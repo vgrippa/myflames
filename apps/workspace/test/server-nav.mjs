@@ -1,11 +1,13 @@
-// The Server place's shell: the grouped sub-navigation (arrow keys, badges from
-// data already loaded), full-width details (Back, Escape, selection and focus
+// The Server place's shell: the floating list of views (the default: the
+// view's title opens it, with keyboard, focus return and a marker for the
+// other views), docking it (persisted), the grouped sub-navigation (arrow
+// keys, badges from data already loaded), full-width details (Back, Escape, selection and focus
 // restored on desktop and narrow layouts), ⓘ popovers, prerequisite
 // gates, the pushed list at phone width, and session restore of the view and
 // the inspector, including view names saved by earlier versions.
 import assert from "node:assert/strict";
 import path from "node:path";
-import { load, open, pause } from "./perf-harness.mjs";
+import { DOCK_KEY, load, open, pause } from "./perf-harness.mjs";
 
 const config = await load("config-mysql-8.4.json");
 const tableReport = await load("tables-mysql-8.4.json");
@@ -13,6 +15,9 @@ const tableReads = [];
 const largeCatalog = { schema_version: "schemas-1.0", engine: "mysql", server_version: "8.4.11", taken_at: "x", uptime_s: 1, performance_schema: true,
   schemas: [{ name: "bigdb", tables: 2501, system: false }, { name: "small", tables: 1, system: false }], user_tables: 2502, all_limit: 2000, all_note: "", system: [] };
 const waitsOff = await load("waits-mariadb-13.0-default.json");
+const blocked = await load("locks-mysql-8.4.json");
+// Locks answers only once the floating marker test asks for it.
+let locksReply = { status: 400, body: { error: "Not mocked in this suite." } };
 
 const accounts = { schema_version: "accounts-1.0", engine: "mysql", version: "8.4.11", complete: true, warnings: [],
   accounts: [{ name: "nav-account", host: "%", role: false }], role_grants: [], default_roles: [] };
@@ -25,6 +30,7 @@ const h = await open("/api/live/config", "server-nav", { "/api/live/waits": { st
     return { status: 200, body: tableReport };
   },
   "/api/accounts/list": { status: 200, body: accounts },
+  "/api/live/locks": () => locksReply,
   "/api/lifecycle/tools": { status: 400, body: { error: "Not mocked in this suite." } },
   "/api/schema-diagram/read": { status: 400, body: { error: "Not mocked in this suite." } } });
 const { page, state, text, texts } = h;
@@ -32,14 +38,184 @@ state.fallback = { status: 200, body: config };
 // state.seen holds this suite's own endpoint (/api/live/config) without a path.
 const live = () => [...state.seen.map((body) => ({ path: "/api/live/config", body })), ...state.other.filter((o) => o.path.startsWith("/api/live/"))];
 const current = () => page.$eval(".source-list [aria-current=page]", (e) => e.dataset.view);
+const active = () => page.evaluate(() => document.activeElement?.id || "");
+const switcher = (view) => page.$eval(`#${view}-switcher`, (e) => ({
+  expanded: e.getAttribute("aria-expanded"), popup: e.getAttribute("aria-haspopup"), name: e.querySelector(".view-switcher-name")?.textContent,
+  text: e.textContent, marker: e.querySelector(".view-switcher-marker")?.className || "", heading: e.parentElement?.id,
+  size: getComputedStyle(e).fontSize, weight: getComputedStyle(e).fontWeight }));
+const popover = () => page.$('.view-switcher-popover[role=dialog][aria-label="Server views"]');
 try {
+  // ---- The floating list of views (the default when nothing is stored) ----
+  assert.equal(await page.evaluate((key) => localStorage.getItem(key), DOCK_KEY), null, "nothing stored: the default applies");
+  // Users and roles loads late (its chunk is held back) for the focus check below.
+  state.slowAssets = /\/Accounts-[^/]*\.js$/;
   await h.server();
+  await page.waitForSelector("#health-switcher");
+  assert.ok(await page.$(".server-place.is-nav-collapsed"), "floating by default");
+  assert.equal(await page.$(".server-source-wrap"), null, "no docked list");
+  assert.equal(await page.$(".source-list"), null, "the list stays closed until the title opens it");
+  // The view's title is the switcher: one name, a pop-up button at the title's size and weight.
+  assert.deepEqual(await switcher("health"), { expanded: "false", popup: "dialog", name: "Health", text: "Health", marker: "",
+    heading: "health-title", size: "15px", weight: "600" });
+  assert.equal(await page.$eval('.server-view[data-view=health]', (e) => document.getElementById(e.getAttribute("aria-labelledby"))?.textContent), "Health",
+    "the view is named by its title text");
+  assert.ok(await page.$('.server-view[data-view=health] .view-title button[aria-label="About Health"]'), "ⓘ stays beside the title");
+  // No second row naming the view: the view's toolbar is the first thing in the content.
+  assert.equal(await page.$eval(".server-content", (c) => {
+    const toolbar = c.querySelector(".server-view .view-toolbar");
+    return Math.round(toolbar.getBoundingClientRect().top - c.getBoundingClientRect().top);
+  }), 0, "no row above the view's toolbar");
+  assert.equal(await page.$$eval(".server-content *", (els) => els.filter((e) => e.children.length === 0 && e.textContent.trim() === "Health" && e.getClientRects().length).length), 1,
+    "the view's name appears once");
+
+  // A view chosen from the list that loads late never takes focus from a
+  // surface opened since (here the connection picker).
+  await page.click("#health-switcher");
+  await page.waitForSelector(".view-switcher-popover");
+  await page.click("#server-nav-accounts");
+  await page.waitForFunction(() => !document.querySelector(".view-switcher-popover"));
+  assert.equal(await page.$('.server-view[data-view=accounts]'), null, "the chosen view is still loading");
+  await page.click(".window-toolbar .connection-pill");
+  await page.waitForSelector(".window-toolbar .picker-panel", { visible: true });
+  await page.waitForFunction(() => !!document.activeElement?.closest(".window-toolbar .connection-picker"));
+  await page.waitForSelector("#accounts-switcher", { visible: true });
+  await pause(200);
+  assert.equal(await page.evaluate(() => !!document.activeElement?.closest(".window-toolbar .connection-picker")), true,
+    "the late view leaves focus in the picker");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".window-toolbar .picker-panel"));
+  state.slowAssets = null;
+  await h.view("health");
+
+  // Keyboard: Enter opens on the current view; arrows, Home and End move without choosing; Escape closes and returns focus.
+  await page.focus("#health-switcher");
+  await page.keyboard.press("Enter");
+  await page.waitForSelector('.view-switcher-popover[role=dialog][aria-label="Server views"]');
+  await page.waitForFunction(() => document.activeElement?.id === "server-nav-health");
+  assert.equal((await switcher("health")).expanded, "true");
+  assert.equal(await page.$eval("#health-switcher", (e) => e.getAttribute("aria-controls")), await page.$eval(".view-switcher-popover", (e) => e.id));
+  assert.deepEqual(await texts(".view-switcher-popover .source-group h3"), ["Overview", "Contention", "Schema", "Setup", "Security"]);
+  // Ten views: Database diagram is a place of its own (SQL workspace group).
+  assert.equal(await page.$$eval(".view-switcher-popover .source-item", (els) => els.length), 10);
+  assert.equal(await page.$("#server-nav-diagram"), null, "no Database diagram in the Server list");
+  assert.ok(await page.$('.view-switcher-popover .server-floating-header button[aria-label="Dock the list of views"]'), "the dock control in its header");
+  // Anchored under the title, aligned to its left edge, never over it, within the window.
+  const anchor = await page.evaluate(() => {
+    const b = document.getElementById("health-switcher").getBoundingClientRect();
+    const p = document.querySelector(".view-switcher-popover").getBoundingClientRect();
+    const footer = document.querySelector(".window-statusbar")?.getBoundingClientRect().top ?? innerHeight;
+    return { gap: p.top - b.bottom, left: Math.round(p.left - b.left), bottom: footer - p.bottom };
+  });
+  assert.ok(anchor.gap >= 0 && anchor.gap <= 12, `the list opens under the title (${JSON.stringify(anchor)})`);
+  assert.equal(anchor.left, 0, "aligned to the title's left edge");
+  assert.ok(anchor.bottom >= 0, `the list stays above the window footer (${JSON.stringify(anchor)})`);
+  await page.keyboard.press("ArrowDown");
+  await page.waitForFunction(() => document.activeElement?.id === "server-nav-innodb");
+  assert.equal(await page.$eval(".view-switcher-popover [aria-current=page]", (e) => e.dataset.view), "health", "moving does not choose");
+  await page.keyboard.press("End");
+  assert.equal(await active(), "server-nav-accounts");
+  await page.keyboard.press("ArrowUp");
+  assert.equal(await active(), "server-nav-maintenance");
+  await page.keyboard.press("Home");
+  assert.equal(await active(), "server-nav-health");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".view-switcher-popover"));
+  assert.equal(await active(), "health-switcher", "Escape returns focus to the title");
+  assert.equal((await switcher("health")).expanded, "false");
+  // Space opens too; a click outside closes it.
+  await page.keyboard.press("Space");
+  await page.waitForSelector(".view-switcher-popover");
+  await page.mouse.click(900, 600);
+  await page.waitForFunction(() => !document.querySelector(".view-switcher-popover"));
+  // Empty space takes no focus: it returns to the title.
+  await page.waitForFunction(() => document.activeElement?.id === "health-switcher");
+  // A click on a control keeps focus on that control.
+  await page.click("#health-switcher");
+  await page.waitForSelector(".view-switcher-popover");
+  await page.click('.server-view[data-view=health] .view-toolbar select');
+  await page.waitForFunction(() => !document.querySelector(".view-switcher-popover"));
+  await pause(100);
+  assert.equal(await page.evaluate(() => document.activeElement?.tagName), "SELECT", "a clicked control keeps focus");
+  await page.keyboard.press("Escape");
+  // Typing ranks commands whose name holds every word first, then keyword
+  // matches, each in the declared order: health lists the Health view before Tuning.
+  await page.keyboard.down("Meta"); await page.keyboard.press("k"); await page.keyboard.up("Meta");
+  await page.waitForSelector("dialog.command-palette[open]");
+  await page.type('input[aria-label="Search commands"]', "health");
+  const ranked = await page.$$eval("dialog.command-palette .command-option > span", (els) => els.map((e) => e.textContent));
+  assert.equal(ranked[0], "Health", `the Health view comes first: ${ranked}`);
+  assert.ok(ranked.indexOf("Tuning") > 0, `Tuning still matches by keyword: ${ranked}`);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.command-palette"));
+  await page.focus("#health-switcher");
+  // Navigation from elsewhere (the command palette) never carries an open list onto the next view.
+  await page.click("#health-switcher");
+  await page.waitForSelector(".view-switcher-popover");
+  await page.keyboard.down("Meta"); await page.keyboard.press("k"); await page.keyboard.up("Meta");
+  await page.waitForSelector("dialog.command-palette[open]");
+  await page.type('input[aria-label="Search commands"]', "innodb");
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => !document.querySelector("dialog.command-palette"));
+  await page.waitForSelector(".server-view[data-view=innodb]", { visible: true });
+  await pause(200);
+  assert.equal(await popover(), null, "the list closed with the view it was opened on");
+  assert.equal(await page.$eval("#innodb-switcher", (e) => e.getAttribute("aria-expanded")), "false");
+  await h.view("health");
+  assert.equal(await popover(), null, "returning to the view does not reopen its list");
+  // Down opens; Enter chooses: the list closes and the chosen view's title has focus.
+  await page.focus("#health-switcher");
+  await page.keyboard.press("ArrowDown");
+  await page.waitForFunction(() => document.activeElement?.id === "server-nav-health");
+  for (const id of ["innodb", "errorlog", "locks", "indexes", "tables", "config"]) {
+    await page.keyboard.press("ArrowDown");
+    await page.waitForFunction((target) => document.activeElement?.id === `server-nav-${target}`, {}, id);
+  }
+  await page.keyboard.press("Enter");
+  await page.waitForSelector('.server-view[data-view=config]', { visible: true });
+  assert.equal(await popover(), null, "choosing a view closes the list");
+  await page.waitForFunction(() => document.activeElement?.id === "config-switcher");
+  // Parameters reads on open; its Watch dot is in the list, and the other views' titles show it.
+  await page.waitForSelector(".server-view tr[data-row-key]");
+  assert.equal((await switcher("config")).marker, "", "a view's own status is not its title's marker");
+  await page.click("#config-switcher");
+  await page.waitForSelector(".view-switcher-popover #server-nav-config .status-dot.is-watch");
+  await page.click("#server-nav-health");
+  await page.waitForSelector('.server-view[data-view=health]', { visible: true });
+  const marked = await switcher("health");
+  assert.equal(marked.marker, "view-switcher-marker is-watch");
+  assert.equal(await page.$eval("#health-switcher > .status-dot", () => true).catch(() => false), false, "never a bare dot directly after the title");
+  assert.equal(await page.$eval("#health-switcher .view-switcher-chevron .view-switcher-marker", (e) => e.getAttribute("title")), "1 other view needs attention");
+  assert.equal(await page.$eval("#health-switcher .view-switcher-chevron .count-badge", (e) => e.textContent), "1", "count badge on the chevron");
+  assert.equal(await page.$eval("#health-switcher .visually-hidden", (e) => e.textContent), ", 1 other view needs attention", "the marker's words reach screen readers");
+
+  // Docking from the list's header persists across a reload. From the
+  // keyboard, focus moves to the toolbar's Dock/Float toggle, never the page.
+  await page.click("#health-switcher");
+  await page.waitForSelector('.view-switcher-popover button[aria-label="Dock the list of views"]');
+  await page.focus('.view-switcher-popover button[aria-label="Dock the list of views"]');
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(".server-place:not(.is-nav-collapsed) .server-source-wrap .source-list");
+  assert.equal(await page.$(".view-switcher"), null, "docked: the title is a heading again");
+  await page.waitForFunction(() => document.activeElement?.matches(".place-toolbar .server-sidebar-toggle"));
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Float the list of views",
+    "docking from the list keeps focus on the Dock/Float toggle");
+  assert.equal(await page.evaluate((key) => localStorage.getItem(key), DOCK_KEY), "false");
+  await page.reload({ waitUntil: "networkidle0" });
+  // The reloaded workspace starts over: count its reads only.
+  state.seen.length = 0;
+  state.other.length = 0;
+  await h.server();
+  await page.waitForSelector(".server-place:not(.is-nav-collapsed) .server-source-wrap .source-list");
+  assert.equal(await page.$(".view-switcher"), null, "still docked after a reload");
+  assert.equal(await page.$eval("#health-title", (e) => e.textContent), "Health");
+
+  // ---- The docked list ----
   // Groups by job, each item with its own icon, one item current.
   // Replication and Tuning are places of their own, not Server views.
   assert.deepEqual(await texts(".source-list .source-group h3"), ["Overview", "Contention", "Schema", "Setup", "Security"]);
   const items = await page.$$eval(".source-list .source-item", (els) => els.map((e) => [e.dataset.view, e.querySelector("svg path, svg rect, svg circle")?.outerHTML]));
   assert.deepEqual(items.map((i) => i[0]),
-    ["health", "innodb", "errorlog", "locks", "indexes", "tables", "diagram", "config", "instruments", "maintenance", "accounts"]);
+    ["health", "innodb", "errorlog", "locks", "indexes", "tables", "config", "instruments", "maintenance", "accounts"]);
   assert.equal(new Set(items.map((i) => i[1])).size, items.length, "one glyph per view");
   assert.equal((await page.$$(".source-list [aria-current=page]")).length, 1);
   assert.equal(await current(), "health");
@@ -56,22 +232,24 @@ try {
   await page.keyboard.press("End");
   await page.waitForFunction(() => document.activeElement?.id === "server-nav-accounts");
   assert.equal(await current(), "accounts");
+  await page.waitForSelector("#server-nav-accounts .count-badge");
   await page.keyboard.press("ArrowUp");
   assert.equal(await current(), "maintenance");
   await page.keyboard.press("Home");
   assert.equal(await current(), "health");
-  // A view reads when it is opened on screen (Parameters and Instruments
-  // read their catalogs once); views never opened read nothing, and nothing
+  // A view reads when it is opened on screen (Parameters, Instruments and
+  // Users and roles read their catalogs once); views never opened read nothing, and nothing
   // was read before Server was opened (Server and Replication mount on their
   // first visit). No badge appears without data.
-  const onOpen = ["/api/live/config", "/api/live/instruments"];
-  for (const view of ["innodb", "errorlog", "locks", "indexes", "tables", "diagram", "config", "instruments", "maintenance", "accounts"]) await h.view(view);
+  const onOpen = ["/api/live/config", "/api/live/instruments", "/api/live/error-log"];
+  for (const view of ["innodb", "errorlog", "locks", "indexes", "tables", "config", "instruments", "maintenance", "accounts"]) await h.view(view);
   const opened = ["/api/live/health", "/api/live/innodb", "/api/live/error-log", "/api/live/locks", "/api/live/indexes", "/api/live/tables", ...onOpen];
   assert.deepEqual(live().filter((c) => c.path !== "/api/live/schemas" && c.path !== "/api/live/privileges" && !opened.includes(c.path)), [],
     "only views opened on screen read (never Top statements, Processlist, Waits, I/O, Replication or the Full analysis)");
   for (const path of onOpen) assert.equal(live().filter((c) => c.path === path).length, 1, `${path} is read once on open`);
-  // Only the views that read on open can show a badge: here Parameters (Instruments is not mocked).
-  assert.deepEqual(await page.$$eval(".source-list .count-badge, .source-list .status-dot", (els) => els.map((e) => e.closest("[id^=server-nav-]")?.id)), ["server-nav-config"]);
+  assert.equal(state.other.filter((c) => c.path === "/api/accounts/list").length, 1, "/api/accounts/list is read once on open");
+  // Only the views that read on open can show a badge: here Parameters and Users and roles (Instruments is not mocked).
+  assert.deepEqual(await page.$$eval(".source-list .count-badge, .source-list .status-dot", (els) => els.map((e) => e.closest("[id^=server-nav-]")?.id)), ["server-nav-config", "server-nav-accounts"]);
 
   // The shared database chooser participates in the kit's one-popover and
   // focus-return contract. Dismissing it does not navigate or load a report.
@@ -185,6 +363,21 @@ try {
   const migrated = await h.savedSlow((s) => s.kind === "io");
   assert.equal(migrated.state.query_lab.slow.inspector, false);
   assert.equal(migrated.state.query_lab.slow.sessions_scope, "active");
+  // A workspace saved on the old Server > Database diagram view opens the
+  // Database diagram place (an old route opens the place); Server then opens Health.
+  await page.evaluate(async (t) => {
+    const call = (route, body) => fetch(route, { method: "POST", headers: { "Content-Type": "application/json", "X-Myflames-Token": t }, body: JSON.stringify(body) }).then((r) => r.json());
+    const stored = await call("/api/session/load", {});
+    const state = stored.state;
+    state.mode = "server";
+    state.query_lab.slow.kind = "diagram";
+    await call("/api/session/save", { revision: stored.revision, client_id: "an-earlier-version-diagram", seq: 1, state });
+  }, token);
+  await page.reload({ waitUntil: "networkidle0" });
+  await page.waitForSelector('.server-place.is-diagram-place .server-view[data-view="diagram"]', { visible: true });
+  assert.equal(await page.$eval(".main-nav button[aria-current=page]", (e) => e.dataset.place), "diagram");
+  await h.server();
+  await page.waitForSelector("#server-nav-health[aria-current=page]");
   // A stored view id that names an Object property ("constructor", "__proto__") is no view: Health opens.
   for (const kind of ["constructor", "__proto__", "toString"]) {
     await page.evaluate(async (t, k) => {
@@ -200,19 +393,28 @@ try {
     await page.waitForSelector(".server-view[data-view=health]");
   }
 
-  // The packaged view restores its id only. Its badge counts an explicit
-  // list read, and a reload does not restore the list or issue an account read.
+  // The packaged view restores its id only (never the list), and reads once
+  // when opened on screen to show its count badge.
   await h.view("accounts");
-  assert.equal(await page.$("#server-nav-accounts .count-badge"), null);
-  await h.button("Load users and roles"); await page.waitForSelector("#server-nav-accounts .count-badge");
+  await page.waitForSelector("#server-nav-accounts .count-badge");
   assert.match(await text("#server-nav-accounts"), /1/);
+  // Account outcomes and one-time secrets live in component memory. Keeping
+  // this same instance across view navigation preserves them until dismissal.
+  await page.type('.accounts-view input[aria-label="Find an account"]', "nav-account");
+  await page.evaluate(() => { window.retainedAccountsView = document.querySelector('.accounts-view'); });
+  await h.view("config");
+  assert.equal(await page.evaluate(() => window.retainedAccountsView.isConnected), true, "Users and roles must stay mounted");
+  await h.view("accounts");
+  assert.equal(await page.evaluate(() => window.retainedAccountsView === document.querySelector('.accounts-view')), true);
+  assert.equal(await page.$eval('.accounts-view input[aria-label="Find an account"]', e => e.value), "nav-account");
+  await page.evaluate(() => { delete window.retainedAccountsView; });
   const savedAccounts = await h.savedSlow(s => s.kind === "accounts");
   assert.ok(!JSON.stringify(savedAccounts.state).includes("nav-account"));
   const readsBeforeReload = state.other.filter(r => r.path === "/api/accounts/list").length;
   await page.reload({ waitUntil: "networkidle0" }); await h.server();
   await page.waitForSelector("#server-nav-accounts[aria-current=page]");
-  assert.equal(await page.$("#server-nav-accounts .count-badge"), null);
-  assert.equal(state.other.filter(r => r.path === "/api/accounts/list").length, readsBeforeReload);
+  await page.waitForSelector("#server-nav-accounts .count-badge");
+  assert.equal(state.other.filter(r => r.path === "/api/accounts/list").length, readsBeforeReload + 1);
 
   // Refresh all repeats the explicitly approved table scope, including
   // Fresh numbers before the :all suffix. It never grants a new scope consent.
@@ -263,8 +465,8 @@ try {
   await phone.keyboard.press("ArrowDown");
   await phone.waitForFunction(() => document.activeElement?.id === "server-nav-indexes");
   assert.ok(await phone.$(".server-layout.show-list"), "arrows only move focus in the pushed list");
-  // Locks to Parameters: Indexes, Tables, Database diagram, Parameters.
-  for (const id of ["tables", "diagram", "config"]) {
+  // Locks to Parameters: Indexes, Tables, Parameters.
+  for (const id of ["tables", "config"]) {
     await phone.keyboard.press("ArrowDown");
     await phone.waitForFunction((target) => document.activeElement?.id === `server-nav-${target}`, {}, id);
   }
@@ -324,6 +526,48 @@ try {
   await narrow.waitForFunction(() => !document.querySelector(".popover[role=menu]"));
   assert.equal(await narrow.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   await narrow.close();
+
+  // Floating again from the top bar's toggle, kept across a reload; the other
+  // views' worst state shows on the title: a problem outranks a watch.
+  await page.click('.place-toolbar button[aria-label="Float the list of views"]');
+  await page.waitForSelector(".server-place.is-nav-collapsed .view-switcher");
+  assert.equal(await page.$(".server-source-wrap"), null);
+  assert.equal(await page.evaluate((key) => localStorage.getItem(key), DOCK_KEY), "true");
+  assert.ok(await page.$('.place-toolbar button[aria-label="Dock the list of views"]'), "the toggle now docks it");
+  await page.reload({ waitUntil: "networkidle0" });
+  await h.server();
+  await page.waitForSelector(".server-place.is-nav-collapsed .view-switcher");
+  await h.view("config");
+  await page.waitForSelector(".server-view tr[data-row-key]");
+  locksReply = { status: 200, body: blocked };
+  await h.view("locks");
+  await page.waitForFunction(() => !document.querySelector('.server-view[data-view="locks"] .spinner'));
+  if (!(await page.$('.server-view[data-view="locks"] [data-row-key]'))) await h.refresh();
+  await page.waitForSelector('.server-view[data-view="locks"] [data-row-key]');
+  await h.view("health");
+  await page.waitForFunction(() => document.querySelector("#health-switcher .view-switcher-marker")?.classList.contains("is-problem"));
+  assert.equal(await page.$eval("#health-switcher .view-switcher-marker", (e) => e.getAttribute("title")), "2 other views need attention");
+  assert.equal(await page.$eval("#health-switcher .view-switcher-marker .count-badge", (e) => e.textContent), "2");
+  assert.equal(await page.$eval("#health-switcher .visually-hidden", (e) => e.textContent), ", 2 other views need attention");
+  await h.view("locks");
+  assert.equal(await page.$eval("#locks-switcher .view-switcher-marker", (e) => e.getAttribute("title")), "1 other view needs attention", "the view's own problem is in its content");
+  assert.equal(await page.$eval("#locks-switcher .visually-hidden", (e) => e.textContent), ", 1 other view needs attention");
+  // The list keeps its counts and dots, and its header names the other views needing attention.
+  await h.openViews();
+  assert.match(await text(".view-switcher-popover .server-floating-header"), /1 other view needs attention/);
+  assert.equal(await text(".view-switcher-popover #server-nav-locks .count-badge"), "5");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => document.activeElement?.id === "locks-switcher");
+  // Workload works the same way, with its own list.
+  await h.workload();
+  await page.waitForSelector("#top-switcher");
+  assert.deepEqual(await switcher("top").then(({ popup, expanded, name }) => ({ popup, expanded, name })), { popup: "dialog", expanded: "false", name: "Top statements" });
+  await page.click("#top-switcher");
+  await page.waitForSelector('.view-switcher-popover[role=dialog][aria-label="Workload views"]');
+  assert.deepEqual(await texts(".view-switcher-popover .source-label"), ["Top statements", "Processlist", "Waits", "I/O"]);
+  await page.waitForFunction(() => document.activeElement?.id === "server-nav-top");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => document.activeElement?.id === "top-switcher");
 
   assert.deepEqual(h.errors, []);
   console.log("server navigation: ok");

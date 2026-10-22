@@ -1,4 +1,4 @@
-import { openConnectionPicker, chooseConnection } from "./chrome-helpers.mjs";
+import { openConnectionPicker, chooseConnection, openAccountSheet, closeAccountSheet } from "./chrome-helpers.mjs";
 // Query editor: running SQL in the tab's session, results, Messages, Stop,
 // row limit and Load more, transactions, confirmations, export, history, the
 // schema browser, a session that ended, and restore. The packaged page and
@@ -120,6 +120,7 @@ const mock = {
   rollback: [],
   close: [],
   open: [],
+  holdOpen: false,
   history: { items: [] },
   holdStatus: false,
   holdRun: false,
@@ -158,6 +159,7 @@ function reply(p, body) {
     case "/api/editor/close":
       return mock.close.shift() || { closed: true, session: null };
     case "/api/editor/open":
+      if (mock.holdOpen) return null;
       return mock.open.shift() || { status: "idle", session: session() };
     case "/api/editor/history":
       return body.action === "clear" ? { cleared: mock.history.items.length } : mock.history;
@@ -624,13 +626,11 @@ try {
   await chord("Enter");
   await ran(12);
   await page.waitForFunction(() => document.querySelector(".tx-state")?.dataset.state === "Transaction unknown");
-  // The footer leaves the transaction to the toolbar, except in Query digest,
-  // which hides the toolbar: an open or unknown transaction stays visible.
+  // The footer leaves the transaction to the toolbar, which is always shown:
+  // Query digest is a place of its own, not a mode of the editor.
   assert.equal(await page.$('.window-statusbar[aria-label="Workspace status"] [data-status="transaction"]'), null);
-  await page.click('.query-mode-switch [role=tab]:nth-child(2)');
-  await page.waitForFunction(() => document.querySelector('.window-statusbar[aria-label="Workspace status"] [data-status="transaction"]')?.textContent === "Transaction unknown");
-  await page.click('.query-mode-switch [role=tab]:nth-child(1)');
-  await page.waitForFunction(() => !document.querySelector('.window-statusbar[aria-label="Workspace status"] [data-status="transaction"]') && !!document.querySelector(".tx-state"));
+  assert.equal(await page.$(".query-mode-switch"), null, "no Editor | Query digest switch");
+  assert.ok(await page.$(".tx-state"));
   mock.close.push({ closed: false, reason: "transaction_unknown", message: "A transaction may be open.", session: session({ in_transaction: null }) });
   mock.close.push({ closed: true, session: session({ ended: true, ended_reason: "closed", state: "ended" }) });
   await page.click(".query-tab:has([aria-selected=true]) .query-tab-close");
@@ -1077,21 +1077,30 @@ try {
   answerHeld(heldRun, { status: "complete", session: session({ tab_id: abTab, connection_id: 77, connection: { profile_id: A, name: "A", host: "127.0.0.1", port: 3306, user: "a", type: "production", read_only: false } }),
     run: run([statement(0, "SELECT * FROM big", 0)], [rows(0, ["id"], [["1"], ["2"]], { stopped: "row_limit", label: "stopped after 2 rows", truncated: true, limit: 2 })]) });
   await page.waitForSelector('[data-banner="mismatch"]');
+  assert.match(await text('[data-banner="mismatch"]'), /This tab is still connected to A\. Close its session to run on B\./);
+  assert.equal(await text('[data-banner="mismatch"] button.primary'), "Close session");
+  // The result's origin lives in its summary beside the row-limit notice.
+  await page.waitForSelector(".result-view .result-meta .result-from", { visible: true });
+  assert.equal(await text(".result-view .result-meta .result-from"), "From A");
+  for (const action of ["run", "run-all", "explain", "analyze"]) {
+    assert.equal(await page.$eval(`[data-action=${action}]`, (e) => e.disabled), true, `${action} disabled during mismatch`);
+    assert.match(await page.$eval(`[data-action=${action}]`, (e) => e.title), /This tab is still connected to A\. Close its session to run on B\./);
+  }
   assert.equal(await page.$(".result-actions button ::-p-text(Load more)"), null, "no Load more on another connection");
   const startsBefore = calls("/api/live/start").length;
-  await page.locator("[data-action=explain]").click();
-  await page.waitForFunction(() => /session is on A/.test(document.querySelector(".query-lab [role=alert]")?.textContent || ""));
   await page.focus(EDITOR);
   await chord("e", true);
   await pause(150);
   assert.equal(calls("/api/live/start").length, startsBefore, "Explain and Run analysis send nothing to B");
   await chooseConnection(page, A);
   await page.waitForFunction(() => !document.querySelector('[data-banner="mismatch"]'));
+  assert.equal(await page.$(".result-from"), null, "the result is current again on A");
   await page.waitForSelector(".result-actions button ::-p-text(Load more)");
   await chooseConnection(page, B);
   mock.close.push({ closed: true, session: null });
   await page.locator('[data-banner="mismatch"] button ::-p-text(Close session)').click();
   await page.waitForFunction(() => !document.querySelector('[data-banner="mismatch"]'));
+  assert.equal(await text(".result-view .result-meta .result-from"), "From A", "closing the session keeps the result's origin");
   await chooseConnection(page, A);
   await pause(150);
   assert.equal(await page.$(".result-actions button ::-p-text(Load more)"), null, "no Load more after the session closed");
@@ -1101,13 +1110,13 @@ try {
   // paths. New-session write denials never stand in for this tab's roles.
   const refreshPrivileges = async () => {
     const before = calls("/api/live/privileges").length;
-    await page.click('button[aria-label="Privileges"]');
-    await page.locator('[role=dialog][aria-label="Privileges"] button ::-p-text(Refresh privileges)').click();
+    await openAccountSheet(page);
+    await page.locator('dialog.account-sheet button ::-p-text(Refresh privileges)').click();
     await until(() => calls("/api/live/privileges").length > before, "privileges did not refresh");
-    await page.waitForFunction(() => !document.querySelector('[role=dialog][aria-label="Privileges"] button')?.disabled);
-    assert.match(await text('[role=dialog][aria-label="Privileges"]'), /Connected as a@%.*Active roles: reader@%/s);
-    assert.match(await text('[role=dialog][aria-label="Privileges"] pre'), /GRANT SELECT ON testdb/);
-    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => [...document.querySelectorAll('dialog.account-sheet button')].some(b => b.textContent === "Refresh privileges" && !b.disabled));
+    assert.match(await text('dialog.account-sheet'), /Connected as a@%.*Active roles: reader@%/s);
+    assert.match(await text('dialog.account-sheet pre'), /GRANT SELECT ON testdb/);
+    await closeAccountSheet(page);
   };
   const deniedAnswer = { state: "denied", grey_out: true, missing: ["TEST_GLOBAL_PRIVILEGE"], reason: "Definitive global denial." };
   mock.privilegeActions = { explain: deniedAnswer, run_analysis: deniedAnswer, set_global: deniedAnswer };
@@ -1246,6 +1255,43 @@ try {
   const beforeReconnect = calls("/api/live/privileges").length;
   await page.locator('[data-banner="ended"] button ::-p-text(Reconnect)').click();
   await until(() => calls("/api/live/privileges").length > beforeReconnect, "reconnect did not refresh privileges");
+  await page.waitForFunction(() => !document.querySelector('[data-banner="ended"]'));
+  await idle();
+
+  // A successful late reconnect must not commit a password currently being
+  // edited in the picker. Release the actual editor/open reply while that
+  // input still owns focus; only Enter is allowed to adopt the new password.
+  mock.run.push({ status: "session_ended", session: session({ ended: true, ended_reason: "connection_lost", state: "ended" }),
+    run: run([statement(0, "SELECT 1", 0, { status: "session_ended" })], [], { state: "session_ended" }) });
+  // Reconnect took focus from the SQL editor. Run shortcuts belong to that
+  // input, so focus it again and verify that the queued reply was requested.
+  await page.focus(EDITOR);
+  const beforeLateReconnectRun = calls("/api/editor/run").length;
+  await chord("Enter"); await ran(beforeLateReconnectRun + 1);
+  await page.waitForSelector('[data-banner="ended"]');
+  mock.holdOpen = true;
+  await page.locator('[data-banner="ended"] button ::-p-text(Reconnect)').click();
+  const delayedOpen = await until(() => held.find(r => r.path === "/api/editor/open"), "reconnect did not reach editor/open");
+  await page.click('.window-toolbar .connection-pill');
+  await page.waitForSelector('.picker-panel', { visible: true });
+  if (!await page.$('.picker-password')) await page.locator('.picker-panel button ::-p-text(Use a different password)').click();
+  await page.waitForSelector('.picker-password', { visible: true });
+  await page.$eval('.picker-password', e => { e.focus(); e.select(); });
+  await page.keyboard.press("Backspace");
+  await page.type('.picker-password', "replacement-part");
+  const beforeDraftReply = calls("/api/live/privileges").length;
+  mock.holdOpen = false;
+  held.splice(held.indexOf(delayedOpen), 1);
+  await delayedOpen.request.respond({ status: 200, contentType: "application/json", body: JSON.stringify({ status: "idle", session: session({ connection_id: 43 }) }) });
+  await page.waitForFunction(() => !document.querySelector('[data-banner="ended"]'));
+  await pause(100);
+  assert.equal(await page.$eval('.picker-password', e => e === document.activeElement), true);
+  assert.equal(calls("/api/live/privileges").length, beforeDraftReply, "late reconnect must not send the partial password");
+  await page.type('.picker-password', "-complete"); await page.keyboard.press("Enter");
+  await until(() => calls("/api/live/privileges").length === beforeDraftReply + 1, "password commit did not refresh privileges");
+  assert.equal(calls("/api/live/privileges").at(-1).connection.password, "replacement-part-complete");
+  await page.keyboard.press("Tab"); await pause(100);
+  assert.equal(calls("/api/live/privileges").length, beforeDraftReply + 1, "blur after Enter does not commit twice");
 
   assert.deepEqual(errors, []);
   console.log("Query editor checks passed. " + directory);

@@ -24,9 +24,9 @@ import time
 import unittest
 from unittest import mock
 
-from _perf_replay import (PASSWORD, FakeFactory, FakeTime, ReplayConn, _Refused, batch, replay as raw_replay, run_cli,
-                          run_main)
-from myflames import discover, report, server_checks, ui
+from _perf_replay import (PASSWORD, FakeFactory, FakeTime, ReplayConn, _Refused, batch, index_partition_keys,
+                          replay as raw_replay, run_cli, run_main, simulated_index_partitioning)
+from myflames import cluster, discover, report, server_checks, ui
 from myflames.connector import ConnectorError, MySQLConnection
 from myflames.perf_common import Server, _table_count_sql, scope_sql
 from test_connector import option_file_client
@@ -310,6 +310,12 @@ class TestLiveRecordings(ReportShape):
                                  data['summary']['views'])
                 self.assertEqual([sql for sql in conn.answers if sql not in conn.seen], [])
                 self.assertEqual(result['header']['failures'], [])
+                # The three instrumented root recordings have unused indexes
+                # only on customers; unavailable usage needs no metadata read.
+                metadata = [index_partition_keys(sql) for sql, _ in conn.calls if index_partition_keys(sql) is not None]
+                expected = [[('mfshop', 'customers')]] if name in (
+                    'mysql-8.4-replica', 'mysql-8.0', 'mariadb-11.4') else []
+                self.assertEqual(metadata, expected)
                 for fmt in ('text', 'digest', 'markdown', 'html', 'json'):
                     self.assertTrue(report.export(result, fmt))
 
@@ -363,6 +369,29 @@ class TestLiveRecordings(ReportShape):
                     for unexpected in (sql, bounded + ' LIMIT 2001', sql + ' LIMIT 2000'):
                         with self.assertRaisesRegex(AssertionError, 'unexpected SQL:'):
                             conn.run(unexpected)
+
+    def test_index_metadata_supplement_preserves_captured_create_options(self):
+        for name in ('mysql-8.4-replica', 'mariadb-11.4'):
+            with self.subTest(server=name):
+                conn, data = raw_replay('report', name)
+                original = json.dumps(data, sort_keys=True)
+                metadata = simulated_index_partitioning(data)
+                self.assertEqual(metadata[('mfshop', 'customers')], '')
+                self.assertEqual(json.dumps(data, sort_keys=True), original)
+                # An explicitly simulated alternate table definition overrides
+                # the plain-table fallback from STATISTICS, including NULL.
+                for option in ('partitioned', 'NULL'):
+                    alternate = json.loads(original)
+                    for call in alternate['calls']:
+                        if call[0].startswith('/*myflames:tables*/ SELECT TABLE_SCHEMA, TABLE_NAME, ENGINE,'):
+                            rows = [line.split('\t') for line in call[1].split('\n') if line]
+                            for row in rows:
+                                if row[:2] == ['mfshop', 'customers']:
+                                    row[7] = option
+                            call[1] = ''.join('\t'.join(row) + '\n' for row in rows)
+                    self.assertEqual(simulated_index_partitioning(alternate)[('mfshop', 'customers')],
+                                     None if option == 'NULL' else option)
+                self.assertEqual(json.dumps(data, sort_keys=True), original)
 
     def test_limited_io_count_reuses_the_recorded_denial(self):
         original, _ = raw_replay('report', 'mysql-8.0-limited')
@@ -793,8 +822,14 @@ class TestConcurrency(unittest.TestCase):
             with self.subTest(engine=engine), tempfile.TemporaryDirectory() as directory, \
                     mock.patch.object(tempfile, 'tempdir', directory):
                 source, _ = replay('report', engine)
+                expected, recorded, _ = run_report(engine)
                 answers = {sql: ({'error': str(values[0])} if isinstance(values[0], _Refused)
                                  else {'stdout': values[0]}) for sql, values in source.answers.items()}
+                # The subprocess has a finite answer map, so materialize the
+                # explicit metadata supplement for each expected bounded read.
+                for sql, _ in recorded.calls:
+                    if index_partition_keys(sql) is not None:
+                        answers[sql] = {'stdout': source.run(sql)}
                 clock = FakeTime()
                 with option_file_client(directory, answers) as binary, \
                         MySQLConnection('h', password=PASSWORD, binary=binary) as conn:
@@ -802,6 +837,8 @@ class TestConcurrency(unittest.TestCase):
                                                     sleep=clock.sleep, clock=clock.monotonic)
                 self.assertEqual(result['header']['failures'], [])
                 self.assertEqual(len(result['header']['views']), 10)
+                self.assertEqual({f['id']: f['status'] for f in result['findings'] if f['id'].startswith('indexes.')},
+                                 {f['id']: f['status'] for f in expected['findings'] if f['id'].startswith('indexes.')})
                 paths = []
                 for name in os.listdir(directory):
                     if name.startswith('record-'):
@@ -1756,7 +1793,12 @@ class TestAdditionalCheckFamilies(ReportShape):
                                   ({'wsrep_connected': 'OFF'}, 'problem'), ({'wsrep_ready': 'OFF'}, 'problem'),
                                   ({'wsrep_cluster_status': 'Non-Primary'}, 'problem'),
                                   ({'wsrep_flow_control_paused': '1.1'}, 'unknown'),
-                                  ({'wsrep_local_state': '2'}, 'watch'), ({'wsrep_cluster_size': '1'}, 'watch'),
+                                  # The state is judged by its comment, as the Cluster place does.
+                                  ({'wsrep_local_state': '2', 'wsrep_local_state_comment': 'Donor/Desynced'}, 'watch'),
+                                  ({'wsrep_local_state_comment': 'Initialized'}, 'problem'),
+                                  ({'wsrep_cluster_size': '1'}, 'watch'),
+                                  # Two nodes cannot survive another failure (Cluster's no_tolerance).
+                                  ({'wsrep_cluster_size': '2'}, 'watch'),
                                   ({'wsrep_cluster_size': None}, 'unknown')):
             def edit(sql, text, n):
                 if sql == server_checks.CHECKS_TAG + server_checks.STATUS_SQL:
@@ -1769,8 +1811,10 @@ class TestAdditionalCheckFamilies(ReportShape):
                 items, _, _, _ = self.scenario('mariadb114', edit)
                 self.assertEqual(items['wsrep']['status'], expected)
                 self.assertIn('not a current failure rate', items['wsrep']['caveat'])
-                self.assertIn('since provider start or last FLUSH STATUS', items['wsrep']['caveat'])
+                self.assertIn('cumulative since the Galera provider started', items['wsrep']['caveat'])
+                self.assertIn('FLUSH GLOBAL STATUS', items['wsrep']['caveat'])
                 self.assertIn('provider-dependent', items['wsrep']['caveat'])
+                self.assertIn(cluster.CERT_FAILURES_CAVEAT, items['wsrep']['caveat'])
         def denied(sql, text, n):
             if sql == server_checks.CHECKS_TAG + server_checks.STATUS_SQL:
                 return _Refused('ERROR 1227: Access denied to global status')
@@ -1793,11 +1837,68 @@ class TestAdditionalCheckFamilies(ReportShape):
                           {'wsrep_on': 'ON', 'wsrep_provider': 'none'}):
             for raw in ({'status': {}}, {'status': {'wsrep_connected': 'ON', 'wsrep_cluster_size': '3'}},
                         {'status': {}, 'status_error': 'Access denied to global status'}):
+                if variables.get('wsrep_provider') and (raw['status'].get('wsrep_connected') or raw.get('status_error')):
+                    # wsrep_on OFF with the provider still connected is a
+                    # node that does not replicate, and an unreadable status
+                    # is unknown, not disconnected: see the next test.
+                    continue
                 with self.subTest(variables=variables, raw=raw):
                     server_ = Server(dict(variables, version='11.4.13-MariaDB'), {})
                     self.assertEqual(server_checks._wsrep(server_, raw), [])
                     checks = server_checks.compute_checks(server_, raw)
                     self.assertNotIn('wsrep', [c['key'] for c in checks['checks']])
+
+    def test_wsrep_off_with_a_connected_provider_is_a_problem(self):
+        """MariaDB's global wsrep_on OFF does not disconnect the provider
+        (Ma/sql/wsrep_var.cc), so the node stays in the component while new
+        sessions do not replicate: the Cluster place says problem, and so does
+        checks.wsrep. Only the server-level names remain (mysqld.cc:8070-8085)."""
+        variables = {'wsrep_on': 'OFF', 'wsrep_provider': '/usr/lib/galera/libgalera_smm.so', 'version': '11.8.9-MariaDB'}
+        status = {'wsrep_connected': 'ON', 'wsrep_ready': 'ON', 'wsrep_cluster_status': 'Primary',
+                  'wsrep_cluster_size': '3'}
+        check = server_checks._wsrep(Server(variables, {}), {'status': status})[0]
+        self.assertEqual(check['status'], 'problem')
+        self.assertIn('This node does not replicate', check['why'])
+        # Unreadable is not disconnected (as cluster.py says not available).
+        check = server_checks._wsrep(Server(variables, {}), {'status': {}, 'status_error': 'Access denied'})[0]
+        self.assertEqual(check['status'], 'unknown')
+
+    def test_wsrep_and_the_cluster_place_agree(self):
+        """One Galera rule set: the same wsrep answers give checks.wsrep the
+        status cluster.read_status gives (the confirmed live mismatch was a node
+        down: Cluster watch, checks.wsrep ok)."""
+        import _cluster_fixtures as F
+        from myflames import cluster as cl
+        m = cl
+        cases = [(name, None) for name in ('galera-11.8-healthy', 'galera-11.8-two-of-three', 'galera-11.8-donor',
+                                           'galera-11.8-non-primary', 'pxc-8.4-healthy', 'pxc-8.4-two-of-three',
+                                           'pxc-8.4-member-donor', 'pxc-8.4-maintenance')]
+        # Incomplete status through both entry points (Codex review).
+        cases += [('galera-11.8-healthy', {name: value}) for name, value in (
+            ('wsrep_flow_control_paused', None), ('wsrep_cluster_size', None), ('wsrep_flow_control_paused', '1.5'),
+            ('wsrep_cluster_size', 'bogus'), ('wsrep_cluster_size', '-3'))]
+        for name, changes in cases:
+            with self.subTest(recording=name, changes=changes):
+                edit = F.editor((F.WSREP, F.pairs(**changes))) if changes else None
+                place = m.read_status(F.recorded(name, edit=edit)[0]) if changes else F.report(name)
+                conn = F.recorded(name, edit=edit)[0] if changes else F.conn(name)
+                reader = cl.Reader(conn, cl.CLUSTER_TAG)
+                pre = cl.preflight(reader, cl.EXTRA_VARIABLES)
+                status = reader.pairs(cl.WSREP_STATUS_SQL)
+                table = reader.optional(cl.WSREP_MEMBERS_SQL, 'members', [])
+                pxc = reader.optional(cl.PXC_VIEW_SQL, 'pxc', []) if cl.galera_kind(pre.variables) == 'pxc' else None
+                raw = {'status': dict((k, v) for k, v in status.items() if k in server_checks.WSREP_STATUS),
+                       'galera': {'variables': dict((k, v) for k, v in pre.variables.items()
+                                                    if k in cl.GALERA_VARIABLES),
+                                  'status': dict((k, v) for k, v in status.items()
+                                                 if k in server_checks.WSREP_IDENTITY_STATUS),
+                                  'members': table, 'pxc': pxc, 'notes': []}}
+                variables = dict((k, v) for k, v in pre.variables.items()
+                                 if k in server_checks.VARIABLES or k in ('version', 'version_comment'))
+                check = server_checks._wsrep(Server(variables, pre.status), raw)[0]
+                self.assertEqual(check['status'], place['status'])
+                for f in place['findings']:
+                    self.assertIn(f['title'], check['why'])
 
     def test_wsrep_unreadable_activation_is_not_assumed_disabled(self):
         for variables in ({'wsrep_on': None}, {'wsrep_provider': None}, {'wsrep_on': 'ON'}):

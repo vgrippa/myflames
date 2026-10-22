@@ -1,4 +1,5 @@
 import { connectionAction, connectionRow } from "./connection-helpers.mjs";
+import { chooseView } from "./chrome-helpers.mjs";
 // Remembered connection passwords, managed in Home's Connections section,
 // and each connection's write safety: Type (Production by default,
 // Development) and Read-only, the strip and the picker's type dot; an
@@ -14,6 +15,86 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
+
+// The request ordering contract runs without a browser, sockets or a workspace.
+// Execute the shell's real callback, with deferred API responses under test control.
+if (process.argv.includes("--unit")) {
+  const { transform } = await import("esbuild");
+  const source = await fs.readFile(new URL("../src/main.tsx", import.meta.url), "utf8");
+  const callback = source.slice(source.indexOf("  const refreshProfiles = useCallback("), source.indexOf("  // A connection's type"));
+  assert.ok(callback.includes("return pending"), "profile callback was located");
+  const code = (await transform(`${callback}\nreturn refreshProfiles;`, { loader: "ts", target: "es2020" })).code;
+  function scenario() {
+    const requests = [];
+    const state = { items: [], loaded: false, error: "", secret: null };
+    const read = new Function("useCallback", "profilesReadSequence", "latestProfilesRead", "api",
+      "setProfiles", "setProfilesLoaded", "setProfilesFailed", "setSecretStore", "message", code)(
+      fn => fn, { current: 0 }, { current: null }, () => new Promise((resolve, reject) => requests.push({ resolve, reject })),
+      items => { state.items = items; }, loaded => { state.loaded = loaded; }, error => { state.error = error; },
+      secret => { state.secret = secret; }, error => error.message);
+    return { read, requests, state };
+  }
+  const oldItems = [{ id: "p", type: "development", read_only: false }];
+  const currentItems = [{ id: "p", type: "production", read_only: true }];
+  // Older success and failure both follow the newer success, including the
+  // returned list used by checkPolicy and restored-profile reconciliation.
+  for (const oldFails of [false, true]) {
+    const { read, requests, state } = scenario();
+    const old = read();
+    const latest = read();
+    requests[1].resolve({ items: currentItems, secret_store: { label: "Current store" } });
+    assert.deepEqual(await latest, currentItems);
+    if (oldFails) requests[0].reject(new Error("stale failure"));
+    else requests[0].resolve({ items: oldItems, secret_store: { label: "Old store" } });
+    assert.deepEqual(await old, currentItems);
+    assert.deepEqual(state, { items: currentItems, loaded: true, error: "", secret: { label: "Current store" } });
+  }
+  // A latest failure must retain unknown policy even if an older success
+  // arrives afterwards; all callers observe that failure.
+  {
+    const { read, requests, state } = scenario();
+    const old = read();
+    const latest = read();
+    const failed = assert.rejects(latest, /latest failure/);
+    requests[1].reject(new Error("latest failure"));
+    await failed;
+    requests[0].resolve({ items: oldItems });
+    await assert.rejects(old, /latest failure/);
+    assert.equal(state.error, "latest failure");
+    assert.equal(state.loaded, false);
+    assert.deepEqual(state.items, []);
+  }
+  // Older reads finishing first wait for the newest outstanding read; there
+  // is no intermediate stale state, even across three overlapping requests.
+  {
+    const { read, requests, state } = scenario();
+    const first = read();
+    const middle = read();
+    const latest = read();
+    requests[0].resolve({ items: oldItems });
+    requests[1].reject(new Error("middle failure"));
+    await Promise.resolve();
+    assert.equal(state.loaded, false);
+    assert.equal(state.error, "");
+    requests[2].resolve({ items: currentItems });
+    assert.deepEqual(await Promise.all([first, middle, latest]), [currentItems, currentItems, currentItems]);
+  }
+  // The loop callback merges against the updater's current state, not the
+  // render that produced the callback, preserving settings changed meanwhile.
+  const loop = source.match(/onLoopActivity=\{\(active\) => \{([\s\S]*?)\n\s+\}\}/);
+  assert.ok(loop);
+  const loopCode = (await transform(loop[1], { loader: "ts", target: "es2020" })).code;
+  let saved = { tabs: ["new query"], slow: { kind: "waits", waits_interval: 30, columns_v1: { waits: { width: 200 } } } };
+  const notify = new Function("active", "setLabState", "normalizeLab", "sameLab", loopCode);
+  const apply = updater => { saved = updater(saved); };
+  notify(true, apply, value => value, (a, b) => JSON.stringify(a) === JSON.stringify(b));
+  assert.deepEqual(saved.slow, { kind: "waits", waits_interval: 30, columns_v1: { waits: { width: 200 } }, replication_loop_active: true });
+  const unchanged = saved;
+  notify(true, apply, value => value, (a, b) => JSON.stringify(a) === JSON.stringify(b));
+  assert.equal(saved, unchanged);
+  console.log("Profiles unit checks passed: latest success/failure, awaiting the newest policy, and loop state merges.");
+  process.exit(0);
+}
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const directory = await fs.mkdtemp(path.join(os.tmpdir(), "myflames-profiles-"));
@@ -117,7 +198,7 @@ try {
   await page.goto(url, { waitUntil: "networkidle0" });
   const button = (text, scope = "") => page.locator(`${scope}button ::-p-text(${text})`).click();
   const text = (selector) => page.$eval(selector, (e) => e.textContent);
-  const last = (pathname) => seen[pathname].at(-1);
+  const last = (pathname) => (seen[pathname] || []).at(-1);
   const password = ".connection-panel input[type=password]";
   const notice = (needle) =>
     page.waitForFunction(
@@ -205,8 +286,9 @@ try {
   assert.equal(await page.$(".save-prompt"), null);
   // Server reads with the connection in use, by id, without a password.
   await place("Workload");
-  await page.locator("#server-nav-top").click();
-  await button("Load top statements");
+  await chooseView(page, "top");
+  // Top statements reads when it opens on screen (no Load button).
+  for (let i = 0; i < 100 && last("/api/live/top")?.connection.profile_id !== "p1"; i++) await new Promise((r) => setTimeout(r, 50));
   await page.waitForFunction(() => !document.querySelector(".server-view .spinner"));
   assert.equal(last("/api/live/top").connection.profile_id, "p1");
   assert.equal(last("/api/live/top").connection.password, "");
@@ -386,16 +468,20 @@ try {
   // The state shows only where changes are sent (strip() returns to Home).
   assert.equal(await page.$(safety), null, "no safety state on Home");
   await place("Query editor");
+  assert.notEqual(await page.$eval(`${safety} .safety-status-dot`, (e) => getComputedStyle(e).backgroundColor),
+    await page.evaluate(() => { const p = document.createElement("div"); p.style.background = "var(--danger)"; document.body.append(p); const c = getComputedStyle(p).backgroundColor; p.remove(); return c; }),
+    "Production never uses the Problem color");
   assert.deepEqual(await page.$eval(safety, (e) => ({
     text: e.textContent,
     dot: getComputedStyle(e.querySelector(".safety-status-dot")).backgroundColor,
     bold: Number(getComputedStyle(e.querySelector("strong")).fontWeight) >= 600,
   })), {
-    // Words, not color alone: a danger dot plus "Production".
+    // Words, not color alone: the Production dot (its own hue, never the
+    // Problem red) plus "Production".
     text: "Production · changes ask first",
     dot: await page.evaluate(() => {
       const probe = document.createElement("div");
-      probe.style.background = "var(--danger)";
+      probe.style.background = "var(--env-prod)";
       document.body.append(probe);
       const out = getComputedStyle(probe).backgroundColor;
       probe.remove();
@@ -443,7 +529,7 @@ try {
   assert.match(await text(safety), /^Production assumed · settings not loadedRetry$/);
   assert.match(await page.$eval(`${safety} [role=note]`, (e) => e.getAttribute("aria-label")), /^Production assumed: could not read the settings of Dev box \(.+\); changes stay off until they load$/);
   await place("Workload");
-  await page.locator("#server-nav-sessions").click();
+  await chooseView(page, "sessions");
   await page.click(".server-view[data-view=sessions] [data-action=refresh]");
   await page.waitForSelector('.server-view[data-view=sessions] tbody tr[data-session="93"]');
   await page.click('.server-view[data-view=sessions] tbody tr[data-session="93"]');
@@ -490,7 +576,7 @@ try {
   await page.click(kill);
   await page.waitForSelector("dialog.kill-dialog[open]");
   await page.click(".sheet-actions .danger-solid");
-  await page.waitForSelector(".server-view[data-view=sessions] .kill-result.killed");
+  await page.waitForSelector(".server-view[data-view=sessions] .kill-result.killed:not([data-refreshing])");
   assert.equal(seen["/api/live/kill"].length, 1);
   assert.equal(seen["/api/live/kill"][0].connection.type, "development");
   await place("Home");
@@ -513,7 +599,7 @@ try {
   assert.equal(await rowType(".connection-row.is-active"), "Production, read-only");
   assert.deepEqual(await strip(), { strip: "Read-only: myflames refuses every change on Scratch", kind: "read-only", dot: "Production, read-only" });
   await place("Workload");
-  await page.locator("#server-nav-top").click();
+  await chooseView(page, "top");
   await page.click(".server-view [data-action=refresh]");
   await page.waitForFunction(() => !document.querySelector(".server-view .spinner"));
   const sent = last("/api/live/top").connection;

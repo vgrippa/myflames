@@ -55,12 +55,15 @@ def fixture(view, name):
     The original recordings predate the global-counter read and the extra
     identity reads. Duplicate the stopped snapshot, not a later healthy one.
     Grants and receiver epochs are separately injected by ReplicationCase.
+    Recordings made before source versions (2026-10-20) have no answer for
+    the relay log head the status endpoint and CLI now read: they get an
+    explicitly synthetic refusal, so those channels show "Version unknown".
     """
     data = recorded_fixture(view, name)
     calls, block = [], []
     for original in data['calls']:
         call = list(original)
-        if 'SHOW GLOBAL VARIABLES' in call[0]:
+        if 'SHOW GLOBAL VARIABLES' in call[0] and 'sql_replica_skip_counter' not in call[0]:
             call[0] = call[0].replace("'super_read_only'", "'sql_replica_skip_counter', 'sql_slave_skip_counter', 'super_read_only'")
             if call[1] is not None:
                 call[1] += 'sql_replica_skip_counter\t0\nsql_slave_skip_counter\t0\n'
@@ -74,7 +77,31 @@ def fixture(view, name):
             block.append(call)
             calls.append(call)
     data['calls'] = calls
+    _synthetic_relay_heads(data)
+    # Recordings predate the cluster hint a server that is not a replica now
+    # reads: an explicitly synthetic empty answer (no Galera provider, no
+    # Group Replication configured).
+    if not any(call[0] == TAG + rp.CLUSTER_HINT_SQL for call in data['calls']):
+        data['calls'].append([TAG + rp.CLUSTER_HINT_SQL, ''])
     return data
+
+
+SYNTHETIC_RELAY_HEAD = ('mysql client exited 1: ERROR 1220 (HY000) at line 1: synthetic: this recording predates '
+                        'the relay log head read')
+
+
+def _synthetic_relay_heads(data):
+    if any('LIMIT %d' % n in call[0] and 'RELAYLOG' in call[0] for call in data['calls']
+           for n in rp.SOURCE_VERSION_EVENTS.values()):
+        return
+    try:
+        report = rp.read_status(ReplayConn(data['calls']))
+    except (AssertionError, ValueError, ConnectorError):
+        return
+    for item in report.get('channels') or ():
+        sql = rp.source_version_statement(report['engine'], item)
+        if sql:
+            data['calls'].append([TAG + sql, None, SYNTHETIC_RELAY_HEAD])
 
 
 def replay(view, name, edit=None, error=None):
@@ -409,16 +436,84 @@ class TestGroupReplication(ReplicationCase):
     def edit(self):
         return xml_edit('Channel_Name', '', 'group_replication_applier')
 
-    def test_listed_not_judged(self):
+    def test_group_member_is_not_a_replica(self):
+        # A group member whose only channel is the group's: not a replica (a
+        # neutral state, never unknown), and the message points to Cluster.
         report, _ = status('mysql-8.4-gtid-error', edit=self.edit())
-        c = channel(report, 'group_replication_applier')
-        self.assertEqual(c['kind'], 'group_replication')
-        self.assertFalse(c['judged'])
-        self.assertEqual(c['status_why'], [rp.GR_NOTE])
-        self.assertNotIn('skip_plan', c)
-        self.assertEqual(report['summary']['judged'], 0)
-        with self.assertRaisesRegex(ValueError, 'Group Replication'):
+        self.assertTrue(report['available'])
+        self.assertFalse(report['replica'])
+        self.assertEqual(report['channels'], [])
+        self.assertEqual(report['group_replication_channels'], ['group_replication_applier'])
+        self.assertIsNone(channel(report, 'group_replication_applier'))
+        self.assertEqual(report['summary']['channels'], 0)
+        self.assertRegex(report['message'], r'not a replica: SHOW REPLICA STATUS returned no asynchronous channel\. '
+                                            r'Its group_replication_applier channel belongs to Group Replication: Cluster '
+                                            r'\(myflames cluster\) shows the group\.')
+        self.assertEqual(rp.format_text(report), report['message'] + '\n')
+        with self.assertRaisesRegex(ValueError, 'no replication channel named'):
             rp.plan_skip(report, 'group_replication_applier')
+
+    def test_group_channels_apart_from_asynchronous_ones(self):
+        # A member that also replicates asynchronously: only that channel is
+        # listed and judged; the group's channel is named in a note.
+        edit = xml_edit('Channel_Name', 'ch80', 'group_replication_recovery')
+        report, _ = status('mysql-8.4-multi-error', edit=edit)
+        self.assertTrue(report['replica'])
+        self.assertEqual([c['name'] for c in report['channels']], [''])
+        self.assertEqual(report['group_replication_channels'], ['group_replication_recovery'])
+        self.assertEqual(report['summary']['channels'], 1)
+        self.assertEqual(report['summary']['judged'], 1)
+        self.assertIn(rp.GR_CHANNELS_NOTE % 'group_replication_recovery', report['notes'])
+
+    def test_both_group_channels_are_named(self):
+        def edit(sql, text, n):
+            if 'STATUS' in sql and text and '<resultset' in text:
+                text = text.replace('<field name="Channel_Name">ch80</field>',
+                                    '<field name="Channel_Name">group_replication_recovery</field>')
+                return text.replace('<field name="Channel_Name"></field>',
+                                    '<field name="Channel_Name">group_replication_applier</field>')
+            return text
+        report, _ = status('mysql-8.4-multi-error', edit=edit)
+        self.assertFalse(report['replica'])
+        self.assertEqual(report['group_replication_channels'], ['group_replication_applier', 'group_replication_recovery'])
+        self.assertIn('Its group_replication_applier and group_replication_recovery channels belong to Group '
+                      'Replication', report['message'])
+
+    def test_not_a_replica_hints_at_the_cluster_place(self):
+        # A server with no channel: the hint says where its own replication
+        # is shown, from two variables; nothing when neither is set.
+        report, conn = status('mysql-8.4-source')
+        self.assertFalse(report['replica'])
+        self.assertIsNone(report['cluster_hint'])
+        self.assertEqual(report['message'], 'This server is not a replica: SHOW REPLICA STATUS returned no channel.')
+        self.assertIn(TAG + rp.CLUSTER_HINT_SQL, [sql for sql, _flags in conn.calls])
+
+        def answer(text):
+            def edit(sql, original, n):
+                return text if sql == TAG + rp.CLUSTER_HINT_SQL else original
+            return edit
+        report, _ = status('mysql-8.4-source', edit=answer('group_replication_group_name\t8a94f357-aab4-11df-86ab-c80aa9429562\n'))
+        self.assertEqual(report['cluster_hint'], 'group_replication')
+        self.assertTrue(report['message'].endswith(rp.GR_CONFIGURED_NOT_REPLICA))
+        report, _ = status('mariadb-11.4-source', edit=answer('wsrep_provider\t/usr/lib/galera/libgalera_smm.so\n'))
+        self.assertEqual(report['cluster_hint'], 'galera')
+        self.assertTrue(report['message'].endswith(rp.GALERA_NOT_REPLICA))
+        report, _ = status('mariadb-11.4-source', edit=answer('wsrep_provider\tnone\n'))
+        self.assertIsNone(report['cluster_hint'])
+        # A refused hint read is no hint, never a failed status read.
+        conn, _data = replay('replication', 'mysql-8.4-source')
+        refused = ReplayConn([c if c[0] != TAG + rp.CLUSTER_HINT_SQL else [c[0], None, 'ERROR 1142 (42000): denied']
+                              for c in _data['calls']])
+        self.assertIsNone(rp.read_status(refused)['cluster_hint'])
+        # Group Replication's own channel sets the hint without the read.
+        report, conn = status('mysql-8.4-gtid-error', edit=xml_edit('Channel_Name', '', 'group_replication_applier'))
+        self.assertEqual(report['cluster_hint'], 'group_replication')
+        self.assertNotIn(TAG + rp.CLUSTER_HINT_SQL, [sql for sql, _flags in conn.calls])
+
+    def test_mariadb_names_no_group_channels(self):
+        report, _ = status('mariadb-11.4-healthy')
+        self.assertEqual(report['group_replication_channels'], [])
+        self.assertTrue(report['replica'])
 
 
 # ---- parsers ------------------------------------------------------------------------

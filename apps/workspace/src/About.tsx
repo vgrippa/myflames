@@ -4,6 +4,7 @@
 import { useEffect, useId, useRef, type KeyboardEvent, type RefObject } from "react";
 import { appVersion } from "./api";
 import { Fields } from "./kit";
+import { CheckForUpdatesButton, UpdateCheckStatus } from "./UpdateCheck";
 
 const FOCUSABLE =
   'button:not([disabled]), [href], input:not([disabled]), select, textarea, [tabindex]:not([tabindex="-1"])';
@@ -85,10 +86,16 @@ export function AboutDialog({
         <p className="about-subtitle" id={taglineId}>Performance workspace</p>
         <div className="about-facts"><Fields label="Application details" rows={[
           Boolean(version) && ["Version", <span key="version" className="about-version">{version}</span>],
+          ["Updates", <span key="updates" className="about-updates"><UpdateCheckStatus /><CheckForUpdatesButton /></span>],
           ["Workspace", "Runs on this computer"],
           ["Databases", "MySQL and MariaDB"],
           ["License", "Apache-2.0"],
         ]} /></div>
+        {/* Privacy in one line: what the app contacts, and only when. It
+            replaces the top bar's former Local badge. */}
+        <section className="about-section about-privacy" aria-label="Privacy">
+          <p>myflames contacts only your database servers, official release pages when you check for updates, and news feeds when shown and turned on.</p>
+        </section>
         <section className="about-section about-credits" aria-labelledby={creditsId}>
           <h3 className="section-label" id={creditsId}>
             Credits

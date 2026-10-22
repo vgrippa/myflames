@@ -599,11 +599,19 @@ class WorkspaceStore:
         row = conn.execute('SELECT kind, payload FROM records WHERE id=?', (key,)).fetchone()
         return (row[0], json.loads(row[1])) if row else (None, None)
 
-    def _profile(self, key):
-        """A stored profile with its ``secret_ref``, or None. Never creates the database."""
+    def _profile(self, key, include_updated=False):
+        """A stored profile with its ``secret_ref``, or None. Never creates the database.
+
+        ``include_updated`` reads its save time in the same snapshot, for callers
+        that fingerprint the current settings and password reference together.
+        """
         if not self.path.exists() or not isinstance(key, str):
             return None
         with closing(self._connect()) as conn, conn:
+            if include_updated:
+                row = conn.execute('SELECT updated, payload FROM records WHERE id=? AND kind=?',
+                                   (key, 'profile')).fetchone()
+                return dict(json.loads(row[1]), updated_at=row[0]) if row else None
             kind, value = self._record(conn, key)
         return value if kind == 'profile' else None
 
@@ -688,6 +696,46 @@ class WorkspaceStore:
                 if kind == 'investigation':
                     conn.execute('DELETE FROM investigation_summaries WHERE id=?', (str(key),))
         return {'deleted': True}
+
+    # -- Application update checks (app_update.py) ----------------------------
+
+    def app_update_last_check(self):
+        """The stored result of the last update check (a dict), or None.
+        Never creates the database."""
+        if not self.path.exists():
+            return None
+        with closing(self._connect()) as conn, conn:
+            row = conn.execute("SELECT value FROM settings WHERE key = 'app_update_last_check'").fetchone()
+        value = _loads(row[0]) if row else None
+        return value if isinstance(value, dict) else None
+
+    def set_app_update_last_check(self, record):
+        """Keep *record* (app_update.last_check_record) as the last check."""
+        if not isinstance(record, dict) or not isinstance(record.get('checked_at'), str):
+            raise ValueError('Expected an update check record.')
+        text = json.dumps(record, allow_nan=False, sort_keys=True)
+        if len(text) > 4096:
+            raise ValueError('The update check record is too large.')
+        with closing(self._connect()) as conn, conn:
+            conn.execute("INSERT OR REPLACE INTO settings VALUES ('app_update_last_check', ?)", (text,))
+        return record
+
+    # -- Home news (news.py): Settings, "Show MySQL and MariaDB news on Home" --
+
+    def news_enabled(self):
+        """True unless the user turned news off (the default is on). Never creates the database."""
+        if not self.path.exists():
+            return True
+        with closing(self._connect()) as conn, conn:
+            row = conn.execute("SELECT value FROM settings WHERE key = 'home_news'").fetchone()
+        return not row or row[0] != 'off'
+
+    def set_news_enabled(self, enabled):
+        if not isinstance(enabled, bool):
+            raise ValueError('enabled must be true or false.')
+        with closing(self._connect()) as conn, conn:
+            conn.execute("INSERT OR REPLACE INTO settings VALUES ('home_news', ?)", ('on' if enabled else 'off',))
+        return enabled
 
     # -- Audit trail of server writes (rows shaped by dbops.py) ----------------
 

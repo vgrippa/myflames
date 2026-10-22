@@ -1,9 +1,10 @@
+import { qualifiedTable, tableMaintenanceSql } from "./sqlIdent";
 // Server > Tables: tables without a primary key or a usable unique key, and
 // InnoDB free space (schema-2.0 from myflames/schema_health.py). One read per
 // click over the chosen databases (all user databases by default); myflames
 // runs an optional OPTIMIZE only after a separate SQL review. One sortable list at a
 // time; the why, the checks and the fix statements are in the inspector.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useOpenRead, useViewOnScreen } from "./viewOnScreen";
 import { api, type Connection, type FreeSpaceRow, type MissingPrimaryKey, type TablesReport, type TableInventoryRow } from "./api";
 import { CompactNumber, CopySql, RowActionMenu, SchemaPicker, bytes, count, engineLabel, useSchemaCatalog, type RowMenuItem } from "./PerfShared";
@@ -104,11 +105,11 @@ function TableRowActions({
     { label: "Remove column…", icon: "minus", disabled: blocked, onSelect: onRemoveColumn },
     "divider",
     { label: "Optimize table…", icon: "optimize", disabled: blocked,
-      onSelect: () => reviewedSql?.start(`OPTIMIZE TABLE \`${schema}\`.\`${table}\``, `Optimize ${table}`) },
+      onSelect: () => reviewedSql?.start(tableMaintenanceSql("OPTIMIZE", schema, table), `Optimize ${table}`) },
     { label: "Analyze table…", icon: "statements", disabled: blocked,
-      onSelect: () => reviewedSql?.start(`ANALYZE TABLE \`${schema}\`.\`${table}\``, `Analyze ${table}`) },
+      onSelect: () => reviewedSql?.start(tableMaintenanceSql("ANALYZE", schema, table), `Analyze ${table}`) },
     { label: "Check table…", icon: "shield", disabled: blocked,
-      onSelect: () => reviewedSql?.start(`CHECK TABLE \`${schema}\`.\`${table}\``, `Check ${table}`) },
+      onSelect: () => reviewedSql?.start(tableMaintenanceSql("CHECK", schema, table), `Check ${table}`) },
     "divider",
     { label: "View indexes", icon: "index", onSelect: onIndexes },
   ];
@@ -204,7 +205,7 @@ export function TablesView({
 
   const getTableRowContextMenu = (schema: string, table: string) => {
     const runner = reviewedSqlRef.current;
-    const qTable = `\`${schema}\`.\`${table}\``;
+    const qTable = qualifiedTable(schema, table);
     return [
       ...(onOpenSql
         ? [
@@ -230,7 +231,7 @@ export function TablesView({
         icon: "optimize",
         disabled: runner?.blocked,
         onClick: () => {
-          runner?.start(`OPTIMIZE TABLE ${qTable}`, `Optimize ${table}`);
+          runner?.start(tableMaintenanceSql("OPTIMIZE", schema, table), `Optimize ${table}`);
         },
       },
       {
@@ -238,7 +239,7 @@ export function TablesView({
         icon: "statements",
         disabled: runner?.blocked,
         onClick: () => {
-          runner?.start(`ANALYZE TABLE ${qTable}`, `Analyze ${table}`);
+          runner?.start(tableMaintenanceSql("ANALYZE", schema, table), `Analyze ${table}`);
         },
       },
       {
@@ -246,7 +247,7 @@ export function TablesView({
         icon: "shield",
         disabled: runner?.blocked,
         onClick: () => {
-          runner?.start(`CHECK TABLE ${qTable}`, `Check ${table}`);
+          runner?.start(tableMaintenanceSql("CHECK", schema, table), `Check ${table}`);
         },
       },
       {
@@ -254,7 +255,7 @@ export function TablesView({
         icon: "check",
         disabled: runner?.blocked,
         onClick: () => {
-          runner?.start(`CHECKSUM TABLE ${qTable} EXTENDED`, `Checksum ${table}`);
+          runner?.start(tableMaintenanceSql("CHECKSUM", schema, table), `Checksum ${table}`);
         },
       },
       { divider: true as const },
@@ -368,7 +369,9 @@ export function TablesView({
 
   useOpenRead({ key: reads.key, reportKey: bound?.key, ready: !disabled && !gated, busy: !!loading || reads.running(), read: () => { void load(); } });
 
-  const needle = filter.trim().toLowerCase();
+  const rawDeferredFilter = useDeferredValue(filter);
+  const deferredFilter = filter === "" ? "" : rawDeferredFilter;
+  const needle = deferredFilter.trim().toLowerCase();
   const visible = (r: { schema: string; table: string }) =>
     (!focus || (r.schema === focus.schema && r.table === focus.table)) &&
     (!needle || `${r.schema}.${r.table}`.toLowerCase().includes(needle));
@@ -395,10 +398,20 @@ export function TablesView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [report, needle, focus, freeStatus, minimumFree],
   );
-  const inventory = (report?.tables || []).filter(visible);
+  const inventory = useMemo(() => {
+    const all = report?.tables || [];
+    if (!needle && !focus) return all;
+    return all.filter(visible);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [report, needle, focus]);
   const exportContext = `${bound?.label || ""} · ${scopeLabel(report?.scope.schemas || null)} · ${report?.taken_at || ""}`;
-  const resetKey = `${reads.key}:${filter}:${JSON.stringify(focus)}:${pkStatus}:${engine}:${freeStatus}:${minimumFree}`;
-  const gipk = (report?.generated_primary_keys || []).filter(visible);
+  const resetKey = `${reads.key}:${deferredFilter}:${JSON.stringify(focus)}:${pkStatus}:${engine}:${freeStatus}:${minimumFree}`;
+  const gipk = useMemo(() => {
+    const all = report?.generated_primary_keys || [];
+    if (!needle && !focus) return all;
+    return all.filter(visible);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [report, needle, focus]);
 
   const s = report?.summary;
   const stats = report?.statistics;
@@ -435,6 +448,8 @@ export function TablesView({
     { key: "rows", label: "Rows (est.)", num: true, sort: r => r.rows, render: r => <CompactNumber value={r.rows} /> },
     { key: "data", label: "Data", num: true, sort: r => r.data_bytes, render: r => bytes(r.data_bytes) },
     { key: "indexes", label: "Indexes", num: true, sort: r => r.index_bytes, render: r => bytes(r.index_bytes) },
+    ...(report?.userstat?.read ? [{ key: "changed", label: "Rows changed", num: true, sort: (r: TableInventoryRow) => r.rows_changed ?? null,
+      render: (r: TableInventoryRow) => <CompactNumber value={r.rows_changed ?? null} /> }] : []),
   ];
   const missingColumns: Column<MissingPrimaryKey>[] = [
     {
@@ -457,6 +472,9 @@ export function TablesView({
     },
     { key: "rows", label: "Rows (est.)", num: true, width: 112, sort: (m) => m.rows, render: (m) => <CompactNumber value={m.rows} /> },
     { key: "size", label: "Size", num: true, width: 112, sort: (m) => m.size_bytes, render: (m) => bytes(m.size_bytes) },
+    // userstat=ON: rows inserted, updated or deleted (unknown for partitioned tables).
+    ...(report?.userstat?.read ? [{ key: "changed", label: "Rows changed", num: true, width: 120,
+      sort: (m: MissingPrimaryKey) => m.rows_changed ?? null, render: (m: MissingPrimaryKey) => <CompactNumber value={m.rows_changed ?? null} /> }] : []),
     {
       key: "clustered",
       label: "Clustered on",
@@ -505,17 +523,17 @@ export function TablesView({
     <div className="table-inspector-actions" style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap", alignItems: "center" }}>
       <ReviewedSqlAction
         action="optimize_table"
-        sql={`OPTIMIZE TABLE \`${r.schema}\`.\`${r.table}\``}
+        sql={tableMaintenanceSql("OPTIMIZE", r.schema, r.table)}
         label={`Optimize ${r.table}`}
       />
       <ReviewedSqlAction
         action="analyze_table"
-        sql={`ANALYZE TABLE \`${r.schema}\`.\`${r.table}\``}
+        sql={tableMaintenanceSql("ANALYZE", r.schema, r.table)}
         label={`Analyze ${r.table}`}
       />
       <ReviewedSqlAction
         action="check_table"
-        sql={`CHECK TABLE \`${r.schema}\`.\`${r.table}\``}
+        sql={tableMaintenanceSql("CHECK", r.schema, r.table)}
         label={`Check ${r.table}`}
       />
       <button
@@ -709,7 +727,7 @@ export function TablesView({
           {report && <p>{whyButton}</p>}
         </>
       }
-      status={<><ViewStatus loading={reads.loading} error={error} /><ReviewedSqlStatus /></>}
+      status={<><ViewStatus loading={reads.loading} error={error} onStop={reads.stop} onRetry={reads.error ? () => void load() : undefined} doneAt={reads.doneAt} slowAfter={45_000} /><ReviewedSqlStatus /></>}
     >
       {gated && (
         <PrerequisiteGate action={

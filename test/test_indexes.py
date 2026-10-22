@@ -12,7 +12,7 @@ import json
 import unittest
 from unittest import mock
 
-from _perf_replay import (MARIADB_PS, MYSQL, PASSWORD, FakeFactory, ReplayConn, assert_read_only, batch, replay,
+from _perf_replay import (MARIADB_PS, MYSQL, PASSWORD, FakeFactory, ReplayConn, assert_read_only, batch, index_partition_keys, replay,
                           run_cli, run_main)
 from myflames import indexes, ui, perf_common
 from myflames.advisor import advise, find_redundant_indexes
@@ -85,7 +85,9 @@ def raw(statistics, usage=None, fks=(), objects=None, actors=None, instrument=((
            'instrument': [list(r) for r in instrument] if instrument is not None else None,
            'consumers': consumers if consumers is not None else {'global_instrumentation': True},
            'actors': actors if actors is not None else [['%', '%', '%', 'YES']],
-           'objects': objects, 'index_stats': None, 'table_stats': None}
+           'objects': objects, 'index_stats': None, 'table_stats': None,
+           # Hand-authored rule cases are plain unless the case explicitly overrides metadata.
+           'partitioned': [[s, t, ''] for s, t in sorted({(r[0], r[1]) for r in statistics})]}
     out.update(extra)
     return out
 
@@ -421,6 +423,217 @@ class TestRules(IndexCase):
         self.assertEqual(report['more']['unused'], 20)
         self.assertEqual(report['summary']['unused'], 30)
         self.assertTrue(any('up only 1 h 0 min' in n for n in report['notes']))
+
+
+class TestPartitioning(IndexCase):
+    """A zero counter is actionable only after the table is known to be plain."""
+
+    def scripted(self, engine, definitions, usage, metadata, fks=(), edit=None):
+        """Recorded preflight plus explicitly simulated index and table metadata."""
+        conn, _ = replay('indexes', 'mysql-8.4' if engine == 'mysql' else 'mariadb-11.4', edit=edit)
+        schemas = sorted({r[0] for r in definitions})
+        conn.answers[TAG + indexes._statistics_sql(server(engine), schemas)] = [batch(definitions)]
+        conn.answers[TAG + indexes._usage_sql(schemas)] = [batch(usage)]
+        conn.answers[TAG + indexes._fk_sql(schemas)] = [batch(fks)]
+        conn.simulated_partitioning = metadata
+        return conn, schemas
+
+    def test_metadata_read_is_bounded_to_candidate_tables_and_exact_schemas(self):
+        for engine in ('mysql', 'mariadb'):
+            with self.subTest(engine=engine):
+                expected = [('shop', 't%03d' % i) for i in range(205)]
+                expected += [("other's", "odd' table"), ("other's", 'second'), ('shop', 'fk_only')]
+                definitions, usage = [], []
+                for schema_name, table in expected:
+                    definitions.append(stat(table, 'k', 1, 'a', schema=schema_name, engine=engine))
+                    usage += [[schema_name, table, 'k', '0', '0', '0'],
+                              [schema_name, table, None, '2', '2', '1000']]
+                # Two candidate indexes on one table still require one metadata row.
+                definitions.append(stat('t000', 'k_other', 1, 'b', engine=engine))
+                usage.append(['shop', 't000', 'k_other', '0', '0', '0'])
+                for table in ('idle', 'used', 'primary_only'):
+                    definitions.append(stat(table, 'PRIMARY' if table == 'primary_only' else 'k', 1, 'a',
+                                            non_unique=0 if table == 'primary_only' else 1, engine=engine))
+                    usage.append(['shop', table, 'PRIMARY' if table == 'primary_only' else 'k',
+                                  '0' if table == 'idle' else '5', '0', '0'])
+                fks = [['shop', 'fk_only', 'fk', 'a', '1', 'shop', 'used', 'a']]
+                conn, schemas = self.scripted(engine, definitions, usage, dict.fromkeys(expected, ''), fks=fks)
+                report = indexes.index_report(conn, schemas=schemas, require_choice_above=None, limit=None)
+                reads = [(sql, index_partition_keys(sql)) for sql, _ in conn.calls if 'CREATE_OPTIONS' in sql]
+                self.assertEqual(sorted(len(keys) for _, keys in reads), [2, 6, 100, 100])
+                actual = [key for _, keys in reads for key in keys]
+                self.assertEqual(len(actual), len(set(actual)), 'each candidate table is read once')
+                self.assertEqual(set(actual), set(expected))
+                for sql, keys in reads:
+                    self.assertEqual(len({s for s, _ in keys}), 1)
+                    self.assertNotIn(' LIKE ', sql)
+                    self.assertNotIn('information_schema.PARTITIONS', sql)
+                    self.assertNotIn('information_schema.COLUMNS', sql)
+                first_metadata = next(i for i, (sql, _) in enumerate(conn.calls) if 'CREATE_OPTIONS' in sql)
+                self.assertLess(next(i for i, (sql, _) in enumerate(conn.calls) if 'by_index_usage' in sql), first_metadata)
+                self.assertLess(next(i for i, (sql, _) in enumerate(conn.calls) if 'information_schema.STATISTICS ' in sql),
+                                first_metadata)
+                kept = [u for u in report['unused'] if u['table'] == 'fk_only']
+                self.assertEqual([u['keep_reason'] for u in kept], ['foreign_key'])
+                assert_read_only(self, conn, TAG)
+
+    def test_metadata_read_is_skipped_without_zero_use_indexes(self):
+        for engine in ('mysql', 'mariadb'):
+            for unavailable in (False, True):
+                with self.subTest(engine=engine, unavailable=unavailable):
+                    definitions = [stat(t, 'k', 1, 'a', engine=engine) for t in ('used', 'idle', 'absent')]
+                    usage = [['shop', 'used', 'k', '2', '2', '1000'], ['shop', 'idle', 'k', '0', '0', '0']]
+                    def edit(sql, text, n):
+                        if unavailable and 'by_index_usage' in sql:
+                            raise ConnectorError('ERROR 1142 (42000): SELECT command denied')
+                        return text
+                    conn, schemas = self.scripted(engine, definitions, usage, {}, edit=edit)
+                    report = indexes.index_report(conn, schemas=schemas, require_choice_above=None)
+                    self.assertEqual(report['unused'], [])
+                    self.assertFalse(any('CREATE_OPTIONS' in sql for sql, _ in conn.calls))
+
+    def test_metadata_failure_and_missing_rows_block_only_affected_tables(self):
+        for engine in ('mysql', 'mariadb'):
+            for response in ('denied', 'missing'):
+                with self.subTest(engine=engine, response=response):
+                    names = ['t%03d' % i for i in range(101)]
+                    definitions = [stat(t, 'k', 1, 'a', engine=engine) for t in names]
+                    usage = [['shop', t, 'k', '0', '0', '0'] for t in names]
+                    usage += [['shop', t, None, '2', '2', '1000'] for t in names]
+                    def edit(sql, text, n):
+                        if 'CREATE_OPTIONS' in sql and len(index_partition_keys(sql)) == 1:
+                            if response == 'denied':
+                                raise ConnectorError('ERROR 1142 (42000): SELECT command denied')
+                            return ''
+                        return text
+                    conn, schemas = self.scripted(engine, definitions, usage,
+                                                   {('shop', t): '' for t in names}, edit=edit)
+                    report = indexes.index_report(conn, schemas=schemas, require_choice_above=None)
+                    self.assertEqual({u['table'] for u in report['unused']}, set(names[:-1]))
+                    self.assertEqual([(n['table'], n['reason']) for n in report['no_data']],
+                                     [('t100', 'partitioning_unknown')])
+                    blocked = [r for r in report['indexes'] if r.get('action_blocked_reason')]
+                    self.assertEqual([r['table'] for r in blocked], ['t100'])
+                    if response == 'denied':
+                        self.assertTrue(any('Could not read information_schema.TABLES partitioning' in n
+                                            for n in report['notes']))
+
+    def test_partitioned_foreign_key_keep_rows_are_not_left_under_unused(self):
+        """Reject inconsistent snapshots too, including a stale FK on a partitioned table."""
+        for engine in ('mysql', 'mariadb'):
+            with self.subTest(engine=engine):
+                definitions = [stat('child', 'k', 1, 'parent_id', engine=engine)]
+                usage = [['shop', 'child', 'k', '0', '0', '0'], ['shop', 'child', None, '3', '3', '1000']]
+                fks = [['shop', 'child', 'fk_parent', 'parent_id', '1', 'shop', 'parent', 'id']]
+                conn, schemas = self.scripted(engine, definitions, usage, {('shop', 'child'): 'partitioned'}, fks=fks)
+                report = indexes.index_report(conn, schemas=schemas, require_choice_above=None)
+                self.assertEqual(report['unused'], [])
+                self.assertEqual(report['summary']['keep_foreign_key'], 0)
+                self.assertEqual([n['reason'] for n in report['no_data']], ['partitioned'])
+                self.assertEqual(sum('CREATE_OPTIONS' in sql for sql, _ in conn.calls), 1)
+
+    def test_cli_text_and_json_explain_why_partitioned_actions_are_unavailable(self):
+        for engine in ('mysql', 'mariadb'):
+            for option, reason in (('partitioned', 'partitioned'), (None, 'partitioning_unknown')):
+                for as_json in (False, True):
+                    with self.subTest(engine=engine, option=option, as_json=as_json):
+                        definitions = [stat('t', name, 1, 'a', engine=engine) for name in ('k', 'k_dup')]
+                        usage = [['shop', 't', 'k', '0', '0', '0'], ['shop', 't', None, '2', '2', '1000']]
+                        conn, _ = self.scripted(engine, definitions, usage, {('shop', 't'): option})
+                        argv = ['--schema', 'shop', '--all-schemas', '-q'] + (['--json'] if as_json else [])
+                        code, text, err, _ = run_cli('indexes', argv, conn)
+                        self.assertEqual((code, err), (0, ''))
+                        if as_json:
+                            report = json.loads(text)
+                            self.assertEqual(report['unused'], [])
+                            self.assertEqual(report['no_data'][0]['reason'], reason)
+                            reason_text = report['no_data'][0]['reason_text']
+                            self.assertEqual(report['redundant'][0]['action_blocked_reason'], reason_text)
+                            self.assertEqual(report['redundant'][0]['test_sql'], '')
+                            self.assertEqual(report['redundant'][0]['drop_sql'], '')
+                        else:
+                            self.assertIn('NO DATA', text)
+                            self.assertIn('partitioned, and Performance Schema' if option else 'partitioning could not be read', text)
+                            self.assertNotIn('ALTER TABLE `shop`.`t`', text)
+
+    def test_userstat_source_cannot_offer_partitioned_indexes_both_engines(self):
+        for engine in ('mysql', 'mariadb'):
+            with self.subTest(engine=engine):
+                variables = {'version': '8.4.11-11' if engine == 'mysql' else '11.4.13-MariaDB',
+                             'performance_schema': 'OFF', 'userstat': 'ON'}
+                if engine == 'mysql':
+                    variables['version_comment'] = 'Percona Server (GPL), Release 11'
+                definitions = [stat(t, 'k', 1, 'a', engine=engine) for t in ('parted', 'plain')]
+                report = indexes.compute_indexes(Server(variables, {'Uptime': '90000'}),
+                    raw(definitions, index_stats=[], table_stats=[['shop', t, '3'] for t in ('parted', 'plain')],
+                        partitioned=[['shop', 'parted', 'partitioned'], ['shop', 'plain', '']]), 'shop')
+                self.assertEqual(report['source'], 'userstat')
+                self.assertEqual([u['table'] for u in report['unused']], ['plain'])
+                self.assertEqual([(n['table'], n['reason']) for n in report['no_data']], [('parted', 'partitioned')])
+
+    def test_partitioned_table_blocks_unused_and_redundant_sql_both_engines(self):
+        for engine in ('mysql', 'mariadb'):
+            with self.subTest(engine=engine):
+                definitions = [stat(t, i, seq, col, engine=engine)
+                               for t in ('parted', 'plain')
+                               for i, seq, col in (('k_a', 1, 'a'), ('k_ab', 1, 'a'), ('k_ab', 2, 'b'))]
+                usage = [['shop', t, i, '0', '0', '0'] for t in ('parted', 'plain') for i in ('k_a', 'k_ab')]
+                usage += [['shop', t, None, '5', '5', '1000'] for t in ('parted', 'plain')]
+                metadata = [['shop', 'parted', 'stats_persistent=0 PARTITIONED'], ['shop', 'plain', '']]
+                report = indexes.compute_indexes(server(engine), raw(definitions, usage=usage,
+                                                                      partitioned=metadata), 'shop')
+                self.assertEqual({u['table'] for u in report['unused']}, {'plain'})
+                self.assertEqual([(n['table'], n['reason']) for n in report['no_data']], [('parted', 'partitioned')])
+                reason = "partitioned, and Performance Schema does not count every read through a partitioned table's indexes"
+                self.assertEqual(report['no_data'][0]['reason_text'], reason)
+                for row in report['indexes'] + report['redundant']:
+                    if row['table'] == 'parted':
+                        self.assertEqual(row['action_blocked_reason'], reason)
+                        self.assertFalse(row.get('test_sql'))
+                        self.assertFalse(row.get('drop_sql'))
+                    else:
+                        self.assertFalse(row.get('action_blocked_reason'))
+                redundant = {r['table']: r for r in report['redundant']}
+                self.assertEqual(redundant['parted']['test_sql'], '')
+                self.assertEqual(redundant['parted']['drop_sql'], '')
+                self.assertTrue(redundant['plain']['test_sql'].startswith('ALTER TABLE'))
+                self.assertTrue(redundant['plain']['drop_sql'].startswith('ALTER TABLE'))
+                self.assertEqual(report['summary']['unused_candidates'], 2)
+                self.assertIn(reason, indexes.format_text(report))
+                self.assertIn(reason, json.dumps(report, allow_nan=False))
+
+    def test_missing_and_malformed_partitioning_is_unknown_both_engines(self):
+        for engine in ('mysql', 'mariadb'):
+            for metadata in (None, [], [['shop', 't']], [['shop', 't', None]], [[None, 't', '']],
+                             [['shop', None, '']], [['other', 't', '']]):
+                with self.subTest(engine=engine, metadata=metadata):
+                    rows = [stat('t', 'k', 1, 'a', engine=engine), stat('t', 'k_dup', 1, 'a', engine=engine)]
+                    usage = [['shop', 't', 'k', '0', '0', '0'], ['shop', 't', None, '5', '5', '1000']]
+                    report = indexes.compute_indexes(server(engine), raw(rows, usage=usage,
+                                                                         partitioned=metadata), 'shop')
+                    self.assertEqual(report['unused'], [])
+                    self.assertEqual([n['reason'] for n in report['no_data']], ['partitioning_unknown'])
+                    reason = report['no_data'][0]['reason_text']
+                    self.assertIn('partition', reason.lower())
+                    self.assertIn(reason, indexes.format_text(report))
+                    for row in report['indexes'] + report['redundant']:
+                        self.assertEqual(row['action_blocked_reason'], reason)
+                        self.assertFalse(row.get('test_sql'))
+                        self.assertFalse(row.get('drop_sql'))
+
+    def test_partitioning_does_not_replace_existing_no_activity_reasons(self):
+        for engine in ('mysql', 'mariadb'):
+            with self.subTest(engine=engine):
+                rows = [stat(t, 'k', 1, 'a', engine=engine) for t in ('idle', 'unopened', 'used')]
+                usage = [['shop', 'idle', 'k', '0', '0', '0'], ['shop', 'used', 'k', '3', '3', '1000']]
+                report = indexes.compute_indexes(server(engine), raw(rows, usage=usage, partitioned=None), 'shop')
+                self.assertEqual(report['unused'], [])
+                self.assertEqual({n['table']: n['reason'] for n in report['no_data']},
+                                 {'idle': 'no_activity', 'unopened': 'not_opened'})
+                fallback = indexes.compute_indexes(server(engine, ps='OFF', userstat='ON'),
+                                                    raw(rows, partitioned=None, index_stats=[], table_stats=[]), 'shop')
+                if engine == 'mariadb':
+                    self.assertEqual({n['reason'] for n in fallback['no_data']}, {'not_read'})
 
 
 class TestSQL(IndexCase):

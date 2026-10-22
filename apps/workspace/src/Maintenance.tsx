@@ -4,14 +4,14 @@
 // typed target for restore and clone). Job results are memory only and bound
 // to the connection they ran on; the jobs themselves live in the myflames
 // process, which lists them again after a reload or a lost Start reply.
-import { useEffect, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
+import { useEffect, useRef, useState, type ComponentProps, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { privilegeResult, targetPrivilege, usePrivilege, usePrivileges } from "./privileges";
 import { download, recordDeclined, type Connection } from "./api";
 import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "./binding";
 import { TYPE_LABEL, useWritePolicy } from "./Connections";
 import { SchemaPicker, useSchemaCatalog } from "./PerfShared";
 import {
-  Checkbox, ConfirmSheet, DataTable, EmptyState, Fields, InspectorSection,
+  ActionButton, ActionStatus, useSince, writeFailure, Checkbox, ConfirmSheet, DataTable, EmptyState, Fields, FormGrid, FormRow, InspectorSection,
   NumberField, PrerequisiteGate, Segmented, Select, StatusPill, SummaryLine,
   ToolbarButton, ViewLayout, ViewStatus,
   type Column, type InspectorContent, type Selection, type Tone,
@@ -27,9 +27,11 @@ import {
 import { isPrivilegeDenial } from "./privileges";
 import { VisiblePrivilegeGate, VisiblePrivilegeConfirmLabel } from "./Locks";
 import "./ops.css";
-import { DumpOptions } from "./DumpOptions";
+import { DumpOptions, optionShown, optionsSummary } from "./DumpOptions";
+import { TablePicker, useSchemaTables } from "./DumpTables";
 import type { DumpOptions as DumpOptionValues } from "./opsApi";
 import { FolderField } from "./FolderField";
+import { useViewOnScreen } from "./viewOnScreen";
 import { toolDownloadUrl } from "./opsApi";
 
 export type MaintenanceSection = "tools" | "upgrade" | "dump" | "restore" | "clone";
@@ -48,7 +50,6 @@ const KEEP_FINISHED = 20;
 const checkTone = (check: Verification): Tone => check.status === "passed" ? "ok" : check.status === "failed" ? "problem" : "unknown";
 const checkWord = (check: Verification) => check.status === "passed" ? "Passed" : check.status === "failed" ? "Failed" : "Not checked";
 const validInteger = (value: number, min: number, max: number) => Number.isInteger(value) && value >= min && value <= max;
-const namedTables = (value: string) => value.split(",").map((name) => name.trim()).filter(Boolean);
 const VERSION = /^\d+\.\d+\.\d+$/;
 
 /** One upgrade finding's result: what the check found, or that it passed,
@@ -110,6 +111,17 @@ function Checks({ checks, selection }: { checks: Verification[]; selection?: Sel
   return <DataTable id="maintenance.checks" label="Preflight checks" rows={rows} columns={columns} rowKey={(r) => `check:${r.row}`} selection={selection} defaultSort={{ key: "status", dir: "asc" }} />;
 }
 
+/** Keep the existing privilege/policy gate, including its reason, while
+ * retaining focus on the read action that is already running. */
+function ReadAction({ busy, busyLabel, children, disabled, blocked, ...props }: ComponentProps<typeof VisiblePrivilegeGate> & { busy: boolean; busyLabel: string; children: string }) {
+  return <VisiblePrivilegeGate {...props} className={`${props.className || ""} action-button${busy ? " is-pending" : ""}`}
+    disabled={!busy && disabled} blocked={busy ? busyLabel : blocked} aria-busy={busy || undefined}>
+    <span className={`action-button-label${busy ? " is-busy" : ""}`} data-reserve={busy ? children : busyLabel}>
+      <span>{busy && <span className="spinner" aria-hidden="true" />}{busy ? busyLabel : children}</span>
+    </span>
+  </VisiblePrivilegeGate>;
+}
+
 /** Job status is an outcome, not proof of verification: a tool that exited 0
  * can still leave checks not checked. */
 function JobProgress({ bound, currentKey, cancelling, onCancel }: {
@@ -120,9 +132,11 @@ function JobProgress({ bound, currentKey, cancelling, onCancel }: {
   const other = bound.key !== currentKey;
   const active = jobActive(job);
   const [tone, word] = jobWord(job);
+  const cancelSince = useSince(cancelling === job.id);
   const last = job.events.length ? job.events[job.events.length - 1].text : "";
   return <section className={`ops-job${other ? " is-other-connection" : ""}`} aria-label={`${SECTION_LABEL[job.operation]} on ${bound.label}`} data-job={job.id || undefined} data-state={job.state} data-other-connection={other || undefined}>
-    <div className="ops-job-head"><strong>{SECTION_LABEL[job.operation]} · {bound.label}</strong><StatusPill tone={tone} label={word} />{active && <ToolbarButton disabled={other || !job.id || cancelling === job.id} title={other ? "Switch back to this connection to cancel it." : undefined} onClick={() => onCancel(bound)}>{cancelling === job.id ? "Cancelling…" : "Cancel"}</ToolbarButton>}</div>
+    <div className="ops-job-head"><strong>{SECTION_LABEL[job.operation]} · {bound.label}</strong><StatusPill tone={tone} label={word} />{active && <ActionButton busy={cancelling === job.id} busyLabel="Cancelling…" disabled={other || !job.id} title={other ? "Switch back to this connection to cancel it." : undefined} onClick={() => onCancel(bound)}>Cancel</ActionButton>}</div>
+    <ActionStatus state={{ phase: cancelling === job.id ? "pending" : "idle", message: "Waiting for the cancellation reply. The job may still be running.", startedAt: cancelSince }} />
     {other && <p className="hint">From {bound.label}. Switch back to that connection to manage this job.</p>}
     {active && <div className="ops-progress" role="status"><progress aria-label={`${SECTION_LABEL[job.operation]} progress`} max={100} value={job.progress ?? undefined} /><span>{job.progress === null ? word : `${job.progress.toFixed(0)}%`}</span></div>}
     {last && <p className="ops-log-line" title={last}>{last}</p>}
@@ -161,9 +175,11 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   const [target, setTarget] = useState("");
   const [customTarget, setCustomTarget] = useState("");
   const [preferShell, setPreferShell] = useState(true);
-  const [scope, setScope] = useState<"instance" | "schemas" | "tables">("instance");
+  // What to dump: the instance, or databases; with one database, its
+  // chosen tables (none chosen: all of them).
+  const [scope, setScope] = useState<"instance" | "schemas">("instance");
   const [schemas, setSchemas] = useState<string[]>([]);
-  const [tables, setTables] = useState("");
+  const [tables, setTables] = useState<string[]>([]);
   const [directory, setDirectory] = useState("");
   const [restoreDirectory, setRestoreDirectory] = useState("");
   const [restoreSchema, setRestoreSchema] = useState("");
@@ -185,6 +201,13 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   sheetRef.current = sheet;
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
+  const [startLeft, setStartLeft] = useState(false);
+  const startSince = useSince(busy);
+  const [readKind, setReadKind] = useState<"tools" | "upgrade" | "preflight">("tools");
+  const readSince = useSince(!!reads.loading);
+  const detecting = !!reads.loading && readKind === "tools";
+  const checking = !!reads.loading && readKind === "upgrade";
+  const preparing = !!reads.loading && readKind === "preflight";
   const sending = useRef(false);
   const [cancelling, setCancelling] = useState("");
   const cancelPending = useRef(new Set<string>());
@@ -203,15 +226,25 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   memoryRef.current = memory;
   const currentKey = useRef(key);
   currentKey.current = key;
-  const catalog = useSchemaCatalog(connection, section === "dump" && scope !== "instance");
+  // Nothing reads while the view is off screen (viewOnScreen.ts).
+  const onScreen = useViewOnScreen();
+  const catalog = useSchemaCatalog(connection, onScreen && section === "dump" && scope !== "instance");
+  // The one chosen database's tables, read when it is chosen and Dump is on
+  // screen. The chosen tables last while that database stays the only one.
+  const oneSchema = scope === "schemas" && schemas.length === 1 ? schemas[0] : "";
+  const schemaTables = useSchemaTables(connection, oneSchema, onScreen && section === "dump" && !!oneSchema);
+  useEffect(() => { setTables([]); }, [key, oneSchema]);
+  const loadedTables = new Set(schemaTables.tables.map((t) => t.name));
+  const unknownTables = tables.filter((name) => !loadedTables.has(name));
+  const tableScope = !!oneSchema && tables.length > 0;
   const tools = memory.tools?.key === key ? memory.tools.report : null;
   const dumpToolName = tools?.offered.dump.find(name => !sqlDump || name !== "mysqlsh");
   const dumpTool = dumpToolName ? tools?.tools[dumpToolName] : undefined;
-  const dumpCapabilities = scope === "tables" ? dumpTool?.dump_table_capabilities : dumpTool?.dump_capabilities;
-  const activeDumpOptions = Object.fromEntries(Object.entries(dumpOptions).filter(([name]) =>
-    dumpCapabilities?.options.some(option => option.key === name) &&
-    (name !== "compression_level" || ["gzip", "zstd"].includes(String(dumpOptions.compression))) &&
-    (name !== "bytes_per_chunk" || dumpOptions.chunking !== false)));
+  const dumpCapabilities = tableScope ? dumpTool?.dump_table_capabilities : dumpTool?.dump_capabilities;
+  const activeDumpOptions = Object.fromEntries(Object.entries(dumpOptions).filter(([name]) => {
+    const option = dumpCapabilities?.options.find(o => o.key === name);
+    return !!option && optionShown(option, dumpOptions) && (name !== "compression_level" || ["gzip", "zstd"].includes(String(dumpOptions.compression)));
+  }));
   useEffect(() => { setDumpOptions({}); }, [key, dumpToolName]);
   const plan = prepared?.report;
   const upgrade = memory.upgrade?.report || null;
@@ -318,18 +351,21 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   useEffect(() => () => { const p = sheetRef.current; if (p && !sending.current) decline(p); }, []);
 
   async function loadTools() {
-    if (disabled || busy) return;
+    if (disabled || busy || reads.running()) return;
+    setReadKind("tools");
+    setFailure(null);
     await reads.run("maintenance-tools", "Detecting tools…", readLifecycleTools, (bound) => onMemory((m) => ({ ...m, tools: bound })));
   }
   async function runUpgrade() {
     const version = target === "custom" ? customTarget.trim() : target;
-    if (formDisabled || !VERSION.test(version) || missingPrivileges.upgrade_check) return;
+    if (formDisabled || reads.running() || !VERSION.test(version) || missingPrivileges.upgrade_check) return;
     setNotice(""); setFailure(null);
     selection.select("", false);
+    setReadKind("upgrade");
     await reads.run(`maintenance-upgrade:${JSON.stringify([version, preferShell])}`, "Checking the upgrade…", (c, signal) => checkUpgrade(c, version, preferShell, signal), (bound) => onMemory((m) => ({ ...m, upgrade: bound })));
   }
   function request(): PrepareRequest | null {
-    if (section === "dump") return { operation: "dump", directory: directory.trim(), schemas: scope === "instance" ? [] : schemas, tables: scope === "tables" ? namedTables(tables) : [], threads, prefer_shell: !sqlDump, options: activeDumpOptions };
+    if (section === "dump") return { operation: "dump", directory: directory.trim(), schemas: scope === "instance" ? [] : schemas, tables: tableScope ? tables : [], threads, prefer_shell: !sqlDump, options: activeDumpOptions };
     if (section === "restore") return { operation: "restore", directory: restoreDirectory.trim(), schema: restoreSchema.trim(), existing, allow_source: allowSource, resume, threads };
     if (section === "clone") return { operation: "clone", donor: { ...donor }, donor_address: donorAddress.trim(), data_directory: cloneMode === "directory" ? dataDirectory.trim() : "", require_ssl: true };
     return null;
@@ -339,7 +375,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
     return JSON.stringify(r?.operation === "clone" ? { ...r, donor: { ...r.donor, password: undefined } } : r);
   }
   async function prepare() {
-    if (formDisabled || blocked || privilegeBlock || !operation) return;
+    if (formDisabled || reads.running() || blocked || privilegeBlock || !operation) return;
     const payload = request();
     if (!payload) return;
     setNotice(""); setFailure(null);
@@ -347,12 +383,13 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
     const from = { ...connection };
     // No secret in the shared read's parameter/cache key. A forced read
     // ensures that edits to the donor's transient password are never joined.
+    setReadKind("preflight");
     const result = await reads.run("maintenance-prepare", "Running the preflight…", (c, signal) => prepareLifecycle(c, payload, signal), () => {}, { force: true });
     if (!result) return;
     const p: Prepared = { ...result, donor: donorSnapshot, at: Date.now(), inputKey: requestKey() };
     setPrepared(p);
     selection.select("", false);
-    if (p.report.ready) { sheetConnection.current = from; setTyped(""); setSheet(p); }
+    if (p.report.ready) { sheetConnection.current = from; setTyped(""); setStartLeft(false); setSheet(p); }
     else setNotice("The preflight found problems, so nothing can start. Select a failed check for its reason, fix it, then run the preflight again.");
   }
   async function start() {
@@ -360,7 +397,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
     if (!p || sheetBlock || sending.current || p.key !== reads.currentKey() || !p.report.ready) return;
     if (p.report.operation !== "dump" && typed !== p.report.target) return;
     const live = captureScope();
-    sending.current = true; setBusy(true); setFailure(null);
+    sending.current = true; setStartLeft(false); setBusy(true); setFailure(null);
     let sent = false;
     const known = new Set(memoryRef.current.jobs.map((b) => b.report.id));
     const from = pConnection(p);
@@ -387,9 +424,13 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
         setPollRetry((n) => n + 1);
       }
     } catch (e) {
-      setSheet(null); sheetConnection.current = null;
       denied(e, from);
       if (!sent) { if (live()) setFailure({ key: p.key, text: (e as Error).message }); return; }
+      const failed = writeFailure(e, { audited: true });
+      if (failed.phase === "failed") {
+        if (live()) setFailure({ key: p.key, text: failed.message });
+        return;
+      }
       // The reply was lost or failed: the job may be running. Look for it
       // instead of starting again.
       let found: LifecycleJob | undefined;
@@ -407,7 +448,10 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
         if (found) { setPrepared(null); setNotice(`The Start reply was lost, but the ${SECTION_LABEL[p.report.operation].toLowerCase()} is in myflames' job list and is shown below. It was not started again.`); }
         else setFailure({ key: p.key, text: `${(e as Error).message} Whether it started is unknown. Do not start it again before you check the target and the Audit log.` });
       }
-    } finally { sending.current = false; setBusy(false); }
+    } finally {
+      sending.current = false; setBusy(false); setStartLeft(false);
+      setSheet(null); sheetConnection.current = null;
+    }
   }
   async function cancel(bound: Bound<LifecycleJob>) {
     const id = bound.report.id;
@@ -420,7 +464,10 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
         onMemory((m) => ({ ...m, jobs: m.jobs.map((b) => b.key === bound.key && b.report.id === id ? { ...b, report: job } : b) }));
         setPollRetry((n) => n + 1);
       }
-    } catch (e) { if (live()) setFailure({ key: bound.key, text: (e as Error).message }); }
+    } catch (e) {
+      const failed = writeFailure(e, { audited: true });
+      if (live()) setFailure({ key: bound.key, text: `${failed.phase === "unknown" ? "Outcome unknown. " : ""}${failed.message}` });
+    }
     finally { cancelPending.current.delete(id); setCancelling((pending) => pending === id ? "" : pending); }
   }
 
@@ -478,16 +525,20 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   const shellVersion = tools?.tools.mysqlsh?.available ? tools.tools.mysqlsh.version_tuple?.join(".") || "" : "";
   const versions = [...new Set([...targetVersions, shellVersion].filter((v) => VERSION.test(v)))];
   const version = target === "custom" ? customTarget.trim() : target;
-  const dumpValid = !!directory.trim() && validInteger(threads, 1, 64) && (scope === "instance" || schemas.length > 0) && (scope !== "tables" || (schemas.length === 1 && namedTables(tables).length > 0));
+  // Chosen tables come from the loaded list: one a reload no longer lists blocks the preflight.
+  const dumpValid = !!directory.trim() && validInteger(threads, 1, 64) && (scope === "instance" || schemas.length > 0) && !unknownTables.length;
   const restoreValid = !!restoreDirectory.trim() && validInteger(threads, 1, 64);
   const cloneValid = !!donor.host.trim() && !!donor.user.trim() && validInteger(donor.port, 1, 65535) && (cloneMode === "in_place" || dataDirectory.startsWith("/"));
   const canPrepare = operation === "dump" ? dumpValid && !!tools?.offered.dump.some((name) => !sqlDump || name !== "mysqlsh") : operation === "restore" ? restoreValid && !!tools : operation === "clone" ? cloneValid && !!tools?.offered.clone : false;
   const controls = <>
-    <Segmented label="Maintenance task" value={section} options={(Object.keys(SECTION_LABEL) as MaintenanceSection[]).filter(value => value !== "clone" || !tools || tools.offered.clone).map((value) => ({ value, label: SECTION_LABEL[value], disabled: busy }))} onChange={(next) => { selection.select("", false); setNotice(""); onSection(next); }} />
+    <Segmented label="Maintenance task" value={section} options={(Object.keys(SECTION_LABEL) as MaintenanceSection[]).filter(value => value !== "clone" || !tools || tools.offered.clone).map((value) => ({ value, label: SECTION_LABEL[value], disabled: busy || !!reads.loading }))} onChange={(next) => { selection.select("", false); setNotice(""); onSection(next); }} />
   </>;
   const form = (children: ReactNode) => <div className="ops-form"><fieldset disabled={formDisabled}>{children}</fieldset></div>;
   const hereJobs = memory.jobs.filter((b) => b.report.operation === section);
   const statusError = failure?.key === key ? failure.text : reads.error;
+  const retryRead = () => { void (readKind === "upgrade" ? runUpgrade() : readKind === "preflight" ? prepare() : loadTools()); };
+  const readStatus = (kind: typeof readKind) => <ActionStatus keepLine state={{ phase: reads.loading && readKind === kind ? "pending" : "idle", message: reads.loading, startedAt: readSince }}
+    onStop={reads.stop} stopLabel="Stop waiting" />;
   const counts = upgrade?.counts;
   // A partial check never reads as a green light: with nothing found it says Partial.
   const upgradeTone: Tone | undefined = !upgrade || upgrade.method === "mariadb_upgrade_guidance" ? undefined : counts?.error ? "problem" : counts?.warning ? "watch" : upgrade.partial ? "unknown" : "ok";
@@ -495,54 +546,85 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   const kindOfCheck = upgrade ? (upgrade.method === "mariadb_upgrade_guidance" ? "mariadb-upgrade steps" : upgrade.partial ? "Partial check (native subset)" : "MySQL Shell") : "";
   const summary = section === "upgrade" && upgrade
     ? [
-        `${engineName(upgrade.server.engine, upgrade.server.version)} to ${upgrade.target_version}`,
+        `${engineName(upgrade.server.engine, upgrade.server.version, upgrade.server.product)} to ${upgrade.target_version}`,
         kindOfCheck,
         upgrade.method === "mariadb_upgrade_guidance" ? "" : [plural(counts?.error || 0, "error"), plural(counts?.warning || 0, "warning"), plural(counts?.notice || 0, "notice")].join(", "),
       ].filter(Boolean).join(" · ")
     : tools
-      ? `${engineName(tools.server.engine, tools.server.version)} · ${SECTION_LABEL[section]}`
+      ? `${engineName(tools.server.engine, tools.server.version, tools.server.product)} · ${SECTION_LABEL[section]}`
       : "";
   const upgradeNotes = section === "upgrade" && upgrade ? upgrade.limitations : undefined;
   return <>
     <ViewLayout id="maintenance" title="Maintenance" className="ops-view" onBack={onBack} controls={controls} onRefresh={() => { void loadTools(); }} refreshDisabled={disabled || busy || !!reads.loading} loading={!!reads.loading} inspector={inspector} otherConnection={other}
       inspectorEmpty={<p>Select a tool, a finding or a check to see its details here.</p>}
       info={<><p>Detect the MySQL and MariaDB tools on this computer, check an upgrade, or dump, restore or clone the connection in use.</p><p>The upgrade check and every preflight only read. A dump, restore or clone starts only after you review its exact commands and confirm (restore and clone also ask you to type the target), and it is recorded in the Audit log.</p></>}
-      status={<><ViewStatus loading={reads.loading} error={statusError}>{failure?.key === key && failure.poll && <button className="text-button" type="button" onClick={() => { setFailure(null); setPollRetry((n) => n + 1); }}>Retry status</button>}</ViewStatus>{hereJobs.map((bound, i) => <JobProgress key={`${bound.key}:${bound.report.id || i}`} bound={bound} currentKey={key} cancelling={cancelling} onCancel={(b) => { void cancel(b); }} />)}</>}>
+      status={<><ViewStatus loading={readKind === "tools" && memory.tools ? reads.loading : ""} error={statusError}
+        onStop={reads.loading ? reads.stop : undefined} onRetry={reads.error && failure?.key !== key ? retryRead : undefined} doneAt={reads.doneAt}>{failure?.key === key && failure.poll && <button className="text-button" type="button" onClick={() => { setFailure(null); setPollRetry((n) => n + 1); }}>Retry status</button>}</ViewStatus>
+        {startLeft && busy && sheet && <section className="ops-job" aria-label={`${SECTION_LABEL[sheet.report.operation]} start on ${sheet.label}`}>
+          <strong>{SECTION_LABEL[sheet.report.operation]} · {sheet.label}</strong>
+          <ActionStatus state={{ phase: "pending", message: "Waiting for the Start reply. Whether it started is unknown; do not start it again.", startedAt: startSince }} />
+        </section>}
+        {hereJobs.map((bound, i) => <JobProgress key={`${bound.key}:${bound.report.id || i}`} bound={bound} currentKey={key} cancelling={cancelling} onCancel={(b) => { void cancel(b); }} />)}</>}>
       {summary && (
         <SummaryLine tone={section === "upgrade" ? upgradeTone : undefined} toneLabel={section === "upgrade" ? upgradeToneLabel : undefined} notes={upgradeNotes}
           extra={section === "upgrade" && upgrade ? <ToolbarButton onClick={() => download(JSON.stringify(upgrade, null, 2), "myflames-upgrade-check.json", "application/json")}>Export JSON</ToolbarButton> : undefined}>
           {summary}
         </SummaryLine>
       )}
-      {!tools && section !== "tools" && <PrerequisiteGate action={<ToolbarButton disabled={disabled || !!reads.loading} onClick={() => { void loadTools(); }}>Detect tools</ToolbarButton>}>Detect the tools for this connection first.</PrerequisiteGate>}
+      {!tools && section !== "tools" && <PrerequisiteGate action={<><ActionButton busy={detecting} busyLabel="Detecting…" disabled={!detecting && (disabled || busy || !!reads.loading)} onClick={() => { void loadTools(); }}>Detect tools</ActionButton>{readStatus("tools")}</>}>Detect the tools for this connection first.</PrerequisiteGate>}
       {section === "tools" && (memory.tools ? <>
         {!!availableUpdates.length && <div className="ops-tool-updates" role="status">Updates available for {availableUpdates.map(t => t.name).join(", ")}.</div>}
         <DataTable id="maintenance.tools" label="Detected tools" rows={toolRows} columns={toolColumns} rowKey={(r) => `tool:${r.name}`} selection={selection} />
         <div className="ops-offered"><Fields label="Offered for this server" rows={[["Dump", memory.tools.report.offered.dump.join(", ") || "No dump tool for this engine"], ["Upgrade check", memory.tools.report.offered.upgrade === "mysqlsh" ? "MySQL Shell (full check)" : memory.tools.report.offered.upgrade === "native_subset" ? "Partial check (native subset)" : "mariadb-upgrade steps to run on the server host"], ["Clone", memory.tools.report.offered.clone ? "Offered after its preflight" : "Not offered"], ["Physical backup", memory.tools.report.offered.physical_backup ? "Detected; runs on the server host" : "Not available"]]} /></div>
-      </> : <EmptyState icon="maintenance" title="Detect maintenance tools" action={<ToolbarButton primary disabled={disabled || !!reads.loading} onClick={() => { void loadTools(); }}>Detect tools</ToolbarButton>}>Find installed tools and check official release pages for updates. No connection details are sent to those sites.</EmptyState>)}
+      </> : <EmptyState icon="maintenance" title="Detect maintenance tools" action={<><ActionButton primary busy={detecting} busyLabel="Detecting…" disabled={!detecting && (disabled || busy || !!reads.loading)} onClick={() => { void loadTools(); }}>Detect tools</ActionButton>{readStatus("tools")}</>}>Find installed tools and check official release pages for updates. No connection details are sent to those sites.</EmptyState>)}
       {section === "upgrade" && tools && <>
         {form(<>
           <label className="ops-field"><span>Target version</span><Select label="Target version" value={target} options={[["", "Choose a version"], ...versions.map((v): [string, string] => [v, v]), ["custom", "Other version…"]]} onChange={setTarget} /></label>
           {target === "custom" && <FormField label="Exact version" value={customTarget} onChange={setCustomTarget} placeholder="8.4.0" hint="major.minor.patch" />}
           <Checkbox checked={!preferShell} onChange={(v) => setPreferShell(!v)}>Partial check without MySQL Shell (native subset)</Checkbox>
         </>)}
-        <div className="ops-actions"><VisiblePrivilegeGate gate={privilegeResult()} write={false} className="primary" disabled={formDisabled || !VERSION.test(version)} blocked={missingPrivileges.upgrade_check} onClick={() => { void runUpgrade(); }}>Check upgrade</VisiblePrivilegeGate><span className="hint">Only reads. Never says an upgrade is safe.</span></div>
+        <div className="ops-actions"><ReadAction busy={checking} busyLabel="Checking…" gate={privilegeResult()} write={false} className="primary" disabled={formDisabled || !VERSION.test(version)} blocked={missingPrivileges.upgrade_check} onClick={() => { void runUpgrade(); }}>Check upgrade</ReadAction>{readStatus("upgrade")}<span className="hint">Only reads. Never says an upgrade is safe.</span></div>
         {upgrade && <>
           {upgrade.method === "mariadb_upgrade_guidance" ? <div className="ops-result">{upgrade.limitations.map((line, i) => <p key={i}>{line}</p>)}</div> : <DataTable id="maintenance.upgrade" label="Upgrade findings" columns={findingColumns} rows={findings} rowKey={(r) => `finding:${r.row}`} selection={selection} defaultSort={{ key: "result", dir: "desc" }} />}
           {upgrade.manual_checks.length > 0 && <details className="ops-details"><summary>Manual checks ({upgrade.manual_checks.length.toLocaleString()})</summary><pre className="ops-pre">{JSON.stringify(upgrade.manual_checks, null, 2)}</pre></details>}
         </>}
       </>}
-      {section === "dump" && tools && form(<>
-        <label className="ops-field"><span>Scope</span><Select label="Scope" value={scope} options={[["instance", "Whole instance"], ["schemas", "Databases"], ["tables", "Tables of one database"]]} onChange={(v) => { if (v === "instance" || v === "schemas" || v === "tables") setScope(v); }} /></label>
-        {scope !== "instance" && <div className="ops-field"><SchemaPicker id="ops-dump-schemas" value={schemas} onChange={setSchemas} catalog={catalog.catalog} error={catalog.error} loading={catalog.loading} onReload={catalog.reload} disabled={formDisabled} />{!schemas.length && <span className="hint">Choose {scope === "tables" ? "one database" : "at least one database"}.</span>}</div>}
-        {scope === "tables" && <FormField label="Tables" value={tables} onChange={setTables} hint="Names separated by commas." />}
-        <label className="ops-field"><span>Tool</span><Select label="Tool" value={sqlDump ? "sql" : "auto"} options={[["auto", "Automatic (MySQL Shell first)"], ["sql", "SQL dump (mysqldump or mariadb-dump)"]]} onChange={(v) => setSqlDump(v === "sql")} /></label>
-        <FolderField key={`dump:${key}`} label="Output folder" value={directory} onChange={setDirectory} disabled={formDisabled} hint="On this computer. Choose an empty folder, or enter a new folder path." />
-        <details className="ops-dump-options"><summary>Options{dumpToolName ? ` for ${dumpToolName}` : ""}</summary>
-          {dumpToolName === "mysqlsh" && <label className="ops-field"><span>Threads</span><NumberField min={1} max={64} value={threads} onChange={(v) => setThreads(+v)} /></label>}
-          {dumpCapabilities && <DumpOptions catalog={dumpCapabilities} value={dumpOptions} onChange={setDumpOptions} />}
+      {section === "dump" && tools && <div className="ops-form ops-dump"><fieldset disabled={formDisabled}>
+        <FormGrid>
+          <FormRow label="Scope" htmlFor="ops-dump-scope">
+            <Select id="ops-dump-scope" label="Scope" value={scope} options={[["instance", "Whole instance"], ["schemas", "Databases"]]} onChange={(v) => { if (v === "instance" || v === "schemas") setScope(v); }} />
+          </FormRow>
+          {scope !== "instance" && <div className="form-row">
+            <span className="form-row-label">Databases</span>
+            <div className="form-row-control">
+              <SchemaPicker id="ops-dump-schemas" value={schemas} onChange={setSchemas} catalog={catalog.catalog} error={catalog.error} loading={catalog.loading} onReload={catalog.reload} disabled={formDisabled} />
+              <p className="hint">{!schemas.length ? "Choose at least one database." : schemas.length > 1 ? "Choose one database to pick its tables." : ""}</p>
+            </div>
+          </div>}
+          {oneSchema && <div className="form-row" data-dump-tables={oneSchema}>
+            <span className="form-row-label">Tables</span>
+            <div className="form-row-control">
+              <TablePicker id="ops-dump-tables" schema={oneSchema} value={tables} onChange={setTables} tables={schemaTables} disabled={formDisabled} />
+              <p className={unknownTables.length || schemaTables.error ? "form-error" : "hint"} role={unknownTables.length || schemaTables.error ? "alert" : undefined}>
+                {unknownTables.length && schemaTables.truncated ? `Not in the tables loaded so far: ${unknownTables.join(", ")}. Load more tables to confirm them.`
+                  : unknownTables.length ? `No longer in ${oneSchema}: ${unknownTables.join(", ")}. Choose tables from the list again.`
+                  : schemaTables.error ? `Could not read the tables of ${oneSchema}: ${schemaTables.error}`
+                    : schemaTables.loading && !schemaTables.tables.length ? `Reading the tables of ${oneSchema}…`
+                      : tables.length ? `${tables.length.toLocaleString()} of ${schemaTables.truncated ? `${schemaTables.tables.length.toLocaleString()}+` : schemaTables.tables.length.toLocaleString()} tables.`
+                        : `Every table of ${oneSchema}; choose tables to dump only those.`}
+              </p>
+            </div>
+          </div>}
+          <FormRow label="Tool" htmlFor="ops-dump-tool">
+            <Select id="ops-dump-tool" label="Tool" value={sqlDump ? "sql" : "auto"} options={[["auto", "Automatic (MySQL Shell first)"], ["sql", `SQL dump (${tools.offered.dump.find(name => name !== "mysqlsh") || (tools.server.engine === "mariadb" ? "mariadb-dump" : "mysqldump")})`]]} onChange={(v) => setSqlDump(v === "sql")} />
+          </FormRow>
+          <FolderField key={`dump:${key}`} row label="Output folder" value={directory} onChange={setDirectory} disabled={formDisabled} hint="On this computer. Choose an empty folder, or enter a new folder path." />
+        </FormGrid>
+        <details className="ops-dump-options"><summary>Options{dumpToolName ? ` for ${dumpToolName}` : ""}{dumpCapabilities && <span className="hint">{optionsSummary(dumpCapabilities, dumpOptions, dumpToolName === "mysqlsh" ? threads : undefined) || "Tool defaults"}</span>}</summary>
+          {dumpCapabilities && <DumpOptions catalog={dumpCapabilities} value={dumpOptions} onChange={setDumpOptions} disabled={formDisabled}
+            threads={dumpToolName === "mysqlsh" ? threads : undefined} onThreads={dumpToolName === "mysqlsh" ? setThreads : undefined} />}
         </details>
-      </>)}
+      </fieldset></div>}
       {section === "restore" && tools && form(<>
         <div className="ops-target"><span>Restores into</span><strong>{connectionLabel(connection)}</strong></div>
         <FolderField key={`restore:${key}`} label="Dump folder" value={restoreDirectory} onChange={setRestoreDirectory} disabled={formDisabled} hint="A completed myflames dump with its checksummed manifest." />
@@ -565,16 +647,18 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
         {cloneMode === "directory" ? <FormField wide label="Data directory" value={dataDirectory} onChange={setDataDirectory} placeholder="/var/lib/mysql-clone" hint="Absolute path on the recipient host. It must not exist and must be outside its data directory." /> : <p className="ops-warning">Replacing the recipient's data drops all its user data and restarts the server. This cannot be undone.</p>}
         <details><summary>Donor TLS</summary><label className="ops-field"><span>TLS mode</span><Select label="TLS mode" value={donor.ssl_mode || "REQUIRED"} options={[["REQUIRED", "Required"], ["VERIFY_CA", "Verify CA"], ["VERIFY_IDENTITY", "Verify identity"]]} onChange={(v) => setDonor({ ...donor, ssl_mode: v })} /></label><FormField label="CA file" value={donor.ssl_ca || ""} onChange={(v) => setDonor({ ...donor, ssl_ca: v })} /></details>
       </>))}
-      {operation && tools && (operation !== "clone" || tools.offered.clone) && <div className="ops-actions"><VisiblePrivilegeGate action={operation === "clone" ? "clone_recipient" : operation === "restore" ? "restore" : undefined} gate={operationGate} className="primary" disabled={formDisabled || !canPrepare} blocked={blocked || privilegeBlock} onClick={() => { void prepare(); }}>Run preflight…</VisiblePrivilegeGate>{!blocked && !privilegeBlock && <span className="hint">{activeHere ? "A job is running on this connection." : "Only reads; the confirmation comes next."}</span>}</div>}
+      {operation && tools && (operation !== "clone" || tools.offered.clone) && <div className="ops-actions"><ReadAction busy={preparing} busyLabel="Running preflight…" action={operation === "clone" ? "clone_recipient" : operation === "restore" ? "restore" : undefined} gate={operationGate} className="primary" disabled={formDisabled || !canPrepare} blocked={blocked || privilegeBlock} onClick={() => { void prepare(); }}>Run preflight…</ReadAction>{readStatus("preflight")}{!blocked && !privilegeBlock && <span className="hint">{activeHere ? "A job is running on this connection." : "Only reads; the confirmation comes next."}</span>}</div>}
       {notice && <p className="ops-note" role="status">{notice}</p>}
       {shownPlan && !shownPlan.report.ready && <Checks checks={shownPlan.report.checks} selection={selection} />}
       {shownPlan && <details className="ops-details"><summary>Planned commands and warnings</summary><Commands label="Planned commands" text={shownPlan.report.commands.join("\n")} />{shownPlan.report.warnings.map((line, i) => <p key={i}>{line}</p>)}</details>}
 
     </ViewLayout>
-    {sheet && <ConfirmSheet className="ops-confirm" eyebrow={sheet.report.operation.toUpperCase()}
+    {sheet && !startLeft && <ConfirmSheet className="ops-confirm" eyebrow={sheet.report.operation.toUpperCase()}
       title={sheet.report.operation === "dump" ? `Dump into the folder ${folderName(sheet.report.target)}?` : sheet.report.operation === "restore" ? `Restore into ${sheet.report.target}?` : `Clone into ${sheet.report.target}?`}
       description={sheet.report.operation === "dump" ? "The dump reads the server and writes only into the folder." : "This changes the server and cannot be undone."}
-      busy={busy} confirmLabel={<VisiblePrivilegeConfirmLabel gate={{ ...sheetGate, disabledReason: sheetBlock }}>{busy ? "Starting…" : `Start ${sheet.report.operation}`}</VisiblePrivilegeConfirmLabel>}
+      busy={busy} busyLabel="Starting…" progress="Waiting for the server to start the job" onLeave={() => setStartLeft(true)}
+      leaveText="Close keeps the Start request running. The job or its unknown outcome appears in this view; do not start it again."
+      confirmLabel={<VisiblePrivilegeConfirmLabel gate={{ ...sheetGate, disabledReason: sheetBlock }}>{`Start ${sheet.report.operation}`}</VisiblePrivilegeConfirmLabel>}
       confirmDisabled={sheet.key !== key || (sheet.report.operation !== "dump" && typed !== sheet.report.target)}
       onCancel={() => { decline(sheet); setSheet(null); sheetConnection.current = null; setTyped(""); }} onConfirm={() => { void start(); }}>
       <div className="ops-target"><span>{sheet.report.operation === "dump" ? "Folder" : "Target"}</span><strong>{sheet.report.target}</strong></div>
@@ -587,7 +671,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
           ["Recipient type", `${TYPE_LABEL[sheet.report.expect.recipient.type]}${sheet.report.expect.recipient.read_only ? ", read-only" : ""}`],
           ["Donor address used by recipient", sheet.report.expect.donor_address],
         ] as [string, string][] : []),
-        ["Server", engineName(sheet.report.server.engine, sheet.report.server.version)],
+        ["Server", engineName(sheet.report.server.engine, sheet.report.server.version, sheet.report.server.product)],
         !!sheet.report.server.identity?.hostname && ["Host name", String(sheet.report.server.identity.hostname)],
         ["Tool", toolName(sheet.report.tool)],
         ["Preflight", `${plural(sheet.report.checks.filter((c) => c.status === "passed").length, "check")} passed${sheet.report.checks.some((c) => c.status === "not_checked") ? `, ${sheet.report.checks.filter((c) => c.status === "not_checked").length.toLocaleString()} not checked` : ""}`],

@@ -82,6 +82,27 @@ final = loop.run()
 write("replication-loop-running.json", running[0])
 write("replication-loop-stopped.json", final)
 
+# Source versions (live, 2026-10-20: MySQL 9.7.2 and MariaDB 11.8.9 replicas
+# reporting their source as 127.0.0.1:<port>): from the relay log, unknown
+# without REPLICATION SLAVE, and, where the relay log gives none (no
+# REPLICATION SLAVE; MariaDB before the source's first event), from the saved
+# connections "Source 9.7" (server ID and UUID compared) and "Source 11.8"
+# (server ID only). These use the synthetic @@hostname answers of
+# test_replication_source_version.
+import test_replication_source_version as tsv  # noqa: E402
+for name, server, profile, source in (
+        ("mysql-9.7-srcver-relay", "mysql-9.7-srcver-relay", None, None),
+        ("mysql-9.7-srcver-profile", "mysql-9.7-srcver-denied", tsv.MYSQL_SOURCE, "mysql-9.7-srcver-profile"),
+        ("mysql-9.7-srcver-denied", "mysql-9.7-srcver-denied", None, None),
+        ("mariadb-11.8-srcver-relay", "mariadb-11.8-srcver-relay", None, None),
+        ("mariadb-11.8-srcver-profile", "mariadb-11.8-srcver-unknown", tsv.MARIADB_SOURCE,
+         "mariadb-11.8-srcver-profile")):
+    rp.reset_source_cache()
+    conn = tsv.source_conn(source) if source else None
+    write("replication-%s.json" % name, rp.read_status(
+        tr.ReplayConn(tsv.replica_calls(server)), source_versions=True, profiles=[profile] if profile else (),
+        open_profile=lambda _p, conn=conn: conn, replica_host="127.0.0.1"))
+
 
 # ---- Maintenance -----------------------------------------------------------
 

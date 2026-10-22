@@ -22,7 +22,7 @@ export const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 export const SERVER_GROUPS = {
   Overview: ["Health", "InnoDB", "Error log"],
   Contention: ["Locks"],
-  Schema: ["Indexes", "Tables", "Database diagram"],
+  Schema: ["Indexes", "Tables"],
   Setup: ["Parameters", "Instruments", "Maintenance"],
   Security: ["Users and roles"],
 };
@@ -60,12 +60,19 @@ export async function assertPrivilege(page, selector, state, need, { unverifiedB
   assert.equal(await page.$eval(selector, e => document.activeElement === e), true);
 }
 
+/** The stored preference that docks the Server and Workload list of views
+ * (main.tsx); without it the list floats, opened from the view's title. */
+export const DOCK_KEY = "myflames.serverNavCollapsed";
+
 /** Start the workspace, open the Server place, and mock *endpoint*.
  * *extra* maps other paths to fixed responses ({status, body, delay?}), for
  * example the database picker's /api/live/schemas, or to a function
  * (body, request) returning one, or null when it answers the request itself
- * later (request.respond). Returns helpers; call close() in a finally block. */
-export async function open(endpoint, name, extra = {}, { fallback = null } = {}) {
+ * later (request.respond). *list* "docked" starts with the list of views
+ * docked, as a person who docked it would (suites that assert the list's
+ * markers and keys directly); the default is the floating list. Returns
+ * helpers; call close() in a finally block. */
+export async function open(endpoint, name, extra = {}, { fallback = null, list = "floating" } = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), `myflames-${name}-`));
   const store = path.join(directory, "workspace.sqlite3");
   const proc = spawn(
@@ -91,7 +98,8 @@ export async function open(endpoint, name, extra = {}, { fallback = null } = {})
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
-  const state = { queue: [], fallback, delay: 0, seen: [], other: [], privilegeReads: [], privileges: { schema_version: "privileges-1.0", account: "root@localhost", actions: {} } };
+  // slowAssets (a RegExp of paths) holds matching static files back by slowAssetsMs (a lazy chunk that loads late).
+  const state = { queue: [], fallback, delay: 0, slowAssets: null, slowAssetsMs: 1500, seen: [], other: [], privilegeReads: [], privileges: { schema_version: "privileges-1.0", account: "root@localhost", actions: {} } };
   await page.setRequestInterception(true);
   page.on("request", (request) => {
     const pathname = new URL(request.url()).pathname;
@@ -118,6 +126,7 @@ export async function open(endpoint, name, extra = {}, { fallback = null } = {})
         return request.respond({ status: 400, contentType: "application/json",
           body: JSON.stringify({ error: "Not mocked in this suite." }) });
       }
+      if (state.slowAssets && state.slowAssets.test(pathname)) return void setTimeout(() => request.continue(), state.slowAssetsMs);
       return request.continue();
     }
     state.seen.push(JSON.parse(request.postData() || "{}"));
@@ -127,8 +136,16 @@ export async function open(endpoint, name, extra = {}, { fallback = null } = {})
       state.delay,
     );
   });
+  if (list === "docked") {
+    // Only when nothing is stored: a test that floats it again keeps that choice across reloads.
+    await page.evaluateOnNewDocument((key) => {
+      try { if (localStorage.getItem(key) === null) localStorage.setItem(key, "false"); } catch {}
+    }, DOCK_KEY);
+  }
   await page.setViewport({ width: 1440, height: 1000 });
   await page.goto(url, { waitUntil: "networkidle0" });
+  /** The element is on screen (not in a hidden place, view or list). */
+  const shown = (selector) => page.$eval(selector, (e) => !e.closest("[hidden]") && e.offsetParent !== null).catch(() => false);
   const shots = process.env.PERF_SHOTS || directory;
   const helpers = {
     page,
@@ -161,30 +178,70 @@ export async function open(endpoint, name, extra = {}, { fallback = null } = {})
     idle: (panel) => page.waitForFunction((p) => !document.querySelector(`${p} .spinner`), {}, panel),
     async server() {
       await helpers.button("Server", ".main-nav ");
-      await page.waitForSelector(".server-place .source-list");
+      await helpers.views();
     },
     async workload() {
       await helpers.button("Workload", ".main-nav ");
-      await page.waitForSelector(".server-place .source-list");
+      await helpers.views();
     },
-    /** Open a Server or Workload view from the sub-navigation and wait for it. */
+    /** Wait for the list of views: docked beside the view, or floating
+     * (the view's title button, its list closed). */
+    async views() {
+      // Any of them on screen (kept views stay mounted, hidden, with their own title).
+      await page.waitForFunction(() => [...document.querySelectorAll(".server-place:not(.is-tuning-place) :is(.source-list, .view-switcher)")]
+        .some((e) => !e.closest("[hidden]") && e.offsetParent !== null));
+    },
+    /** The list of views is floating (opened from the view's title). */
+    floating: () => page.$eval(".server-place:not(.is-tuning-place)", (e) => e.classList.contains("is-nav-collapsed")).catch(() => false),
+    /** Wait until *kind* is the view on screen: named by its title button
+     * when the list floats, current in the docked list otherwise. */
+    async onView(kind) {
+      await page.waitForSelector(`.server-view[data-view="${kind}"]`, { visible: true });
+      if (await helpers.floating()) await page.waitForSelector(`#${kind}-switcher`, { visible: true });
+      else await page.waitForSelector(`#server-nav-${kind}[aria-current=page]`);
+    },
+    /** Open the floating list from the visible view's title (a no-op when it is open). */
+    async openViews() {
+      if (await page.$(".view-switcher-popover")) return;
+      await page.waitForFunction(() => [...document.querySelectorAll(".server-view .view-switcher")].some((e) => !e.closest("[hidden]") && e.offsetParent !== null));
+      const buttons = await page.$$(".server-view .view-switcher");
+      for (const b of buttons) {
+        if (await b.evaluate((e) => !e.closest("[hidden]") && e.offsetParent !== null)) { await b.click(); break; }
+      }
+      await page.waitForSelector(".view-switcher-popover .source-list [aria-current=page]");
+    },
+    /** Open a Server or Workload view from the list of views (docked, or
+     * floating: open it from the title, then choose) and wait for it. */
     async view(kind) {
       if (kind === "replication") {
         await helpers.button("Replication", ".main-nav ");
         await page.waitForSelector('.server-view[data-view="replication"]');
         return;
       }
+      // Database diagram is a place of its own (SQL workspace group).
+      if (kind === "diagram") {
+        await page.click('.main-nav button[data-place="diagram"]');
+        await page.waitForSelector('.server-place.is-diagram-place .server-view[data-view="diagram"]', { visible: true });
+        return;
+      }
       const isWorkload = ["top", "sessions", "waits", "io"].includes(kind);
       const place = isWorkload ? "Workload" : "Server";
-      const navItem = await page.$(`#server-nav-${kind}`);
-      const isVisible = navItem && await navItem.evaluate((el) => !el.closest("[hidden]") && el.offsetParent !== null);
-      if (!isVisible) {
-        await helpers.button(place, ".main-nav ");
-        await page.waitForSelector(".server-place .source-list");
+      if (!(await shown(`#server-nav-${kind}`))) {
+        if (!(await page.$(`.main-nav button[data-place="${isWorkload ? "workload" : "server"}"].active`))) {
+          await helpers.button(place, ".main-nav ");
+        }
+        await helpers.views();
+        if (!(await shown(`#server-nav-${kind}`))) await helpers.openViews();
       }
+      const floating = !!(await page.$(".view-switcher-popover"));
       await page.click(`#server-nav-${kind}`);
-      await page.waitForSelector(`#server-nav-${kind}[aria-current=page]`);
-      await page.waitForSelector(`.server-view[data-view="${kind}"]`);
+      if (floating) {
+        // Choosing closes the list; the chosen view's title names it.
+        await page.waitForFunction(() => !document.querySelector(".view-switcher-popover"));
+      } else {
+        await page.waitForSelector(`#server-nav-${kind}[aria-current=page]`);
+      }
+      await page.waitForSelector(`.server-view[data-view="${kind}"]`, { visible: true });
     },
     /** Open the Full analysis: the second tab of the Tuning place. */
     async fullAnalysis() {

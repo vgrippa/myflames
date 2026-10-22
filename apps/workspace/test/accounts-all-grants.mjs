@@ -88,7 +88,7 @@ try {
  });
  const {page}=h;
  const click=async text=>{const handle=await page.evaluateHandle(text=>[...document.querySelectorAll("button")].find(b=>b.textContent.trim()===text&&b.getClientRects().length),text);assert.ok(handle.asElement(),text);await handle.asElement().click();await handle.dispose();};
- const reset=async()=>{requests=[];await page.reload();await click("Load users and roles");await page.waitForSelector(".accounts-view tbody tr[data-row-key]");await page.click(".accounts-view tbody tr[data-row-key]");await page.waitForSelector(".account-matrix");};
+ const reset=async()=>{requests=[];await page.reload();await page.waitForSelector(".accounts-view tbody tr[data-row-key]");await page.click(".accounts-view tbody tr[data-row-key]");await page.waitForSelector(".account-matrix");};
  const review=async()=>{await page.locator("button ::-p-text(Review changes)").click();await page.waitForSelector(".account-review[open]",{timeout:30000});assert.ok(requests.length);};
  let checkboxes=0, reviews=0;
  // Each server, user/role and direction covers the complete captured catalog

@@ -1,0 +1,171 @@
+{
+ "schema_version": "cluster-1.0",
+ "engine": "mariadb",
+ "server_version": "11.8.9-MariaDB-ubu2404-log",
+ "version_comment": "mariadb.org binary distribution",
+ "captured_at": "2026-10-20T14:40:00+00:00",
+ "uptime_s": 635,
+ "performance_schema": true,
+ "available": true,
+ "message": null,
+ "kind": "galera",
+ "server": {
+  "hostname": "mf-galera-1",
+  "port": 3306,
+  "report_host": null,
+  "server_uuid": null
+ },
+ "cluster": {
+  "name": "mf_galera",
+  "uuid": "58fabe80-cc92-11f1-baa6-0b645d2f9239",
+  "size": 3,
+  "expected_size": 3,
+  "expected_source": "wsrep_cluster_address",
+  "component": "Primary",
+  "quorum": true,
+  "failures_tolerated": 1,
+  "topology": null,
+  "provider": {
+   "name": "Galera",
+   "version": "26.4.27(rf032a460)",
+   "vendor": "Codership Oy <info@codership.com>"
+  }
+ },
+ "status": "problem",
+ "status_why": [
+  "wsrep_on is OFF globally: this node is still in the cluster and applies the other nodes' writes, but writes from sessions started since are not replicated, so the data can diverge. SET GLOBAL wsrep_on=ON replicates new sessions again; check the tables written meanwhile."
+ ],
+ "local": "node:58f352a6-cc92-11f1-8b10-7672dd4ac63d",
+ "members": [
+  {
+   "key": "node:58f352a6-cc92-11f1-8b10-7672dd4ac63d",
+   "name": "galera-1",
+   "address": "192.168.80.2:0",
+   "host": "192.168.80.2",
+   "port": null,
+   "uuid": "58f352a6-cc92-11f1-8b10-7672dd4ac63d",
+   "state": "Not replicating",
+   "state_source": null,
+   "role": null,
+   "version": null,
+   "local": true,
+   "status": "problem",
+   "status_why": [
+    "wsrep_on is OFF: writes from new sessions on this node are not replicated. The provider's status (its state and queues) is hidden while wsrep_on is OFF."
+   ],
+   "metrics": {
+    "ready": true,
+    "connected": true,
+    "local_bf_aborts": 0,
+    "local_index": 0,
+    "cluster_conf_id": 5
+   },
+   "actions": []
+  },
+  {
+   "key": "node:6ae7b745-cc93-11f1-acf4-070008b6688b",
+   "name": "galera-2",
+   "address": "192.168.80.3:0",
+   "host": "192.168.80.3",
+   "port": null,
+   "uuid": "6ae7b745-cc93-11f1-acf4-070008b6688b",
+   "state": null,
+   "state_source": null,
+   "role": null,
+   "version": null,
+   "local": false,
+   "status": "unknown",
+   "status_why": [
+    "In the component as this node sees it. A node's state and queues are read on that node: connect to it to inspect them."
+   ],
+   "metrics": {},
+   "actions": []
+  },
+  {
+   "key": "node:a57a5d64-cc92-11f1-9569-7fa5350ac23b",
+   "name": "galera-3",
+   "address": "192.168.80.4:0",
+   "host": "192.168.80.4",
+   "port": null,
+   "uuid": "a57a5d64-cc92-11f1-9569-7fa5350ac23b",
+   "state": null,
+   "state_source": null,
+   "role": null,
+   "version": null,
+   "local": false,
+   "status": "unknown",
+   "status_why": [
+    "In the component as this node sees it. A node's state and queues are read on that node: connect to it to inspect them."
+   ],
+   "metrics": {},
+   "actions": []
+  }
+ ],
+ "galera": {
+  "node_name": "galera-1",
+  "node_address": null,
+  "cluster_address": "gcomm://mf-galera-1,mf-galera-2,mf-galera-3",
+  "incoming_addresses": [],
+  "gcomm_uuid": null,
+  "desync": "OFF",
+  "pxc_strict_mode": null,
+  "pxc_maint_mode": null,
+  "wsrep_on": "OFF",
+  "members_source": "wsrep_cluster_members",
+  "address_nodes": 3,
+  "address_names_this_node": true,
+  "missing": [],
+  "metrics": {
+   "local_state": null,
+   "local_state_comment": null,
+   "ready": true,
+   "connected": true,
+   "evs_state": null,
+   "local_recv_queue": null,
+   "local_recv_queue_avg": null,
+   "local_send_queue": null,
+   "local_send_queue_avg": null,
+   "flow_control_paused": null,
+   "flow_control_active": null,
+   "flow_control_sent": null,
+   "flow_control_recv": null,
+   "cert_deps_distance": null,
+   "local_cert_failures": null,
+   "local_bf_aborts": 0,
+   "desync_count": null,
+   "last_committed": null,
+   "local_index": 0,
+   "cluster_conf_id": 5,
+   "cluster_weight": null
+  },
+  "incomplete": []
+ },
+ "group_replication": null,
+ "metadata": null,
+ "routers": [],
+ "findings": [
+  {
+   "id": "wsrep_off",
+   "status": "problem",
+   "title": "This node does not replicate",
+   "text": "wsrep_on is OFF globally: this node is still in the cluster and applies the other nodes' writes, but writes from sessions started since are not replicated, so the data can diverge. SET GLOBAL wsrep_on=ON replicates new sessions again; check the tables written meanwhile."
+  }
+ ],
+ "summary": {
+  "members": 3,
+  "ok": 0,
+  "watch": 0,
+  "problem": 1,
+  "unknown": 2
+ },
+ "statements": [
+  "SHOW GLOBAL VARIABLES",
+  "SHOW GLOBAL STATUS (wsrep_%)",
+  "SELECT mysql.wsrep_cluster_members"
+ ],
+ "notes": [
+  "mysql.wsrep_cluster_members reports port 0 for galera-1, galera-2, galera-3, so only the host is shown: with wsrep_node_incoming_address AUTO the node takes the port mysqld had when wsrep started. Set wsrep_node_incoming_address to host:port to report the client port.",
+  "Failures tolerated assumes equal pc.weight on every node (the default): a Primary component needs more than half of the total weight.",
+  "Galera exposes only this node's own state: the other nodes are listed as members of the component without a verdict. Connect to a node to inspect it."
+ ]
+}

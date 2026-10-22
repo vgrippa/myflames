@@ -106,7 +106,7 @@ export function WaitsView({
     await reads.run(
       `waits:${interval}`,
       `Sampling wait events for ${interval} s…`,
-      (c) => api<WaitsReport>("live/waits", { connection: c, interval }),
+      (c, signal) => api<WaitsReport>("live/waits", { connection: c, interval }, signal),
       onReport,
       { onError: () => setAuto(0) },
     );
@@ -351,7 +351,8 @@ export function WaitsView({
       otherConnection={other}
       inspector={inspector}
       inspectorEmpty={<p>Select a wait event or class to see what it is and its numbers.</p>}
-      status={<ViewStatus loading={reads.loading} error={error} />}
+      status={<ViewStatus loading={reads.loading} error={error} onStop={reads.stop} onRetry={error ? () => void load() : undefined}
+        doneAt={reads.doneAt} slowAfter={(interval + 20) * 1000} />}
     >
       <div ref={root}>
         {!report && !loading && !error && (

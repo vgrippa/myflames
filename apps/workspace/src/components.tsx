@@ -1,5 +1,5 @@
 import React, { useRef, useState } from "react";
-import { useFocusScope } from "./kit";
+import { ActionButton, ActionStatus, useFocusScope, useSince } from "./kit";
 import { icons, type IconShape } from "./icons.generated";
 /**
  * Icons are named by meaning, and each meaning has its own glyph: a place in
@@ -43,6 +43,8 @@ export type IconName =
   | "configuration"
   | "instruments"
   | "replication"
+  | "cluster"
+  | "proxy"
   | "maintenance"
   | "info"
   | "refresh"
@@ -76,7 +78,9 @@ export type IconName =
   | "minus"
   | "block"
   | "clean"
-  | "undo";
+  | "undo"
+  // Query editor: Format SQL.
+  | "format";
 // Glyphs are Hugeicons (free Stroke Rounded set, MIT) vendored into
 // icons.generated.ts by scripts/vendor-hugeicons.mjs, drawn on a 24 px grid and
 // scaled to 16 px (rows, navigation) or 12 px (disclosures, inline status).
@@ -111,6 +115,7 @@ export function ImportDialog({
   const dialog = useRef<HTMLDialogElement>(null);
   const [raw, setRaw] = useState("");
   const [name, setName] = useState("");
+  const since = useSince(busy);
   useFocusScope(dialog, { open: true, onClose: () => { if (!busy) onClose(); } });
   return (
     <dialog
@@ -192,15 +197,19 @@ export function ImportDialog({
         />
       </label>
       <div className="dialog-actions">
-        <span>Processed locally on your computer.</span>
-        <button
-          className="button primary"
-          disabled={busy || !raw.trim()}
+        {/* Always mounted: announces the analysis; counts its seconds after 1 s. */}
+        <ActionStatus state={{ phase: busy ? "pending" : "idle", message: "Analyzing the plan on this computer…", startedAt: since }}
+          slowText="Large plans take longer." />
+        {!busy && <span>Processed locally on your computer.</span>}
+        <ActionButton
+          primary
+          busy={busy}
+          busyLabel="Analyzing…"
+          disabled={!busy && !raw.trim()}
           onClick={() => onPaste(raw, name.trim() || "pasted-plan.json")}
         >
-          {busy ? "Analyzing…" : "Analyze plan"}
-          <Icon name="chevron" size={15} />
-        </button>
+          Analyze plan
+        </ActionButton>
       </div>
     </dialog>
   );

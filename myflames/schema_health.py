@@ -30,6 +30,24 @@ Sources:
   INNODB_SYS_TABLESPACES lists only tablespaces opened since startup, and
   MariaDB has no general tablespaces (Ma/sql/sql_yacc.yy:5695-5696).
 
+* With ``userstat=ON`` (MariaDB, Percona Server): ``information_schema.
+  TABLE_STATISTICS`` ROWS_READ and ROWS_CHANGED per table, counted from when
+  userstat was turned on or the last FLUSH TABLE_STATISTICS (same columns on
+  both: Ma/plugin/userstat/table_stats.cc:5-9, read live on Percona Server
+  8.0.46-37 and 8.4.11-11). ROWS_CHANGED counts every inserted, updated and
+  deleted row (Percona Server 8.4.11-11 sql/handler.cc ha_write_row,
+  ha_update_row and ha_delete_row; Ma/sql/handler.cc:6495), so it is write
+  activity: a replica applying row events searches a table only for updated
+  and deleted rows, and the count does not separate them. User statistics do
+  not count partitioned tables reliably: Percona Server documents that they
+  do not support them (https://docs.percona.com/percona-server/8.4/
+  user-stats.html), and a range read through a partitioned table's index
+  was missing from ROWS_READ when read live on Percona Server 8.0.46-37 and
+  8.4.11-11 and on MariaDB 11.4.13 (the partition handler reads each
+  partition below the counted handler calls: M/storage/innobase/handler/
+  ha_innopart.h:474-477). A partitioned table's counts are unknown, never
+  zero.
+
 Verified against server source (mysql-server 9.7 "M/" with the 8.4 tags,
 mariadb-server 13.0 "Ma/" with the 10.11, 11.4 and 11.8 tags):
 
@@ -129,6 +147,7 @@ mariadb-server 13.0 "Ma/" with the 10.11, 11.4 and 11.8 tags):
 import re
 import time
 
+from .server_info import product_name
 from .connector import ConnectorError
 from .health import SEVERITY
 from .perf_common import (Reader, _bytes_text, _count_text, _duration_text, _number, _round, base_report, check_limit,
@@ -174,6 +193,18 @@ def _tables_sql(schemas):
     return ("SELECT TABLE_SCHEMA, TABLE_NAME, ENGINE, TABLE_ROWS, DATA_LENGTH, INDEX_LENGTH, DATA_FREE, "
             "CREATE_OPTIONS FROM information_schema.TABLES WHERE %s AND %s"
             % (TABLE_TYPES_SQL, scope_sql("TABLE_SCHEMA", schemas)))
+
+
+def _userstat_sql(schemas):
+    return ("SELECT TABLE_SCHEMA, TABLE_NAME, ROWS_READ, ROWS_CHANGED FROM information_schema.TABLE_STATISTICS "
+            "WHERE %s" % scope_sql("TABLE_SCHEMA", schemas))
+
+
+def _activity(rows):
+    """{(schema, table): (rows read, rows changed)} from TABLE_STATISTICS, or None when not read."""
+    if rows is None:
+        return None
+    return {(r[0], r[1]): (_number(r[2]) or 0, _number(r[3]) or 0) for r in rows if len(r) >= 4 and r[0] and r[1]}
 
 
 def _keys_sql(server, schemas):
@@ -240,6 +271,9 @@ def table_report(conn, schemas=None, fresh=False, limit=DEFAULT_LIMIT,
             sql = "SET SESSION information_schema_stats_expiry = 0; " + TABLES_TAG + sql
             raw["fresh_applied"] = True
         raw["tables"] = reader.rows(sql)
+        if server.userstat:
+            raw["table_stats"] = reader.optional(_userstat_sql(schemas), "information_schema.TABLE_STATISTICS",
+                                                 notes)
         prefix = ""
         if mysql and (server.var("show_gipk_in_create_table_and_information_schema") or "").upper() in ("OFF", "0"):
             prefix = "SET SESSION show_gipk_in_create_table_and_information_schema = ON; " + TABLES_TAG
@@ -513,6 +547,8 @@ def compute_tables(server, raw, schemas=None, fresh=False, limit=DEFAULT_LIMIT, 
     keys = _unique_keys(raw.get("keys"))
     columns = _columns(raw.get("columns"))
     fold = _fold(server)
+    activity = _activity(raw.get("table_stats"))
+    # User statistics do not count partitioned tables reliably (module docstring).
     missing, gipk = [], []
     for key in sorted(tables):
         t = tables[key]
@@ -525,7 +561,10 @@ def compute_tables(server, raw, schemas=None, fresh=False, limit=DEFAULT_LIMIT, 
                 gipk.append({"schema": t["schema"], "table": t["table"], "engine": t["engine"],
                              "rows": t["rows"], "size_bytes": _size(t)})
             continue
-        missing.append(_missing_entry(server, t, indexes, columns.get(key, {})))
+        entry = _missing_entry(server, t, indexes, columns.get(key, {}))
+        if activity is not None:
+            _add_activity(entry, activity.get(key), known=not t["partitioned"])
+        missing.append(entry)
     missing.sort(key=lambda m: (STATUS_ORDER[m["status"]], -(m["size_bytes"] or 0), m["schema"], m["table"]))
     fragmentation, shared = _fragmentation(server, raw, tables, fold)
     innodb = sum(1 for t in tables.values() if t["innodb"])
@@ -560,6 +599,17 @@ def compute_tables(server, raw, schemas=None, fresh=False, limit=DEFAULT_LIMIT, 
                   "rows": t["rows"], "data_bytes": t["data"], "index_bytes": t["index"],
                   "size_bytes": _size(t), "partitioned": t["partitioned"]}
                  for _, t in sorted(tables.items())]
+    if activity is not None:
+        for row in inventory:
+            if row["partitioned"]:
+                row["rows_read"] = row["rows_changed"] = None
+            else:
+                row["rows_read"], row["rows_changed"] = activity.get((row["schema"], row["table"]), (0, 0))
+        unknown = sum(1 for row in inventory if row["rows_changed"] is None)
+        if unknown:
+            notes.append("User statistics do not count partitioned tables reliably, so rows read and changed "
+                         "are unknown for %s." % ("the partitioned table in scope" if unknown == 1 else
+                                                          "the %s partitioned tables in scope" % _count_text(unknown)))
     expiry = _number(server.var("information_schema_stats_expiry"))
     report.update({
         "scope": {"schemas": list(schemas) if schemas else None, "all_user_schemas": schemas is None,
@@ -570,6 +620,8 @@ def compute_tables(server, raw, schemas=None, fresh=False, limit=DEFAULT_LIMIT, 
             "cached": server.engine == "mysql" and not raw.get("fresh_applied") and expiry != 0,
         },
         "tablespaces_known": raw.get("spaces") is not None,
+        # userstat=ON: rows read and changed per table since userstat started.
+        "userstat": {"enabled": bool(getattr(server, "userstat", False)), "read": activity is not None},
         "tablespace_collection": {"show_create_limit": MAX_SHOW_CREATE, "deadline_s": METADATA_DEADLINE_S,
                                   "unresolved": len(raw.get("spaces_unresolved", ()))},
         "summary": summary,
@@ -588,6 +640,34 @@ def compute_tables(server, raw, schemas=None, fresh=False, limit=DEFAULT_LIMIT, 
     })
     _notes(server, raw, report, schemas, fresh, notes)
     return report
+
+
+def _add_activity(entry, counts, known=True):
+    """Rows read and changed since userstat started on a table without a key.
+
+    A table with no TABLE_STATISTICS row had no reads or changes in that
+    window, except a partitioned table (*known* False), whose counts are
+    unknown (module docstring). Changed rows are inserts,
+    updates and deletes together; a replica applying row events searches
+    the table only for the updates and deletes (module docstring, replica
+    apply)."""
+    if not known:
+        entry["rows_read"] = entry["rows_changed"] = None
+        return
+    read, changed = counts or (0, 0)
+    entry["rows_read"], entry["rows_changed"] = read, changed
+    if entry["kind"] != "no_usable_key":
+        return
+    if changed:
+        entry["why"] += (" User statistics (information_schema.TABLE_STATISTICS) count %s rows changed (inserted, "
+                         "updated or deleted) and %s read since userstat was turned on or the last FLUSH "
+                         "TABLE_STATISTICS. With row-based replication a replica has to find each updated or deleted "
+                         "row by searching this table; inserts need no search, and the count does not separate them."
+                         % (_count_text(changed), _count_text(read)))
+    else:
+        entry["why"] += (" User statistics (information_schema.TABLE_STATISTICS) count no rows changed since userstat "
+                         "was turned on or the last FLUSH TABLE_STATISTICS, so replicas had no changes to this table "
+                         "to apply in that time.")
 
 
 def _size(t):
@@ -977,7 +1057,7 @@ def _rows_text(value):
 
 
 def format_text(report):
-    head = "%s %s" % ("MariaDB" if report["engine"] == "mariadb" else "MySQL", report["server_version"] or "?")
+    head = "%s %s" % (product_name(report), report["server_version"] or "?")
     if report["uptime_s"] is not None:
         head += ", up %s" % _duration_text(report["uptime_s"])
     head += ", %s" % scope_text(report["scope"]["schemas"])

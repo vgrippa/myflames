@@ -1,14 +1,22 @@
 // Saved connections (the API calls them profiles) and the active connection
 // that the Query editor and Server use. The UI says "connection"; requests
 // keep the `profiles/*` endpoints and `profile_id`.
-import { createContext, useContext, useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { api, type Connection, type ConnectionType, type Profile, type SecretStore } from "./api";
 import { Icon } from "./components";
 import { connectionKey } from "./binding";
-import { Checkbox, ConfirmSheet, DataTable, InfoPopover, InspectorContext, Popover, closePopovers,
+import { ActionButton, ActionStatus, Checkbox, ConfirmSheet, DataTable, InfoPopover, InspectorContext, Popover, closePopovers,
   SearchField, Segmented, Select, ViewLayout, useFocusScope, type Column } from "./kit";
 import { actionLabel, privilegeResult, usePrivileges } from "./privileges";
 import { defaultConnection, relativeTime, SSL_MODES, type SessionConnection } from "./session";
+
+/** connection/test: the version, and the product the server names in @@version_comment. */
+type ConnectionTestResult = { version: string; engine?: string; flavor?: string; product?: string };
+/** "8.4.11", "11.8.9-MariaDB-log" (they name themselves), "Percona Server 8.4.11-11". */
+function testedServer(r: ConnectionTestResult) {
+  return r.flavor === "percona" && r.product ? `${r.product} ${r.version}` : r.version;
+}
 
 /** The connection the Query editor and Server send requests to. The password
  * is typed for this page only and is never part of the saved session. */
@@ -99,7 +107,7 @@ function TypeInfo() {
     </InfoPopover>
   );
 }
-/** The small dot that names a connection's type (red for Production). */
+/** The small dot that names a connection's type (purple for Production, teal for Development). */
 export function TypeDot({ type, readOnly }: { type: ConnectionType; readOnly?: boolean }) {
   const label = readOnly ? `${TYPE_LABEL[type]}, read-only` : TYPE_LABEL[type];
   return <span className={`type-dot is-${readOnly ? "read-only" : type}`} role="img" aria-label={label} title={label} />;
@@ -240,7 +248,9 @@ export function Connections({
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [testing, setTesting] = useState(false);
+  const [testSince, setTestSince] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
+  const [forgetting, setForgetting] = useState(false);
   // One save at a time (the ref answers before React re-renders).
   const savingRef = useRef(false);
   // formGen changes when the form opens or closes; draftGen also when a field
@@ -270,6 +280,8 @@ export function Connections({
   const [offerSave, setOfferSave] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<ConnectionRow[] | null>(null);
   const [deleting, setDeleting] = useState(false);
+  // The Delete sheet was closed while the deletion had no reply yet.
+  const [deleteLeft, setDeleteLeft] = useState(false);
   const deletingRef = useRef(false);
   const [deletedIds, setDeletedIds] = useState<string[]>([]);
   const [deleteErrors, setDeleteErrors] = useState<Record<string, string>>({});
@@ -277,12 +289,19 @@ export function Connections({
   const [cursor, setCursor] = useState("");
   const [search, setSearch] = useState("");
   const [sheet, setSheet] = useState(() => typeof window !== "undefined" && window.innerWidth < 1040);
+  const [phone, setPhone] = useState(() => typeof window !== "undefined" && window.innerWidth <= 650);
   const [inspectorWidth, setInspectorWidth] = useState(340);
   const tableRef = useRef<HTMLDivElement>(null);
   const addButtonRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     const media = window.matchMedia("(max-width: 1039px)");
     const change = () => setSheet(media.matches);
+    media.addEventListener("change", change);
+    return () => media.removeEventListener("change", change);
+  }, []);
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 650px)");
+    const change = () => setPhone(media.matches);
     media.addEventListener("change", change);
     return () => media.removeEventListener("change", change);
   }, []);
@@ -444,16 +463,19 @@ export function Connections({
     const seq = ++testSeq.current;
     const tested = { editing: editingId, password: draft.password };
     setTesting(true);
+    setTestSince(Date.now());
     setError("");
+    // The result line belongs to this test from now on.
+    if (statusFromTest.current) { statusFromTest.current = false; setStatus(""); }
     try {
-      const r = await api<{ version: string; schemas: string[] }>(
+      const r = await api<ConnectionTestResult & { schemas: string[] }>(
         "connection/test",
         { connection: formConnection },
       );
       if (draftGen.current !== gen || testSeq.current !== seq) return;
       setSchemas(r.schemas);
       statusFromTest.current = true;
-      setStatus(`Connected · ${r.version}`);
+      setStatus(`Connected · ${testedServer(r)}`);
       if (tested.editing && !savedPassword && tested.password && canRemember)
         setOfferSave(true);
     } catch (e) {
@@ -463,14 +485,26 @@ export function Connections({
       if (testSeq.current === seq) setTesting(false);
     }
   }
+  /** Stop waiting for the test: its answer is dropped (the server ends the
+   * attempt at its own connect timeout). */
+  function stopTest() {
+    testSeq.current++;
+    setTesting(false);
+    setStatus("Stopped waiting for the test. Nothing was saved or changed.");
+    statusFromTest.current = true;
+  }
   async function forget(id: string) {
+    if (forgetting) return;
     setError("");
+    setForgetting(true);
     try {
       await api("profiles/forget-password", { id });
       await refresh();
       setStatus("Saved password forgotten. Enter the password to connect.");
     } catch (e) {
-      setError((e as Error).message);
+      setError(`Could not forget the saved password: ${(e as Error).message}`);
+    } finally {
+      setForgetting(false);
     }
   }
   function askDelete(rows: ConnectionRow[]) {
@@ -514,6 +548,7 @@ export function Connections({
       deletingRef.current = false;
       setDeleting(false);
       setConfirmDelete(null);
+      setDeleteLeft(false);
       // Wait for both the confirmation and any deleted row's form to close.
       // Failed deletions remain in the table and can receive focus again.
       window.setTimeout(() => {
@@ -535,8 +570,8 @@ export function Connections({
     const put = (next: RowTest) => setRowTests((t) => (t[key]?.seq === seq ? { ...t, [key]: next } : t));
     setRowTests((t) => ({ ...t, [key]: { state: "testing", identity, seq } }));
     try {
-      const r = await api<{ version: string }>("connection/test", { connection });
-      put({ state: "ok", text: `Connected · ${r.version}`, identity, seq });
+      const r = await api<ConnectionTestResult>("connection/test", { connection });
+      put({ state: "ok", text: `Connected · ${testedServer(r)}`, identity, seq });
     } catch (e) {
       put({ state: "failed", text: (e as Error).message, identity, seq });
     }
@@ -709,9 +744,11 @@ export function Connections({
                   <button
                     className="text-button"
                     disabled={busy}
-                    onClick={() => editingId && forget(editingId)}
+                    aria-busy={forgetting || undefined}
+                    aria-disabled={forgetting || undefined}
+                    onClick={() => { if (editingId && !forgetting) void forget(editingId); }}
                   >
-                    Forget saved password
+                    {forgetting ? "Forgetting…" : "Forget saved password"}
                   </button>
                 </div>
               )}
@@ -785,20 +822,25 @@ export function Connections({
             </div>
           </details>
           <div className="button-row">
-            <button
-              className="button"
-              disabled={testing || busy || deleting || saving}
-              onClick={testForm}
+            {/* Busy buttons keep focus (aria-disabled): a spinner, a
+                present-tense label, and a second click sends nothing. */}
+            <ActionButton
+              busy={testing}
+              busyLabel="Testing…"
+              disabled={!testing && (busy || deleting || saving)}
+              onClick={() => void testForm()}
             >
-              {testing ? "Connecting…" : "Test connection"}
-            </button>
-            <button
-              className="button primary"
-              disabled={busy || !!savePrompt || saving || deleting}
+              Test connection
+            </ActionButton>
+            <ActionButton
+              primary
+              busy={saving}
+              busyLabel="Saving…"
+              disabled={!saving && (busy || !!savePrompt || deleting)}
               onClick={startSave}
             >
-              {saving ? "Saving…" : "Save connection"}
-            </button>
+              Save connection
+            </ActionButton>
             <button
               className="button"
               onClick={() =>
@@ -919,12 +961,27 @@ export function Connections({
               Delete connection
             </button>
           )}
-          {status && <p role="status" className="notice connections-status">{status}</p>}
+          {/* A test running from the form: the seconds, and Stop waiting when slow. */}
+          <ActionStatus
+            className="connections-progress"
+            state={{ phase: testing ? "pending" : "idle", message: `Testing the connection to ${connectionTarget({ user: draft.user || "", host: draft.host || "", port: draft.port || 3306 })}…`, startedAt: testSince }}
+            onStop={stopTest}
+            stopLabel="Stop waiting"
+          />
+          {/* Always mounted: what Test, Save and Forget password did is announced. */}
+          <div className="connections-live" role="status" aria-live="polite">
+            {status && <p className="notice connections-status">{status}</p>}
+            {editingId && rowTests[editingId] && rowTests[editingId].identity === connectionKey(formConnection) && rowTests[editingId].state !== "failed" && (
+              <p className="row-test">
+                {rowTests[editingId].state === "testing"
+                  ? <><span className="spinner" aria-hidden="true" /> Testing the connection…</>
+                  : (rowTests[editingId] as { text: string }).text}
+              </p>
+            )}
+          </div>
           {error && <p role="alert" className="error">{error}</p>}
-          {editingId && rowTests[editingId] && rowTests[editingId].identity === connectionKey(formConnection) && (
-            <p className="row-test" role={rowTests[editingId].state === "failed" ? "alert" : "status"}>
-              {rowTests[editingId].state === "testing" ? "Connecting…" : (rowTests[editingId] as { text: string }).text}
-            </p>
+          {editingId && rowTests[editingId] && rowTests[editingId].identity === connectionKey(formConnection) && rowTests[editingId].state === "failed" && (
+            <p className="row-test" role="alert">{(rowTests[editingId] as { text: string }).text}</p>
           )}
           <p className="hint">
             Connections store server settings. {storeSentence} Requires a local
@@ -950,7 +1007,7 @@ export function Connections({
         </div>
         {loading && <p role="status">Loading connections…</p>}
         {loadError && <p role="alert" className="error">{loadError} <button className="text-button" onClick={() => void refresh().catch(e => setError((e as Error).message))}>Retry connections</button></p>}
-        <div ref={tableRef} id="connections-table" tabIndex={-1} aria-label="Connections table" onKeyDown={e => {
+        <div ref={tableRef} id="connections-table" tabIndex={-1} aria-label="Connections table" data-compact={phone || editingId !== null || undefined} onKeyDown={e => {
           if ((e.target as HTMLElement).closest('input:not([type="checkbox"]), select, textarea, button, [role=menu], [role=dialog]')) return;
           if (e.key === "Delete" || e.key === "Backspace") {
             e.preventDefault();
@@ -965,19 +1022,27 @@ export function Connections({
             selection={{ key: cursor, select: key => setCursor(key) }} multiSelection={{ keys: selected, select: setSelected }} onActivate={activate}
             rowClass={row => `connection-row${(row.profile?.id === active.id || row.key === "active") ? " is-active" : ""}`}
             rowAttrs={row => ({ "aria-label": `${row.fields.name || connectionTarget(row.fields)}${row.profile?.id === active.id || row.key === "active" ? ", in use" : ""}` })}
-            rowAction={rowMenu} compact={sheet || editingId !== null} detailColumns={["type", "endpoint", "schema", "password", "last-used"]}
+            rowAction={rowMenu} compact={sheet || editingId !== null} detailColumns={phone || editingId !== null ? ["type", "endpoint", "schema", "password", "last-used"] : ["schema", "password", "last-used"]}
             empty={loading ? undefined : <p className="empty-small">{search ? "No connections match your search." : "Add a connection to start working with a server."}</p>} />
         </div>
         {Object.entries(deleteErrors).map(([id, message]) => <p key={id} role="alert" className="error connection-delete-error">
           {profiles.find(p => p.id === id)?.name || id}: {message}
         </p>)}
-        {editingId === null && status && <p role="status" className="notice connections-status">{status}</p>}
+        {/* Always mounted: what a deletion (or Use) did is announced. */}
+        <ActionStatus className="connections-progress" state={{ phase: deleting && deleteLeft ? "pending" : "idle",
+          message: "Deleting the chosen connections…", startedAt: null }} />
+        <div className="connections-live" role="status" aria-live="polite">
+          {editingId === null && status && <p className="notice connections-status">{status}</p>}
+        </div>
         {editingId === null && error && <p role="alert" className="error connections-status">{error}</p>}
       </ViewLayout>
-      {confirmDelete && <ConfirmSheet title={confirmDelete.every(row => !row.profile) ? "Remove connection?"
+      {confirmDelete && !deleteLeft && <ConfirmSheet title={confirmDelete.every(row => !row.profile) ? "Remove connection?"
         : confirmDelete.length === 1 ? "Delete connection?" : `Delete ${confirmDelete.length} connections?`}
         description="Remove these settings from this computer. Existing editor sessions are not closed."
-        busy={deleting} confirmLabel={confirmDelete.every(row => !row.profile) ? "Remove connection" : confirmDelete.length === 1 ? "Delete connection" : "Delete connections"}
+        busy={deleting} busyLabel={confirmDelete.every(row => !row.profile) ? "Removing…" : "Deleting…"}
+        progress="Removing from this computer"
+        onLeave={() => setDeleteLeft(true)} leaveText="Still deleting. Close does not stop it; the list updates when it ends."
+        confirmLabel={confirmDelete.every(row => !row.profile) ? "Remove connection" : confirmDelete.length === 1 ? "Delete connection" : "Delete connections"}
         onCancel={() => setConfirmDelete(null)} onConfirm={() => void remove()}>
         <ul className="connection-delete-list">{confirmDelete.map(row => <li key={row.key}>
           <strong>{row.fields.name || connectionTarget(row.fields)}</strong>
@@ -1000,7 +1065,9 @@ export function ConnectionPicker({
   safety,
   onSwitch,
   onPassword,
+  onPasswordCommit,
   onManage,
+  onAccount,
   note,
 }: {
   profiles: Profile[];
@@ -1009,17 +1076,25 @@ export function ConnectionPicker({
   safety: Safety;
   onSwitch: (id: string) => void;
   onPassword: (password: string) => void;
+  onPasswordCommit?: () => void;
   onManage: () => void;
+  /** Opens Account and privileges for the connection in use. */
+  onAccount?: () => void;
   /** A one-off remark, such as a connection that no longer exists. */
   note?: string;
 }) {
   const privileges = usePrivileges();
-  // read_privileges returns credential-stripped grant lines at the top level.
-  const grantLines = (privileges?.report as { grants?: string[] } | null)?.grants;
   const profile = profiles.find((p) => p.id === active.id);
   const saved = !!profile?.has_saved_password;
   const [override, setOverride] = useState(false);
   const passwordField = useRef<HTMLInputElement>(null);
+  const committedPassword = useRef(active.password);
+  useEffect(() => { committedPassword.current = active.password; }, [active.id]);
+  function commitPassword(password = active.password) {
+    if (password === committedPassword.current) return;
+    committedPassword.current = password;
+    onPasswordCommit?.();
+  }
   useEffect(() => { if (override) passwordField.current?.focus(); }, [override]);
   useEffect(() => setOverride(false), [active.id]);
   const hasConnection = !!active.fields.host;
@@ -1057,35 +1132,78 @@ export function ConnectionPicker({
           {showPassword ? <label className="field">Session password
             <input ref={passwordField} type="password" className="picker-password" aria-label={`Password for ${name}`}
               placeholder={saved ? "Saved password" : "Password"} autoComplete="current-password"
-              value={active.password} onChange={(e) => onPassword(e.target.value)} />
+              value={active.password} onChange={(e) => onPassword(e.target.value)}
+              onBlur={() => commitPassword()}
+              onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); commitPassword(); } }} />
           </label> : <button className="button" onClick={() => setOverride(true)}>Use a different password</button>}
-          {saved && showPassword && <button className="button" onClick={() => { onPassword(""); setOverride(false); }}>Use saved password</button>}
+          {saved && showPassword && <button className="button" onClick={() => { onPassword(""); commitPassword(""); setOverride(false); }}>Use saved password</button>}
           </>}
           {!hasConnection && <p className="hint">Choose a connection to work with a server.</p>}
           {note && <p className="hint picker-note" role="status">{note}</p>}
-          <button className="button picker-manage" onClick={() => { closePopovers(); onManage(); }}>Manage connections…</button>
+          {hasConnection && privileges?.report?.account && <p className="hint picker-account">Connected as {privileges.report.account}</p>}
+          <div className="picker-actions">
+            {hasConnection && privileges && onAccount && <button type="button" className="button picker-account-button" aria-haspopup="dialog"
+              onClick={() => { closePopovers(); onAccount(); }}>Account and privileges…</button>}
+            <button type="button" className="button picker-manage" onClick={() => { closePopovers(); onManage(); }}>Manage connections…</button>
+          </div>
         </div>
       </Popover>
-      {privileges && <Popover label="Privileges" buttonClassName="button small privileges-button" buttonTitle="Privileges"
-        trigger={<><Icon name="key" size={14} /><span className="privileges-button-label">Privileges</span></>}>
-        <h3 className="popover-title">Privileges</h3>
-        {privileges.report ? <>
-          <p>Connected as {privileges.report.account}</p>
+    </div>
+  );
+}
+
+/**
+ * Account and privileges of the connection in use: the account a new session
+ * logs in as, its active roles, its grants and the actions it is denied or
+ * that SHOW GRANTS cannot verify. Opened from the connection picker or the
+ * command palette; greyed actions keep their own reasons where they appear.
+ */
+export function AccountPrivilegesSheet({ name, hasConnection, onClose }: {
+  /** Name of the connection in use, for the lead line. */
+  name: string;
+  hasConnection: boolean;
+  onClose: () => void;
+}) {
+  const privileges = usePrivileges();
+  const report = privileges?.report || null;
+  // read_privileges returns credential-stripped grant lines at the top level.
+  const grantLines = (report as { grants?: string[] } | null)?.grants;
+  const dialog = useRef<HTMLDialogElement>(null);
+  const close = useRef<HTMLButtonElement>(null);
+  const titleId = useId();
+  const leadId = useId();
+  useFocusScope(dialog, { open: true, onClose, initialFocus: () => close.current,
+    // Back to the picker when it is on screen, else where the sheet was opened.
+    returnFocus: () => document.querySelector<HTMLElement>(".window-toolbar .connection-pill") });
+  return createPortal(
+    <dialog ref={dialog} className="confirm-sheet account-sheet" role="dialog" tabIndex={-1}
+      aria-labelledby={titleId} aria-describedby={leadId}
+      onCancel={(e) => { e.preventDefault(); onClose(); }}>
+      <div className="dialog-heading"><div><h2 id={titleId}>Account and privileges</h2></div></div>
+      <div className="sheet-body">
+        <p id={leadId} className="sheet-lead">{hasConnection ? name : "No connection in use. Choose one in the connection picker or in Connections on Home."}</p>
+        {hasConnection && (report ? <>
+          <p>Connected as {report.account}</p>
           <p className="hint">New sessions. An editor tab can have different active roles.</p>
-          <p>Active roles: {(privileges.report.current_roles || []).map(r => r.host ? `${r.name}@${r.host}` : r.name).join(", ") || "None"}</p>
-          {(grantLines || privileges.report.model) && <details><summary>Grants</summary>
-            <pre className="ops-pre">{grantLines ? grantLines.join("\n") : JSON.stringify(privileges.report.model, null, 2)}</pre>
+          <p>Active roles: {(report.current_roles || []).map(r => r.host ? `${r.name}@${r.host}` : r.name).join(", ") || "None"}</p>
+          {(grantLines || report.model) && <details><summary>Grants</summary>
+            <pre className="ops-pre">{grantLines ? grantLines.join("\n") : JSON.stringify(report.model, null, 2)}</pre>
           </details>}
           <details><summary>Denied and unverified actions</summary><ul>
-            {Object.entries(privileges.report.actions).filter(([, answer]) => answer.state !== "allowed").map(([action, answer]) =>
-              <li key={action}><strong>{actionLabel(action)}</strong>: {privilegeResult(answer, privileges.report?.account).reason}</li>)}
+            {Object.entries(report.actions).filter(([, answer]) => answer.state !== "allowed").map(([action, answer]) =>
+              <li key={action}><strong>{actionLabel(action)}</strong>: {privilegeResult(answer, report.account).reason}</li>)}
           </ul></details>
-        </> : <p className="hint">Unverified. Privileges have not been read for this connection.</p>}
-        {privileges.error && <p role="alert" className="error">{privileges.error}</p>}
-        <button type="button" className="button" disabled={privileges.loading} onClick={() => void privileges.refresh(true)}>
+        </> : <p className="hint">{privileges?.loading ? "Reading privileges…" : "Unverified. Privileges have not been read for this connection."}</p>)}
+        {hasConnection && privileges?.error && <p role="alert" className="error">{privileges.error}</p>}
+      </div>
+      <div className="dialog-actions sheet-actions">
+        {hasConnection && privileges && <button type="button" className={`button${privileges.loading ? " is-busy" : ""}`} aria-disabled={privileges.loading || undefined}
+          onClick={() => { if (!privileges.loading) void privileges.refresh(true); }}>
           {privileges.loading ? "Reading privileges…" : "Refresh privileges"}
-        </button>
-      </Popover>}
-    </div>
+        </button>}
+        <button ref={close} type="button" className="button primary" onClick={onClose}>Close</button>
+      </div>
+    </dialog>,
+    document.body,
   );
 }

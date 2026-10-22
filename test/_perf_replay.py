@@ -65,7 +65,9 @@ class ReplayConn(object):
     """Answers recorded statements in order; *edit(sql, text, n)* may change
     the n-th answer to a statement. Unknown SQL fails the test."""
 
-    def __init__(self, calls, clock=None, error=None, edit=None, version=''):
+    def __init__(self, calls, clock=None, error=None, edit=None, version='', simulated_partitioning=None):
+        # Explicit test-only metadata supplement, never a recorded live response.
+        self.simulated_partitioning = simulated_partitioning
         self.answers = {}
         for call in calls:
             # [sql, text], or [sql, None, error] for a statement the server refused.
@@ -87,6 +89,11 @@ class ReplayConn(object):
         if self.clock is not None:
             self.clock.now += self.clock.query_s
         answers = self.answers.get(sql)
+        if not answers and self.simulated_partitioning is not None:
+            keys = index_partition_keys(sql)
+            if keys is not None:
+                answers = [batch([[s, t, self.simulated_partitioning[(s, t)]]
+                                  for s, t in keys if (s, t) in self.simulated_partitioning])]
         if not answers:
             raise AssertionError('unexpected SQL: ' + sql)
         n = self.seen.get(sql, 0)
@@ -125,9 +132,67 @@ class FakeFactory(object):
         return self.conn
 
 
+def index_partition_keys(sql):
+    """Decode only the exact table predicates of the new bounded metadata read."""
+    head = ("/*myflames:indexes*/ SELECT TABLE_SCHEMA, TABLE_NAME, CREATE_OPTIONS "
+            "FROM information_schema.TABLES WHERE TABLE_TYPE = 'BASE TABLE' AND ")
+    if not sql.startswith(head):
+        return None
+    match = re.fullmatch(r"TABLE_SCHEMA = CONVERT\(X'([0-9a-f]+)' USING utf8mb4\) AND \((.+)\)", sql[len(head):])
+    if not match:
+        raise AssertionError('partition metadata must use exact schema and table predicates: ' + sql)
+    schema = bytes.fromhex(match.group(1)).decode('utf-8')
+    keys = []
+    for predicate in match.group(2).split(' OR '):
+        table = re.fullmatch(r"TABLE_NAME = CONVERT\(X'([0-9a-f]+)' USING utf8mb4\)", predicate)
+        if not table:
+            raise AssertionError('partition metadata has an unbounded table predicate: ' + sql)
+        keys.append((schema, bytes.fromhex(table.group(1)).decode('utf-8')))
+    return keys
+
+
+def simulated_index_partitioning(data):
+    """Supplement old index replays with explicitly simulated CREATE_OPTIONS.
+
+    Full analysis captures already contain CREATE_OPTIONS from the Tables
+    read; project those values when present. Otherwise the fixture's captured
+    STATISTICS definitions describe plain tables except the names in its
+    historical partition-list query. The new three-column query itself was
+    not recorded live; neither its response nor the old capture is rewritten.
+    Missing/refused-response tests override this supplement through ``edit``.
+    """
+    from myflames.connector import unescape_mysql
+    tables, partitioned, captured_options = set(), set(), {}
+    for call in data['calls']:
+        sql, text = call[:2]
+        if not text:
+            continue
+        if ('SELECT TABLE_SCHEMA, TABLE_NAME, ENGINE, TABLE_ROWS, DATA_LENGTH, INDEX_LENGTH, '
+                'DATA_FREE, CREATE_OPTIONS FROM information_schema.TABLES ') in sql:
+            for line in text.split('\n'):
+                row = line.split('\t')
+                if len(row) >= 8:
+                    key = tuple(unescape_mysql(cell) for cell in row[:2])
+                    captured_options[key] = None if row[7] == 'NULL' else unescape_mysql(row[7])
+            continue
+        if 'FROM information_schema.STATISTICS ' in sql:
+            target = tables
+        elif "CREATE_OPTIONS LIKE '%partitioned%'" in sql:
+            target = partitioned
+        else:
+            continue
+        target.update(tuple(unescape_mysql(cell) for cell in line.split('\t')[:2])
+                      for line in text.split('\n') if line)
+    options = {key: 'partitioned' if key in partitioned else '' for key in tables}
+    options.update(captured_options)
+    return options
+
+
 def replay(view, server, clock=None, edit=None, error=None):
     data = fixture(view, server)
-    return ReplayConn(data['calls'], clock=clock, edit=edit, error=error), data
+    metadata = simulated_index_partitioning(data) if view in ('indexes', 'report') else None
+    return ReplayConn(data['calls'], clock=clock, edit=edit, error=error,
+                      simulated_partitioning=metadata), data
 
 
 def assert_read_only(case, conn, tag):

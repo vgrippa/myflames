@@ -6,6 +6,7 @@ import json
 import os
 import secrets
 import socket
+import sqlite3
 import sys
 import threading
 import time
@@ -51,7 +52,7 @@ def _operators(root):
 
 def _discover_response(path, payload):
     """Read-only server views over the saved connection (see discover.py,
-    sessions.py, innodb_status.py, error_log.py, locks.py, health.py, waits.py, indexes.py, schema_health.py, io_stats.py,
+    sessions.py, innodb_status.py, error_log.py, cluster.py, locks.py, health.py, waits.py, indexes.py, schema_health.py, io_stats.py,
     config_review.py; the schema picker's list is perf_common.schema_catalog)."""
     from .live import connection_options
     from .connector import MySQLConnection
@@ -64,7 +65,8 @@ def _discover_response(path, payload):
     elif path in ("/api/live/indexes", "/api/live/tables", "/api/live/report"):
         # A server-wide information_schema.STATISTICS read is slow on MariaDB.
         options["query_timeout"] = 60
-    elif path in ("/api/live/io", "/api/live/config", "/api/live/innodb", "/api/live/error-log"):
+    elif path in ("/api/live/io", "/api/live/config", "/api/live/innodb", "/api/live/error-log", "/api/live/cluster",
+                  "/api/live/proxysql", "/api/live/proxysql/digests"):
         options["query_timeout"] = 30
     if path in ("/api/live/indexes", "/api/live/tables", "/api/live/report"):
         # schemas: a list (the picker), or the older single schema; none means
@@ -103,6 +105,18 @@ def _discover_response(path, payload):
             if path == "/api/live/error-log":
                 from .error_log import DEFAULT_LIMIT, error_log_report
                 return error_log_report(conn, limit=payload.get("limit", DEFAULT_LIMIT), levels=payload.get("levels"))
+            if path == "/api/live/cluster":
+                from .cluster import read_status, with_actions
+                return with_actions(read_status(conn))
+            if path == "/api/live/proxysql":
+                from .proxysql import read_status as proxysql_status
+                return proxysql_status(conn)
+            if path == "/api/live/proxysql/digests":
+                from .proxysql_digests import read_digests
+                return read_digests(conn, order=payload.get("order"), limit=payload.get("limit"),
+                                    hostgroup=payload.get("hostgroup"), schema=payload.get("schema"),
+                                    user=payload.get("user"), text=payload.get("text"),
+                                    digest=payload.get("digest"), rule_id=payload.get("rule_id"))
             if path == "/api/live/locks":
                 from .locks import lock_report
                 return lock_report(conn, payload.get("limit", 500),
@@ -312,6 +326,8 @@ def _bulk_kill_review_details(payload):
     prepared = []
     statements = []
     for item in targets:
+        if not isinstance(item, dict):
+            raise ValueError("Each session target must be an object.")
         cid = item.get("connection_id")
         exp = item.get("expect")
         _check_kill_args(cid, mode, exp)
@@ -334,55 +350,93 @@ def _bulk_kill_response(payload, workspace):
     from . import dbops
     from .live import connection_options
     from .connector import MySQLConnection
-    from .locks import KILL_TAG, _check_kill_args, kill_session, refused_result
-    targets = payload.get("targets")
-    if not isinstance(targets, list) or not (1 <= len(targets) <= 200):
-        raise ValueError("Choose between 1 and 200 sessions to kill.")
-    mode = payload.get("mode", "connection")
-    if mode not in ("connection", "query"):
-        raise ValueError("mode must be 'connection' or 'query'.")
+    from .locks import (KILL_TAG, kill_session, _confirmed, _kill_context,
+                        _kill_batch_after, _after_view, _kill_message)
+    details = _bulk_kill_review_details(payload)
+    targets, mode = details["targets"], details["mode"]
     connection = payload.get("connection")
     safety = dbops.connection_safety(_request_profile(connection, workspace.store), connection)
     plain = connection if isinstance(connection, dict) else {}
-    sample_stmt = ("KILL QUERY %d" if mode == "query" else "KILL CONNECTION %d") % targets[0].get("connection_id", 1)
-    decision = dbops.decide(dbops.classify(sample_stmt), safety["type"], safety["read_only"], safety["profile_name"])
+    decision = dbops.decide(dbops.classify(details["statements"][0]), safety["type"],
+                           safety["read_only"], safety["profile_name"])
+    password = plain.get("password") if isinstance(plain.get("password"), str) else None
+    audits = [dbops.AuditTrail(workspace.store, "kill_query" if mode == "query" else "kill", "ui",
+                              connection={k: plain.get(k) for k in ("host", "port", "user")}, safety=safety,
+                              password=password, policy=dbops.policy_summary(decision)) for _ in targets]
     blocked = dbops.gate(decision, confirmed=payload.get("confirmed") is True)
     if blocked:
-        return {
-            "schema_version": "kill-bulk-1.0",
-            "total": len(targets),
-            "killed": 0, "gone": 0, "refused": len(targets), "denied": 0, "errors": 0,
-            "message": blocked[1],
-            "results": [{"connection_id": t.get("connection_id"), "status": blocked[0], "message": blocked[1]} for t in targets]
-        }
-    details = _bulk_kill_review_details(payload)
-    consume = _review_tokens(workspace).consumer(payload.get("review_token"), "bulk_kill",
-                dbops.connection_identity(plain, safety), details)
-    consume()
-    payload = _with_saved_password(payload, workspace)
-    options = connection_options(payload.get("connection"))
-    password = options.get("password")
-    results = []
-    with MySQLConnection(**options) as conn:
-        for t in targets:
-            cid = t.get("connection_id")
-            exp = t.get("expect")
-            stmt = ("KILL QUERY %d" if mode == "query" else "KILL CONNECTION %d") % cid
-            audit = dbops.AuditTrail(workspace.store, "kill_query" if mode == "query" else "kill", "ui",
-                                     connection={k: options.get(k) for k in ("host", "port", "user")}, safety=safety,
-                                     password=password, policy=dbops.policy_summary(decision))
+        refused = []
+        for target, statement, audit in zip(targets, details["statements"], audits):
+            cid = target["connection_id"]
+            audit_id = audit.outcome([KILL_TAG + statement], "refused",
+                                    outcome="read_only" if blocked[0] == "refused" else blocked[0],
+                                    message=blocked[1], target=_confirmed(target["expect"], cid, mode))
+            refused.append({"connection_id": cid, "status": blocked[0], "message": blocked[1],
+                            "audit_id": audit_id, "after": None})
+        return {"schema_version": "kill-bulk-1.0", "total": len(targets), "killed": 0, "gone": 0,
+                "refused": len(targets), "denied": 0, "errors": 0,
+                "message": blocked[1], "results": refused}
+    results, accepted = [], []
+
+    def current_policy():
+        # A batch may outlive a profile edit. This is a local store read, so
+        # retaining the send-boundary policy gate costs no client invocation.
+        current = dbops.connection_safety(_request_profile(connection, workspace.store), connection)
+        if dbops.connection_identity(plain, current) != dbops.connection_identity(plain, safety):
+            return "The connection or its write policy changed after confirmation; nothing was sent."
+        return None
+
+    try:
+        consume = _review_tokens(workspace).consumer(payload.get("review_token"), "bulk_kill",
+                    dbops.connection_identity(plain, safety), details)
+        consume()
+        payload = _with_saved_password(payload, workspace)
+        options = connection_options(payload.get("connection"))
+        password = options.get("password")
+        for audit in audits:
+            audit.password = password
+            audit.connection = {k: options.get(k) for k in ("host", "port", "user")}
+        with MySQLConnection(**options) as conn:
+            context = _kill_context(conn)
             try:
-                res = kill_session(conn, cid, mode, exp, audit=audit, decision=decision,
-                                   confirmed=True, connection=plain)
-                results.append({"connection_id": cid, "status": res.get("status"), "message": res.get("message")})
-            except Exception as exc:
-                results.append({"connection_id": cid, "status": "error", "message": str(exc)})
+                for target, statement, audit in zip(targets, details["statements"], audits):
+                    cid, expect = target["connection_id"], target["expect"]
+                    try:
+                        res = kill_session(conn, cid, mode, expect, audit=audit, decision=decision,
+                                           confirmed=True, connection=plain, settle_s=0,
+                                           _batch_context=context, _defer_after=True, before_send=current_policy)
+                        row = {"connection_id": cid, "status": res.get("status"), "message": res.get("message"),
+                               "audit_id": res.get("audit_id"), "after": res.get("after")}
+                        results.append(row)
+                        if res.get("status") == "killed":
+                            accepted.append((row, res, audit))
+                    except (ValueError, ConnectorError) as exc:
+                        audit.fail(exc, [KILL_TAG + statement])
+                        results.append({"connection_id": cid, "status": "error",
+                                        "message": dbops.redact(str(exc), password),
+                                        "audit_id": audit.id, "after": None})
+                if accepted:
+                    snapshot = _kill_batch_after(conn, context, [row["connection_id"] for row, _, _ in accepted])
+                    for row, res, audit in accepted:
+                        row["after"] = _after_view(snapshot.get(row["connection_id"])) if snapshot is not None else None
+                        row["message"] = _kill_message(mode, row["connection_id"], res.get("target"),
+                                                       row["after"])
+            finally:
+                # An interrupted after-read cannot turn an accepted KILL into a failed send.
+                for row, _res, audit in accepted:
+                    audit.complete("ok", outcome="killed", message=row["message"], after=row["after"])
+    except (KeyboardInterrupt, ValueError, ConnectorError) as exc:
+        for audit, statement in zip(audits, details["statements"]):
+            audit.fail(exc, [KILL_TAG + statement])
+        if isinstance(exc, KeyboardInterrupt):
+            raise
+        _reraise_redacted(exc, password)
     killed_cnt = sum(1 for r in results if r["status"] == "killed")
     gone_cnt = sum(1 for r in results if r["status"] == "gone")
     refused_cnt = sum(1 for r in results if r["status"] == "refused")
     denied_cnt = sum(1 for r in results if r["status"] == "denied")
     error_cnt = sum(1 for r in results if r["status"] == "error")
-    msg = "Mass kill completed: %d killed" % killed_cnt
+    msg = "Kill sessions finished: %d killed" % killed_cnt
     if gone_cnt:
         msg += ", %d already gone" % gone_cnt
     if refused_cnt:
@@ -447,11 +501,20 @@ def _declined_response(payload, store):
     connection = payload.get("connection") if isinstance(payload.get("connection"), dict) else {}
     safety = dbops.connection_safety(_request_profile(connection, store), connection)
     password = connection.get("password") if isinstance(connection.get("password"), str) else None
-    audit_id = dbops.record_outcome(store, operation, statements, "ui", "declined", outcome="declined",
-                                    message="Cancelled in the confirmation; nothing was sent.",
+    # A confirmed sheet the workspace itself stopped before sending (its check
+    # of the saved connections failed or found another policy) is a refusal.
+    reason = payload.get("reason")
+    refusals = {"policy_changed": "The connection or its write policy changed after the review; nothing was sent.",
+                "policy_unknown": "The saved connections could not be read before sending; nothing was sent."}
+    if reason is not None and reason not in refusals:
+        raise ValueError("reason must be policy_changed or policy_unknown.")
+    status = "refused" if reason else "declined"
+    audit_id = dbops.record_outcome(store, operation, statements, "ui", status, outcome=reason or "declined",
+                                    message=refusals[reason] if reason else
+                                    "Cancelled in the confirmation; nothing was sent.",
                                     connection={k: connection.get(k) for k in ("host", "port", "user")},
                                     safety=safety, target=target, password=password)
-    return {"audit_id": audit_id, "status": "declined"}
+    return {"audit_id": audit_id, "status": status}
 
 
 def _audit_response(path, payload, store):
@@ -984,7 +1047,11 @@ def _replication_response(path, payload, workspace):
         options["query_timeout"] = 30
         try:
             with MySQLConnection(**options) as conn:
-                report = rp.read_status(conn)
+                # Source versions: the relay log, else a matching saved connection
+                # (opened at most once per process for the same settings and password).
+                report = rp.read_status(conn, source_versions=True, profiles=rp.saved_profiles(workspace.store),
+                                        open_profile=rp.profile_opener(workspace.store),
+                                        replica_host=options.get("host"))
                 if report.get("available") and report.get("replica"):
                     guard = rp.receiver_guard_plan(conn, report)
                     report.update(guard)
@@ -1021,10 +1088,11 @@ def _replication_response(path, payload, workspace):
 # so a remembered password is filled in on the server, for that request only.
 #: Read-only live server views answered by _discover_response.
 _SERVER_VIEW_PATHS = ("/api/live/top", "/api/live/slow-queries", "/api/live/running", "/api/live/sessions", "/api/live/locks",
-                      "/api/live/innodb", "/api/live/error-log", "/api/live/health",
+                      "/api/live/innodb", "/api/live/error-log", "/api/live/cluster", "/api/live/health",
                       "/api/live/waits", "/api/live/indexes", "/api/live/tables", "/api/live/schemas",
                       "/api/live/io", "/api/live/config", "/api/live/instruments",
-                      "/api/live/report", "/api/live/explain-connection")
+                      "/api/live/report", "/api/live/explain-connection", "/api/live/proxysql",
+                      "/api/live/proxysql/digests")
 #: /api/live/kill is the one write: a confirmed KILL of one session (locks.kill_session).
 #: It fills the saved password itself, after the connection's write policy.
 #: The Query editor's run and commit (editor_session.py) are writes too: the
@@ -1091,8 +1159,40 @@ from .accounts_api import READ_PATHS as _ACCOUNT_READ_PATHS, WRITE_PATHS as _ACC
 _ACCOUNT_PATHS = _ACCOUNT_READ_PATHS + _ACCOUNT_WRITE_PATHS
 _WRITE_PATHS = _WRITE_PATHS + _ACCOUNT_WRITE_PATHS
 _CONNECTION_PATHS = _CONNECTION_PATHS + _ACCOUNT_PATHS
-_APP_UPDATE_PATHS = ('/api/app/update/check', '/api/app/update/download')
+#: Reviewed Cluster and ProxySQL changes (cluster.py, proxysql.py and
+#: reviewed_writes.py, answered by _action_response). Plan reads the target
+#: and returns the exact statements with a review token: it gets the saved
+#: password like the views. Action is a write: the policy runs first, the
+#: token must match the plan as reviewed, then the saved password is filled,
+#: the target is read and planned again, and every attempt is audited.
+_ACTION_KINDS = {"/api/live/cluster/plan": "cluster", "/api/live/cluster/action": "cluster",
+                 "/api/live/proxysql/plan": "proxysql", "/api/live/proxysql/action": "proxysql"}
+_ACTION_WRITE_PATHS = ("/api/live/cluster/action", "/api/live/proxysql/action")
+_ACTION_PATHS = tuple(_ACTION_KINDS)
+_WRITE_PATHS = _WRITE_PATHS + _ACTION_WRITE_PATHS
+_CONNECTION_PATHS = _CONNECTION_PATHS + _ACTION_PATHS
+#: The progress of a send the review sheet is waiting for
+#: (reviewed_writes.Progress by the action request's progress_id). No
+#: connection, no SQL, no credentials: phases and statement states only.
+_ACTION_PROGRESS_PATH = "/api/live/action/progress"
+_ACTION_PROGRESS_LOCK = threading.Lock()
 
+
+def _action_progress(workspace):
+    from .reviewed_writes import ProgressRegistry
+    with _ACTION_PROGRESS_LOCK:
+        registry = getattr(workspace, "action_progress", None)
+        if registry is None:
+            registry = workspace.action_progress = ProgressRegistry()
+        return registry
+
+#: Application updates (app_update.py). Check reads GitHub only when the
+#: workspace asks (the Check for updates button) and keeps the outcome in the
+#: workspace store; status reads that stored outcome and never the network.
+_APP_UPDATE_PATHS = ('/api/app/update/check', '/api/app/update/download', '/api/app/update/status')
+# Home news (news.py): fixed official feeds, read only while Home is shown
+# and the Settings switch is on. No connection, no password.
+_NEWS_PATHS = ('/api/news', '/api/news/settings')
 
 
 def _accounts_response(path, payload, workspace):
@@ -1124,7 +1224,7 @@ def _catalog_response(payload):
     try:
         with MySQLConnection(**options) as conn:
             return catalog_report(conn, payload.get("schema"), payload.get("table"),
-                                  prefix=prefix, after=after)
+                                  prefix=prefix, after=after, stats=payload.get("stats") is True)
     except (ValueError, ConnectorError) as exc:
         _reraise_redacted(exc, options.get("password"))
 
@@ -1230,6 +1330,113 @@ def _variable_apply(payload, workspace):
         _reraise_redacted(exc, password)
 
 
+_ACTION_OPERATION = {"cluster": "cluster_action", "proxysql": "proxysql_action"}
+
+
+def _action_module(kind):
+    if kind == "cluster":
+        from . import cluster as module
+    else:
+        from . import proxysql as module
+    return module
+
+
+def _action_plan(kind, module, conn, payload):
+    """A plan from a fresh read of *conn* for the request's inputs."""
+    if kind == "cluster":
+        report = module.read_status(conn)
+        action = payload.get("action")
+        return module.plan_action(report, action, payload.get("member_key"), module.action_checks(conn, report, action))
+    report = module.read_status(conn)
+    return module.plan_action(report, payload.get("action"), payload.get("target"), payload.get("value"))
+
+
+def _action_response(path, payload, workspace):
+    """Plan (read, review token) and Action (the write) for the Cluster and
+    ProxySQL places. Action refuses before opening any connection on a
+    read-only connection or without confirmation; a missing, expired or
+    changed review is refused too. Refusals and every send are audited
+    (dbops.AuditTrail); the envelope is cluster-action-1.0 or
+    proxysql-action-1.0 (reviewed_writes.py)."""
+    from . import dbops, reviewed_writes
+    from .live import connection_options
+    from .connector import MySQLConnection
+    kind = _ACTION_KINDS[path]
+    module = _action_module(kind)
+    connection = payload.get("connection")
+    plain = connection if isinstance(connection, dict) else {}
+    safety = dbops.connection_safety(_request_profile(connection, workspace.store), connection)
+    identity = dbops.connection_identity(plain, safety)
+    if path.endswith("/plan"):
+        options = connection_options(connection)
+        try:
+            with MySQLConnection(**options) as conn:
+                plan = _action_plan(kind, module, conn, payload)
+        except (ValueError, ConnectorError) as exc:
+            _reraise_redacted(exc, options.get("password"))
+        decision = dbops.decide(reviewed_writes.worst_kind(plan["statements"]), safety["type"], safety["read_only"],
+                                safety.get("profile_name"))
+        plan["policy"] = {k: decision.get(k) for k in ("action", "tone", "title", "text", "connection_type",
+                                                       "read_only")}
+        plan["review_token"] = _review_tokens(workspace).issue(_ACTION_OPERATION[kind], identity,
+                                                               reviewed_writes.review_details(plan))
+        return plan
+    reviewed = reviewed_writes.check_reviewed(payload.get("plan"))
+    statements = list(reviewed["statements"])
+    progress = _action_progress(workspace).start(payload.get("progress_id"), len(statements), module.ACTION_TIMEOUT)
+    decision = dbops.decide(reviewed_writes.worst_kind(statements), safety["type"], safety["read_only"],
+                            safety.get("profile_name"))
+    audit = dbops.AuditTrail(workspace.store, _ACTION_OPERATION[kind], "ui",
+                             connection={k: plain.get(k) for k in ("host", "port", "user")}, safety=safety,
+                             password=plain.get("password") if isinstance(plain.get("password"), str) else None,
+                             policy=dbops.policy_summary(decision))
+    out = reviewed_writes.result(module.ACTION_SCHEMA_VERSION, reviewed)
+    out["policy"] = {k: decision.get(k) for k in ("action", "tone", "title", "text")}
+    blocked = dbops.gate(decision, confirmed=payload.get("confirmed") is True)
+    if blocked:
+        return reviewed_writes.refused(out, blocked[1], "read_only" if blocked[0] == "refused" else blocked[0],
+                                       audit, reviewed.get("expect"), progress)
+    try:
+        consume = _review_tokens(workspace).consumer(payload.get("review_token"), _ACTION_OPERATION[kind], identity,
+                                                     reviewed_writes.review_details(reviewed))
+    except ValueError as exc:
+        return reviewed_writes.refused(out, str(exc), "review", audit, reviewed.get("expect"), progress)
+    typed = payload.get("typed")
+    typed = typed if isinstance(typed, str) else None
+
+    def before_send():
+        # The saved policy is read again right before sending: a profile made
+        # Read-only (or changed) while the target was read sends nothing.
+        now = dbops.connection_safety(_request_profile(connection, workspace.store), connection)
+        if dbops.connection_identity(plain, now) != identity or dbops.gate(dbops.decide(
+                reviewed_writes.worst_kind(statements), now["type"], now["read_only"], now.get("profile_name")),
+                confirmed=True):
+            raise reviewed_writes.Refusal("The connection's write policy changed after the review, so nothing was "
+                                          "sent. Review the change again.", "policy_changed")
+        consume()
+    password = audit.password
+    try:
+        filled = _with_saved_password(payload, workspace)
+        options = connection_options(filled.get("connection"))
+        password = audit.password = options.get("password")
+        audit.connection = {k: options.get(k) for k in ("host", "port", "user")}
+        with MySQLConnection(**options) as conn:
+            result = module.execute_action(conn, reviewed, audit=audit, typed=typed, before_send=before_send,
+                                           progress=progress)
+        result["policy"] = out["policy"]
+        return result
+    except KeyboardInterrupt as exc:
+        if progress is not None:
+            progress.fail()
+        audit.fail(exc, statements)
+        raise
+    except (ValueError, ConnectorError) as exc:
+        if progress is not None:
+            progress.fail()
+        audit.fail(exc, statements)
+        _reraise_redacted(exc, password)
+
+
 def _with_saved_password(payload, workspace):
     connection = payload.get("connection")
     if not isinstance(connection, dict) or not connection.get("profile_id"):
@@ -1322,9 +1529,28 @@ def api_response(path, payload, workspace=None):
         from . import editor_session
         return editor_session.api_response(path, payload, workspace,
                                            lambda value: _with_saved_password(value, workspace))
+    if path in _NEWS_PATHS:
+        if workspace is None:
+            raise ValueError("This operation requires a running workspace.")
+        from . import news
+        return news.api_response(path, payload, workspace.store, getattr(workspace, "news_reader", None))
     if path == "/api/app/update/check":
         from . import app_update
-        return app_update.check_for_updates(force=payload.get("force") is True)
+        result = app_update.check_for_updates(force=payload.get("force") is True)
+        if workspace is not None:
+            record = app_update.last_check_record(result)
+            try:
+                result["last_check"] = workspace.store.set_app_update_last_check(record)
+            except (sqlite3.Error, OSError):
+                # The check itself succeeded or failed on its own terms; a
+                # store that cannot be written must not hide that answer.
+                result["last_check"] = record
+        return result
+    if path == "/api/app/update/status":
+        from . import app_update
+        stored = workspace.store.app_update_last_check() if workspace is not None else None
+        return {"schema_version": "app-update-status-1.0", "current_version": __version__,
+                "last_check": app_update.stored_last_check(stored)}
     if path == "/api/app/update/download":
         from . import app_update
         return app_update.download_binary_update(
@@ -1382,7 +1608,13 @@ def api_response(path, payload, workspace=None):
             options = connection_options(payload.get("connection"))
             try:
                 with MySQLConnection(**options) as conn:
-                    return {"version": conn.server_version(), "schemas": [row[0] for row in conn.query_rows("SHOW DATABASES") if row]}
+                    from .server_info import product_identity
+                    version = conn.server_version()
+                    comment = conn.server_version_comment()
+                    identity = product_identity(version, comment)
+                    return {"version": version, "engine": identity["engine"], "flavor": identity["flavor"],
+                            "product": identity["product"],
+                            "schemas": [row[0] for row in conn.query_rows("SHOW DATABASES") if row]}
             except (ValueError, ConnectorError) as exc:
                 _reraise_redacted(exc, options.get("password"))
         if path == "/api/live/kill/prepare":
@@ -1401,12 +1633,16 @@ def api_response(path, payload, workspace=None):
             return _catalog_response(payload)
         if path in _VARIABLE_PATHS:
             return _variable_response(path, payload, workspace)
+        if path in _ACTION_PATHS:
+            return _action_response(path, payload, workspace)
+        if path == _ACTION_PROGRESS_PATH:
+            return _action_progress(workspace).get(payload.get("progress_id"))
         if path in _SERVER_VIEW_PATHS:
             return _discover_response(path, payload)
         raise ValueError("Unknown workspace operation.")
     if path.startswith("/api/teach/"):
-        from .teach import (LESSONS, CURRICULUM, LESSON_FAMILIES, _FAMILY_LABELS, lesson_views,
-                            render_lesson, render_lesson_3d)
+        from .teach import (LESSONS, CURRICULUM, LESSON_FAMILIES, _FAMILY_LABELS,
+                            render_lesson)
         if path == "/api/teach/catalog":
             track = [key for key in CURRICULUM if key in LESSONS]
             keys = track + [key for key in LESSONS if key not in track]
@@ -1416,17 +1652,16 @@ def api_response(path, payload, workspace=None):
                              for key in LESSON_FAMILIES],
                 "lessons": [{"key": key, "title": LESSONS[key]["title"],
                              "summary": LESSONS[key]["summary"],
-                             "family": LESSONS[key]["family"],
-                             "views": lesson_views(key)} for key in keys],
+                             "family": LESSONS[key]["family"]} for key in keys],
             }
         if path == "/api/teach/lesson":
             key = payload.get("lesson")
             if not isinstance(key, str) or key not in LESSONS:
                 raise ValueError("Choose a lesson from the Teach catalog.")
             view = payload.get("view", "2d")
-            if view not in lesson_views(key):
-                raise ValueError("This lesson has no {} view.".format(view if isinstance(view, str) else "such"))
-            return {"html": render_lesson_3d(key) if view == "3d" else render_lesson(key)}
+            if view != "2d":
+                raise ValueError("Only the 2D lesson view is available.")
+            return {"html": render_lesson(key)}
         raise ValueError("Unknown Teach endpoint.")
     if path == "/api/report/export":
         return _export_response(payload)
@@ -1485,13 +1720,16 @@ class WorkspaceServer(ThreadingHTTPServer):
     daemon_threads = True
     MAX_REQUEST_WORKERS = 32
 
-    def __init__(self, port=0, store_path=None, no_restore=False, tool_groups_file=None):
+    def __init__(self, port=0, store_path=None, no_restore=False, tool_groups_file=None, news_reader=None):
         from .workspace_store import WorkspaceStore
         from .live import LiveJobs
         self.store = WorkspaceStore(store_path)
         # --no-restore: start clean for this launch and leave the stored
         # session untouched (no restore, no autosave).
         self.no_restore = bool(no_restore)
+        # Home news reads the network only through this reader: cmd_ui passes
+        # news.fetch_feed; servers built without one (tests) never read feeds.
+        self.news_reader = news_reader
         self.jobs = LiveJobs()
         from .editor_session import EditorSessions
         # One mysql/mariadb client process per Query editor tab; all are
@@ -1885,7 +2123,8 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                              "/api/profiles/forget-password",
                              "/api/live/start", "/api/live/status", "/api/live/cancel", "/api/connection/test",
                              "/api/live/top", "/api/live/slow-queries", "/api/live/running", "/api/live/sessions",
-                             "/api/live/locks", "/api/live/innodb", "/api/live/error-log", "/api/live/kill", "/api/live/kill/prepare",
+                             "/api/live/locks", "/api/live/innodb", "/api/live/error-log", "/api/live/cluster", "/api/live/proxysql",
+                             "/api/live/kill", "/api/live/kill/prepare",
                              "/api/live/kill/bulk", "/api/live/kill/bulk/prepare",
                              "/api/live/table-columns",
                              "/api/live/health", "/api/live/waits", "/api/live/indexes",
@@ -1902,7 +2141,8 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                              "/api/editor/open", "/api/editor/run", "/api/editor/status", "/api/editor/preview",
                              "/api/editor/stop", "/api/editor/commit", "/api/editor/rollback",
                              "/api/editor/close", "/api/editor/history", "/api/editor/export", "/api/analysis/prepare-query") + _LIFECYCLE_PATHS \
-                + _REPLICATION_PATHS + _CATALOG_PATHS + _VARIABLE_PATHS + _ACCOUNT_PATHS + _DIAGRAM_PATHS + _APP_UPDATE_PATHS:
+                + _REPLICATION_PATHS + _CATALOG_PATHS + _VARIABLE_PATHS + _ACTION_PATHS + _ACCOUNT_PATHS + _DIAGRAM_PATHS + _APP_UPDATE_PATHS \
+                + _NEWS_PATHS + (_ACTION_PROGRESS_PATH, "/api/live/proxysql/digests"):
             self._send(404, {"error": "Not found."})
             return
         if self.headers.get_content_type() != "application/json":
@@ -1961,9 +2201,11 @@ def cmd_ui(argv):
     if not (ASSET_DIR / "index.html").is_file():
         parser.exit(2, "UI assets are missing. Reinstall myflames or build apps/workspace.\n")
     try:
+        from .news import fetch_feed  # Home news: the only server that reads feeds
         # Set only by the desktop app: a file in its private runtime directory.
         server = WorkspaceServer(args.port, no_restore=args.no_restore,
-                                 tool_groups_file=os.environ.get("MYFLAMES_TOOL_GROUPS_FILE") or None)
+                                 tool_groups_file=os.environ.get("MYFLAMES_TOOL_GROUPS_FILE") or None,
+                                 news_reader=fetch_feed)
     except ValueError as exc:
         parser.exit(2, "Cannot start the UI: %s\n" % exc)
     except OSError as exc:

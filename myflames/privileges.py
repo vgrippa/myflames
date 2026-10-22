@@ -24,7 +24,7 @@ from . import dbops
 from .connector import ConnectorError
 from .perf_common import Reader, now
 # Public compatibility export; parsing lives below all server subsystems.
-from .server_info import detect_flavor, parse_version_tuple as version_tuple
+from .server_info import detect_flavor, identity_from_version, parse_version_tuple as version_tuple
 
 SCHEMA_VERSION = 'privileges-1.0'
 TAG = '/*myflames:privileges*/ '
@@ -1156,8 +1156,12 @@ def read_privileges(conn):
     if model['unparsed']:
         warnings.append('Some grant lines were not understood, so every answer is unverified.')
     report = dict(model)
+    # The label only: the one call reads VERSION(), and Percona's release
+    # suffix ("8.4.11-11") names it (server_info.identity_from_version).
+    identity = identity_from_version(version)
     report.update({'schema_version': SCHEMA_VERSION, 'account': account, 'user': user, 'current_roles': active,
-                   'engine': engine, 'version': version, 'read_at': now(), 'variables': variables,
+                   'engine': engine, 'flavor': identity['flavor'], 'server_product': identity['product'],
+                   'version': version, 'read_at': now(), 'variables': variables,
                    'session_scope': 'fresh_client_session',
                    'session_note': ('Describes a new session of this account. A Query editor tab after SET ROLE, '
                                     'or a stored routine running as its definer, can differ.'),

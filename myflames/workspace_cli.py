@@ -359,7 +359,8 @@ def _version_note(conn, quiet, report=None):
         # Most readers use SHOW GLOBAL VARIABLES rather than the connection's
         # cached @@version. Privileges calls this field version.
         version = report.get('server_version') or report.get('version')
-        comment = report.get('engine') or ''
+        # The product names Percona ("Percona Server" is what its comment says).
+        comment = report.get('server_product') or report.get('engine') or ''
     if version:
         note = unsupported_version_note(version, comment)
         if note:
@@ -1411,14 +1412,18 @@ def cmd_replication(argv):
     """Replication status per channel; skip one failed transaction; skip until stopped."""
     if argv and argv[0] in ('skip', 'skip-loop'):
         return (_replication_skip if argv[0] == 'skip' else _replication_skip_loop)(argv[1:])
-    from .replication import format_text, read_status
+    from .replication import format_text, profile_opener, read_status, saved_profiles
+    from .workspace_store import WorkspaceStore
     parser = _discover_parser(
         'replication', 'Show every replication channel (MySQL) or connection (MariaDB): receiver and applier '
                        'threads, the last errors, positions or GTIDs, lag with its caveats, and ok/watch/problem. '
                        'A channel stopped on an error shows the exact statements that would skip that one '
-                       'transaction.',
+                       'transaction. Each source shows its version as recorded in the relay log, else read '
+                       "through a saved connection with the source's host and port (its own saved password, "
+                       'one attempt per run, a few seconds at most).',
         'Read-only: SHOW REPLICA STATUS (SHOW SLAVE STATUS before MySQL 8.0.22; SHOW ALL SLAVES STATUS on '
-        'MariaDB), the Performance Schema replication tables on MySQL, and the relay log at the applier position '
+        'MariaDB), the Performance Schema replication tables on MySQL, the first events of each relay log '
+        '(the source version; REPLICATION SLAVE on MySQL) and the relay log at the applier position '
         'of a failed channel. Needs REPLICATION CLIENT or SUPER on MySQL, SLAVE MONITOR on MariaDB. '
         'Group Replication channels are listed but not judged. Writes: myflames replication skip (one '
         'transaction) and myflames replication skip-loop (skip chosen errors until stopped). '
@@ -1429,7 +1434,9 @@ def cmd_replication(argv):
     args = parser.parse_args(argv)
 
     def work(conn):
-        report = read_status(conn)
+        store = WorkspaceStore()
+        report = read_status(conn, source_versions=True, profiles=saved_profiles(store),
+                             open_profile=profile_opener(store), replica_host=getattr(conn, 'host', None))
         if args.channel is not None:
             channel = _replication_channel(report, args.channel)
             report = dict(report, channels=[channel])
@@ -1438,6 +1445,47 @@ def cmd_replication(argv):
         return report
     report = _discover_run(args, work, query_timeout=30)
     _emit_report(args, report, format_text)
+
+
+def cmd_cluster(argv):
+    """Cluster status: Galera, Percona XtraDB Cluster, InnoDB Cluster, Group Replication."""
+    from .cluster import at_or_worse, format_text, read_status
+    parser = _discover_parser(
+        'cluster', 'Show the cluster this server belongs to: MariaDB Galera, Percona XtraDB Cluster, MySQL '
+                   'InnoDB Cluster or Group Replication. Name, quorum or Primary component, every member with '
+                   'its address, state and role as this server sees it, flow control and queues, InnoDB Cluster '
+                   'routers, and ok/watch/problem with the reasons.',
+        'Read-only: SHOW GLOBAL VARIABLES and SHOW GLOBAL STATUS (wsrep_%), mysql.wsrep_cluster_members, '
+        'performance_schema.pxc_cluster_view on Percona XtraDB Cluster, '
+        'performance_schema.replication_group_members and replication_group_member_stats on MySQL 8.0+, and '
+        'the mysql_innodb_cluster_metadata views when they are readable. MariaDB Galera shows only this '
+        'node\'s own state, so the other nodes are listed without a verdict; Percona XtraDB Cluster names '
+        'every node\'s state. Never changes membership or settings. A server that is not part of a cluster '
+        'says so and exits 0. '
+        'Exit codes: 0 success (nothing at the --fail-on level), 1 a finding reached the --fail-on level, '
+        '2 bad input, missing privilege (with --json the available:false report is still written), or '
+        'connection failure.')
+    parser.add_argument('--fail-on', choices=('problem', 'watch'), metavar='LEVEL',
+                        help="Exit 1 if any finding is at LEVEL or worse: 'problem', or 'watch' (watch or problem).")
+    _add_output_args(parser, 'the cluster-1.0 report')
+    args = parser.parse_args(argv)
+    report = _discover_run(args, read_status, query_timeout=30)
+    if not report['available']:
+        if args.json:
+            _emit_report(args, report, format_text)
+        _fail(report['message'])
+    _emit_report(args, report, format_text)
+    if args.fail_on:
+        tripped = at_or_worse(report, args.fail_on)
+        if not args.quiet:
+            if tripped:
+                sys.stderr.write('FAIL: %d finding(s) at --fail-on %s or worse:\n' % (len(tripped), args.fail_on))
+                for item in tripped:
+                    sys.stderr.write(terminal_text('  [%s] %s: %s\n' % (item['status'], item['title'], item['text'])))
+            else:
+                sys.stderr.write('OK: no finding at --fail-on %s\n' % args.fail_on)
+        if tripped:
+            raise SystemExit(1)
 
 
 def _replication_skip(argv):

@@ -106,7 +106,7 @@ from decimal import Decimal, DecimalException, localcontext
 from . import dbops, mysql_sysvars
 from .connector import ConnectorError, MySQLConnection, unescape_mysql
 from .perf_common import _bytes_text, _number, _version_tuple, literal, reason
-from .server_info import detect_flavor
+from .server_info import percona_variable, product_identity, server_label
 
 _unescape = unescape_mysql
 
@@ -472,7 +472,8 @@ def _read(conn, name):
     session_rows = {r[0]: (r[1] if len(r) > 1 else "") for r in parts.get("session", []) if r and r[0]}
     version = global_rows.get("version") or ""
     comment = global_rows.get("version_comment") or ""
-    engine = detect_flavor(version, comment)
+    product = product_identity(version, comment)
+    engine = product["engine"]
     identity_keys = ("server_id", "hostname", "version") if engine == "mariadb" else ("server_uuid",)
     server_identity = {key: global_rows.get(key) for key in identity_keys}
     if not all(server_identity.values()):
@@ -482,7 +483,8 @@ def _read(conn, name):
         if not rows or len(rows[0]) != 4:
             raise ValueError("Could not read character_set_results with its SQL NULL state.")
         global_rows[name], session_rows[name] = _decode_value(rows[0][:2]), _decode_value(rows[0][2:])
-    info = {"name": name, "engine": engine, "server_version": version or None,
+    info = {"name": name, "engine": engine, "flavor": product["flavor"], "server_product": product["product"],
+            "server_version": version or None,
             "server_identity": server_identity, "platform": global_rows.get("version_compile_os"),
             "read_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "version_tuple": _version_tuple(version), "in_global": name in global_rows,
@@ -715,7 +717,9 @@ def describe(info):
     elif info.get("metadata"):
         description = info["metadata"].get("documentation")
     out = {
-        "schema_version": READ_SCHEMA, "engine": info["engine"], "server_version": info["server_version"],
+        "schema_version": READ_SCHEMA, "engine": info["engine"], "flavor": info.get("flavor"),
+        "server_product": info.get("server_product"), "server_version": info["server_version"],
+        "vendor": "percona" if percona_variable(info["name"], info.get("flavor"), info.get("version_tuple")) else None,
         "server_identity": info.get("server_identity"), "platform": info.get("platform"),
         "read_at": info.get("read_at"), "nullable": info["name"] == "character_set_results",
         "name": info["name"], "exists": exists, "scope": scope, "scope_source": scope_source,
@@ -1196,7 +1200,7 @@ def build_plan(v, value, mode, grants=None):
     name = v["name"]
     problems = []
     plan = {"schema_version": PLAN_SCHEMA, "engine": v["engine"], "server_version": v["server_version"],
-            "name": name, "mode": mode, "mode_label": MODE_LABELS[mode], "requested": None, "value": None,
+            "server_product": v.get("server_product"), "name": name, "mode": mode, "mode_label": MODE_LABELS[mode], "requested": None, "value": None,
             "display": None, "status": "ready", "problems": problems, "statement": None, "config_line": None,
             "before": {"global": v["global_value"], "session": v["session_value"],
                        "persisted": v["persisted"]["value"] if v["persisted"]["present"] else None,
@@ -1645,8 +1649,7 @@ def describe_plan(plan, policy_text=None):
     v = plan["variable"]
     operation = {"global": "SET GLOBAL", "persist": "SET PERSIST", "persist_only": "SET PERSIST_ONLY",
                  "session": "SET SESSION", "reset_persist": "RESET PERSIST"}[plan["mode"]]
-    lines = ["%s on %s %s" % (operation, "MariaDB" if plan["engine"] == "mariadb" else "MySQL",
-                              plan["server_version"] or "?"),
+    lines = ["%s on %s" % (operation, server_label(plan)),
              "  %s;" % plan["statement"]]
     if plan["mode"] != "reset_persist":
         lines.append("  %s: %s -> %s" % (plan["name"], _before_text(plan), plan["display"]))

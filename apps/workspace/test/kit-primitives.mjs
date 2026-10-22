@@ -11,7 +11,7 @@ const bundle = await build({ stdin: { resolveDir: path.join(here, '../src'), loa
   import React, { useState } from 'react';
   import { createRoot } from 'react-dom/client';
   import { SplitButton, SplitPane, FormGrid, FormRow, PendingBar, Fields, DataTable,
-    WindowStatusProvider, WindowStatusBar, useWindowStatus } from './kit';
+    WindowStatusProvider, WindowStatusBar, useWindowStatus, Checkbox, IconButton, ContextMenu } from './kit';
   function Status() {
     useWindowStatus('server:A', { engineVersion: 'MySQL 8.4.0', connectionState: 'Connected', transaction: 'Autocommit', refreshedAt: 1000 });
     useWindowStatus('server:B', { engineVersion: 'MariaDB 11.4', connectionState: 'Disconnected' });
@@ -21,6 +21,8 @@ const bundle = await build({ stdin: { resolveDir: path.join(here, '../src'), loa
     const [runs, setRuns] = useState(0), [pending, setPending] = useState(2), [disabled, setDisabled] = useState(false);
     const [density, setDensity] = useState<'default' | 'compact'>('default');
     const [selection, setSelection] = useState('0');
+    const [emptyMenu, setEmptyMenu] = useState(false);
+    const [menuPoint, setMenuPoint] = useState<{ x: number; y: number; tall: boolean } | null>(null);
     return <WindowStatusProvider>
       <SplitButton label="Run" onClick={() => setRuns(runs + 1)} popoverLabel="Run options" primary disabled={disabled}>
         <button onClick={() => setDisabled(true)}>Disable run</button>
@@ -36,12 +38,34 @@ const bundle = await build({ stdin: { resolveDir: path.join(here, '../src'), loa
           { key: 'id', label: 'Identifier', render: r => r.id },
           { key: 'value', label: 'Count', num: true, render: r => r.value, sort: r => r.value }
         ]} /><Status />
+      <div id="menu-fixture">
+        <button id="empty-menu" data-requested={emptyMenu} onClick={() => setEmptyMenu(true)}>Empty menu</button>
+        {emptyMenu && <ContextMenu x={10} y={10} label="Empty actions" actions={[{ divider: true }]}
+          opener={document.getElementById('empty-menu')} onClose={() => setEmptyMenu(false)} />}
+        <button id="short-menu" onClick={event => setMenuPoint({ x: window.innerWidth - 2, y: window.innerHeight - 2, tall: false })}>Short menu</button>
+        <button id="tall-menu" onClick={event => setMenuPoint({ x: window.innerWidth - 2, y: window.innerHeight - 2, tall: true })}>Tall menu</button>
+        {menuPoint && <ContextMenu x={menuPoint.x} y={menuPoint.y} label="Measured actions"
+          opener={document.getElementById(menuPoint.tall ? 'tall-menu' : 'short-menu')} onClose={() => setMenuPoint(null)}
+          actions={Array.from({ length: menuPoint.tall ? 30 : 1 }, (_, index) => ({ label: 'Action ' + index, onClick() {} }))} />}
+        <DataTable label="Custom row actions" rows={[{ id: 'copyable', text: '' }]} rowKey={r => r.id}
+          columns={[{ key: 'text', label: 'Text', render: r => r.text }]} selection={{ key: 'copyable', select() {} }}
+          rowContextMenu={() => [{ label: 'Inspect row', onClick() {} }, { label: 'Unavailable action', disabled: true, hint: 'Read-only connection', onClick() {} }]} />
+      </div>
+      <div id="busy-look">
+        <Checkbox className="busy-check" checked={false} busy onChange={() => {}}>Busy switch</Checkbox>
+        <Checkbox className="idle-check" checked={false} onChange={() => {}}>Idle switch</Checkbox>
+        <IconButton icon="refresh" label="Busy refresh" className="is-busy" aria-disabled />
+        <IconButton icon="refresh" label="Gated icon" aria-disabled />
+        <button type="button" className="button is-busy" aria-disabled>Busy button</button>
+        <button type="button" className="button" aria-disabled title="Denied">Gated button</button>
+      </div>
     </WindowStatusProvider>;
   }
   createRoot(document.getElementById('root')).render(<Demo />);
 ` }, bundle: true, platform: 'browser', format: 'iife', write: false, jsx: 'automatic', loader: { '.css': 'empty' } });
 const css = (await Promise.all(['style.css', 'kit.css'].map(file => readFile(path.join(here, '../src', file), 'utf8')))).join('\n');
-const browser = await puppeteer.launch({ headless: 'shell', pipe: true });
+if (process.argv.includes('--compile-only')) { console.log('kit-primitives browser fixture compiled; interactions not run'); process.exit(0); }
+const browser = await puppeteer.launch({ headless: 'shell' });
 try {
   const page = await browser.newPage();
   const errors = [];
@@ -101,6 +125,73 @@ try {
   await page.waitForSelector('[role="dialog"][aria-label="Columns of Numbers"]');
   await page.keyboard.press('Escape');
   assert.equal(await page.$('[role="dialog"][aria-label="Columns of Numbers"]'), null);
+  // The busy look (dimmed, still focusable) belongs to controls that say they
+  // are busy (is-busy); a privilege-gated aria-disabled button or icon button
+  // keeps its own look.
+  const look = await page.evaluate(() => {
+    const of = (selector) => { const s = getComputedStyle(document.querySelector(selector)); return [s.opacity, s.cursor]; };
+    return {
+      busyCheck: of('#busy-look .busy-check input'), busyCheckLabel: getComputedStyle(document.querySelector('#busy-look .busy-check')).cursor,
+      busyCheckDisabled: document.querySelector('#busy-look .busy-check input').disabled,
+      idleCheck: of('#busy-look .idle-check input'),
+      busyIcon: of('#busy-look [aria-label="Busy refresh"]'), gatedIcon: of('#busy-look [aria-label="Gated icon"]'),
+      busyButton: of('#busy-look .button.is-busy'), gatedButton: of('#busy-look .button[title="Denied"]'),
+    };
+  });
+  assert.deepEqual(look.busyCheck, ['0.5', 'default'], 'a busy Checkbox is dimmed');
+  assert.equal(look.busyCheckLabel, 'default');
+  assert.equal(look.busyCheckDisabled, false, 'a busy Checkbox stays focusable');
+  assert.equal(look.idleCheck[0], '1');
+  assert.deepEqual(look.busyIcon, ['0.5', 'default'], 'a busy icon button is dimmed');
+  assert.deepEqual(look.busyButton, ['0.5', 'default'], 'a busy button is dimmed');
+  assert.deepEqual(look.gatedIcon, ['1', 'pointer'], 'an aria-disabled icon button without is-busy keeps its look');
+  assert.deepEqual(look.gatedButton, ['1', 'pointer'], 'a privilege-gated button keeps its look');
+  // The same menu owns placement and keyboard focus for row and cell actions.
+  // Copy is available after custom actions, including a cell whose text is empty.
+  await page.focus('#empty-menu');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => document.querySelector('#empty-menu')?.getAttribute('data-requested') === 'true');
+  assert.equal(await page.$('[aria-label="Empty actions"]'), null, 'the actual empty ContextMenu draws no surface');
+  assert.equal(await page.evaluate(() => document.activeElement?.id), 'empty-menu', 'empty menus do not capture focus');
+  await page.keyboard.press('Escape');
+  assert.equal(await page.evaluate(() => document.activeElement?.id), 'empty-menu', 'Escape cannot move focus into an empty menu');
+  const customRow = '#menu-fixture [data-row-key="copyable"]';
+  await page.focus(customRow);
+  await page.keyboard.down('Shift');
+  await page.keyboard.press('F10');
+  await page.keyboard.up('Shift');
+  await page.waitForSelector('[role="menu"][aria-label="Row actions"]');
+  assert.deepEqual(await page.$$eval('[aria-label="Row actions"] [role="menuitem"]', els => els.map(e => e.textContent)),
+    ['Inspect row', 'Unavailable actionRead-only connection', 'Copy cell']);
+  await page.keyboard.press('ArrowDown');
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('aria-disabled')), 'true');
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.querySelector('[aria-label="Row actions"]'));
+  assert.equal(await page.evaluate(() => document.activeElement?.dataset.rowKey), 'copyable');
+  await page.$eval(customRow, el => el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ContextMenu', bubbles: true })));
+  await page.waitForSelector('[role="menu"][aria-label="Row actions"]');
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.querySelector('[aria-label="Row actions"]'));
+  assert.equal(await page.evaluate(() => document.activeElement?.dataset.rowKey), 'copyable');
+  for (const viewport of [{ width: 1000, height: 900 }, { width: 390, height: 320 }]) {
+    await page.setViewport(viewport);
+    for (const id of ['short-menu', 'tall-menu']) {
+      await page.click('#' + id);
+      await page.waitForSelector('[aria-label="Measured actions"]');
+      const box = await page.$eval('[aria-label="Measured actions"]', el => {
+        const rect = el.getBoundingClientRect();
+        return { top: rect.top, left: rect.left, bottom: rect.bottom, right: rect.right,
+          height: rect.height, scroll: el.scrollHeight > el.clientHeight };
+      });
+      assert.ok(box.left >= 8 && box.top >= 8 && box.right <= viewport.width - 8 && box.bottom <= viewport.height - 8,
+        `${id} stays inside ${viewport.width} x ${viewport.height}: ${JSON.stringify(box)}`);
+      if (id === 'short-menu') assert.ok(box.height < 80 && box.top > viewport.height - 100, 'short menus stay near the pointer');
+      if (id === 'tall-menu' && viewport.height === 320) assert.equal(box.scroll, true, 'tall menus scroll inside the viewport');
+      await page.keyboard.press('Escape');
+      await page.waitForFunction(() => !document.querySelector('[aria-label="Measured actions"]'));
+      assert.equal(await page.evaluate(() => document.activeElement?.id), id);
+    }
+  }
   const status = await page.$eval('.window-statusbar', e => e.textContent);
   assert.match(status, /MySQL 8.4.0ConnectedAutocommit/);
   assert.doesNotMatch(status, /MariaDB|Disconnected/);

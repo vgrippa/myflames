@@ -29,7 +29,9 @@ import { buildReportInspector, REPORT_ESTIMATE, ReportDiagnosticBody } from "./R
 import type { ServerKind } from "./session";
 import { StatementRows, StatementsBehind, type DigestAction, type LabSettings, type OpenTop } from "./SlowQueries";
 import {
+  ActionButton,
   EmptyState,
+  ExportMenu,
   Fields,
   GroupedList,
   GroupedRow,
@@ -47,6 +49,13 @@ import {
   CATEGORY_ORDER,
   coverageText,
   evaluateTuning,
+  GRADE_RULE,
+  GRADE_SCALE,
+  gradeRangeText,
+  gradeReason,
+  letterGrade,
+  PROBLEM_GRADE_CAP,
+  SCORE_RULE,
   STATUS_TEXT,
   summaryText,
   TUNING_CATEGORIES,
@@ -65,6 +74,8 @@ import "./tuning.css";
 export type TuningTab = "scorecard" | "analysis";
 type ListFilter = "attention" | "unknown" | "all";
 
+/** The Full analysis usually ends within this many seconds; past it, its line says so and offers Stop. */
+const REPORT_USUAL_MAX_S = 20;
 const ANALYSIS_FORMATS: [string, string][] = [
   ["html", "HTML"],
   ["markdown", "Markdown"],
@@ -96,6 +107,10 @@ interface TuningViewProps {
   sessionsReport?: SessionsReport | null;
   source?: AnalysisSource | null;
   reads?: ConnectionReads;
+  /** Refresh all can own the analysis read while this view is not mounted. */
+  refreshRunning?: boolean;
+  /** Start of the in-flight read, owned by Server so remounting does not reset it. */
+  startedAt?: number;
   wasRun?: boolean;
   settings?: LabSettings;
   onDigest?: (row: TopStatement, rank: number, action: DigestAction, expect: string) => void;
@@ -128,6 +143,8 @@ export function TuningView({
   tablesReport,
   source,
   reads,
+  refreshRunning,
+  startedAt,
   wasRun,
   settings,
   onDigest,
@@ -146,8 +163,6 @@ export function TuningView({
   const [exporting, setExporting] = useState("");
   const [exported, setExported] = useState("");
   const [exportError, setExportError] = useState("");
-  const [now, setNow] = useState(Date.now());
-  const started = useRef(0);
 
   useEffect(() => {
     if (tabRequest) setTab(tabRequest.tab);
@@ -170,17 +185,7 @@ export function TuningView({
   const analysis = boundReport?.report ?? null;
   const analysisOther = boundReport && boundReport.key !== activeKey ? boundReport.label : null;
   const loading = reads?.loading || "";
-  const running = !!loading;
-
-  // While the analysis runs, count the seconds (it usually takes 10 to 20).
-  useEffect(() => {
-    if (!running) return;
-    started.current = Date.now();
-    setNow(started.current);
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [running]);
-  const elapsed = running ? Math.max(0, Math.round((now - started.current) / 1000)) : 0;
+  const running = !!loading || !!refreshRunning;
 
   // A new Full analysis starts on its Look at first pick, on that tab only.
   const selectRef = useRef(selection.select);
@@ -285,71 +290,28 @@ export function TuningView({
 
   const exportMenu =
     tab === "scorecard" ? (
-      <Popover
+      <ExportMenu
         label="Export the tuning scorecard"
         className="report-export"
-        buttonClassName="button"
-        // The scorecard on screen belongs to another server until this one is read.
         disabled={!!other}
-        buttonTitle={other ? `The scorecard is from ${other}: run the full analysis to load this server` : "Export the tuning scorecard as a file"}
-        trigger={
-          <>
-            <Icon name="export" size={15} />
-            Export
-          </>
-        }
-      >
-        <h3 className="popover-title">Export as</h3>
-        <div className="report-export-formats" role="group" aria-label="Export formats">
-          {(["html", "markdown", "json"] as const).map((f) => (
-            <button key={f} type="button" className="button" data-format={f} onClick={() => exportScorecard(f)}>
-              {f === "html" ? "HTML" : f === "markdown" ? "Markdown" : "JSON"}
-            </button>
-          ))}
-        </div>
-        <p className="hint">The scorecard as shown: {coverageText(tuning)}; nothing is read again.</p>
-        {exported && (
-          <p className="hint" role="status">
-            Saved {exported}
-          </p>
-        )}
-      </Popover>
+        title={other ? `The scorecard is from ${other}: run the full analysis to load this server`
+          : `The scorecard as shown: ${coverageText(tuning)}; nothing is read again.`}
+        formats={(["html", "markdown", "json"] as const).map(format => ({
+          key: format,
+          label: format === "html" ? "HTML" : format === "markdown" ? "Markdown" : "JSON",
+          onSelect: () => exportScorecard(format),
+        }))}
+      />
     ) : analysis ? (
-      <Popover
+      <ExportMenu
         label="Export the full analysis"
         className="report-export"
-        buttonClassName="button"
-        buttonTitle="Export the full analysis as a file"
-        trigger={
-          <>
-            <Icon name="export" size={15} />
-            Export
-          </>
-        }
-      >
-        <h3 className="popover-title">Export as</h3>
-        <div className="report-export-formats" role="group" aria-label="Export formats">
-          {ANALYSIS_FORMATS.map(([format, label]) => (
-            <button
-              key={format}
-              type="button"
-              className="button"
-              data-format={format}
-              disabled={!!exporting}
-              onClick={() => void exportAnalysis(format)}
-            >
-              {exporting === format ? <span className="spinner" aria-hidden="true" /> : null}
-              {label}
-            </button>
-          ))}
-        </div>
-        <p className="hint">Made from the report as read{analysisOther ? ` on ${analysisOther}` : ""}; nothing is read again.</p>
-        {exported && (
-          <p className="hint" role="status">
-            Saved {exported}
-          </p>
-        )}
-      </Popover>
+        disabled={!!exporting}
+        title={`Made from the report as read${analysisOther ? ` on ${analysisOther}` : ""}; nothing is read again.`}
+        formats={ANALYSIS_FORMATS.map(([format, label]) => ({
+          key: format, label, onSelect: () => void exportAnalysis(format),
+        }))}
+      />
     ) : null;
 
   // Scorecard | Full analysis: the shared segmented control in the header row,
@@ -381,7 +343,8 @@ export function TuningView({
               A score from the checks the Server views already judge: Health, Parameters, Tables and the Full
               analysis. Each check shows what was measured, the rule and what to do.
             </p>
-            <p>{tuning.scoring}</p>
+            <p>{SCORE_RULE}</p>
+            <p>{GRADE_RULE}</p>
             <p>Suggested statements are for you to copy or open in the Query editor; nothing here runs them.</p>
           </>
         ) : (
@@ -399,17 +362,19 @@ export function TuningView({
           {tabs}
           {exportMenu}
           {tab === "scorecard" && onRunReport && (
-            <button
-              type="button"
-              className="button"
+            // While it runs: a spinner and "Running…", aria-busy, clicks
+            // ignored, and focus stays on it (aria-disabled, not disabled).
+            <ActionButton
               data-action="run-analysis"
-              disabled={disabled || !!runBlocked || running}
+              icon="analysis"
+              busy={running}
+              busyLabel="Running…"
+              disabled={!running && (disabled || !!runBlocked)}
               title={`Runs every Server view once, ${REPORT_ESTIMATE}. It only reads.`}
               onClick={run}
             >
-              {running ? <span className="spinner" aria-hidden="true" /> : <Icon name="analysis" size={15} />}
               Run full analysis
-            </button>
+            </ActionButton>
           )}
         </>
       }
@@ -417,8 +382,8 @@ export function TuningView({
       refreshDisabled={disabled || !!runBlocked}
       loading={running}
       otherConnection={tab === "scorecard" ? other : analysisOther}
-      // The scorecard has no Refresh: the full analysis reads this server.
-      otherAction={tab === "scorecard" && onRunReport ? { label: "Run full analysis", onClick: run, disabled: disabled || !!runBlocked || running } : undefined}
+      // The scorecard has no Refresh: the toolbar's Run full analysis reads this server.
+      otherAction={tab === "scorecard" && onRunReport ? { label: "Run full analysis" } : undefined}
       inspector={inspector}
       inspectorEmpty={
         <p>
@@ -428,10 +393,21 @@ export function TuningView({
         </p>
       }
       status={
-        <ViewStatus
-          loading={running ? `Running every Server view once: ${elapsed} s so far, ${REPORT_ESTIMATE} in all. It only reads.` : ""}
-          error={reads?.error || exportError}
-        />
+        <>
+          {/* Announce the run once; draw seconds from the shell-owned start
+              so opening or remounting this view preserves its progress. */}
+          <ViewStatus
+            loading={running ? `Running every Server view once, ${REPORT_ESTIMATE} in all. It only reads.` : ""}
+            startedAt={startedAt}
+            slowAfter={REPORT_USUAL_MAX_S * 1000}
+            slowText={`Longer than the usual ${REPORT_ESTIMATE.replace(/^about /, "")}.`}
+            onStop={reads?.stop}
+            onRetry={reads?.error ? run : undefined}
+            doneAt={reads?.doneAt}
+            error={reads?.error || exportError}
+          />
+          {exported && <p className="hint" role="status">Saved {exported}</p>}
+        </>
       }
     >
       {tab === "scorecard" ? (
@@ -439,15 +415,16 @@ export function TuningView({
           <p className="visually-hidden" role="status">
             {summaryText(tuning)}
           </p>
-          <ScoreHeader tuning={tuning} running={running || !!runBlocked} disabled={disabled || !!other} onMeasure={open} canRun={!!onRunReport} />
+          <ScoreHeader tuning={tuning} disabled={disabled || !!other} onMeasure={open} canRun={!!onRunReport} />
           <ul className="tuning-categories" aria-label="Categories">
             {tuning.categories.map((c) => {
               const active = category === c.key;
+              const lowCoverage = c.measured > 0 && c.measured * 2 < c.total;
               return (
                 <li key={c.key}>
                   <button
                     type="button"
-                    className={`tuning-category is-${c.status}${active ? " is-active" : ""}`}
+                    className={`tuning-category is-${c.status}${lowCoverage ? " is-low-coverage" : ""}${active ? " is-active" : ""}`}
                     aria-pressed={active}
                     data-category={c.key}
                     title={`${TUNING_CATEGORIES[c.key].description} ${Math.round(c.weight * 100)}% of the score.`}
@@ -455,7 +432,15 @@ export function TuningView({
                   >
                     <span className="tuning-category-name">{c.name}</span>
                     <span className="tuning-category-score">
-                      {c.score === null ? <span className="tuning-category-none">Not measured</span> : `${c.score}%`}
+                      {c.score === null ? (
+                        <span className="tuning-category-none">Not measured</span>
+                      ) : lowCoverage ? (
+                        <>
+                          {c.score}% <span className="tuning-category-coverage">of {c.measured} {c.measured === 1 ? "check" : "checks"}</span>
+                        </>
+                      ) : (
+                        `${c.score}%`
+                      )}
                     </span>
                     <span className="tuning-meter" aria-hidden="true">
                       <span style={{ width: `${c.score ?? 0}%` }} />
@@ -567,13 +552,11 @@ function needsText(c: TuningCheck): string {
 
 function ScoreHeader({
   tuning,
-  running,
   disabled,
   canRun,
   onMeasure,
 }: {
   tuning: TuningReport;
-  running: boolean;
   disabled: boolean;
   canRun: boolean;
   onMeasure: (view: TuningMeasureWith) => void;
@@ -581,15 +564,25 @@ function ScoreHeader({
   const unknown = tuning.checks.filter((c) => c.applies && c.status === "unknown");
   const needsAnalysis = unknown.some((c) => c.measureWith.includes("report"));
   const onlyParameters = unknown.length > 0 && unknown.every((c) => c.measureWith.length === 1 && c.measureWith[0] === "config");
+  const reason = gradeReason(tuning);
+  // A problem lowered the grade below the score's own range.
+  const capped = tuning.grade !== null && tuning.score !== null && letterGrade(tuning.score) !== tuning.grade;
   return (
     <section className={`tuning-score is-${tuning.status}`} aria-labelledby="tuning-score-label">
-      <div className="tuning-score-figure" aria-hidden={tuning.score === null ? "true" : undefined}>
-        <span className={`tuning-score-number${tuning.provisional ? " is-provisional" : ""}`} data-score={tuning.score ?? ""}>
+      <div className="tuning-score-figure">
+        <span
+          className={`tuning-score-number${tuning.provisional ? " is-provisional" : ""}`}
+          data-score={tuning.score ?? ""}
+          aria-hidden={tuning.score === null ? "true" : undefined}
+        >
           {tuning.score === null ? "—" : tuning.score}
           {tuning.score !== null && <span className="tuning-score-unit">%</span>}
         </span>
-        <span className="tuning-grade" data-grade={tuning.grade || ""}>
-          {tuning.grade ? `Grade ${tuning.grade}` : tuning.score === null ? "No score" : "Provisional"}
+        <span className="tuning-grade-line">
+          <span className="tuning-grade" data-grade={tuning.grade || ""}>
+            {tuning.grade ? `Grade ${tuning.grade}` : tuning.score === null ? "No score" : "Provisional"}
+          </span>
+          <GradeLegend grade={tuning.grade} />
         </span>
       </div>
       <div className="tuning-score-text">
@@ -597,6 +590,11 @@ function ScoreHeader({
           <span className={`status-dot is-${tuning.status}`} aria-hidden="true" />
           {tuning.label}
         </h3>
+        {reason && (
+          <p className="tuning-grade-reason" data-capped={capped ? "true" : "false"}>
+            {reason}
+          </p>
+        )}
         <p className="tuning-score-coverage">
           {coverageText(tuning)}
           {tuning.counts.problem > 0 && ` · ${tuning.counts.problem} problem${tuning.counts.problem === 1 ? "" : "s"}`}
@@ -606,13 +604,8 @@ function ScoreHeader({
         {unknown.length > 0 && (
           <p className="tuning-score-hint">
             {tuning.provisional
-              ? "Not graded until at least half the checks, and one in each category, are measured."
+              ? `Not graded until at least half the checks, and one in each category, are measured.${needsAnalysis && canRun ? " Run the full analysis to grade." : ""}`
               : `${unknown.length} not measured; they are left out of the score.`}{" "}
-            {needsAnalysis && canRun && (
-              <button type="button" className="text-button" disabled={disabled || running} onClick={() => onMeasure("report")}>
-                Run full analysis
-              </button>
-            )}
             {onlyParameters && (
               <button type="button" className="text-button" disabled={disabled} onClick={() => onMeasure("config")}>
                 Open Parameters
@@ -622,6 +615,39 @@ function ScoreHeader({
         )}
       </div>
     </section>
+  );
+}
+
+/** ⓘ next to the grade: what each letter means, the cap and when there is no
+ * grade, all from tuningRules.ts (GRADE_SCALE, PROBLEM_GRADE_CAP). */
+function GradeLegend({ grade }: { grade: TuningReport["grade"] }) {
+  return (
+    <Popover label="How the grade works" className="tuning-grade-help" width={300}>
+      <h3 className="popover-title">How the grade works</h3>
+      <table className="tuning-grade-legend">
+        <caption className="visually-hidden">Grades and the scores they cover</caption>
+        <thead>
+          <tr>
+            <th scope="col">Grade</th>
+            <th scope="col">Score</th>
+          </tr>
+        </thead>
+        <tbody>
+          {GRADE_SCALE.map((g) => (
+            <tr key={g.grade} data-grade={g.grade} className={g.grade === grade ? "is-current" : undefined}
+              aria-current={g.grade === grade ? "true" : undefined}>
+              <th scope="row">{g.grade}</th>
+              <td>
+                {gradeRangeText(g.grade)}
+                {g.grade === grade && <span className="tuning-grade-current"> · this server</span>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p>A problem caps the grade at {PROBLEM_GRADE_CAP}, whatever the score.</p>
+      <p>No grade (provisional) until at least half the checks, and one in each category, are measured.</p>
+    </Popover>
   );
 }
 

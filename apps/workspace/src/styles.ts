@@ -28,6 +28,8 @@ import "./config.css";
 import "./ops.css";
 import "./replication-topology.css";
 import "./replication.css";
+import "./cluster.css";
+import "./proxysql.css";
 import "./server.css";
 import "./audit.css";
 import "./style.css";

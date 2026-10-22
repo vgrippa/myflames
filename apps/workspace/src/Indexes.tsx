@@ -1,3 +1,4 @@
+import { bt, dropIndexSql, indexVisibilitySql, showIndexSql, tableMaintenanceSql } from "./sqlIdent";
 // Server > Indexes: unused and redundant indexes and tables read mostly by
 // full scans (indexes-1.0 from myflames/indexes.py). One read per click: the
 // Performance Schema tables behind it cost time on servers with many tables,
@@ -6,7 +7,7 @@
 // user chooses databases in the picker, and the server enforces the same.
 // One list at a time (segmented control); the why and the statements to copy
 // are in the inspector.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useOpenRead, useViewOnScreen } from "./viewOnScreen";
 import {
   api,
@@ -49,13 +50,22 @@ import { ReviewedSqlAction, ReviewedSqlBridger, ReviewedSqlProvider, ReviewedSql
 
 const SOURCES: Record<string, string> = {
   performance_schema: "Performance Schema",
-  userstat: "MariaDB user statistics (userstat)",
+  userstat: "User statistics (userstat)",
 };
+/** "Keep: backs a foreign key", "Keep: read per user statistics", "Candidate". */
+function verdictLabel(u: UnusedIndex, short = false) {
+  if (u.verdict !== "keep") return "Candidate";
+  if (short) return "Keep";
+  return u.keep_reason === "userstat" ? "Keep: read per user statistics" : "Keep: backs a foreign key";
+}
 const NO_DATA: Record<string, string> = {
   not_opened: "not opened since the counts started",
   no_activity: "no rows read or written",
   not_instrumented: "not instrumented (setup_objects)",
   not_read: "no reads since userstat started",
+  partitioned: "partitioned, and Performance Schema does not count every read through a partitioned table's indexes",
+  partitioning_unknown: "partitioning could not be read, so index use cannot be judged",
+  userstat_unknown: "partitioned tables could not be listed, and Percona Server's user statistics do not count them",
 };
 type List = "all" | "unused" | "redundant" | "scans" | "nodata";
 type NoData = IndexesReport["no_data"][number];
@@ -83,6 +93,7 @@ function IndexRowActions({
   visible,
   engine,
   serverVersion,
+  actionBlockedReason,
   onTableHealth,
   disabled,
 }: {
@@ -92,6 +103,7 @@ function IndexRowActions({
   visible?: boolean;
   engine: string;
   serverVersion: string | null | undefined;
+  actionBlockedReason?: string;
   onTableHealth?: () => void;
   disabled: boolean;
 }) {
@@ -100,17 +112,18 @@ function IndexRowActions({
   const canInvisible = supportsInvisibleIndexes(engine, serverVersion);
   const isPrimary = index.toUpperCase() === "PRIMARY";
 
+  if (actionBlockedReason) {
+    return onTableHealth ? <RowActionMenu label={`Actions for ${schema}.${table}.${index}`} disabled={disabled}
+      items={[{ label: "Table health", icon: "statements", onSelect: onTableHealth }]} /> : null;
+  }
+
   const isCurrentlyVisible = visible !== false;
-  const toggleVisibilitySql = isMaria
-    ? `ALTER TABLE \`${schema}\`.\`${table}\` ALTER INDEX \`${index}\` ${isCurrentlyVisible ? "IGNORED" : "NOT IGNORED"}`
-    : `ALTER TABLE \`${schema}\`.\`${table}\` ALTER INDEX \`${index}\` ${isCurrentlyVisible ? "INVISIBLE" : "VISIBLE"}`;
+  const toggleVisibilitySql = indexVisibilitySql(schema, table, index, engine, isCurrentlyVisible);
   const toggleVisibilityLabel = isMaria
     ? (isCurrentlyVisible ? "Set ignored" : "Set not ignored")
     : (isCurrentlyVisible ? "Set invisible" : "Set visible");
 
-  const dropSql = isPrimary
-    ? `ALTER TABLE \`${schema}\`.\`${table}\` DROP PRIMARY KEY`
-    : `ALTER TABLE \`${schema}\`.\`${table}\` DROP INDEX \`${index}\``;
+  const dropSql = dropIndexSql(schema, table, index);
 
   const items: RowMenuItem[] = [
     ...(!isPrimary && canInvisible ? [{
@@ -135,6 +148,7 @@ function IndexInspectorActions({
   visible,
   engine,
   serverVersion,
+  actionBlockedReason,
   onTableHealth,
   disabled,
 }: {
@@ -144,6 +158,7 @@ function IndexInspectorActions({
   visible?: boolean;
   engine: string;
   serverVersion: string | null | undefined;
+  actionBlockedReason?: string;
   onTableHealth?: () => void;
   disabled: boolean;
 }) {
@@ -151,17 +166,19 @@ function IndexInspectorActions({
   const canInvisible = supportsInvisibleIndexes(engine, serverVersion);
   const isPrimary = index.toUpperCase() === "PRIMARY";
 
+  if (actionBlockedReason) {
+    return onTableHealth ? <button type="button" className="button small" disabled={disabled} onClick={onTableHealth}>
+      Table health
+    </button> : null;
+  }
+
   const isCurrentlyVisible = visible !== false;
-  const toggleVisibilitySql = isMaria
-    ? `ALTER TABLE \`${schema}\`.\`${table}\` ALTER INDEX \`${index}\` ${isCurrentlyVisible ? "IGNORED" : "NOT IGNORED"}`
-    : `ALTER TABLE \`${schema}\`.\`${table}\` ALTER INDEX \`${index}\` ${isCurrentlyVisible ? "INVISIBLE" : "VISIBLE"}`;
+  const toggleVisibilitySql = indexVisibilitySql(schema, table, index, engine, isCurrentlyVisible);
   const toggleVisibilityLabel = isMaria
     ? (isCurrentlyVisible ? "Set ignored" : "Set not ignored")
     : (isCurrentlyVisible ? "Set invisible" : "Set visible");
 
-  const dropSql = isPrimary
-    ? `ALTER TABLE \`${schema}\`.\`${table}\` DROP PRIMARY KEY`
-    : `ALTER TABLE \`${schema}\`.\`${table}\` DROP INDEX \`${index}\``;
+  const dropSql = dropIndexSql(schema, table, index);
 
   return (
     <div className="index-inspector-actions" style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap", alignItems: "center" }}>
@@ -191,7 +208,7 @@ function IndexInspectorActions({
 }
 
 function FixStatements({ item }: { item: UnusedIndex | RedundantIndex }) {
-  if (!item.test_sql && !item.drop_sql && !item.caveat) return null;
+  if (item.action_blocked_reason || (!item.test_sql && !item.drop_sql && !item.caveat)) return null;
   return (
     <InspectorSection title="What to do">
       {item.test_sql && (
@@ -265,26 +282,22 @@ export function IndexesView({
   const [list, setList] = useState<List>("all");
   const reviewedSqlRef = useRef<ReturnType<typeof useReviewedSql>>(null);
 
-  const getIndexRowContextMenu = (schema: string, table: string, index: string, visible?: boolean) => {
+  const getIndexRowContextMenu = (schema: string, table: string, index: string, visible?: boolean, actionBlockedReason?: string) => {
     const runner = reviewedSqlRef.current;
     const isMaria = (report?.engine || "").toLowerCase() === "mariadb";
     const canInvisible = supportsInvisibleIndexes(report?.engine || "", report?.server_version);
     const isPrimary = index.toUpperCase() === "PRIMARY";
 
     const isCurrentlyVisible = visible !== false;
-    const toggleVisibilitySql = isMaria
-      ? `ALTER TABLE \`${schema}\`.\`${table}\` ALTER INDEX \`${index}\` ${isCurrentlyVisible ? "IGNORED" : "NOT IGNORED"}`
-      : `ALTER TABLE \`${schema}\`.\`${table}\` ALTER INDEX \`${index}\` ${isCurrentlyVisible ? "INVISIBLE" : "VISIBLE"}`;
+    const toggleVisibilitySql = indexVisibilitySql(schema, table, index, report?.engine || "", isCurrentlyVisible);
     const toggleVisibilityLabel = isMaria
       ? (isCurrentlyVisible ? "Set ignored" : "Set not ignored")
       : (isCurrentlyVisible ? "Set invisible" : "Set visible");
 
-    const dropSql = isPrimary
-      ? `ALTER TABLE \`${schema}\`.\`${table}\` DROP PRIMARY KEY`
-      : `ALTER TABLE \`${schema}\`.\`${table}\` DROP INDEX \`${index}\``;
+    const dropSql = dropIndexSql(schema, table, index);
 
     return [
-      ...(!isPrimary && canInvisible
+      ...(!actionBlockedReason && !isPrimary && canInvisible
         ? [
             {
               label: `${toggleVisibilityLabel}…`,
@@ -307,7 +320,7 @@ export function IndexesView({
         icon: "statements",
         disabled: runner?.blocked,
         onClick: () => {
-          runner?.start(`ANALYZE TABLE \`${schema}\`.\`${table}\``, `Analyze statistics for ${table}`);
+          runner?.start(tableMaintenanceSql("ANALYZE", schema, table), `Analyze statistics for ${table}`);
         },
       },
       {
@@ -315,7 +328,7 @@ export function IndexesView({
         icon: "optimize",
         disabled: runner?.blocked,
         onClick: () => {
-          runner?.start(`OPTIMIZE TABLE \`${schema}\`.\`${table}\``, `Optimize ${table} (rebuild index)`);
+          runner?.start(tableMaintenanceSql("OPTIMIZE", schema, table), `Optimize ${table} (rebuild index)`);
         },
       },
       { divider: true as const },
@@ -340,7 +353,7 @@ export function IndexesView({
               label: "Show index definition (SHOW INDEX)",
               icon: "index",
               onClick: () => {
-                onOpenSql(`SHOW INDEX FROM \`${schema}\`.\`${table}\` WHERE Key_name = '${index.replace(/'/g, "''")}';`);
+                onOpenSql(showIndexSql(schema, table, index));
               },
             },
           ]
@@ -348,9 +361,9 @@ export function IndexesView({
       {
         label: `Copy index name (\`${index}\`)`,
         icon: "copy",
-        onClick: () => void copyToClipboard(`\`${index}\``),
+        onClick: () => void copyToClipboard(bt(index)),
       },
-      {
+      ...(!actionBlockedReason ? [{
         label: isPrimary ? "Copy DROP PRIMARY KEY SQL" : "Copy DROP INDEX SQL",
         icon: "copy",
         onClick: () => void copyToClipboard(dropSql + ";"),
@@ -370,7 +383,7 @@ export function IndexesView({
               : `Dropping index ${index} will permanently remove it from ${table}.`
           );
         },
-      },
+      }] : []),
     ];
   };
   const reads = useConnectionReads(connection);
@@ -411,11 +424,24 @@ export function IndexesView({
   const s = report?.summary;
   const chosen = report ? report.scope.schemas || (report.scope.schema ? [report.scope.schema] : null) : null;
   const scope = !report ? "" : !chosen ? "all user databases" : chosen.length <= 3 ? chosen.join(", ") : `${chosen.length} databases`;
+  const rawDeferredFilter = useDeferredValue(filter);
+  const deferredFilter = filter === "" ? "" : rawDeferredFilter;
   // Filtered once per report, focus and filter, not on every render (a
   // selection in a list of 5,000 indexes).
   const { inventory, unused, redundant, scans, noData } = useMemo(() => {
-    const needle = filter.trim().toLowerCase();
-    const shown = (r: { schema: string; table: string; index?: string }) => (!focus || (r.schema === focus.schema && r.table === focus.table)) && `${r.schema}.${r.table}.${r.index || ""}`.toLowerCase().includes(needle);
+    const needle = deferredFilter.trim().toLowerCase();
+    if (!needle && !focus) {
+      return {
+        inventory: report?.indexes || [],
+        unused: report?.unused || [],
+        redundant: report?.redundant || [],
+        scans: report?.full_scans || [],
+        noData: report?.no_data || [],
+      };
+    }
+    const shown = (r: { schema: string; table: string; index?: string }) =>
+      (!focus || (r.schema === focus.schema && r.table === focus.table)) &&
+      (!needle || `${r.schema}.${r.table}.${r.index || ""}`.toLowerCase().includes(needle));
     return {
       inventory: (report?.indexes || []).filter(shown),
       unused: report ? report.unused.filter(shown) : [],
@@ -423,9 +449,9 @@ export function IndexesView({
       scans: report ? report.full_scans.filter(shown) : [],
       noData: report ? report.no_data.filter(shown) : [],
     };
-  }, [report, focus, filter]);
+  }, [report, focus, deferredFilter]);
   const exportContext = `${bound?.label || ""} · ${scope} · ${report?.taken_at || ""}`;
-  const resetKey = `${reads.key}:${filter}:${JSON.stringify(focus)}`;
+  const resetKey = `${reads.key}:${deferredFilter}:${JSON.stringify(focus)}`;
   const available = !!report?.available;
   const requested = list === "all" && !report?.indexes ? "unused" : list;
   const current: List = !available && (requested === "unused" || requested === "scans") ? "redundant" : requested;
@@ -436,12 +462,13 @@ export function IndexesView({
     </code>
   );
   // Each row's ⋯ menu in the table's trailing column (rowAction), as in Processlist.
-  const indexRowAction = (r: { schema: string; table: string; index: string; visible?: boolean }) => (
+  const indexRowAction = (r: { schema: string; table: string; index: string; visible?: boolean; action_blocked_reason?: string }) => (
     <IndexRowActions
       schema={r.schema}
       table={r.table}
       index={r.index}
       visible={r.visible}
+      actionBlockedReason={r.action_blocked_reason}
       engine={report?.engine || ""}
       serverVersion={report?.server_version}
       disabled={!!other}
@@ -463,7 +490,7 @@ export function IndexesView({
       sort: (u) => (u.verdict === "keep" ? 1 : 0),
       render: (u) => (
         <span className={`perf-verdict is-${u.verdict}`}>
-          <StatusPill tone={u.verdict === "keep" ? "ok" : "watch"} label={u.verdict === "keep" ? "Keep: backs a foreign key" : "Candidate"} />
+          <StatusPill tone={u.verdict === "keep" ? "ok" : "watch"} label={verdictLabel(u)} />
         </span>
       ),
     },
@@ -533,7 +560,7 @@ export function IndexesView({
   const noDataColumns: Column<NoData>[] = [
     { key: "table", label: "Table", sort: (n) => `${n.schema}.${n.table}`, render: tableName },
     { key: "indexes", label: "Indexes", num: true, sort: (n) => n.indexes, render: (n) => count(n.indexes) },
-    { key: "reason", label: "Why there is no data", sort: (n) => n.reason, render: (n) => NO_DATA[n.reason] || n.reason },
+    { key: "reason", label: "Why there is no data", sort: (n) => n.reason, render: (n) => n.reason_text || NO_DATA[n.reason] || n.reason },
   ];
 
   let inspector: InspectorContent | null = null;
@@ -555,6 +582,7 @@ export function IndexesView({
             table={row.table}
             index={row.index}
             visible={row.visible}
+            actionBlockedReason={row.action_blocked_reason}
             engine={report.engine || ""}
             serverVersion={report.server_version}
             disabled={!!other}
@@ -563,6 +591,7 @@ export function IndexesView({
         ),
         body: (
           <InspectorSection title="Index">
+            {row.action_blocked_reason && <p>{row.action_blocked_reason}</p>}
             <Fields
               rows={[
                 ["Table", `${row.schema}.${row.table}`],
@@ -583,7 +612,7 @@ export function IndexesView({
         title: u.index,
         meta: (
           <>
-            <StatusPill tone={u.verdict === "keep" ? "ok" : "watch"} label={u.verdict === "keep" ? "Keep" : "Candidate"} />
+            <StatusPill tone={u.verdict === "keep" ? "ok" : "watch"} label={verdictLabel(u, true)} />
             <code>
               {u.schema}.{u.table}
             </code>
@@ -595,6 +624,7 @@ export function IndexesView({
             table={u.table}
             index={u.index}
             visible={u.visible}
+            actionBlockedReason={u.action_blocked_reason}
             engine={report.engine || ""}
             serverVersion={report.server_version}
             disabled={!!other}
@@ -612,6 +642,7 @@ export function IndexesView({
                   ["Columns", u.columns],
                   ["Visible", u.visible ? "Yes" : report.engine === "mariadb" ? "No (ignored)" : "No (invisible)"],
                   u.foreign_keys.length > 0 && ["Foreign keys", u.foreign_keys.join(", ")],
+                  u.userstat_rows_read != null && ["Rows read (user statistics)", count(u.userstat_rows_read)],
                 ]}
               />
             </InspectorSection>
@@ -636,6 +667,7 @@ export function IndexesView({
             table={r.table}
             index={r.index}
             visible={r.visible}
+            actionBlockedReason={r.action_blocked_reason}
             engine={report.engine || ""}
             serverVersion={report.server_version}
             disabled={!!other}
@@ -646,6 +678,7 @@ export function IndexesView({
           <>
             <InspectorSection title="Why">
               <p>{r.why}</p>
+              {r.action_blocked_reason && <p>{r.action_blocked_reason}</p>}
             </InspectorSection>
             <InspectorSection title="Covered by">
               <Fields
@@ -724,7 +757,7 @@ export function IndexesView({
         body: (
           <InspectorSection title="No data">
             <p>
-              {n.indexes} {n.indexes === 1 ? "index" : "indexes"}, {NO_DATA[n.reason] || n.reason}. Never listed as unused:
+              {n.indexes} {n.indexes === 1 ? "index" : "indexes"}, {n.reason_text || NO_DATA[n.reason] || n.reason}. Never listed as unused:
               there is nothing to judge.
             </p>
           </InspectorSection>
@@ -772,7 +805,7 @@ export function IndexesView({
         inspectorEmpty={<p>Select an index or a table to see why it is listed and the statements to copy.</p>}
         status={
           <>
-            <ViewStatus loading={reads.loading} error={error} />
+            <ViewStatus loading={reads.loading} error={error} onStop={reads.stop} onRetry={reads.error ? () => void load() : undefined} doneAt={reads.doneAt} slowAfter={45_000} />
             <ReviewedSqlStatus />
           </>
         }
@@ -805,6 +838,7 @@ export function IndexesView({
       {report && s && (
         <>
           <SummaryLine
+            tone={!report.available ? "unknown" : (s.unused_candidates > 0 || s.redundant > 0 || s.mostly_full_scans > 0) ? "watch" : "ok"}
             notes={report.available ? report.notes : report.notes.slice(1)}
             extra={
               focus && (
@@ -835,7 +869,9 @@ export function IndexesView({
               ["Server", engineLabel(report)],
               ["Uptime", uptime(report.uptime_s)],
               ["Databases", scope],
-              ["Usage from", report.source ? SOURCES[report.source] : "not available"],
+              ["Usage from", report.source
+                ? `${SOURCES[report.source]}${report.userstat?.role === "evidence" ? " and user statistics" : ""}`
+                : "not available"],
               ["Tables", count(s.tables)],
               ["Indexes", count(s.indexes)],
             ]}
@@ -876,7 +912,7 @@ export function IndexesView({
                       filters={listFilters}
                       rowKey={r=>`index:${r.schema}.${r.table}.${r.index}`} selection={selection} defaultSort={{key:"table",dir:"asc"}}
                       rowAttrs={r=>({"data-index":`${r.table}.${r.index}`})} exportContext={exportContext} resetKey={resetKey}
-                      rowContextMenu={r => getIndexRowContextMenu(r.schema, r.table, r.index, r.visible)}
+                      rowContextMenu={r => getIndexRowContextMenu(r.schema, r.table, r.index, r.visible, r.action_blocked_reason)}
                       exportColumns={[{label:"Database",value:r=>r.schema},{label:"Table",value:r=>r.table},{label:"Index",value:r=>r.index},{label:"Columns",value:r=>r.columns},{label:"Type",value:r=>r.type},{label:"Unique",value:r=>r.unique?"Yes":"No"},{label:"Optimizer",value:r=>r.visible?"Visible":report.engine==="mariadb"?"Ignored":"Invisible"}]}
                       empty="No indexes match these filters." />
                   )}
@@ -893,7 +929,7 @@ export function IndexesView({
                       rowAction={indexRowAction}
                       selection={selection}
                       rowAttrs={(u) => ({ "data-index": `${u.table}.${u.index}` })}
-                      rowContextMenu={u => getIndexRowContextMenu(u.schema, u.table, u.index, u.visible)}
+                      rowContextMenu={u => getIndexRowContextMenu(u.schema, u.table, u.index, u.visible, u.action_blocked_reason)}
                       empty={`No unused indexes in ${scope}.`}
                     />
                   )}
@@ -910,7 +946,7 @@ export function IndexesView({
                       rowAction={indexRowAction}
                       selection={selection}
                       rowAttrs={(r) => ({ "data-index": `${r.table}.${r.index}` })}
-                      rowContextMenu={r => getIndexRowContextMenu(r.schema, r.table, r.index, r.visible)}
+                      rowContextMenu={r => getIndexRowContextMenu(r.schema, r.table, r.index, r.visible, r.action_blocked_reason)}
                       empty={`No redundant indexes in ${scope}.`}
                     />
                   )}

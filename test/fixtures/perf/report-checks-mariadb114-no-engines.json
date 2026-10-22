@@ -25,6 +25,18 @@
   [
    "/*myflames:checks*/ SELECT User, Host, IFNULL(JSON_VALUE(Priv, '$.plugin'), ''), IFNULL(JSON_VALUE(Priv, '$.authentication_string'), '') = '', IF(IFNULL(JSON_VALUE(Priv, '$.account_locked'), '') IN ('1', 'true'), 'Y', 'N'), IF(IFNULL(JSON_VALUE(Priv, '$.is_role'), '') IN ('1', 'true'), 'Y', 'N') FROM mysql.global_priv",
    ""
+  ],
+  [
+   "/*myflames:checks*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('hostname', 'port', 'pxc_maint_mode', 'pxc_strict_mode', 'report_host', 'wsrep_cluster_address', 'wsrep_cluster_name', 'wsrep_desync', 'wsrep_node_address', 'wsrep_node_incoming_address', 'wsrep_node_name', 'wsrep_on', 'wsrep_provider')",
+   "hostname\tnode-1\nport\t3306\nreport_host\t\nwsrep_cluster_address\tgcomm://10.0.0.11,10.0.0.12,10.0.0.13\nwsrep_cluster_name\tshop\nwsrep_desync\tOFF\nwsrep_node_address\t\nwsrep_node_incoming_address\tAUTO\nwsrep_node_name\tnode-1\nwsrep_on\tON\nwsrep_provider\t/usr/lib/galera/libgalera_smm.so\n"
+  ],
+  [
+   "/*myflames:checks*/ SHOW GLOBAL STATUS WHERE Variable_name IN ('wsrep_gcomm_uuid', 'wsrep_incoming_addresses', 'wsrep_local_index', 'wsrep_cluster_weight')",
+   "wsrep_cluster_weight\t3\nwsrep_gcomm_uuid\taaaaaaaa-0001-11f1-8000-000000000001\nwsrep_incoming_addresses\t10.0.0.11:3306,10.0.0.12:3306,10.0.0.13:3306\nwsrep_local_index\t0\n"
+  ],
+  [
+   "/*myflames:checks*/ SELECT node_uuid, node_name, node_incoming_address FROM mysql.wsrep_cluster_members",
+   "aaaaaaaa-0001-11f1-8000-000000000001\tnode-1\t10.0.0.11:3306\naaaaaaaa-0002-11f1-8000-000000000002\tnode-2\t10.0.0.12:3306\naaaaaaaa-0003-11f1-8000-000000000003\tnode-3\t10.0.0.13:3306\n"
   ]
  ],
  "inventory": {

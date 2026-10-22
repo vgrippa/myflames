@@ -152,10 +152,13 @@ class TestWorkspaceAPI(unittest.TestCase):
         with patch('myflames.connector.MySQLConnection') as connection:
             conn = connection.return_value.__enter__.return_value
             conn.server_version.return_value = '9.7.0'
+            conn.is_mariadb.return_value = False
+            conn.server_version_comment.return_value = 'MySQL Community Server - GPL'
             conn.query_rows.return_value = [['inventory'], [], ['reporting']]
             status, body, _ = self.request('/api/connection/test', {'connection': {
                 'host': 'localhost', 'port': '3307', 'password': 'secret-for-test'}})
-            self.assertEqual((status, body), (200, {'version': '9.7.0', 'schemas': ['inventory', 'reporting']}))
+            self.assertEqual((status, body), (200, {'version': '9.7.0', 'engine': 'mysql', 'flavor': 'mysql',
+                                                    'product': 'MySQL', 'schemas': ['inventory', 'reporting']}))
             self.assertEqual(connection.call_args[1]['port'], 3307)
             self.assertEqual(connection.call_args[1]['password'], 'secret-for-test')
             conn.query_rows.assert_called_once_with('SHOW DATABASES')

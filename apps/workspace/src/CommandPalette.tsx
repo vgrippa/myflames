@@ -17,8 +17,15 @@ export function CommandPalette({ commands, onClose }: { commands: WorkspaceComma
   const input = useRef<HTMLInputElement>(null);
   const listId = useId();
   const words = query.toLocaleLowerCase().trim().split(/\s+/).filter(Boolean);
+  // Commands whose label holds every word come first ("innodb" opens the
+  // InnoDB view before the Cluster place, which only has it as a keyword);
+  // otherwise the order stays as declared.
+  const labelMatch = (command: WorkspaceCommand) => words.every(word => command.label.toLocaleLowerCase().includes(word));
   const matches = commands.filter(command => words.every(word =>
-    `${command.label} ${command.group} ${command.keywords || ""}`.toLocaleLowerCase().includes(word)));
+    `${command.label} ${command.group} ${command.keywords || ""}`.toLocaleLowerCase().includes(word)))
+    .map((command, order) => ({ command, order, rank: labelMatch(command) ? 0 : 1 }))
+    .sort((a, b) => a.rank - b.rank || a.order - b.order)
+    .map(({ command }) => command);
   const index = Math.min(selected, Math.max(0, matches.length - 1));
   useFocusScope(dialog, { open: true, onClose, initialFocus: () => input.current });
   useEffect(() => { document.getElementById(`${listId}-${index}`)?.scrollIntoView({ block: "nearest" }); }, [index, listId, query]);
@@ -72,7 +79,7 @@ export function CommandPalette({ commands, onClose }: { commands: WorkspaceComma
           else if (event.key === "ArrowUp") { event.preventDefault(); setSelected((index - 1 + matches.length) % Math.max(matches.length, 1)); }
           else if (event.key === "Enter") { event.preventDefault(); choose(matches[index]); }
         }} />
-      <button type="button" className="text-button" onClick={onClose} aria-label="Close commands">Esc</button>
+      <button type="button" className="text-button command-esc" onClick={onClose} aria-label="Close commands"><kbd>Esc</kbd></button>
     </div>
     <div ref={results} className="command-results" id={listId} role="listbox" aria-label="Matching commands">
       {matches.map((command, position) => <button type="button" key={command.id} id={`${listId}-${position}`}
@@ -83,6 +90,6 @@ export function CommandPalette({ commands, onClose }: { commands: WorkspaceComma
       </button>)}
       {!matches.length && <p className="command-empty" role="status">No commands match “{query}”.</p>}
     </div>
-    <footer className="command-footer"><span>↑ ↓ to move</span><span>Return to open</span></footer>
+    <footer className="command-footer"><span><kbd>↑</kbd> <kbd>↓</kbd> to move</span><span><kbd>Return</kbd> to open</span><span><kbd>Esc</kbd> to close</span></footer>
   </dialog>;
 }

@@ -7,9 +7,12 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { api, download, time, type AuditExport, type AuditRecord, type AuditReport, type AuditStatus, type Profile } from "./api";
 import { Icon } from "./components";
 import {
+  ActionButton,
+  ActionStatus,
   DataTable,
   EmptyState,
   Fields,
+  useSince,
   InspectorContext,
   InspectorSection,
   NumberField,
@@ -183,7 +186,8 @@ function ObjectFields({ label, value, checks = false }: { label: string; value: 
   return <Fields label={label} rows={Object.entries(value as Record<string, unknown>).map(([k, v]) => [mappedLabel(FIELD_LABELS, k), <Value key={k} value={v} />])} />;
 }
 
-export function AuditLog({ profiles }: { profiles: Profile[] }) {
+/** *focusId*: a record to select and open (a reviewed change's result links here). */
+export function AuditLog({ profiles, focusId = "" }: { profiles: Profile[]; focusId?: string }) {
   const [report, setReport] = useState<AuditReport | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -191,7 +195,7 @@ export function AuditLog({ profiles }: { profiles: Profile[] }) {
   const [server, setServer] = useState("");
   const [since, setSince] = useState("");
   const [status, setStatus] = useState("");
-  const [selected, setSelected] = useState("");
+  const [selected, setSelected] = useState(focusId);
   const [exporting, setExporting] = useState("");
   const [exported, setExported] = useState("");
   const [exportError, setExportError] = useState("");
@@ -265,7 +269,7 @@ export function AuditLog({ profiles }: { profiles: Profile[] }) {
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
-  const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(!!focusId);
   const [inspectorWidth, setInspectorWidth] = useState(storedInspectorWidth);
   const sheet = width > 0 && width < SHEET_WIDTH;
   const inspector: InspectorShared = useMemo(
@@ -298,7 +302,9 @@ export function AuditLog({ profiles }: { profiles: Profile[] }) {
   const names = [...new Set([...profiles.map((p) => p.name).filter(Boolean), ...seen])].sort((a, b) => a.localeCompare(b));
   const filtered = !!(server || since || status);
 
+  const exportingSince = useSince(!!exporting);
   async function exportAs(format: "csv" | "json") {
+    if (exporting) return;
     setExporting(format);
     setExported("");
     setExportError("");
@@ -511,31 +517,27 @@ export function AuditLog({ profiles }: { profiles: Profile[] }) {
                 >
                   <h3 className="popover-title">Export as</h3>
                   <div className="audit-export-formats" role="group" aria-label="Export formats">
+                    {/* The clicked format shows that it works and keeps focus; the other waits. */}
                     {(["csv", "json"] as const).map((format) => (
-                      <button
+                      <ActionButton
                         key={format}
-                        type="button"
-                        className="button"
                         data-format={format}
-                        disabled={!!exporting}
+                        busy={exporting === format}
+                        busyLabel="Exporting…"
+                        aria-disabled={(!!exporting && exporting !== format) || undefined}
                         onClick={() => void exportAs(format)}
                       >
-                        {exporting === format ? <span className="spinner" aria-hidden="true" /> : null}
                         {format.toUpperCase()}
-                      </button>
+                      </ActionButton>
                     ))}
                   </div>
                   <p className="hint">Every record that matches the filters, not only the ones listed.</p>
-                  {exported && (
-                    <p className="hint" role="status">
-                      Saved {exported}
-                    </p>
-                  )}
-                  {exportError && (
-                    <p className="error" role="alert">
-                      {exportError}
-                    </p>
-                  )}
+                  {/* Always mounted: the export, where it was saved, or why it failed. */}
+                  <ActionStatus className="export-status" state={{
+                    phase: exporting ? "pending" : exportError ? "failed" : exported ? "done" : "idle",
+                    message: exporting ? `Exporting the matching records as ${exporting.toUpperCase()}…` : exportError || (exported ? `Saved ${exported}` : ""),
+                    startedAt: exportingSince,
+                  }} />
                 </Popover>
               </div>
             </>

@@ -3,7 +3,7 @@
 // never a password. Click an entry to insert its SQL at the cursor.
 import { useEffect, useState } from "react";
 import { api, type EditorHistoryItem } from "./api";
-import { ConfirmSheet, IconButton, SearchField, StatusPill, type Tone } from "./kit";
+import { ActionStatus, ConfirmSheet, IconButton, SearchField, StatusPill, useSince, type Tone } from "./kit";
 import { duration } from "./ResultsPane";
 
 const TONE: Record<string, [Tone, string]> = {
@@ -36,6 +36,10 @@ export function HistoryPanel({
   const [filter, setFilter] = useState("");
   const [clearing, setClearing] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Try again reads the history once more after a failed read.
+  const [attempt, setAttempt] = useState(0);
+  const reading = items === null && !error;
+  const readingSince = useSince(reading);
   useEffect(() => {
     const controller = new AbortController();
     api<{ items: EditorHistoryItem[] }>("editor/history", { limit: 200 }, controller.signal).then(
@@ -48,7 +52,7 @@ export function HistoryPanel({
       },
     );
     return () => controller.abort();
-  }, [refresh]);
+  }, [refresh, attempt]);
   async function clear() {
     setBusy(true);
     try {
@@ -66,7 +70,7 @@ export function HistoryPanel({
     (i) => !needle || i.sql.toLowerCase().includes(needle) || (i.connection.name || "").toLowerCase().includes(needle),
   );
   return (
-    <aside className="history-panel" aria-label="Run history">
+    <aside className="history-panel" aria-label="Run history" aria-busy={reading || undefined}>
       <div className="browser-head">
         <h2>History</h2>
         <button type="button" className="text-button" disabled={!items?.length} onClick={() => setClearing(true)}>
@@ -77,16 +81,11 @@ export function HistoryPanel({
       <div className="browser-filter">
         <SearchField label="Search history" value={filter} onChange={setFilter} />
       </div>
-      {error && (
-        <p className="browser-status is-error" role="alert">
-          {error}
-        </p>
-      )}
-      {items === null && !error && (
-        <p className="browser-status" role="status">
-          <span className="spinner" /> Reading history…
-        </p>
-      )}
+      {/* Always mounted: reading and a failed read are announced; Try again reads once more. */}
+      <ActionStatus className="browser-status" state={{
+        phase: reading ? "pending" : error ? "failed" : "idle",
+        message: reading ? "Reading the run history…" : error, startedAt: readingSince,
+      }} onRetry={error && items === null ? () => { setError(""); setAttempt((n) => n + 1); } : undefined} />
       {items && !shown.length && <p className="browser-status">{items.length ? "Nothing matches." : "Runs appear here."}</p>}
       <ol className="history-list">
         {shown.map((item, k) => {

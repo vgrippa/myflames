@@ -545,7 +545,11 @@
         "checks": [
           "buffer_pool"
         ],
-        "name": "innodb_buffer_pool_size"
+        "name": "innodb_buffer_pool_size",
+        "documentation": {
+          "url": "https://dev.mysql.com/doc/refman/8.4/en/innodb-parameters.html#sysvar_innodb_buffer_pool_size",
+          "source": "MySQL 8.4 Reference Manual"
+        }
       },
       {
         "value": "OFF",
@@ -553,10 +557,13 @@
         "scope": "global",
         "apply_type": "static",
         "modifiable": "restart",
-        "type": "integer",
-        "values": null,
-        "min": 0,
-        "max": 100000,
+        "type": "boolean",
+        "values": [
+          "OFF",
+          "ON"
+        ],
+        "min": null,
+        "max": null,
         "block_size": 1,
         "default": "OFF",
         "source": "COMPILED",
@@ -567,12 +574,16 @@
         "set_host": null,
         "persisted": false,
         "modified": false,
-        "description": "The memory InnoDB uses to cache data and index pages. Pages not in it are read from disk. Compared here with the size of the InnoDB tablespace files on disk (free space inside them included), because a pool much smaller than the data cannot hold much of it.",
+        "description": null,
         "checks": [
           "buffer_pool",
           "dedicated_server"
         ],
-        "name": "innodb_dedicated_server"
+        "name": "innodb_dedicated_server",
+        "documentation": {
+          "url": "https://dev.mysql.com/doc/refman/8.4/en/innodb-parameters.html#option_mysqld_innodb-dedicated-server",
+          "source": "MySQL 8.4 Reference Manual"
+        }
       },
       {
         "value": "262144",
@@ -598,7 +609,11 @@
         "checks": [
           "sort_buffer_size"
         ],
-        "name": "sort_buffer_size"
+        "name": "sort_buffer_size",
+        "documentation": {
+          "url": "https://dev.mysql.com/doc/refman/8.4/en/server-system-variables.html#sysvar_sort_buffer_size",
+          "source": "MySQL 8.4 Reference Manual"
+        }
       },
       {
         "value": "262144",
@@ -624,7 +639,11 @@
         "checks": [
           "join_buffer_size"
         ],
-        "name": "join_buffer_size"
+        "name": "join_buffer_size",
+        "documentation": {
+          "url": "https://dev.mysql.com/doc/refman/8.4/en/server-system-variables.html#sysvar_join_buffer_size",
+          "source": "MySQL 8.4 Reference Manual"
+        }
       },
       {
         "value": "TempTable",
@@ -650,7 +669,11 @@
         "checks": [
           "tmp_tables"
         ],
-        "name": "internal_tmp_mem_storage_engine"
+        "name": "internal_tmp_mem_storage_engine",
+        "documentation": {
+          "url": "https://dev.mysql.com/doc/refman/8.4/en/server-system-variables.html#sysvar_internal_tmp_mem_storage_engine",
+          "source": "MySQL 8.4 Reference Manual"
+        }
       },
       {
         "value": "16777216",
@@ -676,7 +699,11 @@
         "checks": [
           "tmp_tables"
         ],
-        "name": "tmp_table_size"
+        "name": "tmp_table_size",
+        "documentation": {
+          "url": "https://dev.mysql.com/doc/refman/8.4/en/server-system-variables.html#sysvar_tmp_table_size",
+          "source": "MySQL 8.4 Reference Manual"
+        }
       },
       {
         "value": "1073741824",
@@ -702,7 +729,11 @@
         "checks": [
           "tmp_tables"
         ],
-        "name": "temptable_max_ram"
+        "name": "temptable_max_ram",
+        "documentation": {
+          "url": "https://dev.mysql.com/doc/refman/8.4/en/server-system-variables.html#sysvar_temptable_max_ram",
+          "source": "MySQL 8.4 Reference Manual"
+        }
       },
       {
         "value": "0",
@@ -728,7 +759,11 @@
         "checks": [
           "tmp_tables"
         ],
-        "name": "temptable_max_mmap"
+        "name": "temptable_max_mmap",
+        "documentation": {
+          "url": "https://dev.mysql.com/doc/refman/8.4/en/server-system-variables.html#sysvar_temptable_max_mmap",
+          "source": "MySQL 8.4 Reference Manual"
+        }
       },
       {
         "value": "1",
@@ -754,7 +789,11 @@
         "checks": [
           "flush_log"
         ],
-        "name": "innodb_flush_log_at_trx_commit"
+        "name": "innodb_flush_log_at_trx_commit",
+        "documentation": {
+          "url": "https://dev.mysql.com/doc/refman/8.4/en/innodb-parameters.html#sysvar_innodb_flush_log_at_trx_commit",
+          "source": "MySQL 8.4 Reference Manual"
+        }
       },
       {
         "value": "1",
@@ -780,7 +819,11 @@
         "checks": [
           "sync_binlog"
         ],
-        "name": "sync_binlog"
+        "name": "sync_binlog",
+        "documentation": {
+          "url": "https://dev.mysql.com/doc/refman/8.4/en/replication-options-binary-log.html#sysvar_sync_binlog",
+          "source": "MySQL 8.4 Reference Manual"
+        }
       },
       {
         "value": "O_DIRECT",
@@ -806,7 +849,11 @@
         "checks": [
           "flush_method"
         ],
-        "name": "innodb_flush_method"
+        "name": "innodb_flush_method",
+        "documentation": {
+          "url": "https://dev.mysql.com/doc/refman/8.4/en/innodb-parameters.html#sysvar_innodb_flush_method",
+          "source": "MySQL 8.4 Reference Manual"
+        }
       },
       {
         "value": "104857600",
@@ -832,7 +879,11 @@
         "checks": [
           "redo"
         ],
-        "name": "innodb_redo_log_capacity"
+        "name": "innodb_redo_log_capacity",
+        "documentation": {
+          "url": "https://dev.mysql.com/doc/refman/8.4/en/innodb-parameters.html#sysvar_innodb_redo_log_capacity",
+          "source": "MySQL 8.4 Reference Manual"
+        }
       },
       {
         "value": "50331648",
@@ -858,7 +909,11 @@
         "checks": [
           "redo"
         ],
-        "name": "innodb_log_file_size"
+        "name": "innodb_log_file_size",
+        "documentation": {
+          "url": "https://dev.mysql.com/doc/refman/8.4/en/innodb-parameters.html#sysvar_innodb_log_file_size",
+          "source": "MySQL 8.4 Reference Manual"
+        }
       },
       {
         "value": "2",
@@ -884,7 +939,11 @@
         "checks": [
           "redo"
         ],
-        "name": "innodb_log_files_in_group"
+        "name": "innodb_log_files_in_group",
+        "documentation": {
+          "url": "https://dev.mysql.com/doc/refman/8.4/en/innodb-parameters.html#sysvar_innodb_log_files_in_group",
+          "source": "MySQL 8.4 Reference Manual"
+        }
       },
       {
         "value": "151",
@@ -910,7 +969,11 @@
         "checks": [
           "max_connections"
         ],
-        "name": "max_connections"
+        "name": "max_connections",
+        "documentation": {
+          "url": "https://dev.mysql.com/doc/refman/8.4/en/server-system-variables.html#sysvar_max_connections",
+          "source": "MySQL 8.4 Reference Manual"
+        }
       },
       {
         "value": "4000",
@@ -936,7 +999,11 @@
         "checks": [
           "table_open_cache"
         ],
-        "name": "table_open_cache"
+        "name": "table_open_cache",
+        "documentation": {
+          "url": "https://dev.mysql.com/doc/refman/8.4/en/server-system-variables.html#sysvar_table_open_cache",
+          "source": "MySQL 8.4 Reference Manual"
+        }
       },
       {
         "value": "OFF",
@@ -962,7 +1029,11 @@
         "checks": [
           "performance_schema"
         ],
-        "name": "performance_schema"
+        "name": "performance_schema",
+        "documentation": {
+          "url": "https://dev.mysql.com/doc/refman/8.4/en/performance-schema-system-variables.html#sysvar_performance_schema",
+          "source": "MySQL 8.4 Reference Manual"
+        }
       },
       {
         "value": "OFF",
@@ -988,7 +1059,11 @@
         "checks": [
           "slow_log"
         ],
-        "name": "slow_query_log"
+        "name": "slow_query_log",
+        "documentation": {
+          "url": "https://dev.mysql.com/doc/refman/8.4/en/server-system-variables.html#sysvar_slow_query_log",
+          "source": "MySQL 8.4 Reference Manual"
+        }
       },
       {
         "value": "10",
@@ -1014,7 +1089,11 @@
         "checks": [
           "slow_log"
         ],
-        "name": "long_query_time"
+        "name": "long_query_time",
+        "documentation": {
+          "url": "https://dev.mysql.com/doc/refman/8.4/en/server-system-variables.html#sysvar_long_query_time",
+          "source": "MySQL 8.4 Reference Manual"
+        }
       },
       {
         "value": "FILE",
@@ -1044,7 +1123,11 @@
         "checks": [
           "slow_log"
         ],
-        "name": "log_output"
+        "name": "log_output",
+        "documentation": {
+          "url": "https://dev.mysql.com/doc/refman/8.4/en/server-system-variables.html#sysvar_log_output",
+          "source": "MySQL 8.4 Reference Manual"
+        }
       },
       {
         "value": "10000",
@@ -1070,7 +1153,11 @@
         "checks": [
           "io_capacity"
         ],
-        "name": "innodb_io_capacity"
+        "name": "innodb_io_capacity",
+        "documentation": {
+          "url": "https://dev.mysql.com/doc/refman/8.4/en/innodb-parameters.html#sysvar_innodb_io_capacity",
+          "source": "MySQL 8.4 Reference Manual"
+        }
       },
       {
         "value": "20000",
@@ -1096,7 +1183,11 @@
         "checks": [
           "io_capacity"
         ],
-        "name": "innodb_io_capacity_max"
+        "name": "innodb_io_capacity_max",
+        "documentation": {
+          "url": "https://dev.mysql.com/doc/refman/8.4/en/innodb-parameters.html#sysvar_innodb_io_capacity_max",
+          "source": "MySQL 8.4 Reference Manual"
+        }
       },
       {
         "value": "one-thread-per-connection",
@@ -1122,7 +1213,11 @@
         "checks": [
           "thread_handling"
         ],
-        "name": "thread_handling"
+        "name": "thread_handling",
+        "documentation": {
+          "url": "https://dev.mysql.com/doc/refman/8.4/en/server-system-variables.html#sysvar_thread_handling",
+          "source": "MySQL 8.4 Reference Manual"
+        }
       },
       {
         "value": null,
@@ -1146,7 +1241,8 @@
         "modified": null,
         "description": null,
         "checks": [],
-        "name": "unknown_parameter"
+        "name": "unknown_parameter",
+        "documentation": null
       },
       {
         "value": "/data/server",
@@ -1170,7 +1266,8 @@
         "modified": false,
         "description": "Synthetic parameter metadata for browser coverage.",
         "checks": [],
-        "name": "option_file_parameter"
+        "name": "option_file_parameter",
+        "documentation": null
       },
       {
         "value": "partial",
@@ -1194,7 +1291,8 @@
         "modified": false,
         "description": "Synthetic parameter metadata for browser coverage.",
         "checks": [],
-        "name": "truncated_parameter"
+        "name": "truncated_parameter",
+        "documentation": null
       },
       {
         "value": "2048",
@@ -1218,7 +1316,8 @@
         "modified": true,
         "description": "Synthetic parameter metadata for browser coverage.",
         "checks": [],
-        "name": "modified_parameter"
+        "name": "modified_parameter",
+        "documentation": null
       },
       {
         "value": "0",
@@ -1242,7 +1341,8 @@
         "modified": false,
         "description": "Synthetic catalog item 0 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_00"
+        "name": "catalog_parameter_00",
+        "documentation": null
       },
       {
         "value": "1",
@@ -1266,7 +1366,8 @@
         "modified": false,
         "description": "Synthetic catalog item 1 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_01"
+        "name": "catalog_parameter_01",
+        "documentation": null
       },
       {
         "value": "2",
@@ -1290,7 +1391,8 @@
         "modified": false,
         "description": "Synthetic catalog item 2 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_02"
+        "name": "catalog_parameter_02",
+        "documentation": null
       },
       {
         "value": "3",
@@ -1314,7 +1416,8 @@
         "modified": false,
         "description": "Synthetic catalog item 3 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_03"
+        "name": "catalog_parameter_03",
+        "documentation": null
       },
       {
         "value": "4",
@@ -1338,7 +1441,8 @@
         "modified": false,
         "description": "Synthetic catalog item 4 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_04"
+        "name": "catalog_parameter_04",
+        "documentation": null
       },
       {
         "value": "5",
@@ -1362,7 +1466,8 @@
         "modified": false,
         "description": "Synthetic catalog item 5 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_05"
+        "name": "catalog_parameter_05",
+        "documentation": null
       },
       {
         "value": "6",
@@ -1386,7 +1491,8 @@
         "modified": false,
         "description": "Synthetic catalog item 6 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_06"
+        "name": "catalog_parameter_06",
+        "documentation": null
       },
       {
         "value": "7",
@@ -1410,7 +1516,8 @@
         "modified": false,
         "description": "Synthetic catalog item 7 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_07"
+        "name": "catalog_parameter_07",
+        "documentation": null
       },
       {
         "value": "8",
@@ -1434,7 +1541,8 @@
         "modified": false,
         "description": "Synthetic catalog item 8 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_08"
+        "name": "catalog_parameter_08",
+        "documentation": null
       },
       {
         "value": "9",
@@ -1458,7 +1566,8 @@
         "modified": false,
         "description": "Synthetic catalog item 9 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_09"
+        "name": "catalog_parameter_09",
+        "documentation": null
       },
       {
         "value": "10",
@@ -1482,7 +1591,8 @@
         "modified": false,
         "description": "Synthetic catalog item 10 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_10"
+        "name": "catalog_parameter_10",
+        "documentation": null
       },
       {
         "value": "11",
@@ -1506,7 +1616,8 @@
         "modified": false,
         "description": "Synthetic catalog item 11 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_11"
+        "name": "catalog_parameter_11",
+        "documentation": null
       },
       {
         "value": "12",
@@ -1530,7 +1641,8 @@
         "modified": false,
         "description": "Synthetic catalog item 12 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_12"
+        "name": "catalog_parameter_12",
+        "documentation": null
       },
       {
         "value": "13",
@@ -1554,7 +1666,8 @@
         "modified": false,
         "description": "Synthetic catalog item 13 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_13"
+        "name": "catalog_parameter_13",
+        "documentation": null
       },
       {
         "value": "14",
@@ -1578,7 +1691,8 @@
         "modified": false,
         "description": "Synthetic catalog item 14 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_14"
+        "name": "catalog_parameter_14",
+        "documentation": null
       },
       {
         "value": "15",
@@ -1602,7 +1716,8 @@
         "modified": false,
         "description": "Synthetic catalog item 15 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_15"
+        "name": "catalog_parameter_15",
+        "documentation": null
       },
       {
         "value": "16",
@@ -1626,7 +1741,8 @@
         "modified": false,
         "description": "Synthetic catalog item 16 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_16"
+        "name": "catalog_parameter_16",
+        "documentation": null
       },
       {
         "value": "17",
@@ -1650,7 +1766,8 @@
         "modified": false,
         "description": "Synthetic catalog item 17 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_17"
+        "name": "catalog_parameter_17",
+        "documentation": null
       },
       {
         "value": "18",
@@ -1674,7 +1791,8 @@
         "modified": false,
         "description": "Synthetic catalog item 18 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_18"
+        "name": "catalog_parameter_18",
+        "documentation": null
       },
       {
         "value": "19",
@@ -1698,7 +1816,8 @@
         "modified": false,
         "description": "Synthetic catalog item 19 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_19"
+        "name": "catalog_parameter_19",
+        "documentation": null
       },
       {
         "value": "20",
@@ -1722,7 +1841,8 @@
         "modified": false,
         "description": "Synthetic catalog item 20 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_20"
+        "name": "catalog_parameter_20",
+        "documentation": null
       },
       {
         "value": "21",
@@ -1746,7 +1866,8 @@
         "modified": false,
         "description": "Synthetic catalog item 21 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_21"
+        "name": "catalog_parameter_21",
+        "documentation": null
       },
       {
         "value": "22",
@@ -1770,7 +1891,8 @@
         "modified": false,
         "description": "Synthetic catalog item 22 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_22"
+        "name": "catalog_parameter_22",
+        "documentation": null
       },
       {
         "value": "23",
@@ -1794,7 +1916,8 @@
         "modified": false,
         "description": "Synthetic catalog item 23 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_23"
+        "name": "catalog_parameter_23",
+        "documentation": null
       },
       {
         "value": "24",
@@ -1818,7 +1941,8 @@
         "modified": false,
         "description": "Synthetic catalog item 24 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_24"
+        "name": "catalog_parameter_24",
+        "documentation": null
       },
       {
         "value": "25",
@@ -1842,7 +1966,8 @@
         "modified": false,
         "description": "Synthetic catalog item 25 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_25"
+        "name": "catalog_parameter_25",
+        "documentation": null
       },
       {
         "value": "26",
@@ -1866,7 +1991,8 @@
         "modified": false,
         "description": "Synthetic catalog item 26 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_26"
+        "name": "catalog_parameter_26",
+        "documentation": null
       },
       {
         "value": "27",
@@ -1890,7 +2016,8 @@
         "modified": false,
         "description": "Synthetic catalog item 27 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_27"
+        "name": "catalog_parameter_27",
+        "documentation": null
       },
       {
         "value": "28",
@@ -1914,7 +2041,8 @@
         "modified": false,
         "description": "Synthetic catalog item 28 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_28"
+        "name": "catalog_parameter_28",
+        "documentation": null
       },
       {
         "value": "29",
@@ -1938,7 +2066,8 @@
         "modified": false,
         "description": "Synthetic catalog item 29 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_29"
+        "name": "catalog_parameter_29",
+        "documentation": null
       },
       {
         "value": "30",
@@ -1962,7 +2091,8 @@
         "modified": false,
         "description": "Synthetic catalog item 30 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_30"
+        "name": "catalog_parameter_30",
+        "documentation": null
       },
       {
         "value": "31",
@@ -1986,7 +2116,8 @@
         "modified": false,
         "description": "Synthetic catalog item 31 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_31"
+        "name": "catalog_parameter_31",
+        "documentation": null
       },
       {
         "value": "32",
@@ -2010,7 +2141,8 @@
         "modified": false,
         "description": "Synthetic catalog item 32 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_32"
+        "name": "catalog_parameter_32",
+        "documentation": null
       },
       {
         "value": "33",
@@ -2034,7 +2166,8 @@
         "modified": false,
         "description": "Synthetic catalog item 33 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_33"
+        "name": "catalog_parameter_33",
+        "documentation": null
       },
       {
         "value": "34",
@@ -2058,7 +2191,8 @@
         "modified": false,
         "description": "Synthetic catalog item 34 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_34"
+        "name": "catalog_parameter_34",
+        "documentation": null
       },
       {
         "value": "35",
@@ -2082,7 +2216,8 @@
         "modified": false,
         "description": "Synthetic catalog item 35 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_35"
+        "name": "catalog_parameter_35",
+        "documentation": null
       },
       {
         "value": "36",
@@ -2106,7 +2241,8 @@
         "modified": false,
         "description": "Synthetic catalog item 36 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_36"
+        "name": "catalog_parameter_36",
+        "documentation": null
       },
       {
         "value": "37",
@@ -2130,7 +2266,8 @@
         "modified": false,
         "description": "Synthetic catalog item 37 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_37"
+        "name": "catalog_parameter_37",
+        "documentation": null
       },
       {
         "value": "38",
@@ -2154,7 +2291,8 @@
         "modified": false,
         "description": "Synthetic catalog item 38 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_38"
+        "name": "catalog_parameter_38",
+        "documentation": null
       },
       {
         "value": "39",
@@ -2178,8 +2316,10 @@
         "modified": false,
         "description": "Synthetic catalog item 39 for searching and windowed tables.",
         "checks": [],
-        "name": "catalog_parameter_39"
+        "name": "catalog_parameter_39",
+        "documentation": null
       }
-    ]
+    ],
+    "flavor": "mysql"
   }
 }

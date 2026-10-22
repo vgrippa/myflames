@@ -41,12 +41,13 @@ export function createZoom(options: ZoomOptions): ZoomController {
   let { width, height } = options;
   const win = root.ownerDocument.defaultView || window;
   let box: Box = { x: 0, y: 0, w: width, h: height };
-  let drag: { x: number; y: number; bx: number; by: number } | null = null;
+  let drag: { x: number; y: number; bx: number; by: number; scaleX: number; scaleY: number } | null = null;
   let moved = false;
   let wheelFrame: number | null = null;
   let wheelDelta = 0;
   let wheelPoint = { x: 0, y: 0 };
   let wheelTime: number | null = null;
+  let wheelScreen: { left: number; top: number; width: number; height: number; pageHeight: number } | null = null;
   let fitted = false;
   const minimum = () => width / 5;
   const maximum = () => Math.max(width * 8, graphWidth * 2, graphHeight * width / height * 2);
@@ -65,6 +66,7 @@ export function createZoom(options: ZoomOptions): ZoomController {
     wheelFrame = null;
     wheelDelta = 0;
     wheelTime = null;
+    wheelScreen = null;
   }
 
   function paint() {
@@ -135,14 +137,19 @@ export function createZoom(options: ZoomOptions): ZoomController {
     wheelTime = now;
     let step = wheelDelta * (1 - Math.exp(-elapsed / 55));
     step = Math.max(-elapsed * 0.0006, Math.min(elapsed * 0.0006, step));
-    wheelDelta -= step;
-    const matrix = viewport.getScreenCTM();
-    if (!matrix) { stopWheel(); return; }
-    let point = viewport.createSVGPoint();
-    point.x = wheelPoint.x;
-    point.y = wheelPoint.y;
-    point = point.matrixTransform(matrix.inverse());
-    zoom(Math.exp(step), (point.x - box.x) / box.w, (point.y - box.y) / box.h);
+    if (Math.abs(wheelDelta - step) <= 0.0008) {
+      step = wheelDelta;
+      wheelDelta = 0;
+    } else {
+      wheelDelta -= step;
+    }
+    if (!wheelScreen || !(wheelScreen.width > 0) || !(wheelScreen.height > 0)) {
+      stopWheel();
+      return;
+    }
+    const px = (wheelPoint.x - wheelScreen.left) / wheelScreen.width;
+    const py = (wheelPoint.y - wheelScreen.top) / wheelScreen.height;
+    zoom(Math.exp(step), px, py);
     if (Math.abs(wheelDelta) > 0.00001) {
       wheelFrame = win.requestAnimationFrame(animateWheel);
     } else {
@@ -178,9 +185,19 @@ export function createZoom(options: ZoomOptions): ZoomController {
     event.preventDefault();
     // The nested viewport's bounds include the oversized pan background;
     // use its visible height at the parent's screen scale for page units.
-    const parentMatrix = root.getScreenCTM();
-    const pageHeight = height * (parentMatrix ? Math.abs(parentMatrix.d) : 1);
-    const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? pageHeight : 1;
+    if (!wheelScreen) {
+      const matrix = viewport.getScreenCTM();
+      if (!matrix) return;
+      const parentMatrix = root.getScreenCTM();
+      wheelScreen = {
+        left: matrix.a * box.x + matrix.e,
+        top: matrix.d * box.y + matrix.f,
+        width: matrix.a * box.w,
+        height: matrix.d * box.h,
+        pageHeight: height * (parentMatrix ? Math.abs(parentMatrix.d) : 1),
+      };
+    }
+    const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? wheelScreen.pageHeight : 1;
     const delta = Math.max(-100, Math.min(100, event.deltaY * unit)) * 0.001;
     // Reversing a gesture responds immediately, without old momentum.
     if (wheelDelta * delta < 0) wheelDelta = 0;
@@ -193,7 +210,9 @@ export function createZoom(options: ZoomOptions): ZoomController {
     if (event.button !== 0) return;
     stopWheel();
     moved = false;
-    drag = { x: event.clientX, y: event.clientY, bx: box.x, by: box.y };
+    const matrix = viewport.getScreenCTM();
+    if (!matrix || !matrix.a || !matrix.d) return;
+    drag = { x: event.clientX, y: event.clientY, bx: box.x, by: box.y, scaleX: matrix.a, scaleY: matrix.d };
   });
   on(viewport, "pointermove", (event: PointerEvent) => {
     if (!drag) return;
@@ -202,11 +221,9 @@ export function createZoom(options: ZoomOptions): ZoomController {
     if (Math.abs(dx) + Math.abs(dy) > 4) {
       fitted = false;
       moved = true;
-      viewport.setPointerCapture(event.pointerId);
-      const matrix = viewport.getScreenCTM();
-      if (!matrix) return;
-      box.x = drag.bx - dx / matrix.a;
-      box.y = drag.by - dy / matrix.d;
+      if (!viewport.hasPointerCapture(event.pointerId)) viewport.setPointerCapture(event.pointerId);
+      box.x = drag.bx - dx / drag.scaleX;
+      box.y = drag.by - dy / drag.scaleY;
       paint();
     }
   });

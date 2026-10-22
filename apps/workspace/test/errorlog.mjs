@@ -10,7 +10,9 @@ const mysql = await load("errorlog-mysql-8.4.json");
 const maria = await load("errorlog-mariadb-11.4-file.json");
 const remote = await load("errorlog-mariadb-11.4-remote.json");
 const denied = await load("errorlog-mysql-8.4-denied.json");
-const h = await open("/api/live/error-log", "errorlog");
+// The list of views docked, as a person who docked it: this suite asserts
+// the list's markers and keys (server-nav covers the floating default).
+const h = await open("/api/live/error-log", "errorlog", {}, { list: "docked" });
 const { page, state, text } = h;
 state.fallback = { status: 200, body: mysql };
 const view = '.server-view[data-view="errorlog"]';
@@ -30,7 +32,8 @@ const refresh = async report => {
   state.queue.push({ status: 200, body: report });
   const before = state.seen.length;
   await h.refresh();
-  await page.waitForFunction((selector, summary) => document.querySelector(selector)?.textContent.includes(summary), {}, `${view} .summary-line`, report.summary.text);
+  const expected = report.available ? report.summary.text : (report.reason_text || report.summary.text);
+  await page.waitForFunction((selector, summary) => document.querySelector(selector)?.textContent.includes(summary), {}, `${view} .summary-line`, expected);
   await h.idle(view);
   assert.equal(state.seen.length, before + 1);
 };
@@ -38,11 +41,16 @@ try {
   await h.server();
   await h.view("errorlog");
   assert.equal(await page.$eval('#server-nav-errorlog', e => e.closest("li")?.previousElementSibling?.querySelector("button")?.dataset.view), "innodb");
-  await pause(300);
-  assert.equal(state.seen.length, 0, "opening Error log reads nothing until Load");
-  await page.click(`${view} button.primary`);
+  // Opening the view on screen reads it at once (once per connection), like
+  // every other view: no Load button.
   await page.waitForSelector(rows); await h.idle(view);
-  assert.equal(state.seen.length, 1, "Load error log reads once");
+  assert.equal(state.seen.length, 1, "opening Error log reads once");
+  assert.equal(await page.$(`${view} .view-empty button`), null, "no Load button");
+  // Once per connection: another view and back reads nothing more.
+  await h.view("innodb");
+  await h.view("errorlog");
+  await pause(300);
+  assert.equal(state.seen.length, 1, "coming back reads nothing again");
   assert.deepEqual(Object.keys(state.seen[0]).sort(), ["connection", "limit"]);
   assert.equal(state.seen[0].connection.host, "127.0.0.1");
   assert.equal(state.seen[0].limit, 200);
@@ -170,21 +178,25 @@ try {
   await group("entries");
 
   await refresh(remote);
-  assert.match(await text(`${view} .gate`), /another computer/);
+  assert.match(await text(`${view} .summary-line`), /another computer/);
+  assert.equal(await page.$(`${view} .gate`), null, "no duplicate unavailable banner");
+  assert.equal(await page.$eval(`${view} .fact-strip dd span[title]`, el => el.getAttribute("title")), "MariaDB 11.4.8-MariaDB");
+  assert.equal(await text(`${view} .fact-strip dd span[title]`), "MariaDB 11.4.8");
   assert.match(await text(`${view} [aria-label="Error log settings"]`), /log_error.*\.\/host.err.*datadir.*\/var\/lib\/mysql/s);
-  assert.equal(await text(`${view} pre`), remote.how_to_view);
+  assert.equal(await text(`${view} .errorlog-how-to-text code`), "tail -n 200 /var/lib/mysql/host.err");
   assert.equal(await page.$(table), null);
   assert.match(await text("#server-nav-errorlog"), /not available/);
   // Keep clipboard assertions inside the page; never alter the user's clipboard.
   await page.evaluate(() => Object.defineProperty(navigator, "clipboard", { configurable: true,
     value: { writeText: async value => { window.errorLogCopied = value; } } }));
-  await h.button("Copy instructions", `${view} `);
+  await h.button("Copy", `${view} `);
   await page.waitForFunction(() => !!window.errorLogCopied);
-  assert.equal(await page.evaluate(() => window.errorLogCopied), remote.how_to_view);
+  assert.equal(await page.evaluate(() => window.errorLogCopied), "tail -n 200 /var/lib/mysql/host.err");
   await h.narrow("errorlog-remote-390.png");
   await refresh(denied);
-  assert.match(await text(`${view} .gate`), /SELECT privilege/);
-  assert.equal(await page.$(`${view} pre`), null);
+  assert.match(await text(`${view} .summary-line`), /SELECT privilege/);
+  assert.equal(await page.$(`${view} .gate`), null);
+  assert.equal(await page.$(`${view} .errorlog-how-to-text`), null);
   assert.ok(await page.$("#server-nav-errorlog .status-dot.is-unknown"));
 
   const quiet = structuredClone(mysql);

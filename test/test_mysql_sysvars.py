@@ -286,6 +286,56 @@ class TestGenerator(unittest.TestCase):
         '''
         self.assertIsNone(gen.parse_sources({"sql/sys_vars.cc": source})["x"][3])
 
+    def test_help_texts_follow_the_declarations(self):
+        source = {
+            "sql/sys_vars.cc": r'''
+              #define PORT_HELP "Port " STRINGIFY_ARG(MYSQL_PORT)
+              static Sys_var_ulong Sys_limit("limit", "The most "
+                  "clients\n  allowed", GLOBAL_VAR(limit), CMD_LINE(REQUIRED_ARG));
+              static Sys_var_uint Sys_port("port", "Port " STRINGIFY_ARG(MYSQL_PORT), GLOBAL_VAR(port));
+              static Sys_var_deprecated_alias Sys_old("old_limit", Sys_limit);
+              static Sys_var_bool Sys_have("have_x", "have_x", READ_ONLY GLOBAL_VAR(have));
+              #ifdef A
+              static Sys_var_bool Sys_v1("variant", "One text", GLOBAL_VAR(v));
+              #else
+              static Sys_var_bool Sys_v2("variant", "Another text", GLOBAL_VAR(v));
+              #endif
+            ''',
+            "storage/innobase/handler/ha_innodb.cc": '''
+                MYSQL_SYSVAR_ULONG(size, size, PLUGIN_VAR_RQCMDARG, "Pool size.", nullptr, nullptr, 1, 1, 9, 0);
+                MYSQL_THDVAR_UINT(wait, PLUGIN_VAR_OPCMDARG, "Wait seconds.", nullptr, nullptr, 0, 0, 100, 1);
+                MYSQL_SYSVAR_BOOL(hidden, x, PLUGIN_VAR_NOSYSVAR, "Hidden", nullptr, nullptr, 0);
+            ''',
+            "components/validate_password/validate_password_imp.cc": '''
+                mysql_service_component_sys_variable_register->register_variable(
+                    "validate_password", "length", PLUGIN_VAR_INT, "Minimum length", nullptr, nullptr, &arg, &len);
+            '''}
+        result = gen.parse_help(source)
+        self.assertEqual(result["limit"], "The most clients allowed", "joined, with a newline escape as a space")
+        self.assertEqual(result["old_limit"], result["limit"])
+        self.assertNotIn("port", result, "a text built with a macro is unknown")
+        self.assertNotIn("have_x", result, "a text that repeats the name says nothing")
+        self.assertNotIn("variant", result, "build variants that disagree leave the text out")
+        self.assertEqual((result["innodb_size"], result["innodb_wait"]), ("Pool size.", "Wait seconds."))
+        self.assertNotIn("innodb_hidden", result)
+        self.assertEqual(result["validate_password.length"], "Minimum length")
+
+    def test_generated_help_texts(self):
+        from myflames import mysql_sysvar_help as helps
+        self.assertRegex(helps.HELP_TAGS[0], r"^mysql-8\.4\.\d+$")
+        self.assertRegex(helps.HELP_TAGS[1], r"^mysql-8\.0\.\d+$")
+        self.assertGreaterEqual(len(helps.HELP), 700)
+        self.assertEqual(helps.HELP["max_connections"], "The number of simultaneous clients allowed")
+        self.assertEqual(helps.HELP["innodb_buffer_pool_size"],
+                         "The size of the memory buffer InnoDB uses to cache data and indexes of its tables.")
+        self.assertIn("expire_logs_days", helps.HELP_80)
+        self.assertNotIn("expire_logs_days", helps.HELP, "removed in 8.4")
+        for table in (helps.HELP, helps.HELP_80):
+            for name, text in table.items():
+                with self.subTest(name=name):
+                    self.assertTrue(text and text == " ".join(text.split()) and text.lower() != name)
+        self.assertFalse(set(helps.HELP_80.items()) & set(helps.HELP.items()), "HELP_80 holds only differences")
+
     def test_newest_stable_tag_is_numeric(self):
         with mock.patch.object(gen, "git", return_value="mysql-8.4.9\nmysql-8.4.10\nmysql-8.4.11-preview\n"):
             self.assertEqual(gen.source_tags("unused"), ("mysql-9.7.0", "mysql-8.4.10"))

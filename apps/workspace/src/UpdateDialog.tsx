@@ -39,7 +39,7 @@ export function UpdateDialog({
       const res = await downloadAppUpdate(updateInfo.asset_url, updateInfo.html_url);
       setDownloadResult(res);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Failed to download update.");
+      setError(e instanceof Error ? e.message : "Could not download the update.");
     } finally {
       setDownloading(false);
     }
@@ -52,7 +52,7 @@ export function UpdateDialog({
   return (
     <dialog
       ref={dialog}
-      className="dialog update-dialog"
+      className="import-dialog update-dialog"
       aria-labelledby="update-dialog-title"
       onCancel={(e) => {
         e.preventDefault();
@@ -60,7 +60,7 @@ export function UpdateDialog({
       }}
     >
       <div className="dialog-heading">
-        <h2 id="update-dialog-title">Software Update</h2>
+        <h2 id="update-dialog-title">Software update</h2>
         <button
           ref={closeButton}
           type="button"
@@ -88,12 +88,12 @@ export function UpdateDialog({
         {isNewer ? (
           <div className="update-status-badge available">
             <Icon name="import" size={14} />
-            <span>A new version of myflames is available!</span>
+            <span>myflames {latest} is available.</span>
           </div>
         ) : (
           <div className="update-status-badge up-to-date">
             <Icon name="check" size={14} />
-            <span>You are running the newest version.</span>
+            <span>myflames is up to date.</span>
           </div>
         )}
 
@@ -105,7 +105,7 @@ export function UpdateDialog({
 
         {updateInfo?.release_notes && (
           <div className="update-notes-container">
-            <div className="update-notes-heading">Release Notes</div>
+            <div className="update-notes-heading">Release notes</div>
             <pre className="update-notes-content">{updateInfo.release_notes}</pre>
           </div>
         )}
@@ -155,10 +155,10 @@ export function UpdateDialog({
             {downloading ? (
               <>
                 <span className="spinner" aria-hidden="true" />
-                <span>Downloading update…</span>
+                <span>Downloading…</span>
               </>
             ) : (
-              <span>Update Binary</span>
+              <span>Download update</span>
             )}
           </button>
         )}

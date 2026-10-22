@@ -14,8 +14,11 @@
   --shadow-sheet: 0 20px 48px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.08);
   /* The edge of a table with columns scrolled beyond it. */
   --table-edge-shadow: rgba(0, 0, 0, 0.14);
-  --motion-hover: 120ms cubic-bezier(0.2, 0, 0, 1);
-  --motion-panel: 160ms cubic-bezier(0.16, 1, 0.3, 1);
+  --duration-fast: 80ms;
+  --duration-normal: 130ms;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --motion-hover: var(--duration-fast) var(--ease-out);
+  --motion-panel: var(--duration-normal) var(--ease-out);
   --sidebar-w: 208px;
   /* Window footer: one line, tall enough for its Retry button (24 px). */
   --statusbar-h: 26px;
@@ -67,6 +70,13 @@
   --danger-text: #c4261d;
   --danger-fill: #d93025;
   --danger-soft: rgba(255, 59, 48, 0.12);
+  /* Connection type: their own hues, never the status colors (Problem is red, OK green). */
+  --env-prod: #af52de;
+  --env-prod-text: #8338b0;
+  --env-prod-soft: rgba(175, 82, 222, 0.12);
+  --env-dev: #1594a8;
+  --env-dev-text: #0b7489;
+  --env-dev-soft: rgba(48, 176, 199, 0.13);
   --danger-line: rgba(255, 59, 48, 0.25);
   --danger-ink: #ffffff;
   --info: #0071e3;
@@ -203,6 +213,13 @@
   --danger-text: #c4261d;
   --danger-fill: #d93025;
   --danger-soft: rgba(255, 59, 48, 0.12);
+  /* Connection type: their own hues, never the status colors (Problem is red, OK green). */
+  --env-prod: #af52de;
+  --env-prod-text: #8338b0;
+  --env-prod-soft: rgba(175, 82, 222, 0.12);
+  --env-dev: #1594a8;
+  --env-dev-text: #0b7489;
+  --env-dev-soft: rgba(48, 176, 199, 0.13);
   --danger-line: rgba(255, 59, 48, 0.25);
   --danger-ink: #ffffff;
   --info: #0071e3;
@@ -260,6 +277,13 @@
     --danger-text: #ff8378;
     --danger-fill: #d93025;
     --danger-soft: rgba(255, 107, 94, 0.16);
+    /* Connection type: their own hues, never the status colors (Problem is red, OK green). */
+    --env-prod: #bf5af2;
+    --env-prod-text: #d39cf5;
+    --env-prod-soft: rgba(191, 90, 242, 0.18);
+    --env-dev: #40c8e0;
+    --env-dev-text: #6fd6e8;
+    --env-dev-soft: rgba(64, 200, 224, 0.16);
     --danger-line: rgba(255, 107, 94, 0.4);
     --danger-ink: #ffffff;
     --info: #63b3ff;
@@ -324,6 +348,13 @@
   --danger-text: #ff8378;
   --danger-fill: #d93025;
   --danger-soft: rgba(255, 107, 94, 0.16);
+  /* Connection type: their own hues, never the status colors (Problem is red, OK green). */
+  --env-prod: #bf5af2;
+  --env-prod-text: #d39cf5;
+  --env-prod-soft: rgba(191, 90, 242, 0.18);
+  --env-dev: #40c8e0;
+  --env-dev-text: #6fd6e8;
+  --env-dev-soft: rgba(64, 200, 224, 0.16);
   --danger-line: rgba(255, 107, 94, 0.4);
   --danger-ink: #ffffff;
   --info: #63b3ff;
@@ -644,6 +675,7 @@ details > p {
   padding: var(--space-2) var(--space-1) var(--space-1);
   display: grid;
   gap: var(--space-2);
+  animation: chrome-panel-in var(--motion-panel);
 }
 .settings-theme-group {
   display: flex;
@@ -663,17 +695,40 @@ details > p {
   justify-content: center;
   font-size: var(--text-sm);
 }
+.settings-option-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-2) 0;
+  border-top: 1px solid var(--line);
+}
+.settings-option-row.news-option-row {
+  border-top: 0;
+  padding-top: var(--space-1);
+}
 .settings-popover .session-toggle {
   align-items: flex-start;
   margin: 0;
-  padding: var(--space-2) var(--space-2) 0;
-  border-top: 1px solid var(--line);
+  padding: 0;
+  border-top: 0;
   font-size: var(--text-md);
   line-height: var(--leading-md);
   color: var(--ink);
+  flex: 1 1 auto;
+  min-width: 0;
 }
 .settings-popover .session-toggle input {
   margin: 3px 0 0;
+}
+/* The news switch joins the startup option's group: no second hairline. */
+.settings-popover .news-toggle {
+  border-top: 0;
+  padding-top: 0;
+  white-space: normal;
+}
+.settings-popover .hint.error {
+  color: var(--danger-text);
 }
 .settings-popover .hint {
   margin: calc(-1 * var(--space-1)) 0 0;
@@ -822,6 +877,10 @@ details > p {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.topbar-info {
+  margin-left: calc(-1 * var(--space-2));
+  margin-right: auto;
+}
 .topbar-menu-dropdown {
   min-width: 180px;
   padding: var(--space-1) 0;
@@ -874,24 +933,12 @@ details > p {
 .topbar-actions .save-state {
   margin-right: var(--space-1);
 }
-.topbar-actions .local-badge {
-  margin-left: var(--space-1);
-}
 .save-state {
   font-size: var(--text-sm);
   color: var(--ink-muted);
 }
 .save-state.unsaved {
   color: var(--warn-text);
-}
-.local-badge {
-  font-size: var(--text-xs);
-  line-height: var(--leading-xs);
-  font-weight: 500;
-  background: var(--surface-hover);
-  color: var(--ink-muted);
-  padding: 2px var(--space-2);
-  border-radius: var(--radius-sm);
 }
 main {
   padding: var(--space-5) var(--space-6) var(--space-4);
@@ -1032,11 +1079,18 @@ main.is-flush > :is(.error, .notice) {
 }
 .button:active:not(:disabled) {
   background: var(--surface-hover);
+  transition: none;
 }
 .button.primary {
   background: var(--accent-fill);
   border-color: var(--accent-fill);
   color: var(--accent-ink);
+}
+.button.primary:active:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+  filter: brightness(0.95);
+  transition: none;
 }
 .button.danger {
   color: var(--danger-text);
@@ -1044,6 +1098,11 @@ main.is-flush > :is(.error, .notice) {
 }
 .button.danger:hover:not(:disabled) {
   background: var(--danger-soft);
+}
+.button.danger:active:not(:disabled) {
+  background: var(--danger-soft);
+  filter: brightness(0.96);
+  transition: none;
 }
 .text-button {
   background: none;
@@ -1081,6 +1140,10 @@ main.is-flush > :is(.error, .notice) {
 }
 .icon-button:hover:not(:disabled) {
   background: var(--surface-hover);
+}
+.icon-button:active:not(:disabled) {
+  background: var(--surface-muted);
+  transition: none;
 }
 .badge {
   display: inline-flex;
@@ -1412,6 +1475,8 @@ details[open] > summary > .strip-text {
   background: var(--surface);
   color: var(--ink);
 }
+/* Saving keeps notebook fields stable while the request is in flight. */
+.notebook-sheet > fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
 .notebook-sheet::backdrop {
   background: var(--scrim);
 }
@@ -2146,8 +2211,11 @@ main:has(> .library) { padding: 0; max-width: none; }
 .library-split {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
-  height: calc(100dvh - var(--topbar-height) - var(--toolbar-h));
+  height: calc(100dvh - var(--topbar-height));
   min-height: 0;
+}
+.library-split.is-empty {
+  grid-template-columns: 1fr;
 }
 .library-master {
   display: flex;
@@ -2626,8 +2694,7 @@ main:has(> .library) { padding: 0; max-width: none; }
   .topbar {
     padding: 0 var(--space-4);
   }
-  .topbar .save-state,
-  .local-badge {
+  .topbar .save-state {
     display: none;
   }
   :root {
@@ -2842,6 +2909,10 @@ main:has(> .library) { padding: 0; max-width: none; }
   }
 }
 @media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0ms;
+    --duration-normal: 0ms;
+  }
   * {
     scroll-behavior: auto !important;
     animation-duration: 0.01ms !important;
@@ -2980,7 +3051,8 @@ main:has(> .library) { padding: 0; max-width: none; }
 
 /* Write safety (db-operations): the safety state in the window footer, the
    type dot in the picker, and the type in connection rows. Production is the
-   danger color, Development the ok color, Read-only neutral (an outline). */
+   purple, Development teal (their own hues, so neither reads as a status:
+   Problem stays red and OK green), Read-only neutral (an outline). */
 .type-dot {
   flex: none;
   width: 8px;
@@ -2988,10 +3060,10 @@ main:has(> .library) { padding: 0; max-width: none; }
   border-radius: 100%;
 }
 .type-dot.is-production {
-  background: var(--danger);
+  background: var(--env-prod);
 }
 .type-dot.is-development {
-  background: var(--ok);
+  background: var(--env-dev);
 }
 .type-dot.is-read-only {
   border: 1.5px solid var(--ink-muted);
@@ -3013,12 +3085,12 @@ main:has(> .library) { padding: 0; max-width: none; }
   color: var(--ink);
 }
 .type-tag.is-production {
-  background: var(--danger-soft);
-  color: var(--danger-text);
+  background: var(--env-prod-soft);
+  color: var(--env-prod-text);
 }
 .type-tag.is-development {
-  background: var(--ok-soft);
-  color: var(--ok-text);
+  background: var(--env-dev-soft);
+  color: var(--env-dev-text);
 }
 .connection-safety {
   display: flex;
@@ -3403,6 +3475,22 @@ button, .plan-item, .main-nav button {
 .badge, kbd {
   border-radius: var(--radius-xs);
 }
+kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  padding: 1px 5px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-muted);
+  box-shadow: inset 0 -1px 0 var(--line-strong);
+  color: var(--ink-secondary);
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  line-height: 1.3;
+  white-space: nowrap;
+}
 .sidebar {
   width: var(--sidebar-width);
   position: fixed;
@@ -3481,6 +3569,27 @@ button, .plan-item, .main-nav button {
 }
 .main-nav button.active > svg {
   color: var(--accent-text);
+}
+/* A place with nothing for the connection in use (Cluster on a server that is
+   not part of one): looks disabled, stays focusable and opens the place, and
+   its tooltip and hidden text say why. */
+.main-nav button.is-muted:not(.active) {
+  color: var(--ink-faint);
+}
+.main-nav button.is-muted:not(.active) > svg {
+  color: var(--ink-faint);
+  opacity: 0.7;
+}
+/* Selected, it still looks disabled: a neutral gray fill instead of the
+   accent, and the faint text and icon stay. */
+.main-nav button.is-muted.active {
+  color: var(--ink-faint);
+  background: var(--surface-hover);
+  font-weight: 400;
+}
+.main-nav button.is-muted.active > svg {
+  color: var(--ink-faint);
+  opacity: 0.7;
 }
 :is(.main-nav button, .source-item, .plan-select, .query-document, .brand):focus-visible {
   outline: 2px solid var(--focus);
@@ -3579,11 +3688,143 @@ button, .plan-item, .main-nav button {
   border-top: 1px solid var(--line);
   padding: var(--space-2) 0 0;
 }
+.rail-open-plans {
+  display: none;
+}
+.rail-plans-popover {
+  min-width: 220px;
+  max-width: 280px;
+}
 .app.sidebar-collapsed {
   --sidebar-width: 0px;
 }
 .app.sidebar-collapsed .sidebar {
   display: none;
+}
+@media (max-width: 900px) and (min-width: 651px) {
+  .app,
+  .app.sidebar-collapsed {
+    --sidebar-width: 48px;
+  }
+  .app.sidebar-collapsed .sidebar {
+    display: flex;
+  }
+  .sidebar:not(:has(> .sidebar-drawer.open)) {
+    width: 48px;
+    padding: 0 6px var(--space-2);
+    align-items: center;
+  }
+  .sidebar:not(:has(> .sidebar-drawer.open)) .sidebar-head {
+    justify-content: center;
+    width: 100%;
+  }
+  .sidebar:not(:has(> .sidebar-drawer.open)) .brand {
+    padding: 0;
+    width: 36px;
+    height: 32px;
+    justify-content: center;
+  }
+  .sidebar:not(:has(> .sidebar-drawer.open)) .brand-name,
+  .sidebar:not(:has(> .sidebar-drawer.open)) .sidebar-footer .session-status span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .sidebar:not(:has(> .sidebar-drawer.open)) .main-nav button .sidebar-label {
+    position: absolute;
+    inset: 0;
+    font-size: 0;
+    line-height: 0;
+    color: transparent;
+    overflow: hidden;
+  }
+  .sidebar:not(:has(> .sidebar-drawer.open)) .sidebar-drawer {
+    width: 100%;
+    align-items: center;
+    overflow-x: hidden;
+  }
+  .sidebar:not(:has(> .sidebar-drawer.open)) :is(.nav-group-label, .open-plans, .open-queries) {
+    display: none;
+  }
+  .sidebar:not(:has(> .sidebar-drawer.open)) .main-nav {
+    width: 100%;
+    align-items: center;
+    gap: 2px;
+  }
+  .sidebar:not(:has(> .sidebar-drawer.open)) .main-nav button {
+    position: relative;
+    width: 36px;
+    height: 28px;
+    min-height: 28px;
+    padding: 0;
+    justify-content: center;
+  }
+  .sidebar:not(:has(> .sidebar-drawer.open)) .main-nav button .nav-marker {
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    margin: 0;
+  }
+  .sidebar:not(:has(> .sidebar-drawer.open)) .main-nav button .nav-marker .count-badge {
+    display: none;
+  }
+  .sidebar:not(:has(> .sidebar-drawer.open)) .rail-open-plans {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 100%;
+    margin-top: var(--space-2);
+    padding-top: var(--space-2);
+    border-top: 1px solid var(--line);
+  }
+  .rail-plans-button {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 32px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--ink-muted);
+  }
+  .rail-plans-button:hover {
+    background: var(--surface-hover);
+    color: var(--ink);
+  }
+  .rail-plans-button .count-badge {
+    position: absolute;
+    top: 1px;
+    right: 1px;
+    min-width: 15px;
+    height: 15px;
+    padding: 0 3px;
+    font-size: 10px;
+    line-height: 15px;
+  }
+  .sidebar:not(:has(> .sidebar-drawer.open)) .sidebar-footer {
+    flex-direction: column;
+    width: 100%;
+    gap: var(--space-1);
+    padding-top: var(--space-2);
+    align-items: center;
+  }
+  .sidebar:not(:has(> .sidebar-drawer.open)) .sidebar-footer .session-status {
+    flex: none;
+    width: auto;
+    justify-content: center;
+  }
+  .sidebar:has(> .sidebar-drawer.open) {
+    width: 208px;
+    z-index: 25;
+    box-shadow: 0 0 0 100vw var(--scrim), var(--shadow-popover);
+  }
 }
 .workspace {
   /* Runtime charts inherit the workspace's surface roles. Reports and
@@ -3616,10 +3857,19 @@ button, .plan-item, .main-nav button {
 .workspace[data-place="query"] .query-lab {
   height: calc(100dvh - var(--topbar-height) - var(--statusbar-h));
 }
+/* Query digest, a place of its own, is the same height as the Query editor
+   it came from, so its table and inspector scroll on their own and the page
+   never grows with the rows. */
+.digest-place {
+  display: flex;
+  height: calc(100dvh - var(--topbar-height) - var(--statusbar-h));
+  min-width: 0;
+  overflow: hidden;
+}
 .workspace:is([data-place="server"], [data-place="workload"], [data-place="tuning"]) .server-view {
   min-height: calc(100dvh - var(--topbar-height) - var(--statusbar-h));
 }
-.workspace:is([data-place="server"], [data-place="workload"]) .server-layout:not(.is-compact) > .server-source-wrap:not(.is-floating) > .source-list,
+.workspace:is([data-place="server"], [data-place="workload"]) .server-layout:not(.is-compact) > .server-source-wrap > .source-list,
 .workspace .view-inspector:not(.is-sheet) {
   max-height: calc(100dvh - var(--topbar-height) - var(--statusbar-h));
 }
@@ -3815,9 +4065,28 @@ button, .plan-item, .main-nav button {
   font-size: var(--text-sm);
   overflow-wrap: anywhere;
 }
-.picker-manage {
-  justify-self: start;
+/* The picker's menu items: Account and privileges, Manage connections. */
+.picker-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
   margin-top: var(--space-1);
+}
+.picker-account {
+  overflow-wrap: anywhere;
+}
+/* Account and privileges: UI text size, as the popover it replaces; the
+   connection's name can be a long endpoint. */
+.account-sheet .sheet-body {
+  font-size: var(--text-md);
+  line-height: var(--leading-md);
+}
+.account-sheet .sheet-body ul {
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-5);
+}
+.account-sheet .sheet-lead {
+  overflow-wrap: anywhere;
 }
 /* The window footer: one line of facts about what is on screen. On the
    places that send to the connection in use it starts with that
@@ -3839,18 +4108,30 @@ button, .plan-item, .main-nav button {
   font-size: var(--text-xs);
   line-height: var(--leading-xs);
   font-variant-numeric: tabular-nums;
-  overflow: auto;
+  overflow: hidden;
   white-space: nowrap;
-  scrollbar-width: none;
-}
-.window-statusbar::-webkit-scrollbar {
-  display: none;
 }
 .window-statusbar > span {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.window-statusbar > .safety-status,
+.window-statusbar > span[data-status="engine"],
+.window-statusbar > span[data-status="duration"],
+.window-statusbar > span[data-status="rows"],
+.window-statusbar > span[data-status="refreshing"] {
   flex: none;
 }
 .window-statusbar-refresh {
+  flex: none;
   margin-left: auto;
+}
+@media (max-width: 900px) {
+  .window-statusbar {
+    gap: var(--space-3);
+  }
 }
 .safety-status {
   display: inline-flex;
@@ -3867,19 +4148,19 @@ button, .plan-item, .main-nav button {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--danger);
+  background: var(--env-prod);
 }
 .safety-status.is-development .safety-status-dot {
-  background: var(--ok);
+  background: var(--env-dev);
 }
 .safety-status.is-read-only .safety-status-dot {
   background: none;
   border: 1.5px solid var(--ink-muted);
 }
-/* Production assumed: the settings are not known yet, so a hollow red dot. */
+/* Production assumed: the settings are not known yet, so a hollow Production dot. */
 .safety-status.is-unknown .safety-status-dot {
   background: none;
-  border: 1.5px solid var(--danger);
+  border: 1.5px solid var(--env-prod);
 }
 .safety-retry {
   min-height: 24px;
@@ -3992,39 +4273,16 @@ button, .plan-item, .main-nav button {
   .workspace:is([data-place="server"], [data-place="workload"]) .refresh-all-status {
     max-width: 72px;
   }
-  /* The places that send to a connection give the picker the room: Local
-     steps aside (the window footer names the connection) and Privileges
-     keeps its key icon, named for screen readers and in its tooltip. */
-  .workspace:is([data-place="query"], [data-place="server"], [data-place="workload"], [data-place="replication"], [data-place="tuning"]) .window-toolbar .local-badge,
-  .window-toolbar .privileges-button-label {
-    display: none;
-  }
-  .window-toolbar .privileges-button {
-    flex: none;
-    width: var(--control-h);
-    padding: 0;
-    justify-content: center;
-  }
 }
 /* The 720 px window: Server and Workload draw their own actions into the top
    bar, so the connection pill keeps its name (the type stays on its dot, in
-   its accessible name and first in the window footer) and Privileges keeps
-   its key icon, named for screen readers and in its tooltip. */
+   its accessible name and first in the window footer). */
 @media (max-width: 800px) {
   .workspace:is([data-place="server"], [data-place="workload"]) .window-toolbar .connection-pill .safety-tags {
     display: none;
   }
   .workspace:is([data-place="server"], [data-place="workload"]) .window-toolbar .connection-pill-name {
     min-width: 4ch;
-  }
-  .workspace:is([data-place="server"], [data-place="workload"]) .window-toolbar .privileges-button {
-    flex: none;
-    width: var(--control-h);
-    padding: 0;
-    justify-content: center;
-  }
-  .workspace:is([data-place="server"], [data-place="workload"]) .window-toolbar .privileges-button-label {
-    display: none;
   }
 }
 @media (max-width: 650px) {
@@ -4065,15 +4323,6 @@ button, .plan-item, .main-nav button {
     min-width: 76px;
     max-width: 132px;
   }
-  .window-toolbar .privileges-button {
-    flex: none;
-    width: var(--control-h);
-    padding: 0;
-    justify-content: center;
-  }
-  .window-toolbar .privileges-button-label {
-    display: none;
-  }
   .window-toolbar .connection-pill-name {
     flex: 1 1 auto;
     min-width: 4ch;
@@ -4084,7 +4333,6 @@ button, .plan-item, .main-nav button {
   .connection-pill .safety-tags {
     display: none;
   }
-  .window-toolbar .local-badge,
   .place-actions-slot {
     display: none;
   }
@@ -4300,7 +4548,7 @@ button, .plan-item, .main-nav button {
 .connections .cell-empty { color: var(--ink-muted); }
 .home .connections > .view-toolbar { min-height: var(--space-7); }
 .home .connections .view-title h2 { font-size: var(--text-lg); line-height: var(--leading-lg); }
-.home .connections .toolbar-controls { margin-left: auto; }
+.home .connections .toolbar-controls { order: 0; flex: 0 0 auto; margin-left: auto; }
 .home .connections .toolbar-end { display: none; }
 .home .connections .view-main { padding: var(--space-3) var(--space-4) var(--space-4); }
 .home .connections .view-inspector:not(.is-sheet) { max-height: calc(100dvh - var(--topbar-height) - var(--statusbar-h)); }
@@ -4312,6 +4560,10 @@ button, .plan-item, .main-nav button {
 .connections .data-table-wrap { max-height: var(--home-table-max-h); }
 .connections .data-table .type-tag { display: block; width: fit-content; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .connections .connection-type-short { display: none; }
+/* The compact table hides the Type column (narrow windows, or while a
+   connection is edited): the short type label keeps the type in words, so
+   it never rests on the dot's color alone. */
+.connections [data-compact] .cell-name > .connection-type-short { display: inline; flex: none; color: var(--ink-muted); font-size: var(--text-sm); }
 .connections .connection-row.is-active td:first-child { box-shadow: inset var(--radius-xs) 0 var(--accent); }
 .connection-actions { width: var(--control-h); height: var(--control-h); padding: 0; }
 .connection-menu { display: grid; gap: var(--space-1); }
@@ -4437,7 +4689,7 @@ button, .plan-item, .main-nav button {
 .query-document[aria-current=true] > svg { color: var(--accent-text); }
 .sidebar-footer { margin-top: auto; }
 
-/* Brand version & update badge */
+/* Brand */
 .brand-group {
   display: flex;
   align-items: center;
@@ -4447,32 +4699,14 @@ button, .plan-item, .main-nav button {
 .brand-name {
   font-weight: 600;
 }
-/* Icon-only, so the icon uses the warning text color (at least 3:1 on its
-   tint over the sidebar in both appearances). */
-.update-badge-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--warn-text);
-  background: var(--warn-soft);
-  border: 1px solid var(--warn-line);
-  border-radius: var(--radius-sm);
-  padding: 3px;
-  cursor: pointer;
-  animation: pulse-update 2.5s infinite ease-in-out;
-}
-.update-badge-button:hover {
-  border-color: var(--warn);
-}
-@keyframes pulse-update {
-  0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 var(--warn-line); }
-  50% { transform: scale(1.08); box-shadow: 0 0 8px 2px var(--warn-line); }
-}
-
 /* Update dialog */
 .update-dialog {
   max-width: 480px;
   width: 90vw;
+}
+/* View on GitHub on the left; Later and Download update together on the right. */
+.update-dialog .action-spacer {
+  flex: 1;
 }
 .update-body {
   display: flex;

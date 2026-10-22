@@ -1,0 +1,1120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/vgrippa/myflames/docs/schemas/proxysql-1.0.json",
+  "title": "myflames ProxySQL Admin report (proxysql-1.0)",
+  "description": "What the ProxySQL place reads from ProxySQL's Admin interface (myflames/proxysql.py read_status): backends as ProxySQL runs them with their connection pool and configuration row, hostgroups and the monitors that manage them, query rules, the top query digests, and the differences between memory, runtime and disk. Read-only; the changes each row offers are listed in its actions. Each digest carries where the rules send it, evaluated here, and each rule the digests it applies to.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "captured_at",
+    "available",
+    "is_proxysql",
+    "version",
+    "uptime_s",
+    "message",
+    "status",
+    "status_why",
+    "config_readable",
+    "servers",
+    "hostgroups",
+    "monitors",
+    "query_rules",
+    "query_digests",
+    "pending",
+    "metrics",
+    "summary",
+    "actions",
+    "notes",
+    "statements",
+    "fingerprints"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "proxysql-1.0"
+    },
+    "captured_at": {
+      "type": "string"
+    },
+    "available": {
+      "type": "boolean"
+    },
+    "is_proxysql": {
+      "type": "boolean",
+      "description": "admin-version exists in global_variables and SELECT @@version echoes it."
+    },
+    "version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "uptime_s": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "message": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "status": {
+      "enum": [
+        "ok",
+        "watch",
+        "problem",
+        "unknown"
+      ]
+    },
+    "status_why": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "config_readable": {
+      "type": "boolean",
+      "description": "main.mysql_servers and main.mysql_query_rules were readable; without them no change is offered."
+    },
+    "servers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "key",
+          "hostgroup_id",
+          "hostname",
+          "port",
+          "runtime_status",
+          "status_detail",
+          "settings",
+          "pool",
+          "config",
+          "config_key",
+          "config_note",
+          "monitor",
+          "role",
+          "tone",
+          "why",
+          "actions"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "rt|hostgroup|host|port for a runtime row, cfg|... for a configuration row not in runtime."
+          },
+          "hostgroup_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "hostname": {
+            "type": "string"
+          },
+          "port": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "runtime_status": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What ProxySQL runs (the pool's status word, e.g. SHUNNED_REPLICATION_LAG); null when only configured."
+          },
+          "status_detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "settings": {
+            "type": "object"
+          },
+          "pool": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "description": "stats_mysql_connection_pool for this runtime row; a column this ProxySQL lacks is absent.",
+            "properties": {
+              "conn_used": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "conn_free": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "conn_ok": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "conn_err": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "max_conn_used": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "queries": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "bytes_sent": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "bytes_recv": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "latency_us": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "status": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          },
+          "config": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "description": "A row of main.mysql_servers (the configuration in memory).",
+            "properties": {
+              "hostgroup_id": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "hostname": {
+                "type": "string"
+              },
+              "port": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "status": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "weight": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "max_connections": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "max_replication_lag": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "use_ssl": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "max_latency_ms": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "compression": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "gtid_port": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "comment": {
+                "type": "string"
+              }
+            }
+          },
+          "config_key": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": [
+                "integer",
+                "string"
+              ]
+            },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "config_note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "monitor": {
+            "enum": [
+              "galera",
+              "group_replication",
+              "replication",
+              "aws_aurora",
+              null
+            ]
+          },
+          "role": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tone": {
+            "enum": [
+              "ok",
+              "watch",
+              "problem",
+              "unknown"
+            ]
+          },
+          "why": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "actions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/action"
+            }
+          },
+          "action_notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "hostgroups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "monitor",
+          "role",
+          "servers",
+          "status",
+          "standby",
+          "queries",
+          "conn_used",
+          "conn_free",
+          "conn_err",
+          "tone",
+          "why"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "monitor": {
+            "enum": [
+              "galera",
+              "group_replication",
+              "replication",
+              "aws_aurora",
+              null
+            ]
+          },
+          "role": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "servers": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "ONLINE": {
+                "type": "integer"
+              },
+              "SHUNNED": {
+                "type": "integer"
+              },
+              "OFFLINE_SOFT": {
+                "type": "integer"
+              },
+              "OFFLINE_HARD": {
+                "type": "integer"
+              }
+            }
+          },
+          "standby": {
+            "type": "integer"
+          },
+          "queries": {
+            "type": "integer"
+          },
+          "conn_used": {
+            "type": "integer"
+          },
+          "conn_free": {
+            "type": "integer"
+          },
+          "conn_err": {
+            "type": "integer"
+          },
+          "tone": {
+            "enum": [
+              "ok",
+              "watch",
+              "problem",
+              "unknown"
+            ]
+          },
+          "why": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "monitors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "source",
+          "active"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "galera",
+              "group_replication",
+              "replication",
+              "aws_aurora"
+            ]
+          },
+          "source": {
+            "enum": [
+              "runtime",
+              "memory"
+            ]
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "writer_hostgroup": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "backup_writer_hostgroup": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "reader_hostgroup": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "offline_hostgroup": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_writers": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "writer_is_also_reader": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_transactions_behind": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "comment": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "query_rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "rule_id",
+          "active",
+          "destination_hostgroup",
+          "apply",
+          "hits",
+          "runtime_active",
+          "fields",
+          "actions"
+        ],
+        "properties": {
+          "rule_id": {
+            "type": "integer"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "username": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "schemaname": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "match_digest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "match_pattern": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "negate_match_pattern": {
+            "type": "boolean"
+          },
+          "destination_hostgroup": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "apply": {
+            "type": "boolean"
+          },
+          "comment": {
+            "type": "string"
+          },
+          "hits": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "runtime_active": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "fields": {
+            "type": "object",
+            "additionalProperties": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "actions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/action"
+            }
+          },
+          "digests": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Keys of the query digests listed here that this rule applies to, evaluated here; null when routing is not evaluated."
+          },
+          "digest_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "possible_digests": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Keys of digests that ran on this rule's destination hostgroup while a condition of the rule (match_pattern on the query text, or what a digest does not record) could not be tested here: it may apply to them."
+          }
+        }
+      }
+    },
+    "query_digests": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/digest"
+      },
+      "maxItems": 100
+    },
+    "pending": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "servers",
+        "query_rules"
+      ],
+      "properties": {
+        "servers": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "runtime",
+            "disk"
+          ],
+          "properties": {
+            "runtime": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "Differences between the configuration in memory and runtime; null when a copy could not be read."
+            },
+            "disk": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "Differences between memory and disk."
+            }
+          }
+        },
+        "query_rules": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "runtime",
+            "disk"
+          ],
+          "properties": {
+            "runtime": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "Differences between the configuration in memory and runtime; null when a copy could not be read."
+            },
+            "disk": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "Differences between memory and disk."
+            }
+          }
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": {
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "backends": {
+          "type": "integer"
+        },
+        "ONLINE": {
+          "type": "integer"
+        },
+        "SHUNNED": {
+          "type": "integer"
+        },
+        "OFFLINE_SOFT": {
+          "type": "integer"
+        },
+        "OFFLINE_HARD": {
+          "type": "integer"
+        },
+        "not_in_runtime": {
+          "type": "integer"
+        }
+      }
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/action"
+      },
+      "description": "Load and Save for the servers and query rules modules."
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "statements": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "fingerprints": {
+      "type": "object",
+      "additionalProperties": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "description": "SHA-256 of every row of each module copy (servers_memory, servers_runtime, servers_disk, query_rules_memory, ...); null when a table could not be read. A reviewed change binds the ones its statements depend on."
+    },
+    "routing": {
+      "$ref": "#/$defs/routing_context"
+    }
+  },
+  "$defs": {
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "danger",
+        "description"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "danger": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string"
+        },
+        "value": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "label",
+            "min",
+            "max",
+            "current"
+          ],
+          "properties": {
+            "label": {
+              "type": "string"
+            },
+            "min": {
+              "type": "integer"
+            },
+            "max": {
+              "type": "integer"
+            },
+            "current": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "routing": {
+      "type": "object",
+      "description": "Where the active runtime query rules send this digest, evaluated here with Python's re (proxysql_digests.Routing): ProxySQL uses PCRE or RE2 (mysql-query_processor_regex), and match_pattern is tested on the digest text, not the query text.",
+      "additionalProperties": false,
+      "required": [
+        "observed",
+        "expected",
+        "source",
+        "rules",
+        "decisive",
+        "approximate",
+        "possible",
+        "unknown_rules",
+        "default_hostgroup",
+        "verdict",
+        "text",
+        "why"
+      ],
+      "properties": {
+        "observed": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "The hostgroup the digest ran on; -1 is the query cache."
+        },
+        "expected": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "The hostgroup the rules, fast routing or the user's default hostgroup give it here."
+        },
+        "source": {
+          "enum": [
+            "rule",
+            "fast_routing",
+            "default",
+            null
+          ]
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "description": "The rules that apply to it, in order."
+        },
+        "decisive": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "The rule that set the destination hostgroup."
+        },
+        "approximate": {
+          "type": "boolean",
+          "description": "A rule on the way matched by match_pattern, tested on the digest text."
+        },
+        "possible": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "description": "Rules passed over (match_pattern or a condition a digest does not record) that send to the observed hostgroup."
+        },
+        "unknown_rules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "rule_id",
+              "why"
+            ],
+            "properties": {
+              "rule_id": {
+                "type": "integer"
+              },
+              "why": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "default_hostgroup": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "verdict": {
+          "enum": [
+            "match",
+            "mismatch",
+            "possible",
+            "local",
+            "cache",
+            "unknown"
+          ],
+          "description": "match: it ran where the rules send it; mismatch: on another hostgroup; possible: on the hostgroup of a rule that could not be tested here; local: a statement ProxySQL answers itself; cache: the query cache; unknown: not evaluated."
+        },
+        "text": {
+          "type": "string"
+        },
+        "why": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "routing_context": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "How routing was evaluated here: the regex engine ProxySQL uses, query processor iterations, and what could not be read.",
+      "additionalProperties": false,
+      "required": [
+        "evaluated",
+        "regex_engine",
+        "iterations",
+        "note"
+      ],
+      "properties": {
+        "evaluated": {
+          "type": "boolean"
+        },
+        "regex_engine": {
+          "enum": [
+            "PCRE",
+            "RE2",
+            null
+          ]
+        },
+        "regex_variable": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "iterations": {
+          "type": "integer"
+        },
+        "fast_routing_read": {
+          "type": "boolean"
+        },
+        "users_read": {
+          "type": "boolean"
+        },
+        "track_hostname": {
+          "type": "boolean"
+        },
+        "active_rules": {
+          "type": "integer"
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "digest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "hostgroup": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "schemaname": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "username": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "digest": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "digest_text": {
+          "type": "string"
+        },
+        "count_star": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "sum_time_us": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "min_time_us": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_time_us": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "avg_time_us": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "first_seen": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "last_seen": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "rows_sent": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "rows_affected": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "key": {
+          "type": "string",
+          "description": "The row's primary key (hostgroup, schemaname, username, client_address, digest) as one string."
+        },
+        "seen_span_s": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "last_seen minus first_seen, in seconds."
+        },
+        "rate_qps": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Executions per second between the first and the last execution (at least one second)."
+        },
+        "routing": {
+          "$ref": "#/$defs/routing"
+        }
+      },
+      "description": "One stats_mysql_query_digest row (times in microseconds, seen times in Unix seconds; a column this ProxySQL lacks is null) with where the query rules send it, evaluated here.",
+      "required": [
+        "key",
+        "hostgroup",
+        "digest_text",
+        "count_star",
+        "sum_time_us",
+        "routing"
+      ]
+    }
+  }
+}

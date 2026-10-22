@@ -1,0 +1,185 @@
+{
+ "schema_version": "cluster-1.0",
+ "engine": "mysql",
+ "server_version": "8.4.11-11.1",
+ "version_comment": "Percona XtraDB Cluster (GPL), Release rel11, Revision 33f7510, WSREP version 26.1.4.3",
+ "captured_at": "2026-10-20T14:40:00+00:00",
+ "uptime_s": 46,
+ "performance_schema": true,
+ "available": true,
+ "message": null,
+ "kind": "pxc",
+ "server": {
+  "hostname": "mf-pxc-1",
+  "port": 3306,
+  "report_host": null,
+  "server_uuid": "f225b7a6-cc94-11f1-9570-ba3c05ff270b"
+ },
+ "cluster": {
+  "name": "mf_pxc",
+  "uuid": "f3a8ecbe-cc94-11f1-8fe5-7724b6726eeb",
+  "size": 2,
+  "expected_size": 3,
+  "expected_source": "wsrep_cluster_address",
+  "component": "Primary",
+  "quorum": true,
+  "failures_tolerated": 0,
+  "topology": null,
+  "provider": {
+   "name": "Galera",
+   "version": "4.27(13ff9ed)",
+   "vendor": "Codership Oy <info@codership.com> (modified by Percona <https://percona.com/>)"
+  }
+ },
+ "status": "watch",
+ "status_why": [
+  "The component has 2 nodes; wsrep_cluster_address names 3 (this node included), and mf-pxc-2 is not in the component: it may be down or still joining.",
+  "With 2 nodes in the Primary component, losing one more by a crash or a network partition leaves the rest without a majority, so they go non-Primary and stop accepting writes (assumes equal pc.weight)."
+ ],
+ "local": "node:fbfa0b80-cc94-11f1-a429-3a43a27786f1",
+ "members": [
+  {
+   "key": "node:fbfa0b80-cc94-11f1-a429-3a43a27786f1",
+   "name": "pxc-1",
+   "address": "mf-pxc-1:3306",
+   "host": "mf-pxc-1",
+   "port": 3306,
+   "uuid": "fbfa0b80-cc94-11f1-a429-3a43a27786f1",
+   "state": "Synced",
+   "state_source": "wsrep_local_state_comment",
+   "role": null,
+   "version": null,
+   "local": true,
+   "status": "ok",
+   "status_why": [
+    "A full member, applying and accepting writes."
+   ],
+   "metrics": {
+    "local_state": 4,
+    "local_state_comment": "Synced",
+    "ready": true,
+    "connected": true,
+    "evs_state": "OPERATIONAL",
+    "local_recv_queue": 0,
+    "local_recv_queue_avg": 0.1,
+    "local_send_queue": 0,
+    "local_send_queue_avg": 0,
+    "flow_control_paused": 0,
+    "flow_control_active": false,
+    "flow_control_sent": 0,
+    "flow_control_recv": 0,
+    "cert_deps_distance": 1,
+    "local_cert_failures": 0,
+    "local_bf_aborts": 0,
+    "desync_count": 0,
+    "last_committed": 42,
+    "local_index": 1,
+    "cluster_conf_id": 4,
+    "cluster_weight": 2
+   },
+   "pxc_status": "SYNCED",
+   "segment": 0,
+   "actions": []
+  },
+  {
+   "key": "node:09cb6d51-cc95-11f1-80bc-a34fe0b347dd",
+   "name": "pxc-3",
+   "address": "mf-pxc-3:3306",
+   "host": "mf-pxc-3",
+   "port": 3306,
+   "uuid": "09cb6d51-cc95-11f1-80bc-a34fe0b347dd",
+   "state": "Synced",
+   "state_source": "pxc_cluster_view",
+   "role": null,
+   "version": null,
+   "local": false,
+   "status": "ok",
+   "status_why": [
+    "A full member, applying and accepting writes."
+   ],
+   "metrics": {},
+   "pxc_status": "SYNCED",
+   "segment": 0,
+   "actions": []
+  }
+ ],
+ "galera": {
+  "node_name": "pxc-1",
+  "node_address": "192.168.96.2",
+  "cluster_address": "gcomm://mf-pxc-1,mf-pxc-2,mf-pxc-3",
+  "incoming_addresses": [
+   "mf-pxc-3:3306",
+   "mf-pxc-1:3306"
+  ],
+  "gcomm_uuid": "fbfa0b80-cc94-11f1-a429-3a43a27786f1",
+  "desync": "OFF",
+  "pxc_strict_mode": "ENFORCING",
+  "pxc_maint_mode": "DISABLED",
+  "wsrep_on": null,
+  "members_source": "wsrep_cluster_members",
+  "address_nodes": 3,
+  "address_names_this_node": true,
+  "missing": [
+   "mf-pxc-2"
+  ],
+  "metrics": {
+   "local_state": 4,
+   "local_state_comment": "Synced",
+   "ready": true,
+   "connected": true,
+   "evs_state": "OPERATIONAL",
+   "local_recv_queue": 0,
+   "local_recv_queue_avg": 0.1,
+   "local_send_queue": 0,
+   "local_send_queue_avg": 0,
+   "flow_control_paused": 0,
+   "flow_control_active": false,
+   "flow_control_sent": 0,
+   "flow_control_recv": 0,
+   "cert_deps_distance": 1,
+   "local_cert_failures": 0,
+   "local_bf_aborts": 0,
+   "desync_count": 0,
+   "last_committed": 42,
+   "local_index": 1,
+   "cluster_conf_id": 4,
+   "cluster_weight": 2
+  },
+  "incomplete": []
+ },
+ "group_replication": null,
+ "metadata": null,
+ "routers": [],
+ "findings": [
+  {
+   "id": "size_below_configured",
+   "status": "watch",
+   "title": "Fewer nodes than configured",
+   "text": "The component has 2 nodes; wsrep_cluster_address names 3 (this node included), and mf-pxc-2 is not in the component: it may be down or still joining."
+  },
+  {
+   "id": "no_tolerance",
+   "status": "watch",
+   "title": "Cannot survive another failure",
+   "text": "With 2 nodes in the Primary component, losing one more by a crash or a network partition leaves the rest without a majority, so they go non-Primary and stop accepting writes (assumes equal pc.weight)."
+  }
+ ],
+ "summary": {
+  "members": 2,
+  "ok": 2,
+  "watch": 0,
+  "problem": 0,
+  "unknown": 0
+ },
+ "statements": [
+  "SHOW GLOBAL VARIABLES",
+  "SHOW GLOBAL STATUS (wsrep_%)",
+  "SELECT mysql.wsrep_cluster_members",
+  "SELECT performance_schema.pxc_cluster_view"
+ ],
+ "notes": [
+  "Failures tolerated assumes equal pc.weight on every node (the default): a Primary component needs more than half of the total weight.",
+  "wsrep_flow_control_paused and the queue averages cover the time since the provider's statistics were last reset (FLUSH STATUS) or since start.",
+  "The other nodes' states come from performance_schema.pxc_cluster_view on this node; this node's own from wsrep_local_state_comment."
+ ]
+}

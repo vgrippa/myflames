@@ -22,6 +22,167 @@ import os from "node:os";
 import path from "node:path";
 import { load, open, pause } from "./perf-harness.mjs";
 
+// Socket-free coverage of the shell-owned run lifecycle and actual Tuning
+// rendering. The browser path below continues to cover focus and downloads.
+if (process.argv.includes("--unit")) {
+  const { build, transform } = await import("esbuild");
+  const { createRequire } = await import("node:module");
+  const { fileURLToPath } = await import("node:url");
+  const React = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const source = await fs.readFile(new URL("../src/Server.tsx", import.meta.url), "utf8");
+  const helper = source.slice(source.indexOf("function refreshDiagramDatabase("), source.indexOf("/** Below this width"));
+  const helperCode = (await transform(`${helper}\nreturn refreshDiagramDatabase;`, { loader: "ts" })).code;
+  const database = new Function(helperCode)();
+  const documents = [null, { source: { kind: "import" } }, { source: { kind: "server", key: "other", database: "shop" } },
+    { source: { kind: "server", key: "current", database: "shop" } }];
+  assert.deepEqual(documents.map(doc => database(doc, " selected ", "current")), ["selected", "", "", "shop"]);
+  assert.equal(database(null, "  ", "current"), "");
+  assert.equal(database({ source: { kind: "server", key: "current" } }, "shop", "current"), "");
+  assert.equal((source.match(/refreshTasks\(\)/g) || []).length, 2, "tasks are built only on Refresh all, never to render a count");
+  const tasks = source.slice(source.indexOf("  function refreshTasks()"), source.indexOf("  /** Refresh every Server section"));
+  const viewsCode = (await transform(await fs.readFile(new URL("../src/serverViews.ts", import.meta.url), "utf8"), { loader: "ts", format: "cjs" })).code;
+  const viewModule = { exports: {} };
+  new Function("module", viewsCode)(viewModule);
+  const { ALL_SERVER_VIEWS } = viewModule.exports;
+  const taskCode = (await transform(tasks, { loader: "ts" })).code;
+  for (const diagram of documents) {
+    const scope = { latestConnection: { current: {} }, connectionKey: () => "current", lastViewRead: () => null,
+      readRunning: () => false, ALL_SERVER_VIEWS, READ_LABELS: {}, healthInterval: 5, waitsInterval: 10,
+      ioInterval: 10, schema: "", order: "total", topStatements: { table: null },
+      topRead: () => ({ params: "top", body: () => ({}) }), sessionsScope: "active", minSeconds: 0,
+      locks: null, tables: null, indexesSchemas: [], tablesSchemas: [], ERROR_LOG_READ: "error-log",
+      errorLogBody: () => ({}), diagram, diagramDatabase: "selected", refreshDiagramDatabase: database,
+      WINDOWED: ["health", "waits", "io"] };
+    const actual = new Function("scope", `with (scope) { ${taskCode}; return refreshTasks(); }`)(scope);
+    assert.equal(actual.length, ALL_SERVER_VIEWS.length + 3 + (database(diagram, "selected", "current") ? 1 : 0));
+  }
+  assert.doesNotMatch(source, /badges\.(replication|report|tuning)/);
+  assert.doesNotMatch(source, /click Load or Refresh|Top statements, Sessions|Kill in Sessions/);
+  const reportSource = await fs.readFile(new URL("../src/Report.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(reportSource, /ReportView|runStarts/);
+  const sidebar = await fs.readFile(new URL("../src/Sidebar.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(sidebar, /onNewSession|onOpenQuery|onRemoveQuery|activeQueryId|Open queries/);
+
+  const callback = source.match(/onRunReport=\{(async \(\) => \{[\s\S]*?)\}\n\s+onOpenSql=/);
+  assert.ok(callback, "shell-owned analysis callback exists");
+  const callbackCode = (await transform(`const run = ${callback[1]};`, { loader: "ts" })).code;
+  const pending = [];
+  let active = "first";
+  let started = null;
+  const scope = { disabled: false, running: false, connection: {},
+    setAnalysisStarted: value => { started = typeof value === "function" ? value(started) : value; },
+    analysisReads: { currentKey: () => active, running: () => pending.some(p => p.key === active && !p.done),
+      run: () => new Promise(resolve => pending.push({ key: active, resolve, done: false })) } };
+  const run = new Function("scope", `with (scope) { ${callbackCode}; return run; }`)(scope);
+  const now = Date.now;
+  const originalError = console.error;
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const directory = await fs.mkdtemp(path.join(here, ".report-unit-"));
+  try {
+    Date.now = () => 100000;
+    const first = run();
+    assert.deepEqual(started, { key: "first", at: 100000 });
+    await run();
+    assert.equal(pending.length, 1, "duplicate starts preserve the first timestamp");
+    const output = await build({ entryPoints: [fileURLToPath(new URL("../src/Tuning.tsx", import.meta.url))],
+      bundle: true, platform: "node", format: "cjs", write: false, jsx: "automatic", loader: { ".css": "empty" }, external: ["react", "react-dom"] });
+    const filename = path.join(directory, "tuning.cjs");
+    await fs.writeFile(filename, output.outputFiles[0].text);
+    const { TuningView } = createRequire(import.meta.url)(filename);
+    console.error = (...args) => {
+      if (String(args[0]).includes("useLayoutEffect does nothing on the server")) return;
+      originalError(...args);
+    };
+    const render = extra => renderToStaticMarkup(React.createElement(TuningView, {
+      disabled: false, selection: { key: "", select() {} }, reads: { key: "first", loading: "Reading", error: "" },
+      startedAt: started?.at, ...extra,
+    }));
+    Date.now = () => 107000;
+    assert.match(render(), /7 s so far/);
+    Date.now = () => 112000;
+    assert.match(render(), /12 s so far/, "a remounted Tuning keeps the shell start time");
+    assert.match(render(), /aria-label="Export the tuning scorecard"[^>]*aria-haspopup="menu"/);
+    const analysis = await load("report-mysql-8.4.json");
+    assert.match(render({ tabRequest: { tab: "analysis", n: 1 }, report: { key: "first", label: "first", report: analysis } }),
+      /aria-label="Export the full analysis"[^>]*aria-haspopup="menu"/);
+    active = "second";
+    const second = run();
+    assert.deepEqual(started, { key: "second", at: 112000 });
+    pending[0].done = true;
+    pending[0].resolve(null);
+    await first;
+    assert.deepEqual(started, { key: "second", at: 112000 }, "old completion leaves the new connection's timer intact");
+    pending[1].done = true;
+    pending[1].resolve(null);
+    await second;
+    assert.equal(started, null);
+
+    // Refresh all owns a separate read path. Execute its actual worker with
+    // only the report task and hold the response while Tuning is first opened.
+    const refreshSource = source.slice(source.indexOf("  async function refreshAll()"), source.indexOf("  /** Stop Refresh all:"));
+    const refreshCode = (await transform(refreshSource, { loader: "ts" })).code;
+    let refresh = null;
+    let generation = 0;
+    const globalPending = [];
+    const refreshScope = {
+      refreshControl: { current: null }, disabled: false, latestConnection: { current: { key: "first" } },
+      // Stop arming is exercised by the browser path; this worker test owns
+      // no UI timer, but provides the merged action-feedback dependencies.
+      stopArmedAt: { current: 0 }, setStopArmed() {}, STOP_ARM_MS: 600, window: { setTimeout() {} },
+      connectionKey: c => c.key, connectionLabel: c => c.key, refreshSeq: { current: 0 },
+      refreshTasks: () => [{ view: "report", label: "Full analysis", params: "report", request() {}, accept() {} }],
+      setRefresh: value => { refresh = typeof value === "function" ? value(refresh) : value; },
+      analysisStarted: null, readRunning: () => false, nextGeneration: () => ++generation, latestGeneration: () => generation,
+      sharedRead: () => new Promise(resolve => globalPending.push(resolve)), reportOfRef: { current: () => null }, REFRESH_CONCURRENCY: 3,
+    };
+    const refreshAll = new Function("scope", `with (scope) { ${refreshCode}; return refreshAll; }`)(refreshScope);
+    Date.now = () => 200000;
+    const globalFirst = refreshAll();
+    await Promise.resolve();
+    assert.equal(refresh.views[0].state, "loading");
+    assert.equal(refresh.views[0].startedAt, 200000, "the report phase records its read start");
+    const globalProps = () => ({ reads: { key: refresh.key, loading: "", error: "" },
+      refreshRunning: refresh.state === "running" && refresh.views[0].state === "loading", startedAt: refresh.views[0].startedAt });
+    Date.now = () => 207000;
+    assert.match(render(globalProps()), /7 s so far/, "opening Tuning during Refresh all displays the running analysis");
+    Date.now = () => 212000;
+    assert.match(render(globalProps()), /12 s so far/, "remounting during Refresh all keeps its phase's start");
+    // A connection switch stops the old run and permits a new one. Its late
+    // completion cannot clear or relabel the new run's elapsed time.
+    refreshScope.refreshControl.current.controller.abort();
+    refreshScope.refreshControl.current = null;
+    refreshScope.latestConnection.current = { key: "second" };
+    const globalSecond = refreshAll();
+    await Promise.resolve();
+    globalPending[0]({});
+    await globalFirst;
+    assert.equal(refresh.key, "second");
+    assert.equal(refresh.views[0].state, "loading");
+    assert.equal(refresh.views[0].startedAt, 212000);
+    globalPending[1]({});
+    await globalSecond;
+    assert.doesNotMatch(render(globalProps()), /s so far/, "a completed report phase stops the timer");
+    // Joining a manually started read copies its original timestamp; the
+    // waiter may clear manual state before the Refresh all waiter completes.
+    refreshScope.analysisStarted = { key: "second", at: 300000 };
+    refreshScope.readRunning = () => true;
+    Date.now = () => 305000;
+    const joined = refreshAll();
+    assert.equal(refresh.views[0].startedAt, 300000);
+    refreshScope.analysisStarted = null;
+    assert.match(render(globalProps()), /5 s so far/);
+    globalPending[2]({});
+    await joined;
+  } finally {
+    Date.now = now;
+    console.error = originalError;
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+  console.log("Report unit checks passed: refresh count/scope, manual and Refresh all timing across remounts, stale completion and shared export menus.");
+  process.exit(0);
+}
+
 const smoke = await load("report-mysql-8.4.json");
 const health = await load("health-mysql-8.4.json");
 const config = await load("config-mysql-8.4.json");
@@ -69,6 +230,7 @@ const extraFixtures = Object.fromEntries(await Promise.all([
   ["/api/live/sessions", "sessions-mysql-8.4.json"], ["/api/live/indexes", "indexes-mysql-8.4.json"],
   ["/api/live/tables", "tables-mysql-8.4.json"], ["/api/live/instruments", "instruments-mysql-8.4.json"],
   ["/api/live/replication", "replication-mysql-8.4-healthy.json"], ["/api/lifecycle/tools", "lifecycle-tools-mysql.json"],
+  ["/api/live/cluster", "cluster-mysql-8.4-standalone.json"],
 ].map(async ([endpoint, fixture]) => [endpoint, await load(fixture)])));
 const replies = {
   ...Object.fromEntries(Object.entries(extraFixtures).map(([endpoint, fixture]) => [endpoint, () => fixture])),
@@ -145,7 +307,9 @@ const extra = {
   },
 };
 
-const h = await open("/api/live/report", "report", extra);
+// The list of views docked, as a person who docked it: this suite asserts
+// the list's markers and keys (server-nav covers the floating default).
+const h = await open("/api/live/report", "report", extra, { list: "docked" });
 const { page, state, text, texts } = h;
 state.fallback = { status: 200, body: rich };
 const view = ".server-view[data-view=tuning]";
@@ -190,19 +354,27 @@ try {
   assert.deepEqual(await texts(".source-list .source-group:first-child .source-label"), ["Health", "InnoDB", "Error log"]);
   assert.equal(await page.$("#server-nav-report"), null, "the Full analysis is no Server view");
   assert.equal(await page.$eval(refreshAll, (e) => e.disabled), false, "Refresh all works before any view is loaded");
-  assert.match(await page.$eval(refreshAll, (e) => e.title), /Refresh all 16 Server sections/);
+  assert.match(await page.$eval(refreshAll, (e) => e.title), /Refresh all 17 sections/);
   await h.fullAnalysis();
   assert.match(await text(`${view} .view-empty`), /Runs every Server view once and ranks what to look at first, about 10 to 20 s\. It only reads\./);
   assert.match(await h.popover("About Tuning"), /never applies them/);
   assert.equal(state.seen.length, 0, "nothing runs until asked");
   assert.equal(await page.$(`${view} .report-export`), null, "no export before a report");
 
-  // Run: the progress line counts the seconds; then the report.
+  // Run: the progress line says what runs (announced once) and counts the
+  // seconds beside it (drawn, not announced); then the report.
   state.delay = 1300;
   await page.locator(`${view} .view-empty button ::-p-text(Run full analysis)`).click();
   await page.waitForSelector(`${view} .capture-status`);
-  assert.match(await text(`${view} .capture-status`), /Running every Server view once: \d+ s so far, about 10 to 20 s in all\. It only reads\./);
-  await page.waitForFunction((v) => /[1-9] s so far/.test(document.querySelector(`${v} .capture-status`)?.textContent || ""), {}, view);
+  assert.match(await text(`${view} .capture-status`), /Running every Server view once, about 10 to 20 s in all\. It only reads\./);
+  await page.waitForFunction((v) => document.querySelector(`${v} .view-status > [role=status]`)?.textContent ===
+    "Running every Server view once, about 10 to 20 s in all. It only reads.", { timeout: 3000 }, view);
+  // While the seconds count, the live region still holds the same words.
+  const announcedWhileCounting = await page.waitForFunction((v) =>
+    /[1-9] s so far/.test(document.querySelector(`${v} .capture-status`)?.textContent || "") &&
+      document.querySelector(`${v} .view-status > [role=status]`)?.textContent, {}, view).then((h) => h.jsonValue());
+  assert.equal(announcedWhileCounting, "Running every Server view once, about 10 to 20 s in all. It only reads.",
+    "the seconds are never announced");
   await page.waitForSelector(`${view} .summary-line`);
   await h.idle(view);
   state.delay = 0;
@@ -330,10 +502,10 @@ try {
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.click(`${view} .detail-back`);
   await page.click(`${view} .report-export button.button`);
-  await page.waitForSelector(".popover .report-export-formats");
-  assert.deepEqual(await page.$$eval(".popover .report-export-formats button", (els) => els.map((e) => e.textContent)), ["HTML", "Markdown", "JSON", "Text"]);
-  await page.click('.popover .report-export-formats button[data-format="html"]');
-  await page.waitForFunction(() => /Saved myflames-report-20261015010720\.html/.test(document.querySelector(".popover")?.textContent || ""));
+  await page.waitForSelector(".popover .export-menu-items");
+  assert.deepEqual(await page.$$eval(".popover .export-menu-items button", (els) => els.map((e) => e.textContent)), ["HTML", "Markdown", "JSON", "Text"]);
+  await page.click('.popover .export-menu-items button[data-format="html"]');
+  await page.waitForFunction(() => /Saved myflames-report-20261015010720\.html/.test(document.querySelector(".tuning-panel")?.textContent || ""));
   assert.equal(exports.length, 1);
   assert.equal(exports[0].format, "html");
   assert.equal(exports[0].report.schema_version, "report-1.0");
@@ -343,7 +515,12 @@ try {
   assert.equal(JSON.stringify(exports[0].source).includes("password"), false);
   await until(async () => (await fs.readdir(downloads)).some((f) => f.endsWith(".html")), "the HTML file is downloaded");
   assert.equal(await fs.readFile(path.join(downloads, "myflames-report-20261015010720.html"), "utf8"), "html export");
-  for (const format of ["markdown", "json", "text"]) await page.click(`.popover .report-export-formats button[data-format="${format}"]`).then(() => pause(150));
+  for (const format of ["markdown", "json", "text"]) {
+    await page.waitForFunction(s => !document.querySelector(s)?.disabled, {}, `${view} .report-export button.button`);
+    await page.click(`${view} .report-export button.button`);
+    await page.click(`.popover .export-menu-items button[data-format="${format}"]`);
+    await until(() => exports.some(item => item.format === format), `${format} export requested`);
+  }
   assert.deepEqual(exports.map((e) => e.format), ["html", "markdown", "json", "text"]);
   await page.keyboard.press("Escape");
 
@@ -396,7 +573,7 @@ try {
   }
   const refreshed = Object.keys(replies);
   assert.equal(await page.$eval(refreshAll, (e) => e.disabled), false);
-  assert.match(await page.$eval(refreshAll, (e) => e.title), /Refresh all 16 Server sections for this connection \(⌥⌘R\)/);
+  assert.match(await page.$eval(refreshAll, (e) => e.title), /Refresh all 17 sections for this connection \(⌥⌘R\)/);
   // Hold every read: three start (the sampling views first), the rest wait.
   for (const p of refreshed) hold.add(p);
   const before = state.other.length;
@@ -412,8 +589,9 @@ try {
   assert.deepEqual(held.map((e) => e.path), ["/api/live/health", "/api/live/waits", "/api/live/io"]);
   assert.equal(held[0].body.interval, 5, "Health keeps its window");
   assert.equal(held[2].body.interval, 10, "unopened I/O uses its configured window");
-  assert.match(await statusText(), /^Refreshing 1 of 16…$/);
-  assert.equal(await page.$$eval(".source-list .source-refreshing", (els) => els.length), 10); // the Server list: 11 views, the diagram waits for a database, the Full analysis is in Tuning
+  // It names the views it reads now, so a slow one is never hidden behind a count.
+  assert.match(await statusText(), /^Refreshing 1 of 17 · Health, Waits, I\/O…$/);
+  assert.equal(await page.$$eval(".source-list .source-refreshing", (els) => els.length), 10); // the Server list: 10 views (Database diagram and the Full analysis are places of their own)
   await h.workload();
   assert.equal(await page.$$eval(".source-list .source-refreshing", (els) => els.length), 4);
   await h.server();
@@ -451,14 +629,17 @@ try {
   assert.equal(calls("/api/live/indexes").at(-1).body.all_schemas, undefined, "unopened Indexes never grants large-schema consent");
   assert.equal(calls("/api/live/tables").at(-1).body.all_schemas, undefined, "unopened Tables never grants large-schema consent");
   assert.equal(traffic.peak, 3, "at most three reads at once");
-  await page.waitForFunction(() => /^15 of 16 views refreshed; Locks failed$/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
+  await page.waitForFunction(() => /^16 of 17 views refreshed; Locks failed$/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
   // The failure, per view: a mark in the list of views, the list, a note above the view.
   assert.ok(await page.$("#server-nav-locks .source-stale[data-refresh=failed]"));
-  assert.match(await text("#server-nav-locks .visually-hidden"), /not refreshed: Could not read locks/);
+  // The compact status marker has its own screen-reader text before the
+  // refresh failure. Check all the screen-reader text, not the first span.
+  assert.match(await page.$$eval("#server-nav-locks .visually-hidden", els => els.map(e => e.textContent).join(" ")),
+    /not refreshed: Could not read locks/);
   assert.equal(await page.$("#server-nav-health .source-stale"), null);
   await page.click(".server-place .refresh-all-status");
   const list = await page.$$eval(".popover .refresh-all-list li", (els) => els.map((e) => [e.dataset.view, e.dataset.state, e.textContent]));
-  assert.equal(list.length, 16);
+  assert.equal(list.length, 17);
   assert.equal(list.findIndex(x => x[0] === "errorlog"), list.findIndex(x => x[0] === "innodb") + 1);
   assert.deepEqual(list.filter(x => x[1] !== "ok").map(x => [x[0], x[1]]), [["locks", "failed"]]);
   assert.equal(list.at(-1)[0], "report", "analysis is scheduled after individual sections");
@@ -497,7 +678,7 @@ try {
   assert.ok(traffic.peak <= 3, "already running individual reads occupy refresh worker slots");
   release("/api/live/locks");
   hold.clear();
-  await page.waitForFunction(() => /^16 of 16 views refreshed$/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
+  await page.waitForFunction(() => /^17 of 17 views refreshed$/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
   await page.click(".server-view[data-view=locks] .lock-check input");
 
   // A newer read of a view that fails, then the older Refresh all answer: not counted as refreshed.
@@ -511,7 +692,7 @@ try {
   await refreshView();
   await page.waitForSelector(".server-view[data-view=health] [role=alert]");
   release("/api/live/health");
-  await page.waitForFunction(() => /^15 of 16 views refreshed$/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
+  await page.waitForFunction(() => /^16 of 17 views refreshed$/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
   await page.click(".server-place .refresh-all-status");
   assert.match(await page.$eval('.popover .refresh-all-list li[data-view="health"]', (e) => `${e.dataset.state} ${e.textContent}`),
     /^replaced Replaced\s*Health\s*A newer read of this view was asked for/);
@@ -536,7 +717,7 @@ try {
   await pause(200);
   assert.equal(calls("/api/live/health").length, healthBefore + 1, "one Health read for both");
   release("/api/live/health");
-  await page.waitForFunction(() => /^16 of 16 views refreshed$/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
+  await page.waitForFunction(() => /^17 of 17 views refreshed$/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
   assert.equal(await page.$$eval(".source-list .source-stale", (els) => els.length), 0, "no view is marked any more");
   assert.equal(await page.$(".refresh-note"), null);
 
@@ -551,7 +732,7 @@ try {
   while (held.length) release();
   await pause(300);
   assert.equal(state.other.length - stopBefore, 3, "nothing more starts after Escape");
-  await page.waitForFunction(() => /^0 of 16 views refreshed; stopped$/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
+  await page.waitForFunction(() => /^0 of 17 views refreshed; stopped$/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
   assert.equal(await page.$$eval(".source-list .source-stale[data-refresh=stopped]", (els) => els.length), 10);
   await h.workload();
   assert.equal(await page.$$eval(".source-list .source-stale[data-refresh=stopped]", (els) => els.length), 4);
@@ -582,14 +763,16 @@ try {
   assert.match(await text(`${view} .other-connection`), /From Local MySQL \(127\.0\.0\.1:3306\), refresh to load this server\./);
   await page.click("#tuning-tab-scorecard");
   await page.waitForSelector("#tuning-panel-scorecard .tuning-score");
-  // The scorecard has no Refresh: its note offers the read that loads this
-  // server (Run full analysis), and its export is off until then.
+  // The scorecard has no Refresh: its note names the toolbar read that loads
+  // this server (Run full analysis), without a third duplicate button, and its
+  // export is off until then.
   assert.match(await text(`${view} .other-connection`), /From Local MySQL \(127\.0\.0\.1:3306\)\. Run full analysis to load this server\./, "the scorecard names the server the report came from");
-  assert.equal(await page.$eval(`${view} .other-connection .gate-action button`, (e) => e.textContent), "Run full analysis");
+  assert.equal(await page.$(`${view} .other-connection .gate-action button`), null, "one home: Run full analysis stays in the toolbar");
+  assert.ok(await page.$(`${view} [data-action="run-analysis"]`), "toolbar Run full analysis is present");
   assert.equal(await page.$eval(`${view} .report-export button.button`, (e) => e.disabled), true, "the scorecard of another server is not exported");
-  // A check's full-width details keep the note and its action.
+  // A check's full-width details keep the note.
   await h.select(`${view} .tuning-check[data-check]`);
-  await page.waitForFunction((v) => [...document.querySelectorAll(`${v} .other-connection .gate-action button`)].some((b) => b.offsetParent && b.textContent === "Run full analysis"), {}, view);
+  await page.waitForFunction((v) => [...document.querySelectorAll(`${v} .other-connection`)].some((b) => b.offsetParent && /Run full analysis to load this server/.test(b.textContent || "")), {}, view);
   await page.click(`${view} .detail-back`);
   await h.fullAnalysis();
   await h.select(`${view} .report-first li`);
@@ -603,7 +786,7 @@ try {
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.click(`${view} .detail-back`);
   await page.click(`${view} .report-export button.button`);
-  await page.click('.popover .report-export-formats button[data-format="markdown"]');
+  await page.click('.popover .export-menu-items button[data-format="markdown"]');
   await until(async () => (await fs.readdir(downloads)).some((f) => f.endsWith(".md")), "the Markdown file is downloaded");
   const markdown = await fs.readFile(path.join(downloads, (await fs.readdir(downloads)).find((f) => f.endsWith(".md"))), "utf8");
   assert.match(markdown, /^Connection: Local MySQL \(127\.0\.0\.1:3306\)/m);
@@ -660,6 +843,9 @@ try {
   // Staging -> Archive -> Staging while a run is on its way: its answer, read
   // before the switch, is never shown (and the run can start again).
   const archive = await connectionOption(page, "Archive");
+  // connectionOption leaves the picker open; close it before clicking Refresh under it.
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".window-toolbar .picker-panel"));
   const lateReport = structuredClone(rich);
   lateReport.summary = { ...lateReport.summary, text: "Late answer from before the switch" };
   state.queue.push({ status: 200, body: lateReport });
@@ -678,32 +864,36 @@ try {
   // A database chosen in the diagram picker participates before any diagram
   // exists. Switching views preserves that choice for the global refresh.
   await h.view("diagram");
-  // The Database field is a combobox (input + datalist) since the diagram picker change.
-  await page.waitForFunction(() => Array.from(document.querySelectorAll("#diagram-databases option")).some(e => e.value === "shop"));
-  await page.click('.diagram-source input[aria-label="Database"]', { clickCount: 3 });
-  await page.type('.diagram-source input[aria-label="Database"]', "shop");
+  await page.waitForFunction(() => Array.from(document.querySelectorAll('.diagram-source select[aria-label="Database"] option')).some(e => e.value === "shop"));
+  await page.select('.diagram-source select[aria-label="Database"]', "shop");
   await h.view("health");
   await h.view("diagram");
-  await page.waitForFunction(() => document.querySelector('.diagram-source input[aria-label="Database"]')?.value === "shop");
+  await page.waitForFunction(() => document.querySelector('.diagram-source select[aria-label="Database"]')?.value === "shop");
   const diagramReads = calls("/api/schema-diagram/read").length;
+  // Database diagram is a place of its own with no Refresh all: Server's
+  // Refresh all reads it too, and the place shows that answer.
+  assert.equal(await page.$('.server-place.is-diagram-place [data-action=refresh-all]'), null, "no Refresh all in the diagram place");
+  await h.server();
   await clickRefreshAll();
-  await page.waitForFunction(() => /^17 of 17 views refreshed$/.test(document.querySelector(".refresh-all-status")?.textContent || ""));
+  await page.waitForFunction(() => /^18 of 18 views refreshed$/.test(document.querySelector(".refresh-all-status")?.textContent || ""));
   assert.equal(calls("/api/schema-diagram/read").length, diagramReads + 1);
   assert.equal(calls("/api/schema-diagram/read").at(-1).body.database, "shop");
+  await h.view("diagram");
   await page.waitForSelector('.diagram-table[aria-label="Table shop.orders"]');
 
   // Move the arrangement while global metadata refresh is still reading.
   // Its response must retain that new position and place new tables below it.
   holdDiagram = true;
+  await h.server();
   await clickRefreshAll();
   await until(() => !!pendingDiagram, "global diagram read is held");
+  await h.view("diagram");
   await page.focus('[data-table-id="shop.orders"]');
   await page.keyboard.press("ArrowRight");
   await page.keyboard.press("ArrowDown");
   const moved = await page.$eval('.diagram-table[aria-label="Table shop.orders"]', e => ({x: e.style.left, y: e.style.top}));
   const pending = pendingDiagram; pendingDiagram = null; holdDiagram = false;
   await pending.request.respond({status: 200, contentType: "application/json", body: JSON.stringify(diagramReply(pending.body, true))});
-  await page.waitForFunction(() => /^17 of 17 views refreshed$/.test(document.querySelector(".refresh-all-status")?.textContent || ""));
   await page.waitForSelector('.diagram-table[aria-label="Table shop.shipments"]');
   assert.deepEqual(await page.$eval('.diagram-table[aria-label="Table shop.orders"]', e => ({x: e.style.left, y: e.style.top})), moved);
   assert.equal(await page.evaluate(() => {
@@ -711,6 +901,8 @@ try {
     const added = document.querySelector('.diagram-table[aria-label="Table shop.shipments"]');
     return parseFloat(added.style.top) >= parseFloat(existing.style.top) + parseFloat(existing.style.height);
   }), true, "global refresh places new tables below the latest arrangement");
+  await h.server();
+  await page.waitForFunction(() => /^18 of 18 views refreshed$/.test(document.querySelector(".refresh-all-status")?.textContent || ""));
 
   assert.deepEqual(h.errors, []);
   console.log("full analysis and refresh all: ok");

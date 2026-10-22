@@ -59,7 +59,8 @@ try {
   assert.equal(ERROR_LOG_READ, "errorlog:200");
   assert.deepEqual(errorLogBody(connection), { connection, limit: 200 });
   const empty = render();
-  assert.match(empty, /Load error log/);
+  // The view reads when it opens on screen: no Load button.
+  assert.doesNotMatch(empty, /Load error log/);
   assert.match(empty, /performance_schema.error_log.*MariaDB.*only when the server runs on this computer/s);
   assert.doesNotMatch(empty, /<table/);
   const mysql = reports["mysql-8.4"];
@@ -86,8 +87,10 @@ try {
   assert.match(maria, /1\.0 MiB of 2\.0 MiB/);
   const remote = render(reports["mariadb-11.4-remote"]);
   assert.match(remote, /another computer/);
-  assert.match(remote, /tail -n 200 \/var\/lib\/mysql\/host.err/);
-  assert.match(remote, /Copy instructions/);
+  assert.doesNotMatch(remote, /class="gate\b/);
+  assert.match(remote, /<code>tail -n 200 \/var\/lib\/mysql\/host\.err<\/code>/);
+  assert.match(remote, />Copy<\/button>/);
+  assert.match(remote, /title="MariaDB 11\.4\.8-MariaDB"[^>]*>MariaDB 11\.4\.8<\/span>/);
   assert.doesNotMatch(remote, /<table/);
   assert.match(render(reports["mysql-8.4-denied"]), /SELECT privilege/);
   assert.match(render(mysql, "", { connection: { ...connection, host: "another-server" } }), /From Test server, refresh to load this server/);

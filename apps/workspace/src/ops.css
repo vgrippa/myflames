@@ -73,7 +73,8 @@
 .ops-loop,
 .ops-result-head { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
 .ops-job-head > strong,
-.ops-loop > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.ops-loop > span,
+.ops-loop > .ops-loop-copy { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .ops-job.is-other-connection { color: var(--ink-muted); background: var(--surface-pane); }
 .ops-job.is-other-connection > :not(.ops-job-head) { opacity: 0.65; }
 .ops-loop { background: var(--warn-soft); }
@@ -98,6 +99,19 @@
   border-radius: var(--radius-sm);
 }
 .ops-wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
+.ops-gtid {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--leading-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ops-gtid-item {
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
 .ops-verification { list-style: none; margin: var(--space-2) 0; padding: 0; }
 .ops-verification li { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2); padding-block: var(--space-2); border-bottom: 1px solid var(--line); }
 .ops-verification li > span:last-child { flex-basis: 100%; color: var(--ink-muted); }
@@ -145,6 +159,172 @@
 .ops-folder-input button { flex: none; }
 .ops-tool-updates { padding: var(--space-2) var(--space-4); color: var(--warn-text); font-size: var(--text-sm); }
 .ops-tool-link { color: var(--accent-text); text-decoration: underline; text-underline-offset: var(--space-1); }
-.ops-dump-options[open] { grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); }
-.ops-dump-options > summary { grid-column: 1 / -1; }
-.ops-dump-options .ops-field label { display: flex; flex-direction: column; gap: var(--space-1); }
+
+/* Dump: one two-column form (FormGrid), labels left of their controls, then
+   the tool's options in sections (DumpOptions.tsx). Rows stack below 650 px. */
+.ops-dump > fieldset { display: block; max-width: 760px; }
+.ops-dump .form-row > .form-row-label {
+  text-align: right;
+  padding-top: var(--space-1);
+  font-size: var(--text-base);
+  color: var(--ink-secondary);
+}
+.ops-dump .form-row-control { max-width: 32rem; }
+/* One width for every select and picker; numbers keep their own width. */
+.ops-dump .form-row-control > :is(select, .select) { width: 18rem; max-width: 100%; }
+.ops-dump .form-row-control > .number-field { width: auto; }
+.ops-dump .form-row-control > .hint:empty { display: none; }
+.ops-dump .form-row-control > :is(.hint, .form-error) { max-width: 60ch; }
+.ops-dump .perf-picker > span[aria-hidden="true"] { display: none; }
+.ops-dump .perf-picker-button { width: 18rem; min-width: 0; max-width: 100%; }
+.ops-dump .ops-folder-row .ops-field { gap: var(--space-1); max-width: 32rem; }
+.ops-dump .ops-dump-options { display: block; margin-top: var(--space-4); }
+.ops-dump .ops-dump-options > summary { font-size: var(--text-md); font-weight: 600; }
+.ops-dump .ops-dump-options > summary .hint { margin-left: var(--space-2); font-weight: 400; font-size: var(--text-sm); color: var(--ink-muted); }
+.dump-options { display: grid; gap: var(--space-4); margin-top: var(--space-3); min-width: 0; }
+.dump-group { min-width: 0; margin: 0; padding: 0; border: 0; }
+.dump-group > legend {
+  padding: 0;
+  margin-bottom: var(--space-2);
+  font-size: var(--section-size);
+  line-height: var(--section-leading);
+  color: var(--section-ink);
+  font-weight: var(--section-weight);
+}
+.dump-checks { display: grid; gap: 2px; justify-items: start; }
+.dump-check { display: grid; justify-items: start; }
+.dump-check .hint { margin: 0 0 var(--space-1) calc(16px + var(--space-2)); font-size: var(--text-sm); color: var(--ink-muted); }
+.dump-check-row > .form-row-label { padding-top: 6px; }
+.dump-text { display: inline-flex; align-items: center; gap: var(--space-2); max-width: 100%; }
+.ops-dump .dump-text input { width: 10rem; max-width: 100%; height: var(--control-h); }
+.dump-unit { font-size: var(--text-sm); color: var(--ink-muted); white-space: nowrap; }
+.dump-encryption { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--space-2); font-size: var(--text-sm); color: var(--ink-muted); }
+.dump-encryption .disclosure > summary { font-size: var(--text-sm); }
+.dump-encryption .disclosure-body { flex-basis: 100%; }
+.dump-encryption .disclosure[open] { flex-basis: 100%; }
+@media (max-width: 649px) {
+  .ops-dump .form-row > .form-row-label { text-align: left; padding-top: 0; }
+  .ops-dump .form-row-control { max-width: none; }
+}
+/* The table list: name, then engine, estimated rows and size. */
+.dump-table-option code { flex: 0 1 auto; }
+.dump-table-option .hint { margin-left: auto; font-variant-numeric: tabular-nums; }
+.dump-table-list { max-height: 300px; }
+
+/* Reviewed changes (ActionReview.tsx): the change buttons in an inspector's
+   action bar, the result under the toolbar, the typed name in the sheet. */
+.review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.review-actions .button[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.review-actions .hint {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+}
+.action-result p { font-size: var(--text-sm); line-height: var(--leading-sm); }
+.action-result .ops-result-head > strong {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.action-review .action-typed input {
+  font-family: var(--font-mono);
+}
+.action-review details > summary { font-size: var(--text-sm); }
+/* The sheet after Confirm: the step it is on, each statement and its state,
+   then the outcome, what changed, what to check and the Audit log record. */
+.action-review .action-phase {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+  font-variant-numeric: tabular-nums;
+}
+.action-review .action-phase .spinner { width: 13px; height: 13px; flex: none; }
+.action-review .action-outcome {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  margin: 0 0 var(--space-3);
+}
+.action-review .action-outcome p { margin: 0; max-width: 70ch; }
+.action-steps {
+  list-style: none;
+  margin: 0 0 var(--space-3);
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-pane);
+}
+.action-steps li {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2);
+  min-width: 0;
+}
+.action-steps li + li { border-top: 1px solid var(--line); }
+.action-steps code {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.action-step-state {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: none;
+  white-space: nowrap;
+}
+.action-step-state .spinner { width: 11px; height: 11px; }
+.action-effect {
+  width: 100%;
+  margin: 0 0 var(--space-3);
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  font-variant-numeric: tabular-nums;
+}
+.action-effect caption {
+  text-align: start;
+  font-weight: 600;
+  padding-bottom: var(--space-1);
+}
+.action-effect th,
+.action-effect td {
+  text-align: start;
+  vertical-align: top;
+  padding: var(--space-1) var(--space-2) var(--space-1) 0;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+.action-effect thead th { color: var(--ink-muted); font-weight: 500; }
+.action-effect tbody th { font-weight: 500; color: var(--ink-muted); }
+.action-effect tr[data-changed="true"] td:last-child { font-weight: 600; }
+.action-checks { margin: 0 0 var(--space-3); }
+.action-checks h3 { margin: 0 0 var(--space-1); font-size: var(--text-sm); font-weight: 600; }
+.action-checks ol { margin: 0; padding-left: var(--space-4); }
+.action-review .action-audit { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1); }
+/* In the sheet the outcome and each statement's state keep their mark and
+   color, OK included: this is the answer the person waited for. */
+.action-review .action-outcome .status-pill { font-size: var(--text-md); line-height: var(--leading-md); font-weight: 600; }
+.action-review :is(.action-outcome, .action-steps) .status-pill.is-ok { color: var(--ok-text); font-weight: 600; }
+.action-review :is(.action-outcome, .action-steps) .status-pill:is(.is-ok, .is-info) > .status-dot { display: inline-block; }
+.action-review .action-steps .status-pill.is-info { color: var(--info-text); }
+/* A statement with the server: the spinner is its mark. */
+.action-review .action-steps li[data-state="sent"] .status-pill > .status-dot { display: none; }

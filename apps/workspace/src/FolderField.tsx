@@ -1,10 +1,11 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { chooseBackupDirectory } from "./opsApi";
 
-/** Native selection returns a local path. Preflight still validates its use. */
-export function FolderField({ label, value, onChange, hint, disabled }: {
+/** Native selection returns a local path. Preflight still validates its use.
+ * *row* lays it out as a FormGrid row: the label left of the field. */
+export function FolderField({ label, value, onChange, hint, disabled, row = false }: {
   label: string; value: string; onChange: (value: string) => void;
-  hint: string; disabled?: boolean;
+  hint: string; disabled?: boolean; row?: boolean;
 }) {
   const id = useId();
   const [picking, setPicking] = useState(false);
@@ -30,8 +31,7 @@ export function FolderField({ label, value, onChange, hint, disabled }: {
       if (mounted.current) setPicking(false);
     }
   }
-  return <div className="ops-field ops-wide">
-    <label htmlFor={id}>{label}</label>
+  const field = <>
     <div className="ops-folder-input">
       <input id={id} value={value} disabled={disabled || picking} spellCheck={false} autoComplete="off"
         placeholder="Choose a folder or enter its full path" aria-describedby={`${id}-hint`}
@@ -42,5 +42,13 @@ export function FolderField({ label, value, onChange, hint, disabled }: {
     <span id={`${id}-hint`} className="hint">{hint}</span>
     {picking && <span role="status" className="hint">Choose a folder in the system dialog.</span>}
     {error && <span role="alert">{error} You can enter the path above.</span>}
+  </>;
+  if (row) return <div className="form-row ops-folder-row">
+    <label htmlFor={id}>{label}</label>
+    <div className="form-row-control ops-field">{field}</div>
+  </div>;
+  return <div className="ops-field ops-wide">
+    <label htmlFor={id}>{label}</label>
+    {field}
   </div>;
 }

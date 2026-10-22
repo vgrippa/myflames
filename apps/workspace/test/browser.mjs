@@ -695,39 +695,15 @@ print(json.dumps(build_sidecar(root, analyze_plan(root), source_type="file", eng
   });
   await button("Next lesson");
   await page.waitForSelector('iframe[title^="Lesson: B"]');
-  // B+tree also has a 3D view, an extra option: 2D stays the default.
   const lessonView = '.segmented[aria-label="Lesson view"]';
-  assert.equal(
-    await page.$eval(`${lessonView} button[aria-pressed="true"]`, (b) => b.textContent),
-    "2D",
-  );
-  await page.click(`${lessonView} button[data-value="3d"]`);
-  await page.waitForSelector('iframe[title$="(3D view)"]');
-  const frame3d = await (await page.$('iframe[title$="(3D view)"]')).contentFrame();
-  await frame3d.waitForFunction(
-    () => window.teach3d && document.getElementById("phase-label").textContent,
-  );
-  assert.ok(
-    await frame3d.$eval(
-      "#viewport",
-      (v) => !!v.querySelector("canvas") || !v.querySelector("#fallback").hidden,
-    ),
-    "3D view shows its canvas or the no-WebGL note",
-  );
-  await frame3d.evaluate(() => window.teach3d.open(1));
-  await frame3d.evaluate(() => window.teach3d.finish());
-  assert.match(
-    await frame3d.$eval("#phase-label", (e) => e.textContent),
-    /pages read out of/,
-  );
-  await page.screenshot({ path: path.join(directory, "teach-3d.png") });
+  assert.equal(await page.$(lessonView), null, "lessons have one view");
+  const btreeFrame = await (await page.$('iframe[title^="Lesson: B"]')).contentFrame();
+  await btreeFrame.waitForSelector("#btn-play");
   await button("Download lesson");
-  assert.match(await downloaded("btree-3d.html"), /myflames-sources-sha256/);
-  await page.click(`${lessonView} button[data-value="2d"]`);
-  await page.waitForSelector('iframe[title^="Lesson: B"]:not([title$="(3D view)"])');
+  assert.match(await downloaded("btree.html"), /teachRuntime/);
   await button("Previous lesson");
   await page.waitForSelector('iframe[title^="Lesson: Full"]');
-  assert.equal(await page.$(lessonView), null, "lessons without a 3D view have no toggle");
+  assert.equal(await page.$(lessonView), null, "lessons have one view");
   await button("All lessons");
   await page.waitForSelector(".lesson-card");
   await page.setViewport({ width: 390, height: 844 });

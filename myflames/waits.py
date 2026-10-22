@@ -57,6 +57,7 @@ Verified against server source (mysql-server 9.7 "M/", mariadb-server 13.0
   Ma/storage/innobase/os/os0file.cc:3291-3345).
 * MAX_TIMER_WAIT is the longest single wait since startup, never per window.
 """
+from .server_info import product_name
 from .connector import ConnectorError
 from .perf_common import (DEFAULT_WINDOW, Reader, _count_text, _duration_text, _number, _round, base_report,
                           check_limit, check_window, consumer_note, consumer_state, denied, elapsed, lost_note,
@@ -368,7 +369,7 @@ def _notes(server, report, consumers, notes):
 
 
 def format_text(report):
-    head = "%s %s" % ("MariaDB" if report["engine"] == "mariadb" else "MySQL", report["server_version"] or "?")
+    head = "%s %s" % (product_name(report), report["server_version"] or "?")
     if report["uptime_s"] is not None:
         head += ", up %s" % _duration_text(report["uptime_s"])
     lines = [head]

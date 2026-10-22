@@ -282,7 +282,7 @@ export function HealthView({
   const history = memory.key === key ? memory.history : [];
   const s = report?.summary;
   const d = s?.diagnostics;
-  const engine = report ? (report.engine === "mariadb" ? "MariaDB" : "MySQL") : "";
+  const engine = report ? report.server_product || (report.engine === "mariadb" ? "MariaDB" : "MySQL") : "";
   // Problems first, then watch, then the rest (stable within a status).
   const diagnostics = [...(report?.diagnostics ?? [])].sort((a, b) => toneRank(a.status) - toneRank(b.status));
   const byGroup = report
@@ -470,7 +470,8 @@ export function HealthView({
       otherConnection={stale ? memory.label : null}
       inspector={inspector}
       inspectorEmpty={<p>Select a diagnostic or a tile to see what it measures, its rule and its numbers.</p>}
-      status={<ViewStatus loading={reads.loading} error={error} />}
+      status={<ViewStatus loading={reads.loading} error={error} onStop={reads.stop} onRetry={error ? () => void load() : undefined}
+        doneAt={reads.doneAt} slowAfter={(interval + 20) * 1000} />}
     >
       <div ref={root}>
         {!report && !loading && !error && (

@@ -1,0 +1,908 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://myflames.dev/schemas/cluster-1.0.json",
+  "title": "myflames cluster status 1.0",
+  "description": "The Cluster place's report (myflames/cluster.py:read_status), emitted by `myflames cluster --json`, POST /api/live/cluster and the MCP tool cluster_status (detail=full). The cluster the connected server belongs to: MariaDB Galera, Galera Cluster for MySQL, Percona XtraDB Cluster, MySQL InnoDB Cluster (also read from one of its read replicas), or Group Replication without InnoDB Cluster metadata; kind 'none' when it is none of them. Read-only. Members are as the connected server sees them: Galera exposes only its own state, so another Galera node has state null and status 'unknown' (never a guessed state); on Percona XtraDB Cluster performance_schema.pxc_cluster_view names every other node's state. One severity scale for every kind: ok (quorum, every expected member present and healthy); watch (quorum holds but a member is missing, MISSING or UNREACHABLE, a member is in a transitional state, or the cluster cannot survive another failure); problem (no quorum or a non-Primary component, a member in ERROR, the connected member OFFLINE or in ERROR, or a Galera node that does not replicate). Additive optional fields keep 1.x; renamed or removed fields bump the major version.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "engine",
+    "server_version",
+    "version_comment",
+    "captured_at",
+    "uptime_s",
+    "performance_schema",
+    "available",
+    "message",
+    "kind",
+    "server",
+    "cluster",
+    "status",
+    "status_why",
+    "local",
+    "members",
+    "galera",
+    "group_replication",
+    "metadata",
+    "routers",
+    "findings",
+    "summary",
+    "statements",
+    "notes"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "cluster-1.0"
+    },
+    "engine": {
+      "type": "string",
+      "enum": [
+        "mysql",
+        "mariadb"
+      ]
+    },
+    "flavor": {
+      "type": "string",
+      "enum": [
+        "mysql",
+        "percona",
+        "mariadb"
+      ],
+      "description": "Product family. Percona Server and Percona XtraDB Cluster are MySQL builds: engine mysql, flavor percona."
+    },
+    "server_product": {
+      "type": "string",
+      "description": "MySQL, Percona Server, Percona XtraDB Cluster or MariaDB."
+    },
+    "server_version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "version_comment": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "captured_at": {
+      "type": "string",
+      "description": "ISO-8601 UTC time of the read."
+    },
+    "uptime_s": {
+      "type": [
+        "integer",
+        "number",
+        "null"
+      ]
+    },
+    "performance_schema": {
+      "type": "boolean"
+    },
+    "available": {
+      "type": "boolean",
+      "description": "false when the account cannot read the cluster tables; message says why."
+    },
+    "message": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "One sentence: why the report is empty (not a cluster, no privilege)."
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "galera",
+        "pxc",
+        "innodb_cluster",
+        "group_replication",
+        "none"
+      ]
+    },
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hostname",
+        "port",
+        "report_host",
+        "server_uuid"
+      ],
+      "properties": {
+        "hostname": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "port": {
+          "type": [
+            "integer",
+            "number",
+            "null"
+          ]
+        },
+        "report_host": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "server_uuid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "cluster": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "uuid",
+        "size",
+        "expected_size",
+        "expected_source",
+        "component",
+        "quorum",
+        "failures_tolerated",
+        "topology",
+        "provider"
+      ],
+      "properties": {
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "wsrep_cluster_name, or the InnoDB Cluster name from the metadata."
+        },
+        "uuid": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "wsrep_cluster_state_uuid, or the Group Replication group name."
+        },
+        "size": {
+          "type": [
+            "integer",
+            "number",
+            "null"
+          ],
+          "description": "Members in the component or group as this server sees it. null when this member is OFFLINE or in ERROR (it lists only itself and sees no group) and on an InnoDB Cluster read replica (not a group member)."
+        },
+        "expected_size": {
+          "type": [
+            "integer",
+            "number",
+            "null"
+          ],
+          "description": "Galera: the nodes wsrep_cluster_address names, plus this node when it is proved absent from the list; null when this node cannot be identified in the list (the count is then only a lower bound, see notes and galera.address_nodes), for a bootstrap address ('gcomm://'), and when the component is larger than the list (a partial seed list or an arbitrator). InnoDB Cluster: group members in the metadata (read replicas excluded)."
+        },
+        "expected_source": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "wsrep_cluster_address",
+            "mysql_innodb_cluster_metadata",
+            null
+          ]
+        },
+        "component": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Galera: wsrep_cluster_status (Primary, non-Primary, Disconnected)."
+        },
+        "quorum": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Galera: Primary component. Group Replication: a majority of members is not UNREACHABLE. null when it cannot be told (this member OFFLINE or in ERROR, a read replica)."
+        },
+        "failures_tolerated": {
+          "type": [
+            "integer",
+            "number",
+            "null"
+          ],
+          "description": "Galera: (size - 1) / 2 in a Primary component, assuming equal pc.weight (null when wsrep_cluster_weight differs from the size, or not Primary). Group Replication: the failures the current view survives by the majority rule, (members - UNREACHABLE) - (members / 2 + 1), never below 0 (MySQL Shell's (ONLINE + RECOVERING - 1) / 2 when no member is UNREACHABLE); null without quorum or when this member cannot see the group."
+        },
+        "topology": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "single_primary",
+            "multi_primary",
+            null
+          ]
+        },
+        "provider": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "watch",
+        "problem",
+        "unknown"
+      ]
+    },
+    "status_why": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "local": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "key of the member that is the connected server."
+    },
+    "members": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/member"
+      }
+    },
+    "galera": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Galera and Percona XtraDB Cluster: this node's settings and wsrep status (metrics), and where the member list came from (members_source: wsrep_cluster_members or wsrep_incoming_addresses).",
+      "properties": {
+        "node_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "node_address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cluster_address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "incoming_addresses": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "gcomm_uuid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "desync": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pxc_strict_mode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pxc_maint_mode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "members_source": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "wsrep_cluster_members",
+            "wsrep_incoming_addresses",
+            null
+          ],
+          "description": "Where the member list came from."
+        },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "number",
+              "string",
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "address_nodes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Distinct entries in wsrep_cluster_address (0 for 'gcomm://', null without a gcomm URL)."
+        },
+        "address_names_this_node": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "true when an entry names this node, false when this node is proved absent from the list, null when it cannot be identified there."
+        },
+        "missing": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Entries of wsrep_cluster_address that are not in the component, when they can be matched to the missing nodes one for one (empty otherwise; the finding then says how many)."
+        },
+        "wsrep_on": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The global wsrep_on (MariaDB; absent on Percona XtraDB Cluster 8.4, where it is session-only)."
+        },
+        "incomplete": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Required wsrep status the server did not report (wsrep_cluster_status, wsrep_connected, wsrep_ready, wsrep_cluster_size) or invalid values; when not empty nothing is judged and status is 'unknown' (the Full analysis's checks.wsrep uses the same rule)."
+        }
+      }
+    },
+    "group_replication": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "group_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "single_primary_mode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "local_address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "group_seeds": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "view_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "metadata": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "InnoDB Cluster metadata (mysql_innodb_cluster_metadata), when the account can read it; available false with the reason otherwise.",
+      "properties": {
+        "available": {
+          "type": "boolean"
+        },
+        "schema_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cluster_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cluster_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "primary_mode": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "pm",
+            "mm",
+            null
+          ]
+        },
+        "instances": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "server_uuid": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "address": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "endpoint": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "instance_type": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "local_copy": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "left_group",
+            "read_replica",
+            null
+          ],
+          "description": "The metadata was read from a copy that may lag: 'left_group' when this member is OFFLINE or in ERROR (its last copy from the group, frozen), 'read_replica' on a read replica (its asynchronously replicated copy)."
+        }
+      }
+    },
+    "routers": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/router"
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/finding"
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "members",
+        "ok",
+        "watch",
+        "problem",
+        "unknown"
+      ],
+      "properties": {
+        "members": {
+          "type": "integer"
+        },
+        "ok": {
+          "type": "integer"
+        },
+        "watch": {
+          "type": "integer"
+        },
+        "problem": {
+          "type": "integer"
+        },
+        "unknown": {
+          "type": "integer"
+        }
+      }
+    },
+    "statements": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "What was read, by name; every statement is a tagged SELECT or SHOW."
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "$defs": {
+    "member": {
+      "type": "object",
+      "required": [
+        "key",
+        "name",
+        "address",
+        "host",
+        "port",
+        "uuid",
+        "state",
+        "state_source",
+        "role",
+        "version",
+        "local",
+        "status",
+        "status_why",
+        "metrics"
+      ],
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string",
+          "description": "The InnoDB Cluster metadata label, MEMBER_HOST, the Galera node name, or the host."
+        },
+        "address": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "host:port as the cluster reports it (an IPv6 host in brackets); Galera port 0 is kept here, while port is null and the surfaces show the host alone."
+        },
+        "host": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The host alone (an IPv6 host without brackets)."
+        },
+        "port": {
+          "type": [
+            "integer",
+            "number",
+            "null"
+          ],
+          "description": "null when not reported (Galera reports port 0 when wsrep_node_incoming_address is AUTO and the client port was not known)."
+        },
+        "uuid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Galera: wsrep_local_state_comment for this node; on Percona XtraDB Cluster the other nodes' pxc_cluster_view STATUS in the node's own words (DONOR as Donor/Desynced, JOINER as Joiner, JOINED as Joined, SYNCED as Synced, PRIMARY as Joining, NON-PRIMARY as Non-Primary; the raw value in pxc_status); 'Not replicating' for this node while the global wsrep_on is OFF. Group Replication: ONLINE, RECOVERING, OFFLINE, ERROR, UNREACHABLE; MISSING for a group instance in the metadata that is not in the group. InnoDB Cluster read replica connected to: Replicating, Connecting, Stopped, Error or Not replicating from its read_replica_replication channel. null when this server cannot know."
+        },
+        "state_source": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "wsrep_local_state_comment",
+            "pxc_cluster_view",
+            "replication_group_members",
+            "metadata",
+            "replication_channel",
+            null
+          ]
+        },
+        "role": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Group Replication MEMBER_ROLE: PRIMARY or SECONDARY (every ONLINE member is PRIMARY in multi-primary mode); null for an OFFLINE or ERROR member. An UNREACHABLE member keeps the role of its last status. READ_REPLICA for an InnoDB Cluster read replica from the metadata."
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "local": {
+          "type": "boolean",
+          "description": "This member is the connected server."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "ok",
+            "watch",
+            "problem",
+            "unknown"
+          ]
+        },
+        "status_why": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "number",
+              "string",
+              "boolean",
+              "null"
+            ]
+          },
+          "description": "Galera: this node's wsrep status. Group Replication: replication_group_member_stats counters. A read replica connected to: receiver_state, applier_state and last_error_number of its read_replica_replication channel."
+        },
+        "label": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "InnoDB Cluster metadata label."
+        },
+        "endpoint": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "InnoDB Cluster metadata classic endpoint."
+        },
+        "in_metadata": {
+          "type": "boolean"
+        },
+        "instance_type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "'read-replica' for an InnoDB Cluster read replica."
+        },
+        "communication_stack": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Group Replication MEMBER_COMMUNICATION_STACK (8.0.27+)."
+        },
+        "pxc_status": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Percona XtraDB Cluster: STATUS from pxc_cluster_view as the server reports it (SYNCED, DONOR, ...), also for this node."
+        },
+        "segment": {
+          "type": [
+            "integer",
+            "number",
+            "null"
+          ],
+          "description": "Percona XtraDB Cluster: gmcast segment from pxc_cluster_view."
+        },
+        "actions": {
+          "type": "array",
+          "description": "Reviewed changes this member offers (cluster.available_actions). Added only by the workspace's POST /api/live/cluster (cluster.with_actions); myflames cluster and the MCP tool cluster_status leave it out.",
+          "items": {
+            "$ref": "#/$defs/action"
+          }
+        }
+      }
+    },
+    "router": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "product",
+        "address",
+        "version",
+        "last_check_in",
+        "last_check_in_age_s",
+        "ports"
+      ],
+      "properties": {
+        "id": {
+          "type": [
+            "integer",
+            "number",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "product": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_check_in": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "As the server shows it (session time zone); from router_stats first with metadata 2.4.0+. Shown, not judged: MySQL Router writes it periodically (by default every tenth metadata refresh, never by default in a ClusterSet), on the writable member only."
+        },
+        "last_check_in_age_s": {
+          "type": [
+            "integer",
+            "number",
+            "null"
+          ],
+          "description": "Seconds between the check-in and the server's NOW() at the read (never below 0)."
+        },
+        "ports": {
+          "type": "object",
+          "description": "RWEndpoint, ROEndpoint, RWSplitEndpoint, RWXEndpoint, ROXEndpoint as recorded in the router's metadata attributes.",
+          "propertyNames": {
+            "enum": [
+              "RWEndpoint",
+              "ROEndpoint",
+              "RWSplitEndpoint",
+              "RWXEndpoint",
+              "ROXEndpoint"
+            ]
+          },
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "last_check_in_utc": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The check-in as UTC, ISO-8601 with Z (UNIX_TIMESTAMP of the check-in)."
+        },
+        "from_local_copy": {
+          "type": "boolean",
+          "description": "Read from the metadata copy of a member that left the group, so the check-in may be out of date."
+        }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "status",
+        "title",
+        "text"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "non_primary, state_transfer, wsrep_off, not_connected, not_ready, local_state, member_state, size_below_configured, no_tolerance, flow_control, cert_failures, pxc_maint_mode, no_quorum, local_not_in_group, read_replica, version_mismatch, primary_count."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "watch",
+            "problem"
+          ]
+        },
+        "title": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "member": {
+          "type": "string",
+          "description": "key of the member the finding is about."
+        }
+      }
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "danger",
+        "description"
+      ],
+      "properties": {
+        "id": {
+          "enum": [
+            "switchover",
+            "stop_member",
+            "start_member",
+            "switch_to_multi_primary",
+            "switch_to_single_primary",
+            "desync_node",
+            "resync_node",
+            "bootstrap_pc"
+          ]
+        },
+        "label": {
+          "type": "string"
+        },
+        "danger": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

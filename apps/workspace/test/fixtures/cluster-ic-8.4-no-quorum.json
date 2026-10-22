@@ -1,0 +1,240 @@
+{
+ "schema_version": "cluster-1.0",
+ "engine": "mysql",
+ "server_version": "8.4.11",
+ "version_comment": "MySQL Community Server - GPL",
+ "captured_at": "2026-10-20T14:40:00+00:00",
+ "uptime_s": 165,
+ "performance_schema": true,
+ "available": true,
+ "message": null,
+ "kind": "innodb_cluster",
+ "server": {
+  "hostname": "mf-ic-1",
+  "port": 3306,
+  "report_host": "mf-ic-1",
+  "server_uuid": "1062e681-cc92-11f1-83dd-b6daec340a27"
+ },
+ "cluster": {
+  "name": "mfcluster",
+  "uuid": "2ffff60d-cc92-11f1-b51d-b6daec340a27",
+  "size": 3,
+  "expected_size": 3,
+  "expected_source": "mysql_innodb_cluster_metadata",
+  "component": null,
+  "quorum": false,
+  "failures_tolerated": null,
+  "topology": "single_primary",
+  "provider": null
+ },
+ "status": "problem",
+ "status_why": [
+  "2 of 3 members are UNREACHABLE from this member, so the group has lost its majority and cannot process writes.",
+  "This server cannot reach the member; it may be down or partitioned. The group expels it after group_replication_member_expel_timeout.",
+  "This server cannot reach the member; it may be down or partitioned. The group expels it after group_replication_member_expel_timeout."
+ ],
+ "local": "member:1062e681-cc92-11f1-83dd-b6daec340a27",
+ "members": [
+  {
+   "key": "member:1062e681-cc92-11f1-83dd-b6daec340a27",
+   "name": "mf-ic-1:3306",
+   "address": "mf-ic-1:3306",
+   "host": "mf-ic-1",
+   "port": 3306,
+   "uuid": "1062e681-cc92-11f1-83dd-b6daec340a27",
+   "state": "ONLINE",
+   "state_source": "replication_group_members",
+   "role": "PRIMARY",
+   "version": "8.4.11",
+   "local": true,
+   "status": "ok",
+   "status_why": [
+    "A full member of the group."
+   ],
+   "metrics": {
+    "transactions_in_queue": 0,
+    "transactions_checked": 31,
+    "conflicts_detected": 0,
+    "rows_validating": 3,
+    "applier_queue": 0,
+    "remote_applied": 31,
+    "local_proposed": 0,
+    "local_rollback": 0
+   },
+   "communication_stack": "MySQL",
+   "label": "mf-ic-1:3306",
+   "in_metadata": true,
+   "endpoint": "mf-ic-1:3306",
+   "actions": [
+    {
+     "id": "stop_member",
+     "label": "Stop Group Replication…",
+     "danger": true,
+     "description": "This member leaves the group and becomes read-only (super_read_only ON)."
+    }
+   ]
+  },
+  {
+   "key": "member:10a527c5-cc92-11f1-956e-2a01c1402350",
+   "name": "mf-ic-2:3306",
+   "address": "mf-ic-2:3306",
+   "host": "mf-ic-2",
+   "port": 3306,
+   "uuid": "10a527c5-cc92-11f1-956e-2a01c1402350",
+   "state": "UNREACHABLE",
+   "state_source": "replication_group_members",
+   "role": "SECONDARY",
+   "version": "8.4.11",
+   "local": false,
+   "status": "watch",
+   "status_why": [
+    "This server cannot reach the member; it may be down or partitioned. The group expels it after group_replication_member_expel_timeout."
+   ],
+   "metrics": {
+    "transactions_in_queue": 0,
+    "transactions_checked": 105,
+    "conflicts_detected": 0,
+    "rows_validating": 3,
+    "applier_queue": 0,
+    "remote_applied": 61,
+    "local_proposed": 44,
+    "local_rollback": 0
+   },
+   "communication_stack": "MySQL",
+   "label": "mf-ic-2:3306",
+   "in_metadata": true,
+   "endpoint": "mf-ic-2:3306",
+   "actions": []
+  },
+  {
+   "key": "member:10db71e2-cc92-11f1-aaa1-eec8cb922a3b",
+   "name": "mf-ic-3:3306",
+   "address": "mf-ic-3:3306",
+   "host": "mf-ic-3",
+   "port": 3306,
+   "uuid": "10db71e2-cc92-11f1-aaa1-eec8cb922a3b",
+   "state": "UNREACHABLE",
+   "state_source": "replication_group_members",
+   "role": "SECONDARY",
+   "version": "8.4.11",
+   "local": false,
+   "status": "watch",
+   "status_why": [
+    "This server cannot reach the member; it may be down or partitioned. The group expels it after group_replication_member_expel_timeout."
+   ],
+   "metrics": {
+    "transactions_in_queue": 0,
+    "transactions_checked": 96,
+    "conflicts_detected": 0,
+    "rows_validating": 3,
+    "applier_queue": 0,
+    "remote_applied": 96,
+    "local_proposed": 0,
+    "local_rollback": 0
+   },
+   "communication_stack": "MySQL",
+   "label": "mf-ic-3:3306",
+   "in_metadata": true,
+   "endpoint": "mf-ic-3:3306",
+   "actions": []
+  }
+ ],
+ "galera": null,
+ "group_replication": {
+  "group_name": "2ffff60d-cc92-11f1-b51d-b6daec340a27",
+  "single_primary_mode": "ON",
+  "local_address": "mf-ic-1:3306",
+  "group_seeds": "mf-ic-2:3306,mf-ic-3:3306",
+  "view_id": "17925063669729468:9"
+ },
+ "metadata": {
+  "available": true,
+  "schema_version": "2.2.0",
+  "cluster_id": "30d8061b-cc92-11f1-b51d-b6daec340a27",
+  "cluster_name": "mfcluster",
+  "primary_mode": "pm",
+  "instances": [
+   {
+    "label": "mf-ic-1:3306",
+    "server_uuid": "1062e681-cc92-11f1-83dd-b6daec340a27",
+    "address": "mf-ic-1:3306",
+    "endpoint": "mf-ic-1:3306",
+    "instance_type": "group-member"
+   },
+   {
+    "label": "mf-ic-2:3306",
+    "server_uuid": "10a527c5-cc92-11f1-956e-2a01c1402350",
+    "address": "mf-ic-2:3306",
+    "endpoint": "mf-ic-2:3306",
+    "instance_type": "group-member"
+   },
+   {
+    "label": "mf-ic-3:3306",
+    "server_uuid": "10db71e2-cc92-11f1-aaa1-eec8cb922a3b",
+    "address": "mf-ic-3:3306",
+    "endpoint": "mf-ic-3:3306",
+    "instance_type": "group-member"
+   }
+  ],
+  "reason": null,
+  "local_copy": null
+ },
+ "routers": [
+  {
+   "id": 1,
+   "name": null,
+   "product": "MySQL Router",
+   "address": "mf-ic-router",
+   "version": "8.4.10",
+   "last_check_in": "2026-10-20 14:37:48",
+   "last_check_in_age_s": 2,
+   "last_check_in_utc": "2026-10-20T14:37:48Z",
+   "from_local_copy": false,
+   "ports": {
+    "RWEndpoint": "6446",
+    "ROEndpoint": "6447",
+    "RWSplitEndpoint": "6450",
+    "RWXEndpoint": "6448",
+    "ROXEndpoint": "6449"
+   }
+  }
+ ],
+ "findings": [
+  {
+   "id": "no_quorum",
+   "status": "problem",
+   "title": "No quorum",
+   "text": "2 of 3 members are UNREACHABLE from this member, so the group has lost its majority and cannot process writes."
+  },
+  {
+   "id": "member_state",
+   "status": "watch",
+   "title": "mf-ic-2:3306 is UNREACHABLE",
+   "text": "This server cannot reach the member; it may be down or partitioned. The group expels it after group_replication_member_expel_timeout.",
+   "member": "member:10a527c5-cc92-11f1-956e-2a01c1402350"
+  },
+  {
+   "id": "member_state",
+   "status": "watch",
+   "title": "mf-ic-3:3306 is UNREACHABLE",
+   "text": "This server cannot reach the member; it may be down or partitioned. The group expels it after group_replication_member_expel_timeout.",
+   "member": "member:10db71e2-cc92-11f1-aaa1-eec8cb922a3b"
+  }
+ ],
+ "summary": {
+  "members": 3,
+  "ok": 1,
+  "watch": 2,
+  "problem": 0,
+  "unknown": 0
+ },
+ "statements": [
+  "SHOW GLOBAL VARIABLES",
+  "SELECT performance_schema.replication_group_members",
+  "SELECT performance_schema.replication_group_member_stats",
+  "SELECT mysql_innodb_cluster_metadata.v2_gr_clusters, v2_instances, v2_routers"
+ ],
+ "notes": [
+  "Queue lengths and rows validating are current; the other counts are cumulative. Another member's numbers are the ones it last sent to this member."
+ ]
+}

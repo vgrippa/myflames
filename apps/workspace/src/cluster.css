@@ -1,0 +1,598 @@
+/* Cluster place: the shared summary line, metric tiles, table and inspector
+   (kit.css) carry the look; the topology picture, the findings list and the
+   state shapes are local. A static picture: every member is a card on a stem
+   down to one line, the group. Tokens only (style.css). */
+
+.cluster-place {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  width: 100%;
+  background: var(--bg);
+}
+
+.cluster-tiles + :is(.cluster-findings, .data-table-frame, .cluster-topology),
+.cluster-findings + :is(.cluster-tiles, .data-table-frame, .cluster-topology) {
+  margin-top: var(--space-3);
+}
+
+.cluster-tiles .tile-hint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+}
+
+/* A report kept after a failed read: greyed like another connection's. */
+.server-view.cluster-view.is-stale .view-main > :not(.cluster-stale) {
+  opacity: 0.55;
+  filter: grayscale(1);
+}
+
+.cluster-stale {
+  margin-bottom: var(--space-3);
+}
+
+/* ---- State shapes --------------------------------------------------------
+   One shape per state, on cards, in the Members table, in the inspector, in
+   the findings and on the summary line: a check for OK, a dot for Watch, a
+   triangle for Problem, a ring for not judged. Never color alone. */
+
+.cluster-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  min-width: 0;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--ink);
+}
+
+.cluster-mark.is-watch { color: var(--warn-text); }
+.cluster-mark.is-problem { color: var(--danger-text); }
+.cluster-mark.is-unknown { color: var(--ink-muted); font-weight: 500; }
+
+.cluster-shape,
+.cluster-view .status-pill .status-dot {
+  display: inline-block;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ink-faint);
+}
+
+/* OK: the same green dot as the rest of the workspace. */
+.cluster-mark.is-ok > .cluster-shape,
+.cluster-shape.is-ok,
+.cluster-view .status-pill.is-ok .status-dot {
+  background: var(--ok);
+}
+
+.cluster-mark.is-watch > .cluster-shape,
+.cluster-shape.is-watch,
+.cluster-view .status-pill.is-watch .status-dot {
+  background: var(--warn);
+}
+
+/* Problem: a triangle. */
+.cluster-mark.is-problem > .cluster-shape,
+.cluster-shape.is-problem,
+.cluster-view .status-pill.is-problem .status-dot {
+  width: 10px;
+  height: 9px;
+  border-radius: 0;
+  background: var(--danger);
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+}
+
+/* Not judged: a ring, the same in the table and on the cards. */
+.cluster-mark.is-unknown > .cluster-shape,
+.cluster-shape.is-unknown,
+.cluster-view .status-pill.is-unknown .status-dot {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--ink-muted);
+}
+
+/* The summary line's OK reads like Watch and Problem: shape and word. */
+.cluster-view .summary-line .status-pill.is-ok {
+  color: var(--ok-text);
+  font-weight: 600;
+}
+
+/* At the minimum window the state stays beside the text, never alone on a line. */
+@media (max-width: 768px) {
+  .cluster-view .summary-line {
+    flex-wrap: nowrap;
+    align-items: flex-start;
+  }
+  .cluster-view .summary-line > p:first-child {
+    display: flex;
+    flex: 1 1 auto;
+    align-items: flex-start;
+  }
+}
+
+/* ---- Findings ------------------------------------------------------------
+   One line each: shape and word, the title in foreground text (only the
+   member name links), and the reason on demand, stacked under the title. */
+.cluster-findings {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--space-1) / 2);
+  margin: 0 0 var(--space-3);
+  padding: 0;
+  list-style: none;
+}
+
+.cluster-findings li {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+
+.cluster-finding-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.cluster-finding-head > .cluster-mark {
+  flex: none;
+  min-width: 64px;
+}
+
+.cluster-finding-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.cluster-finding-title > .text-button {
+  font-size: inherit;
+  font-weight: inherit;
+}
+
+.cluster-finding-toggle {
+  flex: none;
+  font-size: var(--text-sm);
+}
+
+.cluster-finding-text {
+  max-width: 70ch;
+  margin: 0 0 var(--space-1);
+  padding-left: calc(64px + var(--space-2));
+  color: var(--ink-muted);
+}
+
+/* ---- Topology ------------------------------------------------------------ */
+
+.cluster-topology {
+  --card-w: 212px;
+  container-type: inline-size;
+  margin: 0;
+  overflow-x: auto;
+  padding: var(--space-5) var(--space-4) var(--space-6);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+
+.cluster-map {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: max-content;
+  min-width: 100%;
+}
+
+/* The members and the group line share one width, so the line runs from the
+   first member's stem to the last one's. */
+.cluster-group {
+  display: flex;
+  flex-direction: column;
+  width: max-content;
+}
+
+.cluster-members,
+.cluster-routers {
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  gap: var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cluster-node {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: var(--card-w);
+}
+
+/* Cards in a row share one height, so every stem starts at the same line. */
+.cluster-members .cluster-card {
+  flex: 1 1 auto;
+}
+
+.cluster-card.has-use {
+  padding-bottom: calc(var(--space-3) + var(--leading-sm) + var(--space-1));
+}
+
+.cluster-use-node {
+  position: absolute;
+  left: var(--space-3);
+  bottom: calc(var(--stem-h, 16px) + var(--space-2));
+  z-index: 1;
+  font-size: var(--text-xs);
+  line-height: var(--leading-sm);
+}
+
+/* A member card: the role, then name, address, engine and version, the
+   state, the queues, and last "This connection", so the lines of every card
+   in a row start at the same height. */
+.cluster-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: calc(var(--space-1) / 2);
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-3);
+  font: inherit;
+  text-align: left;
+  color: var(--ink);
+  background: var(--surface-raised);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+  transition: background var(--motion-hover), box-shadow var(--motion-hover);
+}
+
+.cluster-card:hover {
+  background: var(--surface-hover);
+}
+
+.cluster-card:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.cluster-card.is-selected {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* Watch: a heavier left edge. Detached (unreachable, missing, offline, in
+   error): a dashed edge in the state's color, a broken stem and the shape
+   beside the word. */
+.cluster-card.tone-watch {
+  box-shadow: inset 3px 0 0 var(--warn), var(--shadow-sm);
+}
+
+.cluster-card.is-detached {
+  border-style: dashed;
+  border-color: var(--danger);
+  background: var(--surface);
+  box-shadow: none;
+}
+
+.cluster-card.is-detached.tone-watch {
+  border-color: var(--warn);
+  box-shadow: inset 3px 0 0 var(--warn);
+}
+
+.cluster-card.is-detached.is-selected {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* A configured Galera node that is not in the component: named, not judged
+   as a member, not selectable. */
+.cluster-card.is-placeholder {
+  cursor: default;
+  color: var(--ink-muted);
+}
+
+.cluster-card.is-placeholder:hover {
+  background: var(--surface);
+}
+
+.cluster-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: var(--leading-sm);
+}
+
+.cluster-role {
+  padding: 0 var(--space-1-5);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  line-height: var(--leading-sm);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-secondary);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+}
+
+.cluster-role.is-primary {
+  color: var(--accent-text);
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.cluster-role.is-node,
+.cluster-role.is-router {
+  border-color: transparent;
+  padding: 0;
+}
+
+.cluster-local {
+  flex: none;
+  padding: 0 var(--space-1-5);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  line-height: var(--leading-sm);
+  color: var(--ink);
+  background: var(--surface-muted);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
+.cluster-card .cluster-local {
+  margin-top: auto;
+  padding-top: 0;
+}
+
+.cluster-name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-lg);
+  font-weight: 600;
+  line-height: var(--leading-lg);
+}
+
+.cluster-meta,
+.cluster-flow {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-secondary);
+}
+
+.cluster-flow {
+  margin-top: var(--space-1);
+  font-variant-numeric: tabular-nums;
+  white-space: normal;
+}
+
+.cluster-card > .cluster-mark {
+  margin-top: var(--space-1);
+  font-size: var(--text-md);
+}
+
+/* The links: a stem from each card to the group line, the line itself. */
+.cluster-stem {
+  display: block;
+  width: 0;
+  height: var(--space-5);
+  border-left: 2px solid var(--line-strong);
+}
+
+/* Not taking part: dashed and cut short, so the gap shows without color. */
+.cluster-stem.is-broken {
+  height: var(--space-5);
+  border-left: 2px dashed var(--danger);
+  mask-image: linear-gradient(to bottom, #000 55%, transparent 55%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent 55%);
+}
+
+.cluster-node:has(> .cluster-card.tone-watch) > .cluster-stem.is-broken {
+  border-left-color: var(--warn);
+}
+
+.cluster-bus {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+}
+
+.cluster-bus-line {
+  display: block;
+  align-self: center;
+  width: calc(100% - var(--card-w) + 2px);
+  min-width: 2px;
+  height: 0;
+  border-top: 2px solid var(--line-strong);
+}
+
+.cluster-bus.is-broken .cluster-bus-line {
+  border-top: 2px dashed var(--danger);
+}
+
+.cluster-bus-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  margin-top: var(--space-2);
+  padding: calc(var(--space-1) / 2) var(--space-2);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--ink-secondary);
+  background: var(--surface);
+  border-radius: var(--radius-sm);
+}
+
+.cluster-bus.is-broken .cluster-bus-label {
+  color: var(--danger-text);
+}
+
+/* Read replicas hang below the group on dashed neutral links: asynchronous,
+   not members of it (not a fault). */
+.cluster-replicas {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-top: var(--space-4);
+}
+
+.cluster-row-label {
+  margin-bottom: var(--space-1);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  font-weight: 600;
+  color: var(--ink-muted);
+}
+
+.cluster-stem.is-async {
+  height: var(--space-4);
+  border-left: 2px dashed var(--line-strong);
+}
+
+.cluster-card.is-replica {
+  background: var(--surface);
+}
+
+/* Routers hang under the group line. */
+.cluster-routers {
+  margin-top: var(--space-2);
+}
+
+.cluster-node.is-router .cluster-stem {
+  height: var(--space-4);
+}
+
+.cluster-card.is-router {
+  background: var(--surface);
+  border-style: solid;
+}
+
+/* Members table: the name truncates, its "This connection" tag stays whole beside it. */
+.cluster-cell-name {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  max-width: 100%;
+}
+
+.cluster-cell-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A narrow window (the app's 720 px minimum): the cards wrap in a grid inside
+   a frame that stands for the group (dashed when it has no quorum), so the
+   picture never runs off the right edge; the role and the state keep their
+   words and shapes. */
+/* The sections (one segmented control, no field labels) stay in the title's
+   row while they fit, so the content starts higher in a short window. */
+@container view (max-width: 760px) {
+  .server-view[data-view="cluster"] .toolbar-controls:not(:empty) {
+    order: 0;
+    flex: 1 1 auto;
+    justify-content: flex-end;
+  }
+}
+
+/* The icon rail leaves more than 640 px of view at a 720 px window, but
+   three 212 px cards plus gaps and frame padding still cannot fit. */
+@container view (max-width: 760px) {
+  /* Shorter tiles, so the first tab's content starts above the fold. */
+  .cluster-tiles .metric-tile {
+    min-height: 0;
+    padding-block: var(--space-1-5);
+  }
+  .cluster-tiles .tile-value {
+    font-size: var(--text-lg);
+    line-height: var(--leading-lg);
+  }
+  .cluster-topology {
+    --card-w: auto;
+    padding: var(--space-3);
+  }
+  .cluster-map,
+  .cluster-group {
+    width: 100%;
+  }
+  .cluster-group {
+    padding: var(--space-2);
+    border: 2px solid var(--line-strong);
+    border-radius: var(--radius-lg);
+  }
+  .cluster-group:has(> .cluster-bus.is-broken) {
+    border-style: dashed;
+    border-color: var(--danger);
+  }
+  .cluster-members,
+  .cluster-routers {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: var(--space-2);
+    width: 100%;
+  }
+  .cluster-node {
+    width: auto;
+    min-width: 0;
+  }
+  .cluster-members .cluster-node {
+    flex: 1 1 auto;
+  }
+  .cluster-node > .cluster-card {
+    height: 100%;
+  }
+  .cluster-stem,
+  .cluster-bus-line {
+    display: none;
+  }
+  .cluster-bus-label {
+    margin-top: var(--space-1);
+    white-space: normal;
+  }
+  .cluster-replicas,
+  .cluster-routers {
+    width: 100%;
+    margin-top: var(--space-3);
+  }
+  .cluster-finding-text {
+    padding-left: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cluster-card {
+    transition: none;
+  }
+}
+
+/* Inspector: a variable name stays whole (its column grows to fit it) and
+   the value wraps beside it, never "wsrep_node_n / ame". */
+.cluster-view .inspector-fields dt:has(> code) {
+  overflow-wrap: normal;
+  white-space: nowrap;
+}

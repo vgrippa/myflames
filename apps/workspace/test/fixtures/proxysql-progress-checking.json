@@ -1,0 +1,12 @@
+{
+ "schema_version": "action-progress-1.0",
+ "phase": "checking",
+ "states": [
+  "waiting",
+  "waiting"
+ ],
+ "status": null,
+ "elapsed_s": 1.2,
+ "waiting_s": null,
+ "timeout_s": 60
+}

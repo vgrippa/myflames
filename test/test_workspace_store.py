@@ -3,6 +3,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import contextlib
 import sqlite3
 import tempfile
 import unittest
@@ -31,6 +32,27 @@ class TestWorkspaceStore(unittest.TestCase):
         os.environ.pop('MYFLAMES_VAULT_PASSPHRASE', None)
         self.path = Path(self.temp.name) / 'private' / 'workspace.sqlite3'
         self.store = WorkspaceStore(self.path)
+
+    def test_app_update_last_check_survives_a_restart(self):
+        self.assertIsNone(self.store.app_update_last_check())
+        self.assertFalse(self.path.exists(), 'reading the last check never creates the store')
+        record = {'checked_at': '2026-10-20T10:42:00Z', 'outcome': 'up_to_date', 'current_version': '3.1.0',
+                  'latest_version': '3.1.0', 'reason': None}
+        self.assertEqual(self.store.set_app_update_last_check(record), record)
+        self.assertEqual(WorkspaceStore(self.path).app_update_last_check(), record)
+        newer = dict(record, checked_at='2026-10-21T08:00:00Z', outcome='failed', reason='offline')
+        self.store.set_app_update_last_check(newer)
+        self.assertEqual(WorkspaceStore(self.path).app_update_last_check(), newer)
+        for bad in (None, [], {'outcome': 'up_to_date'}, dict(record, reason='x' * 5000)):
+            with self.subTest(bad=type(bad)), self.assertRaises(ValueError):
+                self.store.set_app_update_last_check(bad)
+        self.assertEqual(self.store.app_update_last_check(), newer)
+        # A damaged value reads as never checked, not as an error.
+        # closing(): sqlite3's context manager commits but leaves the file open,
+        # and Windows cannot remove an open file when the temporary folder goes.
+        with contextlib.closing(sqlite3.connect(str(self.path))) as conn, conn:
+            conn.execute("UPDATE settings SET value = 'not json' WHERE key = 'app_update_last_check'")
+        self.assertIsNone(self.store.app_update_last_check())
 
     def test_write_lock_timeout_closes_the_connection(self):
         # BEGIN IMMEDIATE raising (a busy timeout under write contention) must

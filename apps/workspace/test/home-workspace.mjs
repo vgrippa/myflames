@@ -8,6 +8,8 @@ const shots = path.resolve(process.env.PERF_SHOTS || "../../local/fixes-2026-10-
 await fs.mkdir(shots, { recursive: true });
 const h = await open("/api/unused-home-test", "home-workspace", {
   "/api/live/schemas": { status: 200, body: { schemas: [], notes: [] } },
+  // Recorded and refused: Home never asks GitHub without a click.
+  "/api/app/update/check": { status: 500, body: { error: "Not expected in this suite." } },
 });
 const { page } = h;
 async function click(text) {
@@ -28,8 +30,10 @@ async function screenshots(name) {
 }
 try {
   await page.waitForSelector(".home-version");
-  assert.match(await page.$eval(".home-version", el => el.textContent), /myflames \d+\.\d+\.\d+.*Updates not checked/);
+  await page.waitForFunction(() => /Not checked yet/.test(document.querySelector(".home-version")?.textContent || ""));
+  assert.match(await page.$eval(".home-version", el => el.textContent), /myflames \d+\.\d+\.\d+.*Not checked yet.*Check for updates/);
   assert.equal(await page.$eval(".home-version a", el => el.href), "https://github.com/vgrippa/myflames/releases");
+  assert.equal(h.state.other.some(item => item.path === "/api/app/update/check"), false, "no update check without a click");
   assert.deepEqual(await page.$$eval(".nav-group-label", els => els.map(el => el.textContent)), ["SQL workspace", "Library"]);
   await screenshots("home");
   await page.click(".home-workflows button:first-child");
@@ -39,7 +43,9 @@ try {
   await page.waitForFunction(() => document.querySelector(".main-nav button.active")?.textContent === "Server");
   await click("Home");
   await page.click(".home-workflows button:nth-child(3)");
-  await page.waitForSelector('.server-view[data-view="diagram"]');
+  // Home's Database diagram opens its place (SQL workspace), not a Server view.
+  await page.waitForSelector('.server-place.is-diagram-place .server-view[data-view="diagram"]', { visible: true });
+  await page.waitForFunction(() => document.querySelector(".main-nav button.active")?.textContent === "Database diagram");
   await click("View Mermaid");
   assert.equal(await page.$eval('[aria-label="Import format"]', el => el.value), "mermaid");
   await page.type(".diagram-paste textarea", "erDiagram\n  customers ||--o{ orders : places\n  customers {\n    int id PK\n    string name\n  }\n  orders {\n    int id PK\n    int customer_id FK\n  }\n");

@@ -60,10 +60,23 @@ remaining limitations.
 
 ## GA version matrix (live servers)
 
-`scripts/ga-matrix.sh` starts every GA MySQL (8.0, 8.4, 9.7, 26.7) and MariaDB
-(10.6, 10.11, 11.4, 11.8, 12.3, 13.0) image in Docker on 127.0.0.1 (ports 33080
-to 33130), plus a GTID replica for MySQL 9.7 and MariaDB 11.8 (the latter left
-with a duplicate-key SQL thread error). Each primary gets the `testdb` seed from
+`scripts/record-perf-fixtures.py --port PORT --server NAME --view
+indexes|tables|config|io|waits|health [--schema S ...] [--parameters]` records
+one live view read from a matrix server as a replay fixture
+(`test/fixtures/perf/<view>-<server>.json`, or `test/fixtures/health/<server>.json`),
+with the password read from the matrix's credentials file and never printed;
+run it with an isolated `HOME`. The Percona fixtures that `test/test_percona.py`
+replays were recorded this way from `percona-8.0` and `percona-8.4`.
+
+`scripts/ga-matrix.sh` starts every GA MySQL (8.0, 8.4, 9.7, 26.7), Percona
+Server for MySQL (8.0, 8.4; official `percona/percona-server` images pinned to
+8.0.46-37.1 and 8.4.11-11.1, arm64 and amd64) and MariaDB (10.6, 10.11, 11.4,
+11.8, 12.3, 13.0) image in Docker on 127.0.0.1 (ports 33080 to 33185), plus a
+GTID replica for MySQL 9.7, Percona Server 8.4 and MariaDB 11.8 (the last left
+with a duplicate-key SQL thread error). Percona Server 8.0 (port 33180) runs the
+thread pool and the slow log with `log_slow_verbosity=full`; Percona Server 8.4
+(33184, replica on 33185) runs with `userstat=ON`; saved connections
+`ga-percona-8.0`, `ga-percona-8.4` and `ga-percona-8.4-replica`. Each primary gets the `testdb` seed from
 `generate-fixtures.sh`, a `review` schema (no primary key, redundant index,
 foreign key, reusable free space, view, procedure), a warm-up workload and one
 deadlock. Accounts: `root`, `mf_admin` (ALL), `mf_read` (read only); passwords
@@ -77,3 +90,161 @@ anything inside `~/.myflames`, and a `$MYFLAMES_HOME/.myflames` that is the
 real store; `test/test_ga_matrix.py`) and `env`
 (JSON) are the subcommands. Run myflames against a profile with
 `HOME=$MYFLAMES_HOME MYFLAMES_SECRET_BACKEND=vault python3 -m myflames health --profile ga-mysql-8.4`.
+
+## Cluster matrix (live servers)
+
+`scripts/cluster-matrix.sh` starts three 3-node clusters in Docker on 127.0.0.1,
+and a ProxySQL in front of two of them, for building and testing cluster and
+ProxySQL views:
+
+| Cluster | Image | Containers | Ports |
+| --- | --- | --- | --- |
+| MariaDB Galera (`mf_galera`, rsync SST) | `mariadb:11.8` | `mf-galera-1..3` | 34101-34103 |
+| Percona XtraDB Cluster (`mf_pxc`, cluster traffic encrypted with one shared CA and certificate) | `percona/percona-xtradb-cluster:8.4` | `mf-pxc-1..3` | 34201-34203 |
+| MySQL InnoDB Cluster (`mfcluster`, made with the mysqlsh inside the image, clone recovery) | `mysql:8.4` | `mf-ic-1..3` | 34301-34303 |
+| MySQL Router for `mfcluster` | `mf-mysql-router:8.4` (built locally from `mysql:8.4`, since Docker Hub has no `mysql/mysql-router:8.4`) | `mf-ic-router` | 34306 (RW), 34307 (RO) |
+| ProxySQL in front of `mf_galera` and `mfcluster` (group `proxysql`) | `proxysql/proxysql:3.0.11` (ProxySQL 3.0.11, arm64 and amd64) | `mf-proxysql` | 36032 (Admin), 36033 (MySQL) |
+
+Every node gets `root`, `mf_admin` (ALL) and `mf_read` (SELECT, PROCESS,
+REPLICATION CLIENT, SHOW VIEW), created once and replicated by the cluster, and a
+small `testdb` (customers, products, orders). Passwords are random, in
+`local/cluster-matrix/credentials.env` (chmod 600), and reach the servers through
+the container environment or stdin, never a command line. Set `CLUSTER_LAB` to
+keep state elsewhere. Subcommands:
+
+```bash
+scripts/cluster-matrix.sh up [galera|pxc|ic|proxysql|all]    # start, form, seed, wait healthy (idempotent)
+scripts/cluster-matrix.sh status                    # one line per node with its cluster state
+scripts/cluster-matrix.sh check [CLUSTER...]        # health gate, exit 1 when unhealthy
+scripts/cluster-matrix.sh profiles --home DIR       # saved connections, then a health smoke per profile
+scripts/cluster-matrix.sh env                       # the matrix as JSON
+scripts/cluster-matrix.sh fail ic-1                 # docker stop one node
+scripts/cluster-matrix.sh recover ic-1              # start it and rejoin (IST/SST, GR recovery or rejoinInstance)
+scripts/cluster-matrix.sh fixtures STATE [CLUSTER...] [--out DIR]
+scripts/cluster-matrix.sh down [galera|pxc|ic|proxysql|all]  # remove containers, data volumes and networks
+```
+
+Healthy means `wsrep_cluster_size` 3, `wsrep_cluster_status` Primary and every
+node Synced (Galera, PXC); three ONLINE members in
+`performance_schema.replication_group_members` with one PRIMARY,
+`dba.getCluster().status()` OK and the router answering on both ports (InnoDB
+Cluster). `profiles` saves `cluster-galera-1..3`, `cluster-pxc-1..3`,
+`cluster-ic-1..3` and `cluster-ic-router-rw` (user `mf_admin`, type development,
+`ssl_mode` PREFERRED, password remembered with the vault backend) in an isolated
+home and refuses the real home or `~/.myflames` with the same guard as
+`ga-matrix.sh` (`test/test_ga_matrix.py`). Run myflames against a node with
+`HOME=DIR MYFLAMES_SECRET_BACKEND=vault python3 -m myflames health --profile cluster-pxc-1 --interval 1`.
+
+### ProxySQL (`proxysql` group)
+
+`mf-proxysql` runs `proxysql/proxysql:3.0.11` with its data in the
+`mf-proxysql-data` volume, attached to `mf-galera-net` and `mf-ic-net`, with the
+Admin interface on 127.0.0.1:36032 and the MySQL interface on 127.0.0.1:36033.
+`up all` starts it after the clusters; `up proxysql` needs Galera and InnoDB
+Cluster already taking writes. It starts with `--no-version-check`, so the lab
+never asks proxysql.com for the latest version.
+
+- Admin users: ProxySQL's default `admin`, which it only lets in from inside the
+  container (from the host it answers `User 'admin' can only connect locally`),
+  and `radmin` for remote logins, with a random `PROXYSQL_ADMIN_PASSWORD` that
+  the first `up proxysql` adds to `credentials.env`.
+- Monitor: `mf_monitor` (`PROXYSQL_MONITOR_PASSWORD`), created once on each
+  cluster. On Galera it has no privilege: ProxySQL's check reads `@@read_only`,
+  `@@wsrep_*` and `INFORMATION_SCHEMA.GLOBAL_STATUS`, which MariaDB lets any
+  account read. On InnoDB Cluster it has `REPLICATION CLIENT` and `SELECT` on
+  `performance_schema.replication_group_members` and
+  `replication_group_member_stats`, the two tables the Group Replication check
+  reads (both need SELECT).
+- `mysql_galera_hostgroups`: writer 10, backup writer 11, reader 12, offline 19,
+  `max_writers` 1, `writer_is_also_reader` 2 (the backup writers also read).
+  `mf-galera-1` has the highest weight, so it is the writer.
+- `mysql_group_replication_hostgroups`: writer 30, backup writer 31, reader 32,
+  offline 39, `max_writers` 1, `writer_is_also_reader` 0 (the primary writes,
+  the secondaries read). These servers use `use_ssl=1`: the accounts use
+  `caching_sha2_password`, whose first login needs TLS.
+- Frontend user `mf_admin` (the clusters' password), default hostgroup 30.
+- Query rules: 10 sends statements tagged `/* galera */` to 10 (`match_pattern`,
+  so the client has to keep comments: `mysql --comments`), 20 sends
+  `SELECT ... FOR UPDATE` to 30, and 30 sends the other SELECTs to 32. Everything
+  else goes to the default hostgroup 30.
+
+When healthy, `runtime_mysql_servers` shows HG10 `mf-galera-1` ONLINE with
+`mf-galera-2` and `mf-galera-3` SHUNNED (the writers over `max_writers` stay in
+the writer hostgroup as SHUNNED), HG11 and HG12 `mf-galera-2` and `mf-galera-3`
+ONLINE, HG30 `mf-ic-1` (the primary) ONLINE, and HG32 `mf-ic-2` and `mf-ic-3`
+ONLINE. `check proxysql` requires the MySQL protocol greeting on both host
+ports, one ONLINE writer in HG10 and HG30, an ONLINE reader in HG12 and HG32,
+and three routes through the MySQL interface: a SELECT to an HG32 server, a
+`/* galera */` SELECT to the HG10 writer and a SHOW to the HG30 primary.
+
+`up proxysql` writes the servers, hostgroups and query rules only on a new data
+volume and refreshes the three passwords every time, so changes made through
+Admin (for example from the workspace's ProxySQL place) survive it; `down
+proxysql` removes the container and volume, and the next `up` starts over. Each
+`up` and `recover proxysql` sends 65 read-only statements through the MySQL
+interface (the locking reads are rolled back), so `stats_mysql_connection_pool`,
+`stats_mysql_query_rules` and `stats_mysql_query_digest` have rows. `fail
+proxysql` stops it. `down galera` or `down ic` first takes `mf-proxysql` off that
+network; the next `up proxysql` attaches it again. `fixtures` does not record
+ProxySQL.
+
+While `mf-proxysql` runs, `profiles` also saves `proxysql-admin`
+(127.0.0.1:36032, user `radmin`, type development, `ssl_mode` PREFERRED,
+password remembered). Its smoke is the read the ProxySQL place makes
+(`/api/live/proxysql`), since ProxySQL Admin speaks a SQLite dialect that
+rejects the `@@` variables the server views and `myflames sql` read. Look at it
+with the MySQL client (the password comes from the credentials file and travels
+in the environment):
+
+```bash
+set -a; . local/cluster-matrix/credentials.env; set +a
+MYSQL_PWD="$PROXYSQL_ADMIN_PASSWORD" mysql -uradmin -h127.0.0.1 -P36032 --protocol=TCP \
+  -e "SELECT hostgroup_id, hostname, port, status FROM runtime_mysql_servers ORDER BY 1, 2"
+MYSQL_PWD="$MF_ADMIN_PASSWORD" mysql -umf_admin -h127.0.0.1 -P36033 --protocol=TCP --comments \
+  -e "SELECT @@hostname; /* galera */ SELECT @@hostname"
+```
+
+`fixtures STATE` writes `test/fixtures/cluster/CLUSTER-STATE-NODE[-ROLE].json`
+for every running node plus `index.json`: `@@version` and `@@version_comment`,
+`SHOW GLOBAL STATUS LIKE 'wsrep%'`, `SHOW GLOBAL VARIABLES LIKE 'wsrep%'` (and
+`'pxc%'` on PXC), the wsrep plugins and every wsrep or pxc table (`mysql.wsrep_cluster`,
+`mysql.wsrep_cluster_members`, `performance_schema.pxc_cluster_view`) for
+Galera and PXC; the `replication_group_*` tables, Group Replication variables
+and `Gr_*` status counters, GTID state and the `mysql_innodb_cluster_metadata`
+`v2_*` views for InnoDB Cluster, plus `ic-STATE-shell-status.json`
+(`dba.getCluster().status({extended: 1})`) and `ic-STATE-router.json` (which
+member each router port reaches). Secret-like variables and any lab password are
+redacted. The committed set has three states: `healthy`; `degraded`, after
+`fail galera-2`, `fail pxc-2` and `fail ic-1` (the primary, so the group elects
+`mf-ic-2` and the router moves read/write there); and `recovered`, after
+`recover` of the same nodes (IST for Galera and PXC, incremental recovery for
+Group Replication). These matrix captures (`CLUSTER-STATE-NODE*.json` and
+`index.json`) are captured server output for replay tests; nothing reads them
+yet.
+
+The replay recordings that `test_cluster.py` reads sit in the same directory as
+`cluster-<engine>-<version>-<state>.json` (for example
+`cluster-galera-11.8-donor.json`). Each is one live `myflames cluster` read in
+the `test/fixtures/perf` replay shape, `{server, source, args, calls, report}`:
+every statement `myflames/cluster.py` sent with the `mysql --batch` text it got
+back, and the report it made. `test/_cluster_fixtures.py` replays them (and
+derives further states from them), and
+`test_recordings_replay_to_their_recorded_report` checks each replay against
+its stored `report`, so record them again whenever `cluster.py`'s report
+changes. Put the cluster in the state first, then record one node:
+
+```bash
+HOME=$(mktemp -d) python3 scripts/record-cluster-fixtures.py --port 34101 --server galera-11.8-healthy
+```
+
+The states recorded so far: `healthy`; `donor` (`SET GLOBAL wsrep_desync = ON`
+on the node read); `two-of-three` (`fail` one node); `non-primary` (one node
+isolated from the others, read on that node); and for InnoDB Cluster
+`member-offline` and `local-offline` (`STOP GROUP_REPLICATION` on one member,
+read from the primary and from that member) and `unreachable` (one member's
+container paused with `group_replication_member_expel_timeout` raised to 60 so
+it stays UNREACHABLE while it is read). The recorder reads the password for
+`--user` (`root` by default, `mf_admin` or `mf_read`) from the matrix's
+credentials file the way `cluster-matrix.sh` does (`CREDS_FILE`, else
+`$CLUSTER_LAB/credentials.env`), sends it to the client in a defaults file,
+never prints it, and refuses your real home or `~/.myflames` as `HOME`.

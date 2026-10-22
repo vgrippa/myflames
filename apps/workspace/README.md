@@ -1,10 +1,11 @@
 # myflames Performance workspace
 
 Local React + TypeScript interface (`myflames ui`) for the existing myflames
-Python engine. The shell is `src/main.tsx` with `src/Sidebar.tsx`; the nine
+Python engine. The shell is `src/main.tsx` with `src/Sidebar.tsx`; the ten
 places are Home (`Home.tsx`, with `Connections.tsx`), Server (`Server.tsx`),
 Workload (`Server.tsx` with `place="workload"` and `SlowQueries.tsx`),
-Replication (`ReplicationPlace.tsx` and `Replication.tsx`), Tuning
+Replication (`ReplicationPlace.tsx` and `Replication.tsx`), Cluster
+(`ClusterPlace.tsx` and `ClusterTopology.tsx`, data from `clusterApi.ts`), Tuning
 (`Server.tsx` with `place="tuning"`, `Tuning.tsx`, and `Report.tsx`), Query
 editor (`QueryLab.tsx`), Plans, Investigations (`Library.tsx`), and Learn
 (`Teach.tsx`). Design tokens are on `:root` in `src/style.css`.
@@ -74,7 +75,7 @@ The API and command-line regressions run with the repository's Python suite.
 
 ## Navigation checks
 
-`npm run test:navigation` checks the nine places and their active state, the
+`npm run test:navigation` checks the ten places and their active state, the
 Open plans list, the status indicator and Settings popover, Home's
 Connections (add, edit, test, use, forget, delete), the connection picker in
 the Query editor and Server, keyboard movement between places, and the
@@ -100,6 +101,18 @@ Sessions views: resizing any column by pointer and keyboard, the Columns menu
 with the workspace across a reload and a corrupt stored layout ignored, sorting
 independent of visible columns, compact counts with the exact value as the
 tooltip, and a 2,000-row table drawn in a window that the keyboard still walks.
+The shell keeps every table's layout in one record by table id (`columns_v1`
+in the saved workspace), so the Cluster place's Members (Nodes on Galera) and
+Routers tables keep theirs apart from each other and from Server's.
+
+## Cluster checks
+
+`npm run test:cluster` replays cluster-1.0 reports computed by the backend
+(`test/cluster-fixtures.py`) through the Cluster place: each kind, the
+topology, findings (Details stay with their finding and close for another
+connection), Members and Routers tables with their own column layouts, the
+inspector, the not-a-cluster state, connection binding, Refresh all, keyboard,
+and the 720 px window.
 
 ## Investigation checks
 

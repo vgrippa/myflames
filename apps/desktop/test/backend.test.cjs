@@ -29,6 +29,43 @@ test('navigation compares exact origins; external links require permitted HTTPS 
   assert.equal(externalLink('https://dev.mysql.com/downloads/shell/'), 'https://dev.mysql.com/downloads/shell/');
   for (const value of ['https://dev.mysql.com.evil.test/', 'https://user@dev.mysql.com/', 'https://dev.mysql.com:123/', 'http://dev.mysql.com/', 'file:///etc/passwd', 'ms-settings:privacy', 'javascript:alert(1)']) assert.equal(externalLink(value), null);
 });
+test('Parameters documentation links open only the official manuals', () => {
+  // myflames/sysvar_docs.py: the MySQL Reference Manual, MariaDB's documentation, Percona's manuals.
+  for (const value of ['https://dev.mysql.com/doc/refman/8.4/en/innodb-parameters.html#sysvar_innodb_buffer_pool_size',
+    'https://mariadb.com/docs/server/server-usage/storage-engines/innodb/innodb-system-variables#innodb_buffer_pool_size',
+    'https://docs.percona.com/percona-server/8.4/innodb-corrupt-table-action.html#innodb_corrupt_table_action',
+    'https://docs.percona.com/percona-xtradb-cluster/8.4/wsrep-system-index.html#pxc_strict_mode'])
+    assert.equal(externalLink(value), value);
+  for (const value of ['http://docs.percona.com/percona-server/8.4/x.html', 'https://docs.percona.com.evil.test/x',
+    'https://user@docs.percona.com/x', 'https://docs.percona.com:8443/x', 'https://percona.com/x', 'https://forums.percona.com/x'])
+    assert.equal(externalLink(value), null);
+});
+test('Home news links open in the default browser, never in the app window', () => {
+  // Headline links from myflames/news.py: the MySQL team's posts and mariadb.org.
+  for (const value of ['https://blogs.oracle.com/mysql/troubleshooting-mysql-with-opentelemetry-metrics', 'https://mariadb.org/amazic-joins-mariadb-foundation-as-a-silver-sponsor/'])
+    assert.equal(externalLink(value), value);
+  for (const value of ['http://blogs.oracle.com/mysql/x', 'https://blogs.oracle.com.evil.test/mysql/x', 'https://user@blogs.oracle.com/mysql/x', 'https://blogs.oracle.com:8443/mysql/x', 'https://www.percona.com/blog/x', 'https://planet.mysql.com.evil.test/'])
+    assert.equal(externalLink(value), null);
+  // target=_blank reaches the window-open handler: it opens a permitted HTTPS
+  // link with the system browser and always denies a new app window; any
+  // navigation of the app window away from the workspace origin is cancelled.
+  const main = require('node:fs').readFileSync(path.join(__dirname, '..', 'main.cjs'), 'utf8');
+  assert.match(main, /setWindowOpenHandler\(\(\{ url \}\) => \{\s*const safe = externalLink\(url\);\s*if \(safe\) void shell\.openExternal\(safe\)[^\n]*\n\s*return \{ action: 'deny' \};/);
+  assert.match(main, /on\('will-navigate', \(event, url\) => \{ if \(!sameOrigin\(url, origin\)\) event\.preventDefault\(\); \}\)/);
+  assert.match(main, /on\('will-redirect', \(event, url\) => \{ if \(!sameOrigin\(url, origin\)\) event\.preventDefault\(\); \}\)/);
+});
+test('Safe updates documentation links open in the default browser', () => {
+  // The ⓘ next to Safe updates in the Query editor (SafeUpdatesInfo.tsx).
+  const links = ['https://dev.mysql.com/doc/refman/8.4/en/server-system-variables.html#sysvar_sql_safe_updates',
+    'https://mariadb.com/docs/server/server-management/variables-and-modes/server-system-variables#sql_safe_updates'];
+  for (const value of links) assert.equal(externalLink(value), value);
+  // Every link in the source is one of them, so a changed URL cannot be
+  // silently refused by the allowlist.
+  const source = require('node:fs').readFileSync(path.join(__dirname, '..', '..', 'workspace', 'src', 'SafeUpdatesInfo.tsx'), 'utf8');
+  assert.deepEqual([...source.matchAll(/https:\/\/[^"'\s`]+/g)].map((m) => m[0]).sort(), [...links].sort());
+  for (const value of ['http://mariadb.com/docs/server/', 'https://mariadb.com.evil.test/docs/', 'https://docs.mariadb.com/', 'https://mariadb.com:8443/docs/'])
+    assert.equal(externalLink(value), null);
+});
 test('backend environment isolates HOME and strips injected paths and credentials', () => {
   const env = backendEnvironment('/desktop', { HOME: '/real', USERPROFILE: '/real', PATH: '/tools', PYTHONPATH: '/evil', MYSQL_PWD: 'secret', MYFLAMES_VAULT_PASSPHRASE: 'secret', MYFLAMES_SECRET_BACKEND: 'keychain' });
   assert.equal(env.HOME, path.join('/desktop', 'backend-home')); assert.equal(env.USERPROFILE, env.HOME);

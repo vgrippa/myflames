@@ -298,6 +298,34 @@ class TestSelectFunctionSafety(unittest.TestCase):
 class TestClassify(unittest.TestCase):
     maxDiff = None
 
+    def test_handler_open_requires_review_and_read_close_stay_available(self):
+        """Both engines give HANDLER OPEN's metadata lock explicit duration."""
+        reason = ('HANDLER OPEN holds a metadata lock on the table until '
+                  'HANDLER CLOSE or the session ends')
+        for sql in ('HANDLER t OPEN', 'handler db.t open AS h',
+                    'HANDLER `db`.`table name` OPEN AS `h`',
+                    'HANDLER `t`OPEN', 'HANDLER `db`.`t`OPEN', 'HANDLER "t"OPEN',
+                    'HANDLER "table name" OPEN', 'HANDLER café OPEN',
+                    'HANDLER 1table OPEN', 'HANDLER t /* note */ OPEN',
+                    '/*!80000 HANDLER t OPEN */', '/*M! HANDLER t OPEN */'):
+            with self.subTest(sql=sql):
+                verdict = dbops.classify(sql)
+                self.assertEqual((verdict['kind'], verdict['category']), ('risky', 'lock'))
+                self.assertIn(reason, verdict['reasons'])
+                self.assertEqual(dbops.decide(verdict, 'production')['action'], 'confirm')
+                self.assertEqual(dbops.decide(verdict, 'development')['action'], 'confirm')
+                self.assertEqual(dbops.decide(verdict, 'development', read_only=True)['action'], 'refuse')
+        for sql in ('HANDLER t READ FIRST', 'HANDLER t READ NEXT LIMIT 10',
+                    'HANDLER `open` READ FIRST', "HANDLER t READ FIRST WHERE v = 'OPEN'",
+                    'HANDLER t CLOSE', 'HANDLER `open` CLOSE', 'HANDLER open_table CLOSE',
+                    'HANDLER tOPEN READ FIRST'):
+            with self.subTest(sql=sql):
+                verdict = dbops.classify(sql)
+                self.assertEqual(verdict['kind'], 'read')
+                self.assertEqual(dbops.decide(verdict, read_only=True)['action'], 'allow')
+        self.assertEqual(dbops.classify('HANDLER t OPEN; HANDLER t READ FIRST; HANDLER t CLOSE')['kind'],
+                         'risky')
+
     def test_table(self):
         for sql, kind, category, verbs in CASES:
             with self.subTest(sql=sql):

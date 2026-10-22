@@ -52,7 +52,7 @@ try {
   assert.equal(state.seen.length,1);assert.equal(await page.$eval(editor,e=>e.value),'TRUNCATE TABLE orders');
   // A Top statements projection enters the editor for review even after its
   // usual analysis confirmation. It still requires the editor's explicit run.
-  await h.server();await h.view('top');await h.button('Load top statements');
+  await h.server();await h.view('top');
   await page.waitForSelector('.server-view[data-view="top"] tbody tr');
   await page.click('.server-view[data-view="top"] tbody tr');
   await page.click('[aria-label="Run analysis on statement 1"]');

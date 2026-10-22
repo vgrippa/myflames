@@ -167,7 +167,7 @@ export function InnodbView({
     await reads.run(
       `innodb:${raw}`,
       raw ? "Reading the raw InnoDB status…" : "Reading SHOW ENGINE INNODB STATUS…",
-      (c) => api<InnodbReport>("live/innodb", { connection: c, raw }),
+      (c, signal) => api<InnodbReport>("live/innodb", { connection: c, raw }, signal),
       onReport,
     );
   }
@@ -282,7 +282,7 @@ export function InnodbView({
       otherConnection={other}
       inspector={inspector}
       inspectorEmpty={<p>Select a row to see its section's numbers, rules and related views.</p>}
-      status={<ViewStatus loading={loading} error={error} />}
+      status={<ViewStatus loading={loading} error={error} onStop={reads.stop} onRetry={error ? () => void load() : undefined} doneAt={reads.doneAt} />}
     >
       {!report && !loading && !error && (
         <EmptyState
@@ -348,7 +348,7 @@ export function InnodbView({
                           key={i.key}
                           rowKey={`section:${section.key}:${i.key}`}
                           selection={selection}
-                          tone={i.status ? tone(i.status) : undefined}
+                          tone={i.status ? tone(i.status) : rows.some((x) => x.status) ? "info" : undefined}
                           label={i.label}
                           value={<span title={i.text}>{i.text}</span>}
                           attrs={{ "data-section": section.key, "data-item": i.key }}

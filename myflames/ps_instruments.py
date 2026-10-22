@@ -79,6 +79,7 @@ same defaults) and on live MySQL 8.4, 9.7 and 26.7 and MariaDB 11.4 and 13.0:
   type and enable everything else (M/storage/perfschema/pfs_defaults.cc:
   80-140, Ma/storage/perfschema/pfs_defaults.cc:55-100).
 """
+from .server_info import product_name
 from .connector import ConnectorError
 from .perf_common import (Reader, _bytes_text, _count_text, _duration_text, _number, base_report, denied,
                           lost_note, preflight, reason, table_text)
@@ -296,9 +297,13 @@ TABLES = {
     "memory_summary_global_by_event_name": (),
     # Error log uses logging sinks, not Performance Schema instruments or consumers.
     "error_log": (),
-    # Replication (replication.py): filled whenever Performance Schema is on, no instrument or consumer.
+    # Replication (replication.py) and a read replica's channel (cluster.py): filled whenever Performance Schema is on, no instrument or consumer.
     "replication_connection_configuration": (), "replication_connection_status": (),
-    "replication_applier_configuration": (), "replication_applier_status_by_worker": (),
+    "replication_applier_configuration": (), "replication_applier_status": (), "replication_applier_status_by_worker": (),
+    # Cluster (cluster.py): Group Replication's member tables come from the
+    # plugin and Percona XtraDB Cluster's pxc_cluster_view from the server,
+    # filled whenever Performance Schema is on, no instrument or consumer.
+    "replication_group_members": (), "replication_group_member_stats": (), "pxc_cluster_view": (),
     # Server variables (variables.py): readable with Performance Schema on or off, no instrument or consumer.
     "persisted_variables": (), "variables_metadata": (),
 }
@@ -1214,7 +1219,7 @@ _STATE_TEXT = {"on": "on", "off": "off", "partial": "partly on", "counted": "on,
 
 
 def format_text(report):
-    head = "%s %s" % ("MariaDB" if report["engine"] == "mariadb" else "MySQL", report["server_version"] or "?")
+    head = "%s %s" % (product_name(report), report["server_version"] or "?")
     if report["uptime_s"] is not None:
         head += ", up %s" % _duration_text(report["uptime_s"])
     status = report["status"]
@@ -1263,7 +1268,7 @@ def format_text(report):
 def preset_text(report, key):
     """One preset as runnable SQL with comments, then its my.cnf lines."""
     preset = next(p for p in report["presets"] if p["key"] == key)
-    engine = "MariaDB" if report["engine"] == "mariadb" else "MySQL"
+    engine = product_name(report)
     out = ["-- %s (%s %s)" % (preset["label"], engine, report["server_version"] or "?"),
            "-- %s" % preset["summary"],
            "-- Gain: %s" % preset["gain"],

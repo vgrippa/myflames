@@ -91,26 +91,21 @@ try {
   await button("Next lesson");
   await page.waitForFunction(title => document.querySelector('.lesson-frame')?.title !== title,
     {}, operatorLesson);
-  // The next lesson is B+tree, which has a 3D view. Pick it, then come back
-  // through the plan: the operator's lesson (2D only) must open, and be
-  // requested, in 2D.
+  // Return through the plan after navigating to another lesson: the
+  // operator link must reopen the matching lesson.
   const lessonRequests = [];
   page.on("request", (request) => {
     if (request.url().endsWith("/api/teach/lesson")) lessonRequests.push(JSON.parse(request.postData() || "{}"));
   });
-  await page.click('.segmented[aria-label="Lesson view"] button[data-value="3d"]');
-  await page.waitForSelector('.lesson-frame[title$="(3D view)"]');
   await button("Back to plan");
   await frame();
   await inspectorSection("lessons");
   await button("Learn this operator");
   await page.waitForFunction(title => document.querySelector('.lesson-frame')?.title === title,
     {}, operatorLesson);
-  assert.deepEqual(
-    lessonRequests.filter((body) => body.view === "3d" && body.lesson !== "btree"),
-    [],
-    "a lesson without a 3D view is never requested in 3D",
-  );
+  assert.ok(lessonRequests.length > 0, "the operator lesson was requested");
+  assert.ok(lessonRequests.every((body) => !Object.hasOwn(body, "view")),
+    "lesson requests need only the lesson key");
   await button("Back to plan");
   await frame();
   assert.match(
@@ -479,6 +474,40 @@ try {
     path: path.join(directory, "query-lab-mobile.png"),
     fullPage: true,
   });
+  // Unknown saved view fields must not affect lesson restore.
+  const snapshot = await page.evaluate(async () => {
+    const auth = await fetch("/api/auth/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Myflames-Bootstrap": "1",
+        "X-Myflames-Token": localStorage.getItem("myflames.session-proof") || "" },
+      body: "{}",
+    });
+    const { token } = await auth.json();
+    const response = await fetch("/api/session/load", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Myflames-Token": token },
+      body: "{}",
+    });
+    return response.json();
+  });
+  assert.ok(snapshot.state, "the workflow saved a session to restore");
+  snapshot.state.mode = "teach";
+  snapshot.state.teach = { lesson: "btree", return_to_plan: false, view: "3d" };
+  const restoreRequest = (request) => request.url().endsWith("/api/session/load")
+    ? request.respond({ status: 200, contentType: "application/json", body: JSON.stringify(snapshot) })
+    : request.continue();
+  await page.setRequestInterception(true);
+  page.on("request", restoreRequest);
+  await page.reload({ waitUntil: "networkidle0" });
+  await page.waitForSelector('.lesson-frame[title^="Lesson: B"]');
+  const restoredLesson = await (await page.$(".lesson-frame")).contentFrame();
+  await restoredLesson.waitForSelector("#btn-play");
+  assert.ok(await restoredLesson.$("svg"), "restored lesson uses the SVG player");
+  assert.equal(await page.$('.segmented[aria-label="Lesson view"]'), null);
+  assert.ok(lessonRequests.every((body) => !Object.hasOwn(body, "view")),
+    "restoring obsolete preferences requests the current lesson");
+  page.off("request", restoreRequest);
+  await page.setRequestInterception(false);
   assert.deepEqual(errors, []);
   console.log("Investigation workflow passed. " + directory);
 } finally {

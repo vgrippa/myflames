@@ -36,8 +36,10 @@ from typing import Dict, List, NamedTuple
 INNODB_PAGE_SIZE_DEFAULT = 16 * 1024  # 16 KiB
 
 #: Per-page overhead we deduct from ``page_size`` before computing fan-out:
-#: 38 B file-header + 56 B page-header + 8 B page-trailer + ~18 B infimum/supremum
-#: records + page directory slots. Conservative round number.
+#: 120 = 38-byte file header + 56-byte page header + 26 bytes of infimum and
+#: supremum (13 each). The 8-byte trailer and page directory are not included.
+#: The real minimum fixed overhead is 132 bytes, so capacity is a first-order
+#: estimate a few percent high.
 INNODB_PAGE_OVERHEAD_BYTES = 120
 
 #: Secondary-index non-leaf child-pointer size (page number, 4 B) + record header
@@ -167,7 +169,7 @@ def btree_lookup_cost(
 
 
 # ---------------------------------------------------------------------------
-# InnoDB B+tree shape (pages per level), used by the 3D B+tree view
+# InnoDB B+tree shape (pages per level)
 # ---------------------------------------------------------------------------
 
 #: Extra bytes in front of every COMPACT/DYNAMIC record
@@ -181,7 +183,7 @@ INNODB_RECORD_HEADER_BYTES = 5
 #: storage/innobase/include/data0type.h).
 INNODB_CLUSTERED_SYSTEM_BYTES = 13
 
-#: ``BIGINT`` primary key size used by the 3D view's ``users.id``.
+#: ``BIGINT`` primary key size, as in ``users.id``.
 PK_BIGINT_BYTES = 8
 
 #: Clustered-index leaf pages filled by in-order inserts keep 1/16 of the

@@ -43,6 +43,8 @@ async function start() {
   const env = backendEnvironment(dataDirectory);
   env.HOME = isolatedBackendHome(dataDirectory, os.homedir());
   env.USERPROFILE = env.HOME;
+  // A downloaded update goes to the user's real Downloads folder, not the isolated HOME.
+  env.MYFLAMES_DOWNLOADS_DIR = app.getPath('downloads');
   // The packaged backend entry stops itself if this process dies uncleanly.
   env.MYFLAMES_DESKTOP_PARENT = String(process.pid);
   fs.mkdirSync(env.HOME, { recursive: true, mode: 0o700 });

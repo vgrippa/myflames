@@ -1,0 +1,93 @@
+{
+ "schema_version": "proxysql-action-1.0",
+ "action": "server_offline_soft",
+ "target": {
+  "config": [
+   30,
+   "mf-ic-2",
+   3306
+  ]
+ },
+ "value": null,
+ "facts": [
+  [
+   "ProxySQL",
+   "3.0.11-797-g7c91137"
+  ],
+  [
+   "Configuration row",
+   "hostgroup 30, mf-ic-2:3306"
+  ],
+  [
+   "Runtime",
+   "hostgroup 32 ONLINE"
+  ],
+  [
+   "Managed by",
+   "Group Replication monitor (writer 30, backup writer 31, reader 32, offline 39)"
+  ],
+  [
+   "Status",
+   "ONLINE → OFFLINE_SOFT"
+  ]
+ ],
+ "warnings": [
+  "The Group Replication monitor keeps OFFLINE_SOFT when it moves the server between its hostgroups.",
+  "Applied to runtime only. Save servers to disk afterwards, or ProxySQL loads the previous configuration at its next start."
+ ],
+ "typed_guard": null,
+ "undo": "UPDATE mysql_servers SET status = 'ONLINE' WHERE hostgroup_id = 30 AND hostname = 'mf-ic-2' AND port = 3306; then LOAD MYSQL SERVERS TO RUNTIME;",
+ "next": {
+  "action": "servers_save",
+  "label": "Save servers to disk…"
+ },
+ "verified": [
+  "ProxySQL Admin identity (admin-version)",
+  "configuration row mf-ic-2:3306 unchanged since review"
+ ],
+ "timeout_s": 60,
+ "eyebrow": "UPDATE",
+ "title": "Set mf-ic-2:3306 to OFFLINE_SOFT?",
+ "confirm_label": "Set OFFLINE_SOFT",
+ "target_text": "mf-ic-2:3306 (hostgroup 30)",
+ "description": "No new traffic goes to mf-ic-2:3306; queries and transactions already on it finish.",
+ "statements": [
+  "/*myflames:proxysql_op*/ UPDATE mysql_servers SET status = 'OFFLINE_SOFT' WHERE hostgroup_id = 30 AND hostname = 'mf-ic-2' AND port = 3306;",
+  "LOAD MYSQL SERVERS TO RUNTIME;"
+ ],
+ "expect": {
+  "proxysql_version": "3.0.11-797-g7c91137",
+  "fingerprints": {
+   "servers_memory": "422a2600d6dae80e0c02c0e174b6887b68de0edb9d4742d999ac61f4fd07bc65"
+  },
+  "config": {
+   "hostgroup_id": 30,
+   "hostname": "mf-ic-2",
+   "port": 3306,
+   "status": "ONLINE",
+   "weight": 100,
+   "max_connections": 1000,
+   "max_replication_lag": 0,
+   "use_ssl": 1,
+   "max_latency_ms": 0,
+   "compression": 0,
+   "gtid_port": 0,
+   "comment": "ic-2"
+  },
+  "pending_runtime": []
+ },
+ "checks": [
+  "Refresh this place. Servers shows mf-ic-2:3306 as ProxySQL runs it, and its inspector shows the configuration row in memory.",
+  "If memory changed and runtime did not, the UPDATE ran and LOAD MYSQL SERVERS TO RUNTIME did not: the Configuration line then says a change is not loaded to runtime. Load servers to runtime, or undo.",
+  "The Audit log keeps this attempt as Outcome unknown; nothing is sent again."
+ ],
+ "policy": {
+  "action": "confirm",
+  "tone": "danger",
+  "title": "Risky write",
+  "text": "Connection ProxySQL lab is a Development connection. myflames asks only before risky writes, and these 2 statements include one.",
+  "connection_type": "development",
+  "read_only": false
+ },
+ "review_token": "fixture-token-server_offline_soft"
+}

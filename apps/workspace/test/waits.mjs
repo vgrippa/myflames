@@ -9,7 +9,9 @@ const off = await load("waits-mariadb-13.0-default.json");
 const mariadb = await load("waits-mariadb-11.4.json");
 const failure = { status: 400, body: { error: "Could not read wait events: ERROR 2003 (HY000): Can't connect to MySQL server on '127.0.0.1:3306'" } };
 
-const h = await open("/api/live/waits", "waits");
+// The list of views docked, as a person who docked it: this suite asserts
+// the list's markers and keys (server-nav covers the floating default).
+const h = await open("/api/live/waits", "waits", {}, { list: "docked" });
 const { page, state, button, text, texts } = h;
 state.fallback = { status: 200, body: mysql };
 const view = ".server-view[data-view=waits]";

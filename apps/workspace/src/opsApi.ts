@@ -31,6 +31,8 @@ export type SkipIdentity = {
   position: Facts;
   source: Facts;
 };
+/** The product family: Percona Server and Percona XtraDB Cluster are MySQL builds (engine "mysql"). */
+export type Flavor = "mysql" | "percona" | "mariadb";
 export type SkipPlan = Partial<ReceiverGuard> & {
   review_token?: string;
   channel: string; engine: string; server_version: string | null;
@@ -39,6 +41,15 @@ export type SkipPlan = Partial<ReceiverGuard> & {
   error: ReplicationError; drift_warning: string; after: string[];
   privileges: string; notes: string[];
 };
+/** The source server's version and how myflames knows it (replication.attach_source_versions). */
+export type SourceVersion = {
+  version: string | null; version_comment: string | null; engine: "mysql" | "mariadb" | null;
+  /** Percona Server keeps engine "mysql"; a relay log names it by its release suffix. */
+  flavor?: Flavor | null; product?: string | null;
+  provenance: "saved_connection" | "relay_log" | null; label: string;
+  profile_id: string | null; profile_name: string | null; relay_log_file: string | null;
+  verified: boolean; caveat: string | null; reason: string | null; hint: string | null; attempts: string[];
+};
 export type ReplicationChannel = {
   name: string; kind: "replication" | "group_replication"; judged: boolean;
   source: { host: string | null; port: number | null; uuid: string | null; server_id: number | null };
@@ -46,17 +57,48 @@ export type ReplicationChannel = {
   sql: { running: string | null; state: string | null; error: ReplicationError; delay_s: number | null; remaining_delay_s: number | null };
   lag_s: number | null; lag_notes: string[]; lag_signals: Facts;
   position: Facts; worker: Facts; agat: string | null; failing_gtid: string | null;
-  relay?: Facts | null; status: "ok" | "watch" | "problem" | "unknown";
+  relay?: Facts | null; source_version?: SourceVersion | null; status: "ok" | "watch" | "problem" | "unknown";
   status_why: string[]; skip_plan?: SkipPlan;
 };
 export type ReplicationReport = Partial<ReceiverGuard> & {
   schema_version: "replication-1.0"; engine: string; server_version: string | null;
+  flavor?: Flavor | null; server_product?: string | null;
   captured_at: string; uptime_s: number | null; available: boolean;
   message: string | null; replica: boolean; statement: string;
   gtid: Facts; settings: Facts; channels: ReplicationChannel[];
+  /** Group Replication's own channels, never listed in channels (they are
+   * not asynchronous replication; the Cluster place shows the group). */
+  group_replication_channels?: string[];
+  /** For a server that is not a replica: where its own replication is shown
+   * (a Galera provider loaded, or Group Replication configured), never a
+   * verdict on the cluster. */
+  cluster_hint?: "galera" | "group_replication" | null;
   capabilities: Facts; notes: string[];
   summary: { channels: number; judged: number; ok: number; watch: number; problem: number; unknown: number; failed: number; lag_max_s: number | null };
 };
+/** The Replication sidebar item's tooltip once a read says the connection in
+ * use has no asynchronous replication channel. */
+export const NOT_A_REPLICA = "This connection is not a replica";
+type NavTone = "ok" | "watch" | "problem" | "unknown";
+/** What the sidebar's Replication item says for the connection in use: nothing
+ * before a read of it, muted when it is not a replica (a neutral state, never
+ * unknown), unknown only when the status could not be read, otherwise the
+ * worst channel and the number of failed ones. */
+export function replicationNav(bound: { key: string; report: ReplicationReport } | null | undefined, key: string):
+  | { state: "unread" }
+  | { state: "none" }
+  | { state: "replica"; tone: NavTone; failed: number; text: string } {
+  if (!bound || bound.key !== key || !bound.report) return { state: "unread" };
+  const report = bound.report;
+  if (!report.available) return { state: "replica", tone: "unknown", failed: 0, text: "replication status not readable" };
+  if (!report.replica) return { state: "none" };
+  const failed = report.summary.failed;
+  if (failed > 0) return { state: "replica", tone: "problem", failed, text: `Problem, ${failed} failed` };
+  const tones = report.channels.filter((c) => c.judged).map((c) => c.status);
+  const tone: NavTone = tones.includes("problem") ? "problem" : tones.includes("watch") ? "watch"
+    : tones.includes("unknown") || !tones.length ? "unknown" : "ok";
+  return { state: "replica", tone, failed: 0, text: tone === "ok" ? "replicating" : tone === "unknown" ? "lag or state not judged" : `replication ${tone === "problem" ? "problem" : "to watch"}` };
+}
 export type SkipResult = {
   schema_version: "replication-skip-1.0"; channel: string; status: string;
   message: string | null; statements: string[]; target: SkipIdentity;
@@ -89,11 +131,21 @@ export type ToolUpdate = {
   status: "not_checked" | "available" | "current" | "unknown" | "not_installed" | "deprecated";
   latest_version: string | null; checked_at: string | null; source_url: string; message: string;
 };
-export type DumpOption = {key: string; label: string; type: "boolean" | "choice" | "text" | "integer"; default: string | boolean | number | null; choices?: [string,string][]; min?: number; max?: number; hint?: string};
-export type DumpCapabilities = {options: DumpOption[]; encryption: {supported: boolean; message: string}};
+/** One allowlisted option (dump_options.capability_catalog). group places it in
+ * a form section; a boolean's row is the label its checkbox shares. */
+export type DumpOption = {key: string; label: string; type: "boolean" | "choice" | "text" | "integer"; default: string | boolean | number | null; choices?: [string,string][]; min?: number; max?: number; hint?: string;
+  group?: string; row?: string; placeholder?: string; unit?: string};
+export type DumpCapabilities = {options: DumpOption[]; groups?: [string, string][]; encryption: {supported: boolean; summary?: string; message: string}};
+/** catalog-1.0 tables of one schema with stats: true (schema_browser.tables_of). */
+export type SchemaTable = { name: string; type: "table" | "view" | "system view" | "sequence"; engine?: string | null; rows?: number | null; bytes?: number | null };
+export type SchemaTables = { schema_version: "catalog-1.0"; level: "tables"; schema: string; tables: SchemaTable[]; truncated: boolean; limit: number; next_after: string | null; stats?: boolean };
 export type DumpOptions = Record<string, string | boolean | number>;
 export type Tool = { dump_capabilities?: DumpCapabilities; dump_table_capabilities?: DumpCapabilities; download_url?: string; update?: ToolUpdate; available: boolean; deprecated: boolean; path?: string; version?: string; version_tuple?: number[]; engine?: string; error?: string; name?: string };
-export type LifecycleServer = { engine: string; version: string; identity?: Facts; variables?: Facts };
+export type LifecycleServer = {
+  engine: string; version: string; identity?: Facts; variables?: Facts;
+  /** mysql, percona or mariadb, and the product name (Percona Server keeps engine "mysql"). */
+  flavor?: string; product?: string;
+};
 export type LifecycleTools = {
   schema_version: "lifecycle-tools-1.0"; tools: Record<string, Tool>;
   server: LifecycleServer;

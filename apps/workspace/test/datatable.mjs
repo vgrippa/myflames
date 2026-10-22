@@ -30,10 +30,11 @@ const many = {
     lock_wait: null,
   })),
 };
+let sessionReport = many;
 
 const h = await open("/api/live/indexes", "datatable", {
   "/api/live/schemas": { status: 200, body: catalog },
-  "/api/live/sessions": { status: 200, body: many },
+  "/api/live/sessions": () => ({ status: 200, body: sessionReport }),
 });
 const { page, state } = h;
 state.fallback = { status: 200, body: indexes };
@@ -245,9 +246,29 @@ try {
   assert.ok(drawn > 10 && drawn < 200, `windowed: ${drawn} rows drawn of ${ROWS}`);
   assert.equal(await page.$eval(`${sv} table.data-table`, (e) => e.getAttribute("aria-rowcount")), String(ROWS + 1));
   const first = await page.$eval(`${sv} tbody tr[data-session]`, (e) => e.dataset.session);
+  const retainedTable = await page.$(`${sv} table.data-table`);
+  const frameBefore = await page.$eval(`${sv} .data-table-wrap`, (e) => e.clientWidth);
+  const idWidthBefore = await width("id", sv);
   await page.click(`${sv} tbody tr[data-session="${first}"]`);
   await page.waitForSelector(".view-inspector .inspector-title");
+  assert.equal(await page.$eval(`${sv} .data-table-wrap`, (e) => e.clientWidth), 0, "full-width details hide the retained table");
+  // A refresh changes the other rows while the selected row keeps details
+  // open. Returning at the same window width must still grow numeric minima.
+  sessionReport = { ...many, sessions: many.sessions.map((s, i) => ({ ...s, id: String(s.id) === first ? s.id : 9000000000000000 - i })) };
+  await page.click(`${sv} [data-action=refresh]`);
+  await page.waitForFunction((sel) => [...document.querySelectorAll(`${sel} tbody td[data-col="id"]`)]
+    .some((e) => /\d{16}/.test(e.textContent)), {}, sv);
+  assert.equal(await page.$eval(`${sv} .data-table-wrap`, (e) => e.clientWidth), 0, "refresh leaves details open");
   await page.click(".detail-back");
+  await page.waitForFunction((sel, before) => document.querySelector(`${sel} th[data-col="id"]`).getBoundingClientRect().width > before, {}, sv, idWidthBefore);
+  assert.equal(await page.evaluate((table, sel) => table === document.querySelector(`${sel} table.data-table`), retainedTable, sv), true, "the table was not remounted");
+  assert.equal(await page.$eval(`${sv} .data-table-wrap`, (e) => e.clientWidth), frameBefore, "same frame width after Back");
+  assert.ok(await page.$$eval(`${sv} tbody td[data-col="id"]`, (cells) => cells.every((e) => e.scrollWidth <= e.clientWidth)), "larger IDs fit after hidden refresh");
+  await retainedTable.dispose();
+  sessionReport = many;
+  await page.click(`${sv} [data-action=refresh]`);
+  await page.waitForFunction((sel) => [...document.querySelectorAll(`${sel} tbody td[data-col="id"]`)]
+    .every((e) => !/\d{16}/.test(e.textContent)), {}, sv);
   await page.focus(`${sv} tbody tr[data-session="${first}"]`);
   await page.keyboard.press("End");
   const ids = many.sessions.map((s) => s.id).sort((a, b) => a - b);

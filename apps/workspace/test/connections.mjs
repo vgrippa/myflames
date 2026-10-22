@@ -108,26 +108,40 @@ try {
     await page.screenshot({ path: path.join(directory, `home-${scheme}-1440-edit.png`) });
     await page.click('.connections .inspector-close');
     await page.waitForSelector('.connections [data-col=password]');
+    // Wherever the compact table hides the Type column, the type stays in
+    // words beside the dot (never its color alone).
+    const shortTypes = async () => {
+      for (const [name, type, short] of [['Connection 01', 'Production', 'Prod'], ['Connection 04', 'Development', 'Dev'], ['Connection 03', 'Development, read-only', 'Read-only']]) {
+        const dot = await page.$eval(`${connectionRow(name)} [data-col=name] .type-dot`, el => ({
+          label: el.getAttribute('aria-label'), role: el.getAttribute('role'), width: el.getBoundingClientRect().width,
+        }));
+        assert.equal(dot.label, type);
+        assert.equal(dot.role, 'img');
+        assert.ok(dot.width > 0, 'type dot remains visible beside the name');
+        const label = await page.$eval(`${connectionRow(name)} [data-col=name] .connection-type-short`, el => ({
+          text: el.textContent.trim(), hidden: el.getAttribute('aria-hidden'),
+          width: el.getBoundingClientRect().width, height: el.getBoundingClientRect().height,
+          clipped: el.scrollWidth > el.clientWidth,
+        }));
+        assert.equal(label.text, short);
+        assert.equal(label.hidden, 'true', 'the existing dot still provides the screen-reader label');
+        assert.ok(label.width > 0 && label.height > 0, 'type is visible without relying on color');
+        assert.equal(label.clipped, false, 'the short type label does not truncate');
+      }
+    };
+    await page.setViewport({ width: 720, height: 520 });
+    await page.waitForFunction(() => !document.querySelector('.connections thead [data-col=password]') && !!document.querySelector('.connections thead [data-col=type]'));
+    await noOverflow();
+    assert.equal(await page.$eval('.home .connections > .view-toolbar', bar => {
+      const h2 = bar.querySelector('h2').getBoundingClientRect();
+      const add = bar.querySelector('button').getBoundingClientRect();
+      return Math.abs(h2.top + h2.height / 2 - (add.top + add.height / 2)) <= 8;
+    }), true, 'Add connection stays on the heading row at 720 px');
+    await page.screenshot({ path: path.join(directory, `home-${scheme}-720.png`) });
     await page.setViewport({ width: 390, height: 844 });
     await page.waitForFunction(() => !document.querySelector('.connections thead [data-col=type]'));
     await noOverflow();
-    for (const [name, type, short] of [['Connection 01', 'Production', 'Prod'], ['Connection 04', 'Development', 'Dev'], ['Connection 03', 'Development, read-only', 'Read-only']]) {
-      const dot = await page.$eval(`${connectionRow(name)} [data-col=name] .type-dot`, el => ({
-        label: el.getAttribute('aria-label'), role: el.getAttribute('role'), width: el.getBoundingClientRect().width,
-      }));
-      assert.equal(dot.label, type);
-      assert.equal(dot.role, 'img');
-      assert.ok(dot.width > 0, 'type dot remains visible beside the name');
-      const label = await page.$eval(`${connectionRow(name)} [data-col=name] .connection-type-short`, el => ({
-        text: el.textContent.trim(), hidden: el.getAttribute('aria-hidden'),
-        width: el.getBoundingClientRect().width, height: el.getBoundingClientRect().height,
-        clipped: el.scrollWidth > el.clientWidth,
-      }));
-      assert.equal(label.text, short);
-      assert.equal(label.hidden, 'true', 'the existing dot still provides the screen-reader label');
-      assert.ok(label.width > 0 && label.height > 0, 'type is visible without relying on color');
-      assert.equal(label.clipped, false, 'the short type label does not truncate');
-    }
+    await shortTypes();
     const phone = await geometry();
     assert.ok(phone.recent.y >= phone.connections.bottom - 1, JSON.stringify(phone));
     console.log(`${scheme} 390x844 ${JSON.stringify(phone)}`);

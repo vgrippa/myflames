@@ -43,12 +43,19 @@ const topFor = (body) => ({
     caveats: ["The table is matched by name in the normalized digest text, so this is a text match, not proof."] } } : {}),
 });
 
+// The list of views docked, as a person who docked it: this suite asserts
+// the list's markers and keys (server-nav covers the floating default).
 const h = await open("/api/live/indexes", "indexes", {
   "/api/live/schemas": schemasMock,
   "/api/live/tables": { status: 200, body: tablesReport },
   "/api/live/top": (body) => ({ status: 200, body: topFor(body) }),
   "/api/live/start": { status: 400, body: { error: "Not mocked in this suite." } },
-});
+  "/api/editor/preview": { status: 400, body: { error: "Authority unknown in this fixture." } },
+  "/api/editor/run": body => body.decline ? { status: 200, body: { status: "declined" } } : {
+    status: 200, body: { status: "needs_confirmation", confirmation: { token: "index-review", text: "Review the statement.", tone: "primary",
+      connection: { user: "root", host: "127.0.0.1", port: 3306 }, connection_type: "development", warnings: [], statements: [body.sql], typed_target: null } } },
+  "/api/editor/close": { status: 200, body: { closed: true, session: null } },
+}, { list: "docked" });
 const { page, state, button, text } = h;
 state.fallback = { status: 200, body: mysql };
 const view = ".server-view[data-view=indexes]";
@@ -263,13 +270,82 @@ try {
   // MariaDB user statistics: no read times, IGNORED instead of INVISIBLE.
   state.queue.push({ status: 200, body: userstat });
   await h.refresh();
-  await page.waitForFunction(() => /user statistics/.test(document.querySelector(".server-view .fact-strip")?.textContent || ""));
+  await page.waitForFunction(() => /Usage fromUser statistics \(userstat\)/.test(document.querySelector(".server-view .fact-strip")?.textContent || ""));
   await h.idle(view);
   await list("unused");
   await h.select(`${view} [aria-label="Unused indexes"] tr[data-index="orders.k_status"]`);
   await page.waitForFunction(() => /ALTER INDEX `k_status` IGNORED;/.test(document.querySelector(".view-inspector")?.textContent || ""));
   await list("scans");
   assert.match(await text(`${view} tr[data-table="orders"]`), /of rows/);
+  // Partitioned and unresolved tables have no DROP/visibility path, including
+  // the inventory, redundant list, inspector, row menu and right-click menu.
+  // Keep a plain candidate alongside them as the positive action control.
+  for (const engine of ["mysql", "mariadb"]) {
+    for (const reason of ["partitioned", "partitioning_unknown"]) {
+      const reasonText = reason === "partitioned"
+        ? "partitioned, and Performance Schema does not count every read through a partitioned table's indexes"
+        : "partitioning could not be read, so index use cannot be judged";
+      const plain = { ...mysql.unused[0] };
+      const blocked = { schema: "mfshop", table: "parted", index: "kw", columns: "w", unique: false,
+        type: "BTREE", visible: true, action_blocked_reason: reasonText };
+      const guarded = { ...mysql, engine, server_version: engine === "mysql" ? "8.4.11" : "11.4.13-MariaDB",
+        indexes: [blocked, { ...plain, unique: false, type: "BTREE" }],
+        unused: [plain],
+        redundant: [{ ...mysql.redundant[0], ...blocked, dominant: "kw_more", dominant_columns: "w, id",
+          test_sql: "", drop_sql: "", caveat: "" }],
+        full_scans: [], no_data: [{ schema: "mfshop", table: "parted", indexes: 2, reason, reason_text: reasonText }],
+        summary: { ...mysql.summary, tables: 2, indexes: 3, unused: 1, unused_candidates: 1,
+          keep_foreign_key: 0, keep_userstat: 0, redundant: 1, full_scans: 0, mostly_full_scans: 0, no_data: 1 },
+        more: { indexes: 0, unused: 0, redundant: 0, full_scans: 0, no_data: 0 } };
+      if (await page.$(".detail-back")) await page.click(".detail-back");
+      state.queue.push({ status: 200, body: guarded });
+      const loaded = page.waitForResponse(response => response.url().endsWith("/api/live/indexes"));
+      await h.refresh();
+      await loaded;
+      await h.idle(view);
+      await list("nodata");
+      const noDataRow = `${view} tr[data-table="parted"]`;
+      await page.waitForSelector(noDataRow);
+      assert.ok((await text(noDataRow)).includes(reasonText));
+      await h.select(noDataRow);
+      assert.ok((await h.inspector()).includes(reasonText));
+      assert.doesNotMatch(await h.inspector(), /DROP INDEX|ALTER INDEX/);
+      assert.equal(await page.$(".view-inspector .perf-sql"), null);
+      assert.ok(!(await page.$$eval(".view-inspector button", els => els.map(e => e.textContent.trim())))
+        .some(label => /Drop|Set invisible|Set visible|Set ignored|Set not ignored/.test(label)));
+      await list("unused");
+      assert.deepEqual(await ids("Unused indexes"), [`${plain.table}.${plain.index}`]);
+      await page.click(`${view} tbody tr:first-child .row-more`);
+      await page.waitForSelector(".row-action-menu [role=menuitem]", { visible: true });
+      assert.match(await text(".row-action-menu"), /Drop index/);
+      await page.keyboard.press("Escape");
+      await page.waitForSelector(".row-action-menu", { hidden: true });
+      for (const group of ["all", "redundant"]) {
+        await list(group);
+        const row = `${view} tr[data-index="parted.kw"]`;
+        await page.waitForSelector(row);
+        await page.click(`${row} .row-more`);
+        await page.waitForSelector(".row-action-menu [role=menuitem]", { visible: true });
+        assert.deepEqual(await page.$$eval(".row-action-menu [role=menuitem]", els => els.map(e => e.textContent.trim())),
+          ["Table health"]);
+        await page.keyboard.press("Escape");
+        await page.waitForSelector(".row-action-menu", { hidden: true });
+        await page.click(row, { button: "right" });
+        await page.waitForSelector(".context-menu[role=menu]", { visible: true });
+        assert.doesNotMatch(await text(".context-menu"), /DROP|Drop|invisible|visible|ignored/);
+        await page.keyboard.press("Escape");
+        await page.waitForSelector(".context-menu", { hidden: true });
+        await h.select(row);
+        assert.ok((await h.inspector()).includes(reasonText));
+        assert.doesNotMatch(await h.inspector(), /DROP INDEX|ALTER INDEX/);
+        assert.equal(await page.$(".view-inspector .perf-sql"), null);
+        const actions = await page.$$eval(".view-inspector button", els => els.map(e => e.textContent.trim()));
+        assert.ok(!actions.some(label => /Drop|Set invisible|Set visible|Set ignored|Set not ignored/.test(label)));
+      }
+    }
+  }
+  // Restore the list the following limit assertions exercise.
+  await list("scans");
   // Every list cut at the server's limit says how many rows it leaves out.
   state.queue.push({ status: 200, body: { ...mysql, more: { unused: 1, redundant: 4, full_scans: 2, no_data: 3 } } });
   await h.refresh();
@@ -350,6 +426,58 @@ try {
   await h.view("top");
   assert.equal(await page.$eval("#top-schema", (e) => e.value), "mfshop",
     "Top statements keeps its own schema (from the earlier link), not the Indexes choice");
+
+  // Hostile catalog names reach identical quoted SQL from the row menu,
+  // inspector and context menu. A review is declined in every case.
+  await page.setViewport({ width: 1440, height: 1000 });
+  await h.server(); await h.view("indexes");
+  const odd = { schema: "s`name", table: "t`name", index: "i`'\\name" };
+  const qTable = "`s``name`.`t``name`", qIndex = "`i``'\\name`";
+  const toggle = `ALTER TABLE ${qTable} ALTER INDEX ${qIndex} INVISIBLE`;
+  const drop = `ALTER TABLE ${qTable} DROP INDEX ${qIndex}`;
+  state.queue.push({ status: 200, body: { ...mysql, indexes: undefined,
+    unused: [{ ...mysql.unused[0], ...odd, test_sql: toggle + ";", drop_sql: drop + ";" }], redundant: [], full_scans: [], no_data: [] } });
+  await h.refresh(); await h.idle(view); await list("unused");
+  const oddRow = `${view} [aria-label="Unused indexes"] tbody tr[data-row-key]`;
+  await page.waitForFunction(selector => document.querySelector(selector)?.textContent.includes("i`'"), {}, oddRow);
+  const menuItem = async (selector, label) => {
+    await page.waitForSelector(selector);
+    await page.$$eval(selector, (items, text) => {
+      const item = items.find(item => item.textContent.trim() === text);
+      if (!item) throw new Error(`Missing menu action ${text}`);
+      item.click();
+    }, label);
+  };
+  const expectReview = async expected => {
+    await page.waitForSelector("dialog.confirm-sheet[open]");
+    assert.equal(state.other.filter(call => call.path === "/api/editor/run").at(-1).body.sql, expected);
+    assert.equal(await text("dialog.confirm-sheet .sql-preview"), expected);
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => !document.querySelector("dialog.confirm-sheet"));
+    assert.equal(state.other.filter(call => call.path === "/api/editor/run").at(-1).body.decline, true);
+  };
+  await page.$eval(oddRow + " .row-more", button => { button.focus(); button.click(); });
+  await menuItem(".row-action-menu [role=menuitem]", "Set invisible…");
+  await expectReview(toggle);
+  await h.select(oddRow);
+  await page.$$eval('.view-inspector [data-reviewed-sql]', buttons => buttons.find(button => button.textContent.startsWith("Drop index"))?.click());
+  await expectReview(drop);
+  const contextAction = async label => {
+    if (await page.$(".detail-back")) await page.click(".detail-back");
+    await page.click(oddRow, { button: "right" });
+    await menuItem(".context-menu [role=menuitem]", label);
+  };
+  await contextAction("Set invisible…"); await expectReview(toggle);
+  await contextAction("Update index statistics (Analyze)…"); await expectReview(`ANALYZE TABLE ${qTable}`);
+  await contextAction("Rebuild index / table (Optimize)…"); await expectReview(`OPTIMIZE TABLE ${qTable}`);
+  await page.evaluate(() => { window.__indexCopies = []; navigator.clipboard.writeText = text => { window.__indexCopies.push(text); return Promise.resolve(); }; });
+  await contextAction("Copy DROP INDEX SQL");
+  assert.deepEqual(await page.evaluate(() => window.__indexCopies), [drop + ";"]);
+  await contextAction("Show index definition (SHOW INDEX)");
+  await page.waitForSelector('[aria-label="SQL editor"]');
+  assert.equal(await page.$eval('[aria-label="SQL editor"]', editor => editor.value),
+    `SHOW INDEX FROM ${qTable} WHERE Key_name = 'i` + "`''\\\\name';");
+  assert.equal(state.other.filter(call => call.path === "/api/editor/run" && call.body.confirmed).length, 0, "menu checks never apply SQL");
 
   assert.deepEqual(h.errors, []);
   console.log("indexes view: ok");

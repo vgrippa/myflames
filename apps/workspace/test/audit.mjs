@@ -364,6 +364,16 @@ with sqlite3.connect(sys.argv[1]) as db:
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => !document.querySelector(".view-inspector"));
 
+  // A reviewed change's result opens the Audit log at its record
+  // (ActionReview.tsx sends myflames-open-audit with the audit id).
+  await page.setViewport({ width: 1440, height: 900 });
+  await idle();
+  await page.waitForSelector(`${table} tbody tr[data-row-key]`);
+  const focusId = await page.$$eval(`${table} tbody tr[data-row-key]`, (els) => els.at(-1).dataset.rowKey);
+  await page.evaluate((id) => window.dispatchEvent(new CustomEvent("myflames-open-audit", { detail: id })), focusId);
+  await page.waitForFunction((t, id) => document.querySelector(`${t} tr.is-selected[data-row-key]`)?.dataset.rowKey === id, {}, table, focusId);
+  await page.waitForSelector(".view-inspector .inspector-title");
+
   assert.deepEqual(errors, []);
   console.log("Audit log checks passed. " + directory);
 } finally {

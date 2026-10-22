@@ -26,6 +26,8 @@
     "schema_version": {"const": "report-1.0"},
     "myflames_version": {"type": "string"},
     "engine": {"type": "string", "enum": ["mysql", "mariadb"]},
+    "flavor": {"type": "string", "enum": ["mysql", "percona", "mariadb"], "description": "Product family. Percona Server and Percona XtraDB Cluster are MySQL builds: engine mysql, flavor percona."},
+    "server_product": {"type": "string", "description": "The name the server is shown with: MySQL, Percona Server, Percona XtraDB Cluster or MariaDB."},
     "server_version": {"type": ["string", "null"]},
     "taken_at": {"type": "string", "description": "ISO-8601 UTC time the report was composed."},
     "uptime_s": {
@@ -44,6 +46,8 @@
           "required": ["engine", "version", "version_comment", "uptime_s", "performance_schema"],
           "properties": {
             "engine": {"type": "string", "enum": ["mysql", "mariadb"]},
+            "flavor": {"type": "string", "enum": ["mysql", "percona", "mariadb"], "description": "Product family. Percona Server and Percona XtraDB Cluster are MySQL builds: engine mysql, flavor percona."},
+            "product": {"type": "string", "description": "MySQL, Percona Server, Percona XtraDB Cluster or MariaDB."},
             "version": {"type": ["string", "null"]},
             "version_comment": {"type": ["string", "null"]},
             "uptime_s": {"type": ["integer", "number", "null"]},

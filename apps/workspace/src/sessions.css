@@ -1,4 +1,4 @@
-/* Server > Sessions: the breakdown bars; the rest comes from kit.css. */
+/* Workload > Processlist: the breakdown bars; the rest comes from kit.css. */
 .sessions-breakdown {
   margin: 0 0 var(--space-3);
 }
@@ -67,17 +67,17 @@
 }
 
 /* Locked transactions row highlighting */
-.row-lock-wait {
-  background-color: rgba(220, 38, 38, 0.08) !important;
+.data-table tbody tr.row-lock-wait {
+  background-color: var(--danger-soft);
 }
-.row-lock-wait:hover {
-  background-color: rgba(220, 38, 38, 0.15) !important;
+.data-table tbody tr.row-lock-wait:hover {
+  background-color: var(--danger-soft);
 }
-.row-lock-holding {
-  background-color: rgba(217, 119, 6, 0.08) !important;
+.data-table tbody tr.row-lock-holding {
+  background-color: var(--warn-soft);
 }
-.row-lock-holding:hover {
-  background-color: rgba(217, 119, 6, 0.15) !important;
+.data-table tbody tr.row-lock-holding:hover {
+  background-color: var(--warn-soft);
 }
 
 /* The row menu (⋯ in the trailing column): Show plan and Kill. */
@@ -109,8 +109,7 @@
   color: var(--ink-faint);
 }
 
-/* Mass Kill Dialog */
-/* Mass Kill Dialog (pt-kill inspired) */
+/* Kill sessions dialog (Processlist > Kill sessions…, pt-kill inspired) */
 .mass-kill-dialog {
   max-width: 920px;
   width: min(920px, 95vw);
@@ -126,7 +125,7 @@
   overflow: hidden;
 }
 .mass-kill-dialog::backdrop {
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--scrim);
   backdrop-filter: blur(2px);
 }
 .mass-kill-header {
@@ -320,7 +319,7 @@
   background: var(--surface-muted);
 }
 .mass-kill-table tr.is-selected {
-  background: rgba(37, 99, 235, 0.06);
+  background: var(--accent-soft);
 }
 .mass-kill-footer {
   display: flex;
@@ -364,4 +363,10 @@
     min-height: 0;
     max-height: 280px;
   }
+}
+
+.session-lock-marker {
+  display: inline-flex;
+  margin-left: var(--space-1);
+  vertical-align: middle;
 }

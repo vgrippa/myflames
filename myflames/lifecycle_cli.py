@@ -65,6 +65,11 @@ def _say(text, quiet=False):
 _LEVEL = {'error': 'ERROR', 'warning': 'WARNING', 'notice': 'NOTICE'}
 
 
+def _product(server):
+    """MySQL, Percona Server, Percona XtraDB Cluster or MariaDB for a read_server result."""
+    return server.get('product') or ('MariaDB' if server.get('engine') == 'mariadb' else 'MySQL')
+
+
 def _count(number, word):
     return '%d %s%s' % (number, word, '' if number == 1 else 's')
 
@@ -74,8 +79,8 @@ def format_upgrade(report, limit=20):
     server = report['server']
     method = {'mysqlsh': 'MySQL Shell', 'native_subset': 'native subset, partial',
               'mariadb_upgrade_guidance': 'MariaDB guidance'}.get(report.get('method'), report.get('method'))
-    lines = ['Upgrade check: %s %s -> %s (%s)' % ('MariaDB' if server['engine'] == 'mariadb' else 'MySQL',
-                                                 server['version'], report['target_version'], method)]
+    lines = ['Upgrade check: %s %s -> %s (%s)' % (_product(server), server['version'], report['target_version'],
+                                                 method)]
     counts = report.get('counts') or {}
     lines.append('Status: %s (%s, %s, %s)' % (
         str(report.get('status', '')).replace('_', ' '), _count(counts.get('error', 0), 'error'),
@@ -114,7 +119,7 @@ def format_upgrade(report, limit=20):
 def format_plan(plan):
     """lifecycle-plan-1.0 as the description shown before the confirmation."""
     server = plan['server']
-    lines = ['%s on %s %s at %s' % (plan['operation'].upper(), 'MariaDB' if server['engine'] == 'mariadb' else 'MySQL',
+    lines = ['%s on %s %s at %s' % (plan['operation'].upper(), _product(server),
                                     server['version'], server['identity'].get('hostname') or '?'),
              'Target: ' + plan['target'],
              'Tool: %s (%s)' % (plan['tool'].get('name'), (plan['tool'].get('version') or '').strip()[:80])]

@@ -9,7 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
-import { SERVER_VIEW_LABELS, WORKLOAD_VIEW_LABELS } from "./perf-harness.mjs";
+import { SERVER_VIEW_LABELS, WORKLOAD_VIEW_LABELS, DOCK_KEY } from "./perf-harness.mjs";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const directory = await fs.mkdtemp(path.join(os.tmpdir(), "myflames-discover-"));
@@ -154,6 +154,11 @@ try {
     request.respond({ status: mock.status, contentType: "application/json", body: JSON.stringify(mock.body) });
   });
   await page.setViewport({ width: 1440, height: 1000 });
+  // The list of views docked, as a person who docked it: this suite asserts
+  // the list's markers and keys (server-nav covers the floating default).
+  await page.evaluateOnNewDocument((key) => {
+    try { if (localStorage.getItem(key) === null) localStorage.setItem(key, "false"); } catch {}
+  }, DOCK_KEY);
   await page.goto(url, { waitUntil: "networkidle0" });
   const button = (text, scope = "") => page.locator(`${scope}button ::-p-text(${text})`).click();
   const text = (selector) => page.$eval(selector, (e) => e.textContent);
@@ -177,11 +182,11 @@ try {
     WORKLOAD_VIEW_LABELS,
   );
   assert.equal(await page.$eval("#server-nav-top", (e) => e.getAttribute("aria-current")), "page");
-  assert.match(await text(`${view} .view-empty`), /used the most server time/);
 
-  // Top statements: one row per statement, flag pills with plain-English titles, notes behind a button.
-  await button("Load top statements", view + " ");
+  // Top statements reads when it opens on screen, once (no Load button): one
+  // row per statement, flag pills with plain-English titles, notes behind a button.
   await page.waitForSelector(`${view} tbody tr`);
+  assert.equal(seen.filter((s) => s.path === "/api/live/top").length, 1, "opening Top statements reads once");
   assert.equal((await page.$$(`${view} tbody tr`)).length, 2);
   assert.equal(seen.at(-1).order, "total");
   assert.equal(seen.at(-1).connection.host, "127.0.0.1");
@@ -262,6 +267,13 @@ try {
   assert.deepEqual(await page.$$eval(`${view} tbody tr`, (els) => els.map((e) => e.dataset.rank)), ["2", "1"]);
   // The filter narrows the rows on screen.
   await page.type(`${view} input[aria-label="Filter statements"]`, "WHERE `id`");
+  await page.waitForFunction(selector => {
+    const rows = [...document.querySelectorAll(selector)];
+    return rows.length === 1 && rows[0].dataset.rank === "2";
+  }, { timeout: 5000 }, `${view} tbody tr`).catch(error => {
+    if (error.name !== "TimeoutError") throw error;
+    throw new Error('Filter statements "WHERE `id`": expected only statement 2 within 5000 ms');
+  });
   assert.deepEqual(await page.$$eval(`${view} tbody tr`, (els) => els.map((e) => e.dataset.rank)), ["2"]);
   await page.click(`${view} input[aria-label="Filter statements"]`, { clickCount: 3 });
   await page.keyboard.press("Backspace");

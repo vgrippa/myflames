@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { type Connection } from './api';
 import { connectionKey } from './binding';
-import { ConfirmSheet, copyToClipboard, useFocusScope } from './kit';
-import { Icon } from './components';
+import { ActionButton, ActionStatus, ConfirmSheet, ContextMenu, copyToClipboard, writeFailure, type TableContextAction } from './kit';
 import { csvCell } from './reportTableExport';
 import { tsv } from './ResultsPane';
 import { tableData, type Cell, type Change, type TablePage, type TableReview, type TableOutcome } from './tableDataApi';
@@ -19,6 +18,11 @@ export function TableData({ connection, currentConnectionKey, schema, table, onC
   const [review, setReview] = useState<TableReview | null>(null);
   const [outcome, setOutcome] = useState<TableOutcome | null>(null);
   const [busy, setBusy] = useState(false);
+  // What the busy request is: reading a page, preparing the review, applying it.
+  const [step, setStep] = useState<'' | 'load' | 'prepare' | 'apply'>('');
+  const [stepSince, setStepSince] = useState<number | null>(null);
+  // The review sheet was closed while Apply had no reply yet.
+  const [reviewLeft, setReviewLeft] = useState(false);
   const [error, setError] = useState('');
   const [discard, setDiscard] = useState(false);
   const [unknown, setUnknown] = useState(false);
@@ -30,11 +34,6 @@ export function TableData({ connection, currentConnectionKey, schema, table, onC
     inserted: boolean;
     opener: HTMLElement;
   } | null>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  useFocusScope(menuRef, {
-    open: !!contextMenu, onClose: () => setContextMenu(null), menu: true,
-    returnFocus: () => contextMenu?.opener,
-  });
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
 
@@ -50,19 +49,6 @@ export function TableData({ connection, currentConnectionKey, schema, table, onC
     showToast(ok ? (msg || "Copied to clipboard") : "Could not copy to clipboard");
   };
 
-  useEffect(() => {
-    if (!contextMenu) return;
-    const handleOutside = (e: MouseEvent) => {
-      const target = e.target as HTMLElement | null;
-      if (!target?.closest(".context-menu")) {
-        setContextMenu(null);
-      }
-    };
-    window.addEventListener("pointerdown", handleOutside);
-    return () => {
-      window.removeEventListener("pointerdown", handleOutside);
-    };
-  }, [contextMenu]);
   const heading = useRef<HTMLHeadingElement>(null);
   const alive = useRef(true);
   const pending = useRef(false);
@@ -80,7 +66,7 @@ export function TableData({ connection, currentConnectionKey, schema, table, onC
   }; }, []);
   async function load(offset: number) {
     if (pending.current || mismatch || changed || running || unknown) return;
-    pending.current = true; setBusy(true); setError('');
+    pending.current = true; setBusy(true); setStep('load'); setStepSince(Date.now()); setError('');
     const epoch = ++requestEpoch.current;
     const previous = snapshot.current;
     try {
@@ -92,7 +78,7 @@ export function TableData({ connection, currentConnectionKey, schema, table, onC
       setPage(data); setOutcome(null);
       if (previous) void tableData('close', owner.current, { snapshot_id: previous }).catch(() => {});
     } catch (failure) { if (alive.current) setError((failure as Error).message); }
-    finally { pending.current = false; if (alive.current) setBusy(false); }
+    finally { pending.current = false; if (alive.current) { setBusy(false); setStep(''); } }
   }
   function update(rowId: string, column: string, value: Cell) {
     if (!drafts[rowId] && changed >= 20) { setError('Review at most 20 row changes at a time.'); return; }
@@ -101,13 +87,13 @@ export function TableData({ connection, currentConnectionKey, schema, table, onC
   }
   async function prepare() {
     if (!page || pending.current || !editable || !changed) return;
-    pending.current = true; setBusy(true); setError('');
+    pending.current = true; setBusy(true); setStep('prepare'); setStepSince(Date.now()); setError('');
     try {
       const data = await tableData<TableReview>('prepare', owner.current, { snapshot_id: page.snapshot_id,
         changes: [...Object.values(drafts), ...inserts.map(row => ({ kind: 'insert', values: row.values }))] });
-      if (alive.current) setReview(data);
+      if (alive.current) { setReviewLeft(false); setReview(data); }
     } catch (failure) { if (alive.current) setError((failure as Error).message); }
-    finally { pending.current = false; if (alive.current) setBusy(false); }
+    finally { pending.current = false; if (alive.current) { setBusy(false); setStep(''); } }
   }
   async function decline() {
     if (!review || pending.current) return;
@@ -130,12 +116,22 @@ export function TableData({ connection, currentConnectionKey, schema, table, onC
   async function apply() {
     if (!review || mismatch || pending.current) return;
     const current = review;
-    pending.current = true; setBusy(true); setError(''); setReview(null);
+    // The sheet stays open with "Applying…" until the server answers (Close
+    // when it is slow); its review token is spent, so it is never sent twice.
+    pending.current = true; setBusy(true); setStep('apply'); setStepSince(Date.now()); setError('');
     try {
       const result = await tableData<TableOutcome>('apply', owner.current, { snapshot_id: current.snapshot_id, review_token: current.review_token, confirmed: true });
       if (alive.current) setOutcome(result);
-    } catch { if (alive.current) { setUnknown(true); setError('The reply was lost. Checking the existing operation without sending it again.'); await status(); } }
-    finally { pending.current = false; if (alive.current) setBusy(false); }
+    } catch (failure) {
+      if (!alive.current) return;
+      // Refused with an error (4xx): the checks before the background apply
+      // failed, so nothing ran; the server's words say why. No reply: the
+      // outcome is checked, never sent again.
+      const lost = writeFailure(failure);
+      if (lost.phase === 'failed') setError(`Apply failed: ${lost.message}`);
+      else { setUnknown(true); setError('The reply was lost. Checking the existing operation without sending it again.'); await status(); }
+    }
+    finally { pending.current = false; if (alive.current) { setBusy(false); setStep(''); setReview(null); setReviewLeft(false); } }
   }
   useEffect(() => {
     if (!running) return;
@@ -154,13 +150,9 @@ export function TableData({ connection, currentConnectionKey, schema, table, onC
   }
   function resetDrafts() { setDrafts({}); setInserts([]); setReview(null); }
   const openCellMenu = (opener: HTMLElement, rowId: string, colIndex: number, inserted: boolean, clientX: number, clientY: number) => {
-    const menuW = 240;
-    const menuH = 340;
-    const x = Math.max(8, Math.min(clientX, window.innerWidth - menuW - 16));
-    const y = Math.max(8, Math.min(clientY, window.innerHeight - menuH - 16));
     setContextMenu({
-      x,
-      y,
+      x: clientX,
+      y: clientY,
       rowId,
       colIndex,
       inserted,
@@ -283,23 +275,65 @@ export function TableData({ connection, currentConnectionKey, schema, table, onC
       ])
     : "";
 
+  const cellActions: TableContextAction[] = [];
+  if (contextMenu && activeCol && editable) {
+    if (activeCol.nullable && !activeDeleted) cellActions.push({ label: "Set to NULL", icon: "∅", disabled: activeVal?.kind === 'null',
+      onClick: () => applyCellUpdate(contextMenu.rowId, activeCol.name, { kind: 'null', value: null }, contextMenu.inserted) });
+    if (!activeDeleted && (contextMenu.inserted || drafts[contextMenu.rowId]?.values?.[activeCol.name])) cellActions.push({
+      label: contextMenu.inserted ? "Set to Default" : "Revert change", icon: contextMenu.inserted ? "refresh" : "undo",
+      onClick: () => applyCellUpdate(contextMenu.rowId, activeCol.name, undefined, contextMenu.inserted),
+    });
+    cellActions.push(contextMenu.inserted ? { label: "Remove row", icon: "trash", danger: true,
+      onClick: () => setInserts(rows => rows.filter(r => r.id !== contextMenu.rowId)),
+    } : { label: activeDeleted ? "Undo delete" : "Delete row", icon: activeDeleted ? "undo" : "trash", danger: !activeDeleted,
+      onClick: () => {
+        if (activeDeleted) setDrafts(current => { const next = { ...current }; delete next[contextMenu.rowId]; return next; });
+        else setDrafts(current => ({ ...current, [contextMenu.rowId]: { kind: 'delete', row_id: contextMenu.rowId } }));
+      },
+    });
+  }
+
+  if (contextMenu && activeCol) {
+    if (cellActions.length) cellActions.push({ divider: true });
+    cellActions.push(
+      { label: "Copy cell value", icon: "copy", onClick: () => void copyWithFeedback(activeCellText, "Cell value copied") },
+      { label: "Copy row (Excel TSV)", icon: "copy", onClick: () => void copyWithFeedback(tsv([activeRowVals]), "Row copied (Excel TSV)") },
+      { label: "Copy row as CSV", icon: "statements", onClick: () => void copyWithFeedback(activeRowVals.map(v => csvCell(v)).join(","), "Row copied as CSV") },
+      { label: "Copy row as JSON", icon: "query", onClick: () => {
+        const obj: Record<string, string | null> = {};
+        page?.columns.forEach((c, i) => { obj[c.name] = activeRowVals[i] ?? null; });
+        void copyWithFeedback(JSON.stringify(obj, null, 2), "Row copied as JSON");
+      } },
+      { label: `Copy column (${activeCol.name})`, icon: "copy", onClick: () => void copyWithFeedback(tsv(activeColVals.map(v => [v])), `Column ${activeCol.name} copied`) },
+      { label: "Copy table with headers", icon: "copy", onClick: () => void copyWithFeedback(tableTsv, "Table copied (Excel TSV)") },
+    );
+  }
+
   return <section className="table-data-panel" role="region" aria-labelledby="table-data-title">
     <header><div><h2 id="table-data-title" tabIndex={-1} ref={heading}>{schema}.{table}</h2><p>Table data · UTC · {page?.rows.length ?? 0} loaded rows</p></div>
       <button className="button" onClick={close}>Close table</button></header>
     {mismatch && <p role="alert">This table belongs to another connection. Return to that connection to continue; staged changes are preserved.</p>}
     {error && <p className="error" role="alert">{error}</p>}
     {page?.reason && <p className="notice">{page.reason}</p>}
-    {outcome && <div className="notice" role="status">{outcome.message || (running ? 'Applying the reviewed changes…' : outcome.status)}
-      {running && <button className="button small" onClick={() => void cancel()}>Cancel changes</button>}
-      {(unknown || outcome.status === 'unknown') && <button className="button small" onClick={() => void status()}>Check status</button>}
-    </div>}
+    {/* Always mounted, so what Apply did is announced when it arrives. */}
+    <div className="table-data-live" role="status" aria-live="polite">
+      {outcome && <div className="notice">{outcome.message || (running ? 'Applying the reviewed changes…' : outcome.status)}
+        {running && <button className="button small" onClick={() => void cancel()}>Cancel changes</button>}
+        {(unknown || outcome.status === 'unknown') && <button className="button small" onClick={() => void status()}>Check status</button>}
+      </div>}
+    </div>
     {unknown && !outcome && <button className="button" onClick={() => void status()}>Check status</button>}
     <div className="table-data-actions">
       <button className="button" disabled={!editable || changed >= 20} onClick={() => setInserts(rows => [...rows, { id: `new-${crypto.randomUUID()}`, values: {} }])}>Add row</button>
-      <button className="button primary" disabled={!editable || !changed} onClick={() => void prepare()}>Review {changed || ''} changes</button>
+      <ActionButton primary busy={step === 'prepare'} busyLabel="Preparing review…" disabled={step !== 'prepare' && (!editable || !changed)}
+        onClick={() => void prepare()}>{`Review ${changed || ''} changes`}</ActionButton>
       <button className="button" disabled={!changed || busy || running || unknown} onClick={resetDrafts}>Discard changes</button>
       <button className="button" disabled={!!changed || busy || running || mismatch || unknown} onClick={() => void load(page?.offset || 0)}>Reload rows</button>
     </div>
+    {/* Under the buttons (nothing moves when it starts): preparing the review, or an Apply whose sheet was closed before the reply. */}
+    <ActionStatus className="table-data-step" state={{ phase: step === 'prepare' || (step === 'apply' && reviewLeft) ? 'pending' : 'idle',
+      message: step === 'prepare' ? 'Preparing the review of the staged changes. Nothing is sent yet.' : 'Applying the reviewed changes. Waiting for the server.',
+      startedAt: stepSince }} />
     <div className="table-data-scroll" tabIndex={0} aria-label="Table rows">
       <table><thead><tr><th>Row</th>{page?.columns.map(column => <th key={column.name}>{column.name}<small>{column.type}{page.key.includes(column.name) ? ' · Key' : ''}</small></th>)}</tr></thead>
         <tbody>{page?.rows.map((row, index) => <tr key={row.id} data-row-id={row.id}><td tabIndex={0} onKeyDown={e => onCellKey(e, row.id, 0, false)} onContextMenu={e => onCellContextMenu(e, row.id, 0, false)}><span>{page.offset + index + 1}</span>
@@ -313,9 +347,13 @@ export function TableData({ connection, currentConnectionKey, schema, table, onC
         </tbody></table>
     </div>
     <footer><button className="button" disabled={!page || page.offset === 0 || !!changed || busy || running || mismatch || unknown} onClick={() => void load(Math.max(0, (page?.offset || 0) - 50))}>Previous</button>
-      <span>{busy ? 'Loading…' : `Rows ${(page?.offset || 0) + (page?.rows.length ? 1 : 0)} to ${(page?.offset || 0) + (page?.rows.length || 0)}`}</span>
+      <span>{step === 'load' ? 'Loading rows…' : `Rows ${(page?.offset || 0) + (page?.rows.length ? 1 : 0)} to ${(page?.offset || 0) + (page?.rows.length || 0)}`}</span>
       <button className="button" disabled={!page?.has_more || !!changed || busy || running || mismatch || unknown} onClick={() => void load((page?.offset || 0) + 50)}>Next</button></footer>
-    {review && <ConfirmSheet title="Apply table changes?" description="Review the exact SQL. A changed row or table definition refuses the whole batch." confirmLabel="Apply changes" busy={busy} confirmDisabled={mismatch}
+    {review && !reviewLeft && <ConfirmSheet title="Apply table changes?" description="Review the exact SQL. A changed row or table definition refuses the whole batch." confirmLabel="Apply changes"
+      busy={step === 'apply'} busyLabel="Applying…"
+      onLeave={() => setReviewLeft(true)}
+      leaveText="The changes may still be applying. Close does not stop them; the outcome shows above the table."
+      confirmDisabled={mismatch || busy}
       onConfirm={() => void apply()} onCancel={() => void decline()}>
       <p>{review.connection.user}@{review.connection.host}:{review.connection.port} · {review.connection_type}</p>
       {review.warnings.map(warning => <p className="hint" key={warning}>{warning}</p>)}
@@ -324,136 +362,8 @@ export function TableData({ connection, currentConnectionKey, schema, table, onC
     </ConfirmSheet>}
     {discard && <ConfirmSheet title={unknown ? "Close with an unknown outcome?" : "Discard staged changes?"} description={unknown ? "Changes may have committed. Closing discards only the local draft. Open the table afresh and inspect its rows before making new changes. Do not resend this batch." : "These changes have not been applied."} confirmLabel={unknown ? "Close and inspect separately" : "Discard and close"} onConfirm={() => { resetDrafts(); onClose(); }} onCancel={() => setDiscard(false)} />}
     {toast && <div className="table-copy-toast" role="status">{toast}</div>}
-    {contextMenu && activeCol && (
-      <div
-        ref={menuRef}
-        className="context-menu"
-        role="menu"
-        aria-label="Cell actions"
-        tabIndex={-1}
-        style={{ left: contextMenu.x, top: contextMenu.y }}
-      >
-        <div className="context-menu-header">{activeCol.name}</div>
-        <button
-          type="button"
-          role="menuitem"
-          onClick={() => void copyWithFeedback(activeCellText, "Cell value copied")}
-        >
-          <span className="context-menu-icon"><Icon name="copy" /></span>
-          <span>Copy cell value</span>
-        </button>
-        <button
-          type="button"
-          role="menuitem"
-          onClick={() => void copyWithFeedback(tsv([activeRowVals]), "Row copied (Excel TSV)")}
-        >
-          <span className="context-menu-icon"><Icon name="copy" /></span>
-          <span>Copy row (Excel TSV)</span>
-        </button>
-        <button
-          type="button"
-          role="menuitem"
-          onClick={() => {
-            const csv = activeRowVals.map(v => csvCell(v)).join(",");
-            void copyWithFeedback(csv, "Row copied as CSV");
-          }}
-        >
-          <span className="context-menu-icon"><Icon name="statements" /></span>
-          <span>Copy row as CSV</span>
-        </button>
-        <button
-          type="button"
-          role="menuitem"
-          onClick={() => {
-            const obj: Record<string, string | null> = {};
-            page?.columns.forEach((c, i) => { obj[c.name] = activeRowVals[i] ?? null; });
-            void copyWithFeedback(JSON.stringify(obj, null, 2), "Row copied as JSON");
-          }}
-        >
-          <span className="context-menu-icon"><Icon name="query" /></span>
-          <span>Copy row as JSON</span>
-        </button>
-        <button
-          type="button"
-          role="menuitem"
-          onClick={() => void copyWithFeedback(tsv(activeColVals.map(v => [v])), `Column ${activeCol.name} copied`)}
-        >
-          <span className="context-menu-icon"><Icon name="copy" /></span>
-          <span>Copy column ({activeCol.name})</span>
-        </button>
-        <button
-          type="button"
-          role="menuitem"
-          onClick={() => void copyWithFeedback(tableTsv, "Table copied (Excel TSV)")}
-        >
-          <span className="context-menu-icon"><Icon name="copy" /></span>
-          <span>Copy table with headers</span>
-        </button>
+    {contextMenu && activeCol && <ContextMenu x={contextMenu.x} y={contextMenu.y} label="Cell actions"
+      header={activeCol.name} opener={contextMenu.opener} actions={cellActions} onClose={() => setContextMenu(null)} />}
 
-        {editable && (
-          <>
-            <div className="context-menu-divider" />
-            {activeCol.nullable && !activeDeleted && (
-              <button
-                type="button"
-                role="menuitem"
-                disabled={activeVal?.kind === 'null'}
-                onClick={() => {
-                  applyCellUpdate(contextMenu.rowId, activeCol.name, { kind: 'null', value: null }, contextMenu.inserted);
-                  setContextMenu(null);
-                }}
-              >
-                <span className="context-menu-icon">∅</span>
-                <span>Set to NULL</span>
-              </button>
-            )}
-            {!activeDeleted && (contextMenu.inserted || drafts[contextMenu.rowId]?.values?.[activeCol.name]) && (
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  applyCellUpdate(contextMenu.rowId, activeCol.name, undefined, contextMenu.inserted);
-                  setContextMenu(null);
-                }}
-              >
-                <span className="context-menu-icon"><Icon name={contextMenu.inserted ? "refresh" : "undo"} /></span>
-                <span>{contextMenu.inserted ? "Set to Default" : "Revert change"}</span>
-              </button>
-            )}
-            {contextMenu.inserted ? (
-              <button
-                type="button"
-                role="menuitem"
-                className="is-danger"
-                onClick={() => {
-                  setInserts(rows => rows.filter(r => r.id !== contextMenu.rowId));
-                  setContextMenu(null);
-                }}
-              >
-                <span className="context-menu-icon"><Icon name="trash" /></span>
-                <span>Remove row</span>
-              </button>
-            ) : (
-              <button
-                type="button"
-                role="menuitem"
-                className={activeDeleted ? undefined : "is-danger"}
-                onClick={() => {
-                  if (activeDeleted) {
-                    setDrafts(c => { const n = { ...c }; delete n[contextMenu.rowId]; return n; });
-                  } else {
-                    setDrafts(c => ({ ...c, [contextMenu.rowId]: { kind: 'delete', row_id: contextMenu.rowId } }));
-                  }
-                  setContextMenu(null);
-                }}
-              >
-                <span className="context-menu-icon"><Icon name={activeDeleted ? "undo" : "trash"} /></span>
-                <span>{activeDeleted ? "Undo delete" : "Delete row"}</span>
-              </button>
-            )}
-          </>
-        )}
-      </div>
-    )}
   </section>;
 }

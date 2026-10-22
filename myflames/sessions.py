@@ -68,11 +68,12 @@ Verified against server source (mysql-server 9.7 "M/", mariadb-server 13.0
 """
 import re
 
+from .server_info import product_name
 from .connector import ConnectorError
 from .discover import _processlist_source
 from .health import CONNECTIONS_USED_PCT, _grade
 from .perf_common import _count_text, _duration_text, _number, _round
-from .locks import is_mdl_wait_state
+from .locks import is_mdl_wait_state, is_group_replication_command, GROUP_REPLICATION_KILL_REASON
 from .perf_common import Reader, Server, base_report, denied, reason, show_variables
 
 SCHEMA_VERSION = "sessions-1.0"
@@ -160,7 +161,7 @@ def split_host(host):
 def thread_kind(user, command, state):
     """'client', 'daemon' or 'replication' (see the module docstring)."""
     command = command or ""
-    if command in REPLICATION_COMMANDS:
+    if command in REPLICATION_COMMANDS or is_group_replication_command(command):
         return "replication"
     if user == "system user" and (_REPLICATION_STATE.search(state or "") or command == "Connect"):
         return "replication"
@@ -337,6 +338,7 @@ def _session(row, engine, source, trx):
         "info": info, "info_short": _short(info) if info else None, "info_truncated": truncated,
         "thread_kind": kind, "trx": None, "lock_wait": None, "last_statement": None, "progress": None,
         "memory_used": None, "rows_examined": None,
+        "kill_blocked_reason": GROUP_REPLICATION_KILL_REASON if is_group_replication_command(command) else None,
         "explainable": command == "Query" and bool(info) and kind == "client",
     }
     if engine == "mariadb":
@@ -578,6 +580,11 @@ def sessions_report(conn, active_only=True, user=None, host=None, db=None, min_s
             time_val = _number(r[5]) if len(r) > 5 else None
             state_val = r[6] if len(r) > 6 else None
             info_len = len(info_val.encode("utf-8")) if info_val else None
+            # SHOW FULL cannot bound INFO in SQL. Match LEFT(INFO, INFO_CAP)
+            # using Unicode characters and retain the full byte length so the
+            # common session parser reports truncation accurately.
+            if info_val:
+                info_val = info_val[:INFO_CAP]
             if server.engine == "mariadb":
                 prog_val = _number(r[8]) if len(r) > 8 and r[8] not in (None, "") else None
                 formatted_row = [id_val, user_val, host_val, db_val, cmd_val, time_val, state_val, info_val, info_len,
@@ -727,7 +734,7 @@ def _secs(value):
 def format_text(report):
     from .perf_common import table_text
     s = report["summary"]
-    head = "%s %s, %s" % ("MariaDB" if report["engine"] == "mariadb" else "MySQL",
+    head = "%s %s, %s" % (product_name(report),
                           report["server_version"] or "?", report["source"])
     lines = [head, "Status: %s. %s" % (s["status"].upper() if s["status"] != "ok" else "ok", s["text"]), ""]
     c = s["connections"]

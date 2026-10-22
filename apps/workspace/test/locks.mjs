@@ -12,7 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
-import { assertPrivilege as assertPrivilegeState, privilegeAnswer } from "./perf-harness.mjs";
+import { assertPrivilege as assertPrivilegeState, privilegeAnswer, DOCK_KEY } from "./perf-harness.mjs";
 
 
 // Retain the shared semantic/focus checks, then check the touch-visible feedback.
@@ -135,6 +135,11 @@ try {
     request.respond({ status: mock.status, contentType: "application/json", body: JSON.stringify(mock.body) });
   });
   await page.setViewport({ width: 1440, height: 1000 });
+  // The list of views docked, as a person who docked it: this suite asserts
+  // the list's markers and keys (server-nav covers the floating default).
+  await page.evaluateOnNewDocument((key) => {
+    try { if (localStorage.getItem(key) === null) localStorage.setItem(key, "false"); } catch {}
+  }, DOCK_KEY);
   await page.goto(url, { waitUntil: "networkidle0" });
   const view = ".server-view[data-view=locks]";
   const button = (text, scope = "") => page.locator(`${scope}button ::-p-text(${text})`).click();
@@ -196,7 +201,8 @@ try {
     { limit: lockCalls().at(-1).limit, waits_only: lockCalls().at(-1).waits_only, host: lockCalls().at(-1).connection.host },
     { limit: 500, waits_only: false, host: "127.0.0.1" },
   );
-  assert.match(await text(`${view} .summary-line`), /Blocked\s*5 blocked sessions · 2 root blockers \(idle in transaction\)/);
+  assert.equal(await text(`${view} .summary-line .status-pill`), "Problem");
+  assert.equal(await text(`${view} .summary-text`), "Blocked · 5 blocked sessions · 2 root blockers (idle in transaction)");
   assert.match(await text(`${view} .fact-strip`), /Blocked sessions\s*5/);
   assert.match(await text(`${view} .fact-strip`), /Root blockers\s*2/);
   assert.equal(await text("#server-nav-locks .count-badge"), "5", "the badge counts blocked sessions");
@@ -516,7 +522,7 @@ try {
   await page.locator(killButton).click();
   await page.waitForSelector("dialog.kill-dialog[open]");
   await page.locator(".sheet-actions .danger-solid").click();
-  await page.waitForSelector(".kill-result.killed");
+  await page.waitForSelector(".kill-result.killed:not([data-refreshing])");
   const call = killCalls().at(-1);
   assert.equal(call.confirmed, true, "confirmation is the literal boolean true");
   assert.deepEqual({ id: call.connection_id, mode: call.mode, expect: call.expect, host: call.connection.host },
@@ -527,7 +533,7 @@ try {
   assert.equal(declined().length, 2, "a confirmed Kill is not recorded as declined");
   assert.equal(lockCalls().length, before + 1, "the report refreshes after the kill");
   const result = await text(".kill-result");
-  assert.match(result, /Ended\. Ended connection 53\. Its open transaction was rolled back/);
+  assert.match(result, /^Done\. Ended connection 53\. Its open transaction was rolled back/);
   assert.match(result, /The ALTER TABLE on connection 54 no longer waits; it is running or done\./);
   assert.match(result, /Connection 55 no longer waits\./);
   assert.equal(await page.$eval(".kill-result", (e) => e.getAttribute("role")), "status");
@@ -547,7 +553,7 @@ try {
   await openBlocker();
   await page.locator(killButton).click();
   await page.locator(".sheet-actions .danger-solid").click();
-  await page.waitForSelector(".kill-result.killed");
+  await page.waitForSelector(".kill-result.killed:not([data-refreshing])");
   assert.match(await text(".kill-result"), /The ALTER TABLE on connection 54 still waits, now for connection 14\./);
 
   // A running blocker that changed many rows: the rollback warning and both choices.
@@ -718,7 +724,8 @@ try {
     summary: { ...mysql.summary, blocked_sessions: 0, root_blockers: 0, longest_wait_s: null } } };
   await reload();
   assert.match(await text(`${view} [aria-labelledby="locks-tree-h"]`), /No session is waiting for a lock right now/);
-  assert.match(await text(`${view} .summary-line`), /Clear\s*Nothing is waiting for a lock/);
+  assert.equal(await text(`${view} .summary-line .status-pill`), "OK");
+  assert.equal(await text(`${view} .summary-text`), "Clear · Nothing is waiting for a lock");
 
   // Narrow viewport: tables scroll inside their container, never the page.
   mocks["/api/live/locks"] = { status: 200, body: mysql };

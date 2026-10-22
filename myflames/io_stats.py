@@ -11,9 +11,15 @@ seconds apart (2 to 60, default 10) of:
   their time per table), limited to one schema when one is given, and
   ``file_summary_by_instance`` / ``file_summary_by_event_name`` (bytes,
   operations and time per file and per file kind).
-* On MariaDB with Performance Schema off and ``userstat=ON``,
-  ``information_schema.TABLE_STATISTICS`` (rows read and changed per table,
-  no times).
+* On MariaDB or Percona Server with Performance Schema off and
+  ``userstat=ON``, ``information_schema.TABLE_STATISTICS`` (rows read and
+  changed per table, no times; same columns on both, read live on Percona
+  Server 8.0.46-37 and 8.4.11-11, Ma/plugin/userstat/table_stats.cc:5-9).
+  User statistics do not count partitioned tables reliably (Percona Server
+  documents no support, https://docs.percona.com/percona-server/8.4/
+  user-stats.html; a range read through a partitioned table's index was
+  missing on Percona Server 8.0.46-37 and 8.4.11-11 and MariaDB 11.4.13,
+  read live), which the note says.
 
 It also reports the same tables and files since the server started, labeled
 as such. The per-table read costs time proportional to the number of tables
@@ -44,6 +50,7 @@ Verified against server source (mysql-server 9.7 "M/", mariadb-server 13.0
 import re
 import time
 
+from .server_info import product_name
 from .connector import ConnectorError
 from .perf_common import (DEFAULT_WINDOW, SYSTEM_SCHEMAS, Reader, _bytes_text, _count_text, _duration_text,
                           _number, _round, base_report, check_limit, check_schema, check_window, consumer_note,
@@ -240,7 +247,8 @@ def io_report(conn, interval=DEFAULT_WINDOW, schema=None, limit=DEFAULT_LIMIT, s
             state["source"] = "performance_schema"
             state["coverage"] = reader.optional(_COVERAGE_SQL, "performance_schema.setup_instruments", notes)
             state["consumers"] = consumer_state(reader, notes)
-        elif server.engine == "mariadb" and server.userstat:
+        elif server.userstat:
+            # MariaDB and Percona Server (MySQL itself has no userstat).
             state["source"] = "userstat"
         queries = _instance_queries(schema)
         families = ("tables", "files") if state["source"] == "performance_schema" else (
@@ -492,14 +500,15 @@ def _notes(server, report, source, schema, notes):
     if source == "status":
         if not server.ps_on:
             text = ps_off_text(server, "per-table and per-file I/O")
-            if server.engine == "mariadb":
+            if server.engine == "mariadb" or server.flavor == "percona":
                 text += (" Or turn on user statistics with SET GLOBAL userstat = ON (runtime, small overhead "
                          "on every statement) for rows read and changed per table.")
             notes.insert(0, text)
         notes.append("Showing server-wide InnoDB counters only.")
     elif source == "userstat":
-        notes.insert(0, "Performance Schema is off, so tables come from MariaDB user statistics (userstat=ON): "
-                        "rows read and changed, with no times and no per-file view.")
+        notes.insert(0, "Performance Schema is off, so tables come from %s user statistics (userstat=ON): "
+                        "rows read and changed, with no times and no per-file view. They do not count partitioned "
+                        "tables reliably, so those can be missing or low here." % server.product)
     else:
         notes.append("Table figures are row operations through the storage engine (rows fetched, inserted, "
                      "updated, deleted) and their time, which includes the file I/O inside each call. They are "
@@ -533,7 +542,7 @@ def _rate_text(metric):
 
 
 def format_text(report):
-    head = "%s %s" % ("MariaDB" if report["engine"] == "mariadb" else "MySQL", report["server_version"] or "?")
+    head = "%s %s" % (product_name(report), report["server_version"] or "?")
     if report["uptime_s"] is not None:
         head += ", up %s" % _duration_text(report["uptime_s"])
     head += ", sampled over %s s" % (_count_text(report["elapsed_s"]) if report["elapsed_s"] else "?")

@@ -2,7 +2,7 @@
 // Consumers and Actors and objects. Individual rows support bounded selection;
 // exact runtime SQL uses the shared review/confirmation runner. Startup option
 // lines stay copy-only. Linked rows and selected-row details use the inspector.
-import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useLayoutEffect, useState, type ReactNode } from "react";
 import {
   api,
   type Connection,
@@ -20,7 +20,7 @@ import { CopySql, bytes, count, engineLabel } from "./PerfShared";
 import { uptime } from "./Health";
 import type { ServerKind } from "./session";
 import { useConnectionReads, type Bound } from "./binding";
-import { useViewOnScreen } from "./viewOnScreen";
+import { useOpenRead } from "./viewOnScreen";
 import {
   copyToClipboard,
   DataTable,
@@ -98,8 +98,8 @@ function featureStatus(feature: Feature): [Tone, string] {
 /** Views a feature can open in the Server place. */
 const VIEWS: Record<string, [ServerKind, string]> = {
   top: ["top", "Top statements"],
-  sessions: ["sessions", "Sessions"],
-  running: ["sessions", "Sessions"],
+  sessions: ["sessions", "Processlist"],
+  running: ["sessions", "Processlist"],
   locks: ["locks", "Locks"],
   waits: ["waits", "Waits"],
   indexes: ["indexes", "Indexes"],
@@ -334,7 +334,6 @@ export function InstrumentsView({
   onOpenSql?: (sql: string) => void;
 }) {
   const reads = useConnectionReads(connection);
-  const onScreen = useViewOnScreen();
   const loading = !!reads.loading;
   const error = reads.error;
   const report = bound?.report ?? null;
@@ -345,7 +344,6 @@ export function InstrumentsView({
   const [state, setState] = useState("all");
   const [instrumentNames, setInstrumentNames] = useState<string[]>([]);
   const [consumerNames, setConsumerNames] = useState<string[]>([]);
-  const attempted = useRef<string | null>(null);
   const applied = report?.presets.find((p) => p.applied === true)?.key || "";
   const [preset, setPreset] = useState("");
 
@@ -358,13 +356,7 @@ export function InstrumentsView({
     );
   }
 
-  // One attempt per connection visit, including failures. Refresh remains explicit.
-  useEffect(() => {
-    if (disabled || !onScreen || attempted.current === reads.key) return;
-    attempted.current = reads.key;
-    if (bound?.key !== reads.key) void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reads.key, disabled, onScreen, bound?.key]);
+  useOpenRead({ key: reads.key, reportKey: bound?.key, ready: !disabled, busy: loading || reads.running(), read: () => { void load(); } });
   useEffect(() => {
     setInstrumentNames([]);
     setConsumerNames([]);
@@ -678,7 +670,7 @@ export function InstrumentsView({
             Which Performance Schema instruments and consumers are on, what each gives myflames and you, what it
             costs, and the statements that turn it on or off, with ready-made presets.
           </p>
-          <p>Refresh reads the setup tables. Apply actions show the exact SQL and require confirmation.</p>
+          <p>This view reads the setup tables when opened. Refresh retries or reads them again. Apply actions show the exact SQL and require confirmation.</p>
         </>
       }
       controls={report && shownPreset ? (
@@ -694,6 +686,12 @@ export function InstrumentsView({
           </label>
           {!applied && <Pill title="The setup matches none of the presets">Custom</Pill>}
           <InfoPopover label="About presets">
+            <p>
+              <strong>{shownPreset.label}:</strong> {shownPreset.summary}
+            </p>
+            <p>
+              Cost: <CostChip cost={shownPreset.cost} />
+            </p>
             <p>Ready-made sets of statements for this engine. Each takes effect at once and lasts until the server restarts; the my.cnf lines keep it.</p>
             <p>{report.read_only_note}</p>
           </InfoPopover>
@@ -713,7 +711,7 @@ export function InstrumentsView({
       otherConnection={other}
       inspector={inspector}
       inspectorEmpty={<p>Select a preset, a view or an instrument to see its statements, gain and cost.</p>}
-      status={<><ViewStatus loading={reads.loading} error={error} /><ReviewedSqlStatus /></>}
+      status={<><ViewStatus loading={reads.loading} error={error} onStop={reads.stop} onRetry={reads.error ? () => void load() : undefined} doneAt={reads.doneAt} /><ReviewedSqlStatus /></>}
     >
       {!report && !loading && !error && (
         <EmptyState
@@ -730,27 +728,26 @@ export function InstrumentsView({
       )}
       {report && status && (
         <>
-          {shownPreset && (
+          <SummaryLine tone={status.enabled ? (offCount > 0 ? "problem" : partial > 0 ? "watch" : "ok") : "problem"} notes={notes}>
+            Performance Schema {status.enabled ? "is on" : "is off"} · {ready} {ready === 1 ? "view" : "views"} ready
+            {partial > 0 && `, ${partial} partly`}
+            {offCount > 0 && `, ${offCount} off`}
+          </SummaryLine>
+          {shownPreset && shownPreset.applied !== true && (
             <div
               className={`instr-preset-status${shownPreset.applied === false ? " is-pending" : ""}`}
               data-preset={shownPreset.key}
               role="status"
             >
-              {shownPreset.applied !== true && (
-                <StatusPill
-                  tone={shownPreset.applied === false ? "info" : "unknown"}
-                  label={shownPreset.applied === false ? "Would change this server" : "Current setup unknown"}
-                />
-              )}
-              <span className="instr-preset-summary" title={shownPreset.summary}>{shownPreset.summary}</span>
+              <StatusPill
+                tone={shownPreset.applied === false ? "watch" : "unknown"}
+              />
+              <span className="instr-preset-summary" title={shownPreset.summary}>
+                {shownPreset.applied === false ? `Preset ${shownPreset.label} would change this server` : "Current setup unknown"} · {shownPreset.summary}
+              </span>
               <CostChip cost={shownPreset.cost} />
             </div>
           )}
-          <SummaryLine tone={status.enabled ? "ok" : "off"} toneLabel={status.enabled ? "On" : "Off"} notes={notes}>
-            Performance Schema {status.enabled ? "is on" : "is off"} · {ready} {ready === 1 ? "view" : "views"} ready
-            {partial > 0 && `, ${partial} partly`}
-            {offCount > 0 && `, ${offCount} off`}
-          </SummaryLine>
           {report.unavailable && report.unavailable !== "performance_schema_off" && (
             <PrerequisiteGate>
               The setup tables could not be read, so the current state is unknown (see the notes). The statements still apply.
@@ -760,7 +757,7 @@ export function InstrumentsView({
             <GroupedRow
               rowKey="ps"
               selection={selection}
-              tone={status.enabled ? undefined : "off"}
+              tone={status.enabled ? "ok" : "off"}
               toneLabel={status.enabled ? undefined : "Off"}
               label="Performance Schema"
               detail={`${engineLabel(report)}${status.memory_bytes !== null ? ` · its own memory ${bytes(status.memory_bytes)}` : ""}`}
@@ -775,7 +772,6 @@ export function InstrumentsView({
           {tab === "features" && <GroupedList id="instr-features-h" title="What myflames can show" className="instr-features">
             {features.map((f) => {
               const [tone, label] = featureStatus(f);
-              const isNormal = f.status === "ready";
               const reason = f.missing.length
                 ? `needs ${f.missing[0]}${f.missing.length > 1 ? ` and ${f.missing.length - 1} more` : ""}`
                 : f.optional_missing.length
@@ -786,8 +782,8 @@ export function InstrumentsView({
                   key={f.key}
                   rowKey={`feature:${f.key}`}
                   selection={selection}
-                  tone={isNormal ? undefined : tone}
-                  toneLabel={isNormal ? undefined : label}
+                  tone={tone}
+                  toneLabel={label}
                   label={f.label}
                   detail={reason || undefined}
                   attrs={{ "data-feature": f.key }}

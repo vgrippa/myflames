@@ -68,7 +68,7 @@ export function useFocusScope<T extends HTMLElement>(ref: RefObject<T>, options:
     // Popovers are positioned in a layout effect; retry once if initially hidden.
     focusFirst();
     const frame = requestAnimationFrame(() => {
-      if (focusScopes[focusScopes.length - 1] === root && !root.contains(document.activeElement)) focusFirst();
+      if (focusScopes[focusScopes.length - 1] === root && (!root.contains(document.activeElement) || document.activeElement === root)) focusFirst();
     });
     const key = (event: globalThis.KeyboardEvent) => {
       if (focusScopes[focusScopes.length - 1] !== root) return;
@@ -144,22 +144,14 @@ export function StatusDot({ tone, label }: { tone: Tone; label?: string }) {
 }
 
 /** A dot and a short word (OK, Watch, Problem, Off…). In a status column
- * (`quiet`), the normal states step back so only the others draw the eye: OK
- * draws nothing and No threshold a faint dash, while the word stays for
- * screen readers, hover and text search. A custom label is always shown. */
+ * (`quiet`), the normal states step back with muted ink so only the others
+ * draw the eye, while always drawing both the dot and the word. */
 export function StatusPill({ tone, label, title, quiet = false }: { tone: Tone; label?: string; title?: string; quiet?: boolean }) {
   const word = label || TONE_TEXT[tone];
-  if (quiet && (tone === "ok" || tone === "info") && word === TONE_TEXT[tone]) {
-    return (
-      <span className={`status-pill is-${tone} is-quiet`} title={title || word}>
-        <span className="visually-hidden">{word}</span>
-      </span>
-    );
-  }
   return (
-    <span className={`status-pill is-${tone}`} title={title}>
+    <span className={`status-pill is-${tone}${quiet && (tone === "ok" || tone === "info") && word === TONE_TEXT[tone] ? " is-quiet" : ""}`} title={title || (quiet ? word : undefined)}>
       <span className="status-dot" aria-hidden="true" />
-      {label || TONE_TEXT[tone]}
+      {word}
     </span>
   );
 }
@@ -178,26 +170,33 @@ export function CountBadge({ count, tone = "neutral", label }: { count: number; 
  * places): one system everywhere. A dot and word carry state (OK draws
  * nothing), and a count is always a neutral pill beside it. The
  * words reach screen readers through `text` (or the row's own hidden text). */
-export function NavMarker({ tone, count, countTone = "neutral", text, compact = false }: {
+export function NavMarker({ tone, count, countTone = "neutral", text, compact = false, announce = true }: {
   tone?: Tone;
   count?: number;
   countTone?: BadgeTone;
   text?: string;
-  /** Narrow rows (sidebar places, lists of views): with a count, the dot and the count
-   * stand alone and the state word moves to the tooltip and `text`. */
+  /** False when the caller already gives the row its own hidden text (Server's
+   * list of views), so a screen reader hears the state once. */
+  announce?: boolean;
+  /** Narrow rows (sidebar places, lists of views): a dot plus a neutral count
+   * when there is something to count, otherwise the dot alone with the word in
+   * its tooltip and `text`. */
   compact?: boolean;
 }) {
   const state = tone || countState(countTone);
   const word = state && state !== "ok" ? TONE_TEXT[state] : "";
-  const terse = compact && count !== undefined;
+  const terse = compact;
+  const srText = text
+    ? terse && word && !/other view/i.test(text) && !text.toLowerCase().includes(word.toLowerCase()) ? `${word}, ${text}` : text
+    : terse && word ? word : "";
   return (
     <>
-      <span className="nav-marker" aria-hidden="true" title={terse && word ? word : undefined}>
+      <span className="nav-marker" aria-hidden="true" title={terse ? (srText || word || undefined) : undefined}>
         {state && <span className={`status-dot is-${state}`} />}
         {word && !terse && <span>{word}</span>}
         {count !== undefined && <CountBadge count={count} />}
       </span>
-      {text && <span className="visually-hidden">, {text}</span>}
+      {announce && srText && <span className="visually-hidden">, {srText}</span>}
     </>
   );
 }
@@ -231,6 +230,7 @@ export function Popover({
   wide,
   buttonTitle,
   disabled = false,
+  busy = false,
   menu = false,
   width: panelWidth,
   children,
@@ -247,6 +247,8 @@ export function Popover({
   buttonTitle?: string;
   /** Disables the trigger and closes an open panel. */
   disabled?: boolean;
+  /** A running action keeps the trigger focusable, but cannot open it again. */
+  busy?: boolean;
   /** Action menus use arrow navigation; forms keep dialog navigation. */
   menu?: boolean;
   /** Panel width in px for a compact menu (default 320, or 400 when wide). */
@@ -287,10 +289,15 @@ export function Popover({
       const width = Math.min(panelWidth || (wide ? 400 : 320), window.innerWidth - 16);
       const left = Math.max(8, Math.min(b.left - 12, window.innerWidth - width - 8));
       const height = p.offsetHeight;
+      // The fixed window footer paints over the panel, so a panel opened above
+      // it ends at its top edge (720 x 520 window: the last lines were hidden).
+      const footer = document.querySelector(".window-statusbar")?.getBoundingClientRect().top;
+      const floor = footer !== undefined && footer >= b.bottom ? Math.min(footer, window.innerHeight) : window.innerHeight;
       const below = b.bottom + 6;
-      const top = below + height > window.innerHeight - 8 && b.top - height - 6 > 8 ? b.top - height - 6 : below;
-      const boundedTop = Math.max(8, Math.min(top, window.innerHeight - Math.min(height, window.innerHeight - 16) - 8));
-      setStyle({ left, top: boundedTop, width, maxHeight: window.innerHeight - boundedTop - 8 });
+      const top = below + height > floor - 8 && b.top - height - 6 > 8 ? b.top - height - 6 : below;
+      const boundedTop = Math.max(8, Math.min(top, floor - Math.min(height, floor - 16) - 8));
+      p.style.visibility = "visible";
+      setStyle({ left, top: boundedTop, width, maxHeight: floor - boundedTop - 8 });
     };
     place();
     window.addEventListener("resize", place);
@@ -309,10 +316,13 @@ export function Popover({
         aria-label={label}
         aria-haspopup={menu ? "menu" : "dialog"}
         disabled={disabled}
+        aria-busy={busy || undefined}
+        aria-disabled={busy || undefined}
         aria-expanded={open}
         aria-controls={open ? id : undefined}
         title={trigger ? buttonTitle : label}
         onClick={() => {
+          if (busy) return;
           setStyle({ visibility: "hidden" });
           setOpen((o) => !o);
         }}
@@ -329,32 +339,37 @@ export function Popover({
 }
 
 /** One format in an Export menu. */
-export type ExportFormat = { key: string; label: string; onSelect: () => void; disabled?: boolean };
+export type ExportFormat = { key: string; label: string; onSelect: () => void; disabled?: boolean; busy?: boolean; busyLabel?: string };
 
 /** The one Export control: export icon, "Export" and a chevron-down pull-down
  * menu of formats (a macOS pull-down button). With a single format it is a
  * plain button without the chevron. Every place that exports uses this. */
-export function ExportMenu({ label, formats, disabled = false, className = "", title }: {
+export function ExportMenu({ label, formats, disabled = false, className = "", title, busy = false, busyLabel }: {
   /** Accessible name, e.g. "Export plan". */
   label: string;
   formats: ExportFormat[];
   disabled?: boolean;
   className?: string;
+  busy?: boolean;
+  busyLabel?: string;
   /** Tooltip; defaults to the accessible name. */
   title?: string;
 }) {
-  const face = <><Icon name="export" size={14} /><span>Export</span></>;
+  const face = <>{busy ? <span className="spinner" aria-hidden="true" /> : <Icon name="export" size={14} />}
+    {busyLabel ? <span className="action-button-label" data-reserve={busy ? "Export" : busyLabel}><span>{busy ? busyLabel : "Export"}</span></span> : <span>Export</span>}</>;
   if (formats.length === 1) {
     const only = formats[0];
     return <button type="button" className={`button export-button ${className}`} aria-label={label} title={title || label}
-      disabled={disabled || only.disabled} onClick={only.onSelect}>{face}</button>;
+      disabled={!busy && (disabled || only.disabled)} aria-busy={busy || undefined} aria-disabled={busy || undefined} onClick={() => { if (!busy) only.onSelect(); }}>{face}</button>;
   }
-  return <Popover menu width={200} label={label} buttonTitle={title || label} disabled={disabled}
+  return <Popover menu width={200} label={label} buttonTitle={title || label} disabled={!busy && disabled} busy={busy}
     className={`export-menu ${className}`} buttonClassName="button export-button"
     trigger={<>{face}<Icon name="chevron-down" size={12} /></>}>
     <div className="export-menu-items">
-      {formats.map((format) => <button key={format.key} type="button" role="menuitem" data-format={format.key}
-        disabled={format.disabled} onClick={() => { closePopovers(); format.onSelect(); }}>{format.label}</button>)}
+      {formats.map((format) => format.busyLabel ? <ActionButton key={format.key} role="menuitem" data-format={format.key}
+        busy={format.busy} busyLabel={format.busyLabel} disabled={!format.busy && format.disabled}
+        onClick={format.onSelect}>{format.label}</ActionButton> : <button key={format.key} type="button" role="menuitem" data-format={format.key}
+        disabled={busy || format.disabled} onClick={() => { closePopovers(); format.onSelect(); }}>{format.label}</button>)}
     </div>
   </Popover>;
 }
@@ -370,11 +385,12 @@ export function InfoPopover({ label, children }: { label: string; children: Reac
 }
 
 /** "ⓘ 3 notes": engine differences, caveats and privileges, on demand. */
-export function NotesButton({ notes, label = "Notes about this read" }: { notes: ReactNode[]; label?: string }) {
+export function NotesButton({ notes, label = "Notes about this read", title }: { notes: ReactNode[]; label?: string; title?: string }) {
   if (!notes.length) return null;
   return (
     <Popover
       label={label}
+      buttonTitle={title}
       wide
       className="notes-anchor"
       buttonClassName="notes-button"
@@ -510,6 +526,7 @@ export function Checkbox({
   onChange,
   children,
   disabled,
+  busy,
   className = "",
   describedBy,
   title,
@@ -519,20 +536,24 @@ export function Checkbox({
   onChange: (checked: boolean) => void;
   children: ReactNode;
   disabled?: boolean;
+  /** Unavailable for a moment (a save on its way): it keeps keyboard focus
+   * (aria-disabled, not disabled) and ignores changes until it is done. */
+  busy?: boolean;
   className?: string;
   describedBy?: string;
   title?: string;
   id?: string;
 }) {
   return (
-    <label className={`checkbox ${className}`.trim()} title={title}>
+    <label className={`checkbox${busy ? " is-busy" : ""} ${className}`.trim()} title={title}>
       <input
         id={id}
         type="checkbox"
         checked={checked}
         disabled={disabled}
+        aria-disabled={busy || undefined}
         aria-describedby={describedBy}
-        onChange={(e) => onChange(e.target.checked)}
+        onChange={(e) => { if (!busy) onChange(e.target.checked); }}
       />
       <span>{children}</span>
     </label>
@@ -621,6 +642,317 @@ export function IconButton({
       <Icon name={icon} size={size} />
     </button>
   );
+}
+
+// ---- Actions: immediate, honest feedback ----------------------------------------
+//
+// Every action reacts in the same frame as the click and says what is going on
+// and what happened (docs/DEVELOPER_REFERENCE.md, "Action feedback"):
+//   idle -> pending (spinner and a present-tense label on the button, aria-busy,
+//   a second click sends nothing, focus stays) -> done (what changed) or failed
+//   (the error in plain words, with Try again for reads) or unknown (a write
+//   that got no reply: it may have run and is never sent again).
+// One polite live region per action announces the start and the outcome; the
+// elapsed seconds are drawn but never announced.
+
+/** A pending action shows how long it has waited from this point on. */
+export const ACTION_ELAPSED_AFTER_MS = 1000;
+/** Without a reply for this long, a read offers Stop and a sheet may be closed
+ * while its request goes on. */
+export const ACTION_SLOW_AFTER_MS = 10_000;
+
+export type ActionPhase = "idle" | "pending" | "done" | "failed" | "unknown";
+export type ActionState = {
+  phase: ActionPhase;
+  /** What is happening ("Testing the connection…") or what happened. */
+  message: string;
+  /** Date.now() when the request was sent (pending only). */
+  startedAt: number | null;
+  /** Date.now() when it ended (done, failed, unknown). */
+  endedAt: number | null;
+};
+export const IDLE_ACTION: ActionState = { phase: "idle", message: "", startedAt: null, endedAt: null };
+
+function isAbort(error: unknown) {
+  return (error as { name?: string } | null)?.name === "AbortError";
+}
+/** The message of an error, never "[object Object]". */
+export function errorText(error: unknown): string {
+  const message = (error as { message?: unknown } | null)?.message;
+  return typeof message === "string" && message ? message : String(error || "Something went wrong.");
+}
+/** A write that failed: the server refused it with an error (4xx, "failed":
+ * its words say what was done), or its outcome is unknown (no reply, or the
+ * request broke on the way: it may have run, and it is never sent again).
+ * The message never repeats the word the caller shows ("Outcome unknown."). */
+export function writeFailure(error: unknown, options: { audited?: boolean } = {}): { phase: "failed" | "unknown"; message: string } {
+  const status = (error as { status?: unknown } | null)?.status;
+  if (typeof status === "number" && status >= 400 && status < 500) return { phase: "failed", message: errorText(error) };
+  const why = errorText(error);
+  return {
+    phase: "unknown",
+    message: (typeof status === "number" ? `The request failed (${why}).` : `No reply arrived (${why}).`) +
+      " It may have run, so it is not sent again." + (options.audited ? " Its record is in the Audit log." : ""),
+  };
+}
+
+/** The time *active* last became true (Date.now()), or null while it is false. */
+export function useSince(active: boolean): number | null {
+  const since = useRef<number | null>(null);
+  if (active && since.current === null) since.current = Date.now();
+  if (!active) since.current = null;
+  return since.current;
+}
+/** Whole seconds since *since*, ticking once a second; 0 without a start. */
+export function useElapsed(since: number | null | undefined): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (since == null) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [since]);
+  return since == null ? 0 : Math.max(0, Math.floor((now - since) / 1000));
+}
+
+/** A message from a caller's formatter, or *fallback* when it throws (the
+ * error is logged): an action always ends with words, never stuck pending. */
+function format(make: () => string, fallback: string): string {
+  try {
+    return make();
+  } catch (error) {
+    console.error("Action message failed:", error);
+    return fallback;
+  }
+}
+
+export type ActionResult<R> =
+  | { ok: true; value: R }
+  | { ok: false; reason: "busy" | "cancelled" | "failed" | "unknown"; error?: unknown };
+export type ActionText<R> = {
+  /** Present tense, shown and announced at once: "Testing the connection…". */
+  pending: string;
+  /** What happened; "" (or nothing) leaves no line behind. */
+  done?: string | ((value: R) => string);
+  /** A write: an error without the server's answer means outcome unknown. */
+  write?: boolean;
+  /** A write recorded in the Audit log (named in the unknown message). */
+  audited?: boolean;
+  failed?: (error: unknown) => string;
+};
+
+/**
+ * One action's lifecycle. `run(work, text)` does nothing while the same action
+ * runs (single flight), shows *pending* at once, then the outcome. A request
+ * ended by `cancel()`, a new *scope* (the connection or the form it belongs
+ * to) or unmounting ends quietly: its answer is never applied (the result is
+ * `{ ok: false, reason: "cancelled" }`). Writes should not pass a scope: their
+ * outcome is always reported.
+ */
+export function useAction(scope = "") {
+  const [state, setState] = useState<ActionState>(IDLE_ACTION);
+  const ticket = useRef<{ id: number; controller: AbortController } | null>(null);
+  const seq = useRef(0);
+  const cancel = useCallback(() => {
+    const t = ticket.current;
+    ticket.current = null;
+    t?.controller.abort();
+    setState(IDLE_ACTION);
+  }, []);
+  useEffect(() => () => {
+    ticket.current?.controller.abort();
+    ticket.current = null;
+  }, []);
+  const lastScope = useRef(scope);
+  useEffect(() => {
+    if (lastScope.current === scope) return;
+    lastScope.current = scope;
+    cancel();
+  }, [scope, cancel]);
+  const run = useCallback(async <R,>(work: (signal: AbortSignal) => Promise<R>, text: ActionText<R>): Promise<ActionResult<R>> => {
+    if (ticket.current) return { ok: false, reason: "busy" };
+    const t = { id: ++seq.current, controller: new AbortController() };
+    ticket.current = t;
+    setState({ phase: "pending", message: text.pending, startedAt: Date.now(), endedAt: null });
+    let value: R;
+    try {
+      value = await work(t.controller.signal);
+    } catch (error) {
+      if (ticket.current !== t) return { ok: false, reason: "cancelled", error };
+      ticket.current = null;
+      if (isAbort(error) && !text.write) {
+        setState(IDLE_ACTION);
+        return { ok: false, reason: "cancelled", error };
+      }
+      const written = text.write ? writeFailure(error, { audited: text.audited }) : null;
+      const failure = written
+        ? { phase: written.phase, message: written.phase === "unknown" ? `Outcome unknown. ${written.message}` : written.message }
+        : { phase: "failed" as const, message: format(() => (text.failed ? text.failed(error) : errorText(error)), errorText(error)) };
+      setState({ ...failure, startedAt: null, endedAt: Date.now() });
+      return { ok: false, reason: failure.phase, error };
+    }
+    if (ticket.current !== t) return { ok: false, reason: "cancelled" };
+    // The work is done whatever its summary says: a summary that throws
+    // leaves a plain "Done.", never a spinner that never ends.
+    const message = format(() => (typeof text.done === "function" ? text.done(value) : text.done || ""), "Done.");
+    ticket.current = null;
+    setState({ phase: message ? "done" : "idle", message, startedAt: null, endedAt: Date.now() });
+    return { ok: true, value };
+  }, []);
+  /** Show an outcome decided elsewhere (a reply whose status says it failed). */
+  const show = useCallback((phase: Exclude<ActionPhase, "pending">, message: string) => {
+    if (ticket.current) return;
+    setState(phase === "idle" ? IDLE_ACTION : { phase, message, startedAt: null, endedAt: Date.now() });
+  }, []);
+  const reset = useCallback(() => { if (!ticket.current) setState(IDLE_ACTION); }, []);
+  return { ...state, pending: state.phase === "pending", run, cancel, show, reset };
+}
+export type Action = ReturnType<typeof useAction>;
+
+/**
+ * A button that runs an action. While *busy* it shows a spinner and
+ * *busyLabel* (present tense: "Testing…"), sets aria-busy, ignores clicks
+ * (so a double click sends one request) and stays focusable (aria-disabled),
+ * so focus never falls to the page. Its width never changes: the other label
+ * is reserved, invisible, in the same cell.
+ */
+export function ActionButton({
+  busy = false,
+  busyLabel,
+  icon,
+  primary,
+  danger,
+  small,
+  className = "",
+  children,
+  onClick,
+  labelClassName = "",
+  ...rest
+}: ButtonHTMLAttributes<HTMLButtonElement> & {
+  busy?: boolean; busyLabel?: string; icon?: IconName; primary?: boolean; danger?: boolean; small?: boolean;
+  /** Extra class on the label (Refresh hides its label below 650 px). */
+  labelClassName?: string;
+}) {
+  const idle = typeof children === "string" ? children : undefined;
+  const reserve = busy ? idle : busyLabel;
+  const kind = primary ? " primary" : danger ? " danger" : "";
+  return (
+    <button
+      type="button"
+      {...rest}
+      className={`button action-button${kind}${small ? " small" : ""}${busy ? " is-pending" : ""}${icon ? " has-icon" : ""} ${className}`.trim()}
+      aria-busy={busy || undefined}
+      aria-disabled={busy || rest["aria-disabled"] || undefined}
+      onClick={(e) => {
+        if (busy || rest["aria-disabled"] === true || rest["aria-disabled"] === "true") {
+          e.preventDefault();
+          return;
+        }
+        onClick?.(e);
+      }}
+    >
+      {icon && (
+        <span className="action-button-icon" aria-hidden="true">
+          {busy ? <span className="spinner" /> : <Icon name={icon} size={15} />}
+        </span>
+      )}
+      <span className={`action-button-label${busy ? " is-busy" : ""} ${labelClassName}`.trim()} data-reserve={reserve || undefined}>
+        <span>
+          {!icon && busy && <span className="spinner" aria-hidden="true" />}
+          {busy && busyLabel ? busyLabel : children}
+        </span>
+      </span>
+    </button>
+  );
+}
+
+/**
+ * The line beside or under an action: a spinner, what is happening and the
+ * seconds waited (after 1 s, never announced); then what happened, or the
+ * error with Try again. Always mounted, so its polite live region announces
+ * the start and the outcome. Idle, it takes no room.
+ */
+export function ActionStatus({
+  state,
+  onRetry,
+  retryLabel = "Try again",
+  onStop,
+  stopLabel = "Stop",
+  onDismiss,
+  slowAfter = ACTION_SLOW_AFTER_MS,
+  slowText = "Still waiting for the server.",
+  className = "",
+  keepLine = false,
+  children,
+}: {
+  state: Pick<ActionState, "phase" | "message" | "startedAt">;
+  /** Keep its line while idle (an empty, invisible line), so the start of an
+   * action never moves the control that started it (a load button in an
+   * empty state, centered in its box). */
+  keepLine?: boolean;
+  onRetry?: () => void;
+  retryLabel?: string;
+  /** Stop waiting (offered once the action is slow). */
+  onStop?: () => void;
+  stopLabel?: string;
+  onDismiss?: () => void;
+  slowAfter?: number;
+  slowText?: string;
+  className?: string;
+  /** Extra content after the message (a link to the result). */
+  children?: ReactNode;
+}) {
+  const pending = state.phase === "pending";
+  const since = useSince(pending);
+  const elapsed = useElapsed(pending ? state.startedAt ?? since : null);
+  const slow = pending && elapsed * 1000 >= slowAfter;
+  const bad = state.phase === "failed" || state.phase === "unknown";
+  const root = useRef<HTMLDivElement>(null);
+  /** Run *fn*, then keep keyboard focus: the clicked Stop, Try again or
+   * Dismiss goes away, so focus moves to the action beside this line (or to
+   * the line itself), never to the page. */
+  const keepFocus = (fn: () => void) => () => {
+    fn();
+    window.requestAnimationFrame(() => restoreFocus(root.current, ".action-button:not(:disabled)"));
+  };
+  return (
+    <div ref={root} tabIndex={-1} className={`action-status${keepLine ? " keeps-line" : ""} ${className}`.trim()} data-phase={state.phase}>
+      <span className="action-status-text" role="status" aria-live="polite" aria-atomic="true">
+        {pending && <span className="spinner" aria-hidden="true" />}
+        {state.phase === "done" && <span className="action-status-icon"><Icon name="check" size={12} /></span>}
+        {bad && <span className="action-status-icon"><Icon name="warning" size={12} /></span>}
+        {state.phase !== "idle" && <span className="action-status-message">{state.message}</span>}
+        {slow && <span className="action-status-slow"> {slowText}</span>}
+      </span>
+      {pending && elapsed * 1000 >= ACTION_ELAPSED_AFTER_MS && (
+        <span className="action-elapsed" aria-hidden="true">{elapsed} s so far</span>
+      )}
+      {state.phase !== "idle" && children}
+      {slow && onStop && <button type="button" className="text-button" onClick={keepFocus(onStop)}>{stopLabel}</button>}
+      {bad && onRetry && <button type="button" className="text-button" onClick={keepFocus(onRetry)}>{retryLabel}</button>}
+      {!pending && state.phase !== "idle" && onDismiss && (
+        <button type="button" className="text-button" onClick={keepFocus(onDismiss)}>Dismiss</button>
+      )}
+    </div>
+  );
+}
+
+/** After a control inside *line* went away (Stop, Try again, Dismiss): when
+ * focus fell to the page, put it on the nearest control matching *near*
+ * around the line, else on the line (tabIndex -1). */
+function restoreFocus(line: HTMLElement | null, near: string) {
+  if (!line || !line.isConnected) return;
+  const active = document.activeElement;
+  if (active && active !== document.body && active.isConnected) return;
+  let scope: HTMLElement | null = line.parentElement;
+  for (let depth = 0; scope && depth < 3; depth++, scope = scope.parentElement) {
+    const target = scope.querySelector<HTMLElement>(near);
+    if (target && target.getClientRects().length) {
+      target.focus({ preventScroll: true });
+      return;
+    }
+  }
+  line.focus({ preventScroll: true });
 }
 
 // ---- Compound controls ----------------------------------------------------
@@ -812,20 +1144,40 @@ export type WindowStatus = {
   durationMs?: number | null;
   rows?: number | null;
 };
-type WindowStatusStore = { values: Record<string, WindowStatus>; publish: (scope: string, value: WindowStatus | null) => void };
-const WindowStatusContext = createContext<WindowStatusStore | null>(null);
+type WindowStatusPublish = (scope: string, value: WindowStatus | null) => void;
+const WindowStatusPublishContext = createContext<WindowStatusPublish | null>(null);
+const WindowStatusValuesContext = createContext<Record<string, WindowStatus>>({});
+function sameWindowStatus(a: WindowStatus | undefined, b: WindowStatus | null): boolean {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  return (
+    a.engineVersion === b.engineVersion &&
+    a.connectionState === b.connectionState &&
+    a.transaction === b.transaction &&
+    a.refreshedAt === b.refreshedAt &&
+    a.refreshing === b.refreshing &&
+    a.sessionState === b.sessionState &&
+    a.lastRunAt === b.lastRunAt &&
+    a.durationMs === b.durationMs &&
+    a.rows === b.rows
+  );
+}
 export function WindowStatusProvider({ children }: { children: ReactNode }) {
   const [values, setValues] = useState<Record<string, WindowStatus>>({});
   const publish = useCallback((scope: string, value: WindowStatus | null) => {
     setValues((old) => {
+      if (sameWindowStatus(old[scope], value)) return old;
       const next = { ...old };
       if (value) next[scope] = value;
       else delete next[scope];
       return next;
     });
   }, []);
-  const store = useMemo(() => ({ values, publish }), [values, publish]);
-  return <WindowStatusContext.Provider value={store}>{children}</WindowStatusContext.Provider>;
+  return (
+    <WindowStatusPublishContext.Provider value={publish}>
+      <WindowStatusValuesContext.Provider value={values}>{children}</WindowStatusValuesContext.Provider>
+    </WindowStatusPublishContext.Provider>
+  );
 }
 /** Call in a place with a stable scope and the latest known values. Cleanup
  * drops its contribution on unmount/scope change. Only one owner per scope.
@@ -834,19 +1186,19 @@ export function WindowStatusProvider({ children }: { children: ReactNode }) {
  * compare uses `compare:${beforeId}:${afterId}`. Never publish an old report
  * under the current connection's scope. */
 export function useWindowStatus(scope: string, value: WindowStatus) {
-  const publish = useContext(WindowStatusContext)?.publish;
+  const publish = useContext(WindowStatusPublishContext);
   const { engineVersion, connectionState, transaction, refreshedAt, refreshing, sessionState, lastRunAt, durationMs, rows } = value;
   useEffect(() => {
     publish?.(scope, { engineVersion, connectionState, transaction, refreshedAt, refreshing, sessionState, lastRunAt, durationMs, rows });
-    return () => publish?.(scope, null);
   }, [publish, scope, engineVersion, connectionState, transaction, refreshedAt, refreshing, sessionState, lastRunAt, durationMs, rows]);
+  useEffect(() => () => publish?.(scope, null), [publish, scope]);
 }
 /** The window footer. *lead* comes first, left-aligned: the shell puts the
  * write safety of the connection in use there (Connections.tsx SafetyStatus)
  * on the places that send to it. */
 export function WindowStatusBar({ scope, fallback = {}, lead }: { scope: string; fallback?: WindowStatus; lead?: ReactNode }) {
-  const store = useContext(WindowStatusContext);
-  const value = { ...fallback, ...store?.values[scope] };
+  const values = useContext(WindowStatusValuesContext);
+  const value = { ...fallback, ...values[scope] };
   const stamp = (at: number | null | undefined) => {
     if (typeof at !== "number" || !Number.isFinite(at)) return null;
     const date = new Date(at);
@@ -865,7 +1217,8 @@ export function WindowStatusBar({ scope, fallback = {}, lead }: { scope: string;
     {ran && <span data-status="last-run">Last run {ran}</span>}
     {knownNumber(value.durationMs) && <span data-status="duration">{value.durationMs.toLocaleString()} ms</span>}
     {knownNumber(value.rows) && <span data-status="rows">{value.rows.toLocaleString()} {value.rows === 1 ? "row" : "rows"}</span>}
-    {value.refreshing && <span data-status="refreshing" role="status">Refreshing…</span>}
+    {/* Drawn, not announced: the view's own status line announces its read. */}
+    {value.refreshing && <span data-status="refreshing">Refreshing…</span>}
     {refreshed && <span className="window-statusbar-refresh" data-status="refreshed">Refreshed {refreshed}</span>}
   </footer>;
 }
@@ -877,6 +1230,137 @@ export const ViewActivityContext = createContext<((view: string, loading: boolea
 /** The name of the place whose list of views a narrow layout's back button
  * returns to ("Server", "Workload"). */
 export const ViewBackLabelContext = createContext("Server");
+
+/** The floating list of views (Server and Workload with the list floated):
+ * the view's title becomes a pop-up button that opens the list under it.
+ * Provided by Server per view, only while the list floats; ViewLayout
+ * consumes it for its own title and clears it for anything nested. */
+export type ViewSwitcherShared = {
+  /** The list's name ("Server views"): the popover's accessible name. */
+  label: string;
+  /** The list is open (one state for the place; only the active view draws it). */
+  open: boolean;
+  setOpen: (open: boolean) => void;
+  /** This view is the one on screen (kept views stay mounted, hidden). */
+  active: boolean;
+  /** The popover's content: its header and the grouped list of views. */
+  list: ReactNode;
+  /** The worst status among the other views of the list, if any needs attention. */
+  others?: { tone: "problem" | "watch"; count: number; text: string } | null;
+  /** After a choice, the chosen view's title button takes focus once. */
+  takeFocus: () => boolean;
+};
+export const ViewSwitcherContext = createContext<ViewSwitcherShared | null>(null);
+
+/** The view title as a pop-up button ("Health ▾") and, under it, the list of
+ * views in a popover. Enter, Space or Down opens it on the current view;
+ * arrows, Home and End move; Enter or Space chooses; Escape or a click
+ * outside closes it and returns focus to the title. */
+function ViewSwitcher({ id, title, shared }: { id: string; title: string; shared: ViewSwitcherShared }) {
+  const button = useRef<HTMLButtonElement>(null);
+  const popover = useRef<HTMLDivElement>(null);
+  const open = shared.open && shared.active;
+  const latest = useRef(shared);
+  latest.current = shared;
+  const [maxHeight, setMaxHeight] = useState<number | undefined>(undefined);
+  useLayoutEffect(() => {
+    if (!open) return;
+    // Within the window: from under the title to above the window footer.
+    const measure = () => {
+      const top = button.current?.getBoundingClientRect().bottom ?? 0;
+      const footer = document.querySelector<HTMLElement>(".window-statusbar")?.getBoundingClientRect().height ?? 0;
+      setMaxHeight(Math.max(160, Math.floor(window.innerHeight - top - footer - 16)));
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [open]);
+  useFocusScope(popover, {
+    open,
+    onClose: () => latest.current.setOpen(false),
+    returnFocus: () => button.current,
+    initialFocus: () => popover.current?.querySelector<HTMLElement>('[aria-current="page"]'),
+  });
+  useEffect(() => {
+    if (!open) return;
+    // One popover at a time: opening another closes this list, and this list closes the others.
+    window.dispatchEvent(new CustomEvent(POPOVER_EVENT, { detail: `${id}-views` }));
+    const other = (event: Event) => {
+      if ((event as CustomEvent).detail !== `${id}-views`) latest.current.setOpen(false);
+    };
+    const onDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (popover.current?.contains(target) || button.current?.contains(target)) return;
+      latest.current.setOpen(false);
+      // A click on empty space leaves focus nowhere: return it to the title.
+      // A click on a control keeps focus there.
+      requestAnimationFrame(() => {
+        const focused = document.activeElement;
+        if (!focused || focused === document.body || !focused.isConnected) button.current?.focus({ preventScroll: true });
+      });
+    };
+    window.addEventListener(POPOVER_EVENT, other);
+    document.addEventListener("mousedown", onDown);
+    return () => {
+      window.removeEventListener(POPOVER_EVENT, other);
+      document.removeEventListener("mousedown", onDown);
+    };
+  }, [open, id]);
+  useEffect(() => {
+    if (!shared.active || !latest.current.takeFocus()) return;
+    // Only when the choice left focus nowhere (the list closed with its view):
+    // a view that loads late never takes focus from a surface opened since.
+    const focused = document.activeElement;
+    if (!focused || focused === document.body || !focused.isConnected) button.current?.focus({ preventScroll: true });
+  }, [shared.active]);
+  const others = shared.others;
+  return (
+    <>
+      <h2 id={`${id}-title`} tabIndex={-1} className="view-switcher-heading">
+        <button
+          ref={button}
+          type="button"
+          id={`${id}-switcher`}
+          className={`view-switcher${open ? " is-open" : ""}`}
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          aria-controls={open ? `${id}-views` : undefined}
+          title={others ? `${title} (${others.text})` : `Switch ${shared.label.replace(/ views$/, "")} view`}
+          onClick={() => shared.setOpen(!open)}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowDown" && !open) {
+              event.preventDefault();
+              shared.setOpen(true);
+            }
+          }}
+        >
+          <span id={`${id}-title-name`} className="view-switcher-name">{title}</span>
+          <span className="view-switcher-chevron">
+            <span className="view-switcher-chevron-icon" aria-hidden="true"><Icon name="chevron-down" size={12} /></span>
+            {others && (
+              <span className={`view-switcher-marker is-${others.tone}`} title={others.text}>
+                <NavMarker compact tone={others.tone} count={others.count} text={others.text} />
+              </span>
+            )}
+          </span>
+        </button>
+      </h2>
+      {open && (
+        <div
+          ref={popover}
+          id={`${id}-views`}
+          role="dialog"
+          aria-label={shared.label}
+          tabIndex={-1}
+          className="view-switcher-popover"
+          style={maxHeight ? ({ maxHeight: `${maxHeight}px` } as CSSProperties) : undefined}
+        >
+          {shared.list}
+        </div>
+      )}
+    </>
+  );
+}
 
 // ---- Rows: keyboard movement shared by tables, grouped lists and tiles -----
 
@@ -988,6 +1472,26 @@ export type ColumnStore = {
   set: (table: string, prefs: ColumnPrefs | null) => void;
 };
 export const ColumnStoreContext = createContext<ColumnStore | null>(null);
+/** A ColumnStore over one record of layouts by table id (Server and the
+ * shell keep it in the workspace session); clearing a table removes it. */
+export function useColumnStore(
+  columns: Record<string, ColumnPrefs>,
+  setColumns: (update: (all: Record<string, ColumnPrefs>) => Record<string, ColumnPrefs>) => void,
+): ColumnStore {
+  return useMemo(
+    () => ({
+      get: (table) => columns[table],
+      set: (table, prefs) =>
+        setColumns((all) => {
+          const next = { ...all };
+          if (prefs) next[table] = prefs;
+          else delete next[table];
+          return next;
+        }),
+    }),
+    [columns, setColumns],
+  );
+}
 export const COLUMN_MIN = 48;
 export const COLUMN_MAX = 1200;
 /** The flexible column never gets narrower than this. */
@@ -1038,9 +1542,79 @@ export type TableContextAction =
       shortcut?: string;
       danger?: boolean;
       disabled?: boolean;
+      /** Why the item is off (with *disabled*), a second line under its label:
+       * the item stays focusable (aria-disabled) so the reason can be read. */
+      hint?: string;
       onClick: () => void;
     }
   | { divider: true };
+
+/** Row and cell actions share measured placement, dismissal and keyboard focus. */
+export function ContextMenu({ x, y, label, header, opener, actions, onClose }: {
+  x: number;
+  y: number;
+  label: string;
+  header?: ReactNode;
+  opener: HTMLElement | null;
+  actions: TableContextAction[];
+  onClose: () => void;
+}) {
+  const panel = useRef<HTMLDivElement>(null);
+  const [style, setStyle] = useState<CSSProperties>({ left: 8, top: 8, visibility: "hidden" });
+  // A divider is meaningful only between actions; an empty menu draws nothing.
+  const items = actions.filter((action, index) => !("divider" in action) ||
+    (index > 0 && !("divider" in actions[index - 1]) && actions.slice(index + 1).some(item => !("divider" in item))));
+  const open = items.some(action => !("divider" in action));
+  useFocusScope(panel, { open, onClose, menu: true, returnFocus: () => opener });
+  useEffect(() => {
+    if (!open) return;
+    const outside = (event: PointerEvent) => {
+      if (!panel.current?.contains(event.target as Node)) onClose();
+    };
+    document.addEventListener("pointerdown", outside);
+    return () => document.removeEventListener("pointerdown", outside);
+  }, [open, onClose]);
+  useLayoutEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const element = panel.current;
+      if (!element) return;
+      const footer = document.querySelector(".window-statusbar")?.getBoundingClientRect().top;
+      const floor = footer !== undefined && footer >= y ? Math.min(footer, window.innerHeight) : window.innerHeight;
+      // Measure the natural menu within the current viewport, not a height
+      // left over from an earlier, smaller window or an estimated item count.
+      element.style.visibility = "visible";
+      element.style.maxHeight = `${Math.max(0, floor - 16)}px`;
+      const left = Math.max(8, Math.min(x, window.innerWidth - element.offsetWidth - 8));
+      const top = Math.max(8, Math.min(y, floor - element.offsetHeight - 8));
+      setStyle({ left, top, maxHeight: Math.max(0, floor - top - 8) });
+    };
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [open, x, y, actions]);
+  if (!open) return null;
+  return <div ref={panel} className="context-menu" role="menu" aria-label={label} tabIndex={-1}
+    style={{ ...style, minWidth: "min(220px, calc(100vw - 16px))", maxWidth: "min(380px, calc(100vw - 16px))" }}>
+    {header && <div className="context-menu-header">{header}</div>}
+    {items.map((action, index) => {
+      if ("divider" in action) return <div key={`divider-${index}`} className="context-menu-divider" role="separator" />;
+      const explained = !!action.disabled && !!action.hint;
+      return <button key={`${index}-${action.label}`} type="button" role="menuitem"
+        className={[action.danger ? "is-danger" : "", action.hint ? "has-hint" : ""].filter(Boolean).join(" ")}
+        disabled={action.disabled && !explained} aria-disabled={explained ? true : undefined} title={action.hint}
+        onClick={() => { if (!action.disabled) { onClose(); action.onClick(); } }}>
+        {action.icon && <span className="context-menu-icon">{typeof action.icon === "string" && isIconName(action.icon) ? <Icon name={action.icon} /> : action.icon}</span>}
+        {action.hint ? <span className="context-menu-text"><span>{action.label}</span><small className="context-menu-hint">{action.hint}</small></span> : <span>{action.label}</span>}
+        {action.shortcut && <span className="context-menu-shortcut">{action.shortcut}</span>}
+      </button>;
+    })}
+  </div>;
+}
 
 /** Marks *marker* with data-more-left / data-more-right while *scroller* has
  * content scrolled out of view past that edge, for an edge shadow (overlay
@@ -1048,15 +1622,22 @@ export type TableContextAction =
  * edge would otherwise look covered). Attributes are set on the element, so
  * scrolling never re-renders. */
 export function useScrollEdges(scroller: RefObject<HTMLElement>, marker: RefObject<HTMLElement>) {
+  const lastLeft = useRef(-1);
   const mark = useCallback(() => {
     const el = scroller.current;
     const box = marker.current;
     if (!el || !box) return;
+    lastLeft.current = el.scrollLeft;
     const end = el.scrollWidth - el.clientWidth;
     box.toggleAttribute("data-more-left", end > 1 && el.scrollLeft > 1);
     box.toggleAttribute("data-more-right", end > 1 && el.scrollLeft < end - 1);
   }, [scroller, marker]);
-  useLayoutEffect(mark);
+  const onScroll = useCallback(() => {
+    const el = scroller.current;
+    if (!el || el.scrollLeft === lastLeft.current) return;
+    mark();
+  }, [scroller, mark]);
+  useLayoutEffect(mark, [mark]);
   // The scroller can mount later (a table that had no rows): attach to
   // whichever element is current after each render, once.
   const attached = useRef<{ el: HTMLElement; detach: () => void } | null>(null);
@@ -1066,14 +1647,15 @@ export function useScrollEdges(scroller: RefObject<HTMLElement>, marker: RefObje
     attached.current?.detach();
     attached.current = null;
     if (!el) return;
-    el.addEventListener("scroll", mark, { passive: true });
+    mark();
+    el.addEventListener("scroll", onScroll, { passive: true });
     const observer = new ResizeObserver(mark);
     observer.observe(el);
     if (el.firstElementChild) observer.observe(el.firstElementChild);
     attached.current = {
       el,
       detach: () => {
-        el.removeEventListener("scroll", mark);
+        el.removeEventListener("scroll", onScroll);
         observer.disconnect();
       },
     };
@@ -1142,7 +1724,7 @@ export function DataTable<T>({
   multiSelection?: { keys: string[]; select: (keys: string[]) => void };
   /** Collections can select with one click and activate with Enter/double click. */
   onActivate?: (row: T) => void;
-  /** Custom context menu actions for a row (shown above standard Excel-style copy actions). */
+  /** Custom context menu actions for a row (shown above the standard Copy cell action). */
   rowContextMenu?: (
     row: T,
     helpers: {
@@ -1196,9 +1778,10 @@ export function DataTable<T>({
   latestColumns.current = columns;
   const stableRows = useStableRows(rows);
   const sorted = useMemo(() => {
+    if (onSortChange) return stableRows;
     const column = latestColumns.current.find((c) => c.key === sort?.key);
     return sortRows(stableRows, sort, column?.sort);
-  }, [stableRows, sort, signature]);
+  }, [stableRows, sort, signature, onSortChange]);
   const latestRowKey = useRef(rowKey);
   latestRowKey.current = rowKey;
   const rowKeys = useMemo(() => sorted.map((r) => latestRowKey.current(r)), [sorted]);
@@ -1214,6 +1797,7 @@ export function DataTable<T>({
   const wrap = useRef<HTMLDivElement>(null);
   const table = useRef<HTMLTableElement>(null);
   const [frame, setFrame] = useState(0);
+  const [measurable, setMeasurable] = useState(false);
   const [measured, setMeasured] = useState<{
     sig: string;
     natural: Record<string, number>;
@@ -1233,14 +1817,8 @@ export function DataTable<T>({
     key: string;
     col?: Column<T>;
     cellText?: string;
-    rowCells: string[];
     opener: HTMLElement | null;
   } | null>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  useFocusScope(menuRef, {
-    open: !!contextMenu, onClose: () => setContextMenu(null), menu: true,
-    returnFocus: () => contextMenu?.opener,
-  });
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
 
@@ -1260,19 +1838,6 @@ export function DataTable<T>({
     }
   };
 
-  useEffect(() => {
-    if (!contextMenu) return;
-    const handleOutside = (e: MouseEvent) => {
-      const target = e.target as HTMLElement | null;
-      if (!target?.closest(".context-menu")) {
-        setContextMenu(null);
-      }
-    };
-    window.addEventListener("mousedown", handleOutside);
-    return () => {
-      window.removeEventListener("mousedown", handleOutside);
-    };
-  }, [contextMenu]);
   const natural = measured.sig === signature ? measured.natural : {};
   const mins = measured.sig === signature ? measured.min : {};
   const flagWidths = measured.sig === signature ? measured.flags : {};
@@ -1344,8 +1909,12 @@ export function DataTable<T>({
     const el = wrap.current;
     if (!el) return;
     // Full-width details keep this list mounted but hidden. Preserve its last
-    // usable measurements until it is visible again.
-    const update = () => { if (el.clientWidth > 0) setFrame(el.clientWidth); };
+    // usable measurements until it is visible again. Visibility needs its
+    // own state: restoring the same frame must retry a deferred measurement.
+    const update = () => {
+      setMeasurable(el.clientWidth > 0);
+      if (el.clientWidth > 0) setFrame(el.clientWidth);
+    };
     update();
     const observer = new ResizeObserver(update);
     observer.observe(el);
@@ -1363,23 +1932,48 @@ export function DataTable<T>({
   const [view, setView] = useState({ top: 0, height: 760 });
   const [rowHeight, setRowHeight] = useState(density === "compact" ? 28 : 32);
   const [headHeight, setHeadHeight] = useState(32);
-  const first = windowed ? Math.max(0, Math.floor((view.top - headHeight) / rowHeight) - OVERSCAN) : 0;
-  const last = windowed ? Math.min(sorted.length, Math.ceil((view.top + view.height) / rowHeight) + OVERSCAN) : sorted.length;
-  const shown = windowed ? sorted.slice(first, last) : sorted;
+  const computeWindow = (top: number, height: number, total: number, headH: number, rowH: number) => {
+    if (total <= WINDOW_ROWS) return { first: 0, last: total };
+    const rawFirst = Math.max(0, Math.floor((top - headH) / rowH));
+    const visCount = Math.max(1, Math.ceil((height + headH) / rowH));
+    const qFirst = Math.floor(rawFirst / 4) * 4;
+    return {
+      first: Math.max(0, qFirst - OVERSCAN),
+      last: Math.min(total, qFirst + visCount + OVERSCAN),
+    };
+  };
+  const { first, last } = computeWindow(view.top, view.height, sorted.length, headHeight, rowHeight);
+  const windowRef = useRef({ first, last, total: sorted.length, headHeight, rowHeight });
+  windowRef.current = { first, last, total: sorted.length, headHeight, rowHeight };
+  const scrollRaf = useRef<number | null>(null);
+  const lastScrollAt = useRef(0);
+  useEffect(() => () => {
+    if (scrollRaf.current !== null) window.cancelAnimationFrame(scrollRaf.current);
+  }, []);
+  const shown = useMemo(() => windowed ? sorted.slice(first, last) : sorted, [windowed, sorted, first, last]);
 
   // Measure once the rows change: each column's max-content width (table
   // laid out automatically for a moment, before paint) and its header label.
   // A table that cannot be measured then (hidden behind full-width details or
-  // in another view) measures at its next render instead.
+  // in another view) measures when the observer sees it become visible again.
   const hiddenSig = [...hidden].join("\u0000");
   const measuredFor = useRef<{ rows: T[]; signature: string; hidden: string } | null>(null);
+  const seenRows = useRef<WeakSet<object>>(new WeakSet());
   useLayoutEffect(() => {
     const done = measuredFor.current;
-    if (done && done.rows === sorted && done.signature === signature && done.hidden === hiddenSig) return;
+    if (
+      done &&
+      done.signature === signature &&
+      done.hidden === hiddenSig &&
+      (done.rows === shown || shown.every(r => typeof r === "object" && r !== null && seenRows.current.has(r as object)))
+    )
+      return;
     const t = table.current;
     const el = wrap.current;
     if (!t || !el || !t.tHead || el.clientWidth === 0) return;
-    measuredFor.current = { rows: sorted, signature, hidden: hiddenSig };
+    // Only rendered rows were measured. A later page/window, or a newly
+    // visible column, must establish its own numeric and pill minimums.
+    if (!done || done.signature !== signature || done.hidden !== hiddenSig) seenRows.current = new WeakSet();
     const left = el.scrollLeft;
     t.classList.add("is-measuring");
     const next: Record<string, number> = measured.sig === signature ? { ...measured.natural } : {};
@@ -1399,7 +1993,7 @@ export function DataTable<T>({
       if (c.num) min = Math.max(min, full);
       // Neither do flags: a cell's pills keep their size (a name beside them truncates).
       const cells = t.tBodies[0].querySelectorAll<HTMLElement>(`:scope > tr[data-row-key] > td[data-col="${CSS.escape(key)}"]`);
-      for (let i = 0; i < Math.min(cells.length, 120); i++) {
+      for (let i = 0; i < cells.length; i++) {
         const pills = cells[i].querySelectorAll(".pill, .status-pill");
         if (!pills.length) continue;
         let flags = 0;
@@ -1425,8 +2019,12 @@ export function DataTable<T>({
     }
     t.classList.remove("is-measuring");
     el.scrollLeft = left;
+    measuredFor.current = { rows: shown, signature, hidden: hiddenSig };
+    for (const r of shown) {
+      if (typeof r === "object" && r !== null) seenRows.current.add(r as object);
+    }
     if (changed) setMeasured({ sig: signature, natural: next, min: nextMin, flags: nextFlags });
-  });
+  }, [shown, signature, hiddenSig, measurable]);
   // Row and header heights, for the spacers of a long table.
   useLayoutEffect(() => {
     const t = table.current;
@@ -1435,7 +2033,7 @@ export function DataTable<T>({
     if (sample && sample.offsetHeight > 0 && Math.abs(sample.offsetHeight - rowHeight) > 0.5) setRowHeight(sample.offsetHeight);
     const head = t.tHead.offsetHeight;
     if (head && Math.abs(head - headHeight) > 0.5) setHeadHeight(head);
-  });
+  }, [sorted.length > 0, density, signature, measurable]);
 
   // Keyboard: the next row may not be drawn yet in a long table; scroll it
   // into the window, then focus it once it is.
@@ -1448,7 +2046,7 @@ export function DataTable<T>({
     pendingFocus.current = "";
     row.focus({ preventScroll: true });
     row.scrollIntoView({ block: "nearest" });
-  });
+  }, [first, last]);
   function selectRange(key: string, extend: boolean, toggle: boolean) {
     if (!multiSelection) return;
     if (extend) {
@@ -1467,6 +2065,10 @@ export function DataTable<T>({
     if (key === undefined || !selection) return;
     const el = wrap.current;
     if (windowed && el) {
+      if (scrollRaf.current !== null) {
+        window.cancelAnimationFrame(scrollRaf.current);
+        scrollRaf.current = null;
+      }
       const top = headHeight + index * rowHeight;
       if (top < el.scrollTop + headHeight) el.scrollTop = top - headHeight;
       else if (top + rowHeight > el.scrollTop + el.clientHeight) el.scrollTop = top + rowHeight - el.clientHeight;
@@ -1490,19 +2092,15 @@ export function DataTable<T>({
       const tr = e.currentTarget;
       const row = sorted[rowKeys.indexOf(key)];
       if (!row) return;
-      const rowCells = visible.map((c) => {
-        const cellTd = tr.querySelector(`td[data-col="${CSS.escape(c.key)}"]`);
-        if (cellTd) return (cellTd.textContent || "").trim();
-        return c.sort && typeof c.sort === "function" ? String(c.sort(row) ?? "") : "";
-      });
+      const col = visible[0];
+      const cell = col && tr.querySelector(`td[data-col="${CSS.escape(col.key)}"]`);
       setContextMenu({
-        x: Math.min(rect.left + 40, window.innerWidth - 260),
-        y: Math.min(rect.bottom + 4, window.innerHeight - 340),
+        x: rect.left + 40,
+        y: rect.bottom + 4,
         row,
         key,
-        col: visible[0],
-        cellText: rowCells[0],
-        rowCells,
+        col,
+        cellText: cell ? (cell.textContent || "").trim() : undefined,
         opener: tr,
       });
       return;
@@ -1577,9 +2175,12 @@ export function DataTable<T>({
   const customized = Object.keys(userWidths).length > 0 || explicitHidden.size > 0;
 
   // A truncated cell shows its full text on hover.
+  const lastHoverCell = useRef<HTMLElement | null>(null);
   function onHover(e: ReactPointerEvent<HTMLTableSectionElement>) {
+    if (performance.now() - lastScrollAt.current < 100) return;
     const td = (e.target as HTMLElement).closest?.("td");
-    if (!td || (td.hasAttribute("title") && !td.dataset.autoTitle)) return;
+    if (!td || td === lastHoverCell.current || (td.hasAttribute("title") && !td.dataset.autoTitle)) return;
+    lastHoverCell.current = td;
     const clipped =
       td.scrollWidth > td.clientWidth + 1 ||
       [...td.querySelectorAll<HTMLElement>(".cell-truncate, .cell-name > *")].some((x) => x.scrollWidth > x.clientWidth + 1);
@@ -1609,10 +2210,22 @@ export function DataTable<T>({
         onBlurCapture={(e) => {
           if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocused(false);
         }}
-        onScroll={windowed ? (e) => {
-          if (e.currentTarget.clientHeight > 0)
-            setView({ top: e.currentTarget.scrollTop, height: e.currentTarget.clientHeight });
-        } : undefined}
+        onScroll={(e) => {
+          lastScrollAt.current = performance.now();
+          if (!windowed) return;
+          const el = e.currentTarget;
+          if (el.clientHeight <= 0 || scrollRaf.current !== null) return;
+          scrollRaf.current = window.requestAnimationFrame(() => {
+            scrollRaf.current = null;
+            const cur = wrap.current;
+            if (!cur || cur.clientHeight <= 0) return;
+            const { first: curFirst, last: curLast, total, headHeight: hH, rowHeight: rH } = windowRef.current;
+            const next = computeWindow(cur.scrollTop, cur.clientHeight, total, hH, rH);
+            if (next.first !== curFirst || next.last !== curLast) {
+              setView({ top: cur.scrollTop, height: cur.clientHeight });
+            }
+          });
+        }}
       >
         <table
           ref={table}
@@ -1682,6 +2295,10 @@ export function DataTable<T>({
                         if (d && d.key === c.key && e.clientX !== d.x) commitWidth(c, d.width + e.clientX - d.x);
                       }}
                       onPointerCancel={() => {
+                        drag.current = null;
+                        setDragging(null);
+                      }}
+                      onLostPointerCapture={() => {
                         drag.current = null;
                         setDragging(null);
                       }}
@@ -1782,30 +2399,18 @@ export function DataTable<T>({
                     const cellText = td ? (td.textContent || "").trim() : undefined;
 
                     const tr = e.currentTarget;
-                    const rowCells = visible.map((c) => {
-                      const cellTd = tr.querySelector(`td[data-col="${CSS.escape(c.key)}"]`);
-                      if (cellTd) return (cellTd.textContent || "").trim();
-                      return c.sort && typeof c.sort === "function" ? String(c.sort(row) ?? "") : "";
-                    });
-
                     if (selection) {
                       selectRange(key, e.shiftKey, e.metaKey || e.ctrlKey);
                       selection.select(key, false);
                     }
 
-                    const menuW = 260;
-                    const menuH = 340;
-                    const x = Math.max(8, Math.min(e.clientX, window.innerWidth - menuW - 16));
-                    const y = Math.max(8, Math.min(e.clientY, window.innerHeight - menuH - 16));
-
                     setContextMenu({
-                      x,
-                      y,
+                      x: e.clientX,
+                      y: e.clientY,
                       row,
                       key,
                       col,
                       cellText,
-                      rowCells,
                       opener: selection ? tr : document.activeElement as HTMLElement | null,
                     });
                   } : undefined}
@@ -1828,77 +2433,17 @@ export function DataTable<T>({
           </tbody>
         </table>
       </div>
-      {contextMenu && (
-        <div
-          ref={menuRef}
-          className="context-menu"
-          role="menu"
-          aria-label="Row actions"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
-          tabIndex={-1}
-        >
-          {(() => {
-            const customActions = rowContextMenu
-              ? rowContextMenu(contextMenu.row, {
-                  col: contextMenu.col,
-                  cellText: contextMenu.cellText,
-                  copy: copyWithFeedback,
-                  close: () => setContextMenu(null),
-                })
-              : [];
-
-            if (customActions.length === 0) {
-              return (
-                contextMenu.cellText ? (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => void copyWithFeedback(contextMenu.cellText!, "Cell value copied")}
-                  >
-                    <span className="context-menu-icon"><Icon name="copy" /></span>
-                    <span>Copy "{contextMenu.cellText.length > 24 ? contextMenu.cellText.slice(0, 24) + "…" : contextMenu.cellText}"</span>
-                  </button>
-                ) : null
-              );
-            }
-
-            return (
-              <>
-                {customActions.map((action, idx) => {
-                  if ("divider" in action && action.divider) {
-                    return <div key={`div-${idx}`} className="context-menu-divider" />;
-                  }
-                  const a = action as {
-                    label: string;
-                    icon?: ReactNode;
-                    shortcut?: string;
-                    danger?: boolean;
-                    disabled?: boolean;
-                    onClick: () => void;
-                  };
-                  return (
-                    <button
-                      key={a.label}
-                      type="button"
-                      role="menuitem"
-                      className={a.danger ? "is-danger" : ""}
-                      disabled={a.disabled}
-                      onClick={() => {
-                        setContextMenu(null);
-                        a.onClick();
-                      }}
-                    >
-                      {a.icon && <span className="context-menu-icon">{typeof a.icon === "string" && isIconName(a.icon) ? <Icon name={a.icon} /> : a.icon}</span>}
-                      <span>{a.label}</span>
-                      {a.shortcut && <span className="context-menu-shortcut">{a.shortcut}</span>}
-                    </button>
-                  );
-                })}
-              </>
-            );
-          })()}
-        </div>
-      )}
+      {contextMenu && <ContextMenu x={contextMenu.x} y={contextMenu.y} label="Row actions"
+        opener={contextMenu.opener} onClose={() => setContextMenu(null)} actions={[
+          ...(rowContextMenu?.(contextMenu.row, {
+            col: contextMenu.col, cellText: contextMenu.cellText,
+            copy: copyWithFeedback, close: () => setContextMenu(null),
+          }) || []),
+          ...(contextMenu.cellText !== undefined ? [{ divider: true } as const, {
+            label: "Copy cell", icon: "copy",
+            onClick: () => void copyWithFeedback(contextMenu.cellText!, "Cell value copied"),
+          }] : []),
+        ]} />}
       {toast && <div className="table-copy-toast" role="status">{toast}</div>}
     </div>
   );
@@ -2183,11 +2728,13 @@ export function EmptyState({
 /** One line per view (≤ 120 characters), with the notes button at the end.
  * On desktop it stays on one line: a longer text truncates and shows in full
  * on hover. */
-export function SummaryLine({ tone, toneLabel, children, notes, extra }: {
+export function SummaryLine({ tone, toneLabel, children, notes, notesTitle, extra }: {
   tone?: Tone;
   toneLabel?: string;
   children: ReactNode;
   notes?: ReactNode[];
+  /** What the notes are about, on hover (a glossary line for the "notes" button). */
+  notesTitle?: string;
   extra?: ReactNode;
 }) {
   const text = useRef<HTMLSpanElement>(null);
@@ -2196,7 +2743,7 @@ export function SummaryLine({ tone, toneLabel, children, notes, extra }: {
     if (!el) return;
     if (el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1) el.title = (el.textContent || "").trim();
     else el.removeAttribute("title");
-  });
+  }, [children, tone, toneLabel]);
   return (
     <div className="summary-line">
       <p>
@@ -2206,22 +2753,38 @@ export function SummaryLine({ tone, toneLabel, children, notes, extra }: {
         </span>
       </p>
       {extra}
-      {notes && <NotesButton notes={notes} />}
+      {notes && <NotesButton notes={notes} title={notesTitle} />}
     </div>
   );
 }
 
-/** Facts on one line: "Server MySQL 8.4 · Uptime 2 d". */
+/** Facts on one line: "Server MySQL 8.4 · Uptime 2 d". Under 900 px it folds
+ * into a Details disclosure so narrow windows reach the content first. */
 export function FactStrip({ label, facts }: { label: string; facts: [string, ReactNode][] }) {
+  const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(max-width: 900px)").matches);
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const media = window.matchMedia("(max-width: 900px)");
+    const change = () => setNarrow(media.matches);
+    change();
+    media.addEventListener("change", change);
+    return () => media.removeEventListener("change", change);
+  }, []);
   return (
-    <dl className="fact-strip" aria-label={label}>
-      {facts.map(([dt, dd]) => (
-        <div key={dt}>
-          <dt>{dt}</dt>
-          <dd>{dd}</dd>
-        </div>
-      ))}
-    </dl>
+    <details className="fact-strip-details" open={!narrow}>
+      <summary className="fact-strip-summary">
+        <Icon name="disclosure" size={14} />
+        Details
+      </summary>
+      <dl className="fact-strip" aria-label={label}>
+        {facts.map(([dt, dd]) => (
+          <div key={dt}>
+            <dt>{dt}</dt>
+            <dd>{dd}</dd>
+          </div>
+        ))}
+      </dl>
+    </details>
   );
 }
 
@@ -2263,18 +2826,28 @@ export function Disclosure({
 // ---- Confirmation sheet ---------------------------------------------------------
 
 /** A modal confirmation for a consequential action: what happens, Cancel
- * focused first, Escape cancels. */
+ * focused first, Escape cancels. While *busy* the confirm button shows a
+ * spinner and *busyLabel* and keeps focus (aria-disabled), the action row
+ * counts the seconds, and Cancel and Escape send nothing more. With
+ * *onLeave*, after ACTION_SLOW_AFTER_MS without a reply Cancel becomes Close:
+ * the sheet closes and the request goes on (the owner shows its outcome). */
 export function ConfirmSheet({
   eyebrow,
   title,
   description,
   busy,
+  busyLabel,
+  progress,
+  onLeave,
+  leaveText = "It may still be running on the server. Close does not stop it; the outcome shows in the view.",
   confirmLabel,
   confirmTone = "danger",
   confirmDisabled = false,
+  returnFocus,
   onCancel,
   onConfirm,
   secondary,
+  doneLabel,
   children,
   className = "",
 }: {
@@ -2282,22 +2855,48 @@ export function ConfirmSheet({
   title: ReactNode;
   description?: ReactNode;
   busy?: boolean;
+  /** The confirm button's label while busy, present tense ("Sending…", "Deleting…"). */
+  busyLabel?: string;
+  /** What the action row says while busy (default "Waiting for the reply"). */
+  progress?: string;
+  /** Close the sheet while the request goes on (offered when it is slow). */
+  onLeave?: () => void;
+  leaveText?: string;
   confirmLabel: ReactNode;
   confirmTone?: "danger" | "primary";
   /** Keeps the confirm button off until the request is ready (a form inside the sheet). */
   confirmDisabled?: boolean;
+  /** An asynchronous preflight may finish after focus moved from its opener. */
+  returnFocus?: () => HTMLElement | null | undefined;
   onCancel: () => void;
   onConfirm: () => void;
   /** A second way forward, between Cancel and the confirm button (Roll back and close). */
   secondary?: { label: ReactNode; onClick: () => void };
+  /** The request was answered: one button (this label) closes the sheet
+   * through onCancel, after the optional secondary; there is no Cancel. */
+  doneLabel?: ReactNode;
   children?: ReactNode;
   className?: string;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const cancel = useRef<HTMLButtonElement>(null);
+  const done = useRef<HTMLButtonElement>(null);
   const titleId = useId();
   const descId = useId();
-  useFocusScope(dialog, { open: true, onClose: () => { if (!busy) onCancel(); }, initialFocus: () => cancel.current });
+  const leaveId = useId();
+  const since = useSince(!!busy);
+  const elapsed = useElapsed(since);
+  const canLeave = !!busy && !!onLeave && elapsed * 1000 >= ACTION_SLOW_AFTER_MS;
+  const dismiss = () => {
+    if (!busy) onCancel();
+    else if (canLeave) onLeave?.();
+  };
+  useFocusScope(dialog, { open: true, onClose: dismiss, initialFocus: () => cancel.current, returnFocus });
+  const answered = !!doneLabel;
+  // Cancel leaves with the answer: focus moves to the button that closes.
+  useEffect(() => { if (answered) done.current?.focus(); }, [answered]);
+  const busyText = busyLabel || (typeof confirmLabel === "string" ? confirmLabel : "");
+  const reserve = busy ? (typeof confirmLabel === "string" ? confirmLabel : undefined) : busyLabel;
   // Retained list views can be hidden while their selected detail is open.
   // Keep consequential reviews outside those layout ancestors so the native
   // dialog remains visible and Cancel can receive focus.
@@ -2311,8 +2910,9 @@ export function ConfirmSheet({
       aria-describedby={description ? descId : undefined}
       onCancel={(e) => {
         e.preventDefault();
-        if (!busy) onCancel();
+        dismiss();
       }}
+      aria-busy={busy || undefined}
     >
       <div className="dialog-heading">
         <div>
@@ -2329,24 +2929,68 @@ export function ConfirmSheet({
           </p>
         )}
         {children}
+        {/* Slow: what Close does, at the end of the body, never in the action row. */}
+        {canLeave && <p className="sheet-leave-note" id={leaveId}>{leaveText}</p>}
       </div>
       <div className="dialog-actions sheet-actions">
-        <button ref={cancel} type="button" className="button" disabled={busy} onClick={onCancel}>
-          Cancel
-        </button>
-        {secondary && (
-          <button type="button" className="button" disabled={busy} onClick={secondary.onClick}>
-            {secondary.label}
-          </button>
-        )}
-        <button
-          type="button"
-          className={`button ${confirmTone === "danger" ? "danger-solid" : "primary"}`}
-          disabled={busy || confirmDisabled}
-          onClick={onConfirm}
-        >
-          {confirmLabel}
-        </button>
+        {/* Always mounted: announces the send at once (the busy label, read
+            aloud only), then after 1 s a short line (what it waits for, then
+            "No reply yet") with the seconds, drawn but never announced. It
+            stays one line, so the buttons never move. */}
+        <span className="sheet-progress" role="status" aria-live="polite" data-busy={busy || undefined}>
+          {busy && elapsed * 1000 < ACTION_ELAPSED_AFTER_MS && busyText && (
+            <span className="visually-hidden">{busyText}</span>
+          )}
+          {busy && elapsed * 1000 >= ACTION_ELAPSED_AFTER_MS && (
+            <>
+              <span className="sheet-progress-text">{canLeave ? "No reply yet" : progress || "Waiting for the server"}</span>
+              <span className="action-elapsed" aria-hidden="true">{elapsed} s so far</span>
+              {canLeave && <span className="visually-hidden">. {leaveText}</span>}
+            </>
+          )}
+        </span>
+        {/* The buttons share one box (display: contents), so the first is Cancel and the last confirms. */}
+        <div className="sheet-buttons">
+          {answered ? (
+            <>
+              {secondary && (
+                <button type="button" className="button" onClick={secondary.onClick}>
+                  {secondary.label}
+                </button>
+              )}
+              <button ref={done} type="button" className="button primary" onClick={onCancel}>
+                {doneLabel}
+              </button>
+            </>
+          ) : (
+            <>
+              <button ref={cancel} type="button" className="button" disabled={busy && !canLeave} onClick={dismiss}
+                aria-describedby={canLeave ? leaveId : undefined}>
+                {canLeave ? "Close" : "Cancel"}
+              </button>
+              {secondary && (
+                <button type="button" className="button" disabled={busy} onClick={secondary.onClick}>
+                  {secondary.label}
+                </button>
+              )}
+              <button
+                type="button"
+                className={`button action-button ${confirmTone === "danger" ? "danger-solid" : "primary"}${busy ? " is-pending" : ""}`}
+                disabled={!busy && confirmDisabled}
+                aria-disabled={busy || undefined}
+                aria-busy={busy || undefined}
+                onClick={() => { if (!busy && !confirmDisabled) onConfirm(); }}
+              >
+                <span className={`action-button-label${busy ? " is-busy" : ""}`} data-reserve={reserve || undefined}>
+                  <span>
+                    {busy && <span className="spinner" aria-hidden="true" />}
+                    {busy && busyText ? busyText : confirmLabel}
+                  </span>
+                </span>
+              </button>
+            </>
+          )}
+        </div>
       </div>
     </dialog>, document.body
   );
@@ -2511,6 +3155,8 @@ function Inspector({
               if (drag.current) resize(drag.current.width + drag.current.x - e.clientX);
               drag.current = null;
             }}
+            onPointerCancel={() => { drag.current = null; }}
+            onLostPointerCapture={() => { drag.current = null; }}
             onKeyDown={(e) => {
               const step = e.shiftKey ? 64 : 16;
               if (e.key === "ArrowLeft") resize(latest.current + step);
@@ -2586,11 +3232,15 @@ export function ViewLayout({
    * it is greyed, and the view turns its actions off. */
   otherConnection?: string | null;
   /** The read that loads this server, when it is not Refresh (Tuning's
-   * scorecard runs the full analysis). Named in the note and its button. */
-  otherAction?: { label: string; onClick: () => void; disabled?: boolean };
+   * scorecard runs the full analysis). Named in the note and its optional button. */
+  otherAction?: { label: string; onClick?: () => void; disabled?: boolean };
 }) {
   const reportActivity = useContext(ViewActivityContext);
   const backLabel = useContext(ViewBackLabelContext);
+  // The floating list of views: this view's title switches views (never in
+  // the narrow layout, where Back returns to the list, or for a hidden title).
+  const offered = useContext(ViewSwitcherContext);
+  const switcher = offered && !onBack && !hideTitle ? offered : null;
   useEffect(() => {
     reportActivity?.(id, !!loading);
     return () => reportActivity?.(id, false);
@@ -2613,9 +3263,10 @@ export function ViewLayout({
     });
   }
   return (
+    <ViewSwitcherContext.Provider value={null}>
     <section
       className={`server-view ${className}${otherConnection ? " is-other-connection" : ""}`}
-      aria-labelledby={`${id}-title`}
+      aria-labelledby={switcher ? `${id}-title-name` : `${id}-title`}
       data-view={id}
       data-other-connection={otherConnection ? "true" : undefined}
       onKeyDown={(e) => {
@@ -2634,25 +3285,34 @@ export function ViewLayout({
             {backLabel}
           </button>
         )}
-        <div className="view-title">
-          <h2 id={`${id}-title`} tabIndex={-1} className={hideTitle ? "visually-hidden" : undefined}>
-            {title}
-          </h2>
+        <div className={`view-title${switcher ? " has-switcher" : ""}`}>
+          {switcher ? (
+            <ViewSwitcher id={id} title={title} shared={switcher} />
+          ) : (
+            <h2 id={`${id}-title`} tabIndex={-1} className={hideTitle ? "visually-hidden" : undefined}>
+              {title}
+            </h2>
+          )}
           {info && <InfoPopover label={`About ${title}`}>{info}</InfoPopover>}
         </div>
         <div className="toolbar-controls" hidden={detailOpen}>{controls}</div>
         <div className="toolbar-end">
           {onRefresh && (
-            <ToolbarButton
+            // While it reads: a spinner and "Refreshing…", aria-busy, clicks
+            // ignored, and focus stays on it (aria-disabled, not disabled).
+            <ActionButton
               className="toolbar-refresh"
+              labelClassName="toolbar-refresh-label"
               aria-label="Refresh"
               data-action="refresh"
-              disabled={refreshDisabled || loading}
+              icon="refresh"
+              busy={!!loading}
+              busyLabel="Refreshing…"
+              disabled={!loading && !!refreshDisabled}
               onClick={onRefresh}
             >
-              {loading ? <span className="spinner" aria-hidden="true" /> : <Icon name="refresh" size={15} />}
-              <span className="toolbar-refresh-label">Refresh</span>
-            </ToolbarButton>
+              Refresh
+            </ActionButton>
           )}
           {shared && !shared.sheet && !detailBackLabel && (
             <IconButton
@@ -2669,7 +3329,7 @@ export function ViewLayout({
       {status}
       {detailOpen&&otherConnection&&(otherAction
         ? <div className="gate other-connection" role="note"><Icon name="connection" size={18}/><p>From {otherConnection}. {otherAction.label} to load this server.</p>
-            <span className="gate-action"><button type="button" className="button" disabled={otherAction.disabled || loading} onClick={otherAction.onClick}>{otherAction.label}</button></span></div>
+            {otherAction.onClick && <span className="gate-action"><button type="button" className="button" disabled={otherAction.disabled || loading} onClick={otherAction.onClick}>{otherAction.label}</button></span>}</div>
         : <div className="gate other-connection" role="note"><Icon name="connection" size={18}/><p>From {otherConnection}, refresh to load this server.</p></div>)}
       <div
         className={`view-split${open && !shared?.sheet && !detailOpen ? " has-inspector" : ""}`}
@@ -2680,11 +3340,13 @@ export function ViewLayout({
             <div className="gate other-connection" role="note">
               <Icon name="connection" size={18} />
               <p>From {otherConnection}. {otherAction.label} to load this server.</p>
-              <span className="gate-action">
-                <button type="button" className="button" disabled={otherAction.disabled || loading} onClick={otherAction.onClick}>
-                  {otherAction.label}
-                </button>
-              </span>
+              {otherAction.onClick && (
+                <span className="gate-action">
+                  <button type="button" className="button" disabled={otherAction.disabled || loading} onClick={otherAction.onClick}>
+                    {otherAction.label}
+                  </button>
+                </span>
+              )}
             </div>
           ) : otherConnection && (
             <div className="gate other-connection" role="note">
@@ -2711,24 +3373,106 @@ export function ViewLayout({
         )}
       </div>
     </section>
+    </ViewSwitcherContext.Provider>
   );
 }
 
-/** Loading line and error for a view (under the toolbar). */
-export function ViewStatus({ loading, error, children }: { loading?: string; error?: string; children?: ReactNode }) {
-  if (!loading && !error) return null;
+/** Loading line and error for a view (under the toolbar). The loading line
+ * counts the seconds after 1 s (never announced); a slow read says so and
+ * offers *onStop*; an error offers *onRetry* ("Try again", only for a read's
+ * error). A polite live region, always mounted, announces the start of a
+ * read and, with *doneAt* (reads.doneAt), that it was updated. Every new
+ * *loading* text is announced, so it must not change while a read runs (no
+ * counts of seconds in it: this line counts them). */
+export function ViewStatus({
+  loading,
+  error,
+  children,
+  onStop,
+  onRetry,
+  doneAt,
+  startedAt,
+  elapsed: countSeconds = true,
+  slowAfter = 20_000,
+  slowText = "Still waiting for the server.",
+}: {
+  /** What the read does, the same text from its start to its end. */
+  loading?: string;
+  error?: string;
+  children?: ReactNode;
+  /** Stop waiting for the read (reads.stop), offered once it is slow. */
+  onStop?: () => void;
+  /** Read again after a failed read. */
+  onRetry?: () => void;
+  /** When the last read was shown (reads.doneAt): announced as "Updated at …". */
+  doneAt?: number;
+  /** The read owner's start time, preserved while this view is unmounted. */
+  startedAt?: number;
+  /** false to hide elapsed seconds while retaining slow-read feedback. */
+  elapsed?: boolean;
+  /** A read is slow after this long (sampling views add their window). */
+  slowAfter?: number;
+  /** Said once the read is slow (drawn, not announced). */
+  slowText?: string;
+}) {
+  const since = useSince(!!loading);
+  const seconds = useElapsed(loading ? startedAt ?? since : null);
+  const slow = !!loading && seconds * 1000 >= slowAfter;
+  const root = useRef<HTMLDivElement>(null);
+  // Stop and Try again go away when clicked: focus moves to the view's Refresh.
+  const refocus = () => window.requestAnimationFrame(() =>
+    restoreFocus(root.current, "[data-action=refresh]:not(:disabled)"));
+  const [announce, setAnnounce] = useState("");
+  const previous = useRef({ loading, doneAt });
+  const stopped = useRef(false);
+  useEffect(() => {
+    const was = previous.current;
+    previous.current = { loading, doneAt };
+    if (loading && loading !== was.loading) {
+      stopped.current = false;
+      setAnnounce(loading);
+    } else if (doneAt && doneAt !== was.doneAt) setAnnounce(`Updated at ${new Date(doneAt).toLocaleTimeString()}.`);
+    else if (!loading && was.loading && !stopped.current) setAnnounce("");
+  }, [loading, doneAt]);
   return (
-    <div className="view-status">
+    <div ref={root} tabIndex={-1} className={`view-status${!loading && !error ? " is-idle" : ""}`}>
+      <span className="visually-hidden" role="status" aria-live="polite">{announce}</span>
       {loading && (
-        <p role="status" className="capture-status">
-          <span className="spinner" /> {loading}
+        <p className="capture-status">
+          <span className="spinner" aria-hidden="true" /> {loading}
+          {countSeconds && seconds * 1000 >= ACTION_ELAPSED_AFTER_MS && (
+            <span className="action-elapsed" aria-hidden="true">{seconds} s so far</span>
+          )}
+          {slow && <span className="hint">{slowText}</span>}
+          {slow && onStop && (
+            <button
+              type="button"
+              className="text-button view-status-stop"
+              onClick={() => {
+                stopped.current = true;
+                setAnnounce("Stopped waiting. The view keeps what it showed before.");
+                onStop();
+                refocus();
+              }}
+            >
+              Stop
+            </button>
+          )}
         </p>
       )}
       {error && (
-        <p role="alert" className="error">
-          {error}
-          {children}
-        </p>
+        // The alert holds the error alone; Try again sits beside it in the same box.
+        <div className={`error view-status-error${onRetry ? " has-retry" : ""}`}>
+          <p role="alert">
+            {error}
+            {children}
+          </p>
+          {onRetry && (
+            <button type="button" className="text-button view-status-retry" onClick={() => { onRetry(); refocus(); }}>
+              Try again
+            </button>
+          )}
+        </div>
       )}
     </div>
   );

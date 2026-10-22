@@ -90,7 +90,7 @@ import re
 from .connector import ConnectorError, MySQLConnection
 from .live import capture_problem
 # Compatibility exports for one release; these primitives no longer belong to discovery.
-from .perf_common import SERVER_STATE_SQL, _denied, _reason, _server, _version_tuple, text_rows
+from .perf_common import SERVER_STATE_SQL, _denied, _reason, _server, _version_tuple, conn_identity, text_rows
 
 ORDERS = {
     "total": "SUM_TIMER_WAIT",
@@ -428,6 +428,7 @@ def _top(conn, limit=20, schema=None, order="total", table=None, extra_metrics=F
             "(needs a restart) or truncate the table to see them; Performance_schema_digest_lost "
             "counts them too." % ("{:,}".format(count), _ms_text(total_ms)))
     report = {"schema_version": "top-1.0", "engine": engine, "server_version": version,
+              **conn_identity(conn, engine, version),
               "order": order, "limit": limit, "schema": schema, "notes": notes,
               "statements": items,
               "table": {"schema": table[0], "table": table[1]} if table else None,
@@ -747,17 +748,25 @@ def top_report(conn, limit=20, schema=None, order="total", table=None, extra_met
 
 
 def slow_queries_report(conn, min_seconds=1.0, limit=50, source="auto"):
-    """The ``slow-queries-1.0`` JSON envelope: reads from mysql.slow_log or performance_schema."""
+    """Read slow-log executions or digest summaries, retaining source failures in notes."""
+    if isinstance(min_seconds, bool) or not isinstance(min_seconds, (int, float)) \
+            or not 0 <= min_seconds <= 31536000 or min_seconds != min_seconds:
+        raise ValueError("Minimum seconds must be a number from 0 to 31536000.")
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 200:
+        raise ValueError("Choose a limit from 1 to 200.")
+    if source not in ("auto", "slow_log", "pfs", "performance_schema"):
+        raise ValueError("Source must be auto, slow_log, pfs or performance_schema.")
     engine, version, ver, enabled = _server(conn)
-    lim = min(max(int(limit), 1), 200)
     actual_source = "mysql.slow_log"
     statements = []
+    notes = []
 
     if source in ("auto", "slow_log"):
         try:
             sql = ("SELECT start_time, user_host, query_time, lock_time, rows_sent, "
                    "rows_examined, db, sql_text FROM mysql.slow_log "
-                   "ORDER BY start_time DESC LIMIT %d" % lim)
+                   "WHERE query_time >= SEC_TO_TIME(%s) ORDER BY query_time DESC LIMIT %d"
+                   % (repr(float(min_seconds)), limit))
             raw_rows = _rows(conn, sql)
             for i, r in enumerate(raw_rows):
                 r = list(r) + [""] * (8 - len(r))
@@ -790,9 +799,6 @@ def slow_queries_report(conn, min_seconds=1.0, limit=50, source="auto"):
                 db_name = _null(r[6])
                 sql_text = _null(r[7]) or ""
 
-                if min_seconds and total_ms < (float(min_seconds) * 1000.0):
-                    continue
-
                 from .analysis_query import prepare
                 proj = prepare(sql_text)
                 statements.append({
@@ -808,24 +814,30 @@ def slow_queries_report(conn, min_seconds=1.0, limit=50, source="auto"):
                     "rows_examined": rows_examined,
                     "rows_sent": rows_sent,
                     "examined_per_sent": round(rows_examined / float(rows_sent), 2) if rows_sent > 0 else None,
-                    "no_index_used": 1 if rows_examined > 0 and rows_examined > rows_sent * 10 else 0,
-                    "no_good_index_used": 0,
-                    "tmp_disk_tables": 0,
-                    "tmp_tables": 0,
-                    "sort_merge_passes": 0,
-                    "select_full_join": 0,
-                    "select_range_check": 0,
-                    "select_scan": 1 if rows_examined > 1000 and rows_sent < 100 else 0,
+                    # mysql.slow_log has none of these digest counters. Row
+                    # counts cannot establish index use or temporary work.
+                    "no_index_used": None,
+                    "no_good_index_used": None,
+                    "tmp_disk_tables": None,
+                    "tmp_tables": None,
+                    "sort_merge_passes": None,
+                    "select_full_join": None,
+                    "select_range_check": None,
+                    "select_scan": None,
                     "sample_truncated": False,
                     "first_seen": str(start_time) if start_time else None,
                     "last_seen": str(start_time) if start_time else None,
-                    "flags": ["slow_query"] + (["low_selectivity"] if rows_examined > 100 and rows_sent / max(rows_examined, 1) < 0.1 else []),
+                    "flags": ["slow_query"],
                     "capture_problem": proj["problem"] or None,
                     "analysis_sql": proj["sql"] if proj["converted"] else None,
                     "analysis_warning": proj["warning"],
                     "source": "mysql.slow_log",
                 })
-        except Exception:
+        except (ConnectorError, ValueError) as exc:
+            note = "Could not read mysql.slow_log: " + _reason(exc)
+            if _denied(exc):
+                note += " Grant it with: GRANT SELECT ON mysql.slow_log TO <user>;"
+            notes.append(note)
             statements = []
 
     if not statements and source in ("auto", "pfs", "performance_schema"):
@@ -835,19 +847,29 @@ def slow_queries_report(conn, min_seconds=1.0, limit=50, source="auto"):
             pico = int(float(min_seconds) * 1e12)
             where.append("MAX_TIMER_WAIT >= %d" % pico)
         try:
-            _, _, _, _, items = _digest_rows(
-                conn, where, "ORDER BY MAX_TIMER_WAIT DESC LIMIT %d" % lim, exclude=True
+            _, _, has_sample, max_text, items = _digest_rows(
+                conn, where, "ORDER BY MAX_TIMER_WAIT DESC LIMIT %d" % limit, exclude=True
             )
             statements = items
-        except Exception:
+            notes.append("Counters accumulate since the server started or the digest table was last truncated.")
+            if not has_sample:
+                notes.append("This server keeps no sample statement text; digest text shows ? where "
+                             "literal values were, so fill those in before capturing.")
+            elif any(s["sample_truncated"] for s in items):
+                notes.append("Some sample statements reached performance_schema_max_sql_text_length "
+                             "(%d bytes) and may be cut off." % max_text)
+        except (ConnectorError, ValueError) as exc:
+            notes.append("Could not read Performance Schema slow statements: " + _reason(exc))
             statements = []
 
     return {
         "schema_version": "slow-queries-1.0",
         "engine": engine,
         "server_version": version,
+        **conn_identity(conn, engine, version),
         "source": actual_source,
         "min_seconds": min_seconds,
+        "notes": notes,
         "statements": statements,
     }
 
@@ -914,6 +936,7 @@ def running_report(conn, min_seconds=0):
     if source == "performance_schema.processlist" or engine == "mariadb":
         notes.append("Without the PROCESS privilege only your own user's sessions are listed.")
     return {"schema_version": "running-1.0", "engine": engine, "server_version": version,
+            **conn_identity(conn, engine, version),
             "source": source, "min_seconds": min_seconds, "notes": notes,
             "statements": statements}
 

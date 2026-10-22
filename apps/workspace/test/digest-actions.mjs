@@ -1,4 +1,4 @@
-import { chooseConnection } from "./chrome-helpers.mjs";
+import { chooseConnection, chooseView, openAccountSheet, closeAccountSheet } from "./chrome-helpers.mjs";
 // Top statements row actions: Explain, Run analysis (with its confirmation),
 // the parameter path for normalized text, Explain top N with progress and
 // cancel, disabled non-SELECT rows, and session restore of the digest source.
@@ -271,8 +271,8 @@ try {
   await page.locator("label.check-field ::-p-text(Capture optimizer trace)").click();
   await page.keyboard.press("Escape");
   await nav("Workload");
-  await page.locator("#server-nav-top").click();
-  await page.locator("button ::-p-text(Load top statements)").click();
+  await chooseView(page, "top");
+  // Top statements reads when it opens on screen (no Load button).
   await page.waitForSelector(".server-view tbody tr");
   assert.equal((await page.$$(".server-view tbody tr")).length, 6);
 
@@ -303,11 +303,13 @@ try {
   }), true, "unknown privileges are explained visibly outside the button label");
   const refreshPrivileges = async () => {
     const reads = privilegeReads.length;
-    await page.click('button[aria-label="Privileges"]');
-    await page.locator('[role=dialog][aria-label="Privileges"] button ::-p-text(Refresh privileges)').click();
-    await page.waitForFunction(() => !document.querySelector('[role=dialog][aria-label="Privileges"] button')?.disabled);
+    await openAccountSheet(page);
+    await page.locator('dialog.account-sheet button ::-p-text(Refresh privileges)').click();
+    // Busy while reading but still focusable (aria-disabled), so focus stays in the sheet.
+    await page.waitForFunction(() => [...document.querySelectorAll('dialog.account-sheet button')].some(b => b.textContent === "Refresh privileges" && !b.disabled && b.getAttribute("aria-disabled") !== "true"));
+    assert.equal(await page.evaluate(() => !!document.activeElement?.closest("dialog.account-sheet")), true, "focus stays in the sheet after Refresh privileges");
     assert.equal(privilegeReads.length, reads + 1);
-    await page.keyboard.press("Escape");
+    await closeAccountSheet(page);
   };
   // Synthetic definitive answers exercise UI projection, not SQL grants.
   const denied = { state: "denied", grey_out: true, missing: ["TEST_GLOBAL_PRIVILEGE"], reason: "Definitive global denial." };
@@ -318,6 +320,8 @@ try {
     if(selector==='.batch-controls > button')await page.click(".detail-back");
     assert.equal(await page.$eval(selector, e => e.disabled), false);
     assert.equal(await page.$eval(selector, e => e.getAttribute("aria-disabled")), "true");
+    // A denial is not the busy look (kit.css is-busy): no dimming here.
+    assert.equal(await page.$eval(selector, e => getComputedStyle(e).opacity), "1", `${selector} is not dimmed as busy`);
     await page.focus(selector);
     assert.equal(await page.$eval(selector, e => e === document.activeElement), true);
     assert.match(await page.$eval(selector, e => e.getAttribute("aria-describedby").split(" ").map(id => document.getElementById(id)?.textContent).join(" ")), /TEST_GLOBAL_PRIVILEGE/);

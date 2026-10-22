@@ -3,7 +3,8 @@
 // provisional score with no grade; the Full analysis and Parameters measure
 // more. Checks open in the inspector with the evidence first and the
 // statements to copy; the Full analysis tab shows the report. Mocked
-// endpoints only (perf-harness.mjs); screenshots go to PERF_SHOTS when set.
+// endpoints only (perf-harness.mjs); screenshots go to PERF_SHOTS when set
+// (light and dark at 1440, 720 and 390 px).
 import assert from "node:assert/strict";
 import path from "node:path";
 import { load, open, pause } from "./perf-harness.mjs";
@@ -42,8 +43,9 @@ async function shoot(name) {
   if (!shots) return;
   for (const scheme of ["light", "dark"]) {
     await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: scheme }]);
-    for (const width of [1440, 390]) {
-      await page.setViewport({ width, height: width === 390 ? 844 : 1000 });
+    // 720 x 520 is the desktop app's minimum window.
+    for (const width of [1440, 720, 390]) {
+      await page.setViewport({ width, height: width === 390 ? 844 : width === 720 ? 520 : 1000 });
       await pause(250);
       await page.screenshot({ path: path.join(shots, `${name}.${width}.${scheme}.png`), fullPage: true });
     }
@@ -53,6 +55,24 @@ async function shoot(name) {
   await pause(150);
 }
 const coverage = () => text(".tuning-score-coverage");
+const reason = () => text(".tuning-grade-reason");
+const LEGEND = '.tuning-grade-help button[aria-label="How the grade works"]';
+const LEGEND_PANEL = '.popover[role=dialog][aria-label="How the grade works"]';
+// The grade legend, opened from the keyboard: its rows, the current one and its text.
+async function legend() {
+  await page.focus(LEGEND);
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(`${LEGEND_PANEL} .tuning-grade-legend`);
+  const rows = await page.$$eval(`${LEGEND_PANEL} tbody tr`, (els) =>
+    els.map((e) => [e.querySelector("th").textContent, e.querySelector("td").firstChild.textContent]));
+  const current = await page.$$eval(`${LEGEND_PANEL} tbody tr[aria-current=true]`, (els) => els.map((e) => e.dataset.grade));
+  const all = await page.$eval(LEGEND_PANEL, (e) => e.textContent);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction((sel) => !document.querySelector(sel), {}, LEGEND_PANEL);
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "How the grade works", "focus returns to the ⓘ");
+  return { rows, current, all };
+}
+const SCALE = [["A", "90 and above"], ["B", "80 to 89"], ["C", "70 to 79"], ["D", "50 to 69"], ["F", "below 50"]];
 const row = (key) => `.tuning-check[data-check="${key}"]`;
 
 try {
@@ -63,6 +83,7 @@ try {
   assert.equal(await text('.main-nav button[data-place="tuning"]'), "Tuning");
   assert.ok(await page.$(".server-place.is-tuning-place"), "the Tuning place");
   assert.equal(await page.$(".server-place.is-tuning-place .source-list"), null, "no Server sub-navigation");
+  assert.equal(await page.$(".server-place.is-tuning-place .view-switcher"), null, "its title switches no views");
   assert.equal(await page.$(".server-place.is-tuning-place .place-toolbar"), null, "no Server place toolbar");
   assert.equal(await text(".topbar-title"), "Tuning");
   await page.waitForSelector('.window-statusbar [data-status="safety"]');
@@ -72,6 +93,19 @@ try {
   assert.equal(await text(".tuning-score-label"), "Not enough data");
   assert.equal(await text(".tuning-score-number"), "—");
   assert.equal(await text(".tuning-grade"), "No score");
+  assert.equal(await page.$(".tuning-grade-reason"), null, "no grade, no reason line");
+  // What the grades mean: a keyboard-reachable ⓘ beside the grade, from GRADE_SCALE.
+  {
+    const l = await legend();
+    assert.deepEqual(l.rows, SCALE);
+    assert.deepEqual(l.current, [], "no grade yet");
+    assert.match(l.all, /A problem caps the grade at C, whatever the score\./);
+    assert.match(l.all, /No grade \(provisional\) until at least half the checks, and one in each category, are measured/);
+  }
+  // The view's ⓘ explains the score and the grade too.
+  const about = await h.popover("About Tuning");
+  assert.match(about, /Each measured check scores 100 when OK, 50 to watch and 0 for a problem/);
+  assert.match(about, /Grades: A 90 and above, B 80 to 89, C 70 to 79, D 50 to 69, F below 50\. A problem caps the grade at C\./);
   assert.match(await coverage(), /^0 of 19 checks measured/);
   assert.deepEqual(await texts(".tuning-category-name"), [
     "Buffer pool and redo", "Queries", "Connections and threads", "Tables and caches", "Security",
@@ -89,10 +123,12 @@ try {
   await openTuning();
   await page.waitForFunction(() => /^\d+$/.test(document.querySelector(".tuning-score-number")?.firstChild?.textContent || ""));
   assert.equal(await text(".tuning-grade"), "Provisional");
+  assert.equal(await page.$(".tuning-grade-reason"), null, "provisional: the hint says why there is no grade");
   const measured = Number((await coverage()).match(/^(\d+) of 19/)[1]);
   assert.ok(measured >= 10 && measured < 19, `measured ${measured}`);
   assert.equal(await text(".tuning-score-label"), "Problems found");
-  assert.match(await text(".tuning-score-hint"), /Not graded until at least half the checks, and one in each category/);
+  assert.match(await text(".tuning-score-hint"), /Not graded until at least half the checks, and one in each category.*Run the full analysis to grade\./);
+  assert.equal(await page.$(".tuning-score-hint button"), null, "Run full analysis lives in the toolbar only");
   assert.equal(await text('.tuning-category[data-category="security"] .tuning-category-score'), "Not measured");
   // Needs attention lists the buffer pool problem with its measured value.
   assert.ok(await page.$(`${row("buffer_pool")} .status-pill.is-problem`));
@@ -145,7 +181,65 @@ try {
   await page.waitForSelector(row("secure_transport"));
   assert.equal(await page.$eval(row("secure_transport"), (e) => e.dataset.status), "watch");
   assert.match(await text(".tuning-grade"), /^Grade [A-F]$/);
+  // Uncapped: no problem, so the grade is the score's range, and the legend marks it.
+  {
+    const score = Number(await page.$eval(".tuning-score-number", (e) => e.firstChild.textContent));
+    const grade = (await text(".tuning-grade")).slice(-1);
+    assert.doesNotMatch(await coverage(), /problem/);
+    const [, range] = SCALE.find(([g]) => g === grade);
+    assert.equal(await reason(), `Score ${score} is in the ${grade} range, ${range}.`);
+    assert.equal(await page.$eval(".tuning-grade-reason", (e) => e.dataset.capped), "false");
+    const l = await legend();
+    assert.deepEqual(l.current, [grade]);
+    assert.match(l.all, new RegExp(`${grade}${range} · this server`));
+  }
   await shoot("tuning-measured");
+
+  // Capped: one problem (an account without a password) keeps a high score at C,
+  // and the reason line says so beside the grade.
+  const capped = JSON.parse(JSON.stringify(report));
+  Object.assign(capped.findings.find((f) => f.id === "checks.no_password"), { status: "problem", headline: "1" });
+  state.fallback = { status: 200, body: capped };
+  await page.click("#tuning-tab-analysis");
+  await page.waitForSelector("#tuning-panel-analysis .report-look");
+  await page.click(".server-view[data-view=tuning] [data-action=refresh]");
+  for (let i = 0; i < 200 && state.seen.length < 2; i++) await pause(50);
+  assert.equal(state.seen.length, 2, "the Full analysis read again");
+  await page.click("#tuning-tab-scorecard");
+  await page.waitForFunction(() => document.querySelector(".tuning-grade-reason")?.dataset.capped === "true");
+  {
+    const score = Number(await page.$eval(".tuning-score-number", (e) => e.firstChild.textContent));
+    assert.ok(score >= 80, `score ${score}`);
+    assert.equal(await text(".tuning-grade"), "Grade C");
+    assert.equal(await reason(), `Capped at C: 1 check has a problem (${score} is in the ${score >= 90 ? "A" : "B"} range).`);
+    assert.match(await coverage(), /1 problem/);
+    const l = await legend();
+    assert.deepEqual(l.current, ["C"]);
+  }
+  await shoot("tuning-capped");
+  // At the 720 x 520 minimum window the legend ends above the fixed window
+  // footer (which paints over popovers), so its last line stays readable.
+  {
+    await page.setViewport({ width: 720, height: 520 });
+    await pause(250);
+    await page.focus(LEGEND);
+    await page.keyboard.press("Enter");
+    await page.waitForSelector(`${LEGEND_PANEL} .tuning-grade-legend`);
+    await pause(100);
+    const fit = await page.$eval(LEGEND_PANEL, (p) => {
+      const footer = document.querySelector(".window-statusbar").getBoundingClientRect().top;
+      const last = p.querySelector("p:last-of-type");
+      last.scrollIntoView({ block: "nearest" });
+      const r = last.getBoundingClientRect();
+      return { bottom: p.getBoundingClientRect().bottom, footer, hit: p.contains(document.elementFromPoint(r.left + 4, r.bottom - 4)) };
+    });
+    assert.ok(fit.bottom <= fit.footer, `legend ends above the footer (${fit.bottom} vs ${fit.footer})`);
+    assert.ok(fit.hit, "the legend's last line is not under the footer");
+    await page.keyboard.press("Escape");
+    await page.waitForFunction((sel) => !document.querySelector(sel), {}, LEGEND_PANEL);
+    await page.setViewport({ width: 1440, height: 1000 });
+    await pause(150);
+  }
 
   // ---- Full analysis tab: the report, ranked ----
   // Scorecard | Full analysis is the shared segmented control in the header
@@ -168,7 +262,7 @@ try {
 
   // Server opens its own view list again, never the Tuning view.
   await page.click('.main-nav button[data-place="server"]');
-  await page.waitForSelector(".server-place:not(.is-tuning-place) .source-list [aria-current=page]");
+  await h.views();
   assert.equal(await page.$(".server-place:not(.is-tuning-place) .server-view[data-view=tuning]"), null, "Server does not embed Tuning");
   // The command palette keeps "mysql tuning" as a keyword for the place.
   await page.click(".command-trigger");

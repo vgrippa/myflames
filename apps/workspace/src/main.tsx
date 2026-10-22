@@ -29,11 +29,14 @@ import { Home } from "./Home";
 import { SERVER_VIEWS, WORKLOAD_VIEWS, WORKLOAD_KINDS } from "./serverViews";
 import { lazyComponent, preloadWhenIdle } from "./lazy";
 import { connectionKey, connectionLabel, type Bound } from "./binding";
-import type { ReplicationReport, SkipLoop } from "./opsApi";
-import { WindowStatusBar, WindowStatusProvider } from "./kit";
+import { NOT_A_REPLICA, replicationNav, type ReplicationReport, type SkipLoop } from "./opsApi";
+import { clusterNav, NOT_A_CLUSTER, type ClusterFailure, type ClusterReport } from "./clusterApi";
+import { NOT_A_PROXYSQL, proxySqlNav, type ProxySqlFailure, type ProxySqlReport } from "./proxysqlApi";
+import { NavMarker, WindowStatusBar, WindowStatusProvider } from "./kit";
 import { ViewOnScreenContext } from "./viewOnScreen";
 import { PLACES, Sidebar, type Place } from "./Sidebar";
 import {
+  AccountPrivilegesSheet,
   ConnectionPicker,
   Connections,
   SafetyStatus,
@@ -46,7 +49,7 @@ import {
   type ActiveConnection,
 } from "./Connections";
 import type { DigestAction } from "./SlowQueries";
-import { closePopovers, Disclosure, ExportMenu, NotesButton, Popover, Segmented, Select, useFocusScope } from "./kit";
+import { ActionButton, ActionStatus, useAction, closePopovers, ColumnStoreContext, Disclosure, ExportMenu, NotesButton, Popover, Segmented, Select, useColumnStore, useFocusScope, type ColumnPrefs } from "./kit";
 import { changeExact, changeText, matchText, pairTitle, severityText, statusText } from "./compareText";
 import {
   defaultLab,
@@ -79,6 +82,11 @@ const QueryLab = lazyComponent(() => import("./QueryLab").then((m) => m.QueryLab
 void QueryLab.preload().catch(() => {});
 const Server = lazyComponent(() => import("./Server").then((m) => m.Server));
 const ReplicationPlace = lazyComponent(() => import("./ReplicationPlace").then((m) => m.ReplicationPlace));
+const ClusterPlace = lazyComponent(() => import("./ClusterPlace").then((m) => m.ClusterPlace));
+const ProxySqlPlace = lazyComponent(() => import("./ProxySqlPlace").then((m) => m.ProxySqlPlace));
+// Query digest (in the style of pt-query-digest) is a place of its own in the
+// SQL workspace group, after the Query editor; its row actions open the editor.
+const QueryDigestView = lazyComponent(() => import("./QueryDigest").then((m) => m.QueryDigestView));
 const Library = lazyComponent(() => import("./Library").then((m) => m.Library));
 const AuditLog = lazyComponent(() => import("./Audit").then((m) => m.AuditLog));
 const PlanChart = lazyComponent(() => import("./PlanChart").then((m) => m.PlanChart));
@@ -101,8 +109,8 @@ const metrics: [string, string][] = [
 // in either direction; home and server are new. Each maps to one place, except
 // audit: the Audit log is local to this computer and opens from Settings, so
 // no place is "you are here" while it is on screen.
-type Mode = "home" | "inspect" | "compare" | "query" | "server" | "workload" | "replication" | "tuning" | "library" | "teach" | "audit";
-const modes: Mode[] = ["home", "inspect", "compare", "query", "server", "workload", "replication", "tuning", "library", "teach", "audit"];
+type Mode = "home" | "inspect" | "compare" | "query" | "digest" | "diagram" | "server" | "workload" | "replication" | "cluster" | "proxysql" | "tuning" | "library" | "teach" | "audit";
+const modes: Mode[] = ["home", "inspect", "compare", "query", "digest", "diagram", "server", "workload", "replication", "cluster", "proxysql", "tuning", "library", "teach", "audit"];
 function placeOf(mode: Mode): Place | null {
   switch (mode) {
     case "audit":
@@ -121,9 +129,13 @@ function placeOf(mode: Mode): Place | null {
 const PLACE_MODE: Record<Exclude<Place, "plans">, Mode> = {
   home: "home",
   query: "query",
+  digest: "digest",
+  diagram: "diagram",
   server: "server",
   workload: "workload",
   replication: "replication",
+  cluster: "cluster",
+  proxysql: "proxysql",
   tuning: "tuning",
   investigations: "library",
   learn: "teach",
@@ -187,16 +199,23 @@ function ratio(op: Operator) {
   return Math.max(actual / estimate, estimate / actual);
 }
 function App() {
-  const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth > 650);
+  // Width mode and expansion change together. Separate media listeners in
+  // the shell and Sidebar could briefly turn the desktop sidebar into an
+  // open modal drawer on resize, stealing focus from a chart or inspector.
+  const [sidebar, setSidebar] = useState(() => ({
+    open: window.innerWidth > 900,
+    narrow: window.innerWidth <= 900,
+  }));
+  const sidebarOpen = sidebar.open;
+  const setSidebarOpen = (open: boolean) => setSidebar((current) => ({ ...current, open }));
   useEffect(() => {
-    const narrow = window.matchMedia("(max-width: 650px)");
-    const changed = () => setSidebarOpen(!narrow.matches);
+    const narrow = window.matchMedia("(max-width: 900px)");
+    const changed = () => setSidebar({ open: !narrow.matches, narrow: narrow.matches });
     narrow.addEventListener("change", changed);
     return () => narrow.removeEventListener("change", changed);
   }, []);
   const chrome = useRef<HTMLDivElement>(null);
   const [placeActionsWidth, setPlaceActionsWidth] = useState(0);
-  const [replicationBadge, setReplicationBadge] = useState<ReactNode>(null);
   const [replicationLoops, setReplicationLoops] = useState<Bound<SkipLoop[]> | null>(null);
   const [plans, setPlans] = useState<(Plan & { origin?: "sample" })[]>([]);
   const [activeId, setActiveId] = useState("");
@@ -205,11 +224,12 @@ function App() {
   const [mode, setMode] = useState<Mode>("home");
   /** The investigation notebook sheet, opened by Save investigation. */
   const [notebookOpen, setNotebookOpen] = useState(false);
+  const [savedRevision, setSavedRevision] = useState(0);
   // Plans remembers whether it was exploring or comparing.
   const [plansView, setPlansView] = useState<"inspect" | "compare">("inspect");
   useEffect(() => {
     if (mode === "inspect" || mode === "compare") setPlansView(mode);
-    else setNotebookOpen(false);
+    if (mode !== "inspect" && mode !== "compare" && mode !== "library") setNotebookOpen(false);
   }, [mode]);
   const [view, setView] = useState<View>("workbench");
   const [metric, setMetric] = useState("self_time");
@@ -222,8 +242,13 @@ function App() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [importOpen, setImportOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [exporting, setExporting] = useState(false);
+  const [working, setBusy] = useState(false);
+  const sampleAction = useAction();
+  const saveAction = useAction();
+  const busy = working || saveAction.pending;
+  const exportAction = useAction();
+  const exporting = exportAction.pending;
+  const exportRetry = useRef<(() => void) | null>(null);
   const [search, setSearch] = useState("");
   const [beforeId, setBeforeId] = useState("");
   const [afterId, setAfterId] = useState("");
@@ -274,6 +299,39 @@ function App() {
     (report: Bound<ReplicationReport>) => setReplicationShared({ reset: resetKeyRef.current, report }),
     [],
   );
+  // The Cluster place's report, shared the same way: Server's Refresh all
+  // reads it too, and the sidebar names its state from it.
+  // A failed read (the place's Refresh or Refresh all) is kept with the
+  // report it failed over, so that report shows as the last one, greyed,
+  // until a read succeeds through either path.
+  const [clusterShared, setClusterShared] = useState<{ reset: number; report: Bound<ClusterReport> | null; failure?: ClusterFailure }>({ reset: 0, report: null });
+  const clusterReport = clusterShared.reset === resetKey ? clusterShared.report : null;
+  const clusterFailure = clusterShared.reset === resetKey ? clusterShared.failure || null : null;
+  const shareCluster = useCallback(
+    (report: Bound<ClusterReport>) => setClusterShared({ reset: resetKeyRef.current, report }),
+    [],
+  );
+  const failCluster = useCallback(
+    (key: string, message: string) => setClusterShared((s) => {
+      const report = s.reset === resetKeyRef.current && s.report?.key === key ? s.report : null;
+      return { reset: resetKeyRef.current, report, failure: { key, message, over: report } };
+    }),
+    [],
+  );
+  const [proxyShared, setProxyShared] = useState<{ reset: number; report: Bound<ProxySqlReport> | null; failure?: ProxySqlFailure }>({ reset: 0, report: null });
+  const proxyReport = proxyShared.reset === resetKey ? proxyShared.report : null;
+  const proxyFailure = proxyShared.reset === resetKey ? proxyShared.failure || null : null;
+  const shareProxySql = useCallback(
+    (report: Bound<ProxySqlReport>) => setProxyShared({ reset: resetKeyRef.current, report }),
+    [],
+  );
+  const failProxySql = useCallback(
+    (key: string, message: string) => setProxyShared((s) => {
+      const report = s.reset === resetKeyRef.current ? s.report : null;
+      return { reset: resetKeyRef.current, report, failure: { key, message, over: report } };
+    }),
+    [],
+  );
   const [labInitial, setLabInitial] = useState<LabState | undefined>();
   const [labState, setLabState] = useState<LabState>(defaultLab);
   const [teachLesson, setTeachLesson] = useState("");
@@ -294,8 +352,16 @@ function App() {
   const conflictRef = useRef<() => void>(() => {});
   const saverRef = useRef<SessionSaver | null>(null);
   if (!saverRef.current)
-    saverRef.current = new SessionSaver(setSaveStatus, () =>
-      conflictRef.current(),
+    saverRef.current = new SessionSaver(
+      (next) =>
+        setSaveStatus((prev) =>
+          prev.kind === next.kind &&
+          ("at" in prev ? prev.at : "") === ("at" in next ? next.at : "") &&
+          ("message" in prev ? prev.message : "") === ("message" in next ? next.message : "")
+            ? prev
+            : next,
+        ),
+      () => conflictRef.current(),
     );
   const saver = saverRef.current;
   /** Merge part of the restorable lab state (editor, Server tabs, or the
@@ -314,6 +380,21 @@ function App() {
     (slow: SlowState) => patchLab({ slow }),
     [patchLab],
   );
+  // Column widths and hidden columns of the workspace's tables by table id
+  // (Server's views and the Cluster place), one record for both so each
+  // table keeps its own layout and it is saved with the workspace
+  // (slow.columns_v1, validated by session.ts).
+  const [columnLayouts, setColumnLayouts] = useState<Record<string, ColumnPrefs>>({});
+  const columnStore = useColumnStore(columnLayouts, setColumnLayouts);
+  useEffect(() => {
+    setLabState((current) => {
+      const slow = { ...current.slow };
+      if (Object.keys(columnLayouts).length) slow.columns_v1 = columnLayouts;
+      else delete slow.columns_v1;
+      const next = normalizeLab({ ...current, slow });
+      return sameLab(current, next) ? current : next;
+    });
+  }, [columnLayouts]);
   // Saved connections and the connection in use. Its non-secret settings
   // live in the lab state (and so in the saved session); the password is
   // typed for this page only.
@@ -326,6 +407,7 @@ function App() {
   const [activePassword, setActivePassword] = useState("");
   const [connectionNote, setConnectionNote] = useState("");
   const [connectRevision, setConnectRevision] = useState(0);
+  const [passwordRevision, setPasswordRevision] = useState(0);
   const [labBusy, setLabBusy] = useState(false);
   const [batchRunning, setBatchRunning] = useState(false);
   const labRef = useRef<QueryLabHandle | null>(null);
@@ -342,21 +424,30 @@ function App() {
   }, []);
   const labStateRef = useRef(labState);
   labStateRef.current = labState;
-  const refreshProfiles = useCallback(async () => {
-    try {
-      const r = await api<{ items: Profile[]; secret_store?: SecretStore }>(
-        "profiles/list",
-        {},
-      );
-      setProfiles(r.items);
-      setProfilesLoaded(true);
-      setProfilesFailed("");
-      if (r.secret_store) setSecretStore(r.secret_store);
-      return r.items;
-    } catch (e) {
-      setProfilesFailed(message(e));
-      throw e;
-    }
+  const profilesReadSequence = useRef(0);
+  const latestProfilesRead = useRef<Promise<Profile[]> | null>(null);
+  const refreshProfiles = useCallback(() => {
+    const sequence = ++profilesReadSequence.current;
+    const pending: Promise<Profile[]> = (async () => {
+      try {
+        const r = await api<{ items: Profile[]; secret_store?: SecretStore }>("profiles/list", {});
+        // An older success or failure must not replace the latest policy.
+        // Its callers also await the latest read, so a write-policy check or
+        // restored-profile check cannot act on stale connection settings.
+        if (sequence !== profilesReadSequence.current) return latestProfilesRead.current!;
+        setProfiles(r.items);
+        setProfilesLoaded(true);
+        setProfilesFailed("");
+        if (r.secret_store) setSecretStore(r.secret_store);
+        return r.items;
+      } catch (e) {
+        if (sequence !== profilesReadSequence.current) return latestProfilesRead.current!;
+        setProfilesFailed(message(e));
+        throw e;
+      }
+    })();
+    latestProfilesRead.current = pending;
+    return pending;
   }, []);
   // A connection's type or read-only setting can change in another tab or
   // through the CLI: read them again whenever this window comes back.
@@ -394,6 +485,9 @@ function App() {
     recordConnectionUse(id);
     patchLab({ profile_id: id, connection: fields });
     setActivePassword(password);
+    // Use connection is an explicit credential choice, including when Home
+    // supplies a new password for the same endpoint. Reconnect is not.
+    setPasswordRevision(value => value + 1);
     setConnectionNote("");
   }
   function switchConnection(id: string) {
@@ -557,7 +651,9 @@ function App() {
     investigation: { id: savedId || "", name, notes, tags, baseline_id: baseline, dirty },
     query_lab: labState,
   }, plansJson), [plansJson, savedId, name, notes, tags, baseline, dirty, labState.tabs]);
-  useEffect(() => {
+  // QueryLab publishes in a layout effect. Finish handing its snapshot to
+  // the saver in that same commit, before beforeunload/pagehide can run.
+  useLayoutEffect(() => {
     if (ready) saver.update(snapshot, edits);
   }, [snapshot, edits, ready, saver]);
   useEffect(() => {
@@ -610,10 +706,10 @@ function App() {
       })
       .finally(() => setReady(true));
   }, []);
-  const analyze = async (raw: string, capture?: Capture) =>
+  const analyze = async (raw: string, capture?: Capture, signal?: AbortSignal) =>
     api<
       Pick<Plan, "analysis" | "operators" | "query" | "teach_hooks" | "capture">
-    >("analyze", { plan: raw, capture });
+    >("analyze", { plan: raw, capture }, signal);
   /**
    * Analyze and add a plan. `open: false` adds it without leaving the
    * current screen (Explain top N). `wait: true` queues behind an import in
@@ -623,7 +719,7 @@ function App() {
     raw: string,
     planName: string,
     capture?: Capture,
-    options: { open?: boolean; wait?: boolean; cancelled?: () => boolean; origin?: "sample" } = {},
+    options: { open?: boolean; wait?: boolean; cancelled?: () => boolean; origin?: "sample"; signal?: AbortSignal } = {},
   ): Promise<Plan | undefined> {
     if (importLock.current) {
       if (!options.wait) return undefined;
@@ -637,8 +733,8 @@ function App() {
     setBusy(true);
     setError("");
     try {
-      const result = await analyze(raw, capture);
-      if (options.cancelled?.()) return undefined;
+      const result = await analyze(raw, capture, options.signal);
+      if (options.signal?.aborted || options.cancelled?.()) return undefined;
       const plan: Plan & { origin?: "sample" } = {
         ...result,
         raw,
@@ -660,7 +756,7 @@ function App() {
       if (options.origin !== "sample") unsavedWorkspaceContent.current = true;
       return plan;
     } catch (e) {
-      setError(message(e));
+      if (options.origin !== "sample" && !options.signal?.aborted) setError(message(e));
       throw e;
     } finally {
       setBusy(false);
@@ -745,6 +841,8 @@ function App() {
       })),
     };
   }
+  const currentInvestigation = useRef(() => ({ id: savedId, value: makeBundle() }));
+  currentInvestigation.current = () => ({ id: savedId, value: makeBundle() });
   function backupUnsaved() {
     download(
       JSON.stringify(makeBundle(), null, 2),
@@ -807,7 +905,9 @@ function App() {
     setReturnToPlan(false);
     setLabInitial(undefined);
     setLabState(defaultLab());
+    setColumnLayouts({});
     setActivePassword("");
+    setPasswordRevision(value => value + 1);
     setConnectionNote("");
     setTeachLesson("");
     setResetKey((k) => k + 1);
@@ -929,6 +1029,9 @@ function App() {
     // Plans with nothing open was the welcome screen, which is now Home.
     if ((nextMode === "inspect" || nextMode === "compare") && !restoredPlans.length)
       nextMode = "home";
+    // Database diagram was a Server view: a session saved on it opens its place.
+    if (nextMode === "server" && isRecord(state.query_lab) && isRecord(state.query_lab.slow) && state.query_lab.slow.kind === "diagram")
+      nextMode = "diagram";
     const nextView = views.some(([id]) => id === state.view)
       ? (state.view as View)
       : "workbench";
@@ -999,7 +1102,9 @@ function App() {
     setTeachLesson(lessonKey);
     setLabInitial(lab);
     setLabState(lab);
+    setColumnLayouts(lab.slow?.columns_v1 || {});
     setActivePassword("");
+    setPasswordRevision(value => value + 1);
     setConnectionNote("");
     setResetKey((k) => k + 1);
     setServerNavigation(undefined);
@@ -1107,23 +1212,24 @@ function App() {
     }
   }
   async function save(): Promise<boolean> {
-    setBusy(true);
+    // The hook's synchronous guard covers a second click before React renders.
+    if (busy || saveAction.pending) return false;
     setError("");
-    try {
-      const r = await api<Bundle>("investigations/save", {
-        id: savedId,
-        value: makeBundle(),
-      });
-      setSavedId(r.id);
-      setDirty(false);
-      setNotice("Investigation saved on this computer.");
-      return true;
-    } catch (e) {
-      setError(message(e));
+    const snapshot = { id: savedId, value: makeBundle() };
+    const result = await saveAction.run(() => api<Bundle>("investigations/save", snapshot),
+      { pending: "Saving the investigation…", done: "Investigation saved on this computer.", write: true });
+    if (!result.ok) return false;
+    setSavedRevision((n) => n + 1);
+    // Close leaves the request running. A reply for an older notebook must
+    // not mark changes made since then (or another investigation) as saved.
+    if (JSON.stringify(currentInvestigation.current()) !== JSON.stringify(snapshot)) {
+      saveAction.show("done", `Saved “${snapshot.value.name}” on this computer. Later workspace changes remain unsaved.`);
       return false;
-    } finally {
-      setBusy(false);
     }
+    setSavedId(result.value.id);
+    setDirty(false);
+    setNotice("Investigation saved on this computer.");
+    return true;
   }
   function removePlan(id: string) {
     const removed = plans.find((p) => p.id === id);
@@ -1137,45 +1243,28 @@ function App() {
     if (id === baseline) setBaseline(rest[0]?.id || "");
     if (savedId || dirty) setDirty(true);
   }
-  async function exportHtml() {
-    if (mode === "compare") {
-      if (comparison && !loading)
-        download(comparison.html, "myflames-comparison.html", "text/html");
-      return;
-    }
-    if (!active) return;
-    setExporting(true);
-    try {
-      const r = await api<{ html: string }>("report", {
-        plan: active.raw,
-        view,
-      });
-      download(
-        r.html,
-        `${active.name.replace(/\.json$/i, "")}-report.html`,
-        "text/html",
-      );
-    } catch (e) {
-      setError(message(e));
-    } finally {
-      setExporting(false);
-    }
+  function exportHtml() {
+    if (exporting || (mode === "compare" ? !comparison || loading : !active)) return;
+    // Retrying uses the plan and view that failed, even after another is selected.
+    const snapshot: { html: string; name: string } | { raw: string; view: View; name: string } = mode === "compare" ? { html: comparison!.html, name: "myflames-comparison.html" }
+      : { raw: active!.raw, view, name: `${active!.name.replace(/\.json$/i, "")}-report.html` };
+    const run = () => { void exportAction.run(async (signal) => {
+      const html = "html" in snapshot ? snapshot.html : (await api<{ html: string }>("report", { plan: snapshot.raw, view: snapshot.view }, signal)).html;
+      if (!signal.aborted) download(html, snapshot.name, "text/html");
+    }, { pending: "Building the HTML report…", done: `Saved ${snapshot.name}.` }); };
+    exportRetry.current = run;
+    run();
   }
   function exportJson() {
-    const data =
-      mode === "compare"
-        ? loading
-          ? undefined
-          : comparison?.analysis
-        : active && exportedAnalysis(active.analysis);
-    if (data)
-      download(
-        JSON.stringify(data, null, 2),
-        mode === "compare"
-          ? "comparison.json"
-          : `${active!.name.replace(/\.json$/i, "")}-analysis.json`,
-        "application/json",
-      );
+    if (exporting) return;
+    const data = mode === "compare" ? loading ? undefined : comparison?.analysis : active && exportedAnalysis(active.analysis);
+    if (!data) return;
+    const filename = mode === "compare" ? "comparison.json" : `${active!.name.replace(/\.json$/i, "")}-analysis.json`;
+    const run = () => { void exportAction.run(async () => {
+      download(JSON.stringify(data, null, 2), filename, "application/json");
+    }, { pending: "Exporting JSON…", done: `Saved ${filename}.` }); };
+    exportRetry.current = run;
+    run();
   }
   const measured =
     typeof active?.operators[0]?.details.actual_last_row_ms === "number";
@@ -1249,12 +1338,12 @@ function App() {
       setSearch("");
     }
   }
-  const visibleOps =
-    active?.operators.filter((n) =>
-      `${n.label} ${JSON.stringify(n.details)}`
-        .toLowerCase()
-        .includes(search.toLowerCase()),
-    ) || [];
+  const visibleOps = useMemo(() => {
+    const ops = active?.operators || [];
+    const q = search.trim().toLowerCase();
+    if (!q) return ops;
+    return ops.filter((n) => `${n.label} ${JSON.stringify(n.details)}`.toLowerCase().includes(q));
+  }, [active?.operators, search]);
   const place = placeOf(mode);
   const placeLabel = place ? PLACES.find((item) => item.key === place)!.label : "Audit log";
   const activeConnection: ActiveConnection = {
@@ -1293,14 +1382,45 @@ function App() {
     [labState.profile_id, labState.connection, activePassword, safety.type, safety.read_only, safety.endpointMatches, safety.known],
   );
   const [serverNavigation, setServerNavigation] = useState<{ view: ServerKind; n: number } | undefined>(undefined);
+  // The Cluster item names the state of the connection in use once the place
+  // or Refresh all has read it: muted when it is not part of a cluster (still
+  // focusable; the place explains), otherwise the cluster's status. Before
+  // the first read it looks like any other place.
+  const isProxyHere = proxyReport?.key === connectionKey(request) && proxyReport.report.is_proxysql;
+  const shownClusterReport = isProxyHere && clusterReport?.key !== connectionKey(request) ? null : clusterReport;
+  const clusterState = clusterNav(shownClusterReport, connectionKey(request));
+  const clusterMuted = clusterState.state === "none" || isProxyHere;
+  const proxyNav = proxySqlNav(proxyReport, connectionKey(request));
+  const proxyMuted = proxyNav === "none";
+  const proxyNow = proxyNav === "proxysql" && proxyReport && proxyReport.key === connectionKey(request) ? proxyReport.report : null;
+  const proxyIssues = proxyNow && (proxyNow.status === "problem" || proxyNow.status === "watch") ? proxyNow.status_why.length : 0;
+  const proxyBadge = !proxyNow ? null
+    : proxyIssues > 0
+      ? <NavMarker compact tone={proxyNow.status} count={proxyIssues} countTone={proxyNow.status === "problem" ? "danger" : "warn"} text={`ProxySQL ${proxyNow.status === "problem" ? "problem" : "to watch"}, ${proxyIssues} ${proxyIssues === 1 ? "issue" : "issues"}`} />
+      : <NavMarker compact tone={proxyNow.status === "unknown" ? "unknown" : proxyNow.status} text={proxyNow.status === "ok" ? "ProxySQL OK" : proxyNow.status === "unknown" ? "ProxySQL not judged" : `ProxySQL ${proxyNow.status === "problem" ? "problem" : "to watch"}`} />;
+  const clusterBadge = clusterState.state !== "cluster" ? null
+    : clusterState.status === "problem" && clusterState.problems > 0
+      ? <NavMarker compact tone="problem" count={clusterState.problems} countTone="danger" text={clusterState.text} />
+      // Not judged (an account that cannot read): no marker word of its own; the place says why.
+      : <NavMarker compact tone={clusterState.status === "unknown" ? undefined : clusterState.status} text={clusterState.text} />;
+  // Replication names the state of the connection in use the same way, from
+  // the one report the place and Refresh all share: muted when it is not a
+  // replica (a neutral state; Group Replication's own channels do not count),
+  // Unknown only when the status could not be read.
+  const replicationState = replicationNav(replicationReport, connectionKey(request));
+  const replicationMuted = replicationState.state === "none";
+  const replicationBadge = replicationState.state !== "replica" ? null
+    : replicationState.failed > 0
+      ? <NavMarker compact tone="problem" count={replicationState.failed} countTone="danger" text={replicationState.text} />
+      : <NavMarker compact tone={replicationState.tone} text={replicationState.text} />;
   // The places that send to the connection in use (the footer names its
   // write safety there, and only there).
-  const connectionPlace = mode === "query" || mode === "server" || mode === "workload" || mode === "replication" || mode === "tuning";
-  // Server renders Server, Workload and Tuning. While another place is on
-  // screen it keeps the one shown last, so leaving it never swaps (and
-  // mounts) a different view in the hidden place.
-  const serverPlaceRef = useRef<"server" | "workload" | "tuning">(mode === "workload" || mode === "tuning" ? mode : "server");
-  if (mode === "server" || mode === "workload" || mode === "tuning") serverPlaceRef.current = mode;
+  const connectionPlace = mode === "query" || mode === "digest" || mode === "diagram" || mode === "server" || mode === "workload" || mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "tuning";
+  // Server renders Server, Workload, Tuning and Database diagram. While
+  // another place is on screen it keeps the one shown last, so leaving it
+  // never swaps (and mounts) a different view in the hidden place.
+  const serverPlaceRef = useRef<"server" | "workload" | "tuning" | "diagram">(mode === "workload" || mode === "tuning" || mode === "diagram" ? mode : "server");
+  if (mode === "server" || mode === "workload" || mode === "tuning" || mode === "diagram") serverPlaceRef.current = mode;
   const serverPlace = serverPlaceRef.current;
   const serverOnScreen = ready && mode === serverPlace;
   // Server and Replication mount on their first visit and stay mounted,
@@ -1308,10 +1428,16 @@ function App() {
   // (views read on open only while on screen, viewOnScreen.ts). A restored
   // skip loop mounts both at once so its status is found again (that status
   // reads no database). Start fresh and reopening a snapshot start over.
-  const visited = useRef({ key: resetKey, server: false, replication: false });
-  if (visited.current.key !== resetKey) visited.current = { key: resetKey, server: false, replication: false };
+  const visited = useRef({ key: resetKey, server: false, replication: false, cluster: false, proxysql: false, digest: false });
+  if (visited.current.key !== resetKey) visited.current = { key: resetKey, server: false, replication: false, cluster: false, proxysql: false, digest: false };
   if (serverOnScreen) visited.current.server = true;
   if (ready && mode === "replication") visited.current.replication = true;
+  if (ready && mode === "cluster") visited.current.cluster = true;
+  if (ready && mode === "proxysql") visited.current.proxysql = true;
+  if (ready && mode === "digest") visited.current.digest = true;
+  const mountDigest = visited.current.digest;
+  const mountCluster = visited.current.cluster;
+  const mountProxySql = visited.current.proxysql;
   const restoredLoop = labInitial?.slow?.replication_loop_active === true;
   const mountServer = visited.current.server || restoredLoop;
   const mountReplication = visited.current.replication || restoredLoop;
@@ -1319,7 +1445,7 @@ function App() {
   // (Server, Workload and Tuning, Replication, the Plans chart) in idle time,
   // so their first visit does not wait. Nothing mounts or reads a server.
   useEffect(() => {
-    if (ready) preloadWhenIdle([Server, ReplicationPlace, PlanChart, ContextPanel]);
+    if (ready) preloadWhenIdle([Server, ReplicationPlace, ClusterPlace, ProxySqlPlace, QueryDigestView, PlanChart, ContextPanel]);
   }, [ready]);
   // Replication's "How to turn it on" opens Server > Instruments at that row.
   const [instrumentsLink, setInstrumentsLink] = useState<{ row: string; n: number } | null>(null);
@@ -1344,13 +1470,24 @@ function App() {
   /** The Audit log (Settings menu): a screen of its own, not a place. */
   function openAuditLog() {
     setMode("audit");
+    setAuditFocus("");
     setError("");
     setNotice("");
     setRestored(null);
     setConfirmFresh(false);
   }
+  // A reviewed change's result opens the Audit log at its record
+  // (ActionReview.tsx openAuditLog sends "myflames-open-audit" with the id).
+  const [auditFocus, setAuditFocus] = useState("");
+  const openAuditRef = useRef(openAuditLog);
+  openAuditRef.current = openAuditLog;
+  useEffect(() => {
+    const open = (e: Event) => { openAuditRef.current(); setAuditFocus(String((e as CustomEvent).detail || "")); };
+    window.addEventListener("myflames-open-audit", open);
+    return () => window.removeEventListener("myflames-open-audit", open);
+  }, []);
   // The write safety of the connection in use, first in the window footer of
-  // the places that send to it (Query editor, Server, Workload, Replication,
+  // the places that send to it (Query editor, Server, Workload, Replication, Cluster,
   // Tuning). Unknown (not loaded, or the read failed) is Production assumed.
   const safetyStatus = ready && connectionPlace ? (
     <SafetyStatus
@@ -1404,8 +1541,13 @@ function App() {
     setError("");
     setImportOpen(true);
   };
-  const openSample = () =>
-    importPlan(JSON.stringify(example), "sample-plan.json", undefined, { origin: "sample" }).catch(() => {});
+  const openSample = () => {
+    if (busy) return;
+    void sampleAction.run((signal) => importPlan(JSON.stringify(example), "sample-plan.json", undefined, { origin: "sample", signal }),
+      { pending: "Analyzing the sample plan…" });
+  };
+  // Account and privileges of the connection in use (picker and palette).
+  const [accountOpen, setAccountOpen] = useState(false);
   const picker = (
     <ConnectionPicker
       profiles={profiles}
@@ -1413,7 +1555,9 @@ function App() {
       safety={safety}
       onSwitch={switchConnection}
       onPassword={setActivePassword}
+      onPasswordCommit={() => setPasswordRevision(value => value + 1)}
       onManage={manageConnections}
+      onAccount={() => setAccountOpen(true)}
       note={connectionNote}
     />
   );
@@ -1442,16 +1586,19 @@ function App() {
     return () => { appear.disconnect(); observer?.disconnect(); };
   }, [ready, mode, resetKey]);
   const statusScope = mode === "query" ? `query:${connectionKey(request)}:${labState.tab_id}`
-    : (mode === "server" || mode === "workload" || mode === "replication" || mode === "tuning") ? `${mode}:${connectionKey(request)}` : mode === "compare" ? `compare:${beforeId}:${afterId}` : `plans:${activeId}`;
+    : (mode === "digest" || mode === "diagram" || mode === "server" || mode === "workload" || mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "tuning") ? `${mode}:${connectionKey(request)}` : mode === "compare" ? `compare:${beforeId}:${afterId}` : `plans:${activeId}`;
   const plansStatus = mode === "inspect" || mode === "compare";
   const connectedRequest = useRef(request);
   connectedRequest.current = request;
 
+  // The Server and Workload list of views floats (opened from the view's
+  // title) unless the person docked it: only a stored "false" docks it. This
+  // is the one copy of the preference; Server reads it from here.
   const [serverNavCollapsed, setServerNavCollapsed] = useState<boolean>(() => {
     try {
-      return localStorage.getItem("myflames.serverNavCollapsed") === "true";
+      return localStorage.getItem("myflames.serverNavCollapsed") !== "false";
     } catch {
-      return false;
+      return true;
     }
   });
   const toggleServerNavCollapsed = useCallback(() => {
@@ -1464,6 +1611,11 @@ function App() {
     });
   }, []);
   function chooseServerView(viewId: ServerKind) {
+    // Database diagram is a place of its own now: an old route to it opens it.
+    if (viewId === "diagram") {
+      go("diagram");
+      return;
+    }
     if (WORKLOAD_KINDS.includes(viewId)) {
       if (mode !== "workload") go("workload");
     } else {
@@ -1484,14 +1636,18 @@ function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const workspaceCommands = useMemo<WorkspaceCommand[]>(() => [
+  const workspaceCommands: WorkspaceCommand[] = [
     // Places in the sidebar's order, then what belongs to one of them.
     { id: "place-home", label: "Home", group: "Places", icon: "home", run: () => go("home") },
     { id: "place-server", label: "Server", group: "Places", icon: "server", keywords: "database status", run: () => go("server") },
     { id: "place-workload", label: "Workload", group: "Places", icon: "statements", keywords: "queries top processes waits io", run: () => go("workload") },
     { id: "place-replication", label: "Replication", group: "Places", icon: "replication", keywords: "slave replica topology channels lag gtid", run: () => go("replication") },
+    { id: "place-cluster", label: "Cluster", group: "Places", icon: "cluster", keywords: "galera percona xtradb pxc innodb cluster group replication wsrep members quorum router", run: () => go("cluster") },
+    { id: "place-proxysql", label: "ProxySQL", group: "Places", icon: "proxy", keywords: "proxysql proxy hostgroups mysql_servers query rules digest connection pool admin", run: () => go("proxysql") },
     { id: "place-tuning", label: "Tuning", group: "Places", icon: "tuning", keywords: "mysql tuning mariadb tuning advisor health score optimization", run: () => go("tuning") },
     { id: "place-query", label: "Query editor", group: "Places", icon: "query", keywords: "sql run query editor", run: () => go("query") },
+    { id: "place-digest", label: "Query digest", group: "Places", icon: "analysis", keywords: "pt-query-digest digest profile statements workload slow queries", run: () => go("digest") },
+    { id: "place-diagram", label: "Database diagram", group: "Places", icon: "diagram", keywords: "schema diagram er erd mermaid tables relationships foreign keys", run: () => go("diagram") },
     { id: "place-plans", label: "Plans", group: "Places", icon: "plan", keywords: "explain analyze flame graph visual explain", run: () => go("plans") },
     { id: "place-investigations", label: "Investigations", group: "Places", icon: "investigation", keywords: "saved library notes", run: () => go("investigations") },
     { id: "place-learn", label: "Learn", group: "Places", icon: "learn", keywords: "lessons teach algorithms", run: () => go("learn") },
@@ -1517,10 +1673,14 @@ function App() {
     })),
     { id: "action-import", label: "Import plan", group: "Actions", icon: "import", keywords: "open json explain analyze", run: openImport },
     { id: "action-audit", label: "Audit log", group: "Actions", icon: "audit", keywords: "writes changes kill declined refused log", run: openAuditLog },
-  ], [go]);
+    { id: "action-account", label: "Account and privileges", group: "Actions", icon: "key", keywords: "privileges grants roles user account connected as permissions show grants", run: () => setAccountOpen(true) },
+    // Query editor actions on the current tab (QueryLabHandle).
+    { id: "query-rename-tab", label: "Rename query tab", group: "Query editor", icon: "edit", keywords: "rename tab name title query editor", run: () => { go("query"); withLab((lab) => lab.renameTab()); } },
+    { id: "query-format-sql", label: "Format SQL", group: "Query editor", icon: "format", keywords: "format indent beautify pretty sql query editor", run: () => { go("query"); withLab((lab) => lab.formatSql()); } },
+  ];
 
   return (
-    <PrivilegesProvider connection={request} connectRevision={connectRevision + resetKey} connected={ready && safety.known && !!request.host}>
+    <PrivilegesProvider connection={request} connectRevision={connectRevision + resetKey} passwordRevision={passwordRevision} connected={ready && safety.known && !!request.host}>
     <div className={`app${sidebarOpen ? "" : " sidebar-collapsed"}`}>
       <a href="#main" className="skip">
         Skip to content
@@ -1528,6 +1688,7 @@ function App() {
       <Sidebar
         logo={logo}
         expanded={sidebarOpen}
+        narrow={sidebar.narrow}
         onExpandedChange={setSidebarOpen}
         place={ready ? place : null}
         plans={plans}
@@ -1542,12 +1703,17 @@ function App() {
         onRemovePlan={removePlan}
         onToggleRestore={toggleRestore}
         onAuditLog={openAuditLog}
-        placeBadges={{ replication: replicationBadge }}
+        placeBadges={{ replication: replicationBadge, cluster: clusterBadge, proxysql: proxyBadge }}
+        placeMuted={clusterMuted || proxyMuted || replicationMuted ? {
+          ...(replicationMuted ? { replication: NOT_A_REPLICA } : {}),
+          ...(clusterMuted ? { cluster: NOT_A_CLUSTER } : {}),
+          ...(proxyMuted ? { proxysql: NOT_A_PROXYSQL } : {}),
+        } : undefined}
       />
       <div ref={chrome} data-place={place || "audit"} className="workspace" style={{ "--place-actions-width": `${placeActionsWidth}px` } as CSSProperties}>
         <div className="topbar-stack">
         <header className="topbar window-toolbar" aria-label={`${placeLabel} toolbar`}>
-          <button id="window-sidebar-toggle" className="icon-button" aria-label={sidebarOpen ? "Hide sidebar" : "Show sidebar"} title={sidebarOpen ? "Hide sidebar" : "Show sidebar"} aria-expanded={sidebarOpen} aria-controls="workspace-sidebar" onClick={() => setSidebarOpen((open) => !open)}><Icon name="browser" /></button>
+          <button id="window-sidebar-toggle" className="icon-button" aria-label={sidebarOpen ? "Hide sidebar" : "Show sidebar"} title={sidebarOpen ? "Hide sidebar" : "Show sidebar"} aria-expanded={sidebarOpen} aria-controls="workspace-sidebar" onClick={() => setSidebar((current) => ({ ...current, open: !current.open }))}><Icon name="browser" /></button>
           <div className="topbar-title">
             {/* The place is named once. Server and Workload name the place
                 here and the view in its header (switch views from their own
@@ -1555,8 +1721,13 @@ function App() {
                 document in the plan header. Replication and Tuning are one
                 view whose header already says the place name, so it stays
                 here for assistive technology only. */}
-            <strong className={mode === "replication" || mode === "tuning" ? "visually-hidden" : undefined}>{placeLabel}</strong>
+            <strong className={mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "tuning" || mode === "digest" || mode === "diagram" ? "visually-hidden" : undefined}>{placeLabel}</strong>
           </div>
+          {ready && mode === "library" && (
+            <Popover label="About Investigations" className="topbar-info">
+              <p>Saved collections of plans, notes, and tags on this computer.</p>
+            </Popover>
+          )}
           {ready && (mode === "inspect" || mode === "compare") && (
             <div className={`plans-bar${mode === "inspect" && active ? " has-active-plan" : ""}`}>
               <div className="segmented" role="group" aria-label="Plans view">
@@ -1593,7 +1764,7 @@ function App() {
                 {(dirty || savedId) && <span className={`save-state${dirty ? " unsaved" : ""}`}>
                   {dirty ? "Unsaved changes" : "Investigation saved"}
                 </span>}
-                <button className="button small window-save" disabled={busy} onClick={() => { setError(""); setNotebookOpen(true); }} aria-label="Save investigation" title="Save investigation: name, notes and tags" aria-haspopup="dialog" aria-expanded={notebookOpen}>
+                <button className="button small window-save" disabled={busy || saveAction.pending} onClick={() => { setError(""); saveAction.reset(); setNotebookOpen(true); }} aria-label="Save investigation" title="Save investigation: name, notes and tags" aria-haspopup="dialog" aria-expanded={notebookOpen}>
                   <Icon name="investigation" /><span>Save investigation</span>
                 </button>
               </>
@@ -1622,12 +1793,6 @@ function App() {
               <span>Search…</span>
               <kbd>⌘K</kbd>
             </button>
-            <span
-              className="local-badge"
-              title="Runs on this computer. Nothing is sent to an external service."
-            >
-              Local
-            </span>
           </div>
         </header>
         </div>
@@ -1639,8 +1804,12 @@ function App() {
             mode === "server" ||
             mode === "workload" ||
             mode === "replication" ||
+            mode === "cluster" ||
+            mode === "proxysql" ||
             mode === "tuning" ||
             mode === "query" ||
+            mode === "digest" ||
+            mode === "diagram" ||
             mode === "audit" ||
             mode === "home" ||
             mode === "teach"
@@ -1648,7 +1817,7 @@ function App() {
               : undefined
           }
         >
-          {error && !importOpen && (
+          {error && !importOpen && !notebookOpen && (
             <div role="alert" className="error">
               {error}
               <button
@@ -1794,7 +1963,7 @@ function App() {
               onInvestigations={() => go("investigations")}
               onQuery={() => go("query")}
               onServer={() => go("server")}
-              onDiagram={() => chooseServerView("diagram")}
+              onDiagram={() => go("diagram")}
               queryTabs={labState.tabs}
               onOpenQuery={(id) => {
                 withLab((lab) => lab.openTab(id));
@@ -1824,6 +1993,24 @@ function App() {
               </WritePolicyContext.Provider>
             </div>
           )}
+          {ready && mountDigest && (
+            // Mounted on its first visit and kept, hidden, after it: it reads
+            // only while on screen (viewOnScreen.ts), and its rows open the
+            // Query editor, which runs them.
+            <div className="digest-place" hidden={mode !== "digest"}>
+              <ViewOnScreenContext.Provider value={mode === "digest"}>
+                {/* Keyed like Server: Start fresh or another tab's newer
+                    workspace starts it over even when that workspace is on
+                    Query digest too (the wrapper is a sibling of Teach). */}
+                <QueryDigestView
+                  key={resetKey}
+                  connection={request}
+                  onOpenInEditor={(row, rank, from) => openDigest(row, rank, "open", from)}
+                  onExplain={(row, rank, from) => openDigest(row, rank, "explain", from)}
+                />
+              </ViewOnScreenContext.Provider>
+            </div>
+          )}
           {ready && mountServer && (
             <div hidden={!serverOnScreen}>
               <WritePolicyContext.Provider value={writePolicy}>
@@ -1834,8 +2021,8 @@ function App() {
                 onScreen={serverOnScreen}
                 onNavigatePlace={(targetPlace, targetView) => {
                   go(targetPlace);
-                  // Tuning and Replication show their one view; Server and Workload choose theirs.
-                  if (targetPlace !== "tuning" && targetPlace !== "replication") setServerNavigation((n) => ({ view: targetView, n: (n?.n || 0) + 1 }));
+                  // Tuning, Database diagram, Replication and Cluster show their one view; Server and Workload choose theirs.
+                  if (targetPlace !== "tuning" && targetPlace !== "diagram" && targetPlace !== "replication" && targetPlace !== "cluster") setServerNavigation((n) => ({ view: targetView, n: (n?.n || 0) + 1 }));
                 }}
                 navCollapsed={serverNavCollapsed}
                 onToggleNavCollapsed={toggleServerNavCollapsed}
@@ -1850,10 +2037,15 @@ function App() {
                 }}
                 initial={labInitial?.slow}
                 onStateChange={reportSlow}
+                columns={columnLayouts}
+                onColumns={setColumnLayouts}
                 replicationLoops={replicationLoops}
                 onReplicationLoops={setReplicationLoops}
                 replication={replicationReport}
                 onReplication={shareReplication}
+                cluster={clusterReport}
+                onCluster={shareCluster}
+                onClusterFailed={failCluster}
                 onDigest={openDigest}
                 onShowPlan={showPlan}
                 onAddPlan={addPlan}
@@ -1865,10 +2057,9 @@ function App() {
                   go("learn");
                   setLesson(key);
                 }}
-                onOpenSql={(sql) => {
+                onOpenSql={(sql, options) => {
+                  withLab((lab) => lab.openSql(sql, options));
                   go("query");
-                  // After the editor is on screen, so it can take focus and the selection.
-                  window.setTimeout(() => withLab((lab) => lab.openSql(sql)));
                 }}
               />
               </ViewOnScreenContext.Provider>
@@ -1883,18 +2074,20 @@ function App() {
                   connection={request}
                   restoredLoop={restoredLoop}
                   disabled={labBusy}
-                  onBadgeChange={setReplicationBadge}
+                  clusterKind={clusterReport?.key === connectionKey(request) && clusterReport.report.available && clusterReport.report.kind !== "none" ? clusterReport.report.kind : null}
+                  onOpenCluster={() => go("cluster")}
                   onOpenInstruments={openInstrumentsRow}
                   loops={replicationLoops}
                   onLoops={setReplicationLoops}
                   report={replicationReport}
                   onReport={shareReplication}
                   onLoopActivity={(active) => {
-                    patchLab({
-                      slow: {
-                        ...(labState.slow || { kind: "health" }),
-                        replication_loop_active: active,
-                      },
+                    setLabState(current => {
+                      const next = normalizeLab({
+                        ...current,
+                        slow: { ...(current.slow || { kind: "health" }), replication_loop_active: active },
+                      });
+                      return sameLab(current, next) ? current : next;
                     });
                   }}
                 />
@@ -1902,8 +2095,34 @@ function App() {
               </WritePolicyContext.Provider>
             </div>
           )}
-          {ready && mode === "library" && <Library onOpen={openBundle} />}
-          {ready && mode === "audit" && <AuditLog profiles={profiles} />}
+          {ready && mountCluster && (
+            <div hidden={mode !== "cluster"}>
+              <WritePolicyContext.Provider value={writePolicy}>
+              <ViewOnScreenContext.Provider value={mode === "cluster"}>
+              <ColumnStoreContext.Provider value={columnStore}>
+                <ClusterPlace connection={request} disabled={labBusy} report={shownClusterReport} onReport={shareCluster}
+                  failure={clusterFailure} onFailure={failCluster}
+                  onOpenProxySql={() => go("proxysql")} profiles={profiles} onSwitchConnection={switchConnection} />
+              </ColumnStoreContext.Provider>
+              </ViewOnScreenContext.Provider>
+              </WritePolicyContext.Provider>
+            </div>
+          )}
+          {ready && mountProxySql && (
+            <div hidden={mode !== "proxysql"}>
+              <WritePolicyContext.Provider value={writePolicy}>
+              <ViewOnScreenContext.Provider value={mode === "proxysql"}>
+              <ColumnStoreContext.Provider value={columnStore}>
+                <ProxySqlPlace connection={request} disabled={labBusy} report={proxyReport} onReport={shareProxySql}
+                  failure={proxyFailure} onFailure={failProxySql} />
+              </ColumnStoreContext.Provider>
+              </ViewOnScreenContext.Provider>
+              </WritePolicyContext.Provider>
+            </div>
+          )}
+          {ready && mode === "library" && <Library onOpen={openBundle} openPlanCount={plans.length}
+            onSaveInvestigation={() => { setError(""); saveAction.reset(); setNotebookOpen(true); }} savedRevision={savedRevision} />}
+          {ready && mode === "audit" && <AuditLog key={auditFocus} profiles={profiles} focusId={auditFocus} />}
           <Teach
             key={resetKey}
             active={ready && mode === "teach"}
@@ -1931,7 +2150,7 @@ function App() {
                     <button className="text-button" onClick={() => { openImport(); closePopovers(); }}>Import plan</button>
                     <button className="text-button" onClick={() => { setMode("compare"); closePopovers(); }}>Compare plans</button>
                     <button className="text-button" onClick={() => { exportJson(); closePopovers(); }}>Export JSON</button>
-                    <button className="text-button" disabled={exporting} onClick={() => { exportHtml(); closePopovers(); }}>Export HTML</button>
+                    <ActionButton busy={exporting} busyLabel="Exporting…" onClick={exportHtml}>Export HTML</ActionButton>
                     <dl className="plan-menu-facts" aria-label="Plan measurements">
                       <Stat hint="Total plan iterator time" label="Execution time" value={!measured ? "Not executed" : time(summary!.total_time_ms)} />
                       <Stat hint="Estimate across leaf operators" label="Rows examined ≈" value={number(summary!.rows_examined_estimate)} />
@@ -1959,11 +2178,15 @@ function App() {
                 Import a plan, drop an EXPLAIN JSON file here, or capture one
                 in the Query editor.
               </p>
-              <button className="button" disabled={busy} onClick={openSample}>
+              <ActionButton busy={sampleAction.pending} busyLabel="Opening…" disabled={!sampleAction.pending && busy} onClick={openSample}>
                 Explore sample plan
-              </button>
+              </ActionButton>
+              <ActionStatus keepLine state={sampleAction} onStop={sampleAction.cancel} stopLabel="Stop waiting" onRetry={openSample} />
             </section>
           )}
+          {(mode === "inspect" || mode === "compare") && <ActionStatus className="plan-export-status" state={exportAction}
+            onRetry={() => exportRetry.current?.()} onStop={exportAction.cancel} stopLabel="Stop waiting" />}
+          {!notebookOpen && <ActionStatus state={saveAction} />}
           {mode === "inspect" && active && (
             <>
               <div className="plan-screen">
@@ -2141,11 +2364,12 @@ function App() {
               </div>
             </>
           )}
-          {ready && notebookOpen && plans.length > 0 && (mode === "inspect" || mode === "compare") && (
+          {ready && notebookOpen && plans.length > 0 && (mode === "inspect" || mode === "compare" || mode === "library") && (
             <NotebookSheet
               open={notebookOpen}
-              busy={busy}
+              busy={saveAction.pending}
               error={notebookOpen ? error : ""}
+              action={saveAction}
               onClose={() => setNotebookOpen(false)}
               onSave={async () => { if (await save()) setNotebookOpen(false); }}
               onExport={() =>
@@ -2274,7 +2498,7 @@ function App() {
                 </label>
                 </div>
                 {comparison && !loading && (
-                  <PlanExports label="Export comparison" onJson={exportJson} onHtml={exportHtml} />
+                  <PlanExports label="Export comparison" onJson={exportJson} onHtml={exportHtml} exporting={exporting} />
                 )}
               </header>
               {!before || !after || before.id === after.id ? (
@@ -2413,6 +2637,13 @@ function App() {
           }}
         />
       )}
+      {accountOpen && (
+        <AccountPrivilegesSheet
+          name={activeConnection.fields.name || connectionTarget(activeConnection.fields)}
+          hasConnection={!!activeConnection.fields.host}
+          onClose={() => setAccountOpen(false)}
+        />
+      )}
       {commandPaletteOpen && (
         <CommandPalette
           commands={workspaceCommands}
@@ -2426,11 +2657,11 @@ function App() {
 /** Save investigation: the notebook (name, plan name, baseline, tags and
  * notes) in a sheet over the plan, saved with Save. Its fields edit the
  * workspace directly, so Close keeps them as unsaved changes. */
-function NotebookSheet({ open, busy, error, onClose, onSave, onExport, children }: {
-  open: boolean; busy: boolean; error: string; onClose: () => void; onSave: () => void; onExport: () => void; children: ReactNode;
+function NotebookSheet({ open, busy, error, action, onClose, onSave, onExport, children }: {
+  open: boolean; busy: boolean; error: string; action: ReturnType<typeof useAction>; onClose: () => void; onSave: () => void; onExport: () => void; children: ReactNode;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
-  useFocusScope(dialog, { open, onClose: () => { if (!busy) onClose(); } });
+  useFocusScope(dialog, { open, onClose });
   return (
     <dialog
       ref={dialog}
@@ -2439,27 +2670,28 @@ function NotebookSheet({ open, busy, error, onClose, onSave, onExport, children 
       aria-labelledby="notebook-title"
       onCancel={(e) => {
         e.preventDefault();
-        if (!busy) onClose();
+        onClose();
       }}
     >
       <div className="dialog-heading">
         <h2 id="notebook-title">Save investigation</h2>
       </div>
       {error && <div className="error" role="alert">{error}</div>}
-      {children}
+      <fieldset disabled={busy}>{children}</fieldset>
+      <ActionStatus state={action} slowText="No reply yet. Close keeps the save running; its outcome appears in the window." />
       <div className="dialog-actions sheet-actions">
         <button type="button" className="text-button notebook-export" onClick={onExport}>Export investigation bundle</button>
-        <button type="button" className="button" disabled={busy} onClick={onClose}>Close</button>
-        <button type="button" className="button primary" disabled={busy} onClick={onSave}>Save</button>
+        <button type="button" className="button" onClick={onClose}>Close</button>
+        <ActionButton primary busy={busy} busyLabel="Saving…" onClick={onSave}>Save</ActionButton>
       </div>
     </dialog>
   );
 }
 /** A single export home for both Plans modes (the shared Export pull-down). */
 function PlanExports({ label, onJson, onHtml, exporting = false }: { label: string; onJson: () => void; onHtml: () => void; exporting?: boolean }) {
-  return <ExportMenu label={label} className="plan-exports" formats={[
+  return <ExportMenu label={label} className="plan-exports" busy={exporting} busyLabel="Exporting…" formats={[
     { key: "json", label: "JSON", onSelect: onJson },
-    { key: "html", label: "HTML report", onSelect: onHtml, disabled: exporting },
+    { key: "html", label: "HTML report", onSelect: onHtml, busy: exporting, busyLabel: "Exporting…" },
   ]} />;
 }
 

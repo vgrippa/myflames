@@ -15,7 +15,12 @@ function sameOrigin(url, origin) {
   try { const parsed = new URL(url); return parsed.origin === origin && !parsed.username && !parsed.password; }
   catch { return false; }
 }
-const EXTERNAL_HOSTS = new Set(['dev.mysql.com', 'mysql.com', 'www.mysql.com', 'mariadb.org', 'mariadb.com', 'github.com', 'tanelpoder.com']);
+// Official sites the workspace links to. blogs.oracle.com: the MySQL team's
+// posts that Home news lists (myflames/news.py keeps only /mysql/ links).
+// docs.percona.com: Percona's manuals for the variables Parameters links to
+// (myflames/sysvar_docs.py).
+const EXTERNAL_HOSTS = new Set(['dev.mysql.com', 'mysql.com', 'www.mysql.com', 'mariadb.org', 'mariadb.com', 'github.com', 'tanelpoder.com',
+  'blogs.oracle.com', 'docs.percona.com']);
 function externalLink(url) {
   try {
     const parsed = new URL(url);

@@ -12,7 +12,7 @@ deferred.
 
 ## Install and first launch
 
-Download `myflames-3.1.0-macos-arm64.zip` from the GitHub release, unzip it and
+Download `myflames-3.1.1-macos-arm64.zip` from the GitHub release, unzip it and
 move `myflames.app` to Applications. Because the app has no Developer ID
 signature or notarization, macOS blocks the first launch. Control-click the app
 and choose Open, or use System Settings > Privacy & Security > Open Anyway, or
@@ -34,8 +34,10 @@ tests and platform limitations.
 ## Design direction
 
 Home shows the installed engine version and a link to published releases.
-Update status remains **Updates not checked**; this unsigned local build does
-not claim to be current or install updates. SQL editing and plan analysis share
+Update status reads **Not checked yet** until you click **Check for updates**
+in Home's version footer or About myflames; the result and its time are kept in
+the app's own workspace store. The app never installs updates: **Download…**
+saves the release file in your Downloads folder for you to install. SQL editing and plan analysis share
 the **SQL workspace** navigation group. Home also opens Server and the diagram
 canvas, including Mermaid ER imports. The app mark uses saturated flame colors
 on white, while the interface retains system light and dark appearances.
@@ -54,8 +56,9 @@ without becoming a requirement for finding features.
 
 The preview demonstrates navigation, document tabs, full-width statement
 details, filtering, sample query results, a schema view, appearance switching
-and a keyboard command palette. Database diagram remains under Server > Schema
-in the working product; its preview shortcut represents an open document.
+and a keyboard command palette. Database diagram is a place of its own in the
+SQL workspace group of the working product (after Query digest); its preview
+shortcut represents an open document.
 
 ## Current implementation and next features
 

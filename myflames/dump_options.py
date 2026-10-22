@@ -13,41 +13,52 @@ from .server_info import tool_version_tuple
 ENCRYPTION_NOTE = ('These logical dump tools do not offer encryption of local backup files. '
                    'Connection TLS protects transport only. Use an encrypted destination volume '
                    'or encrypt the completed backup with a separate trusted tool.')
+ENCRYPTION_SUMMARY = 'Backup files are not encrypted.'
+#: The form's sections, in order. Each option names its group; a boolean also
+#: names the row its checkbox sits in, so related checkboxes share one label.
+GROUPS = (('performance', 'Performance'), ('contents', 'Contents'), ('output', 'SQL output'),
+          ('compression', 'Compression'))
 _BOOLS = ('triggers', 'routines', 'events', 'hex_blob', 'add_drop_table', 'network_compression', 'chunking')
 _SHELL_NAMES = {'bytes_per_chunk': 'bytesPerChunk', 'max_rate': 'maxRate'}
 
 
 def capability_catalog(tool_name, table_scope=False, tool_version=None):
-    """Describe the bounded options exposed by myflames for this dump tool."""
+    """Describe the bounded options exposed by myflames for this dump tool.
+
+    ``group`` places an option in one of GROUPS; a boolean's ``row`` is the
+    label of the row its checkbox shares with related ones."""
     if tool_name not in ('mysqlsh', 'mysqldump', 'mariadb-dump'):
         raise ValueError('This tool does not support logical dumps in myflames.')
     options = []
 
-    def add(key, label, kind='boolean', default=True, **extra):
-        options.append(dict(key=key, label=label, type=kind, default=default, **extra))
+    def add(key, label, group, kind='boolean', default=True, **extra):
+        options.append(dict(key=key, label=label, group=group, type=kind, default=default, **extra))
 
     if tool_name == 'mysqlsh':
-        add('compression', 'Backup compression', 'choice', 'default',
+        add('chunking', 'Split table data into chunks', 'performance', row='Chunking')
+        add('bytes_per_chunk', 'Chunk size', 'performance', 'text', '', placeholder='64M',
+            hint='Bytes, optionally k, M or G. Blank uses 64M; at least 128k.')
+        add('max_rate', 'Rate limit', 'performance', 'text', '', placeholder='Unlimited', unit='per thread',
+            hint='Bytes per second, optionally k, M or G. Blank or 0 means unlimited.')
+    add('triggers', 'Triggers', 'contents', row='Include')
+    if tool_name != 'mysqlsh' or not table_scope:
+        add('routines', 'Stored routines', 'contents', row='Include')
+        add('events', 'Events', 'contents', row='Include')
+    if tool_name != 'mysqlsh':
+        add('hex_blob', 'Binary values as hexadecimal', 'output', row='Write')
+        add('add_drop_table', 'DROP TABLE before each CREATE TABLE', 'output', row='Write')
+    if tool_name == 'mysqlsh':
+        add('compression', 'Method', 'compression', 'choice', 'default',
             choices=[['default', 'Tool default (Zstandard)'], ['none', 'None'],
                      ['gzip', 'Gzip'], ['zstd', 'Zstandard']])
         if tool_version is None or tool_version_tuple(tool_version) >= (8, 4, 0):
-            add('compression_level', 'Compression level', 'integer', None, min=0, max=22,
-                hint='Requires MySQL Shell 8.4 or newer. Gzip: 0 to 9; Zstandard: 0 to 22.')
-        add('chunking', 'Split table data into chunks')
-        add('bytes_per_chunk', 'Target chunk size', 'text', '',
-            hint='Blank uses 64M. Minimum 128k; requires chunking.')
-        add('max_rate', 'Maximum rate per thread', 'text', '',
-            hint='Bytes per second, optionally k, M or G. Blank or 0 means unlimited.')
-    add('triggers', 'Include triggers')
-    if tool_name != 'mysqlsh' or not table_scope:
-        add('routines', 'Include stored routines')
-        add('events', 'Include events')
-    if tool_name != 'mysqlsh':
-        add('hex_blob', 'Write binary values as hexadecimal')
-        add('add_drop_table', 'Include DROP TABLE before CREATE TABLE')
-        add('network_compression', 'Compress connection traffic', default=False,
-            hint='Compresses traffic from the server. The backup file remains uncompressed.')
-    return {'options': options, 'encryption': {'supported': False, 'message': ENCRYPTION_NOTE}}
+            add('compression_level', 'Level', 'compression', 'integer', None, min=0, max=22,
+                hint='Gzip 0 to 9, Zstandard 0 to 22; needs MySQL Shell 8.4 or newer. Blank uses the tool default.')
+    else:
+        add('network_compression', 'Compress traffic from the server', 'compression', default=False,
+            row='Connection', hint='Only the network traffic; the backup file stays uncompressed.')
+    return {'options': options, 'groups': [list(g) for g in GROUPS],
+            'encryption': {'supported': False, 'summary': ENCRYPTION_SUMMARY, 'message': ENCRYPTION_NOTE}}
 
 
 def _size(value, minimum, label):

@@ -50,7 +50,7 @@ from . import dbops, privileges, dump_options
 from .connector import ConnectorError, MySQLConnection, terminal_text
 from .perf_common import Reader, ident, literal, now
 # Public compatibility export, including MariaDB tool banner precedence.
-from .server_info import detect_flavor, tool_version_tuple as version_tuple, unsupported_version_note
+from .server_info import detect_flavor, product_identity, tool_version_tuple as version_tuple, unsupported_version_note
 
 TAG = '/*myflames:lifecycle*/ '
 TOOLS = ('mysqlsh', 'mysqldump', 'mysqlpump', 'mariadb-dump', 'mariadb-backup',
@@ -294,7 +294,8 @@ def read_server(conn, connection=None):
     variables = {str(row[0]).lower(): row[1] for row in rows if len(row) == 2}
     if not variables.get('version') or not variables.get('hostname') or not variables.get('server_id'):
         raise LifecycleError('Could not establish server identity (version, hostname, server_id).')
-    return {'engine': detect_flavor(variables['version'], variables.get('version_comment')),
+    identity = product_identity(variables['version'], variables.get('version_comment'))
+    return {'engine': identity['engine'], 'flavor': identity['flavor'], 'product': identity['product'],
             'version': variables['version'], 'variables': variables,
             'identity': {key: variables.get(key, '') for key in
                          ('server_uuid', 'server_id', 'hostname', 'port', 'version', 'datadir', 'socket')}}
@@ -338,12 +339,21 @@ def _credentials(connection, tool):
     options = _options(connection)
     if options.get('socket'):
         options['host'] = 'localhost'
+        # mysqlsh selects transport from the last socket/port option. Do not
+        # let the default port override an explicitly reviewed socket.
+        options.pop('port', None)
+    shell = tool.get('name') == 'mysqlsh'
     with tempfile.TemporaryDirectory(prefix='myflames-lifecycle-') as home:
         path = os.path.join(home, 'connection.cnf')
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         try:
             with os.fdopen(fd, 'w', encoding='utf-8') as handle:
                 handle.write('[client]\n')
+                # Shell has no --protocol option: its explicit port selects
+                # TCP, including localhost. Classic clients need this option
+                # because a port read from my.cnf does not force TCP.
+                if not shell:
+                    handle.write('protocol=%s\n' % ('SOCKET' if options.get('socket') else 'TCP'))
                 for key, value in options.items():
                     if key == 'database':
                         continue  # database is a client argument, not a shared tool option
@@ -384,9 +394,9 @@ class LifecycleConnection(MySQLConnection):
             argv += ['--protocol=SOCKET', '--socket=' + self.socket]
         with tempfile.TemporaryDirectory(prefix='myflames-control-') as home:
             try:
-                proc = subprocess.run(argv, input=sql.encode('utf-8'), stdout=subprocess.PIPE,
-                                      stderr=subprocess.PIPE, timeout=timeout or self.query_timeout,
-                                      env=_clean_env(home))
+                from .connector import _run_bounded
+                proc = _run_bounded(argv, input=sql.encode('utf-8'),
+                                    timeout=timeout or self.query_timeout, env=_clean_env(home))
             except subprocess.TimeoutExpired:
                 raise ConnectorError('Lifecycle control query timed out.')
         if proc.returncode:
@@ -1351,6 +1361,8 @@ def prepare_dump(conn, connection, directory, schemas=None, tables=None, threads
                             'Uncompressed table/index estimate; dump size can differ.',
                             estimated_bytes=estimate, available_bytes=available),
               _privileges_check(conn, required)]
+    if tables:
+        checks.append(_tables_check(catalog, schemas[0], tables, _lower_case_table_names(conn)))
     nontransactional = ['%s.%s' % (r[0], r[1]) for r in catalog if r[2] == 'BASE TABLE' and r[3] != 'InnoDB']
     warnings = ['A consistent snapshot protects InnoDB data only. Concurrent DDL must be avoided.',
                 'The reviewed tool options determine whether routines, events and triggers are included. '
@@ -1388,6 +1400,30 @@ def prepare_dump(conn, connection, directory, schemas=None, tables=None, threads
     except ConnectorError:
         checks.append(_verification('long_statements', 'not_checked', 'PROCESS access unavailable.'))
     return _plan('dump', server, connection, request, tool, directory, commands, checks, warnings)
+
+
+def _lower_case_table_names(conn):
+    """@@lower_case_table_names as text, or None when it cannot be read."""
+    try:
+        rows = Reader(conn, TAG).rows('SELECT @@lower_case_table_names')
+    except ConnectorError:
+        return None
+    return str(rows[0][0]) if rows and rows[0] and rows[0][0] is not None else None
+
+
+def _tables_check(catalog, schema, tables, lower_case_table_names=None):
+    """Every named table or view exists in *schema*. Names compare without
+    case only when lower_case_table_names is 1 or 2 (the server then compares
+    them that way too); with 0 or unknown they must match exactly, so a
+    missing `orders` is never taken for an existing `Orders`."""
+    fold = str(lower_case_table_names) in ('1', '2')
+    same = (lambda a, b: a.lower() == b.lower()) if fold else (lambda a, b: a == b)
+    found = [row[1] for row in catalog if len(row) > 1 and row[0] and row[1] and same(row[0], schema)]
+    missing = [name for name in tables if not any(same(name, row) for row in found)]
+    if missing:
+        return _verification('tables', 'failed', 'Not found in %s: %s. Choose tables from its list.'
+                             % (schema, ', '.join(missing)), missing=missing)
+    return _verification('tables', 'passed', 'Every chosen table is in %s.' % schema)
 
 
 def _dump_args(request, tool):

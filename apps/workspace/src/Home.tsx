@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { appVersion, getInvestigation, listInvestigations, time, type Bundle, type InvestigationSummary, type Plan } from "./api";
 import { Icon } from "./components";
+import { CheckForUpdatesButton, UpdateCheckStatus } from "./UpdateCheck";
+import { HomeNews } from "./HomeNews";
 
 import { defaultLab, relativeTime, type QueryTab } from "./session";
 import "./home.css";
@@ -72,7 +74,7 @@ export function Home({
       <nav className="home-workflows" aria-label="Start working">
         <button onClick={onQuery}><Icon name="query" /><span><strong>Write SQL</strong><small>Queries, completion, and table data</small></span><Icon name="disclosure" size={14} /></button>
         <button onClick={onServer}><Icon name="server" /><span><strong>Inspect server</strong><small>Activity, performance, and configuration</small></span><Icon name="disclosure" size={14} /></button>
-        <button onClick={onDiagram}><Icon name="plan" /><span><strong>Database diagram</strong><small>Live schemas and Mermaid diagrams</small></span><Icon name="disclosure" size={14} /></button>
+        <button onClick={onDiagram}><Icon name="diagram" /><span><strong>Database diagram</strong><small>Live schemas and Mermaid diagrams</small></span><Icon name="disclosure" size={14} /></button>
       </nav>
       <div className="home-launcher">
         {connections}
@@ -113,23 +115,30 @@ export function Home({
                 <Icon name="disclosure" size={14} />
               </button>
             </li>)}
-            {onOpenQuery && queries.map((tab) => <li key={`query:${tab.id}`} data-kind="query">
-              <button className="recent-item" onClick={() => onOpenQuery(tab.id)}>
-                <Icon name="query" />
-                <span><strong title={tab.name}>{tab.name}</strong><small title={tab.sql}>
-                  Query · {tab.sql.trim().replace(/\s+/g, " ") || "Empty query"}
-                </small></span>
-                <Icon name="disclosure" size={14} />
-              </button>
-            </li>)}
+            {onOpenQuery && queries.map((tab) => {
+              const snippet = tab.sql.slice(0, 300).trim().replace(/\s+/g, " ");
+              return <li key={`query:${tab.id}`} data-kind="query">
+                <button className="recent-item" onClick={() => onOpenQuery(tab.id)}>
+                  <Icon name="query" />
+                  <span><strong title={tab.name}>{tab.name}</strong><small title={tab.sql.slice(0, 500)}>
+                    Query · {snippet || "Empty query"}
+                  </small></span>
+                  <Icon name="disclosure" size={14} />
+                </button>
+              </li>;
+            })}
           </ul>
           {!!saved?.length && <button className="text-button recent-more" onClick={onInvestigations}>All investigations</button>}
         </section>
+        <HomeNews />
       </div>
       <footer className="home-version" aria-label="Application version">
         <strong>myflames {appVersion() || "development"}</strong>
-        <span>Updates not checked</span>
-        <a href="https://github.com/vgrippa/myflames/releases" target="_blank" rel="noopener noreferrer">View releases</a>
+        <UpdateCheckStatus />
+        <span className="home-version-actions">
+          <CheckForUpdatesButton />
+          <a href="https://github.com/vgrippa/myflames/releases" target="_blank" rel="noopener noreferrer">View releases</a>
+        </span>
       </footer>
     </section>
   );

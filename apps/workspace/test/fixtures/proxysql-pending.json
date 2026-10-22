@@ -1,0 +1,1602 @@
+{
+ "schema_version": "proxysql-1.0",
+ "captured_at": "2026-10-20T14:40:00+00:00",
+ "available": true,
+ "is_proxysql": true,
+ "version": "3.0.11-797-g7c91137",
+ "uptime_s": 187200,
+ "message": null,
+ "status": "ok",
+ "status_why": [
+  "Every hostgroup in use has an ONLINE server."
+ ],
+ "config_readable": true,
+ "servers": [
+  {
+   "key": "rt|10|mf-galera-1|3306",
+   "hostgroup_id": 10,
+   "hostname": "mf-galera-1",
+   "port": 3306,
+   "runtime_status": "ONLINE",
+   "status_detail": null,
+   "settings": {
+    "gtid_port": 0,
+    "weight": 1000,
+    "compression": 0,
+    "max_connections": 1000,
+    "max_replication_lag": 0,
+    "use_ssl": 0,
+    "max_latency_ms": 0,
+    "comment": "galera-1"
+   },
+   "pool": {
+    "conn_used": 0,
+    "conn_free": 1,
+    "conn_ok": 1,
+    "conn_err": 0,
+    "max_conn_used": 1,
+    "queries": 0,
+    "bytes_sent": 400,
+    "bytes_recv": 67,
+    "latency_us": 450,
+    "status": "ONLINE"
+   },
+   "config": {
+    "hostgroup_id": 10,
+    "hostname": "mf-galera-1",
+    "port": 3306,
+    "status": "ONLINE",
+    "weight": 1000,
+    "max_connections": 1000,
+    "max_replication_lag": 0,
+    "use_ssl": 0,
+    "max_latency_ms": 0,
+    "compression": 0,
+    "gtid_port": 0,
+    "comment": "galera-1"
+   },
+   "config_key": [
+    10,
+    "mf-galera-1",
+    3306
+   ],
+   "config_note": null,
+   "monitor": "galera",
+   "role": "writer",
+   "tone": "ok",
+   "why": [],
+   "actions": [
+    {
+     "id": "server_offline_hard",
+     "label": "Set OFFLINE_HARD…",
+     "danger": true,
+     "description": "ProxySQL stops using mf-galera-1:3306 at once: free connections close and a connection a client holds closes when it is used next."
+    },
+    {
+     "id": "server_weight",
+     "label": "Change weight…",
+     "danger": false,
+     "description": "Sets the weight ProxySQL uses to share a hostgroup's traffic between its servers.",
+     "value": {
+      "label": "Weight",
+      "min": 0,
+      "max": 10000000,
+      "current": 1000
+     }
+    }
+   ],
+   "action_notes": [
+    "OFFLINE_SOFT is not offered: the Galera monitor puts the server back in traffic within seconds (seen live on ProxySQL 3.0.11). OFFLINE_HARD or weight 0 takes it out.",
+    "Move to hostgroup is not offered: a row moved out of the Galera monitor's hostgroups stays in its runtime hostgroups (seen live on ProxySQL 3.0.11)."
+   ]
+  },
+  {
+   "key": "rt|10|mf-galera-2|3306",
+   "hostgroup_id": 10,
+   "hostname": "mf-galera-2",
+   "port": 3306,
+   "runtime_status": "SHUNNED",
+   "status_detail": "standby writer",
+   "settings": {
+    "gtid_port": 0,
+    "weight": 100,
+    "compression": 0,
+    "max_connections": 1000,
+    "max_replication_lag": 0,
+    "use_ssl": 0,
+    "max_latency_ms": 0,
+    "comment": "galera-2"
+   },
+   "pool": {
+    "conn_used": 1,
+    "conn_free": 1,
+    "conn_ok": 1,
+    "conn_err": 0,
+    "max_conn_used": 1,
+    "queries": 10,
+    "bytes_sent": 400,
+    "bytes_recv": 67,
+    "latency_us": 450,
+    "status": "SHUNNED"
+   },
+   "config": {
+    "hostgroup_id": 10,
+    "hostname": "mf-galera-2",
+    "port": 3306,
+    "status": "ONLINE",
+    "weight": 100,
+    "max_connections": 1000,
+    "max_replication_lag": 0,
+    "use_ssl": 0,
+    "max_latency_ms": 0,
+    "compression": 0,
+    "gtid_port": 0,
+    "comment": "galera-2"
+   },
+   "config_key": [
+    10,
+    "mf-galera-2",
+    3306
+   ],
+   "config_note": null,
+   "monitor": "galera",
+   "role": "writer",
+   "tone": "ok",
+   "why": [
+    "SHUNNED in writer hostgroup 10 and ONLINE in backup writer hostgroup 11: the Galera monitor keeps the writers above max_writers (1) there."
+   ],
+   "actions": [
+    {
+     "id": "server_offline_hard",
+     "label": "Set OFFLINE_HARD…",
+     "danger": true,
+     "description": "ProxySQL stops using mf-galera-2:3306 at once: free connections close and a connection a client holds closes when it is used next."
+    },
+    {
+     "id": "server_weight",
+     "label": "Change weight…",
+     "danger": false,
+     "description": "Sets the weight ProxySQL uses to share a hostgroup's traffic between its servers.",
+     "value": {
+      "label": "Weight",
+      "min": 0,
+      "max": 10000000,
+      "current": 100
+     }
+    }
+   ],
+   "action_notes": [
+    "OFFLINE_SOFT is not offered: the Galera monitor puts the server back in traffic within seconds (seen live on ProxySQL 3.0.11). OFFLINE_HARD or weight 0 takes it out.",
+    "Move to hostgroup is not offered: a row moved out of the Galera monitor's hostgroups stays in its runtime hostgroups (seen live on ProxySQL 3.0.11)."
+   ]
+  },
+  {
+   "key": "rt|10|mf-galera-3|3306",
+   "hostgroup_id": 10,
+   "hostname": "mf-galera-3",
+   "port": 3306,
+   "runtime_status": "SHUNNED",
+   "status_detail": "standby writer",
+   "settings": {
+    "gtid_port": 0,
+    "weight": 100,
+    "compression": 0,
+    "max_connections": 1000,
+    "max_replication_lag": 0,
+    "use_ssl": 0,
+    "max_latency_ms": 0,
+    "comment": "galera-3"
+   },
+   "pool": {
+    "conn_used": 1,
+    "conn_free": 1,
+    "conn_ok": 1,
+    "conn_err": 0,
+    "max_conn_used": 1,
+    "queries": 40,
+    "bytes_sent": 400,
+    "bytes_recv": 67,
+    "latency_us": 450,
+    "status": "SHUNNED"
+   },
+   "config": {
+    "hostgroup_id": 10,
+    "hostname": "mf-galera-3",
+    "port": 3306,
+    "status": "ONLINE",
+    "weight": 100,
+    "max_connections": 1000,
+    "max_replication_lag": 0,
+    "use_ssl": 0,
+    "max_latency_ms": 0,
+    "compression": 0,
+    "gtid_port": 0,
+    "comment": "galera-3"
+   },
+   "config_key": [
+    10,
+    "mf-galera-3",
+    3306
+   ],
+   "config_note": null,
+   "monitor": "galera",
+   "role": "writer",
+   "tone": "ok",
+   "why": [
+    "SHUNNED in writer hostgroup 10 and ONLINE in backup writer hostgroup 11: the Galera monitor keeps the writers above max_writers (1) there."
+   ],
+   "actions": [
+    {
+     "id": "server_offline_hard",
+     "label": "Set OFFLINE_HARD…",
+     "danger": true,
+     "description": "ProxySQL stops using mf-galera-3:3306 at once: free connections close and a connection a client holds closes when it is used next."
+    },
+    {
+     "id": "server_weight",
+     "label": "Change weight…",
+     "danger": false,
+     "description": "Sets the weight ProxySQL uses to share a hostgroup's traffic between its servers.",
+     "value": {
+      "label": "Weight",
+      "min": 0,
+      "max": 10000000,
+      "current": 100
+     }
+    }
+   ],
+   "action_notes": [
+    "OFFLINE_SOFT is not offered: the Galera monitor puts the server back in traffic within seconds (seen live on ProxySQL 3.0.11). OFFLINE_HARD or weight 0 takes it out.",
+    "Move to hostgroup is not offered: a row moved out of the Galera monitor's hostgroups stays in its runtime hostgroups (seen live on ProxySQL 3.0.11)."
+   ]
+  },
+  {
+   "key": "rt|11|mf-galera-2|3306",
+   "hostgroup_id": 11,
+   "hostname": "mf-galera-2",
+   "port": 3306,
+   "runtime_status": "ONLINE",
+   "status_detail": null,
+   "settings": {
+    "gtid_port": 0,
+    "weight": 100,
+    "compression": 0,
+    "max_connections": 1000,
+    "max_replication_lag": 0,
+    "use_ssl": 0,
+    "max_latency_ms": 0,
+    "comment": "galera-2"
+   },
+   "pool": {
+    "conn_used": 2,
+    "conn_free": 1,
+    "conn_ok": 1,
+    "conn_err": 0,
+    "max_conn_used": 1,
+    "queries": 20,
+    "bytes_sent": 400,
+    "bytes_recv": 67,
+    "latency_us": 450,
+    "status": "ONLINE"
+   },
+   "config": {
+    "hostgroup_id": 10,
+    "hostname": "mf-galera-2",
+    "port": 3306,
+    "status": "ONLINE",
+    "weight": 100,
+    "max_connections": 1000,
+    "max_replication_lag": 0,
+    "use_ssl": 0,
+    "max_latency_ms": 0,
+    "compression": 0,
+    "gtid_port": 0,
+    "comment": "galera-2"
+   },
+   "config_key": [
+    10,
+    "mf-galera-2",
+    3306
+   ],
+   "config_note": null,
+   "monitor": "galera",
+   "role": "backup writer",
+   "tone": "ok",
+   "why": [],
+   "actions": [
+    {
+     "id": "server_offline_hard",
+     "label": "Set OFFLINE_HARD…",
+     "danger": true,
+     "description": "ProxySQL stops using mf-galera-2:3306 at once: free connections close and a connection a client holds closes when it is used next."
+    },
+    {
+     "id": "server_weight",
+     "label": "Change weight…",
+     "danger": false,
+     "description": "Sets the weight ProxySQL uses to share a hostgroup's traffic between its servers.",
+     "value": {
+      "label": "Weight",
+      "min": 0,
+      "max": 10000000,
+      "current": 100
+     }
+    }
+   ],
+   "action_notes": [
+    "OFFLINE_SOFT is not offered: the Galera monitor puts the server back in traffic within seconds (seen live on ProxySQL 3.0.11). OFFLINE_HARD or weight 0 takes it out.",
+    "Move to hostgroup is not offered: a row moved out of the Galera monitor's hostgroups stays in its runtime hostgroups (seen live on ProxySQL 3.0.11)."
+   ]
+  },
+  {
+   "key": "rt|11|mf-galera-3|3306",
+   "hostgroup_id": 11,
+   "hostname": "mf-galera-3",
+   "port": 3306,
+   "runtime_status": "ONLINE",
+   "status_detail": null,
+   "settings": {
+    "gtid_port": 0,
+    "weight": 100,
+    "compression": 0,
+    "max_connections": 1000,
+    "max_replication_lag": 0,
+    "use_ssl": 0,
+    "max_latency_ms": 0,
+    "comment": "galera-3"
+   },
+   "pool": {
+    "conn_used": 2,
+    "conn_free": 1,
+    "conn_ok": 1,
+    "conn_err": 0,
+    "max_conn_used": 1,
+    "queries": 50,
+    "bytes_sent": 400,
+    "bytes_recv": 67,
+    "latency_us": 450,
+    "status": "ONLINE"
+   },
+   "config": {
+    "hostgroup_id": 10,
+    "hostname": "mf-galera-3",
+    "port": 3306,
+    "status": "ONLINE",
+    "weight": 100,
+    "max_connections": 1000,
+    "max_replication_lag": 0,
+    "use_ssl": 0,
+    "max_latency_ms": 0,
+    "compression": 0,
+    "gtid_port": 0,
+    "comment": "galera-3"
+   },
+   "config_key": [
+    10,
+    "mf-galera-3",
+    3306
+   ],
+   "config_note": null,
+   "monitor": "galera",
+   "role": "backup writer",
+   "tone": "ok",
+   "why": [],
+   "actions": [
+    {
+     "id": "server_offline_hard",
+     "label": "Set OFFLINE_HARD…",
+     "danger": true,
+     "description": "ProxySQL stops using mf-galera-3:3306 at once: free connections close and a connection a client holds closes when it is used next."
+    },
+    {
+     "id": "server_weight",
+     "label": "Change weight…",
+     "danger": false,
+     "description": "Sets the weight ProxySQL uses to share a hostgroup's traffic between its servers.",
+     "value": {
+      "label": "Weight",
+      "min": 0,
+      "max": 10000000,
+      "current": 100
+     }
+    }
+   ],
+   "action_notes": [
+    "OFFLINE_SOFT is not offered: the Galera monitor puts the server back in traffic within seconds (seen live on ProxySQL 3.0.11). OFFLINE_HARD or weight 0 takes it out.",
+    "Move to hostgroup is not offered: a row moved out of the Galera monitor's hostgroups stays in its runtime hostgroups (seen live on ProxySQL 3.0.11)."
+   ]
+  },
+  {
+   "key": "rt|12|mf-galera-2|3306",
+   "hostgroup_id": 12,
+   "hostname": "mf-galera-2",
+   "port": 3306,
+   "runtime_status": "ONLINE",
+   "status_detail": null,
+   "settings": {
+    "gtid_port": 0,
+    "weight": 100,
+    "compression": 0,
+    "max_connections": 1000,
+    "max_replication_lag": 0,
+    "use_ssl": 0,
+    "max_latency_ms": 0,
+    "comment": "galera-2"
+   },
+   "pool": {
+    "conn_used": 0,
+    "conn_free": 1,
+    "conn_ok": 1,
+    "conn_err": 0,
+    "max_conn_used": 1,
+    "queries": 30,
+    "bytes_sent": 400,
+    "bytes_recv": 67,
+    "latency_us": 450,
+    "status": "ONLINE"
+   },
+   "config": {
+    "hostgroup_id": 10,
+    "hostname": "mf-galera-2",
+    "port": 3306,
+    "status": "ONLINE",
+    "weight": 100,
+    "max_connections": 1000,
+    "max_replication_lag": 0,
+    "use_ssl": 0,
+    "max_latency_ms": 0,
+    "compression": 0,
+    "gtid_port": 0,
+    "comment": "galera-2"
+   },
+   "config_key": [
+    10,
+    "mf-galera-2",
+    3306
+   ],
+   "config_note": null,
+   "monitor": "galera",
+   "role": "reader",
+   "tone": "ok",
+   "why": [],
+   "actions": [
+    {
+     "id": "server_offline_hard",
+     "label": "Set OFFLINE_HARD…",
+     "danger": true,
+     "description": "ProxySQL stops using mf-galera-2:3306 at once: free connections close and a connection a client holds closes when it is used next."
+    },
+    {
+     "id": "server_weight",
+     "label": "Change weight…",
+     "danger": false,
+     "description": "Sets the weight ProxySQL uses to share a hostgroup's traffic between its servers.",
+     "value": {
+      "label": "Weight",
+      "min": 0,
+      "max": 10000000,
+      "current": 100
+     }
+    }
+   ],
+   "action_notes": [
+    "OFFLINE_SOFT is not offered: the Galera monitor puts the server back in traffic within seconds (seen live on ProxySQL 3.0.11). OFFLINE_HARD or weight 0 takes it out.",
+    "Move to hostgroup is not offered: a row moved out of the Galera monitor's hostgroups stays in its runtime hostgroups (seen live on ProxySQL 3.0.11)."
+   ]
+  },
+  {
+   "key": "rt|12|mf-galera-3|3306",
+   "hostgroup_id": 12,
+   "hostname": "mf-galera-3",
+   "port": 3306,
+   "runtime_status": "ONLINE",
+   "status_detail": null,
+   "settings": {
+    "gtid_port": 0,
+    "weight": 100,
+    "compression": 0,
+    "max_connections": 1000,
+    "max_replication_lag": 0,
+    "use_ssl": 0,
+    "max_latency_ms": 0,
+    "comment": "galera-3"
+   },
+   "pool": {
+    "conn_used": 0,
+    "conn_free": 1,
+    "conn_ok": 1,
+    "conn_err": 0,
+    "max_conn_used": 1,
+    "queries": 60,
+    "bytes_sent": 400,
+    "bytes_recv": 67,
+    "latency_us": 450,
+    "status": "ONLINE"
+   },
+   "config": {
+    "hostgroup_id": 10,
+    "hostname": "mf-galera-3",
+    "port": 3306,
+    "status": "ONLINE",
+    "weight": 100,
+    "max_connections": 1000,
+    "max_replication_lag": 0,
+    "use_ssl": 0,
+    "max_latency_ms": 0,
+    "compression": 0,
+    "gtid_port": 0,
+    "comment": "galera-3"
+   },
+   "config_key": [
+    10,
+    "mf-galera-3",
+    3306
+   ],
+   "config_note": null,
+   "monitor": "galera",
+   "role": "reader",
+   "tone": "ok",
+   "why": [],
+   "actions": [
+    {
+     "id": "server_offline_hard",
+     "label": "Set OFFLINE_HARD…",
+     "danger": true,
+     "description": "ProxySQL stops using mf-galera-3:3306 at once: free connections close and a connection a client holds closes when it is used next."
+    },
+    {
+     "id": "server_weight",
+     "label": "Change weight…",
+     "danger": false,
+     "description": "Sets the weight ProxySQL uses to share a hostgroup's traffic between its servers.",
+     "value": {
+      "label": "Weight",
+      "min": 0,
+      "max": 10000000,
+      "current": 100
+     }
+    }
+   ],
+   "action_notes": [
+    "OFFLINE_SOFT is not offered: the Galera monitor puts the server back in traffic within seconds (seen live on ProxySQL 3.0.11). OFFLINE_HARD or weight 0 takes it out.",
+    "Move to hostgroup is not offered: a row moved out of the Galera monitor's hostgroups stays in its runtime hostgroups (seen live on ProxySQL 3.0.11)."
+   ]
+  },
+  {
+   "key": "rt|30|mf-ic-1|3306",
+   "hostgroup_id": 30,
+   "hostname": "mf-ic-1",
+   "port": 3306,
+   "runtime_status": "ONLINE",
+   "status_detail": null,
+   "settings": {
+    "gtid_port": 0,
+    "weight": 100,
+    "compression": 0,
+    "max_connections": 1000,
+    "max_replication_lag": 0,
+    "use_ssl": 1,
+    "max_latency_ms": 0,
+    "comment": "ic-1"
+   },
+   "pool": {
+    "conn_used": 1,
+    "conn_free": 1,
+    "conn_ok": 1,
+    "conn_err": 0,
+    "max_conn_used": 1,
+    "queries": 70,
+    "bytes_sent": 400,
+    "bytes_recv": 67,
+    "latency_us": 450,
+    "status": "ONLINE"
+   },
+   "config": {
+    "hostgroup_id": 30,
+    "hostname": "mf-ic-1",
+    "port": 3306,
+    "status": "ONLINE",
+    "weight": 100,
+    "max_connections": 1000,
+    "max_replication_lag": 0,
+    "use_ssl": 1,
+    "max_latency_ms": 0,
+    "compression": 0,
+    "gtid_port": 0,
+    "comment": "ic-1"
+   },
+   "config_key": [
+    30,
+    "mf-ic-1",
+    3306
+   ],
+   "config_note": null,
+   "monitor": "group_replication",
+   "role": "writer",
+   "tone": "ok",
+   "why": [],
+   "actions": [
+    {
+     "id": "server_offline_soft",
+     "label": "Set OFFLINE_SOFT…",
+     "danger": false,
+     "description": "No new traffic goes to mf-ic-1:3306; queries and transactions already on it finish."
+    },
+    {
+     "id": "server_offline_hard",
+     "label": "Set OFFLINE_HARD…",
+     "danger": true,
+     "description": "ProxySQL stops using mf-ic-1:3306 at once: free connections close and a connection a client holds closes when it is used next."
+    },
+    {
+     "id": "server_weight",
+     "label": "Change weight…",
+     "danger": false,
+     "description": "Sets the weight ProxySQL uses to share a hostgroup's traffic between its servers.",
+     "value": {
+      "label": "Weight",
+      "min": 0,
+      "max": 10000000,
+      "current": 100
+     }
+    }
+   ],
+   "action_notes": [
+    "Move to hostgroup is not offered: a row moved out of the Group Replication monitor's hostgroups stays in its runtime hostgroups (seen live on ProxySQL 3.0.11)."
+   ]
+  },
+  {
+   "key": "rt|32|mf-ic-2|3306",
+   "hostgroup_id": 32,
+   "hostname": "mf-ic-2",
+   "port": 3306,
+   "runtime_status": "ONLINE",
+   "status_detail": null,
+   "settings": {
+    "gtid_port": 0,
+    "weight": 100,
+    "compression": 0,
+    "max_connections": 1000,
+    "max_replication_lag": 0,
+    "use_ssl": 1,
+    "max_latency_ms": 0,
+    "comment": "ic-2"
+   },
+   "pool": {
+    "conn_used": 2,
+    "conn_free": 1,
+    "conn_ok": 1,
+    "conn_err": 0,
+    "max_conn_used": 1,
+    "queries": 80,
+    "bytes_sent": 400,
+    "bytes_recv": 67,
+    "latency_us": 450,
+    "status": "ONLINE"
+   },
+   "config": {
+    "hostgroup_id": 30,
+    "hostname": "mf-ic-2",
+    "port": 3306,
+    "status": "ONLINE",
+    "weight": 100,
+    "max_connections": 1000,
+    "max_replication_lag": 0,
+    "use_ssl": 1,
+    "max_latency_ms": 0,
+    "compression": 0,
+    "gtid_port": 0,
+    "comment": "ic-2"
+   },
+   "config_key": [
+    30,
+    "mf-ic-2",
+    3306
+   ],
+   "config_note": null,
+   "monitor": "group_replication",
+   "role": "reader",
+   "tone": "ok",
+   "why": [],
+   "actions": [
+    {
+     "id": "server_offline_soft",
+     "label": "Set OFFLINE_SOFT…",
+     "danger": false,
+     "description": "No new traffic goes to mf-ic-2:3306; queries and transactions already on it finish."
+    },
+    {
+     "id": "server_offline_hard",
+     "label": "Set OFFLINE_HARD…",
+     "danger": true,
+     "description": "ProxySQL stops using mf-ic-2:3306 at once: free connections close and a connection a client holds closes when it is used next."
+    },
+    {
+     "id": "server_weight",
+     "label": "Change weight…",
+     "danger": false,
+     "description": "Sets the weight ProxySQL uses to share a hostgroup's traffic between its servers.",
+     "value": {
+      "label": "Weight",
+      "min": 0,
+      "max": 10000000,
+      "current": 100
+     }
+    }
+   ],
+   "action_notes": [
+    "Move to hostgroup is not offered: a row moved out of the Group Replication monitor's hostgroups stays in its runtime hostgroups (seen live on ProxySQL 3.0.11)."
+   ]
+  },
+  {
+   "key": "rt|32|mf-ic-3|3306",
+   "hostgroup_id": 32,
+   "hostname": "mf-ic-3",
+   "port": 3306,
+   "runtime_status": "ONLINE",
+   "status_detail": null,
+   "settings": {
+    "gtid_port": 0,
+    "weight": 100,
+    "compression": 0,
+    "max_connections": 1000,
+    "max_replication_lag": 0,
+    "use_ssl": 1,
+    "max_latency_ms": 0,
+    "comment": "ic-3"
+   },
+   "pool": {
+    "conn_used": 0,
+    "conn_free": 1,
+    "conn_ok": 1,
+    "conn_err": 0,
+    "max_conn_used": 1,
+    "queries": 90,
+    "bytes_sent": 400,
+    "bytes_recv": 67,
+    "latency_us": 450,
+    "status": "ONLINE"
+   },
+   "config": {
+    "hostgroup_id": 30,
+    "hostname": "mf-ic-3",
+    "port": 3306,
+    "status": "ONLINE",
+    "weight": 7,
+    "max_connections": 1000,
+    "max_replication_lag": 0,
+    "use_ssl": 1,
+    "max_latency_ms": 0,
+    "compression": 0,
+    "gtid_port": 0,
+    "comment": "ic-3"
+   },
+   "config_key": [
+    30,
+    "mf-ic-3",
+    3306
+   ],
+   "config_note": null,
+   "monitor": "group_replication",
+   "role": "reader",
+   "tone": "ok",
+   "why": [],
+   "actions": [
+    {
+     "id": "server_offline_soft",
+     "label": "Set OFFLINE_SOFT…",
+     "danger": false,
+     "description": "No new traffic goes to mf-ic-3:3306; queries and transactions already on it finish."
+    },
+    {
+     "id": "server_offline_hard",
+     "label": "Set OFFLINE_HARD…",
+     "danger": true,
+     "description": "ProxySQL stops using mf-ic-3:3306 at once: free connections close and a connection a client holds closes when it is used next."
+    },
+    {
+     "id": "server_weight",
+     "label": "Change weight…",
+     "danger": false,
+     "description": "Sets the weight ProxySQL uses to share a hostgroup's traffic between its servers.",
+     "value": {
+      "label": "Weight",
+      "min": 0,
+      "max": 10000000,
+      "current": 7
+     }
+    }
+   ],
+   "action_notes": [
+    "Move to hostgroup is not offered: a row moved out of the Group Replication monitor's hostgroups stays in its runtime hostgroups (seen live on ProxySQL 3.0.11)."
+   ]
+  }
+ ],
+ "hostgroups": [
+  {
+   "id": 10,
+   "monitor": "galera",
+   "role": "writer",
+   "servers": 3,
+   "status": {
+    "ONLINE": 1,
+    "SHUNNED": 2,
+    "OFFLINE_SOFT": 0,
+    "OFFLINE_HARD": 0
+   },
+   "standby": 2,
+   "queries": 50,
+   "conn_used": 2,
+   "conn_free": 3,
+   "conn_err": 0,
+   "tone": "ok",
+   "why": []
+  },
+  {
+   "id": 11,
+   "monitor": "galera",
+   "role": "backup writer",
+   "servers": 2,
+   "status": {
+    "ONLINE": 2,
+    "SHUNNED": 0,
+    "OFFLINE_SOFT": 0,
+    "OFFLINE_HARD": 0
+   },
+   "standby": 0,
+   "queries": 70,
+   "conn_used": 4,
+   "conn_free": 2,
+   "conn_err": 0,
+   "tone": "ok",
+   "why": []
+  },
+  {
+   "id": 12,
+   "monitor": "galera",
+   "role": "reader",
+   "servers": 2,
+   "status": {
+    "ONLINE": 2,
+    "SHUNNED": 0,
+    "OFFLINE_SOFT": 0,
+    "OFFLINE_HARD": 0
+   },
+   "standby": 0,
+   "queries": 90,
+   "conn_used": 0,
+   "conn_free": 2,
+   "conn_err": 0,
+   "tone": "ok",
+   "why": []
+  },
+  {
+   "id": 19,
+   "monitor": "galera",
+   "role": "offline",
+   "servers": 0,
+   "status": {
+    "ONLINE": 0,
+    "SHUNNED": 0,
+    "OFFLINE_SOFT": 0,
+    "OFFLINE_HARD": 0
+   },
+   "standby": 0,
+   "queries": 0,
+   "conn_used": 0,
+   "conn_free": 0,
+   "conn_err": 0,
+   "tone": "ok",
+   "why": []
+  },
+  {
+   "id": 30,
+   "monitor": "group_replication",
+   "role": "writer",
+   "servers": 1,
+   "status": {
+    "ONLINE": 1,
+    "SHUNNED": 0,
+    "OFFLINE_SOFT": 0,
+    "OFFLINE_HARD": 0
+   },
+   "standby": 0,
+   "queries": 70,
+   "conn_used": 1,
+   "conn_free": 1,
+   "conn_err": 0,
+   "tone": "ok",
+   "why": []
+  },
+  {
+   "id": 31,
+   "monitor": "group_replication",
+   "role": "backup writer",
+   "servers": 0,
+   "status": {
+    "ONLINE": 0,
+    "SHUNNED": 0,
+    "OFFLINE_SOFT": 0,
+    "OFFLINE_HARD": 0
+   },
+   "standby": 0,
+   "queries": 0,
+   "conn_used": 0,
+   "conn_free": 0,
+   "conn_err": 0,
+   "tone": "ok",
+   "why": []
+  },
+  {
+   "id": 32,
+   "monitor": "group_replication",
+   "role": "reader",
+   "servers": 2,
+   "status": {
+    "ONLINE": 2,
+    "SHUNNED": 0,
+    "OFFLINE_SOFT": 0,
+    "OFFLINE_HARD": 0
+   },
+   "standby": 0,
+   "queries": 170,
+   "conn_used": 2,
+   "conn_free": 2,
+   "conn_err": 0,
+   "tone": "ok",
+   "why": []
+  },
+  {
+   "id": 39,
+   "monitor": "group_replication",
+   "role": "offline",
+   "servers": 0,
+   "status": {
+    "ONLINE": 0,
+    "SHUNNED": 0,
+    "OFFLINE_SOFT": 0,
+    "OFFLINE_HARD": 0
+   },
+   "standby": 0,
+   "queries": 0,
+   "conn_used": 0,
+   "conn_free": 0,
+   "conn_err": 0,
+   "tone": "ok",
+   "why": []
+  }
+ ],
+ "monitors": [
+  {
+   "kind": "galera",
+   "source": "runtime",
+   "active": true,
+   "max_writers": 1,
+   "writer_is_also_reader": 2,
+   "max_transactions_behind": 100,
+   "comment": "one writer",
+   "writer_hostgroup": 10,
+   "backup_writer_hostgroup": 11,
+   "reader_hostgroup": 12,
+   "offline_hostgroup": 19
+  },
+  {
+   "kind": "group_replication",
+   "source": "runtime",
+   "active": true,
+   "max_writers": 1,
+   "writer_is_also_reader": 0,
+   "max_transactions_behind": 100,
+   "comment": "innodb cluster",
+   "writer_hostgroup": 30,
+   "backup_writer_hostgroup": 31,
+   "reader_hostgroup": 32,
+   "offline_hostgroup": 39
+  }
+ ],
+ "query_rules": [
+  {
+   "rule_id": 10,
+   "active": true,
+   "username": null,
+   "schemaname": null,
+   "match_digest": null,
+   "match_pattern": "^/\\* galera \\*/",
+   "negate_match_pattern": false,
+   "destination_hostgroup": 10,
+   "apply": true,
+   "comment": "galera",
+   "hits": 6,
+   "runtime_active": true,
+   "fields": {
+    "rule_id": "10",
+    "active": "1",
+    "username": null,
+    "schemaname": null,
+    "flagIN": "0",
+    "match_digest": null,
+    "match_pattern": "^/\\* galera \\*/",
+    "negate_match_pattern": "0",
+    "destination_hostgroup": "10",
+    "apply": "1",
+    "comment": "galera",
+    "re_modifiers": "CASELESS",
+    "flagOUT": null
+   },
+   "digests": [],
+   "digest_count": 0,
+   "possible_digests": [
+    "dg[10,\"information_schema\",\"mf_admin\",\"\",\"0xA8027DF9CE26E2FF\"]",
+    "dg[10,\"information_schema\",\"mf_admin\",\"\",\"0x4A8BCC5DA1E63EFB\"]"
+   ],
+   "actions": [
+    {
+     "id": "rule_disable",
+     "label": "Disable rule…",
+     "danger": true,
+     "description": "Sets active = 0 on rule 10 and loads the query rules to runtime: queries it matched go to the next matching rule or the user's default hostgroup."
+    }
+   ]
+  },
+  {
+   "rule_id": 20,
+   "active": true,
+   "username": null,
+   "schemaname": null,
+   "match_digest": "^SELECT .* FOR UPDATE",
+   "match_pattern": null,
+   "negate_match_pattern": false,
+   "destination_hostgroup": 30,
+   "apply": true,
+   "comment": "locking reads",
+   "hits": 5,
+   "runtime_active": true,
+   "fields": {
+    "rule_id": "20",
+    "active": "1",
+    "username": null,
+    "schemaname": null,
+    "flagIN": "0",
+    "match_digest": "^SELECT .* FOR UPDATE",
+    "match_pattern": null,
+    "negate_match_pattern": "0",
+    "destination_hostgroup": "30",
+    "apply": "1",
+    "comment": "locking reads",
+    "re_modifiers": "CASELESS",
+    "flagOUT": null
+   },
+   "digests": [
+    "dg[30,\"information_schema\",\"mf_admin\",\"\",\"0x7499BD50A3EBE746\"]"
+   ],
+   "digest_count": 1,
+   "possible_digests": [],
+   "actions": [
+    {
+     "id": "rule_disable",
+     "label": "Disable rule…",
+     "danger": true,
+     "description": "Sets active = 0 on rule 20 and loads the query rules to runtime: queries it matched go to the next matching rule or the user's default hostgroup."
+    }
+   ]
+  },
+  {
+   "rule_id": 30,
+   "active": true,
+   "username": null,
+   "schemaname": null,
+   "match_digest": "^SELECT",
+   "match_pattern": null,
+   "negate_match_pattern": false,
+   "destination_hostgroup": 32,
+   "apply": true,
+   "comment": "reads",
+   "hits": 41,
+   "runtime_active": true,
+   "fields": {
+    "rule_id": "30",
+    "active": "1",
+    "username": null,
+    "schemaname": null,
+    "flagIN": "0",
+    "match_digest": "^SELECT",
+    "match_pattern": null,
+    "negate_match_pattern": "0",
+    "destination_hostgroup": "32",
+    "apply": "1",
+    "comment": "reads",
+    "re_modifiers": "CASELESS",
+    "flagOUT": null
+   },
+   "digests": [
+    "dg[32,\"information_schema\",\"mf_admin\",\"\",\"0xA8027DF9CE26E2FF\"]",
+    "dg[32,\"information_schema\",\"mf_admin\",\"\",\"0x9C012E222EE5AA4E\"]",
+    "dg[32,\"information_schema\",\"mf_admin\",\"\",\"0xC54E85FD66BA43DA\"]",
+    "dg[10,\"information_schema\",\"mf_admin\",\"\",\"0xA8027DF9CE26E2FF\"]",
+    "dg[10,\"information_schema\",\"mf_admin\",\"\",\"0x4A8BCC5DA1E63EFB\"]"
+   ],
+   "digest_count": 5,
+   "possible_digests": [],
+   "actions": [
+    {
+     "id": "rule_disable",
+     "label": "Disable rule…",
+     "danger": true,
+     "description": "Sets active = 0 on rule 30 and loads the query rules to runtime: queries it matched go to the next matching rule or the user's default hostgroup."
+    }
+   ]
+  }
+ ],
+ "query_digests": [
+  {
+   "hostgroup": 30,
+   "schemaname": "information_schema",
+   "username": "mf_admin",
+   "client_address": "",
+   "digest": "0x48BE884F70034786",
+   "digest_text": "SHOW GLOBAL VARIABLES LIKE ?",
+   "count_star": 5,
+   "sum_time_us": 16763,
+   "min_time_us": 787,
+   "max_time_us": 6343,
+   "avg_time_us": 3352,
+   "first_seen": 1792537332,
+   "last_seen": 1792543106,
+   "seen_span_s": 5774,
+   "rate_qps": 0.0008659508139937652,
+   "rows_sent": 5,
+   "rows_affected": 0,
+   "key": "dg[30,\"information_schema\",\"mf_admin\",\"\",\"0x48BE884F70034786\"]",
+   "routing": {
+    "observed": 30,
+    "expected": 30,
+    "source": "default",
+    "rules": [],
+    "decisive": null,
+    "approximate": false,
+    "possible": [],
+    "unknown_rules": [],
+    "default_hostgroup": 30,
+    "verdict": "match",
+    "text": "No active rule sets a hostgroup, so it goes to mf_admin's default hostgroup 30, where it ran.",
+    "why": []
+   }
+  },
+  {
+   "hostgroup": 32,
+   "schemaname": "information_schema",
+   "username": "mf_admin",
+   "client_address": "",
+   "digest": "0xA8027DF9CE26E2FF",
+   "digest_text": "SELECT @@hostname",
+   "count_star": 5,
+   "sum_time_us": 13162,
+   "min_time_us": 192,
+   "max_time_us": 6686,
+   "avg_time_us": 2632,
+   "first_seen": 1792537332,
+   "last_seen": 1792543106,
+   "seen_span_s": 5774,
+   "rate_qps": 0.0008659508139937652,
+   "rows_sent": 5,
+   "rows_affected": 0,
+   "key": "dg[32,\"information_schema\",\"mf_admin\",\"\",\"0xA8027DF9CE26E2FF\"]",
+   "routing": {
+    "observed": 32,
+    "expected": 32,
+    "source": "rule",
+    "rules": [
+     30
+    ],
+    "decisive": 30,
+    "approximate": false,
+    "possible": [],
+    "unknown_rules": [],
+    "default_hostgroup": 30,
+    "verdict": "match",
+    "text": "Rule 30 sends it to hostgroup 32, where it ran.",
+    "why": []
+   }
+  },
+  {
+   "hostgroup": 32,
+   "schemaname": "information_schema",
+   "username": "mf_admin",
+   "client_address": "",
+   "digest": "0x9C012E222EE5AA4E",
+   "digest_text": "SELECT COUNT(*) FROM testdb.orders WHERE status = ? AND customer_id = ?",
+   "count_star": 20,
+   "sum_time_us": 7706,
+   "min_time_us": 78,
+   "max_time_us": 5974,
+   "avg_time_us": 385,
+   "first_seen": 1792537331,
+   "last_seen": 1792537331,
+   "seen_span_s": 0,
+   "rate_qps": 20.0,
+   "rows_sent": 20,
+   "rows_affected": 0,
+   "key": "dg[32,\"information_schema\",\"mf_admin\",\"\",\"0x9C012E222EE5AA4E\"]",
+   "routing": {
+    "observed": 32,
+    "expected": 32,
+    "source": "rule",
+    "rules": [
+     30
+    ],
+    "decisive": 30,
+    "approximate": false,
+    "possible": [],
+    "unknown_rules": [],
+    "default_hostgroup": 30,
+    "verdict": "match",
+    "text": "Rule 30 sends it to hostgroup 32, where it ran.",
+    "why": []
+   }
+  },
+  {
+   "hostgroup": 32,
+   "schemaname": "information_schema",
+   "username": "mf_admin",
+   "client_address": "",
+   "digest": "0xC54E85FD66BA43DA",
+   "digest_text": "SELECT name,country FROM testdb.customers WHERE id = ?",
+   "count_star": 20,
+   "sum_time_us": 6889,
+   "min_time_us": 69,
+   "max_time_us": 5369,
+   "avg_time_us": 344,
+   "first_seen": 1792537331,
+   "last_seen": 1792537331,
+   "seen_span_s": 0,
+   "rate_qps": 20.0,
+   "rows_sent": 20,
+   "rows_affected": 0,
+   "key": "dg[32,\"information_schema\",\"mf_admin\",\"\",\"0xC54E85FD66BA43DA\"]",
+   "routing": {
+    "observed": 32,
+    "expected": 32,
+    "source": "rule",
+    "rules": [
+     30
+    ],
+    "decisive": 30,
+    "approximate": false,
+    "possible": [],
+    "unknown_rules": [],
+    "default_hostgroup": 30,
+    "verdict": "match",
+    "text": "Rule 30 sends it to hostgroup 32, where it ran.",
+    "why": []
+   }
+  },
+  {
+   "hostgroup": 30,
+   "schemaname": "information_schema",
+   "username": "mf_admin",
+   "client_address": "",
+   "digest": "0xA64D4A3B64005014",
+   "digest_text": "START TRANSACTION",
+   "count_star": 5,
+   "sum_time_us": 5194,
+   "min_time_us": 52,
+   "max_time_us": 4947,
+   "avg_time_us": 1038,
+   "first_seen": 1792537331,
+   "last_seen": 1792537331,
+   "seen_span_s": 0,
+   "rate_qps": 5.0,
+   "rows_sent": 0,
+   "rows_affected": 0,
+   "key": "dg[30,\"information_schema\",\"mf_admin\",\"\",\"0xA64D4A3B64005014\"]",
+   "routing": {
+    "observed": 30,
+    "expected": 30,
+    "source": "default",
+    "rules": [],
+    "decisive": null,
+    "approximate": false,
+    "possible": [],
+    "unknown_rules": [],
+    "default_hostgroup": 30,
+    "verdict": "match",
+    "text": "No active rule sets a hostgroup, so it goes to mf_admin's default hostgroup 30, where it ran.",
+    "why": []
+   }
+  },
+  {
+   "hostgroup": 10,
+   "schemaname": "information_schema",
+   "username": "mf_admin",
+   "client_address": "",
+   "digest": "0xA8027DF9CE26E2FF",
+   "digest_text": "SELECT @@hostname",
+   "count_star": 5,
+   "sum_time_us": 1888,
+   "min_time_us": 203,
+   "max_time_us": 650,
+   "avg_time_us": 377,
+   "first_seen": 1792537332,
+   "last_seen": 1792543106,
+   "seen_span_s": 5774,
+   "rate_qps": 0.0008659508139937652,
+   "rows_sent": 5,
+   "rows_affected": 0,
+   "key": "dg[10,\"information_schema\",\"mf_admin\",\"\",\"0xA8027DF9CE26E2FF\"]",
+   "routing": {
+    "observed": 10,
+    "expected": 32,
+    "source": "rule",
+    "rules": [
+     30
+    ],
+    "decisive": 30,
+    "approximate": false,
+    "possible": [
+     10
+    ],
+    "unknown_rules": [],
+    "default_hostgroup": 30,
+    "verdict": "possible",
+    "text": "Rule 30 sends it to hostgroup 32 here; it ran on hostgroup 10, where rule 10 may have sent it.",
+    "why": [
+     "Rule 10 tests the query text (match_pattern), which the digest does not keep, so it may have matched these executions."
+    ]
+   }
+  },
+  {
+   "hostgroup": 30,
+   "schemaname": "information_schema",
+   "username": "mf_admin",
+   "client_address": "",
+   "digest": "0xABB02DE3FAD6872B",
+   "digest_text": "SHOW GLOBAL STATUS LIKE ?",
+   "count_star": 5,
+   "sum_time_us": 1329,
+   "min_time_us": 198,
+   "max_time_us": 462,
+   "avg_time_us": 265,
+   "first_seen": 1792537331,
+   "last_seen": 1792537331,
+   "seen_span_s": 0,
+   "rate_qps": 5.0,
+   "rows_sent": 5,
+   "rows_affected": 0,
+   "key": "dg[30,\"information_schema\",\"mf_admin\",\"\",\"0xABB02DE3FAD6872B\"]",
+   "routing": {
+    "observed": 30,
+    "expected": 30,
+    "source": "default",
+    "rules": [],
+    "decisive": null,
+    "approximate": false,
+    "possible": [],
+    "unknown_rules": [],
+    "default_hostgroup": 30,
+    "verdict": "match",
+    "text": "No active rule sets a hostgroup, so it goes to mf_admin's default hostgroup 30, where it ran.",
+    "why": []
+   }
+  },
+  {
+   "hostgroup": 10,
+   "schemaname": "information_schema",
+   "username": "mf_admin",
+   "client_address": "",
+   "digest": "0x4A8BCC5DA1E63EFB",
+   "digest_text": "SELECT COUNT(*) FROM testdb.orders WHERE product_id = ?",
+   "count_star": 5,
+   "sum_time_us": 1315,
+   "min_time_us": 136,
+   "max_time_us": 553,
+   "avg_time_us": 263,
+   "first_seen": 1792537331,
+   "last_seen": 1792537331,
+   "seen_span_s": 0,
+   "rate_qps": 5.0,
+   "rows_sent": 5,
+   "rows_affected": 0,
+   "key": "dg[10,\"information_schema\",\"mf_admin\",\"\",\"0x4A8BCC5DA1E63EFB\"]",
+   "routing": {
+    "observed": 10,
+    "expected": 32,
+    "source": "rule",
+    "rules": [
+     30
+    ],
+    "decisive": 30,
+    "approximate": false,
+    "possible": [
+     10
+    ],
+    "unknown_rules": [],
+    "default_hostgroup": 30,
+    "verdict": "possible",
+    "text": "Rule 30 sends it to hostgroup 32 here; it ran on hostgroup 10, where rule 10 may have sent it.",
+    "why": [
+     "Rule 10 tests the query text (match_pattern), which the digest does not keep, so it may have matched these executions."
+    ]
+   }
+  },
+  {
+   "hostgroup": 30,
+   "schemaname": "information_schema",
+   "username": "mf_admin",
+   "client_address": "",
+   "digest": "0x7499BD50A3EBE746",
+   "digest_text": "SELECT id,status FROM testdb.orders WHERE id = ? FOR UPDATE",
+   "count_star": 5,
+   "sum_time_us": 505,
+   "min_time_us": 86,
+   "max_time_us": 141,
+   "avg_time_us": 101,
+   "first_seen": 1792537331,
+   "last_seen": 1792537331,
+   "seen_span_s": 0,
+   "rate_qps": 5.0,
+   "rows_sent": 5,
+   "rows_affected": 0,
+   "key": "dg[30,\"information_schema\",\"mf_admin\",\"\",\"0x7499BD50A3EBE746\"]",
+   "routing": {
+    "observed": 30,
+    "expected": 30,
+    "source": "rule",
+    "rules": [
+     20
+    ],
+    "decisive": 20,
+    "approximate": false,
+    "possible": [],
+    "unknown_rules": [],
+    "default_hostgroup": 30,
+    "verdict": "match",
+    "text": "Rule 20 sends it to hostgroup 30, where it ran.",
+    "why": []
+   }
+  },
+  {
+   "hostgroup": 30,
+   "schemaname": "information_schema",
+   "username": "mf_admin",
+   "client_address": "",
+   "digest": "0x49474B60312C20A7",
+   "digest_text": "ROLLBACK",
+   "count_star": 5,
+   "sum_time_us": 362,
+   "min_time_us": 62,
+   "max_time_us": 86,
+   "avg_time_us": 72,
+   "first_seen": 1792537331,
+   "last_seen": 1792537331,
+   "seen_span_s": 0,
+   "rate_qps": 5.0,
+   "rows_sent": 0,
+   "rows_affected": 0,
+   "key": "dg[30,\"information_schema\",\"mf_admin\",\"\",\"0x49474B60312C20A7\"]",
+   "routing": {
+    "observed": 30,
+    "expected": 30,
+    "source": "default",
+    "rules": [],
+    "decisive": null,
+    "approximate": false,
+    "possible": [],
+    "unknown_rules": [],
+    "default_hostgroup": 30,
+    "verdict": "match",
+    "text": "No active rule sets a hostgroup, so it goes to mf_admin's default hostgroup 30, where it ran.",
+    "why": []
+   }
+  }
+ ],
+ "pending": {
+  "servers": {
+   "runtime": [
+    "hostgroup 30, mf-ic-3:3306: weight 100 → 7"
+   ],
+   "disk": [
+    "hostgroup 30, mf-ic-3:3306: weight 100 → 7"
+   ]
+  },
+  "query_rules": {
+   "runtime": [],
+   "disk": []
+  }
+ },
+ "fingerprints": {
+  "servers_memory": "9504a8605ae900ee9994d4d76b79c402957a1c650ef956346968d4fb863b3960",
+  "servers_runtime": "35941655f42975786f9f7736fba7bf0d047893d5fee1431aa51387691168388e",
+  "servers_disk": "422a2600d6dae80e0c02c0e174b6887b68de0edb9d4742d999ac61f4fd07bc65",
+  "query_rules_memory": "09c589ac5433a5f263aa629e0e08e27863b11b106b8cafab9739323c152a210f",
+  "query_rules_runtime": "09c589ac5433a5f263aa629e0e08e27863b11b106b8cafab9739323c152a210f",
+  "query_rules_disk": "09c589ac5433a5f263aa629e0e08e27863b11b106b8cafab9739323c152a210f"
+ },
+ "metrics": {
+  "ProxySQL_Uptime": 187200,
+  "Client_Connections_connected": 4,
+  "Questions": 1200
+ },
+ "summary": {
+  "backends": 10,
+  "ONLINE": 8,
+  "SHUNNED": 2,
+  "OFFLINE_SOFT": 0,
+  "OFFLINE_HARD": 0,
+  "not_in_runtime": 0
+ },
+ "actions": [
+  {
+   "id": "servers_load",
+   "label": "Load servers to runtime…",
+   "danger": false,
+   "description": "Loads the servers configuration in memory into runtime (LOAD MYSQL SERVERS TO RUNTIME)."
+  },
+  {
+   "id": "servers_save",
+   "label": "Save servers to disk…",
+   "danger": false,
+   "description": "Saves the servers configuration in memory to ProxySQL's disk database (SAVE MYSQL SERVERS TO DISK), which it loads at its next start."
+  },
+  {
+   "id": "query_rules_load",
+   "label": "Load query rules to runtime…",
+   "danger": false,
+   "description": "Loads the query rules configuration in memory into runtime (LOAD MYSQL QUERY RULES TO RUNTIME)."
+  },
+  {
+   "id": "query_rules_save",
+   "label": "Save query rules to disk…",
+   "danger": false,
+   "description": "Saves the query rules configuration in memory to ProxySQL's disk database (SAVE MYSQL QUERY RULES TO DISK), which it loads at its next start."
+  }
+ ],
+ "notes": [],
+ "statements": [
+  "SELECT admin-version",
+  "SELECT @@version",
+  "SELECT * FROM stats_mysql_global",
+  "SELECT * FROM main.mysql_servers",
+  "SELECT * FROM main.runtime_mysql_servers",
+  "SELECT * FROM disk.mysql_servers",
+  "SELECT * FROM main.mysql_replication_hostgroups",
+  "SELECT * FROM main.runtime_mysql_replication_hostgroups",
+  "SELECT * FROM disk.mysql_replication_hostgroups",
+  "SELECT * FROM main.mysql_group_replication_hostgroups",
+  "SELECT * FROM main.runtime_mysql_group_replication_hostgroups",
+  "SELECT * FROM disk.mysql_group_replication_hostgroups",
+  "SELECT * FROM main.mysql_galera_hostgroups",
+  "SELECT * FROM main.runtime_mysql_galera_hostgroups",
+  "SELECT * FROM disk.mysql_galera_hostgroups",
+  "SELECT * FROM main.mysql_aws_aurora_hostgroups",
+  "SELECT * FROM main.runtime_mysql_aws_aurora_hostgroups",
+  "SELECT * FROM disk.mysql_aws_aurora_hostgroups",
+  "SELECT * FROM main.mysql_hostgroup_attributes",
+  "SELECT * FROM main.runtime_mysql_hostgroup_attributes",
+  "SELECT * FROM disk.mysql_hostgroup_attributes",
+  "SELECT * FROM main.mysql_servers_ssl_params",
+  "SELECT * FROM main.runtime_mysql_servers_ssl_params",
+  "SELECT * FROM disk.mysql_servers_ssl_params",
+  "SELECT * FROM main.mysql_query_rules",
+  "SELECT * FROM main.runtime_mysql_query_rules",
+  "SELECT * FROM disk.mysql_query_rules",
+  "SELECT * FROM main.mysql_query_rules_fast_routing",
+  "SELECT * FROM main.runtime_mysql_query_rules_fast_routing",
+  "SELECT * FROM disk.mysql_query_rules_fast_routing",
+  "SELECT * FROM stats_mysql_connection_pool",
+  "SELECT * FROM stats_mysql_query_rules",
+  "SELECT * FROM stats_mysql_query_digest ORDER BY sum_time DESC LIMIT 100",
+  "SELECT variable_name, variable_value FROM runtime_global_variables WHERE variable_name IN ('mysql-query_processor_regex', 'mysql-query_processor_iterations', 'mysql-query_digests', 'mysql-query_digests_track_hostname', 'mysql-select_version_forwarding')",
+  "SELECT username, active, default_hostgroup, transaction_persistent, frontend FROM runtime_mysql_users"
+ ],
+ "routing": {
+  "evaluated": true,
+  "regex_engine": "PCRE",
+  "regex_variable": "1",
+  "iterations": 0,
+  "fast_routing_read": true,
+  "users_read": true,
+  "track_hostname": false,
+  "active_rules": 3,
+  "note": null
+ }
+}

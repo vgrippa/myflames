@@ -48,10 +48,12 @@ import { validateDiagram, rebuildDiagramLayout, type DiagramDocument, type Schem
 import type { AccountsReport } from "./accountsApi";
 import {
   ColumnStoreContext,
+  useColumnStore,
   ViewActivityContext,
   ViewBackLabelContext,
+  ViewSwitcherContext,
+  type ViewSwitcherShared,
   useWindowStatus,
-  useFocusScope,
   NavMarker,
   countState,
   type BadgeTone,
@@ -63,11 +65,11 @@ import {
   StatusPill,
   TONE_TEXT,
   ToolbarButton,
+  useElapsed,
+  ACTION_ELAPSED_AFTER_MS,
   storeInspectorWidth,
   storedInspectorWidth,
-  worstTone,
   type ColumnPrefs,
-  type ColumnStore,
   type InspectorShared,
   type Selection,
   type SourceItem,
@@ -111,6 +113,7 @@ import {
   type ReplicationReport,
   type SkipLoop,
 } from "./opsApi";
+import type { ClusterReport } from "./clusterApi";
 import { ViewOnScreenContext } from "./viewOnScreen";
 import { ALL_SERVER_VIEWS, SERVER_GROUPS, SERVER_VIEWS, WORKLOAD_GROUPS, WORKLOAD_KINDS, WORKLOAD_VIEWS } from "./serverViews";
 import { lazyComponent, preloadWhenIdle } from "./lazy";
@@ -145,7 +148,16 @@ function focusWhenMounted(id: string) {
 
 /** Names of what Refresh all reads that is not a view in a list: the Full
  * analysis lives in the Tuning place. */
-const READ_LABELS: Partial<Record<ServerKind, string>> = { report: "Full analysis", tuning: "Tuning", replication: "Replication" };
+const READ_LABELS: Partial<Record<ServerKind, string>> = { report: "Full analysis", tuning: "Tuning", replication: "Replication", cluster: "Cluster", diagram: "Database diagram" };
+
+/** Refresh all adds these places to the Server and Workload views. */
+const EXTRA_REFRESH_SECTIONS = ["replication", "cluster", "report"] as const;
+
+/** Imported or other-server diagrams are never replaced by Refresh all. */
+function refreshDiagramDatabase(diagram: DiagramDocument | null, selected: string, key: string): string {
+  return diagram?.source.kind === "server" && diagram.source.key === key
+    ? diagram.source.database || "" : !diagram ? selected.trim() : "";
+}
 
 /** Below this width the sub-navigation becomes a screen of its own. */
 const COMPACT_WIDTH = 720;
@@ -164,12 +176,16 @@ type RefreshItem = {
   state: RefreshState;
   error?: string;
   at?: string;
+  /** When this section started reading, rather than when it was queued. */
+  startedAt?: number;
   /** The view's report when this read failed, stopped or was replaced: a newer
    * report (its own Refresh) means the view is no longer stale. */
   report?: unknown;
   /** A replaced read's answer: when the view shows it anyway (a joined read), it counts as refreshed. */
   result?: unknown;
 };
+/** Stop, which replaces Refresh all in the same spot, takes clicks only after this long. */
+const STOP_ARM_MS = 600;
 /** One Refresh all: the connection it ran on and each view's outcome. */
 type RefreshRun = {
   id: number;
@@ -219,15 +235,28 @@ function toneOf(status: string | null | undefined): Tone {
 }
 // A sub-navigation marker (NavMarker): a dot for state, a neutral pill for a
 // count; the item's hidden text (", Watch", ", 5 blocked") names it once.
-function dot(tone: Tone, text: string) {
-  return { badge: <NavMarker tone={tone} />, badgeText: text };
+function dot(tone: Tone, text: string): Marker {
+  return { badge: <NavMarker tone={tone} />, badgeText: text, tone };
 }
 // A count draws a dot and the count only (a list row is narrow); the state
 // word moves into the tooltip and the hidden text ("2 flagged, Watch").
-function count(n: number, tone: BadgeTone, text: string) {
+function count(n: number, tone: BadgeTone, text: string): Marker {
   const state = countState(tone);
   const word = state ? TONE_TEXT[state] : "";
-  return { badge: <NavMarker compact tone={state} count={n} countTone={tone} />, badgeText: word && !text.includes(word) ? `${text}, ${word}` : text };
+  return { badge: <NavMarker compact announce={false} tone={state} count={n} countTone={tone} />, badgeText: word && !text.includes(word) ? `${text}, ${word}` : text, tone: state };
+}
+/** A list item's marker and the state it stands for (the floating title's
+ * marker sums up the other views from it). */
+type Marker = Pick<SourceItem, "badge" | "badgeText"> & { tone?: Tone };
+/** With the list of views floated, the title says when another view needs
+ * attention: the worst state among the others, and how many share it. */
+function othersMarker(tones: (Tone | undefined)[]): ViewSwitcherShared["others"] {
+  const problems = tones.filter((t) => t === "problem").length;
+  const watches = tones.filter((t) => t === "watch").length;
+  const count = problems + watches;
+  if (!count) return null;
+  const text = `${count} other ${count === 1 ? "view needs" : "views need"} attention`;
+  return { tone: problems ? "problem" : "watch", count, text };
 }
 
 export function Server({
@@ -250,24 +279,32 @@ export function Server({
   link,
   instrumentsLink,
   navigation,
-  navCollapsed: propNavCollapsed,
-  onToggleNavCollapsed: propOnToggleNavCollapsed,
+  navCollapsed,
+  onToggleNavCollapsed: toggleNavCollapsed,
   replicationLoops: propReplicationLoops,
   onReplicationLoops: propOnReplicationLoops,
   replication: propReplication,
   onReplication: propOnReplication,
+  cluster: propCluster,
+  onCluster: propOnCluster,
+  onClusterFailed: propOnClusterFailed,
+  columns: propColumns,
+  onColumns: propOnColumns,
 }: {
   /** The place on screen (or shown last, while another place is): Server and
-   * Workload list their views; Tuning shows its one view, full width. */
-  place?: "server" | "workload" | "tuning";
+   * Workload list their views; Tuning and Database diagram show their one
+   * view, full width. */
+  place?: "server" | "workload" | "tuning" | "diagram";
   /** The place is on screen (not hidden behind another place). Views read on
    * open only while it is (viewOnScreen.ts). */
   onScreen?: boolean;
-  onNavigatePlace?: (place: "server" | "workload" | "tuning" | "replication", view: ServerKind) => void;
+  onNavigatePlace?: (place: "server" | "workload" | "tuning" | "diagram" | "replication" | "cluster", view: ServerKind) => void;
   /** Command palette navigation: changes the visible view without reading it. */
   navigation?: { view: ServerKind; n: number };
-  navCollapsed?: boolean;
-  onToggleNavCollapsed?: () => void;
+  /** The list of views floats (opened from the view's title) instead of
+   * docking beside the view; the shell owns this preference (main.tsx). */
+  navCollapsed: boolean;
+  onToggleNavCollapsed: () => void;
   picker: React.ReactNode;
   connection: Connection;
   /** The Query editor is capturing: reads and row actions wait. */
@@ -284,8 +321,8 @@ export function Server({
   onBatchChange: (running: boolean) => void;
   /** Open a Learn lesson linked from Health. */
   onOpenLesson?: (lesson: string) => void;
-  /** Put a statement (Parameters' SET SESSION) in the Query editor's current tab, without running it. */
-  onOpenSql?: (sql: string) => void;
+  /** Open a statement in the Query editor without running it (new tab, or current tab when append is set). */
+  onOpenSql?: (sql: string, options?: { append?: boolean }) => void;
   /** A link from the Query editor's schema browser: open Indexes or Tables
    * on one table (n changes per click; from is the key it was read with). */
   link?: { view: "indexes" | "tables" | "health"; schema: string; table: string; from: string; n: number } | null;
@@ -298,21 +335,39 @@ export function Server({
    * replication once and the place shows that answer. */
   replication?: Bound<ReplicationReport> | null;
   onReplication?: (report: Bound<ReplicationReport>) => void;
+  /** The Cluster place's report, owned by the shell like Replication's:
+   * Refresh all reads it, and the sidebar learns when the connection in use
+   * is not part of a cluster. */
+  cluster?: Bound<ClusterReport> | null;
+  onCluster?: (report: Bound<ClusterReport>) => void;
+  /** Refresh all could not read the cluster (the place greys its last report). */
+  onClusterFailed?: (key: string, message: string) => void;
+  /** Column layouts by table id, owned by the shell when given, so tables
+   * outside Server (the Cluster place) keep theirs in the same saved state;
+   * otherwise kept here, restored from *initial*. */
+  columns?: Record<string, ColumnPrefs>;
+  onColumns?: (update: (all: Record<string, ColumnPrefs>) => Record<string, ColumnPrefs>) => void;
 }) {
   // Tuning (with its Full analysis tab) is a place of its own, never a view
   // chosen inside Server: an earlier session that saved either as the Server
   // view opens Health there.
   const [serverSelectedKind, setServerSelectedKind] = useState<ServerKind>(() => {
-    return initial?.kind && !WORKLOAD_KINDS.includes(initial.kind) && !["tuning", "report", "replication"].includes(initial.kind) ? initial.kind : "health";
+    return initial?.kind && !WORKLOAD_KINDS.includes(initial.kind) && !["tuning", "report", "replication", "cluster", "diagram"].includes(initial.kind) ? initial.kind : "health";
   });
   const [workloadSelectedKind, setWorkloadSelectedKind] = useState<ServerKind>(() => {
     return initial?.kind && WORKLOAD_KINDS.includes(initial.kind) ? initial.kind : "top";
   });
   useEffect(() => preloadWhenIdle(LAZY_VIEWS), []);
   const tuningPlace = place === "tuning";
-  const kind: ServerKind = place === "workload" ? workloadSelectedKind : tuningPlace ? "tuning" : serverSelectedKind;
-  // The Tuning place saves the Server view under it, so Server opens where it was.
-  const savedKind = tuningPlace ? serverSelectedKind : kind;
+  const diagramPlace = place === "diagram";
+  // Tuning and Database diagram are places of one view each: no list of
+  // views, no Refresh all toolbar, full width.
+  const singlePlace = tuningPlace || diagramPlace;
+  const kind: ServerKind = place === "workload" ? workloadSelectedKind : tuningPlace ? "tuning" : diagramPlace ? "diagram" : serverSelectedKind;
+  const kindRef = useRef(kind);
+  kindRef.current = kind;
+  // A place of one view saves the Server view under it, so Server opens where it was.
+  const savedKind = singlePlace ? serverSelectedKind : kind;
   const [order, setOrder] = useState(initial?.order || "total");
   const [minSeconds, setMinSeconds] = useState(initial?.min_seconds || 0);
   const [healthInterval, setHealthInterval] = useState(initial?.health_interval || 5);
@@ -335,59 +390,27 @@ export function Server({
   /** A Full analysis ran (restored; the report itself never is). */
   const [reportRun, setReportRun] = useState(initial?.report_run === true);
   const [inspectorWidth, setInspectorWidth] = useState(storedInspectorWidth);
-  const [internalNavCollapsed, setInternalNavCollapsed] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem("myflames.serverNavCollapsed") === "true";
-    } catch {
-      return false;
-    }
-  });
-  const navCollapsed = propNavCollapsed !== undefined ? propNavCollapsed : internalNavCollapsed;
-  const toggleNavCollapsed = useCallback(() => {
-    if (propOnToggleNavCollapsed) {
-      propOnToggleNavCollapsed();
-      return;
-    }
-    setInternalNavCollapsed((prev) => {
-      const next = !prev;
-      try {
-        localStorage.setItem("myflames.serverNavCollapsed", String(next));
-      } catch {}
-      return next;
-    });
-  }, [propOnToggleNavCollapsed]);
-  const [floatingMenuOpen, setFloatingMenuOpen] = useState(false);
-  const floatingMenuRef = useRef<HTMLDivElement>(null);
-  const floatingMenuButton = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    if (!floatingMenuOpen) return;
-    const onDown = (e: MouseEvent) => {
-      const target = e.target as HTMLElement;
-      if (!target.closest(".server-source-wrap.is-floating") && !target.closest(".server-floating-nav-btn")) {
-        setFloatingMenuOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-    };
-  }, [floatingMenuOpen]);
+  /** The floating list of views is open (under the view's title, kit.tsx ViewSwitcher). */
+  // Held as the view it was opened on: navigation from elsewhere (the command
+  // palette, a link) never carries an open list onto another view.
+  const [floatingMenuFor, setFloatingMenuFor] = useState<ServerKind | null>(null);
+  const setFloatingMenuOpen = useCallback((open: boolean) => setFloatingMenuFor(open ? kindRef.current : null), []);
+  /** A view chosen from the floating list: its title button takes focus once it is on screen. */
+  const switcherFocus = useRef(false);
+  /** Docked from the floating list's own header: the list and the Dock button
+   * in it are gone, so focus moves to the toolbar's Dock/Float toggle. */
+  const dockFocus = useRef(false);
+  const takeSwitcherFocus = useCallback(() => {
+    const take = switcherFocus.current;
+    switcherFocus.current = false;
+    return take;
+  }, []);
   // Column widths and hidden columns of every Server table, by table id,
-  // restored with the workspace (session.ts validates them).
-  const [columns, setColumns] = useState<Record<string, ColumnPrefs>>(initial?.columns_v1 || {});
-  const columnStore: ColumnStore = useMemo(
-    () => ({
-      get: (table) => columns[table],
-      set: (table, prefs) =>
-        setColumns((all) => {
-          const next = { ...all };
-          if (prefs) next[table] = prefs;
-          else delete next[table];
-          return next;
-        }),
-    }),
-    [columns],
-  );
+  // restored with the workspace (session.ts validates them). The shell owns
+  // them when it passes them (shared with the Cluster place's tables).
+  const [ownColumns, setOwnColumns] = useState<Record<string, ColumnPrefs>>(initial?.columns_v1 || {});
+  const columns = propColumns ?? ownColumns;
+  const columnStore = useColumnStore(columns, propOnColumns ?? setOwnColumns);
   const reportRef = useRef(onStateChange);
   reportRef.current = onStateChange;
   const latestConnection = useRef(connection);
@@ -450,6 +473,15 @@ export function Server({
     },
     [propOnReplication],
   );
+  const [localCluster, setLocalCluster] = useState<Bound<ClusterReport> | null>(null);
+  const cluster = propCluster !== undefined ? propCluster : localCluster;
+  const setCluster = useCallback(
+    (report: Bound<ClusterReport>) => {
+      setLocalCluster(report);
+      propOnCluster?.(report);
+    },
+    [propOnCluster],
+  );
   const setReplicationLoops = useCallback(
     (loops: Bound<SkipLoop[]>) => {
       setLocalReplicationLoops(loops);
@@ -464,6 +496,7 @@ export function Server({
   const [analysisSource, setAnalysisSource] = useState<AnalysisSource | null>(null);
   // Full analysis reads live here, not in its view, so a run survives switching views.
   const analysisReads = useConnectionReads(connection);
+  const [analysisStarted, setAnalysisStarted] = useState<{ key: string; at: number } | null>(null);
   const topStatements = useTopStatements({ connection, settings, order, onAddPlan, onBatchChange });
   const [activity, setActivity] = useState<{ key: string; views: Record<string, boolean> }>({ key: activeKey, views: {} });
   const reportActivity = useCallback((view: string, loading: boolean) => {
@@ -479,7 +512,9 @@ export function Server({
   const [lastRead, setLastRead] = useState<{ key: string; at?: number; engineVersion?: string }>({ key: activeKey });
   useEffect(() => {
     const reports = [health.report ? { key: health.key, report: health.report } : null,
-      innodb, errorlog, sessions, waits, io, locks, indexes, tables, config, instruments, replication,
+      innodb, errorlog, sessions, waits, io, locks, indexes, tables, config, instruments, replication, cluster,
+      accounts ? { key: accounts.key, report: { engine: accounts.report.engine, server_version: accounts.report.version } } : null,
+      diagram && diagram.source.key === activeKey ? { key: activeKey, report: diagram.diagram } : null,
       maintenance.tools, maintenance.upgrade, analysis, topStatements.top];
     let at: number | undefined;
     let engineVersion: string | undefined;
@@ -495,14 +530,16 @@ export function Server({
       const report = bound.report;
       if ('server_version' in report && report.server_version && seen >= versionAt) {
         const engine = 'engine' in report ? report.engine : null;
-        engineVersion = `${engine === "mariadb" ? "MariaDB" : engine === "mysql" ? "MySQL" : "Server"} ${report.server_version}`;
+        // Percona Server keeps engine "mysql"; its reports name the product.
+        const product = 'server_product' in report && typeof report.server_product === "string" ? report.server_product : null;
+        engineVersion = `${product || (engine === "mariadb" ? "MariaDB" : engine === "mysql" ? "MySQL" : "Server")} ${report.server_version}`;
         versionAt = seen;
       }
     }
     setLastRead((old) => old.key === activeKey && old.at === at && old.engineVersion === engineVersion
       ? old : { key: activeKey, at, engineVersion });
   }, [activeKey, health.report, health.key, innodb, errorlog, sessions, waits, io, locks, indexes, tables,
-    config, instruments, replication, maintenance.tools, maintenance.upgrade, analysis, topStatements.top, topStatements.refreshedAt]);
+    config, instruments, replication, cluster, accounts, diagram, maintenance.tools, maintenance.upgrade, analysis, topStatements.top, topStatements.refreshedAt]);
 
   // Links between views.
   const [instrumentsTarget, setInstrumentsTarget] = useState<{ row: string; n: number } | null>(null);
@@ -520,6 +557,7 @@ export function Server({
     top: topStatements.top?.key || "",
     sessions: sessions?.key || "",
     replication: replication?.key || "",
+    cluster: cluster?.key || "",
     waits: waits?.key || "",
     io: io?.key || "",
     locks: locks?.key || "",
@@ -551,23 +589,39 @@ export function Server({
   // Layout: three panes when wide, a sheet inspector below SHEET_WIDTH, and a
   // pushed list (the views list first, then the view) below COMPACT_WIDTH.
   const placeRef = useRef<HTMLElement>(null);
-  const [width, setWidth] = useState(0);
+  const [width, setWidth] = useState(() => (typeof window !== "undefined" ? window.innerWidth : 0));
   useEffect(() => {
     const element = placeRef.current;
     if (!element) return;
-    const measure = () => setWidth(element.clientWidth);
+    const measure = () => {
+      const w = element.clientWidth;
+      if (w > 0) setWidth((prev) => (prev === w ? prev : w));
+    };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
   const compact = width > 0 && width < COMPACT_WIDTH;
-  const floatingNavOpen = !tuningPlace && onScreen && navCollapsed && !compact && floatingMenuOpen;
-  useFocusScope(floatingMenuRef, {
-    open: floatingNavOpen, onClose: () => setFloatingMenuOpen(false),
-    returnFocus: () => floatingMenuButton.current,
-    initialFocus: () => floatingMenuRef.current?.querySelector<HTMLElement>('[aria-current="page"]'),
-  });
+  // The list floats in a wide window only; the narrow layout keeps its own
+  // pushed list (Back), and Tuning has no list of views.
+  const floating = !singlePlace && navCollapsed && !compact;
+  const floatingNavOpen = floating && onScreen && floatingMenuFor === kind;
+  useEffect(() => {
+    if (!floating || !onScreen || floatingMenuFor !== kind) setFloatingMenuFor(null);
+  }, [floating, onScreen, kind]);
+  // Dock from the floating list's header: the Dock button goes with the list,
+  // so focus lands on the toolbar's Dock/Float toggle (now Float the list of
+  // views), or on the view's title when there is no toggle, never on the page.
+  useEffect(() => {
+    if (floating || !dockFocus.current) return;
+    dockFocus.current = false;
+    const focused = document.activeElement;
+    if (focused && focused !== document.body && focused.isConnected) return;
+    const toggle = placeRef.current?.querySelector<HTMLElement>(".server-sidebar-toggle");
+    const target = toggle ?? document.getElementById(`${kind}-title`);
+    target?.focus({ preventScroll: true });
+  }, [floating, kind]);
   const sheet = width > 0 && width < SHEET_WIDTH;
   const [pushed, setPushed] = useState(false);
   const showList = compact && !pushed;
@@ -606,8 +660,13 @@ export function Server({
   /** Choose a view from the list (narrow layouts push it on screen). Tuning
    * has one home, its own place: a route to it goes there. */
   function choose(view: ServerKind) {
-    if (view === "replication") {
-      onNavigatePlace?.("replication", "replication");
+    if (view === "replication" || view === "cluster") {
+      onNavigatePlace?.(view, view);
+      return;
+    }
+    // Database diagram is a place of its own (it was a Schema view).
+    if (view === "diagram") {
+      if (!diagramPlace) onNavigatePlace?.("diagram", "diagram");
       return;
     }
     if (view === "tuning" || view === "report") {
@@ -654,11 +713,11 @@ export function Server({
   // shell, so Refresh all and the loop banner below still cover it.
   const [keptViews, setKeptViews] = useState<ServerKind[]>(() => {
     const list: ServerKind[] = [];
-    if (initial?.kind && ["maintenance", "tables", "instruments"].includes(initial.kind)) list.push(initial.kind);
+    if (initial?.kind && ["maintenance", "tables", "instruments", "accounts"].includes(initial.kind)) list.push(initial.kind);
     return list;
   });
   function keepMounted(view: ServerKind) {
-    if (["maintenance", "tables", "instruments"].includes(view))
+    if (["maintenance", "tables", "instruments", "accounts"].includes(view))
       setKeptViews((list) => (list.includes(view) ? list : [...list, view]));
   }
   /** A link from a report may read with that report's schema or table only
@@ -794,6 +853,10 @@ export function Server({
   const [refresh, setRefresh] = useState<RefreshRun | null>(null);
   const refreshControl = useRef<{ id: number; controller: AbortController } | null>(null);
   const refreshSeq = useRef(0);
+  // Refresh all turns into Stop in the same spot: Stop takes clicks only after
+  // STOP_ARM_MS, so a double click on Refresh all does not stop the run it started.
+  const stopArmedAt = useRef(0);
+  const [stopArmed, setStopArmed] = useState(true);
   const [clock, setClock] = useState(0);
   /** The report object each view shows now (identity, never compared by value). */
   const reportOf = (view: ServerKind): unknown =>
@@ -806,6 +869,7 @@ export function Server({
       top: topStatements.top?.report,
       sessions: sessions?.report,
       replication: replication?.report,
+      cluster: cluster?.report,
       waits: waits?.report,
       io: io?.report,
       locks: locks?.report,
@@ -902,8 +966,7 @@ export function Server({
     // A changed database selection requires the diagram's own replacement
     // review. Refresh only the existing document's source, or the explicit
     // picker/default database when no document has been built yet.
-    const database = diagram?.source.kind === "server" && diagram.source.key === key
-      ? diagram.source.database : !diagram ? diagramDatabase.trim() : "";
+    const database = refreshDiagramDatabase(diagram, diagramDatabase, key);
     if (database) {
       add("diagram", `diagram:${JSON.stringify(database)}`, "schema-diagram/read", c => ({ connection: c, database }), b => {
         const report = validateDiagram((b as Bound<SchemaDiagram>).report);
@@ -925,6 +988,9 @@ export function Server({
     // views; loop starts, preflights, jobs and the upgrade check never run in
     // Refresh all.
     add("replication", "replication", "live/replication", (c) => ({ connection: c }), (b) => setReplication(b as Bound<ReplicationReport>));
+    // The Cluster place's status (read-only); it also tells the sidebar when
+    // the connection in use is not part of a cluster.
+    add("cluster", "cluster", "live/cluster", (c) => ({ connection: c }), (b) => setCluster(b as Bound<ClusterReport>));
     add("maintenance", "maintenance-tools", "lifecycle/tools", (c) => ({ connection: c }), (b) =>
         setMaintenance((m) => ({ ...m, tools: b as Bound<LifecycleTools> })),
       );
@@ -950,6 +1016,9 @@ export function Server({
     const id = ++refreshSeq.current;
     const controller = new AbortController();
     refreshControl.current = { id, controller };
+    stopArmedAt.current = Date.now() + STOP_ARM_MS;
+    setStopArmed(false);
+    window.setTimeout(() => setStopArmed(true), STOP_ARM_MS);
     setRefresh({
       id,
       key,
@@ -964,7 +1033,12 @@ export function Server({
     const reportTask = tasks.find(task => task.view === "report");
     const worker = async (queue: RefreshTask[]) => {
       for (let task = queue.shift(); task && !controller.signal.aborted; task = queue.shift()) {
-        update(task.view, { state: "loading" });
+        // A report joined from Tuning keeps that read's original start time.
+        // Store it in this run too: either waiter can finish first, and opening
+        // Tuning midway through Refresh all must show the elapsed read time.
+        const startedAt = task.view === "report" && analysisStarted?.key === key && readRunning(key, task.params)
+          ? analysisStarted.at : Date.now();
+        update(task.view, { state: "loading", startedAt });
         // A newer read of this view (its own Refresh) wins over this one.
         const generation = nextGeneration(task.view);
         const current = task;
@@ -983,6 +1057,7 @@ export function Server({
           const stopped = controller.signal.aborted || (e as Error).name === "AbortError";
           const report = reportOfRef.current(current.view);
           update(current.view, stopped ? { state: "stopped", report } : { state: "failed", error: (e as Error).message, report });
+          if (!stopped && current.view === "cluster" && connectionKey(latestConnection.current) === key) propOnClusterFailed?.(key, (e as Error).message);
         }
       }
     };
@@ -1017,9 +1092,10 @@ export function Server({
   }
   const refreshRef = useRef({ refreshAll, stopRefresh });
   refreshRef.current = { refreshAll, stopRefresh };
-  // Refresh all belongs to the Server and Workload toolbars; Tuning has none.
-  const tuningRef = useRef(tuningPlace);
-  tuningRef.current = tuningPlace;
+  // Refresh all belongs to the Server and Workload toolbars; Tuning and
+  // Database diagram have none.
+  const tuningRef = useRef(singlePlace);
+  tuningRef.current = singlePlace;
   // Switching the connection, or leaving the workspace, stops it.
   useEffect(() => {
     if (refreshControl.current && refresh && refresh.key !== activeKey) stopRefresh("The connection in use changed.");
@@ -1080,7 +1156,7 @@ export function Server({
   const configNow = current(config);
   const instrumentsNow = current(instruments);
   const topNow = current(topStatements.top);
-  const badges: Partial<Record<ServerKind, Pick<SourceItem, "badge" | "badgeText">>> = {};
+  const badges: Partial<Record<ServerKind, Marker>> = {};
   if (health.report && health.key === activeKey) {
     const tone = toneOf(health.report.summary.status);
     badges.health = dot(tone, TONE_TEXT[tone]);
@@ -1134,19 +1210,6 @@ export function Server({
         ? dot("watch", `${missing} views missing instruments`)
         : dot("ok", "ready");
   }
-  // Replication: only a report of the connection in use counts; Group
-  // Replication channels stay Not judged, never a badge tone.
-  const replicationNow = current(replication);
-  if (replicationNow) {
-    if (!replicationNow.replica) badges.replication = dot("unknown", "no replica channels");
-    else if (replicationNow.summary.failed > 0)
-      badges.replication = count(replicationNow.summary.failed, "danger", `${replicationNow.summary.failed} failed`);
-    else {
-      const judged = replicationNow.channels.filter((c) => c.judged);
-      const worst = worstTone(judged.map((c) => toneOf(c.status)));
-      badges.replication = worst === "ok" ? dot("ok", "replicating") : dot(worst, TONE_TEXT[worst]);
-    }
-  }
   // Maintenance: jobs of the connection in use only, from what is already
   // loaded; nothing is polled or read for a badge.
   const maintenanceJobsNow = maintenance.jobs.filter((b) => b.key === activeKey);
@@ -1162,19 +1225,6 @@ export function Server({
     badges.maintenance = count(maintenanceFailed.length, "danger", `${maintenanceFailed.length} failed`);
   const accountsNow = current(accounts);
   if (accountsNow) badges.accounts = count(accountsNow.accounts.length, "neutral", `${accountsNow.accounts.length} accounts read${accountsNow.complete ? "" : " (partial list)"}`);
-  const analysisNow = current(analysis);
-  if (analysisNow) {
-    const tone = toneOf(analysisNow.summary.status);
-    badges.report = dot(tone, TONE_TEXT[tone]);
-    badges.tuning = analysisNow.summary.problem > 0
-      ? count(analysisNow.summary.problem, "danger", `${analysisNow.summary.problem} critical tuning issues`)
-      : analysisNow.summary.watch > 0
-      ? count(analysisNow.summary.watch, "warn", `${analysisNow.summary.watch} tuning warnings`)
-      : dot("ok", "Tuning optimal");
-  } else if (health.report && health.key === activeKey) {
-    const tone = toneOf(health.report.summary.status);
-    badges.tuning = dot(tone, TONE_TEXT[tone]);
-  }
   // Refresh all on this connection: a spinner while a view waits or reads, and
   // a mark on a view it could not refresh (its report is the previous one).
   const refreshHere = refresh && refresh.key === activeKey ? refresh : null;
@@ -1213,28 +1263,90 @@ export function Server({
   const activeGroups = place === "workload" ? WORKLOAD_GROUPS : SERVER_GROUPS;
   const groups = activeGroups.map((label) => ({
     label,
-    items: activeViews.filter((v) => v.group === label).map((v) => ({ id: v.id, label: v.label, icon: v.icon, ...marked(v.id) })),
+    items: activeViews.filter((v) => v.group === label).map((v) => {
+      const { badge, badgeText } = marked(v.id) || {};
+      return { id: v.id, label: v.label, icon: v.icon, badge, badgeText };
+    }),
   }));
-  const refreshableHere = refreshTasks();
+  // Counting does not allocate request closures or inspect in-flight reads on
+  // every render; build the actual tasks only when Refresh all starts.
+  const refreshableCount = ALL_SERVER_VIEWS.length + EXTRA_REFRESH_SECTIONS.length +
+    (refreshDiagramDatabase(diagram, diagramDatabase, activeKey) ? 1 : 0);
   const refreshDone = refreshHere ? refreshHere.views.filter((v) => outcome(v) === "ok").length : 0;
   const refreshFailed = refreshHere ? refreshHere.views.filter((v) => v.state === "failed") : [];
+  // While it runs: how far it got and the views being read now (a slow view is
+  // named, not hidden behind a count); then what it refreshed and what failed.
+  const refreshReading = refreshHere && running ? refreshHere.views.filter((v) => v.state === "loading").map((v) => v.label) : [];
   const refreshText = !refreshHere
     ? ""
     : running
-      ? `Refreshing ${Math.min(refreshDone + 1, refreshHere.views.length)} of ${refreshHere.views.length}…`
+      ? `Refreshing ${Math.min(refreshDone + 1, refreshHere.views.length)} of ${refreshHere.views.length}` +
+        (refreshReading.length
+          ? ` · ${refreshReading.slice(0, 3).join(", ")}${refreshReading.length > 3 ? ` and ${refreshReading.length - 3} more` : ""}`
+          : "") + "…"
       : `${refreshDone} of ${refreshHere.views.length} ${refreshHere.views.length === 1 ? "view" : "views"} refreshed` +
         (refreshFailed.length ? `; ${refreshFailed.map((v) => v.label).join(", ")} failed` : "") +
         (refreshHere.state === "stopped" && refreshDone + refreshFailed.length < refreshHere.views.length ? "; stopped" : "");
+  // Announced once at the start and once at the end, never per view.
+  const refreshAnnounce = !refreshHere ? "" : running
+    ? `Refreshing ${refreshHere.views.length} ${refreshHere.views.length === 1 ? "view" : "views"} on ${refreshHere.label}…`
+    : refreshText + ".";
+  const refreshSeconds = useElapsed(running && refreshHere ? Date.parse(refreshHere.started) : null);
   const viewFailure = staleNow(refreshOf(kind)) ? refreshOf(kind) : undefined;
+  const listLabel = place === "workload" ? "Workload views" : "Server views";
+  const others = othersMarker(activeViews.filter((v) => v.id !== kind).map((v) => badges[v.id]?.tone));
+  /** The floating list of views, opened from the view's title (ViewLayout
+   * draws it through ViewSwitcherContext, for the view on screen only). */
+  const switcherFor = (view: ServerKind): ViewSwitcherShared | null => floating ? {
+    label: listLabel,
+    open: floatingNavOpen,
+    setOpen: setFloatingMenuOpen,
+    active: view === kind,
+    others,
+    takeFocus: takeSwitcherFocus,
+    list: (
+      <>
+        <div className="server-floating-header">
+          <span>{listLabel}{others ? ` · ${others.text}` : ""}</span>
+          <button
+            type="button"
+            className="icon-button"
+            title="Dock the list of views"
+            aria-label="Dock the list of views"
+            onClick={() => {
+              dockFocus.current = true;
+              setFloatingMenuOpen(false);
+              toggleNavCollapsed();
+            }}
+          >
+            <Icon name="browser" size={13} />
+          </button>
+        </div>
+        <SourceList
+          label={listLabel}
+          groups={groups}
+          current={kind}
+          onSelect={(id) => {
+            if (id !== kind) switcherFocus.current = true;
+            setFloatingMenuOpen(false);
+            choose(id as ServerKind);
+          }}
+          idPrefix="server-nav-"
+          selectOnFocus={false}
+        />
+      </>
+    ),
+  } : null;
 
   // Performance Schema on or off, from any report already loaded for this connection.
   const known = [instrumentsNow, current(waits), current(io), indexesNow, configNow, sessionsNow, innodbNow, errorlogNow].find(
     (r): r is NonNullable<typeof r> => !!r && typeof r.performance_schema === "boolean",
   );
   const performanceSchema = instrumentsNow ? instrumentsNow.status.enabled : known ? known.performance_schema : null;
-  // The Tuning place has no list of views to go back to.
-  const onBack = compact && !tuningPlace ? back : undefined;
-  const analysisPhase = running && refreshHere?.views.some(v => v.view === "report" && v.state === "loading");
+  // Tuning and Database diagram have no list of views to go back to.
+  const onBack = compact && !singlePlace ? back : undefined;
+  const refreshAnalysis = refreshHere?.views.find(v => v.view === "report");
+  const analysisPhase = !!running && refreshAnalysis?.state === "loading";
   const common = { connection, disabled: disabled || !!analysisPhase, onBack };
   // A persistent status area: an active skip loop or a running maintenance
   // job stays reachable from any view, so Stop and Cancel are never lost
@@ -1305,27 +1417,37 @@ export function Server({
             runBlocked={running}
             source={analysisSource}
             reads={analysisReads}
+            refreshRunning={analysisPhase}
+            startedAt={analysisReads.loading && analysisStarted?.key === activeKey ? analysisStarted.at
+              : analysisPhase ? refreshAnalysis.startedAt : undefined}
             wasRun={reportRun}
             settings={settings}
             onDigest={onDigest}
             onOpenLink={openLink}
             onOpenLesson={onOpenLesson}
             onRunReport={async () => {
-              if (disabled || running) return;
+              if (disabled || running || analysisReads.running()) return;
+              const started = { key: analysisReads.currentKey(), at: Date.now() };
+              setAnalysisStarted(started);
               let from: Connection | null = null;
-              await analysisReads.run(
-                "report",
-                "Running the full analysis…",
-                (c, signal) => {
-                  from = c;
-                  return api<AnalysisReport>("live/report", { connection: c }, signal);
-                },
-                (b) => {
-                  setAnalysis(b);
-                  setAnalysisSource(reportSource(from || connection));
-                  setReportRun(true);
-                },
-              );
+              try {
+                await analysisReads.run(
+                  "report",
+                  "Running the full analysis…",
+                  (c, signal) => {
+                    from = c;
+                    return api<AnalysisReport>("live/report", { connection: c }, signal);
+                  },
+                  (b) => {
+                    setAnalysis(b);
+                    setAnalysisSource(reportSource(from || connection));
+                    setReportRun(true);
+                  },
+                );
+              } finally {
+                // A previous connection's completion cannot clear a newer run.
+                setAnalysisStarted(current => current === started ? null : current);
+              }
             }}
             onOpenSql={onOpenSql}
             onOpenView={openView}
@@ -1421,8 +1543,6 @@ export function Server({
         );
       case "diagram":
         return <SchemaDiagramView {...common} selection={selection("diagram")} document={diagram} onDocument={setDiagram} selectedDatabase={diagramDatabase} onDatabaseChange={chooseDiagramDatabase} />;
-      case "accounts":
-        return <AccountsView {...common} selection={selection("accounts")} report={accounts} onReport={setAccounts} />;
       case "config":
         return <ConfigView {...common} selection={selection("config")} report={config} onReport={setConfig} onOpenSql={onOpenSql} />;
       // Operations views mount once and stay mounted, hidden, in
@@ -1430,9 +1550,11 @@ export function Server({
       // switching views and keeps its polls and control paths. Replication
       // is its own place (choose() routes there).
       case "replication":
+      case "cluster":
       case "maintenance":
       case "tables":
       case "instruments":
+      case "accounts":
         return null;
     }
   })();
@@ -1444,14 +1566,14 @@ export function Server({
         <ViewActivityContext.Provider value={reportActivity}>
         <ViewBackLabelContext.Provider value={place === "workload" ? "Workload" : "Server"}>
         <section
-          className={`server-place${tuningPlace ? " is-tuning-place" : navCollapsed && !compact ? " is-nav-collapsed" : ""}`}
-          aria-labelledby={tuningPlace ? "tuning-place-title" : "server-title"}
-          data-place-view={tuningPlace ? "tuning" : undefined}
+          className={`server-place${tuningPlace ? " is-tuning-place is-single-place" : diagramPlace ? " is-diagram-place is-single-place" : navCollapsed && !compact ? " is-nav-collapsed" : ""}`}
+          aria-labelledby={tuningPlace ? "tuning-place-title" : diagramPlace ? "diagram-place-title" : "server-title"}
+          data-place-view={tuningPlace ? "tuning" : diagramPlace ? "diagram" : undefined}
           ref={placeRef}
         >
-          {tuningPlace ? (
+          {singlePlace ? (
             // The top bar names the place; its view toolbar is the header.
-            <h1 id="tuning-place-title" className="visually-hidden">Tuning</h1>
+            <h1 id={tuningPlace ? "tuning-place-title" : "diagram-place-title"} className="visually-hidden">{tuningPlace ? "Tuning" : "Database diagram"}</h1>
           ) : (
           <div className={`place-toolbar has-refresh-all${compact ? " is-compact" : ""}`}>
             <div className="place-title">
@@ -1461,28 +1583,29 @@ export function Server({
                   <>
                     <p>
                       Live views of the connection in use for query workload and resource consumption:
-                      Top statements, Sessions, Waits, and I/O. Each view reads the server only when you
-                      click Load or Refresh, and its numbers stay in memory until you close the workspace.
+                      Top statements, Processlist, Waits, and I/O. Each view reads when you open it;
+                      Refresh reads again or retries a failed read. Its numbers stay in memory until you close the workspace.
                     </p>
                     <p>
-                      They only read, except Kill in Sessions (with explicit confirmation).
+                      They only read, except Kill in Processlist (with explicit confirmation).
                     </p>
                     <p>
-                      Refresh all (⌥⌘R) reads every Workload section for this connection.
+                      Refresh all (⌥⌘R) reads Server and Workload sections, Replication and Cluster, including unopened views, three at a time. Full analysis runs in a separate phase. Database diagram is read once a database is chosen; imported diagrams stay unchanged. Maintenance refreshes tool detection only.
                     </p>
                   </>
                 ) : (
                   <>
                     <p>
-                      Live views of the connection in use, grouped by job. Each view reads the server only when you
-                      click Load or Refresh, and its numbers stay in memory until you close the workspace.
+                      Live views of the connection in use, grouped by job. Each view reads when you open it;
+                      Refresh reads again or retries a failed read. Tables and Indexes still ask before reading a large schema.
+                      Numbers stay in memory until you close the workspace.
                     </p>
                     <p>
                       They only read. myflames changes the server only when you choose an action and confirm it: Kill in
                       Locks, Change in Parameters, a skip in Replication, or a dump, restore or clone in
                       Maintenance, or changes in Users and roles (your account needs the privilege).
                     </p>
-                    <p>Refresh all (⌥⌘R) reads every Server section, including unopened views, three at a time. Full analysis runs afterwards. Database diagram needs a chosen database; imported diagrams stay unchanged. Maintenance refreshes tool detection only.</p>
+                    <p>Refresh all (⌥⌘R) reads Server and Workload sections, Replication and Cluster, including unopened views, three at a time. Full analysis runs in a separate phase. Database diagram is read once a database is chosen; imported diagrams stay unchanged. Maintenance refreshes tool detection only.</p>
                   </>
                 )}
               </InfoPopover>
@@ -1537,7 +1660,13 @@ export function Server({
             {picker}
             <div className="refresh-all" role="group" aria-label="Refresh all">
               {running ? (
-                <ToolbarButton className="refresh-all-stop" onClick={() => stopRefresh()} title="Stop refreshing (Escape)">
+                <ToolbarButton
+                  className="refresh-all-stop"
+                  aria-busy="true"
+                  aria-disabled={!stopArmed || undefined}
+                  onClick={() => { if (Date.now() >= stopArmedAt.current) stopRefresh(); }}
+                  title="Stop refreshing (Escape)"
+                >
                   <span className="spinner" aria-hidden="true" />
                   Stop
                 </ToolbarButton>
@@ -1546,20 +1675,27 @@ export function Server({
                   className="refresh-all-button"
                   data-action="refresh-all"
                   disabled={disabled}
-                  title={`Refresh all ${refreshableHere.length} Server sections for this connection (⌥⌘R)`}
+                  title={`Refresh all ${refreshableCount} sections for this connection (⌥⌘R)`}
                   onClick={() => void refreshAll()}
                 >
                   Refresh all
                 </ToolbarButton>
               )}
-              <span className="visually-hidden" role="status">{refreshHere ? refreshText : ""}</span>
+              <span className="visually-hidden" role="status">{refreshAnnounce}</span>
               {refreshHere && (
                 <Popover
                   label="Refresh all: each view"
                   wide
                   className="refresh-all-anchor"
                   buttonClassName={`text-button refresh-all-status${refreshFailed.length ? " has-failures" : ""}`}
-                  trigger={<span>{refreshText}</span>}
+                  trigger={
+                    <span>
+                      {refreshText}
+                      {running && refreshSeconds * 1000 >= ACTION_ELAPSED_AFTER_MS && (
+                        <span className="action-elapsed" aria-hidden="true">{refreshSeconds} s so far</span>
+                      )}
+                    </span>
+                  }
                 >
                   <h3 className="popover-title">Refresh all on {refreshHere.label}</h3>
                   <ul className="refresh-all-list">
@@ -1595,64 +1731,21 @@ export function Server({
             </div>
           </div>
           )}
-          <div className={`server-layout${compact ? " is-compact" : ""}${showList && !tuningPlace ? " show-list" : ""}${navCollapsed && !compact && !tuningPlace ? " is-nav-collapsed" : ""}`}>
-            {!tuningPlace && (!navCollapsed || compact || floatingMenuOpen) && (
-              <div
-                ref={floatingMenuRef}
-                tabIndex={-1}
-                role={floatingNavOpen ? "dialog" : undefined}
-                aria-label={floatingNavOpen ? (place === "workload" ? "Workload views" : "Server views") : undefined}
-                className={`server-source-wrap${navCollapsed && !compact ? " is-floating" : ""}`}
-              >
-                {navCollapsed && !compact && (
-                  <div className="server-floating-header">
-                    <span>{place === "workload" ? "Workload views" : "Server views"}</span>
-                    <button
-                      type="button"
-                      className="icon-button"
-                      title="Dock sidebar menu"
-                      aria-label="Dock sidebar menu"
-                      onClick={() => {
-                        setFloatingMenuOpen(false);
-                        toggleNavCollapsed();
-                      }}
-                    >
-                      <Icon name="browser" size={13} />
-                    </button>
-                  </div>
-                )}
+          <div className={`server-layout${compact ? " is-compact" : ""}${showList && !singlePlace ? " show-list" : ""}${navCollapsed && !compact && !singlePlace ? " is-nav-collapsed" : ""}`}>
+            {!singlePlace && !floating && (
+              <div className="server-source-wrap">
                 <SourceList
-                  label={place === "workload" ? "Workload views" : "Server views"}
+                  label={listLabel}
                   groups={groups}
                   current={kind}
-                  onSelect={(id) => {
-                    choose(id as ServerKind);
-                    if (navCollapsed && !compact) setFloatingMenuOpen(false);
-                  }}
+                  onSelect={(id) => choose(id as ServerKind)}
                   idPrefix="server-nav-"
                   pushed={compact}
-                  selectOnFocus={!compact && !floatingNavOpen}
+                  selectOnFocus={!compact}
                 />
               </div>
             )}
             <div className="server-content">
-              {!tuningPlace && navCollapsed && !compact && (
-                <div className="server-floating-trigger-container">
-                  <button
-                    ref={floatingMenuButton}
-                    type="button"
-                    className={`server-floating-nav-btn${floatingMenuOpen ? " active" : ""}`}
-                    aria-label="Toggle views menu"
-                    aria-haspopup="dialog"
-                    aria-expanded={floatingMenuOpen}
-                    onClick={() => setFloatingMenuOpen((o) => !o)}
-                  >
-                    <Icon name="menu" size={14} />
-                    <span>{ALL_SERVER_VIEWS.find((v) => v.id === kind)?.label || "Views"}</span>
-                    <Icon name="chevron-down" size={10} />
-                  </button>
-                </div>
-              )}
               {viewFailure && (
                 <p className="refresh-note" role="note" data-view={kind}>
                   <Icon name="warning" size={14} />
@@ -1675,9 +1768,12 @@ export function Server({
                   <ToolbarButton onClick={() => choose("maintenance")}>Open Maintenance</ToolbarButton>
                 </div>
               )}
-              <ViewOnScreenContext.Provider value={onScreen && !(compact && showList && !tuningPlace)}>{view}</ViewOnScreenContext.Provider>
+              <ViewSwitcherContext.Provider value={switcherFor(kind)}>
+                <ViewOnScreenContext.Provider value={onScreen && !(compact && showList && !singlePlace)}>{view}</ViewOnScreenContext.Provider>
+              </ViewSwitcherContext.Provider>
               {keptViews.includes("tables") && (
                 <div className="server-keep" hidden={kind !== "tables"}>
+                  <ViewSwitcherContext.Provider value={switcherFor("tables")}>
                   <ViewOnScreenContext.Provider value={onScreen && kind === "tables" && !(compact && showList)}>
                   <InspectorContext.Provider value={{...inspector, open: inspector.open && kind === "tables"}}>
                     <TablesView
@@ -1696,10 +1792,12 @@ export function Server({
                     />
                   </InspectorContext.Provider>
                   </ViewOnScreenContext.Provider>
+                  </ViewSwitcherContext.Provider>
                 </div>
               )}
               {keptViews.includes("instruments") && (
                 <div className="server-keep" hidden={kind !== "instruments"}>
+                  <ViewSwitcherContext.Provider value={switcherFor("instruments")}>
                   <ViewOnScreenContext.Provider value={onScreen && kind === "instruments" && !(compact && showList)}>
                   <InspectorContext.Provider value={{...inspector, open: inspector.open && kind === "instruments"}}>
                     <InstrumentsView
@@ -1714,10 +1812,25 @@ export function Server({
                     />
                   </InspectorContext.Provider>
                   </ViewOnScreenContext.Provider>
+                  </ViewSwitcherContext.Provider>
+                </div>
+              )}
+              {/* Account writes and one-time passwords must survive navigation
+                  until acknowledged, without saving secrets in the session. */}
+              {keptViews.includes("accounts") && (
+                <div className="server-keep" hidden={kind !== "accounts"}>
+                  <ViewSwitcherContext.Provider value={switcherFor("accounts")}>
+                  <ViewOnScreenContext.Provider value={onScreen && kind === "accounts" && !(compact && showList)}>
+                  <InspectorContext.Provider value={{...inspector, open: inspector.open && kind === "accounts"}}>
+                    <AccountsView {...common} selection={selection("accounts")} report={accounts} onReport={setAccounts} />
+                  </InspectorContext.Provider>
+                  </ViewOnScreenContext.Provider>
+                  </ViewSwitcherContext.Provider>
                 </div>
               )}
               {keptViews.includes("maintenance") && (
                 <div className="server-keep" hidden={kind !== "maintenance"}>
+                  <ViewSwitcherContext.Provider value={switcherFor("maintenance")}>
                   <ViewOnScreenContext.Provider value={onScreen && kind === "maintenance" && !(compact && showList)}>
                   <MaintenanceView
                     {...common}
@@ -1728,6 +1841,7 @@ export function Server({
                     onMemory={setMaintenance}
                   />
                   </ViewOnScreenContext.Provider>
+                  </ViewSwitcherContext.Provider>
                 </div>
               )}
             </div>

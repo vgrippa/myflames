@@ -33,7 +33,7 @@ import {
 
 const SOURCES: Record<string, string> = {
   performance_schema: "Performance Schema",
-  userstat: "MariaDB user statistics",
+  userstat: "User statistics (userstat)",
   status: "server-wide counters only",
 };
 
@@ -324,7 +324,8 @@ export function IoView({
       otherConnection={other}
       inspector={inspector}
       inspectorEmpty={<p>Select a rate, a table or a file to see its numbers and related views.</p>}
-      status={<ViewStatus loading={reads.loading} error={error} />}
+      status={<ViewStatus loading={reads.loading} error={error} onStop={reads.stop} onRetry={error ? () => void load() : undefined}
+        doneAt={reads.doneAt} slowAfter={(interval + 20) * 1000} />}
     >
       {!report && !loading && !error && (
         <EmptyState
@@ -460,8 +461,8 @@ export function IoView({
             </section>
           )}
           {report.global.length > 0 && (
-            <Disclosure title="Server-wide InnoDB I/O" className="io-global-rates" open={!perTable}>
-              <TileGrid label="Server-wide InnoDB I/O">
+            <Disclosure title={perTable ? "More server-wide counters" : "Server-wide InnoDB I/O"} className="io-global-rates" open={!perTable}>
+              <TileGrid label={perTable ? "More server-wide counters" : "Server-wide InnoDB I/O"}>
                 {report.global.map((m) => {
                   const [value, unit] = rate(m);
                   return (

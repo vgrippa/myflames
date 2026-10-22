@@ -28,6 +28,7 @@ import sys
 
 from . import accounts, dbops, privileges
 from .connector import ConnectorError, terminal_text
+from .server_info import server_label
 from .workspace_cli import (_add_connection_args, _connection_settings, _emit_text, _endpoint, _fail,
                             _resolve_connection, _saved_profile, _table)
 
@@ -89,8 +90,7 @@ def _read(args, work):
 # ---- privileges ------------------------------------------------------------------------
 
 def format_privileges(report):
-    lines = ['%s on %s %s' % (report.get('account'), 'MariaDB' if report.get('engine') == 'mariadb' else 'MySQL',
-                              report.get('version'))]
+    lines = ['%s on %s' % (report.get('account'), server_label(report, 'version'))]
     active = ', '.join(r['name'] + ('@' + r['host'] if r.get('host') else '') for r in report.get('current_roles', []))
     lines.append('Active roles: %s' % (active or 'none'))
     lines.append('')

@@ -20,13 +20,13 @@ if (process.argv.includes("--unit")) {
     plugins: [{ name: "config-unit", enforce: "pre", transform(code, id) {
       if (id.endsWith("/src/Config.tsx")) return code + "\nexport { parametersOf, allowedValues, unmodifiable, draftValue, sourceDetails, applyType, planParameterBatch, applyParameterBatch };";
     }, resolveId(id) { if (id === entry) return entry; }, load(id) {
-      if (id === entry) return `export { openSessionSql, parametersOf, allowedValues, unmodifiable, draftValue, sourceDetails, applyType, planParameterBatch, applyParameterBatch } from ${JSON.stringify(path.join(workspace, "src/Config.tsx"))}; export { connectionKey } from ${JSON.stringify(path.join(workspace, "src/binding.ts"))};`;
+      if (id === entry) return `export { openSessionSql, documentationLink, oneLine, parametersOf, allowedValues, unmodifiable, draftValue, sourceDetails, applyType, planParameterBatch, applyParameterBatch } from ${JSON.stringify(path.join(workspace, "src/Config.tsx"))}; export { connectionKey } from ${JSON.stringify(path.join(workspace, "src/binding.ts"))};`;
     } }], build: { ssr: true, write: false, rollupOptions: { input: entry, output: { inlineDynamicImports: true } } } });
   const temporary = await fs.mkdtemp(path.join(workspace, ".config-unit-"));
   try {
     const module = path.join(temporary, "unit.mjs");
     await fs.writeFile(module, compiled.output.find(f => f.type === "chunk").code);
-    const { openSessionSql, parametersOf, allowedValues, unmodifiable, draftValue, sourceDetails, applyType, planParameterBatch, applyParameterBatch, connectionKey } = await import(pathToFileURL(module));
+    const { openSessionSql, documentationLink, oneLine, parametersOf, allowedValues, unmodifiable, draftValue, sourceDetails, applyType, planParameterBatch, applyParameterBatch, connectionKey } = await import(pathToFileURL(module));
     globalThis.fetch = () => { throw new Error("A handoff must never call an API"); };
     const opened = [], callback = sql => opened.push(sql);
     for (const statement of ["SET SESSION character_set_results = NULL", "SET SESSION character_set_results = 'NULL'", "SET SESSION sql_mode = 'STRICT_TRANS_TABLES';"]) {
@@ -65,9 +65,31 @@ if (process.argv.includes("--unit")) {
     assert.match(unmodifiable(find("truncated_parameter"), "mysql"), /truncated/);
     assert.equal(applyType(find("unknown_parameter")), "Unknown");
     assert.equal(sourceDetails(find("modified_parameter")), "/etc/my.cnf · admin@localhost at 2026-10-18T12:00:00Z");
+    // Documentation links: only HTTPS pages of the official manuals the desktop app opens.
+    for (const url of ["https://dev.mysql.com/doc/refman/8.4/en/innodb-parameters.html#sysvar_innodb_buffer_pool_size",
+      "https://mariadb.com/docs/server/server-usage/storage-engines/innodb/innodb-system-variables#innodb_buffer_pool_size",
+      "https://docs.percona.com/percona-server/8.4/innodb-corrupt-table-action.html#innodb_corrupt_table_action"])
+      assert.deepEqual(documentationLink({ url, source: "Manual" }), { url, source: "Manual" });
+    for (const url of ["http://dev.mysql.com/doc/", "https://dev.mysql.com.evil.test/", "https://user@dev.mysql.com/", "https://dev.mysql.com:8443/",
+      "javascript:alert(1)", "https://example.com/", "not a url"])
+      assert.equal(documentationLink({ url, source: "Manual" }), null, url);
+    assert.equal(documentationLink(null), null); assert.equal(documentationLink(undefined), null);
+    assert.ok(mysql.parameters.items.filter(p => p.documentation).every(p => documentationLink(p.documentation)), "every fixture link is accepted");
+    // One sentence: the server's description, else the opening sentence of a check about this parameter first.
+    const checksOf = p => p.checks.map(k => mysql.checks.find(c => c.key === k)).filter(Boolean);
+    assert.equal(oneLine(find("slow_query_log"), checksOf(find("slow_query_log"))), "The slow query log records statements that ran longer than long_query_time.");
+    assert.equal(oneLine({ ...find("innodb_buffer_pool_size"), description: null }, checksOf(find("innodb_buffer_pool_size"))),
+      "The memory InnoDB uses to cache data and index pages.");
+    assert.equal(oneLine({ ...find("long_query_time"), description: null }, checksOf(find("long_query_time"))), "", "a check about another parameter first is not this parameter's description");
+    assert.equal(oneLine({ ...find("max_connections"), description: "Uses 2.5 MiB per thread. Second sentence." }, []), "Uses 2.5 MiB per thread.");
+    assert.ok(oneLine({ ...find("max_connections"), description: "x".repeat(600) }, []).length <= 240);
     const fallback = parametersOf(old), unique = new Set(old.checks.flatMap(c => c.settings.map(s => s.name)));
     assert.equal(fallback.length, unique.size);
     const pool = fallback.find(p => p.name === "innodb_buffer_pool_size");
+    // A check describes its first setting only: innodb_dedicated_server takes the Dedicated server check's text.
+    assert.equal(pool.description, old.checks.find(c => c.key === "buffer_pool").explain);
+    assert.equal(fallback.find(p => p.name === "innodb_dedicated_server").description, old.checks.find(c => c.key === "dedicated_server").explain);
+    assert.equal(fallback.find(p => p.name === "temptable_max_ram").description, null);
     assert.equal(pool.modified, false, "legacy defaults compare the formatted display with the formatted default");
     assert.equal(pool.type, null, "fallback does not invent catalog metadata");
     const duplicate = structuredClone(old);
@@ -93,8 +115,20 @@ if (process.argv.includes("--unit")) {
       assert.deepEqual(sent, intents.slice(0, 2).map(i => i.name));
       // A thrown request may have run on the server: it is reported as unknown, never unchanged.
       assert.deepEqual(results.map(r => r.status), ["changed", stopStatus === "error" ? "unknown" : stopStatus, "not_sent"]);
-      if (stopStatus === "error") assert.match(results[1].message, /outcome is unknown/);
+      if (stopStatus === "error") assert.match(results[1].message, /No reply arrived.*It may have run, so it is not sent again/);
     }
+    // A server refusal has a known failed outcome, even though the API throws.
+    // Stop after it and retain the first change; never send the queued third row.
+    const refusedWrites = [];
+    const refused = await applyParameterBatch(staged, intents, via, plans, undefined, () => via.key,
+      async (intent) => {
+        refusedWrites.push(intent.name);
+        if (refusedWrites.length === 2) throw Object.assign(new Error("The reviewed value changed."), { status: 400 });
+        return { name: intent.name, status: "changed", message: "Read-back result" };
+      });
+    assert.deepEqual(refusedWrites, intents.slice(0, 2).map(intent => intent.name));
+    assert.deepEqual(refused.map(result => result.status), ["changed", "failed", "not_sent"]);
+    assert.equal(refused[1].message, "The reviewed value changed.");
     let writes = 0;
     for (const check of [async () => ({ ...connection, read_only: true }), async () => { throw new Error("Policy unavailable"); }]) {
       const results = await applyParameterBatch(staged, intents, via, plans, check, () => via.key, async () => { writes++; });
@@ -222,6 +256,8 @@ function planFor(body) {
     text: body.mode === "persist_only" ? "The value applies after the next restart." : "Changes the running value." };
   return p;
 }
+// The list of views docked, as a person who docked it: this suite asserts
+// the list's markers and keys (server-nav covers the floating default).
 const h = await open("/api/live/config", "parameters", {
   "/api/live/variable": (body, request) => {
     variableReads.push(body);
@@ -243,7 +279,7 @@ const h = await open("/api/live/config", "parameters", {
     return applyReply ? applyReply(body) : { status: 200, body: { ...variableFixture.change, name: body.name, mode: body.mode, status: "changed", message: "The new value was read back." } };
   },
   "/api/live/report": { status: 200, body: report },
-});
+}, { list: "docked" });
 const { page, state, text, texts } = h;
 state.fallback = { status: 200, body: mysql };
 const view = '.server-view[data-view="config"]';
@@ -263,10 +299,18 @@ async function back() {
   const button = await page.$(`${view} .detail-back`);
   if (button) { await button.click(); await page.waitForFunction(v => !document.querySelector(`${v} .view-inspector`), {}, view); }
 }
-async function search(value) {
+async function search(value, expectedCount) {
   await page.$eval(`${view} input[aria-label="Filter parameters"]`, e => { e.focus(); e.select(); });
   await page.keyboard.press("Backspace");
   if (value) await page.type(`${view} input[aria-label="Filter parameters"]`, value);
+  if (expectedCount !== undefined) {
+    const selector = `${view} table[aria-label="Parameters"] tbody tr[data-row-key]`;
+    await page.waitForFunction((s, count) => document.querySelectorAll(s).length === count,
+      { timeout: 5000 }, selector, expectedCount).catch(error => {
+      if (error.name !== "TimeoutError") throw error;
+      throw new Error(`Filter parameters ${JSON.stringify(value)}: expected ${expectedCount} rendered rows within 5000 ms (${selector})`);
+    });
+  }
 }
 async function edit() { await page.click(`${view} [data-action="edit-parameters"]`); }
 async function stage(name, value) {
@@ -373,16 +417,50 @@ try {
   }
   await page.select(filter, "all");
   for (const term of ["catalog_parameter_05", "2048", "for searching"]) {
-    await search(term);
     const wanted = mysql.parameters.items.filter(p => [p.name, p.value || "", p.description || ""].some(v => v.toLowerCase().includes(term)));
+    await search(term, wanted.length);
     assert.equal(await page.$$eval(`${view} table[aria-label="Parameters"] tbody tr[data-row-key]`, es => es.length), wanted.length);
   }
   await search("");
-  // Recommendations retain the original explanation, caveat and CopySql.
+  // One compact section per parameter: a sentence, the documentation link and
+  // the facts; a flagged parameter adds one recommendation with its reason,
+  // the suggested change and the caveat. Nothing is repeated.
   await h.select(row("slow_query_log"));
-  await page.click(".view-inspector .config-explanation summary");
-  assert.match(await h.inspector(), /Explanation and recommendations.*What it is.*Why it is flagged.*What to do.*Caveat:/s);
-  assert.ok(await page.$(".view-inspector .perf-sql pre"));
+  const slow = mysql.checks.find(c => c.key === "slow_log");
+  const inspected = await h.inspector();
+  assert.deepEqual(await texts(".view-inspector .inspector-block h4"), ["Current value", "Recommendation"]);
+  assert.equal((inspected.match(/The slow query log records statements/g) || []).length, 1, "the description appears once");
+  assert.ok(inspected.includes(slow.why) && inspected.includes(slow.caveat), "the reason and the caveat are shown");
+  assert.doesNotMatch(inspected, /Explanation and recommendations|What it is|Why it is flagged|Apply type|Scope/);
+  assert.equal(await page.$$eval(".view-inspector .parameter-finding", es => es.length), 1);
+  assert.ok(await page.$(".view-inspector .parameter-finding .perf-sql pre"), "the suggested change is copyable");
+  const docLink = await page.$eval('.view-inspector a[data-doc-link="slow_query_log"]', a => ({ href: a.href, target: a.target, rel: a.rel, text: a.textContent }));
+  assert.equal(docLink.href, mysql.parameters.items.find(p => p.name === "slow_query_log").documentation.url);
+  assert.equal(docLink.target, "_blank"); assert.match(docLink.rel, /noreferrer/);
+  assert.match(docLink.text, /^Documentation for slow_query_log, opens in your browser$/);
+  assert.match(inspected, /MySQL 8\.4 Reference Manual/);
+  assert.match(inspected, /Changes\s*Now/);
+  // Current value and Recommendation sit side by side only when both have room:
+  // in the 720 px window the recommendation follows the facts, full width.
+  const blocks = () => page.$$eval(".view-inspector .inspector-block", es => es.map(e => { const r = e.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, width: r.width }; }));
+  let [facts, advice] = await blocks();
+  assert.ok(Math.abs(facts.top - advice.top) < 2 && advice.left > facts.left + facts.width - 1, JSON.stringify([facts, advice]));
+  await page.setViewport({ width: 720, height: 520 });
+  await page.waitForFunction(() => { const [a, b] = document.querySelectorAll(".view-inspector .inspector-block"); return b && b.getBoundingClientRect().top >= a.getBoundingClientRect().bottom; });
+  [facts, advice] = await blocks();
+  assert.ok(advice.top >= facts.bottom && Math.abs(advice.left - facts.left) < 2 && advice.width >= facts.width - 1, JSON.stringify([facts, advice]));
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth), 0, "no horizontal overflow at 720 px");
+  await page.setViewport({ width: 1440, height: 1000 });
+  await back();
+  // Two checks that do not flag it: one Checked row, no recommendation.
+  await h.select(row("innodb_dedicated_server"));
+  assert.deepEqual(await texts(".view-inspector .inspector-block h4"), ["Current value"]);
+  assert.match(await h.inspector(), /Checked.*Buffer pool size.*Dedicated server/s);
+  assert.match(await h.inspector(), /Changes\s*After a restart/);
+  await back();
+  // A parameter without a link or a description says so in one line.
+  await h.select(row("unknown_parameter"));
+  assert.equal(await page.$(".view-inspector a[data-doc-link]"), null);
   await back();
 
   // Snapshot the catalog in both appearances and at phone width. Overflow
@@ -571,6 +649,7 @@ try {
   computed.parameters.items = computed.parameters.items.map(p => p.name === "sort_buffer_size" ? { ...p, scope: "both" } : p);
   await refresh(computed);
   await edit(); await search("version");
+  await page.waitForSelector(row("version"));
   assert.equal(await page.$(input("version")), null, "server-set values are not editable");
   assert.match(await page.$eval(`${row("version")} td[data-col=value] span`, e => e.title), /Set by the server/);
   await search("sort_buffer_size");
@@ -581,9 +660,11 @@ try {
   await h.button("Cancel", `${view} .toolbar-controls `); await search("");
   await refresh(mariadb);
   await edit(); await search("performance_schema");
+  await page.waitForSelector(row("performance_schema"));
   assert.equal(await page.$(input("performance_schema")), null, "MariaDB static parameters are option-file only");
   assert.match(await page.$eval(`${row("performance_schema")} td[data-col=value] span`, e => e.title), /Option file only/);
   await search("unknown_parameter");
+  await page.waitForSelector(row("unknown_parameter"));
   assert.equal(await page.$(input("unknown_parameter")), null);
   assert.match(await page.$eval(`${row("unknown_parameter")} td[data-col=value] span`, e => e.title), /cannot tell/);
   await stage("max_connections", "300"); await review(1);
@@ -1068,19 +1149,19 @@ try {
   await page.reload({ waitUntil: "networkidle0" }); await h.server(); await h.view("config"); await page.waitForSelector(`${view} .summary-line`); await h.idle(view);
   const initialConnection = await connectionOption(page, "Staging");
   await chooseConnection(page, initialConnection);
+  await h.refresh();
   await page.waitForFunction(v => !document.querySelector(`${v}[data-other-connection=true]`) && !document.querySelector(`${v} .spinner`), {}, view);
   await h.select(row("max_connections"));
   const readonly = await connectionOption(page, "Read only");
-  state.delay = 1200;
   await chooseConnection(page, readonly);
   await page.waitForSelector(`${view}[data-other-connection=true]`);
   assert.equal(await page.$eval(`${view} [data-action="edit-parameters"]`, e => e.disabled), true);
   assert.equal(await page.$eval('.view-inspector [data-change="max_connections"]', e => e.disabled), true);
   assert.match(await page.$eval('.view-inspector [data-change="max_connections"]', e => e.title), /refresh to load this server/);
+  await h.view("health"); await h.view("config");
   await page.waitForFunction(v => !document.querySelector(`${v}[data-other-connection=true]`) && !document.querySelector(`${v} .spinner`), {}, view);
   assert.equal(await page.$eval(`${view} [data-action="edit-parameters"]`, e => e.disabled), true);
   assert.match(await page.$eval(`${view} [data-action="edit-parameters"]`, e => e.title), /read-only/);
-  state.delay = 0;
   await h.select(row("max_connections"));
   assert.equal(await page.$eval('.view-inspector [data-change="max_connections"]', e => e.disabled), true);
   assert.match(await page.$eval('.view-inspector [data-change="max_connections"]', e => e.title), /read-only/);
@@ -1088,7 +1169,7 @@ try {
   // A connection change while a sheet is open locks the original review.
   // Dispatch the real picker action programmatically to model an external
   // switch while the modal makes the surrounding controls inert.
-  await chooseConnection(page, initialConnection); await h.idle(view);
+  await chooseConnection(page, initialConnection); await h.refresh(); await h.idle(view);
   await page.waitForFunction(v => !document.querySelector(`${v}[data-other-connection=true]`), {}, view);
   useSingleFixtures = true;
   await h.select(row("max_connections")); await openChange("max_connections");

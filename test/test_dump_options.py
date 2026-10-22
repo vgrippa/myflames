@@ -98,6 +98,25 @@ class DumpOptionsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'encryption of local backup files'):
             options.normalize({'encryption': 'aes256'}, self.shell)
 
+    def test_catalog_groups_rows_and_short_encryption_line(self):
+        groups = [key for key, _ in options.GROUPS]
+        for name, scope in (('mysqlsh', False), ('mysqlsh', True), ('mysqldump', False), ('mariadb-dump', True)):
+            catalog = options.capability_catalog(name, scope, tool_version='9.6.0')
+            self.assertEqual([key for key, _ in catalog['groups']], groups)
+            for item in catalog['options']:
+                self.assertIn(item['group'], groups, item['key'])
+                # Every checkbox names the row it shares; other controls label themselves.
+                self.assertEqual('row' in item, item['type'] == 'boolean', item['key'])
+            self.assertEqual(catalog['encryption']['summary'], 'Backup files are not encrypted.')
+            self.assertEqual(catalog['encryption']['message'], options.ENCRYPTION_NOTE)
+        shell = {d['key']: d for d in options.capability_catalog('mysqlsh', tool_version='9.6.0')['options']}
+        self.assertEqual([k for k, d in shell.items() if d['group'] == 'performance'], ['chunking', 'bytes_per_chunk', 'max_rate'])
+        self.assertEqual({shell[k]['row'] for k in ('triggers', 'routines', 'events')}, {'Include'})
+        self.assertEqual(shell['max_rate']['unit'], 'per thread')
+        sql = {d['key']: d for d in options.capability_catalog('mysqldump')['options']}
+        self.assertEqual(sql['network_compression']['group'], 'compression')
+        self.assertEqual({sql[k]['group'] for k in ('hex_blob', 'add_drop_table')}, {'output'})
+
     def test_prepare_binds_options_and_default_request_stays_compatible(self):
         destination = os.path.join(self.temp.name, 'dump')
         tools = {'tools': {'mysqldump': self.sql}}

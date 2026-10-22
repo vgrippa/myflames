@@ -151,6 +151,9 @@ from myflames import accounts, privileges
 out = []
 for server in replay.SERVERS:
     conn, data = replay.reads(server)
+    catalog = json.loads((replay.FIXTURES / ('show-privileges-' + server + '.json')).read_text())
+    for call in catalog['sessions']['root']['calls']:
+        conn.answers.setdefault(call['sql'], call)
     listing = accounts.list_accounts(conn)
     detail = accounts.read_account(conn, 'acct_app', '%')
     actor, _ = replay.session(server, 'acct_ops')
@@ -167,6 +170,16 @@ print(json.dumps(out))
       const markup = renderToStaticMarkup(createElement(AccountsView, { connection, report: { key: "fixture", label: "fixture", report: listing }, onReport() {}, selection: { key: "", select() {} } }));
       assert.ok(markup.includes("acct_app")); assert.ok(markup.includes("Accounts read")); assert.ok(!markup.includes("No threshold"));
     }
+    const unreadableReason = "Only the connected account is listed: listing users and roles needs SELECT on the mysql database.";
+    const unreadable = { schema_version: "accounts-1.0", engine: "mysql", version: "8.4.0", complete: false,
+      accounts: [{ name: "limited", host: "%", connected: true }], role_grants: [], default_roles: [], warnings: [unreadableReason] };
+    const unreadableMarkup = renderToStaticMarkup(createElement(AccountsView, { connection,
+      report: { key: "fixture", label: "fixture", report: unreadable }, onReport() {}, selection: { key: "", select() {} } }));
+    assert.match(unreadableMarkup, /Not judged/);
+    assert.ok(unreadableMarkup.includes(unreadableReason), "the actual unreadable-list reason is visible");
+    assert.match(unreadableMarkup, /data-col="details"/);
+    assert.match(unreadableMarkup, /Not readable/);
+    for (const key of ["type", "locked", "expired", "risk", "plugin"]) assert.ok(!unreadableMarkup.includes(`data-col="${key}"`), `unreadable metadata omits ${key}`);
     response = { ...response, plan_id: "" };
     await assert.rejects(planAccount(connection, target, [{ operation: "lock" }]), /complete reviewable/);
     await assert.rejects(planAccount(connection, target, []), /No pending/);
@@ -183,7 +196,8 @@ const built = await build({ root: workspace, configFile: false, publicDir: false
       import {createRoot} from ${JSON.stringify(path.join(workspace, "node_modules/react-dom/client.js"))};
       import {AccountsView, compactChanges} from ${source("Accounts.tsx")};
       import {PrivilegesProvider, PrivilegeGate, usePrivileges, privilegeResult} from ${source("privileges.ts")};
-      import {InspectorContext} from ${source("kit.tsx")};
+      import {InspectorContext, ColumnStoreContext, useColumnStore} from ${source("kit.tsx")};
+      import {ViewOnScreenContext} from ${source("viewOnScreen.ts")};
       import {WritePolicyContext} from ${source("Connections.tsx")};
       import ${source("style.css")}; import ${source("kit.css")}; import ${source("server.css")};
       window.accountTest = { compactChanges, privilegeResult };
@@ -199,15 +213,23 @@ const built = await build({ root: workspace, configFile: false, publicDir: false
         const [report,setReport] = useState(null), [selected, select] = useState("");
         const [inspector,setInspector] = useState(true), [revision,setRevision] = useState(0);
         const [width,setWidth] = useState(window.innerWidth);
+        const [onScreen,setOnScreen] = useState(false), [columns,setColumns] = useState({});
+        window.accountColumns = columns;
+        const columnStore = useColumnStore(columns, setColumns);
         React.useEffect(() => { const f = () => setWidth(window.innerWidth); window.addEventListener("resize", f); return () => window.removeEventListener("resize", f); }, []);
         return <WritePolicyContext.Provider value={{blocked:"",check:async()=>connection}}>
           <PrivilegesProvider connection={connection} connectRevision={revision}>
             <div className="test-probes"><button onClick={()=>setConnection(c=>({...c,host:c.host === "127.0.0.1" ? "127.0.0.2" : "127.0.0.1"}))}>Switch connection</button>
               <button onClick={()=>setConnection(c=>({...c,read_only:!c.read_only}))}>Toggle read-only</button>
-              <button onClick={()=>setRevision(n=>n+1)}>Reconnect</button></div><Probe/>
+              <button onClick={()=>setRevision(n=>n+1)}>Reconnect</button>
+              <button onClick={()=>setOnScreen(v=>!v)}>Toggle Accounts visibility</button></div><Probe/>
             <InspectorContext.Provider value={{open:inspector,setOpen:setInspector,width:440,setWidth:()=>{},sheet:width<1040}}>
-              <AccountsView connection={connection} report={report} onReport={setReport} onBack={()=>setInspector(false)}
-                selection={{key:selected,select:(key,open)=>{select(key);if(open)setInspector(true);}}}/>
+              <ColumnStoreContext.Provider value={columnStore}>
+                <ViewOnScreenContext.Provider value={onScreen}><div hidden={!onScreen}>
+                  <AccountsView connection={connection} report={report} onReport={setReport} onBack={()=>setInspector(false)}
+                    selection={{key:selected,select:(key,open)=>{select(key);if(open)setInspector(true);}}}/>
+                </div></ViewOnScreenContext.Provider>
+              </ColumnStoreContext.Provider>
             </InspectorContext.Provider>
           </PrivilegesProvider>
         </WritePolicyContext.Provider>;
@@ -262,6 +284,7 @@ const readDetail = user => {
   ]};
 };
 let latestPlan;
+let holdApply = false, releaseApply = null;
 let h;
 try {
   h = await open("/api/accounts/list", "accounts", {
@@ -281,7 +304,7 @@ try {
       if (grantMode && body.level === "database") latestPlan.statements = [`GRANT ${body.privileges.join(", ")} ON \`${body.database.replaceAll("_", "\\_")}\`.* TO \`${body.user}\`@\`${body.host}\``];
       return { status: 200, body: latestPlan, delay: planDelay };
     },
-    "/api/accounts/apply": body => {
+    "/api/accounts/apply": (body, request) => {
       applyCount++;
       assert.equal(body.confirmed, true); assert.equal(body.plan_id, latestPlan.plan_id); assert.equal(body.expect, latestPlan.expect);
       assert.equal(Object.hasOwn(body, "password"), ["create", "password"].includes(latestPlan.operation) && !latestPlan.generates_password && !latestPlan.role);
@@ -297,16 +320,23 @@ try {
         model.global_grantable = [...(model.static_grant_option ? model.global : []), ...model.dynamic];
       }
       grants = ["GRANT SELECT, INSERT, UPDATE ON *.* TO `app<probe>`@`%`" + (model.static_grant_option ? " WITH GRANT OPTION" : "")];
-      return { status: 200, body: { schema_version: "account-change-1.0", change_set_id: latestPlan.change_set_id, status: "applied", message: "Statements accepted.",
+      const response = { status: 200, body: { schema_version: "account-change-1.0", change_set_id: latestPlan.change_set_id, status: "applied", message: "Statements accepted.",
         before, after: readDetail(latestPlan.name), diff: { added: grants, removed: ["GRANT SELECT ON *.*"] },
         statements: [{ index: 0, statement: latestPlan.statements[0], status: "ok" }], warnings: [], audit_ids: ["audit-1"],
         ...(latestPlan.generates_password ? { generated_password: "shown-once-secret" } : {}) } };
+      if (holdApply) {
+        releaseApply = () => request.respond({ status: response.status, contentType: "application/json", body: JSON.stringify(response.body) });
+        return null;
+      }
+      return response;
     },
     "/api/audit/declined": { status: 200, body: { status: "declined", audit_id: "declined-1" } },
   });
   const { page, state } = h;
   state.fallback = { status: 200, body: list };
   const count = endpoint => state.other.filter(r => r.path === `/api/${endpoint}`).length;
+  const resultTexts = () => page.$$eval('[aria-label="Account change result"]', rows => rows.map(row => row.textContent));
+  const lastResultText = async () => (await resultTexts()).at(-1) || "";
   const click = async text => {
     const handle = await page.evaluateHandle(text => [...document.querySelectorAll("button")].find(b => b.textContent.trim() === text && b.getClientRects().length), text);
     assert.ok(await handle.asElement(), `button ${text}`); await handle.asElement().click(); await handle.dispose();
@@ -339,7 +369,7 @@ try {
       const value=await page.$$eval(`${field("Grant scope")} option`,(options,db)=>options.find(o=>o.textContent===`${db}.*`)?.value,database);
       assert.ok(value); await page.select(field("Grant scope"),value);
     };
-    await click("Load users and roles"); await page.waitForSelector(".accounts-view tbody tr"); await inspect();
+    await click("Toggle Accounts visibility"); await page.waitForSelector(".accounts-view tbody tr"); await inspect();
     // Newly supported dynamic privilege offers its own option despite being unheld.
     await rowInput("FLUSH_TABLES"); await rowInput("FLUSH_TABLES",1);
     assert.match(await h.text(".account-pending"),/with grant option/); await click("Discard");
@@ -417,6 +447,22 @@ try {
     await h.close(); h=null; process.exit(0);
   }
 
+  // Accounts reads once when opened, never while retained off screen. An
+  // unsuccessful first read stops until the explicit Try again action.
+  assert.equal(state.seen.length, 0, "Accounts has not read off screen");
+  state.queue.push({ status: 400, body: { error: "Cannot read account metadata in this session." } });
+  await click("Toggle Accounts visibility");
+  await page.waitForSelector(".accounts-view [role=alert]");
+  assert.equal(state.seen.length, 1, "opening attempts one read");
+  await page.waitForFunction(() => !document.querySelector(".accounts-view .capture-status"));
+  assert.match(await h.text(".accounts-view [role=alert]"), /Cannot read account metadata/);
+  await click("Try again");
+  await page.waitForSelector(".accounts-view tbody tr");
+  assert.equal(state.seen.length, 2, "Try again starts a fresh read");
+  await click("Toggle Accounts visibility");
+  await click("Toggle Accounts visibility");
+  assert.equal(state.seen.length, 2, "reopening keeps the current report");
+
   // Exact global denials stay visible and focusable, unknown remains enabled.
   assert.equal(await page.$eval('[data-privilege-action="kill"]', e => e.getAttribute("aria-disabled")), "true");
   assert.match(await page.$eval('[data-privilege-action="kill"]', e => e.title), /CONNECTION_ADMIN.*SUPER/);
@@ -436,11 +482,42 @@ try {
   assert.equal(probes.read.disabledReason, ""); assert.equal(probes.missing.state, "unknown"); assert.equal(probes.compact.length, 1);
   assert.deepEqual(probes.compact[0].privileges, ["INSERT", "UPDATE"]);
 
-  await click("Load users and roles"); await page.waitForSelector(".accounts-view tbody tr"); await inspect();
-  assert.equal(await h.text(".accounts-view .summary-text"), "2 users · 1 role", "counts are pluralized");
+  await inspect();
+  assert.equal(await h.text(".accounts-view .summary-text"), "Accounts read · 2 users · 1 role", "the read result precedes the pluralized counts");
   assert.equal(await page.$("probe"), null); // User names are rendered as text.
   assert.equal(count("accounts/apply"), 0);
-  await review();
+  const selectedKey = await page.$eval('.accounts-view tr[aria-current="true"]', row => row.dataset.rowKey);
+  const chooseReader = async () => {
+    await backToAccounts();
+    await page.$$eval('.accounts-view tbody tr[data-row-key]', rows => rows.find(row => row.textContent.includes("reader@%"))?.click());
+    await page.waitForSelector(".account-selection-review[open]");
+  };
+  await tick("INSERT");
+  const detailReads = count("accounts/read"), plansBeforeChoice = count("accounts/plan");
+  await chooseReader();
+  assert.equal(await page.evaluate(() => document.activeElement.textContent.trim()), "Cancel");
+  assert.deepEqual(await page.$$eval(".account-selection-review .sheet-actions button", buttons => buttons.map(b => b.textContent)), ["Cancel", "Discard", "Review changes"]);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".account-selection-review"));
+  assert.equal(await page.$eval('.accounts-view tr[aria-current="true"]', row => row.dataset.rowKey), selectedKey);
+  assert.ok(await page.$(".account-pending"));
+  assert.equal(count("accounts/read"), detailReads, "cancel never reads the other account");
+  assert.equal(count("accounts/plan"), plansBeforeChoice, "selection alone never prepares a write");
+  await chooseReader();
+  await page.locator('.account-selection-review button ::-p-text(Cancel)').click();
+  assert.ok(await page.$(".account-pending"));
+  await chooseReader();
+  await page.locator('.account-selection-review button ::-p-text(Discard)').click();
+  await page.waitForFunction(() => document.querySelector('.account-inspector') && document.querySelector('.inspector-title')?.textContent.includes('reader'));
+  assert.equal(await page.$(".account-pending"), null);
+  await inspect();
+  await page.click(".account-inspector > .inspector-block .account-checkbox input");
+  await chooseReader();
+  await page.locator('.account-selection-review button ::-p-text(Review changes)').click();
+  await page.waitForSelector(".account-review[open]");
+  assert.equal(latestPlan.name, target.name, "review remains bound to the account with pending edits");
+  assert.equal(await page.$eval('.accounts-view tr[aria-current="true"]', row => row.dataset.rowKey), selectedKey);
+  assert.equal(count("accounts/apply"), 0, "Review changes only prepares statements");
   assert.equal(await page.evaluate(() => document.activeElement.textContent.trim()), "Cancel");
   assert.match(await h.text(".account-review"), /Production: confirm/);
   assert.match(await h.text('[aria-label="Before and after grants"]'), /Before.*After.*GRANT OPTION/s);
@@ -463,16 +540,21 @@ try {
   await page.waitForFunction(() => !document.querySelector(".account-review"));
   assert.equal(count("accounts/apply"), 1); assert.ok(privilegeReads > readsBeforeApply);
   assert.match(await h.text('[aria-label="Account change result"]'), /Added:.*GRANT SELECT, INSERT, UPDATE/s);
+  const resultsOnA = await resultTexts();
+  assert.equal(resultsOnA.length, 1);
   nextTyped = "";
 
   // Switching identity leaves the old list grey. A reviewed write on A
   // cannot be sent through B even when B permits account changes.
   await page.waitForSelector(".account-matrix"); await review();
+  const listsBeforeSwitch = state.seen.length;
   await page.evaluate(() => [...document.querySelectorAll(".test-probes button")].find(b => b.textContent === "Switch connection").click());
   await page.waitForFunction(() => document.querySelector(".account-review .danger-solid")?.disabled === true);
   assert.match(await h.text(".account-review"), /connection changed/); await dismiss();
   assert.equal(await page.$eval(".accounts-view", e => e.dataset.otherConnection), "true");
+  assert.equal(state.seen.length, listsBeforeSwitch, "switching connections retains the grey report until Refresh");
   assert.equal(count("accounts/apply"), 1);
+  assert.deepEqual(await resultTexts(), [], "A's result is hidden on B");
   await h.refresh(); await inspect();
 
   // Directly denied administration greys the action, without hiding it.
@@ -519,6 +601,38 @@ try {
   assert.match(await h.text('[aria-label="Generated password"]'), /shown-once-secret/);
   await click("Dismiss password"); assert.ok(!(await page.content()).includes("shown-once-secret"));
 
+  // A slow password Apply on B may finish after Close and switching back to A.
+  // A still owns its earlier undismissed result; B's reply and secret must
+  // stay hidden until B is selected again, alongside B's earlier result.
+  const resultsOnB = await resultTexts();
+  assert.equal(resultsOnB.length, 1);
+  holdApply = true;
+  const beforeLate = applyCount, beforeDecline = count("audit/declined");
+  await page.click('.account-actions [data-privilege-action="set_password"]');
+  await page.click("dialog .checkbox input"); await click("Review statements");
+  await page.waitForSelector(".account-review"); await page.click(".account-review .danger-solid");
+  await page.waitForFunction(() => [...document.querySelectorAll('.account-review button')].some(b => b.textContent.trim() === "Close"), { timeout: 15000 });
+  assert.ok(releaseApply, "Apply reached the server before Close");
+  await click("Close"); await click("Switch connection");
+  await releaseApply(); holdApply = false; releaseApply = null;
+  await page.waitForFunction(() => !document.querySelector('.accounts-view')?.textContent.includes("Applying account changes"));
+  assert.equal(await page.$('[aria-label="Generated password"]'), null, "B's password is hidden on A");
+  assert.deepEqual(await resultTexts(), resultsOnA, "A keeps only its own outcome; B's outcomes are hidden");
+  await click("Switch connection");
+  await page.waitForSelector('[aria-label="Generated password"]', { visible: true });
+  assert.match(await h.text('[aria-label="Generated password"]'), /shown-once-secret/);
+  const returnedToB = await resultTexts();
+  assert.equal(returnedToB.length, resultsOnB.length + 1, "B keeps both its earlier and late outcomes");
+  assert.deepEqual(returnedToB.slice(0, -1), resultsOnB);
+  assert.match(await lastResultText(), /1 group applied/);
+  assert.equal(applyCount, beforeLate + 1, "switching never resends Apply");
+  assert.equal(count("audit/declined"), beforeDecline, "Close never declines a sent write");
+  await click("Toggle Accounts visibility"); await click("Toggle Accounts visibility");
+  assert.match(await h.text('[aria-label="Generated password"]'), /shown-once-secret/);
+  assert.equal(await page.evaluate(() => JSON.stringify({ ...localStorage, ...sessionStorage }).includes("shown-once-secret")), false);
+  await click("Dismiss password");
+  await inspect();
+
   // Typed passwords must cross plan and apply separately: the adapter keeps
   // only a non-secret request. Both fields clear immediately after sending.
   await page.click('.account-actions [data-privilege-action="set_password"]');
@@ -540,7 +654,8 @@ try {
   // Unknown outcome destroys the sent plan and never offers a retry.
   await click("Grants"); applyFailure = true; await review(); await page.click(".account-review .danger-solid");
   await page.waitForFunction(() => document.querySelector('.accounts-view [role="alert"]')?.textContent.includes("may have run"));
-  assert.equal(await page.$(".account-review"), null); applyFailure = false;
+  // The alert can render a frame before the review sheet unmounts.
+  await page.waitForFunction(() => !document.querySelector(".account-review"), { timeout: 5000 }); applyFailure = false;
   await h.refresh(); await inspect();
 
   // Mixed groups share a review, one typed guard, and one decline per plan.
@@ -559,7 +674,7 @@ try {
   await page.click(".account-review .danger-solid"); await page.waitForFunction(() => !document.querySelector(".account-review"));
   assert.equal(count("accounts/apply"), beforeBatch + 2);
   assert.equal(count("accounts/plan"), beforePlans + 4);
-  assert.match(await h.text('[aria-label="Account change result"]'), /2 groups applied, 0 failed, 0 not sent/);
+  assert.match(await lastResultText(), /2 groups applied, 0 failed, 0 not sent/);
   assert.equal(await page.$(".account-pending"), null);
   assert.equal(state.other.filter(r => r.path === "/api/accounts/plan").some(r => r.body?.operation === "changes"), false);
   nextTyped = "";
@@ -590,8 +705,8 @@ try {
   await page.locator("button ::-p-text(Review changes)").click(); await page.waitForSelector(".account-review");
   await page.click(".account-review .danger-solid"); await page.waitForFunction(() => !document.querySelector(".account-review"));
   assert.equal(count("accounts/apply"), beforePartial + 2);
-  assert.deepEqual(await page.$$eval("[data-group-status]", rows => rows.map(r => r.dataset.groupStatus)), ["applied", "failed", "not_sent"]);
-  assert.match(await h.text('[aria-label="Account change result"]'), /1 group applied, 1 failed, 1 not sent/);
+  assert.deepEqual(await page.$$eval('[aria-label="Account change result"]', results => [...results.at(-1).querySelectorAll("[data-group-status]")].map(r => r.dataset.groupStatus)), ["applied", "failed", "not_sent"]);
+  assert.match(await lastResultText(), /1 group applied, 1 failed, 1 not sent/);
   assert.equal(await page.$(".account-pending"), null); applyRefusalAt = -1;
 
   // Multiple refresh clicks join one request. Focus within 60s does not
@@ -634,6 +749,28 @@ try {
   await page.click(".account-review .danger-solid"); await page.waitForSelector('[aria-label="Generated password"]');
   await page.waitForFunction(() => !document.querySelector(".account-review"));
   await click("Dismiss password");
+
+  // Account names use measured, capped widths. Layout changes persist under
+  // the stable table id even when the unreadable report swaps its columns.
+  await backToAccounts();
+  const accountWidth = await page.$eval('.accounts-view th[data-col="account"]', th => th.getBoundingClientRect().width);
+  assert.ok(accountWidth <= 360, "Account is content-sized instead of consuming spare table width");
+  await page.focus('.accounts-view [role="separator"][aria-label="Width of Account"]');
+  await page.keyboard.press("ArrowRight");
+  await page.waitForFunction(() => window.accountColumns["accounts.list"]?.widths?.account > 0);
+  const savedWidth = await page.evaluate(() => window.accountColumns["accounts.list"].widths.account);
+  const unreadableReason = "Only the connected account is listed: listing users and roles needs SELECT on the mysql database.";
+  state.queue.push({ status: 200, body: { ...list, complete: false, warnings: [unreadableReason],
+    accounts: [{ name: "limited", host: "%", connected: true }], role_grants: [], default_roles: [] } });
+  await h.refresh();
+  await page.waitForFunction(() => document.querySelector('.accounts-view .summary-line')?.textContent.includes("Not judged"));
+  assert.equal(await h.text(".accounts-view .summary-text"), unreadableReason);
+  assert.deepEqual(await page.$$eval('.accounts-view thead th[data-col]', ths => ths.map(th => th.dataset.col)), ["account", "details"]);
+  assert.equal(await h.text('.accounts-view td[data-col="details"]'), "Not readable");
+  assert.doesNotMatch(await h.text('.accounts-view tbody'), /Unknown|Not checked/);
+  await h.refresh();
+  await page.waitForSelector('.accounts-view th[data-col="plugin"]');
+  assert.equal(await page.evaluate(() => window.accountColumns["accounts.list"].widths.account), savedWidth);
 
   if (process.env.PERF_SHOTS) await fs.mkdir(process.env.PERF_SHOTS, { recursive: true });
   await page.screenshot({ path: path.join(h.shots, "accounts-desktop.png"), fullPage: true });

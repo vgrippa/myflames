@@ -186,7 +186,7 @@ def render_tree(root, width=1200, title="MySQL Query Plan", unit_display="ms", a
         f'<text x="{self_col_x + SELF_W - 4}" y="65" text-anchor="end" class="col-hdr">Self</text>',
         f'<text x="{total_col_x + TOTAL_W - 4}" y="65" text-anchor="end" class="col-hdr">Total</text>',
         f'<text x="{pct_col_x + PCT_W - 4}" y="65" text-anchor="end" class="col-hdr">%</text>',
-        f'<text x="{BAR_X}" y="65" text-anchor="start" class="col-hdr">Self time bar</text>',
+        f'<text x="{BAR_X}" y="65" text-anchor="start" class="col-hdr">Self of total</text>',
         f'<text id="search-btn" x="{width - LEFT}" y="65" text-anchor="end">Search</text>',
         f'<line x1="{LEFT}" y1="68" x2="{width - LEFT}" y2="68" stroke="#ddd" stroke-width="1"/>',
     ]
@@ -207,7 +207,6 @@ def render_tree(root, width=1200, title="MySQL Query Plan", unit_display="ms", a
         color = _row_color(self_t, root_total)
 
         self_bar_w = max(0.0, (self_t / root_total) * BAR_MAX_W) if root_total > 0 else 0.0
-        total_bar_w = max(0.0, (total_t / root_total) * BAR_MAX_W) if root_total > 0 else 0.0
 
         text_y = y + ROW_H - 8
         indent_x = LEFT + depth * INDENT
@@ -272,13 +271,11 @@ def render_tree(root, width=1200, title="MySQL Query Plan", unit_display="ms", a
             f'<text class="row-pct" x="{pct_col_x + PCT_W - 4}" y="{text_y}"'
             f' text-anchor="end" pointer-events="none">{xml_escape(pct_str)}</text>'
         )
-        # Total bar (outline, drawn first so self bar appears on top)
-        if total_bar_w > 0.5:
-            lines.append(
-                f'<rect x="{BAR_X}" y="{y + 5}" width="{total_bar_w:.1f}" height="{ROW_H - 10}"'
-                f' fill="none" stroke="#c0d8ee" stroke-width="1" rx="2" pointer-events="none"/>'
-            )
-        # Self bar (filled)
+        # Hairline baseline and self-time fill
+        lines.append(
+            f'<line x1="{BAR_X}" y1="{y + ROW_H - 5}" x2="{BAR_X + BAR_MAX_W}" y2="{y + ROW_H - 5}"'
+            f' stroke="#dfe5ec" stroke-width="1" pointer-events="none"/>'
+        )
         if self_bar_w > 0.5:
             lines.append(
                 f'<rect x="{BAR_X}" y="{y + 5}" width="{self_bar_w:.1f}" height="{ROW_H - 10}"'

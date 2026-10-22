@@ -1,0 +1,141 @@
+{
+ "schema_version": "replication-1.0",
+ "engine": "mariadb",
+ "server_version": "11.8.9-MariaDB-ubu2404-log",
+ "captured_at": "2026-10-20T14:26:28.699573+00:00",
+ "uptime_s": 155,
+ "available": true,
+ "message": null,
+ "replica": true,
+ "statement": "SHOW ALL SLAVES STATUS",
+ "gtid": {
+  "slave_pos": "0-401-8",
+  "current_pos": "0-401-8",
+  "slave_pos_domains": [
+   {
+    "domain": 0,
+    "server": 401,
+    "seq": 8
+   }
+  ],
+  "current_pos_domains": [
+   {
+    "domain": 0,
+    "server": 401,
+    "seq": 8
+   }
+  ],
+  "domain_id": 0,
+  "strict_mode": "OFF"
+ },
+ "settings": {
+  "read_only": "OFF",
+  "parallel_threads": 0
+ },
+ "global_skip_counter": 0,
+ "channels": [
+  {
+   "name": "",
+   "kind": "replication",
+   "judged": true,
+   "source": {
+    "host": "127.0.0.1",
+    "port": 33318,
+    "uuid": null,
+    "server_id": 401
+   },
+   "io": {
+    "running": "Yes",
+    "state": "Waiting for master to send event",
+    "error": {
+     "errno": 0,
+     "message": null,
+     "timestamp": null
+    }
+   },
+   "sql": {
+    "running": "Yes",
+    "state": "Slave has read all relay log; waiting for more updates",
+    "error": {
+     "errno": 0,
+     "message": null,
+     "timestamp": null,
+     "table": null,
+     "end_log_pos": null
+    },
+    "delay_s": 0,
+    "remaining_delay_s": null
+   },
+   "lag_s": 0,
+   "lag_notes": [
+    "Seconds_Behind_Master is 0 while the applier is idle; one long transaction on the source shows as a jump.",
+    "Slave_received_heartbeats grows between two reads on a healthy, idle link; read the view again after the heartbeat period to tell an idle source from a broken link."
+   ],
+   "lag_signals": {
+    "heartbeat_period_s": 30.0,
+    "heartbeats_received": 3
+   },
+   "position": {
+    "using_gtid": "Slave_Pos",
+    "gtid_io_pos": "0-401-8",
+    "gtid_io_domains": [
+     {
+      "domain": 0,
+      "server": 401,
+      "seq": 8
+     }
+    ],
+    "gtid_current_pos": "0-401-8",
+    "source_log_file": "mysql-bin.000002",
+    "read_source_log_pos": 1598,
+    "exec_file": "mysql-bin.000002",
+    "exec_pos": 1598,
+    "relay_log_file": "mysqld-relay-bin.000002",
+    "relay_log_pos": 641,
+    "skip_counter": 0,
+    "parallel_mode": "optimistic"
+   },
+   "worker": {},
+   "agat": null,
+   "failing_gtid": null,
+   "relay": null,
+   "source_version": {
+    "version": "11.8.9-MariaDB-ubu2404-log",
+    "version_comment": null,
+    "engine": "mariadb",
+    "provenance": "relay_log",
+    "label": "as recorded in the relay log",
+    "profile_id": null,
+    "profile_name": null,
+    "relay_log_file": "mysqld-relay-bin.000002",
+    "verified": true,
+    "caveat": "This is the version of the source server that wrote the binary log the replica was reading when this relay log began. Right after a source upgrade it can still show the earlier version.",
+    "reason": null,
+    "hint": null,
+    "attempts": []
+   },
+   "status": "ok",
+   "status_why": []
+  }
+ ],
+ "capabilities": {
+  "status": true,
+  "performance_schema": false,
+  "worker_timestamps": false,
+  "agat": false,
+  "source_version": true
+ },
+ "notes": [
+  "Seconds_Behind_Master compares the original timestamp of the event being applied with the replica's clock, adjusted by the clock difference measured when the receiver connected. A clock change on either server after that skews it, and one long transaction shows as a jump, so it is never the only lag signal."
+ ],
+ "summary": {
+  "channels": 1,
+  "judged": 1,
+  "ok": 1,
+  "watch": 0,
+  "problem": 0,
+  "unknown": 0,
+  "failed": 0,
+  "lag_max_s": 0
+ }
+}

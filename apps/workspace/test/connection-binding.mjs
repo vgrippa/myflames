@@ -21,6 +21,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
+import { DOCK_KEY } from "./perf-harness.mjs";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const fixtures = fileURLToPath(new URL("./fixtures/", import.meta.url));
@@ -189,6 +190,11 @@ try {
     else answer({ path: p, body, request });
   });
   await page.setViewport({ width: 1440, height: 1000 });
+  // The list of views docked, as a person who docked it: this suite asserts
+  // the list's markers and keys (server-nav covers the floating default).
+  await page.evaluateOnNewDocument((key) => {
+    try { if (localStorage.getItem(key) === null) localStorage.setItem(key, "false"); } catch {}
+  }, DOCK_KEY);
   await page.goto(url, { waitUntil: "networkidle0" });
   await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state !== "loading");
 
@@ -304,7 +310,7 @@ try {
   await page.waitForSelector("dialog.kill-dialog[open]");
   assert.match(await text("dialog.kill-dialog"), /Server\s*Staging \(dev@db\.staging:3307\)/);
   await page.click(".sheet-actions .danger-solid");
-  await page.waitForSelector(`${view("sessions")} .kill-result.killed`);
+  await page.waitForSelector(`${view("sessions")} .kill-result.killed:not([data-refreshing])`);
   const kill = calls("/api/live/kill").at(-1).body;
   const target = mariadb.sessions.find((s) => s.id === 79);
   assert.deepEqual(
@@ -664,7 +670,9 @@ try {
   const save = await held("/api/profiles/save");
   await pause(300);
   assert.equal(calls("/api/profiles/save").length, saves + 1, "one save for two clicks");
-  assert.equal(await page.$eval(".connection-panel .button.primary", (e) => e.disabled), true, "Save waits while saving");
+  // Busy, Save keeps focus (aria-disabled, not disabled) and says what it does.
+  assert.deepEqual(await page.$eval(".connection-panel .button.primary", (e) => [e.getAttribute("aria-disabled"), e.getAttribute("aria-busy"), e.textContent]),
+    ["true", "true", "Saving…"], "Save waits while saving");
   answer(save);
   await page.waitForFunction(() => /Connection "Gamma" saved/.test(document.querySelector(".connections-status")?.textContent || ""));
   hold.delete("/api/profiles/save");

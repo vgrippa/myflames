@@ -6,7 +6,7 @@
 // plan and Kill are in the inspector, and Show plan and Kill are also in each
 // row's ⋯ menu. Kill asks for confirmation (Cancel is the default) and is
 // never offered for server threads.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useOpenRead } from "./viewOnScreen";
 import { api, number, type Connection, type Session, type SessionBreakdown, type SessionFlag, type SessionsReport } from "./api";
 import type { ServerKind } from "./session";
@@ -14,9 +14,10 @@ import { useConnectionReads, type Bound } from "./binding";
 import { PriorityTable, CompactNumber, engineLabel } from "./PerfShared";
 import { KillDialog, KillResultNote, killVia, useKillPrivilege, seconds, sendKill, type KillNote, type KillTarget } from "./Locks";
 import { MassKillDialog } from "./MassKillDialog";
-import { PrivilegeGate, privilegeResult, useLoginUser, usePrivilege } from "./privileges";
+import { PrivilegeGate, privilegeResult, useLoginUser, usePrivilege, type PrivilegeGateResult } from "./privileges";
 import { useWritePolicy } from "./Connections";
 import {
+  ActionStatus,
   AutoRefresh,
   closePopovers,
   NumberField,
@@ -65,6 +66,17 @@ function tone(status: string | null | undefined): Tone {
 /** The flags of a session as words ("Long running, Lock wait"). */
 function flagText(flags: SessionFlag[]) {
   return flags.map((f) => (FLAGS[f] || [f.replace(/_/g, " ")])[0]).join(", ");
+}
+
+function lockStatus(s: Session): "waiting" | "holding" | null {
+  if (s.lock_status === "waiting" || s.lock_status === "holding" || s.lock_status === null) return s.lock_status;
+  if (s.lock_wait) return "waiting";
+  if ((s.trx?.rows_locked ?? 0) > 0 || (s.trx?.tables_locked ?? 0) > 0) return "holding";
+  return null;
+}
+
+function isLocked(s: Session): boolean {
+  return s.is_locked ?? (lockStatus(s) !== null || s.trx?.state === "LOCK WAIT");
 }
 
 function Breakdown({ title, rows }: { title: string; rows: SessionBreakdown }) {
@@ -147,7 +159,12 @@ export function SessionsView({
   const [auto, setAuto] = useState(0);
   const [search, setSearch] = useState("");
   const [target, setTarget] = useState<KillTarget | null>(null);
+  // The KILL a row menu chose (Kill query… or Kill connection…); the sheet
+  // can still switch it.
+  const [targetMode, setTargetMode] = useState<"connection" | "query" | undefined>(undefined);
   const [killing, setKilling] = useState(false);
+  const [killLeft, setKillLeft] = useState<{ id: number; startedAt: number; key: string; label: string } | null>(null);
+  const killSentAt = useRef(0);
   const [note, setNote] = useState<KillNote | null>(null);
   const reads = useConnectionReads(connection);
   const policy = useWritePolicy();
@@ -174,14 +191,14 @@ export function SessionsView({
     return reads.run(
       `sessions:${activeOnly}:${minSeconds}:${source}:${lockedOnly}`,
       "Reading the sessions…",
-      (c) =>
+      (c, signal) =>
         api<SessionsReport>("live/sessions", {
           connection: c,
           active_only: activeOnly,
           min_seconds: minSeconds,
           source_mode: source,
           locked_only: lockedOnly,
-        }),
+        }, signal),
       onReport,
       { force, onError: () => setAuto(0) },
     );
@@ -222,25 +239,56 @@ export function SessionsView({
     }
   }
   async function confirmKill(mode: "connection" | "query", reviewToken: string) {
-    if (!target) return;
+    if (!target || killing) return;
     setKilling(true);
+    killSentAt.current = Date.now();
     const sent = await sendKill(connection, target, mode, policy, reviewToken);
     setTarget(null);
+    setKillLeft(null);
     setKilling(false);
-    // Re-read only while the connection in use is still the one the Kill was
-    // confirmed for (checked now, after the await, not with this render's
-    // connection); after a switch there is nothing of that server to show.
-    if (target.via && reads.currentKey() === target.via.key && !sent.refresh) await load(scope === "active", true);
-    setNote({ ...sent, outcome: [] });
+    // The answer is shown at once (and focused). The list is read again only
+    // while the connection in use is still the one the Kill was confirmed for
+    // (checked now, after the await, not with this render's connection);
+    // after a switch there is nothing of that server to show.
+    const reread = !!target.via && reads.currentKey() === target.via.key && !sent.refresh;
+    const shown: KillNote = { ...sent, mode, outcome: [], refreshing: reread };
+    setNote(shown);
     window.setTimeout(() => noteRef.current?.focus(), 0);
+    if (!reread) return;
+    await load(scope === "active", true);
+    setNote((current) => current === shown ? { ...shown, refreshing: false } : current);
   }
 
-  /** Open the Kill sheet for *x*; focus returns to *opener* when it closes. */
-  function openKill(x: Session, opener: HTMLElement | null) {
+  /** Open the Kill sheet for *x*; focus returns to *opener* when it closes.
+   * *mode* preselects the KILL (a row menu's Kill query… or Kill connection…). */
+  function openKill(x: Session, opener: HTMLElement | null, mode?: "connection" | "query") {
     if (other) return;
     trigger.current = opener;
     setNote(null);
+    setTargetMode(mode);
     setTarget({ ...killTarget(x), via: killVia(connection), server_identity: report?.server_identity ? { ...report.server_identity } : undefined });
+  }
+  // The generic Kill privilege answers (own sessions need none), for the row
+  // menu, which cannot call a hook per row; the sheet checks its own target.
+  const killOtherGate = usePrivilege("kill");
+  const killOwnGate = usePrivilege("kill_own");
+  const killLogin = useLoginUser(connection.user);
+  function rowKillGate(x: Session): PrivilegeGateResult {
+    return x.user && x.user === killLogin ? killOwnGate : killOtherGate;
+  }
+  /** Why the row menu's Kill query… or Kill connection… is off, or "". */
+  function rowKillReason(x: Session, mode: "connection" | "query") {
+    if (other) return "These sessions are from another connection: refresh to load this server.";
+    const blocked = killBlocked(x);
+    if (blocked) return blocked;
+    if (disabled) return "The Query editor is capturing; Kill waits until it ends.";
+    if (killing) return "A Kill is being sent.";
+    if (loading) return "The list is being read.";
+    const denied = rowKillGate(x).disabledReason;
+    if (denied) return denied;
+    if (mode === "query" && !(x.command !== "Sleep" && !!x.info))
+      return `Connection ${x.id} runs no statement now; Kill connection… ends it.`;
+    return "";
   }
   /** Why Kill is off for *x* (empty when it is offered). */
   function killBlocked(x: Session) {
@@ -297,18 +345,23 @@ export function SessionsView({
   }
 
   const s = report?.summary;
-  const needle = search.trim().toLowerCase();
+  const rawDeferredSearch = useDeferredValue(search);
+  const deferredSearch = search === "" ? "" : rawDeferredSearch;
+  const needle = deferredSearch.trim().toLowerCase();
   // Filtered once per report and search, not on every render (a selection in
   // thousands of sessions).
-  const rows = useMemo(() => (report?.sessions || []).filter(
-    (x) =>
-      !needle ||
-      [String(x.id), x.user, x.host, x.db, x.command, x.state, x.info_short, x.last_statement]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase()
-        .includes(needle),
-  ), [report, needle]);
+  const rows = useMemo(() => {
+    const all = report?.sessions || [];
+    if (!needle) return all;
+    return all.filter(
+      (x) =>
+        [String(x.id), x.user, x.host, x.db, x.command, x.state, x.info_short, x.last_statement]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase()
+          .includes(needle),
+    );
+  }, [report, needle]);
   const noProcess = report?.capabilities.process_privilege === false;
 
   const columns: Column<Session>[] = [
@@ -331,7 +384,32 @@ export function SessionsView({
         ) : null,
       className: "cell-dot",
     },
-    { key: "id", label: "ID", title: "Connection ID (the processlist ID that KILL takes)", num: true, width: 96, sort: (x) => x.id, render: (x) => x.id },
+    {
+      key: "id",
+      label: "ID",
+      title: "Connection ID (the processlist ID that KILL takes)",
+      num: true,
+      width: 96,
+      sort: (x) => x.id,
+      render: (x) => {
+        const ls = lockStatus(x);
+        return (
+          <>
+            {x.id}
+            {(ls === "waiting" || ls === "holding") && (
+              <span
+                className="session-lock-marker"
+                role="img"
+                aria-label={ls === "waiting" ? "Waiting for a lock" : "Holding locks"}
+                title={ls === "waiting" ? "Waiting for a lock" : "Holding locks"}
+              >
+                <Icon name={ls === "waiting" ? "lock" : "key"} size={12} />
+              </span>
+            )}
+          </>
+        );
+      },
+    },
     {
       key: "user",
       label: "User@host",
@@ -353,6 +431,7 @@ export function SessionsView({
       key: "statement",
       label: "Statement",
       flex: true,
+      minWidth: 220,
       sort: (x) => x.info_short || x.last_statement || "",
       render: (x) =>
         x.info_short ? (
@@ -373,16 +452,20 @@ export function SessionsView({
       key: "lock",
       label: "Lock / Trx",
       width: 140,
-      sort: (x) => (x.lock_status === "waiting" ? 0 : x.lock_status === "holding" ? 1 : 2),
+      sort: (x) => {
+        const ls = lockStatus(x);
+        return ls === "waiting" ? 0 : ls === "holding" ? 1 : 2;
+      },
       render: (x) => {
-        if (x.lock_status === "waiting") {
+        const ls = lockStatus(x);
+        if (ls === "waiting") {
           return (
             <span className="pill is-danger" title={x.lock_detail || "Waiting on lock"}>
               <Icon name="lock" size={12} /> Wait {x.lock_wait?.wait_s != null ? `(${x.lock_wait.wait_s}s)` : ""}
             </span>
           );
         }
-        if (x.lock_status === "holding") {
+        if (ls === "holding") {
           return (
             <span className="pill is-warn" title={x.lock_detail || "Holding locks"}>
               <Icon name="key" size={12} /> Locks ({x.trx?.rows_locked ?? 0} rows)
@@ -561,7 +644,7 @@ export function SessionsView({
             Every connection to the server, from the process list joined with InnoDB transactions: what each runs, how
             long, idle transactions, and lock waits. Active hides sleeping sessions without a transaction.
           </p>
-          <p>Statuses are rules of thumb. Select a session for its statement, transaction, plan, and Kill (it asks first); a row's ⋯ menu also has Show plan and Kill.</p>
+          <p>Statuses are rules of thumb. Select a session for its statement, transaction, plan, and Kill (it asks first); a row's ⋯ menu also has Show plan and Kill, and right click (or Shift+F10) on a row has Kill query… and Kill connection….</p>
         </>
       }
       controls={
@@ -570,32 +653,45 @@ export function SessionsView({
             type="button"
             className="button"
             disabled={busy || !report || !report.sessions.length}
+            data-action="kill-sessions"
+            aria-haspopup="dialog"
             onClick={() => setMassKillOpen(true)}
           >
-            Mass kill
+            Kill sessions…
           </button>
           <AutoRefresh value={auto} options={AUTO_INTERVALS} disabled={!report} onChange={setAuto} />
         </>
       }
       onRefresh={() => void load()}
       refreshDisabled={busy}
-      loading={!!loading}
+      loading={!!reads.loading}
       otherConnection={other}
       inspector={inspector}
       inspectorEmpty={<p>Select a session to see its statement, its transaction, Show plan and Kill.</p>}
-      status={<><ViewStatus loading={loading} error={error} />{note && <KillResultNote note={note} noteRef={noteRef} onDismiss={() => setNote(null)} onRefresh={() => void load(scope === "active", true)} />}</>}
+      status={<><ViewStatus loading={loading} error={error}
+        onStop={reads.loading ? reads.stop : undefined}
+        onRetry={reads.error ? () => void load(scope === "active") : undefined} doneAt={reads.doneAt} />
+        {killLeft && <div className="view-status"><ActionStatus state={{ phase: "pending", startedAt: killLeft.startedAt,
+          message: `Waiting for the reply to the KILL of connection ${killLeft.id}${killLeft.key !== reads.key ? ` on ${killLeft.label}` : ""}. Its outcome shows here.` }} /></div>}
+        {note && <KillResultNote note={note} currentKey={reads.key} noteRef={noteRef} onDismiss={() => setNote(null)} onRefresh={() => void load(scope === "active", true)} />}</>}
     >
       <div ref={root}>
 
-        {target && (
+        {target && !killLeft && (
           <KillDialog
             target={target}
             busy={killing}
+            initialMode={targetMode}
             onCancel={() => {
               setTarget(null);
               window.setTimeout(() => trigger.current?.focus(), 0);
             }}
             onConfirm={(mode, token) => void confirmKill(mode, token)}
+            onLeave={() => {
+              const via = target.via || killVia(connection);
+              setKillLeft({ id: target.connection_id, startedAt: killSentAt.current, key: via.key, label: via.label });
+              trigger.current?.focus();
+            }}
           />
         )}
         {massKillOpen && report && (
@@ -605,9 +701,9 @@ export function SessionsView({
             serverIdentity={report.server_identity}
             onClose={() => setMassKillOpen(false)}
             onSuccess={(n) => {
-              setMassKillOpen(false);
               setNote(n);
-              void load(scope === "active", true);
+              if (n.status !== "pending") void load(scope === "active", true);
+              if (!n.late) window.setTimeout(() => noteRef.current?.focus(), 0);
             }}
           />
         )}
@@ -721,154 +817,62 @@ export function SessionsView({
                 rowAttrs={(v) => ({
                   "data-session": String(v.id),
                   "data-status": v.status,
-                  "data-locked": v.is_locked ? "true" : "false",
-                  "data-lock-wait": v.lock_status === "waiting" ? "true" : "false",
+                  "data-locked": isLocked(v) ? "true" : "false",
+                  "data-lock-wait": lockStatus(v) === "waiting" ? "true" : "false",
                 })}
                 // A class from rowAttrs would replace the selection class; rowClass joins it.
-                rowClass={(v) => (v.lock_status === "waiting" ? "row-lock-wait" : v.lock_status === "holding" ? "row-lock-holding" : "")}
+                rowClass={(v) => {
+                  const ls = lockStatus(v);
+                  return ls === "waiting" ? "row-lock-wait" : ls === "holding" ? "row-lock-holding" : "";
+                }}
                 rowContextMenu={(v, { copy, close }) => {
-                  const system = v.flags.includes("system_thread");
-                  const own = v.flags.includes("own_connection");
-                  const canKill = !system && !own && !connection.read_only && !other;
-                  const isRunningQuery = v.command !== "Sleep" && !!v.info;
+                  // Right click, Shift+F10 or the context menu key on a row:
+                  // the same actions as the inspector and the ⋯ menu, with
+                  // Kill query… and Kill connection… for this row last. Each
+                  // opens the single Kill sheet (exact statement, identity
+                  // check, write policy, audit); an action that is off says why.
+                  const statement = v.info || v.last_statement || "";
+                  const opener = () => root.current?.querySelector<HTMLElement>(`tr[data-session="${v.id}"]`) || null;
+                  const kill = (mode: "connection" | "query") => {
+                    const reason = rowKillReason(v, mode);
+                    const chosenOn = reads.key;
+                    return {
+                      label: mode === "query" ? "Kill query…" : "Kill connection…",
+                      icon: mode === "query" ? "stop" : "block",
+                      danger: true,
+                      disabled: !!reason,
+                      hint: reason || undefined,
+                      onClick: () => {
+                        close();
+                        // After the menu has closed and handed focus back to
+                        // the row, and only while the connection in use is
+                        // still the one the row was read from.
+                        window.setTimeout(() => {
+                          if (reads.currentKey() === chosenOn) openKill(v, opener(), mode);
+                        }, 0);
+                      },
+                    };
+                  };
                   return [
                     ...(v.explainable
-                      ? [
-                          {
-                            label: `Explain active query (ID #${v.id})`,
-                            icon: "search",
-                            onClick: () => {
-                              close();
-                              void showPlan(v.id);
-                            },
-                          },
-                        ]
+                      ? [{ label: "Show plan", icon: "plan", disabled: actionsOff, onClick: () => { close(); void showPlan(v.id); } }]
                       : []),
-                    ...((v.info || v.last_statement) && onOpenSql
-                      ? [
-                          {
-                            label: "Open in Query Editor",
-                            icon: "query",
-                            onClick: () => {
-                              close();
-                              onOpenSql(v.info || v.last_statement || "");
-                            },
-                          },
-                        ]
+                    ...(statement && onOpenSql
+                      ? [{ label: "Open in Query editor", icon: "query", onClick: () => { close(); onOpenSql(statement); } }]
                       : []),
-                    ...(v.is_locked || v.lock_status === "waiting" || v.lock_status === "holding" || v.trx
-                      ? [
-                          {
-                            label: "View locks and blockers",
-                            icon: "lock",
-                            onClick: () => {
-                              close();
-                              onOpenView("locks");
-                            },
-                          },
-                        ]
+                    ...(isLocked(v) || v.trx
+                      ? [{ label: "Open in Locks", icon: "lock", onClick: () => { close(); onOpenView("locks"); } }]
                       : []),
+                    ...(v.user ? [{ label: `Filter by user ${v.user}`, icon: "users", onClick: () => { close(); setSearch(v.user || ""); } }] : []),
+                    ...(v.db ? [{ label: `Filter by database ${v.db}`, icon: "database", onClick: () => { close(); setSearch(v.db || ""); } }] : []),
+                    ...(v.client_host ? [{ label: `Filter by host ${v.client_host}`, icon: "globe", onClick: () => { close(); setSearch(v.client_host || ""); } }] : []),
+                    ...(v.command ? [{ label: `Filter by command ${v.command}`, icon: "run", onClick: () => { close(); setSearch(v.command || ""); } }] : []),
                     { divider: true as const },
-                    ...(v.user
-                      ? [
-                          {
-                            label: `Filter by user "${v.user}"`,
-                            icon: "users",
-                            onClick: () => {
-                              close();
-                              setSearch(v.user || "");
-                            },
-                          },
-                        ]
+                    ...(statement
+                      ? [{ label: "Copy query", icon: "copy", onClick: () => void copy(statement, "Query copied") }]
                       : []),
-                    ...(v.db
-                      ? [
-                          {
-                            label: `Filter by database "${v.db}"`,
-                            icon: "database",
-                            onClick: () => {
-                              close();
-                              setSearch(v.db || "");
-                            },
-                          },
-                        ]
-                      : []),
-                    ...(v.client_host
-                      ? [
-                          {
-                            label: `Filter by host "${v.client_host}"`,
-                            icon: "globe",
-                            onClick: () => {
-                              close();
-                              setSearch(v.client_host || "");
-                            },
-                          },
-                        ]
-                      : []),
-                    ...(v.command
-                      ? [
-                          {
-                            label: `Filter by command "${v.command}"`,
-                            icon: "run",
-                            onClick: () => {
-                              close();
-                              setSearch(v.command || "");
-                            },
-                          },
-                        ]
-                      : []),
-                    { divider: true as const },
-                    ...(v.info
-                      ? [
-                          {
-                            label: "Copy SQL query",
-                            icon: "copy",
-                            onClick: () => void copy(v.info || "", "SQL query copied"),
-                          },
-                        ]
-                      : []),
-                    {
-                      label: `Copy connection ID (#${v.id})`,
-                      icon: "copy",
-                      onClick: () => void copy(String(v.id), "Connection ID copied"),
-                    },
-                    { divider: true as const },
-                    ...(canKill && isRunningQuery
-                      ? [
-                          {
-                            label: "Kill query",
-                            icon: "stop",
-                            danger: true,
-                            onClick: () => {
-                              close();
-                              setNote(null);
-                              setTarget({
-                                ...killTarget(v),
-                                via: killVia(connection),
-                                server_identity: report?.server_identity ? { ...report.server_identity } : undefined,
-                              });
-                            },
-                          },
-                        ]
-                      : []),
-                    ...(canKill
-                      ? [
-                          {
-                            label: "Kill connection",
-                            icon: "block",
-                            danger: true,
-                            onClick: () => {
-                              close();
-                              setNote(null);
-                              setTarget({
-                                ...killTarget(v),
-                                via: killVia(connection),
-                                server_identity: report?.server_identity ? { ...report.server_identity } : undefined,
-                              });
-                            },
-                          },
-                        ]
-                      : []),
+                    { label: "Copy connection ID", icon: "copy", onClick: () => void copy(String(v.id), "Connection ID copied") },
+                    ...(v.thread_kind === "client" ? [{ divider: true as const }, kill("query"), kill("connection")] : []),
                   ];
                 }}
                 empty={

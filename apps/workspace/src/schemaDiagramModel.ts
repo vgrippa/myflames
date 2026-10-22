@@ -147,20 +147,56 @@ export function relationshipEndpoints(r: DiagramRelationship, d: SchemaDiagram, 
   return { from, to, right, a: {x:a.x+(right?TABLE_WIDTH:0),y:anchor(from,a,r.from_columns)},
     b: {x:b.x+(right?0:TABLE_WIDTH),y:anchor(to,b,r.to_columns)} };
 }
-export function relationshipPath(r: DiagramRelationship, d: SchemaDiagram, positions: Record<string, Point>) {
+function relationshipVertices(r: DiagramRelationship, d: SchemaDiagram, positions: Record<string, Point>): Point[] {
   const {from,to,right,a,b}=relationshipEndpoints(r,d,positions),fp=positions[from.id],tp=positions[to.id];
   if(from.id===to.id){const x=fp.x+TABLE_WIDTH,outside=x+50;
-    return a.y===b.y?`M${x},${a.y} H${outside} V${b.y+40} H${x+25} V${b.y} H${x}`:`M${x},${a.y} H${outside} V${b.y} H${x}`;}
-  const sx=a.x+(right?30:-30),ex=b.x+(right?-30:30);
+    return a.y===b.y?[{x,y:a.y},{x:outside,y:a.y},{x:outside,y:b.y+40},{x:x+25,y:b.y+40},{x:x+25,y:b.y},{x,y:b.y}]:[{x,y:a.y},{x:outside,y:a.y},{x:outside,y:b.y},{x,y:b.y}];}
   if(Math.abs(fp.y-tp.y)>HEADER_HEIGHT){
-    const mid=tp.y>fp.y?(fp.y+tableHeight(from)+tp.y)/2:(tp.y+tableHeight(to)+fp.y)/2;
-    return `M${a.x},${a.y} H${sx} V${mid} H${ex} V${b.y} H${b.x}`;
+    const crossPeers=d.relationships.filter(o=>{const ofp=positions[o.from_table],otp=positions[o.to_table];return ofp&&otp&&o.from_table!==o.to_table&&Math.abs(ofp.y-otp.y)>HEADER_HEIGHT;});
+    const sxPeers=crossPeers.filter(o=>{const e=relationshipEndpoints(o,d,positions);return e.a.x===a.x&&e.right===right;});
+    const exPeers=crossPeers.filter(o=>{const e=relationshipEndpoints(o,d,positions);return e.b.x===b.x&&e.right===right;});
+    const baseMid=tp.y>fp.y?(fp.y+tableHeight(from)+tp.y)/2:(tp.y+tableHeight(to)+fp.y)/2;
+    const midPeers=crossPeers.filter(o=>{const ofp=positions[o.from_table],otp=positions[o.to_table],ofrom=d.tables.find(t=>t.id===o.from_table)!,oto=d.tables.find(t=>t.id===o.to_table)!;
+      const om=otp.y>ofp.y?(ofp.y+tableHeight(ofrom)+otp.y)/2:(otp.y+tableHeight(oto)+ofp.y)/2;return Math.abs(om-baseMid)<30;});
+    const sx=a.x+(right?1:-1)*(24+Math.max(0,sxPeers.indexOf(r))*10);
+    const ex=b.x+(right?-1:1)*(24+Math.max(0,exPeers.indexOf(r))*10);
+    const mid=baseMid+(Math.max(0,midPeers.indexOf(r))-(midPeers.length-1)/2)*10;
+    return [{x:a.x,y:a.y},{x:sx,y:a.y},{x:sx,y:mid},{x:ex,y:mid},{x:ex,y:b.y},{x:b.x,y:b.y}];
   }
   const lo=Math.min(a.x,b.x),hi=Math.max(a.x,b.x);
   const obstacle=d.tables.some(t=>t.id!==from.id&&t.id!==to.id&&positions[t.id].x<hi&&positions[t.id].x+TABLE_WIDTH>lo&&
     positions[t.id].y<Math.max(a.y,b.y)&&positions[t.id].y+tableHeight(t)>Math.min(a.y,b.y));
-  if(obstacle){const y=Math.min(fp.y,tp.y)-40;return `M${a.x},${a.y} H${sx} V${y} H${ex} V${b.y} H${b.x}`;}
-  return `M${a.x},${a.y} H${(a.x+b.x)/2} V${b.y} H${b.x}`;
+  if(obstacle){const sx=a.x+(right?24:-24),ex=b.x+(right?-24:24),y=Math.min(fp.y,tp.y)-40;
+    return [{x:a.x,y:a.y},{x:sx,y:a.y},{x:sx,y},{x:ex,y},{x:ex,y:b.y},{x:b.x,y:b.y}];}
+  const rowPeers=d.relationships.filter(o=>{const ofp=positions[o.from_table],otp=positions[o.to_table];
+    if(!ofp||!otp||o.from_table===o.to_table||Math.abs(ofp.y-otp.y)>HEADER_HEIGHT)return false;
+    const e=relationshipEndpoints(o,d,positions);return Math.min(e.a.x,e.b.x)===lo&&Math.max(e.a.x,e.b.x)===hi;});
+  const midX=(a.x+b.x)/2+(Math.max(0,rowPeers.indexOf(r))-(rowPeers.length-1)/2)*12;
+  return [{x:a.x,y:a.y},{x:midX,y:a.y},{x:midX,y:b.y},{x:b.x,y:b.y}];
+}
+export function relationshipPath(r: DiagramRelationship, d: SchemaDiagram, positions: Record<string, Point>) {
+  const pts=relationshipVertices(r,d,positions);
+  const verticals: {x:number;y1:number;y2:number}[]=[];
+  for(const o of d.relationships){
+    if(o.id===r.id||!d.tables.some(t=>t.id===o.from_table)||!d.tables.some(t=>t.id===o.to_table))continue;
+    const op=relationshipVertices(o,d,positions);
+    for(let i=0;i+1<op.length;i++)if(op[i].x===op[i+1].x&&op[i].y!==op[i+1].y)verticals.push({x:op[i].x,y1:Math.min(op[i].y,op[i+1].y),y2:Math.max(op[i].y,op[i+1].y)});
+  }
+  const cmds=[`M${pts[0].x},${pts[0].y}`];
+  for(let i=0;i+1<pts.length;i++){
+    const p1=pts[i],p2=pts[i+1];
+    if(p1.x===p2.x){cmds.push(`V${p2.y}`);continue;}
+    const y=p1.y,lo=Math.min(p1.x,p2.x),hi=Math.max(p1.x,p2.x),dir=p2.x>=p1.x?1:-1;
+    const cuts=verticals.filter(v=>v.x>lo+8&&v.x<hi-8&&y>v.y1+8&&y<v.y2-8).map(v=>v.x).sort((a,b)=>(a-b)*dir);
+    let cur=p1.x;
+    for(const vx of cuts){if((vx-cur)*dir>6){cmds.push(`H${vx-dir*5} M${vx+dir*5},${y}`);cur=vx+dir*5;}}
+    cmds.push(`H${p2.x}`);
+  }
+  return cmds.join(" ");
+}
+export function relationshipMarkerPath(r: DiagramRelationship, d: SchemaDiagram, positions: Record<string, Point>) {
+  const {right,a}=relationshipEndpoints(r,d,positions),dir=right?1:-1;
+  return `M${a.x},${a.y-5} L${a.x+dir*10},${a.y} L${a.x},${a.y+5}`;
 }
 export const cardinalityLabel = (value: string) => ({"one":"1","zero-or-one":"0..1","zero-or-many":"0..*","one-or-many":"1..*"})[value] || value;
 export const conceptualRelationship = (r: DiagramRelationship) => !r.from_columns.length || !r.to_columns.length;
@@ -174,7 +210,8 @@ export function diagramSvg(d: SchemaDiagram): string {
   const width = Math.min(4096, Math.ceil(bounds.width)), height = width * bounds.height / bounds.width;
   const parts = [`<svg xmlns="http://www.w3.org/2000/svg" viewBox="${bounds.x} ${bounds.y} ${bounds.width} ${bounds.height}" width="${width}" height="${height}" role="img" aria-label="Database diagram">`,
     `<rect x="${bounds.x}" y="${bounds.y}" width="${bounds.width}" height="${bounds.height}" fill="#f5f7fa"/>`, '<g font-family="system-ui,sans-serif" font-size="12">'];
-  for (const r of d.relationships) { parts.push(`<path d="${relationshipPath(r,d,positions)}" fill="none" stroke="#52677e" stroke-width="2"${conceptualRelationship(r) ? ' stroke-dasharray="6 4"' : ''}><title>${xml(r.name || "Relationship")}</title></path>`);
+  for (const r of d.relationships) { parts.push(`<path d="${relationshipPath(r,d,positions)}" fill="none" stroke="#52677e" stroke-width="2"${conceptualRelationship(r) ? ' stroke-dasharray="6 4"' : ''}><title>${xml(r.name || "Relationship")}</title></path>`,
+    `<path d="${relationshipMarkerPath(r,d,positions)}" fill="none" stroke="#52677e" stroke-width="1.5"/>`);
     if(r.cardinality){const ends=relationshipEndpoints(r,d,positions);for(const [p,label] of [[ends.a,r.cardinality.from],[ends.b,r.cardinality.to]] as const)
       parts.push(`<text x="${p.x+(p===ends.a?(ends.right?12:-12):(ends.right?-12:12))}" y="${p.y-8}" text-anchor="middle" fill="#334155">${xml(cardinalityLabel(label))}</text>`);}
   }
@@ -192,6 +229,7 @@ export function diagramSvg(d: SchemaDiagram): string {
     });
     parts.push('</g>');
   }
-  parts.push(`<text x="${bounds.x+16}" y="${bounds.y+bounds.height-12}" fill="#475569">Dashed lines: conceptual relationships. PK: primary key. FK: foreign key.</text>`);
+  const legend = d.relationships.some(conceptualRelationship) ? "Dashed lines: conceptual relationships. PK: primary key. FK: foreign key." : "PK: primary key. FK: foreign key.";
+  parts.push(`<text x="${bounds.x+16}" y="${bounds.y+bounds.height-12}" fill="#475569">${legend}</text>`);
   parts.push('</g></svg>'); return parts.join('');
 }

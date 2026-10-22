@@ -42,7 +42,8 @@ try {
     await page.type('input[aria-label="Search commands"]', "database diagram");
     assert.equal(await page.$$eval('.command-option', elements => elements.length), 1);
     await page.keyboard.press("Enter");
-    await page.waitForSelector('.server-view[data-view="diagram"]');
+    await page.waitForSelector('.server-place.is-diagram-place .server-view[data-view="diagram"]', { visible: true });
+    await page.waitForFunction(() => document.querySelector(".main-nav button.active")?.textContent === "Database diagram");
     assert.equal(await page.$('dialog.command-palette'), null);
     await page.keyboard.down("Meta"); await page.keyboard.press("k"); await page.keyboard.up("Meta");
     await page.waitForSelector("dialog.command-palette[open]");

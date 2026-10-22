@@ -49,7 +49,7 @@
 /* The wrap spans the whole row, so the list of views can stay pinned under
    the top bar while a long view scrolls (in a wrap only as tall as the list,
    sticky had no room and the list scrolled away). */
-.server-layout:not(.is-compact) > .server-source-wrap:not(.is-floating) {
+.server-layout:not(.is-compact) > .server-source-wrap {
   align-self: stretch;
 }
 .server-source-wrap > .source-list {
@@ -64,7 +64,8 @@
   border-left: 1px solid var(--line);
 }
 
-/* Secondary menu collapsed / floating */
+/* The list of views floated: the view takes the full width and its title
+   opens the list (kit.tsx ViewSwitcher). */
 .server-place.is-nav-collapsed {
   --source-w: 0px;
 }
@@ -89,83 +90,34 @@
 .server-sidebar-toggle:hover {
   color: var(--ink);
 }
-.server-source-wrap.is-floating {
-  position: absolute;
-  top: var(--space-2);
-  left: var(--space-4);
-  z-index: 30;
-  width: 220px;
-  max-height: calc(100dvh - var(--topbar-height) - var(--toolbar-h) - var(--space-6));
-  background: var(--surface-raised);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-sheet);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  overflow: auto;
-  animation: serverDrawerFadeIn 150ms cubic-bezier(0.16, 1, 0.3, 1);
-}
-.server-source-wrap.is-floating > .source-list {
-  position: static;
-  max-height: none;
-  padding: var(--space-2);
-}
-@keyframes serverDrawerFadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(-4px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
+/* The floating list's header (in the title's popover, kit.css
+   .view-switcher-popover): the list's name and the dock control. */
 .server-floating-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--space-2) var(--space-3);
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-3);
   border-bottom: 1px solid var(--line);
   font-size: var(--section-size);
   font-weight: var(--section-weight);
   color: var(--section-ink);
 }
-.server-floating-trigger-container {
-  display: flex;
-  align-items: center;
-  padding: var(--space-2) var(--space-4) 0;
+.server-floating-header .icon-button {
+  color: var(--ink-muted);
 }
-.server-floating-nav-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  height: 28px;
-  padding: 0 var(--space-3);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
+.server-floating-header .icon-button:hover {
   color: var(--ink);
-  font-size: var(--text-sm);
-  font-weight: 500;
-  cursor: pointer;
-  box-shadow: var(--shadow-sm);
-  transition: all var(--motion-hover);
-}
-.server-floating-nav-btn:hover,
-.server-floating-nav-btn.active {
-  background: var(--surface-hover);
-  border-color: var(--line-strong);
-  color: var(--accent-text);
 }
 
-/* The Tuning place: its one view, full width, without the list of views
-   (Tuning is a place of its own, never a Server view). */
-.server-place.is-tuning-place .server-layout,
-.server-place.is-tuning-place .server-layout.is-compact {
+/* Tuning and Database diagram: their one view, full width, without the list
+   of views (each is a place of its own, never a Server view). */
+.server-place.is-single-place .server-layout,
+.server-place.is-single-place .server-layout.is-compact {
   grid-template-columns: minmax(0, 1fr);
   background: var(--surface);
 }
-.server-place.is-tuning-place .server-content {
+.server-place.is-single-place .server-content {
   border-left: 0;
 }
 

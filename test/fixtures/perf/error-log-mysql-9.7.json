@@ -378,6 +378,7 @@
   ],
   "entries_total": 19,
   "file": null,
+  "flavor": "mysql",
   "how_to_view": null,
   "levels": [
    "System",
@@ -393,6 +394,7 @@
   "reason": null,
   "reason_text": null,
   "schema_version": "error-log-1.0",
+  "server_product": "MySQL",
   "server_started": "2026-10-19 20:26:15",
   "server_version": "9.7.2",
   "settings": {

@@ -4,7 +4,7 @@ import unittest
 from unittest import mock
 
 from _perf_replay import FakeFactory, ReplayConn, assert_read_only, batch, replay
-from myflames import config_review, mysql_sysvars, parameters as P, ui
+from myflames import config_review, mysql_sysvar_help, mysql_sysvars, parameters as P, ui
 from myflames.connector import ConnectorError
 from myflames.perf_common import Reader, Server
 
@@ -77,6 +77,26 @@ class TestComputeParameters(unittest.TestCase):
         self.assertEqual(len(found["plugin_limit"]["description"]), 600)
         self.assertEqual(found["binlog_row_image"]["values"], ["MINIMAL", "NOBLOB", "FULL"])
         self.assertEqual(found["binlog_row_image"]["apply_type"], "dynamic")
+
+    def test_mysql_before_9_describes_from_the_source_help(self):
+        rows = [["max_connections", "151"], ["expire_logs_days", "0"], ["innodb_dedicated_server", "OFF"],
+                ["percona_only_setting", "1"]]
+        found = items(mysql(rows))
+        self.assertEqual(found["max_connections"]["description"], "The number of simultaneous clients allowed")
+        self.assertEqual(found["innodb_dedicated_server"]["description"], mysql_sysvar_help.HELP["innodb_dedicated_server"])
+        self.assertIsNone(found["expire_logs_days"]["description"], "8.4 declares no such variable")
+        self.assertIsNone(found["percona_only_setting"]["description"])
+        # MySQL 8.0 takes its own text where it differs, then the 8.4 one.
+        eighty = items(mysql(rows, version=(8, 0, 46)))
+        self.assertEqual(eighty["expire_logs_days"]["description"], mysql_sysvar_help.HELP_80["expire_logs_days"])
+        self.assertEqual(eighty["innodb_dedicated_server"]["description"], mysql_sysvar_help.HELP_80["innodb_dedicated_server"])
+        self.assertNotEqual(eighty["innodb_dedicated_server"]["description"], found["innodb_dedicated_server"]["description"])
+        self.assertEqual(eighty["max_connections"]["description"], found["max_connections"]["description"])
+        # MySQL 9.0+ reports its own text; none is borrowed from the source when it reports none.
+        nine = items(mysql(rows, version=(9, 7, 0), metadata_rows=[["max_connections", "GLOBAL", "Integer", "1", "100000", None]]))
+        self.assertIsNone(nine["max_connections"]["description"])
+        self.assertEqual(P.source_help((9, 0, 1), "max_connections"), None)
+        self.assertEqual(P.source_help((8, 3, 0), "max_connections"), "The number of simultaneous clients allowed")
 
     def test_mysql_server_computed_values_have_no_change_path(self):
         names = ("version", "hostname", "server_uuid", "protocol_version", "license", "gtid_executed",

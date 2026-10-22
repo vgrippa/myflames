@@ -4,20 +4,25 @@
 // Sections: Topology, Channels (Connections on MariaDB), Lag, GTID and
 // Recovery, under the shared summary line and metric tiles. Every change goes
 // through a write-policy confirmation sheet.
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Connection } from "./api";
-import { connectionKey, type Bound } from "./binding";
+import { connectionKey, connectionLabel, type Bound } from "./binding";
 import { ReplicationView, type ReplicationSubTab } from "./Replication";
 import type { ReplicationReport, SkipLoop } from "./opsApi";
-import { NavMarker, InspectorContext, type InspectorShared, type Selection, worstTone, TONE_TEXT } from "./kit";
+import type { ClusterKind } from "./clusterApi";
+import { InspectorContext, useWindowStatus, type InspectorShared, type Selection } from "./kit";
 import { InstrumentsLinkContext } from "./Instruments";
+import { engineName } from "./OpsShared";
 import "./replication.css";
+
+const SHEET_WIDTH = 1100;
 
 export function ReplicationPlace({
   connection,
   disabled = false,
   onBack,
-  onBadgeChange,
+  clusterKind = null,
+  onOpenCluster,
   onOpenInstruments,
   loops: propLoops,
   onLoops,
@@ -29,7 +34,11 @@ export function ReplicationPlace({
   connection: Connection;
   disabled?: boolean;
   onBack?: () => void;
-  onBadgeChange?: (badge: ReactNode) => void;
+  /** The cluster the connection in use belongs to, once the Cluster place or
+   * Refresh all read it (a node that is not a replica points there). The
+   * sidebar's marker is drawn by the shell from the shared report. */
+  clusterKind?: ClusterKind | null;
+  onOpenCluster?: () => void;
   onOpenInstruments?: (row: string) => void;
   loops?: Bound<SkipLoop[]> | null;
   onLoops?: (loops: Bound<SkipLoop[]>) => void;
@@ -55,32 +64,27 @@ export function ReplicationPlace({
   };
   const [selectedKey, setSelectedKey] = useState("");
   const [inspectorOpen, setInspectorOpen] = useState(false);
-  const [inspectorWidth, setInspectorWidth] = useState(360);
+  const [inspectorWidth, setInspectorWidth] = useState(320);
   const [activeTab, setActiveTab] = useState<ReplicationSubTab>("topology");
   const [, setLoopActiveNow] = useState(false);
-
+  const placeRef = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(() => (typeof window !== "undefined" ? window.innerWidth : 1440));
   useEffect(() => {
-    const currentKey = connectionKey(connection);
-    if (!report || report.key !== currentKey) {
-      onBadgeChange?.(null);
-      return;
-    }
-    const rep = report.report;
-    if (!rep) {
-      onBadgeChange?.(null);
-      return;
-    }
-    if (!rep.replica) {
-      onBadgeChange?.(<NavMarker tone="unknown" text="no replica channels" />);
-    } else if (rep.summary.failed > 0) {
-      const n = rep.summary.failed;
-      onBadgeChange?.(<NavMarker compact tone="problem" count={n} countTone="danger" text={`Problem, ${n} failed`} />);
-    } else {
-      const judged = rep.channels.filter((c) => c.judged);
-      const worst = judged.length ? worstTone(judged.map((c) => c.status)) : "unknown";
-      onBadgeChange?.(<NavMarker tone={worst} text={worst === "ok" ? "replicating" : TONE_TEXT[worst] || worst} />);
-    }
-  }, [report, connection, onBadgeChange]);
+    const el = placeRef.current;
+    const measure = () => {
+      const w = el && el.clientWidth > 0 ? el.clientWidth : window.innerWidth;
+      if (w > 0) setWidth(w);
+    };
+    measure();
+    const observer = typeof ResizeObserver !== "undefined" && el ? new ResizeObserver(measure) : null;
+    if (el && observer) observer.observe(el);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, []);
+  const sheet = width > 0 && width < SHEET_WIDTH;
 
   const selection: Selection = {
     key: selectedKey,
@@ -96,15 +100,21 @@ export function ReplicationPlace({
       setOpen: setInspectorOpen,
       width: inspectorWidth,
       setWidth: setInspectorWidth,
-      sheet: false,
+      sheet,
     }),
-    [inspectorOpen, selectedKey, inspectorWidth],
+    [inspectorOpen, selectedKey, inspectorWidth, sheet],
   );
+  const key = connectionKey(connection);
+  const current = report && report.key === key ? report.report : null;
+  useWindowStatus(`replication:${key}`, {
+    connectionState: connection.host ? connectionLabel(connection) : "No connection",
+    engineVersion: current && current.server_version ? engineName(current.engine, current.server_version) : undefined,
+  });
 
   return (
     <InspectorContext.Provider value={inspector}>
       <InstrumentsLinkContext.Provider value={onOpenInstruments || (() => {})}>
-        <div className="replication-place">
+        <div ref={placeRef} className="replication-place">
           <ReplicationView
             connection={connection}
             disabled={disabled}
@@ -121,6 +131,8 @@ export function ReplicationPlace({
             }}
             activeTab={activeTab}
             onTabChange={setActiveTab}
+            clusterKind={clusterKind}
+            onOpenCluster={onOpenCluster}
           />
         </div>
       </InstrumentsLinkContext.Provider>

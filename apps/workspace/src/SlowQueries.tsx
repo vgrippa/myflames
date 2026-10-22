@@ -6,7 +6,7 @@
 //
 // useTopStatements keeps the report and the batch in the Server place, so they
 // survive switching views (and the batch keeps running).
-import { useEffect, useId, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   api,
   number,
@@ -27,6 +27,9 @@ import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "
 import { Icon } from "./components";
 import {
   NumberField,
+  ActionButton,
+  ActionStatus,
+  useSince,
   EmptyState,
   Fields,
   InspectorSection,
@@ -42,6 +45,7 @@ import {
   type Selection,
 } from "./kit";
 import { digestName, digestQuery } from "./placeholders";
+import { useOpenRead } from "./viewOnScreen";
 import { isPrivilegeDenial, privilegeButtonProps, usePrivilege, usePrivileges } from "./privileges";
 import "./digest.css";
 
@@ -459,7 +463,12 @@ export function useTopStatements({
     clearTable,
     accept,
     loading: reads.loading,
+    /** A read is on its way (this view's, or Refresh all's through accept). */
+    running: reads.running,
     error: reads.error || actionError,
+    readError: reads.error,
+    stop: reads.stop,
+    doneAt: reads.doneAt,
     load,
     batch,
     batchRunning,
@@ -831,6 +840,7 @@ export function TopStatementsView({
   const explainGate = usePrivilege("explain");
   const privilegeId = useId();
   const { scope, loading, error, batch, batchRunning, batchSize } = state;
+  const since = useSince(!!loading);
   const activeKey = connectionKey(connection);
   const top = state.top?.report ?? null;
   // Statements read from another connection stay on screen, greyed; Explain,
@@ -839,12 +849,21 @@ export function TopStatementsView({
   const [search, setSearch] = useState("");
   const busy = disabled || !!loading || batchRunning;
   const actionsOff = busy || !!other;
-  const rows: Row[] = (top?.statements || []).map((s, i) => ({ ...s, rank: i + 1 }));
-  const needle = search.trim().toLowerCase();
-  const shown = needle
-    ? rows.filter((r) => `${r.sample_text || ""} ${r.digest_text || ""} ${r.schema || ""}`.toLowerCase().includes(needle))
-    : rows;
-  const flagged = rows.filter((r) => r.flags.length).length;
+  const rows: Row[] = useMemo(
+    () => (top?.statements || []).map((s, i) => ({ ...s, rank: i + 1 })),
+    [top?.statements],
+  );
+  const rawDeferredSearch = useDeferredValue(search);
+  const deferredSearch = search === "" ? "" : rawDeferredSearch;
+  const needle = deferredSearch.trim().toLowerCase();
+  const shown = useMemo(
+    () =>
+      needle
+        ? rows.filter((r) => `${r.sample_text || ""} ${r.digest_text || ""} ${r.schema || ""}`.toLowerCase().includes(needle))
+        : rows,
+    [rows, needle],
+  );
+  const flagged = useMemo(() => rows.filter((r) => r.flags.length).length, [rows]);
   // The order and table the list on screen was read with.
   const shownOrder = top?.order || order;
   const ranked = orderLabel(shownOrder).toLowerCase();
@@ -852,6 +871,11 @@ export function TopStatementsView({
   const counter = ORDER_COUNTERS[shownOrder as TopOrder];
   // A Performance Schema prerequisite is a gate with one action, not an error.
   const gate = digestGate(error);
+  // Opening the view on screen reads it, once per connection (Refresh reads
+  // again), like every other view; a link (Health, Indexes, the Full
+  // analysis) has already started its own read with its order and table.
+  useOpenRead({ key: activeKey, reportKey: state.top?.key, ready: !disabled && !batchRunning, busy: !!loading || state.running(),
+    read: () => { void state.load(schema); } });
 
   const columns: Column<Row>[] = [
     { key: "rank", label: "#", num: true, sort: (r) => r.rank, render: (r) => r.rank },
@@ -1064,19 +1088,24 @@ export function TopStatementsView({
       inspector={inspector}
       detailBackLabel="Back to statements"
       inspectorEmpty={<p>Select a statement to see its full text, its numbers, and Explain or Run analysis.</p>}
-      status={<ViewStatus loading={loading} error={gate ? "" : error} />}
+      status={<ViewStatus loading={top ? loading : ""} error={gate ? "" : error}
+        onStop={loading ? state.stop : undefined}
+        onRetry={!gate && state.readError ? () => void state.load(schema) : undefined} doneAt={state.doneAt} />}
     >
       {gate && (
         <PrerequisiteGate action={<InstrumentsLink row={gate.row} />}>{gate.text}</PrerequisiteGate>
       )}
-      {!top && !loading && !error && (
+      {!top && !gate && (
         <EmptyState
           icon="statements"
           title="No statements loaded"
           action={
-            <button type="button" className="button primary" disabled={busy} onClick={() => void state.load(schema)}>
-              Load top statements
-            </button>
+            <>
+              <ActionButton primary busy={!!loading} busyLabel="Loading…" disabled={!loading && busy} onClick={() => void state.load(schema)}>
+                Load top statements
+              </ActionButton>
+              <ActionStatus keepLine state={{ phase: loading ? "pending" : "idle", message: loading, startedAt: since }} onStop={state.stop} />
+            </>
           }
         >
           The statements that used the most server time since Performance Schema started recording.

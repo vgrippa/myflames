@@ -82,6 +82,7 @@ import time
 
 from . import __version__
 from .connector import ConnectorError, terminal_text
+from .server_info import product_name
 from .perf_common import (ALL_SCHEMAS_TABLE_LIMIT, Reader, _bytes_text, _count_text, _duration_text,
                           check_schemas, check_window, lost_note, now, preflight, ps_off_text, reason, require_choice,
                           scope_text)
@@ -1060,12 +1061,15 @@ def compose_report(server, runs, attribution, interval=DEFAULT_INTERVAL, schemas
         "schema_version": SCHEMA_VERSION,
         "myflames_version": __version__,
         "engine": server.engine,
+        "flavor": server.flavor,
+        "server_product": server.product,
         "server_version": server.version or None,
         "taken_at": now(),
         "uptime_s": server.uptime,
         "performance_schema": server.ps_on,
         "header": {
-            "server": {"engine": server.engine, "version": server.version or None, "version_comment": comment,
+            "server": {"engine": server.engine, "flavor": server.flavor, "product": server.product,
+                       "version": server.version or None, "version_comment": comment,
                        "uptime_s": server.uptime, "performance_schema": server.ps_on},
             "started_at": started_at, "elapsed_s": elapsed_s, "interval": interval,
             "scope": {"schemas": list(schemas) if schemas else None, "all_user_schemas": not schemas,
@@ -1162,8 +1166,7 @@ _WRAP = 100
 
 def _server_line(report):
     h = report["header"]["server"]
-    engine = "MariaDB" if report["engine"] == "mariadb" else "MySQL"
-    line = "%s %s" % (engine, report["server_version"] or "?")
+    line = "%s %s" % (product_name(report), report["server_version"] or "?")
     if h.get("version_comment"):
         line += " (%s)" % h["version_comment"]
     if report.get("uptime_s") is not None:

@@ -36,9 +36,14 @@ class TestBackendReadLimits(unittest.TestCase):
         args, kwargs = self.call('/api/live/catalog', {'schema': 'shop', 'prefix': 'a%_', 'after': 'a%_Z'},
                                  'myflames.schema_browser.catalog_report')
         self.assertEqual(args[1:], ('shop', None))
-        self.assertEqual(kwargs, {'prefix': 'a%_', 'after': 'a%_Z'})
+        self.assertEqual(kwargs, {'prefix': 'a%_', 'after': 'a%_Z', 'stats': False})
         _, kwargs = self.call('/api/live/catalog', {'schema': 'shop'}, 'myflames.schema_browser.catalog_report')
-        self.assertEqual(kwargs, {'prefix': None, 'after': None})
+        self.assertEqual(kwargs, {'prefix': None, 'after': None, 'stats': False})
+        # Maintenance > Dump asks for engine, rows and size; only a literal true does.
+        for value, expected in ((True, True), ('true', False), (1, False), (None, False)):
+            _, kwargs = self.call('/api/live/catalog', {'schema': 'shop', 'stats': value},
+                                  'myflames.schema_browser.catalog_report')
+            self.assertIs(kwargs['stats'], expected, value)
 
     def test_catalog_rejects_invalid_paging_before_opening_a_connection(self):
         for key in ('prefix', 'after'):
@@ -54,7 +59,7 @@ class TestBackendReadLimits(unittest.TestCase):
             with self.subTest(value=value):
                 _, kwargs = self.call('/api/live/catalog', {'schema': 'shop', 'prefix': value, 'after': value},
                                       'myflames.schema_browser.catalog_report')
-                self.assertEqual(kwargs, {'prefix': expected, 'after': expected})
+                self.assertEqual(kwargs, {'prefix': expected, 'after': expected, 'stats': False})
 
     def test_selected_and_global_schema_limits_require_a_boolean_override(self):
         for route, target in (('tables', 'myflames.schema_health.table_report'),
@@ -458,6 +463,26 @@ class TestWorkspaceHTTP(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_app_update_status_needs_the_session_and_reads_no_network(self):
+        with mock.patch('myflames.app_update.urllib.request.build_opener', side_effect=AssertionError('network')) as net:
+            status, body, _ = self.request('POST', '/api/app/update/status', {},
+                                           headers={'Cookie': self.server.cookie_name + '=wrong'})
+            self.assertEqual(status, 403)
+            status, body, _ = self.request('POST', '/api/app/update/status', {}, headers={'X-Myflames-Token': 'wrong'})
+            self.assertEqual(status, 403)
+            status, body, _ = self.request('POST', '/api/app/update/status', {})
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body)['schema_version'], 'app-update-status-1.0')
+            net.assert_not_called()
+        with mock.patch.dict(os.environ, {'MYFLAMES_TEST_UPDATE': '99.0.0'}), \
+                mock.patch.dict('myflames.app_update._CACHE', clear=True):
+            status, body, _ = self.request('POST', '/api/app/update/check', {'force': True})
+        self.assertEqual(status, 200)
+        checked = json.loads(body)
+        status, body, _ = self.request('POST', '/api/app/update/status', {})
+        self.assertEqual(json.loads(body)['last_check'], checked['last_check'])
+        self.assertEqual(checked['last_check']['latest_version'], '99.0.0')
+
     def test_unexpected_error_is_neutral_for_live_reads_and_logged_to_stderr(self):
         import io
         from myflames import ui
@@ -558,15 +583,19 @@ class TestWorkspaceHTTP(unittest.TestCase):
         self.assertEqual(self.request('POST', '/api/teach/lesson', {'lesson': 'missing'})[0], 400)
         self.assertEqual(self.request('POST', '/api/teach/catalog', {}, {'X-Myflames-Token': ''})[0], 403)
 
-    def test_teach_lesson_views_over_http(self):
-        status, body, _ = self.request('POST', '/api/teach/lesson', {'lesson': 'btree', 'view': '3d'})
-        self.assertEqual(status, 200)
-        self.assertIn('myflames-sources-sha256', json.loads(body)['html'])
-        for payload in ({'lesson': 'btree', 'view': '4d'}, {'lesson': 'full_scan', 'view': '3d'}):
+    def test_teach_lesson_rejects_unavailable_views_over_http(self):
+        for lesson in ('btree', 'full_scan'):
+            for view in ('3d', '4d', '3D', '', None, [], {}, 3):
+                with self.subTest(lesson=lesson, view=view):
+                    status, body, _ = self.request('POST', '/api/teach/lesson',
+                                                   {'lesson': lesson, 'view': view})
+                    self.assertEqual(status, 400)
+                    self.assertIn('Only the 2D lesson view is available.', json.loads(body)['error'])
+        for payload in ({'lesson': 'btree'}, {'lesson': 'btree', 'view': '2d'}):
             with self.subTest(payload=payload):
                 status, body, _ = self.request('POST', '/api/teach/lesson', payload)
-                self.assertEqual(status, 400)
-                self.assertIn('error', json.loads(body))
+                self.assertEqual(status, 200)
+                self.assertIn('btn-play', json.loads(body)['html'])
 
     def test_limits_content_type_and_paths(self):
         self.assertEqual(self.request('POST', '/api/analyze', {}, {'Content-Type': 'text/plain'})[0], 415)
@@ -605,22 +634,10 @@ class TestWorkspaceTeach(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'Teach catalog'):
                     api_response('/api/teach/lesson', {'lesson': key})
 
-    def test_catalog_lists_the_views_of_every_lesson(self):
-        from myflames.teach import LESSON_3D
-        lessons = {lesson['key']: lesson for lesson in api_response('/api/teach/catalog', {})['lessons']}
-        for key, lesson in lessons.items():
-            with self.subTest(lesson=key):
-                self.assertIn('views', lesson)
-                self.assertEqual(lesson['views'][0], '2d')
-                self.assertEqual(lesson['views'], ['2d', '3d'] if key in LESSON_3D else ['2d'])
-        self.assertEqual(lessons['btree']['views'], ['2d', '3d'])
-        self.assertEqual(lessons['full_scan']['views'], ['2d'])
-
-    def test_lesson_3d_view_returns_the_prebuilt_page(self):
-        from myflames.teach import render_lesson_3d
-        html = api_response('/api/teach/lesson', {'lesson': 'btree', 'view': '3d'})['html']
-        self.assertEqual(html, render_lesson_3d('btree'))
-        self.assertIn('myflames-sources-sha256', html)
+    def test_catalog_contains_only_lesson_metadata(self):
+        for lesson in api_response('/api/teach/catalog', {})['lessons']:
+            with self.subTest(lesson=lesson['key']):
+                self.assertEqual(set(lesson), {'key', 'title', 'summary', 'family'})
 
     def test_lesson_2d_view_is_the_default(self):
         from myflames.teach import render_lesson
@@ -631,21 +648,22 @@ class TestWorkspaceTeach(unittest.TestCase):
         self.assertEqual(api_response('/api/teach/lesson', {'lesson': 'full_scan', 'view': '2d'})['html'],
                          render_lesson('full_scan'))
 
-    def test_unknown_view_or_lesson_without_3d_is_rejected(self):
-        cases = [('btree', view) for view in ('4d', '3D', '', None, [], {}, 3)]
-        cases.append(('full_scan', '3d'))
+    def test_unavailable_views_are_rejected(self):
+        cases = [(key, view) for key in ('btree', 'full_scan')
+                 for view in ('3d', '4d', '3D', '', None, [], {}, 3)]
         for key, view in cases:
             with self.subTest(lesson=key, view=view):
-                with self.assertRaisesRegex(ValueError, 'no .* view'):
+                with self.assertRaisesRegex(ValueError, 'Only the 2D lesson view is available'):
                     api_response('/api/teach/lesson', {'lesson': key, 'view': view})
 
 
 class _FakeDB(object):
     """Stands in for MySQLConnection in connection/test; records the options."""
 
-    def __init__(self, error=None):
+    def __init__(self, error=None, version='8.4.3', comment='MySQL Community Server - GPL'):
         self.error = error
         self.options = None
+        self.version, self.comment = version, comment
 
     def __call__(self, **options):
         self.options = options
@@ -660,7 +678,13 @@ class _FakeDB(object):
         return False
 
     def server_version(self):
-        return '8.4.3'
+        return self.version
+
+    def server_version_comment(self):
+        return self.comment
+
+    def is_mariadb(self):
+        return 'mariadb' in (self.version + self.comment).lower()
 
     def query_rows(self, sql):
         return [['shop']]
@@ -802,6 +826,29 @@ class TestProfilePasswordAPI(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'true or false'):
             self.call('/api/profiles/save', {'value': self.settings, 'remember_password': 'yes'})
 
+    def test_connection_test_preserves_version_comment_product_identity(self):
+        """Use the real metadata cache; only client execution is doubled."""
+        cases = (
+            ('11.4.13', 'MariaDB Server', ('mariadb', 'mariadb', 'MariaDB')),
+            ('11.4.13-MariaDB', 'MariaDB Server', ('mariadb', 'mariadb', 'MariaDB')),
+            ('8.4.11', 'MySQL Community Server - GPL', ('mysql', 'mysql', 'MySQL')),
+            ('8.4.11-11', 'Percona Server (GPL)', ('mysql', 'percona', 'Percona Server')),
+            ('8.4.11-11.1', 'Percona XtraDB Cluster (GPL)', ('mysql', 'percona', 'Percona XtraDB Cluster')),
+        )
+        for version, comment, identity in cases:
+            with self.subTest(version=version, comment=comment):
+                answers = {'SELECT @@version': version + '\n',
+                           'SELECT @@version_comment': comment + '\n',
+                           'SHOW DATABASES': 'shop\n'}
+                with mock.patch('myflames.connector.MySQLConnection.run',
+                                side_effect=lambda sql, **kwargs: answers[sql]) as run:
+                    result = self.call('/api/connection/test', {'connection': self.settings})
+                self.assertEqual((result['engine'], result['flavor'], result['product']), identity)
+                self.assertEqual(result['version'], version)
+                self.assertEqual(result['schemas'], ['shop'])
+                self.assertEqual(sum(call[0][0] == 'SELECT @@version_comment'
+                                     for call in run.call_args_list), 1)
+
     def test_connection_endpoints_fill_the_saved_password(self):
         from unittest import mock
         from myflames import ui
@@ -810,6 +857,7 @@ class TestProfilePasswordAPI(unittest.TestCase):
         with mock.patch('myflames.connector.MySQLConnection', fake):
             result = self.call('/api/connection/test', {'connection': self.connect(profile_id)})
         self.assertEqual(result['version'], '8.4.3')
+        self.assertEqual((result['engine'], result['flavor'], result['product']), ('mysql', 'mysql', 'MySQL'))
         self.assertEqual(fake.options['password'], self.PASSWORD)
         self.call('/api/live/start', {'connection': self.connect(profile_id), 'query': 'SELECT 1'})
         self.assertEqual(self.workspace.jobs.payloads[-1]['connection']['password'], self.PASSWORD)
@@ -829,6 +877,16 @@ class TestProfilePasswordAPI(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'own host, port, user, and TLS settings'):
             self.call('/api/connection/test', {'connection': self.connect(profile_id, host='evil.example')})
 
+
+    def test_connection_test_names_percona_server(self):
+        """Percona names itself only in @@version_comment (read live on 8.4.11-11)."""
+        from unittest import mock
+        profile_id = self.save()['id']
+        fake = _FakeDB(version='8.4.11-11', comment='Percona Server (GPL), Release 11, Revision 57878ff8')
+        with mock.patch('myflames.connector.MySQLConnection', fake):
+            result = self.call('/api/connection/test', {'connection': self.connect(profile_id)})
+        self.assertEqual((result['version'], result['engine'], result['flavor'], result['product']),
+                         ('8.4.11-11', 'mysql', 'percona', 'Percona Server'))
     def test_saved_password_binds_to_the_exact_tls_mode(self):
         # A profile saved without ssl_mode means "the client's own default",
         # which is not PREFERRED for every client (MariaDB 11.4+ verifies by
@@ -946,12 +1004,15 @@ class TestLiveBulkKillAndTableColumns(unittest.TestCase):
 
     def test_bulk_kill_unconfirmed_gate(self):
         conn = {'host': 'localhost', 'port': 3306, 'user': 'root'}
-        targets = [{'connection_id': 42, 'expect': {'connection_id': 42, 'command': 'Sleep', 'user': 'test'}}]
+        targets = [{'connection_id': 42, 'expect': {'connection_id': 42, 'command': 'Sleep', 'user': 'test', 'host': 'localhost'}}]
         res = api_response('/api/live/kill/bulk', {'connection': conn, 'targets': targets, 'confirmed': False}, self.workspace)
         self.assertEqual(res['schema_version'], 'kill-bulk-1.0')
         self.assertEqual(res['total'], 1)
         self.assertEqual(res['killed'], 0)
         self.assertEqual(res['refused'], 1)
+        records = self.store.audit_records()
+        self.assertEqual(len(records), 1)
+        self.assertEqual((records[0]['status'], records[0]['outcome']), ('refused', 'needs_confirmation'))
 
     def test_bulk_kill_prepare_and_execute(self):
         from myflames.review_tokens import ReviewTokens
@@ -972,6 +1033,8 @@ class TestLiveBulkKillAndTableColumns(unittest.TestCase):
         fake_conn.__exit__.return_value = False
 
         with mock.patch('myflames.connector.MySQLConnection', return_value=fake_conn), \
+             mock.patch('myflames.locks._kill_context', return_value=(('mysql', '8.4.6', (8, 4, 6), True), {})), \
+             mock.patch('myflames.locks._kill_batch_after', return_value={}), \
              mock.patch('myflames.locks.kill_session') as mock_kill:
             mock_kill.side_effect = [
                 {'status': 'killed', 'message': 'Killed connection 10.'},
@@ -989,6 +1052,7 @@ class TestLiveBulkKillAndTableColumns(unittest.TestCase):
             self.assertEqual(res['gone'], 1)
             self.assertEqual(res['refused'], 0)
             self.assertEqual(len(res['results']), 2)
+            self.assertEqual(res['message'], 'Kill sessions finished: 1 killed, 1 already gone')
 
     def test_table_columns_names_are_hex_encoded(self):
         conn = {'host': 'localhost', 'port': 3306, 'user': 'root'}

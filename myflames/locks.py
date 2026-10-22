@@ -111,7 +111,7 @@ import sys
 import time
 
 from .connector import ConnectorError, MySQLConnection, terminal_text, unescape_mysql
-from .perf_common import _denied, _reason, _server
+from .perf_common import _denied, _reason, _server, conn_identity
 
 SCHEMA_VERSION = "locks-1.1"
 KILL_SCHEMA_VERSION = "kill-1.0"
@@ -434,6 +434,7 @@ def lock_report(conn, limit=500, waits_only=False, deadlock_only=False, identity
     scope = "deadlock" if deadlock_only else "waits" if waits_only else "all"
     engine, version, ver, ps_on = _server(conn)
     r = _Report(engine, version, ver, ps_on, limit, scope)
+    r.identity = conn_identity(conn, engine, version)
     # Bind a later Kill confirmation to the server that supplied this report.
     # Only the workspace asks (identity=True); the CLI Kill path re-reads it.
     keys = ("server_id", "hostname", "version") if engine == "mariadb" else ("server_uuid",)
@@ -2077,8 +2078,10 @@ def _assemble(r, deadlock, waits_only):
         "ddl_waits": len(ddl_waits),
     }
     return {
-        "schema_version": SCHEMA_VERSION, "engine": r.engine, "server_version": r.version,
-        "server_identity": r.server_identity,
+        "schema_version": SCHEMA_VERSION, "engine": r.engine,
+        "flavor": getattr(r, "identity", {}).get("flavor"),
+        "server_product": getattr(r, "identity", {}).get("server_product"),
+        "server_version": r.version, "server_identity": r.server_identity,
         "captured_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "scope": r.scope, "limit": r.limit, "capabilities": r.caps, "notes": notes,
         "summary": summary, "ddl_waits": ddl_waits, "kill_privilege": r.kill_privilege,
@@ -2365,6 +2368,22 @@ def format_text(report):
 
 KILL_MODES = ("connection", "query")
 _SERVER_THREAD_USERS = ("system user", "event_scheduler")
+# sql/sql_parse.cc's COM_SUBSCRIBE_GROUP_REPLICATION_STREAM command name.
+GROUP_REPLICATION_COMMAND = "Group Replication Data Stream subscription"
+GROUP_REPLICATION_KILL_REASON = (
+    "Group Replication uses this connection to talk to the other members; ending it can "
+    "remove a member from the group. Use Cluster to stop Group Replication instead.")
+
+
+def is_group_replication_command(command):
+    """Recognize the stream command, including process-list truncation."""
+    # MySQL 8.4.6: storage/perfschema/table_processlist.cc:65 defines COMMAND
+    # as VARCHAR(16); sql/sql_show.cc:5051 gives I_S.PROCESSLIST the same width.
+    # Of all Command_names::m_names in sql/sql_parse.cc:224-260, only the stream
+    # command starts with "Group Replicatio". Accept exact prefixes of at least
+    # 16 characters as well as the full name; shorter or extended names do not match.
+    return (isinstance(command, str) and len(command) >= 16 and
+            GROUP_REPLICATION_COMMAND.startswith(command))
 
 
 def _check_kill_args(connection_id, mode, expect):
@@ -2399,7 +2418,7 @@ def _running(session):
     return (session or {}).get("command") not in (None, "Sleep", "Killed") and bool((session or {}).get("info"))
 
 
-def read_target(conn, engine, ps_on, connection_id):
+def read_target(conn, engine, ps_on, connection_id, server_identity=False):
     """Read one session and its open InnoDB transaction now.
 
     Returns ``(session or None, the connection id of the session that read it)``.
@@ -2408,9 +2427,13 @@ def read_target(conn, engine, ps_on, connection_id):
     exactly. ``trx_checked`` is False when INNODB_TRX was not readable (PROCESS).
     """
     rows = None
+    identity_keys = ("server_id", "hostname", "version") if engine == "mariadb" else ("server_uuid",)
     for source_ps in ((True, False) if ps_on else (False,)):
         sql = _session_sql(engine, source_ps, "{ID} = %d" % connection_id, " LIMIT 1")
-        sql = sql.replace(" FROM ", ", CONNECTION_ID() FROM ", 1)
+        extra = ", CONNECTION_ID()"
+        if server_identity:
+            extra += ", " + ", ".join("@@" + key for key in identity_keys)
+        sql = sql.replace(" FROM ", extra + " FROM ", 1)
         try:
             rows = _q(conn, sql)
             break
@@ -2420,6 +2443,8 @@ def read_target(conn, engine, ps_on, connection_id):
     if not rows:
         return None, None
     session = _session_from_row(rows[0][:9])
+    if server_identity:
+        session["server_identity"] = dict(zip(identity_keys, rows[0][10:]))
     own = _int(rows[0][9]) if len(rows[0]) > 9 else None
     session["trx"], session["trx_checked"] = None, False
     try:
@@ -2455,6 +2480,8 @@ def _kill_problem(target, own, cid, mode, expect):
     if target is None:
         return "gone", ("Connection %d is no longer connected, so there is nothing to end. Refresh the "
                         "lock report." % cid)
+    if is_group_replication_command(target.get("command")):
+        return "refused", GROUP_REPLICATION_KILL_REASON
     if own is not None and own == cid:
         return "refused", "Connection %d is the session myflames is using; it never ends itself." % cid
     if (target.get("info") or "").lstrip().startswith("/*myflames:"):
@@ -2534,6 +2561,12 @@ def _after_view(session):
 
 
 def _kill_message(mode, cid, target, after):
+    # Acknowledging KILL is not evidence of completion. None means the
+    # verification read was unavailable; {"present": False} means it succeeded.
+    if after is None:
+        statement = "KILL QUERY" if mode == "query" else "KILL CONNECTION"
+        return ("Sent; could not verify completion of %s %d. Refresh the session list to check."
+                % (statement, cid))
     rows = ((target or {}).get("trx") or {}).get("rows_modified")
     if mode == "query":
         if after.get("present") and _running(_after_session(after)) and \
@@ -2573,8 +2606,34 @@ def refused_result(connection_id, mode, message, status="refused", engine=None, 
             "message": message, "verified": [], "target": None, "after": None}
 
 
+def _kill_context(conn):
+    """Read the server and its identity once for a single request or batch."""
+    server = _server(conn)
+    keys = ("server_id", "hostname", "version") if server[0] == "mariadb" else ("server_uuid",)
+    rows = _q(conn, "SELECT " + ", ".join("@@" + key for key in keys))
+    identity = dict(zip(keys, rows[0])) if rows and len(rows[0]) == len(keys) else {}
+    return server, identity if all(identity.get(key) for key in keys) else {}
+
+
+def _kill_batch_after(conn, context, connection_ids):
+    """One bounded process-list read after a batch; None means unavailable.
+
+    Every target was re-read separately immediately before its KILL. This
+    snapshot only describes the observed effect; it authorizes no writes.
+    """
+    engine, _version, _ver, ps_on = context[0]
+    ids = ",".join(str(cid) for cid in connection_ids)
+    try:
+        rows = _q(conn, _session_sql(engine, ps_on, "{ID} IN (%s)" % ids,
+                                    " LIMIT %d" % len(connection_ids)))
+    except (ConnectorError, ValueError):
+        return None
+    return {session["connection_id"]: session for session in (_session_from_row(row) for row in rows)}
+
+
 def kill_session(conn, connection_id, mode="connection", expect=None, settle_s=0.3, audit=None,
-                 decision=None, confirmed=False, connection=None, before_send=None):
+                 decision=None, confirmed=False, connection=None, before_send=None,
+                 _batch_context=None, _defer_after=False):
     """End one session: ``KILL CONNECTION n`` (default) or ``KILL QUERY n``.
 
     Only for an explicit, confirmed request. *expect* is the session the
@@ -2599,7 +2658,10 @@ def kill_session(conn, connection_id, mode="connection", expect=None, settle_s=0
     a refusal as ``refused``; otherwise a ``pending`` record is written
     before the KILL is sent (nothing is sent when that fails) and finished
     as ``ok``, ``error`` or ``unknown`` after an interrupted send.
-    ``audit_id`` is added to the result.
+    ``audit_id`` is added to the result. An internal ``before_send`` callback
+    may return a refusal message after re-reading saved policy. Batch calls
+    reuse server metadata, include identity in each target read, and defer
+    after-state and audit completion to the batch owner's shared snapshot.
     """
     from . import dbops
     bound_expect = expect
@@ -2631,20 +2693,24 @@ def kill_session(conn, connection_id, mode="connection", expect=None, settle_s=0
         return refuse(blocked[1], "read_only" if blocked[0] == "refused" else blocked[0], blocked[0])
     if bound_expect.get("connection_identity") != dbops.connection_identity(connection, safety):
         return refuse("The connection or its write policy changed after confirmation; nothing was sent.")
-    engine, version, _ver, ps_on = _server(conn)
+    context, identity = _batch_context if _batch_context is not None else _kill_context(conn)
+    engine, version, _ver, ps_on = context
     if audit is not None:
         audit.server(engine, version)
-    keys = ("server_id", "hostname", "version") if engine == "mariadb" else ("server_uuid",)
-    rows = _q(conn, "SELECT " + ", ".join("@@" + key for key in keys))
-    identity = dict(zip(keys, rows[0])) if rows and len(rows[0]) == len(keys) else {}
-    if not all(identity.get(key) for key in keys) or bound_expect.get("server_identity") != identity:
+    if not identity or bound_expect.get("server_identity") != identity:
         return refuse("The server identity is missing or changed after confirmation; nothing was sent.")
     result = {"schema_version": KILL_SCHEMA_VERSION, "engine": engine, "server_version": version,
               "connection_id": connection_id, "mode": mode, "statement": None, "status": None,
               "message": None, "verified": [], "target": None, "after": None}
     confirmed_target = seen
-    target, own = read_target(conn, engine, ps_on, connection_id)
+    target, own = read_target(conn, engine, ps_on, connection_id,
+                             server_identity=_batch_context is not None)
     result["target"] = target
+    # Each run opens a new client connection. Keep the server check in the
+    # existing target SELECT so routing changes cannot reuse another server's
+    # matching process id, even though batch metadata is read only once.
+    if _batch_context is not None and target is not None and target.get("server_identity") != identity:
+        return refuse("The server identity is missing or changed after confirmation; nothing was sent.")
     problem = _kill_problem(target, own, connection_id, mode, expect)
     if problem:
         result["status"], result["message"] = problem
@@ -2660,7 +2726,9 @@ def kill_session(conn, connection_id, mode="connection", expect=None, settle_s=0
     result["verified"] = verified
     result["statement"] = statement
     if before_send is not None:
-        before_send()
+        refusal = before_send()
+        if isinstance(refusal, str) and refusal:
+            return refuse(refusal, "policy")
     if audit is not None:
         try:
             result["audit_id"] = audit.attempt([KILL_TAG + statement], target=confirmed_target, verified=verified)
@@ -2689,6 +2757,10 @@ def kill_session(conn, connection_id, mode="connection", expect=None, settle_s=0
             audit.complete("error", outcome=result["status"], error=str(exc), message=result["message"])
         return result
     result["status"] = "killed"
+    if _defer_after:
+        # The batch owner completes the pending audit after its shared snapshot.
+        result["message"] = _kill_message(mode, connection_id, target, None)
+        return result
     try:
         if settle_s:
             time.sleep(settle_s)
@@ -2703,7 +2775,7 @@ def kill_session(conn, connection_id, mode="connection", expect=None, settle_s=0
             audit.complete("ok", outcome="killed", message="Sent %s; interrupted before checking the session again."
                            % statement)
         raise
-    result["message"] = _kill_message(mode, connection_id, target, result["after"] or {"present": True})
+    result["message"] = _kill_message(mode, connection_id, target, result["after"])
     if audit is not None:
         audit.complete("ok", outcome="killed", message=result["message"], after=result["after"])
     return result

@@ -1,9 +1,9 @@
 .diagram-view .view-toolbar { flex-wrap: wrap; }
 .diagram-source, .diagram-tools, .diagram-zoom, .diagram-import-controls { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
-.diagram-source { margin-block-end: var(--space-3); }
+.diagram-source { gap: var(--space-1); }
 .diagram-source label { display: flex; align-items: center; gap: var(--space-2); color: var(--ink-muted); font-size: var(--text-sm); }
-.diagram-source input { width: 180px; min-width: 0; }
-.diagram-source select { max-width: 280px; min-width: 0; }
+.diagram-source input { width: 160px; min-width: 0; }
+.diagram-source select { max-width: 220px; min-width: 0; }
 .diagram-source-note { margin-block: 0 var(--space-2); color: var(--ink-muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
 .diagram-tools { justify-content: space-between; margin-block: var(--space-3); }
 .diagram-tools .search-field { flex: 1 1 180px; max-width: 320px; }

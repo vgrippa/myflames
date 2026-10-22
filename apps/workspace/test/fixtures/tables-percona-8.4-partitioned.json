@@ -1,0 +1,278 @@
+{
+ "schema_version": "schema-2.0",
+ "engine": "mysql",
+ "flavor": "percona",
+ "server_product": "Percona Server",
+ "server_version": "8.4.11-11",
+ "taken_at": "2026-10-21T19:09:56.173032+00:00",
+ "uptime_s": 634,
+ "performance_schema": true,
+ "scope": {
+  "schemas": [
+   "review"
+  ],
+  "all_user_schemas": false,
+  "excluded": []
+ },
+ "statistics": {
+  "fresh_requested": false,
+  "fresh": false,
+  "cache_expiry_s": 86400,
+  "cached": true
+ },
+ "tablespaces_known": false,
+ "userstat": {
+  "enabled": true,
+  "read": true
+ },
+ "tablespace_collection": {
+  "show_create_limit": 50,
+  "deadline_s": 30.0,
+  "unresolved": 0
+ },
+ "summary": {
+  "tables": 4,
+  "innodb": 4,
+  "other_engines": 0,
+  "no_usable_key": 2,
+  "not_null_unique": 0,
+  "gipk": 0,
+  "free_problem": 0,
+  "free_watch": 0,
+  "free_info": 0,
+  "shared": 0,
+  "unknown_tablespace": 0,
+  "engines": [
+   {
+    "engine": "InnoDB",
+    "tables": 4,
+    "bytes": 311296
+   }
+  ],
+  "status": "problem"
+ },
+ "thresholds": {},
+ "rules": {
+  "no_usable_key": "problem: no PRIMARY KEY and no UNIQUE key on NOT NULL columns",
+  "not_null_unique": "watch: no PRIMARY KEY, but a UNIQUE key on NOT NULL columns stands in for it",
+  "free": "Informational: DATA_FREE is reusable space inside the tablespace. Its amount or percentage alone does not establish a problem or a need to rebuild. File capacity and filesystem headroom are not measured by this report."
+ },
+ "why": [
+  {
+   "key": "replication",
+   "title": "Replicas find each changed row by its key",
+   "text": "With row-based replication (the default) each UPDATE or DELETE reaches the replica as the changed rows, and the replica has to find each one. With a primary key or a unique key on NOT NULL columns that is one index lookup per row. Without one, MySQL hashes the rows of each event and looks them up through another index if there is one, or else makes up to one full table scan per event. An event holds about 8 KiB of rows (binlog_row_event_max_size), so a large DELETE means many full scans and the replica falls behind."
+  },
+  {
+   "key": "clustering",
+   "title": "InnoDB stores rows in primary key order",
+   "text": "InnoDB keeps each table as a B-tree ordered by the primary key, and every secondary index stores the primary key to reach the row. Without a primary key it uses the first unique key on NOT NULL columns (whole columns, not a prefix, a functional part or a virtual generated column). Without one it adds a hidden 6-byte row ID."
+  },
+  {
+   "key": "row_id",
+   "title": "The hidden row ID",
+   "text": "Queries and tools cannot see or use the hidden row ID to find, page through or deduplicate rows. It comes from one counter shared by every table that has no key, and each new ID takes InnoDB's global dictionary mutex, so inserts into all such tables contend for it."
+  },
+  {
+   "key": "clusters",
+   "title": "Group Replication needs a primary key",
+   "text": "Group Replication refuses writes to a table without a primary key or a unique key on NOT NULL columns: the client sees \"The table does not comply with the requirements by an external plugin.\""
+  },
+  {
+   "key": "tools",
+   "title": "Online schema change tools need a key",
+   "text": "pt-online-schema-change and gh-ost copy rows in chunks by a primary or unique key; per their documentation they refuse a table without one, so the server's own online ALTER is the only online option left."
+  }
+ ],
+ "tables": [
+  {
+   "schema": "review",
+   "table": "parted_nopk",
+   "engine": "InnoDB",
+   "rows": 4,
+   "data_bytes": 65536,
+   "index_bytes": 65536,
+   "size_bytes": 131072,
+   "partitioned": true,
+   "rows_read": null,
+   "rows_changed": null
+  },
+  {
+   "schema": "review",
+   "table": "parted_pk",
+   "engine": "InnoDB",
+   "rows": 3,
+   "data_bytes": 32768,
+   "index_bytes": 65536,
+   "size_bytes": 98304,
+   "partitioned": true,
+   "rows_read": null,
+   "rows_changed": null
+  },
+  {
+   "schema": "review",
+   "table": "plain_nopk",
+   "engine": "InnoDB",
+   "rows": 3,
+   "data_bytes": 16384,
+   "index_bytes": 16384,
+   "size_bytes": 32768,
+   "partitioned": false,
+   "rows_read": 6,
+   "rows_changed": 4
+  },
+  {
+   "schema": "review",
+   "table": "plain_pk",
+   "engine": "InnoDB",
+   "rows": 3,
+   "data_bytes": 16384,
+   "index_bytes": 32768,
+   "size_bytes": 49152,
+   "partitioned": false,
+   "rows_read": 6,
+   "rows_changed": 3
+  }
+ ],
+ "missing_primary_keys": [
+  {
+   "schema": "review",
+   "table": "parted_nopk",
+   "engine": "InnoDB",
+   "rows": 4,
+   "size_bytes": 131072,
+   "partitioned": true,
+   "kind": "no_usable_key",
+   "status": "problem",
+   "unique_keys": [],
+   "clustered_on": "hidden row ID",
+   "why": "InnoDB clusters the rows on a hidden 6-byte row ID (DB_ROW_ID) that queries and tools cannot use. It comes from one counter shared by every table that has no key, and each new ID takes InnoDB's global dictionary mutex, so inserts into all such tables contend for it. Without a key, a replica applying row-based changes has to search the table to find the changed rows (see Why a primary key matters).",
+   "checks": [
+    {
+     "label": "Template: must return no rows for the columns you choose",
+     "sql": "SELECT col1, col2, COUNT(*) FROM `review`.`parted_nopk` GROUP BY col1, col2 HAVING COUNT(*) > 1 LIMIT 10;",
+     "template": true
+    }
+   ],
+   "fixes": [
+    {
+     "label": "Template: a primary key on columns that identify a row",
+     "sql": "ALTER TABLE `review`.`parted_nopk` ADD PRIMARY KEY (col1, col2), ALGORITHM=INPLACE, LOCK=NONE;",
+     "template": true
+    },
+    {
+     "label": "Or add an invisible surrogate key (SELECT * and INSERT without a column list keep working)",
+     "sql": "ALTER TABLE `review`.`parted_nopk` ADD COLUMN `row_id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT INVISIBLE PRIMARY KEY FIRST, ALGORITHM=INPLACE, LOCK=SHARED;"
+    }
+   ],
+   "caveat": "Adding a primary key rebuilds the table: it takes time and free disk space for a new copy of the table, and replicas run the same ALTER after it finishes here, so they lag while they rebuild. ALGORITHM=INPLACE, LOCK=NONE makes the server refuse instead of blocking writes when it cannot do it online, for example with a FULLTEXT or SPATIAL index, or when columns must become NOT NULL outside strict SQL mode. Adding an AUTO_INCREMENT column always blocks writes (LOCK=SHARED). The ALTER waits for transactions that use the table, and queries on it queue behind that wait. Try it on a copy or a replica first. This table is partitioned: every unique key, the primary key included, must contain all columns of the partitioning function.",
+   "rows_read": null,
+   "rows_changed": null
+  },
+  {
+   "schema": "review",
+   "table": "plain_nopk",
+   "engine": "InnoDB",
+   "rows": 3,
+   "size_bytes": 32768,
+   "partitioned": false,
+   "kind": "no_usable_key",
+   "status": "problem",
+   "unique_keys": [],
+   "clustered_on": "hidden row ID",
+   "why": "InnoDB clusters the rows on a hidden 6-byte row ID (DB_ROW_ID) that queries and tools cannot use. It comes from one counter shared by every table that has no key, and each new ID takes InnoDB's global dictionary mutex, so inserts into all such tables contend for it. Without a key, a replica applying row-based changes has to search the table to find the changed rows (see Why a primary key matters). User statistics (information_schema.TABLE_STATISTICS) count 4 rows changed (inserted, updated or deleted) and 6 read since userstat was turned on or the last FLUSH TABLE_STATISTICS. With row-based replication a replica has to find each updated or deleted row by searching this table; inserts need no search, and the count does not separate them.",
+   "checks": [
+    {
+     "label": "Template: must return no rows for the columns you choose",
+     "sql": "SELECT col1, col2, COUNT(*) FROM `review`.`plain_nopk` GROUP BY col1, col2 HAVING COUNT(*) > 1 LIMIT 10;",
+     "template": true
+    }
+   ],
+   "fixes": [
+    {
+     "label": "Template: a primary key on columns that identify a row",
+     "sql": "ALTER TABLE `review`.`plain_nopk` ADD PRIMARY KEY (col1, col2), ALGORITHM=INPLACE, LOCK=NONE;",
+     "template": true
+    },
+    {
+     "label": "Or add an invisible surrogate key (SELECT * and INSERT without a column list keep working)",
+     "sql": "ALTER TABLE `review`.`plain_nopk` ADD COLUMN `row_id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT INVISIBLE PRIMARY KEY FIRST, ALGORITHM=INPLACE, LOCK=SHARED;"
+    }
+   ],
+   "caveat": "Adding a primary key rebuilds the table: it takes time and free disk space for a new copy of the table, and replicas run the same ALTER after it finishes here, so they lag while they rebuild. ALGORITHM=INPLACE, LOCK=NONE makes the server refuse instead of blocking writes when it cannot do it online, for example with a FULLTEXT or SPATIAL index, or when columns must become NOT NULL outside strict SQL mode. Adding an AUTO_INCREMENT column always blocks writes (LOCK=SHARED). The ALTER waits for transactions that use the table, and queries on it queue behind that wait. Try it on a copy or a replica first.",
+   "rows_read": 6,
+   "rows_changed": 4
+  }
+ ],
+ "generated_primary_keys": [],
+ "fragmentation": [
+  {
+   "schema": "review",
+   "table": "parted_nopk",
+   "rows": 4,
+   "data_bytes": 65536,
+   "index_bytes": 65536,
+   "free_bytes": 0,
+   "free_pct": 0,
+   "partitioned": true,
+   "tablespace": null,
+   "tablespace_name": null,
+   "status": "ok",
+   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
+  },
+  {
+   "schema": "review",
+   "table": "parted_pk",
+   "rows": 3,
+   "data_bytes": 32768,
+   "index_bytes": 65536,
+   "free_bytes": 0,
+   "free_pct": 0,
+   "partitioned": true,
+   "tablespace": null,
+   "tablespace_name": null,
+   "status": "ok",
+   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
+  },
+  {
+   "schema": "review",
+   "table": "plain_nopk",
+   "rows": 3,
+   "data_bytes": 16384,
+   "index_bytes": 16384,
+   "free_bytes": 0,
+   "free_pct": 0,
+   "partitioned": false,
+   "tablespace": null,
+   "tablespace_name": null,
+   "status": "ok",
+   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
+  },
+  {
+   "schema": "review",
+   "table": "plain_pk",
+   "rows": 3,
+   "data_bytes": 16384,
+   "index_bytes": 32768,
+   "free_bytes": 0,
+   "free_pct": 0,
+   "partitioned": false,
+   "tablespace": null,
+   "tablespace_name": null,
+   "status": "ok",
+   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
+  }
+ ],
+ "shared_tablespaces": [],
+ "more": {
+  "tables": 0,
+  "missing_primary_keys": 0,
+  "generated_primary_keys": 0,
+  "fragmentation": 0
+ },
+ "notes": [
+  "User statistics do not count partitioned tables reliably, so rows read and changed are unknown for the 2 partitioned tables in scope.",
+  "Row counts, sizes and free space come from a cache MySQL keeps for up to 1 d 0 h (information_schema_stats_expiry; partitioned tables are never cached), so they can be that old. Fresh numbers (--fresh) reads them from InnoDB now, for myflames' own connection only.",
+  "TABLE_ROWS, DATA_LENGTH and INDEX_LENGTH are InnoDB estimates from its table statistics, recalculated in the background after about 10% of the rows change (persistent statistics, the default) or by ANALYZE TABLE. DATA_FREE is read with the other statistics, so it comes from the same cache unless Fresh numbers is on. It counts whole free extents and the unused space at the end of the file (an extent is 1 MiB with 4 to 16 KiB pages, 2 MiB with 32 KiB, 4 MiB with 64 KiB), minus a reserve of 2 extents plus about 1%; free pages in partly used extents and half-empty pages after scattered deletes are not in it, so it understates."
+ ]
+}

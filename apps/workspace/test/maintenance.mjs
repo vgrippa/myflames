@@ -73,6 +73,8 @@ const owners = new Map();
 const endpoint = (c) => JSON.stringify([c?.profile_id || "", c?.host, c?.port, c?.user, c?.ssl_mode || "", c?.ssl_ca || ""]);
 const listed = (c) => [...held.values()].filter((j) => owners.get(j.id) === endpoint(c));
 const job = (base, id, extra = {}) => ({ ...structuredClone(base), id, ...extra });
+// The list of views docked, as a person who docked it: this suite asserts
+// the list's markers and keys (server-nav covers the floating default).
 const h = await open("/api/lifecycle/tools", "maintenance", {
   [UPGRADE]: () => ({ status: 200, body: next.upgrade, delay: 50 }),
   [PREPARE]: () => next.prepare.shift() || { status: 200, body: dumpPlan },
@@ -97,7 +99,7 @@ const h = await open("/api/lifecycle/tools", "maintenance", {
     void request.continue();
     return null;
   },
-});
+}, { list: "docked" });
 const { page, state, text, texts } = h;
 const view = '.server-view[data-view="maintenance"]';
 const sheet = "dialog.ops-confirm[open]";
@@ -136,7 +138,7 @@ const connect = async (name) => {
   await page.waitForFunction((n) => document.querySelector('.window-toolbar .connection-pill-name')?.textContent === n, {}, name);
 };
 async function field(label, value) {
-  const handle = await page.waitForSelector(`${view} .ops-field label ::-p-text(${label}), ${view} label.ops-field ::-p-text(${label})`);
+  const handle = await page.waitForSelector(`${view} .ops-field label ::-p-text(${label}), ${view} label.ops-field ::-p-text(${label}), ${view} .form-row > label ::-p-text(${label})`);
   const input = await handle.evaluateHandle((span) => span.closest("label").control || span.closest("label").querySelector("input"));
   await input.click({ clickCount: 3 });
   await page.keyboard.press("Backspace");

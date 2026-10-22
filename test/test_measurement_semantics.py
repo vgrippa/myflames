@@ -1054,9 +1054,12 @@ class TestBarChartReadsLikeTheTree(unittest.TestCase):
     def test_tree_headers_and_links_are_sentence_case(self):
         from myflames.output_tree import render_tree
         root = P.parse_explain(_text(_fixture("mariadb-13.0-analyze-join-3t.json")))
-        doc = ET.fromstring(render_tree(root))
+        svg = render_tree(root)
+        doc = ET.fromstring(svg)
         texts = [n.text for n in doc.iter() if n.get('class') in ('col-hdr', 'ctrl-link')]
-        self.assertEqual(texts, ['Expand all', 'Collapse all', 'Self', 'Total', '%', 'Self time bar'])
+        self.assertEqual(texts, ['Expand all', 'Collapse all', 'Self', 'Total', '%', 'Self of total'])
+        self.assertNotIn('#c0d8ee', svg)
+        self.assertIn('#dfe5ec', svg)
 
 
 if __name__ == "__main__":

@@ -3,15 +3,16 @@
 // writes run sequentially and stop at the first unconfirmed outcome. Reports,
 // drafts and reviews belong to one connection. The single-variable sheet keeps
 // all modes, including the Query editor handoff for Session SQL.
-import { useEffect, useMemo, useRef, useState } from "react";
-import { api, type ConfigCheck, type ConfigReport, type ConfigParameter, type Connection } from "./api";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { api, formatNumber, type ConfigCheck, type ConfigReport, type ConfigParameter, type Connection } from "./api";
 import { uptime } from "./Health";
 import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "./binding";
-import { useViewOnScreen } from "./viewOnScreen";
+import { useOpenRead } from "./viewOnScreen";
 import { PrivilegeConfirmLabel, privilegeResult, targetPrivilege, usePrivilege } from "./privileges";
 import { useWritePolicy } from "./Connections";
 import { CopySql, bytes, engineLabel } from "./PerfShared";
 import {
+  ActionStatus,
   ConfirmSheet,
   copyToClipboard,
   EmptyState,
@@ -23,6 +24,7 @@ import {
   ToolbarSelect,
   type Column,
   InspectorSection,
+  Pill,
   SearchField,
   Select,
   StatusPill,
@@ -30,6 +32,8 @@ import {
   ViewLayout,
   ViewStatus,
   useInspector,
+  useSince,
+  writeFailure,
   type InspectorContent,
   type Selection,
 } from "./kit";
@@ -145,7 +149,33 @@ export function openSessionSql(plan: VariablePlan, onOpenSql?: (sql: string) => 
 /** The connection a Change sheet was opened for (Locks' killVia pattern). */
 type Via = { connection: Connection; key: string; label: string };
 type ChangeRequest = { name: string; mode: VariableMode | null; via: Via; draft?: string };
-type ChangeNote = { name: string; mode: VariableMode; status: string; message: string; type: VariableInfo["type"]; result: VariableChange | null };
+type ChangeNote = { name: string; mode: VariableMode; status: string; message: string; type: VariableInfo["type"]; result: VariableChange | null; via?: Via };
+
+const BYTE_NAMES = /(_size|_capacity|_ram|_packet|_buffer|_limit|_threshold|_max_table_size)$/i;
+function isByteParam(type: VariableInfo["type"], name?: string) {
+  return type === "bytes" || (type === null && !!name && BYTE_NAMES.test(name));
+}
+
+export function formattedValue(type: VariableInfo["type"], value: string | null | undefined, name?: string): { text: string; raw?: string } {
+  if (value === undefined) return { text: "not read" };
+  if (value === null) return { text: "SQL NULL" };
+  if (value === "") return { text: "(empty)" };
+  if (value === "NULL") return { text: "'NULL' (text)" };
+  if (isByteParam(type, name)) {
+    if (/^\d+$/.test(value)) {
+      const n = Number(value);
+      if (n >= 1024) return { text: bytes(n), raw: `${n.toLocaleString()} bytes` };
+    }
+    const m = value.match(/^([0-9.]+\s*[KMGT]i?B)\s*\(([\d,]+(?:\s*bytes)?)\)$/i);
+    if (m) return { text: m[1], raw: m[2].endsWith("bytes") ? m[2] : `${m[2]} bytes` };
+  }
+  return { text: value };
+}
+
+function valueSpan(type: VariableInfo["type"], value: string | null | undefined, name?: string) {
+  const f = formattedValue(type, value, name);
+  return <span title={f.raw}>{f.text}</span>;
+}
 
 /** A value as the server shows it; sizes also in KiB, MiB, GiB. */
 function valueText(type: VariableInfo["type"], value: string | null | undefined) {
@@ -239,12 +269,16 @@ function privilegeText(p: NonNullable<VariablePlan["privileges"]>) {
 function VariableSheet({
   request,
   activeKey,
+  left,
+  onLeave,
   onClose,
   onDone,
   onOpenSql,
 }: {
   request: ChangeRequest;
   activeKey: string;
+  left: boolean;
+  onLeave: (startedAt: number) => void;
   onClose: () => void;
   onDone: (note: ChangeNote) => void;
   onOpenSql?: (sql: string) => void;
@@ -259,6 +293,8 @@ function VariableSheet({
   const [planning, setPlanning] = useState(false);
   const [planError, setPlanError] = useState("");
   const [busy, setBusy] = useState(false);
+  const sending = useRef(false);
+  const since = useSince(busy);
   const seq = useRef(0);
   const cancelled = useRef(false);
   const name = request.name;
@@ -336,7 +372,7 @@ function VariableSheet({
   const hintId = `variable-hint-${name}`;
 
   function cancel() {
-    if (cancelled.current) return;
+    if (sending.current || cancelled.current) return;
     cancelled.current = true;
     // Cancelling before a plan arrives is still an attempt. A previous plan
     // belongs to different inputs and must never become the audit evidence.
@@ -355,7 +391,8 @@ function VariableSheet({
       if (ready && plan && !stale && !busy) openSessionSql(plan, onOpenSql);
       return;
     }
-    if (!ready || !plan || !mode || stale || refused || busy || blocked || gate.disabledReason) return;
+    if (!ready || !plan || !mode || stale || refused || sending.current || blocked || gate.disabledReason) return;
+    sending.current = true;
     setBusy(true);
     const base = { name, mode, type: info?.type ?? null, result: null };
     if (policy) {
@@ -382,18 +419,21 @@ function VariableSheet({
       });
       onDone({ ...base, status: result.status, message: result.message, result });
     } catch (e) {
-      onDone({ ...base, status: "error", message: (e as Error).message });
+      const failure = writeFailure(e, { audited: true });
+      onDone({ ...base, status: failure.phase, message: failure.message });
     }
   }
 
   const modes = info ? MODE_ORDER.filter((m) => info.modes[m]?.available) : [];
-  const confirmLabel = busy ? "Sending…" : mode ? MODES[mode].confirm : "No change at runtime";
+  const confirmLabel = mode ? MODES[mode].confirm : "No change at runtime";
   let lock = "";
   if (stale) lock = "The connection in use changed after this sheet opened. Close it and open Review change again.";
   else if (mode === "session") lock = !onOpenSql ? "Query editor is unavailable. Copy the statement to your query tab." : "";
   else if (blocked) lock = blocked;
   else if (refused) lock = plan?.policy?.text || "This connection is read-only in myflames.";
 
+  // Keep the owner mounted while hidden: Close never cancels or repeats a send.
+  if (left) return null;
   return (
     <ConfirmSheet
       className="variable-sheet"
@@ -405,6 +445,10 @@ function VariableSheet({
           : "Check the statement before you send it. Right before sending, myflames reads the variable again and stops if it changed."
       }
       busy={busy}
+      busyLabel="Applying…"
+      progress="Waiting for the server to apply the change"
+      onLeave={() => onLeave(since ?? Date.now())}
+      leaveText="The change may still be running. Close does not stop it; its outcome shows in Parameters."
       // Nothing to send (no mode): no privilege applies, so no gate on the label.
       confirmLabel={mode && mode !== "session" ? <PrivilegeConfirmLabel gate={gate} showStatus={false}>{confirmLabel}</PrivilegeConfirmLabel> : confirmLabel}
       confirmTone={mode === "session" ? "primary" : tone}
@@ -594,10 +638,11 @@ const HEADLINE: Record<string, string> = {
   interrupted: "Interrupted.",
   failed: "Could not change it.",
   error: "Could not change it.",
+  unknown: "Outcome unknown.",
 };
 
 /** The answer to a change, announced and focused, with before and after. */
-function ChangeResultNote({ note, onDismiss, noteRef }: { note: ChangeNote; onDismiss: () => void; noteRef: React.RefObject<HTMLDivElement> }) {
+function ChangeResultNote({ note, currentKey, onDismiss, noteRef }: { note: ChangeNote; currentKey: string; onDismiss: () => void; noteRef: React.RefObject<HTMLDivElement> }) {
   const r = note.result;
   const rows: [string, string, string][] = [];
   if (r && r.before && r.after) {
@@ -613,6 +658,7 @@ function ChangeResultNote({ note, onDismiss, noteRef }: { note: ChangeNote; onDi
       <p>
         <strong>{HEADLINE[note.status] || "Nothing was sent."}</strong> {plain ? `${note.name}, ${MODES[note.mode].label.toLowerCase()}.` : note.message}
       </p>
+      {note.via && note.via.key !== currentKey && <p className="hint">Sent on {note.via.label}, not the connection in use.</p>}
       {rows.length > 0 && (
         <dl className="variable-facts">
           {rows.map(([label, before, after]) => (
@@ -640,7 +686,11 @@ function parametersOf(report: ConfigReport): ConfigParameter[] {
   const rows = new Map<string, ConfigParameter>();
   for (const check of report.checks) for (const setting of check.settings) {
     const previous = rows.get(setting.name);
-    if (previous) { if (!previous.checks.includes(check.key)) previous.checks.push(check.key); continue; }
+    if (previous) {
+      if (!previous.checks.includes(check.key)) previous.checks.push(check.key);
+      if (!previous.description && check.settings[0]?.name === setting.name) previous.description = check.explain;
+      continue;
+    }
     const dynamic = setting.dynamic;
     rows.set(setting.name, {
       name: setting.name, value: setting.value, truncated: false, scope: null,
@@ -652,21 +702,27 @@ function parametersOf(report: ConfigReport): ConfigParameter[] {
       source_path: null, set_time: null, set_user: null, set_host: null,
       persisted: report.engine === "mysql" && setting.set_by === "SET PERSIST" ? true : null,
       modified: setting.default !== null && setting.display !== null ? setting.default !== setting.display : null,
-      description: check.explain, checks: [check.key],
+      // The check describes its first setting; oneLine falls back the same way.
+      description: check.settings[0]?.name === setting.name ? check.explain : null, checks: [check.key],
     });
   }
   return [...rows.values()];
 }
 
+const allowedValuesCache = new WeakMap<ConfigParameter, string>();
 function allowedValues(p: ConfigParameter) {
-  if (p.type === "boolean") return "OFF, ON";
-  if (p.type === "enum" || p.type === "set" || p.type === "flagset") return p.values?.join(", ") || "";
-  if (p.type === "string") return "Any text";
-  if (["bytes", "integer", "double"].includes(p.type || "") && (p.min !== null || p.max !== null)) {
-    const fmt = (n: number | null) => n === null ? "?" : p.type === "bytes" ? bytes(n) : n.toLocaleString();
-    return `${fmt(p.min)} to ${fmt(p.max)}`;
+  const cached = allowedValuesCache.get(p);
+  if (cached !== undefined) return cached;
+  let result = "";
+  if (p.type === "boolean") result = "OFF, ON";
+  else if (p.type === "enum" || p.type === "set" || p.type === "flagset") result = p.values?.join(", ") || "";
+  else if (p.type === "string") result = "Any text";
+  else if (["bytes", "integer", "double"].includes(p.type || "") && (p.min !== null || p.max !== null)) {
+    const fmt = (n: number | null) => n === null ? "?" : p.type === "bytes" ? bytes(n) : formatNumber(n, { maximumSignificantDigits: 21 });
+    result = `${fmt(p.min)} to ${fmt(p.max)}`;
   }
-  return "";
+  allowedValuesCache.set(p, result);
+  return result;
 }
 function applyType(p: ConfigParameter) { return p.apply_type === "dynamic" ? "Dynamic" : p.apply_type === "static" ? "Static" : "Unknown"; }
 function sourceDetails(p: ConfigParameter) {
@@ -743,8 +799,8 @@ async function applyParameterBatch(rows: StagedParameter[], intents: ParameterIn
       results[i] = { name: intent.name, status: result.status, message: result.message, result, type: rows[i].parameter.type };
       if (result.status !== "changed") break;
     } catch (e) {
-      // The statement may have run before the reply was lost: never call it unchanged.
-      results[i] = { name: intent.name, status: "unknown", message: `The reply did not arrive, so the outcome is unknown. Check the value before trying again. ${(e as Error).message}` };
+      const failure = writeFailure(e, { audited: true });
+      results[i] = { name: intent.name, status: failure.phase, message: failure.message };
       break;
     }
   }
@@ -753,8 +809,9 @@ async function applyParameterBatch(rows: StagedParameter[], intents: ParameterIn
 
 /** One review is a bounded set of server-generated plans. Changing the scope
  * invalidates all earlier plans immediately, including their audit evidence. */
-function ParameterBatchSheet({ request, activeKey, onClose, onRemove, onDone }: {
+function ParameterBatchSheet({ request, activeKey, left, onLeave, onClose, onRemove, onDone }: {
   request: BatchRequest; activeKey: string; onClose: () => void;
+  left: boolean; onLeave: (startedAt: number) => void;
   onRemove: (name: string) => void; onDone: (results: BatchResult[]) => void;
 }) {
   const policy = useWritePolicy();
@@ -762,6 +819,7 @@ function ParameterBatchSheet({ request, activeKey, onClose, onRemove, onDone }: 
   const [persist, setPersist] = useState(true);
   const [answers, setAnswers] = useState<BatchPlans>({ signature: "", plans: {}, errors: {} });
   const [busy, setBusy] = useState(false);
+  const since = useSince(busy);
   const sending = useRef(false);
   const cancelled = useRef(false);
   const latestKey = useRef(activeKey);
@@ -826,9 +884,13 @@ function ParameterBatchSheet({ request, activeKey, onClose, onRemove, onDone }: 
     );
     onDone(results);
   }
+  if (left) return null;
   return <ConfirmSheet className="parameter-batch-sheet" eyebrow="PARAMETERS" title={`Apply ${rows.length} parameter ${rows.length === 1 ? "change" : "changes"}?`}
     description="Review every statement for this server. Each value is checked again before sending. The batch stops at the first change that is not confirmed."
-    busy={busy} confirmLabel={<PrivilegeConfirmLabel gate={gate} showStatus={false}>{busy ? "Applying…" : `Apply ${rows.length} changes`}</PrivilegeConfirmLabel>}
+    busy={busy} busyLabel="Applying…" progress="Waiting for the server to apply the parameter changes"
+    onLeave={() => onLeave(since ?? Date.now())}
+    leaveText="The changes may still be running. Close does not stop them; their outcomes show in Parameters."
+    confirmLabel={<PrivilegeConfirmLabel gate={gate} showStatus={false}>{`Apply ${rows.length} changes`}</PrivilegeConfirmLabel>}
     confirmDisabled={!ready || stale || !!blocked} confirmTone={policyPlan?.policy?.tone || "danger"} onCancel={cancel} onConfirm={() => void confirm()}>
     <Fields rows={[["Server", request.via.label]]} />
     {request.engine === "mysql" && rows.some(r => r.parameter.modifiable === "now") && <label className="parameter-persist">
@@ -857,27 +919,61 @@ function ParameterBatchSheet({ request, activeKey, onClose, onRemove, onDone }: 
   </ConfirmSheet>;
 }
 
-function CheckExplanation({ check }: { check: ConfigCheck }) {
-  const flagged = check.status === "watch" || check.status === "problem";
-  return <section className="parameter-check">
-    <div className="parameter-check-heading"><StatusPill tone={check.status} /><strong>{check.label}</strong></div>
-    <Disclosure title="Explanation and recommendations" className="config-explanation">
-      <InspectorSection title="What it is"><p>{check.explain}</p></InspectorSection>
-      <InspectorSection title={flagged ? "Why it is flagged" : "Why this status"}><p className="config-why">{check.why}</p></InspectorSection>
-      {check.action && <InspectorSection title="What to do">
-        {check.action.text && <p>{check.action.text}</p>}
-        {check.action.sql && <CopySql sql={check.action.sql} label={`Suggested statement for ${check.label}`} />}
-        {check.action.config && <CopySql sql={check.action.config} label={`my.cnf line for ${check.label}`} />}
-      </InspectorSection>}
-      {check.caveat && <p className="hint perf-caveat">Caveat: {check.caveat}</p>}
-      <p className="hint config-sources">From {check.sources.join(", ")}</p>
-    </Disclosure>
-  </section>;
+const SEVERITY: Record<string, number> = { problem: 0, watch: 1 };
+/** The most severe finding first: problem, then watch. */
+function findings(checks: ConfigCheck[]) {
+  return checks.filter(c => c.status in SEVERITY).sort((a, b) => SEVERITY[a.status] - SEVERITY[b.status]);
+}
+/** Only the official manuals the desktop app opens (apps/desktop/backend.cjs). */
+const DOC_HOSTS = new Set(["dev.mysql.com", "mariadb.com", "docs.percona.com"]);
+export function documentationLink(doc: ConfigParameter["documentation"]): { url: string; source: string } | null {
+  if (!doc || typeof doc.url !== "string") return null;
+  try {
+    const u = new URL(doc.url);
+    return u.protocol === "https:" && !u.username && !u.password && !u.port && DOC_HOSTS.has(u.hostname)
+      ? { url: u.href, source: doc.source || "Documentation" } : null;
+  } catch { return null; }
+}
+/** One plain sentence: the server's own description, else the opening
+ * sentence of a check that is about this parameter first. */
+export function oneLine(p: ConfigParameter, checks: ConfigCheck[]) {
+  const text = p.description || checks.find(c => c.settings[0]?.name === p.name)?.explain || "";
+  const first = text.trim().match(/^.*?[.!?](?=\s+[A-Z(]|$)/s)?.[0] || text.trim();
+  return first.length > 240 ? `${first.slice(0, 239).trimEnd()}…` : first;
+}
+/** When a change takes effect, in words (replaces Apply type and Scope). */
+function changeTiming(p: ConfigParameter, engine: string | null) {
+  if (p.modifiable === "none") return "Set by the server";
+  if (p.apply_type === "dynamic") return p.scope === "both" ? "Now, for new sessions" : "Now";
+  if (p.modifiable === "restart") return "After a restart";
+  if (p.modifiable === "option_file" || (engine === "mariadb" && p.apply_type === "static")) return "Option file, then a restart";
+  return p.apply_type === "static" ? "After a restart" : "Unknown";
+}
+function sourceText(p: ConfigParameter) {
+  const details = sourceDetails(p);
+  return [p.source_label || p.source || "Unknown", details].filter(Boolean).join(" · ");
+}
+
+/** The single recommendation for a parameter: the most severe finding, its
+ * reason, the suggested change and one caveat line. */
+function ParameterRecommendation({ name, flagged }: { name: string; flagged: ConfigCheck[] }) {
+  const [check, ...others] = flagged;
+  return <InspectorSection title="Recommendation">
+    <div className="parameter-finding" data-check={check.key}>
+      <p className="parameter-finding-head"><StatusPill tone={check.status} /><strong>{check.label}</strong></p>
+      <p>{check.why}</p>
+      {check.action?.text && <p>{check.action.text}</p>}
+      {check.action?.sql && <CopySql sql={check.action.sql} label={`Suggested statement for ${name}`} />}
+      {check.action?.config && <CopySql sql={check.action.config} label={`Option file line for ${name}`} />}
+      {check.caveat && <p className="hint">{check.caveat}</p>}
+      {others.length > 0 && <p className="hint">Also flagged: {others.map(c => c.label).join(", ")}.</p>}
+    </div>
+  </InspectorSection>;
 }
 
 export function ConfigView({ connection, disabled, onBack, selection, report: bound, onReport, onOpenSql }: {
   connection: Connection; disabled: boolean; onBack?: () => void; selection: Selection;
-  report: Bound<ConfigReport> | null; onReport: (report: Bound<ConfigReport>) => void; onOpenSql?: (sql: string) => void;
+  report: Bound<ConfigReport> | null; onReport: (report: Bound<ConfigReport>) => void; onOpenSql?: (sql: string, options?: { append?: boolean }) => void;
 }) {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
@@ -886,24 +982,25 @@ export function ConfigView({ connection, disabled, onBack, selection, report: bo
   const [preview, setPreview] = useState(false);
   const [batch, setBatch] = useState<BatchRequest | null>(null);
   const [batchResults, setBatchResults] = useState<BatchResult[]>([]);
+  const [batchResultVia, setBatchResultVia] = useState<Via | null>(null);
+  const [batchLeft, setBatchLeft] = useState<number | null>(null);
   const [change, setChange] = useState<ChangeRequest | null>(null);
+  const [changeLeft, setChangeLeft] = useState<number | null>(null);
   const [note, setNote] = useState<ChangeNote | null>(null);
   const [focusName, setFocusName] = useState("");
   const trigger = useRef<HTMLElement | null>(null);
   const noteRef = useRef<HTMLDivElement>(null);
   const resultsRef = useRef<HTMLDivElement>(null);
-  const attempted = useRef("");
   const policy = useWritePolicy();
   const sharedInspector = useInspector();
   const reads = useConnectionReads(connection);
-  const onScreen = useViewOnScreen();
   const loading = !!reads.loading;
   const report = bound?.report ?? null;
   const other = bound && bound.key !== reads.key ? bound.label : null;
   const parameters = useMemo(() => report ? parametersOf(report) : [], [report]);
   const checkMap = useMemo(() => new Map(report?.checks.map(c => [c.key, c]) || []), [report]);
   const recommendation = (p: ConfigParameter) => p.checks.map(k => checkMap.get(k)).find(c => c?.status === "problem") || p.checks.map(k => checkMap.get(k)).find(c => c?.status === "watch");
-  const actionsOff = disabled || loading || !!other;
+  const actionsOff = disabled || loading || !!other || !!change || !!batch;
   const offTitle = other ? `From ${other}: refresh to load this server` : policy?.blocked || (connection.read_only ? "This connection is read-only." : disabled ? "Select an available connection." : "");
   const editOff = actionsOff || !!offTitle || !report;
 
@@ -911,13 +1008,7 @@ export function ConfigView({ connection, disabled, onBack, selection, report: bo
     if (disabled) return;
     await reads.run("config", "Reading parameters…", (c, signal) => api<ConfigReport>("live/config", { connection: c }, signal), onReport, { force });
   }
-  useEffect(() => {
-    // One attempt on open or connection change, including a failed read. An
-    // error never causes a retry loop; Refresh remains the explicit retry.
-    if (disabled || !onScreen || bound?.key === reads.key || attempted.current === reads.key) return;
-    attempted.current = reads.key;
-    void load();
-  }, [reads.key, disabled, onScreen, bound?.key]);
+  useOpenRead({ key: reads.key, reportKey: bound?.key, ready: !disabled, busy: loading || reads.running(), read: () => { void load(); } });
   useEffect(() => {
     setDrafts({}); setEditing(false); setPreview(false); setFilter("all"); setFocusName("");
     setNote(null); setBatchResults([]);
@@ -929,10 +1020,22 @@ export function ConfigView({ connection, disabled, onBack, selection, report: bo
     if (name && parameters.some(p => p.name === name)) selection.select(name, true);
   }, [selection.key, parameters, checkMap]);
 
-  const pending = parameters.filter(p => Object.prototype.hasOwnProperty.call(drafts, p.name)).map(parameter => ({ parameter, value: drafts[parameter.name] }));
-  const needle = search.trim().toLowerCase();
-  const rows = parameters.filter(p => (!needle || [p.name, p.value || "", p.description || ""].some(v => v.toLowerCase().includes(needle))) &&
-    (filter === "all" || filter === "modified" && p.modified === true || filter === "dynamic" && p.apply_type === "dynamic" || filter === "static" && p.apply_type === "static" || filter === "recommendations" && !!recommendation(p) || filter === "pending" && Object.prototype.hasOwnProperty.call(drafts, p.name)));
+  const pending = useMemo(
+    () => parameters.filter(p => Object.prototype.hasOwnProperty.call(drafts, p.name)).map(parameter => ({ parameter, value: drafts[parameter.name] })),
+    [parameters, drafts],
+  );
+  const rawDeferredSearch = useDeferredValue(search);
+  const deferredSearch = search === "" ? "" : rawDeferredSearch;
+  const needle = deferredSearch.trim().toLowerCase();
+  const rows = useMemo(
+    () => {
+      if (!needle && filter === "all") return parameters;
+      return parameters.filter(p => (!needle || [p.name, p.value || "", p.description || ""].some(v => v.toLowerCase().includes(needle))) &&
+        (filter === "all" || filter === "modified" && p.modified === true || filter === "dynamic" && p.apply_type === "dynamic" || filter === "static" && p.apply_type === "static" || filter === "recommendations" && !!recommendation(p) || filter === "pending" && Object.prototype.hasOwnProperty.call(drafts, p.name)));
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [parameters, needle, filter, drafts, checkMap],
+  );
   useEffect(() => {
     if (!focusName || !editing) return;
     // Filtering to the requested row also brings a windowed row into the DOM.
@@ -955,34 +1058,38 @@ export function ConfigView({ connection, disabled, onBack, selection, report: bo
     selection.select(p.name, false); sharedInspector?.setOpen(false);
   }
   function openChange(name: string, mode: VariableMode | null, el: HTMLElement) {
-    if (other || disabled) return;
+    if (other || disabled || change || batch) return;
     trigger.current = el; setNote(null);
     setChange({ name, mode, via: { connection, key: reads.key, label: connectionLabel(connection) } });
   }
   function closeChange() { setChange(null); window.setTimeout(() => trigger.current?.focus(), 0); }
   async function changed(result: ChangeNote) {
-    const via = change?.via; setChange(null); setNote(result);
+    const via = change?.via; setChange(null); setChangeLeft(null); setNote({ ...result, via });
     window.setTimeout(() => noteRef.current?.focus(), 0);
     if (result.status === "changed" && via && reads.currentKey() === via.key) { discard(result.name); await load(true); }
   }
   async function batchDone(results: BatchResult[]) {
-    const via = batch?.via; setBatch(null);
-    if (!via || reads.currentKey() !== via.key) return;
+    const via = batch?.via; setBatch(null); setBatchLeft(null);
     setBatchResults(results);
+    setBatchResultVia(via || null);
+    window.setTimeout(() => resultsRef.current?.focus(), 0);
+    if (!via || reads.currentKey() !== via.key) return;
     const changedNames = new Set(results.filter(r => r.status === "changed").map(r => r.name));
     setDrafts(d => { const next = { ...d }; for (const name of changedNames) delete next[name]; return next; });
     const remaining = pending.some(r => !changedNames.has(r.parameter.name));
     setEditing(remaining); setPreview(remaining);
     if (!remaining && filter === "pending") setFilter("all");
-    window.setTimeout(() => resultsRef.current?.focus(), 0);
     await load(true);
   }
   const columns: Column<ConfigParameter>[] = [
-    { key: "name", label: "Name", primary: true, width: 260, sort: p => p.name, render: p => <span className="parameter-name">{recommendation(p) && <StatusDot tone={recommendation(p)!.status} />}<code>{p.name}</code></span> },
+    { key: "name", label: "Name", primary: true, width: 260, sort: p => p.name, render: p => <span className="parameter-name">{recommendation(p) && <StatusDot tone={recommendation(p)!.status} />}<code>{p.name}</code>{p.vendor === "percona" && <Pill title="A variable Percona Server adds to MySQL">Percona</Pill>}</span> },
     { key: "value", label: "Value", width: editing ? 320 : 180, minWidth: editing ? 300 : undefined, sort: p => p.value, render: p => {
       const staged = Object.prototype.hasOwnProperty.call(drafts, p.name);
       const reason = unmodifiable(p, report?.engine || null);
-      if (!editing || reason) return <span title={reason || (p.truncated ? "Value truncated" : valueText(p.type, p.value))}>{valueText(p.type, p.value)}{p.truncated ? "…" : ""}</span>;
+      if (!editing || reason) {
+        const f = formattedValue(p.type, p.value, p.name);
+        return <span title={reason || (p.truncated ? "Value truncated" : f.raw || f.text)}>{f.text}{p.truncated ? "…" : ""}</span>;
+      }
       const id = `parameter-value-${p.name}`;
       return <span className="parameter-cell-editor" onKeyDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}>
         {staged && drafts[p.name] === "DEFAULT" ? <code>DEFAULT</code> : <ValueField info={p} label={p.name} value={staged ? drafts[p.name] : draftValue(p)} onChange={v => stage(p, v)} id={id} hintId={`${id}-hint`} disabled={editOff} />}
@@ -1002,33 +1109,43 @@ export function ConfigView({ connection, disabled, onBack, selection, report: bo
     const p = selected;
     const reason = unmodifiable(p, report.engine);
     const resettable = report.engine === "mysql" && p.apply_type === "dynamic" && ["bytes", "integer", "double", "boolean"].includes(p.type || "");
-    inspector = { key: p.name, title: p.name, meta: <span>{valueText(p.type, p.value)}</span>, body: <>
-      <Fields rows={[
-        ["Value", valueText(p.type, p.value)], ["Default", p.default === null ? "Unknown" : valueText(p.type, p.default)],
-        ["Source", p.source_label || p.source || "Unknown"], sourceDetails(p) ? ["Set by", sourceDetails(p)] : null,
-        report.engine === "mysql" ? ["Persisted", p.persisted === null ? "Unknown" : p.persisted ? "Yes" : "No"] : null,
-        ["Allowed values", allowedValues(p) || "Unknown"], ["Scope", p.scope === "both" ? "Global and Session" : p.scope === "global" ? "Global" : "Unknown"],
-        ["Apply type", applyType(p)],
-      ]} />
-      <p className="hint">{p.modifiable === "none" ? "The server sets this value; no option or statement changes it."
-        : p.apply_type === "dynamic" ? (p.scope === "both" ? "A dynamic parameter can change while the server runs. Sessions already connected keep their own value." : "A dynamic parameter can change while the server runs.")
-        : p.apply_type === "static" ? "A static parameter takes effect after the server restarts." : "myflames cannot tell when this parameter can change."}</p>
-      {p.description && <InspectorSection title="Description"><p>{p.description}</p></InspectorSection>}
-      <div className="config-actions">
+    const checks = p.checks.map(k => checkMap.get(k)).filter((c): c is ConfigCheck => !!c);
+    const flagged = findings(checks);
+    const doc = documentationLink(p.documentation);
+    const line = oneLine(p, checks);
+    inspector = { key: p.name, title: p.name,
+      meta: <>{valueSpan(p.type, p.value, p.name)}{flagged[0] && <StatusPill tone={flagged[0].status} />}</>,
+      actions: <div className="config-actions">
         <button type="button" className="button primary" disabled={editOff || !!reason} title={offTitle || reason || undefined} onClick={() => editParameter(p)}>Edit value</button>
         {resettable && <button type="button" className="button" disabled={editOff || !!reason} title={offTitle || reason || undefined} onClick={() => { setEditing(true); stage(p, "DEFAULT"); sharedInspector?.setOpen(false); setPreview(true); }}>Reset to default</button>}
         <button type="button" className="button" data-change={p.name} disabled={actionsOff || !!offTitle || p.modifiable === "none"}
           title={offTitle || (p.modifiable === "none" ? reason : undefined) || undefined} onClick={e => openChange(p.name, null, e.currentTarget)}>Change…</button>
         {p.persisted === true && <button type="button" className="button" data-reset={p.name} disabled={actionsOff || !!offTitle} title={offTitle || undefined} onClick={e => openChange(p.name, "reset_persist", e.currentTarget)}>Reset persisted value…</button>}
-      </div>
-      {p.checks.map(k => checkMap.get(k)).filter((c): c is ConfigCheck => !!c).map(check => <CheckExplanation key={check.key} check={check} />)}
-    </> };
+      </div>,
+      body: <>
+        <div className="parameter-about">
+          {line ? <p className="parameter-summary">{line}</p> : !doc && <p className="hint">The server gives no description for this parameter.</p>}
+          {doc && <p className="parameter-docs"><a href={doc.url} target="_blank" rel="noreferrer" data-doc-link={p.name}>Documentation<span className="visually-hidden"> for {p.name}, opens in your browser</span></a><span className="hint">{doc.source}</span></p>}
+        </div>
+        <InspectorSection title="Current value">
+          <Fields label={`${p.name} facts`} rows={[
+            ["Value", valueSpan(p.type, p.value, p.name)],
+            ["Default", p.default === null ? "Unknown" : valueSpan(p.type, p.default, p.name)],
+            ["Source", sourceText(p)],
+            ["Changes", changeTiming(p, report.engine)],
+            ["Allowed", allowedValues(p) || "Unknown"],
+            report.engine === "mysql" ? ["Persisted", p.persisted === null ? "Unknown" : p.persisted ? "Yes" : "No"] : null,
+            checks.length > 0 && !flagged.length ? ["Checked", <span className="parameter-checked">{checks.map(c => <span key={c.key}><StatusPill tone={c.status} /> {c.label}</span>)}</span>] : null,
+          ]} />
+        </InspectorSection>
+        {flagged.length > 0 && <ParameterRecommendation name={p.name} flagged={flagged} />}
+      </> };
   }
   const s = report?.summary;
   const notes = [...(report?.notes || []), ...(report?.parameters?.notes || [])];
   if (report?.parameters && !report.parameters.complete) notes.push("The parameter catalog is incomplete. Some parameters or metadata could not be read.");
   return <ViewLayout id="config" title="Parameters" className="config-panel" onBack={onBack}
-    info={<><p>Every server parameter, with its allowed values, source and when it applies.</p><p>Edit stages local drafts. Preview changes, then review every exact statement before applying. Recommendations are rules of thumb; select a parameter for the explanation and caveats.</p></>}
+    info={<><p>Every server parameter, with its allowed values, source and when it applies.</p><p>Edit stages local drafts. Preview changes, then review every exact statement before applying. Recommendations are rules of thumb; select a parameter for its recommendation and a link to the official documentation.</p></>}
     controls={report && <>
       <SearchField label="Filter parameters" value={search} onChange={setSearch} placeholder="Filter parameters" />
       <ToolbarSelect label="Show" value={filter} options={[["all", "All"], ["modified", "Modified"], ["dynamic", "Dynamic"], ["static", "Static"], ["recommendations", "Recommendations"], ...(editing ? [["pending", "Pending"] as [string, string]] : [])]} onChange={setFilter} />
@@ -1041,9 +1158,15 @@ export function ConfigView({ connection, disabled, onBack, selection, report: bo
     </>}
     onRefresh={() => void load()} refreshDisabled={disabled} loading={loading} otherConnection={other}
     inspector={inspector} inspectorEmpty={<p>Select a parameter to inspect its source, allowed values and recommendations.</p>}
-    status={<><ViewStatus loading={reads.loading} error={reads.error} />
-      {note && <ChangeResultNote note={note} noteRef={noteRef} onDismiss={() => setNote(null)} />}
+    status={<><ViewStatus loading={reads.loading} error={reads.error}
+      onStop={reads.loading ? reads.stop : undefined} onRetry={reads.error ? () => void load() : undefined} doneAt={reads.doneAt} />
+      {change && changeLeft !== null && <div className="view-status variable-pending"><ActionStatus state={{ phase: "pending", startedAt: changeLeft,
+        message: `Waiting for the reply to the change to ${change.name}${change.via.key !== reads.key ? ` on ${change.via.label}` : ""}. Its outcome shows here.` }} /></div>}
+      {batch && batchLeft !== null && <div className="view-status parameter-batch-pending"><ActionStatus state={{ phase: "pending", startedAt: batchLeft,
+        message: `Waiting for the replies to the parameter changes${batch.via.key !== reads.key ? ` on ${batch.via.label}` : ""}. Their outcomes show here.` }} /></div>}
+      {note && <ChangeResultNote note={note} currentKey={reads.key} noteRef={noteRef} onDismiss={() => setNote(null)} />}
       {batchResults.length > 0 && <div ref={resultsRef} tabIndex={-1} className="parameter-results variable-result" role="status">
+        {batchResultVia && batchResultVia.key !== reads.key && <p className="hint">Sent on {batchResultVia.label}, not the connection in use.</p>}
         <strong>Parameter changes</strong><ul>{batchResults.map(r => <li key={r.name} data-result={r.name} data-status={r.status}><code>{r.name}</code>: {r.status === "changed" ? "Changed" : r.status === "not_sent" ? "Not sent" : r.status === "applied_unverified" ? "Applied; verification incomplete" : r.status === "unknown" ? "Outcome unknown" : "Not changed"}. {r.message}
           {r.result?.before && r.result.after && <span className="hint parameter-result-values">Global: {valueText(r.type ?? null, r.result.before.global)} → {valueText(r.type ?? null, r.result.after.global)}
             {r.result.mode !== "global" && <> · mysqld-auto.cnf: {persistedText(r.type ?? null, r.result.before.persisted_state, r.result.before.persisted)} → {persistedText(r.type ?? null, r.result.after.persisted_state, r.result.after.persisted)}</>}
@@ -1077,10 +1200,15 @@ export function ConfigView({ connection, disabled, onBack, selection, report: bo
             onClick: () => openChange(p.name, p.modifiable === "now" ? "global" : p.modifiable === "restart" ? "persist_only" : null, document.body),
           }] : []),
           {
-            label: "Inspect parameter & docs",
+            label: "Inspect parameter",
             icon: "info",
             onClick: () => selection.select(p.name, true),
           },
+          ...(documentationLink(p.documentation) ? [{
+            label: "Open documentation",
+            icon: "browser" as const,
+            onClick: () => { window.open(documentationLink(p.documentation)!.url, "_blank", "noopener,noreferrer"); },
+          }] : []),
           { divider: true as const },
           {
             label: `Copy variable name (${p.name})`,
@@ -1099,7 +1227,11 @@ export function ConfigView({ connection, disabled, onBack, selection, report: bo
           }] : []),
         ]} />
     </>}
-    {change && <VariableSheet request={change} activeKey={reads.key} onClose={closeChange} onDone={n => void changed(n)} onOpenSql={onOpenSql ? sql => { setChange(null); onOpenSql(sql); } : undefined} />}
-    {batch && <ParameterBatchSheet request={batch} activeKey={reads.key} onClose={() => setBatch(null)} onRemove={name => { if (batch.via.key === reads.currentKey()) discard(name); }} onDone={results => void batchDone(results)} />}
+    {change && <VariableSheet request={change} activeKey={reads.key} left={changeLeft !== null}
+      onLeave={at => { setChangeLeft(at); window.setTimeout(() => document.querySelector<HTMLElement>(".variable-pending .action-status")?.focus(), 0); }}
+      onClose={closeChange} onDone={n => void changed(n)} onOpenSql={onOpenSql ? sql => { setChange(null); onOpenSql(sql, { append: true }); } : undefined} />}
+    {batch && <ParameterBatchSheet request={batch} activeKey={reads.key} left={batchLeft !== null}
+      onLeave={at => { setBatchLeft(at); window.setTimeout(() => document.querySelector<HTMLElement>(".parameter-batch-pending .action-status")?.focus(), 0); }}
+      onClose={() => setBatch(null)} onRemove={name => { if (batch.via.key === reads.currentKey()) discard(name); }} onDone={results => void batchDone(results)} />}
   </ViewLayout>;
 }

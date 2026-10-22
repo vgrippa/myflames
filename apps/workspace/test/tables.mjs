@@ -27,9 +27,11 @@ const editorRun = (body) => body.decline
   : { status: 200, body: { status: "needs_confirmation", confirmation: { token: "t1", text: "Review the statements.", tone: "primary",
       connection: { user: "root", host: "127.0.0.1", port: 3306 }, connection_type: "development", warnings: [],
       statements: body.sql.split(";\n"), typed_target: null } } };
+// The list of views docked, as a person who docked it: this suite asserts
+// the list's markers and keys (server-nav covers the floating default).
 const h = await open("/api/live/tables", "tables", { "/api/live/schemas": schemasMock, "/api/live/table-columns": tableColumns,
   "/api/editor/preview": { status: 400, body: { error: "Not checked in this test." } }, "/api/editor/run": editorRun,
-  "/api/editor/close": { status: 200, body: { closed: true, session: null } } });
+  "/api/editor/close": { status: 200, body: { closed: true, session: null } } }, { list: "docked" });
 const { page, state, button, text, texts } = h;
 state.fallback = { status: 200, body: fresh };
 const view = ".server-view[data-view=tables]";
@@ -58,8 +60,8 @@ const assertRefreshBlocked = async () => {
 };
 try {
   await h.server();
-  // Tables follows Indexes in the Schema group.
-  assert.deepEqual(await texts(".source-list .source-group:nth-child(3) .source-label"), ["Indexes", "Tables", "Database diagram"]);
+  // Tables follows Indexes in the Schema group (Database diagram is a place of its own).
+  assert.deepEqual(await texts(".source-list .source-group:nth-child(3) .source-label"), ["Indexes", "Tables"]);
   await h.view("tables");
   // A small server reads on open, because the view is on screen.
   await page.waitForSelector(`${view} .fact-strip`);
@@ -84,6 +86,10 @@ try {
   assert.equal(await page.evaluate(() => document.activeElement?.type), "checkbox");
   await page.focus("#tables-schemas-panel .perf-picker-search");
   await page.keyboard.type("tab");
+  await page.waitForFunction(() => {
+    const rows = [...document.querySelectorAll("#tables-schemas-panel .perf-picker-list li")];
+    return rows.length === 1 && rows[0].textContent.trim() === "mftab18 tables";
+  }, { timeout: 5000 });
   assert.deepEqual(await texts("#tables-schemas-panel .perf-picker-list li"), ["mftab18 tables"]);
   await page.click("#tables-schemas-panel .perf-picker-list input");
   assert.equal(await page.$eval("#tables-schemas-panel .perf-picker-all input", (e) => e.checked), false);
@@ -167,6 +173,13 @@ try {
   if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.select(`${view} .tables-engine select`, "all");
   await page.type(`${view} input[aria-label="Filter tables"]`, "uk");
+  await page.waitForFunction(selector => {
+    const rows = [...document.querySelectorAll(selector)];
+    return rows.length > 0 && rows.every(row => row.dataset.table?.includes("uk"));
+  }, { timeout: 5000 }, `${view} [aria-label="${missingLabel}"] tbody tr`).catch(error => {
+    if (error.name !== "TimeoutError") throw error;
+    throw new Error('Filter tables "uk": expected every rendered table name to include "uk" within 5000 ms');
+  });
   assert.ok((await rows(missingLabel)).every((t) => t.includes("uk")));
   await page.click(`${view} input[aria-label="Filter tables"]`, { clickCount: 3 });
   await page.keyboard.press("Backspace");
@@ -418,6 +431,74 @@ try {
   assert.equal(await text(`${view} .perf-picker-summary`), "mftab, archive_db");
   await h.view("indexes");
   assert.equal(await text(".server-view .perf-picker-summary"), "mftab");
+
+  // Every generated menu/inspector snippet quotes catalog identifiers,
+  // including maintenance reviews and snippets copied or opened in the editor.
+  await page.setViewport({ width: 1440, height: 1000 });
+  await h.view("tables");
+  const odd = { schema: "s`name", table: "t`'\\name" };
+  const qTable = "`s``name`.`t``'\\name`";
+  state.queue.push({ status: 200, body: { ...fresh, tables: undefined,
+    missing_primary_keys: [{ ...fresh.missing_primary_keys[0], ...odd }], fragmentation: [], generated_primary_keys: [] } });
+  await h.refresh(); await h.idle(view);
+  if (await page.$(".detail-back")) await page.click(".detail-back");
+  await page.click(`${view} .segmented button[data-value=missing]`);
+  const oddRow = `${view} [aria-label="${missingLabel}"] tbody tr[data-row-key]`;
+  await page.waitForFunction(selector => document.querySelector(selector)?.textContent.includes("t`'"), {}, oddRow);
+  const contextAction = async label => {
+    if (await page.$(".detail-back")) await page.click(".detail-back");
+    await page.click(oddRow, { button: "right" });
+    await page.waitForSelector(".context-menu [role=menuitem]");
+    await page.$$eval(".context-menu [role=menuitem]", (items, label) => {
+      const item = items.find(item => item.textContent.trim() === label);
+      if (!item) throw new Error(`Missing menu action ${label}`);
+      item.click();
+    }, label);
+  };
+  await page.evaluate(() => { window.__tableCopies = []; navigator.clipboard.writeText = text => { window.__tableCopies.push(text); return Promise.resolve(); }; });
+  for (const label of [`Copy table name (${qTable})`, "Copy SELECT query", "Copy SELECT COUNT(*)"]) await contextAction(label);
+  assert.deepEqual(await page.evaluate(() => window.__tableCopies), [qTable, `SELECT * FROM ${qTable} LIMIT 100;`, `SELECT COUNT(*) AS total_rows FROM ${qTable};`]);
+  const confirmedBefore = state.other.filter(call => call.path === "/api/editor/run" && call.body.confirmed).length;
+  const expectReview = async expected => {
+    await page.waitForSelector("dialog.confirm-sheet[open]");
+    assert.equal(state.other.filter(call => call.path === "/api/editor/run").at(-1).body.sql, expected);
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => !document.querySelector("dialog.confirm-sheet"));
+    assert.equal(state.other.filter(call => call.path === "/api/editor/run").at(-1).body.decline, true);
+  };
+  for (const [label, expected] of [
+    ["Optimize table…", `OPTIMIZE TABLE ${qTable}`], ["Analyze table…", `ANALYZE TABLE ${qTable}`],
+    ["Check table…", `CHECK TABLE ${qTable}`], ["Checksum table…", `CHECKSUM TABLE ${qTable} EXTENDED`],
+    ["Truncate table…", `SET SESSION lock_wait_timeout = 5;\nTRUNCATE TABLE ${qTable}`],
+    ["Drop table…", `SET SESSION lock_wait_timeout = 5;\nDROP TABLE ${qTable}`],
+  ]) {
+    await contextAction(label);
+    await expectReview(expected);
+  }
+  for (const [label, verb] of [["Optimize", "OPTIMIZE"], ["Analyze", "ANALYZE"], ["Check", "CHECK"]]) {
+    if (await page.$(".detail-back")) await page.click(".detail-back");
+    await page.$eval(oddRow + " .row-more", button => { button.focus(); button.click(); });
+    await page.waitForSelector(".row-action-menu [role=menuitem]");
+    await page.$$eval(".row-action-menu [role=menuitem]", (items, label) => {
+      const item = items.find(item => item.textContent.trim() === `${label} table…`);
+      if (!item) throw new Error(`Missing row action ${label}`);
+      item.click();
+    }, label);
+    await expectReview(`${verb} TABLE ${qTable}`);
+  }
+  await h.select(oddRow);
+  for (const [label, verb] of [["Optimize", "OPTIMIZE"], ["Analyze", "ANALYZE"], ["Check", "CHECK"]]) {
+    await page.$$eval('.view-inspector [data-reviewed-sql]', (buttons, label) => {
+      const button = buttons.find(button => button.dataset.reviewedSql === label);
+      if (!button) throw new Error(`Missing inspector action ${label}`);
+      button.click();
+    }, `${label} ${odd.table}`);
+    await expectReview(`${verb} TABLE ${qTable}`);
+  }
+  assert.equal(state.other.filter(call => call.path === "/api/editor/run" && call.body.confirmed).length, confirmedBefore);
+  await contextAction("Show CREATE TABLE (DDL)");
+  await page.waitForSelector('[aria-label="SQL editor"]');
+  assert.equal(await page.$eval('[aria-label="SQL editor"]', editor => editor.value), `SHOW CREATE TABLE ${qTable};`);
 
   assert.deepEqual(h.errors, []);
   console.log("tables view: ok");

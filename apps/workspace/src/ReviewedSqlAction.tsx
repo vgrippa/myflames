@@ -3,7 +3,7 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { api, type Connection, type EditorConfirmation, type EditorReply } from "./api";
 import { connectionKey } from "./binding";
-import { ConfirmSheet, Disclosure } from "./kit";
+import { ActionStatus, ConfirmSheet, Disclosure, writeFailure, type ActionPhase } from "./kit";
 import { editorPrivilegeGate, PrivilegeGate, type EditorPrivilegePreview } from "./privileges";
 
 type Request = { tab_id: string; connection: Connection; sql: string; require_confirmation: true; wait: number; limit: number };
@@ -11,8 +11,17 @@ type Review = EditorConfirmation & { typed_target?: string | null };
 type Action = {
   request: Request; key: string; label: string; warning: string; phase: "review" | "confirm" | "running" | "unknown" | "done";
   confirmation?: Review; reply?: EditorReply; message: string; error: boolean;
+  /** Date.now() when the current step began (the review, or the confirmed send). */
+  since: number;
+  /** The confirmed statements were sent: from then on an answer that never
+   * comes is an unknown outcome, never "nothing was sent". */
+  sent?: boolean;
+  /** The sheet was closed while the confirmed send had no reply yet. */
+  left?: boolean;
 };
-type Actions = { start(sql: string, label: string, warning?: string): void; blocked: boolean; active: Action | null; stop(): void; check(): void; dismiss(): void };
+type Actions = { start(sql: string, label: string, warning?: string): void; blocked: boolean; active: Action | null; stop(): void; check(): void; dismiss(): void;
+  /** Stop waiting for a review that is still being prepared (nothing was sent). */
+  abandon(): void };
 const Context = createContext<Actions | null>(null);
 
 export function ReviewedSqlProvider({ connection, disabled, onComplete, children }: {
@@ -105,15 +114,22 @@ export function ReviewedSqlProvider({ connection, disabled, onComplete, children
       const reply = await api<EditorReply>("editor/run", { ...action.request, ...extra });
       await receive(action, reply);
     } catch (error) {
-      if (confirmed) {
-        update(action, { phase: "unknown", confirmation: undefined,
+      // A confirmed send the server answered with an error (4xx: its words, a
+      // failure) differs from one with no reply (it may have run: check the
+      // existing run, never send it again).
+      const failure = confirmed ? writeFailure(error) : null;
+      if (failure?.phase === "unknown") {
+        update(action, { phase: "unknown", confirmation: undefined, since: Date.now(),
           message: "The execution reply was lost. Checking the existing run without sending it again.", error: true });
         void poll(action);
+      } else if (failure) {
+        update(action, { phase: "done", confirmation: undefined, message: `${action.label} failed: ${failure.message}`, error: true });
+        await close(action);
       } else {
         update(action, { phase: "done", confirmation: undefined, message: (error as Error).message, error: true });
         await close(action);
       }
-    } finally { pending.current = false; }
+    } finally { if (!current.current || current.current.request.tab_id === action.request.tab_id) pending.current = false; }
   }
   function start(sql: string, label: string, warning = "") {
     if (!sql.trim() || latest.current.disabled || latest.current.connection.read_only || pending.current ||
@@ -121,7 +137,7 @@ export function ReviewedSqlProvider({ connection, disabled, onComplete, children
     const snapshot = { ...latest.current.connection };
     const action: Action = { request: { tab_id: `view-${crypto.randomUUID()}`, connection: snapshot,
       sql, require_confirmation: true, wait: 1, limit: 1000 }, key: connectionKey(snapshot), label, warning,
-      phase: "review", message: "Preparing the SQL review…", error: false };
+      phase: "review", message: `Preparing the SQL review of ${label}. Nothing is sent yet.`, error: false, since: Date.now() };
     current.current = action;
     setActive(action);
     void prepare(action);
@@ -133,7 +149,10 @@ export function ReviewedSqlProvider({ connection, disabled, onComplete, children
       const reason = editorPrivilegeGate(preview).disabledReason;
       if (reason) { update(action, { phase: "done", message: reason, error: true }); return; }
     } catch { /* Unverifiable privileges remain enabled; the server decides. */ }
-    finally { pending.current = false; }
+    // Only this action's own flag: an abandoned review never clears a newer one's.
+    finally { if (!current.current || current.current.request.tab_id === action.request.tab_id) pending.current = false; }
+    // Stop waiting (abandon) while the preview was out: nothing more is sent.
+    if (current.current?.request.tab_id !== action.request.tab_id) return;
     if (!alive.current || !compatible(action)) {
       update(action, { phase: "done", message: "The connection or policy changed. Nothing was sent.", error: true });
       return;
@@ -143,8 +162,24 @@ export function ReviewedSqlProvider({ connection, disabled, onComplete, children
   function confirm() {
     const action = current.current;
     if (!action?.confirmation || !compatible(action)) return;
-    update(action, { phase: "review", message: "Sending the reviewed statements…" });
+    update(action, { phase: "review", message: `Sending the reviewed statements of ${action.label}…`, sent: true, since: Date.now() });
     void send(action, { confirmed: true, confirm_token: action.confirmation.token, typed_target: typed }, true);
+  }
+  /** Close the sheet while its confirmed send has no reply (offered when slow);
+   * the line under the toolbar keeps the progress and shows the outcome. */
+  function leave() {
+    const action = current.current;
+    if (action?.sent) update(action, { left: true });
+  }
+  /** Stop waiting for the review being prepared: nothing was sent, and the
+   * session it opened is closed. A confirmed send is never abandoned. */
+  function abandon() {
+    const action = current.current;
+    if (!action || action.sent || action.confirmation || action.phase !== "review") return;
+    current.current = null;
+    setActive({ ...action, phase: "done", message: "Stopped waiting for the review. Nothing was sent.", error: false });
+    pending.current = false;
+    void close(action);
   }
   function decline() {
     const action = current.current;
@@ -170,12 +205,18 @@ export function ReviewedSqlProvider({ connection, disabled, onComplete, children
     } catch (error) { update(action, { message: (error as Error).message, error: true }); }
   }
   const blocked = disabled || !!connection.read_only || !!active && active.phase !== "done";
-  return <Context.Provider value={{ start, blocked, active, stop: () => void stop(),
+  return <Context.Provider value={{ start, blocked, active, stop: () => void stop(), abandon,
     check: () => { if (current.current) void poll(current.current); },
-    dismiss: () => { if (current.current?.phase === "done") { current.current = null; setActive(null); } } }}>
+    dismiss: () => {
+      if (current.current?.phase === "done") { current.current = null; setActive(null); }
+      else if (!current.current && active?.phase === "done") setActive(null);
+    } }}>
     <span ref={anchor} style={{ display: "none" }} />{children}
-    {active?.confirmation && <ConfirmSheet title={`${active.label}?`} description={active.confirmation.text}
-      busy={active.phase !== "confirm"} confirmLabel={active.label} confirmTone={active.confirmation.tone}
+    {active?.confirmation && !active.left && <ConfirmSheet title={`${active.label}?`} description={active.confirmation.text}
+      busy={active.phase !== "confirm"} busyLabel="Sending…"
+      onLeave={active.sent ? leave : undefined}
+      leaveText="It may still be running on the server. Close does not stop it; the outcome shows under the toolbar."
+      confirmLabel={active.label} confirmTone={active.confirmation.tone}
       confirmDisabled={!compatible(active) || (active.confirmation.typed_target != null && typed !== active.confirmation.typed_target)}
       onConfirm={confirm} onCancel={decline}>
       <dl className="sheet-facts"><div><dt>Connection</dt><dd>{active.confirmation.connection.user}@{active.confirmation.connection.host}:{active.confirmation.connection.port}</dd></div>
@@ -197,16 +238,29 @@ export function ReviewedSqlAction({ sql, label, warning = "", disabled = false, 
     onClick={() => context.start(sql, label, warning)}>{label}…</PrivilegeGate>;
 }
 
+/** What the reviewed action is doing, under the view's toolbar: preparing the
+ * review (Stop waiting when slow; nothing was sent), sending or running (with
+ * the seconds and Stop), then what happened. Always mounted, so its polite
+ * live region announces the start and the outcome. */
 export function ReviewedSqlStatus() {
   const context = useContext(Context);
-  if (!context?.active) return null;
+  if (!context) return null;
   const action = context.active;
-  return <div className="notice" data-reviewed-status="" role={action.error ? "alert" : "status"}>
-    <span>{action.message}</span>{" "}
-    {(action.phase === "running" || action.phase === "unknown") && <button className="button small" onClick={context.stop}>Stop</button>}
-    {action.reply?.run && action.phase === "done" && action.reply.run.results.some(result => result.type === "rows") &&
-      <Disclosure className="reviewed-messages" title="Server messages"><pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{action.reply.run.results.flatMap(result => result.type === "rows" ? result.rows.map(row => row.map(value => value ?? "NULL").join(" · ")) : []).join("\n")}</pre></Disclosure>}
-    {action.phase === "done" && <button className="text-button" onClick={context.dismiss}>Dismiss</button>}
+  const phase: ActionPhase = !action ? "idle"
+    : action.phase === "review" || action.phase === "running" ? "pending"
+      : action.phase === "confirm" ? "idle"
+        : action.phase === "unknown" ? "unknown"
+          : action.error ? "failed" : "done";
+  const preparing = !!action && action.phase === "review" && !action.sent;
+  return <div className={`view-status reviewed-sql-status${phase === "idle" ? " is-idle" : ""}`} data-reviewed-status=""
+    aria-busy={phase === "pending" || undefined}>
+    <ActionStatus state={{ phase, message: action?.message || "", startedAt: action?.since ?? null }}
+      onStop={preparing ? context.abandon : undefined} stopLabel="Stop waiting"
+      onDismiss={action?.phase === "done" ? context.dismiss : undefined}>
+      {action && (action.phase === "running" || action.phase === "unknown") && <button className="button small" onClick={context.stop}>Stop</button>}
+      {action?.reply?.run && action.phase === "done" && action.reply.run.results.some(result => result.type === "rows") &&
+        <Disclosure className="reviewed-messages" title="Server messages"><pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{action.reply.run.results.flatMap(result => result.type === "rows" ? result.rows.map(row => row.map(value => value ?? "NULL").join(" · ")) : []).join("\n")}</pre></Disclosure>}
+    </ActionStatus>
   </div>;
 }
 

@@ -1,0 +1,72 @@
+{
+ "fixture": "cluster-matrix",
+ "schema": "cluster-fixture-1",
+ "cluster": "ic",
+ "state": "degraded",
+ "captured_at": "2026-10-20T14:34:40+00:00",
+ "source": "mysqlsh dba.getCluster().status({extended: 1}) on mf-ic-2",
+ "status": {
+  "clusterName": "mfcluster",
+  "defaultReplicaSet": {
+   "GRProtocolVersion": "8.0.27",
+   "communicationStack": "MYSQL",
+   "groupName": "2ffff60d-cc92-11f1-b51d-b6daec340a27",
+   "groupViewChangeUuid": "AUTOMATIC",
+   "groupViewId": "17925063669729468:8",
+   "name": "default",
+   "paxosSingleLeader": "OFF",
+   "primary": "mf-ic-2:3306",
+   "ssl": "REQUIRED",
+   "status": "OK_NO_TOLERANCE_PARTIAL",
+   "statusText": "Cluster is NOT tolerant to any failures. 1 member is not active.",
+   "topology": {
+    "mf-ic-1:3306": {
+     "address": "mf-ic-1:3306",
+     "fenceSysVars": [],
+     "memberId": "",
+     "memberRole": "SECONDARY",
+     "memberState": "(MISSING)",
+     "mode": "n/a",
+     "readReplicas": {},
+     "role": "HA",
+     "shellConnectError": "MySQL Error 2005: Could not open connection to 'mf-ic-1:3306': Unknown MySQL server host 'mf-ic-1' (-2)",
+     "status": "(MISSING)"
+    },
+    "mf-ic-2:3306": {
+     "address": "mf-ic-2:3306",
+     "applierWorkerThreads": 4,
+     "fenceSysVars": [],
+     "memberId": "10a527c5-cc92-11f1-956e-2a01c1402350",
+     "memberRole": "PRIMARY",
+     "memberState": "ONLINE",
+     "mode": "R/W",
+     "readReplicas": {},
+     "replicationLag": "applier_queue_applied",
+     "role": "HA",
+     "status": "ONLINE",
+     "version": "8.4.11"
+    },
+    "mf-ic-3:3306": {
+     "address": "mf-ic-3:3306",
+     "applierWorkerThreads": 4,
+     "fenceSysVars": [
+      "read_only",
+      "super_read_only"
+     ],
+     "memberId": "10db71e2-cc92-11f1-aaa1-eec8cb922a3b",
+     "memberRole": "SECONDARY",
+     "memberState": "ONLINE",
+     "mode": "R/O",
+     "readReplicas": {},
+     "replicationLag": "applier_queue_applied",
+     "role": "HA",
+     "status": "ONLINE",
+     "version": "8.4.11"
+    }
+   },
+   "topologyMode": "Single-Primary"
+  },
+  "groupInformationSourceMember": "mf-ic-2:3306",
+  "metadataVersion": "2.2.0"
+ }
+}

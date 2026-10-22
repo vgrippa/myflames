@@ -43,23 +43,14 @@
   white-space: nowrap;
   color: var(--ink-muted);
 }
-/* Normal states remain in the status column, without competing with an
-   actionable warning. Standalone status dots (connection safety) keep color. */
+/* Normal states remain in the status column with muted ink, while always
+   drawing both the dot and the word. */
 :is(.status-pill, .status-indicator):is(.is-ok, .is-info) {
   color: var(--ink-muted);
   font-weight: 400;
   background: transparent;
   border: 0;
   box-shadow: none;
-}
-:is(.status-pill, .status-indicator):is(.is-ok, .is-info) > .status-dot {
-  display: none;
-}
-/* Quiet normal states in a status column (StatusPill quiet): OK is an
-   empty cell, No threshold a faint dash; the word stays for screen readers. */
-.status-pill.is-quiet.is-info::before {
-  content: "–" / "";
-  color: var(--ink-faint);
 }
 .status-pill.is-watch {
   color: var(--warn-text);
@@ -249,6 +240,20 @@
   color: var(--ink-faint);
   cursor: default;
 }
+/* Busy for a moment (a save or a read on its way): dimmed like a disabled
+   control but still focusable (aria-disabled), so keyboard focus stays put.
+   Only controls that set is-busy (Checkbox busy, Refresh news, Refresh
+   privileges) look like this; an aria-disabled privilege gate keeps its own
+   look. */
+.checkbox.is-busy {
+  color: var(--ink-faint);
+  cursor: default;
+}
+.checkbox.is-busy input[type="checkbox"],
+:is(.icon-button, .button).is-busy[aria-disabled="true"] {
+  cursor: default;
+  opacity: 0.5;
+}
 /* A number field with its unit inside the border. */
 .number-field {
   display: inline-flex;
@@ -342,6 +347,9 @@
 .source-item:hover:not(:disabled):not([aria-current="page"]) {
   background: var(--surface-hover);
 }
+.source-item:active:not(:disabled):not([aria-current="page"]) {
+  background: var(--selection-fill);
+}
 .source-item[aria-current="page"] {
   background: var(--selection-fill);
   color: var(--selection-ink);
@@ -427,6 +435,93 @@
 }
 .view-title h2:focus {
   outline: none;
+}
+/* The floating list of views: the title is a pop-up button ("Health ▾") at
+   the title's size and weight, and the list opens under it. */
+.view-title.has-switcher {
+  position: relative;
+  /* The name stays whole: the toolbar's controls wrap instead. */
+  flex: none;
+}
+/* The button's text lines up with where a plain title starts. */
+.view-switcher-heading {
+  margin-left: calc(-1 * var(--space-2));
+}
+.view-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: var(--control-h);
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  letter-spacing: inherit;
+  cursor: default;
+}
+.view-switcher:hover,
+.view-switcher.is-open {
+  background: var(--surface-hover);
+}
+.view-switcher-chevron {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--ink-muted);
+}
+.view-switcher-chevron-icon {
+  display: inline-flex;
+  transition: transform var(--motion-hover);
+}
+.view-switcher.is-open .view-switcher-chevron-icon {
+  transform: rotate(180deg);
+}
+.view-switcher-marker {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+.view-switcher-marker .nav-marker {
+  margin-left: 0;
+}
+.view-switcher-popover {
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  left: calc(-1 * var(--space-2));
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  width: 240px;
+  max-height: calc(100dvh - var(--topbar-height) - 3 * var(--toolbar-h));
+  overflow: hidden;
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-popover);
+  color: var(--ink);
+  font-size: var(--text-md);
+  font-weight: 400;
+  letter-spacing: 0;
+  animation: view-switcher-in var(--motion-panel);
+}
+.view-switcher-popover:focus {
+  outline: none;
+}
+.view-switcher-popover > .source-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-2);
+}
+@keyframes view-switcher-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .view-switcher-popover { animation: none; }
+  .view-switcher-chevron { transition: none; }
 }
 .toolbar-controls {
   display: flex;
@@ -699,8 +794,8 @@
 .inspector-fields {
   display: grid;
   /* The label column fits its labels up to 40% of the width; values keep the
-     rest, so a long label wraps instead of squeezing every value into a
-     staircase. */
+     rest, so labels and values align in two columns above 900 px and stack
+     under 900 px. */
   grid-template-columns: fit-content(40%) minmax(0, 1fr);
   gap: 4px var(--space-3);
   margin: 0;
@@ -715,21 +810,22 @@
   color: var(--ink-muted);
   overflow-wrap: anywhere;
 }
-/* Fields marks code labels longer than 20 characters; short keys align. */
-.inspector-fields dt.is-long-label {
-  grid-column: 1 / -1;
-  overflow-wrap: anywhere;
-}
-.inspector-fields dt.is-long-label + dd {
-  grid-column: 1 / -1;
-  margin-bottom: var(--space-1);
-  padding-left: var(--space-3);
-}
 .inspector-fields dd {
   margin: 0;
   min-width: 0;
   overflow-wrap: anywhere;
   font-variant-numeric: tabular-nums;
+}
+@media (max-width: 900px) {
+  .inspector-fields {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+  .inspector-fields dt.is-long-label + dd,
+  .inspector-fields dd {
+    padding-left: 0;
+    margin-bottom: var(--space-2);
+  }
 }
 .inspector-placeholder {
   padding: var(--space-4) 0;
@@ -868,6 +964,12 @@
     flex: initial;
   }
 }
+.fact-strip-details {
+  margin: 0 0 var(--space-3);
+}
+.fact-strip-summary {
+  display: none;
+}
 .fact-strip {
   display: flex;
   flex-wrap: wrap;
@@ -875,6 +977,35 @@
   margin: 0 0 var(--space-3);
   font-size: var(--text-sm);
   line-height: var(--leading-sm);
+}
+.fact-strip-details > .fact-strip {
+  margin-bottom: 0;
+}
+@media (max-width: 900px) {
+  .fact-strip-summary {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    list-style: none;
+    font-size: var(--text-sm);
+    line-height: var(--leading-sm);
+    font-weight: 600;
+    color: var(--ink-muted);
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+  }
+  .fact-strip-summary::-webkit-details-marker {
+    display: none;
+  }
+  .fact-strip-summary > svg {
+    transition: transform var(--motion-hover);
+  }
+  .fact-strip-details[open] > .fact-strip-summary > svg {
+    transform: rotate(90deg);
+  }
+  .fact-strip-details[open] > .fact-strip {
+    margin-top: var(--space-1);
+  }
 }
 .fact-strip > div {
   display: flex;
@@ -1149,6 +1280,9 @@
 }
 .data-table tbody tr[tabindex]:hover td {
   background: var(--surface-subtle);
+}
+.data-table tbody tr[tabindex]:active:not(.is-selected) td {
+  background: var(--surface-hover);
 }
 .data-table tbody tr.is-selected td,
 .data-table tbody tr.is-selected:hover td {
@@ -1564,6 +1698,36 @@ button.metric-tile.is-selected:hover {
 .tile-foot > .sparkline {
   margin-left: auto;
 }
+@media (max-width: 900px) {
+  .tile-grid {
+    display: flex;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    gap: var(--space-2);
+    scrollbar-width: thin;
+  }
+  .tile-item {
+    flex: 0 0 auto;
+  }
+  .server-view .tile-grid .metric-tile,
+  .tile-grid .metric-tile {
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-2);
+    height: 44px;
+    min-height: 44px;
+    max-height: 44px;
+    padding: 0 var(--space-3);
+  }
+  .tile-grid .tile-value {
+    font-size: var(--text-md);
+    line-height: var(--leading-md);
+  }
+  .tile-grid .tile-foot {
+    margin-top: 0;
+    min-height: 0;
+  }
+}
 .sparkline {
   width: 72px;
   height: 20px;
@@ -1775,11 +1939,6 @@ details[open]:not([class]) > summary:not([class]):not(:has(> svg))::before {
   }
   .grouped-row > .status-pill {
     width: auto;
-  }
-  /* A quiet OK draws nothing: drop its gap so the label starts where an
-     unrated row's label does. */
-  .grouped-row:not(.is-wrapping) > .status-pill.is-quiet.is-ok {
-    margin-inline-end: calc(-1 * var(--space-3));
   }
   .row-detail {
     display: none;
@@ -2197,8 +2356,8 @@ details[open]:not([class]) > summary:not([class]):not(:has(> svg))::before {
 /* The highlighted item (pointer or keyboard) is a filled row with white
    words, like a macOS menu: the accent fill, or the danger fill for a
    destructive item. Its icon and shortcut take the same color. */
-.context-menu [role="menuitem"]:hover:not(:disabled),
-.context-menu [role="menuitem"]:focus-visible {
+.context-menu [role="menuitem"]:hover:not(:disabled, [aria-disabled="true"]),
+.context-menu [role="menuitem"]:focus-visible:not([aria-disabled="true"]) {
   background: var(--accent-fill);
   color: var(--accent-ink);
   outline: none;
@@ -2207,10 +2366,40 @@ details[open]:not([class]) > summary:not([class]):not(:has(> svg))::before {
   opacity: 0.5;
   cursor: not-allowed;
 }
+/* An item off for a reason (aria-disabled) keeps focus and stays legible:
+   its label and icon in the faint ink, its reason in the muted ink. */
+.context-menu [role="menuitem"][aria-disabled="true"] {
+  cursor: not-allowed;
+}
+.context-menu [role="menuitem"][aria-disabled="true"],
+.context-menu [role="menuitem"].is-danger[aria-disabled="true"] {
+  color: var(--ink-faint);
+}
+.context-menu [role="menuitem"][aria-disabled="true"]:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+/* A second line under the label: why the item is off. */
+.context-menu [role="menuitem"].has-hint {
+  align-items: flex-start;
+  white-space: normal;
+}
+.context-menu-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  max-width: 34ch;
+  gap: 1px;
+}
+.context-menu-hint {
+  font-size: var(--text-xs);
+  color: var(--ink-muted);
+  line-height: 1.3;
+}
 .context-menu [role="menuitem"].is-danger {
   color: var(--danger-text);
 }
-.context-menu [role="menuitem"].is-danger:is(:hover:not(:disabled), :focus-visible) {
+.context-menu [role="menuitem"].is-danger:is(:hover:not(:disabled, [aria-disabled="true"]), :focus-visible:not([aria-disabled="true"])) {
   background: var(--danger-fill);
   color: var(--danger-ink);
 }
@@ -2286,3 +2475,275 @@ details[open]:not([class]) > summary:not([class]):not(:has(> svg))::before {
   outline: none;
 }
 .export-menu-items [role="menuitem"]:disabled { color: var(--ink-faint); }
+
+/* ---- Action feedback (ActionButton, ActionStatus, ConfirmSheet busy) ----
+   A click changes the button in the same frame: pressed, then a spinner and
+   a present-tense label while the request is out. The label cell reserves
+   the other label (data-reserve, invisible), so the button never changes
+   width. Busy buttons keep full color (they are working, not unavailable)
+   and stay focusable through aria-disabled. */
+.action-button {
+  position: relative;
+}
+.action-button:active:not(:disabled):not([aria-disabled="true"]) {
+  filter: brightness(0.94);
+  transition: none;
+}
+.action-button.is-pending,
+.action-button.is-pending:hover {
+  cursor: progress;
+}
+.action-button-icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+}
+.action-button-label {
+  display: inline-grid;
+  justify-items: center;
+  align-items: center;
+}
+.action-button-label > span,
+.action-button-label::after {
+  grid-area: 1 / 1;
+}
+.action-button-label > span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+}
+/* Beside an icon the label starts at the icon; the reserved room trails. */
+.action-button.has-icon .action-button-label {
+  justify-items: start;
+}
+/* The label the button is not showing, kept for its width only. */
+.action-button-label::after {
+  content: attr(data-reserve);
+  visibility: hidden;
+  pointer-events: none;
+}
+/* Without an icon the busy label carries the spinner: reserve its room too. */
+.action-button:not(.has-icon) .action-button-label:not(.is-busy)[data-reserve]::after {
+  padding-inline-start: calc(13px + var(--space-1-5));
+}
+.action-button .spinner,
+.action-status .spinner,
+.sheet-progress .spinner {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  border-width: 2px;
+}
+.button.primary .spinner,
+.button.danger-solid .spinner {
+  border-color: rgba(255, 255, 255, 0.35);
+  border-top-color: var(--accent-ink);
+}
+/* Seconds waited: drawn after 1 s, never announced (aria-hidden). */
+.action-elapsed {
+  margin-inline-start: var(--space-1-5);
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.action-elapsed::before {
+  content: "· ";
+}
+/* The line beside or under an action. Idle, it is an empty live region that
+   takes no room. */
+.action-status {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+}
+.action-status[data-phase="idle"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+/* A status line takes focus only when the control in it went away (Stop,
+   Try again, Dismiss) and nothing better was near: show where focus is. */
+.action-status:focus-visible,
+.view-status:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+.action-status:focus:not(:focus-visible),
+.view-status:focus:not(:focus-visible) {
+  outline: none;
+}
+/* An idle status that keeps its (empty) line: nothing moves when it starts. */
+.action-status.keeps-line[data-phase="idle"] {
+  position: static;
+  width: auto;
+  height: auto;
+  min-height: var(--leading-sm);
+  overflow: visible;
+  clip-path: none;
+}
+.action-status-text {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  min-width: 0;
+}
+.action-status-message {
+  overflow-wrap: anywhere;
+}
+.action-status-icon {
+  display: inline-flex;
+  flex: none;
+}
+.action-status[data-phase="done"] {
+  color: var(--ok-text);
+}
+.action-status[data-phase="failed"] {
+  color: var(--danger-text);
+}
+.action-status[data-phase="unknown"] {
+  color: var(--warn-text);
+}
+.action-status[data-phase="done"] .action-status-message,
+.action-status:is([data-phase="failed"], [data-phase="unknown"]) .action-status-message {
+  color: var(--ink);
+}
+.action-status .text-button {
+  padding-block: 0;
+}
+.action-status-slow {
+  color: var(--ink-muted);
+}
+/* A view's loading line: spinner, what it reads, seconds, Stop when slow. */
+.view-status.is-idle {
+  padding: 0;
+}
+.view-status .capture-status .hint {
+  margin-inline-start: var(--space-1-5);
+}
+.view-status .capture-status .view-status-stop {
+  padding-block: 0;
+  margin-inline-start: var(--space-2);
+}
+.view-status-error.has-retry {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+}
+.view-status-error > p {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+}
+.view-status .view-status-retry {
+  flex: none;
+  padding-block: 0;
+}
+/* A sheet's action row while its request is out: what it waits for and the
+   seconds, at the leading edge; Cancel turns into Close when it is slow. */
+.sheet-buttons {
+  display: contents;
+}
+.sheet-progress {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  margin-inline-end: auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+}
+.sheet-progress-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* What Close does when a sheet's request is slow, under its content. */
+.sheet-leave-note {
+  margin: var(--space-3) 0 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--warn-soft);
+  color: var(--ink);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.sheet-progress:empty {
+  margin: 0;
+}
+@media (max-width: 650px) {
+  .sheet-progress {
+    flex: 1 1 100%;
+    max-width: none;
+  }
+}
+/* An icon button working on its request (Refresh news, Reload schemas): full
+   color with its glyph turning, still focusable (aria-disabled). The dimmed
+   look above is for controls that wait without saying so. */
+:is(.icon-button, .button).is-busy[aria-busy="true"] {
+  opacity: 1;
+  cursor: progress;
+}
+.icon-button.is-busy[aria-busy="true"] svg {
+  animation: spin 1s linear infinite;
+}
+/* The first run of a Query editor tab: the results area says it runs. */
+.results-first-run {
+  justify-content: center;
+  margin: 0;
+  padding: var(--space-5);
+}
+/* Status lines of actions inside panes and dialogs. */
+.library-status:not([data-phase="idle"]),
+.library-compare-status:not([data-phase="idle"]) {
+  display: flex;
+  padding: var(--space-2) 0;
+}
+.library-status-empty:not([data-phase="idle"]) {
+  padding: var(--space-4) var(--space-5) 0;
+}
+.export-status:not([data-phase="idle"]),
+.connections-progress:not([data-phase="idle"]),
+.table-data-step:not([data-phase="idle"]) {
+  display: flex;
+  margin-top: var(--space-2);
+}
+.import-dialog .dialog-actions .action-status:not([data-phase="idle"]) {
+  margin-inline-end: auto;
+}
+.mass-kill-footer .action-status:not([data-phase="idle"]) {
+  max-width: 50%;
+}
+/* Kill sessions: its notes (an earlier send, an error, read-only) are
+   compact callouts under the presets, not body text. */
+.mass-kill-dialog > .note {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--surface-muted);
+  color: var(--ink);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.mass-kill-dialog > .note.danger {
+  background: var(--danger-soft);
+  color: var(--danger-text);
+}
+.reviewed-sql-status .action-status:not([data-phase="idle"]) {
+  display: flex;
+}
+/* Reduced motion: the spinners stand still (style.css stops every animation);
+   the present-tense label and the seconds still say that it is working. */
