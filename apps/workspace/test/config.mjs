@@ -287,10 +287,18 @@ async function back() {
   const button = await page.$(`${view} .detail-back`);
   if (button) { await button.click(); await page.waitForFunction(v => !document.querySelector(`${v} .view-inspector`), {}, view); }
 }
-async function search(value) {
+async function search(value, expectedCount) {
   await page.$eval(`${view} input[aria-label="Filter parameters"]`, e => { e.focus(); e.select(); });
   await page.keyboard.press("Backspace");
   if (value) await page.type(`${view} input[aria-label="Filter parameters"]`, value);
+  if (expectedCount !== undefined) {
+    const selector = `${view} table[aria-label="Parameters"] tbody tr[data-row-key]`;
+    await page.waitForFunction((s, count) => document.querySelectorAll(s).length === count,
+      { timeout: 5000 }, selector, expectedCount).catch(error => {
+      if (error.name !== "TimeoutError") throw error;
+      throw new Error(`Filter parameters ${JSON.stringify(value)}: expected ${expectedCount} rendered rows within 5000 ms (${selector})`);
+    });
+  }
 }
 async function edit() { await page.click(`${view} [data-action="edit-parameters"]`); }
 async function stage(name, value) {
@@ -397,8 +405,8 @@ try {
   }
   await page.select(filter, "all");
   for (const term of ["catalog_parameter_05", "2048", "for searching"]) {
-    await search(term);
     const wanted = mysql.parameters.items.filter(p => [p.name, p.value || "", p.description || ""].some(v => v.toLowerCase().includes(term)));
+    await search(term, wanted.length);
     assert.equal(await page.$$eval(`${view} table[aria-label="Parameters"] tbody tr[data-row-key]`, es => es.length), wanted.length);
   }
   await search("");
@@ -629,6 +637,7 @@ try {
   computed.parameters.items = computed.parameters.items.map(p => p.name === "sort_buffer_size" ? { ...p, scope: "both" } : p);
   await refresh(computed);
   await edit(); await search("version");
+  await page.waitForSelector(row("version"));
   assert.equal(await page.$(input("version")), null, "server-set values are not editable");
   assert.match(await page.$eval(`${row("version")} td[data-col=value] span`, e => e.title), /Set by the server/);
   await search("sort_buffer_size");
@@ -639,9 +648,11 @@ try {
   await h.button("Cancel", `${view} .toolbar-controls `); await search("");
   await refresh(mariadb);
   await edit(); await search("performance_schema");
+  await page.waitForSelector(row("performance_schema"));
   assert.equal(await page.$(input("performance_schema")), null, "MariaDB static parameters are option-file only");
   assert.match(await page.$eval(`${row("performance_schema")} td[data-col=value] span`, e => e.title), /Option file only/);
   await search("unknown_parameter");
+  await page.waitForSelector(row("unknown_parameter"));
   assert.equal(await page.$(input("unknown_parameter")), null);
   assert.match(await page.$eval(`${row("unknown_parameter")} td[data-col=value] span`, e => e.title), /cannot tell/);
   await stage("max_connections", "300"); await review(1);

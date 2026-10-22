@@ -71,16 +71,23 @@ function pieces(sql: string, tokens: Token[], marks: Mark[]): ReactNode[] {
   return out;
 }
 
-/** 0-based line of an offset. */
-function lineAt(sql: string, offset: number) {
-  let line = 0;
-  for (let i = 0; i < offset && i < sql.length; i++) if (sql[i] === "\n") line++;
-  return line;
+/** 0-based line of an offset using precomputed newline offsets. */
+function lineAt(newlines: number[], length: number, offset: number) {
+  const limit = Math.min(offset, length);
+  if (limit <= 0) return 0;
+  let lo = 0;
+  let hi = newlines.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (newlines[mid] < limit) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
 }
 
 export type SqlEditorProps = {
   value: string;
-  onChange: (value: string) => void;
+  onChange: (value: string, selectionStart?: number, selectionEnd?: number) => void;
   onSelect?: () => void;
   onKeyDown?: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
   /** The caret or selection, to find the bracket pair next to it. */
@@ -124,8 +131,8 @@ export const SqlEditor = forwardRef<HTMLTextAreaElement, SqlEditorProps>(functio
   const selected = Math.min(choice, Math.max(0, completion.items.length - 1));
   const popup = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState({ left: 0, top: 0 });
-  useEffect(() => { setCompletionMode(false); }, [completionScope]);
-  useEffect(() => { setChoice(0); }, [completion.key]);
+  useEffect(() => { setCompletionMode((m) => (m === false ? m : false)); }, [completionScope]);
+  useEffect(() => { setChoice((c) => (c === 0 ? c : 0)); }, [completion.key]);
   useLayoutEffect(() => {
     if (showing) document.getElementById(`${listId}-${selected}`)?.scrollIntoView({ block: "nearest" });
   }, [selected, showing, completion.items]);
@@ -152,7 +159,7 @@ export const SqlEditor = forwardRef<HTMLTextAreaElement, SqlEditorProps>(functio
     const top = Math.max(8, Math.min(y + line + height > window.innerHeight - 8 ? y - height : y + line, window.innerHeight - height - 8));
     setPosition(previous => previous.left === left && previous.top === top ? previous : { left, top });
   }
-  useLayoutEffect(positionCompletion);
+  useLayoutEffect(positionCompletion, [showing, value, caret.start, selected, completion.items, completion.loading, completion.note]);
   useEffect(() => {
     if (!showing) return;
     window.addEventListener("resize", positionCompletion);
@@ -211,14 +218,15 @@ export const SqlEditor = forwardRef<HTMLTextAreaElement, SqlEditorProps>(functio
   }, [value, tokens, colored, statementStart, statementEnd, errorStart, errorEnd, matchKey]);
 
   // Line numbers, with the statement's lines and the error line marked.
-  const lineCount = useMemo(() => {
-    let n = 1;
-    for (let i = 0; i < value.length; i++) if (value[i] === "\n") n++;
-    return n;
+  const newlines = useMemo(() => {
+    const out: number[] = [];
+    for (let i = 0; i < value.length; i++) if (value.charCodeAt(i) === 10) out.push(i);
+    return out;
   }, [value]);
-  const firstLine = statement && statementEnd > statementStart ? lineAt(value, statementStart) : -1;
-  const lastLine = statement && statementEnd > statementStart ? lineAt(value, statementEnd) : -1;
-  const errorLine = errorEnd > errorStart ? lineAt(value, errorStart) : -1;
+  const lineCount = newlines.length + 1;
+  const firstLine = lineCount <= GUTTER_LINE_LIMIT && statement && statementEnd > statementStart ? lineAt(newlines, value.length, statementStart) : -1;
+  const lastLine = lineCount <= GUTTER_LINE_LIMIT && statement && statementEnd > statementStart ? lineAt(newlines, value.length, statementEnd) : -1;
+  const errorLine = lineCount <= GUTTER_LINE_LIMIT && errorEnd > errorStart ? lineAt(newlines, value.length, errorStart) : -1;
   const numbers = useMemo(() => {
     if (lineCount > GUTTER_LINE_LIMIT)
       return Array.from({ length: lineCount }, (_, i) => i + 1).join("\n");
@@ -241,7 +249,7 @@ export const SqlEditor = forwardRef<HTMLTextAreaElement, SqlEditorProps>(functio
     if (backdrop.current) backdrop.current.style.transform = shift;
     if (gutter.current) gutter.current.style.transform = `translateY(${-el.scrollTop}px)`;
   }
-  useLayoutEffect(follow);
+  useLayoutEffect(follow, [value, height, flash?.start, flash?.end]);
 
   const flashLit = flash && flash.end > flash.start ? flash : null;
   return (
@@ -294,8 +302,9 @@ export const SqlEditor = forwardRef<HTMLTextAreaElement, SqlEditorProps>(functio
           value={value}
           onChange={(e) => {
             const input = e.nativeEvent as InputEvent;
-            setCompletionMode(composing || input.isComposing || input.inputType?.startsWith("history") ? false : "auto");
-            onChange(e.target.value);
+            const nextMode = composing || input.isComposing || input.inputType?.startsWith("history") ? false : "auto";
+            setCompletionMode((m) => (m === nextMode ? m : nextMode));
+            onChange(e.target.value, e.target.selectionStart, e.target.selectionEnd);
           }}
           onFocus={() => { focusState.current = true; }}
           onBlur={() => { focusState.current = false; setCompletionMode(false); }}

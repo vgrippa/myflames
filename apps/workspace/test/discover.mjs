@@ -267,6 +267,13 @@ try {
   assert.deepEqual(await page.$$eval(`${view} tbody tr`, (els) => els.map((e) => e.dataset.rank)), ["2", "1"]);
   // The filter narrows the rows on screen.
   await page.type(`${view} input[aria-label="Filter statements"]`, "WHERE `id`");
+  await page.waitForFunction(selector => {
+    const rows = [...document.querySelectorAll(selector)];
+    return rows.length === 1 && rows[0].dataset.rank === "2";
+  }, { timeout: 5000 }, `${view} tbody tr`).catch(error => {
+    if (error.name !== "TimeoutError") throw error;
+    throw new Error('Filter statements "WHERE `id`": expected only statement 2 within 5000 ms');
+  });
   assert.deepEqual(await page.$$eval(`${view} tbody tr`, (els) => els.map((e) => e.dataset.rank)), ["2"]);
   await page.click(`${view} input[aria-label="Filter statements"]`, { clickCount: 3 });
   await page.keyboard.press("Backspace");

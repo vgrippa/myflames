@@ -17,7 +17,7 @@ export function useSqlCompletion(connection: Connection | undefined, sql: string
   const cacheOwner = owner.current;
   const context = useMemo(() => completionContext(sql, start, end, backslashEscapes), [sql, start, end, backslashEscapes]);
   const wanted = enabled && !!context && (manual || context.prefix.length >= 2 || context.qualifiers.length > 0);
-  const key = JSON.stringify([identity, scope, sql, start, end, wanted, manual, backslashEscapes, request]);
+  const key = wanted ? JSON.stringify([identity, scope, sql, start, end, wanted, manual, backslashEscapes, request]) : "";
   const [result, setResult] = useState<CompletionResult>({ key: "", items: [], loading: false, note: "" });
   const latest = useRef(key); latest.current = key;
   useEffect(() => {

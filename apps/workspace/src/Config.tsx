@@ -3,8 +3,8 @@
 // writes run sequentially and stop at the first unconfirmed outcome. Reports,
 // drafts and reviews belong to one connection. The single-variable sheet keeps
 // all modes, including the Query editor handoff for Session SQL.
-import { useEffect, useMemo, useRef, useState } from "react";
-import { api, type ConfigCheck, type ConfigReport, type ConfigParameter, type Connection } from "./api";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { api, formatNumber, type ConfigCheck, type ConfigReport, type ConfigParameter, type Connection } from "./api";
 import { uptime } from "./Health";
 import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "./binding";
 import { useOpenRead } from "./viewOnScreen";
@@ -664,15 +664,20 @@ function parametersOf(report: ConfigReport): ConfigParameter[] {
   return [...rows.values()];
 }
 
+const allowedValuesCache = new WeakMap<ConfigParameter, string>();
 function allowedValues(p: ConfigParameter) {
-  if (p.type === "boolean") return "OFF, ON";
-  if (p.type === "enum" || p.type === "set" || p.type === "flagset") return p.values?.join(", ") || "";
-  if (p.type === "string") return "Any text";
-  if (["bytes", "integer", "double"].includes(p.type || "") && (p.min !== null || p.max !== null)) {
-    const fmt = (n: number | null) => n === null ? "?" : p.type === "bytes" ? bytes(n) : n.toLocaleString();
-    return `${fmt(p.min)} to ${fmt(p.max)}`;
+  const cached = allowedValuesCache.get(p);
+  if (cached !== undefined) return cached;
+  let result = "";
+  if (p.type === "boolean") result = "OFF, ON";
+  else if (p.type === "enum" || p.type === "set" || p.type === "flagset") result = p.values?.join(", ") || "";
+  else if (p.type === "string") result = "Any text";
+  else if (["bytes", "integer", "double"].includes(p.type || "") && (p.min !== null || p.max !== null)) {
+    const fmt = (n: number | null) => n === null ? "?" : p.type === "bytes" ? bytes(n) : formatNumber(n, { maximumSignificantDigits: 21 });
+    result = `${fmt(p.min)} to ${fmt(p.max)}`;
   }
-  return "";
+  allowedValuesCache.set(p, result);
+  return result;
 }
 function applyType(p: ConfigParameter) { return p.apply_type === "dynamic" ? "Dynamic" : p.apply_type === "static" ? "Static" : "Unknown"; }
 function sourceDetails(p: ConfigParameter) {
@@ -961,10 +966,22 @@ export function ConfigView({ connection, disabled, onBack, selection, report: bo
     if (name && parameters.some(p => p.name === name)) selection.select(name, true);
   }, [selection.key, parameters, checkMap]);
 
-  const pending = parameters.filter(p => Object.prototype.hasOwnProperty.call(drafts, p.name)).map(parameter => ({ parameter, value: drafts[parameter.name] }));
-  const needle = search.trim().toLowerCase();
-  const rows = parameters.filter(p => (!needle || [p.name, p.value || "", p.description || ""].some(v => v.toLowerCase().includes(needle))) &&
-    (filter === "all" || filter === "modified" && p.modified === true || filter === "dynamic" && p.apply_type === "dynamic" || filter === "static" && p.apply_type === "static" || filter === "recommendations" && !!recommendation(p) || filter === "pending" && Object.prototype.hasOwnProperty.call(drafts, p.name)));
+  const pending = useMemo(
+    () => parameters.filter(p => Object.prototype.hasOwnProperty.call(drafts, p.name)).map(parameter => ({ parameter, value: drafts[parameter.name] })),
+    [parameters, drafts],
+  );
+  const rawDeferredSearch = useDeferredValue(search);
+  const deferredSearch = search === "" ? "" : rawDeferredSearch;
+  const needle = deferredSearch.trim().toLowerCase();
+  const rows = useMemo(
+    () => {
+      if (!needle && filter === "all") return parameters;
+      return parameters.filter(p => (!needle || [p.name, p.value || "", p.description || ""].some(v => v.toLowerCase().includes(needle))) &&
+        (filter === "all" || filter === "modified" && p.modified === true || filter === "dynamic" && p.apply_type === "dynamic" || filter === "static" && p.apply_type === "static" || filter === "recommendations" && !!recommendation(p) || filter === "pending" && Object.prototype.hasOwnProperty.call(drafts, p.name)));
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [parameters, needle, filter, drafts, checkMap],
+  );
   useEffect(() => {
     if (!focusName || !editing) return;
     // Filtering to the requested row also brings a windowed row into the DOM.

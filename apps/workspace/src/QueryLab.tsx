@@ -468,7 +468,6 @@ export const QueryLab = forwardRef<
     measuredRoom.current = room;
     setEditorRoom(room);
   }, []);
-  useLayoutEffect(measureEditorRoom);
   useEffect(() => {
     const panel = tabPanel.current;
     if (!panel) return;
@@ -621,6 +620,16 @@ export const QueryLab = forwardRef<
   // continuation such as Commit and close reads it before React renders).
   const runtimeRef = useRef(runtime);
   const rt = runtime[tab.id] || blankRuntime();
+  useLayoutEffect(measureEditorRoom, [
+    measureEditorRoom,
+    tabId,
+    status,
+    error,
+    analysisWarning,
+    layout.height,
+    Boolean(rt.run),
+    Boolean(rt.note),
+  ]);
   const [pending, setPending] = useState<Pending | null>(null);
   const [pendingBusy, setPendingBusy] = useState(false);
   const [closing, setClosing] = useState<{ tabId: string; known: boolean; keepTab: boolean } | null>(null);
@@ -775,9 +784,8 @@ export const QueryLab = forwardRef<
   tabsNowRef.current = onTabsNow;
   // App's beforeunload check (unsaved query tabs when autosave is off) must
   // see an edit as soon as it is made: a layout effect hands it the tabs in
-  // the same task as the keystroke. The full report below stays a passive
-  // effect, because App normalizes and serializes the whole workspace from
-  // it; a reload between the two once checked the tabs before the edit.
+  // the same task as the keystroke. The full report below also runs before
+  // paint so autosave sees the edit before reload or quit handling.
   useLayoutEffect(() => {
     tabsNowRef.current?.(tabs);
   }, [tabs]);
@@ -786,7 +794,7 @@ export const QueryLab = forwardRef<
   const layoutChanged = useRef(!!start.editor_layout);
   if (!layoutChanged.current && JSON.stringify(layout) !== JSON.stringify(defaultEditorLayout())) layoutChanged.current = true;
   const reportedLayout = layoutChanged.current ? layout : undefined;
-  useEffect(() => {
+  useLayoutEffect(() => {
     reportRef.current?.({
       tabs,
       tab_id: tabId,
@@ -948,9 +956,14 @@ export const QueryLab = forwardRef<
   // Preview uses the same request scope as Run. Replies are bound to the
   // text, tab, connection, session generation and privileges read; editing
   // or switching any of them immediately drops an older denial.
+  const sqlVersionRef = useRef<{ sql: string; ver: number }>({ sql: "", ver: 0 });
   function previewKey(payload: Record<string, unknown>) {
     const via = payload.connection as Connection;
-    return JSON.stringify([payload.tab_id, connectionKey(via), via.database || "", payload.sql,
+    const s = String(payload.sql || "");
+    if (sqlVersionRef.current.sql !== s) {
+      sqlVersionRef.current = { sql: s, ver: sqlVersionRef.current.ver + 1 };
+    }
+    return JSON.stringify([payload.tab_id, connectionKey(via), via.database || "", sqlVersionRef.current.ver,
       payload.selection || null, payload.cursor ?? null]);
   }
   const previewBase = { tab_id: tab.id, connection: connectionFor(tab), sql: tab.sql };
@@ -2408,7 +2421,13 @@ export const QueryLab = forwardRef<
               completionConnection={connectionFor(tab)}
               completionScope={tab.id}
               backslashEscapes={rt.session?.backslash_escapes ?? true}
-              onChange={(sql) => changeTab({ sql })}
+              onChange={(sql, start, end) => {
+                sqlNow.current = sql;
+                changeTab({ sql });
+                if (typeof start === "number" && typeof end === "number") {
+                  setCursor((c) => (c.start === start && c.end === end ? c : { start, end }));
+                }
+              }}
               onSelect={syncCursor}
               caret={cursor}
               statement={statementMark}

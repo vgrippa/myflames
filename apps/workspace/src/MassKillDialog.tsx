@@ -3,7 +3,7 @@
 // Inspired by Percona Toolkit pt-kill (busy-time, idle-time, match-user,
 // ignore-user, match-host, match-db, match-command, match-info, lock-wait).
 // Excludes server/system threads and current connection for safety.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   prepareBulkKill,
   killBulkSessions,
@@ -153,6 +153,9 @@ export function MassKillDialog({
   const [userOverridden, setUserOverridden] = useState<boolean>(false);
   // The reviewed KILL statements, shown in a confirmation sheet before anything is sent.
   const [pending, setPending] = useState<{ review: BulkKillReview; targets: BulkKillTarget[]; label: string; key: string } | null>(null);
+  const [previewScrollTop, setPreviewScrollTop] = useState(0);
+  const previewWrap = useRef<HTMLDivElement>(null);
+  const previewRaf = useRef<number | null>(null);
 
   useFocusScope(dialog, {
     open: true, onClose: () => { if (!busy && !pending) close(); },
@@ -288,6 +291,17 @@ export function MassKillDialog({
     lockWaitsOnly,
     queryPattern,
   ]);
+
+  useLayoutEffect(() => {
+    // A filter or a fresh report starts at its first match. Cancel a queued
+    // scroll frame as well, so it cannot restore the previous list's offset.
+    if (previewWrap.current) previewWrap.current.scrollTop = 0;
+    setPreviewScrollTop(0);
+    return () => {
+      if (previewRaf.current !== null) window.cancelAnimationFrame(previewRaf.current);
+      previewRaf.current = null;
+    };
+  }, [matchedSessions]);
 
   // Auto-select all matching when filters change unless manually overridden
   const activeIds = useMemo(() => {
@@ -730,89 +744,118 @@ export function MassKillDialog({
           )}
         </div>
 
-        <div className="mass-kill-preview-table-wrap">
+        <div
+          ref={previewWrap}
+          className="mass-kill-preview-table-wrap"
+          onScroll={matchedSessions.length > 80 ? (e) => {
+            const wrap = e.currentTarget;
+            if (previewRaf.current !== null) return;
+            previewRaf.current = window.requestAnimationFrame(() => {
+              previewRaf.current = null;
+              setPreviewScrollTop(wrap.scrollTop);
+            });
+          } : undefined}
+        >
           {matchedSessions.length === 0 ? (
             <div className="empty-preview">
               <p>No client sessions match these filters.</p>
               <p className="hint">Try lowering the minimum time or clearing user/query filters.</p>
             </div>
-          ) : (
-            <table className="mass-kill-table">
-              <thead>
-                <tr>
-                  <th scope="col" style={{ width: 36 }}><span className="visually-hidden">Select</span></th>
-                  <th style={{ width: 70 }}>ID</th>
-                  <th style={{ width: 150 }}>User@host</th>
-                  <th style={{ width: 100 }}>DB</th>
-                  <th style={{ width: 90 }}>Command</th>
-                  <th style={{ width: 75 }}>Time</th>
-                  <th style={{ width: 100 }}>Lock / State</th>
-                  <th>Statement / Last Query</th>
-                </tr>
-              </thead>
-              <tbody>
-                {matchedSessions.map((s) => {
-                  const checked = activeIds.has(s.id);
-                  const isLocked = s.is_locked || s.lock_status === "holding";
-                  const isWaiting = !!s.lock_wait || s.lock_status === "waiting";
-                  return (
-                    <tr
-                      key={s.id}
-                      className={checked ? "is-selected" : ""}
-                      onClick={() => toggleId(s.id)}
-                    >
-                      <td onClick={(e) => e.stopPropagation()}>
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => toggleId(s.id)}
-                          aria-label={`Select session ${s.id}`}
-                        />
-                      </td>
-                      <td>
-                        <strong>{s.id}</strong>
-                      </td>
-                      <td>
-                        {s.user || "?"}
-                        <span className="cell-muted">@{s.client_host || s.host || "?"}</span>
-                      </td>
-                      <td>{s.db || <span className="cell-muted">—</span>}</td>
-                      <td>
-                        <span className={`cmd-pill is-${(s.command || "").toLowerCase()}`}>
-                          {s.command || "—"}
-                        </span>
-                      </td>
-                      <td>
-                        <CompactNumber value={s.time_s} />s
-                      </td>
-                      <td>
-                        {isWaiting ? (
-                          <span className="pill is-danger" title="Waiting for lock">Lock wait</span>
-                        ) : isLocked ? (
-                          <span className="pill is-warn" title="Holding lock">Locked</span>
-                        ) : (
-                          <span className="cell-muted">{s.state || "—"}</span>
-                        )}
-                      </td>
-                      <td>
-                        {s.info_short ? (
-                          <code className="cell-truncate cell-sql" title={s.info || s.info_short}>
-                            {s.info_short}
-                          </code>
-                        ) : s.last_statement ? (
-                          <code className="cell-truncate cell-sql cell-muted" title={s.last_statement}>
-                            Last: {s.last_statement}
-                          </code>
-                        ) : (
-                          <span className="cell-muted">—</span>
-                        )}
-                      </td>
+          ) : (() => {
+            const windowed = matchedSessions.length > 80;
+            const rowH = 32;
+            const first = windowed ? Math.min(Math.max(0, matchedSessions.length - 36), Math.max(0, Math.floor(previewScrollTop / rowH) - 10)) : 0;
+            const last = windowed ? Math.min(matchedSessions.length, first + 36) : matchedSessions.length;
+            const shown = windowed ? matchedSessions.slice(first, last) : matchedSessions;
+            return (
+              <table className="mass-kill-table" aria-rowcount={windowed ? matchedSessions.length + 1 : undefined}>
+                <thead>
+                  <tr aria-rowindex={windowed ? 1 : undefined}>
+                    <th scope="col" style={{ width: 36 }}><span className="visually-hidden">Select</span></th>
+                    <th style={{ width: 70 }}>ID</th>
+                    <th style={{ width: 150 }}>User@host</th>
+                    <th style={{ width: 100 }}>DB</th>
+                    <th style={{ width: 90 }}>Command</th>
+                    <th style={{ width: 75 }}>Time</th>
+                    <th style={{ width: 100 }}>Lock / State</th>
+                    <th>Statement / Last Query</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {windowed && first > 0 && (
+                    <tr className="row-spacer" aria-hidden="true">
+                      <td colSpan={8} style={{ height: first * rowH, padding: 0, border: 0 }} />
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          )}
+                  )}
+                  {shown.map((s, idx) => {
+                    const checked = activeIds.has(s.id);
+                    const isLocked = s.is_locked || s.lock_status === "holding";
+                    const isWaiting = !!s.lock_wait || s.lock_status === "waiting";
+                    return (
+                      <tr
+                        key={s.id}
+                        aria-rowindex={windowed ? first + idx + 2 : undefined}
+                        className={checked ? "is-selected" : ""}
+                        onClick={() => toggleId(s.id)}
+                      >
+                        <td onClick={(e) => e.stopPropagation()}>
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleId(s.id)}
+                            aria-label={`Select session ${s.id}`}
+                          />
+                        </td>
+                        <td>
+                          <strong>{s.id}</strong>
+                        </td>
+                        <td>
+                          {s.user || "?"}
+                          <span className="cell-muted">@{s.client_host || s.host || "?"}</span>
+                        </td>
+                        <td>{s.db || <span className="cell-muted">—</span>}</td>
+                        <td>
+                          <span className={`cmd-pill is-${(s.command || "").toLowerCase()}`}>
+                            {s.command || "—"}
+                          </span>
+                        </td>
+                        <td>
+                          <CompactNumber value={s.time_s} />s
+                        </td>
+                        <td>
+                          {isWaiting ? (
+                            <span className="pill is-danger" title="Waiting for lock">Lock wait</span>
+                          ) : isLocked ? (
+                            <span className="pill is-warn" title="Holding lock">Locked</span>
+                          ) : (
+                            <span className="cell-muted">{s.state || "—"}</span>
+                          )}
+                        </td>
+                        <td>
+                          {s.info_short ? (
+                            <code className="cell-truncate cell-sql" title={s.info || s.info_short}>
+                              {s.info_short}
+                            </code>
+                          ) : s.last_statement ? (
+                            <code className="cell-truncate cell-sql cell-muted" title={s.last_statement}>
+                              Last: {s.last_statement}
+                            </code>
+                          ) : (
+                            <span className="cell-muted">—</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {windowed && last < matchedSessions.length && (
+                    <tr className="row-spacer" aria-hidden="true">
+                      <td colSpan={8} style={{ height: (matchedSessions.length - last) * rowH, padding: 0, border: 0 }} />
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            );
+          })()}
         </div>
       </div>
 

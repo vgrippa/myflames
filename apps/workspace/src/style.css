@@ -14,8 +14,11 @@
   --shadow-sheet: 0 20px 48px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.08);
   /* The edge of a table with columns scrolled beyond it. */
   --table-edge-shadow: rgba(0, 0, 0, 0.14);
-  --motion-hover: 120ms cubic-bezier(0.2, 0, 0, 1);
-  --motion-panel: 160ms cubic-bezier(0.16, 1, 0.3, 1);
+  --duration-fast: 80ms;
+  --duration-normal: 130ms;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --motion-hover: var(--duration-fast) var(--ease-out);
+  --motion-panel: var(--duration-normal) var(--ease-out);
   --sidebar-w: 208px;
   /* Window footer: one line, tall enough for its Retry button (24 px). */
   --statusbar-h: 26px;
@@ -672,6 +675,7 @@ details > p {
   padding: var(--space-2) var(--space-1) var(--space-1);
   display: grid;
   gap: var(--space-2);
+  animation: chrome-panel-in var(--motion-panel);
 }
 .settings-theme-group {
   display: flex;
@@ -1057,11 +1061,18 @@ main.is-flush > :is(.error, .notice) {
 }
 .button:active:not(:disabled) {
   background: var(--surface-hover);
+  transition: none;
 }
 .button.primary {
   background: var(--accent-fill);
   border-color: var(--accent-fill);
   color: var(--accent-ink);
+}
+.button.primary:active:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+  filter: brightness(0.95);
+  transition: none;
 }
 .button.danger {
   color: var(--danger-text);
@@ -1069,6 +1080,11 @@ main.is-flush > :is(.error, .notice) {
 }
 .button.danger:hover:not(:disabled) {
   background: var(--danger-soft);
+}
+.button.danger:active:not(:disabled) {
+  background: var(--danger-soft);
+  filter: brightness(0.96);
+  transition: none;
 }
 .text-button {
   background: none;
@@ -1106,6 +1122,10 @@ main.is-flush > :is(.error, .notice) {
 }
 .icon-button:hover:not(:disabled) {
   background: var(--surface-hover);
+}
+.icon-button:active:not(:disabled) {
+  background: var(--surface-muted);
+  transition: none;
 }
 .badge {
   display: inline-flex;
@@ -2866,6 +2886,10 @@ main:has(> .library) { padding: 0; max-width: none; }
   }
 }
 @media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0ms;
+    --duration-normal: 0ms;
+  }
   * {
     scroll-behavior: auto !important;
     animation-duration: 0.01ms !important;

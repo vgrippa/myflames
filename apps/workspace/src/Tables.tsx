@@ -4,7 +4,7 @@ import { qualifiedTable, tableMaintenanceSql } from "./sqlIdent";
 // click over the chosen databases (all user databases by default); myflames
 // runs an optional OPTIMIZE only after a separate SQL review. One sortable list at a
 // time; the why, the checks and the fix statements are in the inspector.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useOpenRead, useViewOnScreen } from "./viewOnScreen";
 import { api, type Connection, type FreeSpaceRow, type MissingPrimaryKey, type TablesReport, type TableInventoryRow } from "./api";
 import { CompactNumber, CopySql, RowActionMenu, SchemaPicker, bytes, count, engineLabel, useSchemaCatalog, type RowMenuItem } from "./PerfShared";
@@ -369,7 +369,9 @@ export function TablesView({
 
   useOpenRead({ key: reads.key, reportKey: bound?.key, ready: !disabled && !gated, busy: !!loading || reads.running(), read: () => { void load(); } });
 
-  const needle = filter.trim().toLowerCase();
+  const rawDeferredFilter = useDeferredValue(filter);
+  const deferredFilter = filter === "" ? "" : rawDeferredFilter;
+  const needle = deferredFilter.trim().toLowerCase();
   const visible = (r: { schema: string; table: string }) =>
     (!focus || (r.schema === focus.schema && r.table === focus.table)) &&
     (!needle || `${r.schema}.${r.table}`.toLowerCase().includes(needle));
@@ -396,10 +398,20 @@ export function TablesView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [report, needle, focus, freeStatus, minimumFree],
   );
-  const inventory = (report?.tables || []).filter(visible);
+  const inventory = useMemo(() => {
+    const all = report?.tables || [];
+    if (!needle && !focus) return all;
+    return all.filter(visible);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [report, needle, focus]);
   const exportContext = `${bound?.label || ""} · ${scopeLabel(report?.scope.schemas || null)} · ${report?.taken_at || ""}`;
-  const resetKey = `${reads.key}:${filter}:${JSON.stringify(focus)}:${pkStatus}:${engine}:${freeStatus}:${minimumFree}`;
-  const gipk = (report?.generated_primary_keys || []).filter(visible);
+  const resetKey = `${reads.key}:${deferredFilter}:${JSON.stringify(focus)}:${pkStatus}:${engine}:${freeStatus}:${minimumFree}`;
+  const gipk = useMemo(() => {
+    const all = report?.generated_primary_keys || [];
+    if (!needle && !focus) return all;
+    return all.filter(visible);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [report, needle, focus]);
 
   const s = report?.summary;
   const stats = report?.statistics;

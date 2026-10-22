@@ -86,6 +86,10 @@ try {
   assert.equal(await page.evaluate(() => document.activeElement?.type), "checkbox");
   await page.focus("#tables-schemas-panel .perf-picker-search");
   await page.keyboard.type("tab");
+  await page.waitForFunction(() => {
+    const rows = [...document.querySelectorAll("#tables-schemas-panel .perf-picker-list li")];
+    return rows.length === 1 && rows[0].textContent.trim() === "mftab18 tables";
+  }, { timeout: 5000 });
   assert.deepEqual(await texts("#tables-schemas-panel .perf-picker-list li"), ["mftab18 tables"]);
   await page.click("#tables-schemas-panel .perf-picker-list input");
   assert.equal(await page.$eval("#tables-schemas-panel .perf-picker-all input", (e) => e.checked), false);
@@ -169,6 +173,13 @@ try {
   if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.select(`${view} .tables-engine select`, "all");
   await page.type(`${view} input[aria-label="Filter tables"]`, "uk");
+  await page.waitForFunction(selector => {
+    const rows = [...document.querySelectorAll(selector)];
+    return rows.length > 0 && rows.every(row => row.dataset.table?.includes("uk"));
+  }, { timeout: 5000 }, `${view} [aria-label="${missingLabel}"] tbody tr`).catch(error => {
+    if (error.name !== "TimeoutError") throw error;
+    throw new Error('Filter tables "uk": expected every rendered table name to include "uk" within 5000 ms');
+  });
   assert.ok((await rows(missingLabel)).every((t) => t.includes("uk")));
   await page.click(`${view} input[aria-label="Filter tables"]`, { clickCount: 3 });
   await page.keyboard.press("Backspace");

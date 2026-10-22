@@ -587,11 +587,14 @@ export function Server({
   // Layout: three panes when wide, a sheet inspector below SHEET_WIDTH, and a
   // pushed list (the views list first, then the view) below COMPACT_WIDTH.
   const placeRef = useRef<HTMLElement>(null);
-  const [width, setWidth] = useState(0);
+  const [width, setWidth] = useState(() => (typeof window !== "undefined" ? window.innerWidth : 0));
   useEffect(() => {
     const element = placeRef.current;
     if (!element) return;
-    const measure = () => setWidth(element.clientWidth);
+    const measure = () => {
+      const w = element.clientWidth;
+      if (w > 0) setWidth((prev) => (prev === w ? prev : w));
+    };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(element);

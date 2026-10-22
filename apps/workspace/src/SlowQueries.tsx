@@ -6,7 +6,7 @@
 //
 // useTopStatements keeps the report and the batch in the Server place, so they
 // survive switching views (and the batch keeps running).
-import { useEffect, useId, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   api,
   number,
@@ -842,12 +842,21 @@ export function TopStatementsView({
   const [search, setSearch] = useState("");
   const busy = disabled || !!loading || batchRunning;
   const actionsOff = busy || !!other;
-  const rows: Row[] = (top?.statements || []).map((s, i) => ({ ...s, rank: i + 1 }));
-  const needle = search.trim().toLowerCase();
-  const shown = needle
-    ? rows.filter((r) => `${r.sample_text || ""} ${r.digest_text || ""} ${r.schema || ""}`.toLowerCase().includes(needle))
-    : rows;
-  const flagged = rows.filter((r) => r.flags.length).length;
+  const rows: Row[] = useMemo(
+    () => (top?.statements || []).map((s, i) => ({ ...s, rank: i + 1 })),
+    [top?.statements],
+  );
+  const rawDeferredSearch = useDeferredValue(search);
+  const deferredSearch = search === "" ? "" : rawDeferredSearch;
+  const needle = deferredSearch.trim().toLowerCase();
+  const shown = useMemo(
+    () =>
+      needle
+        ? rows.filter((r) => `${r.sample_text || ""} ${r.digest_text || ""} ${r.schema || ""}`.toLowerCase().includes(needle))
+        : rows,
+    [rows, needle],
+  );
+  const flagged = useMemo(() => rows.filter((r) => r.flags.length).length, [rows]);
   // The order and table the list on screen was read with.
   const shownOrder = top?.order || order;
   const ranked = orderLabel(shownOrder).toLowerCase();

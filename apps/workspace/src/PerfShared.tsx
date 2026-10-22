@@ -76,10 +76,13 @@ export function compact(value: number | null | undefined) {
 /** A large count in a table cell: compact text, the exact value with
  * separators as its tooltip and accessible name. Sort on the raw number. */
 export function CompactNumber({ value }: { value: number | null | undefined }) {
-  const tiny = value != null && Number.isFinite(value) && value !== 0 && Math.abs(value) < 0.01;
+  if (value === null || value === undefined || !Number.isFinite(value)) return <>—</>;
+  if (Number.isInteger(value) && Math.abs(value) < 1e6) {
+    return <>{Math.abs(value) < 1000 ? String(value) : formatNumber(value, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</>;
+  }
+  const tiny = value !== 0 && Math.abs(value) < 0.01;
   const text = tiny ? formatNumber(value, { maximumSignificantDigits: 3 }) : compact(value);
-  const exact = value != null && Number.isFinite(value)
-    ? formatNumber(value, { maximumFractionDigits: 20 }) : "—";
+  const exact = formatNumber(value, { maximumFractionDigits: 20 });
   if (text === exact) return <>{text}</>;
   return (
     <abbr className="compact-number" title={exact} aria-label={exact}>

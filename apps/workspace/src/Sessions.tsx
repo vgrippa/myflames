@@ -6,7 +6,7 @@
 // plan and Kill are in the inspector, and Show plan and Kill are also in each
 // row's ⋯ menu. Kill asks for confirmation (Cancel is the default) and is
 // never offered for server threads.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useOpenRead } from "./viewOnScreen";
 import { api, number, type Connection, type Session, type SessionBreakdown, type SessionFlag, type SessionsReport } from "./api";
 import type { ServerKind } from "./session";
@@ -340,18 +340,23 @@ export function SessionsView({
   }
 
   const s = report?.summary;
-  const needle = search.trim().toLowerCase();
+  const rawDeferredSearch = useDeferredValue(search);
+  const deferredSearch = search === "" ? "" : rawDeferredSearch;
+  const needle = deferredSearch.trim().toLowerCase();
   // Filtered once per report and search, not on every render (a selection in
   // thousands of sessions).
-  const rows = useMemo(() => (report?.sessions || []).filter(
-    (x) =>
-      !needle ||
-      [String(x.id), x.user, x.host, x.db, x.command, x.state, x.info_short, x.last_statement]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase()
-        .includes(needle),
-  ), [report, needle]);
+  const rows = useMemo(() => {
+    const all = report?.sessions || [];
+    if (!needle) return all;
+    return all.filter(
+      (x) =>
+        [String(x.id), x.user, x.host, x.db, x.command, x.state, x.info_short, x.last_statement]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase()
+          .includes(needle),
+    );
+  }, [report, needle]);
   const noProcess = report?.capabilities.process_privilege === false;
 
   const columns: Column<Session>[] = [

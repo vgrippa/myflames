@@ -1134,20 +1134,40 @@ export type WindowStatus = {
   durationMs?: number | null;
   rows?: number | null;
 };
-type WindowStatusStore = { values: Record<string, WindowStatus>; publish: (scope: string, value: WindowStatus | null) => void };
-const WindowStatusContext = createContext<WindowStatusStore | null>(null);
+type WindowStatusPublish = (scope: string, value: WindowStatus | null) => void;
+const WindowStatusPublishContext = createContext<WindowStatusPublish | null>(null);
+const WindowStatusValuesContext = createContext<Record<string, WindowStatus>>({});
+function sameWindowStatus(a: WindowStatus | undefined, b: WindowStatus | null): boolean {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  return (
+    a.engineVersion === b.engineVersion &&
+    a.connectionState === b.connectionState &&
+    a.transaction === b.transaction &&
+    a.refreshedAt === b.refreshedAt &&
+    a.refreshing === b.refreshing &&
+    a.sessionState === b.sessionState &&
+    a.lastRunAt === b.lastRunAt &&
+    a.durationMs === b.durationMs &&
+    a.rows === b.rows
+  );
+}
 export function WindowStatusProvider({ children }: { children: ReactNode }) {
   const [values, setValues] = useState<Record<string, WindowStatus>>({});
   const publish = useCallback((scope: string, value: WindowStatus | null) => {
     setValues((old) => {
+      if (sameWindowStatus(old[scope], value)) return old;
       const next = { ...old };
       if (value) next[scope] = value;
       else delete next[scope];
       return next;
     });
   }, []);
-  const store = useMemo(() => ({ values, publish }), [values, publish]);
-  return <WindowStatusContext.Provider value={store}>{children}</WindowStatusContext.Provider>;
+  return (
+    <WindowStatusPublishContext.Provider value={publish}>
+      <WindowStatusValuesContext.Provider value={values}>{children}</WindowStatusValuesContext.Provider>
+    </WindowStatusPublishContext.Provider>
+  );
 }
 /** Call in a place with a stable scope and the latest known values. Cleanup
  * drops its contribution on unmount/scope change. Only one owner per scope.
@@ -1156,19 +1176,19 @@ export function WindowStatusProvider({ children }: { children: ReactNode }) {
  * compare uses `compare:${beforeId}:${afterId}`. Never publish an old report
  * under the current connection's scope. */
 export function useWindowStatus(scope: string, value: WindowStatus) {
-  const publish = useContext(WindowStatusContext)?.publish;
+  const publish = useContext(WindowStatusPublishContext);
   const { engineVersion, connectionState, transaction, refreshedAt, refreshing, sessionState, lastRunAt, durationMs, rows } = value;
   useEffect(() => {
     publish?.(scope, { engineVersion, connectionState, transaction, refreshedAt, refreshing, sessionState, lastRunAt, durationMs, rows });
-    return () => publish?.(scope, null);
   }, [publish, scope, engineVersion, connectionState, transaction, refreshedAt, refreshing, sessionState, lastRunAt, durationMs, rows]);
+  useEffect(() => () => publish?.(scope, null), [publish, scope]);
 }
 /** The window footer. *lead* comes first, left-aligned: the shell puts the
  * write safety of the connection in use there (Connections.tsx SafetyStatus)
  * on the places that send to it. */
 export function WindowStatusBar({ scope, fallback = {}, lead }: { scope: string; fallback?: WindowStatus; lead?: ReactNode }) {
-  const store = useContext(WindowStatusContext);
-  const value = { ...fallback, ...store?.values[scope] };
+  const values = useContext(WindowStatusValuesContext);
+  const value = { ...fallback, ...values[scope] };
   const stamp = (at: number | null | undefined) => {
     if (typeof at !== "number" || !Number.isFinite(at)) return null;
     const date = new Date(at);
@@ -1587,15 +1607,22 @@ export function ContextMenu({ x, y, label, header, opener, actions, onClose }: {
  * edge would otherwise look covered). Attributes are set on the element, so
  * scrolling never re-renders. */
 export function useScrollEdges(scroller: RefObject<HTMLElement>, marker: RefObject<HTMLElement>) {
+  const lastLeft = useRef(-1);
   const mark = useCallback(() => {
     const el = scroller.current;
     const box = marker.current;
     if (!el || !box) return;
+    lastLeft.current = el.scrollLeft;
     const end = el.scrollWidth - el.clientWidth;
     box.toggleAttribute("data-more-left", end > 1 && el.scrollLeft > 1);
     box.toggleAttribute("data-more-right", end > 1 && el.scrollLeft < end - 1);
   }, [scroller, marker]);
-  useLayoutEffect(mark);
+  const onScroll = useCallback(() => {
+    const el = scroller.current;
+    if (!el || el.scrollLeft === lastLeft.current) return;
+    mark();
+  }, [scroller, mark]);
+  useLayoutEffect(mark, [mark]);
   // The scroller can mount later (a table that had no rows): attach to
   // whichever element is current after each render, once.
   const attached = useRef<{ el: HTMLElement; detach: () => void } | null>(null);
@@ -1605,14 +1632,15 @@ export function useScrollEdges(scroller: RefObject<HTMLElement>, marker: RefObje
     attached.current?.detach();
     attached.current = null;
     if (!el) return;
-    el.addEventListener("scroll", mark, { passive: true });
+    mark();
+    el.addEventListener("scroll", onScroll, { passive: true });
     const observer = new ResizeObserver(mark);
     observer.observe(el);
     if (el.firstElementChild) observer.observe(el.firstElementChild);
     attached.current = {
       el,
       detach: () => {
-        el.removeEventListener("scroll", mark);
+        el.removeEventListener("scroll", onScroll);
         observer.disconnect();
       },
     };
@@ -1735,9 +1763,10 @@ export function DataTable<T>({
   latestColumns.current = columns;
   const stableRows = useStableRows(rows);
   const sorted = useMemo(() => {
+    if (onSortChange) return stableRows;
     const column = latestColumns.current.find((c) => c.key === sort?.key);
     return sortRows(stableRows, sort, column?.sort);
-  }, [stableRows, sort, signature]);
+  }, [stableRows, sort, signature, onSortChange]);
   const latestRowKey = useRef(rowKey);
   latestRowKey.current = rowKey;
   const rowKeys = useMemo(() => sorted.map((r) => latestRowKey.current(r)), [sorted]);
@@ -1883,9 +1912,25 @@ export function DataTable<T>({
   const [view, setView] = useState({ top: 0, height: 760 });
   const [rowHeight, setRowHeight] = useState(density === "compact" ? 28 : 32);
   const [headHeight, setHeadHeight] = useState(32);
-  const first = windowed ? Math.max(0, Math.floor((view.top - headHeight) / rowHeight) - OVERSCAN) : 0;
-  const last = windowed ? Math.min(sorted.length, Math.ceil((view.top + view.height) / rowHeight) + OVERSCAN) : sorted.length;
-  const shown = windowed ? sorted.slice(first, last) : sorted;
+  const computeWindow = (top: number, height: number, total: number, headH: number, rowH: number) => {
+    if (total <= WINDOW_ROWS) return { first: 0, last: total };
+    const rawFirst = Math.max(0, Math.floor((top - headH) / rowH));
+    const visCount = Math.max(1, Math.ceil((height + headH) / rowH));
+    const qFirst = Math.floor(rawFirst / 4) * 4;
+    return {
+      first: Math.max(0, qFirst - OVERSCAN),
+      last: Math.min(total, qFirst + visCount + OVERSCAN),
+    };
+  };
+  const { first, last } = computeWindow(view.top, view.height, sorted.length, headHeight, rowHeight);
+  const windowRef = useRef({ first, last, total: sorted.length, headHeight, rowHeight });
+  windowRef.current = { first, last, total: sorted.length, headHeight, rowHeight };
+  const scrollRaf = useRef<number | null>(null);
+  const lastScrollAt = useRef(0);
+  useEffect(() => () => {
+    if (scrollRaf.current !== null) window.cancelAnimationFrame(scrollRaf.current);
+  }, []);
+  const shown = useMemo(() => windowed ? sorted.slice(first, last) : sorted, [windowed, sorted, first, last]);
 
   // Measure once the rows change: each column's max-content width (table
   // laid out automatically for a moment, before paint) and its header label.
@@ -1893,13 +1938,22 @@ export function DataTable<T>({
   // in another view) measures at its next render instead.
   const hiddenSig = [...hidden].join("\u0000");
   const measuredFor = useRef<{ rows: T[]; signature: string; hidden: string } | null>(null);
+  const seenRows = useRef<WeakSet<object>>(new WeakSet());
   useLayoutEffect(() => {
     const done = measuredFor.current;
-    if (done && done.rows === sorted && done.signature === signature && done.hidden === hiddenSig) return;
+    if (
+      done &&
+      done.signature === signature &&
+      done.hidden === hiddenSig &&
+      (done.rows === shown || shown.every(r => typeof r === "object" && r !== null && seenRows.current.has(r as object)))
+    )
+      return;
     const t = table.current;
     const el = wrap.current;
     if (!t || !el || !t.tHead || el.clientWidth === 0) return;
-    measuredFor.current = { rows: sorted, signature, hidden: hiddenSig };
+    // Only rendered rows were measured. A later page/window, or a newly
+    // visible column, must establish its own numeric and pill minimums.
+    if (!done || done.signature !== signature || done.hidden !== hiddenSig) seenRows.current = new WeakSet();
     const left = el.scrollLeft;
     t.classList.add("is-measuring");
     const next: Record<string, number> = measured.sig === signature ? { ...measured.natural } : {};
@@ -1919,7 +1973,7 @@ export function DataTable<T>({
       if (c.num) min = Math.max(min, full);
       // Neither do flags: a cell's pills keep their size (a name beside them truncates).
       const cells = t.tBodies[0].querySelectorAll<HTMLElement>(`:scope > tr[data-row-key] > td[data-col="${CSS.escape(key)}"]`);
-      for (let i = 0; i < Math.min(cells.length, 120); i++) {
+      for (let i = 0; i < cells.length; i++) {
         const pills = cells[i].querySelectorAll(".pill, .status-pill");
         if (!pills.length) continue;
         let flags = 0;
@@ -1945,8 +1999,12 @@ export function DataTable<T>({
     }
     t.classList.remove("is-measuring");
     el.scrollLeft = left;
+    measuredFor.current = { rows: shown, signature, hidden: hiddenSig };
+    for (const r of shown) {
+      if (typeof r === "object" && r !== null) seenRows.current.add(r as object);
+    }
     if (changed) setMeasured({ sig: signature, natural: next, min: nextMin, flags: nextFlags });
-  });
+  }, [shown, signature, hiddenSig, frame > 0]);
   // Row and header heights, for the spacers of a long table.
   useLayoutEffect(() => {
     const t = table.current;
@@ -1955,7 +2013,7 @@ export function DataTable<T>({
     if (sample && sample.offsetHeight > 0 && Math.abs(sample.offsetHeight - rowHeight) > 0.5) setRowHeight(sample.offsetHeight);
     const head = t.tHead.offsetHeight;
     if (head && Math.abs(head - headHeight) > 0.5) setHeadHeight(head);
-  });
+  }, [sorted.length > 0, density, signature, frame > 0]);
 
   // Keyboard: the next row may not be drawn yet in a long table; scroll it
   // into the window, then focus it once it is.
@@ -1968,7 +2026,7 @@ export function DataTable<T>({
     pendingFocus.current = "";
     row.focus({ preventScroll: true });
     row.scrollIntoView({ block: "nearest" });
-  });
+  }, [first, last]);
   function selectRange(key: string, extend: boolean, toggle: boolean) {
     if (!multiSelection) return;
     if (extend) {
@@ -1987,6 +2045,10 @@ export function DataTable<T>({
     if (key === undefined || !selection) return;
     const el = wrap.current;
     if (windowed && el) {
+      if (scrollRaf.current !== null) {
+        window.cancelAnimationFrame(scrollRaf.current);
+        scrollRaf.current = null;
+      }
       const top = headHeight + index * rowHeight;
       if (top < el.scrollTop + headHeight) el.scrollTop = top - headHeight;
       else if (top + rowHeight > el.scrollTop + el.clientHeight) el.scrollTop = top + rowHeight - el.clientHeight;
@@ -2093,9 +2155,12 @@ export function DataTable<T>({
   const customized = Object.keys(userWidths).length > 0 || explicitHidden.size > 0;
 
   // A truncated cell shows its full text on hover.
+  const lastHoverCell = useRef<HTMLElement | null>(null);
   function onHover(e: ReactPointerEvent<HTMLTableSectionElement>) {
+    if (performance.now() - lastScrollAt.current < 100) return;
     const td = (e.target as HTMLElement).closest?.("td");
-    if (!td || (td.hasAttribute("title") && !td.dataset.autoTitle)) return;
+    if (!td || td === lastHoverCell.current || (td.hasAttribute("title") && !td.dataset.autoTitle)) return;
+    lastHoverCell.current = td;
     const clipped =
       td.scrollWidth > td.clientWidth + 1 ||
       [...td.querySelectorAll<HTMLElement>(".cell-truncate, .cell-name > *")].some((x) => x.scrollWidth > x.clientWidth + 1);
@@ -2125,10 +2190,22 @@ export function DataTable<T>({
         onBlurCapture={(e) => {
           if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocused(false);
         }}
-        onScroll={windowed ? (e) => {
-          if (e.currentTarget.clientHeight > 0)
-            setView({ top: e.currentTarget.scrollTop, height: e.currentTarget.clientHeight });
-        } : undefined}
+        onScroll={(e) => {
+          lastScrollAt.current = performance.now();
+          if (!windowed) return;
+          const el = e.currentTarget;
+          if (el.clientHeight <= 0 || scrollRaf.current !== null) return;
+          scrollRaf.current = window.requestAnimationFrame(() => {
+            scrollRaf.current = null;
+            const cur = wrap.current;
+            if (!cur || cur.clientHeight <= 0) return;
+            const { first: curFirst, last: curLast, total, headHeight: hH, rowHeight: rH } = windowRef.current;
+            const next = computeWindow(cur.scrollTop, cur.clientHeight, total, hH, rH);
+            if (next.first !== curFirst || next.last !== curLast) {
+              setView({ top: cur.scrollTop, height: cur.clientHeight });
+            }
+          });
+        }}
       >
         <table
           ref={table}
@@ -2646,7 +2723,7 @@ export function SummaryLine({ tone, toneLabel, children, notes, notesTitle, extr
     if (!el) return;
     if (el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1) el.title = (el.textContent || "").trim();
     else el.removeAttribute("title");
-  });
+  }, [children, tone, toneLabel]);
   return (
     <div className="summary-line">
       <p>

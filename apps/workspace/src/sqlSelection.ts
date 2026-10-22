@@ -127,6 +127,10 @@ const VERSIONED_OPEN = /^\/\*M?!(?:\d{6}(?=\s)|\d{5})?/;
  * _delimiter_argument (the client compares only the word's first 9 letters).
  */
 function delimiterCommand(sql: string, i: number): { value: string; end: number } | null {
+  let p = i;
+  while (p < sql.length && (sql[p] === " " || sql[p] === "\t" || sql[p] === "\v" || sql[p] === "\f" || sql[p] === "\r")) p++;
+  const first = sql.charCodeAt(p);
+  if (first !== 68 && first !== 100) return null;
   const command = /^[ \t\v\f\r]*delimiter[^ \t\r\n]*/i.exec(sql.slice(i, i + 4096));
   if (!command) return null;
   const at = i + command[0].length;
@@ -146,6 +150,10 @@ function delimiterCommand(sql: string, i: number): { value: string; end: number 
   return { value: value && !value.includes("\\") ? value : "", end: stop };
 }
 
+let cachedSplitSql = "";
+let cachedSplitBackslash = true;
+let cachedSplitStatements: Statement[] | null = null;
+
 /**
  * Split editor text into statements at `;` (or the delimiter a DELIMITER
  * line set) outside quotes and comments. Only statements with SQL beyond
@@ -154,6 +162,9 @@ function delimiterCommand(sql: string, i: number): { value: string; end: number 
  * to `sql.length`.
  */
 export function splitStatements(sql: string, backslash = true): Statement[] {
+  if (cachedSplitStatements !== null && sql === cachedSplitSql && backslash === cachedSplitBackslash) {
+    return cachedSplitStatements;
+  }
   const segments: {
     from: number;
     begin: number;
@@ -177,6 +188,7 @@ export function splitStatements(sql: string, backslash = true): Statement[] {
     code = false;
   };
   while (i < sql.length) {
+    const ch = sql[i];
     if (!code && !versioned && (i === 0 || sql[i - 1] === "\n")) {
       const command = delimiterCommand(sql, i);
       if (command) {
@@ -185,28 +197,34 @@ export function splitStatements(sql: string, backslash = true): Statement[] {
         continue;
       }
     }
-    if (versioned && sql.startsWith("*/", i)) {
+    if (versioned && ch === "*" && sql[i + 1] === "/") {
       versioned = false;
       i += 2;
       continue;
     }
-    const opener = !versioned && sql[i] === "/" && sql[i + 1] === "*" ? VERSIONED_OPEN.exec(sql.slice(i, i + 16)) : null;
+    const opener =
+      !versioned && ch === "/" && sql[i + 1] === "*" && (sql[i + 2] === "!" || sql[i + 2] === "M")
+        ? VERSIONED_OPEN.exec(sql.slice(i, i + 16))
+        : null;
     if (opener) {
       versioned = true;
       i += opener[0].length;
       continue;
     }
-    const token = tokenAt(sql, i, backslash);
+    const token =
+      ch === "/" || ch === "#" || ch === "-" || ch === "'" || ch === '"' || ch === "`"
+        ? tokenAt(sql, i, backslash)
+        : null;
     if (token) {
       if (!token.comment) code = true;
       i = token.end;
-    } else if (sql.startsWith(delimiter, i)) {
+    } else if (delimiter.length === 1 ? ch === delimiter : sql.startsWith(delimiter, i)) {
       finish(i, delimiter.length);
-    } else if (sql[i] === "\\" && (sql[i + 1] === "g" || sql[i + 1] === "G")) {
+    } else if (ch === "\\" && (sql[i + 1] === "g" || sql[i + 1] === "G")) {
       // \g and \G end a statement, as in the mysql client.
       finish(i, 2);
     } else {
-      if (!isSpace(sql[i])) code = true;
+      if (!isSpace(ch)) code = true;
       i++;
     }
   }
@@ -234,23 +252,56 @@ export function splitStatements(sql: string, backslash = true): Statement[] {
   }
   // Positions before the first statement choose it.
   if (statements.length) statements[0].from = 0;
+  if (sql.length <= 2_000_000) {
+    cachedSplitSql = sql;
+    cachedSplitBackslash = backslash;
+    cachedSplitStatements = statements;
+  }
   return statements;
 }
 
 /** Index of the statement that contains `cursor`, or -1 when there is none. */
 export function statementAt(statements: Statement[], cursor: number) {
-  for (let k = 0; k < statements.length; k++)
-    if (cursor <= statements[k].to) return k;
-  return statements.length - 1;
+  if (!statements.length) return -1;
+  let lo = 0;
+  let hi = statements.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (cursor <= statements[mid].to) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo;
+}
+
+let cachedLineSql = "";
+let cachedLineBreaks: number[] = [];
+function getLineBreaks(sql: string): number[] {
+  if (sql === cachedLineSql) return cachedLineBreaks;
+  const breaks: number[] = [];
+  for (let i = 0; i < sql.length; i++) {
+    const c = sql.charCodeAt(i);
+    if (c === 10 || (c === 13 && sql.charCodeAt(i + 1) !== 10)) breaks.push(i);
+  }
+  if (sql.length <= 2_000_000) {
+    cachedLineSql = sql;
+    cachedLineBreaks = breaks;
+  }
+  return breaks;
 }
 
 /** 1-based line number of `offset`. */
 export function lineOf(sql: string, offset: number) {
-  let line = 1;
-  for (let i = 0; i < offset && i < sql.length; i++) {
-    if (sql[i] === "\n" || (sql[i] === "\r" && sql[i + 1] !== "\n")) line++;
+  const limit = Math.min(offset, sql.length);
+  if (limit <= 0) return 1;
+  const breaks = getLineBreaks(sql);
+  let lo = 0;
+  let hi = breaks.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (breaks[mid] < limit) lo = mid + 1;
+    else hi = mid;
   }
-  return line;
+  return 1 + lo;
 }
 
 /** Number of lines in `text` (1 for a single line). */

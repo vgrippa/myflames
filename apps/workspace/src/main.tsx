@@ -338,8 +338,16 @@ function App() {
   const conflictRef = useRef<() => void>(() => {});
   const saverRef = useRef<SessionSaver | null>(null);
   if (!saverRef.current)
-    saverRef.current = new SessionSaver(setSaveStatus, () =>
-      conflictRef.current(),
+    saverRef.current = new SessionSaver(
+      (next) =>
+        setSaveStatus((prev) =>
+          prev.kind === next.kind &&
+          ("at" in prev ? prev.at : "") === ("at" in next ? next.at : "") &&
+          ("message" in prev ? prev.message : "") === ("message" in next ? next.message : "")
+            ? prev
+            : next,
+        ),
+      () => conflictRef.current(),
     );
   const saver = saverRef.current;
   /** Merge part of the restorable lab state (editor, Server tabs, or the
@@ -626,7 +634,9 @@ function App() {
     investigation: { id: savedId || "", name, notes, tags, baseline_id: baseline, dirty },
     query_lab: labState,
   }, plansJson), [plansJson, savedId, name, notes, tags, baseline, dirty, labState.tabs]);
-  useEffect(() => {
+  // QueryLab publishes in a layout effect. Finish handing its snapshot to
+  // the saver in that same commit, before beforeunload/pagehide can run.
+  useLayoutEffect(() => {
     if (ready) saver.update(snapshot, edits);
   }, [snapshot, edits, ready, saver]);
   useEffect(() => {
@@ -1323,12 +1333,12 @@ function App() {
       setSearch("");
     }
   }
-  const visibleOps =
-    active?.operators.filter((n) =>
-      `${n.label} ${JSON.stringify(n.details)}`
-        .toLowerCase()
-        .includes(search.toLowerCase()),
-    ) || [];
+  const visibleOps = useMemo(() => {
+    const ops = active?.operators || [];
+    const q = search.trim().toLowerCase();
+    if (!q) return ops;
+    return ops.filter((n) => `${n.label} ${JSON.stringify(n.details)}`.toLowerCase().includes(q));
+  }, [active?.operators, search]);
   const place = placeOf(mode);
   const placeLabel = place ? PLACES.find((item) => item.key === place)!.label : "Audit log";
   const activeConnection: ActiveConnection = {

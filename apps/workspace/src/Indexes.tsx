@@ -7,7 +7,7 @@ import { bt, dropIndexSql, indexVisibilitySql, showIndexSql, tableMaintenanceSql
 // user chooses databases in the picker, and the server enforces the same.
 // One list at a time (segmented control); the why and the statements to copy
 // are in the inspector.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useOpenRead, useViewOnScreen } from "./viewOnScreen";
 import {
   api,
@@ -424,11 +424,24 @@ export function IndexesView({
   const s = report?.summary;
   const chosen = report ? report.scope.schemas || (report.scope.schema ? [report.scope.schema] : null) : null;
   const scope = !report ? "" : !chosen ? "all user databases" : chosen.length <= 3 ? chosen.join(", ") : `${chosen.length} databases`;
+  const rawDeferredFilter = useDeferredValue(filter);
+  const deferredFilter = filter === "" ? "" : rawDeferredFilter;
   // Filtered once per report, focus and filter, not on every render (a
   // selection in a list of 5,000 indexes).
   const { inventory, unused, redundant, scans, noData } = useMemo(() => {
-    const needle = filter.trim().toLowerCase();
-    const shown = (r: { schema: string; table: string; index?: string }) => (!focus || (r.schema === focus.schema && r.table === focus.table)) && `${r.schema}.${r.table}.${r.index || ""}`.toLowerCase().includes(needle);
+    const needle = deferredFilter.trim().toLowerCase();
+    if (!needle && !focus) {
+      return {
+        inventory: report?.indexes || [],
+        unused: report?.unused || [],
+        redundant: report?.redundant || [],
+        scans: report?.full_scans || [],
+        noData: report?.no_data || [],
+      };
+    }
+    const shown = (r: { schema: string; table: string; index?: string }) =>
+      (!focus || (r.schema === focus.schema && r.table === focus.table)) &&
+      (!needle || `${r.schema}.${r.table}.${r.index || ""}`.toLowerCase().includes(needle));
     return {
       inventory: (report?.indexes || []).filter(shown),
       unused: report ? report.unused.filter(shown) : [],
@@ -436,9 +449,9 @@ export function IndexesView({
       scans: report ? report.full_scans.filter(shown) : [],
       noData: report ? report.no_data.filter(shown) : [],
     };
-  }, [report, focus, filter]);
+  }, [report, focus, deferredFilter]);
   const exportContext = `${bound?.label || ""} · ${scope} · ${report?.taken_at || ""}`;
-  const resetKey = `${reads.key}:${filter}:${JSON.stringify(focus)}`;
+  const resetKey = `${reads.key}:${deferredFilter}:${JSON.stringify(focus)}`;
   const available = !!report?.available;
   const requested = list === "all" && !report?.indexes ? "unused" : list;
   const current: List = !available && (requested === "unused" || requested === "scans") ? "redundant" : requested;

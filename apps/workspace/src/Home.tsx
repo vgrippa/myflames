@@ -115,15 +115,18 @@ export function Home({
                 <Icon name="disclosure" size={14} />
               </button>
             </li>)}
-            {onOpenQuery && queries.map((tab) => <li key={`query:${tab.id}`} data-kind="query">
-              <button className="recent-item" onClick={() => onOpenQuery(tab.id)}>
-                <Icon name="query" />
-                <span><strong title={tab.name}>{tab.name}</strong><small title={tab.sql}>
-                  Query · {tab.sql.trim().replace(/\s+/g, " ") || "Empty query"}
-                </small></span>
-                <Icon name="disclosure" size={14} />
-              </button>
-            </li>)}
+            {onOpenQuery && queries.map((tab) => {
+              const snippet = tab.sql.slice(0, 300).trim().replace(/\s+/g, " ");
+              return <li key={`query:${tab.id}`} data-kind="query">
+                <button className="recent-item" onClick={() => onOpenQuery(tab.id)}>
+                  <Icon name="query" />
+                  <span><strong title={tab.name}>{tab.name}</strong><small title={tab.sql.slice(0, 500)}>
+                    Query · {snippet || "Empty query"}
+                  </small></span>
+                  <Icon name="disclosure" size={14} />
+                </button>
+              </li>;
+            })}
           </ul>
           {!!saved?.length && <button className="text-button recent-more" onClick={onInvestigations}>All investigations</button>}
         </section>

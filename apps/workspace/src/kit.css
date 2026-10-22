@@ -356,6 +356,9 @@
 .source-item:hover:not(:disabled):not([aria-current="page"]) {
   background: var(--surface-hover);
 }
+.source-item:active:not(:disabled):not([aria-current="page"]) {
+  background: var(--selection-fill);
+}
 .source-item[aria-current="page"] {
   background: var(--selection-fill);
   color: var(--selection-ink);
@@ -500,7 +503,7 @@
   font-size: var(--text-md);
   font-weight: 400;
   letter-spacing: 0;
-  animation: view-switcher-in 120ms cubic-bezier(0.16, 1, 0.3, 1);
+  animation: view-switcher-in var(--motion-panel);
 }
 .view-switcher-popover:focus {
   outline: none;
@@ -1240,6 +1243,9 @@
 }
 .data-table tbody tr[tabindex]:hover td {
   background: var(--surface-subtle);
+}
+.data-table tbody tr[tabindex]:active:not(.is-selected) td {
+  background: var(--surface-hover);
 }
 .data-table tbody tr.is-selected td,
 .data-table tbody tr.is-selected:hover td {
