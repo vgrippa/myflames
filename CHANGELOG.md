@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Rewrite the README around the macOS app, with screenshots; detailed behaviour moved to the guides.
+
 ### Fixed
 
 - Processlist shows the server's State in its own column, and durations read as words everywhere they appear ("36 s", "4 min 12 s", "18 d 12 h", with the exact seconds on hover) instead of an abbreviated number such as "1.6m" (1.6 million seconds); Locks' transaction age is "Open for" and its Wait column uses the same words.

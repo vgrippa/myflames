@@ -167,9 +167,12 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
   Isolation in Locks transactions.
   Durations read the same everywhere, as the CLI writes them: "36 s",
   "4 min 12 s", "4 h 5 min", "18 d 12 h", with the exact seconds on hover
-  (Processlist Time, the Kill sessions preview, Locks' Open for and Wait).
+  (Processlist Time and details, the Kill sessions preview, Locks' Open for,
+  Wait and summary, and Replication's lag and delays).
   Processlist shows State (what the session is doing now) beside Time (how
   long it has been in that state).
+  Statement text in Processlist is capped at 4,096 characters with a truncation
+  indicator when longer.
   Processlist rows have no buttons: each row's ⋯ menu holds **Show plan** and
   **Kill…**, which opens the same confirmation sheet as Kill in the details.
   Right click on a row (or Shift+F10, or the context menu key) opens its
@@ -204,6 +207,15 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
   button stays off. Group Replication data-stream connections are marked as
   replication system threads and protected from Kill, including when MySQL
   reports their command as `Group Replicatio`; the reason points to Cluster.
+  Bulk Kill validates every target before checking policy and keeps an audit
+  row per target, including refusals, declined or expired reviews, and credential
+  or connection failures. It reads server metadata once for the batch, then
+  rechecks each target, transaction, server identity and saved policy before
+  sending. One final process-list snapshot supplies the results and audit
+  after-state, without a settle wait per target. An unreadable or interrupted
+  snapshot leaves the after-state unknown and says **Sent; could not verify**.
+  Acceptance and verified completion are separate; a failed verification never
+  resends KILL.
   Indexes and Tables use the same ⋯ row menu (Set invisible…, Drop index…,
   Table health; Add column…, Remove column…, Optimize, Analyze and Check
   table…, View indexes), with the labels of the row's right-click menu; an
@@ -278,15 +290,19 @@ expired; when `log_error_verbosity` hides warnings or notes, a note says so.
 MariaDB has no SQL access to its error log, so the view reads the log file
 itself only when the server runs on this computer and the file is verifiably
 that server's log (its latest startup line names the same version and port and
-was written when this server started), from at most its last 1 MB. For a remote server it says where the log is and
+was written when this server started), from at most its last 1 MB. MySQL before
+8.0.22 provides file-viewing guidance; myflames does not read its log file.
+For a remote server it says where the log is and
 how to read it on the server host. When the log cannot be read, the summary
 says why once. File settings and guidance follow separately; commands have
 their own copyable blocks, apart from the explanation. It is not part of
 Full analysis yet.
 
-**Full analysis** (the second tab in the Tuning place) runs every Server view once on request, the
-MySQLTuner-style checklist that `myflames report` prints, implemented with
-myflames' own modules. **Run full analysis** takes about 10 to 20 seconds and
+**Full analysis** (the second tab in the Tuning place) composes a report from
+Health, Waits, I/O, Parameters, InnoDB, Processlist, Instruments, server checks,
+Tables and Indexes on request. Error log and Locks are outside its coverage.
+It is the MySQLTuner-style checklist that `myflames report` prints, implemented
+with myflames' own modules. **Run full analysis** takes about 10 to 20 seconds and
 only reads. The view then shows one summary line, the server facts (version,
 host, uptime, when it was taken and how long it took, the databases, how many
 views were read), **Look at first**, the findings to look at as one-line rows
@@ -495,7 +511,9 @@ transaction is missing on the replica):
   connection's type or Read-only keeps the loop's status and Stop.
 
 Opening a skip review shows **Checking…** while the failure is read again;
-another click sends no second check. After confirmation, the sheet shows
+another click sends no second check, and the initiating button stays in place
+and focused. Its review focuses **Cancel** first and returns focus to that
+button when dismissed. After confirmation, the sheet shows
 **Skipping…** or **Starting…**, with elapsed time. After ten seconds without
 a reply, **Close** leaves the request running and shows its progress in
 Replication. A lost write reply shows **Outcome unknown** and is never
@@ -750,7 +768,7 @@ sidebar item looks disabled for that connection only.
 **Maintenance** (Setup, last) has five tasks in a segmented control. **Tools**
 (**Detect tools**) lists the MySQL and MariaDB tools on this computer
 (mysqlsh, mysqldump, mariadb-dump, and the rest) with their versions and what
-they offer for the connection in use. Each tool links to its official download page. Detect tools and Refresh also check vendor release metadata; newer versions appear beside the installed version. Client tools are compared within their installed series, while MySQL Shell uses its latest GA release. Checks can be cached for an hour; failed checks are cached for a minute and remain unknown. No installer runs automatically. **Upgrade check** runs MySQL Shell's
+they offer for the connection in use. Each tool links to its official download page. CLI tool discovery stays offline; in the workspace, Detect tools and Refresh also check vendor release metadata, and newer versions appear beside the installed version. Client tools are compared within their installed series, while MySQL Shell uses its latest GA release. Checks can be cached for an hour; failed checks are cached for a minute and remain unknown. No installer runs automatically. **Upgrade check** runs MySQL Shell's
 upgrade checker for a target version you choose, or a **Partial check
 (native subset)** without it, labeled as such, which never says an upgrade is
 safe; findings are rows (Error, Warning, Notice, Passed, Not checked, Check
@@ -1016,7 +1034,9 @@ rows; arrow keys move between rows, and Shift with an arrow extends selection.
 The row menu contains **Use**, **Edit**, **Duplicate**, **Test**, **Forget
 password**, and **Delete…**. Duplicate opens a copy of the settings with no
 password. **Add connection** and **Edit** open an inspector beside the table,
-or a sheet on a narrow screen, with Test and Save. TLS settings stay collapsed.
+or a sheet on a narrow screen, with Test and Save. Host-and-port connections
+use TCP, including `localhost`; Unix sockets require an explicit socket
+setting. TLS settings stay collapsed.
 Recent work stays beside the table at desktop widths and follows it on phones;
 the phone table starts with selection and names, with more columns available
 from Columns. Wide tables scroll inside their frame.
@@ -1270,7 +1290,7 @@ Development (asks only before risky writes), and can be read-only (refuses
 every write); every write attempt goes into a local audit trail
 (**Settings > Audit log**, or `myflames audit`). See
 [Production, Development, Read-only](#production-development-read-only) and
-[Write safety](../README.md#4-write-safety-model-and-audit-trail).
+[Audit log](#audit-log).
 See the [query investigation guide](QUERY_WORKSPACE.md) for capture modes,
 saved credentials, and limits.
 
