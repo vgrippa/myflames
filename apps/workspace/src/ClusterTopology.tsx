@@ -11,6 +11,7 @@
 // on the card. Selecting a card selects the member (or router) in the
 // inspector; arrow keys move between cards.
 import type { ReactNode } from "react";
+import type { Profile } from "./api";
 import { moveRowFocus, type Selection, type Tone } from "./kit";
 import { engineName } from "./OpsShared";
 import {
@@ -56,7 +57,7 @@ export function ClusterMark({ tone, label, title }: { tone: Tone; label: string;
 export function memberFlow(report: ClusterReport, m: ClusterMember): string {
   const mt = m.metrics || {};
   if (isGalera(report)) {
-    if (!m.local) return "State and queues are read on that node; connect to it to inspect";
+    if (!m.local) return "In the component · not read here";
     if (report.galera?.wsrep_on && /^(off|0)$/i.test(report.galera.wsrep_on)) return "Queues are hidden while wsrep_on is OFF";
     return `Receive queue ${count(mt.local_recv_queue)} · send ${count(mt.local_send_queue)} · flow control paused ${flowPercent(mt.flow_control_paused)}`;
   }
@@ -64,6 +65,14 @@ export function memberFlow(report: ClusterReport, m: ClusterMember): string {
   if (m.state === "MISSING") return "Not in the group";
   if (!("transactions_in_queue" in mt)) return m.state_source === "metadata" ? "State is read on that member" : "No queue figures";
   return `Queue ${count(mt.transactions_in_queue)} · applier ${count(mt.applier_queue)}`;
+}
+
+/** A saved connection whose host and port match a non-connected member. */
+export function matchingProfile(m: ClusterMember, profiles?: Profile[]): Profile | undefined {
+  if (m.local || !m.host || !profiles?.length) return undefined;
+  const host = m.host.trim().toLowerCase();
+  const port = m.port || 3306;
+  return profiles.find((p) => p.host.trim().toLowerCase() === host && p.port === port);
 }
 
 /** The engine and version a card or row names: the member's own (Group
@@ -157,11 +166,15 @@ function Card({ selection, rowKey, className, label, children }: {
  * from another connection or from before a failed read. */
 export type LocalMarker = { word: string; title?: string };
 
-function MemberCard({ report, m, selection, marker }: { report: ClusterReport; m: ClusterMember; selection?: Selection; marker: LocalMarker }) {
+function MemberCard({ report, m, selection, marker, hasUse = false }: {
+  report: ClusterReport; m: ClusterMember; selection?: Selection; marker: LocalMarker; hasUse?: boolean;
+}) {
   const detached = memberDetached(m);
   const tone: Tone = m.status;
   const role = m.role ? ROLE_WORD[m.role] || m.role : null;
   const word = stateWord(m);
+  const galeraUnread = isGalera(report) && !m.local && !m.state;
+  const markLabel = galeraUnread ? "In the component · not read here" : word;
   const engine = memberEngine(report, m);
   const flow = memberFlow(report, m);
   const replica = isReadReplica(m);
@@ -169,7 +182,7 @@ function MemberCard({ report, m, selection, marker }: { report: ClusterReport; m
     <Card
       selection={selection}
       rowKey={m.key}
-      className={`tone-${tone}${detached ? " is-detached" : ""}${m.local ? " is-local" : ""}${replica ? " is-replica" : ""}`}
+      className={`tone-${tone}${detached ? " is-detached" : ""}${m.local ? " is-local" : ""}${replica ? " is-replica" : ""}${hasUse ? " has-use" : ""}`}
       label={memberLabel(m, marker.word)}
     >
       <span className="cluster-card-head">
@@ -179,15 +192,16 @@ function MemberCard({ report, m, selection, marker }: { report: ClusterReport; m
       <strong className="cluster-name" title={m.name}>{m.name}</strong>
       {memberAddress(m) !== m.name && <span className="cluster-meta" title={memberAddress(m)}>{memberAddress(m)}</span>}
       {engine && <span className="cluster-meta" title={memberEngineFull(report, m)}>{engine}</span>}
-      <ClusterMark tone={tone} label={word} />
-      <span className="cluster-flow" title={isGalera(report) ? GLOSSARY.galeraQueues : GLOSSARY.grQueues}>{flow}</span>
+      <ClusterMark tone={tone} label={markLabel} />
+      {!galeraUnread && <span className="cluster-flow" title={isGalera(report) ? GLOSSARY.galeraQueues : GLOSSARY.grQueues}>{flow}</span>}
       {m.local && <span className="cluster-local" title={marker.title}>{marker.word}</span>}
     </Card>
   );
 }
 
-export function ClusterTopology({ report, selection, marker = { word: "This connection" } }: {
+export function ClusterTopology({ report, selection, marker = { word: "This connection" }, profiles, onSwitchConnection }: {
   report: ClusterReport; selection?: Selection; marker?: LocalMarker;
+  profiles?: Profile[]; onSwitchConnection?: (id: string) => void;
 }) {
   const line = groupLine(report);
   const routers = report.kind === "innodb_cluster" ? report.routers : [];
@@ -200,12 +214,24 @@ export function ClusterTopology({ report, selection, marker = { word: "This conn
       <div className="cluster-map" data-rows="">
         <div className="cluster-group">
           <ul className="cluster-members" aria-label={`${noun}s`}>
-            {group.map((m) => (
-              <li key={m.key} className={`cluster-node${memberDetached(m) ? " is-detached" : ""}`}>
-                <MemberCard report={report} m={m} selection={selection} marker={marker} />
-                <span className={`cluster-stem${memberDetached(m) ? " is-broken" : ""}`} aria-hidden="true" />
-              </li>
-            ))}
+            {group.map((m) => {
+              const match = !m.local && onSwitchConnection ? matchingProfile(m, profiles) : undefined;
+              return (
+                <li key={m.key} className={`cluster-node${memberDetached(m) ? " is-detached" : ""}`}>
+                  <MemberCard report={report} m={m} selection={selection} marker={marker} hasUse={!!match} />
+                  {match && onSwitchConnection && (
+                    <button
+                      type="button"
+                      className="text-button cluster-use-node"
+                      onClick={() => onSwitchConnection(match.id)}
+                    >
+                      Use {match.name}
+                    </button>
+                  )}
+                  <span className={`cluster-stem${memberDetached(m) ? " is-broken" : ""}`} aria-hidden="true" />
+                </li>
+              );
+            })}
             {missing.map((name) => (
               <li key={`missing:${name}`} className="cluster-node is-detached is-placeholder">
                 <div className="cluster-card tone-watch is-detached is-placeholder" role="group"

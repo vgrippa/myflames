@@ -1,7 +1,7 @@
 // Execution tree, the TypeScript twin of myflames/output_tree.py: one row per
 // visible operator in pre-order (reported input order), indented by depth,
-// with self/total time, share of the root, a log-scaled blue self bar over a
-// total-time outline, zebra stripes and a warning accent for operators named
+// with self/total time, share of the root, a log-scaled blue self bar on a
+// hairline baseline, zebra stripes and a warning accent for operators named
 // by the analysis. Collapse/expand (per row and all), regex search and a
 // pinned details strip are scoped to this chart instance.
 //
@@ -150,7 +150,7 @@ export function renderTree(context: ViewContext): ViewInstance {
   svg(doc, "text", { x: selfX + SELF_W - 4, y: hdrY, "text-anchor": "end", class: "col-hdr" }, root, "Self");
   svg(doc, "text", { x: totalX + TOTAL_W - 4, y: hdrY, "text-anchor": "end", class: "col-hdr" }, root, "Total");
   svg(doc, "text", { x: pctX + PCT_W - 4, y: hdrY, "text-anchor": "end", class: "col-hdr" }, root, "%");
-  svg(doc, "text", { x: barX, y: hdrY, "text-anchor": "start", class: "col-hdr" }, root, "Self time bar");
+  svg(doc, "text", { x: barX, y: hdrY, "text-anchor": "start", class: "col-hdr" }, root, "Self of total");
   rule(workspace ? 25 : 68, "#ddd");
 
   const rows: Row[] = [];
@@ -196,10 +196,7 @@ export function renderTree(context: ViewContext): ViewInstance {
     svg(doc, "text", { class: "row-pct", x: pctX + PCT_W - 4, y: textY, "text-anchor": "end", "pointer-events": "none" },
       group, (pct >= 1 ? pyFixed(pct, 0) : pyFixed(pct, 1)) + "%");
     const selfBar = Math.max(0, (self / rootTotal) * barMax);
-    const totalBar = Math.max(0, (total / rootTotal) * barMax);
-    if (totalBar > 0.5) {
-      svg(doc, "rect", { x: barX, y: y + 5, width: pyFixed(totalBar, 1), height: ROW_H - 10, fill: "none", stroke: "#c0d8ee", "stroke-width": 1, rx: 2, "pointer-events": "none" }, group);
-    }
+    svg(doc, "line", { x1: barX, y1: y + ROW_H - 5, x2: barX + barMax, y2: y + ROW_H - 5, class: "mfc-rule", stroke: "#dfe5ec", "stroke-width": 1, "pointer-events": "none" }, group);
     if (selfBar > 0.5) {
       svg(doc, "rect", { x: barX, y: y + 5, width: pyFixed(selfBar, 1), height: ROW_H - 10, fill: rowColor(self, rootTotal), rx: 2, "pointer-events": "none" }, group);
     }

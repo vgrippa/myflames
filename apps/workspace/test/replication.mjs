@@ -313,6 +313,9 @@ try {
 
   // The inspector: threads, the error once, lag signals and positions in words.
   await h.select(row(""));
+  assert.equal(await page.$eval(".view-inspector", (e) => e.classList.contains("is-detail")), false, "right-pane inspector at 1440 px");
+  assert.equal(await page.$eval(row(""), (e) => !!e.offsetParent && e.classList.contains("is-selected")), true, "channel list stays mounted with row selected");
+  assert.ok(await page.$(".view-inspector code.ops-gtid"), "GTID sets render in monospace code.ops-gtid");
   const inspector = await h.inspector();
   assert.match(inspector, /\(default\)Problem/);
   assert.match(inspector, /SQL threadNo/);

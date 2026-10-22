@@ -165,6 +165,7 @@ type Runtime = {
    * session (its connection id); Load more needs both to still be in use. */
   runKey: string;
   runSessionId: number | null;
+  runConnectionName: string;
   /** Requests started for the tab; an answer to an older probe is dropped. */
   gen: number;
   /** The last status poll failed: the run may still be going, retrying. */
@@ -192,6 +193,7 @@ const blankRuntime = (): Runtime => ({
   execConnection: null,
   runKey: "",
   runSessionId: null,
+  runConnectionName: "",
   gen: 0,
   pollTrouble: false,
   run: null,
@@ -269,6 +271,9 @@ function sessionKeyFor(s: EditorSession, current: Connection) {
 }
 function sessionName(s: EditorSession) {
   const c = s.connection;
+  return c.name || `${c.user ? `${c.user}@` : ""}${c.host}:${c.port}`;
+}
+function connectionShortName(c: Connection) {
   return c.name || `${c.user ? `${c.user}@` : ""}${c.host}:${c.port}`;
 }
 /** The word at *offset*, for the error underline (at least one character). */
@@ -1200,13 +1205,16 @@ export const QueryLab = forwardRef<
 
   /** The session of the tab is on another connection than the one in use. */
   const mismatch = !!rt.session && !rt.session.ended && !!rt.sessionKey && rt.sessionKey !== connectionKey(connection);
+  const mismatchReason = mismatch && rt.session
+    ? `This tab is still connected to ${sessionName(rt.session)}. Close its session to run on ${connectionShortName(connection)}.`
+    : "";
   /** Why tab *id* may not run on the connection in use now: its session is
    * on another connection. Every execution path checks it (Run, Run all,
    * Explain, Run analysis, their shortcuts, Load more). */
   function sessionProblem(id: string) {
     const now = runtimeRef.current[id] || blankRuntime();
     if (now.session && !now.session.ended && now.sessionKey && now.sessionKey !== connectionKey(connectionRef.current))
-      return `This tab's session is on ${sessionName(now.session)}, not the connection in use. Close the session to run on ${connectionLabel(connectionRef.current)}.`;
+      return `This tab is still connected to ${sessionName(now.session)}. Close its session to run on ${connectionShortName(connectionRef.current)}.`;
     return "";
   }
   /** The connection a tab's session operations use (Stop, Commit, Roll
@@ -1375,7 +1383,12 @@ export const QueryLab = forwardRef<
   /** Where results come from: the connection key and the session id. */
   function bound(id: string, session?: EditorSession | null) {
     const now = runtimeRef.current[id] || blankRuntime();
-    return { runKey: now.sessionKey, runSessionId: (session ?? now.session)?.connection_id ?? null };
+    const s = session ?? now.session;
+    return {
+      runKey: now.sessionKey,
+      runSessionId: s?.connection_id ?? null,
+      runConnectionName: s ? sessionName(s) : now.sessionConnection ? connectionShortName(now.sessionConnection) : "",
+    };
   }
   async function poll(id: string, runId: string, meta: SendMeta, gen: number) {
     polls.current.get(id)?.abort();
@@ -2109,13 +2122,13 @@ export const QueryLab = forwardRef<
                   action={
                     <ToolbarButton
                       icon="run"
-                      primary={!runGate.disabledReason}
+                      primary={!runGate.disabledReason && !mismatch}
                       className="privilege-action"
                       data-action="run"
-                      disabled={running}
+                      disabled={running || mismatch}
                       data-privilege-state={runGate.state}
                       aria-keyshortcuts={ctrl(false, "Enter")}
-                      {...privilegeButtonProps(runGate, () => runSql(false), "", privilegeNoticeId || `${privilegeId}-run`)}
+                      {...privilegeButtonProps(runGate, () => runSql(false), mismatchReason, privilegeNoticeId || `${privilegeId}-run`)}
                     >
                       {selecting ? "Run selection" : "Run"}
                     </ToolbarButton>
@@ -2167,10 +2180,10 @@ export const QueryLab = forwardRef<
                   icon="runAll"
                   data-action="run-all"
                   className="privilege-action"
-                  disabled={running}
+                  disabled={running || mismatch}
                   data-privilege-state={allGate.state}
                   aria-keyshortcuts={ctrl(true, "Enter")}
-                  {...privilegeButtonProps(allGate, () => runSql(true), "", privilegeNoticeId || `${privilegeId}-run-all`)}
+                  {...privilegeButtonProps(allGate, () => runSql(true), mismatchReason, privilegeNoticeId || `${privilegeId}-run-all`)}
                 >
                   Run all
                 </ToolbarButton>
@@ -2194,11 +2207,11 @@ export const QueryLab = forwardRef<
                 <button
                   className="button"
                   data-action="explain"
-                  disabled={busy}
+                  disabled={busy || mismatch}
                   title={`Explain ${scopePhrase} (${keys(false, "E")})`}
                   aria-keyshortcuts={ctrl(false, "E")}
                   data-privilege-state={explainGate.state}
-                  {...privilegeButtonProps(explainGate, () => void capture("explain"), "", `${privilegeNoticeId || `${privilegeId}-explain`}${scopeLabel ? " run-scope" : ""}`)}
+                  {...privilegeButtonProps(explainGate, () => void capture("explain"), mismatchReason, `${privilegeNoticeId || `${privilegeId}-explain`}${scopeLabel ? " run-scope" : ""}`)}
                 >
                   {selecting ? "Explain selection" : "Explain"}
                 </button>
@@ -2210,11 +2223,11 @@ export const QueryLab = forwardRef<
                     <button
                       className="button"
                       data-action="analyze"
-                      disabled={busy}
+                      disabled={busy || mismatch}
                       title={`Run analysis on ${scopePhrase} (${keys(true, "E")}): it executes the SELECT and captures measured timings`}
                       aria-keyshortcuts={ctrl(true, "E")}
                       data-privilege-state={analysisGate.state}
-                      {...privilegeButtonProps(analysisGate, () => void capture("analyze"), "", `${privilegeNoticeId || `${privilegeId}-analysis`}${scopeLabel ? " run-scope" : ""}`)}
+                      {...privilegeButtonProps(analysisGate, () => void capture("analyze"), mismatchReason, `${privilegeNoticeId || `${privilegeId}-analysis`}${scopeLabel ? " run-scope" : ""}`)}
                     >
                       {selecting ? "Analyze selection" : "Run analysis"}
                     </button>
@@ -2378,10 +2391,9 @@ export const QueryLab = forwardRef<
             {mismatch && session && (
               <div className="editor-banner is-warn" data-banner="mismatch">
                 <span>
-                  This tab's session is on {sessionName(session)}, not {connectionLabel(connection)}. Runs wait until you
-                  close it{session.in_transaction !== false ? "; its transaction is open or unknown" : ""}.
+                  This tab is still connected to {sessionName(session)}. Close its session to run on {connectionShortName(connection)}.
                 </span>
-                <button type="button" className="button small" onClick={() => void requestClose(tab.id, true)}>
+                <button type="button" className="button small primary" onClick={() => void requestClose(tab.id, true)}>
                   Close session
                 </button>
               </div>
@@ -2490,6 +2502,11 @@ export const QueryLab = forwardRef<
               running={running}
               base={0}
               stale={stale}
+              fromConnection={
+                rt.run && rt.runKey && rt.runKey !== connectionKey(connection)
+                  ? rt.runConnectionName || (session ? sessionName(session) : "") || undefined
+                  : undefined
+              }
               selected={tab.result_tab || ""}
               onSelect={(key) => changeTab({ result_tab: key })}
               engine={session?.engine || null}

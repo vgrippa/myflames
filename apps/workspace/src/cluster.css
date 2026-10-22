@@ -218,6 +218,7 @@
 }
 
 .cluster-node {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -227,6 +228,19 @@
 /* Cards in a row share one height, so every stem starts at the same line. */
 .cluster-members .cluster-card {
   flex: 1 1 auto;
+}
+
+.cluster-card.has-use {
+  padding-bottom: calc(var(--space-3) + var(--leading-sm) + var(--space-1));
+}
+
+.cluster-use-node {
+  position: absolute;
+  left: var(--space-3);
+  bottom: calc(var(--stem-h, 16px) + var(--space-2));
+  z-index: 1;
+  font-size: var(--text-xs);
+  line-height: var(--leading-sm);
 }
 
 /* A member card: the role, then name, address, engine and version, the

@@ -127,7 +127,8 @@ try {
   const measured = Number((await coverage()).match(/^(\d+) of 19/)[1]);
   assert.ok(measured >= 10 && measured < 19, `measured ${measured}`);
   assert.equal(await text(".tuning-score-label"), "Problems found");
-  assert.match(await text(".tuning-score-hint"), /Not graded until at least half the checks, and one in each category/);
+  assert.match(await text(".tuning-score-hint"), /Not graded until at least half the checks, and one in each category.*Run the full analysis to grade\./);
+  assert.equal(await page.$(".tuning-score-hint button"), null, "Run full analysis lives in the toolbar only");
   assert.equal(await text('.tuning-category[data-category="security"] .tuning-category-score'), "Not measured");
   // Needs attention lists the buffer pool problem with its measured value.
   assert.ok(await page.$(`${row("buffer_pool")} .status-pill.is-problem`));

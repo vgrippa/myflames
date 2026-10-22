@@ -36,6 +36,7 @@ try {
   assert.match(await text(`${view} .summary-line`), /s window · tables from Performance Schema/);
   assert.ok(await page.$(`${view} .view-toolbar [aria-label="Time range"]`), "range lives in the toolbar");
   assert.equal(await page.$eval(`${view} .io-global-rates`, (e) => e.open), false, "global rates are disclosed on demand");
+  assert.match(await text(`${view} .io-global-rates > summary`), /More server-wide counters/);
   await page.click(`${view} .io-global-rates > summary`);
   // Server-wide rates: compact tiles; what each measures is in the inspector.
   assert.deepEqual(await page.$$eval(`${view} .io-global-rates .tile-item`, (els) => els.map((e) => e.dataset.metric)),

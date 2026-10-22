@@ -224,11 +224,12 @@ function App() {
   const [mode, setMode] = useState<Mode>("home");
   /** The investigation notebook sheet, opened by Save investigation. */
   const [notebookOpen, setNotebookOpen] = useState(false);
+  const [savedRevision, setSavedRevision] = useState(0);
   // Plans remembers whether it was exploring or comparing.
   const [plansView, setPlansView] = useState<"inspect" | "compare">("inspect");
   useEffect(() => {
     if (mode === "inspect" || mode === "compare") setPlansView(mode);
-    else setNotebookOpen(false);
+    if (mode !== "inspect" && mode !== "compare" && mode !== "library") setNotebookOpen(false);
   }, [mode]);
   const [view, setView] = useState<View>("workbench");
   const [metric, setMetric] = useState("self_time");
@@ -307,7 +308,7 @@ function App() {
   );
   const failCluster = useCallback(
     (key: string, message: string) => setClusterShared((s) => {
-      const report = s.reset === resetKeyRef.current ? s.report : null;
+      const report = s.reset === resetKeyRef.current && s.report?.key === key ? s.report : null;
       return { reset: resetKeyRef.current, report, failure: { key, message, over: report } };
     }),
     [],
@@ -1207,6 +1208,7 @@ function App() {
         value: makeBundle(),
       });
       setSavedId(r.id);
+      setSavedRevision((n) => n + 1);
       setDirty(false);
       setNotice("Investigation saved on this computer.");
       return true;
@@ -1389,8 +1391,10 @@ function App() {
   // or Refresh all has read it: muted when it is not part of a cluster (still
   // focusable; the place explains), otherwise the cluster's status. Before
   // the first read it looks like any other place.
-  const clusterState = clusterNav(clusterReport, connectionKey(request));
-  const clusterMuted = clusterState.state === "none";
+  const isProxyHere = proxyReport?.key === connectionKey(request) && proxyReport.report.is_proxysql;
+  const shownClusterReport = isProxyHere && clusterReport?.key !== connectionKey(request) ? null : clusterReport;
+  const clusterState = clusterNav(shownClusterReport, connectionKey(request));
+  const clusterMuted = clusterState.state === "none" || isProxyHere;
   const proxyNav = proxySqlNav(proxyReport, connectionKey(request));
   const proxyMuted = proxyNav === "none";
   const proxyNow = proxyNav === "proxysql" && proxyReport && proxyReport.key === connectionKey(request) ? proxyReport.report : null;
@@ -1721,6 +1725,11 @@ function App() {
                 here for assistive technology only. */}
             <strong className={mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "tuning" || mode === "digest" || mode === "diagram" ? "visually-hidden" : undefined}>{placeLabel}</strong>
           </div>
+          {ready && mode === "library" && (
+            <Popover label="About Investigations" className="topbar-info">
+              <p>Saved collections of plans, notes, and tags on this computer.</p>
+            </Popover>
+          )}
           {ready && (mode === "inspect" || mode === "compare") && (
             <div className={`plans-bar${mode === "inspect" && active ? " has-active-plan" : ""}`}>
               <div className="segmented" role="group" aria-label="Plans view">
@@ -2093,8 +2102,9 @@ function App() {
               <WritePolicyContext.Provider value={writePolicy}>
               <ViewOnScreenContext.Provider value={mode === "cluster"}>
               <ColumnStoreContext.Provider value={columnStore}>
-                <ClusterPlace connection={request} disabled={labBusy} report={clusterReport} onReport={shareCluster}
-                  failure={clusterFailure} onFailure={failCluster} />
+                <ClusterPlace connection={request} disabled={labBusy} report={shownClusterReport} onReport={shareCluster}
+                  failure={clusterFailure} onFailure={failCluster}
+                  onOpenProxySql={() => go("proxysql")} profiles={profiles} onSwitchConnection={switchConnection} />
               </ColumnStoreContext.Provider>
               </ViewOnScreenContext.Provider>
               </WritePolicyContext.Provider>
@@ -2112,7 +2122,8 @@ function App() {
               </WritePolicyContext.Provider>
             </div>
           )}
-          {ready && mode === "library" && <Library onOpen={openBundle} />}
+          {ready && mode === "library" && <Library onOpen={openBundle} openPlanCount={plans.length}
+            onSaveInvestigation={() => { setError(""); setNotebookOpen(true); }} savedRevision={savedRevision} />}
           {ready && mode === "audit" && <AuditLog key={auditFocus} profiles={profiles} focusId={auditFocus} />}
           <Teach
             key={resetKey}
@@ -2351,7 +2362,7 @@ function App() {
               </div>
             </>
           )}
-          {ready && notebookOpen && plans.length > 0 && (mode === "inspect" || mode === "compare") && (
+          {ready && notebookOpen && plans.length > 0 && (mode === "inspect" || mode === "compare" || mode === "library") && (
             <NotebookSheet
               open={notebookOpen}
               busy={busy}

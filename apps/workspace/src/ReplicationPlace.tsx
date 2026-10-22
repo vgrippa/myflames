@@ -4,7 +4,7 @@
 // Sections: Topology, Channels (Connections on MariaDB), Lag, GTID and
 // Recovery, under the shared summary line and metric tiles. Every change goes
 // through a write-policy confirmation sheet.
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Connection } from "./api";
 import { connectionKey, connectionLabel, type Bound } from "./binding";
 import { ReplicationView, type ReplicationSubTab } from "./Replication";
@@ -14,6 +14,8 @@ import { InspectorContext, useWindowStatus, type InspectorShared, type Selection
 import { InstrumentsLinkContext } from "./Instruments";
 import { engineName } from "./OpsShared";
 import "./replication.css";
+
+const SHEET_WIDTH = 1100;
 
 export function ReplicationPlace({
   connection,
@@ -62,9 +64,27 @@ export function ReplicationPlace({
   };
   const [selectedKey, setSelectedKey] = useState("");
   const [inspectorOpen, setInspectorOpen] = useState(false);
-  const [inspectorWidth, setInspectorWidth] = useState(360);
+  const [inspectorWidth, setInspectorWidth] = useState(320);
   const [activeTab, setActiveTab] = useState<ReplicationSubTab>("topology");
   const [, setLoopActiveNow] = useState(false);
+  const placeRef = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(() => (typeof window !== "undefined" ? window.innerWidth : 1440));
+  useEffect(() => {
+    const el = placeRef.current;
+    const measure = () => {
+      const w = el && el.clientWidth > 0 ? el.clientWidth : window.innerWidth;
+      if (w > 0) setWidth(w);
+    };
+    measure();
+    const observer = typeof ResizeObserver !== "undefined" && el ? new ResizeObserver(measure) : null;
+    if (el && observer) observer.observe(el);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, []);
+  const sheet = width > 0 && width < SHEET_WIDTH;
 
   const selection: Selection = {
     key: selectedKey,
@@ -80,9 +100,9 @@ export function ReplicationPlace({
       setOpen: setInspectorOpen,
       width: inspectorWidth,
       setWidth: setInspectorWidth,
-      sheet: false,
+      sheet,
     }),
-    [inspectorOpen, selectedKey, inspectorWidth],
+    [inspectorOpen, selectedKey, inspectorWidth, sheet],
   );
   const key = connectionKey(connection);
   const current = report && report.key === key ? report.report : null;
@@ -94,7 +114,7 @@ export function ReplicationPlace({
   return (
     <InspectorContext.Provider value={inspector}>
       <InstrumentsLinkContext.Provider value={onOpenInstruments || (() => {})}>
-        <div className="replication-place">
+        <div ref={placeRef} className="replication-place">
           <ReplicationView
             connection={connection}
             disabled={disabled}

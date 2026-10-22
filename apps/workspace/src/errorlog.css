@@ -52,3 +52,30 @@
   flex: 1;
   text-align: center;
 }
+
+.errorlog-how-to {
+  margin-top: var(--space-4);
+}
+
+.errorlog-how-to-text {
+  margin: var(--space-1-5) 0 var(--space-2);
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+
+.errorlog-how-to-text code {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  padding: 1px 5px;
+  border-radius: var(--radius-xs);
+  background: var(--surface-subtle);
+  border: 1px solid var(--line);
+  color: var(--ink);
+}
+
+.errorlog-how-to-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}

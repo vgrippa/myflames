@@ -280,6 +280,22 @@ class TestGalera(unittest.TestCase):
         m.read_status(conn)
         self.assertFalse(any('replication_group_members' in sql for sql, _ in conn.calls))
 
+    def test_proxysql_admin_is_not_a_cluster(self):
+        from test_proxysql import FakeAdmin
+        class ProxyAdminConn(FakeAdmin):
+            def run(self, sql, extra_flags=None, timeout=None):
+                if 'SHOW GLOBAL VARIABLES' in sql:
+                    raise ConnectorError('ERROR 1045 (28000) at line 1: near "SHOW": syntax error')
+                return super(ProxyAdminConn, self).run(sql, extra_flags=extra_flags, timeout=timeout)
+        conn = ProxyAdminConn()
+        report = m.read_status(conn)
+        self.assertTrue(report['available'])
+        self.assertEqual((report['kind'], report['status']), ('none', 'unknown'))
+        self.assertEqual(report['server_product'], 'ProxySQL Admin')
+        self.assertEqual(report['server_version'], '3.0.11-797-g7c91137')
+        self.assertEqual(report['message'], 'Not part of a cluster: this connection is a ProxySQL Admin interface.')
+        self.assertEqual(report['members'], [])
+
     def test_configured_nodes_never_adds_this_node_blindly(self):
         """wsrep_cluster_address gives an expected size only when this node
         is identified: named by one entry, or proved absent (every entry is

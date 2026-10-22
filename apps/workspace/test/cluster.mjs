@@ -80,6 +80,7 @@ async function backToList() {
 try {
   await api("/api/profiles/save", { value: { name: "Node A", host: "node-a.test", port: 3306, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "" } });
   await api("/api/profiles/save", { value: { name: "Solo", host: "solo.test", port: 3306, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "" } });
+  await api("/api/profiles/save", { value: { name: "cluster-galera-2", host: "192.168.80.3", port: 3306, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "" } });
   await page.reload({ waitUntil: "networkidle0" });
 
   // The place sits right after Replication and reads nothing until it is on screen.
@@ -363,8 +364,15 @@ try {
   await refreshTo(R["galera-11.8-healthy"]);
   assert.match((await visible(`${view} .summary-line`))[0], /MariaDB Galera Cluster mf_galera · Primary component · 3 nodes · this node Synced/);
   const galera = await page.$$eval(`${view} .cluster-members .cluster-card`, (els) => els.map((e) => ({
-    local: e.classList.contains("is-local"), state: e.querySelector(".cluster-mark")?.textContent, meta: [...e.querySelectorAll(".cluster-meta")].map((m) => m.textContent) })));
-  assert.deepEqual(galera.map((c) => c.state).sort(), ["In the component", "In the component", "Synced"]);
+    local: e.classList.contains("is-local"), state: e.querySelector(".cluster-mark")?.textContent,
+    flow: e.querySelector(".cluster-flow")?.textContent || null,
+    useBtn: e.parentElement.querySelector(".cluster-use-node")?.textContent || null,
+    meta: [...e.querySelectorAll(".cluster-meta")].map((m) => m.textContent) })));
+  assert.deepEqual(galera.map((c) => c.state).sort(), ["In the component · not read here", "In the component · not read here", "Synced"]);
+  assert.ok(galera.filter((c) => !c.local).every((c) => c.flow === null), "non-local Galera cards do not repeat the 3-line explanation");
+  assert.deepEqual(galera.filter((c) => c.useBtn).map((c) => c.useBtn), ["Use cluster-galera-2"]);
+  const galeraNotes = await h.notes();
+  assert.match(galeraNotes, /Each other node's state and queues are read on that node; connect to it to inspect\./);
   assert.ok(galera.find((c) => c.local).meta.some((m) => /^MariaDB 11\.8\.9/.test(m)), JSON.stringify(galera));
   // Port 0: the host alone (a note explains it); another node's version is not visible, so none is shown.
   assert.ok(galera.every((c) => c.meta.some((m) => /^192\.168\.80\.\d+$/.test(m))), JSON.stringify(galera));
@@ -559,6 +567,24 @@ try {
   await pause(300);
   assert.equal(state.seen.length, beforeAll + 1, "opening Cluster after Refresh all reads nothing more");
 
+  // ProxySQL Admin connection: calm Not part of a cluster state with Open ProxySQL action and muted sidebar item.
+  const proxyAdminReport = {
+    ...R["mysql-8.4-standalone"],
+    server_product: "ProxySQL Admin",
+    server_version: "3.0.11",
+    message: "Not part of a cluster: this connection is a ProxySQL Admin interface.",
+  };
+  await refreshTo(proxyAdminReport);
+  assert.equal(await h.text(`${view} .view-empty h3`), "Not part of a cluster");
+  assert.equal(await h.text(`${view} .view-empty p`), "This connection is a ProxySQL Admin interface.");
+  assert.equal(await h.text(`${view} .view-empty button.primary`), "Open ProxySQL");
+  assert.equal(await page.$eval(nav, (b) => b.dataset.muted), "true");
+  assert.equal(await page.$eval(nav, (b) => b.title), "This connection is not part of a cluster");
+  await page.click(`${view} .view-empty button.primary`);
+  await page.waitForSelector('.main-nav button[data-place="proxysql"].active');
+  await page.click(nav);
+  await page.waitForSelector(`${nav}.active`);
+
   // A failed read keeps the last report greyed with its age, a short reason
   // (no client dump), and no "This connection".
   await refreshTo(R["galera-11.8-healthy"]);
@@ -595,6 +621,18 @@ try {
   assert.equal(afterAllFailed.stale, true);
   assert.deepEqual(afterAllFailed.chips, ["Read here"]);
   assert.match(afterAllFailed.error, /^Lost the connection to the server while reading/);
+
+  // A failed read on a different connection drops the stale other-connection
+  // report, and ERROR 1045 without Access denied shows the server's own line.
+  await chooseConnection(page, await connectionOption(page, "Node A"));
+  state.fallback = { status: 400, body: { error: "mysql client exited 1: ERROR 1045 (28000): near \"@@hostname\": syntax error" } };
+  await h.refresh();
+  await page.waitForFunction((sel) => document.querySelector(`${sel} .view-status .error`), {}, view);
+  assert.equal(await page.$(`${view} .other-connection`), null, "stale report from another connection dropped on failed read");
+  assert.equal(await page.$(`${view} .cluster-topology`), null);
+  assert.match(await h.text(`${view} .view-status .error`), /near "@@hostname": syntax error/);
+  assert.doesNotMatch(await h.text(`${view} .view-status .error`), /user name or password/);
+  await chooseConnection(page, await connectionOption(page, "Solo"));
 
   // Details never carry over to another connection's report, even for the
   // same finding.

@@ -877,6 +877,10 @@ details > p {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.topbar-info {
+  margin-left: calc(-1 * var(--space-2));
+  margin-right: auto;
+}
 .topbar-menu-dropdown {
   min-width: 180px;
   padding: var(--space-1) 0;
@@ -2205,8 +2209,11 @@ main:has(> .library) { padding: 0; max-width: none; }
 .library-split {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
-  height: calc(100dvh - var(--topbar-height) - var(--toolbar-h));
+  height: calc(100dvh - var(--topbar-height));
   min-height: 0;
+}
+.library-split.is-empty {
+  grid-template-columns: 1fr;
 }
 .library-master {
   display: flex;

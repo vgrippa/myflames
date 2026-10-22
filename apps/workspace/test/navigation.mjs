@@ -216,7 +216,7 @@ try {
     Cluster: ".cluster-place",
     ProxySQL: ".proxysql-place",
     Tuning: ".server-place.is-tuning-place .server-view[data-view=tuning]",
-    Investigations: '[aria-label="Search investigations"]',
+    Investigations: ".library .library-split.is-empty .view-empty",
     Learn: ".teach-workspace",
     Home: ".home",
   };
@@ -231,6 +231,14 @@ try {
     assert.deepEqual(await active(), [label], `${label} is the only active place`);
     assert.deepEqual(await current(), [label]);
     assert.match(await text(".topbar-title"), new RegExp("^" + label));
+    // An empty library has no list or search pane until something is saved.
+    if (label === "Investigations") {
+      assert.equal(await text(".library-detail .view-empty h3"), "No investigations yet");
+      assert.equal(await page.$(".library-master"), null, "empty investigations hide the list pane");
+      assert.equal(await page.$('[aria-label="Search investigations"]'), null);
+      assert.deepEqual(await texts(".library-detail .view-empty button.primary"), ["Import plan"],
+        "with no open plans, Import plan is the empty library's primary action");
+    }
     // The place is named once: the top bar title is not a menu of places or
     // views (the sidebar and the list of views are), and there is one sidebar toggle.
     assert.equal(await page.$$eval(".topbar-title button", (els) => els.length), 0, `${label}: the top bar title is plain text`);
@@ -743,7 +751,22 @@ try {
     await button("Delete permanently", "dialog.confirm-sheet ");
     await page.waitForFunction((id) => !document.querySelector(`.library-item[data-row-key="${id}"]`), {}, id);
   }
-  assert.match(await text(".library-detail"), /Open plans, then choose Save investigation/);
+  await page.click('button[aria-label="About Investigations"]');
+  await page.waitForSelector('.popover[role="dialog"][aria-label="About Investigations"]');
+  assert.match(await text('.popover[role="dialog"][aria-label="About Investigations"]'), /Saved collections of plans, notes, and tags on this computer\./);
+  await page.keyboard.press("Escape");
+  assert.equal(await page.$(".library-master"), null, "empty list pane is hidden until the first investigation exists");
+  assert.equal(await text(".library-detail .view-empty p"), "Save your open plans with notes and tags on this computer.");
+  assert.deepEqual(await texts(".library-detail .view-empty button.primary"), ["Save 2 open plans as an investigation…"]);
+  await button("Save 2 open plans as an investigation…", ".library-detail ");
+  await page.waitForSelector("dialog.notebook-sheet[open]");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.notebook-sheet[open]"));
+  for (const name of ["before.json", "after.json"]) {
+    await page.click(`.plan-item button[aria-label="Remove ${name}"]`);
+  }
+  await page.waitForFunction(() => document.querySelectorAll(".plan-item").length === 0);
+  assert.match(await text(".library-detail"), /Import or capture a plan, then save it as an investigation/);
   await button("Import plan", ".library-detail ");
   await page.waitForSelector("dialog.import-dialog[open]");
   await page.keyboard.press("Escape");

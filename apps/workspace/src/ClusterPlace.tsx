@@ -12,7 +12,7 @@
 // another connection, or kept after a failed read) is greyed and never marks
 // a member "This connection".
 import { useId, useMemo, useState, type ReactNode } from "react";
-import type { Connection } from "./api";
+import type { Connection, Profile } from "./api";
 import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "./binding";
 import { useWritePolicy } from "./Connections";
 import { ActionResult, useReviewedActions } from "./ActionReview";
@@ -112,7 +112,7 @@ export function summaryText(report: ClusterReport, stale = false): string {
   return parts.join(" · ");
 }
 
-export function ClusterPlace({ connection, disabled = false, report, onReport, failure = null, onFailure }: {
+export function ClusterPlace({ connection, disabled = false, report, onReport, failure = null, onFailure, onOpenProxySql, profiles, onSwitchConnection }: {
   connection: Connection;
   disabled?: boolean;
   /** Owned by the shell so Server's Refresh all feeds this place and the sidebar. */
@@ -121,6 +121,9 @@ export function ClusterPlace({ connection, disabled = false, report, onReport, f
   /** The last failed read (this place's or Refresh all's), shared by the shell. */
   failure?: ClusterFailure | null;
   onFailure?: (key: string, message: string) => void;
+  onOpenProxySql?: () => void;
+  profiles?: Profile[];
+  onSwitchConnection?: (id: string) => void;
 }) {
   const [selectedKey, setSelectedKey] = useState("");
   const [inspectorOpen, setInspectorOpen] = useState(false);
@@ -147,7 +150,8 @@ export function ClusterPlace({ connection, disabled = false, report, onReport, f
     <InspectorContext.Provider value={inspector}>
       <div className="cluster-place">
         <ClusterView connection={connection} disabled={disabled} report={report} onReport={onReport}
-          failure={failure} onFailure={onFailure} selection={selection} tab={tab} onTab={setTab} />
+          failure={failure} onFailure={onFailure} selection={selection} tab={tab} onTab={setTab}
+          onOpenProxySql={onOpenProxySql} profiles={profiles} onSwitchConnection={onSwitchConnection} />
       </div>
     </InspectorContext.Provider>
   );
@@ -206,10 +210,11 @@ function Findings({ report, selection }: { report: ClusterReport; selection: Sel
   );
 }
 
-function ClusterView({ connection, disabled, report: bound, onReport, failure, onFailure, selection, tab, onTab }: {
+function ClusterView({ connection, disabled, report: bound, onReport, failure, onFailure, selection, tab, onTab, onOpenProxySql, profiles, onSwitchConnection }: {
   connection: Connection; disabled: boolean; report: Bound<ClusterReport> | null;
   onReport: (report: Bound<ClusterReport>) => void; failure: ClusterFailure | null; onFailure?: (key: string, message: string) => void;
   selection: Selection; tab: ClusterTab; onTab: (tab: ClusterTab) => void;
+  onOpenProxySql?: () => void; profiles?: Profile[]; onSwitchConnection?: (id: string) => void;
 }) {
   const reads = useConnectionReads(connection);
   const report = bound?.report || null;
@@ -311,6 +316,15 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
   const tone: Tone | undefined = !report || !isCluster ? (report && !report.available ? "unknown" : undefined) : report.status;
   const failed = current ? failureText(current.message) : reads.error && !onFailure ? failureText(reads.error) : "";
   const findings = isCluster && report!.findings.length > 0 && shownTab !== "routers" ? <Findings key={bound?.key} report={report!} selection={selection} /> : null;
+  const summaryNotes = useMemo(() => {
+    if (!report) return undefined;
+    const list = [...report.notes];
+    if (isGalera(report) && !list.some((n) => /Each other node's state and queues are read on that node/i.test(n))) {
+      list.push("Each other node's state and queues are read on that node; connect to it to inspect.");
+    }
+    return list.length ? list : undefined;
+  }, [report]);
+  const isProxySql = !!report && (report.server_product === "ProxySQL Admin" || /ProxySQL Admin interface/i.test(report.message || ""));
   // Each table keeps its own column layout (ColumnStoreContext, saved with
   // the workspace): Galera and PXC Nodes, Group Replication Members and
   // Routers have different columns, so each has its own id and instance.
@@ -349,23 +363,34 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
           </div>
         )}
         <SummaryLine tone={tone} toneLabel={!report.available ? "Not available" : report.status === "unknown" ? "Not judged" : undefined}
-          notes={report.notes.length ? report.notes : undefined}
+          notes={summaryNotes}
           notesTitle="Notes: where the values come from, what this server cannot see, and engine differences">
           {summaryText(report, stale)}
         </SummaryLine>
         {!report.available ? (
           <PrerequisiteGate>{deniedText(report.message)}</PrerequisiteGate>
         ) : report.kind === "none" ? (
-          <EmptyState icon="cluster" title="Not part of a cluster">
-            {notClusterReason(report.message)} myflames reads MariaDB Galera Cluster, Galera Cluster for MySQL, Percona XtraDB Cluster and MySQL InnoDB Cluster (and Group Replication without InnoDB Cluster).
-          </EmptyState>
+          isProxySql ? (
+            <EmptyState
+              icon="cluster"
+              title="Not part of a cluster"
+              action={!other && onOpenProxySql ? <ToolbarButton primary onClick={onOpenProxySql}>Open ProxySQL</ToolbarButton> : undefined}
+            >
+              This connection is a ProxySQL Admin interface.
+            </EmptyState>
+          ) : (
+            <EmptyState icon="cluster" title="Not part of a cluster">
+              {notClusterReason(report.message)} myflames reads MariaDB Galera Cluster, Galera Cluster for MySQL, Percona XtraDB Cluster and MySQL InnoDB Cluster (and Group Replication without InnoDB Cluster).
+            </EmptyState>
+          )
         ) : <>
           {/* Not OK: what is wrong comes first, above the tiles. */}
           {report.status !== "ok" && findings}
           {tiles}
           {report.status === "ok" && findings}
           {shownTab === "topology" ? (
-            <ClusterTopology report={report} selection={selection} marker={marker} />
+            <ClusterTopology report={report} selection={selection} marker={marker}
+              profiles={!stale ? profiles : undefined} onSwitchConnection={!stale ? onSwitchConnection : undefined} />
           ) : shownTab === "members" ? (
             <DataTable key={membersTable} id={membersTable} label={`Cluster ${noun.toLowerCase()}s`} columns={memberColumns} rows={members} rowKey={memberKey} selection={selection} />
           ) : (

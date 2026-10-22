@@ -16,7 +16,7 @@ import {
   TileGrid, ToolbarButton, ViewLayout, ViewStatus, worstTone,
   type Column, type InspectorContent, type Selection, type Tone,
 } from "./kit";
-import { Commands, FactsList, channelCell, channelPhrase, engineName, factRows, plural } from "./OpsShared";
+import { Commands, FactsList, channelCell, channelPhrase, engineName, factRows, formatGtidSet, plural } from "./OpsShared";
 import {
   factText, loopActive, readReplication, readSkipLoops, skipTransaction,
   startSkipLoop, stopSkipLoop, useOpsScope,
@@ -393,7 +393,7 @@ export function ReplicationView({ connection, disabled, selection, report: bound
           !!chosen.io.error.errno && ["I/O thread", `Error ${chosen.io.error.errno}${chosen.io.error.timestamp ? ` at ${chosen.io.error.timestamp}` : ""}`],
           !!chosen.sql.error.table && ["Table", chosen.sql.error.table],
           firstFailure && ["Failed first", `Error ${firstFailure.errno} (worker ${String(chosen.worker.failing_worker_id ?? "?")})`],
-          !!chosen.failing_gtid && ["Failing GTID", <code className="ops-wrap">{chosen.failing_gtid}</code>],
+          !!chosen.failing_gtid && ["Failing GTID", formatGtidSet(chosen.failing_gtid)],
         ]} />
         <pre className="ops-pre">{chosen.sql.error.message || chosen.io.error.message}</pre>
         {firstFailure && <pre className="ops-pre">{firstFailure.message}</pre>}
@@ -437,7 +437,7 @@ export function ReplicationView({ connection, disabled, selection, report: bound
   const gtidColumns: Column<ReplicationChannel>[] = [
     { key: "name", label: engine === "mariadb" ? "Connection" : "Channel", primary: true, flex: true, sort: (r) => r.name, render: (r) => channelCell(r.name) },
     { key: "status", label: "Status", sort: (r) => r.status, render: (r) => <StatusPill tone={r.judged ? r.status : "unknown"} label={r.judged ? undefined : "Not judged"} /> },
-    { key: "failing_gtid", label: "Failing GTID", render: (r) => r.failing_gtid ? <code className="ops-wrap">{r.failing_gtid}</code> : "None" },
+    { key: "failing_gtid", label: "Failing GTID", render: (r) => r.failing_gtid ? formatGtidSet(r.failing_gtid) : "None" },
     { key: "read_pos", label: "Read position", title: "Source binary log position the receiver has read",
       render: (r) => logPosition(r.position, ["source_log_file", "Master_Log_File", "Source_Log_File"], ["read_source_log_pos", "Read_Master_Log_Pos", "Read_Source_Log_Pos"]) },
     { key: "exec_pos", label: "Executed position", title: "Source binary log position the applier has executed",
@@ -524,7 +524,7 @@ export function ReplicationView({ connection, disabled, selection, report: bound
       }
     : report;
   return <>
-    <ViewLayout id="replication" title="Replication" className="ops-view" onRefresh={() => { void load(); }} refreshDisabled={disabled || busy} loading={!!reads.loading} otherConnection={other} inspector={inspector}
+    <ViewLayout id="replication" title="Replication" detailBackLabel="" className="ops-view" onRefresh={() => { void load(); }} refreshDisabled={disabled || busy} loading={!!reads.loading} otherConnection={other} inspector={inspector}
       inspectorEmpty={<p>Select a {word} to see its threads, last error, lag signals and recovery.</p>}
       controls={onTabChange && (!report || !report.available || report.replica) ? (
         <Segmented<ReplicationSubTab>

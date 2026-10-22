@@ -821,7 +821,9 @@
     grid-template-columns: minmax(0, 1fr);
     gap: 2px;
   }
+  .inspector-fields dt.is-long-label + dd,
   .inspector-fields dd {
+    padding-left: 0;
     margin-bottom: var(--space-2);
   }
 }

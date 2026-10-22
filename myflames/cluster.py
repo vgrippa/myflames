@@ -199,7 +199,7 @@ import datetime
 import re
 
 from .connector import ConnectorError, terminal_text
-from .perf_common import Reader, _number, denied, now, preflight, reason
+from .perf_common import Reader, Server, _number, denied, now, preflight, reason
 from .server_info import product_name
 
 SCHEMA_VERSION = "cluster-1.0"
@@ -625,7 +625,27 @@ def read_status(conn):
     cannot read the cluster tables returns ``available: false``.
     """
     reader = Reader(conn, CLUSTER_TAG)
-    server = preflight(reader, EXTRA_VARIABLES)
+    try:
+        server = preflight(reader, EXTRA_VARIABLES)
+    except ConnectorError as exc:
+        if "Access denied" not in str(exc):
+            from . import proxysql
+            try:
+                is_proxy, proxy_version = proxysql.identify(conn)
+            except ConnectorError:
+                is_proxy, proxy_version = False, None
+            if is_proxy:
+                report = _base(Server({"version": proxy_version or ""}, {}))
+                report["server_product"] = "ProxySQL Admin"
+                report["server_version"] = proxy_version
+                report["message"] = "Not part of a cluster: this connection is a ProxySQL Admin interface."
+                report["statements"] = [
+                    "SELECT variable_value FROM global_variables WHERE variable_name = 'admin-version'",
+                    "SELECT @@version",
+                ]
+                _finish(report)
+                return report
+        raise
     report = _base(server)
     report["statements"].append("SHOW GLOBAL VARIABLES")
     wsrep_on = _on(server.var("wsrep_on"))

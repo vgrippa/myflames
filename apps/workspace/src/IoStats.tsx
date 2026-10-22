@@ -461,8 +461,8 @@ export function IoView({
             </section>
           )}
           {report.global.length > 0 && (
-            <Disclosure title="Server-wide InnoDB I/O" className="io-global-rates" open={!perTable}>
-              <TileGrid label="Server-wide InnoDB I/O">
+            <Disclosure title={perTable ? "More server-wide counters" : "Server-wide InnoDB I/O"} className="io-global-rates" open={!perTable}>
+              <TileGrid label={perTable ? "More server-wide counters" : "Server-wide InnoDB I/O"}>
                 {report.global.map((m) => {
                   const [value, unit] = rate(m);
                   return (

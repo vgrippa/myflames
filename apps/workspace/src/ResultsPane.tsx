@@ -479,6 +479,8 @@ export type ResultsPaneProps = {
   base: number;
   /** The editor text changed since the run. */
   stale: boolean;
+  /** The connection name when these results came from another connection than the one in use. */
+  fromConnection?: string;
   /** "messages", "plan" or "result:N" (0-based among the rows results). */
   selected: string;
   onSelect: (key: string) => void;
@@ -626,6 +628,7 @@ function ResultView({
   reloaded,
   onNote,
   run,
+  fromConnection,
 }: ResultsPaneProps & { result: EditorRows; n: number }) {
   const statement = run?.statements[result.statement];
   const index = rowResults(run).indexOf(result);
@@ -639,6 +642,7 @@ function ResultView({
       </div>
     );
   const metaItems = [
+    fromConnection ? <span key="from" className="result-from">From {fromConnection}</span> : null,
     cut ? <span key="cut" className="result-cut">{result.label || `first ${rowsText(result.row_count)}`}</span> : null,
     result.warnings ? <span key="warn">{`${count(result.warnings)} ${result.warnings === 1 ? "warning" : "warnings"}`}</span> : null,
     // Only a cut result has rows the sort cannot see.
@@ -681,9 +685,10 @@ function ResultView({
   );
 }
 
-function Messages({ run, base, stale, onJump, running }: ResultsPaneProps & { run: EditorRun }) {
+function Messages({ run, base, stale, onJump, running, fromConnection }: ResultsPaneProps & { run: EditorRun }) {
   const c = run.counts;
   const summary = [
+    fromConnection ? `From ${fromConnection}` : "",
     `${count(c.statements)} ${c.statements === 1 ? "statement" : "statements"}`,
     c.run !== c.statements ? `${count(c.run)} run` : "",
     c.errors ? `${count(c.errors)} ${c.errors === 1 ? "error" : "errors"}` : "",

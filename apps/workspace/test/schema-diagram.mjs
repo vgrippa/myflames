@@ -57,10 +57,11 @@ try{
  const click=async text=>{const handle=await page.evaluateHandle(text=>[...document.querySelectorAll("button")].find(b=>b.textContent.trim()===text&&b.getClientRects().length),text);assert.ok(handle.asElement(),`Missing button ${text}`);await handle.asElement().click();await handle.dispose();};
  const settled=()=>page.evaluate(async()=>{await Promise.all(document.getAnimations().map(a=>a.finished.catch(()=>{})));});
  const shot=async name=>{await settled();await page.screenshot({path:path.join(h.shots,name),fullPage:true});};
- const input=async(selector,value)=>{await page.$eval(selector,(el,value)=>{Object.getOwnPropertyDescriptor(el.tagName==="TEXTAREA"?HTMLTextAreaElement.prototype:HTMLInputElement.prototype,"value").set.call(el,value);el.dispatchEvent(new Event("input",{bubbles:true}));},value);};
+ const input=async(selector,value)=>{await page.$eval(selector,(el,value)=>{const proto=el.tagName==="TEXTAREA"?HTMLTextAreaElement.prototype:el.tagName==="SELECT"?HTMLSelectElement.prototype:HTMLInputElement.prototype;Object.getOwnPropertyDescriptor(proto,"value").set.call(el,value);el.dispatchEvent(new Event(el.tagName==="SELECT"?"change":"input",{bubbles:true}));},value);};
  const requests=path=>state.other.filter(r=>r.path===`/api/schema-diagram/${path}`);
  await page.evaluate(()=>{window.diagramDownloads=[];window.diagramClipboard="";Object.defineProperty(navigator,"clipboard",{configurable:true,value:{writeText:async text=>{window.diagramClipboard=text;}}});HTMLAnchorElement.prototype.click=function(){fetch(this.href).then(r=>r.text()).then(text=>window.diagramDownloads.push({name:this.download,text}));};});
- assert.equal(await page.$eval('.diagram-source .primary',e=>e.disabled),true);
+ assert.equal(await page.$eval('[data-action="refresh"]',e=>e.disabled),true);
+ assert.equal(await page.$('.diagram-source .primary'),null,"single Refresh in toolbar");
  await shot("diagram-empty-desktop.png");
  await click("View Mermaid");
  assert.equal(await page.$eval('[aria-label="Import format"]',e=>e.value),"mermaid");
@@ -69,6 +70,8 @@ try{
  await click("Import diagram");await page.waitForSelector(".diagram-table");assert.equal(lastImport.format,"sql");assert.equal(requests("read").length,0);
  assert.equal(await page.$$(".diagram-table").then(x=>x.length),6);
  assert.equal(await page.$$(".diagram-lines .is-conceptual").then(x=>x.length),1);
+ assert.equal(await page.$$(".diagram-lines .diagram-fk-marker").then(x=>x.length),5);
+ assert.match(await page.$eval(".diagram-caption",e=>e.textContent),/Dashed lines: conceptual relationships/);
  assert.match(await page.$eval('[aria-label="Table shop.order_items"]',e=>e.textContent),/PK FK/);
  await shot("diagram-light-desktop.png");
  await click("Import");await page.select('[aria-label="Import format"]',"mermaid");await input(".diagram-paste textarea","erDiagram\n  products ||..o{ reviews : receives");
@@ -163,48 +166,55 @@ try{
  await page.click(header);await page.waitForSelector(".view-inspector");await shot("diagram-inspector-phone.png");await page.keyboard.press("Escape");
  await page.emulateMediaFeatures([{name:"prefers-color-scheme",value:"light"}]);await shot("diagram-light-phone.png");await page.setViewport({width:1440,height:1000});
  // Catalog selection reads the active connection, and replacement is explicit.
- await click("Switch connection");await page.waitForFunction(()=>!!document.querySelector('#diagram-databases option[value="shop"]'));
+ await click("Switch connection");await page.waitForFunction(()=>!!document.querySelector('select[aria-label="Database"] option[value="shop"]'));
  await input('[aria-label="Database"]',"shop");
- await click("Rebuild from database");await page.waitForSelector("dialog[open]");
+ await page.click('[data-action="refresh"]');await page.waitForSelector("dialog[open]");
  assert.match(await page.$eval("dialog",e=>e.textContent),/No database changes will be made/);
  const beforeCancel=requests("read").length;await click("Cancel");assert.equal(requests("read").length,beforeCancel);
  // Connection switch invalidates late server responses but preserves imports.
- readDelay=150;await click("Rebuild from database");await click("Rebuild diagram");await click("Switch connection");await pause(200);
+ readDelay=150;await page.click('[data-action="refresh"]');await click("Rebuild diagram");await click("Switch connection");await pause(200);
  assert.equal(await page.evaluate(()=>window.diagramDocument.source.kind),"import");readDelay=0;
- await input('[aria-label="Database"]',"shop");await click("Rebuild from database");await click("Rebuild diagram");
+ await input('[aria-label="Database"]',"shop");await page.click('[data-action="refresh"]');await click("Rebuild diagram");
  await page.waitForFunction(()=>window.diagramDocument.source.kind==="server");
  assert.ok(await page.$('time[datetime]'));assert.equal(requests("read").at(-1).body.connection.host,"127.0.0.2");
+ assert.match(await page.$eval(".summary-line",e=>e.textContent),/Connection: 127\.0\.0\.2:3306/);
  // An explicit host works with the client's default OS user. Same-source rebuild keeps arrangement.
  await input('[aria-label="Find a table or column"]',"");await page.focus(header);await page.keyboard.press("ArrowRight");
  const livePosition=await page.evaluate(()=>window.diagramDocument.diagram.layout.positions.customers);
  liveModel.tables.push({id:"shipments",schema:"shop",name:"shipments",columns:[column("id","bigint",true),column("order_id")]});
  liveModel.tables[0].columns.push(column("phone","varchar(40)"));
  liveModel.relationships.push(edge("shipment_order","shipments",["order_id"],"orders",["id"]));
- const readCount=requests("read").length;await click("Rebuild from database");
+ const readCount=requests("read").length;await page.click('[data-action="refresh"]');
  await page.waitForFunction(()=>window.diagramDocument.diagram.tables.some(t=>t.name==="shipments"));
  assert.equal(requests("read").length,readCount+1);assert.deepEqual(await page.evaluate(()=>window.diagramDocument.diagram.layout.positions.customers),livePosition);
  assert.match(await page.$eval('[aria-label="Table shop.customers"]',e=>e.textContent),/phone/);
  assert.equal(await page.evaluate(()=>{const d=window.diagramDocument.diagram,p=d.layout.positions,s=p.shipments;return d.tables.filter(t=>t.id!=="shipments").every(t=>s.y>=p[t.id].y+window.diagramHelpers.tableHeight(t));}),true,"New tables do not cover existing table positions");
  assert.equal(await page.evaluate(()=>window.diagramDocument.diagram.relationships.some(r=>r.id==="shipment_order")),true);
+ // When no conceptual relationships exist, the dashed-line legend is omitted.
+ liveModel.relationships=liveModel.relationships.filter(r=>r.id!=="receives");
+ await page.click('[data-action="refresh"]');
+ await page.waitForFunction(()=>!window.diagramDocument.diagram.relationships.some(r=>r.id==="receives"));
+ assert.doesNotMatch(await page.$eval(".diagram-caption",e=>e.textContent),/Dashed lines: conceptual relationships/);
+ liveModel.relationships.push({...edge("receives","products",[],"reviews",[]),cardinality:{from:"one",to:"zero-or-many"},identifying:false});
  // Mermaid export receives the rebuilt model, including new entities and columns.
  exportWarnings=false;const downloads=await page.evaluate(()=>window.diagramDownloads.length);
  await click("Export");await page.click(".diagram-export-menu button:last-child");await page.waitForFunction(n=>window.diagramDownloads.length===n+1,{},downloads);
  assert.match(await page.evaluate(()=>window.diagramDownloads.at(-1).text),/shipments/);
  assert.match(await page.evaluate(()=>window.diagramDownloads.at(-1).text),/phone/);
- // Changing the selected database does not retarget Refresh of the displayed diagram.
+ // Changing the selected database asks before replacing the displayed diagram.
  await input('[aria-label="Database"]',"inventory");await page.click('[data-action="refresh"]');
- await page.waitForFunction(()=>!document.querySelector('[data-action="refresh"]').disabled);
+ await page.waitForSelector("dialog[open]");await click("Cancel");
  assert.equal(requests("read").at(-1).body.database,"shop");
  // Failed rebuilds preserve the last good model and clearly expose the failure.
- await input('[aria-label="Database"]',"shop");readFailure=true;await click("Rebuild from database");
+ await input('[aria-label="Database"]',"shop");readFailure=true;await page.click('[data-action="refresh"]');
  await page.waitForFunction(()=>document.body.textContent.includes("Schema read failed"));
  assert.equal(await page.evaluate(()=>window.diagramDocument.diagram.tables.length),7);readFailure=false;
  // A schema selection change invalidates the outstanding read and its errors.
  readDelay=180;liveModel.tables.push({id:"stale",schema:"shop",name:"stale",columns:[]});
- await click("Rebuild from database");await input('[aria-label="Database"]',"inventory");await pause(220);
+ await page.click('[data-action="refresh"]');await input('[aria-label="Database"]',"inventory");await pause(220);
  assert.equal(await page.evaluate(()=>window.diagramDocument.diagram.tables.some(t=>t.id==="stale")),false);
  readDelay=0;liveModel.tables.pop();await input('[aria-label="Database"]',"shop");
- await click("Rebuild from database");await page.waitForFunction(()=>!document.querySelector('[data-action="refresh"]').disabled);
+ await page.click('[data-action="refresh"]');await page.waitForFunction(()=>!document.querySelector('[data-action="refresh"]').disabled);
  for(const theme of ["light","dark"]){
    await page.emulateMediaFeatures([{name:"prefers-color-scheme",value:theme}]);await shot(`diagram-rebuilt-${theme}-1440.png`);
    await page.setViewport({width:390,height:844});await input('[aria-label="Find a table or column"]',"customers");await click("Fit");
@@ -212,8 +222,8 @@ try{
    await shot(`diagram-rebuilt-${theme}-390.png`);await page.setViewport({width:1440,height:1000});await input('[aria-label="Find a table or column"]',"");await click("Fit");
  }
  // A catalog failure still permits entering a known database name.
- catalogFailure=true;await click("Reload database list");await page.waitForFunction(()=>document.body.textContent.includes("Catalog permission denied"));
- await input('[aria-label="Database"]',"shop");await click("Rebuild from database");await page.waitForFunction(()=>!document.querySelector('[data-action="refresh"]').disabled);
+ catalogFailure=true;await page.click('[aria-label="Reload database list"]');await page.waitForFunction(()=>document.body.textContent.includes("Catalog permission denied"));
+ await input('[aria-label="Database"]',"shop");await page.click('[data-action="refresh"]');await page.waitForFunction(()=>!document.querySelector('[data-action="refresh"]').disabled);
  await click("Switch connection");await page.waitForSelector('[data-other-connection="true"]');
  // Escaping and malformed model checks exercise pure helpers with hostile text.
  const checks=await page.evaluate(model=>{const h=window.diagramHelpers,d=structuredClone(model);d.tables[0].name='<script>alert(1)</script>';d.tables[0].columns[0].name='x"><image href="https://invalid/">';

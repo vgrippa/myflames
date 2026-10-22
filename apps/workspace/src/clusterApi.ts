@@ -243,7 +243,7 @@ export function failureText(error: string): string {
   if (code === "2003" || code === "2002") return `Could not connect to${target}: it refused the connection or did not answer. The server may be down.`;
   if (code === "2013") return `Lost the connection to${target} while reading: the server may be paused, restarting or overloaded.`;
   if (code === "2005") return `The host${target} could not be resolved.`;
-  if (code === "1045") return "The server refused this account's user name or password.";
+  if (code === "1045" && /access denied/i.test(raw)) return "The server refused this account's user name or password.";
   if (/timed out/i.test(raw)) return "The read timed out: the server did not answer in time.";
   const line = raw.split("\n")[0];
   return line.length > 180 ? `${line.slice(0, 177)}…` : line || "The read failed.";

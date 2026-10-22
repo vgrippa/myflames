@@ -763,14 +763,16 @@ try {
   assert.match(await text(`${view} .other-connection`), /From Local MySQL \(127\.0\.0\.1:3306\), refresh to load this server\./);
   await page.click("#tuning-tab-scorecard");
   await page.waitForSelector("#tuning-panel-scorecard .tuning-score");
-  // The scorecard has no Refresh: its note offers the read that loads this
-  // server (Run full analysis), and its export is off until then.
+  // The scorecard has no Refresh: its note names the toolbar read that loads
+  // this server (Run full analysis), without a third duplicate button, and its
+  // export is off until then.
   assert.match(await text(`${view} .other-connection`), /From Local MySQL \(127\.0\.0\.1:3306\)\. Run full analysis to load this server\./, "the scorecard names the server the report came from");
-  assert.equal(await page.$eval(`${view} .other-connection .gate-action button`, (e) => e.textContent), "Run full analysis");
+  assert.equal(await page.$(`${view} .other-connection .gate-action button`), null, "one home: Run full analysis stays in the toolbar");
+  assert.ok(await page.$(`${view} [data-action="run-analysis"]`), "toolbar Run full analysis is present");
   assert.equal(await page.$eval(`${view} .report-export button.button`, (e) => e.disabled), true, "the scorecard of another server is not exported");
-  // A check's full-width details keep the note and its action.
+  // A check's full-width details keep the note.
   await h.select(`${view} .tuning-check[data-check]`);
-  await page.waitForFunction((v) => [...document.querySelectorAll(`${v} .other-connection .gate-action button`)].some((b) => b.offsetParent && b.textContent === "Run full analysis"), {}, view);
+  await page.waitForFunction((v) => [...document.querySelectorAll(`${v} .other-connection`)].some((b) => b.offsetParent && /Run full analysis to load this server/.test(b.textContent || "")), {}, view);
   await page.click(`${view} .detail-back`);
   await h.fullAnalysis();
   await h.select(`${view} .report-first li`);
@@ -862,13 +864,11 @@ try {
   // A database chosen in the diagram picker participates before any diagram
   // exists. Switching views preserves that choice for the global refresh.
   await h.view("diagram");
-  // The Database field is a combobox (input + datalist) since the diagram picker change.
-  await page.waitForFunction(() => Array.from(document.querySelectorAll("#diagram-databases option")).some(e => e.value === "shop"));
-  await page.click('.diagram-source input[aria-label="Database"]', { clickCount: 3 });
-  await page.type('.diagram-source input[aria-label="Database"]', "shop");
+  await page.waitForFunction(() => Array.from(document.querySelectorAll('.diagram-source select[aria-label="Database"] option')).some(e => e.value === "shop"));
+  await page.select('.diagram-source select[aria-label="Database"]', "shop");
   await h.view("health");
   await h.view("diagram");
-  await page.waitForFunction(() => document.querySelector('.diagram-source input[aria-label="Database"]')?.value === "shop");
+  await page.waitForFunction(() => document.querySelector('.diagram-source select[aria-label="Database"]')?.value === "shop");
   const diagramReads = calls("/api/schema-diagram/read").length;
   // Database diagram is a place of its own with no Refresh all: Server's
   // Refresh all reads it too, and the place shows that answer.

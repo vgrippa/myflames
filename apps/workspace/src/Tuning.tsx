@@ -382,8 +382,8 @@ export function TuningView({
       refreshDisabled={disabled || !!runBlocked}
       loading={running}
       otherConnection={tab === "scorecard" ? other : analysisOther}
-      // The scorecard has no Refresh: the full analysis reads this server.
-      otherAction={tab === "scorecard" && onRunReport ? { label: "Run full analysis", onClick: run, disabled: disabled || !!runBlocked || running } : undefined}
+      // The scorecard has no Refresh: the toolbar's Run full analysis reads this server.
+      otherAction={tab === "scorecard" && onRunReport ? { label: "Run full analysis" } : undefined}
       inspector={inspector}
       inspectorEmpty={
         <p>
@@ -415,7 +415,7 @@ export function TuningView({
           <p className="visually-hidden" role="status">
             {summaryText(tuning)}
           </p>
-          <ScoreHeader tuning={tuning} running={running || !!runBlocked} disabled={disabled || !!other} onMeasure={open} canRun={!!onRunReport} />
+          <ScoreHeader tuning={tuning} disabled={disabled || !!other} onMeasure={open} canRun={!!onRunReport} />
           <ul className="tuning-categories" aria-label="Categories">
             {tuning.categories.map((c) => {
               const active = category === c.key;
@@ -552,13 +552,11 @@ function needsText(c: TuningCheck): string {
 
 function ScoreHeader({
   tuning,
-  running,
   disabled,
   canRun,
   onMeasure,
 }: {
   tuning: TuningReport;
-  running: boolean;
   disabled: boolean;
   canRun: boolean;
   onMeasure: (view: TuningMeasureWith) => void;
@@ -606,13 +604,8 @@ function ScoreHeader({
         {unknown.length > 0 && (
           <p className="tuning-score-hint">
             {tuning.provisional
-              ? "Not graded until at least half the checks, and one in each category, are measured."
+              ? `Not graded until at least half the checks, and one in each category, are measured.${needsAnalysis && canRun ? " Run the full analysis to grade." : ""}`
               : `${unknown.length} not measured; they are left out of the score.`}{" "}
-            {needsAnalysis && canRun && (
-              <button type="button" className="text-button" disabled={disabled || running} onClick={() => onMeasure("report")}>
-                Run full analysis
-              </button>
-            )}
             {onlyParameters && (
               <button type="button" className="text-button" disabled={disabled} onClick={() => onMeasure("config")}>
                 Open Parameters

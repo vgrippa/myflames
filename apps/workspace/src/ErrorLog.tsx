@@ -7,13 +7,33 @@ import { api, download, type Connection, type ErrorLogCode, type ErrorLogEntry, 
 import { useConnectionReads, type Bound } from "./binding";
 import { useOpenRead } from "./viewOnScreen";
 import { Icon } from "./components";
+import { engineName } from "./OpsShared";
 import { bytes, CompactNumber, count, engineLabel } from "./PerfShared";
 import {
   Checkbox, copyToClipboard, DataTable, Disclosure, EmptyState, FactStrip, Fields, InspectorSection,
-  Popover, PrerequisiteGate, SearchField, Segmented, StatusPill, SummaryLine, ToolbarSelect, ViewLayout, ViewStatus,
+  Popover, SearchField, Segmented, StatusPill, SummaryLine, ToolbarSelect, ViewLayout, ViewStatus,
   type Column, type InspectorContent, type Segment, type Selection, type Tone,
 } from "./kit";
 import "./errorlog.css";
+
+function formatHowToView(text: string): { content: ReactNode; commands: string } {
+  const re = /((?:tail\s+-n\s+\d+\s+(?:--\s+)?[^\n]+)|(?:journalctl\s+-u\s+\S+)|(?:docker\s+logs\s+\S+))/g;
+  const parts: ReactNode[] = [];
+  const cmds: string[] = [];
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) parts.push(text.slice(last, m.index));
+    const cmd = m[1].replace(/[.,;]$/, "");
+    const trailing = m[1].slice(cmd.length);
+    cmds.push(cmd);
+    parts.push(<code key={m.index}>{cmd}</code>);
+    if (trailing) parts.push(trailing);
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return { content: parts.length ? parts : text, commands: cmds.length ? cmds.join("\n") : text };
+}
 
 type Level = "all" | ErrorLogEntry["prio"];
 type Grouping = "entries" | "codes";
@@ -376,21 +396,27 @@ export function ErrorLogView({ connection, disabled, onBack, selection, report: 
       {disabled ? "Read when the Query editor finishes its capture." : "MySQL: performance_schema.error_log. MariaDB: the error log file, only when the server runs on this computer."}
     </EmptyState>}
     {report && <>
-      <SummaryLine tone={report.summary.status} notes={report.notes}>{report.summary.text}</SummaryLine>
+      <SummaryLine tone={report.summary.status} notes={report.notes}>{!report.available ? (report.reason_text || report.summary.text) : report.summary.text}</SummaryLine>
       <FactStrip label="Error log source" facts={[
-        ["Server", engineLabel(report)], ["Source", report.source ?? "Not available"], ["Server start", report.server_started ?? "—"],
+        ["Server", <span title={engineLabel(report)}>{engineName(report.engine, report.server_version, report.server_product)}</span>], ["Source", report.source ?? "Not available"], ["Server start", report.server_started ?? "—"],
         ...(report.buffer ? [["Buffer", `${count(report.buffer.events)} events · ${bytes(report.buffer.bytes)} of ${bytes(report.buffer.capacity_bytes)}`] as [string, ReactNode]] : []),
         ...(report.file ? [["File read", `${bytes(report.file.read_bytes)} of ${bytes(report.file.size_bytes)}`] as [string, ReactNode]] : []),
       ]} />
       {!report.available ? <>
-        <PrerequisiteGate>{report.reason_text || "The error log is not available on this connection."}</PrerequisiteGate>
         <Settings report={report} />
-        {report.how_to_view && <section className="view-section" aria-label="How to view the error log">
-          <h3>How to view</h3><pre className="inspector-sql">{report.how_to_view}</pre>
-          <button type="button" className="button" onClick={() => {
-            void copyToClipboard(report.how_to_view!).then(ok => setCopyStatus(ok ? "Copied" : "Could not copy; select the text to copy it."));
-          }}>Copy instructions</button><span className="hint" role="status">{copyStatus}</span>
-        </section>}
+        {report.how_to_view && (() => {
+          const how = formatHowToView(report.how_to_view);
+          return <section className="view-section errorlog-how-to" aria-label="How to view the error log">
+            <h3>How to view</h3>
+            <p className="hint errorlog-how-to-text">{how.content}</p>
+            <div className="errorlog-how-to-actions">
+              <button type="button" className="button small" onClick={() => {
+                void copyToClipboard(how.commands).then(ok => setCopyStatus(ok ? "Copied" : "Could not copy; select the text to copy it."));
+              }}>Copy</button>
+              {copyStatus && <span className="hint" role="status">{copyStatus}</span>}
+            </div>
+          </section>;
+        })()}
       </> : <>
         <section className="view-section" aria-label="Error log rows">
           {tools}

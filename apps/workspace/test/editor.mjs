@@ -1075,21 +1075,30 @@ try {
   answerHeld(heldRun, { status: "complete", session: session({ tab_id: abTab, connection_id: 77, connection: { profile_id: A, name: "A", host: "127.0.0.1", port: 3306, user: "a", type: "production", read_only: false } }),
     run: run([statement(0, "SELECT * FROM big", 0)], [rows(0, ["id"], [["1"], ["2"]], { stopped: "row_limit", label: "stopped after 2 rows", truncated: true, limit: 2 })]) });
   await page.waitForSelector('[data-banner="mismatch"]');
+  assert.match(await text('[data-banner="mismatch"]'), /This tab is still connected to A\. Close its session to run on B\./);
+  assert.equal(await text('[data-banner="mismatch"] button.primary'), "Close session");
+  // The result's origin lives in its summary beside the row-limit notice.
+  await page.waitForSelector(".result-view .result-meta .result-from", { visible: true });
+  assert.equal(await text(".result-view .result-meta .result-from"), "From A");
+  for (const action of ["run", "run-all", "explain", "analyze"]) {
+    assert.equal(await page.$eval(`[data-action=${action}]`, (e) => e.disabled), true, `${action} disabled during mismatch`);
+    assert.match(await page.$eval(`[data-action=${action}]`, (e) => e.title), /This tab is still connected to A\. Close its session to run on B\./);
+  }
   assert.equal(await page.$(".result-actions button ::-p-text(Load more)"), null, "no Load more on another connection");
   const startsBefore = calls("/api/live/start").length;
-  await page.locator("[data-action=explain]").click();
-  await page.waitForFunction(() => /session is on A/.test(document.querySelector(".query-lab [role=alert]")?.textContent || ""));
   await page.focus(EDITOR);
   await chord("e", true);
   await pause(150);
   assert.equal(calls("/api/live/start").length, startsBefore, "Explain and Run analysis send nothing to B");
   await chooseConnection(page, A);
   await page.waitForFunction(() => !document.querySelector('[data-banner="mismatch"]'));
+  assert.equal(await page.$(".result-from"), null, "the result is current again on A");
   await page.waitForSelector(".result-actions button ::-p-text(Load more)");
   await chooseConnection(page, B);
   mock.close.push({ closed: true, session: null });
   await page.locator('[data-banner="mismatch"] button ::-p-text(Close session)').click();
   await page.waitForFunction(() => !document.querySelector('[data-banner="mismatch"]'));
+  assert.equal(await text(".result-view .result-meta .result-from"), "From A", "closing the session keeps the result's origin");
   await chooseConnection(page, A);
   await pause(150);
   assert.equal(await page.$(".result-actions button ::-p-text(Load more)"), null, "no Load more after the session closed");

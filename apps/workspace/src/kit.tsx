@@ -3213,8 +3213,8 @@ export function ViewLayout({
    * it is greyed, and the view turns its actions off. */
   otherConnection?: string | null;
   /** The read that loads this server, when it is not Refresh (Tuning's
-   * scorecard runs the full analysis). Named in the note and its button. */
-  otherAction?: { label: string; onClick: () => void; disabled?: boolean };
+   * scorecard runs the full analysis). Named in the note and its optional button. */
+  otherAction?: { label: string; onClick?: () => void; disabled?: boolean };
 }) {
   const reportActivity = useContext(ViewActivityContext);
   const backLabel = useContext(ViewBackLabelContext);
@@ -3310,7 +3310,7 @@ export function ViewLayout({
       {status}
       {detailOpen&&otherConnection&&(otherAction
         ? <div className="gate other-connection" role="note"><Icon name="connection" size={18}/><p>From {otherConnection}. {otherAction.label} to load this server.</p>
-            <span className="gate-action"><button type="button" className="button" disabled={otherAction.disabled || loading} onClick={otherAction.onClick}>{otherAction.label}</button></span></div>
+            {otherAction.onClick && <span className="gate-action"><button type="button" className="button" disabled={otherAction.disabled || loading} onClick={otherAction.onClick}>{otherAction.label}</button></span>}</div>
         : <div className="gate other-connection" role="note"><Icon name="connection" size={18}/><p>From {otherConnection}, refresh to load this server.</p></div>)}
       <div
         className={`view-split${open && !shared?.sheet && !detailOpen ? " has-inspector" : ""}`}
@@ -3321,11 +3321,13 @@ export function ViewLayout({
             <div className="gate other-connection" role="note">
               <Icon name="connection" size={18} />
               <p>From {otherConnection}. {otherAction.label} to load this server.</p>
-              <span className="gate-action">
-                <button type="button" className="button" disabled={otherAction.disabled || loading} onClick={otherAction.onClick}>
-                  {otherAction.label}
-                </button>
-              </span>
+              {otherAction.onClick && (
+                <span className="gate-action">
+                  <button type="button" className="button" disabled={otherAction.disabled || loading} onClick={otherAction.onClick}>
+                    {otherAction.label}
+                  </button>
+                </span>
+              )}
             </div>
           ) : otherConnection && (
             <div className="gate other-connection" role="note">

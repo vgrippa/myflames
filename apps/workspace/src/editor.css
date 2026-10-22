@@ -706,6 +706,10 @@
   color: var(--warn-text);
   font-weight: 500;
 }
+.result-from {
+  color: var(--warn-text);
+  font-weight: 500;
+}
 .result-sortnote {
   color: var(--ink-faint);
 }

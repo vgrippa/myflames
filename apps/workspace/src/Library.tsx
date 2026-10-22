@@ -6,7 +6,7 @@ import {
 import { Icon, ImportDialog } from "./components";
 import {
   ActionButton, ActionStatus, ConfirmSheet, EmptyState, GroupedList, GroupedRow, Pill,
-  SearchField, SummaryLine, errorText, moveRowFocus, useAction, useSince,
+  SearchField, errorText, moveRowFocus, useAction, useSince,
 } from "./kit";
 import { relativeTime } from "./session";
 
@@ -16,7 +16,17 @@ const PAGE = 25;
 const SEARCH_DELAY_MS = 250;
 
 /** A saved collection stays in the list while its details and actions share one pane. */
-export function Library({ onOpen }: { onOpen: (bundle: Bundle) => Promise<void> }) {
+export function Library({
+  onOpen,
+  openPlanCount = 0,
+  onSaveInvestigation,
+  savedRevision = 0,
+}: {
+  onOpen: (bundle: Bundle) => Promise<void>;
+  openPlanCount?: number;
+  onSaveInvestigation?: () => void;
+  savedRevision?: number;
+}) {
   // Summaries only; Open, Compare and Export read the complete bundle.
   const [items, setItems] = useState<InvestigationSummary[]>([]);
   const [selectedId, setSelectedId] = useState("");
@@ -86,7 +96,7 @@ export function Library({ onOpen }: { onOpen: (bundle: Bundle) => Promise<void> 
     }, firstRead.current || !text ? 0 : SEARCH_DELAY_MS);
     firstRead.current = false;
     return () => { window.clearTimeout(timer); controller.abort(); };
-  }, [search]);
+  }, [search, savedRevision]);
   function loadMore() {
     const controller = listRead.current;
     if (!controller || !nextCursor || loading || moreRead.current) return;
@@ -248,48 +258,50 @@ export function Library({ onOpen }: { onOpen: (bundle: Bundle) => Promise<void> 
   deletingRef.current = deleteLeft ? null : deleting;
   const retry = actKind === "export" && actItem ? () => void exportBundle(actItem as InvestigationSummary)
     : actKind === "open" && actItem ? () => void open(actItem) : undefined;
+  const emptyLibrary = !loading && anySaved === false && !search.trim() && !error;
   return (
     <section className="library" aria-labelledby="investigations-title">
       <h1 id="investigations-title" className="visually-hidden">Investigations</h1>
-      <SummaryLine>Saved collections of plans, notes, and tags on this computer.</SummaryLine>
       {error && !importing && !deleting && <p role="alert" className="error">{error}</p>}
-      <div className="library-split">
-        <aside className="library-master" aria-label="Saved investigations">
-          <div className="library-tools">
-            <SearchField label="Search investigations" placeholder="Name, notes, or tags" value={search} onChange={changeSearch} />
-          </div>
-          <div className="library-list" data-rows ref={rows}>
-            {filtered.map((b) => (
-              <button
-                key={b.id} className={`library-item${selected?.id === b.id ? " is-selected" : ""}`}
-                data-row-key={b.id} aria-current={selected?.id === b.id ? "true" : undefined}
-                aria-controls="investigation-detail" tabIndex={selected?.id === b.id ? 0 : -1} disabled={busy}
-                onClick={() => { setSelectedId(b.id!); setTargetId(""); setError(""); }}
-                onKeyDown={(e) => {
-                  const next = moveRowFocus(e);
-                  if (next?.dataset.rowKey) { setSelectedId(next.dataset.rowKey); setTargetId(""); setError(""); }
-                }}
-              >
-                <Icon name="investigation" />
-                <span className="library-item-text">
-                  <strong title={b.name}>{b.name}</strong>
-                  <small title={`${b.tags.join(", ")}${b.updated_at ? ` · Updated ${new Date(b.updated_at).toLocaleString()}` : ""}`}>
-                    {b.plans.length} {b.plans.length === 1 ? "plan" : "plans"}
-                    {b.updated_at && <> · <time dateTime={b.updated_at}>{relativeTime(b.updated_at)}</time></>}
-                    {b.tags.length > 0 && ` · ${b.tags.join(", ")}`}
-                  </small>
-                </span>
-              </button>
-            ))}
-            {loading && !filtered.length && <p className="empty-small" role="status">Loading investigations…</p>}
-            {nextCursor && !loading && <button className="text-button" disabled={busy || loadingMore}
-              onClick={loadMore}>{loadingMore ? "Loading investigations…" : "Load more investigations"}</button>}
-            {!loading && anySaved !== false && !!search.trim() && !filtered.length && <EmptyState icon="search" title="No matching investigations"
-              action={<button className="button" onClick={() => changeSearch("")}>Clear search</button>}>
-              Try a different name, note, or tag.
-            </EmptyState>}
-          </div>
-        </aside>
+      <div className={`library-split${emptyLibrary ? " is-empty" : ""}`}>
+        {!emptyLibrary && (
+          <aside className="library-master" aria-label="Saved investigations">
+            <div className="library-tools">
+              <SearchField label="Search investigations" placeholder="Name, notes, or tags" value={search} onChange={changeSearch} />
+            </div>
+            <div className="library-list" data-rows ref={rows}>
+              {filtered.map((b) => (
+                <button
+                  key={b.id} className={`library-item${selected?.id === b.id ? " is-selected" : ""}`}
+                  data-row-key={b.id} aria-current={selected?.id === b.id ? "true" : undefined}
+                  aria-controls="investigation-detail" tabIndex={selected?.id === b.id ? 0 : -1} disabled={busy}
+                  onClick={() => { setSelectedId(b.id!); setTargetId(""); setError(""); }}
+                  onKeyDown={(e) => {
+                    const next = moveRowFocus(e);
+                    if (next?.dataset.rowKey) { setSelectedId(next.dataset.rowKey); setTargetId(""); setError(""); }
+                  }}
+                >
+                  <Icon name="investigation" />
+                  <span className="library-item-text">
+                    <strong title={b.name}>{b.name}</strong>
+                    <small title={`${b.tags.join(", ")}${b.updated_at ? ` · Updated ${new Date(b.updated_at).toLocaleString()}` : ""}`}>
+                      {b.plans.length} {b.plans.length === 1 ? "plan" : "plans"}
+                      {b.updated_at && <> · <time dateTime={b.updated_at}>{relativeTime(b.updated_at)}</time></>}
+                      {b.tags.length > 0 && ` · ${b.tags.join(", ")}`}
+                    </small>
+                  </span>
+                </button>
+              ))}
+              {loading && !filtered.length && <p className="empty-small" role="status">Loading investigations…</p>}
+              {nextCursor && !loading && <button className="text-button" disabled={busy || loadingMore}
+                onClick={loadMore}>{loadingMore ? "Loading investigations…" : "Load more investigations"}</button>}
+              {!loading && anySaved !== false && !!search.trim() && !filtered.length && <EmptyState icon="search" title="No matching investigations"
+                action={<button className="button" onClick={() => changeSearch("")}>Clear search</button>}>
+                Try a different name, note, or tag.
+              </EmptyState>}
+            </div>
+          </aside>
+        )}
         <section className="library-detail" id="investigation-detail" aria-label="Investigation details" aria-busy={busy}>
           {/* With nothing left to select (the last one was deleted), the outcome shows here. */}
           {!selected && act.phase !== "idle" && <ActionStatus className="library-status library-status-empty" state={act} onDismiss={act.reset} />}
@@ -338,8 +350,16 @@ export function Library({ onOpen }: { onOpen: (bundle: Bundle) => Promise<void> 
               <iframe title="Baseline comparison" sandbox="allow-scripts" srcDoc={safePreview(comparison.html)} />
             </section>}
           </> : !loading && anySaved === false && !error ? <EmptyState icon="investigation" title="No investigations yet"
-            action={<button className="button primary" onClick={() => { setError(""); setImporting(true); }}>Import plan</button>}>
-            Open plans, then choose Save investigation in the top bar.
+            action={openPlanCount > 0 && onSaveInvestigation ? (
+              <button className="button primary" onClick={onSaveInvestigation}>
+                Save {openPlanCount === 1 ? "1 open plan" : `${openPlanCount} open plans`} as an investigation…
+              </button>
+            ) : (
+              <button className="button primary" onClick={() => { setError(""); setImporting(true); }}>Import plan</button>
+            )}>
+            {openPlanCount > 0 && onSaveInvestigation
+              ? "Save your open plans with notes and tags on this computer."
+              : "Import or capture a plan, then save it as an investigation."}
           </EmptyState> : !loading && anySaved !== false ? <EmptyState icon="investigation" title="Select an investigation" /> : null}
         </section>
       </div>
