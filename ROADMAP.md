@@ -31,7 +31,14 @@ new grant scopes and batch review, and Database diagram with a Diagram | Mermaid
 SQL/Mermaid imports and exports, editable JSON and SVG. Diagram imports do not
 execute SQL; save JSON to retain a layout. The live database picker and Rebuild action refresh tables, keys and relationships while retaining positions for tables that remain. Maintenance has native folder selection, tool-specific dump options, official download links and bounded release checks.
 
-Top statement details now use the available width. Supported DML can prepare a SELECT projection for individual review before capture, with the original SQL retained. Optimize table and Instruments selection (up to 2,000 rows, 500-name batched `UPDATE` statements, consumer dependencies) provide optional operations through exact SQL confirmation. A view reads when opened on screen (once per connection, while Tables and Indexes keep their schema-size consent and Error log waits for Load). Learn and standalone `myflames teach` lessons share the workspace's light and dark tokens, semantic `--svg-*` drawing palette and embedded lesson toolbar. Ordinary InnoDB free space remains informational; true storage capacity monitoring is still a separate gap.
+Top statement details now use the available width. Supported DML can prepare a SELECT projection for individual review before capture, with the original SQL retained. Optimize table and Instruments selection (up to 2,000 rows, 500-name batched `UPDATE` statements, consumer dependencies) provide optional operations through exact SQL confirmation. A view reads when opened on screen (once per connection, while Tables and Indexes keep their schema-size consent and Error log reads on open). Learn and standalone `myflames teach` lessons share the workspace's light and dark tokens, semantic `--svg-*` drawing palette and embedded lesson toolbar. Ordinary InnoDB free space remains informational; true storage capacity monitoring is still a separate gap.
+
+Action feedback now covers Top statements, Error log, Query editor and Database
+diagram, including focus retention, pending session operations, and cancellation
+of a stalled diagram import. Browser regression scenarios cover delayed replies,
+errors and missing replies; see the action-feedback suite in the UI checklist.
+Cluster and ProxySQL keep pending reviewed changes visible under the toolbar
+after Close, including while the selected member or server inspector is open.
 
 Security boundaries now include launch bootstrap with cookie and origin proof,
 isolated database clients, recipient TLS checks for saved clone credentials,
@@ -187,6 +194,8 @@ complexity models for ordered/multidimensional aggregates.
 
 Successful Kill feedback in Locks, Processlist and Kill sessions uses **Done.** followed by the server's message.
 
+Implemented shared action feedback for Processlist Kill, Parameters change/reset and batch apply, and Replication preflight, skip, loop start and Stop. Slow write sheets can close while their progress and outcomes remain in the view; reads expose Stop, Try again and their completion time. Delayed-reply browser scenarios are in the action-feedback harness, including preflight button stability, Cancel focus on review opening and return to the initiating control on dismissal.
+
 Shipped: Query digest and Database diagram are places of their own in the SQL workspace group (Query editor, Query digest, Database diagram, Plans); the Query editor has no digest tab and Server's Schema group lists Indexes and Tables. Top statements and Error log read when opened on screen, like every other view. Processlist rows have a context menu with Copy query, Kill query… and Kill connection…, which open the reviewed single Kill sheet and show its progress and answer. Replication reads Not a replica for a server with no asynchronous channel, and its sidebar item is greyed like Cluster's.
 
 Implemented Home version information and workflow shortcuts, grouped SQL navigation, a white app mark with saturated flames, the Database diagram Diagram | Mermaid view (`mermaid` 11.17.2) and Mermaid export/import fixes, all-section Refresh all, the Parameters view (`parameters-1.0` and the 817-variable `mysql_sysvars.py` catalog) replacing Configuration, interactive Instruments selection, and the Learn workspace restyle with light and dark tokens and `--svg-*` drawing colors. **Check for updates** in Home's version footer and About myflames asks GitHub only when clicked and shows Up to date, the newer version with **Download…** (which saves the release file to Downloads and never installs it), or why it could not check. The outcome and its time are kept in the workspace store (`app-update-status-1.0`), and a result older than 24 hours reads as the last result; until a check, the version reads Not checked yet. Automatic update checks, installers and a signed, verified update channel remain future work.
@@ -205,3 +214,5 @@ reads, consistent on-open reads, retained account drafts, escaped table/index
 statements, measured context menus, cancelled resize cleanup, and analysis
 progress across view remounts. Browser verification at 1440x900 and 720x520 in
 light and dark remains part of the release gate.
+
+Completed workspace feedback: Plans sample opening, HTML/JSON export and investigation Save, Maintenance reads and jobs, and Cluster/ProxySQL confirmed sends share progress and outcome feedback. A slow sent request can close its sheet while remaining single flight. Browser cases live in `test/action-feedback-batch-c.mjs`; the socket-free reviewed-action unit cases also cover late replies after Close and connection changes.

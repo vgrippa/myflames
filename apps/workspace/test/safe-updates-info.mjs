@@ -238,8 +238,23 @@ try {
   await page.waitForFunction((s) => !document.querySelector(s), {}, INFO);
   assert.equal(await open(RUN_PANEL), true, "a click inside Run options keeps it open");
   await openInfo();
-  await page.click('[aria-label="SQL editor"]');
+  // Busy labels reserve their width in the toolbar. The resulting Run options
+  // position can put a popover over the editor's center, where page.click()
+  // normally aims. Hit-test a visible part of the editor before clicking it.
+  const editorPoint = await page.$eval('[aria-label="SQL editor"]', (editor) => {
+    const r = editor.getBoundingClientRect();
+    const left = Math.max(0, r.left), right = Math.min(innerWidth, r.right);
+    const top = Math.max(0, r.top), bottom = Math.min(innerHeight, r.bottom);
+    for (const fy of [0.1, 0.5, 0.9]) for (const fx of [0.1, 0.5, 0.9]) {
+      const x = left + (right - left) * fx, y = top + (bottom - top) * fy;
+      if (document.elementFromPoint(x, y) === editor) return { x, y };
+    }
+    return null;
+  });
+  assert.ok(editorPoint, "the editor has an uncovered point outside both popovers");
+  await page.mouse.click(editorPoint.x, editorPoint.y);
   await page.waitForFunction((r, i) => !document.querySelector(i) && document.querySelector(r)?.hidden, {}, RUN_PANEL, INFO);
+  assert.equal(await active('[aria-label="SQL editor"]'), true, "the outside click focuses the editor");
 
   // 8. Only a popover inside Run options keeps it open: another popover's
   // opening event closes it, and closePopovers() (an empty detail) closes

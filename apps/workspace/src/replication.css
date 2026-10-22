@@ -39,3 +39,9 @@
     margin-left: auto;
   }
 }
+/* Preflight progress lives below the recovery buttons. Keep their existing
+   privilege notes in place: exposing the temporary Checking restriction as
+   a new paragraph would resize the wrappers and move a double-click target.
+   The restriction still describes the button through aria-describedby. */
+.visible-privilege > .privilege-action.replication-checking + .account-sr { display: none; }
+.visible-privilege > .privilege-action.replication-checking[data-privilege-state="unknown"] ~ .privilege-status-note { display: block; }

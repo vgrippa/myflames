@@ -73,7 +73,8 @@
 .ops-loop,
 .ops-result-head { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
 .ops-job-head > strong,
-.ops-loop > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.ops-loop > span,
+.ops-loop > .ops-loop-copy { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .ops-job.is-other-connection { color: var(--ink-muted); background: var(--surface-pane); }
 .ops-job.is-other-connection > :not(.ops-job-head) { opacity: 0.65; }
 .ops-loop { background: var(--warn-soft); }

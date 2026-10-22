@@ -17,6 +17,7 @@ import { MassKillDialog } from "./MassKillDialog";
 import { PrivilegeGate, privilegeResult, useLoginUser, usePrivilege, type PrivilegeGateResult } from "./privileges";
 import { useWritePolicy } from "./Connections";
 import {
+  ActionStatus,
   AutoRefresh,
   closePopovers,
   NumberField,
@@ -162,6 +163,8 @@ export function SessionsView({
   // can still switch it.
   const [targetMode, setTargetMode] = useState<"connection" | "query" | undefined>(undefined);
   const [killing, setKilling] = useState(false);
+  const [killLeft, setKillLeft] = useState<{ id: number; startedAt: number; key: string; label: string } | null>(null);
+  const killSentAt = useRef(0);
   const [note, setNote] = useState<KillNote | null>(null);
   const reads = useConnectionReads(connection);
   const policy = useWritePolicy();
@@ -236,22 +239,24 @@ export function SessionsView({
     }
   }
   async function confirmKill(mode: "connection" | "query", reviewToken: string) {
-    if (!target) return;
+    if (!target || killing) return;
     setKilling(true);
+    killSentAt.current = Date.now();
     const sent = await sendKill(connection, target, mode, policy, reviewToken);
     setTarget(null);
+    setKillLeft(null);
     setKilling(false);
     // The answer is shown at once (and focused). The list is read again only
     // while the connection in use is still the one the Kill was confirmed for
     // (checked now, after the await, not with this render's connection);
     // after a switch there is nothing of that server to show.
     const reread = !!target.via && reads.currentKey() === target.via.key && !sent.refresh;
-    const shown: KillNote = { ...sent, mode, outcome: [] };
-    setNote({ ...shown, refreshing: reread });
+    const shown: KillNote = { ...sent, mode, outcome: [], refreshing: reread };
+    setNote(shown);
     window.setTimeout(() => noteRef.current?.focus(), 0);
     if (!reread) return;
     await load(scope === "active", true);
-    setNote((n) => (n && n.status === shown.status && n.message === shown.message ? shown : n));
+    setNote((current) => current === shown ? { ...shown, refreshing: false } : current);
   }
 
   /** Open the Kill sheet for *x*; focus returns to *opener* when it closes.
@@ -659,15 +664,20 @@ export function SessionsView({
       }
       onRefresh={() => void load()}
       refreshDisabled={busy}
-      loading={!!loading}
+      loading={!!reads.loading}
       otherConnection={other}
       inspector={inspector}
       inspectorEmpty={<p>Select a session to see its statement, its transaction, Show plan and Kill.</p>}
-      status={<><ViewStatus loading={loading} error={error} />{note && <KillResultNote note={note} noteRef={noteRef} onDismiss={() => setNote(null)} onRefresh={() => void load(scope === "active", true)} />}</>}
+      status={<><ViewStatus loading={loading} error={error}
+        onStop={reads.loading ? reads.stop : undefined}
+        onRetry={reads.error ? () => void load(scope === "active") : undefined} doneAt={reads.doneAt} />
+        {killLeft && <div className="view-status"><ActionStatus state={{ phase: "pending", startedAt: killLeft.startedAt,
+          message: `Waiting for the reply to the KILL of connection ${killLeft.id}${killLeft.key !== reads.key ? ` on ${killLeft.label}` : ""}. Its outcome shows here.` }} /></div>}
+        {note && <KillResultNote note={note} currentKey={reads.key} noteRef={noteRef} onDismiss={() => setNote(null)} onRefresh={() => void load(scope === "active", true)} />}</>}
     >
       <div ref={root}>
 
-        {target && (
+        {target && !killLeft && (
           <KillDialog
             target={target}
             busy={killing}
@@ -677,6 +687,11 @@ export function SessionsView({
               window.setTimeout(() => trigger.current?.focus(), 0);
             }}
             onConfirm={(mode, token) => void confirmKill(mode, token)}
+            onLeave={() => {
+              const via = target.via || killVia(connection);
+              setKillLeft({ id: target.connection_id, startedAt: killSentAt.current, key: via.key, label: via.label });
+              trigger.current?.focus();
+            }}
           />
         )}
         {massKillOpen && report && (
@@ -686,9 +701,9 @@ export function SessionsView({
             serverIdentity={report.server_identity}
             onClose={() => setMassKillOpen(false)}
             onSuccess={(n) => {
-              setMassKillOpen(false);
               setNote(n);
-              void load(scope === "active", true);
+              if (n.status !== "pending") void load(scope === "active", true);
+              if (!n.late) window.setTimeout(() => noteRef.current?.focus(), 0);
             }}
           />
         )}

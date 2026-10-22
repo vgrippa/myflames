@@ -6,7 +6,7 @@
 // lifecycle, editor and network endpoint is mocked. For each action the
 // endpoint it calls is held, then answered three ways:
 //   ok     held, then answered (a delayed reply),
-//   error  held, then answered with HTTP 400 (a failing reply),
+//   error  held, then answered with HTTP 400 (or the scenario's errorStatus),
 //   hang   never answered (the page clock is moved on to reach "slow").
 // Each run asserts, measured in the page so a loaded machine does not skew it:
 //   - a visible change within 150 ms of the click,

@@ -224,7 +224,7 @@ try {
   assert.deepEqual({ op: declined[0]?.operation, statements: declined[0]?.statements }, { op: "cluster_action", statements: R["plan-switchover"].statements });
   assert.equal(sends.length, 0, "nothing sent on Escape");
   // Confirm: the same sheet follows the send (the shared review, ActionReview.tsx):
-  // Applying… on a button that cannot be clicked twice, the statement Sent
+  // Sending… on a button that cannot be clicked twice, the statement Sent
   // until the server answers, then Done, what changed and Close.
   await page.evaluate(() => [...document.querySelectorAll(".view-inspector .review-actions button")].find((b) => b.textContent.trim() === "Make primary…").click());
   await page.waitForSelector("dialog.action-review[open]", { visible: true });
@@ -232,7 +232,7 @@ try {
   await page.waitForFunction(() => /Sent\. Waiting for the server's answer/.test(document.querySelector("dialog.action-review[open] .action-phase")?.textContent || ""));
   const applying = await page.$eval("dialog.action-review[open]", (d) => ({ confirm: d.querySelector(".sheet-actions button:last-child").textContent,
     ariaDisabled: d.querySelector(".sheet-actions button:last-child").getAttribute("aria-disabled"), steps: [...d.querySelectorAll(".action-steps li")].map((li) => li.dataset.state) }));
-  assert.deepEqual(applying, { confirm: "Applying…", ariaDisabled: "true", steps: ["sent"] });
+  assert.deepEqual(applying, { confirm: "Sending…", ariaDisabled: "true", steps: ["sent"] });
   await page.waitForSelector("dialog.action-review[open] .action-outcome");
   const answered = await page.$eval("dialog.action-review[open]", (d) => ({ outcome: d.querySelector(".action-outcome").textContent,
     steps: [...d.querySelectorAll(".action-steps li")].map((li) => li.dataset.state),

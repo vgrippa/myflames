@@ -15,9 +15,9 @@ export async function reviewedActionsUnit() {
     tsconfigRaw: { compilerOptions: { jsx: "react" } },
   });
   for (const outcome of ["done", "partial", "unknown", "refused", "error", "lost"]) {
-    for (const switchTo of [null, "B", "ABA"]) {
+    for (const switchTo of [null, "B", "ABA"]) for (const leave of [false, true]) {
       const slots = [], effects = [];
-      let cursor = 0, resolve, reject, sent = 0, refreshed = 0, followed = 0;
+      let cursor = 0, resolve, reject, sent = 0, refreshed = 0, followed = 0, declined = 0;
       const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
       class ApiError extends Error { constructor(message, status) { super(message); this.status = status; } }
       const context = {
@@ -40,7 +40,7 @@ export async function reviewedActionsUnit() {
           }
         },
         connectionKey: (c) => c.host, connectionLabel: (c) => c.host,
-        useWritePolicy: () => null, recordDeclined: async () => {}, api: async () => ({}), ApiError,
+        ActionStatus: "ActionStatus", useWritePolicy: () => null, recordDeclined: async () => { declined++; }, api: async () => ({}), ApiError,
       };
       vm.runInNewContext(code, context);
       const hook = context.module.exports.useReviewedActions;
@@ -58,8 +58,19 @@ export async function reviewedActionsUnit() {
       await value.review("save", async () => plan);
       value = render();
       reviewSheet(value).props.onConfirm();
-      render();
+      value = render();
       assert.equal(sent, 1);
+      if (leave) {
+        reviewSheet(value).props.onLeave();
+        value = render();
+        assert.equal(reviewSheet(value), undefined, "Close hides only the sheet");
+        assert.equal(value.busy, true, "the send is still pending");
+        const status = value.sheet.props.children.find((n) => n?.type === "ActionStatus");
+        assert.equal(status.props.state.phase, "pending");
+        await value.review("again", async () => plan);
+        assert.equal(reviewSheet(render()), undefined, "no second review while the send waits");
+        assert.equal(declined, 0, "Close is not a declined write");
+      }
       if (switchTo) {
         connection = { host: "B" }; render();
         if (switchTo === "ABA") { connection = { host: "A" }; render(); }
@@ -76,6 +87,10 @@ export async function reviewedActionsUnit() {
         assert.equal(value.error, "");
         assert.equal(refreshed, 0, "no refresh using the replacement connection");
         assert.equal(value.busy, false, "a stale completed send must release the review flow");
+      } else if (leave) {
+        assert.equal(sheet, undefined, "a late reply never reopens the sheet");
+        assert.equal(value.busy, false, "the answered send releases the review flow");
+        assert.equal(value.result.value.status, outcome === "lost" ? "unknown" : outcome === "error" ? "refused" : outcome);
       } else {
         assert.ok(sheet?.props.run.result, `${outcome}: current connection keeps its answered sheet`);
         assert.equal(!!sheet.props.onNext, outcome === "done");
@@ -84,5 +99,5 @@ export async function reviewedActionsUnit() {
       assert.equal(sent, 1, "no retry");
     }
   }
-  console.log("proxysql: reviewed action hook regressions ok");
+  console.log("reviewed action hook: 36 outcome/scope/Close cases passed");
 }

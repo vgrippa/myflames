@@ -49,7 +49,7 @@ import {
   type ActiveConnection,
 } from "./Connections";
 import type { DigestAction } from "./SlowQueries";
-import { closePopovers, ColumnStoreContext, Disclosure, ExportMenu, NotesButton, Popover, Segmented, Select, useColumnStore, useFocusScope, type ColumnPrefs } from "./kit";
+import { ActionButton, ActionStatus, useAction, closePopovers, ColumnStoreContext, Disclosure, ExportMenu, NotesButton, Popover, Segmented, Select, useColumnStore, useFocusScope, type ColumnPrefs } from "./kit";
 import { changeExact, changeText, matchText, pairTitle, severityText, statusText } from "./compareText";
 import {
   defaultLab,
@@ -242,8 +242,13 @@ function App() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [importOpen, setImportOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [exporting, setExporting] = useState(false);
+  const [working, setBusy] = useState(false);
+  const sampleAction = useAction();
+  const saveAction = useAction();
+  const busy = working || saveAction.pending;
+  const exportAction = useAction();
+  const exporting = exportAction.pending;
+  const exportRetry = useRef<(() => void) | null>(null);
   const [search, setSearch] = useState("");
   const [beforeId, setBeforeId] = useState("");
   const [afterId, setAfterId] = useState("");
@@ -698,10 +703,10 @@ function App() {
       })
       .finally(() => setReady(true));
   }, []);
-  const analyze = async (raw: string, capture?: Capture) =>
+  const analyze = async (raw: string, capture?: Capture, signal?: AbortSignal) =>
     api<
       Pick<Plan, "analysis" | "operators" | "query" | "teach_hooks" | "capture">
-    >("analyze", { plan: raw, capture });
+    >("analyze", { plan: raw, capture }, signal);
   /**
    * Analyze and add a plan. `open: false` adds it without leaving the
    * current screen (Explain top N). `wait: true` queues behind an import in
@@ -711,7 +716,7 @@ function App() {
     raw: string,
     planName: string,
     capture?: Capture,
-    options: { open?: boolean; wait?: boolean; cancelled?: () => boolean; origin?: "sample" } = {},
+    options: { open?: boolean; wait?: boolean; cancelled?: () => boolean; origin?: "sample"; signal?: AbortSignal } = {},
   ): Promise<Plan | undefined> {
     if (importLock.current) {
       if (!options.wait) return undefined;
@@ -725,8 +730,8 @@ function App() {
     setBusy(true);
     setError("");
     try {
-      const result = await analyze(raw, capture);
-      if (options.cancelled?.()) return undefined;
+      const result = await analyze(raw, capture, options.signal);
+      if (options.signal?.aborted || options.cancelled?.()) return undefined;
       const plan: Plan & { origin?: "sample" } = {
         ...result,
         raw,
@@ -748,7 +753,7 @@ function App() {
       if (options.origin !== "sample") unsavedWorkspaceContent.current = true;
       return plan;
     } catch (e) {
-      setError(message(e));
+      if (options.origin !== "sample" && !options.signal?.aborted) setError(message(e));
       throw e;
     } finally {
       setBusy(false);
@@ -833,6 +838,8 @@ function App() {
       })),
     };
   }
+  const currentInvestigation = useRef(() => ({ id: savedId, value: makeBundle() }));
+  currentInvestigation.current = () => ({ id: savedId, value: makeBundle() });
   function backupUnsaved() {
     download(
       JSON.stringify(makeBundle(), null, 2),
@@ -1200,24 +1207,24 @@ function App() {
     }
   }
   async function save(): Promise<boolean> {
-    setBusy(true);
+    // The hook's synchronous guard covers a second click before React renders.
+    if (busy || saveAction.pending) return false;
     setError("");
-    try {
-      const r = await api<Bundle>("investigations/save", {
-        id: savedId,
-        value: makeBundle(),
-      });
-      setSavedId(r.id);
-      setSavedRevision((n) => n + 1);
-      setDirty(false);
-      setNotice("Investigation saved on this computer.");
-      return true;
-    } catch (e) {
-      setError(message(e));
+    const snapshot = { id: savedId, value: makeBundle() };
+    const result = await saveAction.run(() => api<Bundle>("investigations/save", snapshot),
+      { pending: "Saving the investigation…", done: "Investigation saved on this computer.", write: true });
+    if (!result.ok) return false;
+    setSavedRevision((n) => n + 1);
+    // Close leaves the request running. A reply for an older notebook must
+    // not mark changes made since then (or another investigation) as saved.
+    if (JSON.stringify(currentInvestigation.current()) !== JSON.stringify(snapshot)) {
+      saveAction.show("done", `Saved “${snapshot.value.name}” on this computer. Later workspace changes remain unsaved.`);
       return false;
-    } finally {
-      setBusy(false);
     }
+    setSavedId(result.value.id);
+    setDirty(false);
+    setNotice("Investigation saved on this computer.");
+    return true;
   }
   function removePlan(id: string) {
     const removed = plans.find((p) => p.id === id);
@@ -1231,45 +1238,28 @@ function App() {
     if (id === baseline) setBaseline(rest[0]?.id || "");
     if (savedId || dirty) setDirty(true);
   }
-  async function exportHtml() {
-    if (mode === "compare") {
-      if (comparison && !loading)
-        download(comparison.html, "myflames-comparison.html", "text/html");
-      return;
-    }
-    if (!active) return;
-    setExporting(true);
-    try {
-      const r = await api<{ html: string }>("report", {
-        plan: active.raw,
-        view,
-      });
-      download(
-        r.html,
-        `${active.name.replace(/\.json$/i, "")}-report.html`,
-        "text/html",
-      );
-    } catch (e) {
-      setError(message(e));
-    } finally {
-      setExporting(false);
-    }
+  function exportHtml() {
+    if (exporting || (mode === "compare" ? !comparison || loading : !active)) return;
+    // Retrying uses the plan and view that failed, even after another is selected.
+    const snapshot: { html: string; name: string } | { raw: string; view: View; name: string } = mode === "compare" ? { html: comparison!.html, name: "myflames-comparison.html" }
+      : { raw: active!.raw, view, name: `${active!.name.replace(/\.json$/i, "")}-report.html` };
+    const run = () => { void exportAction.run(async (signal) => {
+      const html = "html" in snapshot ? snapshot.html : (await api<{ html: string }>("report", { plan: snapshot.raw, view: snapshot.view }, signal)).html;
+      if (!signal.aborted) download(html, snapshot.name, "text/html");
+    }, { pending: "Building the HTML report…", done: `Saved ${snapshot.name}.` }); };
+    exportRetry.current = run;
+    run();
   }
   function exportJson() {
-    const data =
-      mode === "compare"
-        ? loading
-          ? undefined
-          : comparison?.analysis
-        : active && exportedAnalysis(active.analysis);
-    if (data)
-      download(
-        JSON.stringify(data, null, 2),
-        mode === "compare"
-          ? "comparison.json"
-          : `${active!.name.replace(/\.json$/i, "")}-analysis.json`,
-        "application/json",
-      );
+    if (exporting) return;
+    const data = mode === "compare" ? loading ? undefined : comparison?.analysis : active && exportedAnalysis(active.analysis);
+    if (!data) return;
+    const filename = mode === "compare" ? "comparison.json" : `${active!.name.replace(/\.json$/i, "")}-analysis.json`;
+    const run = () => { void exportAction.run(async () => {
+      download(JSON.stringify(data, null, 2), filename, "application/json");
+    }, { pending: "Exporting JSON…", done: `Saved ${filename}.` }); };
+    exportRetry.current = run;
+    run();
   }
   const measured =
     typeof active?.operators[0]?.details.actual_last_row_ms === "number";
@@ -1546,8 +1536,11 @@ function App() {
     setError("");
     setImportOpen(true);
   };
-  const openSample = () =>
-    importPlan(JSON.stringify(example), "sample-plan.json", undefined, { origin: "sample" }).catch(() => {});
+  const openSample = () => {
+    if (busy) return;
+    void sampleAction.run((signal) => importPlan(JSON.stringify(example), "sample-plan.json", undefined, { origin: "sample", signal }),
+      { pending: "Analyzing the sample plan…" });
+  };
   // Account and privileges of the connection in use (picker and palette).
   const [accountOpen, setAccountOpen] = useState(false);
   const picker = (
@@ -1766,7 +1759,7 @@ function App() {
                 {(dirty || savedId) && <span className={`save-state${dirty ? " unsaved" : ""}`}>
                   {dirty ? "Unsaved changes" : "Investigation saved"}
                 </span>}
-                <button className="button small window-save" disabled={busy} onClick={() => { setError(""); setNotebookOpen(true); }} aria-label="Save investigation" title="Save investigation: name, notes and tags" aria-haspopup="dialog" aria-expanded={notebookOpen}>
+                <button className="button small window-save" disabled={busy || saveAction.pending} onClick={() => { setError(""); saveAction.reset(); setNotebookOpen(true); }} aria-label="Save investigation" title="Save investigation: name, notes and tags" aria-haspopup="dialog" aria-expanded={notebookOpen}>
                   <Icon name="investigation" /><span>Save investigation</span>
                 </button>
               </>
@@ -1819,7 +1812,7 @@ function App() {
               : undefined
           }
         >
-          {error && !importOpen && (
+          {error && !importOpen && !notebookOpen && (
             <div role="alert" className="error">
               {error}
               <button
@@ -2123,7 +2116,7 @@ function App() {
             </div>
           )}
           {ready && mode === "library" && <Library onOpen={openBundle} openPlanCount={plans.length}
-            onSaveInvestigation={() => { setError(""); setNotebookOpen(true); }} savedRevision={savedRevision} />}
+            onSaveInvestigation={() => { setError(""); saveAction.reset(); setNotebookOpen(true); }} savedRevision={savedRevision} />}
           {ready && mode === "audit" && <AuditLog key={auditFocus} profiles={profiles} focusId={auditFocus} />}
           <Teach
             key={resetKey}
@@ -2152,7 +2145,7 @@ function App() {
                     <button className="text-button" onClick={() => { openImport(); closePopovers(); }}>Import plan</button>
                     <button className="text-button" onClick={() => { setMode("compare"); closePopovers(); }}>Compare plans</button>
                     <button className="text-button" onClick={() => { exportJson(); closePopovers(); }}>Export JSON</button>
-                    <button className="text-button" disabled={exporting} onClick={() => { exportHtml(); closePopovers(); }}>Export HTML</button>
+                    <ActionButton busy={exporting} busyLabel="Exporting…" onClick={exportHtml}>Export HTML</ActionButton>
                     <dl className="plan-menu-facts" aria-label="Plan measurements">
                       <Stat hint="Total plan iterator time" label="Execution time" value={!measured ? "Not executed" : time(summary!.total_time_ms)} />
                       <Stat hint="Estimate across leaf operators" label="Rows examined ≈" value={number(summary!.rows_examined_estimate)} />
@@ -2180,11 +2173,15 @@ function App() {
                 Import a plan, drop an EXPLAIN JSON file here, or capture one
                 in the Query editor.
               </p>
-              <button className="button" disabled={busy} onClick={openSample}>
+              <ActionButton busy={sampleAction.pending} busyLabel="Opening…" disabled={!sampleAction.pending && busy} onClick={openSample}>
                 Explore sample plan
-              </button>
+              </ActionButton>
+              <ActionStatus keepLine state={sampleAction} onStop={sampleAction.cancel} stopLabel="Stop waiting" onRetry={openSample} />
             </section>
           )}
+          {(mode === "inspect" || mode === "compare") && <ActionStatus className="plan-export-status" state={exportAction}
+            onRetry={() => exportRetry.current?.()} onStop={exportAction.cancel} stopLabel="Stop waiting" />}
+          {!notebookOpen && <ActionStatus state={saveAction} />}
           {mode === "inspect" && active && (
             <>
               <div className="plan-screen">
@@ -2365,8 +2362,9 @@ function App() {
           {ready && notebookOpen && plans.length > 0 && (mode === "inspect" || mode === "compare" || mode === "library") && (
             <NotebookSheet
               open={notebookOpen}
-              busy={busy}
+              busy={saveAction.pending}
               error={notebookOpen ? error : ""}
+              action={saveAction}
               onClose={() => setNotebookOpen(false)}
               onSave={async () => { if (await save()) setNotebookOpen(false); }}
               onExport={() =>
@@ -2495,7 +2493,7 @@ function App() {
                 </label>
                 </div>
                 {comparison && !loading && (
-                  <PlanExports label="Export comparison" onJson={exportJson} onHtml={exportHtml} />
+                  <PlanExports label="Export comparison" onJson={exportJson} onHtml={exportHtml} exporting={exporting} />
                 )}
               </header>
               {!before || !after || before.id === after.id ? (
@@ -2654,11 +2652,11 @@ function App() {
 /** Save investigation: the notebook (name, plan name, baseline, tags and
  * notes) in a sheet over the plan, saved with Save. Its fields edit the
  * workspace directly, so Close keeps them as unsaved changes. */
-function NotebookSheet({ open, busy, error, onClose, onSave, onExport, children }: {
-  open: boolean; busy: boolean; error: string; onClose: () => void; onSave: () => void; onExport: () => void; children: ReactNode;
+function NotebookSheet({ open, busy, error, action, onClose, onSave, onExport, children }: {
+  open: boolean; busy: boolean; error: string; action: ReturnType<typeof useAction>; onClose: () => void; onSave: () => void; onExport: () => void; children: ReactNode;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
-  useFocusScope(dialog, { open, onClose: () => { if (!busy) onClose(); } });
+  useFocusScope(dialog, { open, onClose });
   return (
     <dialog
       ref={dialog}
@@ -2667,27 +2665,28 @@ function NotebookSheet({ open, busy, error, onClose, onSave, onExport, children 
       aria-labelledby="notebook-title"
       onCancel={(e) => {
         e.preventDefault();
-        if (!busy) onClose();
+        onClose();
       }}
     >
       <div className="dialog-heading">
         <h2 id="notebook-title">Save investigation</h2>
       </div>
       {error && <div className="error" role="alert">{error}</div>}
-      {children}
+      <fieldset disabled={busy}>{children}</fieldset>
+      <ActionStatus state={action} slowText="No reply yet. Close keeps the save running; its outcome appears in the window." />
       <div className="dialog-actions sheet-actions">
         <button type="button" className="text-button notebook-export" onClick={onExport}>Export investigation bundle</button>
-        <button type="button" className="button" disabled={busy} onClick={onClose}>Close</button>
-        <button type="button" className="button primary" disabled={busy} onClick={onSave}>Save</button>
+        <button type="button" className="button" onClick={onClose}>Close</button>
+        <ActionButton primary busy={busy} busyLabel="Saving…" onClick={onSave}>Save</ActionButton>
       </div>
     </dialog>
   );
 }
 /** A single export home for both Plans modes (the shared Export pull-down). */
 function PlanExports({ label, onJson, onHtml, exporting = false }: { label: string; onJson: () => void; onHtml: () => void; exporting?: boolean }) {
-  return <ExportMenu label={label} className="plan-exports" formats={[
+  return <ExportMenu label={label} className="plan-exports" busy={exporting} busyLabel="Exporting…" formats={[
     { key: "json", label: "JSON", onSelect: onJson },
-    { key: "html", label: "HTML report", onSelect: onHtml, disabled: exporting },
+    { key: "html", label: "HTML report", onSelect: onHtml, busy: exporting, busyLabel: "Exporting…" },
   ]} />;
 }
 

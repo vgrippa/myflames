@@ -115,8 +115,20 @@ if (process.argv.includes("--unit")) {
       assert.deepEqual(sent, intents.slice(0, 2).map(i => i.name));
       // A thrown request may have run on the server: it is reported as unknown, never unchanged.
       assert.deepEqual(results.map(r => r.status), ["changed", stopStatus === "error" ? "unknown" : stopStatus, "not_sent"]);
-      if (stopStatus === "error") assert.match(results[1].message, /outcome is unknown/);
+      if (stopStatus === "error") assert.match(results[1].message, /No reply arrived.*It may have run, so it is not sent again/);
     }
+    // A server refusal has a known failed outcome, even though the API throws.
+    // Stop after it and retain the first change; never send the queued third row.
+    const refusedWrites = [];
+    const refused = await applyParameterBatch(staged, intents, via, plans, undefined, () => via.key,
+      async (intent) => {
+        refusedWrites.push(intent.name);
+        if (refusedWrites.length === 2) throw Object.assign(new Error("The reviewed value changed."), { status: 400 });
+        return { name: intent.name, status: "changed", message: "Read-back result" };
+      });
+    assert.deepEqual(refusedWrites, intents.slice(0, 2).map(intent => intent.name));
+    assert.deepEqual(refused.map(result => result.status), ["changed", "failed", "not_sent"]);
+    assert.equal(refused[1].message, "The reviewed value changed.");
     let writes = 0;
     for (const check of [async () => ({ ...connection, read_only: true }), async () => { throw new Error("Policy unavailable"); }]) {
       const results = await applyParameterBatch(staged, intents, via, plans, check, () => via.key, async () => { writes++; });

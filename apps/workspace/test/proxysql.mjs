@@ -13,7 +13,7 @@
 // Save to disk, a lost reply shown as Outcome unknown and never retried, the
 // sidebar muted only for the connection that was read, another connection's
 // report greyed with its changes off, and the 720x520 window.
-// After Confirm the sheet follows the send: Applying… on a button that cannot
+// After Confirm the sheet follows the send: Sending… on a button that cannot
 // be clicked twice, each statement Sent (never Done) until the server
 // answers, then the outcome, what changed, the Audit log record and, for an
 // unknown outcome, what to check. Query digests reads on its own only when the
@@ -216,7 +216,7 @@ try {
   assert.equal(declined.length, 2, "Cancel records a declined attempt");
 
   // Confirm: the sheet follows the send. While the server works on it the
-  // button reads Applying… and cannot be clicked twice, Cancel and Escape do
+  // button reads Sending… and cannot be clicked twice, Cancel and Escape do
   // nothing, and each statement is Sent, never Done; then the outcome, what
   // changed and the Audit log record. Close leaves the result panel, which
   // offers the separate Save to disk.
@@ -230,7 +230,7 @@ try {
   const checking = await page.$eval(sheet, (d) => ({
     confirm: d.querySelector(".sheet-actions button:last-child").textContent, ariaDisabled: d.querySelector(".sheet-actions button:last-child").getAttribute("aria-disabled"),
     cancel: d.querySelector(".sheet-actions button:first-child").disabled, steps: [...d.querySelectorAll(".action-steps li")].map((li) => li.dataset.state) }));
-  assert.deepEqual(checking, { confirm: "Applying…", ariaDisabled: "true", cancel: true, steps: ["waiting", "waiting"] });
+  assert.deepEqual(checking, { confirm: "Sending…", ariaDisabled: "true", cancel: true, steps: ["waiting", "waiting"] });
   progressAnswer = () => ({ status: 200, body: R["progress-sending"] });
   await page.waitForFunction((s) => /Sent\. Waiting for the server's answer/.test(document.querySelector(`${s} .action-phase`)?.textContent || ""), {}, sheet);
   const sending = await page.$eval(sheet, (d) => ({ steps: [...d.querySelectorAll(".action-steps li")].map((li) => li.dataset.state),

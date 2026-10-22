@@ -4,12 +4,15 @@
 // click and the first visible change, and the scenarios (how to reach each
 // action, the endpoint it calls, and what each reply must show).
 import assert from "node:assert/strict";
+import { batchBScenarios } from "./action-feedback-batch-b.mjs";
+import { batchC } from "./action-feedback-batch-c.mjs";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chooseConnection, chooseView, openConnectionPicker } from "./chrome-helpers.mjs";
+import { operationScenarios } from "./action-feedback-operations.mjs";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const fixtures = fileURLToPath(new URL("./fixtures/", import.meta.url));
@@ -37,6 +40,11 @@ for (const [p, file] of [
 F["/api/live/sessions"].server_identity = { server_uuid: "feedback-server-uuid" };
 const LOCKS_DDL = await load("locks-mysql-26.7-ddl.json");
 LOCKS_DDL.server_identity = { server_uuid: "feedback-locks-uuid" };
+const OPERATION_FIXTURES = {
+  variable: await load("variable-mysql-8.4-global.json"), parameters: F["/api/live/config"],
+  replication: F["/api/live/replication"], skipped: await load("replication-mysql-8.4-skip.json"),
+  running: await load("replication-loop-running.json"), stopped: await load("replication-loop-stopped.json"),
+};
 
 let runN = 0;
 function editorSession(over = {}) {
@@ -408,6 +416,9 @@ const LIVE_VIEWS = ["/api/live/health", "/api/live/innodb", "/api/live/error-log
   "/api/lifecycle/tools", "/api/schema-diagram/read", "/api/live/report"];
 
 export const SCENARIOS = [
+  ...operationScenarios({ click, named, visible, confirmButton, goPlace, goView, waitText, waitNotBusy,
+    pause, respond, heldFor, switchConnection, escapeRe, viewRefresh }, OPERATION_FIXTURES),
+  ...batchC({ goPlace, goView, visible, named, click, confirmButton, waitText, waitNotBusy, pause, respond, answer, viewRefresh }),
   // ---- Server, Workload and Cluster views -------------------------------------------
   viewRefresh("health", "server", "/api/live/health", { label: "Health" }),
   viewRefresh("innodb", "server", "/api/live/innodb", { label: "InnoDB" }),
@@ -622,10 +633,8 @@ export const SCENARIOS = [
   },
   // ---- Query editor ------------------------------------------------------------------
   {
-    // The first run of a tab: the results area says it runs (QueryLab still
-    // disables Run, so focus is not checked here; see the follow-ups).
-    name: "editor-first-run", label: "Run (first run in a tab)", paths: ["/api/editor/run"], focus: false,
-    busy: ".query-lab .results-pane",
+    // The first run preserves the action's focus and shows progress in results.
+    name: "editor-first-run", label: "Run (first run in a tab)", paths: ["/api/editor/run"], replyDelayMs: 2000,
     setup: async ({ page }) => { await goPlace(page, "query"); await page.locator('[aria-label="SQL editor"]').fill("SELECT 1"); await pause(400); },
     target: "[data-action=run]",
     ok: async ({ page }) => waitText(page, ".query-lab .results-tabs [role=tab]", /Result 1/),
@@ -635,8 +644,7 @@ export const SCENARIOS = [
   {
     // A tab that already has a result: the run is announced at its end, and a
     // run refused with an error never announces the previous run's counts.
-    name: "editor-run-again", label: "Run (a tab with a result)", paths: ["/api/editor/run"], focus: false,
-    busy: ".query-lab .results-pane",
+    name: "editor-run-again", label: "Run (a tab with a result)", paths: ["/api/editor/run"], replyDelayMs: 2000,
     setup: async ({ page }) => {
       await goPlace(page, "query"); await page.locator('[aria-label="SQL editor"]').fill("SELECT 1"); await pause(300);
       await page.click("[data-action=run]");
@@ -798,7 +806,15 @@ export const SCENARIOS = [
       await page.waitForSelector("dialog.mass-kill-confirm[open]");
     },
     target: confirmButton("dialog.mass-kill-confirm[open]"),
-    ok: async ({ page }) => waitText(page, ".server-view[data-view=sessions] .kill-result", /^Done\. Kill sessions finished: \d+ killed/),
+    afterClick: async ({ ctx }) => {
+      ctx.hold.add("/api/live/sessions");
+      ctx.massKillReads = ctx.log.filter((entry) => entry.path === "/api/live/sessions").length;
+    },
+    ok: async ({ page, ctx }) => {
+      await waitText(page, ".server-view[data-view=sessions] .kill-result", /^Done\. Kill sessions finished: \d+ killed/);
+      await focusKillOutcome(page);
+      await heldFor(ctx, ["/api/live/sessions"]);
+    },
     error: async ({ page }) => waitText(page, ".mass-kill-error[role=alert]", /Could not send the KILL statements: Simulated failure/),
     hang: async ({ page, ctx }) => {
       await waitText(page, "dialog.mass-kill-confirm[open] .sheet-progress", /^No reply yet/);
@@ -806,6 +822,8 @@ export const SCENARIOS = [
       await click(page, "Close", "dialog.mass-kill-confirm[open]");
       await page.waitForFunction(() => !document.querySelector("dialog.mass-kill-dialog"));
       await waitText(page, ".server-view[data-view=sessions] .kill-result", /^Waiting for the reply\./);
+      assert.equal(ctx.log.filter((entry) => entry.path === "/api/live/sessions").length, ctx.massKillReads,
+        "closing a pending bulk send does not reread Processlist");
       // One bulk KILL at a time: a dialog opened meanwhile says so and sends nothing.
       await page.click("[data-action=kill-sessions]");
       await page.waitForSelector("dialog.mass-kill-dialog[open]");
@@ -813,7 +831,8 @@ export const SCENARIOS = [
       await click(page, "Runaway queries (> 30s)"); await pause(200);
       assert.equal(await page.$eval(".mass-kill-footer-actions .action-button", (e) => e.disabled), true, "Kill N waits for the earlier send");
       // The earlier reply arrives: it shows in this dialog, which stays open,
-      // and reaches Processlist, naming its connection, when this one closes.
+      // and reaches Processlist when this one closes. The connection is still
+      // the same, so the note must not suggest it belongs to another one.
       const bulk = ctx.held.splice(ctx.held.findIndex((h) => h.path === "/api/live/kill/bulk"), 1)[0];
       respond(bulk.request, 200, DEFAULTS["/api/live/kill/bulk"](bulk.body));
       await waitText(page, ".mass-kill-earlier.is-answered", /^The earlier Kill sessions request on .+ answered: Done\. Kill sessions finished: \d+ killed/);
@@ -824,7 +843,8 @@ export const SCENARIOS = [
       await click(page, "Cancel", ".mass-kill-footer-actions");
       await page.waitForFunction(() => !document.querySelector("dialog.mass-kill-dialog"));
       await waitText(page, ".server-view[data-view=sessions] .kill-result", /^Done\. Kill sessions finished: \d+ killed/);
-      await waitText(page, ".server-view[data-view=sessions] .kill-result .kill-result-on", /^Sent on .+\.$/);
+      assert.equal(await page.$(".server-view[data-view=sessions] .kill-result .kill-result-on"), null,
+        "same-connection late note does not repeat its origin");
     },
   },
   {
@@ -899,6 +919,8 @@ export const SCENARIOS = [
     error: async ({ page }) => waitText(page, ".export-status", /Simulated failure/),
     hang: async ({ page }) => waitText(page, ".export-status .action-elapsed", /^\d{2,} s so far$/),
   },
+  ...batchBScenarios({ goPlace, goView, visible, named, click, confirmButton, waitText, waitNotBusy, pause,
+    viewRefresh, editorSession, editorRun, switchConnection, respond }),
 ];
 
 /** After a switch the Processlist report is greyed until it is read on the
@@ -909,6 +931,10 @@ async function readSessionsHere(page) {
   if (await page.$eval(view, (e) => e.dataset.otherConnection === "true")) await page.click(`${view} [data-action=refresh]`);
   await page.waitForFunction((v) => document.querySelector(v)?.dataset.otherConnection !== "true" &&
     document.querySelector("[data-action=kill-sessions]")?.disabled === false, { timeout: 8000 }, view);
+}
+async function focusKillOutcome(page) {
+  await page.waitForFunction(() => document.activeElement === document.querySelector(".server-view[data-view=sessions] .kill-result"),
+    { timeout: 3000 }).catch(() => { throw Error("Kill outcome does not have focus"); });
 }
 /** kill-sessions-unmounted: the connection is made read-only elsewhere while the send waits. */
 async function unmountedSend({ page, ctx }, status) {
@@ -942,6 +968,7 @@ export async function runOne(browser, s, mode, shots) {
   try {
     ctx = await openPage(browser, ws.url);
     Object.assign(ctx.mocks, s.mocks || {});
+    ctx.mode = mode;
     const { page } = ctx;
     await s.setup(ctx);
     await pause(250);
@@ -953,12 +980,14 @@ export async function runOne(browser, s, mode, shots) {
     const box = await handle.boundingBox();
     assert.ok(box, "the control is on screen");
     const x = box.x + box.width / 2, y = box.y + box.height / 2;
+    const clickedAt = Date.now();
     await page.mouse.click(x, y);
     if (s.double !== false) await page.mouse.click(x, y);
-    await heldFor(ctx, s.paths);
+    if (!s.local) await heldFor(ctx, s.paths);
     // Busy while it waits: on the control (or the region named by s.busy).
     const busySelector = s.busy || null;
-    if (busySelector) await page.waitForFunction((sel) => [...document.querySelectorAll(sel)].some((e) => e.getAttribute("aria-busy") === "true"), { timeout: 3000 }, busySelector)
+    if (s.local) await pause(50); // A synchronous download has no pending network request.
+    else if (busySelector) await page.waitForFunction((sel) => [...document.querySelectorAll(sel)].some((e) => e.getAttribute("aria-busy") === "true"), { timeout: 3000 }, busySelector)
       .catch(() => { throw Error(`not aria-busy while waiting: ${busySelector}`); });
     else {
       // The busy state can render a moment after the request leaves (a read
@@ -975,16 +1004,24 @@ export async function runOne(browser, s, mode, shots) {
       const focus = await page.evaluate(() => document.activeElement === document.body || !document.activeElement ? "body" : document.activeElement.outerHTML.slice(0, 80));
       assert.notEqual(focus, "body", "focus stays on a control, never the page");
     }
-    if (s.afterClick) await s.afterClick({ page, ctx });
-    await pause(350);
-    if (s.oneRequest !== false) {
+    if (s.afterClick) await s.afterClick({ page, ctx, mode });
+    await pause(s.replyDelayMs ?? s.delayMs ?? 350);
+    if (s.oneRequest !== false && !s.local) {
       const sent = ctx.log.slice(before).filter((e) => s.paths.includes(e.path)).length;
       assert.equal(sent, 1, `one request for ${s.double === false ? "the click" : "a double click"}`);
     }
+    if (mode !== "hang" && s.replyDelayMs) await pause(Math.max(0, s.replyDelayMs - (Date.now() - clickedAt)));
+    // A scenario can also hold the read after a successful write. Release only
+    // the action's paths; its result must show while that follow-up still waits.
+    const releaseAction = () => {
+      for (const p of s.paths) ctx.hold.delete(p);
+      const action = ctx.held.filter((entry) => s.paths.includes(entry.path));
+      ctx.held = ctx.held.filter((entry) => !s.paths.includes(entry.path));
+      return action;
+    };
     if (mode === "ok") {
       if (!s.skipAnswer) {
-        ctx.hold.clear();
-        for (const h of ctx.held.splice(0)) {
+        for (const h of releaseAction()) {
           if (s.respondOk === PASS) answer(ctx, h.path, h.body, h.request);
           else if (s.respondOk) respond(h.request, 200, s.respondOk(h.body));
           else answer(ctx, h.path, h.body, h.request);
@@ -993,12 +1030,14 @@ export async function runOne(browser, s, mode, shots) {
       await s.ok({ page, ctx });
     } else if (mode === "error") {
       if (!s.skipAnswer) {
-        ctx.hold.clear();
-        for (const h of ctx.held.splice(0)) respond(h.request, 400, { error: failure(h.path) });
+        for (const h of releaseAction()) {
+          if (s.respondError) await s.respondError(h.request);
+          else respond(h.request, s.errorStatus ?? 400, { error: failure(h.path) });
+        }
       }
       await s.error({ page, ctx });
     } else {
-      await page.evaluate((ms) => { window.__clockOffset += ms; }, SLOW_SHIFT_MS);
+      await page.evaluate((ms) => { window.__clockOffset += ms; }, s.slowShiftMs ?? SLOW_SHIFT_MS);
       await pause(1300);
       await s.hang({ page, ctx });
     }

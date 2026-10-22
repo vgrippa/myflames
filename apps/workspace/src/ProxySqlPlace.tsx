@@ -334,10 +334,14 @@ function ProxySqlView({ connection, disabled, report: bound, onReport, failure, 
         <p>Query digests lists the top digests in one order (slowest, most time, most frequent, highest rate, most rows sent) with filters, read with ORDER BY and LIMIT in Admin. Each one shows where the active query rules send it, evaluated here, next to the hostgroup it ran on.</p>
       </>}
       status={<>
-        <ViewStatus loading={reads.loading || digestReads.loading || (actions.planning ? "Reading the target for review…" : undefined)} error={failed || actions.error} />
+        <ViewStatus loading={reads.loading || digestReads.loading || (actions.planning ? "Reading the target for review…" : undefined)} error={failed || actions.error}
+          onStop={reads.loading ? reads.stop : digestReads.loading ? digestReads.stop : undefined}
+          onRetry={failed && !actions.error ? () => { void load(true); } : undefined} doneAt={Math.max(reads.doneAt, digestReads.doneAt)} />
         {shownResult && <ActionResult shown={shownResult} onClose={actions.clearResult}
           onNext={(id) => { actions.clearResult(); startModule(id); }}
           extra={<AfterLines after={shownResult.value.after} />} />}
+        {/* Close leaves progress here even while the inspector hides the list. */}
+        {actions.sheet}
       </>}>
       {report ? <>
         {failedOver && (
@@ -398,7 +402,6 @@ function ProxySqlView({ connection, disabled, report: bound, onReport, failure, 
           The ProxySQL Admin interface the connection in use reaches: backends, hostgroups, query rules and digests.
         </EmptyState>
       )}
-      {actions.sheet}
     </ViewLayout>
   );
 }

@@ -48,7 +48,7 @@ import {
 } from "./session";
 import { connectionKey, connectionLabel } from "./binding";
 import { Icon } from "./components";
-import { Checkbox, ConfirmSheet, EmptyState, IconButton, InfoPopover, NumberField, StatusPill, ToolbarButton, useWindowStatus, type Tone } from "./kit";
+import { ActionButton, ActionStatus, IDLE_ACTION, writeFailure, type ActionState, Checkbox, ConfirmSheet, EmptyState, IconButton, InfoPopover, NumberField, StatusPill, useWindowStatus, type Tone } from "./kit";
 import { useWritePolicy, TYPE_LABEL } from "./Connections";
 import { SqlEditor, type Range } from "./SqlEditor";
 import { ResultsPane, rowResults } from "./ResultsPane";
@@ -175,6 +175,12 @@ type Runtime = {
   runSql: string;
   running: boolean;
   stopping: boolean;
+  /** The per-tab control owning a request, including session opens and closes. */
+  operation: "" | "run" | "commit" | "rollback" | "open" | "close";
+  sessionFeedback: ActionState;
+  stopFeedback: ActionState;
+  /** One Stop per run, including a reply lost after KILL QUERY was sent. */
+  stopGen: number | null;
   note: string;
   noteError: boolean;
   /** Result columns marked binary for SQL export, per rows result. */
@@ -200,6 +206,10 @@ const blankRuntime = (): Runtime => ({
   runSql: "",
   running: false,
   stopping: false,
+  operation: "",
+  sessionFeedback: IDLE_ACTION,
+  stopFeedback: IDLE_ACTION,
+  stopGen: null,
   note: "",
   noteError: false,
   binary: {},
@@ -1256,7 +1266,7 @@ export const QueryLab = forwardRef<
       setError(problem);
       return;
     }
-    if (now.running) return;
+    if (now.running || now.operation || now.stopping) return;
     if (now.session?.ended) {
       setError("This tab's session ended. Choose Reconnect to start a new session.");
       return;
@@ -1281,19 +1291,33 @@ export const QueryLab = forwardRef<
     void send(t.id, "editor/run", payload, { runSql: sql });
   }
   async function send(id: string, path: string, payload: Record<string, unknown>, meta: SendMeta) {
+    const now = runtimeRef.current[id];
+    if (now?.running || now?.operation || now?.stopping) return;
     const isRun = path !== "editor/open";
+    const operation = meta.action || (isRun ? "run" : "open");
+    const pendingText = meta.action === "commit" ? "Committing…" : meta.action === "rollback" ? "Rolling back…"
+      : payload.safe_updates !== undefined && now?.session && !now.session.ended ? "Updating session settings…" : "Reconnecting…";
     const gen = (runtimeRef.current[id]?.gen ?? 0) + 1;
     // The connection of this request, before any reply: Stop uses it even
     // when the picker changes while the request is on its way.
-    patchRuntime(id, { running: isRun, note: "", noteError: false, gen, execConnection: payload.connection as Connection });
+    patchRuntime(id, { running: isRun, operation, note: "", noteError: false, gen, execConnection: payload.connection as Connection,
+      stopFeedback: IDLE_ACTION, stopGen: null,
+      sessionFeedback: operation === "run" ? IDLE_ACTION : { phase: "pending", message: pendingText, startedAt: Date.now(), endedAt: null } });
     let reply: EditorReply;
     try {
       reply = await api<EditorReply>(path, payload);
     } catch (e) {
-      patchRuntime(id, { running: false, execConnection: null });
+      patchRuntime(id, { running: false, operation: "", execConnection: null });
       const err = e as ApiError;
       denied(err, payload.connection as Connection);
-      setError(err.message);
+      if (meta.action) {
+        const failure = writeFailure(e, { audited: true });
+        patchRuntime(id, { sessionFeedback: { ...failure, message: failure.phase === "unknown" ? `Outcome unknown. ${failure.message}` : failure.message,
+          startedAt: null, endedAt: Date.now() } });
+      } else {
+        if (!isRun) patchRuntime(id, { sessionFeedback: { phase: "failed", message: err.message, startedAt: null, endedAt: Date.now() } });
+        else setError(err.message);
+      }
       return;
     }
     handle(id, path, payload, meta, reply, gen);
@@ -1322,7 +1346,7 @@ export const QueryLab = forwardRef<
     const previousSession = runtimeRef.current[id]?.session;
     adoptSession(id, reply.session, payload);
     denied(reply, payload.connection as Connection);
-    const done = { running: false, execConnection: null };
+    const done = { running: false, operation: "" as const, execConnection: null, sessionFeedback: IDLE_ACTION };
     if (reply.status === "needs_confirmation" && reply.confirmation) {
       patchRuntime(id, done);
       let again = "";
@@ -1426,7 +1450,7 @@ export const QueryLab = forwardRef<
       if (reply.session !== undefined) patchRuntime(id, { session: reply.session ?? null });
       const run = reply.run;
       if (!run || run.id !== runId) {
-        patchRuntime(id, { running: false, execConnection: null });
+        patchRuntime(id, { running: false, operation: "", execConnection: null, sessionFeedback: IDLE_ACTION });
         return;
       }
       if (run.state !== "running") {
@@ -1439,16 +1463,21 @@ export const QueryLab = forwardRef<
   }
   function finish(id: string, run: EditorRun, meta: SendMeta, session?: EditorSession | null) {
     if (run.error) denied(run.error, sessionConnectionOf(id));
-    patchRuntime(id, { running: false, stopping: false, execConnection: null, pollTrouble: false });
+    // A completed statement does not acknowledge a Stop still on its way.
+    patchRuntime(id, { running: false, operation: "", execConnection: null, pollTrouble: false });
     setHistoryTick((n) => n + 1);
     if (meta.action) {
       const word = meta.action === "commit" ? "Committed" : "Rolled back";
       if (run.state === "complete") {
+        patchRuntime(id, { sessionFeedback: IDLE_ACTION });
         note(id, `${word}.`);
         meta.after?.();
       } else {
         const err = run.error || run.results.find((r) => r.type === "error");
-        note(id, `${meta.action === "commit" ? "Commit" : "Roll back"} failed: ${(err && "message" in err && err.message) || run.message || run.state}`, true);
+        const unknown = run.state === "session_ended";
+        patchRuntime(id, { sessionFeedback: { phase: unknown ? "unknown" : "failed",
+          message: `${unknown ? "Outcome unknown" : `${meta.action === "commit" ? "Commit" : "Roll back"} failed`}: ${(err && "message" in err && err.message) || run.message || run.state}${unknown ? ". It is not sent again. Check the Audit log." : ""}`,
+          startedAt: null, endedAt: Date.now() } });
       }
       return;
     }
@@ -1482,19 +1511,23 @@ export const QueryLab = forwardRef<
   }
   async function stop(id = tab.id) {
     const now = runtimeRef.current[id];
-    if (!now?.running || now.stopping) return;
+    if (!now?.running || now.stopping || now.stopGen === now.gen) return;
     const via = sessionConnectionOf(id);
     if (!via) {
       setError(noSessionConnection(id));
       return;
     }
-    patchRuntime(id, { stopping: true });
+    patchRuntime(id, { stopping: true, stopGen: now.gen,
+      stopFeedback: { phase: "pending", message: "Sending KILL QUERY…", startedAt: Date.now(), endedAt: null } });
     try {
       const reply = await api<EditorStop>("editor/stop", { tab_id: id, connection: via });
-      note(id, reply.message);
-      if (reply.session !== undefined) patchRuntime(id, { session: reply.session });
+      patchRuntime(id, { stopFeedback: { phase: "done", message: reply.message, startedAt: null, endedAt: Date.now() } });
+      if (!reply.stopped && !reply.stop_requested) patchRuntime(id, { stopGen: null });
+      if (reply.session !== undefined && runtimeRef.current[id]?.running) patchRuntime(id, { session: reply.session });
     } catch (e) {
-      setError((e as Error).message);
+      const failure = writeFailure(e, { audited: true });
+      patchRuntime(id, { stopFeedback: { ...failure, message: failure.phase === "unknown" ? `Outcome unknown. ${failure.message}` : failure.message,
+        startedAt: null, endedAt: Date.now() } });
     } finally {
       patchRuntime(id, { stopping: false });
     }
@@ -1512,8 +1545,9 @@ export const QueryLab = forwardRef<
   /** Start a new session after one ended (never done without asking). */
   function reconnect(id = tab.id) {
     const now = runtimeRef.current[id] || blankRuntime();
+    if (now.running || now.operation || now.stopping) return;
     setError("");
-    patchRuntime(id, { session: null, sessionKey: "", sessionConnection: null });
+    // Keep the ended-session banner (and its focused button) until the reply.
     void send(id, "editor/open", { tab_id: id, connection: connectionFor(tab), ...(now.safe === true ? { safe_updates: true } : {}) }, { runSql: "" });
   }
   function setSafeUpdates(on: boolean) {
@@ -1645,21 +1679,30 @@ export const QueryLab = forwardRef<
       setError("A statement is running in this tab. Stop it before closing.");
       return "running";
     }
+    if (now?.operation || now?.stopping) return "running";
+    patchRuntime(id, { operation: "close", note: "", noteError: false, sessionFeedback: { phase: "pending", message: "Closing the session…", startedAt: Date.now(), endedAt: null } });
     try {
       const reply = await api<EditorClose>("editor/close", { tab_id: id, connection: sessionConnectionOf(id) || connectionRef.current });
       if (reply.closed) {
         if (keepTab) {
           patchRuntime(id, { session: null, sessionKey: "", sessionConnection: null });
+          patchRuntime(id, { sessionFeedback: IDLE_ACTION });
           note(id, "Session closed. The next run opens a new one on the connection in use.");
         } else removeTab(id);
         return "closed";
       }
       if (reply.session) adoptSession(id, reply.session, {});
+      patchRuntime(id, { sessionFeedback: IDLE_ACTION });
       setClosing({ tabId: id, known: reply.reason === "transaction_open", keepTab });
       return "asks";
     } catch (e) {
-      setError((e as Error).message);
+      const failure = writeFailure(e);
+      patchRuntime(id, { sessionFeedback: { ...failure, message: failure.phase === "unknown" ? `Outcome unknown. ${failure.message}` : failure.message,
+        startedAt: null, endedAt: Date.now() } });
       return "error";
+    } finally {
+      // A closed tab has already removed its runtime; do not recreate it.
+      if (runtimeRef.current[id]) patchRuntime(id, { operation: "" });
     }
   }
   async function closeDiscarding() {
@@ -1880,6 +1923,9 @@ export const QueryLab = forwardRef<
     : "";
   const session = rt.session;
   const running = rt.running;
+  const runBusy = running && (!rt.operation || rt.operation === "run");
+  const sessionBusy = !!rt.operation || rt.stopping;
+  const transactionUnknown = rt.sessionFeedback.phase === "unknown";
   const stale = !!rt.run && rt.runSql !== tab.sql;
   const errorPosition = rt.run?.error?.position;
   const errorMark = !stale && errorPosition ? wordAt(tab.sql, errorPosition.offset) : null;
@@ -2120,18 +2166,20 @@ export const QueryLab = forwardRef<
                   open={runOptionsOpen}
                   onOpen={setRunOptionsOpen}
                   action={
-                    <ToolbarButton
+                    <ActionButton
                       icon="run"
                       primary={!runGate.disabledReason && !mismatch}
                       className="privilege-action"
                       data-action="run"
-                      disabled={running || mismatch}
+                      busy={runBusy} busyLabel="Running…"
+                  disabled={!runBusy && (running || sessionBusy || mismatch)}
                       data-privilege-state={runGate.state}
                       aria-keyshortcuts={ctrl(false, "Enter")}
                       {...privilegeButtonProps(runGate, () => runSql(false), mismatchReason, privilegeNoticeId || `${privilegeId}-run`)}
+                      aria-disabled={runBusy || !!mismatchReason || !!runGate.disabledReason ? "true" : "false"}
                     >
                       {selecting ? "Run selection" : "Run"}
-                    </ToolbarButton>
+                    </ActionButton>
                   }
                 >
                   <div className="toolbar-group run-settings">
@@ -2176,26 +2224,29 @@ export const QueryLab = forwardRef<
                     </div>
                   </div>
                 </EditorSplitButton>
-                <ToolbarButton
+                <ActionButton
                   icon="runAll"
                   data-action="run-all"
                   className="privilege-action"
-                  disabled={running || mismatch}
+                  busy={runBusy} busyLabel="Running…"
+                      disabled={!runBusy && (running || sessionBusy || mismatch)}
                   data-privilege-state={allGate.state}
                   aria-keyshortcuts={ctrl(true, "Enter")}
                   {...privilegeButtonProps(allGate, () => runSql(true), mismatchReason, privilegeNoticeId || `${privilegeId}-run-all`)}
+                  aria-disabled={runBusy || !!mismatchReason || !!allGate.disabledReason ? "true" : "false"}
                 >
                   Run all
-                </ToolbarButton>
-                <ToolbarButton
+                </ActionButton>
+                <ActionButton
                   icon="stop"
                   data-action="stop"
-                  disabled={!running || rt.stopping}
+                  busy={rt.stopping} busyLabel="Stopping…"
+                  disabled={!rt.stopping && (!running || rt.stopGen === rt.gen)}
                   onClick={() => void stop()}
                   title="Stop the running statement with KILL QUERY (Escape); an open transaction stays open"
                 >
-                  {rt.stopping ? "Stopping…" : "Stop"}
-                </ToolbarButton>
+                  Stop
+                </ActionButton>
               </div>
               {!privilegeNotice && <>
                 <span id={`${privilegeId}-run`} className="account-sr">{runGate.reason}</span>
@@ -2204,33 +2255,33 @@ export const QueryLab = forwardRef<
                 <span id={`${privilegeId}-analysis`} className="account-sr">{analysisGate.reason}</span>
               </>}
               <div className="editor-actions toolbar-group">
-                <button
-                  className="button"
-                  data-action="explain"
-                  disabled={busy || mismatch}
+                <ActionButton
+                  data-action="explain" busy={jobBusy} busyLabel="Capturing…"
+                  disabled={!jobBusy && (busy || mismatch)}
                   title={`Explain ${scopePhrase} (${keys(false, "E")})`}
                   aria-keyshortcuts={ctrl(false, "E")}
                   data-privilege-state={explainGate.state}
                   {...privilegeButtonProps(explainGate, () => void capture("explain"), mismatchReason, `${privilegeNoticeId || `${privilegeId}-explain`}${scopeLabel ? " run-scope" : ""}`)}
+                  aria-disabled={jobBusy || !!mismatchReason || !!explainGate.disabledReason ? "true" : "false"}
                 >
                   {selecting ? "Explain selection" : "Explain"}
-                </button>
+                </ActionButton>
                 <EditorSplitButton
                   label="Explain and Run analysis options"
                   open={showAnalysisOptions}
                   onOpen={toggleAnalysisOptions}
                   action={
-                    <button
-                      className="button"
-                      data-action="analyze"
-                      disabled={busy || mismatch}
+                    <ActionButton
+                      data-action="analyze" busy={jobBusy} busyLabel="Capturing…"
+                      disabled={!jobBusy && (busy || mismatch)}
                       title={`Run analysis on ${scopePhrase} (${keys(true, "E")}): it executes the SELECT and captures measured timings`}
                       aria-keyshortcuts={ctrl(true, "E")}
                       data-privilege-state={analysisGate.state}
                       {...privilegeButtonProps(analysisGate, () => void capture("analyze"), mismatchReason, `${privilegeNoticeId || `${privilegeId}-analysis`}${scopeLabel ? " run-scope" : ""}`)}
+                      aria-disabled={jobBusy || !!mismatchReason || !!analysisGate.disabledReason ? "true" : "false"}
                     >
                       {selecting ? "Analyze selection" : "Run analysis"}
-                    </button>
+                    </ActionButton>
                   }
                 >
                   <div className="execution-options plan-options" aria-label="Explain and Run analysis settings" role="group">
@@ -2295,12 +2346,14 @@ export const QueryLab = forwardRef<
               <div className="toolbar-group tx-group" aria-label="Transaction" hidden={!txOpen}>
                 {txOpen && (
                   <>
-                    <button type="button" className="button small" data-action="commit" disabled={running} onClick={() => commit()}>
+                    <ActionButton small data-action="commit" busy={rt.operation === "commit"} busyLabel="Committing…"
+                      disabled={rt.operation !== "commit" && (running || sessionBusy || transactionUnknown)} onClick={() => commit()}>
                       Commit
-                    </button>
-                    <button type="button" className="button small" data-action="rollback" disabled={running} onClick={() => rollback()}>
+                    </ActionButton>
+                    <ActionButton small data-action="rollback" busy={rt.operation === "rollback"} busyLabel="Rolling back…"
+                      disabled={rt.operation !== "rollback" && (running || sessionBusy || transactionUnknown)} onClick={() => rollback()}>
                       Roll back
-                    </button>
+                    </ActionButton>
                   </>
                 )}
               </div>
@@ -2361,6 +2414,8 @@ export const QueryLab = forwardRef<
                 className={`editor-privilege-note${previewWarning || privilegeReasons.length ? " is-warning" : ""}`}
                 role="status">{privilegeNotice}</p>}
             </div>
+            <ActionStatus className="editor-stop-status" state={rt.stopFeedback}
+              slowAfter={10_000} slowText="No reply to Stop yet; the statement may still be running." />
             {tab.source && (
               <p className="hint tab-source">
                 From Top statements, digest{" "}
@@ -2393,9 +2448,10 @@ export const QueryLab = forwardRef<
                 <span>
                   This tab is still connected to {sessionName(session)}. Close its session to run on {connectionShortName(connection)}.
                 </span>
-                <button type="button" className="button small primary" onClick={() => void requestClose(tab.id, true)}>
+                <ActionButton small primary busy={rt.operation === "close"} busyLabel="Closing…"
+                  disabled={rt.operation !== "close" && (running || sessionBusy)} onClick={() => void requestClose(tab.id, true)}>
                   Close session
-                </button>
+                </ActionButton>
               </div>
             )}
             {session?.ended && (
@@ -2404,11 +2460,13 @@ export const QueryLab = forwardRef<
                   Session ended{session.ended_reason ? `: ${ENDED[session.ended_reason] || session.ended_reason}` : ""}. Session settings
                   were lost and any open transaction was rolled back.
                 </span>
-                <button type="button" className="button small" onClick={() => reconnect()}>
+                <ActionButton small busy={rt.operation === "open"} busyLabel="Reconnecting…"
+                  disabled={rt.operation !== "open" && (running || sessionBusy)} onClick={() => reconnect()}>
                   Reconnect
-                </button>
+                </ActionButton>
               </div>
             )}
+            <ActionStatus className="editor-session-status" state={rt.sessionFeedback} />
             {batchRunning && (
               <p className="hint">
                 Explain and Run analysis wait while Explain top N runs on Server.

@@ -12,6 +12,7 @@ import { PrivilegeConfirmLabel, privilegeResult, targetPrivilege, usePrivilege }
 import { useWritePolicy } from "./Connections";
 import { CopySql, bytes, engineLabel } from "./PerfShared";
 import {
+  ActionStatus,
   ConfirmSheet,
   copyToClipboard,
   EmptyState,
@@ -31,6 +32,8 @@ import {
   ViewLayout,
   ViewStatus,
   useInspector,
+  useSince,
+  writeFailure,
   type InspectorContent,
   type Selection,
 } from "./kit";
@@ -146,7 +149,7 @@ export function openSessionSql(plan: VariablePlan, onOpenSql?: (sql: string) => 
 /** The connection a Change sheet was opened for (Locks' killVia pattern). */
 type Via = { connection: Connection; key: string; label: string };
 type ChangeRequest = { name: string; mode: VariableMode | null; via: Via; draft?: string };
-type ChangeNote = { name: string; mode: VariableMode; status: string; message: string; type: VariableInfo["type"]; result: VariableChange | null };
+type ChangeNote = { name: string; mode: VariableMode; status: string; message: string; type: VariableInfo["type"]; result: VariableChange | null; via?: Via };
 
 const BYTE_NAMES = /(_size|_capacity|_ram|_packet|_buffer|_limit|_threshold|_max_table_size)$/i;
 function isByteParam(type: VariableInfo["type"], name?: string) {
@@ -266,12 +269,16 @@ function privilegeText(p: NonNullable<VariablePlan["privileges"]>) {
 function VariableSheet({
   request,
   activeKey,
+  left,
+  onLeave,
   onClose,
   onDone,
   onOpenSql,
 }: {
   request: ChangeRequest;
   activeKey: string;
+  left: boolean;
+  onLeave: (startedAt: number) => void;
   onClose: () => void;
   onDone: (note: ChangeNote) => void;
   onOpenSql?: (sql: string) => void;
@@ -286,6 +293,8 @@ function VariableSheet({
   const [planning, setPlanning] = useState(false);
   const [planError, setPlanError] = useState("");
   const [busy, setBusy] = useState(false);
+  const sending = useRef(false);
+  const since = useSince(busy);
   const seq = useRef(0);
   const cancelled = useRef(false);
   const name = request.name;
@@ -363,7 +372,7 @@ function VariableSheet({
   const hintId = `variable-hint-${name}`;
 
   function cancel() {
-    if (cancelled.current) return;
+    if (sending.current || cancelled.current) return;
     cancelled.current = true;
     // Cancelling before a plan arrives is still an attempt. A previous plan
     // belongs to different inputs and must never become the audit evidence.
@@ -382,7 +391,8 @@ function VariableSheet({
       if (ready && plan && !stale && !busy) openSessionSql(plan, onOpenSql);
       return;
     }
-    if (!ready || !plan || !mode || stale || refused || busy || blocked || gate.disabledReason) return;
+    if (!ready || !plan || !mode || stale || refused || sending.current || blocked || gate.disabledReason) return;
+    sending.current = true;
     setBusy(true);
     const base = { name, mode, type: info?.type ?? null, result: null };
     if (policy) {
@@ -409,18 +419,21 @@ function VariableSheet({
       });
       onDone({ ...base, status: result.status, message: result.message, result });
     } catch (e) {
-      onDone({ ...base, status: "error", message: (e as Error).message });
+      const failure = writeFailure(e, { audited: true });
+      onDone({ ...base, status: failure.phase, message: failure.message });
     }
   }
 
   const modes = info ? MODE_ORDER.filter((m) => info.modes[m]?.available) : [];
-  const confirmLabel = busy ? "Sending…" : mode ? MODES[mode].confirm : "No change at runtime";
+  const confirmLabel = mode ? MODES[mode].confirm : "No change at runtime";
   let lock = "";
   if (stale) lock = "The connection in use changed after this sheet opened. Close it and open Review change again.";
   else if (mode === "session") lock = !onOpenSql ? "Query editor is unavailable. Copy the statement to your query tab." : "";
   else if (blocked) lock = blocked;
   else if (refused) lock = plan?.policy?.text || "This connection is read-only in myflames.";
 
+  // Keep the owner mounted while hidden: Close never cancels or repeats a send.
+  if (left) return null;
   return (
     <ConfirmSheet
       className="variable-sheet"
@@ -432,6 +445,10 @@ function VariableSheet({
           : "Check the statement before you send it. Right before sending, myflames reads the variable again and stops if it changed."
       }
       busy={busy}
+      busyLabel="Applying…"
+      progress="Waiting for the server to apply the change"
+      onLeave={() => onLeave(since ?? Date.now())}
+      leaveText="The change may still be running. Close does not stop it; its outcome shows in Parameters."
       // Nothing to send (no mode): no privilege applies, so no gate on the label.
       confirmLabel={mode && mode !== "session" ? <PrivilegeConfirmLabel gate={gate} showStatus={false}>{confirmLabel}</PrivilegeConfirmLabel> : confirmLabel}
       confirmTone={mode === "session" ? "primary" : tone}
@@ -621,10 +638,11 @@ const HEADLINE: Record<string, string> = {
   interrupted: "Interrupted.",
   failed: "Could not change it.",
   error: "Could not change it.",
+  unknown: "Outcome unknown.",
 };
 
 /** The answer to a change, announced and focused, with before and after. */
-function ChangeResultNote({ note, onDismiss, noteRef }: { note: ChangeNote; onDismiss: () => void; noteRef: React.RefObject<HTMLDivElement> }) {
+function ChangeResultNote({ note, currentKey, onDismiss, noteRef }: { note: ChangeNote; currentKey: string; onDismiss: () => void; noteRef: React.RefObject<HTMLDivElement> }) {
   const r = note.result;
   const rows: [string, string, string][] = [];
   if (r && r.before && r.after) {
@@ -640,6 +658,7 @@ function ChangeResultNote({ note, onDismiss, noteRef }: { note: ChangeNote; onDi
       <p>
         <strong>{HEADLINE[note.status] || "Nothing was sent."}</strong> {plain ? `${note.name}, ${MODES[note.mode].label.toLowerCase()}.` : note.message}
       </p>
+      {note.via && note.via.key !== currentKey && <p className="hint">Sent on {note.via.label}, not the connection in use.</p>}
       {rows.length > 0 && (
         <dl className="variable-facts">
           {rows.map(([label, before, after]) => (
@@ -780,8 +799,8 @@ async function applyParameterBatch(rows: StagedParameter[], intents: ParameterIn
       results[i] = { name: intent.name, status: result.status, message: result.message, result, type: rows[i].parameter.type };
       if (result.status !== "changed") break;
     } catch (e) {
-      // The statement may have run before the reply was lost: never call it unchanged.
-      results[i] = { name: intent.name, status: "unknown", message: `The reply did not arrive, so the outcome is unknown. Check the value before trying again. ${(e as Error).message}` };
+      const failure = writeFailure(e, { audited: true });
+      results[i] = { name: intent.name, status: failure.phase, message: failure.message };
       break;
     }
   }
@@ -790,8 +809,9 @@ async function applyParameterBatch(rows: StagedParameter[], intents: ParameterIn
 
 /** One review is a bounded set of server-generated plans. Changing the scope
  * invalidates all earlier plans immediately, including their audit evidence. */
-function ParameterBatchSheet({ request, activeKey, onClose, onRemove, onDone }: {
+function ParameterBatchSheet({ request, activeKey, left, onLeave, onClose, onRemove, onDone }: {
   request: BatchRequest; activeKey: string; onClose: () => void;
+  left: boolean; onLeave: (startedAt: number) => void;
   onRemove: (name: string) => void; onDone: (results: BatchResult[]) => void;
 }) {
   const policy = useWritePolicy();
@@ -799,6 +819,7 @@ function ParameterBatchSheet({ request, activeKey, onClose, onRemove, onDone }: 
   const [persist, setPersist] = useState(true);
   const [answers, setAnswers] = useState<BatchPlans>({ signature: "", plans: {}, errors: {} });
   const [busy, setBusy] = useState(false);
+  const since = useSince(busy);
   const sending = useRef(false);
   const cancelled = useRef(false);
   const latestKey = useRef(activeKey);
@@ -863,9 +884,13 @@ function ParameterBatchSheet({ request, activeKey, onClose, onRemove, onDone }: 
     );
     onDone(results);
   }
+  if (left) return null;
   return <ConfirmSheet className="parameter-batch-sheet" eyebrow="PARAMETERS" title={`Apply ${rows.length} parameter ${rows.length === 1 ? "change" : "changes"}?`}
     description="Review every statement for this server. Each value is checked again before sending. The batch stops at the first change that is not confirmed."
-    busy={busy} confirmLabel={<PrivilegeConfirmLabel gate={gate} showStatus={false}>{busy ? "Applying…" : `Apply ${rows.length} changes`}</PrivilegeConfirmLabel>}
+    busy={busy} busyLabel="Applying…" progress="Waiting for the server to apply the parameter changes"
+    onLeave={() => onLeave(since ?? Date.now())}
+    leaveText="The changes may still be running. Close does not stop them; their outcomes show in Parameters."
+    confirmLabel={<PrivilegeConfirmLabel gate={gate} showStatus={false}>{`Apply ${rows.length} changes`}</PrivilegeConfirmLabel>}
     confirmDisabled={!ready || stale || !!blocked} confirmTone={policyPlan?.policy?.tone || "danger"} onCancel={cancel} onConfirm={() => void confirm()}>
     <Fields rows={[["Server", request.via.label]]} />
     {request.engine === "mysql" && rows.some(r => r.parameter.modifiable === "now") && <label className="parameter-persist">
@@ -957,7 +982,10 @@ export function ConfigView({ connection, disabled, onBack, selection, report: bo
   const [preview, setPreview] = useState(false);
   const [batch, setBatch] = useState<BatchRequest | null>(null);
   const [batchResults, setBatchResults] = useState<BatchResult[]>([]);
+  const [batchResultVia, setBatchResultVia] = useState<Via | null>(null);
+  const [batchLeft, setBatchLeft] = useState<number | null>(null);
   const [change, setChange] = useState<ChangeRequest | null>(null);
+  const [changeLeft, setChangeLeft] = useState<number | null>(null);
   const [note, setNote] = useState<ChangeNote | null>(null);
   const [focusName, setFocusName] = useState("");
   const trigger = useRef<HTMLElement | null>(null);
@@ -972,7 +1000,7 @@ export function ConfigView({ connection, disabled, onBack, selection, report: bo
   const parameters = useMemo(() => report ? parametersOf(report) : [], [report]);
   const checkMap = useMemo(() => new Map(report?.checks.map(c => [c.key, c]) || []), [report]);
   const recommendation = (p: ConfigParameter) => p.checks.map(k => checkMap.get(k)).find(c => c?.status === "problem") || p.checks.map(k => checkMap.get(k)).find(c => c?.status === "watch");
-  const actionsOff = disabled || loading || !!other;
+  const actionsOff = disabled || loading || !!other || !!change || !!batch;
   const offTitle = other ? `From ${other}: refresh to load this server` : policy?.blocked || (connection.read_only ? "This connection is read-only." : disabled ? "Select an available connection." : "");
   const editOff = actionsOff || !!offTitle || !report;
 
@@ -1030,26 +1058,27 @@ export function ConfigView({ connection, disabled, onBack, selection, report: bo
     selection.select(p.name, false); sharedInspector?.setOpen(false);
   }
   function openChange(name: string, mode: VariableMode | null, el: HTMLElement) {
-    if (other || disabled) return;
+    if (other || disabled || change || batch) return;
     trigger.current = el; setNote(null);
     setChange({ name, mode, via: { connection, key: reads.key, label: connectionLabel(connection) } });
   }
   function closeChange() { setChange(null); window.setTimeout(() => trigger.current?.focus(), 0); }
   async function changed(result: ChangeNote) {
-    const via = change?.via; setChange(null); setNote(result);
+    const via = change?.via; setChange(null); setChangeLeft(null); setNote({ ...result, via });
     window.setTimeout(() => noteRef.current?.focus(), 0);
     if (result.status === "changed" && via && reads.currentKey() === via.key) { discard(result.name); await load(true); }
   }
   async function batchDone(results: BatchResult[]) {
-    const via = batch?.via; setBatch(null);
-    if (!via || reads.currentKey() !== via.key) return;
+    const via = batch?.via; setBatch(null); setBatchLeft(null);
     setBatchResults(results);
+    setBatchResultVia(via || null);
+    window.setTimeout(() => resultsRef.current?.focus(), 0);
+    if (!via || reads.currentKey() !== via.key) return;
     const changedNames = new Set(results.filter(r => r.status === "changed").map(r => r.name));
     setDrafts(d => { const next = { ...d }; for (const name of changedNames) delete next[name]; return next; });
     const remaining = pending.some(r => !changedNames.has(r.parameter.name));
     setEditing(remaining); setPreview(remaining);
     if (!remaining && filter === "pending") setFilter("all");
-    window.setTimeout(() => resultsRef.current?.focus(), 0);
     await load(true);
   }
   const columns: Column<ConfigParameter>[] = [
@@ -1129,9 +1158,15 @@ export function ConfigView({ connection, disabled, onBack, selection, report: bo
     </>}
     onRefresh={() => void load()} refreshDisabled={disabled} loading={loading} otherConnection={other}
     inspector={inspector} inspectorEmpty={<p>Select a parameter to inspect its source, allowed values and recommendations.</p>}
-    status={<><ViewStatus loading={reads.loading} error={reads.error} />
-      {note && <ChangeResultNote note={note} noteRef={noteRef} onDismiss={() => setNote(null)} />}
+    status={<><ViewStatus loading={reads.loading} error={reads.error}
+      onStop={reads.loading ? reads.stop : undefined} onRetry={reads.error ? () => void load() : undefined} doneAt={reads.doneAt} />
+      {change && changeLeft !== null && <div className="view-status variable-pending"><ActionStatus state={{ phase: "pending", startedAt: changeLeft,
+        message: `Waiting for the reply to the change to ${change.name}${change.via.key !== reads.key ? ` on ${change.via.label}` : ""}. Its outcome shows here.` }} /></div>}
+      {batch && batchLeft !== null && <div className="view-status parameter-batch-pending"><ActionStatus state={{ phase: "pending", startedAt: batchLeft,
+        message: `Waiting for the replies to the parameter changes${batch.via.key !== reads.key ? ` on ${batch.via.label}` : ""}. Their outcomes show here.` }} /></div>}
+      {note && <ChangeResultNote note={note} currentKey={reads.key} noteRef={noteRef} onDismiss={() => setNote(null)} />}
       {batchResults.length > 0 && <div ref={resultsRef} tabIndex={-1} className="parameter-results variable-result" role="status">
+        {batchResultVia && batchResultVia.key !== reads.key && <p className="hint">Sent on {batchResultVia.label}, not the connection in use.</p>}
         <strong>Parameter changes</strong><ul>{batchResults.map(r => <li key={r.name} data-result={r.name} data-status={r.status}><code>{r.name}</code>: {r.status === "changed" ? "Changed" : r.status === "not_sent" ? "Not sent" : r.status === "applied_unverified" ? "Applied; verification incomplete" : r.status === "unknown" ? "Outcome unknown" : "Not changed"}. {r.message}
           {r.result?.before && r.result.after && <span className="hint parameter-result-values">Global: {valueText(r.type ?? null, r.result.before.global)} → {valueText(r.type ?? null, r.result.after.global)}
             {r.result.mode !== "global" && <> · mysqld-auto.cnf: {persistedText(r.type ?? null, r.result.before.persisted_state, r.result.before.persisted)} → {persistedText(r.type ?? null, r.result.after.persisted_state, r.result.after.persisted)}</>}
@@ -1192,7 +1227,11 @@ export function ConfigView({ connection, disabled, onBack, selection, report: bo
           }] : []),
         ]} />
     </>}
-    {change && <VariableSheet request={change} activeKey={reads.key} onClose={closeChange} onDone={n => void changed(n)} onOpenSql={onOpenSql ? sql => { setChange(null); onOpenSql(sql, { append: true }); } : undefined} />}
-    {batch && <ParameterBatchSheet request={batch} activeKey={reads.key} onClose={() => setBatch(null)} onRemove={name => { if (batch.via.key === reads.currentKey()) discard(name); }} onDone={results => void batchDone(results)} />}
+    {change && <VariableSheet request={change} activeKey={reads.key} left={changeLeft !== null}
+      onLeave={at => { setChangeLeft(at); window.setTimeout(() => document.querySelector<HTMLElement>(".variable-pending .action-status")?.focus(), 0); }}
+      onClose={closeChange} onDone={n => void changed(n)} onOpenSql={onOpenSql ? sql => { setChange(null); onOpenSql(sql, { append: true }); } : undefined} />}
+    {batch && <ParameterBatchSheet request={batch} activeKey={reads.key} left={batchLeft !== null}
+      onLeave={at => { setBatchLeft(at); window.setTimeout(() => document.querySelector<HTMLElement>(".parameter-batch-pending .action-status")?.focus(), 0); }}
+      onClose={() => setBatch(null)} onRemove={name => { if (batch.via.key === reads.currentKey()) discard(name); }} onDone={results => void batchDone(results)} />}
   </ViewLayout>;
 }

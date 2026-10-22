@@ -11,9 +11,9 @@ import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "
 import { useWritePolicy } from "./Connections";
 import { InstrumentsLink } from "./Instruments";
 import {
-  Checkbox, ConfirmSheet, DataTable, Disclosure, EmptyState, FactStrip, Fields,
+  ActionButton, ActionStatus, Checkbox, ConfirmSheet, DataTable, Disclosure, EmptyState, FactStrip, Fields,
   InspectorSection, MetricTile, NumberField, PrerequisiteGate, Segmented, StatusPill, SummaryLine,
-  TileGrid, ToolbarButton, ViewLayout, ViewStatus, worstTone,
+  TileGrid, ToolbarButton, ViewLayout, ViewStatus, worstTone, useInspector, useSince, writeFailure,
   type Column, type InspectorContent, type Selection, type Tone,
 } from "./kit";
 import { Commands, FactsList, channelCell, channelPhrase, engineName, factRows, formatGtidSet, plural } from "./OpsShared";
@@ -73,37 +73,41 @@ function time(iso: Json | undefined) {
 export function ReplicationLoopBanner({ loops, disabled, stopping, onStop }: {
   loops: SkipLoop[]; disabled?: boolean; stopping?: string; onStop: (loop: SkipLoop) => void;
 }) {
+  return <>{loops.map(loop => <ReplicationLoopRow key={loop.job_id || loop.channel} loop={loop}
+    disabled={disabled} stopping={stopping === loop.job_id} onStop={onStop} />)}</>;
+}
+
+function ReplicationLoopRow({ loop, disabled, stopping, onStop }: {
+  loop: SkipLoop; disabled?: boolean; stopping: boolean; onStop: (loop: SkipLoop) => void;
+}) {
+  const last = loop.skips?.length ? loop.skips[loop.skips.length - 1] : null;
+  const active = loopActive(loop);
+  const since = useSince(stopping);
+  const row = useRef<HTMLDivElement>(null);
+  const stopHadFocus = useRef(false);
+  // If the status poll removes Stop, keep focus on its result rather than body.
+  useEffect(() => {
+    if (stopHadFocus.current && !active && !stopping && document.activeElement === document.body) row.current?.focus();
+    if (!active && !stopping) stopHadFocus.current = false;
+  }, [active, stopping]);
   return (
-    <>
-      {loops.map((loop) => {
-        const last = loop.skips?.length ? loop.skips[loop.skips.length - 1] : null;
-        const active = loopActive(loop);
-        return (
-          <div
-            className={`ops-loop${active ? "" : " is-stopped"}${loop.needs_attention ? " needs-attention" : ""}`}
-            key={loop.job_id || loop.channel}
-            role="status"
-            data-loop={loop.state}
-          >
-            <span>
-              <strong>{loop.message}</strong>
-              {active && loop.receiver_guard === "off" && <span className="ops-last" title={loop.receiver_guard_reason || loop.receiver_guard_note}>Reconnect detection off</span>}
-              {last && (
-                <span className="ops-last">
-                  Last skip: {factText(last.gtid || last.exec_pos)}
-                  {last.at ? ` at ${time(last.at)}` : ""}
-                </span>
-              )}
-            </span>
-            {active && (
-              <ToolbarButton disabled={disabled || !loop.job_id || stopping === loop.job_id} onClick={() => onStop(loop)}>
-                {stopping === loop.job_id || loop.state === "stopping" ? "Stopping…" : "Stop"}
-              </ToolbarButton>
-            )}
-          </div>
-        );
-      })}
-    </>
+    <div ref={row} tabIndex={-1}
+      className={`ops-loop${active ? "" : " is-stopped"}${loop.needs_attention ? " needs-attention" : ""}`}
+      role="status" data-loop={loop.state}>
+      <div className="ops-loop-copy">
+        <strong>{loop.message}</strong>
+        {active && loop.receiver_guard === "off" && <span className="ops-last" title={loop.receiver_guard_reason || loop.receiver_guard_note}>Reconnect detection off</span>}
+        {last && <span className="ops-last">
+          Last skip: {factText(last.gtid || last.exec_pos)}
+          {last.at ? ` at ${time(last.at)}` : ""}
+        </span>}
+        <ActionStatus state={{ phase: stopping ? "pending" : "idle", startedAt: since, message: "Waiting for the reply to Stop." }}
+          slowAfter={10_000} slowText="No reply to Stop yet; the loop may still be running." />
+      </div>
+      {(active || stopping) && <ActionButton busy={stopping || loop.state === "stopping"} busyLabel="Stopping…"
+        disabled={!stopping && (disabled || !loop.job_id)}
+        onClick={() => { stopHadFocus.current = true; onStop(loop); }}>Stop</ActionButton>}
+    </div>
   );
 }
 
@@ -152,12 +156,24 @@ export function ReplicationView({ connection, disabled, selection, report: bound
   const confirmationRef = useRef(confirmation);
   confirmationRef.current = confirmation;
   const [busy, setBusy] = useState(false);
+  const [checking, setChecking] = useState<Confirmation["kind"] | null>(null);
+  const checkingRef = useRef(false);
+  const reviewOpener = useRef<HTMLButtonElement | null>(null);
+  const inspectorState = useInspector();
+  const [left, setLeft] = useState(false);
+  const since = useSince(busy);
+  const readSince = useSince(!!reads.loading);
+  const viewRef = useRef<HTMLDivElement>(null);
   const sending = useRef(false);
   const [stopping, setStopping] = useState("");
   const stoppingRef = useRef(new Set<string>());
-  const [failure, setFailure] = useState<{ key: string; text: string; loop?: boolean } | null>(null);
+  const [failure, setFailure] = useState<{ key: string; text: string; loop?: boolean; write?: boolean; label?: string } | null>(null);
   const [notice, setNotice] = useState("");
   const [outcome, setOutcome] = useState<Bound<SkipResult> | null>(null);
+  const [loopResult, setLoopResult] = useState<Bound<SkipLoop> | null>(null);
+  function focusResult(selector = ".ops-result, .replication-write-result, .ops-loop") {
+    window.setTimeout(() => viewRef.current?.querySelector<HTMLElement>(selector)?.focus(), 0);
+  }
   const gtidGate = usePrivilege("skip_gtid");
   const counterGate = usePrivilege("skip_counter");
   function skipGate(plan?: SkipPlan) {
@@ -259,20 +275,28 @@ export function ReplicationView({ connection, disabled, selection, report: bound
       void load();
     }
   }, [reads.key, report, bound?.key, reads.loading, disabled, onScreen]);
-  async function open(kind: Confirmation["kind"], channel: ReplicationChannel) {
-    if (disabled || other || sending.current || loops.some((l) => l.channel === channel.name && loopActive(l)) || policy?.blocked || connection.read_only || loopFailure === key || loopChecked !== key || actionBlock(kind, channel.skip_plan)) return;
+  async function open(kind: Confirmation["kind"], channel: ReplicationChannel, opener: HTMLButtonElement) {
+    if (disabled || other || sending.current || checkingRef.current || loops.some((l) => l.channel === channel.name && loopActive(l)) || policy?.blocked || connection.read_only || loopFailure === key || loopChecked !== key || actionBlock(kind, channel.skip_plan)) return;
+    checkingRef.current = true;
+    reviewOpener.current = opener;
+    setChecking(kind);
     // Read again so the sheet shows the failure as it is now.
-    const current = await reads.run("replication", "Checking the failed transaction…", readReplication, onReport, { force: true });
-    if (!current) return;
-    const plan = current.report.channels.find((c) => c.name === channel.name)?.skip_plan;
-    if (!plan?.available) { setFailure({ key: current.key, text: plan?.message || "The failed transaction changed. Select the channel again." }); return; }
-    if (actionBlock(kind, plan)) { setFailure({ key: current.key, text: actionBlock(kind, plan) }); return; }
-    setNotice("");
-    setFailure(null);
-    setConfirmation({
-      kind, connection: { ...connection }, key: current.key, label: current.label, engine: current.report.engine,
-      plan, at: Date.now(), options: { codes: [], max_skips: 10, max_minutes: 10, poll_s: 2 },
-    });
+    try {
+      const current = await reads.run("replication", "Checking the failed transaction…", readReplication, onReport, { force: true });
+      if (!current) return;
+      const plan = current.report.channels.find((c) => c.name === channel.name)?.skip_plan;
+      if (!plan?.available) { setFailure({ key: current.key, text: plan?.message || "The failed transaction changed. Select the channel again." }); return; }
+      if (actionBlock(kind, plan)) { setFailure({ key: current.key, text: actionBlock(kind, plan) }); return; }
+      setNotice("");
+      setFailure(null);
+      setOutcome(null);
+      setLoopResult(null);
+      setLeft(false);
+      setConfirmation({
+        kind, connection: { ...connection }, key: current.key, label: current.label, engine: current.report.engine,
+        plan, at: Date.now(), options: { codes: [], max_skips: 10, max_minutes: 10, poll_s: 2 },
+      });
+    } finally { checkingRef.current = false; setChecking(null); }
   }
   async function confirm() {
     const c = confirmation;
@@ -280,6 +304,7 @@ export function ReplicationView({ connection, disabled, selection, report: bound
     sending.current = true;
     setBusy(true);
     const live = captureScope();
+    let sent = false;
     try {
       const checked = policy ? await policy.check() : c.connection;
       if (!live() || connectionKey(checked) !== c.key) throw new Error("The connection or its write policy changed. Nothing was sent. Refresh and confirm again.");
@@ -297,49 +322,68 @@ export function ReplicationView({ connection, disabled, selection, report: bound
         return;
       }
       if (c.kind === "one") {
+        sent = true;
         const result = await skipTransaction(checked, c.plan);
-        if (!live()) return;
         setOutcome({ key: c.key, label: c.label, report: result });
         setConfirmation(null);
-        await reads.run("replication", "Reading the result…", readReplication, onReport, { force: true });
+        focusResult(".ops-result");
+        // The reply is the result; a hanging verification read must not hide it.
+        if (live()) void reads.run("replication", "Reading the result…", readReplication, onReport, { force: true });
       } else {
         // Keep the mode the person reviewed, even if coverage changed during
         // the fresh read. Python requires an acknowledged active guard.
+        sent = true;
         const result = await startSkipLoop(checked, c.plan.channel, { ...c.options, receiver_guard: c.plan.receiver_guard });
-        if (!live()) return;
         setConfirmation(null);
+        setLoopResult({ key: c.key, label: c.label, report: result });
+        if (!live()) { focusResult(".replication-write-result"); return; }
         const merged = [...loops.filter((l) => l.channel !== result.channel || loopActive(l)), result];
         publishLoops.current({ key: c.key, label: c.label, report: merged });
         activity.current?.(merged.some(loopActive));
         if (result.state === "refused" || result.state === "needs_confirmation") {
-          setFailure({ key: c.key, text: [result.message, result.policy?.text].filter(Boolean).join(" ") });
+          setFailure({ key: c.key, label: c.label, write: true, text: [result.message, result.policy?.text].filter(Boolean).join(" ") });
         }
+        focusResult(".replication-write-result, .ops-loop");
         // Read the registry rather than trusting this reply alone.
         setPollRetry((n) => n + 1);
       }
     } catch (e) {
-      if (live()) {
-        setFailure({ key: c.key, text: (e as Error).message });
+      if (sent || live()) {
+        const failure = sent ? writeFailure(e, { audited: true }) : null;
+        setFailure({ key: c.key, label: c.label, write: true, text: failure
+          ? `${failure.phase === "unknown" ? "Outcome unknown. " : ""}${failure.message}`
+          : `Nothing was sent. ${(e as Error).message}` });
         setConfirmation(null);
+        focusResult(".replication-write-result");
         // A loop whose Start reply was lost shows up in the status read.
-        if (c.kind === "loop") setPollRetry((n) => n + 1);
+        if (c.kind === "loop" && live()) setPollRetry((n) => n + 1);
       }
-    } finally { sending.current = false; setBusy(false); if (!live()) setConfirmation(null); }
+    } finally { sending.current = false; setBusy(false); setLeft(false); if (!live()) setConfirmation(null); }
   }
   async function stop(loop: SkipLoop) {
     const id = loop.job_id;
     if (!id || stoppingRef.current.has(id) || boundLoops?.key !== reads.currentKey()) return;
     stoppingRef.current.add(id); setStopping(id);
+    setFailure(null);
     const live = captureScope();
     try {
       await stopSkipLoop({ ...connection }, id);
       if (live()) setPollRetry((n) => n + 1);
-    } catch (e) { if (live()) setFailure({ key, text: (e as Error).message }); }
+    } catch (e) {
+      const failure = writeFailure(e);
+      setFailure({ key, label: connectionLabel(connection), write: true,
+        text: `${failure.phase === "unknown" ? "Outcome unknown. " : ""}${failure.message}` });
+      focusResult(".replication-write-result");
+    }
     finally { stoppingRef.current.delete(id); setStopping((pending) => pending === id ? "" : pending); }
   }
 
   const engine = report?.engine;
   const chosen = report?.channels.find((c) => channelKey(c) === selection.key);
+  // Progress below the initiating controls keeps a second pointer click on
+  // the same button. If the inspector closes, progress returns to the view.
+  const checkingInInspector = !!checking && !!inspectorState?.open && !!chosen &&
+    !!reviewOpener.current?.closest(".view-inspector");
   const blocked = policy?.blocked || (connection.read_only ? "Read-only: myflames refuses every change on this connection." : "");
   const loopGate = loopFailure === key ? "Skip loop status could not be read. Use Retry status." : loopChecked !== key ? "Reading skip loop status…" : "";
   const channelBusy = !!chosen && loops.some((l) => l.channel === chosen.name && loopActive(l));
@@ -365,15 +409,25 @@ export function ReplicationView({ connection, disabled, selection, report: bound
     meta: <StatusPill tone={chosen.judged ? chosen.status : "unknown"} label={chosen.judged ? undefined : "Not judged"} />,
     actions: recoverable ? <>
       <VisiblePrivilegeGate action={chosen.skip_plan?.method === "empty_gtid_transaction" ? "skip_gtid" : "skip_counter"} gate={chosenGate}
-        blocked={blocked || loopGate || recoveryPrivileges.replication_skip}
+        className={checking ? "replication-checking" : undefined}
+        blocked={blocked || loopGate || recoveryPrivileges.replication_skip || (checking ? "Checking the failed transaction…" : "")}
+        aria-busy={checking === "one" || undefined}
         disabled={disabled || !!other || busy || channelBusy || !chosen.skip_plan?.available}
-        onClick={() => { void open("one", chosen); }}>Skip this transaction…</VisiblePrivilegeGate>
+        onClick={(e) => { void open("one", chosen, e.currentTarget); }}><span className="action-button-label" data-reserve={checking === "one" ? "Skip this transaction…" : "Checking…"}>
+          <span>{checking === "one" ? <><span className="spinner" aria-hidden="true" />Checking…</> : "Skip this transaction…"}</span>
+        </span></VisiblePrivilegeGate>
       <VisiblePrivilegeGate action={chosen.skip_plan?.method === "empty_gtid_transaction" ? "skip_gtid" : "skip_counter"} gate={chosenGate}
-        blocked={blocked || loopGate || recoveryPrivileges.replication_skip_loop}
+        className={checking ? "replication-checking" : undefined}
+        blocked={blocked || loopGate || recoveryPrivileges.replication_skip_loop || (checking ? "Checking the failed transaction…" : "")}
+        aria-busy={checking === "loop" || undefined}
         disabled={disabled || !!other || busy || channelBusy || !chosen.skip_plan?.available}
-        onClick={() => { void open("loop", chosen); }}>Skip until stopped…</VisiblePrivilegeGate>
+        onClick={(e) => { void open("loop", chosen, e.currentTarget); }}><span className="action-button-label" data-reserve={checking === "loop" ? "Skip until stopped…" : "Checking…"}>
+          <span>{checking === "loop" ? <><span className="spinner" aria-hidden="true" />Checking…</> : "Skip until stopped…"}</span>
+        </span></VisiblePrivilegeGate>
     </> : undefined,
     body: <>
+      <ViewStatus loading={checkingInInspector ? reads.loading : undefined} startedAt={readSince ?? undefined}
+        onStop={checkingInInspector ? reads.stop : undefined} />
       <InspectorSection title="Status">
         <Fields rows={[
           ["Source", `${chosen.source.host || "Unknown"}:${chosen.source.port ?? "?"}`],
@@ -459,7 +513,7 @@ export function ReplicationView({ connection, disabled, selection, report: bound
           <VisiblePrivilegeGate action={r.skip_plan.method === "empty_gtid_transaction" ? "skip_gtid" : "skip_counter"} gate={skipGate(r.skip_plan)}
             blocked={blocked || loopGate || actionBlock("one", r.skip_plan)}
             disabled={disabled || !!other || busy || loops.some((l) => l.channel === r.name && loopActive(l))}
-            onClick={() => { void open("one", r); }}>Skip…</VisiblePrivilegeGate>
+            onClick={(e) => { void open("one", r, e.currentTarget); }}>Skip…</VisiblePrivilegeGate>
         </span>
       ) : "—"
     },
@@ -469,8 +523,8 @@ export function ReplicationView({ connection, disabled, selection, report: bound
     activeTab === "gtid" ? gtidColumns :
     activeTab === "recovery" ? recoveryColumns :
     channelColumns;
-  const error = failure?.key === key ? failure.text : reads.error;
-  const result = outcome?.key === key ? outcome.report : null;
+  const error = failure?.key === key && !failure.write ? failure.text : reads.error;
+  const result = outcome?.report ?? null;
   const resultTone = result ? SKIP_STATUS[result.status] || (["unknown", result.status] as [Tone, string]) : null;
   const c = confirmation;
   const errorCodes = c ? [...new Set([...COMMON_ERRORS.map(([code]) => code), c.plan.error.errno])] : [];
@@ -541,13 +595,27 @@ export function ReplicationView({ connection, disabled, selection, report: bound
         />
       ) : undefined}
       info={<><p>Each replication channel (MySQL) or connection (MariaDB) of the connection in use: thread states, the last error, lag signals and positions. Reading changes nothing.</p><p>Seconds behind the source alone does not show that a replica is caught up: compare heartbeats, receiver and worker lag in the inspector.</p><p>Skip this transaction and Skip until stopped are changes: each asks first, shows the exact statements, and is recorded in the Audit log. A skipped transaction is missing on the replica.</p></>}
-      status={<><ViewStatus loading={reads.loading} error={error}>{failure?.key === key && failure.loop && <button className="text-button" type="button" onClick={() => { setFailure(null); setPollRetry((n) => n + 1); }}>Retry status</button>}</ViewStatus>{loopsShown.length > 0 && <ReplicationLoopBanner loops={loopsShown} stopping={stopping} onStop={(l) => { void stop(l); }} />}{result && resultTone && <section className="ops-result" aria-label="Skip result" role="status" data-status={result.status}>
+      status={<div ref={viewRef}><ViewStatus loading={checkingInInspector ? undefined : reads.loading} error={error} startedAt={readSince ?? undefined}
+        onStop={reads.loading ? reads.stop : undefined} onRetry={reads.error ? () => void load() : undefined} doneAt={reads.doneAt}>
+        {failure?.key === key && failure.loop && <button className="text-button" type="button" onClick={() => { setFailure(null); setPollRetry((n) => n + 1); }}>Retry status</button>}
+      </ViewStatus>
+      {left && c && <div className="view-status replication-pending"><ActionStatus state={{ phase: "pending", startedAt: since,
+        message: `Waiting for the reply to ${c.kind === "one" ? "Skip transaction" : "Start skipping"}${c.key !== key ? ` on ${c.label}` : ""}. Its outcome shows here.` }} /></div>}
+      {failure?.write && <section tabIndex={-1} className="ops-result replication-write-result" role="alert">
+        <p>{failure.text}</p>{failure.key !== key && <p className="hint">Sent on {failure.label}, not the connection in use.</p>}
+      </section>}
+      {loopResult && loopResult.key !== key && <section tabIndex={-1} className="ops-result replication-write-result" role="status">
+        <p>{loopResult.report.message}</p><p className="hint">Sent on {loopResult.label}, not the connection in use.</p>
+      </section>}
+      {loopsShown.length > 0 && <ReplicationLoopBanner loops={loopsShown} stopping={stopping} onStop={(l) => { void stop(l); }} />}
+      {result && resultTone && <section tabIndex={-1} className="ops-result" aria-label="Skip result" role="status" data-status={result.status}>
           <div className="ops-result-head"><StatusPill tone={resultTone[0]} label={resultTone[1]} /><strong>{channelPhrase(engine, result.channel)}</strong></div>
           <p>{result.message}</p>
+          {outcome && outcome.key !== key && <p className="hint">Sent on {outcome.label}, not the connection in use.</p>}
           {result.policy?.text && <p>{result.policy.text}</p>}
           {result.after && <p className="hint">{result.after.passed ? "Checked after: the applier moved past the skipped transaction." : "Checked after: the applier did not move past it. Read the status again."}</p>}
           {result.status === "skipped" && result.plan && <details><summary>What to do next</summary><p>{result.plan.drift_warning}</p><ul>{result.plan.after.map((s, i) => <li key={i}>{s}</li>)}</ul></details>}
-        </section>}</>}>
+        </section>}</div>}>
 
       {restartNote && <p className="ops-note" role="status">Stopped when myflames restarted. Skip loops never resume from a restored workspace.</p>}
       {report ? <>
@@ -600,10 +668,15 @@ export function ReplicationView({ connection, disabled, selection, report: bound
 
       </> : <EmptyState icon="replication" title="Read replication status" action={<ToolbarButton primary disabled={disabled || !!reads.loading} onClick={() => { void load(); }}>Load</ToolbarButton>}>Channels, thread states, the last error and lag signals of the connection in use. It only reads.</EmptyState>}
     </ViewLayout>
-    {c && <ConfirmSheet className="ops-confirm" eyebrow={c.kind === "one" ? "SKIP TRANSACTION" : "SKIP UNTIL STOPPED"}
+    {c && !left && <ConfirmSheet className="ops-confirm" eyebrow={c.kind === "one" ? "SKIP TRANSACTION" : "SKIP UNTIL STOPPED"}
+      returnFocus={() => reviewOpener.current?.isConnected ? reviewOpener.current : null}
       title={`${c.kind === "one" ? "Skip the failed transaction" : "Skip failures until stopped"} on ${channelPhrase(c.engine, c.plan.channel)}?`}
       description="myflames reads the failure again right before sending and stops if it changed. A skipped transaction cannot be undone."
-      busy={busy} confirmLabel={<VisiblePrivilegeConfirmLabel gate={{ ...skipGate(c.plan), disabledReason: blocked || loopGate || actionBlock(c.kind, c.plan) }}>{busy ? "Working…" : c.kind === "one" ? "Skip transaction" : "Start skipping"}</VisiblePrivilegeConfirmLabel>}
+      busy={busy} busyLabel={c.kind === "one" ? "Skipping…" : "Starting…"}
+      progress={c.kind === "one" ? "Waiting for the server to skip the transaction" : "Waiting for the server to start skipping"}
+      onLeave={() => { setLeft(true); focusResult(".replication-pending .action-status"); }}
+      leaveText="The request may still be running. Close does not stop it; its outcome shows in Replication."
+      confirmLabel={<VisiblePrivilegeConfirmLabel gate={{ ...skipGate(c.plan), disabledReason: blocked || loopGate || actionBlock(c.kind, c.plan) }}>{c.kind === "one" ? "Skip transaction" : "Start skipping"}</VisiblePrivilegeConfirmLabel>}
       confirmDisabled={c.key !== key || !!loopGate || (c.kind === "loop" && !validLoop)}
       onCancel={() => { decline(c); setConfirmation(null); setNotice(""); }} onConfirm={() => { void confirm(); }}>
       <Fields rows={[

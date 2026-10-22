@@ -80,7 +80,7 @@
     "test:table-index-pagination": "npm run build && node test/table-index-pagination.mjs",
     "test:review-read-hooks": "node test/review-read-hooks.mjs",
     "test:sql-ident": "node test/sql-ident.mjs",
-    "test:action-feedback": "npm run build && node test/action-feedback-unit.mjs && node test/action-feedback.mjs",
+    "test:action-feedback": "npm run build && node test/action-feedback-regressions.mjs && node test/action-feedback-unit.mjs && node test/action-feedback.mjs",
     "test:perf-regressions": "node test/performance-regressions.mjs && node test/perf-budgets-regressions.mjs",
     "test:perf-budgets": "npm run build && node test/perf-budgets.mjs",
     "test:perf-measure": "node test/perf-measure.mjs"

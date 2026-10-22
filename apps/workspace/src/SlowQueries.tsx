@@ -27,6 +27,9 @@ import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "
 import { Icon } from "./components";
 import {
   NumberField,
+  ActionButton,
+  ActionStatus,
+  useSince,
   EmptyState,
   Fields,
   InspectorSection,
@@ -463,6 +466,9 @@ export function useTopStatements({
     /** A read is on its way (this view's, or Refresh all's through accept). */
     running: reads.running,
     error: reads.error || actionError,
+    readError: reads.error,
+    stop: reads.stop,
+    doneAt: reads.doneAt,
     load,
     batch,
     batchRunning,
@@ -834,6 +840,7 @@ export function TopStatementsView({
   const explainGate = usePrivilege("explain");
   const privilegeId = useId();
   const { scope, loading, error, batch, batchRunning, batchSize } = state;
+  const since = useSince(!!loading);
   const activeKey = connectionKey(connection);
   const top = state.top?.report ?? null;
   // Statements read from another connection stay on screen, greyed; Explain,
@@ -1081,19 +1088,24 @@ export function TopStatementsView({
       inspector={inspector}
       detailBackLabel="Back to statements"
       inspectorEmpty={<p>Select a statement to see its full text, its numbers, and Explain or Run analysis.</p>}
-      status={<ViewStatus loading={loading} error={gate ? "" : error} />}
+      status={<ViewStatus loading={top ? loading : ""} error={gate ? "" : error}
+        onStop={loading ? state.stop : undefined}
+        onRetry={!gate && state.readError ? () => void state.load(schema) : undefined} doneAt={state.doneAt} />}
     >
       {gate && (
         <PrerequisiteGate action={<InstrumentsLink row={gate.row} />}>{gate.text}</PrerequisiteGate>
       )}
-      {!top && !loading && !error && (
+      {!top && !gate && (
         <EmptyState
           icon="statements"
           title="No statements loaded"
           action={
-            <button type="button" className="button primary" disabled={busy} onClick={() => void state.load(schema)}>
-              Load top statements
-            </button>
+            <>
+              <ActionButton primary busy={!!loading} busyLabel="Loading…" disabled={!loading && busy} onClick={() => void state.load(schema)}>
+                Load top statements
+              </ActionButton>
+              <ActionStatus keepLine state={{ phase: loading ? "pending" : "idle", message: loading, startedAt: since }} onStop={state.stop} />
+            </>
           }
         >
           The statements that used the most server time since Performance Schema started recording.

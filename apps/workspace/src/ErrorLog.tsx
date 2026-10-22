@@ -391,7 +391,8 @@ export function ErrorLogView({ connection, disabled, onBack, selection, report: 
       <p>Filters apply to the loaded entries; the text filter matches the message, code and subsystem. By code uses the server's grouped counts across the source, including previous runs.</p></>}
     onRefresh={() => void load()} refreshDisabled={disabled} loading={!!reads.loading} otherConnection={other}
     inspector={inspector} inspectorEmpty={<p>Select an entry or code to see the full message and details.</p>}
-    status={<ViewStatus loading={reads.loading} error={reads.error} />}>
+    status={<ViewStatus loading={reads.loading} error={reads.error}
+      onStop={reads.loading ? reads.stop : undefined} onRetry={reads.error ? () => void load() : undefined} doneAt={reads.doneAt} />}>
     {!report && !reads.loading && !reads.error && <EmptyState icon="errorlog" title="Error log">
       {disabled ? "Read when the Query editor finishes its capture." : "MySQL: performance_schema.error_log. MariaDB: the error log file, only when the server runs on this computer."}
     </EmptyState>}

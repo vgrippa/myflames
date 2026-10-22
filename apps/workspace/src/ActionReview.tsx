@@ -9,7 +9,7 @@
 // it changed.
 //
 // After Confirm the same sheet follows the send: the button reads
-// "Applying…" and nothing can be clicked twice; the backend's progress
+// "Sending…" and nothing can be clicked twice; the backend's progress
 // (/api/live/action/progress, reviewed_writes.Progress) names the step and
 // each statement's state (Waiting, Sent, Done, Failed, Not run, Not sent,
 // Outcome unknown). A statement is Done only once the server answered. Then
@@ -21,7 +21,7 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { api, ApiError, recordDeclined, type Connection } from "./api";
 import { connectionKey, connectionLabel } from "./binding";
 import { TYPE_LABEL, useWritePolicy } from "./Connections";
-import { ConfirmSheet, Fields, NumberField, StatusPill, type Tone } from "./kit";
+import { ActionStatus, ConfirmSheet, Fields, NumberField, StatusPill, type Tone } from "./kit";
 import { Commands } from "./OpsShared";
 import { useOpsScope } from "./opsApi";
 import "./ops.css";
@@ -118,7 +118,7 @@ export function openAuditLog(id?: string | null) {
 type Pending = { plan: ReviewedPlan; connection: Connection; key: string; label: string };
 type Ask = { title: string; label: string; min: number; max: number; current: number | null; run: (value: number) => void };
 /** A confirmed send, from Confirm to Close: its progress, then its result. */
-type Run = { p: Pending; id: string; progress: ActionProgress | null; result: ReviewedResult | null; sentAt: number | null };
+type Run = { p: Pending; id: string; progress: ActionProgress | null; result: ReviewedResult | null; sentAt: number | null; startedAt: number };
 
 function progressId(): string {
   const bytes = new Uint8Array(16);
@@ -148,6 +148,8 @@ export function useReviewedActions({ connection, operation, send, onSent, onNext
   const [ask, setAsk] = useState<Ask | null>(null);
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
+  const [left, setLeft] = useState(false);
+  const leftRef = useRef(false);
   const [planning, setPlanning] = useState("");
   const [error, setError] = useState<{ key: string; text: string } | null>(null);
   const [result, setResult] = useState<ShownResult | null>(null);
@@ -216,10 +218,12 @@ export function useReviewedActions({ connection, operation, send, onSent, onNext
     if (p.plan.typed_guard && typed !== p.plan.typed_guard) return;
     const live = captureScope();
     sending.current = true;
+    leftRef.current = false; setLeft(false);
+    setResult(null);
     setBusy(true);
     const id = progressId();
     // The same sheet follows the send (no second dialog): the review is over.
-    setRun({ p, id, progress: null, result: null, sentAt: null });
+    setRun({ p, id, progress: null, result: null, sentAt: null, startedAt: Date.now() });
     setPending(null);
     let sent = false;
     let stopped = false;
@@ -227,8 +231,9 @@ export function useReviewedActions({ connection, operation, send, onSent, onNext
     const finish = (value: ReviewedResult, keepResult = true) => {
       // A send keeps its audit record, but its completed sheet must not move
       // to another connection (including a switch away and back).
-      setRun((r) => (r && r.id === id ? (live() ? { ...r, result: value } : null) : r));
-      if (live() && keepResult) setResult({ key: p.key, label: p.label, title: p.plan.title, value });
+      const wasLeft = leftRef.current;
+      setRun((r) => (r && r.id === id ? (live() && !wasLeft ? { ...r, result: value } : null) : r));
+      if (live() && (keepResult || wasLeft)) setResult({ key: p.key, label: p.label, title: p.plan.title, value });
     };
     async function poll() {
       while (!stopped) {
@@ -287,6 +292,7 @@ export function useReviewedActions({ connection, operation, send, onSent, onNext
       stopped = true;
       sending.current = false;
       setBusy(false);
+      leftRef.current = false; setLeft(false);
     }
   }
 
@@ -295,7 +301,9 @@ export function useReviewedActions({ connection, operation, send, onSent, onNext
   const closeRun = () => setRun(null);
   const sheet: ReactNode = <>
     {ask && <ValueSheet ask={ask} onCancel={() => setAsk(null)} onReview={(v) => { const go = ask.run; setAsk(null); go(v); }} />}
-    {shown && <ReviewSheet p={shown} run={run} busy={busy} typed={typed} onTyped={setTyped}
+    {left && run && !run.result && <ActionStatus className="reviewed-action-status" state={{ phase: "pending",
+      message: `Waiting for the reviewed change on ${run.p.label}. Its outcome is not known yet; nothing will be sent again.`, startedAt: run.startedAt }} />}
+    {shown && !left && <ReviewSheet p={shown} run={run} busy={busy} typed={typed} onTyped={setTyped}
       confirmDisabled={!!run || shown.key !== key || (!!guard && typed !== guard) || !!policy?.blocked}
       blocked={run ? "" : policy?.blocked || (shown.key !== key ? "The connection changed. Review the change again." : "")}
       onCancel={() => {
@@ -303,6 +311,7 @@ export function useReviewedActions({ connection, operation, send, onSent, onNext
         if (run) { closeRun(); return; }
         if (pending) { decline(pending); setPending(null); setTyped(""); }
       }}
+      onLeave={() => { leftRef.current = true; setLeft(true); }}
       onConfirm={() => { void confirm(); }}
       onNext={run?.p.key === key && run.result?.status === "done" && run.result.next && nextRef.current
         ? () => { const next = run.result!.next!.action; closeRun(); setResult(null); nextRef.current?.(next); } : undefined}
@@ -386,9 +395,9 @@ function auditText(r: ReviewedResult): string {
   return r.status === "refused" ? "Recorded in the Audit log as refused." : "The Audit log has the attempt.";
 }
 
-function ReviewSheet({ p, run, busy, typed, onTyped, confirmDisabled, blocked, onCancel, onConfirm, onNext, onAudit }: {
+function ReviewSheet({ p, run, busy, typed, onTyped, confirmDisabled, blocked, onCancel, onConfirm, onLeave, onNext, onAudit }: {
   p: Pending; run: Run | null; busy: boolean; typed: string; onTyped: (v: string) => void; confirmDisabled: boolean; blocked: string;
-  onCancel: () => void; onConfirm: () => void; onNext?: () => void; onAudit: (id: string | null) => void;
+  onCancel: () => void; onConfirm: () => void; onLeave: () => void; onNext?: () => void; onAudit: (id: string | null) => void;
 }) {
   const plan = p.plan;
   const typedId = useId();
@@ -413,7 +422,9 @@ function ReviewSheet({ p, run, busy, typed, onTyped, confirmDisabled, blocked, o
     <ConfirmSheet className="ops-confirm action-review" eyebrow={plan.eyebrow} title={title}
       description={run ? undefined : plan.description}
       busy={busy} confirmTone={plan.policy?.tone || "danger"} confirmDisabled={confirmDisabled}
-      confirmLabel={busy ? "Applying…" : plan.confirm_label} onCancel={onCancel} onConfirm={onConfirm}
+      busyLabel="Sending…" progress="Waiting for the server to run the statements" onLeave={onLeave}
+      leaveText="Close keeps the request running. Its outcome appears in the view; nothing is sent again."
+      confirmLabel={plan.confirm_label} onCancel={onCancel} onConfirm={onConfirm}
       doneLabel={r ? "Close" : undefined}
       secondary={r && onNext && r.next ? { label: r.next.label, onClick: onNext } : undefined}>
       <div className="ops-target"><span>Target</span><strong>{plan.target_text}</strong></div>
@@ -429,7 +440,7 @@ function ReviewSheet({ p, run, busy, typed, onTyped, confirmDisabled, blocked, o
           </p>
         )}
         <StatementSteps statements={plan.statements} states={states} spinning={applying} />
-        {applying && <p className="hint">Sent once, never again. Close is offered when the server has answered.</p>}
+        {applying && <p className="hint">Sent once, never again. If the reply takes longer, Close lets you follow the outcome in the view.</p>}
         {r?.effect && r.effect.length > 0 && <EffectTable rows={r.effect} />}
         {r?.status === "unknown" && checks.length > 0 && (
           <section className="action-checks" aria-label="What to check">

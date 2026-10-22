@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type Connection } from "./api";
 import { connectionKey, connectionLabel, nextGeneration, useConnectionReads } from "./binding";
 import { useSchemaCatalog } from "./PerfShared";
-import { ConfirmSheet, Disclosure, EmptyState, Fields, IconButton, InspectorSection, Popover, SearchField, Segmented, Select, SummaryLine,
+import { ActionButton, ActionStatus, useSince, ConfirmSheet, Disclosure, EmptyState, Fields, InspectorSection, Popover, SearchField, Segmented, Select, SummaryLine,
   ViewLayout, ViewStatus, closePopovers, type InspectorContent, type Selection } from "./kit";
 import { autoLayout, boundedCoordinate, COLUMN_HEIGHT, conceptualRelationship, diagramBounds, diagramPositions, diagramSvg,
   MAX_IMPORT_BYTES, relationshipPath, relationshipMarkerPath, relationshipEndpoints, cardinalityLabel, TABLE_WIDTH, tableHeight, tableLabel, validateDiagram, withDiagramLayout, rebuildDiagramLayout,
@@ -330,6 +330,14 @@ export function SchemaDiagramView({ connection, disabled = false, onBack, docume
   const other = doc?.source.kind === "server" && doc.source.key !== key ? doc.source.label : null;
   const canRead = !!(connection.host || connection.user || connection.profile_id);
   const catalog = useSchemaCatalog(connection, canRead && !disabled);
+  const catalogSince = useSince(catalog.loading);
+  const catalogReloading = useRef(false);
+  if (!catalog.loading) catalogReloading.current = false;
+  function reloadCatalog() {
+    if (catalog.loading || catalogReloading.current || disabled) return;
+    catalogReloading.current = true;
+    catalog.reload();
+  }
   const databaseNames = catalog.catalog?.schemas.map(s => s.name) || [];
 
   useEffect(() => {
@@ -403,7 +411,7 @@ export function SchemaDiagramView({ connection, disabled = false, onBack, docume
   async function importDiagram() {
     if(busy||!text.trim())return;
     cancelRequest(); nextGeneration("diagram"); const n=revision.current;
-    const controller=new AbortController();request.current=controller; setBusy("Reading diagram…");setError("");
+    const controller=new AbortController();request.current=controller; setBusy("Importing…");setError("");
     try {
       if(new TextEncoder().encode(text).byteLength>MAX_IMPORT_BYTES) throw new Error("Imports must be 2 MiB or smaller.");
       const result=await api<SchemaDiagram>("schema-diagram/import",{format,text},controller.signal);
@@ -511,14 +519,11 @@ export function SchemaDiagramView({ connection, disabled = false, onBack, docume
           )}
         </label>
         {canRead && (
-          <IconButton
-            icon="refresh"
-            className="diagram-reload-list"
-            disabled={catalog.loading || disabled}
-            label="Reload database list"
-            title="Reload the list of database names from the server"
-            onClick={catalog.reload}
-          />
+          <ActionButton icon="refresh" className="ghost diagram-reload-list"
+            busy={catalog.loading} busyLabel="Reloading…" disabled={!catalog.loading && disabled}
+            title="Reload the list of database names from the server" onClick={reloadCatalog}>
+            Reload database list
+          </ActionButton>
         )}
       </div>
       <Segmented label="Diagram view" value={view} options={[{value:"diagram",label:"Diagram"},{value:"mermaid",label:"Mermaid"}]} onChange={setView}/>
@@ -529,8 +534,13 @@ export function SchemaDiagramView({ connection, disabled = false, onBack, docume
       </Popover></>}
     onRefresh={rebuild} refreshDisabled={disabled||!!busy||!!reads.loading||!canRead||!targetDb}
     loading={!!busy||!!reads.loading} otherConnection={other} inspector={inspector} inspectorEmpty="Select a table to inspect its columns and relationships."
-    status={<ViewStatus loading={busy||reads.loading} error={importOpen?reads.error:error||reads.error}/> }>
-    {catalog.error&&<p className="diagram-source-note" role="status">Database list unavailable: {catalog.error} Enter a database name to refresh.</p>}
+    status={<ViewStatus loading={importOpen ? reads.loading : busy||reads.loading} error={importOpen?reads.error:error||reads.error}
+      onStop={reads.loading ? reads.stop : undefined} onRetry={reads.error && !error ? rebuild : undefined} doneAt={reads.doneAt}/> }>
+    <ActionStatus className="diagram-source-note" state={{
+      phase: catalog.loading ? "pending" : catalog.error ? "failed" : catalog.catalog ? "done" : "idle",
+      message: catalog.loading ? "Loading database names…" : catalog.error ? `Database list unavailable: ${catalog.error} Enter a database name to refresh.` : "Database list updated.",
+      startedAt: catalogSince,
+    }} onRetry={reloadCatalog} />
     {d?<>
       <SummaryLine tone={d.incomplete||d.warnings.length?"watch":"ok"} notes={d.warnings}>
         {d.incomplete?"Partial schema":"Schema"} · {d.tables.length} {d.tables.length === 1 ? "table" : "tables"} · {d.relationships.length} {d.relationships.length === 1 ? "relationship" : "relationships"} · {doc.source.kind==="import"?doc.source.label:doc.source.database}
@@ -578,12 +588,14 @@ export function SchemaDiagramView({ connection, disabled = false, onBack, docume
       onCancel={()=>setReplacement(null)} onConfirm={()=>{const target=replacement;setReplacement(null);if(target.key===reads.currentKey()&&target.database===(database.trim()||target.database))void load(target.database);}}>
       <p>Export the current diagram first if you want to keep it. Its layout is kept only when rebuilding the same database on the same connection.</p>
     </ConfirmSheet>}
-    {importOpen&&<ConfirmSheet className="diagram-import" title="Import a schema" confirmLabel="Import diagram" confirmTone="primary" busy={!!busy} confirmDisabled={!text.trim()}
+    {importOpen&&<ConfirmSheet className="diagram-import" title="Import a schema" confirmLabel="Import diagram" confirmTone="primary" busy={!!busy} busyLabel="Importing…" progress="Reading the schema file…" confirmDisabled={!text.trim()}
+      onLeave={()=>{cancelRequest();fileRead.current++;setBusy("");setImportOpen(false);setError("");}}
+      leaveText="Close stops waiting for the import and keeps the current diagram. No SQL runs."
       description="Import creates a diagram. SQL in the file is never run on a server." onCancel={()=>{fileRead.current++;setImportOpen(false);setError("");}} onConfirm={()=>void importDiagram()}>
       <div className="diagram-import-controls"><Select label="Import format" value={format} onChange={v=>setFormat(v as Format)} options={[["sql","SQL schema"],["mermaid","Mermaid"],["json","Editable JSON"]]}/>
         <button className="button" onClick={()=>fileInput.current?.click()}>Choose file</button><input ref={fileInput} type="file" accept=".sql,.mmd,.mermaid,.json" hidden onChange={e=>void chooseFile(e.target.files?.[0])}/></div>
       {filename&&<p className="hint">{filename}</p>}<label className="diagram-paste">Schema text<textarea spellCheck={false} value={text} onChange={e=>{fileRead.current++;setText(e.target.value);setFilename("");}} placeholder={format==="sql"?"CREATE TABLE …":format==="mermaid"?"erDiagram":"{\"schema_version\": \"schema-diagram-1.0\", …}"}/></label>
-      <p className="hint">SQL, Mermaid or JSON · Up to 2 MiB</p><ViewStatus loading={busy} error={error}/>
+      <p className="hint">SQL, Mermaid or JSON · Up to 2 MiB</p><ViewStatus error={error}/>
     </ConfirmSheet>}
     {exportFile&&<ConfirmSheet title="Review export notes" confirmTone="primary" confirmLabel="Download file" onCancel={()=>setExportFile(null)} onConfirm={()=>{download(exportFile);setExportFile(null);}}>
       <p>Some schema details cannot be represented in this format.</p><ul>{exportFile.warnings.map((w,i)=><li key={i}>{w}</li>)}</ul>

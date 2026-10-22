@@ -51,12 +51,19 @@ after a reload without a fresh launch. See the [authentication contract](DEVELOP
 
 ## Find your way around
 
+Actions show a busy label and keep keyboard focus while waiting. Top statements,
+Error log and Database diagram offer Stop for slow reads and Try again for read
+errors. In the Query editor, Stop and session operations show elapsed time;
+Commit and Roll back report an unknown outcome when their reply is lost. The
+workspace does not retry those writes. Close on a stalled diagram import stops
+waiting and keeps the current diagram.
+
 The sidebar separates where you go from what you have open:
 
 | Place | What it holds |
 | --- | --- |
 | **Home** | Connections in a table beside one Recent work list of open plans, saved investigations and query tabs. **Add connection** is the primary action in the Connections toolbar. **Import plan** appears once, in the top bar, whether or not anything is open; the empty Recent work list offers **Explore sample plan**. Passwords show **Saved** or **Not saved**, and a connection without a default schema shows a dash. **News**, under Recent work (below it on a narrow window), lists up to six MySQL and MariaDB headlines with their source and age; each opens in your browser, **Refresh news** reads again, and one line says when news is loading, unavailable offline (with when it was last updated) or empty. The version line sits at the bottom of Home with **Check for updates**, which asks GitHub only when clicked and shows the outcome with the time of the last check (Not checked yet, Up to date, a newer version with **Download…**, or why it could not check; a result older than a day reads as the last result). About myflames has the same status and button. Dropping a plan file anywhere on Home imports it. **New query tab** belongs to the Query editor |
-| **Plans** | The open plan with its charts, findings, and inspector. **Explore** and **Compare**, in the top bar beside the place name, switch between one plan and two plans side by side; **Import plan** is at the end of the top bar. One plan header holds the plan's name, the stats (time, rows examined, rows returned, findings), **Plan summary** (or **Investigate first** when a finding leads), **SQL** with **Copy SQL**, and **Export**; Plan summary and SQL each open a panel over the chart with one click (a click elsewhere or Escape closes it). The chart with its own toolbar and the inspector fill the rest of the window; findings and execution context follow below. **Save investigation** opens a sheet with the notebook (investigation name, plan name, baseline, tags, notes and conclusions, Export investigation bundle) and saves with **Save**; **Close** keeps edits as unsaved changes |
+| **Plans** | The open plan with its charts, findings, and inspector. **Explore** and **Compare**, in the top bar beside the place name, switch between one plan and two plans side by side; **Import plan** is at the end of the top bar. One plan header holds the plan's name, the stats (time, rows examined, rows returned, findings), **Plan summary** (or **Investigate first** when a finding leads), **SQL** with **Copy SQL**, and **Export**; Plan summary and SQL each open a panel over the chart with one click (a click elsewhere or Escape closes it). The chart with its own toolbar and the inspector fill the rest of the window; findings and execution context follow below. **Save investigation** opens a sheet with the notebook (investigation name, plan name, baseline, tags, notes and conclusions, Export investigation bundle) and saves with **Save**; **Close** keeps edits as unsaved changes; while Save is running it continues and reports its outcome in the window |
 | **Query editor** | SQL tabs that run any SQL in a session of their own (Run, Run all, Stop, results per result set, Messages, export, transactions), Explain and Run analysis, the schema browser, the run history, and the connection in use |
 | **Query digest** | Right below the Query editor: the statement digests of the connection in use profiled in the style of pt-query-digest (ranked by total time, full scans, joins without an index, temporary tables on disk, lock time, or slow queries), with Export. A row's **Open in editor** and **Explain** open the Query editor, which runs them. See [Query digest](#query-digest) |
 | **Database diagram** | After Query digest: the tables, columns and relationships of a database, read from the connection in use or imported without executing SQL, with a Diagram \| Mermaid view. See [Database diagram](#database-diagram) |
@@ -66,12 +73,25 @@ The sidebar separates where you go from what you have open:
 | **Cluster** | The MariaDB Galera Cluster, Galera Cluster for MySQL, Percona XtraDB Cluster or MySQL InnoDB Cluster (or Group Replication) the connection in use belongs to: members, roles, state, quorum, failures tolerated and routers, with a member's changes (Make primary, Stop or Start Group Replication, Desync, Resync, Bootstrap a Primary component) in its inspector, each after its own confirmation. Greyed in the sidebar once the connection is known not to be part of a cluster |
 | **ProxySQL** | The ProxySQL Admin interface the connection in use reaches: backends as ProxySQL runs them with their connection pool, hostgroups, query rules and query digests, with a server's or rule's changes in its inspector and Load and Save to disk on the Configuration line, each after its own confirmation. Greyed in the sidebar once the connection is known not to be a ProxySQL Admin interface |
 | **Tuning** | A place of its own (for MySQL and MariaDB; the command palette also finds "mysql tuning"): the tuning scorecard full width, without Server's list of views, and the **Full analysis** as its second tab. Links to the Full analysis open it there |
-| **Investigations** | Saved investigations: search, open, delete |
+| **Investigations** | Saved investigations: search, open, delete. With none saved, the empty list is hidden. If plans are open, **Save N open plans as an investigation…** opens the notebook sheet; with no plans open, the empty state offers **Import plan** |
 | **Learn** | The lesson catalog and player (`myflames teach` on the command line) |
 
 The app follows the system light or dark appearance. Check chart labels,
 Compare highlights, tables, dialogs, and Audit status colors in both appearances;
 status text and icons remain available alongside color.
+
+### Query editor results and connection changes
+
+**Export** sits at the end of the results tab row, beside **Result N** and
+**Messages**, and applies to the selected result.
+
+Changing the connection picker leaves each tab's session on its original
+server. When these differ, the editor says "This tab is still connected to
+A. Close its session to run on B." and offers **Close session**. Run, Run all,
+Explain and Run analysis stay disabled until the session is closed or you
+choose its connection again. Stop, Commit and Roll back still use the tab's
+session. An old result says **From &lt;connection&gt;**; closing the session keeps
+that label, and Load more is unavailable for that result.
 
 ### The Server place
 
@@ -83,8 +103,8 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
   you already loaded (Health and Parameters show their worst check status, Locks
   the blocked sessions, Sessions the active ones, Indexes what to review). One
   system everywhere, the sidebar places included: a small dot for state (red
-  for a problem, amber to watch, a gray ring when unknown or off, nothing when
-  OK) and a neutral count beside it, so color always means state.
+  for a problem, amber to watch, a neutral dot for Not judged, and no marker for OK in navigation)
+  and a neutral count beside it, so color always means state.
   Nothing is read just for a badge. A view reads when it is opened on screen,
   once per connection (Refresh retries), Top statements and Error log
   included; Tables and Indexes keep their schema-size consent, and nothing
@@ -96,10 +116,10 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
   Down opens it on the current view; the arrow keys, Home and End move; Enter
   or Space chooses (the list closes and the chosen view's title has focus);
   Escape or a click outside closes it and returns focus to the title. While
-  the list is closed, a dot beside the title shows the worst state among the
-  other views (red for a problem, amber to watch, nothing when all are fine),
-  and screen readers hear it in words ("Health, 1 other view has a problem");
-  counts stay in the list. **Dock the list of views** (in the list's header or
+  the list is closed, a labelled badge on its chevron gives the number of
+  other views that need attention, with the reason on hover and in its
+  accessible name. The title has no bare status dot: its summary describes
+  the view on screen, and the badge describes the other views. **Dock the list of views** (in the list's header or
   the top bar) keeps it beside the view instead, and the choice is remembered;
   docked from the list's header, focus moves to the top bar's toggle, which
   now reads **Float the list of views** and floats it again. Workload works
@@ -113,7 +133,8 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
   one control for the list of views (dock or float it; in a narrow window a
   **Views** menu instead).
 - **One summary line**, with the status and a **N notes** button for engine
-  differences, privileges, and caveats.
+  differences, privileges, and caveats. Summary status words are **OK**,
+  **Watch**, **Problem**, **Not judged** and **Unknown**.
 - **A table or one-line rows.** Tables sort by any column, keep the header in
   view, and scroll sideways inside their frame: an edge with more columns
   beyond it fades out, and the Columns menu column at the right casts a shadow
@@ -124,12 +145,12 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
   closes it and returns to the row. Large counts read compact (159.0B, 14.2M)
   with the exact value on hover and in the inspector; a long name truncates
   (full text on hover) and its flags stay beside it. Tables with more than 300
-  rows draw only the rows in view. In a status column only what needs a look
-  is drawn: Problem and Watch show a dot and the word, No threshold a faint
-  dash, and an OK row leaves the cell empty (screen readers still hear OK).
+  rows draw only the rows in view. Status cells show a dot and a word,
+  including **OK** in Health and InnoDB rows; OK uses quieter text.
   A metric tile without a threshold draws no marker at all.
-  Metric tiles in a group all have the same width: up to six share one row,
-  and a row that does not fit becomes balanced rows of three or two.
+  Metric tiles share equal widths in a wide window. At 900 px and below,
+  they form one compact strip that scrolls sideways within the view, and
+  the facts line folds into **Details** so the table starts nearer the top.
 - **Columns.** Drag a header's right edge to resize any column, or focus the
   edge and use the Left and Right arrow keys (Shift for bigger steps, Home and
   End for the narrowest and widest); double-click the edge to fit. The
@@ -154,6 +175,10 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
   (Done, Already ended, The server refused, Outcome unknown, or Nothing was
   sent) while the list is read again. A successful result begins with **Done.**
   followed by the server's explanation; Kill sessions uses the same headline.
+  If a KILL has no reply after ten seconds, **Close** leaves it running and
+  shows its progress above the list. Its eventual result names the original
+  server when another connection is in use, and offers no Refresh for that
+  other server. A late bulk reply never closes a newer Kill sessions dialog.
   **Kill sessions…** in the Processlist toolbar opens the Kill sessions
   dialog: presets (Runaway queries, Idle sleeping, Lock waiters, All clients)
   and filters choose client sessions (system threads and your own connection
@@ -240,7 +265,10 @@ MariaDB has no SQL access to its error log, so the view reads the log file
 itself only when the server runs on this computer and the file is verifiably
 that server's log (its latest startup line names the same version and port and
 was written when this server started), from at most its last 1 MB. For a remote server it says where the log is and
-how to read it on the server host. It is not part of Full analysis yet.
+how to read it on the server host. When the log cannot be read, the summary
+says why once. File settings and guidance follow separately; commands have
+their own copyable blocks, apart from the explanation. It is not part of
+Full analysis yet.
 
 **Full analysis** (the second tab in the Tuning place) runs every Server view once on request, the
 MySQLTuner-style checklist that `myflames report` prints, implemented with
@@ -266,7 +294,10 @@ never saved; the workspace only remembers that it ran.
 **Tuning** gives a score from the checks the other views already judge
 (Health, Parameters, Tables and the Full analysis), in five weighted
 categories: Buffer pool and redo, Queries, Connections and threads, Tables and
-caches, and Security. A measured check counts 100 when OK, 50 to watch and 0
+caches, and Security. Category cards fit the available width without a blank
+grid cell. A category measured on fewer than half its checks has a muted,
+hatched bar and names its coverage, such as "100% of 1 check"; it also says
+how many of its checks were measured. A measured check counts 100 when OK, 50 to watch and 0
 for a problem. A check that was not measured shows **Not measured** with what
 would measure it (for example "Needs Health or Full analysis"), and it never
 counts: the summary says how many checks were measured. Until at least half
@@ -285,7 +316,8 @@ variable. Only reports of the connection in use are scored; after a switch the
 scorecard stays greyed, its note offers **Run full analysis** to load the
 server in use, and its **Export** is off until then. **Scorecard | Full
 analysis** is the segmented control in the header row. The **Full analysis** tab shows the report described
-above. **Export** saves the scorecard as HTML, Markdown or JSON.
+above and uses its **Refresh** to run it again; the Scorecard toolbar owns
+**Run full analysis**. **Export** saves the scorecard as HTML, Markdown or JSON.
 
 **Parameters** (Setup, formerly Configuration) is modelled on an AWS RDS
 parameter group. It reads once on open for each connection (Refresh retries) and
@@ -315,10 +347,17 @@ PERSIST_ONLY`, and MariaDB rows use `SET GLOBAL` and show the option file line
 to copy. Confirm applies the changes one at a time (each re-read and checked
 first), stops at the first change that is not confirmed, and shows a result per
 row. A change whose reply does not arrive shows **Outcome unknown**: it may have
-run, so check the value before trying again. Cancel or Escape sends nothing and
+run, so check the value before trying again. Before sending, Cancel or Escape
 records a declined attempt for every planned row in the [Audit log](#audit-log).
+While applying, the confirm button shows **Applying…** and the sheet counts
+the seconds. After ten seconds without a reply, **Close** keeps the request
+running and shows its progress in Parameters until the outcome arrives. This
+also applies to single-parameter Change and Reset persisted value. Further
+changes wait for that reply; closing the sheet never resends a change.
 
-The inspector has one compact section per parameter: a one-sentence
+Selecting a parameter opens the side inspector and keeps the table on screen
+in a wide window. Value and Default use the same formatting, so equal values
+look equal. The inspector has one compact section per parameter: a one-sentence
 description (the server's own text on MySQL 9.0 and later and on MariaDB; on
 MySQL 8.0 and 8.4 the same help text, taken from the MySQL source because
 those servers do not report it; otherwise the opening sentence of a check
@@ -408,7 +447,9 @@ that time is used, and the remaining sources say "Not checked" and get their
 turn on the next Refresh. Otherwise it says **Version
 unknown** with the reason and "Add a saved connection for host:port to show its
 version." Where the version came from is in the tooltip, the connector's
-details and the inspector's **Source version** row. The inspector shows the threads, the last error once (code, time,
+details and the inspector's **Source version** row. Selecting a channel opens
+the side inspector while keeping the list on screen in a wide window. Long
+GTID sets wrap after commas and remain selectable. The inspector shows the threads, the last error once (code, time,
 table, failing GTID, the server's text), the lag signals with their caveats
 (Seconds_Behind_Source alone never says a replica is caught up), the
 positions and GTID state in one list (GTID mode and Enforce GTID consistency
@@ -438,6 +479,14 @@ transaction is missing on the replica):
   myflames restarted"; a reloaded page finds a loop still running in the same
   myflames; nothing ever starts a loop again by itself. Changing the
   connection's type or Read-only keeps the loop's status and Stop.
+
+Opening a skip review shows **Checking…** while the failure is read again;
+another click sends no second check. After confirmation, the sheet shows
+**Skipping…** or **Starting…**, with elapsed time. After ten seconds without
+a reply, **Close** leaves the request running and shows its progress in
+Replication. A lost write reply shows **Outcome unknown** and is never
+resent automatically. Loop Stop shows **Stopping…** and, after ten seconds,
+warns that the loop may still be running.
 
 If the failure changed between the sheet and the click, or the sheet stayed
 open for more than a minute, myflames reads it again, shows the new
@@ -475,8 +524,7 @@ InnoDB Cluster, **Routers**:
 
 - **Topology** is a still picture: one card per member with its role
   (Primary or Secondary for Group Replication), its name and address, engine
-  and version, its state as a word beside its shape (a check for OK, a dot for
-  Watch, a triangle for Problem, a ring for not judged), its queues (or this
+  and version, its state as a word beside the shared status dot, its queues (or this
   node's receive and send queues and flow control on Galera) as text, and
   **This connection** on the member you are connected to, each joined to one
   line for the group, labelled with the component or the group mode, quorum and
@@ -498,8 +546,10 @@ InnoDB Cluster, **Routers**:
   columns, saved with the workspace.
 
 Members are shown as the connected server sees them. Galera exposes only its
-own node's state, so the other nodes read **In the component**: their state
-and queues are read on that node, so connect to it to inspect them. Percona
+own node's state, so the other nodes read **In the component · not read here**
+on a compact line. Their state and queues are read on that node; the notes
+explain this once. **Use &lt;connection&gt;** appears when a saved connection
+matches the node and switches to it so you can inspect that node. Percona
 XtraDB Cluster names every node's state, and Group Replication every member's
 state and role. Connected to a member that is offline or in error, the place
 says so, claims no group size, lists the other instances as **Not visible
@@ -509,7 +559,10 @@ not part of a cluster shows a calm **Not part of a cluster** with the reason;
 from then on the sidebar item looks disabled (faint text and icon, tooltip
 "This connection is not part of a cluster"), also while it is open, but stays
 focusable and opens the place. Before the first read, and for another
-connection, it looks like any other place. Choosing another connection while
+connection, it looks like any other place. On a ProxySQL Admin connection,
+Cluster shows **Not part of a cluster**, the sentence "This connection is a
+ProxySQL Admin interface." and **Open ProxySQL**. A password hint appears only
+for an Access denied response. Choosing another connection while
 Cluster stays on screen greys the old report until **Refresh**, and a failed
 read keeps the last report greyed with the time it was read and one sentence
 saying why; either way its member is marked **Read here**, never **This
@@ -646,8 +699,10 @@ change also needs the target's name typed (OFFLINE_HARD, the last ONLINE server
 of a hostgroup, stopping the primary or the last member, a mode switch,
 bootstrapping a Primary component). Right before sending, myflames reads the
 target again and sends nothing if it changed. After you confirm, the same sheet
-follows the send: the button reads **Applying…** and cannot be pressed twice,
-Cancel and Escape wait, a line names the step (reading the target again; sent
+follows the send: the button reads **Sending…** and cannot be pressed twice,
+Cancel and Escape wait for ten seconds; then Close or Escape hides the sheet
+while the request continues under the toolbar, including while the member or
+server inspector is open. A line names the step (reading the target again; sent
 and waiting for the server's answer, with the seconds waited and the limit;
 reading the result back), and each statement shows **Waiting**, **Sent**,
 **Done**, **Failed**, **Not run**, **Not sent** or **Outcome unknown**; a
@@ -766,7 +821,7 @@ unverified actions with their reasons, and **Refresh privileges**. Close is its
 default button, Escape closes it, and focus returns to the picker. The command
 palette opens the same sheet as **Account and privileges** (keywords include
 privileges, grants and roles) from any place. Greyed actions keep their reasons
-where they appear, in their tooltips, descriptions and review dialogs. The sidebar keeps one width in every place.
+where they appear, in their tooltips, descriptions and review dialogs. The sidebar keeps the same width across places at a given window size.
 The light appearance uses a white window, like the dark one uses its content
 color: gray is for the sidebar and side panes only.
 
@@ -781,25 +836,31 @@ each in that same order: **innodb** opens the InnoDB view, not the Cluster
 place, and **health** opens the Health view, not Tuning.
 
 Use the Up and Down arrow keys to move between places, and Home or End to jump
-to the first or last. Below 650 pixels the sidebar becomes a compact bar with
+to the first or last. From 651 to 900 px the sidebar becomes a **48 px icon
+rail**. Place names remain in tooltips and accessible names; status markers
+remain visible. The sidebar toggle opens the full list over the content, and
+Escape closes it and returns focus to the toggle. An **Open plans (N)** rail
+button opens a list of the open plans. At 650 px and below the sidebar becomes a compact bar with
 the status, Settings, and a **Menu** button that opens the places and open plans
 in a drawer; Escape closes it.
 
 ### Window status bar
 
-Across Plans, the Query editor, Server, Workload, Replication, Cluster and Tuning, one
+Across Plans and the places that use a connection, one
 window status bar at the bottom of the viewport shows the state of what is on
 screen. On the places that send to the connection in use it starts with that
 connection's write safety, a dot plus words: **Production** · changes ask
 first, **Read-only** · changes refused, **Development** · risky changes ask
 first, or **Production assumed** · reading settings / settings not loaded (with
 **Retry**). Its tooltip and accessible name are the full sentence ("Production:
-every change on NAME asks first"). Then come the database engine and version,
+every change on NAME asks first"). Every place with a window status bar shows
+the database product and version when that place has read them. Unknown values
+stay hidden. Then come
 the connection, session state, the last run and refresh status. The Query
 editor's transaction state stays in its toolbar, and the rows and time of a run
-in its result tabs, so the footer does not repeat them. On phones it stays one line at the bottom: the
-safety state comes first and stays visible, and later facts scroll inside the
-bar. Home, Plans, Investigations, Learn and the Audit log show no safety state.
+in its result tabs, so the footer does not repeat them. The footer stays one
+line: connection names and other flexible text truncate before the safety
+words, leaving the safety state readable. Home, Plans, Investigations, Learn and the Audit log show no safety state.
 
 ### Dialogs, menus, and focus management
 
@@ -812,7 +873,7 @@ Dialogs, confirmation sheets, popovers, and drawers use scoped focus trapping:
   items. Tuning and result tabs use ArrowLeft/ArrowRight and Home/End, with only
   the selected tab in the Tab order.
 - Pressing Escape dismisses the active surface and restores focus to the control
-  that opened it.
+  that opened it. Visible Esc hints use a keycap.
 - Context menus on table rows (in Query editor results grids and schema trees) can
   be opened by right-clicking, by clicking the dedicated "More actions" button on
   the row (`aria-haspopup="menu"`), or by pressing Shift+F10 (or the ContextMenu
@@ -832,6 +893,12 @@ Dialogs, confirmation sheets, popovers, and drawers use scoped focus trapping:
 
 ### Responsive and phone layout
 
+At 900 px and below, summary tiles form a compact strip, facts fold into
+**Details**, and key/value lists stack each value below its label. In wider
+windows the label column fits the longest label, up to 40% of the list width.
+At the 720 px minimum window, Home keeps connection types readable as tags
+(**Prod**, **Dev**, **Read-only**) beside the connection names.
+
 On phone and narrow screens (below 720 px):
 - Flame graphs, execution trees and bar charts are redrawn for the width of
   their pane. Execution trees and bar charts shorten operator names (the full
@@ -840,7 +907,8 @@ On phone and narrow screens (below 720 px):
   full text size. Swipe sideways or focus the chart and use arrow keys.
 - Toolbars and segmented controls wrap onto multiple lines without clipping
   buttons or dropping controls offscreen.
-- The sidebar collapses into a compact bar with a **Menu** drawer.
+- The sidebar is a 48 px icon rail from 651 to 900 px, with the full list
+  available as an overlay; at 650 px and below it uses the **Menu** drawer.
 - Below 650 px the connection pill gives up width first (its dot and a few
   characters of the name stay, the rest ends in an ellipsis). In the Server and
   Workload top bar, which also holds the place's own actions, this starts below
@@ -1035,6 +1103,9 @@ here.") and **Export** waits for a record. From the command line: `myflames audi
    (4.66 ms, 3.57 s) and colors each bar by its share of the plan's time, so
    only the bars that dominate are red. Resizing the window draws the flame
    graph, tree and bar chart again for the new width and keeps the selection.
+   The execution tree column **Self of total** draws each operator's own
+   time as a share of the whole plan's total time on a common baseline.
+   The Python SVG and workspace chart use the same scale.
 4. Search the operator list and select an operator to inspect its measurements
    and raw fields. A plan with findings opens the inspector on **Findings**
    until you choose an operator. Findings with a matching operator include an
@@ -1093,7 +1164,8 @@ Choose **Learn** in the sidebar to browse all registered lessons. The Learn
 place uses a view toolbar (**Search lessons**, **Family** filter, **Start
 learning**), a one-line summary ("23 lessons, 16 in the learning path"), and
 grouped rows by family, ordered by the learning path, each with its summary and
-"Step n of 16".
+"Step n of 16". A lesson without named phases hides the empty **Phases**
+panel; lessons with phases keep their phase navigation.
 
 An open lesson has one compact toolbar (**All lessons**, **Previous lesson**,
 **Step n of 16**, **Next lesson**, **2D | 3D** when available, **Download
@@ -1229,7 +1301,7 @@ again.
 
 Open **Database diagram** in the sidebar's SQL workspace group (after Query
 digest; Home's Database diagram card and the command palette open it too) to inspect a database's tables,
-columns, keys, and foreign-key relationships. Choose a database from the connected server and select **Rebuild from database** to read fresh metadata. Rebuilding retains positions for tables that remain and incorporates added or removed tables and relationships. Replacing an imported diagram asks for confirmation first; cancel leaves it intact. You can also import SQL (`.sql`), Mermaid (`.mmd` or `.mermaid`), or editable JSON
+columns, keys, and foreign-key relationships. Choose a database from the connected server and select **Refresh** in the view toolbar to rebuild it from fresh metadata. Rebuilding retains positions for tables that remain and incorporates added or removed tables and relationships. Replacing an imported diagram asks for confirmation first; cancel leaves it intact. You can also import SQL (`.sql`), Mermaid (`.mmd` or `.mermaid`), or editable JSON
 without a database connection. Imports are parsed as data and never executed.
 Files and models are limited to 2 MiB; a model holds at most 200 tables,
 10,000 columns, 1,000 relationships, and 20,000 index key parts. Unsupported input and incomplete metadata produce
@@ -1255,7 +1327,9 @@ or relationship for details. Focus a table and use the arrow keys to move it
 16 pixels, or Shift+arrow for 64; Enter opens its details. Position fields and
 Reset offer alternatives to dragging. Conceptual relationships use dashed
 lines; a relationship without column mappings does not claim a database foreign
-key. Mermaid cardinalities are retained as modeling information.
+key. Relationship lines have a small gap at crossings so they do not look like
+junctions. You can follow each relationship to its table. Mermaid
+cardinalities are retained as modeling information.
 
 Export SQL or Mermaid after reviewing any loss warnings, editable JSON to keep
 the model and table positions, or standalone SVG to share the drawing. Export
@@ -1414,3 +1488,7 @@ case sensitivity. An invalid expression says **Not a valid pattern** and selects
 no sessions. Reviewed Indexes and Tables statements quote names containing
 backticks correctly. Tuning and Full analysis share the Export menu, and an
 analysis's elapsed time continues when Tuning is reopened during its run.
+
+Plans sample opening and HTML export show progress immediately; reads can stop waiting, and export failures can retry the same input. HTML and JSON exports report **Saved** with the filename. Investigation Save shows **Saving…** and keeps its error in the sheet.
+
+Maintenance's Detect tools, Check upgrade and Run preflight controls show elapsed progress with **Stop waiting**. A read failure offers **Try again**. Start and Cluster/ProxySQL confirmations offer **Close** after ten seconds without a reply: the request continues, its progress and outcome appear in the view, and nothing is sent again. Cancelling a job shows **Cancelling…** until the reply arrives; a missing reply does not mean it stopped.

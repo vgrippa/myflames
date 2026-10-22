@@ -1475,6 +1475,8 @@ details[open] > summary > .strip-text {
   background: var(--surface);
   color: var(--ink);
 }
+/* Saving keeps notebook fields stable while the request is in flight. */
+.notebook-sheet > fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
 .notebook-sheet::backdrop {
   background: var(--scrim);
 }

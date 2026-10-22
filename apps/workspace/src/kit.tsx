@@ -230,6 +230,7 @@ export function Popover({
   wide,
   buttonTitle,
   disabled = false,
+  busy = false,
   menu = false,
   width: panelWidth,
   children,
@@ -246,6 +247,8 @@ export function Popover({
   buttonTitle?: string;
   /** Disables the trigger and closes an open panel. */
   disabled?: boolean;
+  /** A running action keeps the trigger focusable, but cannot open it again. */
+  busy?: boolean;
   /** Action menus use arrow navigation; forms keep dialog navigation. */
   menu?: boolean;
   /** Panel width in px for a compact menu (default 320, or 400 when wide). */
@@ -313,10 +316,13 @@ export function Popover({
         aria-label={label}
         aria-haspopup={menu ? "menu" : "dialog"}
         disabled={disabled}
+        aria-busy={busy || undefined}
+        aria-disabled={busy || undefined}
         aria-expanded={open}
         aria-controls={open ? id : undefined}
         title={trigger ? buttonTitle : label}
         onClick={() => {
+          if (busy) return;
           setStyle({ visibility: "hidden" });
           setOpen((o) => !o);
         }}
@@ -333,32 +339,37 @@ export function Popover({
 }
 
 /** One format in an Export menu. */
-export type ExportFormat = { key: string; label: string; onSelect: () => void; disabled?: boolean };
+export type ExportFormat = { key: string; label: string; onSelect: () => void; disabled?: boolean; busy?: boolean; busyLabel?: string };
 
 /** The one Export control: export icon, "Export" and a chevron-down pull-down
  * menu of formats (a macOS pull-down button). With a single format it is a
  * plain button without the chevron. Every place that exports uses this. */
-export function ExportMenu({ label, formats, disabled = false, className = "", title }: {
+export function ExportMenu({ label, formats, disabled = false, className = "", title, busy = false, busyLabel }: {
   /** Accessible name, e.g. "Export plan". */
   label: string;
   formats: ExportFormat[];
   disabled?: boolean;
   className?: string;
+  busy?: boolean;
+  busyLabel?: string;
   /** Tooltip; defaults to the accessible name. */
   title?: string;
 }) {
-  const face = <><Icon name="export" size={14} /><span>Export</span></>;
+  const face = <>{busy ? <span className="spinner" aria-hidden="true" /> : <Icon name="export" size={14} />}
+    {busyLabel ? <span className="action-button-label" data-reserve={busy ? "Export" : busyLabel}><span>{busy ? busyLabel : "Export"}</span></span> : <span>Export</span>}</>;
   if (formats.length === 1) {
     const only = formats[0];
     return <button type="button" className={`button export-button ${className}`} aria-label={label} title={title || label}
-      disabled={disabled || only.disabled} onClick={only.onSelect}>{face}</button>;
+      disabled={!busy && (disabled || only.disabled)} aria-busy={busy || undefined} aria-disabled={busy || undefined} onClick={() => { if (!busy) only.onSelect(); }}>{face}</button>;
   }
-  return <Popover menu width={200} label={label} buttonTitle={title || label} disabled={disabled}
+  return <Popover menu width={200} label={label} buttonTitle={title || label} disabled={!busy && disabled} busy={busy}
     className={`export-menu ${className}`} buttonClassName="button export-button"
     trigger={<>{face}<Icon name="chevron-down" size={12} /></>}>
     <div className="export-menu-items">
-      {formats.map((format) => <button key={format.key} type="button" role="menuitem" data-format={format.key}
-        disabled={format.disabled} onClick={() => { closePopovers(); format.onSelect(); }}>{format.label}</button>)}
+      {formats.map((format) => format.busyLabel ? <ActionButton key={format.key} role="menuitem" data-format={format.key}
+        busy={format.busy} busyLabel={format.busyLabel} disabled={!format.busy && format.disabled}
+        onClick={format.onSelect}>{format.label}</ActionButton> : <button key={format.key} type="button" role="menuitem" data-format={format.key}
+        disabled={busy || format.disabled} onClick={() => { closePopovers(); format.onSelect(); }}>{format.label}</button>)}
     </div>
   </Popover>;
 }
@@ -2827,6 +2838,7 @@ export function ConfirmSheet({
   confirmLabel,
   confirmTone = "danger",
   confirmDisabled = false,
+  returnFocus,
   onCancel,
   onConfirm,
   secondary,
@@ -2849,6 +2861,8 @@ export function ConfirmSheet({
   confirmTone?: "danger" | "primary";
   /** Keeps the confirm button off until the request is ready (a form inside the sheet). */
   confirmDisabled?: boolean;
+  /** An asynchronous preflight may finish after focus moved from its opener. */
+  returnFocus?: () => HTMLElement | null | undefined;
   onCancel: () => void;
   onConfirm: () => void;
   /** A second way forward, between Cancel and the confirm button (Roll back and close). */
@@ -2872,7 +2886,7 @@ export function ConfirmSheet({
     if (!busy) onCancel();
     else if (canLeave) onLeave?.();
   };
-  useFocusScope(dialog, { open: true, onClose: dismiss, initialFocus: () => cancel.current });
+  useFocusScope(dialog, { open: true, onClose: dismiss, initialFocus: () => cancel.current, returnFocus });
   const answered = !!doneLabel;
   // Cancel leaves with the answer: focus moves to the button that closes.
   useEffect(() => { if (answered) done.current?.focus(); }, [answered]);

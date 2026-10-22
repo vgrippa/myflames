@@ -355,6 +355,8 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
         <ViewStatus loading={reads.loading || (actions.planning ? "Reading the member for review…" : undefined)} error={failed || actions.error}
           onStop={reads.loading ? reads.stop : undefined} onRetry={failed && !actions.error ? () => { void load(true); } : undefined} doneAt={reads.doneAt} />
         {actions.result && <ActionResult shown={actions.result} onClose={actions.clearResult} />}
+        {/* Close leaves progress here even while the inspector hides the list. */}
+        {actions.sheet}
       </>}>
       {report ? <>
         {failedOver && (
@@ -408,7 +410,6 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
           The cluster the connection in use belongs to, its members and their state. Reading changes nothing.
         </EmptyState>
       )}
-      {actions.sheet}
     </ViewLayout>
   );
 }

@@ -214,7 +214,7 @@ try{
  await page.click('[data-action="refresh"]');await input('[aria-label="Database"]',"inventory");await pause(220);
  assert.equal(await page.evaluate(()=>window.diagramDocument.diagram.tables.some(t=>t.id==="stale")),false);
  readDelay=0;liveModel.tables.pop();await input('[aria-label="Database"]',"shop");
- await page.click('[data-action="refresh"]');await page.waitForFunction(()=>!document.querySelector('[data-action="refresh"]').disabled);
+ await page.click('[data-action="refresh"]');await page.waitForFunction(()=>{const b=document.querySelector('[data-action="refresh"]');return b&&!b.disabled&&b.getAttribute("aria-busy")!=="true";});
  for(const theme of ["light","dark"]){
    await page.emulateMediaFeatures([{name:"prefers-color-scheme",value:theme}]);await shot(`diagram-rebuilt-${theme}-1440.png`);
    await page.setViewport({width:390,height:844});await input('[aria-label="Find a table or column"]',"customers");await click("Fit");
@@ -222,8 +222,13 @@ try{
    await shot(`diagram-rebuilt-${theme}-390.png`);await page.setViewport({width:1440,height:1000});await input('[aria-label="Find a table or column"]',"");await click("Fit");
  }
  // A catalog failure still permits entering a known database name.
- catalogFailure=true;await page.click('[aria-label="Reload database list"]');await page.waitForFunction(()=>document.body.textContent.includes("Catalog permission denied"));
- await input('[aria-label="Database"]',"shop");await page.click('[data-action="refresh"]');await page.waitForFunction(()=>!document.querySelector('[data-action="refresh"]').disabled);
+ catalogFailure=true;await click("Reload database list");await page.waitForFunction(()=>document.body.textContent.includes("Catalog permission denied"));
+ assert.equal(await page.$eval('[aria-label="Database"]',e=>e.tagName),"INPUT","a failed catalog offers a typed database name");
+ const fallbackReads=requests("read").length;
+ await input('[aria-label="Database"]',"shop");await page.click('[data-action="refresh"]');await page.waitForFunction(()=>{const b=document.querySelector('[data-action="refresh"]');return b&&!b.disabled&&b.getAttribute("aria-busy")!=="true";});
+ assert.equal(requests("read").length,fallbackReads+1,"Refresh still reads the typed database after a catalog failure");
+ assert.equal(requests("read").at(-1).body.database,"shop");
+ assert.equal(await page.evaluate(()=>window.diagramDocument.diagram.tables.length),7);
  await click("Switch connection");await page.waitForSelector('[data-other-connection="true"]');
  // Escaping and malformed model checks exercise pure helpers with hostile text.
  const checks=await page.evaluate(model=>{const h=window.diagramHelpers,d=structuredClone(model);d.tables[0].name='<script>alert(1)</script>';d.tables[0].columns[0].name='x"><image href="https://invalid/">';
