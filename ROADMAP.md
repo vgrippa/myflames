@@ -153,6 +153,8 @@ Distribution multiplies whatever is inside, and the inside is now honest (decisi
 
 ## Performance workspace: proposed next views
 
+Shipped: readable durations across Replication lag tables, signals, summary, tile and topology, and the Query editor ALTER review transaction age. Processlist inspector and Locks summary facts retain exact seconds on hover; duration tables keep numeric sorting. Settings and progress counters retain their units.
+
 Candidates for the workspace's **Server** place, in suggested order. Each is read-only, works on MySQL 8.4+/9.x and MariaDB 10.11+ (with engine notes), has a CLI equivalent with `--json`, and links back to plans where it can.
 
 **Shipped: Percona Server for MySQL.** Percona Server 8.0 and 8.4 and Percona XtraDB Cluster are named by their product everywhere while MySQL rules apply, and the views read what Percona adds when the server reports it: user statistics in Indexes and Tables, the thread pool in Health, slow log sampling, and Percona variables marked in Parameters. Checked live on the GA matrix's Percona Server 8.0.46-37 and 8.4.11-11 (with a replica) and on PXC 8.4.11-11.1. Next: Percona's own lifecycle dates for version support, its audit log (`audit_log` plugin on 8.0, `audit_log_filter` on 8.4) in Security basics once installed in the matrix, and Group Replication peers' product.
