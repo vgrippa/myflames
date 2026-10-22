@@ -9,10 +9,10 @@ import {
   type TopReport,
   type TopStatement,
 } from "./api";
-import { useConnectionReads, type Bound } from "./binding";
+import { connectionLabel, useConnectionReads, type Bound } from "./binding";
 import { useOpenRead, useViewOnScreen } from "./viewOnScreen";
 import { Icon } from "./components";
-import { EmptyState } from "./kit";
+import { EmptyState, useWindowStatus } from "./kit";
 import { csvCell } from "./reportTableExport";
 import { digestName, digestQuery, shortDigest } from "./placeholders";
 import "./query-digest.css";
@@ -115,6 +115,12 @@ export function QueryDigestView({
   // default database reads again while it is on screen.
   const onScreen = useViewOnScreen();
   useOpenRead({ key: reads.key, reportKey: bound?.key, ready: true, busy: loading || reads.running(), read: () => { void loadData(); } });
+  const current = bound && bound.key === reads.key ? bound.report : null;
+  useWindowStatus(`digest:${reads.key}`, {
+    connectionState: connection.host ? connectionLabel(connection) : "No connection",
+    engineVersion: current?.version ? `${current.engine === "mariadb" ? "MariaDB" : "MySQL"} ${current.version}` : undefined,
+    refreshing: loading,
+  });
   const choices = useRef(true);
   useEffect(() => {
     if (choices.current) { choices.current = false; return; }

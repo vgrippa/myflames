@@ -2320,7 +2320,7 @@ export const QueryLab = forwardRef<
                 <InfoPopover label="Query editor shortcuts">
                   <p>
                     {keys(false)} runs the selection or the statement at the cursor; {keys(true)} runs every
-                    statement. {keys(false, "E")} explains; {keys(true, "E")} runs analysis. Escape stops a run.
+                    statement. {keys(false, "E")} explains; {keys(true, "E")} runs analysis. <kbd>Esc</kbd> stops a run.
                     Ctrl+Space opens SQL suggestions; Ctrl+Shift+Space also works when the system reserves Ctrl+Space.
                     {" "}{FORMAT_KEYS} formats the selection or the whole tab.
                   </p>

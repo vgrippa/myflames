@@ -565,28 +565,42 @@ export function ResultsPane(props: ResultsPaneProps) {
   return (
     <div className="results-pane" aria-busy={running || undefined}>
       {live}
-      <div className="results-tabs" role="tablist" aria-label="Results" ref={list}>
-        {keys.map((k, i) => (
-          <button
-            key={k.key}
-            type="button"
-            role="tab"
-            id={`results-tab-${k.key.replace(":", "-")}`}
-            data-key={k.key}
-            aria-selected={k.key === active}
-            aria-controls="results-panel"
-            tabIndex={k.key === active ? 0 : -1}
-            title={k.title}
-            onClick={() => onSelect(k.key)}
-            onKeyDown={(e) => onKey(e, i)}
-          >
-            {k.label}
-          </button>
-        ))}
-        {running && (
-          <span className="results-running">
-            <span className="spinner" aria-hidden="true" /> Running…{elapsed}
-          </span>
+      <div className="results-head">
+        <div className="results-tabs" role="tablist" aria-label="Results" ref={list}>
+          {keys.map((k, i) => (
+            <button
+              key={k.key}
+              type="button"
+              role="tab"
+              id={`results-tab-${k.key.replace(":", "-")}`}
+              data-key={k.key}
+              aria-selected={k.key === active}
+              aria-controls="results-panel"
+              tabIndex={k.key === active ? 0 : -1}
+              title={k.title}
+              onClick={() => onSelect(k.key)}
+              onKeyDown={(e) => onKey(e, i)}
+            >
+              {k.label}
+            </button>
+          ))}
+          {running && (
+            <span className="results-running">
+              <span className="spinner" aria-hidden="true" /> Running…{elapsed}
+            </span>
+          )}
+        </div>
+        {result?.columns_known && (
+          <div className="results-tabs-actions">
+            <ExportMenu
+              result={result}
+              n={index + 1}
+              engine={props.engine}
+              binary={props.binary[index] || []}
+              onBinary={(column, on) => props.onBinary(index, column, on)}
+              onDone={props.onNote}
+            />
+          </div>
         )}
       </div>
       <div
@@ -607,9 +621,6 @@ export function ResultsPane(props: ResultsPaneProps) {
 function ResultView({
   result,
   n,
-  engine,
-  binary,
-  onBinary,
   onLoadMore,
   canLoadMore,
   reloaded,
@@ -627,50 +638,44 @@ function ResultView({
         <code title={statement?.text}>{statement?.text.trim().split("\n")[0]}</code>
       </div>
     );
+  const metaItems = [
+    cut ? <span key="cut" className="result-cut">{result.label || `first ${rowsText(result.row_count)}`}</span> : null,
+    result.warnings ? <span key="warn">{`${count(result.warnings)} ${result.warnings === 1 ? "warning" : "warnings"}`}</span> : null,
+    // Only a cut result has rows the sort cannot see.
+    cut && result.row_count > 1 ? (
+      <span key="sort" className="result-sortnote" title="Sorting a column reorders the rows loaded here; rows past the limit are not included">
+        Sorting applies to loaded rows
+      </span>
+    ) : null,
+  ].filter(Boolean);
+  const hasBar = metaItems.length > 0 || !!reloaded[index] || more;
   return (
     <div className="result-view">
-      <div className="result-bar">
-        <span className="result-meta">
-          {[
-            cut ? <span key="cut" className="result-cut">{result.label || `first ${rowsText(result.row_count)}`}</span> : null,
-            result.warnings ? <span key="warn">{`${count(result.warnings)} ${result.warnings === 1 ? "warning" : "warnings"}`}</span> : null,
-            // Only a cut result has rows the sort cannot see.
-            cut && result.row_count > 1 ? (
-              <span key="sort" className="result-sortnote" title="Sorting a column reorders the rows loaded here; rows past the limit are not included">
-                Sorting applies to loaded rows
-              </span>
-            ) : null,
-          ]
-            .filter(Boolean)
-            .map((item, i) => (
+      {hasBar && (
+        <div className="result-bar">
+          <span className="result-meta">
+            {metaItems.map((item, i) => (
               <span key={i}>
                 {i > 0 ? " · " : ""}
                 {item}
               </span>
             ))}
-        </span>
-        {reloaded[index] && <span className="result-note">{reloaded[index]}</span>}
-        <span className="result-actions">
+          </span>
+          {reloaded[index] && <span className="result-note">{reloaded[index]}</span>}
           {more && (
-            <button
-              type="button"
-              className="button small"
-              title="Runs this statement again with a larger row limit; rows may differ from this run"
-              onClick={() => onLoadMore(result)}
-            >
-              Load more
-            </button>
+            <span className="result-actions">
+              <button
+                type="button"
+                className="button small"
+                title="Runs this statement again with a larger row limit; rows may differ from this run"
+                onClick={() => onLoadMore(result)}
+              >
+                Load more
+              </button>
+            </span>
           )}
-          <ExportMenu
-            result={result}
-            n={n}
-            engine={engine}
-            binary={binary[index] || []}
-            onBinary={(column, on) => onBinary(index, column, on)}
-            onDone={onNote}
-          />
-        </span>
-      </div>
+        </div>
+      )}
       <ResultGrid result={result} label={`Result ${n}`} onCopied={(text) => onNote(text)} />
     </div>
   );

@@ -116,17 +116,19 @@
 /* ---- Categories: one quiet strip, a filter per category ------------------- */
 .tuning-categories {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 1px;
   margin: 0;
   padding: 0;
   list-style: none;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   overflow: hidden;
-  background: var(--surface);
+  background: var(--line);
 }
-.tuning-categories > li + li {
-  border-left: 1px solid var(--line);
+.tuning-categories > li {
+  background: var(--surface);
+  min-width: 0;
 }
 .tuning-category {
   display: grid;
@@ -166,6 +168,12 @@
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
+.tuning-category-coverage {
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  font-weight: 500;
+  color: var(--ink-muted);
+}
 .tuning-category-none {
   font-size: var(--text-md);
   line-height: var(--leading-md);
@@ -188,6 +196,11 @@
 .tuning-category.is-ok .tuning-meter > span { background: var(--ok); }
 .tuning-category.is-watch .tuning-meter > span { background: var(--warn); }
 .tuning-category.is-problem .tuning-meter > span { background: var(--danger); }
+/* Fewer than half the category's checks measured: muted hatched bar so a
+   single passing check never looks like a full green bar. */
+.tuning-category.is-low-coverage .tuning-meter > span {
+  background: repeating-linear-gradient(-45deg, var(--ink-faint) 0 4px, transparent 4px 8px);
+}
 .tuning-category-foot {
   font-size: var(--text-xs);
   line-height: var(--leading-xs);
@@ -242,23 +255,14 @@
 /* ---- Narrow ------------------------------------------------------------------------ */
 @container view-main (max-width: 860px) {
   .tuning-categories {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(136px, 1fr));
   }
-  .tuning-categories > li + li {
-    border-left: 0;
+  .tuning-category {
+    padding: var(--space-2) var(--space-3);
   }
-  .tuning-categories > li:nth-child(n + 3) {
-    border-top: 1px solid var(--line);
-  }
-  .tuning-categories > li:nth-child(2n) {
-    border-left: 1px solid var(--line);
-  }
-  /* Every category keeps the same width: an odd last row ends in an empty,
-     ruled cell instead of one category stretched across the row. */
-  .tuning-categories:has(> li:last-child:nth-child(odd))::after {
-    content: "";
-    border-top: 1px solid var(--line);
-    border-left: 1px solid var(--line);
+  .tuning-category-score {
+    font-size: var(--text-md);
+    line-height: var(--leading-md);
   }
 }
 @media (max-width: 650px) {

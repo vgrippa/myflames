@@ -838,6 +838,7 @@ export function IndexesView({
       {report && s && (
         <>
           <SummaryLine
+            tone={!report.available ? "unknown" : (s.unused_candidates > 0 || s.redundant > 0 || s.mostly_full_scans > 0) ? "watch" : "ok"}
             notes={report.available ? report.notes : report.notes.slice(1)}
             extra={
               focus && (

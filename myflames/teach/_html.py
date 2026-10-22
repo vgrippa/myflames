@@ -531,6 +531,11 @@ section.stage button svg {
   padding: 8px 0;
   font-size: var(--text-sm);
 }
+.phase-nav:empty,
+.phase-nav[hidden],
+.phase-nav:not(:has(.phase-item)) {
+  display: none;
+}
 .phase-nav-title {
   padding: 0 10px 6px;
   font-size: var(--text-xs);
@@ -1039,6 +1044,12 @@ var teachRuntime = (function() {
     var c = _ctrl.phaseContainer;
     if (!c || !_ctrl.tl || !_ctrl.tl.getMarks) return;
     _ctrl.marks = _ctrl.tl.getMarks();
+    if (!_ctrl.marks.length) {
+      c.innerHTML = "";
+      c.hidden = true;
+      return;
+    }
+    c.hidden = false;
     c.innerHTML = '<div class="phase-nav-title">Phases</div>';
     for (var i = 0; i < _ctrl.marks.length; i++) {
       (function(idx) {
@@ -1126,6 +1137,10 @@ var teachRuntime = (function() {
     if (_dom.btnReset) _dom.btnReset.addEventListener("click", function() {
       _stopAll();
       if (_ctrl.reset) _ctrl.reset();
+      if (_ctrl.phaseContainer) {
+        _ctrl.phaseContainer.innerHTML = "";
+        _ctrl.phaseContainer.hidden = true;
+      }
       _syncUI();
     });
 
@@ -1220,7 +1235,8 @@ var teachRuntime = (function() {
     // kept for backward compat.
     if (opts && opts.build && !_ctrl.build) _ctrl.build = opts.build;
     if (opts && opts.reset && !_ctrl.reset) _ctrl.reset = opts.reset;
-    container.innerHTML = '<div class="phase-nav-title">Phases</div>';
+    container.innerHTML = "";
+    container.hidden = true;
   }
 
   // Backward-compat aliases used by older code paths
@@ -1341,7 +1357,7 @@ def phase_nav(nav_id: str = "phase-nav") -> str:
     timeline is built (via ``tl.mark("Phase name")`` calls). Clicking
     a phase seeks the animation to that point.
     """
-    return f'<div id="{esc(nav_id)}" class="phase-nav"></div>'
+    return f'<div id="{esc(nav_id)}" class="phase-nav" hidden></div>'
 
 
 def stage_toolbar(status_text: str = "Ready — press Play") -> str:

@@ -372,7 +372,10 @@ try {
   assert.equal(await page.$eval(settings, (e) => e.getAttribute("aria-expanded")), "true");
   assert.match(await text("#settings-popover"), /Restore workspace on startup/);
   // Saved passwords exist (Keychain); they are never part of the workspace.
-  assert.match(await text("#session-toggle-hint"), /Passwords are never part of the workspace\./);
+  assert.equal(await text("#session-toggle-hint"), "Off clears the saved workspace.");
+  await page.click('#settings-popover button[aria-label="About restoring the workspace"]');
+  assert.match(await text('.popover[aria-label="About restoring the workspace"]'), /Passwords are never part of the workspace\./);
+  await page.keyboard.press("Escape");
   assert.equal(await page.$eval("#settings-popover .session-toggle input", (e) => e.checked), true);
   assert.equal(
     await page.evaluate(() => document.activeElement?.closest("#settings-popover") !== null),
@@ -400,11 +403,15 @@ try {
   const focusLabel = () => page.evaluate(() => document.activeElement?.getAttribute("aria-label"));
   await page.click(settings);
   await page.waitForSelector("#settings-popover");
-  // Keyboard reachable: Tab from the startup option reaches the news switch,
-  // then the menu items.
+  // Keyboard reachable: Tab from the startup option reaches its info button,
+  // the news switch and its info button, then the menu items.
+  await page.keyboard.press("Tab");
+  assert.equal(await focusLabel(), "About restoring the workspace");
   await page.keyboard.press("Tab");
   assert.equal(await page.evaluate(() => document.activeElement?.closest(".news-toggle")?.textContent.trim()),
     "Show MySQL and MariaDB news on Home");
+  await page.keyboard.press("Tab");
+  assert.equal(await focusLabel(), "About Home news");
   await page.keyboard.press("Tab");
   assert.equal(await focused(), "Audit log");
   await page.keyboard.press("Tab");
@@ -538,6 +545,7 @@ try {
     const fields = await page.$$eval(".window-statusbar [data-status]", (els) => els.map((e) => e.dataset.status));
     const serverDrawn = ["Server", "Workload", "Tuning", "Database diagram"].includes(label);
     assert.deepEqual(fields, label === "Query editor" ? ["safety", "connection", "session"]
+      : label === "Query digest" ? ["safety", "engine", "connection"]
       : serverDrawn ? ["safety", "engine", "connection", "refreshed"] : ["safety", "connection"], `${label} status fields`);
     assert.doesNotMatch(await text(".window-statusbar"), /unknown|not checked|not refreshed/i, "unknown fields are hidden");
     assert.equal(await page.$eval(".connection-picker .type-dot", (e) => e.getAttribute("aria-label")), "Production");
@@ -987,24 +995,26 @@ try {
   // The skip link reaches the content.
   assert.equal(await page.$eval(".skip", (e) => e.getAttribute("href")), "#main");
 
-  // 9. Narrow layout: a compact bar with status and a drawer behind Menu.
+  // 9. Narrow layout: a 48 px icon rail below 900 px with overlay sidebar and open-plans popover, and a drawer at phone width.
+  await page.setViewport({ width: 720, height: 520 });
+  await page.waitForFunction(() => document.querySelector("#window-sidebar-toggle")?.getAttribute("aria-expanded") === "false");
+  assert.equal(await page.$eval(".sidebar", (e) => Math.round(e.getBoundingClientRect().width)), 48, "48 px icon rail at 720 px");
+  assert.ok(await visible(".rail-open-plans .rail-plans-button"), "open plans stay reachable from the rail");
+  await page.click(".rail-open-plans .rail-plans-button");
+  await page.waitForSelector('.popover[aria-label^="Open plans"]');
+  assert.ok((await texts('.popover[aria-label^="Open plans"] .plan-select strong')).includes("new-from-investigations.json"));
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector('.popover[aria-label^="Open plans"]'));
+  await page.click("#window-sidebar-toggle");
+  await page.waitForSelector(".sidebar-drawer.open");
+  assert.equal(await page.$eval(".sidebar", (e) => Math.round(e.getBoundingClientRect().width)), 208, "toggle opens full sidebar overlay");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".sidebar-drawer.open"));
+  assert.equal(await page.evaluate(() => document.activeElement?.id), "window-sidebar-toggle", "Escape returns focus to the toggle");
   await page.setViewport({ width: 390, height: 844 });
   // Resizing resolves before the media-query listener's React update. Wait
   // for that state transition, then verify that the drawer really is hidden.
   await page.waitForFunction(() => document.querySelector("#window-sidebar-toggle")?.getAttribute("aria-expanded") === "false");
-  const overflown = await page.evaluate(() => {
-    return Array.from(document.querySelectorAll('*'))
-      .filter(el => el.scrollWidth > window.innerWidth)
-      .map(el => ({
-        tag: el.tagName,
-        className: el.className,
-        id: el.id,
-        scrollWidth: el.scrollWidth,
-        clientWidth: el.clientWidth,
-        innerWidth: window.innerWidth,
-      }));
-  });
-  console.log("OVERFLOWN ELEMENTS:", JSON.stringify(overflown, null, 2));
   assert.equal(await overflow(), false);
   const menu = "#window-sidebar-toggle";
   assert.ok(await visible(menu));

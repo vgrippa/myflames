@@ -475,7 +475,7 @@ try {
   assert.deepEqual(probes.compact[0].privileges, ["INSERT", "UPDATE"]);
 
   await inspect();
-  assert.equal(await h.text(".accounts-view .summary-text"), "2 users · 1 role", "counts are pluralized");
+  assert.equal(await h.text(".accounts-view .summary-text"), "Accounts read · 2 users · 1 role", "the read result precedes the pluralized counts");
   assert.equal(await page.$("probe"), null); // User names are rendered as text.
   assert.equal(count("accounts/apply"), 0);
   const selectedKey = await page.$eval('.accounts-view tr[aria-current="true"]', row => row.dataset.rowKey);

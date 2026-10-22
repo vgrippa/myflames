@@ -1459,8 +1459,8 @@ export function LocksView({
       )}
       {report && s && mdl && (
         <>
-          <SummaryLine tone={tone} toneLabel={tone === "ok" ? "Clear" : "Blocked"} notes={report.notes}>
-            {summaryText}
+          <SummaryLine tone={tone} notes={report.notes}>
+            {tone === "ok" ? "Clear" : "Blocked"} · {summaryText}
           </SummaryLine>
           <FactStrip
             label="Lock summary"

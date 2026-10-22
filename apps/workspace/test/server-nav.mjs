@@ -182,10 +182,11 @@ try {
   await page.click("#server-nav-health");
   await page.waitForSelector('.server-view[data-view=health]', { visible: true });
   const marked = await switcher("health");
-  assert.equal(marked.marker, "status-dot is-watch view-switcher-marker");
-  assert.equal(marked.text, "Health, 1 other view to watch", "the marker's words reach screen readers");
-  assert.equal(await page.$eval("#health-switcher .view-switcher-marker", (e) => e.getAttribute("aria-hidden")), "true");
-  assert.equal(await page.$eval("#health-switcher .view-switcher-marker", (e) => e.textContent), "", "no counts on the title");
+  assert.equal(marked.marker, "view-switcher-marker is-watch");
+  assert.equal(await page.$eval("#health-switcher > .status-dot", () => true).catch(() => false), false, "never a bare dot directly after the title");
+  assert.equal(await page.$eval("#health-switcher .view-switcher-chevron .view-switcher-marker", (e) => e.getAttribute("title")), "1 other view needs attention");
+  assert.equal(await page.$eval("#health-switcher .view-switcher-chevron .count-badge", (e) => e.textContent), "1", "count badge on the chevron");
+  assert.equal(await page.$eval("#health-switcher .visually-hidden", (e) => e.textContent), ", 1 other view needs attention", "the marker's words reach screen readers");
 
   // Docking from the list's header persists across a reload. From the
   // keyboard, focus moves to the toolbar's Dock/Float toggle, never the page.
@@ -535,11 +536,15 @@ try {
   await page.waitForSelector('.server-view[data-view="locks"] [data-row-key]');
   await h.view("health");
   await page.waitForFunction(() => document.querySelector("#health-switcher .view-switcher-marker")?.classList.contains("is-problem"));
-  assert.equal((await switcher("health")).text, "Health, 1 other view has a problem, 1 to watch");
+  assert.equal(await page.$eval("#health-switcher .view-switcher-marker", (e) => e.getAttribute("title")), "2 other views need attention");
+  assert.equal(await page.$eval("#health-switcher .view-switcher-marker .count-badge", (e) => e.textContent), "2");
+  assert.equal(await page.$eval("#health-switcher .visually-hidden", (e) => e.textContent), ", 2 other views need attention");
   await h.view("locks");
-  assert.equal((await switcher("locks")).text, "Locks, 1 other view to watch", "the view's own problem is in its content");
-  // The list keeps its counts and dots.
+  assert.equal(await page.$eval("#locks-switcher .view-switcher-marker", (e) => e.getAttribute("title")), "1 other view needs attention", "the view's own problem is in its content");
+  assert.equal(await page.$eval("#locks-switcher .visually-hidden", (e) => e.textContent), ", 1 other view needs attention");
+  // The list keeps its counts and dots, and its header names the other views needing attention.
   await h.openViews();
+  assert.match(await text(".view-switcher-popover .server-floating-header"), /1 other view needs attention/);
   assert.equal(await text(".view-switcher-popover #server-nav-locks .count-badge"), "5");
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => document.activeElement?.id === "locks-switcher");

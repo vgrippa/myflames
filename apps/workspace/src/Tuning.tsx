@@ -419,11 +419,12 @@ export function TuningView({
           <ul className="tuning-categories" aria-label="Categories">
             {tuning.categories.map((c) => {
               const active = category === c.key;
+              const lowCoverage = c.measured > 0 && c.measured * 2 < c.total;
               return (
                 <li key={c.key}>
                   <button
                     type="button"
-                    className={`tuning-category is-${c.status}${active ? " is-active" : ""}`}
+                    className={`tuning-category is-${c.status}${lowCoverage ? " is-low-coverage" : ""}${active ? " is-active" : ""}`}
                     aria-pressed={active}
                     data-category={c.key}
                     title={`${TUNING_CATEGORIES[c.key].description} ${Math.round(c.weight * 100)}% of the score.`}
@@ -431,7 +432,15 @@ export function TuningView({
                   >
                     <span className="tuning-category-name">{c.name}</span>
                     <span className="tuning-category-score">
-                      {c.score === null ? <span className="tuning-category-none">Not measured</span> : `${c.score}%`}
+                      {c.score === null ? (
+                        <span className="tuning-category-none">Not measured</span>
+                      ) : lowCoverage ? (
+                        <>
+                          {c.score}% <span className="tuning-category-coverage">of {c.measured} {c.measured === 1 ? "check" : "checks"}</span>
+                        </>
+                      ) : (
+                        `${c.score}%`
+                      )}
                     </span>
                     <span className="tuning-meter" aria-hidden="true">
                       <span style={{ width: `${c.score ?? 0}%` }} />

@@ -144,22 +144,14 @@ export function StatusDot({ tone, label }: { tone: Tone; label?: string }) {
 }
 
 /** A dot and a short word (OK, Watch, Problem, Off…). In a status column
- * (`quiet`), the normal states step back so only the others draw the eye: OK
- * draws nothing and No threshold a faint dash, while the word stays for
- * screen readers, hover and text search. A custom label is always shown. */
+ * (`quiet`), the normal states step back with muted ink so only the others
+ * draw the eye, while always drawing both the dot and the word. */
 export function StatusPill({ tone, label, title, quiet = false }: { tone: Tone; label?: string; title?: string; quiet?: boolean }) {
   const word = label || TONE_TEXT[tone];
-  if (quiet && (tone === "ok" || tone === "info") && word === TONE_TEXT[tone]) {
-    return (
-      <span className={`status-pill is-${tone} is-quiet`} title={title || word}>
-        <span className="visually-hidden">{word}</span>
-      </span>
-    );
-  }
   return (
-    <span className={`status-pill is-${tone}`} title={title}>
+    <span className={`status-pill is-${tone}${quiet && (tone === "ok" || tone === "info") && word === TONE_TEXT[tone] ? " is-quiet" : ""}`} title={title || (quiet ? word : undefined)}>
       <span className="status-dot" aria-hidden="true" />
-      {label || TONE_TEXT[tone]}
+      {word}
     </span>
   );
 }
@@ -178,26 +170,33 @@ export function CountBadge({ count, tone = "neutral", label }: { count: number; 
  * places): one system everywhere. A dot and word carry state (OK draws
  * nothing), and a count is always a neutral pill beside it. The
  * words reach screen readers through `text` (or the row's own hidden text). */
-export function NavMarker({ tone, count, countTone = "neutral", text, compact = false }: {
+export function NavMarker({ tone, count, countTone = "neutral", text, compact = false, announce = true }: {
   tone?: Tone;
   count?: number;
   countTone?: BadgeTone;
   text?: string;
-  /** Narrow rows (sidebar places, lists of views): with a count, the dot and the count
-   * stand alone and the state word moves to the tooltip and `text`. */
+  /** False when the caller already gives the row its own hidden text (Server's
+   * list of views), so a screen reader hears the state once. */
+  announce?: boolean;
+  /** Narrow rows (sidebar places, lists of views): a dot plus a neutral count
+   * when there is something to count, otherwise the dot alone with the word in
+   * its tooltip and `text`. */
   compact?: boolean;
 }) {
   const state = tone || countState(countTone);
   const word = state && state !== "ok" ? TONE_TEXT[state] : "";
-  const terse = compact && count !== undefined;
+  const terse = compact;
+  const srText = text
+    ? terse && word && !/other view/i.test(text) && !text.toLowerCase().includes(word.toLowerCase()) ? `${word}, ${text}` : text
+    : terse && word ? word : "";
   return (
     <>
-      <span className="nav-marker" aria-hidden="true" title={terse && word ? word : undefined}>
+      <span className="nav-marker" aria-hidden="true" title={terse ? (srText || word || undefined) : undefined}>
         {state && <span className={`status-dot is-${state}`} />}
         {word && !terse && <span>{word}</span>}
         {count !== undefined && <CountBadge count={count} />}
       </span>
-      {text && <span className="visually-hidden">, {text}</span>}
+      {announce && srText && <span className="visually-hidden">, {srText}</span>}
     </>
   );
 }
@@ -1236,7 +1235,7 @@ export type ViewSwitcherShared = {
   /** The popover's content: its header and the grouped list of views. */
   list: ReactNode;
   /** The worst status among the other views of the list, if any needs attention. */
-  others?: { tone: "problem" | "watch"; text: string } | null;
+  others?: { tone: "problem" | "watch"; count: number; text: string } | null;
   /** After a choice, the chosen view's title button takes focus once. */
   takeFocus: () => boolean;
 };
@@ -1315,7 +1314,7 @@ function ViewSwitcher({ id, title, shared }: { id: string; title: string; shared
           aria-haspopup="dialog"
           aria-expanded={open}
           aria-controls={open ? `${id}-views` : undefined}
-          title={others ? `${title}: ${others.text}` : `Switch ${shared.label.replace(/ views$/, "")} view`}
+          title={others ? `${title} (${others.text})` : `Switch ${shared.label.replace(/ views$/, "")} view`}
           onClick={() => shared.setOpen(!open)}
           onKeyDown={(event) => {
             if (event.key === "ArrowDown" && !open) {
@@ -1325,9 +1324,14 @@ function ViewSwitcher({ id, title, shared }: { id: string; title: string; shared
           }}
         >
           <span id={`${id}-title-name`} className="view-switcher-name">{title}</span>
-          {others && <span className={`status-dot is-${others.tone} view-switcher-marker`} aria-hidden="true" />}
-          {others && <span className="visually-hidden">, {others.text}</span>}
-          <span className="view-switcher-chevron" aria-hidden="true"><Icon name="chevron-down" size={12} /></span>
+          <span className="view-switcher-chevron">
+            <span className="view-switcher-chevron-icon" aria-hidden="true"><Icon name="chevron-down" size={12} /></span>
+            {others && (
+              <span className={`view-switcher-marker is-${others.tone}`} title={others.text}>
+                <NavMarker compact tone={others.tone} count={others.count} text={others.text} />
+              </span>
+            )}
+          </span>
         </button>
       </h2>
       {open && (
@@ -2738,17 +2742,33 @@ export function SummaryLine({ tone, toneLabel, children, notes, notesTitle, extr
   );
 }
 
-/** Facts on one line: "Server MySQL 8.4 · Uptime 2 d". */
+/** Facts on one line: "Server MySQL 8.4 · Uptime 2 d". Under 900 px it folds
+ * into a Details disclosure so narrow windows reach the content first. */
 export function FactStrip({ label, facts }: { label: string; facts: [string, ReactNode][] }) {
+  const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(max-width: 900px)").matches);
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const media = window.matchMedia("(max-width: 900px)");
+    const change = () => setNarrow(media.matches);
+    change();
+    media.addEventListener("change", change);
+    return () => media.removeEventListener("change", change);
+  }, []);
   return (
-    <dl className="fact-strip" aria-label={label}>
-      {facts.map(([dt, dd]) => (
-        <div key={dt}>
-          <dt>{dt}</dt>
-          <dd>{dd}</dd>
-        </div>
-      ))}
-    </dl>
+    <details className="fact-strip-details" open={!narrow}>
+      <summary className="fact-strip-summary">
+        <Icon name="disclosure" size={14} />
+        Details
+      </summary>
+      <dl className="fact-strip" aria-label={label}>
+        {facts.map(([dt, dd]) => (
+          <div key={dt}>
+            <dt>{dt}</dt>
+            <dd>{dd}</dd>
+          </div>
+        ))}
+      </dl>
+    </details>
   );
 }
 

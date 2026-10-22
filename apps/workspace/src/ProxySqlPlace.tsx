@@ -22,11 +22,11 @@
 // and in the Configuration line. Nothing is persisted without its own review.
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Connection } from "./api";
-import { useConnectionReads, type Bound } from "./binding";
+import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "./binding";
 import { useWritePolicy } from "./Connections";
 import {
   DataTable, EmptyState, Fields, InfoPopover, InspectorContext, InspectorSection, MetricTile, Pill, PrerequisiteGate,
-  SearchField, Segmented, StatusPill, SummaryLine, TileGrid, ToolbarButton, ToolbarSelect, ViewLayout, ViewStatus,
+  SearchField, Segmented, StatusPill, SummaryLine, TileGrid, ToolbarButton, ToolbarSelect, ViewLayout, ViewStatus, useWindowStatus,
   type Column, type InspectorContent, type InspectorShared, type Selection, type Tone,
 } from "./kit";
 import { useOpenRead, useViewOnScreen } from "./viewOnScreen";
@@ -135,6 +135,12 @@ export function ProxySqlPlace({ connection, disabled = false, report, onReport, 
     open: inspectorOpen && !!selectedKey, setOpen: setInspectorOpen,
     width: inspectorWidth, setWidth: setInspectorWidth, sheet: false,
   }), [inspectorOpen, selectedKey, inspectorWidth]);
+  const key = connectionKey(connection);
+  const current = report && report.key === key ? report.report : null;
+  useWindowStatus(`proxysql:${key}`, {
+    connectionState: connection.host ? connectionLabel(connection) : "No connection",
+    engineVersion: current?.is_proxysql && current.version ? `ProxySQL ${current.version}` : undefined,
+  });
   return (
     <InspectorContext.Provider value={inspector}>
       <div className="cluster-place proxysql-place">

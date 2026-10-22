@@ -348,7 +348,7 @@ export function InnodbView({
                           key={i.key}
                           rowKey={`section:${section.key}:${i.key}`}
                           selection={selection}
-                          tone={i.status ? tone(i.status) : undefined}
+                          tone={i.status ? tone(i.status) : rows.some((x) => x.status) ? "info" : undefined}
                           label={i.label}
                           value={<span title={i.text}>{i.text}</span>}
                           attrs={{ "data-section": section.key, "data-item": i.key }}

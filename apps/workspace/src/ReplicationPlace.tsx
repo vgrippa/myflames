@@ -6,12 +6,13 @@
 // through a write-policy confirmation sheet.
 import { useMemo, useState } from "react";
 import type { Connection } from "./api";
-import type { Bound } from "./binding";
+import { connectionKey, connectionLabel, type Bound } from "./binding";
 import { ReplicationView, type ReplicationSubTab } from "./Replication";
 import type { ReplicationReport, SkipLoop } from "./opsApi";
 import type { ClusterKind } from "./clusterApi";
-import { InspectorContext, type InspectorShared, type Selection } from "./kit";
+import { InspectorContext, useWindowStatus, type InspectorShared, type Selection } from "./kit";
 import { InstrumentsLinkContext } from "./Instruments";
+import { engineName } from "./OpsShared";
 import "./replication.css";
 
 export function ReplicationPlace({
@@ -83,6 +84,12 @@ export function ReplicationPlace({
     }),
     [inspectorOpen, selectedKey, inspectorWidth],
   );
+  const key = connectionKey(connection);
+  const current = report && report.key === key ? report.report : null;
+  useWindowStatus(`replication:${key}`, {
+    connectionState: connection.host ? connectionLabel(connection) : "No connection",
+    engineVersion: current && current.server_version ? engineName(current.engine, current.server_version) : undefined,
+  });
 
   return (
     <InspectorContext.Provider value={inspector}>

@@ -283,8 +283,8 @@ export function AccountsView({ connection, disabled = false, onBack, selection, 
       <ActionStatus keepLine state={{ phase: reads.loading ? "pending" : "idle", message: reads.loading, startedAt: loadingSince }}
         onStop={reads.stop} />
     </>}>Read accounts from the connection in use.</EmptyState> : <>
-      <SummaryLine tone={metadataUnreadable ? "unknown" : "info"} toneLabel={metadataUnreadable ? "Not judged" : "Accounts read"} notes={report.warnings}>
-        {metadataUnreadable ? report.warnings[0] || "Account metadata could not be read." : `${(report.accounts.length - roles).toLocaleString()} ${report.accounts.length - roles === 1 ? "user" : "users"} · ${roles.toLocaleString()} ${roles === 1 ? "role" : "roles"}`}
+      <SummaryLine tone={metadataUnreadable ? "unknown" : report.complete ? "info" : "watch"} toneLabel={metadataUnreadable ? "Not judged" : undefined} notes={report.warnings}>
+        {metadataUnreadable ? report.warnings[0] || "Account metadata could not be read." : `${report.complete ? "Accounts read" : "Partial list"} · ${(report.accounts.length - roles).toLocaleString()} ${report.accounts.length - roles === 1 ? "user" : "users"} · ${roles.toLocaleString()} ${roles === 1 ? "role" : "roles"}`}
       </SummaryLine>
       <DataTable id="accounts.list" label="Users and roles" columns={shownColumns} rows={rows} rowKey={accountKey} selection={{ key: selection.key, select: selectAccount }} empty="No matching accounts." />
     </>}

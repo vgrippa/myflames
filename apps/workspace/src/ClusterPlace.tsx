@@ -13,12 +13,12 @@
 // a member "This connection".
 import { useId, useMemo, useState, type ReactNode } from "react";
 import type { Connection } from "./api";
-import { useConnectionReads, type Bound } from "./binding";
+import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "./binding";
 import { useWritePolicy } from "./Connections";
 import { ActionResult, useReviewedActions } from "./ActionReview";
 import {
   DataTable, EmptyState, Fields, InspectorContext, InspectorSection, MetricTile, PrerequisiteGate, Segmented,
-  SummaryLine, TileGrid, ToolbarButton, ViewLayout, ViewStatus,
+  SummaryLine, TileGrid, ToolbarButton, ViewLayout, ViewStatus, useWindowStatus,
   type Column, type InspectorContent, type InspectorShared, type Selection, type Tone,
 } from "./kit";
 import { useOpenRead } from "./viewOnScreen";
@@ -137,6 +137,12 @@ export function ClusterPlace({ connection, disabled = false, report, onReport, f
     open: inspectorOpen && !!selectedKey, setOpen: setInspectorOpen,
     width: inspectorWidth, setWidth: setInspectorWidth, sheet: false,
   }), [inspectorOpen, selectedKey, inspectorWidth]);
+  const key = connectionKey(connection);
+  const current = report && report.key === key ? report.report : null;
+  useWindowStatus(`cluster:${key}`, {
+    connectionState: connection.host ? connectionLabel(connection) : "No connection",
+    engineVersion: current && current.server_version ? engineName(current.engine, current.server_version, current.server_product) : undefined,
+  });
   return (
     <InspectorContext.Provider value={inspector}>
       <div className="cluster-place">

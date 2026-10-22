@@ -104,19 +104,24 @@ export function NewsSetting() {
   useEffect(() => () => { mounted.current = false; }, []);
   return (
     <>
-      <Checkbox className="check-field session-toggle news-toggle" checked={enabled === true}
-        disabled={enabled === null} busy={saving} describedBy="news-toggle-hint"
-        onChange={(on) => {
-          setError("");
-          setSaving(true);
-          setNewsEnabled(on)
-            .catch(() => { if (mounted.current) setError("Could not save this setting. Try again."); })
-            .finally(() => { if (mounted.current) setSaving(false); });
-        }}>
-        Show MySQL and MariaDB news on Home
-      </Checkbox>
+      <div className="settings-option-row news-option-row">
+        <Checkbox className="check-field session-toggle news-toggle" checked={enabled === true}
+          disabled={enabled === null} busy={saving} describedBy="news-toggle-hint"
+          onChange={(on) => {
+            setError("");
+            setSaving(true);
+            setNewsEnabled(on)
+              .catch(() => { if (mounted.current) setError("Could not save this setting. Try again."); })
+              .finally(() => { if (mounted.current) setSaving(false); });
+          }}>
+          Show MySQL and MariaDB news on Home
+        </Checkbox>
+        <InfoPopover label="About Home news">
+          <p>Headlines from Planet MySQL and the MariaDB Foundation, read over HTTPS while Home is open.</p>
+        </InfoPopover>
+      </div>
       <p className={error ? "hint error" : "hint"} id="news-toggle-hint" role={error ? "alert" : undefined}>
-        {error || "Headlines from Planet MySQL and the MariaDB Foundation, read while Home is open."}
+        {error || "Read while Home is open."}
       </p>
     </>
   );

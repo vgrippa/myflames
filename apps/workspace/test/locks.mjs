@@ -201,7 +201,8 @@ try {
     { limit: lockCalls().at(-1).limit, waits_only: lockCalls().at(-1).waits_only, host: lockCalls().at(-1).connection.host },
     { limit: 500, waits_only: false, host: "127.0.0.1" },
   );
-  assert.match(await text(`${view} .summary-line`), /Blocked\s*5 blocked sessions · 2 root blockers \(idle in transaction\)/);
+  assert.equal(await text(`${view} .summary-line .status-pill`), "Problem");
+  assert.equal(await text(`${view} .summary-text`), "Blocked · 5 blocked sessions · 2 root blockers (idle in transaction)");
   assert.match(await text(`${view} .fact-strip`), /Blocked sessions\s*5/);
   assert.match(await text(`${view} .fact-strip`), /Root blockers\s*2/);
   assert.equal(await text("#server-nav-locks .count-badge"), "5", "the badge counts blocked sessions");
@@ -723,7 +724,8 @@ try {
     summary: { ...mysql.summary, blocked_sessions: 0, root_blockers: 0, longest_wait_s: null } } };
   await reload();
   assert.match(await text(`${view} [aria-labelledby="locks-tree-h"]`), /No session is waiting for a lock right now/);
-  assert.match(await text(`${view} .summary-line`), /Clear\s*Nothing is waiting for a lock/);
+  assert.equal(await text(`${view} .summary-line .status-pill`), "OK");
+  assert.equal(await text(`${view} .summary-text`), "Clear · Nothing is waiting for a lock");
 
   // Narrow viewport: tables scroll inside their container, never the page.
   mocks["/api/live/locks"] = { status: 200, body: mysql };

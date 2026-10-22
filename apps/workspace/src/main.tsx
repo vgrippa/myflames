@@ -199,10 +199,18 @@ function ratio(op: Operator) {
   return Math.max(actual / estimate, estimate / actual);
 }
 function App() {
-  const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth > 650);
+  // Width mode and expansion change together. Separate media listeners in
+  // the shell and Sidebar could briefly turn the desktop sidebar into an
+  // open modal drawer on resize, stealing focus from a chart or inspector.
+  const [sidebar, setSidebar] = useState(() => ({
+    open: window.innerWidth > 900,
+    narrow: window.innerWidth <= 900,
+  }));
+  const sidebarOpen = sidebar.open;
+  const setSidebarOpen = (open: boolean) => setSidebar((current) => ({ ...current, open }));
   useEffect(() => {
-    const narrow = window.matchMedia("(max-width: 650px)");
-    const changed = () => setSidebarOpen(!narrow.matches);
+    const narrow = window.matchMedia("(max-width: 900px)");
+    const changed = () => setSidebar({ open: !narrow.matches, narrow: narrow.matches });
     narrow.addEventListener("change", changed);
     return () => narrow.removeEventListener("change", changed);
   }, []);
@@ -1383,15 +1391,19 @@ function App() {
   // the first read it looks like any other place.
   const clusterState = clusterNav(clusterReport, connectionKey(request));
   const clusterMuted = clusterState.state === "none";
-  // ProxySQL looks disabled (and stays focusable) only once a read of the
-  // connection in use said it is not a ProxySQL Admin interface.
-  const proxyMuted = proxySqlNav(proxyReport, connectionKey(request)) === "none";
-  // The word stays visible beside the shape (a triangle for Problem, cluster place shapes), never "● 1" alone.
+  const proxyNav = proxySqlNav(proxyReport, connectionKey(request));
+  const proxyMuted = proxyNav === "none";
+  const proxyNow = proxyNav === "proxysql" && proxyReport && proxyReport.key === connectionKey(request) ? proxyReport.report : null;
+  const proxyIssues = proxyNow && (proxyNow.status === "problem" || proxyNow.status === "watch") ? proxyNow.status_why.length : 0;
+  const proxyBadge = !proxyNow ? null
+    : proxyIssues > 0
+      ? <NavMarker compact tone={proxyNow.status} count={proxyIssues} countTone={proxyNow.status === "problem" ? "danger" : "warn"} text={`ProxySQL ${proxyNow.status === "problem" ? "problem" : "to watch"}, ${proxyIssues} ${proxyIssues === 1 ? "issue" : "issues"}`} />
+      : <NavMarker compact tone={proxyNow.status === "unknown" ? "unknown" : proxyNow.status} text={proxyNow.status === "ok" ? "ProxySQL OK" : proxyNow.status === "unknown" ? "ProxySQL not judged" : `ProxySQL ${proxyNow.status === "problem" ? "problem" : "to watch"}`} />;
   const clusterBadge = clusterState.state !== "cluster" ? null
     : clusterState.status === "problem" && clusterState.problems > 0
-      ? <NavMarker tone="problem" count={clusterState.problems} countTone="danger" text={clusterState.text} />
+      ? <NavMarker compact tone="problem" count={clusterState.problems} countTone="danger" text={clusterState.text} />
       // Not judged (an account that cannot read): no marker word of its own; the place says why.
-      : <NavMarker tone={clusterState.status === "unknown" ? undefined : clusterState.status} text={clusterState.text} />;
+      : <NavMarker compact tone={clusterState.status === "unknown" ? undefined : clusterState.status} text={clusterState.text} />;
   // Replication names the state of the connection in use the same way, from
   // the one report the place and Refresh all share: muted when it is not a
   // replica (a neutral state; Group Replication's own channels do not count),
@@ -1401,7 +1413,7 @@ function App() {
   const replicationBadge = replicationState.state !== "replica" ? null
     : replicationState.failed > 0
       ? <NavMarker compact tone="problem" count={replicationState.failed} countTone="danger" text={replicationState.text} />
-      : <NavMarker tone={replicationState.tone} text={replicationState.text} />;
+      : <NavMarker compact tone={replicationState.tone} text={replicationState.text} />;
   // The places that send to the connection in use (the footer names its
   // write safety there, and only there).
   const connectionPlace = mode === "query" || mode === "digest" || mode === "diagram" || mode === "server" || mode === "workload" || mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "tuning";
@@ -1674,6 +1686,7 @@ function App() {
       <Sidebar
         logo={logo}
         expanded={sidebarOpen}
+        narrow={sidebar.narrow}
         onExpandedChange={setSidebarOpen}
         place={ready ? place : null}
         plans={plans}
@@ -1688,7 +1701,7 @@ function App() {
         onRemovePlan={removePlan}
         onToggleRestore={toggleRestore}
         onAuditLog={openAuditLog}
-        placeBadges={{ replication: replicationBadge, cluster: clusterBadge }}
+        placeBadges={{ replication: replicationBadge, cluster: clusterBadge, proxysql: proxyBadge }}
         placeMuted={clusterMuted || proxyMuted || replicationMuted ? {
           ...(replicationMuted ? { replication: NOT_A_REPLICA } : {}),
           ...(clusterMuted ? { cluster: NOT_A_CLUSTER } : {}),
@@ -1698,7 +1711,7 @@ function App() {
       <div ref={chrome} data-place={place || "audit"} className="workspace" style={{ "--place-actions-width": `${placeActionsWidth}px` } as CSSProperties}>
         <div className="topbar-stack">
         <header className="topbar window-toolbar" aria-label={`${placeLabel} toolbar`}>
-          <button id="window-sidebar-toggle" className="icon-button" aria-label={sidebarOpen ? "Hide sidebar" : "Show sidebar"} title={sidebarOpen ? "Hide sidebar" : "Show sidebar"} aria-expanded={sidebarOpen} aria-controls="workspace-sidebar" onClick={() => setSidebarOpen((open) => !open)}><Icon name="browser" /></button>
+          <button id="window-sidebar-toggle" className="icon-button" aria-label={sidebarOpen ? "Hide sidebar" : "Show sidebar"} title={sidebarOpen ? "Hide sidebar" : "Show sidebar"} aria-expanded={sidebarOpen} aria-controls="workspace-sidebar" onClick={() => setSidebar((current) => ({ ...current, open: !current.open }))}><Icon name="browser" /></button>
           <div className="topbar-title">
             {/* The place is named once. Server and Workload name the place
                 here and the view in its header (switch views from their own

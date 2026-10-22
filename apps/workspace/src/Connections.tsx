@@ -289,12 +289,19 @@ export function Connections({
   const [cursor, setCursor] = useState("");
   const [search, setSearch] = useState("");
   const [sheet, setSheet] = useState(() => typeof window !== "undefined" && window.innerWidth < 1040);
+  const [phone, setPhone] = useState(() => typeof window !== "undefined" && window.innerWidth <= 650);
   const [inspectorWidth, setInspectorWidth] = useState(340);
   const tableRef = useRef<HTMLDivElement>(null);
   const addButtonRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     const media = window.matchMedia("(max-width: 1039px)");
     const change = () => setSheet(media.matches);
+    media.addEventListener("change", change);
+    return () => media.removeEventListener("change", change);
+  }, []);
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 650px)");
+    const change = () => setPhone(media.matches);
     media.addEventListener("change", change);
     return () => media.removeEventListener("change", change);
   }, []);
@@ -1000,7 +1007,7 @@ export function Connections({
         </div>
         {loading && <p role="status">Loading connections…</p>}
         {loadError && <p role="alert" className="error">{loadError} <button className="text-button" onClick={() => void refresh().catch(e => setError((e as Error).message))}>Retry connections</button></p>}
-        <div ref={tableRef} id="connections-table" tabIndex={-1} aria-label="Connections table" data-compact={sheet || editingId !== null || undefined} onKeyDown={e => {
+        <div ref={tableRef} id="connections-table" tabIndex={-1} aria-label="Connections table" data-compact={phone || editingId !== null || undefined} onKeyDown={e => {
           if ((e.target as HTMLElement).closest('input:not([type="checkbox"]), select, textarea, button, [role=menu], [role=dialog]')) return;
           if (e.key === "Delete" || e.key === "Backspace") {
             e.preventDefault();
@@ -1015,7 +1022,7 @@ export function Connections({
             selection={{ key: cursor, select: key => setCursor(key) }} multiSelection={{ keys: selected, select: setSelected }} onActivate={activate}
             rowClass={row => `connection-row${(row.profile?.id === active.id || row.key === "active") ? " is-active" : ""}`}
             rowAttrs={row => ({ "aria-label": `${row.fields.name || connectionTarget(row.fields)}${row.profile?.id === active.id || row.key === "active" ? ", in use" : ""}` })}
-            rowAction={rowMenu} compact={sheet || editingId !== null} detailColumns={["type", "endpoint", "schema", "password", "last-used"]}
+            rowAction={rowMenu} compact={sheet || editingId !== null} detailColumns={phone || editingId !== null ? ["type", "endpoint", "schema", "password", "last-used"] : ["schema", "password", "last-used"]}
             empty={loading ? undefined : <p className="empty-small">{search ? "No connections match your search." : "Add a connection to start working with a server."}</p>} />
         </div>
         {Object.entries(deleteErrors).map(([id, message]) => <p key={id} role="alert" className="error connection-delete-error">

@@ -126,6 +126,10 @@ try {
   assert.match(info, /OK: quorum, and every expected member present and healthy/);
   // The healthy summary reads like Watch and Problem: a shape and the word, inline.
   assert.notEqual(await page.$eval(`${view} .summary-line .status-pill.is-ok .status-dot`, (d) => getComputedStyle(d).display), "none");
+  // d06: OK member cards draw a green dot instead of a checkmark.
+  assert.equal(await page.$eval(`${view} .cluster-mark.is-ok .cluster-shape`, (d) => getComputedStyle(d).borderRadius), "50%");
+  // d19.2: window footer shows server version in Cluster.
+  assert.match(await page.$eval(".window-statusbar", (el) => el.textContent || ""), /MySQL 8\.4/);
   // A name equal to its address is announced once.
   assert.ok(cards.every((c) => c.label.split("mf-ic-").length === 2), JSON.stringify(cards.map((c) => c.label)));
   await shot("cluster-ic-topology.png");
@@ -321,8 +325,11 @@ try {
   const blindSummary = (await visible(`${view} .summary-line`))[0];
   assert.doesNotMatch(blindSummary, /\d+ of \d+ members ONLINE/);
   assert.match(blindSummary, /this member OFFLINE · group not visible from here/);
-  // The sidebar's problem marker shows its word, not a dot and a count alone.
-  assert.match(await page.$eval(`${nav} .nav-marker`, (m) => m.textContent), /^Problem1$/);
+  // d15: sidebar place badge shows a dot and a neutral count, with the word in its tooltip and accessible name.
+  assert.equal(await page.$eval(`${nav} .nav-marker .count-badge`, (m) => m.textContent), "1");
+  assert.ok(await page.$(`${nav} .nav-marker .status-dot.is-problem`));
+  assert.match(await page.$eval(`${nav} .nav-marker`, (m) => m.getAttribute("title") || ""), /cluster problem, 1 member with a problem/);
+  assert.match(await page.$eval(nav, (b) => b.textContent), /cluster problem, 1 member with a problem/);
   assert.match(await h.text(`${view} .tile-item:nth-child(2) .tile-value`), /^Not visible/);
   assert.ok((await visible(`${view} .cluster-card.is-local.is-detached .cluster-mark`)).includes("OFFLINE"));
   assert.equal((await visible(`${view} .cluster-card:not(.is-local) .cluster-mark`)).filter((s) => s === "Not visible here").length, 2);

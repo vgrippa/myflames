@@ -330,7 +330,7 @@ export const SqlEditor = forwardRef<HTMLTextAreaElement, SqlEditorProps>(functio
               ))}
             </div>
             <div className="sql-completion-hint" role="status">
-              {completion.loading ? "Reading catalog…" : completion.note || "Enter or Tab to insert · Esc to dismiss"}
+              {completion.loading ? "Reading catalog…" : completion.note || <><kbd>Enter</kbd> or <kbd>Tab</kbd> to insert · <kbd>Esc</kbd> to dismiss</>}
             </div>
           </div>, document.body,
         )}

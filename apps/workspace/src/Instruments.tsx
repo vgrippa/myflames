@@ -686,6 +686,12 @@ export function InstrumentsView({
           </label>
           {!applied && <Pill title="The setup matches none of the presets">Custom</Pill>}
           <InfoPopover label="About presets">
+            <p>
+              <strong>{shownPreset.label}:</strong> {shownPreset.summary}
+            </p>
+            <p>
+              Cost: <CostChip cost={shownPreset.cost} />
+            </p>
             <p>Ready-made sets of statements for this engine. Each takes effect at once and lasts until the server restarts; the my.cnf lines keep it.</p>
             <p>{report.read_only_note}</p>
           </InfoPopover>
@@ -722,27 +728,26 @@ export function InstrumentsView({
       )}
       {report && status && (
         <>
-          {shownPreset && (
+          <SummaryLine tone={status.enabled ? (offCount > 0 ? "problem" : partial > 0 ? "watch" : "ok") : "problem"} notes={notes}>
+            Performance Schema {status.enabled ? "is on" : "is off"} · {ready} {ready === 1 ? "view" : "views"} ready
+            {partial > 0 && `, ${partial} partly`}
+            {offCount > 0 && `, ${offCount} off`}
+          </SummaryLine>
+          {shownPreset && shownPreset.applied !== true && (
             <div
               className={`instr-preset-status${shownPreset.applied === false ? " is-pending" : ""}`}
               data-preset={shownPreset.key}
               role="status"
             >
-              {shownPreset.applied !== true && (
-                <StatusPill
-                  tone={shownPreset.applied === false ? "info" : "unknown"}
-                  label={shownPreset.applied === false ? "Would change this server" : "Current setup unknown"}
-                />
-              )}
-              <span className="instr-preset-summary" title={shownPreset.summary}>{shownPreset.summary}</span>
+              <StatusPill
+                tone={shownPreset.applied === false ? "watch" : "unknown"}
+              />
+              <span className="instr-preset-summary" title={shownPreset.summary}>
+                {shownPreset.applied === false ? `Preset ${shownPreset.label} would change this server` : "Current setup unknown"} · {shownPreset.summary}
+              </span>
               <CostChip cost={shownPreset.cost} />
             </div>
           )}
-          <SummaryLine tone={status.enabled ? "ok" : "off"} toneLabel={status.enabled ? "On" : "Off"} notes={notes}>
-            Performance Schema {status.enabled ? "is on" : "is off"} · {ready} {ready === 1 ? "view" : "views"} ready
-            {partial > 0 && `, ${partial} partly`}
-            {offCount > 0 && `, ${offCount} off`}
-          </SummaryLine>
           {report.unavailable && report.unavailable !== "performance_schema_off" && (
             <PrerequisiteGate>
               The setup tables could not be read, so the current state is unknown (see the notes). The statements still apply.
@@ -752,7 +757,7 @@ export function InstrumentsView({
             <GroupedRow
               rowKey="ps"
               selection={selection}
-              tone={status.enabled ? undefined : "off"}
+              tone={status.enabled ? "ok" : "off"}
               toneLabel={status.enabled ? undefined : "Off"}
               label="Performance Schema"
               detail={`${engineLabel(report)}${status.memory_bytes !== null ? ` · its own memory ${bytes(status.memory_bytes)}` : ""}`}
@@ -767,7 +772,6 @@ export function InstrumentsView({
           {tab === "features" && <GroupedList id="instr-features-h" title="What myflames can show" className="instr-features">
             {features.map((f) => {
               const [tone, label] = featureStatus(f);
-              const isNormal = f.status === "ready";
               const reason = f.missing.length
                 ? `needs ${f.missing[0]}${f.missing.length > 1 ? ` and ${f.missing.length - 1} more` : ""}`
                 : f.optional_missing.length
@@ -778,8 +782,8 @@ export function InstrumentsView({
                   key={f.key}
                   rowKey={`feature:${f.key}`}
                   selection={selection}
-                  tone={isNormal ? undefined : tone}
-                  toneLabel={isNormal ? undefined : label}
+                  tone={tone}
+                  toneLabel={label}
                   label={f.label}
                   detail={reason || undefined}
                   attrs={{ "data-feature": f.key }}

@@ -43,23 +43,14 @@
   white-space: nowrap;
   color: var(--ink-muted);
 }
-/* Normal states remain in the status column, without competing with an
-   actionable warning. Standalone status dots (connection safety) keep color. */
+/* Normal states remain in the status column with muted ink, while always
+   drawing both the dot and the word. */
 :is(.status-pill, .status-indicator):is(.is-ok, .is-info) {
   color: var(--ink-muted);
   font-weight: 400;
   background: transparent;
   border: 0;
   box-shadow: none;
-}
-:is(.status-pill, .status-indicator):is(.is-ok, .is-info) > .status-dot {
-  display: none;
-}
-/* Quiet normal states in a status column (StatusPill quiet): OK is an
-   empty cell, No threshold a faint dash; the word stays for screen readers. */
-.status-pill.is-quiet.is-info::before {
-  content: "–" / "";
-  color: var(--ink-faint);
 }
 .status-pill.is-watch {
   color: var(--warn-text);
@@ -476,14 +467,24 @@
 }
 .view-switcher-chevron {
   display: inline-flex;
+  align-items: center;
+  gap: 5px;
   color: var(--ink-muted);
+}
+.view-switcher-chevron-icon {
+  display: inline-flex;
   transition: transform var(--motion-hover);
 }
-.view-switcher.is-open .view-switcher-chevron {
+.view-switcher.is-open .view-switcher-chevron-icon {
   transform: rotate(180deg);
 }
 .view-switcher-marker {
+  display: inline-flex;
+  align-items: center;
   flex: none;
+}
+.view-switcher-marker .nav-marker {
+  margin-left: 0;
 }
 .view-switcher-popover {
   position: absolute;
@@ -793,8 +794,8 @@
 .inspector-fields {
   display: grid;
   /* The label column fits its labels up to 40% of the width; values keep the
-     rest, so a long label wraps instead of squeezing every value into a
-     staircase. */
+     rest, so labels and values align in two columns above 900 px and stack
+     under 900 px. */
   grid-template-columns: fit-content(40%) minmax(0, 1fr);
   gap: 4px var(--space-3);
   margin: 0;
@@ -809,21 +810,20 @@
   color: var(--ink-muted);
   overflow-wrap: anywhere;
 }
-/* Fields marks code labels longer than 20 characters; short keys align. */
-.inspector-fields dt.is-long-label {
-  grid-column: 1 / -1;
-  overflow-wrap: anywhere;
-}
-.inspector-fields dt.is-long-label + dd {
-  grid-column: 1 / -1;
-  margin-bottom: var(--space-1);
-  padding-left: var(--space-3);
-}
 .inspector-fields dd {
   margin: 0;
   min-width: 0;
   overflow-wrap: anywhere;
   font-variant-numeric: tabular-nums;
+}
+@media (max-width: 900px) {
+  .inspector-fields {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+  .inspector-fields dd {
+    margin-bottom: var(--space-2);
+  }
 }
 .inspector-placeholder {
   padding: var(--space-4) 0;
@@ -962,6 +962,12 @@
     flex: initial;
   }
 }
+.fact-strip-details {
+  margin: 0 0 var(--space-3);
+}
+.fact-strip-summary {
+  display: none;
+}
 .fact-strip {
   display: flex;
   flex-wrap: wrap;
@@ -969,6 +975,35 @@
   margin: 0 0 var(--space-3);
   font-size: var(--text-sm);
   line-height: var(--leading-sm);
+}
+.fact-strip-details > .fact-strip {
+  margin-bottom: 0;
+}
+@media (max-width: 900px) {
+  .fact-strip-summary {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    list-style: none;
+    font-size: var(--text-sm);
+    line-height: var(--leading-sm);
+    font-weight: 600;
+    color: var(--ink-muted);
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+  }
+  .fact-strip-summary::-webkit-details-marker {
+    display: none;
+  }
+  .fact-strip-summary > svg {
+    transition: transform var(--motion-hover);
+  }
+  .fact-strip-details[open] > .fact-strip-summary > svg {
+    transform: rotate(90deg);
+  }
+  .fact-strip-details[open] > .fact-strip {
+    margin-top: var(--space-1);
+  }
 }
 .fact-strip > div {
   display: flex;
@@ -1661,6 +1696,36 @@ button.metric-tile.is-selected:hover {
 .tile-foot > .sparkline {
   margin-left: auto;
 }
+@media (max-width: 900px) {
+  .tile-grid {
+    display: flex;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    gap: var(--space-2);
+    scrollbar-width: thin;
+  }
+  .tile-item {
+    flex: 0 0 auto;
+  }
+  .server-view .tile-grid .metric-tile,
+  .tile-grid .metric-tile {
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-2);
+    height: 44px;
+    min-height: 44px;
+    max-height: 44px;
+    padding: 0 var(--space-3);
+  }
+  .tile-grid .tile-value {
+    font-size: var(--text-md);
+    line-height: var(--leading-md);
+  }
+  .tile-grid .tile-foot {
+    margin-top: 0;
+    min-height: 0;
+  }
+}
 .sparkline {
   width: 72px;
   height: 20px;
@@ -1872,11 +1937,6 @@ details[open]:not([class]) > summary:not([class]):not(:has(> svg))::before {
   }
   .grouped-row > .status-pill {
     width: auto;
-  }
-  /* A quiet OK draws nothing: drop its gap so the label starts where an
-     unrated row's label does. */
-  .grouped-row:not(.is-wrapping) > .status-pill.is-quiet.is-ok {
-    margin-inline-end: calc(-1 * var(--space-3));
   }
   .row-detail {
     display: none;

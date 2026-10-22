@@ -148,6 +148,32 @@ type Via = { connection: Connection; key: string; label: string };
 type ChangeRequest = { name: string; mode: VariableMode | null; via: Via; draft?: string };
 type ChangeNote = { name: string; mode: VariableMode; status: string; message: string; type: VariableInfo["type"]; result: VariableChange | null };
 
+const BYTE_NAMES = /(_size|_capacity|_ram|_packet|_buffer|_limit|_threshold|_max_table_size)$/i;
+function isByteParam(type: VariableInfo["type"], name?: string) {
+  return type === "bytes" || (type === null && !!name && BYTE_NAMES.test(name));
+}
+
+export function formattedValue(type: VariableInfo["type"], value: string | null | undefined, name?: string): { text: string; raw?: string } {
+  if (value === undefined) return { text: "not read" };
+  if (value === null) return { text: "SQL NULL" };
+  if (value === "") return { text: "(empty)" };
+  if (value === "NULL") return { text: "'NULL' (text)" };
+  if (isByteParam(type, name)) {
+    if (/^\d+$/.test(value)) {
+      const n = Number(value);
+      if (n >= 1024) return { text: bytes(n), raw: `${n.toLocaleString()} bytes` };
+    }
+    const m = value.match(/^([0-9.]+\s*[KMGT]i?B)\s*\(([\d,]+(?:\s*bytes)?)\)$/i);
+    if (m) return { text: m[1], raw: m[2].endsWith("bytes") ? m[2] : `${m[2]} bytes` };
+  }
+  return { text: value };
+}
+
+function valueSpan(type: VariableInfo["type"], value: string | null | undefined, name?: string) {
+  const f = formattedValue(type, value, name);
+  return <span title={f.raw}>{f.text}</span>;
+}
+
 /** A value as the server shows it; sizes also in KiB, MiB, GiB. */
 function valueText(type: VariableInfo["type"], value: string | null | undefined) {
   if (value === undefined) return "not read";
@@ -1031,7 +1057,10 @@ export function ConfigView({ connection, disabled, onBack, selection, report: bo
     { key: "value", label: "Value", width: editing ? 320 : 180, minWidth: editing ? 300 : undefined, sort: p => p.value, render: p => {
       const staged = Object.prototype.hasOwnProperty.call(drafts, p.name);
       const reason = unmodifiable(p, report?.engine || null);
-      if (!editing || reason) return <span title={reason || (p.truncated ? "Value truncated" : valueText(p.type, p.value))}>{valueText(p.type, p.value)}{p.truncated ? "…" : ""}</span>;
+      if (!editing || reason) {
+        const f = formattedValue(p.type, p.value, p.name);
+        return <span title={reason || (p.truncated ? "Value truncated" : f.raw || f.text)}>{f.text}{p.truncated ? "…" : ""}</span>;
+      }
       const id = `parameter-value-${p.name}`;
       return <span className="parameter-cell-editor" onKeyDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}>
         {staged && drafts[p.name] === "DEFAULT" ? <code>DEFAULT</code> : <ValueField info={p} label={p.name} value={staged ? drafts[p.name] : draftValue(p)} onChange={v => stage(p, v)} id={id} hintId={`${id}-hint`} disabled={editOff} />}
@@ -1056,7 +1085,7 @@ export function ConfigView({ connection, disabled, onBack, selection, report: bo
     const doc = documentationLink(p.documentation);
     const line = oneLine(p, checks);
     inspector = { key: p.name, title: p.name,
-      meta: <><span>{valueText(p.type, p.value)}</span>{flagged[0] && <StatusPill tone={flagged[0].status} />}</>,
+      meta: <>{valueSpan(p.type, p.value, p.name)}{flagged[0] && <StatusPill tone={flagged[0].status} />}</>,
       actions: <div className="config-actions">
         <button type="button" className="button primary" disabled={editOff || !!reason} title={offTitle || reason || undefined} onClick={() => editParameter(p)}>Edit value</button>
         {resettable && <button type="button" className="button" disabled={editOff || !!reason} title={offTitle || reason || undefined} onClick={() => { setEditing(true); stage(p, "DEFAULT"); sharedInspector?.setOpen(false); setPreview(true); }}>Reset to default</button>}
@@ -1071,8 +1100,8 @@ export function ConfigView({ connection, disabled, onBack, selection, report: bo
         </div>
         <InspectorSection title="Current value">
           <Fields label={`${p.name} facts`} rows={[
-            ["Value", valueText(p.type, p.value)],
-            ["Default", p.default === null ? "Unknown" : valueText(p.type, p.default)],
+            ["Value", valueSpan(p.type, p.value, p.name)],
+            ["Default", p.default === null ? "Unknown" : valueSpan(p.type, p.default, p.name)],
             ["Source", sourceText(p)],
             ["Changes", changeTiming(p, report.engine)],
             ["Allowed", allowedValues(p) || "Unknown"],

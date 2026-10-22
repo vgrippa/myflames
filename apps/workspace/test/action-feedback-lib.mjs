@@ -676,7 +676,7 @@ export const SCENARIOS = [
       await goPlace(page, "query"); await page.locator('[aria-label="SQL editor"]').fill("SELECT 1"); await pause(300);
       await page.click("[data-action=run]");
       await waitText(page, ".query-lab .results-tabs [role=tab]", /Result 1/);
-      await click(page, "Export", ".result-actions"); await pause(250);
+      await click(page, "Export", ".results-tabs-actions"); await pause(250);
     },
     target: named("CSV", ".export-actions"),
     ok: async ({ page }) => waitText(page, ".query-lab", /Result 1 exported as myflames-result\.csv\./),

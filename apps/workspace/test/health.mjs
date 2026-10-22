@@ -363,8 +363,8 @@ try {
   await h.select(diag("tmp_tables"));
   await page.waitForFunction(() => /go to Aria tables on disk/.test(document.querySelector(".view-inspector")?.textContent || ""));
 
-  // Narrow layout: no horizontal page scroll at 390 px; tiles and rows fit;
-  // full-width details and the list each fit the viewport.
+  // Narrow layout: no horizontal page scroll at 390 px. Tiles form one
+  // compact, sideways-scrolling strip; details and diagnostic rows still fit.
   await page.setViewport({ width: 390, height: 844 });
   await pause(250);
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
@@ -372,7 +372,24 @@ try {
   assert.ok(await page.$eval(".view-inspector.is-detail", e => e.getBoundingClientRect().right) <= 390, "details fit the viewport");
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => !document.querySelector(".view-inspector"));
-  assert.ok(await page.$eval(tile("redo_generated"), (e) => e.getBoundingClientRect().right) <= 390, "tiles fit the viewport");
+  const strip = await page.$eval(tile("redo_generated"), e => {
+    const grid = e.closest(".tile-grid");
+    const rect = grid.getBoundingClientRect();
+    return {
+      left: rect.left, right: rect.right, client: grid.clientWidth, scroll: grid.scrollWidth,
+      overflow: getComputedStyle(grid).overflowX,
+      tops: [...grid.children].map(item => item.getBoundingClientRect().top),
+      heights: [...grid.querySelectorAll(".metric-tile")].map(item => item.getBoundingClientRect().height),
+    };
+  });
+  assert.ok(strip.left >= 0 && strip.right <= 390, "the tile strip fits the viewport");
+  assert.equal(strip.overflow, "auto", "tile overflow scrolls inside the strip");
+  assert.ok(strip.scroll > strip.client, "the fixture's tiles extend sideways");
+  assert.equal(new Set(strip.tops).size, 1, "tiles stay on one row");
+  assert.ok(strip.heights.every(height => height === 44), "tiles are 44 px tall");
+  await page.$eval(tile("redo_generated"), e => e.scrollIntoView({ block: "nearest", inline: "end", behavior: "instant" }));
+  assert.ok(await page.$eval(tile("redo_generated"), e => e.getBoundingClientRect().right) <= 390, "the scrolled-to tile is reachable");
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   const rights = await page.$$eval(`${view} li[data-diagnostic]`, (els) => els.map((e) => e.getBoundingClientRect().right));
   assert.ok(rights.every((r) => r <= 390), "diagnostic rows fit the viewport");
   await page.screenshot({ path: path.join(h.shots, "health-390.png"), fullPage: true });

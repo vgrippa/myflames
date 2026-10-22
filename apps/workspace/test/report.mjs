@@ -632,7 +632,10 @@ try {
   await page.waitForFunction(() => /^16 of 17 views refreshed; Locks failed$/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
   // The failure, per view: a mark in the list of views, the list, a note above the view.
   assert.ok(await page.$("#server-nav-locks .source-stale[data-refresh=failed]"));
-  assert.match(await text("#server-nav-locks .visually-hidden"), /not refreshed: Could not read locks/);
+  // The compact status marker has its own screen-reader text before the
+  // refresh failure. Check all the screen-reader text, not the first span.
+  assert.match(await page.$$eval("#server-nav-locks .visually-hidden", els => els.map(e => e.textContent).join(" ")),
+    /not refreshed: Could not read locks/);
   assert.equal(await page.$("#server-nav-health .source-stale"), null);
   await page.click(".server-place .refresh-all-status");
   const list = await page.$$eval(".popover .refresh-all-list li", (els) => els.map((e) => [e.dataset.view, e.dataset.state, e.textContent]));

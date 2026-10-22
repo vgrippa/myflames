@@ -243,7 +243,7 @@ function dot(tone: Tone, text: string): Marker {
 function count(n: number, tone: BadgeTone, text: string): Marker {
   const state = countState(tone);
   const word = state ? TONE_TEXT[state] : "";
-  return { badge: <NavMarker compact tone={state} count={n} countTone={tone} />, badgeText: word && !text.includes(word) ? `${text}, ${word}` : text, tone: state };
+  return { badge: <NavMarker compact announce={false} tone={state} count={n} countTone={tone} />, badgeText: word && !text.includes(word) ? `${text}, ${word}` : text, tone: state };
 }
 /** A list item's marker and the state it stands for (the floating title's
  * marker sums up the other views from it). */
@@ -253,10 +253,10 @@ type Marker = Pick<SourceItem, "badge" | "badgeText"> & { tone?: Tone };
 function othersMarker(tones: (Tone | undefined)[]): ViewSwitcherShared["others"] {
   const problems = tones.filter((t) => t === "problem").length;
   const watches = tones.filter((t) => t === "watch").length;
-  const views = (n: number) => `${n} other ${n === 1 ? "view" : "views"}`;
-  if (problems) return { tone: "problem", text: `${views(problems)} ${problems === 1 ? "has" : "have"} a problem${watches ? `, ${watches} to watch` : ""}` };
-  if (watches) return { tone: "watch", text: `${views(watches)} to watch` };
-  return null;
+  const count = problems + watches;
+  if (!count) return null;
+  const text = `${count} other ${count === 1 ? "view needs" : "views need"} attention`;
+  return { tone: problems ? "problem" : "watch", count, text };
 }
 
 export function Server({
@@ -513,6 +513,8 @@ export function Server({
   useEffect(() => {
     const reports = [health.report ? { key: health.key, report: health.report } : null,
       innodb, errorlog, sessions, waits, io, locks, indexes, tables, config, instruments, replication, cluster,
+      accounts ? { key: accounts.key, report: { engine: accounts.report.engine, server_version: accounts.report.version } } : null,
+      diagram && diagram.source.key === activeKey ? { key: activeKey, report: diagram.diagram } : null,
       maintenance.tools, maintenance.upgrade, analysis, topStatements.top];
     let at: number | undefined;
     let engineVersion: string | undefined;
@@ -537,7 +539,7 @@ export function Server({
     setLastRead((old) => old.key === activeKey && old.at === at && old.engineVersion === engineVersion
       ? old : { key: activeKey, at, engineVersion });
   }, [activeKey, health.report, health.key, innodb, errorlog, sessions, waits, io, locks, indexes, tables,
-    config, instruments, replication, cluster, maintenance.tools, maintenance.upgrade, analysis, topStatements.top, topStatements.refreshedAt]);
+    config, instruments, replication, cluster, accounts, diagram, maintenance.tools, maintenance.upgrade, analysis, topStatements.top, topStatements.refreshedAt]);
 
   // Links between views.
   const [instrumentsTarget, setInstrumentsTarget] = useState<{ row: string; n: number } | null>(null);
@@ -1292,6 +1294,7 @@ export function Server({
   const refreshSeconds = useElapsed(running && refreshHere ? Date.parse(refreshHere.started) : null);
   const viewFailure = staleNow(refreshOf(kind)) ? refreshOf(kind) : undefined;
   const listLabel = place === "workload" ? "Workload views" : "Server views";
+  const others = othersMarker(activeViews.filter((v) => v.id !== kind).map((v) => badges[v.id]?.tone));
   /** The floating list of views, opened from the view's title (ViewLayout
    * draws it through ViewSwitcherContext, for the view on screen only). */
   const switcherFor = (view: ServerKind): ViewSwitcherShared | null => floating ? {
@@ -1299,12 +1302,12 @@ export function Server({
     open: floatingNavOpen,
     setOpen: setFloatingMenuOpen,
     active: view === kind,
-    others: othersMarker(activeViews.filter((v) => v.id !== kind).map((v) => badges[v.id]?.tone)),
+    others,
     takeFocus: takeSwitcherFocus,
     list: (
       <>
         <div className="server-floating-header">
-          <span>{listLabel}</span>
+          <span>{listLabel}{others ? ` · ${others.text}` : ""}</span>
           <button
             type="button"
             className="icon-button"

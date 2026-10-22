@@ -68,19 +68,11 @@
   background: var(--ink-faint);
 }
 
-/* OK: a check drawn with two borders. */
+/* OK: the same green dot as the rest of the workspace. */
 .cluster-mark.is-ok > .cluster-shape,
 .cluster-shape.is-ok,
 .cluster-view .status-pill.is-ok .status-dot {
-  display: inline-block;
-  width: 4px;
-  height: 8px;
-  margin: 0 2px 2px;
-  border-radius: 0;
-  background: transparent;
-  border: solid var(--ok);
-  border-width: 0 2px 2px 0;
-  transform: rotate(45deg);
+  background: var(--ok);
 }
 
 .cluster-mark.is-watch > .cluster-shape,
@@ -514,7 +506,9 @@
   }
 }
 
-@container view (max-width: 640px) {
+/* The icon rail leaves more than 640 px of view at a 720 px window, but
+   three 212 px cards plus gaps and frame padding still cannot fit. */
+@container view (max-width: 760px) {
   /* Shorter tiles, so the first tab's content starts above the fold. */
   .cluster-tiles .metric-tile {
     min-height: 0;

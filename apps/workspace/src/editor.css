@@ -617,13 +617,27 @@
 .results-pane.is-empty {
   justify-content: center;
 }
-.results-tabs {
+.results-head {
   flex: none;
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-subtle);
+  padding-right: var(--space-2);
+  gap: var(--space-2);
+}
+.results-tabs {
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
   align-items: stretch;
   overflow-x: auto;
-  border-bottom: 1px solid var(--line);
-  background: var(--surface-subtle);
+}
+.results-tabs-actions {
+  flex: none;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
 }
 .results-tabs [role="tab"] {
   display: inline-flex;

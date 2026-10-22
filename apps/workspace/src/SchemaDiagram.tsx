@@ -513,8 +513,8 @@ export function SchemaDiagramView({ connection, disabled = false, onBack, docume
     {catalog.error&&<p className="diagram-source-note" role="status">Database list unavailable: {catalog.error} Enter a database name to rebuild.</p>}
     {canRead&&<p className="diagram-source-note">Connection: {connectionLabel(connection)}</p>}
     {d?<>
-      <SummaryLine tone={d.incomplete||d.warnings.length?"watch":"info"} toneLabel={d.incomplete?"Partial schema":"Schema"} notes={d.warnings}>
-        {d.tables.length} {d.tables.length === 1 ? "table" : "tables"} · {d.relationships.length} {d.relationships.length === 1 ? "relationship" : "relationships"} · {doc.source.kind==="import"?doc.source.label:doc.source.database}
+      <SummaryLine tone={d.incomplete||d.warnings.length?"watch":"ok"} notes={d.warnings}>
+        {d.incomplete?"Partial schema":"Schema"} · {d.tables.length} {d.tables.length === 1 ? "table" : "tables"} · {d.relationships.length} {d.relationships.length === 1 ? "relationship" : "relationships"} · {doc.source.kind==="import"?doc.source.label:doc.source.database}
         {doc.source.kind==="server"&&readAt&&readAt.key===doc.source.key&&readAt.database===doc.source.database&&<> · Read <time dateTime={readAt.at.toISOString()} title={readAt.at.toLocaleString()}>{readAt.at.toLocaleTimeString()}</time></>}
       </SummaryLine>
       {view==="mermaid"&&d.tables.length>0?<MermaidDiagram diagram={d}/>:<>

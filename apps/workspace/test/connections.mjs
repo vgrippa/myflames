@@ -130,9 +130,13 @@ try {
       }
     };
     await page.setViewport({ width: 720, height: 520 });
-    await page.waitForFunction(() => !document.querySelector('.connections thead [data-col=type]'));
+    await page.waitForFunction(() => !document.querySelector('.connections thead [data-col=password]') && !!document.querySelector('.connections thead [data-col=type]'));
     await noOverflow();
-    await shortTypes();
+    assert.equal(await page.$eval('.home .connections > .view-toolbar', bar => {
+      const h2 = bar.querySelector('h2').getBoundingClientRect();
+      const add = bar.querySelector('button').getBoundingClientRect();
+      return Math.abs(h2.top + h2.height / 2 - (add.top + add.height / 2)) <= 8;
+    }), true, 'Add connection stays on the heading row at 720 px');
     await page.screenshot({ path: path.join(directory, `home-${scheme}-720.png`) });
     await page.setViewport({ width: 390, height: 844 });
     await page.waitForFunction(() => !document.querySelector('.connections thead [data-col=type]'));
