@@ -1343,7 +1343,7 @@ token. There is no CORS access. See the [authentication and limits contract](DEV
 | Endpoint | Request | Response |
 | --- | --- | --- |
 | `/api/teach/catalog` | Empty object | `lessons`, `families`, `curriculum` |
-| `/api/teach/lesson` | `lesson`: registered lesson key; omit `view` or use `2d`; other values return HTTP 400 | `html`: original self-contained lesson, or the prebuilt 3D page |
+| `/api/teach/lesson` | `lesson`: registered lesson key; omit `view` or use `2d`; other values return HTTP 400 | `html`: original self-contained lesson |
 | `/api/analyze` | `plan`: raw plan text | `analysis`, `operators`, `query`, `teach_hooks`, `chart_data` (`chart-data-2.0`, drawn in the page by the chart runtime). The SQL is sent once, in `query` and `analysis.query.raw`; teach hooks leave out `query_sql`, which Export JSON adds back |
 | `/api/investigations/list` | optional `limit` (1 to 50, default 25), `cursor`, `search` | `investigation-list-1.0`: `items` (summaries, newest first, no plans) and `next_cursor` (null on the last page) |
 | `/api/investigations/get` | `id` | the saved `investigation-1.0` bundle |
