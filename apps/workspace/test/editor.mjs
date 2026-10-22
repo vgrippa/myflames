@@ -725,6 +725,8 @@ try {
   await page.waitForSelector('[aria-label="ALTER TABLE preflight"]');
   assert.match(await text('[aria-label="ALTER TABLE preflight"]'), /123,456 bytes/);
   assert.match(await text('[aria-label="ALTER TABLE preflight"]'), /5 seconds/);
+  assert.match(await text('[aria-label="ALTER TABLE preflight"] details'), /Connection 81: transaction open 2 min 0 s; SELECT \* FROM t/);
+  assert.doesNotMatch(await text('[aria-label="ALTER TABLE preflight"] details'), /transaction open 120 seconds/);
   assert.equal(await text('[aria-label="Statements that will be sent"]'), guard + ";\n\n" + WRITE + ";");
   assert.equal(await text('[aria-label="Suggested ALTER SQL"]'), suggestion + ";");
   for (const width of [1440, 390]) {

@@ -18,7 +18,7 @@ import { killStatusWord, killVia, Sql, type KillNote } from "./Locks";
 import { connectionKey } from "./binding";
 import { useWritePolicy } from "./Connections";
 import { Icon } from "./components";
-import { CompactNumber } from "./PerfShared";
+import { Duration } from "./PerfShared";
 import { ActionButton, ActionStatus, ConfirmSheet, NumberField, Segmented, errorText, useFocusScope, writeFailure } from "./kit";
 
 /** The Kill sessions send that is still waiting for its reply, across dialogs:
@@ -787,7 +787,7 @@ export function MassKillDialog({
                     <th style={{ width: 150 }}>User@host</th>
                     <th style={{ width: 100 }}>DB</th>
                     <th style={{ width: 90 }}>Command</th>
-                    <th style={{ width: 75 }}>Time</th>
+                    <th style={{ width: 90 }} title="How long the session has been in its current state">Time</th>
                     <th style={{ width: 100 }}>Lock / State</th>
                     <th>Statement / Last Query</th>
                   </tr>
@@ -831,7 +831,7 @@ export function MassKillDialog({
                           </span>
                         </td>
                         <td>
-                          <CompactNumber value={s.time_s} />s
+                          <Duration value={s.time_s} />
                         </td>
                         <td>
                           {isWaiting ? (

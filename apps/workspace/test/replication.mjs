@@ -322,7 +322,7 @@ try {
   assert.match(inspector, /Error 1062 at 261015 16:11:00/);
   assert.match(inspector, /Tableshop\.t/);
   assert.match(inspector, /Failing GTID7256d98a-c8b1-11f1-be59-aa9276ea306a:13/);
-  assert.match(inspector, /Heartbeat interval \(s\)30/);
+  assert.match(inspector, /Heartbeat interval30 s/);
   assert.match(inspector, /Executed GTID set/);
   const shown = await page.$eval(".view-inspector", (e) => e.innerText);
   assert.equal((shown.match(/Worker 1 failed executing transaction/g) || []).length, 1, "the error text is shown once");
@@ -555,11 +555,93 @@ try {
   await pause(300);
   assert.equal(state.seen.length, beforeAll + 1, "opening Replication after Refresh all reads nothing more");
 
+  // Synthetic measured durations supplement the live recordings without changing them.
+  // Fractional precision, numeric sorting and caveats survive the readable labels.
+  const durations = structuredClone(healthy);
+  durations.summary.lag_max_s = 252.1256;
+  durations.channels[0].lag_s = 252.1256;
+  durations.channels[1].lag_s = 36;
+  Object.assign(durations.channels[0].sql, { delay_s: 14700.25, remaining_delay_s: 60.75 });
+  durations.channels[0].lag_notes = ["Clock changes can skew lag."];
+  durations.channels[0].lag_signals = {
+    heartbeat_interval_s: 30.1256, heartbeat_age_s: 252.75,
+    last_queued_age_s: 14700.25, receiver_idle_s: 1598400.5,
+    heartbeats_received: 12, optional_age_s: null, receiver_connected: true,
+  };
+  state.queue.push({ status: 200, body: durations });
+  await h.refresh();
+  await channelsTab();
+  await page.waitForFunction((v) => [...document.querySelectorAll(v)].some((e) => e.offsetParent && /max lag 4 min 12 s$/.test(e.querySelector('.summary-text')?.textContent || "")), {}, view);
+  assert.match(await text(`${view} .summary-text`), /max lag 4 min 12 s$/);
+  const visible = (selector) => page.evaluate((v, q) => {
+    const live = [...document.querySelectorAll(v)].find((e) => e.offsetParent);
+    return [...live.querySelectorAll(q)].map((e) => [e.textContent.trim(), e.getAttribute("title"), e.getAttribute("aria-label")]);
+  }, view, selector);
+  assert.deepEqual(await visible('th[data-col=lag] .th-label'), [["Lag", null, null]]);
+  assert.deepEqual(await visible('[data-row-key="channel:"] td[data-col=lag] abbr'),
+    [["4 min 12 s", "252.1256 seconds Clock changes can skew lag.", "252.1256 seconds Clock changes can skew lag."]]);
+  // A lexical sort would put "36 s" after "4 min 12 s".
+  await page.evaluate((v) => [...document.querySelectorAll(v)].find((e) => e.offsetParent).querySelector('th[data-col=lag] .sort-button').click(), view);
+  const ascending = await page.evaluate((v) => {
+    const live = [...document.querySelectorAll(v)].find((e) => e.offsetParent);
+    return live.querySelector('th[data-col=lag]').getAttribute('aria-sort') === 'ascending';
+  }, view);
+  assert.deepEqual((await visible('tbody tr[data-row-key]')).map(([t]) => t.includes('4 min 12 s')),
+    ascending ? [false, true] : [true, false], "lag sorts by seconds");
+  assert.deepEqual(await visible('.replication-tiles .tile-item:nth-child(3) .tile-value'), [["4 min 12 s", null, null]]);
+  assert.match((await visible('.replication-tiles .tile-item:nth-child(3)'))[0][1], /^252\.1256 seconds\. Seconds behind/);
+
+  await h.select(row(""));
+  const fact = (label) => page.$$eval('.view-inspector .inspector-fields > div', (rows, name) => {
+    const value = rows.find((e) => e.querySelector('dt')?.textContent === name)?.querySelector('dd');
+    return [value?.textContent, value?.querySelector('abbr')?.title];
+  }, label);
+  for (const [name, words, exact] of [
+    ["Lag", "4 min 12 s", "252.1256 seconds"],
+    ["Configured delay", "4 h 5 min", "14,700.25 seconds"],
+    ["Heartbeat interval", "30 s", "30.1256 seconds"],
+    ["Heartbeat age", "4 min 12 s", "252.75 seconds"],
+    ["Last queued age", "4 h 5 min", "14,700.25 seconds"],
+    ["Receiver idle", "18 d 12 h", "1,598,400.5 seconds"],
+  ]) assert.deepEqual(await fact(name), [words, exact], name);
+  assert.deepEqual(await fact("Heartbeats received"), ["12", null], "counts stay numeric");
+  assert.deepEqual(await fact("Optional age"), ["Not available", null], "missing facts stay missing");
+  assert.deepEqual(await fact("Receiver connected"), ["Yes", null], "boolean facts keep their meaning");
+
+  await tab("Lag");
+  assert.deepEqual(await visible('[data-row-key="channel:"] td[data-col=lag] abbr'),
+    [["4 min 12 s", "252.1256 seconds Clock changes can skew lag.", "252.1256 seconds Clock changes can skew lag."]]);
+  assert.deepEqual(await visible('[data-row-key="channel:"] td[data-col=delay] abbr'),
+    [["4 h 5 min", "14,700.25 seconds", "14,700.25 seconds"]]);
+  assert.deepEqual(await visible('[data-row-key="channel:"] td[data-col=remaining_delay] abbr'),
+    [["1 min 0 s", "60.75 seconds", "60.75 seconds"]]);
+  assert.match(await text(`${row("")} td[data-col=signals]`), /^Heartbeat interval: 30 s, Heartbeat age: 4 min 12 s$/);
+  assert.deepEqual((await visible('[data-row-key="channel:"] td[data-col=signals] abbr')).map(([words, exact]) => [words, exact]),
+    [["30 s", "30.1256 seconds"], ["4 min 12 s", "252.75 seconds"]]);
+  assert.equal(await text(`${row("ch80")} td[data-col=delay]`), "None", "zero delay stays None");
+  assert.equal(await text(`${row("ch80")} td[data-col=remaining_delay]`), "None", "unreported delay keeps its existing state");
+  await tab("Topology");
+  assert.deepEqual((await visible('.topology-link-lag')).map(([words, exact]) => [words, exact]),
+    [["4 min 12 s behind", "252.1256 seconds"], ["36 s behind", "36 seconds"]]);
+  assert.deepEqual((await visible('.topology-replica .topology-lag')).map(([words, exact]) => [words, exact]),
+    [["OK · 4 min 12 s behind", "252.1256 seconds"]]);
+  assert.deepEqual((await visible('.topology-detail-row abbr')).map(([words, exact]) => [words, exact]),
+    [["4 h 5 min", "14,700.25 seconds"]]);
+  await tab("Channels");
+  const partialDurations = structuredClone(durations);
+  partialDurations.channels[1].lag_s = null;
+  state.queue.push({ status: 200, body: partialDurations });
+  await h.refresh();
+  await page.waitForFunction((v) => [...document.querySelectorAll(v)].some((e) => e.offsetParent && /1 measured \(max 4 min 12 s\) · 1 unknown/.test(e.textContent)), {}, view);
+  assert.match(await text(`${view} .summary-text`), /lag unknown$/);
+  assert.match(await text(`${view} .replication-tiles`), /1 measured \(max 4 min 12 s\) · 1 unknown/);
+
   // Two channels; MariaDB names connections.
   state.fallback = { status: 200, body: multi };
   await h.refresh();
   await channelsTab();
   await waitRow("ch80");
+  await page.waitForFunction((v) => [...document.querySelectorAll(v)].some((e) => e.offsetParent && /2 channels · 1 failed · lag unknown$/.test(e.querySelector('.summary-text')?.textContent || "")), {}, view);
   // One channel's lag is unknown, so the maximum is unknown: a measured 0 s
   // on the healthy channel never reads as caught up.
   assert.equal(await text(`${view} .summary-text`), "MySQL 8.4.11 · 2 channels · 1 failed · lag unknown");
@@ -568,6 +650,9 @@ try {
     return [...live.querySelectorAll(".replication-tiles .metric-tile")].map((t) => [t.querySelector(".tile-label").textContent, t.querySelector(".tile-value").textContent]);
   }, view);
   assert.deepEqual(tiles, [["Replica state", "Failing"], ["Channels", "2"], ["Max applier lag", "Unknown"], ["GTID mode", "ON"]]);
+  assert.match(await text(`${view} .replication-tiles`), /1 measured \(max 0 s\) · 1 unknown/);
+  assert.equal(await text(`${row("ch80")} td[data-col=lag]`), "Unknown");
+  assert.ok((await page.$eval(`${row("ch80")} td[data-col=lag] abbr`, e => e.title)).length > 0, "unknown lag retains its caveats");
   // The state tile's pill counts the channels behind the state instead of repeating it.
   assert.equal(await page.evaluate((v) => {
     const live = [...document.querySelectorAll(v)].find((e) => e.offsetParent);

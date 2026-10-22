@@ -205,6 +205,10 @@ try {
   assert.equal(await text(`${view} .summary-text`), "Blocked · 5 blocked sessions · 2 root blockers (idle in transaction)");
   assert.match(await text(`${view} .fact-strip`), /Blocked sessions\s*5/);
   assert.match(await text(`${view} .fact-strip`), /Root blockers\s*2/);
+  const summaryDurations = await page.$$eval(`${view} .fact-strip > div`, (rows) => rows
+    .filter((e) => ["Longest wait", "Oldest transaction"].includes(e.querySelector('dt')?.textContent))
+    .map((e) => [e.querySelector('dt').textContent, e.querySelector('dd').textContent, e.querySelector('abbr')?.title]));
+  assert.deepEqual(summaryDurations, [["Longest wait", "7 min 51 s", "471 seconds"], ["Oldest transaction", "7 min 52 s", "472 seconds"]]);
   assert.equal(await text("#server-nav-locks .count-badge"), "5", "the badge counts blocked sessions");
   assert.match(await text("#server-nav-locks .visually-hidden"), /5 blocked/);
   assert.equal((await page.$$(`${view} .lock-tree tr.root`)).length, 2);
@@ -255,7 +259,13 @@ try {
   // views at 1440 px; the Columns menu shows them and the details list both.
   assert.deepEqual(await page.$$eval(`${view} table[aria-label="Transactions"] th[data-col]`, (els) => els.map((e) => e.dataset.col)),
     ["trx", "conn", "stmt", "state", "age", "session", "locked"], "full-width lists retain their columns");
-  assert.match(await text(`${view} th[data-col=age]`), /Open \(s\)/);
+  assert.match(await text(`${view} th[data-col=age]`), /Open for/);
+  const idleBadge = await page.$$eval(`${view} table[aria-label="Transactions"] td[data-col=session] .pill`, (els) => els.map((e) => [e.textContent, e.querySelector('abbr')?.title]));
+  assert.ok(idleBadge.some(([words, exact]) => words === "Idle 7 min 53 s" && exact === "473 seconds"), JSON.stringify(idleBadge));
+  // The age is a duration in words with the exact seconds on hover.
+  const ageCells = await page.$$eval(`${view} table[aria-label="Transactions"] td[data-col=age]`, (els) => els.map((e) => [e.textContent.trim(), e.querySelector("abbr")?.title || ""]));
+  assert.ok(ageCells.some(([t, title]) => t === "7 min 52 s" && title === "472 seconds"), JSON.stringify(ageCells));
+  for (const [t] of ageCells) assert.match(t, /^\d+ s$|^\d+ min \d+ s$|^\d+ h \d+ min$|^\d+ d \d+ h$/, `a duration in words (${t})`);
   if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.waitForFunction(() => !document.querySelector(".view-inspector"));
   assert.equal(await page.$eval(`${view} .data-table-wrap[aria-label="Transactions"]`, (e) => e.scrollWidth - e.clientWidth), 0,

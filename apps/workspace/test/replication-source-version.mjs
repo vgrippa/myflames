@@ -39,6 +39,8 @@ const shown = () => page.evaluate((q) => {
     version: version?.textContent, title: version?.getAttribute("title"), unknown: version?.classList.contains("is-unknown"),
     visible: !!box && box.width > 0 && box.height > 0 && box.right <= window.innerWidth,
     detail: row?.lastElementChild?.textContent,
+    lag: root.querySelector(".topology-link-lag")?.textContent,
+    lagTitle: root.querySelector(".topology-link-lag")?.title,
     overflow: document.documentElement.scrollWidth > window.innerWidth,
   };
 }, topology);
@@ -56,6 +58,8 @@ try {
   // From the relay log: the engine and version beside the port, the provenance on hover.
   let s = await shown();
   assert.equal(s.version, "MySQL 9.7.2");
+  assert.equal(s.lag, "0 s behind", "zero lag keeps a readable duration");
+  assert.equal(s.lagTitle, "0 seconds", "zero lag retains exact seconds on hover");
   assert.match(s.source, /Port 33297 · MySQL 9\.7\.2/);
   assert.match(s.source, /Server ID 301/);
   assert.match(s.replica, /MySQL 9\.7\.2/);

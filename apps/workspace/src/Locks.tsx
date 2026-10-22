@@ -7,6 +7,7 @@
 // It only reads, except a Kill the user confirms.
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import { useOpenRead } from "./viewOnScreen";
+import { durationText } from "./duration";
 import { createPortal } from "react-dom";
 import {
   api,
@@ -30,7 +31,7 @@ import {
 } from "./api";
 import { PrivilegeGate, PrivilegeConfirmLabel, targetPrivilege, useLoginUser, usePrivilege } from "./privileges";
 import { InstrumentsLink } from "./Instruments";
-import { PriorityTable, CompactNumber } from "./PerfShared";
+import { PriorityTable, CompactNumber, Duration } from "./PerfShared";
 import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "./binding";
 import { useWritePolicy, type WritePolicy } from "./Connections";
 import {
@@ -81,13 +82,9 @@ export function VisiblePrivilegeConfirmLabel(props: ComponentProps<typeof Privil
   </>;
 }
 
-/** Seconds as a short duration: 45 s, 3 m 05 s, 2 h 10 m. */
+/** A duration in words, the same everywhere (see duration.ts). */
 export function seconds(value: number | null | undefined) {
-  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
-  const s = Math.max(0, Math.round(value));
-  if (s >= 3600) return `${Math.floor(s / 3600)} h ${String(Math.floor((s % 3600) / 60)).padStart(2, "0")} m`;
-  if (s >= 60) return `${Math.floor(s / 60)} m ${String(s % 60).padStart(2, "0")} s`;
-  return `${s} s`;
+  return durationText(value);
 }
 
 const INTERVALS = [10, 30, 60];
@@ -1321,11 +1318,11 @@ export function LocksView({
         ),
     },
     { key: "state", label: "State", sort: (t) => t.state || "", render: (t) => t.state || "—" },
-    { key: "age", label: "Open (s)", title: "Seconds since the transaction started", num: true, sort: (t) => t.age_s, render: (t) => <CompactNumber value={t.age_s} /> },
+    { key: "age", label: "Open for", title: "How long the transaction has been open", num: true, sort: (t) => t.age_s, render: (t) => <Duration value={t.age_s} /> },
     {
       key: "session",
       label: "Session",
-      render: (t) => (t.idle_in_transaction ? <Pill tone="warn">Idle {seconds(t.time_s)}</Pill> : t.command || "—"),
+      render: (t) => (t.idle_in_transaction ? <Pill tone="warn">Idle <Duration value={t.time_s} /></Pill> : t.command || "—"),
     },
     { key: "locked", label: "Rows locked", title: "Row locks the transaction holds (trx_rows_locked, approximate)", num: true, sort: (t) => t.rows_locked, render: (t) => <CompactNumber value={t.rows_locked} /> },
     { key: "structs", label: "Lock structs", title: "Lock structures the transaction holds (trx_lock_structs); one can cover many rows of a page", num: true, sort: (t) => t.lock_structs, render: (t) => <CompactNumber value={t.lock_structs} /> },
@@ -1469,9 +1466,9 @@ export function LocksView({
             facts={[
               ["Blocked sessions", String(s.blocked_sessions)],
               ["Root blockers", String(s.root_blockers)],
-              ["Longest wait", seconds(s.longest_wait_s)],
+              ["Longest wait", <Duration value={s.longest_wait_s} />],
               ["Open transactions", String(s.transactions)],
-              ["Oldest transaction", seconds(s.oldest_transaction_s)],
+              ["Oldest transaction", <Duration value={s.oldest_transaction_s} />],
               ["Read", `${engineName} at ${new Date(report.captured_at).toLocaleTimeString()}`],
             ]}
           />
@@ -1820,8 +1817,8 @@ function BlockingTree({
           <tr>
             <th scope="col">Session</th>
             <th scope="col">Waits for</th>
-            <th scope="col" className="num">
-              Wait (s)
+            <th scope="col" className="num" title="How long this session has been waiting for the lock">
+              Wait
             </th>
             <th scope="col" className="tree-statement">Statement</th>
           </tr>
@@ -1899,7 +1896,7 @@ function BlockingTree({
                     <span className="cell-muted">—</span>
                   )}
                 </td>
-                <td className="num">{edge ? <span title={edgeSeconds(edge)}>{edge.wait_s == null && edge.statement_s != null ? "~" : ""}<CompactNumber value={edge.wait_s ?? edge.statement_s} /></span> : "—"}</td>
+                <td className="num">{edge ? <Duration value={edge.wait_s ?? edge.statement_s} approx={edge.wait_s == null && edge.statement_s != null} /> : "—"}</td>
                 <td className="tree-statement">
                   {node.query || node.last_statement ? (
                     <code className={`cell-truncate cell-sql${node.query ? "" : " cell-muted"}`} title={node.query || node.last_statement || ""}>

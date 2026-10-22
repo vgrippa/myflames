@@ -20,7 +20,9 @@
 /* Session starts at 140 px and grows to fit identities and role pills.
    The outline fills its frame: Statement takes the room left and truncates
    down to 200 px; below that (nested chains, a narrow window, the inspector
-   open) the outline scrolls inside its frame. No badge gives up its width. */
+   open) the outline scrolls inside its frame. No badge gives up its width.
+   Wait holds a duration in words ("7 min 52 s"); Waits for narrows a step so
+   the whole tree still fits at 1440 px. */
 .lock-tree {
   min-width: 0;
   overflow: auto;
@@ -33,10 +35,10 @@
   width: 140px;
 }
 .lock-col-target {
-  width: 280px;
+  width: calc(var(--space-6) * 8 + var(--space-3));
 }
 .lock-col-wait {
-  width: calc(var(--space-6) * 3);
+  width: calc(var(--space-6) * 3 + var(--space-3));
 }
 .lock-col-statement {
   width: 100%;
@@ -54,7 +56,7 @@
 /* Waits for is capped so Statement keeps real width at 1440 px; the full
    lock description is in the tooltip and the inspector. */
 .lock-tree-table .cell-flex .cell-truncate {
-  max-width: 40ch;
+  max-width: 38ch;
   overflow: hidden;
   text-overflow: ellipsis;
 }

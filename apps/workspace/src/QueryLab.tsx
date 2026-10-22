@@ -27,6 +27,7 @@ import {
   type TopStatement,
 } from "./api";
 import type { DigestAction } from "./SlowQueries";
+import { durationText } from "./duration";
 import { delimiterAt, describeTarget, runTarget, sqlRun, type RunTarget } from "./sqlSelection";
 import {
   digestName,
@@ -2692,7 +2693,7 @@ export const QueryLab = forwardRef<
               <details><summary>Lock and transaction snapshot</summary>
                 <ul>
                   {review.metadata_locks.map((lock, i) => <li key={`m${i}`}>Connection {lock.connection_id ?? "unknown"}: {lock.lock_type}, {lock.status}</li>)}
-                  {review.transactions.map((trx, i) => <li key={`t${i}`}>Connection {trx.connection_id ?? "unknown"}: transaction open {trx.age_s ?? "?"} seconds{trx.query ? `; ${trx.query}` : ""}</li>)}
+                  {review.transactions.map((trx, i) => <li key={`t${i}`}>Connection {trx.connection_id ?? "unknown"}: transaction open {trx.age_s == null ? "?" : durationText(trx.age_s)}{trx.query ? `; ${trx.query}` : ""}</li>)}
                   {review.sessions?.map((session, i) => <li key={`s${i}`}>Connection {session.connection_id ?? "unknown"}: {session.query || "No current statement reported"}</li>)}
                 </ul>
                 <p>{review.unattributed_transactions?.length || 0} other open transactions; table ownership not established. This snapshot cannot rule out new or uninstrumented locks. Check Server → Locks while ALTER runs.</p>

@@ -3,6 +3,7 @@
 // rows, and the plain names of replication channels.
 import { useState } from "react";
 import { Fields } from "./kit";
+import { Duration } from "./PerfShared";
 import { factText, type Facts, type Json } from "./opsApi";
 
 /** The exact statements or commands a confirmation will send. They may be
@@ -37,12 +38,12 @@ export function Commands({ text, label }: { text: string; label: string }) {
   );
 }
 
-/** "heartbeat_age_s" as "Heartbeat age (s)". */
+/** "heartbeat_age_s" as "Heartbeat age"; values carry their duration units. */
 export function factLabel(key: string) {
   const seconds = key.endsWith("_s");
   const words = (seconds ? key.slice(0, -2) : key).replace(/_/g, " ").replace(/\bgtid\b/gi, "GTID").replace(/\bio\b/g, "I/O").replace(/\bpos\b/g, "position");
   const label = words.charAt(0).toUpperCase() + words.slice(1);
-  return seconds ? `${label} (s)` : label;
+  return label;
 }
 
 function factValue(value: Json | undefined) {
@@ -81,9 +82,9 @@ export function factRows(facts: Facts, labels: Record<string, string> = {}): [st
   return Object.entries(facts)
     .filter(([key]) => !key.endsWith("_domains"))
     .map(([key, value]): [string, React.ReactNode] => {
-      const rendered = factValue(value);
+      const rendered = key.endsWith("_s") && typeof value === "number" ? <Duration value={value} /> : factValue(value);
       const isGtid = GTID_SET_KEY.test(key) && typeof value === "string" && value.trim() !== "";
-      return [labels[key] || factLabel(key), isGtid ? formatGtidSet(rendered) : <span className="ops-wrap">{rendered}</span>];
+      return [labels[key] || factLabel(key), isGtid ? formatGtidSet(value as string) : <span className="ops-wrap">{rendered}</span>];
     });
 }
 
