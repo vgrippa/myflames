@@ -78,7 +78,7 @@ try {
   assert.deepEqual([state.seen[0].active_only, state.seen[0].min_seconds], [true, 0]);
   assert.equal(state.seen[0].connection.host, "127.0.0.1");
   const summary = await text(`${view} .summary-line`);
-  assert.match(summary, /Problem\s*9 active · 2 idle in transaction · 2 waiting for a lock · 5 running 10 s or more · oldest transaction \d+ m \d+ s/);
+  assert.match(summary, /Problem\s*9 active · 2 idle in transaction · 2 waiting for a lock · 5 running 10 s or more · oldest transaction \d+ min \d+ s/);
   assert.ok(summary.replace(/\d+ notes?$/, "").length <= 130, "the summary is one line");
   const facts = await text(`${view} .fact-strip`);
   assert.match(facts, /Connected\s*12/);
@@ -107,6 +107,11 @@ try {
     const expected = pattern === "[" ? [] : eligible.filter(s => new RegExp(pattern, "i").test(s.info || s.info_short || s.last_statement || "")).map(s => s.id);
     await page.waitForFunction(n => document.querySelector(".preview-title strong")?.textContent === `Preview: ${n} matching sessions`, {}, expected.length);
     assert.deepEqual(await page.$$eval(".mass-kill-table tbody tr td:nth-child(2) strong", es => es.map(e => Number(e.textContent))), expected, `pattern ${pattern} is preserved`);
+    // The preview's Time is a duration in words, with the exact seconds on hover.
+    for (const cell of await page.$$eval(".mass-kill-table tbody tr td:nth-child(6)", (es) => es.map((e) => [e.textContent.trim(), e.querySelector("abbr")?.title || ""]))) {
+      assert.match(cell[0], /^\d+ s$|^\d+ min \d+ s$|^\d+ h \d+ min$|^\d+ d \d+ h$/, `a duration in words (${cell[0]})`);
+      assert.match(cell[1], /^[\d,]+ seconds$/, `the exact seconds on hover (${cell[1]})`);
+    }
     assert.equal(await page.$eval("#mk-query", e => e.getAttribute("aria-invalid")), String(pattern === "["));
     if (pattern === "[") {
       assert.equal(await text("#mk-query-error"), "Not a valid pattern");
@@ -123,12 +128,24 @@ try {
   assert.ok(await page.$(`${row(94)} td[data-col=id] [role=img][aria-label="Waiting for a lock"]`));
   assert.ok(await page.$(`${row(93)} td[data-col=id] [role=img][aria-label="Holding locks"]`));
   // The list fits beside the list of views at 1440 px: Kill and Show plan
-  // live in the row menu, and Flags starts off with its words on the status.
+  // live in the row menu, and Flags, Database and Command start off (their
+  // words are on the status, in State, in the details and in the Breakdown).
   assert.deepEqual(await page.$$eval(`${view} thead th[data-col]`, els => els.map(e => e.dataset.col)),
-    ["status", "id", "user", "db", "command", "time", "statement", "lock"]);
+    ["status", "id", "user", "state", "time", "statement", "lock"]);
   assert.equal(await page.$eval(`${view} .data-table-wrap`, (e) => e.scrollWidth - e.clientWidth), 0, "no sideways scroll at 1440 px");
   assert.equal(await text(`${view} th[data-col=time]`), "Time");
-  assert.equal(await page.$eval(`${view} th[data-col=time]`, (e) => e.title), "Time in the current state, in seconds");
+  assert.equal(await page.$eval(`${view} th[data-col=time]`, (e) => e.title), "How long the session has been in its current state");
+  assert.equal(await page.$eval(`${view} th[data-col=state]`, (e) => e.title), "What the session is doing now: the server's State, or its command (Sleep, Daemon) when it reports none");
+  // State is its own column (MySQL's Command, State, Time order), and Time says
+  // the duration in words with the exact seconds on hover.
+  assert.equal(await text(`${row(95)} td[data-col=state]`), "Waiting for table metadata lock");
+  assert.equal(await text(`${row(100)} td[data-col=state]`), "executing");
+  assert.equal(await text(`${row(93)} td[data-col=state]`), "Sleep", "no state shows the command");
+  assert.equal(await page.$eval(`${row(93)} td[data-col=state] span`, (e) => [e.className, e.title].join("|")), "cell-muted|No state; command Sleep");
+  assert.equal(await text(`${row(93)} td[data-col=time]`), "20 min 50 s");
+  assert.equal(await page.$eval(`${row(93)} td[data-col=time] abbr`, (e) => e.title), "1,250 seconds");
+  assert.equal(await text(`${row(100)} td[data-col=time]`), "36 s");
+  for (const t of await texts(`${view} td[data-col=time]`)) assert.doesNotMatch(t, /\d\.\d+m|^\d+m$/, `never a compact number (${t})`);
   assert.equal(await page.$eval(`${row(94)} td[data-col=status] [title]`, (e) => e.title), "Long running, Lock wait");
   assert.equal(await page.$eval(`${row(93)} td[data-col=status] [title]`, (e) => e.title), "Idle in transaction");
   assert.equal(await page.$(`${row(93)} td[data-col=actions]`), null, "no per-row Kill button");
@@ -161,7 +178,7 @@ try {
   await page.click(".detail-back");
   await page.waitForFunction(() => !document.querySelector(".view-inspector"));
   assert.deepEqual(await page.$$eval(`${view} thead th[data-col]`, els => els.map(e => e.dataset.col)),
-    ["status", "id", "user", "db", "command", "time", "statement", "lock"]);
+    ["status", "id", "user", "state", "time", "statement", "lock"]);
   const readsBeforeColumns = state.seen.length;
   // Flags is in the Columns menu, off by default; showing it brings the pills back.
   await page.click(`${view} .table-columns-button`);
@@ -170,17 +187,18 @@ try {
   await page.keyboard.press("Escape");
   assert.deepEqual(await page.$$eval(`${row(94)} td[data-col=flags] .pill`, (els) => els.map((e) => e.textContent)), ["Long running", "Lock wait"]);
   assert.deepEqual(await page.$$eval(`${row(93)} td[data-col=flags] .pill`, (els) => els.map((e) => e.textContent)), ["Idle in transaction"]);
+  // Database starts off too; showing it survives the full-width details.
   await page.click(`${view} .table-columns-button`);
   await page.click('.popover input[data-col=db]');
   await page.keyboard.press("Escape");
-  assert.equal(await page.$(`${view} th[data-col=db]`), null);
+  assert.ok(await page.$(`${view} th[data-col=db]`), "Columns shows Database");
   await h.select(row(93));
   await page.click(".detail-back");
-  assert.equal(await page.$(`${view} th[data-col=db]`), null, "explicit column choices survive details");
+  assert.ok(await page.$(`${view} th[data-col=db]`), "explicit column choices survive details");
   await page.click(`${view} .table-columns-button`);
   await page.click('.popover .columns-reset');
   await page.keyboard.press("Escape");
-  assert.ok(await page.$(`${view} th[data-col=db]`), "Reset restores every column");
+  assert.equal(await page.$(`${view} th[data-col=db]`), null, "Reset turns Database off again");
   assert.equal(await page.$(`${view} th[data-col=flags]`), null, "Reset turns Flags off again");
   await page.click(`${view} .table-columns-button`);
   await page.click('.popover input[data-col=flags]');
@@ -192,7 +210,7 @@ try {
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("Enter");
   await inspectorHas(/Connection 94/);
-  assert.match(await h.inspector(), /Waiting \d+ m \d+ s for an InnoDB lock \(a row lock, or a table lock such as AUTO-INC\)/);
+  assert.match(await h.inspector(), /Waiting \d+ min \d+ s for an InnoDB lock \(a row lock, or a table lock such as AUTO-INC\)/);
   assert.match(await h.inspector(), /UPDATE t SET v = 0 WHERE id = 10/);
   await page.click(".detail-back");
   await page.waitForFunction(selector => document.activeElement?.matches(selector), {}, row(94));
@@ -215,7 +233,7 @@ try {
   assert.match(sheet, /Server\s*Local MySQL.*127\.0\.0\.1:3306/);
   assert.match(sheet, /Server identity\s*sessions-server-uuid/);
   assert.match(sheet, /User\s*root@172\.17\.0\.1:60204 · mf/);
-  assert.match(sheet, /State\s*Idle in transaction for \d+ m \d+ s/);
+  assert.match(sheet, /State\s*Idle in transaction for \d+ min \d+ s/);
   assert.match(sheet, /KILL QUERY would not help/);
   assert.equal(await page.evaluate(() => document.activeElement?.textContent), "Cancel");
   await page.keyboard.press("Escape");
@@ -377,6 +395,9 @@ try {
   assert.deepEqual(await page.$$eval(`${row(5)} .pill`, (els) => els.map((e) => e.textContent)), ["Server thread"]);
   // With Flags off, an OK row still names its informational flags in Status.
   assert.equal(await page.$eval(`${row(5)} td[data-col=status] [title]`, (e) => [e.textContent, e.title].join("|")), "Server thread|Server thread");
+  // A daemon's state is in the State column; the statement cell no longer repeats it.
+  assert.equal(await text(`${row(5)} td[data-col=state]`), "Waiting on empty queue");
+  assert.equal(await text(`${row(5)} td[data-col=statement]`), "—", "the statement cell no longer repeats the state");
   await page.click(more(5));
   await page.waitForSelector('.popover[role=menu]');
   assert.deepEqual(await page.$eval('.popover[role=menu] .is-danger', (e) => [e.disabled, e.title]),
@@ -506,6 +527,32 @@ try {
   await h.refresh(); await h.idle(view); await h.select(row(100));
   await assertPrivilege(page, gatedKill, "allowed");
   await assertPrivilege(page, '.view-inspector [aria-label="Show plan for connection 100"]', "allowed");
+
+  // A session up for days (a daemon or a replication thread) reads as a
+  // duration in words, never "1.6m", and sorting by Time still orders by seconds.
+  if (await page.$(".detail-back")) await page.click(".detail-back");
+  await page.waitForFunction(() => !document.querySelector(".view-inspector"));
+  const longRun = structuredClone(active);
+  longRun.sessions = [{
+    id: 900, user: null, host: null, client_host: null, db: null, command: "Daemon",
+    time_s: 1598400, state: "Waiting on empty queue", info: null, info_short: null, info_truncated: false,
+    thread_kind: "daemon", trx: null, lock_wait: null, last_statement: null, progress: null,
+    memory_used: null, rows_examined: null, explainable: false, flags: ["system_thread"], status: "ok", why: null, active: false,
+  }, ...longRun.sessions];
+  state.fallback = { status: 200, body: longRun };
+  await h.refresh();
+  await page.waitForSelector(row(900));
+  await h.idle(view);
+  assert.equal(await text(`${row(900)} td[data-col=time]`), "18 d 12 h");
+  assert.equal(await page.$eval(`${row(900)} td[data-col=time] abbr`, (e) => e.title), "1,598,400 seconds");
+  assert.equal(await page.$eval(`${row(900)} td[data-col=time] abbr`, (e) => e.getAttribute("aria-label")), "1,598,400 seconds");
+  assert.equal(await text(`${row(900)} td[data-col=state]`), "Waiting on empty queue");
+  await page.click(`${view} th[data-col=time] button`);
+  assert.equal(await page.$eval(`${view} th[data-col=time]`, (e) => e.getAttribute("aria-sort")), "descending");
+  assert.deepEqual(await page.$$eval(`${view} tbody tr`, (els) => els.slice(0, 2).map((e) => e.dataset.session)), ["900", "93"], "largest first, by seconds");
+  await page.click(`${view} th[data-col=time] button`);
+  assert.deepEqual(await page.$$eval(`${view} tbody tr`, (els) => els.slice(0, 2).map((e) => e.dataset.session)), ["98", "102"], "smallest first, by seconds");
+  await page.click(`${view} th[data-col=time] button`);
 
   assert.deepEqual(h.errors, []);
   console.log("sessions view: ok");

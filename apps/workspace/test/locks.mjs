@@ -255,7 +255,11 @@ try {
   // views at 1440 px; the Columns menu shows them and the details list both.
   assert.deepEqual(await page.$$eval(`${view} table[aria-label="Transactions"] th[data-col]`, (els) => els.map((e) => e.dataset.col)),
     ["trx", "conn", "stmt", "state", "age", "session", "locked"], "full-width lists retain their columns");
-  assert.match(await text(`${view} th[data-col=age]`), /Open \(s\)/);
+  assert.match(await text(`${view} th[data-col=age]`), /Open for/);
+  // The age is a duration in words with the exact seconds on hover.
+  const ageCells = await page.$$eval(`${view} table[aria-label="Transactions"] td[data-col=age]`, (els) => els.map((e) => [e.textContent.trim(), e.querySelector("abbr")?.title || ""]));
+  assert.ok(ageCells.some(([t, title]) => t === "7 min 52 s" && title === "472 seconds"), JSON.stringify(ageCells));
+  for (const [t] of ageCells) assert.match(t, /^\d+ s$|^\d+ min \d+ s$|^\d+ h \d+ min$|^\d+ d \d+ h$/, `a duration in words (${t})`);
   if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.waitForFunction(() => !document.querySelector(".view-inspector"));
   assert.equal(await page.$eval(`${view} .data-table-wrap[aria-label="Transactions"]`, (e) => e.scrollWidth - e.clientWidth), 0,

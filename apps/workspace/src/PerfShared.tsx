@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { api, formatNumber, type Connection, type SchemaCatalog } from "./api";
 import { DataTable, Popover, Select, closePopovers } from "./kit";
+import { durationText } from "./duration";
 import { connectionKey } from "./binding";
 import { Icon, type IconName } from "./components";
 import "./perf.css";
@@ -94,6 +95,21 @@ export function CompactNumber({ value }: { value: number | null | undefined }) {
 export function percent(share: number | null | undefined) {
   if (share === null || share === undefined || !Number.isFinite(share)) return "—";
   return `${Math.round(share * 100)}%`;
+}
+
+/** A duration in a table cell: the words are the cell text ("18 d 12 h",
+ * "4 min 12 s"), and the exact seconds ("1,598,400 seconds") are the tooltip
+ * and the accessible name. Sort on the raw value. *approx* marks a value read
+ * from the running statement rather than the wait itself ("~"). */
+export function Duration({ value, approx = false }: { value: number | null | undefined; approx?: boolean }) {
+  if (value === null || value === undefined || !Number.isFinite(value)) return <>—</>;
+  const exact = `${approx ? "~" : ""}${formatNumber(value, { maximumFractionDigits: 3 })} seconds`;
+  return (
+    <abbr className="compact-number" title={exact} aria-label={exact}>
+      {approx ? "~" : ""}
+      {durationText(value)}
+    </abbr>
+  );
 }
 
 /** "MySQL 8.4.11", "MariaDB 11.8.9-MariaDB-log", "Percona Server 8.4.11-11": the

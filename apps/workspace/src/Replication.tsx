@@ -3,6 +3,7 @@
 // confirmed action; Python owns the statements, the final re-read, the
 // connection's write policy and the audit record.
 import { useEffect, useRef, useState } from "react";
+import { durationText } from "./duration";
 import { useViewOnScreen } from "./viewOnScreen";
 import type { ActionPrivilege } from "./accountsApi";
 import { privilegeResult, usePrivilege } from "./privileges";
@@ -482,9 +483,9 @@ export function ReplicationView({ connection, disabled, selection, report: bound
   const lagColumns: Column<ReplicationChannel>[] = [
     { key: "name", label: engine === "mariadb" ? "Connection" : "Channel", primary: true, flex: true, sort: (r) => r.name, render: (r) => channelCell(r.name) },
     { key: "status", label: "Status", sort: (r) => r.status, render: (r) => <StatusPill tone={r.judged ? r.status : "unknown"} label={r.judged ? undefined : "Not judged"} /> },
-    { key: "lag", label: "Lag (s)", num: true, title: "Seconds behind the source", sort: (r) => r.lag_s, render: (r) => <abbr title={r.lag_notes.join(" ") || undefined}>{r.lag_s === null ? "Unknown" : `${r.lag_s.toLocaleString()} s`}</abbr> },
-    { key: "delay", label: "Configured delay", num: true, sort: (r) => r.sql.delay_s, render: (r) => r.sql.delay_s ? `${r.sql.delay_s} s` : "None" },
-    { key: "remaining_delay", label: "Remaining delay", num: true, sort: (r) => r.sql.remaining_delay_s, render: (r) => r.sql.remaining_delay_s ? `${r.sql.remaining_delay_s} s` : "None" },
+    { key: "lag", label: "Lag", num: true, title: "How far behind the source the replica is", sort: (r) => r.lag_s, render: (r) => <abbr title={[r.lag_s === null ? "" : `${r.lag_s.toLocaleString()} seconds`, ...r.lag_notes].filter(Boolean).join(" ") || undefined}>{r.lag_s === null ? "Unknown" : durationText(r.lag_s)}</abbr> },
+    { key: "delay", label: "Configured delay", num: true, sort: (r) => r.sql.delay_s, render: (r) => r.sql.delay_s ? durationText(r.sql.delay_s) : "None" },
+    { key: "remaining_delay", label: "Remaining delay", num: true, sort: (r) => r.sql.remaining_delay_s, render: (r) => r.sql.remaining_delay_s ? durationText(r.sql.remaining_delay_s) : "None" },
     { key: "signals", label: "Worker signals", render: (r) => Object.keys(r.lag_signals || {}).length ? Object.entries(r.lag_signals).slice(0, 2).map(([k, v]) => `${k}: ${v}`).join(", ") : "Normal" },
     { key: "notes", label: "Lag caveats", render: (r) => r.lag_notes?.length ? r.lag_notes.join("; ") : "No delay caveats" },
   ];

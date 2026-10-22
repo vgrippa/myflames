@@ -160,9 +160,16 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
   checkbox to hide or show it (the last visible one stays) and **Reset
   columns**. Widths and hidden columns are kept per table with the workspace.
   So that the widest lists fit beside the list of views, a few columns start
-  off and stay in the Columns menu, with their values in the details: Flags in
-  Processlist (the Status cell names them on hover), Rows sent and Schema in
-  Top statements, and Lock structs and Isolation in Locks transactions.
+  off and stay in the Columns menu, with their values in the details: Flags,
+  Database and Command in Processlist (the Status cell names the flags on
+  hover, and State shows the command when the server reports no state, such
+  as Sleep), Rows sent and Schema in Top statements, and Lock structs and
+  Isolation in Locks transactions.
+  Durations read the same everywhere, as the CLI writes them: "36 s",
+  "4 min 12 s", "4 h 5 min", "18 d 12 h", with the exact seconds on hover
+  (Processlist Time, the Kill sessions preview, Locks' Open for and Wait).
+  Processlist shows State (what the session is doing now) beside Time (how
+  long it has been in that state).
   Processlist rows have no buttons: each row's ⋯ menu holds **Show plan** and
   **Kill…**, which opens the same confirmation sheet as Kill in the details.
   Right click on a row (or Shift+F10, or the context menu key) opens its

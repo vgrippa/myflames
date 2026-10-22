@@ -11,7 +11,8 @@ import { useOpenRead } from "./viewOnScreen";
 import { api, number, type Connection, type Session, type SessionBreakdown, type SessionFlag, type SessionsReport } from "./api";
 import type { ServerKind } from "./session";
 import { useConnectionReads, type Bound } from "./binding";
-import { PriorityTable, CompactNumber, engineLabel } from "./PerfShared";
+import { PriorityTable, Duration, engineLabel } from "./PerfShared";
+import { durationText } from "./duration";
 import { KillDialog, KillResultNote, killVia, useKillPrivilege, seconds, sendKill, type KillNote, type KillTarget } from "./Locks";
 import { MassKillDialog } from "./MassKillDialog";
 import { PrivilegeGate, privilegeResult, useLoginUser, usePrivilege, type PrivilegeGateResult } from "./privileges";
@@ -426,7 +427,10 @@ export function SessionsView({
     },
     { key: "db", label: "Database", sort: (x) => x.db || "", render: (x) => x.db || <span className="cell-muted">—</span> },
     { key: "command", label: "Command", sort: (x) => x.command || "", render: (x) => x.command || "—" },
-    { key: "time", label: "Time", name: "Time (s)", title: "Time in the current state, in seconds", num: true, width: 112, sort: (x) => x.time_s, render: (x) => <CompactNumber value={x.time_s} /> },
+    { key: "state", label: "State", title: "What the session is doing now: the server's State, or its command (Sleep, Daemon) when it reports none", width: 220, sort: (x) => x.state || x.command || "", render: (x) => x.state ? <span className="cell-truncate" title={x.state}>{x.state}</span> : x.command ? <span className="cell-muted" title={`No state; command ${x.command}`}>{x.command}</span> : <span className="cell-muted">—</span> },
+    // Time sits next to State because the state is what it measures; the cell
+    // says the duration in words, the tooltip the exact seconds.
+    { key: "time", label: "Time", title: "How long the session has been in its current state", num: true, width: 96, sort: (x) => x.time_s, render: (x) => <Duration value={x.time_s} /> },
     {
       key: "statement",
       label: "Statement",
@@ -442,8 +446,6 @@ export function SessionsView({
           <code className="cell-truncate cell-sql cell-muted" title={x.last_statement}>
             Last: {x.last_statement}
           </code>
-        ) : x.state ? (
-          <span className="cell-muted">{x.state}</span>
         ) : (
           <span className="cell-muted">—</span>
         ),
@@ -461,14 +463,14 @@ export function SessionsView({
         if (ls === "waiting") {
           return (
             <span className="pill is-danger" title={x.lock_detail || "Waiting on lock"}>
-              <Icon name="lock" size={12} /> Wait {x.lock_wait?.wait_s != null ? `(${x.lock_wait.wait_s}s)` : ""}
+              <Icon name="lock" size={12} /> Wait {x.lock_wait?.wait_s != null ? `(${durationText(x.lock_wait.wait_s)})` : ""}
             </span>
           );
         }
         if (ls === "holding") {
           return (
             <span className="pill is-warn" title={x.lock_detail || "Holding locks"}>
-              <Icon name="key" size={12} /> Locks ({x.trx?.rows_locked ?? 0} rows)
+              <Icon name="key" size={12} /> Locks ({x.trx?.rows_locked ?? 0} {(x.trx?.rows_locked ?? 0) === 1 ? "row" : "rows"})
             </span>
           );
         }
@@ -804,10 +806,13 @@ export function SessionsView({
               <PriorityTable
                 id="sessions.sessions"
                 detailColumns={["user", "db", "command", "statement", "lock", "flags"]}
-                // Flags start off so the list fits beside the list of views at
-                // 1440 px: the Status dot names them on hover, and the details
-                // explain each one (Why it is flagged, Rules).
-                defaultHidden={["flags"]}
+                // Flags, Database and Command start off so the list (with the
+                // State column) fits beside the list of views at 1440 px: the
+                // Status dot names the flags on hover, State shows the command
+                // when the server reports no state (Sleep, Daemon), all three
+                // are in the details and the Breakdown, and the Columns menu
+                // brings each back.
+                defaultHidden={["flags", "db", "command"]}
                 rowAction={rowMenu}
                 label="Sessions"
                 columns={columns}
