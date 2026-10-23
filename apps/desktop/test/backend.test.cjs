@@ -93,9 +93,12 @@ test('Windows client discovery appends installer folders after PATH, newest firs
     'C:\\Program Files': ['MariaDB 10.11', 'MariaDB 11.8', 'MySQL', 'Git'],
     'C:\\Program Files (x86)\\MySQL': ['MySQL Server 5.7'],
   };
+  // Like Windows, the fake compares paths without case.
+  const lowerDirs = new Set([...dirs].map(dir => dir.toLowerCase()));
+  const lowerListing = Object.fromEntries(Object.entries(listing).map(([dir, names]) => [dir.toLowerCase(), names]));
   const fileSystem = {
-    readdirSync: dir => { if (!listing[dir]) throw Object.assign(new Error('missing'), { code: 'ENOENT' }); return listing[dir]; },
-    statSync: dir => { if (!dirs.has(dir)) throw Object.assign(new Error('missing'), { code: 'ENOENT' }); return { isDirectory: () => true }; },
+    readdirSync: dir => { const names = lowerListing[dir.toLowerCase()]; if (!names) throw Object.assign(new Error('missing'), { code: 'ENOENT' }); return names; },
+    statSync: dir => { if (!lowerDirs.has(dir.toLowerCase())) throw Object.assign(new Error('missing'), { code: 'ENOENT' }); return { isDirectory: () => true }; },
   };
   const inherited = { Path: 'C:\\Windows\\System32;C:\\tools\\mysql\\bin', ProgramFiles: 'C:\\Program Files',
     'ProgramFiles(x86)': 'C:\\Program Files (x86)', ProgramW6432: 'C:\\Program Files' };
@@ -112,9 +115,11 @@ test('Windows client discovery appends installer folders after PATH, newest firs
   assert.ok(lower.PATH.split(';').includes('C:\\Program Files\\MariaDB 11.8\\bin'));
   const none = { readdirSync: () => { throw new Error('missing'); }, statSync: () => { throw new Error('missing'); } };
   assert.equal(backendEnvironment('C:\\desktop', { PATH: 'C:\\x', ProgramFiles: 'C:\\Program Files' }, 'win32', none).PATH, 'C:\\x');
-  // A folder already on PATH is not added twice.
-  const dup = backendEnvironment('C:\\desktop', { PATH: 'C:\\Program Files\\MariaDB 11.8\\bin', ProgramFiles: 'C:\\Program Files' }, 'win32', fileSystem);
-  assert.equal(dup.PATH.split(';').filter(value => value === 'C:\\Program Files\\MariaDB 11.8\\bin').length, 1);
+  // A folder already on PATH, in any case or with a trailing backslash, is not added twice.
+  const dup = backendEnvironment('C:\\desktop', { PATH: 'c:\\program files\\mariadb 11.8\\bin\\', ProgramFiles: 'C:\\Program Files',
+    ProgramW6432: 'C:\\PROGRAM FILES' }, 'win32', fileSystem);
+  assert.equal(dup.PATH.split(';').filter(value => value.toLowerCase().startsWith('c:\\program files\\mariadb 11.8')).length, 1);
+  assert.ok(dup.PATH.startsWith('c:\\program files\\mariadb 11.8\\bin\\;'));
 });
 test('startup tolerates fragmented output and shutdown owns only its child process group', async () => {
   const f = fixture(), ready = startBackend(settings, f.dependencies);

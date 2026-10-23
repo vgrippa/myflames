@@ -77,12 +77,22 @@ function newerFirst(a, b) {
   }
   return 0;
 }
+// Windows paths compare without case; keep the first spelling of each.
+function uniqueWindowsPaths(paths) {
+  const seen = new Set();
+  return paths.filter(value => {
+    const key = value.toLowerCase().replace(/[\\/]+$/, '');
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 function windowsClientDirectories(inherited, fileSystem = fs) {
   const variable = name => {
     const key = Object.keys(inherited).find(candidate => candidate.toLowerCase() === name.toLowerCase());
     return key ? inherited[key] : undefined;
   };
-  const roots = [...new Set(['ProgramW6432', 'ProgramFiles', 'ProgramFiles(x86)'].map(variable).filter(Boolean))];
+  const roots = uniqueWindowsPaths(['ProgramW6432', 'ProgramFiles', 'ProgramFiles(x86)'].map(variable).filter(Boolean));
   const found = [];
   for (const [parent, pattern] of WINDOWS_CLIENT_FOLDERS) {
     const group = [];
@@ -119,8 +129,8 @@ function backendEnvironment(dataDirectory, inherited = process.env, platform = p
       '/opt/homebrew/opt/mariadb/bin', '/usr/local/opt/mariadb/bin', '/opt/local/bin',
     ]))].join(':');
   } else if (platform === 'win32') {
-    env.PATH = [...new Set((env.PATH || '').split(';').filter(Boolean)
-      .concat(windowsClientDirectories(inherited, fileSystem)))].join(';');
+    env.PATH = uniqueWindowsPaths((env.PATH || '').split(';').filter(Boolean)
+      .concat(windowsClientDirectories(inherited, fileSystem))).join(';');
   }
   env.HOME = path.join(dataDirectory, 'backend-home');
   env.USERPROFILE = env.HOME;
