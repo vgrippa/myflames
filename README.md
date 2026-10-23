@@ -36,12 +36,19 @@ Try a [MySQL plan demo](https://vgrippa.github.io/myflames/demos/live-mysql/live
 
 ### macOS app
 
-1. Download `myflames-3.2.0-macos-arm64.dmg` from [GitHub Releases](https://github.com/vgrippa/myflames/releases) (Apple Silicon), open it, and drag `myflames.app` to `/Applications`.
-2. Double-click `myflames.app`. It is signed with a Developer ID and notarized by Apple, so macOS opens it without extra steps. Releases before 3.2.0 were unsigned zips: Control-click those in Finder and choose **Open** the first time.
+1. Download `myflames-3.3.0-macos-arm64.dmg` from [GitHub Releases](https://github.com/vgrippa/myflames/releases) (Apple Silicon), open it, and drag `myflames.app` to `/Applications`.
+2. Double-click `myflames.app`. It is signed with a Developer ID and notarized by Apple, so macOS opens it without extra steps. Releases before 3.3.0 were unsigned zips: Control-click those in Finder and choose **Open** the first time.
 
 The packaged app keeps its data under `~/Library/Application Support/myflames-desktop`, unless overridden by `MYFLAMES_DESKTOP_DATA`. Its workspace database and audit records are in `backend-home/.myflames/workspace.sqlite3`; saved passwords use `credentials.vault` and `vault.key` in that same `.myflames` folder. Desktop and CLI data are separate; the CLI uses `~/.myflames`. You can check for newer releases on demand with **Check for updates** on Home or in **Settings > About myflames**.
 
-Live server features use a local `mysql` or `mariadb` client and optional `mysqlsh`, `mysqldump` or `mariadb-dump` binaries. The app discovers them automatically on `PATH` and in standard Homebrew, MacPorts and vendor folders (`/opt/homebrew/bin`, `/usr/local/bin`, `/opt/local/bin`, `/usr/local/mysql/bin`).
+### Windows app (preview)
+
+1. Download `myflames-3.3.0-windows-x64-setup.exe` from [GitHub Releases](https://github.com/vgrippa/myflames/releases) and run it. It installs for your user only, with no administrator prompt, and adds Start menu and desktop shortcuts.
+2. The installer is not code signed yet, so SmartScreen says "Windows protected your PC" the first time: choose **More info**, then **Run anyway**.
+
+The Windows app is a preview: it has been tested on Windows 11 x64, but a crash can leave a statement that was already running on the server until it finishes. Its data lives in `%APPDATA%\myflames-desktop`. Uninstall it from **Settings > Apps**.
+
+Live server features use a local `mysql` or `mariadb` client and optional `mysqlsh`, `mysqldump` or `mariadb-dump` binaries. The app discovers them automatically on `PATH` and in standard Homebrew, MacPorts and vendor folders (`/opt/homebrew/bin`, `/usr/local/bin`, `/opt/local/bin`, `/usr/local/mysql/bin`); on Windows, in the folders the MySQL and MariaDB installers create under Program Files.
 
 While Home is open, the app fetches up to six headlines from Planet MySQL and the MariaDB Foundation over HTTPS and caches them for six hours. Turn this off in **Settings** with **Show MySQL and MariaDB news on Home**; nothing is fetched while it is off.
 

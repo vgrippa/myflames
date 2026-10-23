@@ -8,10 +8,9 @@ as the backend entry point). The Python CLI remains available for command-line u
 The implementation and verification target is macOS on Apple Silicon. The
 `.app` bundles Electron, Python and the workspace, and opens directly from
 Finder. Releases are signed with a Developer ID and notarized; local builds are
-not. Windows and Linux distribution are deferred. An unsigned Windows x64
-installer is built in CI for testing
-([Build the Windows installer](#build-the-windows-installer-preview)); it and the
-Windows notes below describe unfinished groundwork, not a supported platform.
+not. Releases also attach an unsigned Windows x64 installer as a preview
+([Build the Windows installer](#build-the-windows-installer-preview)); Linux is
+deferred.
 The window opens at 1440 by 960 pixels and cannot be smaller than 720 by 520.
 
 Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGraph)
@@ -268,7 +267,7 @@ administrator prompt, under `%LOCALAPPDATA%\Programs\myflames-desktop`, with Sta
 and desktop shortcuts and an uninstaller in Settings > Apps. Its data lives in
 `%APPDATA%\myflames-desktop`, separate from the command-line workspace.
 
-This build is for testing, not a supported platform or a release asset. Known gaps:
+Releases attach this installer and its `.sha256` from the workflow run of the release commit, as an unsigned preview. Known gaps:
 
 - Quitting stops the backend with `taskkill /T /F`, so a dump, restore or clone
   in progress is not stopped and audited as cancelled first.
