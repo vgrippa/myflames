@@ -5,12 +5,19 @@ const os = require('node:os');
 const path = require('node:path');
 (async () => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'myflames-desktop-smoke-'));
+  // A packaged app is a macOS .app bundle or the Windows win-unpacked folder.
   const appPath = process.argv[2] ? path.resolve(process.argv[2]) : null;
-  const executable = appPath ? path.join(appPath, 'Contents/MacOS/myflames') : require('electron');
+  const windows = process.platform === 'win32';
+  const executable = appPath ? path.join(appPath, windows ? 'myflames.exe' : 'Contents/MacOS/myflames') : require('electron');
+  const bundledBackend = appPath && (windows ? path.join(appPath, 'resources', 'backend', 'myflames-backend.exe')
+    : path.join(appPath, 'Contents/Resources/backend/myflames-backend'));
   const env = { ...process.env, MYFLAMES_DESKTOP_DATA: home };
   if (appPath) {
     // Prove that the delivered bundle does not depend on terminal PATH/Python.
-    env.PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
+    // Windows spells it Path; drop every spelling so only this one is passed.
+    for (const key of Object.keys(env)) if (key.toUpperCase() === 'PATH') delete env[key];
+    const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+    env.PATH = windows ? [path.join(systemRoot, 'System32'), systemRoot].join(path.delimiter) : '/usr/bin:/bin:/usr/sbin:/sbin';
     env.MYFLAMES_DESKTOP_PYTHON = '/missing/python-must-not-be-used';
     env.MYFLAMES_DESKTOP_SMOKE = '1';
   }
@@ -26,7 +33,8 @@ const path = require('node:path');
     if (code !== 0) throw new Error('Desktop smoke did not complete successfully. ' + diagnostics.replace(/http:\/\/\S+/g, '[private URL]'));
     const report = JSON.parse(await fs.readFile(path.join(home, 'smoke.json'), 'utf8'));
     if (!report.ready || !report.shellNavigation || !report.completion || !report.authenticated || !report.reloadAuthenticated || !report.sandbox || report.nodeIntegration) throw new Error('Desktop isolation checks failed.');
-    if (appPath && (!report.packaged || report.backendExecutable !== path.join(appPath, 'Contents/Resources/backend/myflames-backend')))
+    const samePath = (a, b) => windows ? String(a).toLowerCase() === b.toLowerCase() : a === b;
+    if (appPath && (!report.packaged || !samePath(report.backendExecutable, bundledBackend)))
       throw new Error('The packaged app did not use its bundled backend.');
     try { process.kill(report.backendPid, 0); throw new Error('Owned backend remained alive after desktop exit.'); }
     catch (error) { if (error.code !== 'ESRCH') throw error; }

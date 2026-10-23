@@ -82,6 +82,10 @@ class TestAppUpdate(unittest.TestCase):
             ('linux', 'amd64', 'linux-arm64.tar.gz', 'linux-x64.tar.gz'),
             ('win32', 'ARM64', 'windows-x64.exe', 'win-arm64.zip'),
             ('win32', 'AMD64', 'darwin-x64.zip', 'windows-x86_64.exe'),
+            # The names electron-builder.json gives the release DMG and the
+            # Windows installer.
+            ('win32', 'AMD64', '3.2.0-macos-arm64.dmg', '3.2.0-windows-x64-setup.exe'),
+            ('darwin', 'arm64', '3.2.0-windows-x64-setup.exe', '3.2.0-macos-arm64.dmg'),
         ]
         for platform, machine, wrong, right in cases:
             with self.subTest(platform=platform, machine=machine, wrong=wrong):

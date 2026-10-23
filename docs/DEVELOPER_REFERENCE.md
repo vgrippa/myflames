@@ -79,6 +79,13 @@ malformed list counts as unconfirmed. `stop()` resolves only when all are gone
 (7 s in total) and otherwise rejects, which shows the shutdown-incomplete dialog.
 Client discovery appends fixed macOS installation directories without shell
 startup scripts. Packaged app data is separate from development and CLI data.
+`package:win` builds the unsigned Windows x64 NSIS installer
+(`myflames-<version>-windows-x64-setup.exe`, per user). PyInstaller does not
+cross-compile, so `.github/workflows/windows-desktop.yml` builds the backend on a
+Windows runner, packages the installer, runs the packaged smoke on
+`dist/win-unpacked` and uploads the installer with its SHA-256. It is a preview,
+not a release asset: Windows quits with `taskkill /T /F`, has no crash
+supervision or installer-folder client discovery, and is unsigned.
 See [Desktop app](DESKTOP.md) and the desktop package README for launch and test
 instructions. Current delivery targets macOS. The shared working UI now uses
 compact neutral navigation, open-query links, a command palette and full-width

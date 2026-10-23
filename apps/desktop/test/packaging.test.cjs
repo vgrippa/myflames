@@ -11,6 +11,11 @@ const path = require('node:path');
 const desktop = path.resolve(__dirname, '..');
 const config = JSON.parse(fs.readFileSync(path.join(desktop, 'electron-builder.json'), 'utf8'));
 const pkg = JSON.parse(fs.readFileSync(path.join(desktop, 'package.json'), 'utf8'));
+// Same whole-label rule as app_update.match_asset_for_platform.
+const label = (labels) => new RegExp('(?<![a-z0-9])(?:' + labels.join('|') + ')(?![a-z0-9])');
+const artifact = (template, arch, ext) => template
+  .replace('${productName}', pkg.productName).replace('${version}', pkg.version)
+  .replace('${arch}', arch).replace('${ext}', ext).toLowerCase();
 
 test('local builds explicitly disable Developer ID signing and notarization', () => {
   assert.equal(config.mac.identity, null);
@@ -27,14 +32,22 @@ test('release signing uses the hardened runtime and grants only JIT', () => {
 });
 
 test('the release DMG name is one the update check matches for Apple Silicon', () => {
-  const name = config.dmg.artifactName
-    .replace('${productName}', pkg.productName).replace('${version}', pkg.version)
-    .replace('${arch}', 'arm64').replace('${ext}', 'dmg').toLowerCase();
+  const name = artifact(config.dmg.artifactName, 'arm64', 'dmg');
   assert.equal(name, 'myflames-' + pkg.version + '-macos-arm64.dmg');
-  // Same whole-label rule as app_update.match_asset_for_platform.
-  const label = (labels) => new RegExp('(?<![a-z0-9])(?:' + labels.join('|') + ')(?![a-z0-9])');
   assert.match(name, label(['mac', 'macos', 'darwin', 'apple']));
   assert.match(name, label(['arm64', 'aarch64', 'universal']));
+});
+
+test('Windows builds an unsigned x64 NSIS installer the update check matches', () => {
+  assert.deepEqual(config.win.target, [{ target: 'nsis', arch: ['x64'] }]);
+  assert.equal(config.win.signtoolOptions, undefined);
+  assert.equal(config.win.azureSignOptions, undefined);
+  assert.match(pkg.scripts['package:win'], /--win --x64 --publish never/);
+  const name = artifact(config.nsis.artifactName, 'x64', 'exe');
+  assert.equal(name, 'myflames-' + pkg.version + '-windows-x64-setup.exe');
+  assert.match(name, label(['win', 'windows']));
+  assert.match(name, label(['x86_64', 'amd64', 'x64']));
+  assert.doesNotMatch(name, label(['mac', 'macos', 'darwin', 'apple', 'linux']));
 });
 
 test('the release script refuses to start without an identity and notary credentials', { skip: process.platform === 'win32' }, () => {

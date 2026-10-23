@@ -16,7 +16,8 @@
     "build:backend": "python3 scripts/build-backend.py",
     "package:dir": "electron-builder --dir --config electron-builder.json",
     "package:mac": "electron-builder --mac dir --arm64 --config electron-builder.json",
-    "package:mac:release": "sh scripts/package-mac-release.sh"
+    "package:mac:release": "sh scripts/package-mac-release.sh",
+    "package:win": "electron-builder --win --x64 --publish never --config electron-builder.json"
   },
   "devDependencies": {
     "electron": "44.8.0",

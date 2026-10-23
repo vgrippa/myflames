@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Build an unsigned Windows x64 installer of the desktop app (`myflames-<version>-windows-x64-setup.exe`, NSIS, installed per user without an administrator prompt) with `npm run package:win` in `apps/desktop`. The new `Windows desktop` workflow builds the backend with PyInstaller on a Windows runner, packages the installer, runs the packaged smoke and uploads the installer with its SHA-256 as a workflow artifact. It is a preview for testing, not a release asset: quitting force-stops the backend, a crash can leave it running, database clients are found only through PATH, and the installer is not signed. `build-backend.py` now finds the build venv and the Python license on Windows too.
+
 ## [3.2.0] - 2026-10-23
 
 ### Changed

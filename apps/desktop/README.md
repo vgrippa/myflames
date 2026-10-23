@@ -8,8 +8,10 @@ as the backend entry point). The Python CLI remains available for command-line u
 The implementation and verification target is macOS on Apple Silicon. The
 `.app` bundles Electron, Python and the workspace, and opens directly from
 Finder. Releases are signed with a Developer ID and notarized; local builds are
-not. Windows and Linux distribution are deferred, and the Windows notes
-below describe unfinished groundwork, not a supported platform.
+not. Windows and Linux distribution are deferred. An unsigned Windows x64
+installer is built in CI for testing
+([Build the Windows installer](#build-the-windows-installer-preview)); it and the
+Windows notes below describe unfinished groundwork, not a supported platform.
 The window opens at 1440 by 960 pixels and cannot be smaller than 720 by 520.
 
 Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGraph)
@@ -230,3 +232,45 @@ A signature made before the certificate
 expires keeps verifying afterwards because it carries Apple's timestamp; new
 builds need a valid certificate. The repository names no certificate or profile;
 both come from the environment.
+
+## Build the Windows installer (preview)
+
+The `Windows desktop` workflow (`.github/workflows/windows-desktop.yml`) builds
+`myflames-<version>-windows-x64-setup.exe` on a GitHub-hosted Windows runner for
+each pull request and push to master that touches `apps/desktop` or `myflames`,
+and on demand (Actions > Windows desktop > Run workflow). It builds the backend
+with PyInstaller in a fresh venv, runs `npm test`, packages the NSIS installer
+with `package:win`, runs the packaged smoke against `dist/win-unpacked` with a
+PATH of only the Windows system folders, and uploads the installer and its
+`.sha256` as the `myflames-windows-x64` artifact on the run's summary page.
+
+To build on a Windows x64 machine instead (Python 3.14, Node.js 22.12 or newer),
+run from the repository root in Git Bash:
+
+```sh
+python -m venv local/desktop-build-venv
+local/desktop-build-venv/Scripts/python.exe -m pip install -r apps/desktop/requirements-build.txt
+local/desktop-build-venv/Scripts/python.exe apps/desktop/scripts/build-backend.py
+cd apps/desktop
+npm ci
+npm run package:win
+npm run smoke -- dist/win-unpacked
+```
+
+PyInstaller does not cross-compile, so this cannot be built on a Mac. The
+installer is unsigned: SmartScreen says "Windows protected your PC" until you
+choose More info, then Run anyway. It installs for the current user without an
+administrator prompt, under `%LOCALAPPDATA%\Programs\myflames`, with Start menu
+and desktop shortcuts and an uninstaller in Settings > Apps. Its data lives in
+`%APPDATA%\myflames-desktop`, separate from the command-line workspace.
+
+This build is for testing, not a supported platform or a release asset. Known gaps:
+
+- Quitting stops the backend with `taskkill /T /F`, so a dump, restore or clone
+  in progress is not stopped and audited as cancelled first.
+- If the desktop process crashes or is force-killed, the backend and its database
+  clients may keep running: there is no Job Object supervision, and the parent
+  watch in `scripts/backend-entry.py` is POSIX only.
+- Database clients are found only through PATH; the MySQL and MariaDB
+  installers' default folders are not searched.
+- The installer and the app are not code signed.
