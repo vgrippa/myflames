@@ -66,7 +66,8 @@ Build with `package:mac` (unsigned, for local use) or `package:mac:release`
 with only `com.apple.security.cs.allow-jit` from `entitlements.mac.plist`,
 notarization and stapling of the app and the DMG, Gatekeeper checks, and the
 150 MiB update download limit; the certificate comes from `MYFLAMES_MAC_IDENTITY`
-and the notary profile from `APPLE_KEYCHAIN_PROFILE`). Validate the delivered
+and the notary sign-in from `APPLE_KEYCHAIN_PROFILE`, or from an App Store Connect
+API key in `APPLE_API_KEY`, `APPLE_API_KEY_ID` and `APPLE_API_ISSUER`). Validate the delivered
 `.app` using the packaged smoke, which removes system Python from the startup path
 and checks owned cleanup.
 Quitting sends SIGINT to the backend's process group and waits 5 s; `backend.cjs`

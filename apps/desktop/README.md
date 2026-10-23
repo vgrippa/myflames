@@ -209,7 +209,20 @@ the DMG and the app inside the mounted DMG as notarized, refuses a DMG over the
 
 Notarization uploads the build to Apple and usually takes a few minutes per
 submission. When Apple rejects one, `xcrun notarytool log <id> --keychain-profile
-myflames-notary` names the files. A signature made before the certificate
+myflames-notary` names the files.
+
+macOS does not hand out a notarytool profile while the screen is locked
+(`notarytool` then reports that no Keychain item was found), so a build that
+uses `APPLE_KEYCHAIN_PROFILE` needs the Mac unlocked until it ends; the script
+keeps the display awake, but a manual lock still stops it. For a build that may
+run unattended, create an App Store Connect API key (Users and Access >
+Integrations > Team Keys, with App Manager access; Apple lets you download the
+`AuthKey_<id>.p8` file once), keep that file readable only by you, and set
+these instead of `APPLE_KEYCHAIN_PROFILE`:
+
+```sh
+APPLE_API_KEY=/absolute/path/AuthKey_<id>.p8 APPLE_API_KEY_ID=<key ID> APPLE_API_ISSUER=<issuer ID>
+``` A signature made before the certificate
 expires keeps verifying afterwards because it carries Apple's timestamp; new
 builds need a valid certificate. The repository names no certificate or profile;
 both come from the environment.

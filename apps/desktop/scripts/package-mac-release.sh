@@ -4,7 +4,13 @@
 #   MYFLAMES_MAC_IDENTITY   the Developer ID Application certificate: its name
 #                           without the "Developer ID Application: " prefix, or
 #                           its SHA-1 hash (security find-identity -v -p codesigning)
-#   APPLE_KEYCHAIN_PROFILE  a notarytool profile (xcrun notarytool store-credentials)
+#   and one way to sign in to the notary service:
+#   APPLE_KEYCHAIN_PROFILE  a notarytool profile (xcrun notarytool store-credentials),
+#                           which macOS will not hand out while the screen is locked
+#   APPLE_API_KEY, APPLE_API_KEY_ID, APPLE_API_ISSUER
+#                           an App Store Connect API key file (AuthKey_<id>.p8),
+#                           its key ID and issuer ID; read from disk, so a locked
+#                           screen does not stop the build
 #
 # Build the workspace and the backend first (see README.md). Local builds stay
 # unsigned: electron-builder.json keeps identity null and notarize false, and
@@ -15,18 +21,35 @@ die() { echo "package-mac-release: $*" >&2; exit 2; }
 
 [ "$(uname -s)" = Darwin ] && [ "$(uname -m)" = arm64 ] || die "build on an Apple Silicon Mac"
 [ -n "${MYFLAMES_MAC_IDENTITY:-}" ] || die "set MYFLAMES_MAC_IDENTITY to the Developer ID Application certificate's name or SHA-1 hash"
-[ -n "${APPLE_KEYCHAIN_PROFILE:-}" ] || die "set APPLE_KEYCHAIN_PROFILE to a profile saved with xcrun notarytool store-credentials"
 case "$MYFLAMES_MAC_IDENTITY" in
   "Developer ID Application:"*) die "leave the \"Developer ID Application: \" prefix out of MYFLAMES_MAC_IDENTITY" ;;
 esac
+# electron-builder signs in with the first of an Apple ID, an API key or a
+# profile it finds, so leave it exactly one.
+unset APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID APPLE_KEYCHAIN
+if [ -n "${APPLE_API_KEY:-}" ]; then
+  [ -n "${APPLE_API_KEY_ID:-}" ] && [ -n "${APPLE_API_ISSUER:-}" ] || die "set APPLE_API_KEY_ID and APPLE_API_ISSUER with APPLE_API_KEY"
+  case "$APPLE_API_KEY" in /*) ;; *) APPLE_API_KEY=$PWD/$APPLE_API_KEY ;; esac
+  [ -r "$APPLE_API_KEY" ] || die "cannot read the API key file $APPLE_API_KEY"
+  export APPLE_API_KEY
+  unset APPLE_KEYCHAIN_PROFILE
+  notary_name="API key $APPLE_API_KEY_ID"
+  locked_hint="check the key file, key ID and issuer ID"
+  notary() { xcrun notarytool "$@" --key "$APPLE_API_KEY" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER"; }
+elif [ -n "${APPLE_KEYCHAIN_PROFILE:-}" ]; then
+  notary_name="profile \"$APPLE_KEYCHAIN_PROFILE\""
+  locked_hint="if notarytool found no Keychain item for the profile, the screen was probably locked: unlock the Mac and run this again, or use an API key"
+  notary() { xcrun notarytool "$@" --keychain-profile "$APPLE_KEYCHAIN_PROFILE"; }
+else
+  die "set APPLE_KEYCHAIN_PROFILE, or APPLE_API_KEY with APPLE_API_KEY_ID and APPLE_API_ISSUER"
+fi
 # Only the identity named above signs; no certificate file or other name may.
 unset CSC_LINK CSC_KEY_PASSWORD CSC_NAME CSC_IDENTITY_AUTO_DISCOVERY
-# macOS will not hand out the notary profile while the screen is locked, so keep
-# the display awake until the build ends (a manual lock still stops it).
+# Keep the display from sleeping (and locking) until the build ends; a manual
+# lock still closes the keychain.
 if [ -z "${MYFLAMES_RELEASE_AWAKE:-}" ]; then
   MYFLAMES_RELEASE_AWAKE=1 exec caffeinate -dim sh "$0" "$@"
 fi
-locked_hint="if notarytool found no Keychain item for the profile, the screen was probably locked: unlock the Mac and run this again"
 
 cd "$(dirname "$0")/.."
 [ -x build/backend/myflames-backend/myflames-backend ] || die "build the backend first (scripts/build-backend.py)"
@@ -35,8 +58,7 @@ matches=$(security find-identity -v -p codesigning | grep '"Developer ID Applica
 count=$(printf '%s\n' "$matches" | grep -c . || true)
 [ "$count" -eq 1 ] || die "MYFLAMES_MAC_IDENTITY matches $count Developer ID Application identities; use the SHA-1 hash"
 identity=$(printf '%s\n' "$matches" | awk '{print $2}')
-xcrun notarytool history --keychain-profile "$APPLE_KEYCHAIN_PROFILE" >/dev/null \
-  || die "notarytool profile \"$APPLE_KEYCHAIN_PROFILE\" could not sign in; $locked_hint"
+notary history >/dev/null || die "notarytool could not sign in with the $notary_name; $locked_hint"
 
 version=$(node -p 'require("./package.json").version')
 app=dist/mac-arm64/myflames.app
@@ -64,12 +86,12 @@ rm -rf "$certs"
 node scripts/smoke.cjs "$app"
 
 codesign --force --sign "$identity" --timestamp "$dmg"
-result=$(xcrun notarytool submit "$dmg" --keychain-profile "$APPLE_KEYCHAIN_PROFILE" --wait --output-format json) \
+result=$(notary submit "$dmg" --wait --output-format json) \
   || die "notarytool submit for $name failed (output above); $locked_hint"
 status=$(printf '%s' "$result" | node -e 'let s = ""; process.stdin.on("data", (d) => { s += d; }).on("end", () => console.log(JSON.parse(s).status || ""))')
 if [ "$status" != Accepted ]; then
   echo "$result" >&2
-  die "notarization of $name ended with \"$status\"; xcrun notarytool log <id> --keychain-profile $APPLE_KEYCHAIN_PROFILE names the files"
+  die "notarization of $name ended with \"$status\"; xcrun notarytool log <id> with the $notary_name names the files"
 fi
 xcrun stapler staple "$dmg"
 

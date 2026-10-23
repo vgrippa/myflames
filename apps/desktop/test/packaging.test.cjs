@@ -37,15 +37,25 @@ test('the release DMG name is one the update check matches for Apple Silicon', (
   assert.match(name, label(['arm64', 'aarch64', 'universal']));
 });
 
-test('the release script refuses to start without an identity and a notary profile', { skip: process.platform === 'win32' }, () => {
+test('the release script refuses to start without an identity and notary credentials', { skip: process.platform === 'win32' }, () => {
   assert.equal(pkg.scripts['package:mac:release'], 'sh scripts/package-mac-release.sh');
   const script = path.join(desktop, 'scripts', 'package-mac-release.sh');
   const env = { PATH: process.env.PATH, HOME: process.env.HOME };
-  for (const extra of [{}, { MYFLAMES_MAC_IDENTITY: 'Example (TEAMID)' }, { APPLE_KEYCHAIN_PROFILE: 'profile' },
-    { MYFLAMES_MAC_IDENTITY: 'Developer ID Application: Example (TEAMID)', APPLE_KEYCHAIN_PROFILE: 'profile' }]) {
+  const identity = { MYFLAMES_MAC_IDENTITY: 'Example (TEAMID)' };
+  const missingKey = path.join(desktop, 'test', 'no-such-AuthKey.p8');
+  const onMac = process.platform === 'darwin' && process.arch === 'arm64';
+  for (const [extra, reason] of [
+    [{}, /set MYFLAMES_MAC_IDENTITY/],
+    [{ APPLE_KEYCHAIN_PROFILE: 'profile' }, /set MYFLAMES_MAC_IDENTITY/],
+    [{ MYFLAMES_MAC_IDENTITY: 'Developer ID Application: Example (TEAMID)', APPLE_KEYCHAIN_PROFILE: 'profile' }, /leave the "Developer ID Application: " prefix out/],
+    [identity, /set APPLE_KEYCHAIN_PROFILE, or APPLE_API_KEY/],
+    [{ ...identity, APPLE_API_KEY: missingKey }, /set APPLE_API_KEY_ID and APPLE_API_ISSUER/],
+    [{ ...identity, APPLE_API_KEY: missingKey, APPLE_API_KEY_ID: 'KEYID' }, /set APPLE_API_KEY_ID and APPLE_API_ISSUER/],
+    [{ ...identity, APPLE_API_KEY: missingKey, APPLE_API_KEY_ID: 'KEYID', APPLE_API_ISSUER: 'issuer' }, /cannot read the API key file/],
+  ]) {
     const run = spawnSync('sh', [script], { env: { ...env, ...extra }, encoding: 'utf8' });
     assert.equal(run.status, 2, run.stderr);
-    assert.match(run.stderr, /^package-mac-release: /);
+    assert.match(run.stderr, onMac ? reason : /build on an Apple Silicon Mac/);
     assert.equal(run.stdout, '');
   }
 });
