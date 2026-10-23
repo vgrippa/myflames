@@ -37,6 +37,8 @@ if [ -n "${APPLE_API_KEY:-}" ]; then
   locked_hint="check the key file, key ID and issuer ID"
   notary() { xcrun notarytool "$@" --key "$APPLE_API_KEY" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER"; }
 elif [ -n "${APPLE_KEYCHAIN_PROFILE:-}" ]; then
+  # electron-builder refuses a partial API key before it looks at a profile.
+  unset APPLE_API_KEY APPLE_API_KEY_ID APPLE_API_ISSUER
   notary_name="profile \"$APPLE_KEYCHAIN_PROFILE\""
   locked_hint="if notarytool found no Keychain item for the profile, the screen was probably locked: unlock the Mac and run this again, or use an API key"
   notary() { xcrun notarytool "$@" --keychain-profile "$APPLE_KEYCHAIN_PROFILE"; }
