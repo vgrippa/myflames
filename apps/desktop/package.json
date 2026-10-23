@@ -5,6 +5,7 @@
   "private": true,
   "description": "Local desktop launcher for the myflames workspace",
   "license": "Apache-2.0",
+  "author": "Vinicius Grippa and the myflames contributors",
   "main": "main.cjs",
   "engines": {
     "node": ">=22.12.0"

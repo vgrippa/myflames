@@ -268,9 +268,11 @@ This build is for testing, not a supported platform or a release asset. Known ga
 
 - Quitting stops the backend with `taskkill /T /F`, so a dump, restore or clone
   in progress is not stopped and audited as cancelled first.
-- If the desktop process crashes or is force-killed, the backend and its database
-  clients may keep running: there is no Job Object supervision, and the parent
-  watch in `scripts/backend-entry.py` is POSIX only.
+- If the desktop process crashes or is force-killed, a database client in the
+  middle of a statement keeps running until that statement ends: there is no Job
+  Object supervision, and the parent watch in `scripts/backend-entry.py` is POSIX
+  only. Ending `myflames.exe` in Task Manager during a 120 s query left the
+  backend gone but its `mysql.exe` running the query to the end.
 - Database clients are found only through PATH; the MySQL and MariaDB
   installers' default folders are not searched.
 - The installer and the app are not code signed.

@@ -9,7 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Build an unsigned Windows x64 installer of the desktop app (`myflames-<version>-windows-x64-setup.exe`, NSIS, installed per user without an administrator prompt) with `npm run package:win` in `apps/desktop`. The new `Windows desktop` workflow builds the backend with PyInstaller on a Windows runner, packages the installer, runs the packaged smoke and uploads the installer with its SHA-256 as a workflow artifact. It is a preview for testing, not a release asset: quitting force-stops the backend, a crash can leave it running, database clients are found only through PATH, and the installer is not signed. `build-backend.py` now finds the build venv and the Python license on Windows too.
+- Build an unsigned Windows x64 installer of the desktop app (`myflames-<version>-windows-x64-setup.exe`, NSIS, installed per user without an administrator prompt) with `npm run package:win` in `apps/desktop`. The new `Windows desktop` workflow builds the backend with PyInstaller on a Windows runner, packages the installer, runs the packaged smoke and uploads the installer with its SHA-256 as a workflow artifact. It is a preview for testing, not a release asset: quitting force-stops the backend, after a crash a statement already running keeps running until it ends, database clients are found only through PATH, and the installer is not signed. `build-backend.py` now finds the build venv and the Python license on Windows too. The app names its publisher (Vinicius Grippa and the myflames contributors) in the exe and the uninstall entry instead of Electron's default.
+
+### Fixed
+
+- Commands no longer crash on Windows when their output is redirected or piped and contains characters outside the ANSI code page (query text, table names, the audit log): standard output and error are written as UTF-8, as `-o` files already were. SQL piped to `sql` (`-f -` or stdin) and passwords from `--password-stdin` are read as UTF-8 there instead of the code page, so a non-ASCII password is no longer changed on the way.
+- ProxySQL Query digests evaluates rule patterns on Windows: the pattern worker's lines end with `\r\n` there, so its ready line was never recognized and every pattern was unknown.
+- The error log hint for a MariaDB server on Linux keeps its `/` path when myflames runs on Windows.
+- `sql` names the rows in its warning note ("Statement 1: 1 row(s); 1 warning(s)." instead of "None") and `-q` suppresses that note like the others.
+- Shortcut hints read Ctrl+K, Ctrl+Alt+R and Ctrl+Alt+I on Windows and Linux instead of ⌘K, ⌥⌘R and ⌥⌘I.
+- Windows no longer shows a scroll bar down the whole window: an idle status line hung one pixel below it. The 48 px icon rail hides its scroll bar on short windows (it still scrolls).
 
 ## [3.2.0] - 2026-10-23
 

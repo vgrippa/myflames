@@ -38,6 +38,14 @@ test('the release DMG name is one the update check matches for Apple Silicon', (
   assert.match(name, label(['arm64', 'aarch64', 'universal']));
 });
 
+test('the app names its publisher as NOTICE does, not Electron\'s default', () => {
+  // electron-builder takes the Windows CompanyName, the uninstall entry's
+  // publisher and the copyright line from author; without it the exe says GitHub, Inc.
+  // A Windows checkout may have CRLF line endings.
+  const notice = fs.readFileSync(path.join(desktop, '..', '..', 'NOTICE'), 'utf8').replace(/\r\n/g, '\n');
+  assert.ok(notice.includes('Copyright 2026 ' + pkg.author + '\n'), 'author must match the NOTICE copyright holder');
+});
+
 test('Windows builds an unsigned x64 NSIS installer the update check matches', () => {
   assert.deepEqual(config.win.target, [{ target: 'nsis', arch: ['x64'] }]);
   assert.equal(config.win.signtoolOptions, undefined);
