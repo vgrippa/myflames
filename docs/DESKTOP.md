@@ -4,20 +4,21 @@ The desktop app uses Electron to host the existing React and TypeScript
 workspace, with Python providing the same engine and CLI. Download size is
 secondary to consistent rendering and reliable native integration.
 
-The workspace ships only as this macOS app (Apple Silicon, signed with a
-Developer ID and notarized by Apple). There is
+The workspace ships as this macOS app (Apple Silicon, signed with a
+Developer ID and notarized by Apple), with a Windows x64 installer as an
+unsigned preview. There is
 no browser version, and `myflames ui` is deprecated; the app uses it
 internally to start its backend. The Python CLI (`pip install myflames`) remains
-for the command-line tools. Windows and Linux distribution is deferred; an
-unsigned Windows x64 installer is built in CI for testing only
-([preview build](../apps/desktop/README.md#build-the-windows-installer-preview)).
+for the command-line tools. Linux distribution is deferred. The Windows
+installer is built and smoke-tested in CI and attached to releases unsigned
+([Windows build](../apps/desktop/README.md#build-the-windows-installer-preview)).
 
 ## Install and first launch
 
-Download `myflames-3.2.0-macos-arm64.dmg` from the GitHub release, open it and
+Download `myflames-3.3.0-macos-arm64.dmg` from the GitHub release, open it and
 drag `myflames.app` to Applications. The app is signed with a Developer ID and
 notarized by Apple, so it opens from Finder like any other downloaded app.
-Releases before 3.2.0 were unsigned zips: Control-click those and choose Open
+Releases before 3.3.0 were unsigned zips: Control-click those and choose Open
 the first time. App data lives
 under `~/Library/Application Support/myflames-desktop`, separate from the CLI's
 `~/.myflames`. The minimum window size is 720 by 520 pixels.

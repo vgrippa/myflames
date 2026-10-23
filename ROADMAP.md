@@ -12,12 +12,14 @@ It stays a single project: pure-Python stdlib core, with heavy integrations behi
 
 ## Current workstation capabilities
 
-The workspace ships only as the macOS desktop app (3.2.0): an Apple Silicon
+The workspace ships as the macOS desktop app (3.3.0): an Apple Silicon
 `.app` that bundles Python and opens directly from Finder, signed with a
 Developer ID, notarized by Apple and attached to the GitHub release as
-`myflames-3.2.0-macos-arm64.dmg`. The browser launch (`myflames ui`) is
-deprecated and the Python CLI remains for command-line use. Automatic updates
-and other platforms remain release work.
+`myflames-3.3.0-macos-arm64.dmg`. A Windows x64 installer
+(`myflames-3.3.0-windows-x64-setup.exe`) ships beside it as an unsigned preview.
+The browser launch (`myflames ui`) is deprecated and the Python CLI remains for
+command-line use. Windows code signing and crash supervision, automatic updates
+and Linux remain release work.
 The app is Electron around the existing React/TypeScript workspace and Python
 engine. The
 working UI includes the new compact shell, command palette, full-width Server

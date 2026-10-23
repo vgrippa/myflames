@@ -1,7 +1,7 @@
 {
   "name": "myflames-desktop",
   "productName": "myflames",
-  "version": "3.2.0",
+  "version": "3.3.0",
   "private": true,
   "description": "Local desktop launcher for the myflames workspace",
   "license": "Apache-2.0",
