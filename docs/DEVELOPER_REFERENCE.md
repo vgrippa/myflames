@@ -60,9 +60,16 @@ This is the detailed contract per feature; [AGENTS.md](../AGENTS.md) has the rul
 The optional Electron development host is in `apps/desktop`. It starts its own
 Python server and loads the one-use launch URL into a sandboxed window. It uses
 separate app data and retains the same API authentication and write contracts.
-The unsigned Apple Silicon package bundles its Python backend and opens through
-Finder. Build with `package:mac`; validate the delivered `.app` using the packaged
-smoke, which removes system Python from the startup path and checks owned cleanup.
+The Apple Silicon package bundles its Python backend and opens through Finder.
+Build with `package:mac` (unsigned, for local use) or `package:mac:release`
+(`scripts/package-mac-release.sh`: Developer ID signing under the hardened runtime
+with only `com.apple.security.cs.allow-jit` from `entitlements.mac.plist`,
+notarization and stapling of the app and the DMG, Gatekeeper checks, and the
+150 MiB update download limit; the certificate comes from `MYFLAMES_MAC_IDENTITY`
+and the notary sign-in from `APPLE_KEYCHAIN_PROFILE`, or from an App Store Connect
+API key in `APPLE_API_KEY`, `APPLE_API_KEY_ID` and `APPLE_API_ISSUER`). Validate the delivered
+`.app` using the packaged smoke, which removes system Python from the startup path
+and checks owned cleanup.
 Quitting sends SIGINT to the backend's process group and waits 5 s; `backend.cjs`
 then kills the dump, restore and clone tool groups the backend listed in its
 `runtime/tool-groups-<launch id>.json` file, kills the backend's group and stops

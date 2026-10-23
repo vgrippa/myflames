@@ -20,8 +20,10 @@
   "mac": {
     "target": ["dir"], "category": "public.app-category.developer-tools",
     "icon": "../../docs/brand/myflames-icon-v3.png",
-    "identity": null, "notarize": false
+    "identity": null, "notarize": false,
+    "hardenedRuntime": true, "entitlements": "entitlements.mac.plist", "entitlementsInherit": "entitlements.mac.plist"
   },
+  "dmg": { "artifactName": "${productName}-${version}-macos-${arch}.${ext}", "writeUpdateInfo": false },
   "win": { "target": ["dir"] },
   "linux": { "target": ["dir"], "category": "Development" }
 }

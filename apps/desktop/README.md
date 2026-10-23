@@ -5,9 +5,10 @@ starts its own Python backend. The workspace ships only as this macOS app; there
 is no browser version and `myflames ui` is deprecated (the launcher still uses it
 as the backend entry point). The Python CLI remains available for command-line use.
 
-The implementation and verification target is macOS on Apple Silicon. An
-unsigned `.app` bundles Electron, Python and the workspace, and opens directly
-from Finder. Windows and Linux distribution are deferred, and the Windows notes
+The implementation and verification target is macOS on Apple Silicon. The
+`.app` bundles Electron, Python and the workspace, and opens directly from
+Finder. Releases are signed with a Developer ID and notarized; local builds are
+not. Windows and Linux distribution are deferred, and the Windows notes
 below describe unfinished groundwork, not a supported platform.
 The window opens at 1440 by 960 pixels and cannot be smaller than 720 by 520.
 
@@ -114,9 +115,10 @@ npm run package:dir
 `build-backend.py` collects myflames Python modules and package assets. The builder
 copies that directory into the app resources, and a packaged app uses that
 backend rather than a system Python. Build on each target OS and architecture.
-The package directory is scaffolding, not a signed or notarized installer.
-Signing, notarization, updater trust, platform icons, dependency licensing,
-Windows process supervision and packaged platform validation remain release work.
+The package directory is scaffolding; the signed, notarized DMG comes from
+`package:mac:release` ([Build the signed release](#build-the-signed-release)).
+Updater trust, platform icons, dependency licensing, Windows process supervision
+and packaged platform validation remain release work.
 Database clients are not bundled. On macOS the launcher appends standard
 Homebrew, Oracle MySQL and MacPorts client locations to the backend PATH so
 Finder launches can discover installed tools without reading shell startup files.
@@ -138,10 +140,8 @@ node apps/desktop/scripts/smoke.cjs apps/desktop/dist/mac-arm64/myflames.app
 
 `npm run build:backend` runs the same `scripts/build-backend.py` with `python3`;
 use the virtual environment's Python as shown so PyInstaller is available.
-`package:mac` produces the Apple Silicon `.app` only. To publish it, zip the
-bundle as `myflames-<version>-macos-arm64.zip` (for example with
-`ditto -c -k --keepParent myflames.app myflames-3.1.0-macos-arm64.zip`) and attach
-it to the GitHub release.
+`package:mac` produces the unsigned Apple Silicon `.app` only, for local use.
+Releases attach the signed DMG instead ([Build the signed release](#build-the-signed-release)).
 
 Copy `apps/desktop/dist/mac-arm64/myflames.app` to your Applications folder and
 double-click it (Control-click and Open the first time, because the app is
@@ -151,7 +151,8 @@ separate from development data and the CLI workspace. Connections must be added
 there independently.
 
 The macOS configuration explicitly disables Developer ID signing and
-notarization. Apple Silicon executables retain local ad-hoc signatures required
+notarization for local builds; only the release script below turns them on.
+Apple Silicon executables retain local ad-hoc signatures required
 to run; these do not certify a publisher. The app includes the project's LICENSE
 and NOTICE under `Contents/Resources/licenses`, with the Electron, Chromium and
 bundled Python license notices beside them, and the original inspiration credit
@@ -169,3 +170,63 @@ authentication, reload, renderer isolation, command search, keyword completion
 and owned-process shutdown. It does not connect to a database. Packaged test mode
 requires both `--smoke` and `MYFLAMES_DESKTOP_SMOKE=1`; normal Finder launches do
 not enter it.
+
+## Build the signed release
+
+Releases ship `myflames-<version>-macos-arm64.dmg`, signed with a Developer ID
+and notarized by Apple, so it opens from Finder without Control-click or
+`xattr`. You need a Developer ID Application certificate in the login keychain
+(`security find-identity -v -p codesigning` lists it) and a notarytool profile:
+
+```sh
+xcrun notarytool store-credentials myflames-notary --apple-id <Apple ID> --team-id <Team ID>
+```
+
+It asks for an app-specific password created at account.apple.com (Sign-In and
+Security), not the Apple Account password. Build the workspace and the backend
+as above, then from the repository root:
+
+```sh
+MYFLAMES_MAC_IDENTITY=<certificate SHA-1 hash> APPLE_KEYCHAIN_PROFILE=myflames-notary \
+  npm --prefix apps/desktop run package:mac:release
+```
+
+`MYFLAMES_MAC_IDENTITY` may also be the certificate's name without the
+`Developer ID Application: ` prefix; the script refuses unless exactly one
+Developer ID Application identity matches and the profile signs in, and after
+signing it refuses a build whose app or backend carries another certificate
+(electron-builder passes the signer the certificate's name, and the signer takes
+the first certificate with that name, so remove a renewed certificate's
+predecessor from the keychain). It overrides
+the unsigned configuration for this build only: electron-builder signs every
+binary, the PyInstaller backend included, under the hardened runtime with
+`entitlements.mac.plist` (only `com.apple.security.cs.allow-jit`), notarizes and
+staples the app, and builds the DMG. The script then runs the packaged smoke,
+signs, notarizes and staples the DMG, checks that Gatekeeper accepts the app,
+the DMG and the app inside the mounted DMG as notarized, refuses a DMG over the
+150 MiB in-app update download limit (`myflames/app_update.py`), and writes
+`<name>.sha256` beside it in `dist/`. Attach both to the GitHub release.
+
+Notarization uploads the build to Apple and usually takes a few minutes per
+submission. When Apple rejects one, `xcrun notarytool log <id> --keychain-profile
+myflames-notary` names the files.
+
+macOS does not hand out a notarytool profile while the screen is locked
+(`notarytool` then reports that no Keychain item was found), so a build that
+uses `APPLE_KEYCHAIN_PROFILE` needs the Mac unlocked until it ends; the script
+keeps the display awake, but a manual lock still stops it. For a build that may
+run unattended, create an App Store Connect API key (Users and Access >
+Integrations > Team Keys, with App Manager access; Apple lets you download the
+`AuthKey_<id>.p8` file once), keep that file readable only by you, and pass
+the key instead of `APPLE_KEYCHAIN_PROFILE`:
+
+```sh
+MYFLAMES_MAC_IDENTITY=<certificate SHA-1 hash> APPLE_API_KEY=/absolute/path/AuthKey_<id>.p8 \
+  APPLE_API_KEY_ID=<key ID> APPLE_API_ISSUER=<issuer ID> \
+  npm --prefix apps/desktop run package:mac:release
+```
+
+A signature made before the certificate
+expires keeps verifying afterwards because it carries Apple's timestamp; new
+builds need a valid certificate. The repository names no certificate or profile;
+both come from the environment.

@@ -4,7 +4,8 @@ The desktop app uses Electron to host the existing React and TypeScript
 workspace, with Python providing the same engine and CLI. Download size is
 secondary to consistent rendering and reliable native integration.
 
-The workspace ships only as this macOS app (unsigned, Apple Silicon). There is
+The workspace ships only as this macOS app (Apple Silicon, signed with a
+Developer ID and notarized by Apple). There is
 no browser version, and `myflames ui` is deprecated; the app uses it
 internally to start its backend. The Python CLI (`pip install myflames`) remains
 for the command-line tools. Windows and Linux packaging and validation are
@@ -12,11 +13,11 @@ deferred.
 
 ## Install and first launch
 
-Download `myflames-3.1.1-macos-arm64.zip` from the GitHub release, unzip it and
-move `myflames.app` to Applications. Because the app has no Developer ID
-signature or notarization, macOS blocks the first launch. Control-click the app
-and choose Open, or use System Settings > Privacy & Security > Open Anyway, or
-run `xattr -dr com.apple.quarantine /Applications/myflames.app`. App data lives
+Download `myflames-3.2.0-macos-arm64.dmg` from the GitHub release, open it and
+drag `myflames.app` to Applications. The app is signed with a Developer ID and
+notarized by Apple, so it opens from Finder like any other downloaded app.
+Releases before 3.2.0 were unsigned zips: Control-click those and choose Open
+the first time. App data lives
 under `~/Library/Application Support/myflames-desktop`, separate from the CLI's
 `~/.myflames`. The minimum window size is 720 by 520 pixels.
 
@@ -101,11 +102,14 @@ are not defined by this development foundation. No payment or entitlement
 checks have been added.
 
 Bundle the Python engine with PyInstaller on the target operating system (macOS only for now).
-The unsigned Apple Silicon `.app` bundles Python and opens directly from Finder;
-see [build instructions](../apps/desktop/README.md#build-an-unsigned-macos-app).
-It has no Developer ID signature or notarization. Before distributing
-official builds, complete native packaging tests, code signing and macOS
-notarization, dependency notices, a verified update channel, and a deliberate
+The Apple Silicon `.app` bundles Python and opens directly from Finder.
+Releases are signed with a Developer ID under the hardened runtime, notarized
+and stapled, and ship in a DMG that is signed, notarized and stapled too (see
+the [signed release build](../apps/desktop/README.md#build-the-signed-release));
+local builds stay unsigned
+([build instructions](../apps/desktop/README.md#build-an-unsigned-macos-app)).
+Before distributing official builds more widely, complete native packaging
+tests, dependency notices, a verified update channel, and a deliberate
 MySQL/MariaDB client distribution policy. Installed clients are discovered in
 standard macOS locations as well as PATH. Keep the Python CLI
 available independently.
