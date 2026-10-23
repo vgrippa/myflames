@@ -131,7 +131,8 @@ test('data paths reject symlinks into the protected CLI store', () => {
     fs.symlinkSync(path.join(directory, '.myflames'), path.join(directory, 'alias'), 'junction');
     assert.throws(() => dataPath(path.join(directory, '.myflames'), directory), /separate/);
     assert.throws(() => dataPath(path.join(directory, 'alias', 'new-child'), directory), /separate/);
-    assert.equal(dataPath(path.join(directory, 'desktop'), directory), path.join(fs.realpathSync(directory), 'desktop'));
+    // dataPath uses the native realpath, which also expands Windows 8.3 short names.
+    assert.equal(dataPath(path.join(directory, 'desktop'), directory), path.join(fs.realpathSync.native(directory), 'desktop'));
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 test('Windows tree cleanup failure is reported even when direct-child fallback exits', async () => {
@@ -231,7 +232,8 @@ test('stop is bounded and refuses to claim success while a tool group survives',
     assert.ok(f.signals.some(([pid, signal]) => pid === 12345 && signal === 'SIGKILL'));
   } finally { r.cleanup(); }
 });
-test('unexpected tool group records are never signalled and fail the shutdown check', async () => {
+// Tool group records are POSIX only: Windows launches never pass one (below).
+test('unexpected tool group records are never signalled and fail the shutdown check', { skip: process.platform === 'win32' }, async () => {
   const fs = require('node:fs');
   const { readToolGroups } = require('../backend.cjs');
   const r = runtimeFile();
@@ -257,7 +259,7 @@ test('unexpected tool group records are never signalled and fail the shutdown ch
     assert.deepEqual(f.signals, [[12345, 'SIGINT'], [12345, 'SIGKILL']]);
   } finally { r.cleanup(); }
 });
-test('each launch gets a fresh record in a private runtime folder; earlier records are dropped', () => {
+test('each launch gets a fresh record in a private runtime folder; earlier records are dropped', { skip: process.platform === 'win32' }, () => {
   const fs = require('node:fs'), os = require('node:os');
   const { toolGroupsFile } = require('../backend.cjs');
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-runtime-'));
