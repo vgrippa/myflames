@@ -8,8 +8,9 @@ The workspace ships only as this macOS app (Apple Silicon, signed with a
 Developer ID and notarized by Apple). There is
 no browser version, and `myflames ui` is deprecated; the app uses it
 internally to start its backend. The Python CLI (`pip install myflames`) remains
-for the command-line tools. Windows and Linux packaging and validation are
-deferred.
+for the command-line tools. Windows and Linux distribution is deferred; an
+unsigned Windows x64 installer is built in CI for testing only
+([preview build](../apps/desktop/README.md#build-the-windows-installer-preview)).
 
 ## Install and first launch
 
@@ -101,7 +102,8 @@ signed releases, updates and support. Pricing and the free/paid feature matrix
 are not defined by this development foundation. No payment or entitlement
 checks have been added.
 
-Bundle the Python engine with PyInstaller on the target operating system (macOS only for now).
+Bundle the Python engine with PyInstaller on the target operating system (macOS,
+and Windows x64 for the preview installer).
 The Apple Silicon `.app` bundles Python and opens directly from Finder.
 Releases are signed with a Developer ID under the hardened runtime, notarized
 and stapled, and ship in a DMG that is signed, notarized and stapled too (see
@@ -111,7 +113,7 @@ local builds stay unsigned
 Before distributing official builds more widely, complete native packaging
 tests, dependency notices, a verified update channel, and a deliberate
 MySQL/MariaDB client distribution policy. Installed clients are discovered in
-standard macOS locations as well as PATH. Keep the Python CLI
+standard macOS locations, and the MySQL and MariaDB installers' folders on Windows, as well as PATH. Keep the Python CLI
 available independently.
 
 Electron renderer code must stay sandboxed, with context isolation and no Node

@@ -1,0 +1,78 @@
+name: Windows desktop
+
+# Builds the unsigned Windows x64 installer (an NSIS .exe) from the Electron
+# launcher and a PyInstaller backend, runs the packaged smoke on the runner and
+# uploads the installer with its checksum as a workflow artifact. PyInstaller
+# cannot cross-compile, so the Windows backend is built here. This is a preview
+# build for testing, not a release asset (see apps/desktop/README.md).
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - "apps/desktop/**"
+      - "myflames/**"
+      - ".github/workflows/windows-desktop.yml"
+  pull_request:
+    branches: [master]
+    paths:
+      - "apps/desktop/**"
+      - "myflames/**"
+      - ".github/workflows/windows-desktop.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - name: Build the backend
+        run: |
+          python -m venv local/desktop-build-venv
+          local/desktop-build-venv/Scripts/python.exe -m pip install -r apps/desktop/requirements-build.txt
+          local/desktop-build-venv/Scripts/python.exe apps/desktop/scripts/build-backend.py
+          apps/desktop/build/backend/myflames-backend/myflames-backend.exe --version
+      - name: Install launcher dependencies
+        working-directory: apps/desktop
+        run: npm ci
+      - name: Launcher tests
+        working-directory: apps/desktop
+        run: npm test
+      - name: Build the installer
+        working-directory: apps/desktop
+        run: npm run package:win
+      # The unpacked app is what the installer contains.
+      - name: Packaged smoke
+        working-directory: apps/desktop
+        run: npm run smoke -- dist/win-unpacked
+      - name: Checksum
+        working-directory: apps/desktop/dist
+        run: for file in *-setup.exe; do sha256sum "$file" > "$file.sha256"; cat "$file.sha256"; done
+      - uses: actions/upload-artifact@v7
+        with:
+          name: myflames-windows-x64
+          path: |
+            apps/desktop/dist/*-setup.exe
+            apps/desktop/dist/*-setup.exe.sha256
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: windows-smoke-screenshot
+          path: apps/desktop/smoke-results/desktop.png
+          if-no-files-found: ignore

@@ -177,7 +177,7 @@ if '--version' in sys.argv:
     print(versions[name]); sys.exit(0)
 assert sys.argv[1].startswith('--defaults-file=')
 cnf = sys.argv[1].split('=',1)[1]
-config = Path(cnf).read_text()
+config = Path(cnf).read_text(encoding="utf-8")
 stdin = sys.stdin.read()
 record = {'name':name, 'argv':sys.argv, 'env':dict(os.environ), 'cnf':cnf,
           'cnf_mode':stat.S_IMODE(os.stat(cnf).st_mode), 'password_seen':'password=' in config,
@@ -186,13 +186,13 @@ record = {'name':name, 'argv':sys.argv, 'env':dict(os.environ), 'cnf':cnf,
           'sql_on_argv':any('CLONE ' in arg or 'SELECT ' in arg for arg in sys.argv)}
 with (root/'calls.jsonl').open('a') as log:
     log.write(json.dumps(record)+'\n')
-mode = (root/'mode').read_text() if (root/'mode').exists() else 'ok'
+mode = (root/'mode').read_text(encoding="utf-8") if (root/'mode').exists() else 'ok'
 if mode == 'echo':
     print("secret'with spaces donor'private IDENTIFIED BY 'unknown-secret'", file=sys.stderr, flush=True)
 if mode == 'fail':
     print('failure',file=sys.stderr); sys.exit(3)
 if name == 'mysqlsh' and 'check-for-server-upgrade' in sys.argv:
-    print((root/'upgrade.json').read_text()); sys.exit(0)
+    print((root/'upgrade.json').read_text(encoding="utf-8")); sys.exit(0)
 if mode == 'cr':
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     print('42% copied',end='\r',file=sys.stderr,flush=True)
@@ -324,7 +324,7 @@ class ControlTransportTests(unittest.TestCase):
                     connection['socket'] = socket_path
                 with self.subTest(tool=name, socket=socket_path), \
                         lc._credentials(connection, tool) as (argv, env):
-                    content = Path(argv[1].split('=', 1)[1]).read_text()
+                    content = Path(argv[1].split('=', 1)[1]).read_text(encoding="utf-8")
                     self.assertIn('host="localhost"\n', content)
                     if name == 'mysqlsh':
                         self.assertNotIn('protocol=', content)  # Shell has no such option.
@@ -363,7 +363,7 @@ class LifecycleTests(unittest.TestCase):
             tool = self.bin / name
             tool.write_text('#!' + sys.executable + '\n' + FAKE_TOOL)
             tool.chmod(0o700)
-        (self.bin / 'upgrade.json').write_text((FIXTURES / 'mysqlsh-upgrade-schema.json').read_text())
+        (self.bin / 'upgrade.json').write_text((FIXTURES / 'mysqlsh-upgrade-schema.json').read_text(encoding="utf-8"))
         self.tools = lc.detect_tools(path=str(self.bin), common_dirs=())
         self.detect = mock.patch.object(lc, 'detect_tools', return_value=self.tools)
         self.detect.start()
@@ -389,7 +389,7 @@ class LifecycleTests(unittest.TestCase):
 
     def calls(self):
         path = self.bin / 'calls.jsonl'
-        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()] if path.exists() else []
 
     def make_dump(self, engine='mysql', shell=False):
         conn = ReplayConnection(server_variables(engine))
@@ -442,7 +442,7 @@ class LifecycleTests(unittest.TestCase):
         path = None
         with lc._credentials(connection, dict(self.tools['tools']['mysql'], name='mysql')) as (argv, env):
             path = argv[1].split('=', 1)[1]
-            content = Path(path).read_text()
+            content = Path(path).read_text(encoding="utf-8")
             self.assertIn('password="a\\"b\\\\c\\nd\\r\\t#;="', content)
             self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
             self.assertNotIn('MYSQL_PWD', env)
@@ -487,7 +487,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertFalse(self.calls())
 
     def native_live(self, name, deny=None):
-        data = json.loads((FIXTURES / name).read_text())
+        data = json.loads((FIXTURES / name).read_text(encoding="utf-8"))
         conn = StrictReplay(data['calls'] + data.get('synthetic_calls', []), deny)
         return lc.upgrade_check(conn, data['target'], CONNECTION, {'tools': {}}), conn
 
@@ -530,7 +530,7 @@ class LifecycleTests(unittest.TestCase):
 
     def test_native_subset_57_source_gates(self):
         """Hand-authored 5.7 replay (no 5.7 server was run): the 5.7-only checks run and 8.0 words count."""
-        replay = json.loads((FIXTURES / 'native-replay.json').read_text())['responses']
+        replay = json.loads((FIXTURES / 'native-replay.json').read_text(encoding="utf-8"))['responses']
         conn = ReplayConnection(server_variables(version='5.7.44'), replay=replay)
         report = lc.upgrade_check(conn, '8.0.40', CONNECTION, {'tools': {}})
         checks = {c['id']: c for c in report['checks']}
@@ -547,7 +547,7 @@ class LifecycleTests(unittest.TestCase):
 
     def test_reserved_words_match_live_keyword_lists(self):
         """RESERVED_SINCE reproduces the differences between information_schema.KEYWORDS read live."""
-        servers = json.loads((FIXTURES / 'keywords-reserved.json').read_text())['servers']
+        servers = json.loads((FIXTURES / 'keywords-reserved.json').read_text(encoding="utf-8"))['servers']
         versions = sorted(servers, key=lc.version_tuple)
         for i, old in enumerate(versions):
             for new in versions[i + 1:]:
@@ -563,7 +563,7 @@ class LifecycleTests(unittest.TestCase):
 
     def test_shell_json_recorded_live(self):
         """Raw mysqlsh 9.6.0 output for MySQL 8.0.46 -> 8.4.0 (the same seeded server)."""
-        report = lc.parse_upgrade_json((FIXTURES / 'shell-upgrade-8.0.46-to-8.4.0.json').read_text())
+        report = lc.parse_upgrade_json((FIXTURES / 'shell-upgrade-8.0.46-to-8.4.0.json').read_text(encoding="utf-8"))
         self.assertEqual(report['counts'], {'error': 2, 'warning': 27, 'notice': 2})
         self.assertEqual(report['status'], 'issues_found')
         checks = {c['id']: c for c in report['checks']}
@@ -723,7 +723,7 @@ class LifecycleTests(unittest.TestCase):
         Path(self.output, 'keep').write_text('original')
         with self.assertRaises(lc.Refused):
             lc.prepare_dump(self.conn, CONNECTION, self.output, tools=self.native_tools())
-        self.assertEqual(Path(self.output, 'keep').read_text(), 'original')
+        self.assertEqual(Path(self.output, 'keep').read_text(encoding="utf-8"), 'original')
         link = self.root / 'link'
         link.symlink_to(self.output)
         with self.assertRaises(lc.Refused):
@@ -755,7 +755,7 @@ class LifecycleTests(unittest.TestCase):
             result = job.wait(8)
         self.assertIsNotNone(process.poll())
         self.assertEqual(result['state'], 'cancelled', result)
-        self.assertFalse(json.loads(Path(self.output, lc.MANIFEST).read_text())['complete'])
+        self.assertFalse(json.loads(Path(self.output, lc.MANIFEST).read_text(encoding="utf-8"))['complete'])
         self.assertEqual(self.store.audit_records()[0]['status'], 'unknown')
         self.assert_secret_transport(self.calls()[0])
         self.assertFalse(job.thread.is_alive())
@@ -970,7 +970,7 @@ class LifecycleTests(unittest.TestCase):
             result = lc.restore_job(CONNECTION, plan, True, plan['target'], self.audit(), factory=lambda **kw: target, start=False).run()
         self.assertNotEqual(result['state'], 'done')
         self.assertFalse((self.bin/'restored').exists())
-        data = json.loads(Path(self.output, lc.MANIFEST).read_text())
+        data = json.loads(Path(self.output, lc.MANIFEST).read_text(encoding="utf-8"))
         data['complete'] = False
         Path(self.output, lc.MANIFEST).write_text(json.dumps(data))
         with self.assertRaises(lc.Refused):
@@ -1284,7 +1284,7 @@ class LifecycleTests(unittest.TestCase):
             result = lc.dump_job(CONNECTION, plan, True, plan['target'], self.audit('dump'),
                                  factory=lambda **kw: self.conn, start=False).run()
         self.assertEqual(result['state'], 'failed')
-        self.assertFalse(json.loads(Path(self.output, lc.MANIFEST).read_text())['complete'])
+        self.assertFalse(json.loads(Path(self.output, lc.MANIFEST).read_text(encoding="utf-8"))['complete'])
         self.assertEqual(self.store.audit_records()[0]['status'], 'error')
         self.assert_secret_transport(self.calls()[0])
 
@@ -1391,7 +1391,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertIsNone(job.snapshot()['progress'])
         self.assertEqual(json.loads(json.dumps(job.snapshot())), job.snapshot())
         if sys.version_info >= (3, 8):
-            ast.parse(Path(lc.__file__).read_text(), feature_version=7)
+            ast.parse(Path(lc.__file__).read_text(encoding="utf-8"), feature_version=7)
         with self.assertRaises(ValueError):
             lc.clone_statement(dict(CONNECTION, password='a\\b'), redact=False)
 
@@ -1400,7 +1400,7 @@ class LifecycleTests(unittest.TestCase):
     def replace_sql_backup(self):
         Path(self.output, 'dump.sql').write_text('DROP DATABASE unexpected;\n')
         path = Path(self.output, lc.MANIFEST)
-        manifest = json.loads(path.read_text())
+        manifest = json.loads(path.read_text(encoding="utf-8"))
         manifest['files'] = lc._file_records(self.output)
         path.write_text(json.dumps(manifest))
 
@@ -1446,7 +1446,7 @@ class LifecycleTests(unittest.TestCase):
                 staged_paths.append(path)
                 self.assertNotEqual(os.path.realpath(path), os.path.realpath(self.output))
                 Path(self.output, 'app@t.tsv').write_text('replacement')
-                self.assertEqual(Path(path, 'app@t.tsv').read_text(), '1\n2\n')
+                self.assertEqual(Path(path, 'app@t.tsv').read_text(encoding="utf-8"), '1\n2\n')
             return invoke(job, tool, connection, args, script, **kwargs)
         with mock.patch.object(lc, '_invoke', side_effect=swapped):
             result = lc.restore_job(CONNECTION, plan, True, plan['target'], self.audit(),
@@ -1499,7 +1499,7 @@ class LifecycleTests(unittest.TestCase):
     def test_review_instance_sql_requires_mysql_drop_and_acknowledgement(self):
         self.make_dump()
         path = Path(self.output, lc.MANIFEST)
-        manifest = json.loads(path.read_text())
+        manifest = json.loads(path.read_text(encoding="utf-8"))
         manifest['scope'] = {'schemas': [], 'tables': []}
         path.write_text(json.dumps(manifest))
         target, tools = self.target(), self.native_tools()
@@ -1639,7 +1639,7 @@ class LifecycleTests(unittest.TestCase):
         with mock.patch.object(lc, 'detect_tools', return_value=tools), mock.patch.object(lc, '_file_records', side_effect=cancel_hash):
             result = owner.run()
         self.assertEqual(result['state'], 'cancelled')
-        self.assertFalse(json.loads(Path(self.output, lc.MANIFEST).read_text())['complete'])
+        self.assertFalse(json.loads(Path(self.output, lc.MANIFEST).read_text(encoding="utf-8"))['complete'])
 
     def test_review_windows_force_cancel_has_no_sigkill_and_kills_tree(self):
         job = lc.LifecycleJob('test', lambda j: None)
@@ -1679,7 +1679,7 @@ class LifecycleTests(unittest.TestCase):
     def listed_groups(path):
         if not os.path.exists(path):
             return None
-        value = json.loads(Path(path).read_text())
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
         assert value['schema_version'] == 'tool-groups-1.0', value
         return value['groups']
 
@@ -1753,7 +1753,7 @@ class LifecycleTests(unittest.TestCase):
     @unittest.skipUnless(os.name == 'posix', 'tool process groups are POSIX')
     def test_closing_workspace_mid_dump_stops_tool_group_before_slow_cleanup(self):
         self.close_workspace_during('dump')
-        self.assertFalse(json.loads(Path(self.output, lc.MANIFEST).read_text())['complete'])
+        self.assertFalse(json.loads(Path(self.output, lc.MANIFEST).read_text(encoding="utf-8"))['complete'])
 
     @unittest.skipUnless(os.name == 'posix', 'tool process groups are POSIX')
     def test_closing_workspace_mid_restore_stops_tool_and_its_server_session(self):
@@ -1766,7 +1766,7 @@ class LifecycleTests(unittest.TestCase):
         import subprocess
         path = self.private_groups_file()
         groups = lc.ToolGroups(path)
-        self.assertEqual(json.loads(Path(path).read_text()), {'schema_version': 'tool-groups-1.0', 'groups': []})
+        self.assertEqual(json.loads(Path(path).read_text(encoding="utf-8")), {'schema_version': 'tool-groups-1.0', 'groups': []})
         self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
         child = subprocess.Popen([sys.executable, '-c', 'import signal, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
                                   'print("ready", flush=True)\ntime.sleep(60)'],
@@ -1829,7 +1829,7 @@ class LifecycleTests(unittest.TestCase):
         with mock.patch.object(groups, '_write', side_effect=OSError('read-only')), \
                 mock.patch.object(lc.os, 'unlink', side_effect=PermissionError('read-only')):
             groups.discard(4242)
-        self.assertEqual(Path(path).read_text(), '')
+        self.assertEqual(Path(path).read_text(encoding="utf-8"), '')
 
     def test_tool_start_is_serialized_with_shutdown(self):
         """A start in progress is listed before shutdown's snapshot; none starts afterwards."""
@@ -1967,7 +1967,7 @@ class LifecycleTests(unittest.TestCase):
             records = lc._file_records(self.output)
         self.assertIn('app/chunk.tsv', [r['path'] for r in records])
         path = Path(self.output, lc.MANIFEST)
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
         data['files'] = records
         path.write_text(json.dumps(data))
         self.assertEqual(lc.read_manifest(self.output)['files'], records)
@@ -1979,7 +1979,7 @@ class LifecycleTests(unittest.TestCase):
 
     def test_review_removed_persisted_variables_independent_of_running_source(self):
         for source in ('DYNAMIC', 'COMPILED'):
-            data = json.loads((FIXTURES / 'native-8.0.46-to-8.4.0.json').read_text())
+            data = json.loads((FIXTURES / 'native-8.0.46-to-8.4.0.json').read_text(encoding="utf-8"))
             conn = StrictReplay(data['calls'] + data['synthetic_calls'])
             saved_sql = data['synthetic_calls'][0]['sql']
             conn.answers[saved_sql] = 'default_authentication_plugin\n'
@@ -2068,7 +2068,7 @@ class LifecycleTests(unittest.TestCase):
             for mode in (None, 'DISABLED', 'PREFERRED', 'REQUIRED', 'VERIFY_IDENTITY'):
                 with self.subTest(tool=name, mode=mode):
                     with lc._credentials(dict(CONNECTION, ssl_mode=mode), tool) as (argv, env):
-                        content = Path(argv[1].split('=', 1)[1]).read_text()
+                        content = Path(argv[1].split('=', 1)[1]).read_text(encoding="utf-8")
                     self.assertNotIn('get-server-public-key', content)
                     self.assertTrue(argv[1].startswith('--defaults-file='))
 

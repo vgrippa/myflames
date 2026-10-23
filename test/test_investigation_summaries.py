@@ -31,7 +31,7 @@ class InvestigationSummaries(unittest.TestCase):
     def save(self, key, engine='mysql', padding=0, **fields):
         # Summaries never depend on the plan's engine; both are real parser inputs.
         name = 'mysql-explain-json-sample.json' if engine == 'mysql' else 'mariadb-explain-block-nl-join.json'
-        raw = (TEST / name).read_text()
+        raw = (TEST / name).read_text(encoding="utf-8")
         if padding:
             raw = json.dumps(dict(json.loads(raw), padding='x' * padding))
         value = {'schema_version': 'investigation-1.0', 'name': 'Experiment ' + key,

@@ -13,7 +13,7 @@ FIXTURES = Path(__file__).parent / 'fixtures/accounts'
 def cases():
     result = []
     for path in sorted(FIXTURES.glob('show-privileges-*.json')):
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
         server = data['server']
         call = next(c for c in data['sessions']['root']['calls'] if c['sql'] == 'SHOW PRIVILEGES')
         rows = [line.split('\t') for line in call['output'].splitlines()]

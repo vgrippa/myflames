@@ -2569,6 +2569,9 @@ details[open]:not([class]) > summary:not([class]):not(:has(> svg))::before {
   position: absolute;
   width: 1px;
   height: 1px;
+  /* Without it the box hangs 1 px past its container: at the bottom of the
+     window that is a page scroll bar on Windows. */
+  margin: -1px;
   overflow: hidden;
   clip-path: inset(50%);
   white-space: nowrap;
@@ -2590,6 +2593,7 @@ details[open]:not([class]) > summary:not([class]):not(:has(> svg))::before {
   position: static;
   width: auto;
   height: auto;
+  margin: 0;
   min-height: var(--leading-sm);
   overflow: visible;
   clip-path: none;

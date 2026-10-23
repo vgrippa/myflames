@@ -239,9 +239,9 @@ class TestVault(IsolatedHome):
 
     def test_file_holds_only_ciphertext_with_fresh_nonces(self):
         self.vault.save('p1', SECRET)
-        first = json.loads(self.vault.path.read_text())['entries']['p1']
+        first = json.loads(self.vault.path.read_text(encoding="utf-8"))['entries']['p1']
         self.vault.save('p1', SECRET)
-        second = json.loads(self.vault.path.read_text())['entries']['p1']
+        second = json.loads(self.vault.path.read_text(encoding="utf-8"))['entries']['p1']
         self.assertNotEqual(first['nonce'], second['nonce'])
         self.assertNotEqual(first['ciphertext'], second['ciphertext'])
         raw = self.vault.path.read_bytes()
@@ -250,7 +250,7 @@ class TestVault(IsolatedHome):
         self.assertEqual(len(self.vault.key_path.read_bytes()), 32)
 
     def _entries(self):
-        return json.loads(self.vault.path.read_text())
+        return json.loads(self.vault.path.read_text(encoding="utf-8"))
 
     def _rewrite(self, data):
         self.vault.path.write_text(json.dumps(data))

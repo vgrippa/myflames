@@ -149,7 +149,7 @@ class LiveCLIRegressions(unittest.TestCase):
     def test_mcp_accepts_capture_and_preserves_engine(self):
         for filename in ('mysql-explain-hash-join.json', 'fixtures/mariadb-11.4-003-table-scan-products.json'):
             path = Path(__file__).parent / filename
-            raw = path.read_text()
+            raw = path.read_text(encoding="utf-8")
             capture = json.dumps({'schema_version': 'capture-1.0', 'raw': raw})
             with self.subTest(file=path.name):
                 bare = mcp_server.analyze_plan_tool(raw)

@@ -271,7 +271,7 @@ class TestResponsiveSVG(unittest.TestCase):
             r = self._run("--type", "flamegraph",
                           "--no-sidecar", "-o", path, HASH_JOIN_FIXTURE)
             self.assertEqual(r.returncode, 0, r.stderr.decode())
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 svg = f.read()
             # Match the FIRST <svg> tag (the root) and verify both attributes.
             m = re.search(r"<svg\b[^>]*>", svg)
@@ -290,7 +290,7 @@ class TestResponsiveSVG(unittest.TestCase):
             r = self._run("--type", "bargraph",
                           "--no-sidecar", "-o", path, HASH_JOIN_FIXTURE)
             self.assertEqual(r.returncode, 0, r.stderr.decode())
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 svg = f.read()
             m = re.search(r"<svg\b[^>]*>", svg)
             self.assertIn("viewBox", m.group(0))

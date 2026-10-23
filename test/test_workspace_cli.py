@@ -19,7 +19,7 @@ FIXTURE = os.path.join(ROOT, 'test', 'fixtures', 'explain-044-join-3t-products-c
 def run_cli(*args, **kwargs):
     return subprocess.run([sys.executable, '-m', 'myflames'] + list(args), cwd=ROOT,
                           input=kwargs.get('stdin'), stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE, universal_newlines=True)
+                          stderr=subprocess.PIPE, universal_newlines=True, encoding="utf-8")
 
 
 class TestCaptureCLI(unittest.TestCase):

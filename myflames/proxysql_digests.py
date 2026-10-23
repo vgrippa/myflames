@@ -247,7 +247,8 @@ def _run_worker(patterns, texts, start, out):
         def drain():
             try:
                 for raw in iter(proc.stdout.readline, b""):
-                    lines.put(raw.decode("utf-8", "replace").rstrip("\n"))
+                    # The worker's text stdout ends lines with \r\n on Windows.
+                    lines.put(raw.decode("utf-8", "replace").rstrip("\r\n"))
             except (OSError, ValueError):
                 pass
             lines.put(None)

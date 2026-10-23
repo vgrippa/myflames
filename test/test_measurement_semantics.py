@@ -313,7 +313,7 @@ class TestEstimatedFullScanGate(unittest.TestCase):
                 f.write(ESTIMATED_SCAN)
             proc = subprocess.run(
                 [sys.executable, "-m", "myflames", "check", "--fail-on", "full_scan", path],
-                cwd=REPO_DIR, capture_output=True, text=True)
+                cwd=REPO_DIR, capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
         self.assertIn("[warn/full_scan] Full table scan: t1 (about 1000000 rows, estimated)",
                       proc.stdout + proc.stderr)
@@ -441,7 +441,7 @@ class TestXmlEscaping(unittest.TestCase):
                     out = os.path.join(tmp, view + ".svg")
                     proc = subprocess.run([sys.executable, "-m", "myflames", "--type", view,
                                            src, "-o", out, "--no-sidecar"],
-                                          cwd=REPO_DIR, capture_output=True, text=True)
+                                          cwd=REPO_DIR, capture_output=True, text=True, encoding="utf-8")
                     self.assertEqual(proc.returncode, 0, proc.stderr)
                     ET.parse(out)
 
@@ -492,7 +492,7 @@ class TestCliContracts(unittest.TestCase):
         path = _fixture("mysql-8.4-v1-intersect.json")
         self.assertEqual(parse_explain(_text(path))["engine"], "mysql")
         proc = subprocess.run([sys.executable, "-m", "myflames", "digest", path],
-                              cwd=REPO_DIR, capture_output=True, text=True)
+                              cwd=REPO_DIR, capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("engine mysql |", proc.stdout)
 
@@ -501,7 +501,7 @@ class TestCliContracts(unittest.TestCase):
             out = os.path.join(tmp, "plan.svg")
             proc = subprocess.run([sys.executable, "-m", "myflames", "--type", "tree",
                                    _fixture("mysql-8.4-v1-intersect.json"), "-o", out],
-                                  cwd=REPO_DIR, capture_output=True, text=True)
+                                  cwd=REPO_DIR, capture_output=True, text=True, encoding="utf-8")
             self.assertEqual(proc.returncode, 0, proc.stderr)
             with open(os.path.join(tmp, "plan.json"), encoding="utf-8") as f:
                 self.assertEqual(json.load(f)["source"]["engine"], "mysql")
@@ -652,7 +652,7 @@ class TestCaptureEngineAndVersion(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as f:
                 f.write(_capture(raw, version="8.0.46", mode="explain"))
             proc = subprocess.run([sys.executable, "-m", "myflames", "digest", path],
-                                  cwd=REPO_DIR, capture_output=True, text=True)
+                                  cwd=REPO_DIR, capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("engine mysql 8.0.46 |", proc.stdout)
         self.assertIn("rows not measured", proc.stdout)

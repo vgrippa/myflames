@@ -2930,6 +2930,7 @@ main:has(> .library) { padding: 0; max-width: none; }
   position: absolute;
   width: 1px;
   height: 1px;
+  margin: -1px;
   overflow: hidden;
   clip: rect(0 0 0 0);
   clip-path: inset(50%);
@@ -3746,6 +3747,9 @@ kbd {
     width: 100%;
     align-items: center;
     overflow-x: hidden;
+    /* The 48 px rail scrolls on short windows; a classic scroll bar
+       (Windows, or macOS set to always show them) would take a third of it. */
+    scrollbar-width: none;
   }
   .sidebar:not(:has(> .sidebar-drawer.open)) :is(.nav-group-label, .open-plans, .open-queries) {
     display: none;

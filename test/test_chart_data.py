@@ -281,7 +281,7 @@ class ChartDataFixtureTests(unittest.TestCase):
         self.assertEqual(build_chart_data(plan(actual_last_row_ms=4))['display_unit'], 'ms')
 
     def test_teach_index_and_highlights_come_from_python_maps(self):
-        root = parse_explain((TEST / 'fixtures' / 'explain-044-join-3t-products-category-reviews.json').read_text())
+        root = parse_explain((TEST / 'fixtures' / 'explain-044-join-3t-products-category-reviews.json').read_text(encoding="utf-8"))
         maps = build_teach_index_maps(build_teach_hooks(root))['by_folded_label']
         message = {'node_highlights': [{'short_label': root['short_label'], 'message': 'Look here'}]}
         data = build_chart_data(root, teach_index_by_folded=maps, analysis=message)
@@ -304,7 +304,7 @@ class ChartDataFixtureTests(unittest.TestCase):
         self.assertEqual(rows[0]['self_ms'], 5, 'SELECT-list time is not subtracted')
 
     def test_projection_is_metadata_only(self):
-        root = parse_explain((TEST / 'fixtures' / 'explain-044-join-3t-products-category-reviews.json').read_text())
+        root = parse_explain((TEST / 'fixtures' / 'explain-044-join-3t-products-category-reviews.json').read_text(encoding="utf-8"))
         before = copy.deepcopy(root)
         branch = root['children'][0]['node_id']
         plain = build_chart_data(root)
@@ -381,7 +381,7 @@ class ChartEmbedTests(unittest.TestCase):
 
     def test_html_report_mounts_every_view_with_python_semantics(self):
         from myflames.output_html_report import render_html_report
-        text = (TEST / 'fixtures' / 'explain-001-table-scan-users-no-filter.json').read_text()
+        text = (TEST / 'fixtures' / 'explain-001-table-scan-users-no-filter.json').read_text(encoding="utf-8")
         for view in ('flamegraph', 'bargraph', 'tree', 'workbench', 'diagram'):
             with self.subTest(view=view):
                 page = render_html_report(text, view_type=view, title='Report </script>',

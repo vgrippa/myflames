@@ -81,6 +81,46 @@ test('Finder client discovery appends fixed locations without shell execution or
   assert.ok(backendEnvironment('/desktop', {}, 'darwin').PATH.startsWith('/usr/bin:/bin:'));
   assert.equal(backendEnvironment('/desktop', { PATH: '/custom' }, 'linux').PATH, '/custom');
 });
+test('Windows client discovery appends installer folders after PATH, newest first', () => {
+  // A fake file system, so this runs on any OS: Program Files as the installers leave it.
+  const dirs = new Set([
+    'C:\\Program Files\\MySQL\\MySQL Server 8.0\\bin', 'C:\\Program Files\\MySQL\\MySQL Server 8.4\\bin',
+    'C:\\Program Files\\MySQL\\MySQL Shell 8.4\\bin', 'C:\\Program Files\\MariaDB 11.8\\bin',
+    'C:\\Program Files\\MariaDB 10.11\\bin', 'C:\\Program Files (x86)\\MySQL\\MySQL Server 5.7\\bin',
+  ]);
+  const listing = {
+    'C:\\Program Files\\MySQL': ['MySQL Server 8.0', 'MySQL Server 8.4', 'MySQL Shell 8.4', 'MySQL Workbench 8.0', 'MySQL Server 9.1'],
+    'C:\\Program Files': ['MariaDB 10.11', 'MariaDB 11.8', 'MySQL', 'Git'],
+    'C:\\Program Files (x86)\\MySQL': ['MySQL Server 5.7'],
+  };
+  // Like Windows, the fake compares paths without case.
+  const lowerDirs = new Set([...dirs].map(dir => dir.toLowerCase()));
+  const lowerListing = Object.fromEntries(Object.entries(listing).map(([dir, names]) => [dir.toLowerCase(), names]));
+  const fileSystem = {
+    readdirSync: dir => { const names = lowerListing[dir.toLowerCase()]; if (!names) throw Object.assign(new Error('missing'), { code: 'ENOENT' }); return names; },
+    statSync: dir => { if (!lowerDirs.has(dir.toLowerCase())) throw Object.assign(new Error('missing'), { code: 'ENOENT' }); return { isDirectory: () => true }; },
+  };
+  const inherited = { Path: 'C:\\Windows\\System32;C:\\tools\\mysql\\bin', ProgramFiles: 'C:\\Program Files',
+    'ProgramFiles(x86)': 'C:\\Program Files (x86)', ProgramW6432: 'C:\\Program Files' };
+  const env = backendEnvironment('C:\\desktop', { ...inherited, PATH: inherited.Path }, 'win32', fileSystem);
+  assert.deepEqual(env.PATH.split(';'), [
+    'C:\\Windows\\System32', 'C:\\tools\\mysql\\bin',
+    'C:\\Program Files\\MySQL\\MySQL Server 8.4\\bin', 'C:\\Program Files\\MySQL\\MySQL Server 8.0\\bin',
+    'C:\\Program Files (x86)\\MySQL\\MySQL Server 5.7\\bin',
+    'C:\\Program Files\\MariaDB 11.8\\bin', 'C:\\Program Files\\MariaDB 10.11\\bin',
+    'C:\\Program Files\\MySQL\\MySQL Shell 8.4\\bin',
+  ]);
+  // Environment names are case-insensitive on Windows; nothing installed leaves PATH alone.
+  const lower = backendEnvironment('C:\\desktop', { PATH: 'C:\\x', programfiles: 'C:\\Program Files' }, 'win32', fileSystem);
+  assert.ok(lower.PATH.split(';').includes('C:\\Program Files\\MariaDB 11.8\\bin'));
+  const none = { readdirSync: () => { throw new Error('missing'); }, statSync: () => { throw new Error('missing'); } };
+  assert.equal(backendEnvironment('C:\\desktop', { PATH: 'C:\\x', ProgramFiles: 'C:\\Program Files' }, 'win32', none).PATH, 'C:\\x');
+  // A folder already on PATH, in any case or with a trailing backslash, is not added twice.
+  const dup = backendEnvironment('C:\\desktop', { PATH: 'c:\\program files\\mariadb 11.8\\bin\\', ProgramFiles: 'C:\\Program Files',
+    ProgramW6432: 'C:\\PROGRAM FILES' }, 'win32', fileSystem);
+  assert.equal(dup.PATH.split(';').filter(value => value.toLowerCase().startsWith('c:\\program files\\mariadb 11.8')).length, 1);
+  assert.ok(dup.PATH.startsWith('c:\\program files\\mariadb 11.8\\bin\\;'));
+});
 test('startup tolerates fragmented output and shutdown owns only its child process group', async () => {
   const f = fixture(), ready = startBackend(settings, f.dependencies);
   f.child.stderr.write('Other bounded startup text\nmyflames UI: ' + url.slice(0, 20));
@@ -131,7 +171,8 @@ test('data paths reject symlinks into the protected CLI store', () => {
     fs.symlinkSync(path.join(directory, '.myflames'), path.join(directory, 'alias'), 'junction');
     assert.throws(() => dataPath(path.join(directory, '.myflames'), directory), /separate/);
     assert.throws(() => dataPath(path.join(directory, 'alias', 'new-child'), directory), /separate/);
-    assert.equal(dataPath(path.join(directory, 'desktop'), directory), path.join(fs.realpathSync(directory), 'desktop'));
+    // dataPath uses the native realpath, which also expands Windows 8.3 short names.
+    assert.equal(dataPath(path.join(directory, 'desktop'), directory), path.join(fs.realpathSync.native(directory), 'desktop'));
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 test('Windows tree cleanup failure is reported even when direct-child fallback exits', async () => {
@@ -231,7 +272,8 @@ test('stop is bounded and refuses to claim success while a tool group survives',
     assert.ok(f.signals.some(([pid, signal]) => pid === 12345 && signal === 'SIGKILL'));
   } finally { r.cleanup(); }
 });
-test('unexpected tool group records are never signalled and fail the shutdown check', async () => {
+// Tool group records are POSIX only: Windows launches never pass one (below).
+test('unexpected tool group records are never signalled and fail the shutdown check', { skip: process.platform === 'win32' }, async () => {
   const fs = require('node:fs');
   const { readToolGroups } = require('../backend.cjs');
   const r = runtimeFile();
@@ -257,7 +299,7 @@ test('unexpected tool group records are never signalled and fail the shutdown ch
     assert.deepEqual(f.signals, [[12345, 'SIGINT'], [12345, 'SIGKILL']]);
   } finally { r.cleanup(); }
 });
-test('each launch gets a fresh record in a private runtime folder; earlier records are dropped', () => {
+test('each launch gets a fresh record in a private runtime folder; earlier records are dropped', { skip: process.platform === 'win32' }, () => {
   const fs = require('node:fs'), os = require('node:os');
   const { toolGroupsFile } = require('../backend.cjs');
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-runtime-'));

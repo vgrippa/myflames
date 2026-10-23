@@ -61,7 +61,7 @@ class TestCLIConsistency(unittest.TestCase):
         output = self.path('rules.json')
         code, out, err = self.call(['advise', '--list-rules', '--json', '-o', output, '-q'])
         self.assertEqual((code, out, err), (0, '', ''))
-        self.assertTrue(json.loads(Path(output).read_text()))
+        self.assertTrue(json.loads(Path(output).read_text(encoding="utf-8")))
         code, out, err = self.call(['advise', '--list-rules', '-o', self.directory.name, '-q'])
         self.assertEqual(code, 2)
         self.assertIn('Cannot write', err)
@@ -72,7 +72,7 @@ class TestCLIConsistency(unittest.TestCase):
                            return_value=[{'index': 0, 'prefix': 'query0', 'query': 'SELECT 1'}]):
             code, out, err = self.call(['import-shell', 'bundle.zip', '--list', '-o', self.path(), '-q'])
         self.assertEqual((code, out, err), (0, '', ''))
-        self.assertEqual(Path(self.path()).read_text(), '0\tquery0\tSELECT 1\n')
+        self.assertEqual(Path(self.path()).read_text(encoding="utf-8"), '0\tquery0\tSELECT 1\n')
 
     def test_explicit_query_file_failure_is_two(self):
         invalid = self.path('invalid.sql')
@@ -100,7 +100,7 @@ class TestCLIConsistency(unittest.TestCase):
         conn = mock.MagicMock()
         conn.__enter__.return_value = conn
         conn.is_mariadb.return_value = False
-        conn.run_stdin.return_value = Path(PLAN).read_text()
+        conn.run_stdin.return_value = Path(PLAN).read_text(encoding="utf-8")
         with mock.patch('myflames.connector.MySQLConnection', return_value=conn) as factory:
             code, _, err = self.call(['-u', 'reader', '-e', 'SELECT 1', self.path('missing.json'),
                                      '--no-collect-schema', '--no-collect-stats', '--no-collect-variables',
@@ -124,7 +124,7 @@ class TestCLIConsistency(unittest.TestCase):
         conn = mock.MagicMock()
         conn.__enter__.return_value = conn
         conn.is_mariadb.return_value = False
-        conn.run_stdin.return_value = Path(PLAN).read_text()
+        conn.run_stdin.return_value = Path(PLAN).read_text(encoding="utf-8")
         with mock.patch('myflames.connector.MySQLConnection', return_value=conn) as factory:
             code, _, err = self.call(['--profile', profile['id'], '-e', 'SELECT 1',
                                      '--no-collect-schema', '--no-collect-stats', '--no-collect-variables',
@@ -155,12 +155,12 @@ class TestCLIConsistency(unittest.TestCase):
                 path = self.path(filename)
                 code, out, err = self.call(args + ['-o', path, '-q'])
                 self.assertEqual((code, out, err), (0, '', ''))
-                self.assertTrue(Path(path).read_text())
+                self.assertTrue(Path(path).read_text(encoding="utf-8"))
         job = mock.Mock(state='complete', result={'raw': '{}'})
         with mock.patch.object(workspace_cli, 'LiveJob', return_value=job):
             code, out, err = self.call(['capture', '-e', 'SELECT 1', '-o', self.path(), '-q'])
         self.assertEqual((code, out, err), (0, '', ''))
-        self.assertEqual(json.loads(Path(self.path()).read_text())['schema_version'], 'capture-1.0')
+        self.assertEqual(json.loads(Path(self.path()).read_text(encoding="utf-8"))['schema_version'], 'capture-1.0')
 
     def test_teach_write_failures_exit_two_including_catalog_alias(self):
         for args in (['btree'], ['--index'], ['--catalog']):
@@ -181,7 +181,7 @@ class TestCLIConsistency(unittest.TestCase):
         self.assertIn('--output', out)
         code, out, err = self.call(['guide', '-o', self.path(), '-q'])
         self.assertEqual((code, out, err), (0, '', ''))
-        self.assertEqual(Path(self.path()).read_text(), cli._GUIDE_TEXT)
+        self.assertEqual(Path(self.path()).read_text(encoding="utf-8"), cli._GUIDE_TEXT)
 
     def test_deprecated_aliases_warn_unless_quiet(self):
         for alias, args, canonical in (('diff', [PLAN, PLAN, '--json'], 'compare'),
@@ -206,7 +206,7 @@ class TestCLIConsistency(unittest.TestCase):
         self.assertEqual(code, 0)
         for alias in ('tokens', 'findings', 'diff', 'running'):
             self.assertRegex(out, r'(?m)^  ' + alias + r'\s+Deprecated alias')
-        readme = (ROOT / 'README.md').read_text()
+        readme = (ROOT / 'README.md').read_text(encoding="utf-8")
         row = next(line for line in readme.splitlines() if line.startswith('| `--profile NAME_OR_ID`'))
         self.assertIn('replication', row)
 
@@ -224,11 +224,11 @@ class TestCLIConsistency(unittest.TestCase):
             for command in ('top', 'running'):
                 code, out, err = self.call([command, '-o', self.path(), '-q'])
                 self.assertEqual((code, out, err), (0, '', ''))
-                self.assertIn('SQL', Path(self.path()).read_text())
+                self.assertIn('SQL', Path(self.path()).read_text(encoding="utf-8"))
         for command, header in (('profiles', 'NAME'), ('audit', 'WHEN (UTC)')):
             code, out, err = self.call([command, 'list', '-o', self.path(), '-q'])
             self.assertEqual((code, out, err), (0, '', ''))
-            self.assertIn(header, Path(self.path()).read_text())
+            self.assertIn(header, Path(self.path()).read_text(encoding="utf-8"))
 
     def test_capture_digest_alias_warns_and_selector_reaches_lookup(self):
         for flag, quiet in (('--statement-digest', False), ('--digest', False), ('--digest', True)):
@@ -272,7 +272,7 @@ class TestCLIConsistency(unittest.TestCase):
             self.assertEqual((code, out), (2, ''), err)
             self.assertIn('read-only', err)
             if output:
-                self.assertEqual(Path(output).read_text(), 'previous result')
+                self.assertEqual(Path(output).read_text(encoding="utf-8"), 'previous result')
             factory.assert_not_called()
         self.assertEqual(len(store.audit_records()), 2)
         self.assertTrue(all(r['status'] == 'refused' for r in store.audit_records()))
@@ -332,7 +332,7 @@ class TestCLIConsistency(unittest.TestCase):
                         self.assertTrue(err)
                         self.assertNotIn('Traceback', err)
                         if output:
-                            self.assertEqual(Path(output).read_text(), 'existing result')
+                            self.assertEqual(Path(output).read_text(encoding="utf-8"), 'existing result')
         code, out, err = self.call(['advise', PLAN, '--json', '--ignore', 'bad-category', '-q'])
         self.assertEqual((code, out), (2, ''))
         self.assertIn('unknown --ignore', err)
@@ -348,7 +348,7 @@ class TestCLIConsistency(unittest.TestCase):
             file_code, file_out, file_err = self.call(args + ['-o', self.path()])
         self.assertEqual((code, out, file_code, file_out), (2, '', 2, ''))
         self.assertIn('read-only', err)
-        self.assertEqual(Path(self.path()).read_text(), 'previous result')
+        self.assertEqual(Path(self.path()).read_text(encoding="utf-8"), 'previous result')
         self.assertEqual(err, file_err)
         connect.assert_not_called()
 
@@ -400,7 +400,7 @@ class TestCLIConsistency(unittest.TestCase):
                         code, out, err = self.call(command + flags)
                     self.assertEqual((code, out), (2, ''), err)
                     self.assertIn('read-only', err)
-                    self.assertEqual(Path(output).read_text(), 'previous result')
+                    self.assertEqual(Path(output).read_text(encoding="utf-8"), 'previous result')
                     prompt.assert_not_called()
                     connect.assert_not_called()
                     records = store.audit_records()

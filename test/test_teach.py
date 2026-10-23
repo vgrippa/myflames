@@ -598,7 +598,7 @@ class TestTmpLessonJsMatchesCostModel(unittest.TestCase):
         result = subprocess.run(
             [shutil.which("node"), "-e", script],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            universal_newlines=True, timeout=10,
+            universal_newlines=True, encoding="utf-8", timeout=10,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         for args, js in zip(cases, _json.loads(result.stdout)):
@@ -777,7 +777,7 @@ class TestTeachCLI(unittest.TestCase):
     def _run(self, *extra):
         return subprocess.run(
             [sys.executable, "-m", "myflames", "teach", *extra],
-            cwd=REPO_DIR, capture_output=True, text=True,
+            cwd=REPO_DIR, capture_output=True, text=True, encoding="utf-8",
         )
 
     def test_catalog_with_no_arg(self):

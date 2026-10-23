@@ -79,7 +79,7 @@ class Isolated(unittest.TestCase):
 
 class UpgradeCheckCli(Isolated):
     def replay(self):
-        data = json.loads((FIXTURES / 'native-8.0.46-to-8.4.0.json').read_text())
+        data = json.loads((FIXTURES / 'native-8.0.46-to-8.4.0.json').read_text(encoding="utf-8"))
         return StrictReplay(data['calls'] + data.get('synthetic_calls', []))
 
     def test_native_report_text_json_and_fail_on(self):

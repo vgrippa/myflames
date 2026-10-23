@@ -177,6 +177,15 @@ class TestRouting(unittest.TestCase):
                          'only the default hostgroup is the local answer')
         self.assertEqual(r.evaluate(digest('SELECT @@hostname', hostgroup=30))['verdict'], 'mismatch')
 
+    def test_a_worker_that_ends_lines_with_crlf_is_read(self):
+        # The worker's text stdout ends lines with \r\n on Windows; its ready
+        # line and answers must still be read.
+        import sys
+        child = [sys.executable, "-c", "import sys; sys.stdin.buffer.read(); "
+                 "sys.stdout.buffer.write(b'ready\\r\\n10\\r\\n'); sys.stdout.buffer.flush()"]
+        with mock.patch.object(pd, "_worker_argv", return_value=child):
+            self.assertEqual(pd.test_patterns([("x", False)], ["x", "y"]), {0: "10"})
+
     def test_a_pattern_that_backtracks_without_end_never_holds_up_the_workspace(self):
         # Patterns run in a separate process; one that takes too long is unknown
         # and the worker starts again for the rules after it.

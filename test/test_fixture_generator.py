@@ -37,8 +37,8 @@ elif args[0] == 'exec':
             script = Path(__file__).resolve().parents[1] / 'scripts/generate-fixtures.sh'
             result = subprocess.run(['bash', str(script)], env=env,
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                    universal_newlines=True, timeout=15)
-            calls = [json.loads(line) for line in (root / 'calls').read_text().splitlines()]
+                                    universal_newlines=True, encoding="utf-8", timeout=15)
+            calls = [json.loads(line) for line in (root / 'calls').read_text(encoding="utf-8").splitlines()]
             return result, calls
 
     def test_existing_container_is_never_removed(self):

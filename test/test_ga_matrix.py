@@ -168,7 +168,7 @@ class TestGaMatrixServers(unittest.TestCase):
     """The Percona Server entries: pinned official images, MySQL rules, a GTID replica."""
 
     def setUp(self):
-        self.text = (SCRIPTS / "ga-matrix.sh").read_text()
+        self.text = (SCRIPTS / "ga-matrix.sh").read_text(encoding="utf-8")
 
     def spec(self, name):
         import re

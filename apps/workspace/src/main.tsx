@@ -33,6 +33,7 @@ import { NOT_A_REPLICA, replicationNav, type ReplicationReport, type SkipLoop } 
 import { clusterNav, NOT_A_CLUSTER, type ClusterFailure, type ClusterReport } from "./clusterApi";
 import { NOT_A_PROXYSQL, proxySqlNav, type ProxySqlFailure, type ProxySqlReport } from "./proxysqlApi";
 import { NavMarker, WindowStatusBar, WindowStatusProvider } from "./kit";
+import { MAC, shortcut } from "./platform";
 import { ViewOnScreenContext } from "./viewOnScreen";
 import { PLACES, Sidebar, type Place } from "./Sidebar";
 import {
@@ -1785,13 +1786,13 @@ function App() {
             <button
               type="button"
               className="button small ghost command-trigger"
-              aria-label="Search or jump to (Cmd+K)"
-              title="Search or jump to (Cmd+K)"
+              aria-label={`Search or jump to (${MAC ? "Cmd+K" : "Ctrl+K"})`}
+              title={`Search or jump to (${MAC ? "Cmd+K" : "Ctrl+K"})`}
               onClick={() => setCommandPaletteOpen(true)}
             >
               <Icon name="search" size={13} />
               <span>Search…</span>
-              <kbd>⌘K</kbd>
+              <kbd>{shortcut("K")}</kbd>
             </button>
           </div>
         </header>

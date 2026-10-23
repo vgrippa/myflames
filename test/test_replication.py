@@ -2570,7 +2570,7 @@ with open(path, 'a+b') as handle:
         print('acquired')
 '''
         def run_probe():
-            return subprocess.check_output([sys.executable, '-c', probe], universal_newlines=True, timeout=5).strip()
+            return subprocess.check_output([sys.executable, '-c', probe], universal_newlines=True, encoding="utf-8", timeout=5).strip()
         with rp._serialize_skips():
             self.assertEqual(run_probe(), 'blocked')
         self.assertEqual(run_probe(), 'acquired')

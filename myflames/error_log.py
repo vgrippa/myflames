@@ -63,6 +63,7 @@ logged within BANNER_WINDOW_S after the server's start. Only parsed entries
 import datetime
 import json
 import os
+import posixpath
 import re
 import shlex
 import socket
@@ -387,7 +388,10 @@ def _read_tail(path):
 def _how_to_view(path, datadir):
     """A shell hint for the server host; never executed. Paths the server
     reports with control characters get words instead of a command."""
-    full = os.path.normpath(os.path.join(datadir or '', path))
+    # The path is on the server: a POSIX server keeps POSIX paths when myflames
+    # itself runs on Windows.
+    paths = posixpath if (datadir or path or '').startswith('/') else os.path
+    full = paths.normpath(paths.join(datadir or '', path))
     if any(ord(c) < 32 or ord(c) == 127 for c in full):
         return 'Read the file named by log_error on the server host (its path has control characters).'
     return 'Read it on the server host: tail -n 200 -- ' + shlex.quote(full)

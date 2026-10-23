@@ -12,7 +12,7 @@ from unittest.mock import patch
 from myflames import workspace_store
 from myflames.workspace_store import WorkspaceStore, validate_bundle
 
-PLAN = (Path(__file__).parent / 'mysql-explain-json-sample.json').read_text()
+PLAN = (Path(__file__).parent / 'mysql-explain-json-sample.json').read_text(encoding="utf-8")
 
 
 def bundle():

@@ -787,7 +787,7 @@ class TestCLI(unittest.TestCase):
             cmd,
             input=input_text,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8",
             cwd=REPO_DIR,
         )
         return result
@@ -1184,7 +1184,7 @@ class TestAnalysis(unittest.TestCase):
         r = subprocess.run(
             [sys.executable, "-m", "myflames", "--type", "bargraph", fixture],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8",
             cwd=REPO_DIR,
         )
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -1196,7 +1196,7 @@ class TestAnalysis(unittest.TestCase):
         r = subprocess.run(
             [sys.executable, "-m", "myflames", "--type", "diagram", fixture],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8",
             cwd=REPO_DIR,
         )
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -1208,7 +1208,7 @@ class TestAnalysis(unittest.TestCase):
         r = subprocess.run(
             [sys.executable, "-m", "myflames", "--type", "flamegraph", fixture],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8",
             cwd=REPO_DIR,
         )
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -1655,7 +1655,7 @@ class TestDocumentation(unittest.TestCase):
         for t in ("flamegraph", "bargraph", "diagram", "tree"):
             result = subprocess.run(
                 [sys.executable, "-m", "myflames", "--type", t, self.HASH_JOIN],
-                cwd=REPO_DIR, capture_output=True, text=True,
+                cwd=REPO_DIR, capture_output=True, text=True, encoding="utf-8",
             )
             self.assertEqual(result.returncode, 0, f"--type {t} failed: {result.stderr[:300]}")
 
@@ -1669,7 +1669,7 @@ class TestDocumentation(unittest.TestCase):
         ):
             result = subprocess.run(
                 [sys.executable, "-m", "myflames"] + extra + [self.HASH_JOIN],
-                cwd=REPO_DIR, capture_output=True, text=True,
+                cwd=REPO_DIR, capture_output=True, text=True, encoding="utf-8",
             )
             self.assertEqual(result.returncode, 0, f"Flags {extra} failed: {result.stderr[:300]}")
 
@@ -1838,7 +1838,7 @@ class TestDocumentation(unittest.TestCase):
         import re
         result = subprocess.run(
             [sys.executable, "-m", "myflames", "--type", "flamegraph", self.HASH_JOIN],
-            cwd=REPO_DIR, capture_output=True, text=True,
+            cwd=REPO_DIR, capture_output=True, text=True, encoding="utf-8",
         )
         self.assertEqual(result.returncode, 0)
         svg = result.stdout
@@ -2089,7 +2089,7 @@ class TestSQLAndIndexFeatures(unittest.TestCase):
         """SQL embedded in the EXPLAIN JSON should appear in the SVG output."""
         result = subprocess.run(
             [sys.executable, "-m", "myflames", "--type", "diagram", self.LIKE_FIXTURE],
-            cwd=REPO_DIR, capture_output=True, text=True,
+            cwd=REPO_DIR, capture_output=True, text=True, encoding="utf-8",
         )
         self.assertEqual(result.returncode, 0)
         self.assertIn("Query", result.stdout, "Query section missing from auto-extracted output")
@@ -2101,7 +2101,7 @@ class TestSQLAndIndexFeatures(unittest.TestCase):
             [sys.executable, "-m", "myflames", "--type", "tree",
              "--query", "SELECT sentinel_token FROM dual",
              self.HASH_JOIN],
-            cwd=REPO_DIR, capture_output=True, text=True,
+            cwd=REPO_DIR, capture_output=True, text=True, encoding="utf-8",
         )
         self.assertEqual(result.returncode, 0)
         self.assertIn("sentinel_token", result.stdout, "--query text not found in SVG output")
@@ -2111,7 +2111,7 @@ class TestSQLAndIndexFeatures(unittest.TestCase):
         """Fixture with filter + table scan should produce index suggestion DDL in SVG."""
         result = subprocess.run(
             [sys.executable, "-m", "myflames", "--type", "bargraph", self.LIKE_FIXTURE],
-            cwd=REPO_DIR, capture_output=True, text=True,
+            cwd=REPO_DIR, capture_output=True, text=True, encoding="utf-8",
         )
         self.assertEqual(result.returncode, 0)
         self.assertIn("CREATE INDEX", result.stdout)
@@ -2176,7 +2176,7 @@ class TestHypergraphFixtures(unittest.TestCase):
             with self.subTest(fixture=os.path.basename(path)):
                 result = subprocess.run(
                     [sys.executable, "-m", "myflames", path],
-                    cwd=REPO_DIR, capture_output=True, text=True,
+                    cwd=REPO_DIR, capture_output=True, text=True, encoding="utf-8",
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("<svg", result.stdout)
@@ -2187,7 +2187,7 @@ class TestHypergraphFixtures(unittest.TestCase):
             with self.subTest(fixture=os.path.basename(path)):
                 result = subprocess.run(
                     [sys.executable, "-m", "myflames", "--type", "bargraph", path],
-                    cwd=REPO_DIR, capture_output=True, text=True,
+                    cwd=REPO_DIR, capture_output=True, text=True, encoding="utf-8",
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("<svg", result.stdout)
@@ -2198,7 +2198,7 @@ class TestHypergraphFixtures(unittest.TestCase):
             with self.subTest(fixture=os.path.basename(path)):
                 result = subprocess.run(
                     [sys.executable, "-m", "myflames", "--type", "diagram", path],
-                    cwd=REPO_DIR, capture_output=True, text=True,
+                    cwd=REPO_DIR, capture_output=True, text=True, encoding="utf-8",
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("<svg", result.stdout)
@@ -2328,7 +2328,7 @@ class TestMySQLOutputFormats(unittest.TestCase):
         escaped = self.original.replace("\n", "\\n").replace("\t", "\\t")
         result = subprocess.run(
             [sys.executable, "-m", "myflames", "--type", "bargraph"],
-            input=escaped, cwd=REPO_DIR, capture_output=True, text=True,
+            input=escaped, cwd=REPO_DIR, capture_output=True, text=True, encoding="utf-8",
         )
         self.assertEqual(result.returncode, 0,
                          "CLI failed on escaped input: %s" % result.stderr)
@@ -2383,7 +2383,7 @@ class TestCLIVersion(unittest.TestCase):
     def test_version_flag(self):
         result = subprocess.run(
             [sys.executable, "-m", "myflames", "--version"],
-            cwd=REPO_DIR, capture_output=True, text=True,
+            cwd=REPO_DIR, capture_output=True, text=True, encoding="utf-8",
         )
         self.assertEqual(result.returncode, 0)
         self.assertIn("myflames", result.stdout)
@@ -2399,7 +2399,7 @@ class TestCLIGuide(unittest.TestCase):
     def test_guide_subcommand(self):
         result = subprocess.run(
             [sys.executable, "-m", "myflames", "guide"],
-            cwd=REPO_DIR, capture_output=True, text=True,
+            cwd=REPO_DIR, capture_output=True, text=True, encoding="utf-8",
         )
         self.assertEqual(result.returncode, 0)
         self.assertIn("flamegraph", result.stdout)
@@ -2421,7 +2421,7 @@ class TestCLIOutputFlag(unittest.TestCase):
         try:
             result = subprocess.run(
                 [sys.executable, "-m", "myflames", "--output", tmp_path, SIMPLE_FIXTURE],
-                cwd=REPO_DIR, capture_output=True, text=True,
+                cwd=REPO_DIR, capture_output=True, text=True, encoding="utf-8",
             )
             self.assertEqual(result.returncode, 0)
             with open(tmp_path) as f:
@@ -2439,7 +2439,7 @@ class TestCLIOutputFlag(unittest.TestCase):
         try:
             result = subprocess.run(
                 [sys.executable, "-m", "myflames", "--output", tmp_path, SIMPLE_FIXTURE],
-                cwd=REPO_DIR, capture_output=True, text=True,
+                cwd=REPO_DIR, capture_output=True, text=True, encoding="utf-8",
             )
             self.assertEqual(result.returncode, 0)
             self.assertEqual(result.stdout, "", "stdout should be empty when --output is used")
@@ -2458,10 +2458,10 @@ class TestHTMLReport(unittest.TestCase):
         try:
             result = subprocess.run(
                 [sys.executable, "-m", "myflames", "--output", tmp_path, HASH_JOIN_FIXTURE],
-                cwd=REPO_DIR, capture_output=True, text=True,
+                cwd=REPO_DIR, capture_output=True, text=True, encoding="utf-8",
             )
             self.assertEqual(result.returncode, 0, "CLI failed: %s" % result.stderr)
-            with open(tmp_path) as f:
+            with open(tmp_path, encoding="utf-8") as f:
                 html = f.read()
             self.assertIn("<!DOCTYPE html>", html, "Missing HTML doctype")
             # The chart is drawn in the browser by the inlined
@@ -2491,11 +2491,11 @@ class TestHTMLReport(unittest.TestCase):
                 result = subprocess.run(
                     [sys.executable, "-m", "myflames", "--type", view,
                      "--output", tmp_path, HASH_JOIN_FIXTURE],
-                    cwd=REPO_DIR, capture_output=True, text=True,
+                    cwd=REPO_DIR, capture_output=True, text=True, encoding="utf-8",
                 )
                 self.assertEqual(result.returncode, 0,
                                  "HTML report failed for %s: %s" % (view, result.stderr))
-                with open(tmp_path) as f:
+                with open(tmp_path, encoding="utf-8") as f:
                     html = f.read()
                 self.assertIn('data-mfc-view="%s"' % ("workbench" if view == "diagram" else view), html,
                               "Chart mount missing from HTML report for %s" % view)
@@ -2545,7 +2545,7 @@ class TestCompare(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, "-m", "myflames", "compare",
              SIMPLE_FIXTURE, HASH_JOIN_FIXTURE],
-            cwd=REPO_DIR, capture_output=True, text=True,
+            cwd=REPO_DIR, capture_output=True, text=True, encoding="utf-8",
         )
         self.assertEqual(result.returncode, 0, "compare failed: %s" % result.stderr)
         html = result.stdout
@@ -2566,7 +2566,7 @@ class TestCompare(unittest.TestCase):
                 [sys.executable, "-m", "myflames", "compare",
                  SIMPLE_FIXTURE, HASH_JOIN_FIXTURE,
                  "--output", tmp_path],
-                cwd=REPO_DIR, capture_output=True, text=True,
+                cwd=REPO_DIR, capture_output=True, text=True, encoding="utf-8",
             )
             self.assertEqual(result.returncode, 0, "compare --output failed: %s" % result.stderr)
             with open(tmp_path) as f:
@@ -2583,7 +2583,7 @@ class TestCompare(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, "-m", "myflames", "compare",
              SIMPLE_FIXTURE, HASH_JOIN_FIXTURE],
-            cwd=REPO_DIR, capture_output=True, text=True,
+            cwd=REPO_DIR, capture_output=True, text=True, encoding="utf-8",
         )
         self.assertEqual(result.returncode, 0)
         html = result.stdout
@@ -2600,7 +2600,7 @@ class TestCompare(unittest.TestCase):
             [sys.executable, "-m", "myflames", "compare",
              SIMPLE_FIXTURE, HASH_JOIN_FIXTURE,
              "--title", "Custom Diff Title"],
-            cwd=REPO_DIR, capture_output=True, text=True,
+            cwd=REPO_DIR, capture_output=True, text=True, encoding="utf-8",
         )
         self.assertEqual(result.returncode, 0)
         self.assertIn("Custom Diff Title", result.stdout)
@@ -2998,7 +2998,7 @@ class TestTreemapRemoved(unittest.TestCase):
     def _run(self, *args):
         return subprocess.run(
             [sys.executable, "-m", "myflames"] + list(args),
-            cwd=REPO_DIR, capture_output=True, text=True,
+            cwd=REPO_DIR, capture_output=True, text=True, encoding="utf-8",
         )
 
     @unittest.skipUnless(os.path.exists(HASH_JOIN_FIXTURE), "fixture missing")

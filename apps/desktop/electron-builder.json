@@ -24,6 +24,7 @@
     "hardenedRuntime": true, "entitlements": "entitlements.mac.plist", "entitlementsInherit": "entitlements.mac.plist"
   },
   "dmg": { "artifactName": "${productName}-${version}-macos-${arch}.${ext}", "writeUpdateInfo": false },
-  "win": { "target": ["dir"] },
+  "win": { "target": [{ "target": "nsis", "arch": ["x64"] }], "icon": "../../docs/brand/myflames-icon-v3.png" },
+  "nsis": { "artifactName": "${productName}-${version}-windows-${arch}-setup.${ext}", "oneClick": true, "perMachine": false },
   "linux": { "target": ["dir"], "category": "Development" }
 }

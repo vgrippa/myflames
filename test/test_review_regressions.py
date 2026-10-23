@@ -74,7 +74,7 @@ class TestCliInputRegressions(unittest.TestCase):
         return subprocess.run([sys.executable, '-m', 'myflames'] + list(args),
                               cwd=REPO, input=kwargs.get('stdin'),
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                              universal_newlines=True)
+                              universal_newlines=True, encoding="utf-8")
 
     def assert_bad_input(self, result):
         self.assertEqual(result.returncode, 2, result.stderr)

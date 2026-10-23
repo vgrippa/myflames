@@ -18,7 +18,7 @@ from myflames.workspace_store import (SessionConflict, SessionTooLarge, Workspac
                                       validate_session_state)
 
 TEST_DIR = Path(__file__).resolve().parent
-PLAN = (TEST_DIR / 'mysql-explain-json-sample.json').read_text()
+PLAN = (TEST_DIR / 'mysql-explain-json-sample.json').read_text(encoding="utf-8")
 SECRET = 'hunter2-session-secret'
 
 

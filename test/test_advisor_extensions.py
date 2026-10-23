@@ -344,7 +344,7 @@ class TestRuleCatalog(unittest.TestCase):
 class TestRuleFlagsCli(unittest.TestCase):
     def _run(self, *args):
         return subprocess.run([sys.executable, "-m", "myflames"] + list(args),
-                              cwd=REPO_DIR, capture_output=True, text=True)
+                              cwd=REPO_DIR, capture_output=True, text=True, encoding="utf-8")
 
     def test_list_rules_needs_no_input(self):
         for command in ("check", "advise"):
@@ -448,7 +448,7 @@ class TestReviewRegressions(unittest.TestCase):
 
     def test_list_rules_json(self):
         r = subprocess.run([sys.executable, "-m", "myflames", "advise", "--list-rules", "--json"],
-                           cwd=REPO_DIR, capture_output=True, text=True)
+                           cwd=REPO_DIR, capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual({e["category"] for e in json.loads(r.stdout)}, set(_WARNING_CATEGORIES))
 
@@ -526,7 +526,7 @@ class TestCaptureFileInput(unittest.TestCase):
 
     def _run(self, *args):
         return subprocess.run([sys.executable, "-m", "myflames"] + list(args),
-                              cwd=REPO_DIR, capture_output=True, text=True)
+                              cwd=REPO_DIR, capture_output=True, text=True, encoding="utf-8")
 
     def test_capture_file_is_analyzed_with_its_evidence(self):
         data = json.loads(self._run("advise", self.capture, "--json").stdout)

@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 from myflames.connector import ConnectorError
 from myflames.ui import ASSET_DIR, WorkspaceServer, api_response
 
-PLAN = (Path(__file__).parent / 'mysql-explain-json-sample.json').read_text()
+PLAN = (Path(__file__).parent / 'mysql-explain-json-sample.json').read_text(encoding="utf-8")
 
 
 class TestWorkspaceAPI(unittest.TestCase):
