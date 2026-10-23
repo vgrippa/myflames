@@ -260,7 +260,7 @@ npm run smoke -- dist/win-unpacked
 PyInstaller does not cross-compile, so this cannot be built on a Mac. The
 installer is unsigned: SmartScreen says "Windows protected your PC" until you
 choose More info, then Run anyway. It installs for the current user without an
-administrator prompt, under `%LOCALAPPDATA%\Programs\myflames`, with Start menu
+administrator prompt, under `%LOCALAPPDATA%\Programs\myflames-desktop`, with Start menu
 and desktop shortcuts and an uninstaller in Settings > Apps. Its data lives in
 `%APPDATA%\myflames-desktop`, separate from the command-line workspace.
 
