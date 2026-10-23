@@ -169,6 +169,25 @@ def _write_output(content, output_path, quiet=False):
             _fail("Cannot write to standard output: %s" % (e.strerror or e))
 
 
+def _utf8_standard_streams():
+    """Read and write UTF-8 on redirected standard streams.
+
+    Windows gives a redirected stream the ANSI code page (cp1252 and the
+    like): writing query text, names or comments it cannot hold crashed the
+    command, and a UTF-8 script or password piped in was mis-decoded. Files
+    are already UTF-8; a console keeps Python's own Unicode path.
+    """
+    for name in ("stdin", "stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        encoding = (getattr(stream, "encoding", None) or "").lower().replace("-", "").replace("_", "")
+        if encoding == "utf8" or not hasattr(stream, "reconfigure"):
+            continue
+        try:
+            stream.reconfigure(encoding="utf-8", errors=stream.errors)
+        except (OSError, ValueError):
+            pass  # Already read from, or not a text stream we can change.
+
+
 def _discard_stdout():
     """Point stdout at the null device after a failed write, so the
     interpreter's final flush cannot raise a second, unhandled error."""
@@ -945,6 +964,7 @@ def _cmd_findings_deprecated(argv):
 
 
 def main():
+    _utf8_standard_streams()
     # Handle subcommands before argparse to avoid conflicts with positional args
     if len(sys.argv) > 1:
         if sys.argv[1] == "sql":

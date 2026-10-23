@@ -461,7 +461,8 @@ class TestMariaDB(LogCase):
         self.addCleanup(hostname.stop)
 
     def write(self, text):
-        with open(self.path, 'w', encoding='utf-8') as handle:
+        # newline='': keep \n on Windows, so byte offsets match the text.
+        with open(self.path, 'w', encoding='utf-8', newline='') as handle:
             handle.write(text)
 
     def conn(self, **kwargs):
@@ -808,6 +809,12 @@ class TestMariaDB(LogCase):
         self.assertTrue(hint.startswith(prefix), hint)
         self.assertEqual(shlex.split(hint[len(prefix):]), ['tail', '-n', '200', '--', "/srv/logs/-x'; rm -rf ~.err"])
 
+    def test_remote_hint_keeps_a_posix_server_path_on_windows(self):
+        import ntpath
+        with mock.patch.object(m.os, 'path', ntpath):
+            hint = m._how_to_view('mariadb.err', '/var/lib/mysql/')
+        self.assertEqual(shlex.split(hint.split(': ', 1)[1]), ['tail', '-n', '200', '--', '/var/lib/mysql/mariadb.err'])
+
     def test_same_second_entries_keep_the_later_line_first(self):
         report = self.report(self.conn())
         logged = [entry['logged'] for entry in report['entries']]
@@ -1009,7 +1016,7 @@ class TestCLI(LogCase):
             self.assertIn(flag, out)
         self.assertIn("never reports 'problem'", out)
         for path in (Path(m.__file__), Path(__file__)):
-            ast.parse(path.read_text(), **({'feature_version': 7} if sys.version_info >= (3, 8) else {}))
+            ast.parse(path.read_text(encoding="utf-8"), **({'feature_version': 7} if sys.version_info >= (3, 8) else {}))
 
 
 class TestAPI(LogCase):

@@ -468,7 +468,7 @@ class Rules(unittest.TestCase):
 
     def test_python37_syntax(self):
         for path in (Path(p.__file__), Path(__file__), Path(replay.__file__)):
-            ast.parse(path.read_text(), **({'feature_version': 7} if sys.version_info >= (3, 8) else {}))
+            ast.parse(path.read_text(encoding="utf-8"), **({'feature_version': 7} if sys.version_info >= (3, 8) else {}))
 
 
 class EditorStatementPrivileges(unittest.TestCase):
@@ -543,7 +543,7 @@ class EditorStatementPrivileges(unittest.TestCase):
 
 class PrivilegeCatalogTest(unittest.TestCase):
     def capture(self, server, login='acct_low'):
-        data = json.loads((replay.FIXTURES / ('show-privileges-' + server + '.json')).read_text())
+        data = json.loads((replay.FIXTURES / ('show-privileges-' + server + '.json')).read_text(encoding="utf-8"))
         conn = replay.ReplayConn(data['sessions'][login]['calls'], data['server']['version'])
         rows = p.Reader(conn, '/*myflames:accounts*/ ').rows('SHOW PRIVILEGES')
         return data, rows

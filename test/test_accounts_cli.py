@@ -319,7 +319,7 @@ class AccountsCliTest(unittest.TestCase):
                                                  + fmt + flags)
                     self.assertEqual(code, 0 if allowed else 2, err)
                     self.assertEqual(out, '')
-                    text = destination.read_text()
+                    text = destination.read_text(encoding="utf-8")
                     if allowed:
                         self.assertEqual(json.loads(text)['status'] if fmt else text.split(':')[0], 'applied')
                         self.assertEqual(err, '')

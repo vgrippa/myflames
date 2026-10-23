@@ -653,7 +653,7 @@ class ProcessTests(unittest.TestCase):
 
     def session_log(self):
         session = self.registry.get("tab1")
-        return (self.state / ("session-%d.log" % session.connection_id)).read_text().splitlines()
+        return (self.state / ("session-%d.log" % session.connection_id)).read_text(encoding="utf-8").splitlines()
 
     # -- helpers for barrier tests --------------------------------------------------------
     def until(self, predicate, what, timeout=10.0):
@@ -668,7 +668,7 @@ class ProcessTests(unittest.TestCase):
     def logged(self, tab, text):
         session = self.registry.get(tab)
         path = self.state / ("session-%d.log" % session.connection_id)
-        return path.exists() and any(text in line for line in path.read_text().splitlines())
+        return path.exists() and any(text in line for line in path.read_text(encoding="utf-8").splitlines())
 
     def release(self, tab="tab1"):
         session = self.registry.get(tab)
@@ -945,7 +945,7 @@ class ProcessTests(unittest.TestCase):
         self.assertEqual(rolled["status"], "complete")
         self.assertEqual(len(self.rows(self.run_sql("SELECT * FROM tt"))), 3)
         # One client process, one connection id throughout.
-        argv = (self.state / "argv.log").read_text()
+        argv = (self.state / "argv.log").read_text(encoding="utf-8")
         self.assertEqual(argv.count("--xml"), 1)
         ids = {r["session"]["connection_id"] for r in (first, committed, rolled)}
         self.assertEqual(len(ids), 1)
@@ -962,7 +962,7 @@ class ProcessTests(unittest.TestCase):
         self.assertEqual(len(result["run"]["results"]), 1)
         self.assertEqual(result["run"]["counts"]["statements"], 1)
         self.assertNotIn("SET NAMES", self.session_log())  # init stays outside the framed stdin protocol
-        argv = (self.state / "argv.log").read_text()
+        argv = (self.state / "argv.log").read_text(encoding="utf-8")
         for flag in ("--xml", "--binary-as-hex", "--binary-mode", "--comments", "--force", "--quick", "--unbuffered",
                      "-vv", "--skip-reconnect", "--default-character-set=utf8mb4",
                      "--init-command=SET NAMES utf8mb4"):
@@ -997,7 +997,7 @@ class ProcessTests(unittest.TestCase):
             self.run_sql("SELECT 1")
         finally:
             os.environ.pop("FAKE_COMMANDS", None)
-        self.assertIn("'--skip-commands'", (self.state / "argv.log").read_text())
+        self.assertIn("'--skip-commands'", (self.state / "argv.log").read_text(encoding="utf-8"))
 
     def test_values_and_result_sets(self):
         result = self.run_sql("SELECT special;\nSELECT 1/0;\nSELECT empty;\nCALL two()")
@@ -1051,7 +1051,7 @@ class ProcessTests(unittest.TestCase):
         self.assertLess(big["server_rows"], 200000)
         self.assertEqual(self.rows(result, 1), [["5"]])
         session = self.registry.get("tab1")
-        kills = (self.state / "kills.log").read_text()
+        kills = (self.state / "kills.log").read_text(encoding="utf-8")
         self.assertIn("/*myflames:editor*/ KILL QUERY %d" % session.connection_id, kills)
         self.assertNotIn("1317", json.dumps(result["run"]["error"]))
         # Load more: the same statement again with a larger limit.
@@ -1151,7 +1151,7 @@ class ProcessTests(unittest.TestCase):
         ended = self.run_sql("SELECT 1")
         self.assertEqual(ended["status"], "session_ended")
         self.assertEqual(ended["message"], "Stopped by ending the session. " + ed.SESSION_ENDED_TEXT)
-        self.assertEqual((self.state / "argv.log").read_text().count("--xml"), 1)   # no new client
+        self.assertEqual((self.state / "argv.log").read_text(encoding="utf-8").count("--xml"), 1)   # no new client
         self.call("/api/editor/close")
         fresh = self.run_sql("SELECT 1")
         self.assertEqual(fresh["status"], "complete")
@@ -1533,7 +1533,7 @@ class ProcessTests(unittest.TestCase):
                     self.assertIn("nothing was sent", reply["message"].lower())
                     session = opened[0]
                     log = self.state / ("session-%d.log" % session.connection_id)
-                    self.assertFalse(log.exists() and ed.SAFE_UPDATES_OFF in log.read_text())
+                    self.assertFalse(log.exists() and ed.SAFE_UPDATES_OFF in log.read_text(encoding="utf-8"))
                     records = self.store.audit_records()
                     self.assertEqual(len(records), audits + 1)
                     self.assertEqual((records[0]["operation"], records[0]["status"], records[0]["statements"]),
@@ -1603,7 +1603,7 @@ class ProcessTests(unittest.TestCase):
     def test_review_alter_guard_error_stops_before_ddl(self):
         # Change this test's fake binary only, leaving the shared fixture intact.
         client = Path(self.temp.name) / "bin" / "mysql"
-        text = client.read_text()
+        text = client.read_text(encoding="utf-8")
         text = text.replace("        upper = text.upper()\n", "        upper = text.upper()\n"
                             "        if upper == 'SET SESSION LOCK_WAIT_TIMEOUT = 5':\n"
                             "            self.error(line, 1227, '42000', 'Guard denied')\n"
@@ -1632,7 +1632,7 @@ class ProcessTests(unittest.TestCase):
         # The session this run started is ended, and nothing reached it.
         self.assertIsNone(self.registry.get("tab1"))
         log = self.state / ("session-%d.log" % opened[0].connection_id)
-        self.assertFalse(log.exists() and "INSERT INTO tt" in log.read_text())
+        self.assertFalse(log.exists() and "INSERT INTO tt" in log.read_text(encoding="utf-8"))
 
     def test_review_policy_refusal_ends_only_a_session_the_run_started(self):
         """The final policy re-read refuses the run. A session this request
@@ -1675,7 +1675,7 @@ class ProcessTests(unittest.TestCase):
                     self.assertIsNone(self.registry.get(tab))
                     self.assertIsNone(result["session"])
                     log = self.state / ("session-%d.log" % opened[0].connection_id)
-                    self.assertFalse(log.exists() and "INSERT INTO tt" in log.read_text())
+                    self.assertFalse(log.exists() and "INSERT INTO tt" in log.read_text(encoding="utf-8"))
 
     def test_review_policy_refusal_keeps_a_new_session_another_request_holds(self):
         """Review gate: between creating the session and the final re-read,
@@ -2021,7 +2021,7 @@ class ProcessTests(unittest.TestCase):
                 control.assert_called_once()
                 self.assertEqual(control.call_args[1]["password"], "s3cret-pw")
                 self.assertEqual(control.call_args[1]["host"], self.connection["host"])
-                self.assertIn("KILL QUERY %d" % session.connection_id, (self.state / "kills.log").read_text())
+                self.assertIn("KILL QUERY %d" % session.connection_id, (self.state / "kills.log").read_text(encoding="utf-8"))
                 self.assertTrue(run.done.wait(5))
                 self.assertIsNone(run.options)
                 self.assertNotIn("s3cret-pw", json.dumps(result))
@@ -2062,7 +2062,7 @@ class ProcessTests(unittest.TestCase):
                     with self.assertRaises(ed.EditorError) as caught:
                         self.call("/api/editor/" + path, tab=path, **payload)
                 self.assertEqual(caught.exception.code, "identity_mismatch")
-                log = (self.state / ("session-%d.log" % session.connection_id)).read_text()
+                log = (self.state / ("session-%d.log" % session.connection_id)).read_text(encoding="utf-8")
                 self.assertNotIn("SET @x = 99", log)
                 self.assertNotIn(ed.TAG + "COMMIT", log)
                 self.assertNotIn("SET SESSION sql_safe_updates = 1", log)

@@ -476,7 +476,7 @@ class TestCache(unittest.TestCase):
         self.assertEqual([(s['id'], s['items']) for s in result['sources']], [('planet-mysql', 4), ('mariadb-foundation', 4)])
         if os.name == 'posix':
             self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
-        self.assertEqual(json.loads(self.path.read_text())['schema_version'], 'news-cache-1.0')
+        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8"))['schema_version'], 'news-cache-1.0')
 
     def test_fresh_cache_is_served_without_reading(self):
         self.read(Reader())
@@ -578,7 +578,7 @@ class TestCache(unittest.TestCase):
 
     def test_cache_is_checked_again_when_loaded(self):
         self.read(Reader())
-        value = json.loads(self.path.read_text())
+        value = json.loads(self.path.read_text(encoding="utf-8"))
         entry = value['sources']['planet-mysql']
         entry['items'] = [dict(entry['items'][0], link='javascript:alert(1)'),
                           dict(entry['items'][0], link='http://blogs.oracle.com/mysql/x'),

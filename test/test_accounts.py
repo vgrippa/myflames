@@ -38,7 +38,7 @@ def actor(engine='mysql', account='admin@localhost', grants=None, variables=None
 
 def catalog_replay(conn, server):
     """Add the independent live catalog capture, preserving both recordings."""
-    data = json.loads((replay.FIXTURES / ('show-privileges-' + server + '.json')).read_text())
+    data = json.loads((replay.FIXTURES / ('show-privileges-' + server + '.json')).read_text(encoding="utf-8"))
     for call in data['sessions']['root']['calls']:
         conn.answers[call['sql']] = call
     return conn
@@ -1130,7 +1130,7 @@ class AccountsTest(unittest.TestCase):
         sql = a._with_password_mode('ALTER USER `app`@`%` IDENTIFIED BY ' + a._password(password))
         with mock.patch.dict(os.environ, {'MYSQL_PWD': 'must-not-inherit', 'MYSQL_HOST': 'must-not-inherit'}):
             a._run_stdin(conn, sql, [password])
-        data = json.loads(log.read_text())
+        data = json.loads(log.read_text(encoding="utf-8"))
         self.assertEqual(data['mode'], 0o600)
         self.assertTrue(all(password not in arg and 'connection-secret' not in arg and 'ALTER USER' not in arg
                             for arg in data['argv']))
@@ -1167,7 +1167,7 @@ class AccountsTest(unittest.TestCase):
 
     def test_python37_syntax(self):
         for path in (Path(a.__file__), Path(__file__)):
-            ast.parse(path.read_text(), **({'feature_version': 7} if sys.version_info >= (3, 8) else {}))
+            ast.parse(path.read_text(encoding="utf-8"), **({'feature_version': 7} if sys.version_info >= (3, 8) else {}))
 
 
 
@@ -1179,7 +1179,7 @@ class GrantEditorTest(unittest.TestCase):
             with self.subTest(server=server):
                 conn, data = replay.reads(server)
                 catalog_replay(conn, server)
-                low = json.loads((replay.FIXTURES / ('show-privileges-' + server + '.json')).read_text())
+                low = json.loads((replay.FIXTURES / ('show-privileges-' + server + '.json')).read_text(encoding="utf-8"))
                 for call in low['sessions']['acct_low']['calls']:
                     conn.answers[call['sql']] = call
                 account = a.read_account(conn, 'acct_app')
@@ -1323,7 +1323,7 @@ class GrantEditorTest(unittest.TestCase):
 
     def test_live_dynamic_names_and_invalid_levels_before_write(self):
         for server in replay.SERVERS:
-            data = json.loads((replay.FIXTURES / ('show-privileges-' + server + '.json')).read_text())
+            data = json.loads((replay.FIXTURES / ('show-privileges-' + server + '.json')).read_text(encoding="utf-8"))
             self.conn = FakeConn(data['server']['engine']); self.conn.version = data['server']['version']
             original = self.conn.run
             output = next(c['output'] for c in data['sessions']['root']['calls'] if c['sql'] == a.TAG + 'SHOW PRIVILEGES')

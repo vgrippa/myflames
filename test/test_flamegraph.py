@@ -420,7 +420,7 @@ class TestPlanUnits(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as f:
                 f.write(SUB_MS_PLAN)
             result = subprocess.run([sys.executable, "-m", "myflames", "--type", "flamegraph", "--no-enhance", path],
-                                    cwd=REPO_DIR, capture_output=True, text=True)
+                                    cwd=REPO_DIR, capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(result.returncode, 0, result.stderr)
         _, frames = _frames(result.stdout)
         self.assertEqual(len(frames), 7)
@@ -505,7 +505,7 @@ class TestUnmeasuredPlans(unittest.TestCase):
     def test_except_fixture_reads_no_measured_time(self):
         path = os.path.join(TEST_DIR, "fixtures", "mysql-8.4-v1-except.json")
         result = subprocess.run([sys.executable, "-m", "myflames", "--type", "flamegraph", path],
-                                cwd=REPO_DIR, capture_output=True, text=True)
+                                cwd=REPO_DIR, capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(result.returncode, 0, result.stderr)
         root, frames = _frames(result.stdout)
         self.assertTrue(frames, "placeholder frames still render")
@@ -555,7 +555,7 @@ class TestPipelines(unittest.TestCase):
     def test_cli_inverted_svg_with_panel(self):
         result = subprocess.run(
             [sys.executable, "-m", "myflames", "--type", "flamegraph", "--inverted", HASH_JOIN],
-            cwd=REPO_DIR, capture_output=True, text=True,
+            cwd=REPO_DIR, capture_output=True, text=True, encoding="utf-8",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         root = ET.fromstring(result.stdout.encode("utf-8"))

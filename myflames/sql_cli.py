@@ -103,9 +103,11 @@ def _emit(body, fmt, quiet, password, output=None, insert_table="result"):
                 # default for result sets without a source table.
                 data.write(editor.export_result("sql" if fmt == "insert" else fmt, result,
                                                       table=insert_table if fmt == "insert" else None)["content"])
-            if result.get("truncated") or result.get("warnings"):
+            if (result.get("truncated") or result.get("warnings")) and not quiet:
+                # label describes a stopped or truncated result; otherwise count the rows.
                 _note("Statement %d: %s; %d warning(s)." % (
-                    result["statement"] + 1, result["label"], result.get("warnings") or 0))
+                    result["statement"] + 1, result.get("label") or "%d row(s)" % len(result["rows"]),
+                    result.get("warnings") or 0))
         elif kind == "ok" and not quiet:
             _note("Statement %d: %s row(s) affected; %s warning(s).%s" % (
                 result["statement"] + 1, result.get("affected_rows") or 0,

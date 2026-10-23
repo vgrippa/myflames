@@ -206,7 +206,7 @@ class TestServerWrapper(unittest.TestCase):
             env = dict(os.environ, PYTHONPATH=directory + os.pathsep + os.path.dirname(TEST_DIR))
             result = subprocess.run([sys.executable, '-m', 'myflames.mcp_server'],
                                     env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                    universal_newlines=True, timeout=30)
+                                    universal_newlines=True, encoding="utf-8", timeout=30)
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertEqual(result.stdout, '')
         self.assertEqual(len(result.stderr.splitlines()), 1, result.stderr)

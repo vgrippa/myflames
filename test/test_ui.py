@@ -16,8 +16,8 @@ from myflames.output_compare_sidecar import build_compare_sidecar
 from myflames.ui import api_response, WorkspaceHandler, WorkspaceServer, MAX_BODY, VIEWS
 
 TEST_DIR = Path(__file__).resolve().parent
-PLAN = (TEST_DIR / 'mysql-explain-json-sample.json').read_text()
-MARIA = (TEST_DIR / 'mariadb-explain-join.json').read_text()
+PLAN = (TEST_DIR / 'mysql-explain-json-sample.json').read_text(encoding="utf-8")
+MARIA = (TEST_DIR / 'mariadb-explain-join.json').read_text(encoding="utf-8")
 
 
 class TestBackendReadLimits(unittest.TestCase):
@@ -415,7 +415,7 @@ class TestWorkspaceLaunchGuidance(unittest.TestCase):
                      'width: 100%', 'box-sizing: border-box', 'overflow-wrap: anywhere'):
             self.assertIn(rule, style.group(1))
         # The server fallback and React error share the same scoped rules.
-        app_css = (TEST_DIR.parent / 'apps/workspace/src/style.css').read_text()
+        app_css = (TEST_DIR.parent / 'apps/workspace/src/style.css').read_text(encoding="utf-8")
         self.assertIn(style.group(1).strip(), app_css)
         for secret in (self.server.token, self.server.session_secret, self.server.bootstrap_secret):
             self.assertNotIn(secret, page)

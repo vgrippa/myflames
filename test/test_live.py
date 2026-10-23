@@ -13,8 +13,8 @@ from myflames.live import (LiveJob, LiveJobs, bind_query, capture_problem, conne
                            measurement_summary, _sections, _status)
 from myflames.parser import parse_explain
 
-PLAN = (Path(__file__).parent / 'mysql-explain-json-sample.json').read_text()
-MARIA = (Path(__file__).parent / 'mariadb-explain-join.json').read_text()
+PLAN = (Path(__file__).parent / 'mysql-explain-json-sample.json').read_text(encoding="utf-8")
+MARIA = (Path(__file__).parent / 'mariadb-explain-join.json').read_text(encoding="utf-8")
 
 
 def payload(**extra):

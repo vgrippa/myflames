@@ -81,7 +81,7 @@ class TestWriteHTTP(unittest.TestCase):
         return payload
 
     def test_socket_setup_preserves_headers_and_authenticated_json_body(self):
-        plan = Path(__file__).with_name('mysql-explain-json-sample.json').read_text()
+        plan = Path(__file__).with_name('mysql-explain-json-sample.json').read_text(encoding="utf-8")
         body = json.dumps({'plan': plan}).encode('utf-8')
         headers = ('POST /api/analyze HTTP/1.1\r\nHost: 127.0.0.1:8765\r\n'
                    'Origin: %s\r\nCookie: myflames_test=test-cookie-secret\r\n'

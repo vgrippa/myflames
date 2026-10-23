@@ -31,7 +31,7 @@ def run_cli(*args, **kwargs):
         input=stdin,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        universal_newlines=True,
+        universal_newlines=True, encoding="utf-8",
     )
     return proc
 
@@ -87,7 +87,7 @@ class TestOutputFlag(unittest.TestCase):
                 result = run_cli('--type', 'workbench', FULL_SCAN, '-o', str(output))
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout, '')
-                content = output.read_text()
+                content = output.read_text(encoding="utf-8")
                 if extension == 'svg':
                     self.assertIn('class="wb-plan"', content)
                     self.assertIn('data-node-id=', content)
@@ -96,9 +96,9 @@ class TestOutputFlag(unittest.TestCase):
                     # The report mounts Visual Explain from chart data with
                     # the inlined bundle (browser coverage: charts.mjs).
                     self.assertIn('data-mfc-view="workbench"', content)
-                    self.assertIn('"id":"' + parse_explain(Path(FULL_SCAN).read_text())['node_id'] + '"', content)
+                    self.assertIn('"id":"' + parse_explain(Path(FULL_SCAN).read_text(encoding="utf-8"))['node_id'] + '"', content)
                     self.assertIn('application/ld+json', content)
-                    sidecar = json.loads(output.with_suffix('.json').read_text())
+                    sidecar = json.loads(output.with_suffix('.json').read_text(encoding="utf-8"))
                     self.assertIn('plan_tree', sidecar)
 
     def test_digest_output_writes_file(self):
@@ -157,6 +157,50 @@ class TestStreamDiscipline(unittest.TestCase):
         proc = run_cli("check", FULL_SCAN, "--fail-on", "filesort", "-q")
         self.assertEqual(proc.stdout.strip(), "")
         self.assertEqual(proc.stderr.strip(), "")
+
+
+class TestUnicodeStreams(unittest.TestCase):
+    """Windows encodes a redirected stream with the ANSI code page (cp1252);
+    the CLI still writes and reads UTF-8 there. PYTHONIOENCODING gives any
+    platform that starting point."""
+
+    NAME = "café_日本"
+
+    def test_redirected_output_is_utf8_on_an_ansi_code_page(self):
+        with open(FULL_SCAN, encoding="utf-8") as handle:
+            plan = handle.read().replace('"table_name": "users"', '"table_name": "%s"' % self.NAME)
+        self.assertIn(self.NAME, plan)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "unicode-plan.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(plan)
+            env = dict(os.environ, PYTHONIOENCODING="cp1252")
+            proc = subprocess.run([sys.executable, "-m", "myflames", "digest", path], cwd=REPO_ROOT, env=env,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(proc.returncode, 0, proc.stderr.decode("utf-8", "replace"))
+        self.assertIn(self.NAME, proc.stdout.decode("utf-8"))
+
+    def test_piped_input_is_read_as_utf8(self):
+        import io
+        from unittest import mock
+        from myflames import cli
+        text = "SELECT '%s'" % self.NAME
+        streams = {name: io.TextIOWrapper(io.BytesIO(text.encode("utf-8") if name == "stdin" else b""),
+                                          encoding="cp1252", errors=errors)
+                   for name, errors in (("stdin", "strict"), ("stdout", "strict"), ("stderr", "backslashreplace"))}
+        with mock.patch.multiple(sys, **streams):
+            cli._utf8_standard_streams()
+            self.assertEqual(sys.stdin.read(), text)
+            self.assertEqual(sys.stdout.encoding, "utf-8")
+            self.assertEqual(sys.stderr.errors, "backslashreplace")
+
+    def test_streams_without_an_encoding_are_left_alone(self):
+        import io
+        from unittest import mock
+        from myflames import cli
+        with mock.patch.multiple(sys, stdin=io.StringIO("x"), stdout=io.StringIO(), stderr=io.StringIO()):
+            cli._utf8_standard_streams()
+            self.assertEqual(sys.stdin.read(), "x")
 
 
 class TestQuietFlagUniform(unittest.TestCase):

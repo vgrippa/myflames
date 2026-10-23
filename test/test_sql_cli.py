@@ -86,7 +86,7 @@ class SQLTests(unittest.TestCase):
         self.store.save('profile', dict(name='test', host='127.0.0.1', port=3306, user='app', **settings))
 
     def log(self):
-        return '\n'.join(p.read_text() for p in self.state.glob('session-*.log'))
+        return '\n'.join(p.read_text(encoding="utf-8") for p in self.state.glob('session-*.log'))
 
     def test_yes_records_only_real_outcome_on_both_profile_types(self):
         for ctype in ('development', 'production'):
@@ -113,11 +113,11 @@ class SQLTests(unittest.TestCase):
                                       "--insert-table", "a`b", "-o", str(target), "-q"])
         self.assertEqual(code, 0, err)
         self.assertEqual((out, err), ("", ""))
-        self.assertIn("INSERT INTO `a``b`", target.read_text())
+        self.assertIn("INSERT INTO `a``b`", target.read_text(encoding="utf-8"))
         code, out, err = self.invoke(["-e", "SELECT 7 AS n", "--json", "--output", str(target)])
         self.assertEqual(code, 0, err)
         self.assertEqual(out, "")
-        self.assertEqual(json.loads(target.read_text())["status"], "complete")
+        self.assertEqual(json.loads(target.read_text(encoding="utf-8"))["status"], "complete")
         before = target.read_bytes()
         code, out, err = self.invoke(["-e", "DROP DATABASE d", "--yes", "-o", str(target)])
         self.assertEqual(code, 2)
@@ -335,7 +335,7 @@ class SQLTests(unittest.TestCase):
             self.assertEqual(code, 2, err)
             code, out, err = self.invoke(['--profile', 'saved', '-e', 'SELECT 1', '--json'])
         self.assertEqual(code, 0, err)
-        self.assertNotIn('saved-secret', out + err + (self.state / 'argv.log').read_text())
+        self.assertNotIn('saved-secret', out + err + (self.state / 'argv.log').read_text(encoding="utf-8"))
 
     def test_tty_confirmation_yes_and_default_no(self):
         for answer, expected in (('\n', 2), ('y\n', 0)):
@@ -532,7 +532,7 @@ class SQLTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         for secret in ('cli-password', 'new-secret'):
             self.assertNotIn(secret, out + err + json.dumps(self.store.audit_records()))
-        self.assertNotIn('cli-password', (self.state / 'argv.log').read_text())
+        self.assertNotIn('cli-password', (self.state / 'argv.log').read_text(encoding="utf-8"))
 
     def test_quiet_preserves_payload_and_errors(self):
         code, out, err = self.invoke(['-e', 'SET @x=1; SELECT @x', '--yes', '--json', '-q'])
@@ -542,6 +542,16 @@ class SQLTests(unittest.TestCase):
         code, out, err = self.invoke(['-e', 'SELECT * FROM nope', '--json', '-q'])
         self.assertEqual(code, 1)
         self.assertIn('ERROR 1146', err)
+
+    def test_warning_note_counts_rows_and_follows_quiet(self):
+        code, out, err = self.invoke(['-e', 'SELECT 1/0', '--json'])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)['results'][0]['warnings'], 1)
+        self.assertIn('Statement 1: 1 row(s); 1 warning(s).', err)
+        self.assertNotIn('None', err)
+        code, out, err = self.invoke(['-e', 'SELECT 1/0', '--json', '-q'])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(err, '')
 
     def test_profile_change_during_password_resolution_refuses(self):
         self.profile(type='development')

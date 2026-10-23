@@ -42,7 +42,7 @@ class WorkspacePayloadTests(unittest.TestCase):
         query = 'SELECT 1 /* keep this SQL exactly */'
         for filename in ('mysql-explain-hash-join.json', 'mariadb-explain-block-nl-join.json'):
             with self.subTest(engine=filename):
-                raw = (TEST / filename).read_text()
+                raw = (TEST / filename).read_text(encoding="utf-8")
                 root = parse_explain(raw)
                 result = api_response('/api/analyze', {'plan': json.dumps(dict(json.loads(raw), query=query))})
                 self.assertEqual(result['query'], query)

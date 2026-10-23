@@ -77,7 +77,7 @@ class TestWorkbench(unittest.TestCase):
                          'fixtures/explain-061-union-all-us-uk-users.json',
                          'mariadb-explain-complex.json', 'mariadb-explain-index-merge.json'):
             with self.subTest(filename=filename):
-                root = parse_explain((TEST / filename).read_text())
+                root = parse_explain((TEST / filename).read_text(encoding="utf-8"))
                 original = copy.deepcopy(root)
                 svg = ET.fromstring(render_workbench(root))
                 node_ids = [g.attrib['data-node-id'] for g in svg.iter(SVG+'g') if 'data-node-id' in g.attrib]
@@ -197,13 +197,13 @@ class TestWorkbench(unittest.TestCase):
     def test_real_left_and_inner_plans_have_correct_regions(self):
         for filename, expected in [('explain-040-left-join-products-reviews.json', 'left'),
                                    ('explain-044-join-3t-products-category-reviews.json', 'inner')]:
-            root = parse_explain((TEST / 'fixtures' / filename).read_text())
+            root = parse_explain((TEST / 'fixtures' / filename).read_text(encoding="utf-8"))
             joins = [node for node in flatten_nodes(root) if _kind(node) in ('nested_loop', 'hash', 'bka')]
             self.assertTrue(joins)
             self.assertTrue(all(_join_type(node) == expected for node in joins))
 
     def test_mariadb_synthetic_join_does_not_invent_inner_semantics(self):
-        root = parse_explain((TEST / 'mariadb-explain-complex.json').read_text())
+        root = parse_explain((TEST / 'mariadb-explain-complex.json').read_text(encoding="utf-8"))
         joins = [node for node in flatten_nodes(root) if node['details']['join_algorithm'] == 'nested_loop']
         self.assertTrue(joins)
         self.assertTrue(all(_join_type(node) == 'unknown' for node in joins))
@@ -221,7 +221,7 @@ class TestWorkbench(unittest.TestCase):
 
     def test_programmatic_render_alias_includes_same_analysis(self):
         from myflames.render import render_explain
-        raw = (TEST / 'fixtures' / 'explain-040-left-join-products-reviews.json').read_text()
+        raw = (TEST / 'fixtures' / 'explain-040-left-join-products-reviews.json').read_text(encoding="utf-8")
         diagram = render_explain(raw, output_type='diagram')
         self.assertEqual(diagram, render_explain(raw, output_type='workbench'))
         self.assertIn('data-join-type="left"', diagram)

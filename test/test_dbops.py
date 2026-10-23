@@ -554,7 +554,7 @@ class TestReviewGate(unittest.TestCase):
         self.assertEqual(dbops.connection_identity(base, {'type': 'production', 'read_only': True}),
                          '["p1","db",3306,"app","REQUIRED","","production",true]')
         self.assertNotIn('never', dbops.connection_identity(base))
-        source = (Path(__file__).resolve().parent.parent / 'apps' / 'workspace' / 'src' / 'binding.ts').read_text()
+        source = (Path(__file__).resolve().parent.parent / 'apps' / 'workspace' / 'src' / 'binding.ts').read_text(encoding="utf-8")
         self.assertIn('key.push(type, c.read_only === true)', source)
         from myflames import report
         options = {'host': 'db', 'port': 3306}
@@ -1292,7 +1292,7 @@ class TestAuditCLI(TempHome):
         path = Path(self.temp.name) / 'audit.csv'
         code, out, err = run_cli(workspace_cli.cmd_audit, ['export', '--csv', '-o', str(path)])
         self.assertEqual((code, out), (0, ''))
-        self.assertIn('KILL CONNECTION 41', path.read_text())
+        self.assertIn('KILL CONNECTION 41', path.read_text(encoding="utf-8"))
         code, out, _ = run_cli(workspace_cli.cmd_audit, ['export'])
         self.assertEqual(json.loads(out)['records'][0]['status'], 'refused')
 

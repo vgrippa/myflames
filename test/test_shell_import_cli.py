@@ -37,7 +37,7 @@ class TestShellBundleCli(unittest.TestCase):
 
     def _run(self, *args):
         return subprocess.run([sys.executable, "-m", "myflames"] + list(args),
-                              cwd=REPO_DIR, capture_output=True, text=True)
+                              cwd=REPO_DIR, capture_output=True, text=True, encoding="utf-8")
 
     def test_import_shell_writes_capture_json(self):
         r = self._run("import-shell", self.zip, "-q")
