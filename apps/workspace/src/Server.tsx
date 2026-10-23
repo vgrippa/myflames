@@ -117,6 +117,7 @@ import type { ClusterReport } from "./clusterApi";
 import { ViewOnScreenContext } from "./viewOnScreen";
 import { ALL_SERVER_VIEWS, SERVER_GROUPS, SERVER_VIEWS, WORKLOAD_GROUPS, WORKLOAD_KINDS, WORKLOAD_VIEWS } from "./serverViews";
 import { lazyComponent, preloadWhenIdle } from "./lazy";
+import { shortcut } from "./platform";
 import "./server.css";
 
 // Views that Server uses only as components load their chunk on first open
@@ -1590,7 +1591,7 @@ export function Server({
                       They only read, except Kill in Processlist (with explicit confirmation).
                     </p>
                     <p>
-                      Refresh all (⌥⌘R) reads Server and Workload sections, Replication and Cluster, including unopened views, three at a time. Full analysis runs in a separate phase. Database diagram is read once a database is chosen; imported diagrams stay unchanged. Maintenance refreshes tool detection only.
+                      Refresh all ({shortcut("R", true)}) reads Server and Workload sections, Replication and Cluster, including unopened views, three at a time. Full analysis runs in a separate phase. Database diagram is read once a database is chosen; imported diagrams stay unchanged. Maintenance refreshes tool detection only.
                     </p>
                   </>
                 ) : (
@@ -1605,7 +1606,7 @@ export function Server({
                       Locks, Change in Parameters, a skip in Replication, or a dump, restore or clone in
                       Maintenance, or changes in Users and roles (your account needs the privilege).
                     </p>
-                    <p>Refresh all (⌥⌘R) reads Server and Workload sections, Replication and Cluster, including unopened views, three at a time. Full analysis runs in a separate phase. Database diagram is read once a database is chosen; imported diagrams stay unchanged. Maintenance refreshes tool detection only.</p>
+                    <p>Refresh all ({shortcut("R", true)}) reads Server and Workload sections, Replication and Cluster, including unopened views, three at a time. Full analysis runs in a separate phase. Database diagram is read once a database is chosen; imported diagrams stay unchanged. Maintenance refreshes tool detection only.</p>
                   </>
                 )}
               </InfoPopover>
@@ -1675,7 +1676,7 @@ export function Server({
                   className="refresh-all-button"
                   data-action="refresh-all"
                   disabled={disabled}
-                  title={`Refresh all ${refreshableCount} sections for this connection (⌥⌘R)`}
+                  title={`Refresh all ${refreshableCount} sections for this connection (${shortcut("R", true)})`}
                   onClick={() => void refreshAll()}
                 >
                   Refresh all

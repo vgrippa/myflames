@@ -59,15 +59,13 @@ import { SafeUpdatesInfo } from "./SafeUpdatesInfo";
 import { QueryTabMenu, MAX_TAB_NAME, clipName, copyName } from "./QueryTabMenu";
 import { editorPrivilegeGate, isPrivilegeDenial, privilegeButtonProps, usePrivilege, usePrivileges, type EditorPrivilegePreview } from "./privileges";
 import { lazyComponent } from "./lazy";
+import { MAC } from "./platform";
 import "./editor.css";
 
 // Opened on request (Table data, the Query Digest mode): their chunks load
 // the first time they open (lazy.tsx).
 const TableData = lazyComponent(() => import("./TableData").then((m) => m.TableData));
 
-const MAC =
-  typeof navigator !== "undefined" &&
-  /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent);
 /** Visible shortcut text: "⌘Return" on macOS, "Ctrl+Enter" elsewhere. */
 /** Format SQL: ⇧⌥F on macOS, Shift+Alt+F elsewhere (VS Code's binding). */
 const FORMAT_KEYS = MAC ? "⇧⌥F" : "Shift+Alt+F";

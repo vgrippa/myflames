@@ -29,6 +29,7 @@ import {
 } from "react";
 import { Icon, isIconName, type IconName } from "./components";
 import { createPortal } from "react-dom";
+import { shortcut } from "./platform";
 import "./kit.css";
 
 // Only the innermost open surface owns keyboard navigation. A drawer may
@@ -3320,7 +3321,7 @@ export function ViewLayout({
               className="inspector-toggle"
               aria-pressed={shared.open}
               label={shared.open ? "Hide inspector" : "Show inspector"}
-              title={`${shared.open ? "Hide" : "Show"} inspector (⌥⌘I)`}
+              title={`${shared.open ? "Hide" : "Show"} inspector (${shortcut("I", true)})`}
               onClick={() => (shared.open ? close() : shared.setOpen(true))}
             />
           )}
