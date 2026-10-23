@@ -124,6 +124,10 @@ and packaged platform validation remain release work.
 Database clients are not bundled. On macOS the launcher appends standard
 Homebrew, Oracle MySQL and MacPorts client locations to the backend PATH so
 Finder launches can discover installed tools without reading shell startup files.
+On Windows it appends the `bin` folders the MySQL and MariaDB installers create
+under Program Files (`MySQL\MySQL Server 8.4`, `MariaDB 11.8`, `MySQL\MySQL Shell 8.4`
+and other versions, newest first), which they do not add to PATH; PATH keeps
+precedence.
 No automatic application updates or install actions are enabled.
 
 ## Build an unsigned macOS app
@@ -273,6 +277,4 @@ This build is for testing, not a supported platform or a release asset. Known ga
   Object supervision, and the parent watch in `scripts/backend-entry.py` is POSIX
   only. Ending `myflames.exe` in Task Manager during a 120 s query left the
   backend gone but its `mysql.exe` running the query to the end.
-- Database clients are found only through PATH; the MySQL and MariaDB
-  installers' default folders are not searched.
 - The installer and the app are not code signed.

@@ -62,7 +62,47 @@ function isolatedBackendHome(directory, home) {
   }
   return actualHome;
 }
-function backendEnvironment(dataDirectory, inherited = process.env, platform = process.platform) {
+// The MySQL and MariaDB installers for Windows put their clients in versioned
+// folders under Program Files and do not add them to PATH. Searched in this
+// order (MySQL first, as on macOS), newest version first within each.
+const WINDOWS_CLIENT_FOLDERS = [
+  ['MySQL', /^MySQL Server (\d+(?:\.\d+)*)$/i],
+  ['', /^MariaDB (\d+(?:\.\d+)*)$/i],
+  ['MySQL', /^MySQL Shell (\d+(?:\.\d+)*)$/i],
+];
+function newerFirst(a, b) {
+  const x = a.split('.').map(Number), y = b.split('.').map(Number);
+  for (let i = 0; i < Math.max(x.length, y.length); i += 1) {
+    if ((x[i] || 0) !== (y[i] || 0)) return (y[i] || 0) - (x[i] || 0);
+  }
+  return 0;
+}
+function windowsClientDirectories(inherited, fileSystem = fs) {
+  const variable = name => {
+    const key = Object.keys(inherited).find(candidate => candidate.toLowerCase() === name.toLowerCase());
+    return key ? inherited[key] : undefined;
+  };
+  const roots = [...new Set(['ProgramW6432', 'ProgramFiles', 'ProgramFiles(x86)'].map(variable).filter(Boolean))];
+  const found = [];
+  for (const [parent, pattern] of WINDOWS_CLIENT_FOLDERS) {
+    const group = [];
+    for (const root of roots) {
+      const base = parent ? path.win32.join(root, parent) : root;
+      let names;
+      try { names = fileSystem.readdirSync(base); } catch { continue; }
+      for (const name of names) {
+        const match = pattern.exec(name);
+        if (!match) continue;
+        const bin = path.win32.join(base, name, 'bin');
+        try { if (fileSystem.statSync(bin).isDirectory()) group.push({ bin, version: match[1] }); } catch { /* not installed */ }
+      }
+    }
+    group.sort((a, b) => newerFirst(a.version, b.version));
+    found.push(...group.map(item => item.bin));
+  }
+  return found;
+}
+function backendEnvironment(dataDirectory, inherited = process.env, platform = process.platform, fileSystem = fs) {
   const env = {};
   // Preserve tool discovery and OS necessities, never inherited MySQL defaults,
   // Python injection paths, profile overrides or vault secrets.
@@ -78,6 +118,9 @@ function backendEnvironment(dataDirectory, inherited = process.env, platform = p
       '/opt/homebrew/opt/mysql-shell/bin', '/usr/local/opt/mysql-shell/bin',
       '/opt/homebrew/opt/mariadb/bin', '/usr/local/opt/mariadb/bin', '/opt/local/bin',
     ]))].join(':');
+  } else if (platform === 'win32') {
+    env.PATH = [...new Set((env.PATH || '').split(';').filter(Boolean)
+      .concat(windowsClientDirectories(inherited, fileSystem)))].join(';');
   }
   env.HOME = path.join(dataDirectory, 'backend-home');
   env.USERPROFILE = env.HOME;

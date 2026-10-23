@@ -81,6 +81,41 @@ test('Finder client discovery appends fixed locations without shell execution or
   assert.ok(backendEnvironment('/desktop', {}, 'darwin').PATH.startsWith('/usr/bin:/bin:'));
   assert.equal(backendEnvironment('/desktop', { PATH: '/custom' }, 'linux').PATH, '/custom');
 });
+test('Windows client discovery appends installer folders after PATH, newest first', () => {
+  // A fake file system, so this runs on any OS: Program Files as the installers leave it.
+  const dirs = new Set([
+    'C:\\Program Files\\MySQL\\MySQL Server 8.0\\bin', 'C:\\Program Files\\MySQL\\MySQL Server 8.4\\bin',
+    'C:\\Program Files\\MySQL\\MySQL Shell 8.4\\bin', 'C:\\Program Files\\MariaDB 11.8\\bin',
+    'C:\\Program Files\\MariaDB 10.11\\bin', 'C:\\Program Files (x86)\\MySQL\\MySQL Server 5.7\\bin',
+  ]);
+  const listing = {
+    'C:\\Program Files\\MySQL': ['MySQL Server 8.0', 'MySQL Server 8.4', 'MySQL Shell 8.4', 'MySQL Workbench 8.0', 'MySQL Server 9.1'],
+    'C:\\Program Files': ['MariaDB 10.11', 'MariaDB 11.8', 'MySQL', 'Git'],
+    'C:\\Program Files (x86)\\MySQL': ['MySQL Server 5.7'],
+  };
+  const fileSystem = {
+    readdirSync: dir => { if (!listing[dir]) throw Object.assign(new Error('missing'), { code: 'ENOENT' }); return listing[dir]; },
+    statSync: dir => { if (!dirs.has(dir)) throw Object.assign(new Error('missing'), { code: 'ENOENT' }); return { isDirectory: () => true }; },
+  };
+  const inherited = { Path: 'C:\\Windows\\System32;C:\\tools\\mysql\\bin', ProgramFiles: 'C:\\Program Files',
+    'ProgramFiles(x86)': 'C:\\Program Files (x86)', ProgramW6432: 'C:\\Program Files' };
+  const env = backendEnvironment('C:\\desktop', { ...inherited, PATH: inherited.Path }, 'win32', fileSystem);
+  assert.deepEqual(env.PATH.split(';'), [
+    'C:\\Windows\\System32', 'C:\\tools\\mysql\\bin',
+    'C:\\Program Files\\MySQL\\MySQL Server 8.4\\bin', 'C:\\Program Files\\MySQL\\MySQL Server 8.0\\bin',
+    'C:\\Program Files (x86)\\MySQL\\MySQL Server 5.7\\bin',
+    'C:\\Program Files\\MariaDB 11.8\\bin', 'C:\\Program Files\\MariaDB 10.11\\bin',
+    'C:\\Program Files\\MySQL\\MySQL Shell 8.4\\bin',
+  ]);
+  // Environment names are case-insensitive on Windows; nothing installed leaves PATH alone.
+  const lower = backendEnvironment('C:\\desktop', { PATH: 'C:\\x', programfiles: 'C:\\Program Files' }, 'win32', fileSystem);
+  assert.ok(lower.PATH.split(';').includes('C:\\Program Files\\MariaDB 11.8\\bin'));
+  const none = { readdirSync: () => { throw new Error('missing'); }, statSync: () => { throw new Error('missing'); } };
+  assert.equal(backendEnvironment('C:\\desktop', { PATH: 'C:\\x', ProgramFiles: 'C:\\Program Files' }, 'win32', none).PATH, 'C:\\x');
+  // A folder already on PATH is not added twice.
+  const dup = backendEnvironment('C:\\desktop', { PATH: 'C:\\Program Files\\MariaDB 11.8\\bin', ProgramFiles: 'C:\\Program Files' }, 'win32', fileSystem);
+  assert.equal(dup.PATH.split(';').filter(value => value === 'C:\\Program Files\\MariaDB 11.8\\bin').length, 1);
+});
 test('startup tolerates fragmented output and shutdown owns only its child process group', async () => {
   const f = fixture(), ready = startBackend(settings, f.dependencies);
   f.child.stderr.write('Other bounded startup text\nmyflames UI: ' + url.slice(0, 20));

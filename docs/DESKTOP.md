@@ -113,7 +113,7 @@ local builds stay unsigned
 Before distributing official builds more widely, complete native packaging
 tests, dependency notices, a verified update channel, and a deliberate
 MySQL/MariaDB client distribution policy. Installed clients are discovered in
-standard macOS locations as well as PATH. Keep the Python CLI
+standard macOS locations, and the MySQL and MariaDB installers' folders on Windows, as well as PATH. Keep the Python CLI
 available independently.
 
 Electron renderer code must stay sandboxed, with context isolation and no Node
