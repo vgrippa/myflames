@@ -12,6 +12,7 @@ import {
   DataTable,
   EmptyState,
   Fields,
+  InfoPopover,
   useSince,
   InspectorContext,
   InspectorSection,
@@ -23,6 +24,7 @@ import {
   ViewLayout,
   ViewStatus,
   closePopovers,
+  copyToClipboard,
   storeInspectorWidth,
   storedInspectorWidth,
   type Column,
@@ -31,6 +33,7 @@ import {
   type Selection,
   type Tone,
 } from "./kit";
+import { SafetyTags } from "./Connections";
 import "./audit.css";
 
 /** Below this width the inspector is a bottom sheet (as in Server). */
@@ -60,8 +63,20 @@ export const AUDIT_STATUS: Record<AuditStatus, { word: string; tone: Tone; meani
     tone: "watch",
     meaning: "Recorded before sending, but myflames stopped before it recorded the result. The statement may have run.",
   },
+  stopped: {
+    word: "Stopped",
+    tone: "off",
+    meaning: "Stopped on request before it finished; nothing more was sent. The message says what was kept.",
+  },
 };
-const STATUS_ORDER: AuditStatus[] = ["ok", "error", "unknown", "pending", "refused", "declined"];
+const STATUS_ORDER: AuditStatus[] = ["ok", "error", "unknown", "pending", "stopped", "refused", "declined"];
+/** A write stopped on request (Import CSV's Stop) reads Stopped, never Done or
+ * "answered without an error": the "stopped" status, and records an earlier
+ * build stored as status ok with outcome "stopped". */
+function statusOf(r: Pick<AuditRecord, "status" | "outcome">) {
+  if (r.status === "ok" && r.outcome === "stopped") return AUDIT_STATUS.stopped;
+  return AUDIT_STATUS[r.status];
+}
 const OPERATIONS: Record<string, string> = {
   kill: "Kill connection", kill_query: "Kill query",
   set_global: "SET GLOBAL", set_persist: "SET PERSIST", set_persist_only: "SET PERSIST_ONLY",
@@ -69,6 +84,7 @@ const OPERATIONS: Record<string, string> = {
   editor_run: "Query editor run", editor_commit: "Commit", editor_rollback: "Roll back", editor_safe_updates: "Safe updates",
   replication_skip: "Skip this transaction", replication_skip_loop: "Skip until stopped",
   dump: "Dump", restore: "Restore", clone: "Clone", sql: "SQL from the command line",
+  import_csv: "Import CSV",
 };
 /** Users and roles writes are recorded as accounts.<operation>. */
 const ACCOUNT_OPERATIONS: Record<string, string> = {
@@ -115,6 +131,30 @@ function readableLabel(key: string) {
 function mappedLabel(labels: Record<string, string>, key: string) {
   return Object.prototype.hasOwnProperty.call(labels, key) ? labels[key] : readableLabel(key);
 }
+/** Stored outcome keys as words (dbops._finish_fields keeps the key). */
+const OUTCOME_WORDS: Record<string, string> = {
+  killed: "Killed", gone: "Already ended", denied: "Denied by the server", error: "Error",
+  timeout: "Timed out", interrupted: "Interrupted", no_reply: "No reply", unverified: "Could not verify",
+  declined: "Declined", read_only: "Read-only connection", identity: "Target changed",
+  connection_changed: "Connection changed", changed: "Changed before sending", stale: "Review changed",
+  preflight: "Preflight failed", unsent: "Nothing was sent", not_connected: "Could not connect",
+  not_started: "Not started", applied: "Applied", review: "Review refused",
+  target_mismatch: "Target changed", stopped: "Stopped",
+};
+/** The outcome as a word, with the stored key on hover when they differ. */
+function Outcome({ outcome }: { outcome: string | null }) {
+  if (!outcome) return <>—</>;
+  const word = Object.prototype.hasOwnProperty.call(OUTCOME_WORDS, outcome) ? OUTCOME_WORDS[outcome] : readableLabel(outcome);
+  return word === outcome ? <>{word}</> : <span title={`Stored as "${outcome}"`}>{word}</span>;
+}
+/** Stored policy values as words (dbops.decide keeps the keys). */
+const POLICY_WORDS: Record<string, Record<string, string>> = {
+  action: { allow: "Allowed without asking", confirm: "Requires confirmation", refuse: "Refused" },
+  kind: { read: "Read", write: "Write", risky: "Risky" },
+  connection_type: { production: "Production", development: "Development" },
+};
+/** The policy names the type the write was judged by, not the connection's. */
+const POLICY_LABELS: Record<string, string> = { ...FIELD_LABELS, connection_type: "Judged as" };
 const OUTCOME_NOTE = "The statement may have reached the server; its outcome is unknown.";
 /** Older records append this note directly to an unpunctuated server error. */
 function messageText(r: AuditRecord) {
@@ -160,6 +200,33 @@ function errorText(r: AuditRecord) {
   return [r.error_code ? String(r.error_code) : "", messageText(r)].filter(Boolean).join(": ");
 }
 
+/** A stored statement with the shared clipboard path (kit copyToClipboard). */
+function Statement({ statement, index }: { statement: string; index: number }) {
+  const [copied, setCopied] = useState("");
+  return (
+    <div className="audit-statement">
+      <pre className="inspector-sql">
+        <code>{statement}</code>
+      </pre>
+      <button
+        type="button"
+        className="text-button"
+        aria-label={`Copy statement ${index + 1} as stored`}
+        onClick={() => {
+          void copyToClipboard(statement).then((ok) => setCopied(ok ? "Copied." : "Select the text to copy it."));
+        }}
+      >
+        Copy
+      </button>
+      {copied && (
+        <span className="hint" role="status">
+          {copied}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function Value({ value }: { value: unknown }): ReactNode {
   if (value === null || value === undefined || value === "") return "—";
   if (typeof value === "boolean") return value ? "Yes" : "No";
@@ -167,7 +234,14 @@ function Value({ value }: { value: unknown }): ReactNode {
   return String(value);
 }
 /** An object (target, policy, after state) as label / value rows. */
-function ObjectFields({ label, value, checks = false }: { label: string; value: unknown; checks?: boolean }) {
+function ObjectFields({ label, value, checks = false, labels = FIELD_LABELS, words }: {
+  label: string;
+  value: unknown;
+  checks?: boolean;
+  labels?: Record<string, string>;
+  /** Stored values to show as words, per field key. */
+  words?: Record<string, Record<string, string>>;
+}) {
   if (value === null || value === undefined) return <p className="hint">None recorded.</p>;
   if (typeof value !== "object" || Array.isArray(value))
     return Array.isArray(value) ? (
@@ -183,7 +257,15 @@ function ObjectFields({ label, value, checks = false }: { label: string; value: 
         <Value value={value} />
       </p>
     );
-  return <Fields label={label} rows={Object.entries(value as Record<string, unknown>).map(([k, v]) => [mappedLabel(FIELD_LABELS, k), <Value key={k} value={v} />])} />;
+  return <Fields label={label} rows={Object.entries(value as Record<string, unknown>).map(([k, v]) => {
+    const word = words && typeof v === "string"
+      ? (words[k] && Object.prototype.hasOwnProperty.call(words[k], v) ? words[k][v] : k === "category" ? readableLabel(v) : "")
+      : "";
+    return [
+      mappedLabel(labels, k),
+      word ? <span key={k} title={word === v ? undefined : `Stored as "${v}"`}>{word}</span> : <Value key={k} value={v} />,
+    ];
+  })} />;
 }
 
 /** *focusId*: a record to select and open (a reviewed change's result links here). */
@@ -332,15 +414,21 @@ export function AuditLog({ profiles, focusId = "" }: { profiles: Profile[]; focu
       // "Outcome unknown" never clips, whatever the frame.
       minWidth: 152,
       sort: (r) => STATUS_ORDER.indexOf(r.status),
-      render: (r) => <StatusPill tone={AUDIT_STATUS[r.status]?.tone || "unknown"} label={AUDIT_STATUS[r.status]?.word || r.status} />,
+      render: (r) => <StatusPill tone={statusOf(r)?.tone || "unknown"} label={statusOf(r)?.word || r.status} />,
     },
-    { key: "connection", label: "Connection", sort: connectionOf, render: (r) => <span className="cell-truncate">{connectionOf(r)}</span> },
-    { key: "type", label: "Type", sort: typeOf, render: typeOf },
     { key: "operation", label: "Operation", sort: (r) => operationLabel(r.operation), render: (r) => operationLabel(r.operation) },
+    { key: "connection", label: "Connection", sort: connectionOf, render: (r) => <span className="cell-truncate">{connectionOf(r)}</span> },
+    { key: "type", label: "Type", width: 184, minWidth: 184, sort: typeOf, render: (r) => (
+      r.connection.type === "development" || r.connection.type === "production"
+        ? <SafetyTags type={r.connection.type} readOnly={r.connection.read_only === true} />
+        : "—"
+    ) },
     {
       key: "statements",
       label: "Statements",
       flex: true,
+      // The pinned Type pills must not push Duration out of the frame at 1440.
+      minWidth: 192,
       render: (r) => (
         <span className="cell-name" title={r.statements.join("\n")}>
           <code className="cell-truncate">{r.statements[0] ? untagged(r.statements[0]) : "—"}</code>
@@ -354,7 +442,7 @@ export function AuditLog({ profiles, focusId = "" }: { profiles: Profile[]; focu
 
   let content: InspectorContent | null = null;
   if (record) {
-    const meta = AUDIT_STATUS[record.status];
+    const meta = statusOf(record);
     const c = record.connection;
     content = {
       key: record.id,
@@ -373,11 +461,8 @@ export function AuditLog({ profiles, focusId = "" }: { profiles: Profile[]; focu
           </InspectorSection>
           <InspectorSection title={record.statements.length === 1 ? "Statement" : "Statements"}>
             {record.statements.length ? (
-              record.statements.map((s, i) => (
-                <pre key={i} className="inspector-sql">
-                  <code>{s}</code>
-                </pre>
-              ))
+              // Keyed by record too: "Copied." belongs to one record's statement.
+              record.statements.map((s, i) => <Statement key={`${record.id}:${i}`} statement={s} index={i} />)
             ) : (
               <p className="hint">None recorded.</p>
             )}
@@ -389,6 +474,7 @@ export function AuditLog({ profiles, focusId = "" }: { profiles: Profile[]; focu
               rows={[
                 ["Name", c.profile_name || "Not saved"],
                 ["Server", c.host ? `${c.user ? `${c.user}@` : ""}${c.host}${c.port ? `:${c.port}` : ""}` : "—"],
+                ...(c.ssh ? [["Through SSH", c.ssh] as [string, string]] : []),
                 ["Type", c.type === "development" ? "Development" : c.type === "production" ? "Production" : "—"],
                 ["Read-only", c.read_only === null ? "—" : c.read_only ? "Yes" : "No"],
                 ["Engine", c.engine ? `${c.engine === "mariadb" ? "MariaDB" : "MySQL"} ${c.server_version || ""}`.trim() : "—"],
@@ -399,7 +485,7 @@ export function AuditLog({ profiles, focusId = "" }: { profiles: Profile[]; focu
             <Fields
               label="Result"
               rows={[
-                ["Outcome", record.outcome || "—"],
+                ["Outcome", <Outcome key="outcome" outcome={record.outcome} />],
                 record.error_code !== null && ["Error code", String(record.error_code)],
                 record.rows_affected !== null && ["Rows affected", String(record.rows_affected)],
                 ["Duration", record.duration_ms === null ? "—" : time(record.duration_ms)],
@@ -422,15 +508,31 @@ export function AuditLog({ profiles, focusId = "" }: { profiles: Profile[]; focu
           )}
           {record.policy !== null && record.policy !== undefined && (
             <InspectorSection title="Write policy">
-              <ObjectFields label="Write policy" value={record.policy} />
+              <ObjectFields label="Write policy" value={record.policy} labels={POLICY_LABELS} words={POLICY_WORDS} />
+              {(() => {
+                const judged =
+                  record.policy && typeof record.policy === "object" && !Array.isArray(record.policy)
+                    ? (record.policy as Record<string, unknown>).connection_type
+                    : undefined;
+                const judgedWord = typeof judged === "string" && POLICY_WORDS.connection_type[judged] ? POLICY_WORDS.connection_type[judged] : "";
+                const typeWord = c.type === "development" ? "Development" : c.type === "production" ? "Production" : "";
+                return judgedWord && typeWord && judged !== c.type ? (
+                  <p className="hint">
+                    The connection is {typeWord}; this write was judged as {judgedWord}. A connection used with other
+                    settings than the saved ones is judged as Production.
+                  </p>
+                ) : null;
+              })()}
             </InspectorSection>
           )}
           <InspectorSection title="Record">
             <Fields
               label="Record"
               rows={[
-                ["Attempted", `${record.attempted_at} (UTC)`],
-                ["Finished", record.finished_at ? `${record.finished_at} (UTC)` : "Not recorded"],
+                ["Attempted", <span key="a" title={`${record.attempted_at} (UTC)`}>{when(record.attempted_at)}</span>],
+                ["Finished", record.finished_at
+                  ? <span key="f" title={`${record.finished_at} (UTC)`}>{when(record.finished_at)}</span>
+                  : "Not recorded"],
                 ["From", record.surface === "cli" ? "Command line" : "Workspace"],
                 ["OS user", record.os_user || "—"],
                 ["Record ID", <code key="id">{record.id}</code>],
@@ -464,6 +566,21 @@ export function AuditLog({ profiles, focusId = "" }: { profiles: Profile[]; focu
       <ToolbarSelect label="Since" className="audit-filter-since" value={since} onChange={setSince} options={SINCE} />
     </>
   );
+  const aboutAudit = (
+    <>
+      <p>
+        Every change myflames sends to a server is recorded here before it is sent, with how it ended. Cancelled
+        confirmations and refused writes are recorded too. Kept on this computer only, never a password.
+      </p>
+      <ul className="audit-status-list">
+        {STATUS_ORDER.map((s) => (
+          <li key={s}>
+            <StatusPill tone={AUDIT_STATUS[s].tone} label={AUDIT_STATUS[s].word} /> {AUDIT_STATUS[s].meaning}
+          </li>
+        ))}
+      </ul>
+    </>
+  );
   return (
     <div className="audit-place" ref={place}>
       <InspectorContext.Provider value={inspector}>
@@ -472,21 +589,9 @@ export function AuditLog({ profiles, focusId = "" }: { profiles: Profile[]; focu
           title="Audit log"
           hideTitle
           className={`audit-view${compactControls ? " is-compact-controls" : ""}`}
-          info={
-            <>
-              <p>
-                Every change myflames sends to a server is recorded here before it is sent, with how it ended. Cancelled
-                confirmations and refused writes are recorded too. Kept on this computer only, never a password.
-              </p>
-              <ul className="audit-status-list">
-                {STATUS_ORDER.map((s) => (
-                  <li key={s}>
-                    <StatusPill tone={AUDIT_STATUS[s].tone} label={AUDIT_STATUS[s].word} /> {AUDIT_STATUS[s].meaning}
-                  </li>
-                ))}
-              </ul>
-            </>
-          }
+          /* While the log is empty the About ⓘ keeps its toolbar place; with
+             records it sits in the summary line, next to what it explains. */
+          info={records.length ? undefined : aboutAudit}
           controls={
             <>
               {compactControls ? (
@@ -555,7 +660,7 @@ export function AuditLog({ profiles, focusId = "" }: { profiles: Profile[]; focu
             </EmptyState>
           ) : report ? (
             <>
-              <SummaryLine>
+              <SummaryLine extra={<InfoPopover label="About Audit log">{aboutAudit}</InfoPopover>}>
                 {`${records.length.toLocaleString()} ${records.length === 1 ? "record" : "records"}`}
                 {report.has_more ? ", more are older" : ""} · newest first · Kept {retention} {retention === 1 ? "day" : "days"}
               </SummaryLine>
@@ -567,6 +672,8 @@ export function AuditLog({ profiles, focusId = "" }: { profiles: Profile[]; focu
                 selection={selection}
                 selectionHighlight="active"
                 defaultSort={{ key: "time", dir: "desc" }}
+                compact={width > 0 && width < 960}
+                detailColumns={["type", "duration"]}
                 rowAttrs={(r) => ({ "data-status": r.status })}
                 empty={<p>No records match these filters.</p>}
               />

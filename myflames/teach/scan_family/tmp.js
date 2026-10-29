@@ -74,23 +74,19 @@ var BAR_X = 30, BAR_W = W - 60, BAR_H = 14;
 var MEM_BAR_Y = MEM_Y + 12;
 var DISK_BAR_Y = DISK_Y + 12;
 
-var EMPLOYEES = [
-  {name: "Alice", dept: "Engineering"},
-  {name: "Bob", dept: "Sales"},
-  {name: "Carol", dept: "Engineering"},
-  {name: "Dave", dept: "Marketing"},
-  {name: "Eve", dept: "Engineering"},
-  {name: "Frank", dept: "Sales"},
-  {name: "Grace", dept: "HR"},
-  {name: "Hank", dept: "Marketing"},
-  {name: "Iris", dept: "Engineering"},
-  {name: "Jake", dept: "Sales"},
-  {name: "Kate", dept: "HR"},
-  {name: "Leo", dept: "Engineering"}
+// GROUP BY customer_id keeps one temp table row per customer: an orders row
+// for a customer already in the table only updates its COUNT and SUM, and a
+// new customer_id inserts a row. So the table grows with the number of
+// groups, and each pill below is a new group (one twelfth of the groups set
+// above). MySQL: TemptableAggregateIterator (sql/iterators/
+// composite_iterators.cc); MariaDB: end_update (sql/sql_select.cc).
+var GROUPS = [
+  {cust: 1001}, {cust: 1002}, {cust: 1003}, {cust: 1004}, {cust: 1005}, {cust: 1006},
+  {cust: 1007}, {cust: 1008}, {cust: 1009}, {cust: 1010}, {cust: 1011}, {cust: 1012}
 ];
-var N_SAMPLE = EMPLOYEES.length;
+var N_SAMPLE = GROUPS.length;
 
-var MEM_IDLE_TEXT = "Rows land here first: fast, no disk I/O";
+var MEM_IDLE_TEXT = "Group rows land here first: fast, no disk I/O";
 var DISK_IDLE_TEXT = "Used only if the table outgrows its limit";
 
 function svgText(svg, attrs, text) {
@@ -107,7 +103,7 @@ function buildStage(cost) {
 
   // Source rows (top)
   svgText(svg, {x: 20, y: 24, "font-size": 13, "font-weight": 700, fill: "var(--svg-token)"},
-    "employees table → rows streaming into GROUP BY department");
+    "orders → GROUP BY customer_id: one temp table row per customer");
   var srcRect = anim.svgEl("rect", {
     x: 20, y: 36, width: W - 40, height: 50, rx: 8, ry: 8,
     fill: "var(--svg-token-soft)", stroke: "var(--svg-token)", "stroke-width": 1.5
@@ -272,16 +268,22 @@ function buildTimeline(cost, c) {
   var memBarMid = MEM_BAR_Y + BAR_H / 2;
   var diskBarMid = DISK_BAR_Y + BAR_H / 2;
 
+  // Guided steps: creating the table, one per group batch inserted, the
+  // conversion to disk, and the end. Kinds map to the simplified-code lines
+  // (GUIDE in tmp.py).
   tl.mark("Fill in memory");
+  tl.beat("start");
   tl.call(function() {
-    phase.textContent = "Phase 1/" + phases + ": GROUP BY streams " + fmtN(rows) +
-      " employees rows into an in-memory temp table (" + eng.label + "); " + limitPhrase(cost);
+    phase.textContent = "Phase 1/" + phases + ": GROUP BY customer_id keeps " + fmtN(rows) +
+      " groups (one row per customer) in an in-memory temp table (" + eng.label + "); " + limitPhrase(cost);
+    stage.statusLbl.textContent = "Each orders row updates its customer's COUNT and SUM; a new customer_id inserts a row.";
   });
+  tl.delay(250);
 
   for (var i = 0; i < N_SAMPLE; i++) {
     (function(idx) {
-      var emp = EMPLOYEES[idx];
-      var label = emp.name + " (" + emp.dept + ")";
+      var grp = GROUPS[idx];
+      var label = "customer_id=" + grp.cust;
       var after = realAfter(idx);
       var before = idx === 0 ? 0 : realAfter(idx - 1);
       var col = 60 + (idx %% 8) * 90;
@@ -291,10 +293,14 @@ function buildTimeline(cost, c) {
         // Row batch fits: the pill drops onto the bar's growing edge.
         var fromFrac = before / cost.cap;
         var toFrac = after / cost.cap;
+        tl.beat("insert-mem");
         tl.call(function() {
           slot.g = spawnTuple(label, "var(--svg-ok)", col, SRC_Y);
+          phase.textContent = "Phase 1/" + phases + ", batch " + (idx + 1) + " of " + N_SAMPLE + ": new groups such as " +
+            label + " get a row (COUNT = 1); " + fmtN(after) + " of " + fmtN(rows) +
+            " group rows now in memory";
           stage.statusLbl.textContent = "Insert " + label + ": " + fmtN(after) + " of " +
-            fmtN(rows) + " rows in memory, " + pctText(toFrac) + " of the " + fmtB(cost.limit) + " limit";
+            fmtN(rows) + " group rows in memory, " + pctText(toFrac) + " of the " + fmtB(cost.limit) + " limit";
         });
         tl.add({from: 0, to: 1, duration: 360, ease: anim.easeInOutQuad, onUpdate: function(v) {
           placePill(slot, col, SRC_Y, barEdgeX(toFrac), memBarMid, v, {fadeIn: true, fadeOut: true});
@@ -302,7 +308,7 @@ function buildTimeline(cost, c) {
         }});
         tl.call(function() {
           anim.arrival(stage.memRect);
-          stage.memContent.textContent = fmtN(after) + " of " + fmtN(rows) + " rows in memory (" +
+          stage.memContent.textContent = fmtN(after) + " of " + fmtN(rows) + " group rows in memory (" +
             fmtB(after * c.row_size) + " of " + fmtB(cost.limit) + ")";
         });
         tl.delay(60);
@@ -314,9 +320,13 @@ function buildTimeline(cost, c) {
         var startFrac = before / cost.cap;
         slot.x = barEdgeX(1);
         slot.y = memBarMid;
+        tl.beat("insert-full");
         tl.call(function() {
           slot.g = spawnTuple(label, "var(--svg-build)", col, SRC_Y);
-          stage.statusLbl.textContent = "Insert " + label + ": row " + fmtN(cost.cap + 1) + " of " +
+          phase.textContent = "Phase 1/3, batch " + (idx + 1) + " of " + N_SAMPLE + ": inserting " + label +
+            " fills the table, and group row " + fmtN(cost.cap + 1) + " does not fit under the " +
+            fmtB(cost.limit) + " limit";
+          stage.statusLbl.textContent = "Insert " + label + ": group row " + fmtN(cost.cap + 1) + " of " +
             fmtN(rows) + " does not fit under the " + fmtB(cost.limit) + " limit";
         });
         tl.add({from: 0, to: 1, duration: 360, ease: anim.easeInOutQuad, onUpdate: function(v) {
@@ -330,6 +340,7 @@ function buildTimeline(cost, c) {
 
         // The one anticipation moment: the box flushes red, disk wakes up.
         tl.mark("Convert to disk");
+        tl.beat("convert");
         tl.call(function() {
           phase.textContent = "Phase 2/3: ⚠ the " + eng.label + " table hit its " +
             fmtB(cost.limit) + " limit, so " + eng.server + " converts it to an on-disk " +
@@ -345,9 +356,9 @@ function buildTimeline(cost, c) {
         tl.call(function() {
           anim.arrival(stage.memRect, {peakWidth: 3});
           stage.barPct.textContent = "copying…";
-          stage.memContent.textContent = "Copying " + fmtN(cost.cap) + " rows to the on-disk " +
+          stage.memContent.textContent = "Copying " + fmtN(cost.cap) + " group rows to the on-disk " +
             cost.diskEngine + " table…";
-          stage.diskContent.textContent = "Receiving " + fmtN(cost.cap) + " rows from memory…";
+          stage.diskContent.textContent = "Receiving " + fmtN(cost.cap) + " group rows from memory…";
         });
         // Copy: the memory bar drains while the disk bar fills.
         tl.add({from: 0, to: 1, duration: 800, ease: anim.easeInOutCubic, onUpdate: function(v) {
@@ -357,15 +368,16 @@ function buildTimeline(cost, c) {
         tl.call(function() {
           stage.barPct.textContent = "freed";
           stage.memContent.textContent = "Memory freed: the whole table now lives on disk";
-          stage.diskContent.textContent = fmtN(cost.cap) + " rows copied from memory";
+          stage.diskContent.textContent = fmtN(cost.cap) + " group rows copied from memory";
           anim.arrival(stage.diskRect);
         });
         tl.delay(300);
 
         tl.mark("Insert on disk");
+        tl.beat("insert-disk");
         tl.call(function() {
-          phase.textContent = "Phase 3/3: the remaining " + fmtN(cost.diskRows) +
-            " rows go straight to the on-disk " + cost.diskEngine + " table (slower)";
+          phase.textContent = "Phase 3/3: " + label + " and the remaining " + fmtN(cost.diskRows) +
+            " new groups go straight to the on-disk " + cost.diskEngine + " table (slower)";
         });
         var diskTo = after / rows;
         tl.add({from: 0, to: 1, duration: 400, ease: anim.easeInOutQuad, onUpdate: function(v) {
@@ -384,10 +396,13 @@ function buildTimeline(cost, c) {
       // After the conversion: red pills skip memory and land on disk.
       var dFrom = before / rows;
       var dTo = after / rows;
+      tl.beat("insert-disk");
       tl.call(function() {
         slot.g = spawnTuple(label, "var(--svg-danger)", col, SRC_Y);
+        phase.textContent = "Phase 3/3, batch " + (idx + 1) + " of " + N_SAMPLE + ": new groups such as " + label +
+          " are inserted straight into the on-disk " + cost.diskEngine + " table";
         stage.statusLbl.textContent = "Insert " + label + ": straight to disk, " +
-          fmtN(after - cost.cap) + " rows inserted on disk so far";
+          fmtN(after - cost.cap) + " group rows inserted on disk so far";
       });
       tl.add({from: 0, to: 1, duration: 400, ease: anim.easeInOutQuad, onUpdate: function(v) {
         placePill(slot, col, SRC_Y, barEdgeX(dTo), diskBarMid, v, {fadeIn: true, fadeOut: true});
@@ -404,17 +419,18 @@ function buildTimeline(cost, c) {
 
   tl.delay(300);
   tl.mark("Done");
+  tl.beat("done");
   tl.call(function() {
     var need = fmtB(rows * c.row_size);
     if (cost.fits) {
-      phase.textContent = "Phase 2/2: ✓ done. All " + fmtN(rows) + " rows (" + need +
-        ") stayed in the " + eng.label + " table, under its " + fmtB(cost.limit) + " limit";
+      phase.textContent = "Phase 2/2: ✓ done. All " + fmtN(rows) + " group rows (" + need +
+        ") stayed in the " + eng.label + " table, under its " + fmtB(cost.limit) + " limit; they are read back and sent";
       stage.statusLbl.textContent = cost.engine === "temptable"
         ? "0 rows on disk. TempTable also needs room in the shared temptable_max_ram pool."
         : "0 rows on disk: the whole GROUP BY ran in memory.";
     } else {
-      phase.textContent = "✓ Done: " + fmtN(cost.cap) + " rows fit in memory, then the table moved to disk and " +
-        fmtN(cost.diskRows) + " more rows were inserted into on-disk " + cost.diskEngine;
+      phase.textContent = "✓ Done: " + fmtN(cost.cap) + " group rows fit in memory, then the table moved to disk and " +
+        fmtN(cost.diskRows) + " more were inserted into on-disk " + cost.diskEngine + "; the groups are read back and sent";
       stage.statusLbl.textContent = cost.engine === "temptable"
         ? "To stay in memory: tmp_table_size ≥ ~" + need + ". max_heap_table_size does not matter here."
         : "To stay in memory: tmp_table_size and max_heap_table_size both ≥ ~" + need + ".";
@@ -435,7 +451,7 @@ function buildCurrentTimeline() {
 }
 function resetAnim() {
   resetStage();
-  document.getElementById("phase-label").textContent = "Ready — press Play";
+  document.getElementById("phase-label").textContent = "Ready: press Next step, or Play to run it all";
 }
 
 // TempTable ignores max_heap_table_size: dim that control and say so, but
@@ -464,7 +480,7 @@ function sourceText(cost) {
 function explanationText(cost, c) {
   var label = TMP_ENGINES[cost.engine].long;
   if (cost.fits) {
-    var s = "All " + fmtN(c.rows) + " rows (" + fmtB(c.rows * c.row_size) + ") fit in the " + label +
+    var s = "All " + fmtN(c.rows) + " group rows (" + fmtB(c.rows * c.row_size) + ") fit in the " + label +
       " temp table. Its limit is " + fmtB(cost.limit) + " (" + ruleText(cost) + "). No on-disk conversion.";
     if (cost.engine === "temptable") {
       s += " TempTable tables also share the global temptable_max_ram pool; if it runs out, " +
@@ -472,9 +488,9 @@ function explanationText(cost, c) {
     }
     return s;
   }
-  var out = "The " + label + " temp table holds " + fmtN(cost.cap) + " rows (" + fmtB(cost.limit) +
-    ": " + ruleText(cost) + "). Row " + fmtN(cost.cap + 1) + " triggers conversion to an on-disk " +
-    cost.diskEngine + " temp table, and the remaining " + fmtN(cost.diskRows) + " rows are inserted there. ";
+  var out = "The " + label + " temp table holds " + fmtN(cost.cap) + " group rows (" + fmtB(cost.limit) +
+    ": " + ruleText(cost) + "). Group row " + fmtN(cost.cap + 1) + " triggers conversion to an on-disk " +
+    cost.diskEngine + " temp table, and the remaining " + fmtN(cost.diskRows) + " groups are inserted there. ";
   if (cost.engine === "temptable") {
     out += "Raise tmp_table_size to avoid the conversion; raising max_heap_table_size changes nothing here.";
   } else {

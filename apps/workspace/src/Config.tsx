@@ -3,13 +3,13 @@
 // writes run sequentially and stop at the first unconfirmed outcome. Reports,
 // drafts and reviews belong to one connection. The single-variable sheet keeps
 // all modes, including the Query editor handoff for Session SQL.
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, formatNumber, type ConfigCheck, type ConfigReport, type ConfigParameter, type Connection } from "./api";
 import { uptime } from "./Health";
 import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "./binding";
 import { useOpenRead } from "./viewOnScreen";
 import { PrivilegeConfirmLabel, privilegeResult, targetPrivilege, usePrivilege } from "./privileges";
-import { useWritePolicy } from "./Connections";
+import { ConnectionTypeBand, useWritePolicy } from "./Connections";
 import { CopySql, bytes, engineLabel } from "./PerfShared";
 import {
   ActionStatus,
@@ -25,6 +25,7 @@ import {
   type Column,
   InspectorSection,
   Pill,
+  Popover,
   SearchField,
   Select,
   StatusPill,
@@ -38,6 +39,7 @@ import {
   type Selection,
 } from "./kit";
 import "./config.css";
+import { ServerCompareHost } from "./ServerCompare";
 
 // ---- variables.py contract ----------------------------------------------------------
 
@@ -231,6 +233,62 @@ function rangeHint(info: VariableInfo) {
   }
 }
 
+/** A set-typed value (sql_mode): one checkbox per allowed member in a popover,
+ * joined with "," in the catalog's order; Edit as text keeps the raw field.
+ * Members the catalog does not list are kept, appended as they were. */
+function SetValueField({ info, value, onChange, id, hintId, disabled, label }: { info: Pick<VariableInfo, "type"> & { values: string[] }; value: string; onChange: (v: string) => void; id: string; hintId: string; disabled: boolean; label?: string }) {
+  const [asText, setAsText] = useState(false);
+  const members = value.split(",").map((m) => m.trim()).filter(Boolean);
+  const known = new Set(info.values.map((v) => v.toLowerCase()));
+  const chosen = new Set(members.filter((m) => known.has(m.toLowerCase())).map((m) => m.toLowerCase()));
+  const extra = members.filter((m) => !known.has(m.toLowerCase()));
+  function toggle(member: string, on: boolean) {
+    const next = new Set(chosen);
+    if (on) next.add(member.toLowerCase());
+    else next.delete(member.toLowerCase());
+    onChange([...info.values.filter((v) => next.has(v.toLowerCase())), ...extra].join(","));
+  }
+  if (asText)
+    return (
+      <span className="set-value">
+        <input
+          id={id}
+          className="variable-input"
+          value={value}
+          disabled={disabled}
+          spellCheck={false}
+          autoComplete="off"
+          aria-describedby={hintId}
+          aria-label={label}
+          onChange={(e) => onChange(e.target.value)}
+        />
+        <button type="button" className="text-button" disabled={disabled} onClick={() => setAsText(false)}>Choose from list</button>
+      </span>
+    );
+  return (
+    <span className="set-value" id={id} tabIndex={-1} aria-describedby={hintId}>
+      <Popover
+        label={label ? `Choose ${label} members` : "Choose members"}
+        className="set-value-popover"
+        buttonClassName="set-value-button"
+        disabled={disabled}
+        trigger={<span className="set-value-summary">{value || "(empty)"}</span>}
+      >
+        <span className="set-value-members" role="group" aria-label={label || "Members"}>
+          {info.values.map((v) => (
+            <label key={v} className="set-value-member">
+              <input type="checkbox" checked={chosen.has(v.toLowerCase())} onChange={(e) => toggle(v, e.target.checked)} />
+              <span>{v}</span>
+            </label>
+          ))}
+        </span>
+        {extra.length > 0 && <p className="hint">Not in the list; kept as they are: {extra.join(", ")}</p>}
+      </Popover>
+      <button type="button" className="text-button set-value-as-text" disabled={disabled} onClick={() => setAsText(true)}>Edit as text</button>
+    </span>
+  );
+}
+
 /** The value control for the variable's type. */
 function ValueField({ info, value, onChange, id, hintId, disabled, label }: { info: Pick<VariableInfo, "type" | "values">; value: string; onChange: (v: string) => void; id: string; hintId: string; disabled: boolean; label?: string }) {
   if (info.type === "boolean")
@@ -240,6 +298,8 @@ function ValueField({ info, value, onChange, id, hintId, disabled, label }: { in
     </button>;
   if (info.type === "enum" && info.values?.length)
     return <Select id={id} label={label} value={value} options={info.values.map((v) => [v, v] as [string, string])} onChange={onChange} disabled={disabled} describedBy={hintId} />;
+  if (info.type === "set" && info.values?.length)
+    return <SetValueField info={{ type: info.type, values: info.values }} value={value} onChange={onChange} id={id} hintId={hintId} disabled={disabled} label={label} />;
   return (
     <input
       id={id}
@@ -437,6 +497,7 @@ function VariableSheet({
   return (
     <ConfirmSheet
       className="variable-sheet"
+      band={<ConnectionTypeBand connection={via.connection} label={via.label} />}
       eyebrow={verb}
       title={mode === "reset_persist" ? `Remove ${name} from mysqld-auto.cnf?` : info && !mode && info.exists ? `Change ${name} at the next restart?` : `Change ${name}?`}
       description={
@@ -885,7 +946,9 @@ function ParameterBatchSheet({ request, activeKey, left, onLeave, onClose, onRem
     onDone(results);
   }
   if (left) return null;
-  return <ConfirmSheet className="parameter-batch-sheet" eyebrow="PARAMETERS" title={`Apply ${rows.length} parameter ${rows.length === 1 ? "change" : "changes"}?`}
+  return <ConfirmSheet className="parameter-batch-sheet"
+    band={<ConnectionTypeBand connection={request.via.connection} label={request.via.label} />}
+    eyebrow="PARAMETERS" title={`Apply ${rows.length} parameter ${rows.length === 1 ? "change" : "changes"}?`}
     description="Review every statement for this server. Each value is checked again before sending. The batch stops at the first change that is not confirmed."
     busy={busy} busyLabel="Applying…" progress="Waiting for the server to apply the parameter changes"
     onLeave={() => onLeave(since ?? Date.now())}
@@ -971,9 +1034,17 @@ function ParameterRecommendation({ name, flagged }: { name: string; flagged: Con
   </InspectorSection>;
 }
 
-export function ConfigView({ connection, disabled, onBack, selection, report: bound, onReport, onOpenSql }: {
+export function ConfigView(props: Omit<Parameters<typeof ConfigListView>[0], "onVersionHistory">) {
+  return <ServerCompareHost kind="parameters" connection={props.connection} disabled={props.disabled} onBack={props.onBack}
+    versions={{ report: props.report, selected: props.selection.key }}
+    renderList={(controls, links) => <ConfigListView {...props} compareControls={controls} onVersionHistory={links.openVersionHistory} />} />;
+}
+
+function ConfigListView({ connection, disabled, onBack, selection, report: bound, onReport, onOpenSql, compareControls, onVersionHistory }: {
   connection: Connection; disabled: boolean; onBack?: () => void; selection: Selection;
-  report: Bound<ConfigReport> | null; onReport: (report: Bound<ConfigReport>) => void; onOpenSql?: (sql: string, options?: { append?: boolean }) => void;
+  compareControls?: ReactNode; report: Bound<ConfigReport> | null; onReport: (report: Bound<ConfigReport>) => void; onOpenSql?: (sql: string, options?: { append?: boolean }) => void;
+  /** Versions > Parameter history for a parameter (the release catalog; reads no server). */
+  onVersionHistory?: (name: string, engine: "mysql" | "mariadb" | null) => void;
 }) {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
@@ -1116,11 +1187,13 @@ export function ConfigView({ connection, disabled, onBack, selection, report: bo
     inspector = { key: p.name, title: p.name,
       meta: <>{valueSpan(p.type, p.value, p.name)}{flagged[0] && <StatusPill tone={flagged[0].status} />}</>,
       actions: <div className="config-actions">
-        <button type="button" className="button primary" disabled={editOff || !!reason} title={offTitle || reason || undefined} onClick={() => editParameter(p)}>Edit value</button>
+        <button type="button" className="button primary" disabled={editOff || !!reason} title={offTitle || reason || undefined} onClick={() => editParameter(p)}>Stage value for review</button>
         {resettable && <button type="button" className="button" disabled={editOff || !!reason} title={offTitle || reason || undefined} onClick={() => { setEditing(true); stage(p, "DEFAULT"); sharedInspector?.setOpen(false); setPreview(true); }}>Reset to default</button>}
         <button type="button" className="button" data-change={p.name} disabled={actionsOff || !!offTitle || p.modifiable === "none"}
-          title={offTitle || (p.modifiable === "none" ? reason : undefined) || undefined} onClick={e => openChange(p.name, null, e.currentTarget)}>Change…</button>
+          title={offTitle || (p.modifiable === "none" ? reason : undefined) || undefined} onClick={e => openChange(p.name, null, e.currentTarget)}>Change this parameter…</button>
         {p.persisted === true && <button type="button" className="button" data-reset={p.name} disabled={actionsOff || !!offTitle} title={offTitle || undefined} onClick={e => openChange(p.name, "reset_persist", e.currentTarget)}>Reset persisted value…</button>}
+        {onVersionHistory && <button type="button" className="button" data-action="version-history" title={`Every ${report.engine === "mariadb" ? "MariaDB" : "MySQL"} release where ${p.name} changed or was deprecated`}
+          onClick={() => onVersionHistory(p.name, report.engine === "mariadb" ? "mariadb" : report.engine === "mysql" ? "mysql" : null)}>Version history</button>}
       </div>,
       body: <>
         <div className="parameter-about">
@@ -1146,7 +1219,7 @@ export function ConfigView({ connection, disabled, onBack, selection, report: bo
   if (report?.parameters && !report.parameters.complete) notes.push("The parameter catalog is incomplete. Some parameters or metadata could not be read.");
   return <ViewLayout id="config" title="Parameters" className="config-panel" onBack={onBack}
     info={<><p>Every server parameter, with its allowed values, source and when it applies.</p><p>Edit stages local drafts. Preview changes, then review every exact statement before applying. Recommendations are rules of thumb; select a parameter for its recommendation and a link to the official documentation.</p></>}
-    controls={report && <>
+    controls={<>{compareControls}{report && <>
       <SearchField label="Filter parameters" value={search} onChange={setSearch} placeholder="Filter parameters" />
       <ToolbarSelect label="Show" value={filter} options={[["all", "All"], ["modified", "Modified"], ["dynamic", "Dynamic"], ["static", "Static"], ["recommendations", "Recommendations"], ...(editing ? [["pending", "Pending"] as [string, string]] : [])]} onChange={setFilter} />
       {!editing ? <button type="button" className="button primary" data-action="edit-parameters" disabled={editOff} title={offTitle || (loading ? "Reading parameters…" : undefined)} onClick={() => setEditing(true)}>Edit</button> : <>
@@ -1155,7 +1228,7 @@ export function ConfigView({ connection, disabled, onBack, selection, report: bo
         <button type="button" className="button primary" disabled={editOff || pending.length === 0 || pending.length > BATCH_LIMIT} title={pending.length > BATCH_LIMIT ? `Review at most ${BATCH_LIMIT} changes at once.` : offTitle || undefined}
           onClick={() => { if (!editOff && pending.length && pending.length <= BATCH_LIMIT) setBatch({ rows: pending, via: { connection, key: reads.key, label: connectionLabel(connection) }, engine: report.engine }); }}>Review and apply ({pending.length})</button>
       </>}
-    </>}
+    </>}</>}
     onRefresh={() => void load()} refreshDisabled={disabled} loading={loading} otherConnection={other}
     inspector={inspector} inspectorEmpty={<p>Select a parameter to inspect its source, allowed values and recommendations.</p>}
     status={<><ViewStatus loading={reads.loading} error={reads.error}
@@ -1191,7 +1264,7 @@ export function ConfigView({ connection, disabled, onBack, selection, report: bo
           { key: "remove", label: "Remove", render: r => <button type="button" className="text-button" aria-label={`Remove ${r.parameter.name} from preview`} onClick={() => discard(r.parameter.name)}>Remove</button> },
         ]} empty="No pending changes." />
       </section>}
-      <DataTable id="parameters.all" label="Parameters" columns={columns} rows={rows} rowKey={p => p.name} selection={selection} detailColumns={["type", "description"]}
+      <DataTable id="parameters.all" label="Parameters" columns={columns} rows={rows} rowKey={p => p.name} selection={selection} compact={sharedInspector?.sheet ?? false} detailColumns={["allowed", "type", "description"]}
         rowClass={p => Object.prototype.hasOwnProperty.call(drafts, p.name) ? "parameter-staged" : ""} empty="No parameters match this filter."
         rowContextMenu={p => [
           ...(p.modifiable !== "none" ? [{

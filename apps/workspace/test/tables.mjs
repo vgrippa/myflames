@@ -67,6 +67,8 @@ try {
   await page.waitForSelector(`${view} .fact-strip`);
   await h.idle(view);
   assert.equal(state.seen.length, 1, "opening reads once");
+  assert.equal(await page.$eval('input[aria-label="Filter tables"]', input => !!input.closest('.report-table-tools')), true);
+  assert.equal(await page.$eval(`${view} th[data-col="table"] [role=separator]`, handle => +handle.getAttribute('aria-valuemin') >= 220), true, 'schema.table keeps its own minimum');
   state.seen.length = 0;
   assert.equal(await text(`${view} .perf-picker-summary`), "All user databases");
 
@@ -379,7 +381,8 @@ try {
   await page.waitForFunction(() => /ADD COLUMN `is_active`/.test(document.querySelector("dialog.confirm-sheet .sql-preview")?.textContent || ""));
   assert.equal(await page.$(sheet), null, "the column sheet closes");
   const sent = state.other.filter((o) => o.path === "/api/editor/run").at(-1).body;
-  assert.equal(sent.sql, "SET SESSION lock_wait_timeout = 5;\nALTER TABLE `mftab`.`no_key` ADD COLUMN `is_active` VARCHAR(255) NULL");
+  // The editor adds its own lock_wait_timeout guard and reviews the ALTER alone.
+  assert.equal(sent.sql, "ALTER TABLE `mftab`.`no_key` ADD COLUMN `is_active` VARCHAR(255) NULL");
   assert.equal(sent.require_confirmation, true);
   await page.waitForFunction(() => document.querySelector("dialog.confirm-sheet")?.contains(document.activeElement));
   await page.keyboard.press("Escape");

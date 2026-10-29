@@ -61,6 +61,23 @@ mariadb-server checkouts):
   table_esms_by_digest.cc:102, pfs_engine_table.cc:1100).
 * ``QUERY_SAMPLE_TEXT`` is capped at ``performance_schema_max_sql_text_length``
   bytes (default 1024): sql/sys_vars.cc:1095-1098, pfs_digest.cc:119-157.
+* A sample cut at that limit ends with "..." in place of its last three
+  characters (format_sqltext, storage/perfschema/table_helper.cc).
+* MySQL's digest table also has ``SUM_CPU_TIME``, ``QUANTILE_95``,
+  ``QUANTILE_99`` and ``QUANTILE_999`` (table_esms_by_digest.cc); MariaDB's
+  has none of them. Each quantile is the upper bound of the histogram bucket
+  that holds it (table_esms_by_digest.cc, ``m_bucket_timer[index + 1]``).
+  The columns are read defensively (a server that lacks one answers Unknown
+  column and the read is sent again without it), never chosen by version
+  number. ``SUM_CPU_TIME`` grows only while the ``events_statements_cpu``
+  consumer is ENABLED (pfs.cc sets STATE_FLAG_CPU only then); the consumer
+  is off by default (sql/sys_vars.cc, performance_schema_consumer_
+  events_statements_cpu DEFAULT(false)).
+* The latency histogram behind the quantiles,
+  ``performance_schema.events_statements_histogram_by_digest``, keeps 450
+  buckets per digest (pfs_histogram.h): bucket 0 below 10 microseconds, then
+  bounds growing by 10^(1/50), the last one open-ended (pfs_histogram.cc).
+  It is MySQL-only; only buckets with ``COUNT_BUCKET > 0`` are read.
 * MariaDB ships with ``performance_schema=OFF``: mariadb sql/sys_vars.cc:88-91.
 * ``performance_schema.processlist`` exists from MySQL 8.0.22 (WL#9090); its
   rows are limited to the caller's own user unless PROCESS is granted:
@@ -152,11 +169,36 @@ _MAX_TEXT_SQL = "SELECT @@performance_schema_max_sql_text_length"
 _OVERFLOW_SQL = ("SELECT COUNT_STAR, SUM_TIMER_WAIT FROM performance_schema.events_statements_summary_by_digest "
                  "WHERE DIGEST IS NULL")
 _COVERAGE_SQL = "SHOW GLOBAL STATUS WHERE Variable_name IN ('Uptime', 'Performance_schema_digest_lost')"
+#: What a list that ranks against the whole server (top_report with
+#: server_context) reads in one more aggregate read: every digest row (the
+#: overflow row included) with its total statement time and executions, the
+#: oldest FIRST_SEEN and its age computed on the server (TIMESTAMPDIFF, so no
+#: client clock or time zone is involved), and the events_statements_cpu
+#: consumer (NULL where the server has none: MariaDB, MySQL before 8.0.28).
+_CONTEXT_SQL = ("SELECT COUNT(*), SUM(SUM_TIMER_WAIT), SUM(COUNT_STAR), MIN(FIRST_SEEN), "
+                "TIMESTAMPDIFF(SECOND, MIN(FIRST_SEEN), NOW()), "
+                "(SELECT ENABLED FROM performance_schema.setup_consumers WHERE NAME = 'events_statements_cpu') "
+                "FROM performance_schema.events_statements_summary_by_digest")
+#: MySQL digest columns read with server_context; a server that lacks one
+#: answers Unknown column and the read is sent again without it, so the
+#: list is never chosen by version number (SUM_CPU_TIME arrived after the
+#: quantiles). MariaDB has none of them.
+_OPTIONAL_COLUMNS = ("SUM_CPU_TIME", "QUANTILE_95", "QUANTILE_99", "QUANTILE_999")
+#: The New badge: first seen in the last 24 hours, decided on the server
+#: (NOW()) so no client clock is involved. _mark_new gates it on the window.
+_NEW_FLAG_SQL = "FIRST_SEEN > NOW() - INTERVAL 24 HOUR"
+#: A statement first seen this recently is New, and the badge is shown only
+#: when the counters cover more than this (otherwise every statement is new).
+NEW_WITHIN_S = 86400
+#: "Counting since" is noted when the oldest FIRST_SEEN began more than this
+#: long after the server started.
+COUNTING_GAP_S = 3600
 #: What every digest list reads besides its digest rows, exactly as sent:
 #: server state, the two consumers, the sample text limit, the overflow row
 #: and the coverage counters. None depends on the list's order or filter, so
 #: a caller that reads several lists in one pass (Full analysis attribution,
-#: report._AttributionContext) may share one reply to each.
+#: report._AttributionContext) may share one reply to each. The attribution
+#: reads its lists without server_context, so _CONTEXT_SQL is not among them.
 SHARED_METADATA_SQL = frozenset(DISCOVER_TAG + sql for sql in (
     SERVER_STATE_SQL, _CONSUMERS_SQL, _MAX_TEXT_SQL, _OVERFLOW_SQL, _COVERAGE_SQL))
 LOW_SELECTIVITY = 0.5
@@ -365,7 +407,8 @@ def table_reference(digest_text, digest_schema, schema, table):
     return None
 
 
-def _top(conn, limit=20, schema=None, order="total", table=None, extra_metrics=False):
+def _top(conn, limit=20, schema=None, order="total", table=None, extra_metrics=False,
+         server_context=True):
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 200:
         raise ValueError("Choose a limit from 1 to 200.")
     if order not in ORDERS:
@@ -398,8 +441,8 @@ def _top(conn, limit=20, schema=None, order="total", table=None, extra_metrics=F
     if order in ORDER_FILTERS:
         tail = "ORDER BY %s DESC, %s LIMIT %d" % (
             ORDERS[order], ORDER_TIEBREAKS.get(order, "SUM_TIMER_WAIT DESC"), fetch)
-    engine, version, has_sample, max_text, items = _digest_rows(
-        conn, where, tail, exclude=True, extra_metrics=extra_metrics)
+    engine, version, has_sample, max_text, items, kept = _digest_rows(
+        conn, where, tail, exclude=True, extra_metrics=extra_metrics, detail=server_context)
     candidates = len(items)
     if table is not None:
         matched = []
@@ -410,6 +453,12 @@ def _top(conn, limit=20, schema=None, order="total", table=None, extra_metrics=F
                                        "label": TEXT_MATCH_LABEL}
                 matched.append(item)
         items = matched[:limit]
+    overflow = _digest_overflow(conn)
+    context = _server_context(conn) if server_context else None
+    coverage = _coverage(conn, items, overflow, context)
+    if server_context:
+        _mark_new(items, coverage["uptime_s"], context)
+    totals = context["totals"] if context else None
     notes = ["Counters accumulate since the server started or the digest table was last truncated."]
     if order in _ORDER_NOTES and not (table is not None and order in ("no_index", "scan", "scans")):
         notes.append(_ORDER_NOTES[order])
@@ -417,9 +466,10 @@ def _top(conn, limit=20, schema=None, order="total", table=None, extra_metrics=F
         notes.append("This server keeps no sample statement text; digest text shows ? where "
                      "literal values were, so fill those in before capturing.")
     elif any(s["sample_truncated"] for s in items):
-        notes.append("Some sample statements reached performance_schema_max_sql_text_length "
-                     "(%d bytes) and may be cut off." % max_text)
-    overflow = _digest_overflow(conn)
+        notes.append("Sample text was cut at %d bytes (performance_schema_max_sql_text_length)." % max_text)
+    if coverage["counting_since"]:
+        notes.append("Counting since %s: the digest table was reset or statements began after the "
+                     "server started." % coverage["counting_since"][:19])
     if overflow:
         count, total_ms = overflow
         notes.append(
@@ -432,7 +482,9 @@ def _top(conn, limit=20, schema=None, order="total", table=None, extra_metrics=F
               "order": order, "limit": limit, "schema": schema, "notes": notes,
               "statements": items,
               "table": {"schema": table[0], "table": table[1]} if table else None,
-              "coverage": _coverage(conn, items, overflow)}
+              "totals": totals, "others": _others(totals, items),
+              "cpu": _cpu_state(engine, kept, context) if server_context else None,
+              "coverage": coverage}
     if table is not None:
         report["match"] = {"label": TEXT_MATCH_LABEL, "caveats": list(TEXT_MATCH_CAVEATS),
                            "candidates": candidates, "capped": candidates >= TABLE_CANDIDATES}
@@ -460,22 +512,100 @@ _ORDER_NOTES = {
 }
 
 
-def _coverage(conn, items, overflow):
+def _coverage(conn, items, overflow, context=None):
     """What the list covers: Uptime, the oldest FIRST_SEEN listed, the
-    overflow row, and Performance_schema_digest_lost (best effort)."""
+    overflow row, and Performance_schema_digest_lost (best effort).
+
+    ``counting_since`` is the oldest FIRST_SEEN of the whole digest table
+    when it began more than COUNTING_GAP_S after the server started (the
+    table was reset, or statements began later), else None. Both numbers
+    come from the server: Uptime, and the age of that FIRST_SEEN from
+    TIMESTAMPDIFF in *context* (:func:`_server_context`)."""
     seen = [item["first_seen"] for item in items if item.get("first_seen")]
     coverage = {"uptime_s": None, "first_seen": min(seen) if seen else None, "digest_lost": None,
+                "counting_since": None,
                 "overflow": {"executions": overflow[0], "total_ms": round(overflow[1], 3)} if overflow else None}
     try:
         rows = _rows(conn, _COVERAGE_SQL)
     except Exception:
-        return coverage
+        rows = []
     values = {row[0]: row[1] for row in rows if len(row) >= 2}
     if "Uptime" in values:
         coverage["uptime_s"] = _int(values["Uptime"])
     if "Performance_schema_digest_lost" in values:
         coverage["digest_lost"] = _int(values["Performance_schema_digest_lost"])
+    if (context and context["age_s"] is not None and coverage["uptime_s"] is not None
+            and coverage["uptime_s"] - context["age_s"] > COUNTING_GAP_S):
+        coverage["counting_since"] = context["first_seen"]
     return coverage
+
+
+_COUNT = re.compile(r"^-?\d+$")
+_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
+
+
+def _server_context(conn):
+    """The whole digest table in one aggregate read (:data:`_CONTEXT_SQL`):
+    ``{"totals": {digests, total_ms, executions}, "first_seen", "age_s",
+    "cpu_enabled"}``, or None when the read fails or its reply is not the one
+    aggregate row (best effort: the list itself stands without it).
+    ``cpu_enabled`` is None where the server has no events_statements_cpu
+    consumer."""
+    try:
+        rows = _rows(conn, _CONTEXT_SQL)
+    except Exception:
+        return None
+    if len(rows) != 1 or len(rows[0]) != 6:
+        return None
+    count, wait, calls, first, age, cpu = [_null(cell) for cell in rows[0]]
+    if count is None or not _COUNT.match(str(count)) or int(count) < 0:
+        return None
+    if any(cell is not None and not _COUNT.match(str(cell)) for cell in (wait, calls, age)):
+        return None
+    first = first if first and _TIMESTAMP.match(str(first)) else None
+    age_s = int(age) if first and age is not None and int(age) >= 0 else None
+    return {"totals": {"digests": int(count), "total_ms": round(int(wait or 0) / _PICO_PER_MS, 3),
+                       "executions": int(calls or 0)},
+            "first_seen": first, "age_s": age_s,
+            "cpu_enabled": None if cpu is None else str(cpu).strip().upper() == "YES"}
+
+
+def _mark_new(items, uptime_s, context):
+    """``new``: first seen in the last NEW_WITHIN_S (the server's own
+    ``new_24h`` flag), shown only while the counters cover more than that:
+    the server is up longer and the oldest digest is older. Otherwise every
+    statement would be new and the badge would say nothing."""
+    age_s = context["age_s"] if context else None
+    window = uptime_s is not None and uptime_s > NEW_WITHIN_S and (age_s is None or age_s > NEW_WITHIN_S)
+    for item in items:
+        flagged = item.pop("new_24h", False)
+        item["new"] = bool(window and flagged)
+
+
+def _others(totals, items):
+    """The digests the list does not hold, for its closing "N other
+    statements" row: ``{digests, total_ms, executions}``, or None when the
+    list holds every digest or the whole-table totals were not read."""
+    if not totals:
+        return None
+    digests = totals["digests"] - len(items)
+    if digests <= 0:
+        return None
+    # The aggregate and the list are two reads: counters that grew between
+    # them never make the remainder negative.
+    total_ms = max(0.0, round(totals["total_ms"] - sum(item["total_ms"] for item in items), 3))
+    executions = max(0, totals["executions"] - sum(item["count"] for item in items))
+    return {"digests": digests, "total_ms": total_ms, "executions": executions}
+
+
+def _cpu_state(engine, kept, context):
+    """``{"collected": bool or None}`` when the digest rows carried
+    SUM_CPU_TIME, else None (MariaDB, or a MySQL without the column).
+    False: the events_statements_cpu consumer is off, so the column does
+    not grow ("Not collected"); None: the consumer could not be read."""
+    if engine != "mysql" or "SUM_CPU_TIME" not in kept:
+        return None
+    return {"collected": context["cpu_enabled"] if context else None}
 
 
 def _digest_overflow(conn):
@@ -504,11 +634,29 @@ def _ms_text(ms):
     return "{:,.1f} ms".format(ms)
 
 
-def _digest_rows(conn, where, tail, exclude=False, extra_metrics=False):
-    """Read digest rows: (engine, version, has_sample, max_text, items).
+def _sample_cut(sample, max_text):
+    """Whether a QUERY_SAMPLE_TEXT was cut at performance_schema_max_sql_text_length.
+
+    MySQL replaces the last three characters of a cut sample with "..."
+    (format_sqltext, storage/perfschema/table_helper.cc), after trimming it
+    to whole characters, so a cut sample ends with "..." a few bytes short of
+    the limit; a sample at the limit counts too."""
+    if not sample or not max_text:
+        return False
+    size = len(sample.encode("utf-8"))
+    return size >= max_text or (sample.endswith("...") and size >= max_text - 12)
+
+
+def _digest_rows(conn, where, tail, exclude=False, extra_metrics=False, detail=False):
+    """Read digest rows: (engine, version, has_sample, max_text, items, kept).
 
     *where* adds conditions to the shared ones; *tail* is the ORDER BY/LIMIT.
     With *exclude*, myflames' own captures are left out (see _excluded).
+    With *detail* (top_report's server_context), each item also gets
+    ``cpu_ms``, ``p95_ms``, ``p99_ms`` and ``p999_ms`` from the optional
+    MySQL columns (:data:`_OPTIONAL_COLUMNS`, None when absent) and the
+    server's ``new_24h`` flag; *kept* names the optional columns the server
+    accepted. Without *detail* the statement is exactly what it always was.
     """
     engine, version, ver, enabled = _server(conn)
     if not enabled:
@@ -533,25 +681,40 @@ def _digest_rows(conn, where, tail, exclude=False, extra_metrics=False):
             conditions.append("(QUERY_SAMPLE_TEXT IS NULL OR LOCATE('%s', QUERY_SAMPLE_TEXT) = 0)"
                               % CAPTURE_TAG)
     # Attribution counters come last, so rows read before they existed (and
-    # replayed answers) keep their column positions.
+    # replayed answers) keep their column positions. With *detail*, the
+    # optional MySQL columns and the New flag follow them.
     if extra_metrics:
         columns += ", SUM_SELECT_FULL_JOIN, SUM_SELECT_RANGE_CHECK, SUM_SELECT_SCAN, SUM_LOCK_TIME, SUM_CREATED_TMP_TABLES"
     else:
         columns += ", SUM_SELECT_FULL_JOIN, SUM_SELECT_RANGE_CHECK, SUM_SELECT_SCAN"
     extra_at = 16 if has_sample else 15
     conditions.extend(where)
-    sql = ("SELECT %s FROM performance_schema.events_statements_summary_by_digest WHERE %s %s"
-           % (columns, " AND ".join(conditions), tail))
-    try:
-        rows = _rows(conn, sql)
-    except ConnectorError as exc:
-        if _denied(exc):
-            raise ValueError(
-                "This user cannot read performance_schema.events_statements_summary_by_digest. "
-                "Grant it with: GRANT SELECT ON performance_schema.* TO <user>;")
-        raise ValueError("Could not read statement digests: " + _reason(exc))
+    kept = list(_OPTIONAL_COLUMNS) if detail and engine == "mysql" else []
+
+    def digest_sql():
+        selected = columns + "".join(", " + c for c in kept) + (", " + _NEW_FLAG_SQL if detail else "")
+        return ("SELECT %s FROM performance_schema.events_statements_summary_by_digest WHERE %s %s"
+                % (selected, " AND ".join(conditions), tail))
+
+    while True:
+        try:
+            rows = _rows(conn, digest_sql())
+            break
+        except ConnectorError as exc:
+            missing = re.search(r"Unknown column '([^']+)'", str(exc))
+            if missing and missing.group(1).upper() in kept:
+                kept.remove(missing.group(1).upper())
+                continue
+            if _denied(exc):
+                raise ValueError(
+                    "This user cannot read performance_schema.events_statements_summary_by_digest. "
+                    "Grant it with: GRANT SELECT ON performance_schema.* TO <user>;")
+            raise ValueError("Could not read statement digests: " + _reason(exc))
     items = []
-    pad_len = (extra_at + 5) if extra_metrics else (extra_at + 3)
+    # After the attribution counters: the kept optional columns, then the flag.
+    optional_at = extra_at + (5 if extra_metrics else 3)
+    new_at = optional_at + len(kept)
+    pad_len = new_at + 1 if detail else optional_at
     for row in rows:
         row = list(row) + [""] * (pad_len - len(row))
         digest_text = _null(row[2])
@@ -585,10 +748,16 @@ def _digest_rows(conn, where, tail, exclude=False, extra_metrics=False):
             "select_range_check": _int(row[extra_at + 1]),
             "select_scan": _int(row[extra_at + 2]),
             "sample_text": sample,
-            "sample_truncated": bool(sample and max_text and len(sample.encode("utf-8")) >= max_text),
+            "sample_truncated": _sample_cut(sample, max_text),
             "first_seen": _null(row[13]),
             "last_seen": _null(row[14]),
         }
+        if detail:
+            for name, key in (("SUM_CPU_TIME", "cpu_ms"), ("QUANTILE_95", "p95_ms"),
+                              ("QUANTILE_99", "p99_ms"), ("QUANTILE_999", "p999_ms")):
+                cell = _null(row[optional_at + kept.index(name)]) if name in kept else None
+                item[key] = round(_int(cell) / _PICO_PER_MS, 3) if cell not in (None, "") else None
+            item["new_24h"] = _null(row[new_at]) == "1"
         if item["rows_sent"]:
             item["examined_per_sent"] = round(item["rows_examined"] / float(item["rows_sent"]), 2)
         item["flags"] = _statement_flags(item)
@@ -598,7 +767,7 @@ def _digest_rows(conn, where, tail, exclude=False, extra_metrics=False):
         item["analysis_sql"] = projection["sql"] if projection["converted"] else None
         item["analysis_warning"] = projection["warning"]
         items.append(item)
-    return engine, version, has_sample, max_text, items
+    return engine, version, has_sample, max_text, items, kept
 
 
 #: Quoted text and comments are copied unchanged; a digest's collapsed lists
@@ -722,7 +891,7 @@ def find_statement(conn, digest, schema=None):
         raise ValueError("Pass a statement digest: 8 to 64 hexadecimal characters "
                          "(myflames top --json lists them).")
     digest = digest.lower()
-    engine, version, _, _, items = _digest_rows(
+    engine, version, _, _, items, _ = _digest_rows(
         conn, ["DIGEST LIKE '%s%%'" % digest], "ORDER BY SUM_TIMER_WAIT DESC LIMIT 50")
     if not items:
         raise ValueError(
@@ -738,13 +907,188 @@ def find_statement(conn, digest, schema=None):
             "schemas": [item["schema"] for item in items]}
 
 
-def top_report(conn, limit=20, schema=None, order="total", table=None, extra_metrics=False):
+def top_report(conn, limit=20, schema=None, order="total", table=None, extra_metrics=False,
+               server_context=True):
     """The ``top-1.0`` JSON envelope shared by the CLI and the UI.
 
     *table* (``"schema.table"``, a pair, or ``{"schema", "table"}``) keeps
     only digests that read a table without an index and whose text names
-    that table; each gets ``table_match`` (see :func:`table_reference`)."""
-    return _top(conn, limit, schema, order, table, extra_metrics=extra_metrics)
+    that table; each gets ``table_match`` (see :func:`table_reference`).
+
+    With *server_context* (the default) the list is ranked against the whole
+    server in one more aggregate read: ``totals`` (every digest),
+    ``others`` (the digests the list does not hold, or None),
+    ``coverage.counting_since``, ``cpu`` (``{"collected"}`` on MySQL with
+    SUM_CPU_TIME, else None) and, per statement, ``cpu_ms``, ``p95_ms``,
+    ``p99_ms``, ``p999_ms`` (None where the server has no such column) and
+    ``new``. The Full analysis attribution reads its lists without it."""
+    return _top(conn, limit, schema, order, table, extra_metrics=extra_metrics,
+                server_context=server_context)
+
+
+#: Buckets of one digest with at least one call, in bucket order.
+_HISTOGRAM_SQL = ("SELECT BUCKET_NUMBER, BUCKET_TIMER_LOW, BUCKET_TIMER_HIGH, COUNT_BUCKET "
+                  "FROM performance_schema.events_statements_histogram_by_digest "
+                  "WHERE %s AND DIGEST = '%s' AND COUNT_BUCKET > 0 ORDER BY BUCKET_NUMBER")
+#: The last bucket's upper bound is UINT64_MAX picoseconds (pfs_histogram.cc):
+#: no bound at all, sent as null.
+_OPEN_BUCKET_PS = 2 ** 63
+
+
+DIGEST_TABLE_LIMIT = 20
+DIGEST_INDEX_PART_LIMIT = 4096
+
+
+def check_digest_tables(schema, text):
+    """Validate bounded statement text before opening a connection."""
+    from .perf_common import check_schema
+    schema = check_schema(schema)
+    if not isinstance(text, str) or len(text) > 1000000 or "\x00" in text:
+        raise ValueError("Pass statement text of at most 1,000,000 characters without NUL.")
+    return schema
+
+
+def digest_tables(conn, schema, text):
+    """Metadata for at most 20 names in statement text, never row data.
+
+    Exactly two scoped metadata reads at most, with no engine preflight or
+    schema inventory. Like schema_browser.indexes_of, named STATISTICS rows
+    read engine-specific columns without a probe or retry: IS_VISIBLE and
+    EXPRESSION on MySQL, absent on MariaDB. Unknown visibility stays null.
+    """
+    from .collectors import extract_table_references
+    from .perf_common import Reader
+    schema = check_digest_tables(schema, text)
+    pairs, notes = extract_table_references(text, schema, limit=DIGEST_TABLE_LIMIT)
+    tables = [{"schema": db, "name": name, "found": False, "type": None, "engine": None,
+               "rows_estimate": None, "data_bytes": None, "index_bytes": None, "indexes": []}
+              for db, name in pairs]
+    result = {"schema_version": "digest-tables-1.0", "method": "statement text", "tables": tables, "notes": notes}
+    lookup = {(t["schema"], t["name"]): t for t in tables if t["schema"] is not None
+              and len(t["schema"]) <= 64 and len(t["name"]) <= 64}
+    for table in tables:
+        if table["schema"] is None:
+            notes.append("No default schema was recorded for %s; its metadata was not read." % table["name"])
+        elif (table["schema"], table["name"]) not in lookup:
+            notes.append("Invalid table name %s.%s; its metadata was not read." % (table["schema"], table["name"]))
+    if not lookup:
+        return result
+    # Each OR branch fixes BOTH fields. Never expand to every table in a
+    # schema (the Tables/Indexes schema-size consent still belongs there).
+    where = " OR ".join(
+        "(TABLE_SCHEMA = %s AND TABLE_NAME = %s AND (@@lower_case_table_names <> 0 OR "
+        "(BINARY TABLE_SCHEMA = BINARY %s AND BINARY TABLE_NAME = BINARY %s)))"
+        % (_literal(db), _literal(name), _literal(db), _literal(name)) for db, name in lookup)
+    reader = Reader(conn, "/*myflames:monitor*/ ")
+    try:
+        metadata = reader.named("SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE, ENGINE, TABLE_ROWS, DATA_LENGTH, INDEX_LENGTH "
+                                ", @@lower_case_table_names AS MYFLAMES_LOWER_CASE_TABLE_NAMES "
+                                "FROM information_schema.TABLES WHERE %s LIMIT %d" % (where, DIGEST_TABLE_LIMIT + 1))
+        indexes = reader.named("SELECT * FROM information_schema.STATISTICS WHERE %s "
+                               "ORDER BY TABLE_SCHEMA, TABLE_NAME, INDEX_NAME = 'PRIMARY' DESC, INDEX_NAME, SEQ_IN_INDEX "
+                               "LIMIT %d" % (where, DIGEST_INDEX_PART_LIMIT + 1))
+    except ConnectorError as exc:
+        raise ValueError("Could not read statement table metadata: " + _reason(exc))
+
+    fold_names = any(str(row.get("MYFLAMES_LOWER_CASE_TABLE_NAMES")) in ("1", "2") for row in metadata)
+
+    def targets(row):
+        key = (row.get("TABLE_SCHEMA"), row.get("TABLE_NAME"))
+        if not fold_names:
+            return [lookup[key]] if key in lookup else []
+        folded = tuple((part or "").casefold() for part in key)
+        return [value for pair, value in lookup.items() if tuple(p.casefold() for p in pair) == folded]
+
+    def size(value):
+        try:
+            return max(0, int(value)) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    for row in metadata:
+        kind = (row.get("TABLE_TYPE") or "").upper()
+        for table in targets(row):
+            table.update(found=True, type={"VIEW": "view", "SYSTEM VIEW": "system view", "SEQUENCE": "sequence"}.get(kind, "table"),
+                         engine=row.get("ENGINE"), rows_estimate=size(row.get("TABLE_ROWS")),
+                         data_bytes=size(row.get("DATA_LENGTH")), index_bytes=size(row.get("INDEX_LENGTH")))
+    if len(metadata) > DIGEST_TABLE_LIMIT:
+        notes.append("Table metadata reached the 20-table result limit; some matches may be missing.")
+    if len(indexes) > DIGEST_INDEX_PART_LIMIT:
+        notes.append("Index metadata was limited to 4,096 key parts; the index list may be incomplete.")
+    grouped = {}
+    for row in indexes[:DIGEST_INDEX_PART_LIMIT]:
+        name = row.get("INDEX_NAME")
+        if name is None:
+            continue
+        for table in targets(row):
+            if not table["found"]:
+                continue
+            key = (table["schema"], table["name"], name)
+            if key not in grouped:
+                visible = row.get("IS_VISIBLE")
+                item = {"name": name, "unique": str(row.get("NON_UNIQUE")) == "0", "columns": [],
+                        "visible": None if visible is None else str(visible).upper() == "YES"}
+                grouped[key] = item
+                table["indexes"].append(item)
+            # Functional parts have NULL COLUMN_NAME on MySQL.
+            column = row.get("COLUMN_NAME") or row.get("EXPRESSION") or "(expression unavailable)"
+            grouped[key]["columns"].append(column)
+    for table in tables:
+        if table["schema"] is not None and (table["schema"], table["name"]) in lookup and not table["found"]:
+            notes.append("%s.%s was not found or is not visible to this account." % (table["schema"], table["name"]))
+    return result
+
+
+def digest_histogram(conn, schema, digest):
+    """The latency histogram of one digest (``digest-histogram-1.0``).
+
+    *schema* is the digest's default schema (None for a row recorded without
+    one) and *digest* its full hex digest; both come from a ``top-1.0``
+    statement. Each bucket that holds a call carries its bounds in
+    milliseconds (``high_ms`` null for the open-ended last bucket) and its
+    count, cumulative since the digest was first seen. MariaDB keeps no
+    histogram, and a MySQL without the table answers ``available`` False with
+    the reason, so the workspace omits the section.
+    """
+    if not isinstance(digest, str) or not re.match(r"^[0-9a-fA-F]{32,64}$", digest):
+        raise ValueError("Pass a full statement digest: 32 to 64 hexadecimal characters.")
+    if schema is not None and (not isinstance(schema, str) or not schema or len(schema) > 64
+                               or "\x00" in schema):
+        raise ValueError("Schema names are 1 to 64 characters.")
+    engine, version, _, enabled = _server(conn)
+    base = {"schema_version": "digest-histogram-1.0", "engine": engine, "server_version": version,
+            **conn_identity(conn, engine, version),
+            "schema": schema, "digest": digest.lower(), "available": False, "reason": None,
+            "buckets": []}
+    if engine == "mariadb":
+        base["reason"] = "MariaDB keeps no statement latency histogram."
+        return base
+    if not enabled:
+        raise ValueError(_perfschema_off_message(engine))
+    where = "SCHEMA_NAME IS NULL" if schema is None else "SCHEMA_NAME = " + _literal(schema)
+    try:
+        rows = _rows(conn, _HISTOGRAM_SQL % (where, digest.lower()))
+    except ConnectorError as exc:
+        if _denied(exc):
+            raise ValueError(
+                "This user cannot read performance_schema.events_statements_histogram_by_digest. "
+                "Grant it with: GRANT SELECT ON performance_schema.* TO <user>;")
+        if "doesn't exist" in str(exc):
+            base["reason"] = "This server keeps no statement latency histogram."
+            return base
+        raise ValueError("Could not read the statement latency histogram: " + _reason(exc))
+    for row in rows:
+        if len(row) < 4:
+            continue
+        high = _int(_null(row[2]))
+        base["buckets"].append({
+            "bucket": _int(row[0]),
+            "low_ms": round(_int(_null(row[1])) / _PICO_PER_MS, 6),
+            "high_ms": None if high >= _OPEN_BUCKET_PS else round(high / _PICO_PER_MS, 6),
+            "count": _int(_null(row[3])),
+        })
+    base["available"] = True
+    return base
 
 
 def slow_queries_report(conn, min_seconds=1.0, limit=50, source="auto"):
@@ -847,7 +1191,7 @@ def slow_queries_report(conn, min_seconds=1.0, limit=50, source="auto"):
             pico = int(float(min_seconds) * 1e12)
             where.append("MAX_TIMER_WAIT >= %d" % pico)
         try:
-            _, _, has_sample, max_text, items = _digest_rows(
+            _, _, has_sample, max_text, items, _ = _digest_rows(
                 conn, where, "ORDER BY MAX_TIMER_WAIT DESC LIMIT %d" % limit, exclude=True
             )
             statements = items

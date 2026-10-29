@@ -337,13 +337,13 @@ def _session(row, engine, source, trx):
         "time_s": _round(float(seconds), 3) if seconds is not None else None, "state": state,
         "info": info, "info_short": _short(info) if info else None, "info_truncated": truncated,
         "thread_kind": kind, "trx": None, "lock_wait": None, "last_statement": None, "progress": None,
-        "memory_used": None, "rows_examined": None,
+        "memory_used": None, "rows_examined": None, "ddl": None,
         "kill_blocked_reason": GROUP_REPLICATION_KILL_REASON if is_group_replication_command(command) else None,
         "explainable": command == "Query" and bool(info) and kind == "client",
     }
     if engine == "mariadb":
         max_stage = _int(row[10])
-        if max_stage:
+        if max_stage or (source == "show_processlist" and _number(row[11])):
             session["progress"] = {"stage": _int(row[9]), "max_stage": max_stage,
                                    "pct": _round(_number(row[11]), 1)}
         session["memory_used"] = _int(row[12])
@@ -609,6 +609,13 @@ def sessions_report(conn, active_only=True, user=None, host=None, db=None, min_s
     sessions = [_assess(_session(row, server.engine, source, by_conn.get(_int(row[0]))))
                 for row in rows if row]
     by_id = {s["id"]: s for s in sessions}
+    from .ddl_progress import read_progress, session_native_rows
+    native = session_native_rows(sessions, source) if server.engine == "mariadb" else None
+    ddl = read_progress(reader, server, native_rows=native)
+    ddl["items"] = [item for item in ddl["items"] if item["id"] in by_id]
+    for item in ddl["items"]:
+        if item["id"] in by_id:
+            by_id[item["id"]]["ddl"] = item
     _last_statements(reader, server, [s for s in sessions if "idle_in_trx" in s["flags"]], notes)
     clients = [s for s in sessions if s["thread_kind"] == "client"]
 
@@ -712,7 +719,7 @@ def sessions_report(conn, active_only=True, user=None, host=None, db=None, min_s
         "rules": dict(RULES),
         "summary": summary, "attention": attention,
         "matched": len(matched), "truncated": len(matched) > limit or truncated_read,
-        "sessions": listed, "notes": notes, "links": dict(_LINKS),
+        "sessions": listed, "ddl": ddl, "notes": notes, "links": dict(_LINKS),
     })
     return report
 
@@ -765,6 +772,17 @@ def format_text(report):
         lines.append("  History list  %s%s" % (_count_text(history["value"]),
                                               "  [%s]" % history["status"].upper()
                                               if history["status"] in ("watch", "problem") else ""))
+    ddl = report.get("ddl", {})
+    if ddl.get("items"):
+        lines += ["", "DDL PROGRESS"]
+        for item in ddl["items"]:
+            progress = "%g%%" % item["percent"] if item["percent"] is not None else "percentage unknown"
+            left = (", about %s left (estimate)" % _duration_text(item["left_s"])
+                    if item["left_s"] is not None else ", time left unknown")
+            lines.append("  %s on %s: %s (%s) %s%s" % (
+                item["statement_kind"], item["id"], item["stage_label"].lower(), item["stage"], progress, left))
+    if ddl.get("missing") or (ddl and not ddl.get("available")):
+        lines.append("  DDL progress: " + (ddl.get("reason") or "Unknown."))
     flagged = [x for x in report["sessions"] if x["status"] in ("watch", "problem")]
     if flagged:
         lines += ["", "FLAGGED"]

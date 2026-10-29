@@ -286,6 +286,53 @@ class TestWriteHTTP(unittest.TestCase):
                 if expected == 500:
                     self.assertNotIn('private implementation detail', json.dumps(result))
 
+    def test_failed_reads_lead_with_plain_words_on_every_server_view(self):
+        """Every Server view's read answers through the same 400 path: a
+        connection that fails leads with what to check, then the client's
+        line, and never under "Could not complete the request: "."""
+        line = "ERROR 2003 (HY000): Can't connect to MySQL server on '127.0.0.1:3306' (61)"
+        expected = ("Could not connect to the server. Check that it is running and that the host and port "
+                    "are right. " + line)
+        refused = ConnectorError("mysql client exited 1: " + line)
+        connection = {'host': '127.0.0.1', 'port': 3306, 'user': 'root'}
+        for path in ('/api/live/health', '/api/live/innodb', '/api/live/locks', '/api/live/sessions',
+                     '/api/live/waits', '/api/live/config', '/api/live/error-log', '/api/live/top'):
+            with self.subTest(path=path):
+                with mock.patch('myflames.connector.MySQLConnection', side_effect=refused):
+                    status, result = self.post(path, {'connection': dict(connection)})
+                self.assertEqual((status, result), (400, {'error': expected}))
+
+    def test_a_reader_context_and_the_generic_prefix_never_stack(self):
+        line = "ERROR 2003 (HY000): Can't connect to MySQL server on '127.0.0.1:3306' (61)"
+        denied = "ERROR 1045 (28000): Access denied for user 'root'@'172.17.0.1' (using password: YES)"
+        cases = (
+            # Health's own context before a connection error: the lead replaces it.
+            (ValueError("Could not read the server status: " + line),
+             "Could not connect to the server. Check that it is running and that the host and port are right. " + line),
+            (ConnectorError("mysql client exited 1: " + denied),
+             "The server refused the user name or password. Check both, and that the account may connect from "
+             "your address. " + denied),
+            # A lost connection keeps what was being done.
+            (ValueError("Could not end connection 41: ERROR 2013 (HY000): Lost connection to MySQL server during query"),
+             "Lost the connection to the server. Check that it is still running: it may have restarted, or a "
+             "network or time limit ended the connection. Could not end connection 41: ERROR 2013 (HY000): Lost "
+             "connection to MySQL server during query"),
+            # A message that says what failed is sent as it is.
+            (ValueError("Could not read the configuration: ERROR 1227 (42000): Access denied; you need the PROCESS privilege"),
+             "Could not read the configuration: ERROR 1227 (42000): Access denied; you need the PROCESS privilege"),
+            # Only a message that does not say what failed gets the prefix.
+            (ValueError("Port must be between 1 and 65535."), "Could not complete the request: Port must be between 1 and 65535."),
+            # A client error passes through as it is.
+            (ConnectorError("mysql client exited 1: ERROR 1142 (42000): SELECT command denied"),
+             "mysql client exited 1: ERROR 1142 (42000): SELECT command denied"),
+        )
+        for error, expected in cases:
+            with self.subTest(error=str(error)):
+                with mock.patch.object(ui, 'api_response', side_effect=error):
+                    status, result = self.post('/api/live/health', {'connection': {'host': '127.0.0.1'}})
+                self.assertEqual((status, result), (400, {'error': expected}))
+                self.assertNotIn('Could not complete the request: Could not', result['error'])
+
     def test_unknown_post_path_is_404_without_dispatch(self):
         with mock.patch.object(ui, 'api_response') as dispatch:
             status, result = self.post('/api/live/not-a-write', {})

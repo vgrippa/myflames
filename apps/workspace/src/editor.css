@@ -1154,9 +1154,11 @@
 /* The highlighted item's fill and words are set once, in kit.css. */
 
 /* The confirmation sheet for a write. */
+/* One label column for every facts list in the sheet (the connection's and
+   the ALTER preflight's), so their values start at the same edge. */
 .editor-confirm .sheet-facts {
   display: grid;
-  grid-template-columns: max-content 1fr;
+  grid-template-columns: minmax(13em, max-content) minmax(0, 1fr);
   gap: var(--space-1) var(--space-4);
   margin: var(--space-3) 0;
   font-size: var(--text-sm);
@@ -1166,6 +1168,11 @@
 }
 .editor-confirm .sheet-facts dt {
   color: var(--ink-muted);
+}
+/* The column gap is the only space between a label and its value (no
+   browser indent on dd). */
+.editor-confirm .sheet-facts dd {
+  margin: 0;
 }
 .editor-confirm .sheet-warnings {
   margin: var(--space-2) 0;
@@ -1321,3 +1328,35 @@
 
 /* A table document replaces the editor work area without losing its session. */
 .editor-workbench[hidden] { display: none; }
+
+/* The ALTER review's predicted algorithm (alter_algorithm.py): one fact
+   row, with each clause's reason and source inside a disclosure. */
+:is(.editor-confirm, .schema-detail) .alter-prediction strong {
+  font-weight: 600;
+}
+:is(.editor-confirm, .schema-detail) .alter-prediction-details {
+  font-size: var(--text-sm);
+}
+:is(.editor-confirm, .schema-detail) .alter-prediction-details ul {
+  max-width: 70ch;
+  margin: var(--space-2) 0;
+  padding-left: var(--space-5);
+}
+:is(.editor-confirm, .schema-detail) .alter-prediction-details li + li {
+  margin-top: var(--space-1);
+}
+:is(.editor-confirm, .schema-detail) .alter-prediction-details code {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+:is(.editor-confirm, .schema-detail) .alter-prediction-source {
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+:is(.editor-confirm, .schema-detail) .alter-prediction-details .hint {
+  color: var(--ink-muted);
+  margin: var(--space-1) 0 0;
+}
+
+/* The wrapper owns narrow-sheet focus; the wide panel keeps its flex sizing. */
+.history-panel-slot { display: contents; }

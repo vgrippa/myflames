@@ -4,51 +4,19 @@ import fs from 'node:fs';
 import ts from 'typescript';
 const src = f => fs.readFileSync(new URL(`../src/${f}`, import.meta.url), 'utf8');
 
-// QueryDigest exports execution statistics, not extrema/percentiles of digest
-// averages or per-digest row totals. Execute the actual text generator with
-// formatters stubbed to expose its numeric inputs (no browser needed).
+// QueryDigest's Text report: a myflames report that names its source, never
+// "pt-query-digest", and claims no minima or percentiles (digest rows hold
+// averages and maxima only). The product name reaches the header (Percona
+// keeps engine=mysql; percona.mjs checks the rendered header).
 const digest = src('QueryDigest.tsx');
-const generator = /const generatePtReportText = \(\) => \{([\s\S]*?)\n  \};/.exec(digest);
-assert.ok(generator, 'digest text generator exists');
-const body = generator[1]
-  .replace('const lines: string[]', 'const lines')
-  .replace('(str: string, len: number)', '(str, len)')
-  .replace('(value: number | null)', '(value)')
-  .replace('(total: number)', '(total)');
-// Keep the real product formatter: Percona uses engine=mysql, so the
-// server_product argument must reach the exported report's header.
-const opsTree = sourceTree('OpsShared.tsx');
-const engineNameDeclaration = findNode(opsTree, node => ts.isFunctionDeclaration(node) && node.name?.text === 'engineName');
-assert.ok(engineNameDeclaration, 'shared product formatter exists');
-const engineName = new Function(ts.transpileModule(engineNameDeclaration.getText(opsTree).replace(/^export\s+/, ''), {
-  compilerOptions: { target: ts.ScriptTarget.ES2020 },
-}).outputText + '\nreturn engineName;')();
-const generate = new Function('statements', 'aggregates', 'serverMeta', 'bound', 'filter',
-  'time', 'number', 'shortDigest', 'formatRatio', 'digestQuery', 'engineName', body);
-function exported(rows, serverMeta = { engine: 'mysql', version: '8.4', filter: 'time' }) {
-  const sum = key => rows.reduce((n, row) => n + (row[key] || 0), 0);
-  return generate(rows, { totalWorkloadMs: sum('total_ms'), totalCalls: sum('count'),
-    totalExamined: sum('rows_examined'), totalSent: sum('rows_sent'), totalLockMs: sum('lock_time_ms') },
-    serverMeta, { label: 'Alice@db:3306' }, 'time',
-    x => `${x}ms`, String, String, () => ({ text: '1:1' }), row => ({ text: row.digest_text }), engineName);
-}
-const row = { digest_text: 'SELECT 1', count: 100, total_ms: 100, avg_ms: 1, max_ms: 1,
-  rows_sent: 100, rows_examined: 200, lock_time_ms: 50, tmp_disk_tables: 0 };
-const text = exported([row, { ...row, count: 1, avg_ms: 100, max_ms: 100 }]);
-assert.match(text, /^# Server: MySQL 8\.4$/m);
-assert.match(exported([row], { engine: 'mysql', version: '8.4.11-11', server_product: 'Percona Server', filter: 'time' }),
-  /^# Server: Percona Server 8\.4\.11-11$/m, 'Percona report header keeps the product and release suffix');
-const attributes = label => text.split('\n').find(line => line.startsWith(`# ${label}`)).trim().split(/\s+/).slice(3);
-assert.deepEqual(attributes('Exec time').slice(0, 3), ['200ms', 'unknown', '100ms']);
-assert.equal(attributes('Exec time')[4], 'unknown', 'execution p95 cannot be recovered from averages');
-assert.deepEqual(attributes('Rows sent').slice(0, 3), ['200', 'unknown', 'unknown']);
-assert.deepEqual(attributes('Rows examine').slice(0, 3), ['400', 'unknown', 'unknown']);
-assert.deepEqual(attributes('Lock time').slice(0, 3), ['100ms', 'unknown', 'unknown']);
-assert.match(exported([{ ...row, max_ms: 0 }]), /# Exec time\s+100ms\s+unknown\s+0ms/);
-assert.match(exported([{ ...row, max_ms: undefined, lock_time_ms: undefined }]), /# Exec time\s+100ms\s+unknown\s+unknown/);
-assert.match(exported([{ ...row, lock_time_ms: undefined }]), /# Lock time\s+unknown/);
-assert.match(exported([]), /# Exec time\s+0ms\s+unknown\s+unknown\s+unknown\s+unknown/);
-assert.ok(/const escape = csvCell/.test(digest) && digest.includes("from \"./reportTableExport\""), 'digest CSV uses the formula guard');
+const report = /function textReport\(\) \{([\s\S]*?)\n  \}/.exec(digest);
+assert.ok(report, 'digest text report exists');
+assert.match(report[1], /"# myflames query digest"/);
+assert.match(report[1], /# Server: \$\{engineName\(report\.engine, report\.version, report\.server_product\)\}/);
+assert.match(report[1], /# Source: \$\{sourceOf\(report\)\}/, 'the report names where its numbers come from');
+assert.doesNotMatch(report[1], /95%|percentile|\bmin\b/i, 'no statistic the digest table does not record');
+assert.doesNotMatch(digest, /pt-query-digest/i, 'Query digest never describes itself as pt-query-digest');
+assert.ok(/csvCell\(value == null \? "" : value\)/.test(digest) && digest.includes('from "./reportTableExport"'), 'digest CSV uses the formula guard');
 
 // TableData: CSV guard, JSON null, NULL is empty in TSV, Set to Default only where real.
 const td = src('TableData.tsx');

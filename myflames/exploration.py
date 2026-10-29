@@ -75,7 +75,7 @@ def project_tree(root, focus_id='', collapsed_ids=None):
 
 
 def render_exploration(root, view, width=1200, selected_id='', focus_id='',
-                       collapsed_ids=None, metric='self_time'):
+                       collapsed_ids=None, metric='self_time', hide_literals=False):
     """Return standalone HTML with a native chart, metric list, and selection.
 
     Every view is drawn by the inlined ``myflames-charts.js`` bundle from
@@ -86,6 +86,9 @@ def render_exploration(root, view, width=1200, selected_id='', focus_id='',
     Child messages: ``{type: 'myflames-node', node_id: 'n:...'}``.
     Unknown IDs and messages from windows other than the parent are ignored.
     """
+    if hide_literals:
+        from .parser import hide_parsed_plan_literals
+        root = hide_parsed_plan_literals(root)
     if view not in VIEWS:
         raise ValueError('Unknown exploration view.')
     if not isinstance(metric, str) or metric not in METRICS:
@@ -93,7 +96,10 @@ def render_exploration(root, view, width=1200, selected_id='', focus_id='',
     width = max(720, min(3000, int(width)))
     # Validates focus/collapse exactly as before; the bundle projects a copy.
     project_tree(root, focus_id, collapsed_ids)
-    return _render_bundle_page(root, view, width, selected_id, focus_id, collapsed_ids, metric)
+    page = _render_bundle_page(root, view, width, selected_id, focus_id, collapsed_ids, metric)
+    if hide_literals:
+        page = page.replace('<body>', '<body><p>Literal values hidden</p>', 1)
+    return page
 
 
 _BUNDLE_PAGE = (

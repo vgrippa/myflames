@@ -18,15 +18,76 @@ Developer ID, notarized by Apple and attached to the GitHub release as
 `myflames-3.3.0-macos-arm64.dmg`. A Windows x64 installer
 (`myflames-3.3.0-windows-x64-setup.exe`) ships beside it as an unsigned preview.
 The browser launch (`myflames ui`) is deprecated and the Python CLI remains for
-command-line use. Windows code signing and crash supervision, automatic updates
-and Linux remain release work.
+command-line use. Windows code signing and the rest of Windows crash
+supervision (SSH tunnels now end with the backend however it ends, but dump,
+restore and clone tools still outlive a backend that crashed), automatic
+updates and Linux remain release work.
 The app is Electron around the existing React/TypeScript workspace and Python
 engine. The
 working UI includes the new compact shell, command palette, full-width Server
 details, catalog completion and reviewed table-data edits. Setup and current
-limits are described in [Desktop app](docs/DESKTOP.md). The remaining proposed
-extensions are CSV import, SSH tunnels, server history, schema comparison,
-object editing and incident collection.
+limits are described in [Desktop app](docs/DESKTOP.md). SSH tunnels have
+shipped. The remaining proposed extensions are server history
+beyond parameter snapshots, object editing and incident collection.
+
+Schema versions (shipped after 3.3.0) saves a database's schema locally and
+compares any two schemas, saved or read now on any connection, as a source
+and a target, with a sync script that changes the target to match the source
+and that myflames never runs. You choose the objects the script includes
+(objects only in the target are left out until chosen, and a change blocked
+by a kept object says what it needs), each change says whether it drops data,
+may fail on existing rows or rebuilds the table (each ALTER TABLE carries its
+predicted INSTANT, INPLACE or COPY algorithm), and Checks
+(`myflames schema lint`) flag risky definitions. Next steps there: an MCP tool
+for agents (compare a saved version
+with a live database), `ALTER SEQUENCE` and system versioning in the sync
+script, rename hints that offer RENAME COLUMN or RENAME TABLE instead of drop
+and add, and saved versions taken on a schedule.
+
+Parameters and Users and roles compare two servers, or parameters against a
+snapshot saved on this computer, and export grants as SQL without passwords
+(`myflames config compare`, `config snapshot`, `accounts compare`, `accounts
+export`); nothing is executed. Processlist, `myflames sessions` and the Query
+editor show the progress of running DDL, and the Query editor's ALTER review
+predicts whether the server will run the statement INSTANT, INPLACE or COPY.
+Query digest ranks statements against the server's total time, with
+percentiles, a latency histogram and CPU time on MySQL, and lists the size
+and indexes of the tables a statement names. The Query editor asks for a digest's values in a form,
+keeps saved queries, totals selected cells and shows one row as a panel.
+Health draws live charts and can capture the processlist, InnoDB status and
+locks into an investigation when a condition trips. Plans has a Stats view and
+All occurrences, and exports can hide literal values. Connections can go
+through SSH tunnels, and the connection type shows as a strip and on every
+write sheet. Every lesson in Learn steps one idea at a time with simplified
+code, Check yourself and Explore. Parameters has a **Versions** tab: the
+parameter catalogs of every MySQL GA, LTS and Innovation release from 8.0.11
+and every stable MariaDB release from 10.6 that could be started, each read
+from a running server in a throwaway lab container and shipped with myflames
+(`myflames config versions list|compare|history`), so two releases compare
+and one parameter traces through every release without reading a server.
+Possible follow-ups: catalog the variables only Percona Server adds, use the
+catalogs in the upgrade check (parameters set on a server that the target
+release removes), and restore the Versions tab, its mode and its choices
+across sessions.
+
+**Shipped: Import CSV.** The workspace loads a .csv, .tsv or .txt file into
+an existing table or a new one created from the file, from the Query
+editor's Schemas panel (a table's **Import CSV…**, a database's **Import CSV
+into a new table…**) and from Server > Tables. The format is detected from
+the file, every row is checked against the column types before anything is
+sent (problems listed by line), rows go as batched INSERT statements by
+default, and LOAD DATA LOCAL is offered only when the server already has
+`local_infile` ON, from a checked copy myflames writes, never the original
+file. A failure or Stop either keeps nothing (one rolled-back transaction)
+or keeps the rows committed every N rows, and bad rows stop the import or
+are skipped and reported. Every import is a reviewed and audited write, the
+Audit log never stores row data, and a lost reply reads Outcome unknown and
+is never sent again. Validated live on MySQL 8.4 and 9.7 and MariaDB 10.11
+and 11.4 by `scripts/lab-csv-import.py` (29 scenarios per server through the
+real API). Follow-ups: a CLI, Truncate and Recreate options for an existing
+table, a matching export, the Audit log's own "Import CSV" operation label,
+live checks through SSH tunnels and on Windows, and lab runs on Percona
+Server, MySQL 8.0 and MariaDB 11.5+ (whose TIMESTAMP reaches 2106).
 
 The workspace includes the Query editor's persistent sessions, light and dark
 appearance, Parameters (AWS RDS-style parameter group table, inline edits, batch review up to 25 changes, and Session handoff to the editor), Users and roles with
@@ -154,6 +215,93 @@ Distribution multiplies whatever is inside, and the inside is now honest (decisi
 3. **CLI consistency**: shared server-write confirmation and the unsent exit-2 contract are implemented. Preserve them as commands grow. (owned by `cli-ux`)
 4. **Finish the semijoin cluster**: `semijoin_firstmatch` shipped as the flagship; `loosescan`, `materialization`, and a real `duplicate_weedout` (today a stub) remain, each taught as a contrast against the FirstMatch early-out. See [.claude/ALGORITHM_ROADMAP.md](.claude/ALGORITHM_ROADMAP.md). (owned by `teaching`)
 
+## Ideas from open source database tools (October 2026)
+
+A review of how well-regarded open source tools present the same tasks, read
+from their documentation, screenshots and issue discussions only. No code was
+read or copied; projects under the GPL or AGPL (MySQL Workbench, Beekeeper
+Studio, DbGate, HeidiSQL, phpMyAdmin, PMM, Percona Toolkit, innotop) were
+observed through their documentation alone. myflames implements its own
+version of any idea it takes.
+
+Taken in October 2026: Source and Target with side-anchored statuses and a
+sync script in Schema versions (DBeaver, Bytebase, Liquibase); a difference
+shown over the whole view with both definitions side by side; a checkbox per
+difference that rebuilds the sync script, with objects only in the target left
+out until chosen and the objects a change needs named (DBeaver's drop option,
+Skeema's `allow-unsafe`, Atlas diff policies); Checks for a saved version and
+`myflames schema lint` (FLOAT for money, utf8mb3, MyISAM, zero dates, reserved
+words, foreign keys without an index or parent key, missing definers) and a
+destructive or data-dependent label on each sync change (Skeema lint, Atlas
+migrate lint, Bytebase SQL review); whether each ALTER TABLE will run INSTANT,
+INPLACE (with or without a rebuild) or COPY and whether writes continue,
+predicted from source-checked rules and never by running it, in the Query
+editor's ALTER review, `myflames sql` and, as a Rebuilds table label and an
+`-- ALGORITHM:` comment, in the sync script (the reason gh-ost and
+pt-online-schema-change exist); a DDL progress meter with the stage,
+percentage and time left on Processlist, `myflames sessions` and the Query
+editor's own ALTER, read-only and only while on screen (gh-ost and
+pt-online-schema-change); parameters compared between two connections or
+against a saved snapshot, and accounts and grants compared with the grants
+exportable as SQL, on Source and Target screens like Schema versions
+(pt-config-diff, pt-show-grants); Query digest's named source and share of
+the server's total time, a last line for the statements outside the list,
+notes shown only when they apply, a New badge from first seen, CPU time where
+MySQL has `SUM_CPU_TIME`, and P95, P99, P99.9 with a latency histogram from
+`events_statements_histogram_by_digest`, and a Tables section with the
+size and indexes of the tables a statement names (PMM Query Analytics, the
+pt-query-digest profile, PgHero, Datadog); a form for the values of a digest's
+`?` markers, saved queries in folders, sum, average and count of the selected
+cells, and one row as a key and value panel with JSON laid out (DBeaver bind
+variables and value panel, Sequel Ace favorites, Beekeeper Studio); a Stats
+view with time per table and per operator type, the total of one operator
+across every place it appears, and literal values hidden when a plan is
+exported to share (PEV2, speedscope's Sandwich view); live charts while Health
+is on screen and a capture of the processlist, InnoDB status and locks into an
+investigation when a condition trips, opt-in and only while the screen is open
+(Workbench's Performance Dashboard, phpMyAdmin's status monitor, pt-stalk);
+New connection in the connection switcher and a pasted `mysql://` URL split
+into fields (DBeaver, Beekeeper Studio); the connection type as a strip along
+the window's top edge and a band on every write sheet (DBeaver connection
+types); SSH tunnels from `~/.ssh/config` with the user's own keys and agent
+(Beekeeper Studio); a name defaulting to `user@host` with duplicates refused
+(phpMyAdmin, DBeaver); a database list after a successful Test connection
+(Sequel Ace); choices filled from the server instead of typed names (Sequel
+Ace, DBeaver); a full screen lesson stage that fits the window (reveal.js,
+Algorithm Visualizer); and, for every lesson, guided steps with a simplified
+code panel that follows the step, a short quiz at the end and a free Explore
+mode with the lesson's inputs (VisuAlgo, Algorithm Visualizer).
+
+Next, roughly in order of value:
+
+1. **Schema versions**: a drift check that compares the database now with its
+   newest saved version from the connection picker (Bytebase drift
+   detection).
+2. **Connections**: a search box and recent connections first in the picker;
+   groups and pinned favorites (DBeaver folders, Sequel Ace favorites);
+   plain-language TLS mode names with the `ssl-mode` value beside them
+   (Beekeeper Studio); a failed socket path explained with the usual
+   locations (Sequel Ace); Test connection reporting TLS in use and the
+   privilege verdict, not only the version.
+3. **Query digest**: choose the main measure and the columns from the table
+   header (PMM); group by schema, user or host (PMM); trends only once
+   myflames samples digests itself.
+4. **Plans**: a differential flame graph colored by the change per operator,
+   with the delta also in text (FlameGraph's difffolded, the Firefox Profiler
+   compare view); a match count and a breadcrumb for the zoomed frame in
+   search (speedscope); selecting an operator from a finding and the findings
+   from an operator (pgMustard, PEV2).
+5. **Learn**: Space to play or pause and the arrow keys to step,
+   with a shortcuts overlay (VisuAlgo, reveal.js); lesson parameters the
+   learner can drag on the drawing, beyond Explore's inputs (explorable
+   explanations).
+
+Not taken, because they write to the server or need an agent on it, against
+myflames' read-first, local design: pt-table-checksum (checksum rows through
+replication), pt-heartbeat (a heartbeat table), Orchestrator's drag to move
+replicas, and PMM's agents and long-term metric storage. Processlist already
+refreshes automatically, and Schema compare already swaps its sides.
+
 ## Performance workspace: proposed next views
 
 Shipped: readable durations across Replication lag tables, signals, summary, tile and topology, and the Query editor ALTER review transaction age. Processlist inspector and Locks summary facts retain exact seconds on hover; duration tables keep numeric sorting. Settings and progress counters retain their units.
@@ -214,7 +362,7 @@ Implemented Home version information and workflow shortcuts, grouped SQL navigat
 
 Implemented complete scoped Tables and Indexes inventories, pagination and CSV/HTML/PDF exports. A reusable-space filter is available for known file-per-table allocations. Per-index fragmentation measurement remains unavailable from these metadata sources.
 
-Parameters uses **Review and apply** for batch edits (up to 25 changes) and **Change…** in the inspector for single-parameter modes. Permission details appear inside the review dialog; the buttons do not show an Unverified badge. Existing confirmation and privilege checks still apply.
+Parameters uses **Review and apply** for batch edits (up to 25 changes), **Stage value for review** in the inspector to stage one value for that review, and **Change this parameter…** in the inspector for single-parameter modes. Permission details appear inside the review dialog; the buttons do not show an Unverified badge. Existing confirmation and privilege checks still apply.
 
 **Shipped: Parameters documentation links and a calmer Dump form.** The Parameters inspector is one compact section with a Documentation link per variable (MySQL Reference Manual by server version, MariaDB documentation, Percona manuals for Percona-only variables), generated from saved official pages into `sysvar_docs.py`, and a single Recommendation only when a check flags it. Maintenance > Dump reads the tables of the one chosen database into a searchable list and groups the tool's options as a two-column form. MySQL 8.0 and 8.4 variables are described by the help text they are declared with in the server source (MySQL 9.0+ and MariaDB describe their own). Next: the variables declared outside the generator's source folders (the `admin_ssl_*` family), and refreshing the saved pages when a new MySQL manual ships.
 

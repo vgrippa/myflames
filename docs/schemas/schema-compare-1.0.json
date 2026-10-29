@@ -1,0 +1,1024 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/vgrippa/myflames/docs/schemas/schema-compare-1.0.json",
+  "title": "myflames schema comparison (schema-compare-1.0)",
+  "description": "Two schemas compared (myflames/schema_versions.py compare): objects paired by type and name (tables, views and sequences share a namespace), each only in source, only in target, different, identical or not compared (a definition one side could not read). Tables compare column by column (with effective character sets and collations), key, foreign key, check, options and partitioning; other objects compare definition, definer, sql_mode, time zone and trigger order. sync (myflames/schema_sync.py) holds the statements that would change Target to match Source; myflames never runs them. markdown is added by the workspace endpoint only when asked.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "compared_at",
+    "source",
+    "target",
+    "options",
+    "identical",
+    "summary",
+    "objects",
+    "notes",
+    "sync"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "schema-compare-1.0"
+    },
+    "compared_at": {
+      "type": "string"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "label",
+        "database",
+        "server",
+        "taken_at",
+        "checksum",
+        "connection",
+        "coverage"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "live",
+            "version",
+            "file"
+          ]
+        },
+        "label": {
+          "type": "string"
+        },
+        "database": {
+          "type": "string"
+        },
+        "server": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "engine"
+          ],
+          "properties": {
+            "engine": {
+              "enum": [
+                "mysql",
+                "mariadb"
+              ]
+            },
+            "flavor": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "server_product": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "server_version": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "hostname": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "host": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "port": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "lower_case_table_names": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "ssh_host": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Present only when the server was read through an SSH tunnel: the SSH host (host and port are then the database as that SSH host reaches it). Part of the server's identity: the same host and port through another SSH host, or none, is another server."
+            },
+            "ssh_user": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The SSH user, when one was given (else the user's ~/.ssh/config decides)."
+            },
+            "ssh_port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535,
+              "description": "The SSH port, when one was given."
+            }
+          }
+        },
+        "taken_at": {
+          "type": "string"
+        },
+        "checksum": {
+          "type": "string"
+        },
+        "connection": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "profile_id": {
+              "type": "string"
+            },
+            "profile_name": {
+              "type": "string"
+            }
+          }
+        },
+        "coverage": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "state",
+              "reason"
+            ],
+            "properties": {
+              "state": {
+                "enum": [
+                  "complete",
+                  "unknown"
+                ]
+              },
+              "reason": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "id": {
+          "type": "string"
+        },
+        "number": {
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "saved_at": {
+          "type": "string"
+        },
+        "file": {
+          "type": "string"
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "label",
+        "database",
+        "server",
+        "taken_at",
+        "checksum",
+        "connection",
+        "coverage"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "live",
+            "version",
+            "file"
+          ]
+        },
+        "label": {
+          "type": "string"
+        },
+        "database": {
+          "type": "string"
+        },
+        "server": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "engine"
+          ],
+          "properties": {
+            "engine": {
+              "enum": [
+                "mysql",
+                "mariadb"
+              ]
+            },
+            "flavor": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "server_product": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "server_version": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "hostname": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "host": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "port": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "lower_case_table_names": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "ssh_host": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Present only when the server was read through an SSH tunnel: the SSH host (host and port are then the database as that SSH host reaches it). Part of the server's identity: the same host and port through another SSH host, or none, is another server."
+            },
+            "ssh_user": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The SSH user, when one was given (else the user's ~/.ssh/config decides)."
+            },
+            "ssh_port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535,
+              "description": "The SSH port, when one was given."
+            }
+          }
+        },
+        "taken_at": {
+          "type": "string"
+        },
+        "checksum": {
+          "type": "string"
+        },
+        "connection": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "profile_id": {
+              "type": "string"
+            },
+            "profile_name": {
+              "type": "string"
+            }
+          }
+        },
+        "coverage": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "state",
+              "reason"
+            ],
+            "properties": {
+              "state": {
+                "enum": [
+                  "complete",
+                  "unknown"
+                ]
+              },
+              "reason": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "id": {
+          "type": "string"
+        },
+        "number": {
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "saved_at": {
+          "type": "string"
+        },
+        "file": {
+          "type": "string"
+        }
+      }
+    },
+    "options": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ignore_definers"
+      ],
+      "properties": {
+        "ignore_definers": {
+          "type": "boolean"
+        }
+      }
+    },
+    "identical": {
+      "type": "boolean"
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "different",
+        "only_in_source",
+        "only_in_target",
+        "not_compared",
+        "identical",
+        "definer_only"
+      ],
+      "properties": {
+        "different": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "only_in_source": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "only_in_target": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "not_compared": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "identical": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "definer_only": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "objects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "type",
+          "name",
+          "status"
+        ],
+        "properties": {
+          "type": {
+            "enum": [
+              "database",
+              "table",
+              "view",
+              "sequence",
+              "procedure",
+              "function",
+              "package",
+              "package_body",
+              "trigger",
+              "event"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "different",
+              "only_in_source",
+              "only_in_target",
+              "not_compared",
+              "identical"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "changes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "part",
+                "name",
+                "change"
+              ],
+              "properties": {
+                "part": {
+                  "enum": [
+                    "column",
+                    "index",
+                    "foreign_key",
+                    "check",
+                    "constraint",
+                    "period",
+                    "other",
+                    "options",
+                    "partitioning",
+                    "definition",
+                    "definer",
+                    "sql_mode",
+                    "time_zone",
+                    "order",
+                    "type",
+                    "name"
+                  ]
+                },
+                "name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "change": {
+                  "enum": [
+                    "only_in_source",
+                    "only_in_target",
+                    "different",
+                    "moved"
+                  ]
+                },
+                "target": {
+                  "type": [
+                    "string",
+                    "integer",
+                    "null"
+                  ]
+                },
+                "source": {
+                  "type": [
+                    "string",
+                    "integer",
+                    "null"
+                  ]
+                },
+                "position": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "moved": {
+                  "type": "boolean"
+                },
+                "collation": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "target",
+                    "source"
+                  ],
+                  "properties": {
+                    "target": {
+                      "type": "array"
+                    },
+                    "source": {
+                      "type": "array"
+                    }
+                  }
+                },
+                "label": {
+                  "type": "string",
+                  "description": "What the change is about, for example \"column email\" or \"table options\"."
+                },
+                "text": {
+                  "type": "string",
+                  "description": "The change as one line (the same words the CLI and the workspace show)."
+                },
+                "risks": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "destructive",
+                    "data_dependent",
+                    "rebuild"
+                  ],
+                  "properties": {
+                    "destructive": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "One sentence per known destructive effect."
+                    },
+                    "data_dependent": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "One sentence per effect that depends on existing rows."
+                    },
+                    "rebuild": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Python-written table rebuild or copy risk; null for no rebuild or an unknown prediction."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "summary": {
+            "type": "string"
+          },
+          "definer_only": {
+            "type": "boolean"
+          },
+          "target_name": {
+            "type": "string"
+          },
+          "target_ddl": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_ddl": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "diff": {
+            "type": "array",
+            "description": "Unified diff from Target to Source: [op, text] with '-' only in target, '+' only in source, ' ' shared, or '@' (hunk header).",
+            "items": {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "enum": [
+                    " ",
+                    "-",
+                    "+",
+                    "@"
+                  ]
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "key": {
+            "type": "string",
+            "description": "Stable namespace:name key, preserving name case; tables, views and sequences use relation."
+          },
+          "risks": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "destructive",
+              "data_dependent",
+              "rebuild"
+            ],
+            "properties": {
+              "destructive": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "One sentence per known destructive effect."
+              },
+              "data_dependent": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "One sentence per effect that depends on existing rows."
+              },
+              "rebuild": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Python-written table rebuild or copy risk; null for no rebuild or an unknown prediction."
+              }
+            }
+          },
+          "blocked_by": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            },
+            "description": "Comparison keys to choose before generating this object's changes. Includes transitive blockers; empty when no selection dependency blocks it. Recomputed for each sync selection."
+          }
+        }
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "sync": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "database",
+        "statements",
+        "skipped",
+        "warnings",
+        "summary",
+        "script"
+      ],
+      "properties": {
+        "database": {
+          "type": "string"
+        },
+        "statements": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "phase",
+              "object",
+              "sql",
+              "risks",
+              "warnings",
+              "compound"
+            ],
+            "properties": {
+              "phase": {
+                "enum": [
+                  "session",
+                  "database",
+                  "drop_objects",
+                  "drop_foreign_keys",
+                  "drop_checks",
+                  "drop_tables",
+                  "create_sequences",
+                  "alter_tables",
+                  "create_tables",
+                  "add_foreign_keys",
+                  "routines",
+                  "views",
+                  "triggers",
+                  "events",
+                  "database_end"
+                ]
+              },
+              "object": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "additionalProperties": false,
+                "required": [
+                  "type",
+                  "name"
+                ],
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "database",
+                      "table",
+                      "view",
+                      "sequence",
+                      "procedure",
+                      "function",
+                      "package",
+                      "package_body",
+                      "trigger",
+                      "event"
+                    ]
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                }
+              },
+              "sql": {
+                "type": "string"
+              },
+              "risks": {
+                "type": "array",
+                "items": {
+                  "enum": [
+                    "drops_data",
+                    "may_change_data",
+                    "checks_rows",
+                    "drops_privileges"
+                  ]
+                }
+              },
+              "warnings": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "compound": {
+                "type": "boolean",
+                "description": "A routine, trigger or event body: the script wraps it in DELIMITER lines."
+              },
+              "risk_details": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "destructive",
+                  "data_dependent",
+                  "rebuild"
+                ],
+                "properties": {
+                  "destructive": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "One sentence per known destructive effect."
+                  },
+                  "data_dependent": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "One sentence per effect that depends on existing rows."
+                  },
+                  "rebuild": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "Python-written table rebuild or copy risk; null for no rebuild or an unknown prediction."
+                  }
+                }
+              },
+              "algorithm": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "ALTER TABLE prediction from the captured target definition and target server rules. No live facts are read; missing facts stay unknown. Clause reasons and notes support the Why disclosure.",
+                "required": [
+                  "predicted",
+                  "algorithm",
+                  "rebuild",
+                  "concurrent_dml",
+                  "summary",
+                  "reason",
+                  "source",
+                  "needs"
+                ],
+                "properties": {
+                  "predicted": {
+                    "type": "boolean"
+                  },
+                  "algorithm": {
+                    "enum": [
+                      "INSTANT",
+                      "INPLACE",
+                      "COPY",
+                      null
+                    ]
+                  },
+                  "rebuild": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "concurrent_dml": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "summary": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "needs": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "clauses": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "text",
+                        "algorithm",
+                        "summary",
+                        "outcome",
+                        "reason",
+                        "source"
+                      ],
+                      "properties": {
+                        "text": {
+                          "type": "string"
+                        },
+                        "algorithm": {
+                          "enum": [
+                            "INSTANT",
+                            "INPLACE",
+                            "COPY",
+                            null
+                          ]
+                        },
+                        "rebuild": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ]
+                        },
+                        "concurrent_dml": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ]
+                        },
+                        "summary": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "outcome": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "reason": {
+                          "type": "string"
+                        },
+                        "source": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  },
+                  "notes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "skipped": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "name",
+              "reason"
+            ],
+            "properties": {
+              "type": {
+                "enum": [
+                  "database",
+                  "table",
+                  "view",
+                  "sequence",
+                  "procedure",
+                  "function",
+                  "package",
+                  "package_body",
+                  "trigger",
+                  "event"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "summary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "statements",
+            "drops_data",
+            "skipped"
+          ],
+          "properties": {
+            "statements": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "drops_data": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "skipped": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "warnings": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Number of WARNING and CHECK comment lines emitted for statement risks."
+            }
+          }
+        },
+        "script": {
+          "type": "string"
+        },
+        "chosen_keys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "omitted": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "key",
+              "reason"
+            ],
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "markdown": {
+      "type": "string"
+    },
+    "comparison_id": {
+      "type": "string",
+      "description": "Workspace-only opaque reference to the bounded comparison cache; use for sync selection without another server read."
+    }
+  }
+}

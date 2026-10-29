@@ -1130,6 +1130,38 @@
         }
       },
       {
+        "value": "STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO",
+        "truncated": false,
+        "scope": "both",
+        "apply_type": "dynamic",
+        "modifiable": "now",
+        "type": "set",
+        "values": [
+          "ONLY_FULL_GROUP_BY",
+          "STRICT_TRANS_TABLES",
+          "NO_ZERO_IN_DATE",
+          "NO_ZERO_DATE",
+          "ERROR_FOR_DIVISION_BY_ZERO",
+          "NO_ENGINE_SUBSTITUTION"
+        ],
+        "min": null,
+        "max": null,
+        "block_size": null,
+        "default": "ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION",
+        "source": "COMPILED",
+        "source_label": "default",
+        "source_path": null,
+        "set_time": null,
+        "set_user": null,
+        "set_host": null,
+        "persisted": false,
+        "modified": true,
+        "description": "The SQL mode of new sessions.",
+        "checks": [],
+        "name": "sql_mode",
+        "documentation": null
+      },
+      {
         "value": "10000",
         "truncated": false,
         "scope": "global",

@@ -116,12 +116,9 @@ export function NewsSetting() {
           }}>
           Show MySQL and MariaDB news on Home
         </Checkbox>
-        <InfoPopover label="About Home news">
-          <p>Headlines from Planet MySQL and the MariaDB Foundation, read over HTTPS while Home is open.</p>
-        </InfoPopover>
       </div>
       <p className={error ? "hint error" : "hint"} id="news-toggle-hint" role={error ? "alert" : undefined}>
-        {error || "Read while Home is open."}
+        {error || "Planet MySQL and the MariaDB Foundation, read over HTTPS while Home is open."}
       </p>
     </>
   );

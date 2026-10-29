@@ -6,7 +6,35 @@ import sys
 import threading
 import time
 
+if __name__ == '__main__' and sys.argv[1:2] == ['__myflames_ssh_watchdog']:
+    # One SSH tunnel's watchdog (myflames/ssh_watchdog.py): started per
+    # tunnel, so it starts before the CLI is even imported.
+    from myflames.ssh_watchdog import main as watchdog_main
+    sys.exit(watchdog_main(sys.argv[2:]))
+
 from myflames.cli import main
+
+
+def _kill_owned_groups(own_group):
+    """SIGKILL the process groups this backend owns outside its own group:
+    every SSH tunnel's and every dump, restore or clone tool's (the groups
+    its ToolGroups lists, the same list the desktop reads). A SIGKILL of the
+    backend's own group never reaches them. Returns the groups signalled."""
+    try:
+        from myflames.ssh_tunnel import TUNNELS
+        groups = TUNNELS.owned_groups()
+    except Exception:
+        return []
+    killed = []
+    for pgid in groups:
+        if not isinstance(pgid, int) or pgid <= 1 or pgid in (own_group, os.getpid()):
+            continue
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+            killed.append(pgid)
+        except OSError:
+            pass
+    return killed
 
 
 def _stop_with_desktop_parent():
@@ -42,7 +70,10 @@ def _stop_with_desktop_parent():
         atexit.register(end_group)
         os.kill(os.getpid(), signal.SIGINT)
         time.sleep(5)
-        os.killpg(group, signal.SIGKILL)  # Shutdown hung.
+        # Shutdown hung. Tools and tunnels first: they are in groups of
+        # their own, which the SIGKILL below never reaches.
+        _kill_owned_groups(group)
+        os.killpg(group, signal.SIGKILL)
 
     threading.Thread(target=watch, name='desktop-parent-watch', daemon=True).start()
 

@@ -79,8 +79,9 @@ function buildStage(numBlocks) {
     });
   }
   if (numBlocks > cap) {
+    // Under the blocks, so it never covers a block's customer names.
     var more = anim.svgEl("text", {
-      x: W - 20, y: 80, "text-anchor": "end",
+      x: W - 20, y: 116, "text-anchor": "end",
       "font-size": 11, "font-weight": 600, fill: "var(--svg-ink-muted)", "font-style": "italic"
     });
     more.textContent = "\u2026 and " + (numBlocks - cap) + " more blocks (each one is another full scan of orders)";
@@ -105,25 +106,34 @@ function buildStage(numBlocks) {
   });
   svg.appendChild(innerRect);
 
-  // Draw order rows inside the inner table
+  // Draw order rows inside the inner table, one column per order, upright
+  // so they stay readable (they used to be rotated and cross the border).
   var orderLabels = [];
+  var colW = (innerW - 32) / ORDERS.length;
   for (var j = 0; j < ORDERS.length; j++) {
-    var ox = innerX + 16 + j * ((innerW - 32) / ORDERS.length);
-    var oy = innerY + 12;
+    var ox = innerX + 16 + j * colW;
     var oLbl = anim.svgEl("text", {
-      x: ox, y: oy + 12, "font-size": 8, "font-weight": 600, fill: "var(--svg-token-ink)",
-      transform: "rotate(-35," + ox + "," + (oy + 12) + ")"
+      x: ox + colW / 2, y: innerY + 38, "text-anchor": "middle",
+      "font-size": 10, "font-weight": 600, fill: "var(--svg-token-ink)"
     });
     oLbl.textContent = "#" + ORDERS[j].id + " " + ORDERS[j].month;
     svg.appendChild(oLbl);
     orderLabels.push(oLbl);
-
-    // Faint stripe
-    var stripe = anim.svgEl("line", {
-      x1: ox, y1: innerY + 28, x2: ox, y2: innerY + innerH - 8,
-      stroke: "var(--svg-token-soft)", "stroke-width": 1
+    var oTot = anim.svgEl("text", {
+      x: ox + colW / 2, y: innerY + 56, "text-anchor": "middle",
+      "font-size": 9, "font-weight": 500, fill: "var(--svg-ink-muted)"
     });
-    svg.appendChild(stripe);
+    oTot.textContent = ORDERS[j].total;
+    svg.appendChild(oTot);
+
+    // Faint stripe between orders
+    if (j > 0) {
+      var stripe = anim.svgEl("line", {
+        x1: ox, y1: innerY + 18, x2: ox, y2: innerY + innerH - 18,
+        stroke: "var(--svg-token)", "stroke-width": 0.5, opacity: 0.35
+      });
+      svg.appendChild(stripe);
+    }
   }
 
   var sweep = anim.svgEl("rect", {
@@ -131,6 +141,14 @@ function buildStage(numBlocks) {
     fill: "var(--svg-build)", opacity: 0
   });
   svg.appendChild(sweep);
+
+  // Where the buffered customers wait while orders is scanned.
+  var bufLbl = anim.svgEl("text", {
+    x: innerX, y: 132, "font-size": 11, "font-weight": 600,
+    fill: "var(--svg-ink-muted)", opacity: 0
+  });
+  bufLbl.textContent = "In the join buffer now (each is compared with every order):";
+  svg.appendChild(bufLbl);
 
   var statusLbl = anim.svgEl("text", {
     x: W/2, y: innerY + innerH + 30, "text-anchor": "middle",
@@ -142,7 +160,7 @@ function buildStage(numBlocks) {
   stage = {
     svg: svg, blocks: blockRects, totalBlocks: numBlocks, sweep: sweep,
     innerX: innerX, innerY: innerY, innerW: innerW, innerH: innerH,
-    statusLbl: statusLbl, tuples: [], orderLabels: orderLabels
+    statusLbl: statusLbl, bufLbl: bufLbl, tuples: [], orderLabels: orderLabels
   };
 }
 
@@ -153,7 +171,12 @@ function resetStage() {
     b.rect.setAttribute("stroke", "var(--svg-node-stroke)");
     b.rect.setAttribute("stroke-width", 1.5);
   });
+  stage.orderLabels.forEach(function(l) {
+    l.setAttribute("fill", "var(--svg-token-ink)");
+    l.setAttribute("font-weight", 600);
+  });
   stage.sweep.setAttribute("opacity", 0);
+  stage.bufLbl.setAttribute("opacity", 0);
   stage.statusLbl.textContent = "";
   stage.tuples.forEach(function(t) { if (t.parentNode) t.parentNode.removeChild(t); });
   stage.tuples = [];
@@ -178,6 +201,52 @@ function spawnLabeledTuple(text, color, cx, cy) {
   return g;
 }
 
+// The timeline's own clock for staggered moves: each pill eases itself.
+function clock(t) { return t; }
+var BUFFER_Y = 160;
+var PILL_FLY = 480, PILL_STAGGER = 80;
+
+// The block's customers leave the block one after another (100 ms apart) and
+// line up above orders, where they stay while orders is scanned. One
+// timeline tween drives every pill, so stepping and scrubbing show exactly
+// the same picture as playing.
+function flyBlockPills(tl, block, held) {
+  var n = block.customers.length;
+  var paths = [];
+  for (var k = 0; k < n; k++) {
+    var tx = stage.innerX + stage.innerW * (k + 0.5) / n;
+    paths.push(anim.path(block.cx, block.cy + 4,
+      (block.cx + tx) / 2, (block.cy + BUFFER_Y) / 2 - 30, tx, BUFFER_Y));
+  }
+  var total = PILL_FLY + (n - 1) * PILL_STAGGER;
+  tl.add({
+    from: 0, to: 1, duration: total, ease: clock,
+    onUpdate: function(t) {
+      var ms = t * total;
+      for (var i = 0; i < n; i++) {
+        var local = Math.max(0, Math.min(1, (ms - i * PILL_STAGGER) / PILL_FLY));
+        if (local <= 0) continue;
+        if (!held.pills[i]) {
+          var c = block.customers[i];
+          held.pills[i] = spawnLabeledTuple(c.name + " (" + c.month + ")", "var(--svg-build)",
+            block.cx, block.cy + 4);
+        }
+        var p = paths[i](anim.easeInOutQuad(local));
+        held.pills[i].setAttribute("transform", "translate(" + p.x.toFixed(1) + "," + p.y.toFixed(1) + ")");
+        held.pills[i].setAttribute("opacity", Math.min(1, local * 4).toFixed(2));
+      }
+    }
+  });
+}
+
+function matchesFor(customers, order) {
+  var names = [];
+  for (var i = 0; i < customers.length; i++) {
+    if (customers[i].month === order.month) names.push(customers[i].name);
+  }
+  return names;
+}
+
 function buildTimeline(totalBlocksReal) {
   resetStage();
   var tl = anim.timeline();
@@ -187,98 +256,97 @@ function buildTimeline(totalBlocksReal) {
   for (var i = 0; i < shown; i++) {
     (function(idx) {
       var block = stage.blocks[idx];
-      var custNames = [];
+      var custNames = [], custLabels = [];
       for (var cn = 0; cn < block.customers.length; cn++) {
         custNames.push(block.customers[cn].name);
+        custLabels.push(block.customers[cn].name + " (" + block.customers[cn].month + ")");
       }
-      var blockLabel = "Block " + (idx + 1) + " (" + custNames.join(", ") + ")";
+      var pairs = 0;
+      for (var o = 0; o < ORDERS.length; o++) pairs += matchesFor(block.customers, ORDERS[o]).length;
+      var held = { pills: [] };
 
       tl.mark("Block " + (idx + 1) + ": scan orders");
+      // Guided steps: filling the buffer, then one scan of orders per block.
+      // Kinds map to the simplified code (GUIDE in bnl.py).
+      tl.beat("fill");
       tl.call(function() {
         block.rect.setAttribute("fill", "var(--svg-highlight)");
         block.rect.setAttribute("stroke", "var(--svg-build)");
         block.rect.setAttribute("stroke-width", 2.5);
-        phase.textContent = "Scanning orders for " + blockLabel;
+        stage.bufLbl.setAttribute("opacity", 1);
+        phase.textContent = "Block " + (idx + 1) + " of " + totalBlocksReal +
+          " fills the join buffer: " + custLabels.join(", ");
+        stage.statusLbl.textContent = "join buffer = Block " + (idx + 1) + ": " + custNames.join(", ");
       });
+      flyBlockPills(tl, block, held);
+      tl.delay(150);
 
-      // Spawn labeled tuples flying from the block to the inner table
+      tl.beat("scan");
       tl.call(function() {
-        for (var k = 0; k < block.customers.length; k++) {
-          (function(kk, cust) {
-            var label = cust.name + " (" + cust.month + ")";
-            var tuple = spawnLabeledTuple(label, "var(--svg-build)", block.cx, block.cy + 4);
-            var targetX = stage.innerX + 40 + (kk * (stage.innerW - 80) / Math.max(1, block.customers.length));
-            var targetY = stage.innerY + 20;
-            var pathFn = anim.path(
-              block.cx, block.cy + 4,
-              (block.cx + targetX) / 2, (block.cy + targetY) / 2 - 40,
-              targetX, targetY
-            );
-            setTimeout(function() {
-              anim.tween({
-                from: 0, to: 1, duration: 200, ease: anim.easeOutCubic,
-                onUpdate: function(v) { tuple.setAttribute("opacity", v); }
-              });
-              anim.tween({
-                from: 0, to: 1, duration: 640, ease: anim.easeInOutQuad,
-                onUpdate: function(t) {
-                  var p = pathFn(t);
-                  tuple.setAttribute("transform", "translate(" + p.x + "," + p.y + ")");
-                },
-                onComplete: function() {
-                  anim.tween({
-                    from: 1, to: 0, duration: 240, ease: anim.easeInCubic,
-                    onUpdate: function(v) { tuple.setAttribute("opacity", v); }
-                  });
-                }
-              });
-            }, kk * 100);
-          })(k, block.customers[k]);
-        }
+        phase.textContent = "Block " + (idx + 1) + ": one full scan of orders compares each of the " +
+          ORDERS.length + " orders with " + custNames.join(" and ");
       });
-
-      // Sweep across the inner table with narration
+      // Sweep across the inner table with narration.
       tl.add({
-        from: stage.innerX, to: stage.innerX + stage.innerW,
+        from: stage.innerX + 16, to: stage.innerX + stage.innerW - 16,
         duration: 1200, ease: anim.easeInOutCubic,
         onUpdate: function(x) {
-          stage.sweep.setAttribute("x", x);
+          stage.sweep.setAttribute("x", x - 2);
           stage.sweep.setAttribute("opacity", 0.85);
-          // Narrate which order is being compared
-          var progress = (x - stage.innerX) / stage.innerW;
+          var progress = (x - stage.innerX - 16) / (stage.innerW - 32);
           var orderIdx = Math.min(ORDERS.length - 1, Math.floor(progress * ORDERS.length));
           var order = ORDERS[orderIdx];
-          var matches = [];
-          for (var mc = 0; mc < block.customers.length; mc++) {
-            if (block.customers[mc].month === order.month) {
-              matches.push(block.customers[mc].name);
-            }
+          for (var l = 0; l < stage.orderLabels.length; l++) {
+            var on = l === orderIdx;
+            stage.orderLabels[l].setAttribute("fill", on ? "var(--svg-build-ink)" : "var(--svg-token-ink)");
+            stage.orderLabels[l].setAttribute("font-weight", on ? 800 : 600);
           }
-          var matchStr = matches.length > 0
-            ? " \u2014 " + matches.join(" & ") + " match!"
-            : " \u2014 no match";
+          var matches = matchesFor(block.customers, order);
           stage.statusLbl.textContent = custNames.join("+") + " vs order #" + order.id +
-            " (" + order.month + " " + order.total + ")" + matchStr;
+            " (" + order.month + " " + order.total + "): " +
+            (matches.length ? matches.join(" & ") + " match ✓" : "no match");
         },
         onComplete: function() {
           stage.sweep.setAttribute("opacity", 0);
+          for (var l = 0; l < stage.orderLabels.length; l++) {
+            stage.orderLabels[l].setAttribute("fill", "var(--svg-token-ink)");
+            stage.orderLabels[l].setAttribute("font-weight", 600);
+          }
           block.rect.setAttribute("fill", "var(--svg-node-muted)");
           block.rect.setAttribute("stroke", "var(--svg-node-stroke)");
           block.rect.setAttribute("stroke-width", 1);
+          stage.statusLbl.textContent = "Block " + (idx + 1) + " done: orders read once (" +
+            ORDERS.length + " rows), " + pairs + " matching pair" + (pairs === 1 ? "" : "s");
         }
       });
-      tl.delay(200);
+      // The buffer empties for the next block.
+      tl.add({
+        from: 1, to: 0, duration: 180, ease: anim.easeInCubic,
+        onUpdate: function(v) {
+          held.pills.forEach(function(p) { if (p) p.setAttribute("opacity", v.toFixed(2)); });
+          stage.bufLbl.setAttribute("opacity", v.toFixed(2));
+        },
+        onComplete: function() {
+          held.pills.forEach(function(p) { if (p && p.parentNode) p.parentNode.removeChild(p); });
+          held.pills = [];
+        }
+      });
+      tl.delay(120);
     })(i);
   }
   tl.mark("Done");
+  tl.beat("done");
   tl.call(function() {
-    phase.textContent = "\u2713 All " + totalBlocksReal + " block(s) done \u2014 " + totalBlocksReal + " full scans of orders";
+    phase.textContent = "✓ All " + totalBlocksReal + " block" + (totalBlocksReal === 1 ? "" : "s") +
+      " done: orders was scanned " + totalBlocksReal + " time" + (totalBlocksReal === 1 ? "" : "s") +
+      ", once per block";
     if (totalBlocksReal > shown) {
-      stage.statusLbl.textContent = "\u2026plus " + (totalBlocksReal - shown) + " more blocks not drawn above, same pattern.";
+      stage.statusLbl.textContent = "…plus " + (totalBlocksReal - shown) + " more blocks not drawn above, same pattern.";
     } else {
       stage.statusLbl.textContent = "Each block triggered one full scan of the orders table.";
     }
   });
+  tl.delay(400);
   return tl;
 }
 
@@ -289,7 +357,7 @@ function buildCurrentTimeline() {
 }
 function resetAnim() {
   resetStage();
-  document.getElementById("phase-label").textContent = "Ready \u2014 press Play";
+  document.getElementById("phase-label").textContent = "Ready: press Next step, or Play to run it all";
 }
 
 function renderChart(innerRows, rowSize, jbs, currentOuter) {

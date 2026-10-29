@@ -567,7 +567,7 @@ def read_status(conn, source_versions=False, profiles=(), open_profile=None, rep
             "the only lag signal." % lag_name)
     if source_versions:
         attach_source_versions(reader, report, profiles, open_profile,
-                               replica_host if replica_host is not None else getattr(conn, "host", None))
+                               replica_host if replica_host is not None else reached_host(conn))
     return report
 
 
@@ -1088,10 +1088,23 @@ def _profile_name(profile):
     return profile.get("name") or profile.get("id")
 
 
+def reached_host(connection):
+    """The host a replica connection reached its server at, for the loopback
+    checks below: the connection's host, or for a connection through SSH a
+    name that is never this computer ("ssh:bastion"). Through SSH the
+    database host (often 127.0.0.1) is as the SSH host sees it."""
+    get = connection.get if isinstance(connection, dict) else (lambda name: getattr(connection, name, None))
+    ssh = get("ssh_host")
+    if isinstance(ssh, str) and ssh.strip():
+        return "ssh:" + ssh.strip()
+    return get("host")
+
+
 def match_source_profiles(source, profiles, replica_host=None):
     """``(profiles, problem)``: the saved connections that name the source the
     replica reports, in the order to try, or why none can be used. Loopback
-    candidates also need the replica's local hostname proof before any login."""
+    candidates also need the replica's local hostname proof before any login.
+    *replica_host* is :func:`reached_host` of the replica connection."""
     host = _host_key(source.get("host"))
     port = _int(source.get("port")) or 3306
     if not host:
@@ -1103,6 +1116,9 @@ def match_source_profiles(source, profiles, replica_host=None):
         return [], ("The source address %s is local to the replica, which is not on this computer, so no saved "
                     "connection can stand for it." % _endpoint_text(source))
     candidates = [p for p in profiles or () if isinstance(p, dict) and _profile_port(p) == port]
+    if _is_loopback(host):
+        # A loopback database host through SSH is on the SSH host, never this computer.
+        candidates = [p for p in candidates if not p.get("ssh_host")]
     exact = [p for p in candidates if _host_key(p.get("host") or "127.0.0.1") == host]
     if exact:
         return exact, None
@@ -1512,7 +1528,7 @@ def profile_opener(store):
         if stored is None:
             raise ValueError("The saved connection %s no longer exists, so it was not read."
                              % _profile_name(profile))
-        fields = ("host", "port", "user", "ssl_mode", "ssl_ca")
+        fields = ("host", "port", "user", "ssl_mode", "ssl_ca", "ssh_host", "ssh_user", "ssh_port")
         if any(profile.get(k) != stored.get(k) for k in fields):
             raise ValueError("Not checked: the saved connection %s changed its endpoint. Refresh to match its "
                              "current settings." % _profile_name(profile))

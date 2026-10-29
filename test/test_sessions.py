@@ -18,6 +18,7 @@ from unittest import mock
 from _perf_replay import FakeFactory, PASSWORD, ReplayConn, batch, fixture, run_cli, run_main
 from myflames import sessions, ui
 from myflames.connector import ConnectorError
+from myflames import ddl_progress
 from myflames.sessions import sessions_report, split_host, thread_kind
 
 SERVERS = ('mysql-8.4', 'mysql-9.7', 'mysql-26.7', 'mariadb-11.4', 'mariadb-13.0')
@@ -30,6 +31,13 @@ def replay(server, edit=None):
                     else 'SELECT @@server_uuid')
     identity = [['1', 'server-one', '11.4.13-MariaDB']] if server.startswith('mariadb') else [['server-uuid-1']]
     calls.append([sessions.SESSIONS_TAG + identity_sql, batch(identity)])
+    # Explicit synthetic supplement: old live recordings predate the DDL read.
+    engine = 'mariadb' if server.startswith('mariadb') else 'mysql'
+    calls.append([sessions.SESSIONS_TAG + ddl_progress.progress_sql(engine), batch([
+        ['consumer', None, name, 'NO' if name == 'events_stages_current' else 'YES']
+        for name in ddl_progress.CONSUMERS] + [
+        ['instrument', None, name, 'YES', 'YES'] for name in ddl_progress.STAGES
+        if engine != 'mariadb' or not name.endswith('(flush)')])])
     return ReplayConn(calls, edit=edit)
 
 
@@ -285,7 +293,7 @@ def processlist_row(id_, user='app', host='10.0.0.5:5000', db='shop', command='Q
 
 
 def synthetic(rows, trx=(), version='8.4.11', ps='ON', status=None, history='12', events='',
-              ps_show_processlist='ON', pl_rows=None):
+              ps_show_processlist='ON', pl_rows=None, ddl_rows=None):
     status = status or [['Max_used_connections', '9'], ['Threads_connected', '8'], ['Threads_running', '3'],
                         ['Uptime', '1000']]
     pl_rows = pl_rows if pl_rows is not None else rows
@@ -313,6 +321,10 @@ def synthetic(rows, trx=(), version='8.4.11', ps='ON', status=None, history='12'
 
         def run(self, sql, extra_flags=None, timeout=None):
             self.calls.append(sql)
+            if "SELECT 'consumer'" in sql:
+                if isinstance(ddl_rows, Exception):
+                    raise ddl_rows
+                return batch(ddl_rows or [])
             for needle, text in answers:
                 if needle in sql:
                     return text

@@ -23,6 +23,93 @@ from .._cost_model import (
 # Node labels are applied during the animation when the token visits them.
 _LESSON_JS_TEMPLATE = _html.load_lesson_js(__file__)
 
+# Guided steps (see _html.normalize_guide). btree.js marks one step per page
+# read with tl.beat(kind); kinds map to the simplified-code lines below.
+# Function names were checked in mysql-server (8.4.9 and 9.7.0); see
+# _html.VERIFIED_SERVER_FUNCTIONS.
+GUIDE = {
+    "code": {
+        "title": "Index lookup in InnoDB",
+        "lines": [
+            ("root", 0, "page = root page of the index", "btr_cur_search_to_nth_level"),
+            ("loop", 0, "while page is not a leaf page:"),
+            ("child", 1, "page = child page whose key range holds the key",
+             "page_cur_search_with_match"),
+            ("rec", 0, "rec = record in the leaf page with the key"),
+            ("covers", 0, "if the index is secondary and lacks a column you asked for:"),
+            ("pk", 1, "key = rec.id, the primary key stored in the leaf",
+             "row_build_row_ref_in_tuple"),
+            ("clus", 1, "run lines 1 to 4 again on the clustered index",
+             "Row_sel_get_clust_rec_for_mysql"),
+            ("ret", 0, "return the row"),
+        ],
+    },
+    "beats": {
+        "root": ["root"],
+        "internal": ["loop", "child"],
+        "leaf": ["child", "rec"],
+        "sec-root": ["root"],
+        "sec-internal": ["loop", "child"],
+        "sec-leaf": ["child", "rec"],
+        "pk-hop": ["covers", "pk"],
+        "clus-root": ["clus", "root"],
+        "clus-internal": ["clus", "loop", "child"],
+        "clus-leaf": ["clus", "child", "rec"],
+        "done": ["ret"],
+        # Covering secondary lookup: the leaf has every column, so the check
+        # on the covers line fails and the row is returned from the leaf.
+        "covered": ["covers", "ret"],
+    },
+    "quiz": [
+        {
+            "question": ("WHERE email = 'alice@example.com' uses idx_users_email, which holds "
+                         "only (email, id). How many B+trees does InnoDB walk to return first_name?"),
+            "choices": [
+                ("Two: the secondary index, then the clustered index by id", True,
+                 "The secondary leaf gives the id, and InnoDB looks that id up in the "
+                 "clustered index, where the whole row lives."),
+                ("One: the secondary leaf stores the row's disk address", False,
+                 "InnoDB secondary records store the primary key value, not a page "
+                 "address, so the row is found by a second walk from the clustered root page."),
+                ("None: the root page already holds every row", False,
+                 "The root page holds keys and child page numbers only; rows live in the "
+                 "leaf pages of the clustered index."),
+            ],
+        },
+        {
+            "question": ("The users table grows from 1 million to 1 billion rows. About how "
+                         "many more pages does one primary key lookup read?"),
+            "choices": [
+                ("One or two more", True,
+                 "Each level multiplies what the tree can hold by its fan-out (about 950 "
+                 "child pages per 16 KiB page with a BIGINT key here), so 1,000 times more "
+                 "rows adds about one level."),
+                ("About 1,000 times more", False,
+                 "That is how a full table scan grows; a B+tree's height grows with the "
+                 "logarithm of the row count."),
+                ("Exactly the same number", False,
+                 "A bigger tree eventually needs another level, so the count does grow, "
+                 "just very slowly."),
+            ],
+        },
+        {
+            "question": ("Which change lets SELECT id, first_name, last_name, country_code "
+                         "... WHERE email = 'alice@example.com' skip the clustered index walk?"),
+            "choices": [
+                ("An index on (email, first_name, last_name, country_code)", True,
+                 "Its leaf holds every column you asked for (InnoDB keeps id in it too), "
+                 "so the lookup stops there and EXPLAIN's Extra column shows Using index."),
+                ("A larger innodb_page_size", False,
+                 "A bigger page raises the fan-out (the size is set only when the instance is "
+                 "created), but the secondary leaf still lacks first_name, so the second walk stays."),
+                ("Adding LIMIT 1", False,
+                 "LIMIT stops after one row, but that row still needs its other columns "
+                 "from the clustered index."),
+            ],
+        },
+    ],
+}
+
 
 def render() -> str:
     controls_html = f"""
@@ -81,11 +168,12 @@ def render() -> str:
     explainer_html = _html.explainer(
         "What you'll see in the animation",
         [
-            "The grey rectangles are B+tree pages. Top row is the root page, bottom row is the leaf.",
-            "A red diamond 'query token' appears above the root and descends level by level — each step is one page read.",
+            "The grey rectangles are B+tree pages. The top row is the root page, the middle rows hold internal pages and the bottom row holds leaf pages.",
+            "A red diamond 'query token' appears above the root page and goes down one page at a time. Each step is one page read; Next step shows one read at a time.",
             "When the token arrives at a page, the page pulses yellow. That's the 'page is in the buffer pool now'.",
-            "For non-covering secondary lookups, the secondary-tree LEAF stores the primary key (labelled 'leaf: PK = 42'). A dashed orange PK-hop arrow then links that leaf directly to the clustered-tree leaf which holds the actual row (labelled 'leaf: full row'). The token rides that arrow across — no re-descent magic, the link is a real index pointer.",
-            "That dashed arrow is the extra I/O a covering index would eliminate.",
+            "For non-covering secondary lookups, the secondary-tree leaf page stores the primary key (labelled 'PK = 42'), not the row. A dashed orange arrow links it to the clustered-tree leaf that holds the row: the key, not a disk address, is the link, so InnoDB then walks the clustered tree from its root page.",
+            "That second walk is the extra I/O a covering index would eliminate.",
+            "The simplified code beside the drawing highlights the lines each step runs.",
         ],
     )
 
@@ -94,7 +182,7 @@ def render() -> str:
   <h2 id="stage-h" class="sr-only" style="position:absolute;left:-9999px">Tree descent animation</h2>
   {query_card_html}
   {explainer_html}
-  {_html.stage_toolbar("Adjust parameters, then press Play")}
+  {_html.stage_toolbar("Ready: press Next step, or Play to run it all")}
   <div class="stage-with-phases">
     <svg id="btree-svg" viewBox="0 0 800 400" xmlns="http://www.w3.org/2000/svg"></svg>
     {_html.phase_nav()}
@@ -173,4 +261,5 @@ def render() -> str:
         readout_html=readout_html,
         learn_more_html=learn_more_html,
         lesson_js=lesson_js,
+        guide=GUIDE,
     )

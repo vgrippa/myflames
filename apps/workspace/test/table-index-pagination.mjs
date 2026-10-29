@@ -21,6 +21,7 @@ try {
  await h.server(); await h.view('tables'); await h.refresh();
  const wrap='[data-report-table="tables.inventory"]';
  await page.waitForSelector(`${wrap} tbody tr`);
+ assert.equal(await page.$eval('input[aria-label="Filter tables"]',e=>!!e.closest('.report-table-tools')),true);
  assert.equal(await page.$$eval(`${wrap} tbody tr`,e=>e.length),50);
  await page.click(`${wrap} .report-table-pages button:last-child`);
  await page.waitForFunction(s=>document.querySelectorAll(`${s} tbody tr`).length===1,{},wrap);
@@ -56,6 +57,7 @@ try {
  await h.view('indexes'); await h.refresh();
  const idx='[data-report-table="indexes.inventory"]';
  await page.waitForSelector(`${idx} tbody tr`);
+ assert.equal(await page.$eval('input[aria-label="Filter indexes"]',e=>!!e.closest('.report-table-tools')),true);
  assert.equal(await page.$$eval(`${idx} tbody tr`,e=>e.length),50);
  await page.click(`${idx} .report-table-pages button:last-child`);
  await page.waitForFunction(s=>document.querySelectorAll(`${s} tbody tr`).length===1,{},idx);

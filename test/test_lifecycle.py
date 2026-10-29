@@ -452,6 +452,15 @@ class LifecycleTests(unittest.TestCase):
         for key in ('host', 'user', 'ssl_ca', 'socket'):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 lc._options(dict(CONNECTION, **{key: 'a\npassword=evil'}))
+        # Pasted spaces: trimmed around the host and paths (and after the
+        # database), never in the user name or password.
+        options = lc._options(dict(CONNECTION, host=' db.internal ', ssl_ca='/ca.pem ', socket=' /tmp/mysql.sock',
+                                   database='shop ', user=' app ', password=' pw '))
+        self.assertEqual((options['host'], options['ssl_ca'], options['socket'], options['database']),
+                         ('db.internal', '/ca.pem', '/tmp/mysql.sock', 'shop'))
+        self.assertEqual((options['user'], options['password']), (' app ', ' pw '))
+        with self.assertRaisesRegex(ValueError, 'space'):
+            lc._options(dict(CONNECTION, host='db internal'))
 
     def test_shell_json_exit_zero_with_errors_and_configuration_failure(self):
         conn = ReplayConnection(server_variables(version='8.0.36'))

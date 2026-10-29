@@ -3,6 +3,16 @@
 // directional button limits together, so buttons, wheel, fit, and reset
 // always agree. Wheel deltas are normalized by deltaMode and eased with a
 // bounded per-frame step so trackpad momentum cannot jump.
+//
+// Fit (on open, the Fit button, a double click, and a resize or screen
+// scale change while fitted) never makes the smallest text smaller than
+// MIN_TEXT_PX on screen: a plan that does not fit at that scale opens at its
+// first input, and the user pans or zooms out on purpose. That bound wins
+// over the fixed 500% zoom-in limit; manual zoom keeps its limits.
+// workbench.js keeps the same rules.
+
+/** Smallest on-screen text a fit may produce (web-design: nothing below 11 px). */
+export const MIN_TEXT_PX = 11;
 
 export interface ZoomButtons {
   fit: HTMLButtonElement;
@@ -19,8 +29,11 @@ export interface ZoomOptions {
   graphWidth: number;
   graphHeight: number;
   buttons: ZoomButtons;
-  /** Workspace canvases fit width at a readable scale; tall trees can pan. */
+  /** Workspace canvases fit width (never past 100%); tall trees can pan. */
   fitWidth?: boolean;
+  /** Smallest font size the canvas draws, in its own units; fit keeps it
+   * at MIN_TEXT_PX or more on screen. Without it, fit is not limited. */
+  smallestTextPx?: number;
 }
 
 export interface ZoomController {
@@ -29,6 +42,9 @@ export interface ZoomController {
   zoom(factor: number, px: number, py: number): void;
   /** Resize the visible canvas without discarding a user's zoom or pan. */
   resize(width: number, height: number): void;
+  /** The page may have changed the canvas's screen scale (a report column
+   * resized): refit while still fitted; a deliberate zoom or pan is kept. */
+  rescale(): void;
   /** True when the current pointer gesture moved beyond the drag threshold. */
   dragged(): boolean;
   destroy(): void;
@@ -49,6 +65,8 @@ export function createZoom(options: ZoomOptions): ZoomController {
   let wheelTime: number | null = null;
   let wheelScreen: { left: number; top: number; width: number; height: number; pageHeight: number } | null = null;
   let fitted = false;
+  /** Screen scale the current fit was computed for. */
+  let fittedScale = 1;
   const minimum = () => width / 5;
   const maximum = () => Math.max(width * 8, graphWidth * 2, graphHeight * width / height * 2);
   const clamp = (value: number) => Math.min(maximum(), Math.max(minimum(), value));
@@ -79,18 +97,35 @@ export function createZoom(options: ZoomOptions): ZoomController {
     buttons.zoomOut.disabled = box.w >= maximum() - 0.00001;
   }
 
+  /** CSS pixels per canvas unit. The workspace canvas is kept at 1 by its
+   * ResizeObserver (a transient transform or the frame before it runs must
+   * not change the fit); a report page can shrink the SVG to its column. */
+  function screenScale(): number {
+    if (options.fitWidth) return 1;
+    const matrix = typeof root.getScreenCTM === "function" ? root.getScreenCTM() : null;
+    const scale = matrix ? Math.hypot(matrix.a, matrix.b) : 0;
+    return Number.isFinite(scale) && scale > 0 ? scale : 1;
+  }
+
   function fit() {
     stopWheel();
-    // A full-tree fit on a phone makes text microscopic. In the workspace,
-    // fit width between 75% and 100%, then start at the first input. Keep the
-    // report's overview fit, and allow manual zoom out beyond the fit floor.
-    const ratio = options.fitWidth
-      ? Math.max(1, Math.min(1 / 0.75, (graphWidth + 56) / width))
+    // The workspace fits the plan's width without zooming past 100%, then
+    // starts at the first input; a report fits the whole plan. Either way
+    // the ratio stops where the smallest text would drop below MIN_TEXT_PX
+    // on screen, and a plan wider or taller than that view starts at its
+    // first input (top left) instead of a centered slice. Zooming out by
+    // hand still goes further.
+    const wanted = options.fitWidth
+      ? Math.max(1, (graphWidth + 56) / width)
       : Math.max((graphWidth + 56) / width, (graphHeight + 56) / height);
-    box.w = clamp(width * ratio);
+    fittedScale = screenScale();
+    const readable = options.smallestTextPx ? fittedScale * options.smallestTextPx / MIN_TEXT_PX : Infinity;
+    // The readable bound wins over the fixed 500% limit: a tiny embedding
+    // fits closer than a manual zoom can go, rather than at unreadable text.
+    box.w = Math.min(clamp(width * Math.min(wanted, readable)), width * readable);
     box.h = box.w * height / width;
-    box.x = options.fitWidth && graphWidth + 56 > box.w ? -28 : (graphWidth - box.w) / 2;
-    box.y = options.fitWidth ? -28 : (graphHeight - box.h) / 2;
+    box.x = graphWidth + 56 > box.w + 0.5 ? -28 : (graphWidth - box.w) / 2;
+    box.y = options.fitWidth || graphHeight + 56 > box.h + 0.5 ? -28 : (graphHeight - box.h) / 2;
     fitted = true;
     paint();
   }
@@ -104,7 +139,9 @@ export function createZoom(options: ZoomOptions): ZoomController {
 
   function zoom(factor: number, px: number, py: number) {
     fitted = false;
-    const next = clamp(box.w * factor);
+    // Within the limits, or from a fit past them toward them: zooming in
+    // from a tiny embedding's fit never jumps back out across the cap.
+    const next = Math.min(Math.max(maximum(), box.w), Math.max(Math.min(minimum(), box.w), box.w * factor));
     const ratio = next / box.w;
     box.x += box.w * px * (1 - ratio);
     box.y += box.h * py * (1 - ratio);
@@ -128,6 +165,10 @@ export function createZoom(options: ZoomOptions): ZoomController {
     box.x = cx - box.w / 2;
     box.y = cy - box.h / 2;
     paint();
+  }
+
+  function rescale() {
+    if (fitted && Math.abs(screenScale() - fittedScale) > 1e-6) fit();
   }
 
   function animateWheel(now: number) {
@@ -241,6 +282,7 @@ export function createZoom(options: ZoomOptions): ZoomController {
     reset,
     zoom,
     resize,
+    rescale,
     dragged: () => moved,
     destroy() {
       stopWheel();

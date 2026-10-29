@@ -12,6 +12,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import { load, open, pause } from "./perf-harness.mjs";
+import { chooseConnection } from "./chrome-helpers.mjs";
 
 const health = await load("health-percona-8.0.json");
 const indexes = await load("indexes-percona-8.4.json");
@@ -34,14 +35,49 @@ const schemas = {
 };
 
 const live = { indexes, tables };
+let digestTablesResponse = { status: 200, body: await load("digest-tables.json") };
+// Query digest: statements in two schemas and one without a default schema.
+const statement = (digest, schema, total_ms, count) => ({ digest, digest_text: `SELECT * FROM t_${digest}`, schema, count, total_ms,
+  avg_ms: total_ms / count, max_ms: total_ms, lock_time_ms: 0.25, rows_examined: 10, rows_sent: 5, tmp_tables: 0, tmp_disk_tables: 0,
+  select_scan: 0, select_full_join: 0, sample_text: null, first_seen: null, last_seen: null, flags: [], capture_problem: null });
 const digestReport = { engine: "mysql", flavor: "percona", server_product: "Percona Server",
-  server_version: "8.4.11-11", statements: [] };
+  server_version: "8.4.11-11", notes: [],
+  statements: [statement("a1", "review", 1200, 2), statement("b2", "testdb", 59.04, 1), statement("c3", null, 0.5, 1)] };
+// Performance Schema rankings read against the whole server: 7 digests, the
+// three listed plus 4 others; the CPU consumer off (its default); a1 is New.
+const detail = (s, extra = {}) => ({ ...s, cpu_ms: 0, p95_ms: 1258.925, p99_ms: 1258.925, p999_ms: 1258.925, new: false, ...extra });
+digestReport.statements[0].digest_text += " JOIN review.order_view v ON v.id=t_a1.id JOIN archive.missing m ON m.id=t_a1.id";
+const topReport = { ...digestReport, schema_version: "top-1.0",
+  statements: digestReport.statements.map((s) => detail(s, s.digest === "a1" ? { new: true, first_seen: "2026-10-27 08:00:00.123456", last_seen: "2026-10-27 11:59:00" } : {})),
+  totals: { digests: 7, total_ms: 2519.08, executions: 16 }, others: { digests: 4, total_ms: 1259.54, executions: 12 },
+  cpu: { collected: false }, coverage: { uptime_s: 200000, first_seen: null, digest_lost: 0, overflow: null, counting_since: null } };
+// a1's two calls: about 600 ms and 1.2 s (MySQL buckets 240 and 255).
+const histogram = { schema_version: "digest-histogram-1.0", engine: "mysql", server_version: "8.4.11-11", flavor: "percona",
+  server_product: "Percona Server", schema: "review", digest: "a1", available: true, reason: null,
+  buckets: [{ bucket: 240, low_ms: 602.559586, high_ms: 630.957344, count: 1 }, { bucket: 255, low_ms: 1202.264435, high_ms: 1258.925412, count: 1 }] };
+// Two saved connections for the histogram race at the end (nothing earlier
+// uses them: the connection in use stays the unsaved default until then).
+const profile = (id, name, host) => ({ id, name, host, port: 3306, user: "root", database: "", ssl_mode: "PREFERRED", ssl_ca: "",
+  has_saved_password: false, secret_backend: "", secret_backend_label: "" });
+const profiles = [profile("pa", "Percona A", "db-a"), profile("pb", "Percona B", "db-b")];
+// Histogram requests are answered later while *holdHistograms* is set.
+let holdHistograms = false;
+const heldHistograms = [];
+const answer = (request, body) => request.respond({ status: 200, contentType: "application/json", body: JSON.stringify(body) })
+  .catch(() => "aborted by the page");
 const h = await open("/api/live/health", "percona", {
+  "/api/profiles/list": { status: 200, body: { items: profiles, secret_store: { backend: "vault", label: "encrypted vault", available: true } } },
   "/api/live/indexes": () => ({ status: 200, body: live.indexes }),
   "/api/live/tables": () => ({ status: 200, body: live.tables }),
   "/api/live/config": { status: 200, body: config },
   "/api/live/schemas": { status: 200, body: schemas },
-  "/api/live/top": { status: 200, body: { ...digestReport, schema_version: "top-1.0" } },
+  "/api/live/top": { status: 200, body: topReport },
+  "/api/live/digest-histogram": (body, request) => {
+    if (!holdHistograms) return { status: 200, body: histogram };
+    heldHistograms.push(request);
+    return null;
+  },
+  "/api/live/digest-tables": () => digestTablesResponse,
   "/api/live/slow-queries": { status: 200, body: { ...digestReport, schema_version: "slow-queries-1.0", source: "slow_log" } },
 }, { fallback: { status: 200, body: health }, list: "docked" });
 const { page, errors, text } = h;
@@ -159,21 +195,251 @@ try {
   for (const slow of [false, true]) {
     if (slow) {
       const response = page.waitForResponse(r => new URL(r.url()).pathname === '/api/live/slow-queries');
-      await page.click('.query-digest-pill-tabs [role="tab"]:last-child');
+      await page.select('[data-view="query-digest"] select[aria-label="Rank by"]', 'slow_queries');
       await response;
     }
     await page.waitForFunction(() => {
-      const refresh = document.querySelector('button[title="Refresh digest profile"]');
+      const refresh = document.querySelector('[data-view="query-digest"] button[data-action="refresh"]');
       const label = [...document.querySelectorAll('[data-status="engine"]')].find(e => e.getClientRects().length)?.textContent;
-      return refresh && !refresh.disabled && label === 'Percona Server 8.4.11-11';
+      return refresh && refresh.getAttribute('aria-busy') !== 'true' && document.querySelector('.qd-summary') && label === 'Percona Server 8.4.11-11';
     });
-    await page.click('button[title="Export a pt-query-digest style text report or CSV"]');
-    await page.waitForSelector('.query-digest-preview-pre');
-    assert.match(await text('.query-digest-preview-pre'), /^# Server: Percona Server 8\.4\.11-11$/m);
-    assert.match(await text('.query-digest-preview-pre'), slow ? /^# Filter mode: slow_queries$/m : /^# Filter mode: time$/m);
-    await page.click('.query-digest-modal-header button');
-    await page.waitForFunction(() => !document.querySelector('.query-digest-preview-pre'));
+    await page.click('button[aria-label="Export query digest"]');
+    await page.click('.export-menu-items button[data-format="text"]');
+    const preview = 'dialog[open] pre[aria-label="text report"]';
+    await page.waitForSelector(preview);
+    assert.match(await text(preview), /^# myflames query digest$/m);
+    assert.match(await text(preview), /^# Server: Percona Server 8\.4\.11-11$/m);
+    assert.match(await text(preview), slow ? /^# Filter mode: slow_queries$/m : /^# Filter mode: time$/m);
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => !document.querySelector('dialog[open] pre[aria-label="text report"]'));
   }
+  // The Schema choice lists the loaded statements' schemas and filters them on screen.
+  const qd = '[data-view="query-digest"]';
+  const schemaChoice = `${qd} select[aria-label="Schema"]`;
+  const qdRows = () => page.$$eval(`${qd} tbody tr[data-row-key]`, (rows) => rows.length);
+  assert.deepEqual(await page.$$eval(`${schemaChoice} option`, (os) => os.map((o) => o.textContent)),
+    ["All schemas", "review", "testdb", "No default schema"]);
+  assert.equal(await qdRows(), 3);
+  const digestReads = h.state.other.filter((o) => /^\/api\/live\/(top|slow-queries)$/.test(o.path)).length;
+  await page.select(schemaChoice, "testdb");
+  await page.waitForFunction((q) => document.querySelectorAll(`${q} tbody tr[data-row-key]`).length === 1, {}, qd);
+  // Latencies read like Top statements: milliseconds, the exact value on hover.
+  assert.deepEqual(await page.$eval(`${qd} tbody tr[data-row-key] td[data-col="total"] span`, (e) => [e.textContent, e.title]),
+    ["59.04 ms", "59.04 ms"]);
+  await page.select(schemaChoice, "review");
+  await page.waitForFunction((q) => document.querySelector(`${q} tbody tr[data-row-key] td[data-col="total"]`)?.textContent === "1.20 s", {}, qd);
+  assert.equal(await page.$eval(`${qd} tbody tr[data-row-key] td[data-col="total"] span`, (e) => e.title), "1,200 ms");
+  assert.equal(await page.$eval(`${qd} tbody tr[data-row-key] td[data-col="avg"]`, (e) => e.textContent), "600 ms");
+  await page.select(schemaChoice, await page.$eval(`${schemaChoice} option:last-child`, (o) => o.value));
+  await page.waitForFunction((q) => document.querySelector(`${q} tbody tr[data-row-key] td[data-col="schema"]`)?.textContent === "—", {}, qd);
+  assert.equal(await qdRows(), 1);
+  assert.match(await text(`${qd} .summary-line`), /3 statements .* · 1 shown/);
+  await page.select(schemaChoice, "");
+  await page.waitForFunction((q) => document.querySelectorAll(`${q} tbody tr[data-row-key]`).length === 3, {}, qd);
+  assert.equal(h.state.other.filter((o) => /^\/api\/live\/(top|slow-queries)$/.test(o.path)).length, digestReads, "the Schema choice never reads");
+  // The slow query log ranks the loaded statements only: no server totals, no CPU column.
+  assert.equal(await page.$(`${qd} .qd-others`), null, "the slow log has no other-statements row");
+  assert.match(await page.$eval(`${qd} th[data-col="share"]`, (e) => e.title), /loaded statements/);
+  // The slow log has no counting window: the summary line is the numbers only.
+  assert.equal(await text(`${qd} .summary-line .summary-text`), "3 statements · 1.26 s total · 4 executions");
+
+  // Back to Total time: Performance Schema digests ranked against the whole server.
+  const topRead = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/live/top");
+  await page.select(`${qd} select[aria-label="Rank by"]`, "time");
+  await topRead;
+  await page.waitForSelector(`${qd} .qd-others`);
+  // Share of total time is of the server's 2,519.08 ms, not the loaded 1,259.54 ms.
+  assert.match(await page.$eval(`${qd} th[data-col="share"]`, (e) => e.title), /server's total statement time/);
+  const a1 = `${qd} tbody tr[data-row-key]:first-child`;
+  assert.equal(await page.$eval(`${a1} td[data-col="share"]`, (e) => e.textContent.trim()), "47.6%");
+  assert.equal(await page.$eval(`${a1} td[data-col="share"] progress`, (e) => e.getAttribute("aria-label")),
+    "47.6% of the server's total statement time");
+  assert.equal(await text(`${qd} .qd-others`), "4 other statements · 50.0% of total time · 12 calls");
+  assert.equal(await page.$(`${qd} .qd-others[data-row-key], ${qd} tr.qd-others`), null, "the closing row is not a selectable row");
+  // The summary line leads with the numbers and keeps the period short; the
+  // full sentence is on hover, the source sentence in the ⓘ beside the title.
+  const summaryText = `${qd} .summary-line .summary-text`;
+  assert.equal(await text(summaryText), "3 statements · 1.26 s total · 4 executions · since 2 d 7 h ago");
+  assert.ok((await text(summaryText)).length <= 120, "the summary line fits the 120-character budget");
+  assert.equal(await page.$eval(`${summaryText} span[title]`, (e) => e.title),
+    "Counted since the server started 2 d 7 h ago, or since the digest table was last reset.");
+  await page.click(`${qd} button[aria-label="About Query digest"]`);
+  await page.waitForSelector(".popover[role=dialog]");
+  assert.match(await text(".popover[role=dialog]"),
+    /reads performance_schema\.events_statements_summary_by_digest: Performance Schema statement digests counted since the server started 2 d 7 h ago or the digest table was last reset\./);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".popover[role=dialog]"));
+  // New: first seen in the last 24 hours, decided on the server.
+  assert.deepEqual(await page.$$eval(`${qd} tbody tr[data-row-key] .pill`, (els) => els.map((e) => [e.firstChild.textContent, e.title])),
+    [["New", "First seen 2026-10-27 08:00:00"]]);
+  // CPU time is a column off by default (Columns menu) and an inspector fact.
+  assert.equal(await page.$(`${qd} th[data-col="cpu"]`), null);
+  await page.click(`${qd} button[aria-label="Columns of Query digest statements"]`);
+  await page.click(`input[data-col="cpu"]`);
+  await page.waitForSelector(`${qd} th[data-col="cpu"]`);
+  assert.equal(await page.$eval(`${a1} td[data-col="cpu"]`, (e) => e.textContent.trim()), "Not collected");
+  await page.click(`input[data-col="cpu"]`);
+  await page.waitForFunction((q) => !document.querySelector(`${q} th[data-col="cpu"]`), {}, qd);
+  await page.keyboard.press("Escape");
+  const histogramReads = () => h.state.other.filter((o) => o.path === "/api/live/digest-histogram");
+  assert.equal(histogramReads().length, 0, "nothing reads a histogram before a statement is shown");
+  const tableReads = () => h.state.other.filter((o) => o.path === "/api/live/digest-tables");
+  assert.equal(tableReads().length, 0, "no table read before a statement is opened");
+  // Control only the Tables section's observer, so the on-screen contract
+  // is deterministic across viewport sizes and native inspector scrolling.
+  await page.evaluate(() => {
+    const NativeObserver = window.IntersectionObserver;
+    const targets = new Map();
+    let visible = false;
+    window.__showDigestTables = (shown) => {
+      visible = shown;
+      targets.forEach((callback) => callback([{ isIntersecting: shown }]));
+    };
+    window.IntersectionObserver = class {
+      constructor(callback, options) { this.callback = callback; this.native = new NativeObserver(callback, options); }
+      observe(element) {
+        if (element.matches(".qd-tables")) { targets.set(this, this.callback); this.callback([{ isIntersecting: visible }]); }
+        else this.native.observe(element);
+      }
+      unobserve(element) { targets.delete(this); this.native.unobserve(element); }
+      disconnect() { targets.delete(this); this.native.disconnect(); }
+      takeRecords() { return this.native.takeRecords(); }
+    };
+  });
+  await page.click(`${a1} td[data-col="statement"]`);
+  await page.waitForSelector(`${qd} .view-inspector .qd-latency`);
+  const inspector = await page.$eval(`${qd} .view-inspector`, (e) => e.textContent);
+  assert.match(inspector, /CPU timeNot collectedevents_statements_cpu is off\. How to turn it on/);
+  assert.ok(await page.$(`${qd} .view-inspector [data-instruments-row="consumer:events_statements_cpu"]`));
+  assert.match(inspector, /P951\.26 sP991\.26 sP99\.91\.26 s/);
+  // One aligned list: the Latency rows share the Statement rows' columns.
+  const aligned = await page.evaluate((q) => {
+    const firstRow = (f) => {
+      const row = f.querySelector(":scope > div");
+      const dt = row?.querySelector("dt")?.getBoundingClientRect();
+      const dd = row?.querySelector("dd")?.getBoundingClientRect();
+      return dt && dd ? [Math.round(dt.left), Math.round(dd.left)] : null;
+    };
+    const lists = [...document.querySelectorAll(`${q} .view-inspector .inspector-fields`)].map(firstRow).filter(Boolean);
+    return lists.length > 1 && lists.every(([dt, dd]) => dt === lists[0][0] && dd === lists[0][1]);
+  }, qd);
+  assert.ok(aligned, "every fact list shares one label column and one value column");
+  // The digest hash is one line with the full value on hover and in Copy.
+  assert.deepEqual(await page.$eval(`${qd} .view-inspector .qd-digest code`, (e) => [e.textContent, e.title]), ["a1", "a1"]);
+  assert.ok(await page.$(`${qd} .view-inspector .qd-digest button`), "the digest has a Copy button");
+  // First seen and Last seen: the server's own clock as a short date and
+  // time (never shifted to this computer's zone); the exact value on hover.
+  const seen = await page.$$eval(`${qd} .view-inspector .inspector-fields time`, (els) => els.map((e) => [e.textContent, e.title]));
+  assert.deepEqual(seen, [["Oct 27, 2026, 8:00 AM", "Server time: 2026-10-27 08:00:00.123456"], ["Oct 27, 2026, 11:59 AM", "Server time: 2026-10-27 11:59:00"]]);
+  // CPU time: "Not collected" on one line, the reason and its link on one
+  // muted line below.
+  const cpuNote = await page.evaluate((q) => {
+    const fields = document.querySelector(`${q} .view-inspector .inspector-fields`);
+    const rows = [...fields.children].map((r) => [r.querySelector("dt"), r.querySelector("dd")]);
+    const rect = (e) => { const r = e?.getBoundingClientRect(); return r ? { top: r.top, bottom: r.bottom, right: r.right, height: r.height } : null; };
+    const value = rect(rows.find(([dt]) => dt?.textContent === "CPU time")?.[1]);
+    const note = rect(fields.querySelector(".qd-cpu-note"));
+    const box = rect(document.querySelector(`${q} .view-inspector .inspector-scroll`));
+    return { value, note, right: box?.right };
+  }, qd);
+  assert.ok(cpuNote.value && cpuNote.note, "the CPU note is rendered");
+  assert.ok(cpuNote.note.top >= cpuNote.value.bottom - 1, "the reason sits below Not collected");
+  assert.ok(Math.round(cpuNote.note.height) <= 19, `the reason and its link fit on one line (${cpuNote.note.height})`);
+  assert.ok(cpuNote.note.right <= cpuNote.right + 1, "nothing overflows the inspector");
+  // The histogram reads once for the statement on screen, then draws.
+  const chart = `${qd} .view-inspector .qd-hist svg[role=img]`;
+  await page.waitForSelector(chart);
+  assert.deepEqual(histogramReads().map((o) => [o.body.schema, o.body.digest]), [["review", "a1"]]);
+  assert.equal(await page.$$eval(`${chart} .qd-hist-bar`, (els) => els.length), 2);
+  assert.equal(await page.$eval(chart, (e) => e.getAttribute("aria-label")),
+    "Latency histogram. Most calls took 501 ms to 1.3 s; the slowest took 1.20 s.");
+  assert.equal(await text(`${qd} .qd-hist-summary`), "Most calls took 501 ms to 1.3 s; the slowest took 1.20 s.");
+  assert.deepEqual(await page.$$eval(`${chart} .qd-hist-hit title`, (els) => els.map((e) => e.textContent)),
+    ["501 to 631 ms: 1 call (50.0%)", "1 to 1.3 s: 1 call (50.0%)"]);
+  await page.$eval(`${qd} .view-inspector .qd-latency`, (e) => e.scrollIntoView({ block: "center" }));
+  await shoot("query-digest");
+  assert.equal(histogramReads().length, 1, "resizing and theme changes never read again");
+  const tableSection = `${qd} .view-inspector .qd-tables`;
+  assert.equal(tableReads().length, 0, "Tables waits while its section is below the fold");
+  await page.$eval(tableSection, (e) => e.scrollIntoView({ block: "center" }));
+  await page.evaluate(() => window.__showDigestTables(true));
+  await page.waitForSelector(`${tableSection} .qd-index-list`);
+  assert.deepEqual(tableReads().map((o) => [o.body.schema, o.body.text]), [["review", topReport.statements[0].digest_text]]);
+  assert.match(await text(tableSection), /Found in the statement text/);
+  assert.match(await text(tableSection), /Rows \(estimate\)/);
+  assert.match(await text(tableSection), /PRIMARY \(id\).*unique/);
+  assert.match(await text(tableSection), /idx_customer \(customer_id, created_at\).*invisible/);
+  assert.match(await text(tableSection), /Views have no indexes of their own/);
+  assert.equal(await page.$$eval(`${tableSection} button`, (es) => es.filter((e) => e.textContent === "Open in Indexes").length), 1);
+  await shoot("query-digest-tables");
+  assert.equal(tableReads().length, 1, "resizing and theme changes reuse table metadata");
+  await page.evaluate(() => window.__showDigestTables(false));
+  // A different row, while the whole place is hidden, also waits.
+  await page.click(`${qd} button[aria-label="Close inspector"]`);
+  await page.click(`${qd} tbody tr:nth-child(2) td[data-col="statement"]`);
+  await h.server();
+  await page.evaluate(() => window.__showDigestTables(true));
+  await pause(100);
+  assert.equal(tableReads().length, 1, "a hidden Query digest never reads table metadata");
+  digestTablesResponse = { status: 400, body: { error: "Statement metadata is unavailable." } };
+  await page.click('.main-nav button[data-place="digest"]');
+  await page.waitForFunction((q) => document.querySelector(`${q} .qd-tables`)?.textContent.includes("Statement metadata is unavailable."), {}, qd);
+  assert.equal((await text(tableSection)).match(/Statement metadata is unavailable\./g)?.length, 1, "the read error appears once");
+  assert.equal(tableReads().length, 2);
+  await pause(100);
+  assert.equal(tableReads().length, 2, "a failed read waits for Try again");
+  // Restore the first statement. Its cached tables need no new read.
+  await page.click(`${qd} button[aria-label="Close inspector"]`);
+  await page.click(`${a1} td[data-col="statement"]`);
+  await page.waitForSelector(`${tableSection} .qd-index-list`);
+  assert.equal(tableReads().length, 2);
+  // Its link opens Server > Instruments at the consumer row.
+  await page.click(`${qd} .view-inspector [data-instruments-row="consumer:events_statements_cpu"]`);
+  await page.waitForSelector('.server-view[data-view="instruments"]', { visible: true });
+
+  // A latency histogram read belongs to the connection it was sent on: a
+  // switch to another connection stops it, and its late answer is dropped
+  // even after switching back (A, B, A); the section reads again on A instead
+  // of waiting forever for an answer it already threw away.
+  await page.evaluate(() => window.__showDigestTables(false));
+  holdHistograms = true;
+  await chooseConnection(page, "pa");
+  const topReads = () => h.state.other.filter((o) => o.path === "/api/live/top").length;
+  const topBefore = topReads();
+  await page.click('.main-nav button[data-place="digest"]');
+  // Opening the place on A reads A's statements (the default connection's report is replaced).
+  for (let i = 0; i < 100 && topReads() === topBefore; i++) await pause(20);
+  await page.waitForFunction((q) => document.querySelector(q)?.dataset.otherConnection === undefined &&
+    document.querySelector(`${q} tbody tr[data-row-key]`), {}, qd);
+  const firstRead = histogramReads().length;
+  await page.click(`${a1} td[data-col="statement"]`);
+  for (let i = 0; i < 100 && heldHistograms.length < 1; i++) await pause(20);
+  assert.equal(heldHistograms.length, 1, "the statement on screen reads its histogram on A");
+  assert.equal(histogramReads().length, firstRead + 1);
+  await page.waitForFunction((q) => /Reading the latency histogram/.test(document.querySelector(`${q} .qd-latency`)?.textContent || ""), {}, qd);
+  // B while A's read is out: the section waits for A; A's answer arrives now.
+  await chooseConnection(page, "pb");
+  await page.waitForFunction((q) => /From Percona A/.test(document.querySelector(`${q} .qd-latency`)?.textContent || ""), {}, qd);
+  await answer(heldHistograms[0], { ...histogram, buckets: histogram.buckets.slice(0, 1) });
+  await pause(100);
+  // Back on A: a new read, not an endless "Reading…".
+  await chooseConnection(page, "pa");
+  for (let i = 0; i < 100 && heldHistograms.length < 2; i++) await pause(20);
+  assert.equal(heldHistograms.length, 2, "switching back to A reads the histogram again");
+  // A, B, A again while the second read is out: its late answer is dropped too.
+  await chooseConnection(page, "pb");
+  await chooseConnection(page, "pa");
+  for (let i = 0; i < 100 && heldHistograms.length < 3; i++) await pause(20);
+  assert.equal(heldHistograms.length, 3, "each return to A starts one fresh read");
+  await answer(heldHistograms[1], { ...histogram, buckets: histogram.buckets.slice(0, 1) });
+  await pause(150);
+  assert.equal(await page.$(`${qd} .view-inspector .qd-hist svg[role=img]`), null, "an answer read before the switch is not drawn");
+  assert.match(await text(`${qd} .qd-latency`), /Reading the latency histogram/);
+  await answer(heldHistograms[2], histogram);
+  await page.waitForSelector(chart);
+  assert.equal(await page.$$eval(`${chart} .qd-hist-bar`, (els) => els.length), 2, "only the latest read on A is drawn");
+  assert.equal(histogramReads().length, firstRead + 3);
+  holdHistograms = false;
   assert.deepEqual(errors, []);
   console.log("percona: ok");
 } finally {

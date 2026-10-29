@@ -25,6 +25,7 @@ const MAP = {
   edit: "Edit02", trash: "Delete02", globe: "Globe", optimize: "Flash", shield: "ShieldCheck",
   minus: "MinusSign", block: "CancelCircle", clean: "BrushCleaning", undo: "Undo02",
   cluster: "Network", proxy: "Split", format: "TextIndent",
+  fullscreen: "FullScreen", "exit-fullscreen": "ArrowShrink02",
 };
 
 const pkg = process.argv[2];

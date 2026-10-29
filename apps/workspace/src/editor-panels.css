@@ -1,0 +1,218 @@
+/* The Query editor's side panel tabs (History | Saved), the saved queries
+   list and its sheets (SavedQueries.tsx), and the parameter form
+   (FillParameters.tsx). Tokens only; the panel's frame (.history-panel,
+   .browser-head, .browser-filter) is in editor.css, imported before this
+   file (styles.ts). */
+
+.history-head {
+  padding-left: var(--space-2);
+}
+.history-tabs {
+  flex: none;
+  height: 26px;
+}
+.history-head-gap {
+  flex: 1 1 auto;
+}
+.history-tab {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.history-tab[hidden] {
+  display: none;
+}
+.run-history,
+.saved-queries {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Saved queries: folders as collapsible groups, one row per query. */
+.saved-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  list-style: none;
+  margin: 0;
+  padding: 0 0 var(--space-3);
+}
+.saved-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.saved-folder {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: 30px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: none;
+  padding: 0 var(--space-3);
+  text-align: left;
+  color: var(--ink);
+  font-weight: 600;
+}
+.saved-folder:hover {
+  background: var(--surface-hover);
+}
+.saved-folder-mark {
+  display: inline-flex;
+  color: var(--ink-muted);
+  transition: transform 120ms ease;
+}
+.saved-folder-mark.is-open {
+  transform: rotate(90deg);
+}
+.saved-folder-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.saved-folder-count {
+  flex: none;
+  color: var(--ink-muted);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+.saved-row {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+}
+.saved-row:hover {
+  background: var(--surface-hover);
+}
+.saved-group:has(> .saved-folder) .saved-item {
+  padding-left: calc(var(--space-3) + 20px);
+}
+.saved-item {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 0;
+  background: none;
+  padding: var(--space-2) 0 var(--space-2) var(--space-3);
+  text-align: left;
+  color: var(--ink);
+}
+.saved-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.saved-sql {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.saved-row .row-more {
+  margin-right: var(--space-1);
+  visibility: hidden;
+}
+.saved-row:is(:hover, :focus-within) .row-more,
+.saved-row .row-more[aria-expanded="true"] {
+  visibility: visible;
+}
+@media (hover: none) {
+  .saved-row .row-more {
+    visibility: visible;
+  }
+}
+.saved-query-error {
+  margin: var(--space-3) 0 0;
+}
+
+/* The parameter form (FillParameters.tsx): the SQL around each marker, then
+   its type and value. */
+.fill-fields {
+  display: grid;
+  gap: var(--space-3);
+}
+.fill-field {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.fill-label {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+}
+.fill-name {
+  flex: none;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--ink);
+}
+.fill-context {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+}
+.fill-controls {
+  display: flex;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.fill-controls .fill-type {
+  flex: none;
+  width: 104px;
+}
+.fill-controls .fill-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--font-mono);
+}
+/* A value the comma field cannot show as is: its JSON, read-only. */
+.fill-json {
+  display: block;
+  max-height: calc(var(--leading-sm) * 4 + var(--space-1) * 2);
+  overflow: auto;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-pane);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.fill-json:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.fill-field .hint,
+.fill-field .form-error {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+.fill-notice > .text-button {
+  flex: none;
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .saved-folder-mark {
+    transition: none;
+  }
+}

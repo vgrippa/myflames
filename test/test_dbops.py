@@ -972,6 +972,64 @@ class TestRedaction(unittest.TestCase):
         self.assertIsNone(dbops.error_code('Lost connection'))
 
 
+class TestConnectionErrorText(unittest.TestCase):
+    """Common connection errors lead with plain words and what to check, then
+    the client's own error line (libmysql/errmsg.cc and MariaDB
+    sql-common/errmsg.c texts)."""
+
+    def test_cannot_connect_mysql_and_mariadb(self):
+        mysql = "ERROR 2003 (HY000): Can't connect to MySQL server on '127.0.0.1:3306' (61)"
+        text = dbops.connection_error_text("Could not read the server status: " + mysql)
+        self.assertEqual(text, "Could not connect to the server. Check that it is running and that the host "
+                               "and port are right. " + mysql)
+        # The client wrapper and the reader's context never stack before it.
+        self.assertEqual(dbops.connection_error_text("mysql client exited 1: " + mysql), text)
+        self.assertNotIn("Could not read", text)
+        # MariaDB's client reports a refused TCP connection as 2002.
+        maria = "ERROR 2002 (HY000): Can't connect to server on '10.0.0.5' (115)"
+        self.assertEqual(dbops.connection_error_text("mysql client exited 1: " + maria),
+                         dbops._CANNOT_CONNECT + " " + maria)
+        socket = "ERROR 2002 (HY000): Can't connect to local MySQL server through socket '/tmp/mysql.sock' (2)"
+        self.assertTrue(dbops.connection_error_text(socket).startswith(
+            "Could not connect to the server. Check that it is running and that the socket path is right. ERROR 2002"))
+
+    def test_unknown_host_keeps_the_host_and_a_tunnel_note(self):
+        error = "mysql client exited 1: ERROR 2005 (HY000): Unknown MySQL server host 'db.exmaple' (8)\n SSH said: x"
+        self.assertEqual(dbops.connection_error_text(error),
+                         "Could not find the server's host name. Check the host for a typing error, or use its IP "
+                         "address. ERROR 2005 (HY000): Unknown MySQL server host 'db.exmaple' (8) SSH said: x")
+
+    def test_lost_connection_keeps_what_was_being_done(self):
+        for code, message in ((2013, "Lost connection to MySQL server during query"),
+                              (2006, "MySQL server has gone away"), (2006, "Server has gone away")):
+            with self.subTest(code=code, message=message):
+                error = "mysql client exited 1: ERROR %d (HY000): %s" % (code, message)
+                text = dbops.connection_error_text("Could not end connection 41: " + error[len("mysql client exited 1: "):])
+                self.assertTrue(text.startswith("Lost the connection to the server. Check that it is still running"))
+                self.assertTrue(text.endswith("Could not end connection 41: ERROR %d (HY000): %s" % (code, message)))
+                self.assertEqual(dbops.connection_error_text(error), dbops._LOST + " ERROR %d (HY000): %s" % (code, message))
+
+    def test_password_hint_only_for_access_denied(self):
+        denied = "ERROR 1045 (28000): Access denied for user 'app'@'172.17.0.1' (using password: YES)"
+        self.assertEqual(dbops.connection_error_text("mysql client exited 1: " + denied),
+                         "The server refused the user name or password. Check both, and that the account may "
+                         "connect from your address. " + denied)
+        no_password = "ERROR 1045 (28000): Access denied for user 'app'@'localhost' (using password: NO)"
+        self.assertEqual(dbops.connection_error_text(no_password),
+                         "The server refused the login, and no password was sent. Enter the password, or check "
+                         "the user name. " + no_password)
+        # A 1045 without the server's Access denied words is not called a password error.
+        self.assertIsNone(dbops.connection_error_text('ERROR 1045 (28000) at line 1: near "SHOW": syntax error'))
+
+    def test_other_errors_are_left_alone(self):
+        for text in ("ERROR 1227 (42000): Access denied; you need (at least one of) the PROCESS privilege(s)",
+                     "ERROR 1142 (42000): SELECT command denied to user 'app'@'%' for table 'x'",
+                     "ERROR 2026 (HY000): SSL connection error: unknown error number",
+                     "Query timed out after 30s: SHOW GLOBAL STATUS", "Lost connection", "", None):
+            with self.subTest(text=text):
+                self.assertIsNone(dbops.connection_error_text(text))
+
+
 # ---- the audit trail ----------------------------------------------------------------------
 
 class TestAudit(TempHome):

@@ -303,7 +303,7 @@ export function IoView({
       }
       controls={
         <>
-          <SchemaField id="io-schema" value={schema} onChange={onSchemaChange} disabled={loading} />
+          <SchemaField id="io-schema" connection={connection} value={schema} onChange={onSchemaChange} disabled={loading} />
           <WindowSelect value={interval} options={WINDOW_INTERVALS} onChange={onIntervalChange} disabled={loading} />
           {perTable && (
             <Segmented<Scope>

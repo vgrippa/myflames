@@ -42,9 +42,52 @@ function joinEdgesFor(N) {
 }
 
 // Stage geometry.
-var W = 820, H = 460;
+var W = 820, H = 436;
 var TABLE_ROW_Y = 56;
 var FINAL_PLAN_Y = 408;
+
+// Guided steps: each kind names the simplified-code lines it runs (GUIDE in
+// join_order.py). Kinds come from this table so each appears as a literal.
+var BEAT_KINDS = {
+  problem: "problem",
+  costFirst: "cost-first",
+  goDeeper: "go-deeper",
+  prune: "prune",
+  costNext: "cost-next",
+  done: "done",
+  hgTables: "hg-tables",
+  hgPairs: "hg-pairs",
+  hgGrow: "hg-grow",
+  hgDone: "hg-done"
+};
+
+// The controls as the lesson uses them. readControls() gives a select's
+// value as text (prune_level "0" or "1") and writes the raw slider value to
+// every pill, so normalise here and put the "62 (max)" pill back.
+function plannerControls() {
+  var c = teachRuntime.readControls();
+  var rawDepth = Math.round(c.search_depth);
+  var pillDepth = document.querySelector('[data-pill-for="search_depth"]');
+  if (pillDepth) pillDepth.textContent = (rawDepth >= 10) ? "62 (max)" : String(rawDepth);
+  return {
+    tables: Math.round(c.tables),
+    rawDepth: rawDepth,
+    search_depth: (rawDepth >= 10) ? 62 : rawDepth,
+    prune_level: Number(c.prune_level),
+    algo: c.algo
+  };
+}
+
+// Whole numbers with thousands separators: "5,040 orders", not "5.0K".
+function fullInt(n) {
+  return Math.round(n).toLocaleString("en-US");
+}
+
+var ORDINALS = ["first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth"];
+
+function orderText(names) {
+  return names.join(" \u25b6 ");
+}
 
 // ---- Factorial / permutation helpers (greedy_search cost) ----
 function fact(n) {
@@ -94,16 +137,16 @@ function bigOLabel(N, d) {
 // Hypergraph (DPhyp) cost model
 // =============================================================================
 // DPhyp enumerates connected subgraphs (CSGs) of the query graph plus
-// complement-pairs. Worst case is O(3^N) for clique queries; for
-// tree-shaped queries (our example) it's O(N^3). Capped at
+// complement-pairs. Worst case is O(3^N) for clique queries; for a chain
+// of joins it is (N^3 - N) / 6 pairs. Branching trees fall in between (the
+// 7-table example query has 98 pairs). Capped at
 // optimizer_max_subgraph_pairs (default 100,000).
 var OPTIMIZER_MAX_SUBGRAPH_PAIRS = 100000;
 
 function dphypTreePairs(N) {
-  // Empirical: for a tree-shaped query graph, DPhyp examines roughly
-  // C(N, 2) + (N-2)*(N-1)/2 + ... ≈ N^3 / 6 pairs. Use N^3 / 6 as the
-  // teaching approximation — same order of magnitude as the real algo,
-  // and the lesson is about regimes not exact counts.
+  // A chain of N joins has (N^3 - N) / 6 csg-cmp pairs. Use N^3 / 6 as the
+  // teaching approximation: the same order of magnitude for this query
+  // (98 pairs at N = 7), and the lesson is about regimes not exact counts.
   return Math.max(N, Math.round((N * N * N) / 6));
 }
 
@@ -113,7 +156,7 @@ function dphypClique(N) {
 }
 
 function bigOLabelDPhyp() {
-  return "O(3^N) worst case, O(N³) on tree query (current example)";
+  return "O(3^N) worst case (every table joined to every other), O(N³) for a chain of joins";
 }
 
 // =============================================================================
@@ -370,11 +413,13 @@ function resetGreedyColors() {
     nd.circle.setAttribute("fill", "var(--svg-node-muted)");
     nd.circle.setAttribute("stroke", "var(--svg-node-stroke)");
     nd.circle.setAttribute("stroke-width", 1.5);
+    nd.circle.removeAttribute("stroke-dasharray");
     nd.labelEl.setAttribute("fill", "var(--svg-ink)");
     if (nd.edge) {
       nd.edge.setAttribute("stroke", "var(--svg-node-stroke)");
       nd.edge.setAttribute("stroke-width", 1);
       nd.edge.setAttribute("opacity", 0.6);
+      nd.edge.removeAttribute("stroke-dasharray");
     }
   }
 }
@@ -384,7 +429,7 @@ function buildGreedyTimeline(controls) {
   var phaseLabel = document.getElementById("phase-label");
   var N = controls.tables;
   var depth = controls.search_depth;
-  var prune = controls.prune_level;
+  var prune = controls.prune_level === 0 ? 0 : 1;
   var tree = stageState.tree;
   if (!tree) return tl;
 
@@ -402,9 +447,21 @@ function buildGreedyTimeline(controls) {
     }
   }
 
+  var tables = TABLE_NAMES.slice(0, N);
+  function pathPrefix(levelIdx) {
+    var out = [];
+    for (var li = 0; li <= levelIdx && li < tree.levels.length; li++) {
+      var on = tree.levels[li].find(function(n) { return n.onPath; });
+      if (on) out.push(on.label);
+    }
+    return out;
+  }
+
   tl.mark("Problem: pick an order for " + N + " tables");
+  tl.beat(BEAT_KINDS.problem);
   tl.call(function() {
-    phaseLabel.textContent = "Problem: " + N + " tables, " + teachRuntime.formatInt(fact(N)) + " possible left-deep orderings.";
+    phaseLabel.textContent = "Problem: " + N + " tables (" + tables.join(", ") + ") can be joined in " +
+      fullInt(fact(N)) + " left-deep orders; greedy_search must pick one before the query runs";
   });
   for (var i = 0; i < stageState.tableCards.length; i++) {
     (function(idx) {
@@ -419,10 +476,13 @@ function buildGreedyTimeline(controls) {
   tl.delay(200);
 
   tl.mark("Step 1: evaluate each candidate first table");
-  tl.call(function() {
-    phaseLabel.textContent = "Step 1 — best_extension_by_limited_search costs each candidate root";
-  });
   var lvl0 = tree.levels[0];
+  tl.beat(BEAT_KINDS.costFirst);
+  tl.call(function() {
+    phaseLabel.textContent = "Step 1: best_extension_by_limited_search costs each table as the first table: " +
+      lvl0.map(function(n) { return n.label; }).join(", ") + " (" + lvl0.length + " of " + N +
+      " drawn), each with its best access path, rows and cost";
+  });
   for (var k = 0; k < lvl0.length; k++) {
     (function(idx) {
       var nd = lvl0[idx];
@@ -438,9 +498,13 @@ function buildGreedyTimeline(controls) {
 
   tl.delay(150);
   tl.mark("Pick lowest-cost partial plan");
+  tl.beat(BEAT_KINDS.goDeeper);
   tl.call(function() {
-    phaseLabel.textContent = "Greedy commit — lowest-cost candidate becomes the outer loop";
     var winner = lvl0.find(function(n) { return n.onPath; });
+    var first = winner ? winner.label : "The first candidate";
+    phaseLabel.textContent = prune === 0
+      ? first + " is the cheapest first table so far; with prune_level=0 the search goes deeper from every first table, not only " + first
+      : first + " is the cheapest first table so far, so the search goes deeper from it; it becomes the outer loop unless a cheaper order turns up";
     if (winner) {
       animColor(winner.circle, "fill", "var(--svg-ok-soft)", 300, anim.easeOutBack);
       animColor(winner.circle, "stroke", "var(--svg-ok)", 300);
@@ -477,13 +541,25 @@ function buildGreedyTimeline(controls) {
   // only the surviving path.
   if (prune === 1) {
     tl.delay(120);
-    tl.mark("optimizer_prune_level=1 — prune unreachable subtrees up-front");
+    tl.mark("optimizer_prune_level=1: drop the beaten first tables");
+    tl.beat(BEAT_KINDS.prune);
     tl.call(function() {
+      var winner = lvl0.find(function(n) { return n.onPath; });
+      var beaten = lvl0.filter(function(n) { return !n.onPath; }).map(function(n) { return n.label; });
       phaseLabel.textContent =
-        "optimizer_prune_level=1 — partial plans whose ancestor was already beaten are dropped without exploring their subtree";
+        "optimizer_prune_level=1: " + beaten.join(", ") + " read no fewer rows and cost no less than " +
+        (winner ? winner.label : "the winner") + ", so " + (beaten.length === 1 ? "it is" : "they are") +
+        " dropped and no order starting with " + (beaten.length === 1 ? "it" : "them") + " is explored (grey)";
       for (var ai = 0; ai < tree.allNodes.length; ai++) {
         var nd = tree.allNodes[ai];
-        if (nd.parentId === null) continue;
+        if (nd.parentId === null) {
+          // A beaten first table was costed, then dropped: dashed outline.
+          if (!nd.onPath) {
+            animColor(nd.circle, "fill", "var(--svg-node-muted)", 260, anim.easeInCubic);
+            nd.circle.setAttribute("stroke-dasharray", "3 2");
+          }
+          continue;
+        }
         if (!isReachable(nd)) {
           animColor(nd.circle, "fill", "var(--svg-node-muted)", 260, anim.easeInCubic);
           animColor(nd.circle, "stroke", "var(--svg-node-stroke)", 260, anim.easeInCubic);
@@ -509,12 +585,18 @@ function buildGreedyTimeline(controls) {
 
       tl.mark("Step " + (levelIdx + 1) +
               (prune === 0
-                ? ": exhaustive — every partial plan costed"
+                ? ": no pruning, every drawn partial plan costed"
                 : ": cost only the surviving prefix's extensions"));
+      tl.beat(BEAT_KINDS.costNext);
       tl.call(function() {
+        var prefix = orderText(pathPrefix(levelIdx - 1));
         phaseLabel.textContent = (prune === 0
-          ? "Step " + (levelIdx + 1) + " (prune_level=0) — costing all " + levelNodes.length + " partial plans at this level"
-          : "Step " + (levelIdx + 1) + " (prune_level=1) — only the " + visited.length + " of " + levelNodes.length + " plans whose prefix survived are extended");
+          ? "Step " + (levelIdx + 1) + " (prune_level=0): cost a " + ORDINALS[levelIdx] + " table after every drawn " +
+            levelIdx + "-table order: all " + levelNodes.length + " drawn " + (levelIdx + 1) +
+            "-table orders, not only those after " + prefix
+          : "Step " + (levelIdx + 1) + " (prune_level=1): cost each next table after " + prefix + ": " +
+            visited.map(function(n) { return prefix + " \u25b6 " + n.label; }).join(", ") +
+            " (" + visited.length + " of the " + levelNodes.length + " drawn)");
       });
 
       // Walk the visited set. With prune=0 this is the full level (every
@@ -538,8 +620,18 @@ function buildGreedyTimeline(controls) {
       }
       tl.delay(120);
 
-      // Commit the winning extension at this level.
+      // Keep the winning extension at this level and go deeper from it.
+      tl.beat(levelIdx === tree.levels.length - 1 ? BEAT_KINDS.done : BEAT_KINDS.goDeeper);
       tl.call(function() {
+        var kept = orderText(pathPrefix(levelIdx));
+        if (levelIdx === tree.levels.length - 1) {
+          phaseLabel.textContent = kept + " is the cheapest " + (levelIdx + 1) + "-table prefix drawn; " +
+            "the search finishes the remaining " + Math.max(0, N - levelIdx - 1) + " tables the same way";
+        } else {
+          phaseLabel.textContent = kept + " is the cheapest " + (levelIdx + 1) + "-table order so far, " +
+            "so the search goes deeper from it" +
+            (prune === 0 ? "; with prune_level=0 the others are explored too" : "");
+        }
         for (var w = 0; w < onPath.length; w++) {
           animColor(onPath[w].circle, "fill", "var(--svg-ok-soft)", 300, anim.easeOutBack);
           animColor(onPath[w].circle, "stroke", "var(--svg-ok)", 300);
@@ -558,12 +650,9 @@ function buildGreedyTimeline(controls) {
 
   tl.mark("Final plan locked");
   tl.call(function() {
-    phaseLabel.textContent = "✓ greedy_search complete — " +
-      teachRuntime.formatInt(finalPlanCount) + " partial plans evaluated";
     if (stageState.plansCounter) {
       stageState.plansCounter.textContent = teachRuntime.formatInt(finalPlanCount);
     }
-    var tables = TABLE_NAMES.slice(0, N);
     var chosenPrefix = [];
     for (var lv3 = 0; lv3 < tree.levels.length; lv3++) {
       var onPath = tree.levels[lv3].find(function(n) { return n.onPath; });
@@ -571,6 +660,10 @@ function buildGreedyTimeline(controls) {
     }
     var rest = tables.filter(function(t) { return chosenPrefix.indexOf(t) < 0; });
     var finalOrder = chosenPrefix.concat(rest);
+    phaseLabel.textContent = "\u2713 greedy_search done: " + orderText(finalOrder) + " is the join order EXPLAIN shows; " +
+      fullInt(finalPlanCount) + (finalPlanCount === 1 ? " partial plan" : " partial plans") +
+      " costed (the tree draws " + tree.levels.length +
+      " of " + N + " levels)";
     if (stageState.finalPlanText) {
       stageState.finalPlanText.textContent = finalOrder.join(" ▶ ");
       stageState.finalPlanText.setAttribute("opacity", 1);
@@ -774,10 +867,12 @@ function buildHypergraphTimeline(controls) {
 
   // ---- Phase 1: vertex enumeration (size-1 CSGs) ----
   tl.mark("Phase 1: enumerate vertices (size-1 CSGs)");
-  tl.call(function() {
-    phaseLabel.textContent = "Phase 1 — each table is a size-1 connected subgraph (CSG)";
-  });
   var tables = TABLE_NAMES.slice(0, N);
+  tl.beat(BEAT_KINDS.hgTables);
+  tl.call(function() {
+    phaseLabel.textContent = "Phase 1: each table alone (" + tables.join(", ") +
+      ") is a connected set; its best plan is its cheapest access path";
+  });
   for (var i = 0; i < tables.length; i++) {
     (function(name, idx) {
       tl.call(function() {
@@ -792,10 +887,13 @@ function buildHypergraphTimeline(controls) {
 
   // ---- Phase 2: enumerate pairs along edges (CSG + CMP pairs of size 2) ----
   tl.mark("Phase 2: enumerate edge-induced pairs (CSG-CMP, size 2)");
-  tl.call(function() {
-    phaseLabel.textContent = "Phase 2 — each join edge is a candidate 2-table CSG-CMP pair";
-  });
   var edges = stageState.graph.edges;
+  tl.beat(BEAT_KINDS.hgPairs);
+  tl.call(function() {
+    phaseLabel.textContent = "Phase 2: each join predicate links two tables: " +
+      edges.map(function(e) { return e.from + " \u22c8 " + e.to; }).join(", ") +
+      "; the cheapest plan for each pair is kept";
+  });
   for (var e = 0; e < edges.length; e++) {
     (function(edgeRec) {
       tl.call(function() {
@@ -816,9 +914,6 @@ function buildHypergraphTimeline(controls) {
 
   // ---- Phase 3: grow CSGs by adjacent vertex (size 3, 4, ...) ----
   tl.mark("Phase 3: grow CSGs by adjacent vertex");
-  tl.call(function() {
-    phaseLabel.textContent = "Phase 3 — extend each CSG with adjacent vertices via EnumerateCsgRec";
-  });
   // Demonstrate growing from one seed (u) outward.
   var seed = tables[0];
   var grown = [seed];
@@ -833,6 +928,7 @@ function buildHypergraphTimeline(controls) {
   var growthSteps = Math.min(N, 5);
   for (var step = 1; step < growthSteps; step++) {
     (function(stepIdx) {
+      tl.beat(BEAT_KINDS.hgGrow);
       tl.call(function() {
         // Find a neighbor not yet in CSG.
         var candidates = [];
@@ -846,6 +942,9 @@ function buildHypergraphTimeline(controls) {
         }
         if (candidates.length === 0) return;
         var next = candidates[0];
+        phaseLabel.textContent = "Phase 3: join the set { " + grown.join(", ") + " } with " + next +
+          ", linked by a join predicate, giving { " + grown.concat([next]).join(", ") +
+          " }; its cheapest plans are kept";
         grown.push(next);
         for (var v = 0; v < grown.length; v++) {
           highlightVertex(grown[v], "var(--svg-ok-soft)", "var(--svg-ok)");
@@ -870,6 +969,7 @@ function buildHypergraphTimeline(controls) {
 
   // ---- Phase 4: final plan (bushy possible) ----
   tl.mark("Phase 4: lock in plan (DPhyp may emit a bushy tree)");
+  tl.beat(BEAT_KINDS.hgDone);
   tl.call(function() {
     phaseLabel.textContent = "✓ DPhyp complete — " + teachRuntime.formatInt(totalPairs) + " subgraph pairs evaluated; plan can be bushy";
     if (stageState.plansCounter) {
@@ -939,7 +1039,8 @@ function buildSearchTimeline(controls) {
 
 function renderChart(currentN, depth, prune, algo) {
   function greedyCurve(d) {
-    return function(n) {
+    return function(x) {
+      var n = Math.max(2, Math.round(x));
       var p = plansEvaluated(n, Math.min(d, n));
       var pr = applyPruning(p, prune).plans;
       return Math.max(1, pr);
@@ -959,14 +1060,15 @@ function renderChart(currentN, depth, prune, algo) {
     {
       label: "Greedy exhaustive: O(N!)",
       color: "var(--svg-danger)",
-      fn: function(n) {
+      fn: function(x) {
+        var n = Math.max(2, Math.round(x));
         var p = plansEvaluated(n, n);
         var pr = applyPruning(p, prune).plans;
         return Math.max(1, pr);
       }
     },
     {
-      label: "Hypergraph DPhyp (tree query): O(N³)",
+      label: "Hypergraph DPhyp (chain of joins): O(N³)",
       color: "var(--svg-group-alt)",
       fn: function(n) {
         return Math.min(dphypTreePairs(n), OPTIMIZER_MAX_SUBGRAPH_PAIRS);
@@ -996,13 +1098,11 @@ function renderChart(currentN, depth, prune, algo) {
 // =============================================================================
 
 function recompute() {
-  var c = teachRuntime.readControls();
-  var N = Math.round(c.tables);
-  var rawDepth = Math.round(c.search_depth);
-  var pillDepth = document.querySelector('[data-pill-for="search_depth"]');
-  if (pillDepth) pillDepth.textContent = (rawDepth >= 10) ? "62 (max)" : String(rawDepth);
-  var depth = (rawDepth >= 10) ? 62 : rawDepth;
-  var prune = Number(c.prune_level);
+  var c = plannerControls();
+  var N = c.tables;
+  var rawDepth = c.rawDepth;
+  var depth = c.search_depth;
+  var prune = c.prune_level;
   var algo = c.algo;
 
   var pillN = document.querySelector('[data-pill-for="tables"]');
@@ -1018,9 +1118,9 @@ function recompute() {
     document.getElementById("out-prune").textContent = "n/a (DP, no prune_level)";
     document.getElementById("out-time").textContent = teachRuntime.formatMs(pairs * 0.001);
     document.getElementById("out-explanation").textContent =
-      "Hypergraph optimizer (DPhyp, Moerkotte & Neumann 2006). Treats the query as a graph: vertices = tables, edges = join predicates. Enumerates connected subgraphs bottom-up via the DP recurrence: for each CSG, find a non-overlapping CMP whose connecting edge merges them. Capped by optimizer_max_subgraph_pairs = " +
+      "Hypergraph optimizer (MySQL only, DPhyp, Moerkotte & Neumann 2006). Treats the query as a graph: vertices = tables, edges = join predicates. Enumerates connected subgraphs bottom-up via the DP recurrence: for each CSG, find a non-overlapping CMP whose connecting edge merges them. Capped by optimizer_max_subgraph_pairs = " +
       teachRuntime.formatInt(OPTIMIZER_MAX_SUBGRAPH_PAIRS) +
-      ". For our 7-table tree query, ~57 pairs vs greedy's worst-case 5,040 orderings — and DPhyp can emit a bushy plan tree.";
+      ". The count here is N\u00b3/6, the number of pairs for a chain of joins (57 for 7 tables; the branching 7-table query drawn here has 98), against greedy's worst case of 5,040 orders, and DPhyp can emit a bushy plan tree.";
   } else {
     var effDepth = Math.min(depth, N);
     var raw = plansEvaluated(N, effDepth);
@@ -1036,10 +1136,10 @@ function recompute() {
     var explanation;
     if (effDepth >= N && prune === 0) {
       explanation =
-        "Exhaustive enumeration: every one of N! left-deep orders is costed. At N=" + N + " that's " + teachRuntime.formatInt(fact(N)) + " plans. Beyond N≈12 this is what tanks query compilation time on giant analytical queries.";
+        "Exhaustive enumeration: every one of N! left-deep orders is considered; only orders already costlier than the best complete order found so far are cut short. At N=" + N + " that's " + teachRuntime.formatInt(fact(N)) + " orders. Beyond N≈12 this is what tanks query compilation time on giant analytical queries.";
     } else if (effDepth >= N && prune === 1) {
       explanation =
-        "Exhaustive but pruned: optimizer_prune_level=1 cuts branches whose partial cost already exceeds the best complete plan found so far. The shape is still O(N!), the constant is ~4-10× smaller.";
+        "Exhaustive but pruned: optimizer_prune_level=1 drops a partial order when an earlier candidate at the same step read no more rows and cost no more, so far fewer orders are costed. It is a heuristic that can miss the cheapest order, and the worst case is still O(N!).";
     } else if (effDepth === 1) {
       explanation =
         "Pure greedy: at each step pick the locally-cheapest next table. O(N²) plans. Fast but can miss the globally-optimal order — that is why MySQL's default lookahead is much larger.";
@@ -1057,19 +1157,19 @@ function recompute() {
 
 function resetAnim() {
   resetStageColors();
-  document.getElementById("phase-label").textContent = "Ready — press Play";
+  document.getElementById("phase-label").textContent = "Ready: press Next step, or Play to run it all";
 }
 
 teachRuntime.wire(recompute);
 teachRuntime.wireToolbar({
   build: function() {
-    return buildSearchTimeline(teachRuntime.readControls());
+    return buildSearchTimeline(plannerControls());
   },
   reset: resetAnim
 });
 teachRuntime.wirePhaseNav("phase-nav", {
   build: function() {
-    return buildSearchTimeline(teachRuntime.readControls());
+    return buildSearchTimeline(plannerControls());
   },
   reset: resetAnim
 });

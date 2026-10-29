@@ -49,6 +49,47 @@ class TestWorkbench(unittest.TestCase):
         search = next(item for item in document.iter() if item.tag.endswith('input'))
         self.assertEqual(search.attrib['placeholder'], 'Search operators')
 
+    def test_fit_keeps_the_smallest_text_at_eleven_pixels(self):
+        # Fit (on open, the Fit button, a double click) stops where the
+        # smallest text in the viewport would render below 11 px; the
+        # constant it scales must be the smallest font size the styles draw.
+        # The TypeScript twin (charts/workbench.ts + core/zoom.ts) follows
+        # the same rule; zoom.mjs and browser.mjs measure the rendered text.
+        import re
+        document = ET.fromstring(render_workbench(plan('Table scan on t')))
+        style = document.find(SVG+'style').text
+        smallest = min(int(size) for size in re.findall(r'font-size:(\d+)px', style))
+        self.assertEqual(smallest, 11)
+        script = (Path(__file__).resolve().parents[1] / 'myflames' / 'workbench.js').read_text(encoding='utf-8')
+        self.assertIn('var SMALLEST_TEXT_PX = %d;' % smallest, script)
+        self.assertIn('var MIN_TEXT_PX = 11;', script)
+        fit = script[script.index('function fit()'):script.index('function rescale()')]
+        self.assertIn('var readable = fittedScale * SMALLEST_TEXT_PX / MIN_TEXT_PX;', fit)
+        self.assertIn('Math.min(Math.max((graphWidth + 56) / width, (graphHeight + 56) / height), readable)', fit)
+        # The readable bound wins over the 500% zoom-in limit (zoom.mjs
+        # measures 11 px text in a 150 px wide embedding).
+        self.assertIn('width * readable)', fit)
+        # Refit when the page changes the SVG's screen scale while fitted;
+        # a deliberate zoom, pan or 100% ends the fitted state.
+        rescale = script[script.index('function rescale()'):script.index('function animateWheel')]
+        self.assertIn('if (fitted && Math.abs(screenScale() - fittedScale) > 1e-6) fit();', rescale)
+        self.assertIn('new ResizeObserver(rescale).observe(root)', script)
+        self.assertEqual(script.count('fitted = false;') - script.count('var fitted = false;'), 3)
+        charts = Path(__file__).resolve().parents[1] / 'apps' / 'workspace' / 'src' / 'charts'
+        if not charts.is_dir():
+            self.skipTest('TypeScript sources are not in this checkout')
+        workbench_ts = (charts / 'workbench.ts').read_text(encoding='utf-8')
+        styles_ts = (charts / 'core' / 'styles.ts').read_text(encoding='utf-8')
+        zoom_ts = (charts / 'core' / 'zoom.ts').read_text(encoding='utf-8')
+        css = styles_ts[styles_ts.index('export const WORKBENCH_CSS'):]
+        css = css[:css.index('].join("")')]
+        self.assertEqual(min(int(size) for size in re.findall(r'font-size:(\d+)px', css)), smallest)
+        self.assertIn('export const SMALLEST_TEXT_PX = %d;' % smallest, workbench_ts)
+        self.assertIn('smallestTextPx: SMALLEST_TEXT_PX', workbench_ts)
+        self.assertIn('export const MIN_TEXT_PX = 11;', zoom_ts)
+        self.assertIn('box.w = Math.min(clamp(width * Math.min(wanted, readable)), width * readable);', zoom_ts)
+        self.assertIn('new ResizeObserver(() => zoom.rescale())', workbench_ts)
+
     def test_rows_label_sits_on_an_opaque_chip_wider_than_its_text(self):
         root = plan('Nested loop inner join', [
             {'operation': 'Table scan on a', 'table_name': 'a', 'actual_rows': 10000, 'actual_loops': 1,

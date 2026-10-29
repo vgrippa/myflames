@@ -220,8 +220,12 @@ def _consumer_option(name):
 #: the view to work; ``optional`` adds to it.
 FEATURES = (
     {"key": "top", "label": "Top statements", "view": "top", "modules": ("discover",),
-     "tables": ("events_statements_summary_by_digest",),
+     "tables": ("events_statements_summary_by_digest", "events_statements_histogram_by_digest"),
      "needs": {"consumers": ("global_instrumentation", "statements_digest"), "instruments": ("statement/%",)},
+     # CPU time per digest (SUM_CPU_TIME, MySQL 8.0.28+) grows only while this
+     # consumer is on; it is off by default and MariaDB has no such consumer.
+     "optional": {"consumers": ("events_statements_cpu",)},
+     "consumer_engines": {"events_statements_cpu": "mysql"},
      "explain": "The heaviest normalized statements since startup, from statement digests."},
     {"key": "capture", "label": "Capture statistics", "view": "editor", "modules": ("live",),
      "tables": ("events_statements_history", "threads"),
@@ -281,6 +285,7 @@ FILTER_CONSUMERS = ("thread_instrumentation",)
 #: feeds; () for tables that need no instrument or consumer.
 TABLES = {
     "events_statements_summary_by_digest": ("top",),
+    "events_statements_histogram_by_digest": ("top",),
     "events_statements_history": ("capture",),
     "events_statements_current": ("locks_last",),
     "events_waits_summary_global_by_event_name": ("waits",),
@@ -1038,6 +1043,8 @@ def _features(server, instruments, consumers, actors, objects):
         for kind in ("needs", "optional"):
             spec = f.get(kind, {})
             for name in spec.get("consumers", ()):
+                if f.get("consumer_engines", {}).get(name, server.engine) != server.engine:
+                    continue
                 c = current.get(name)
                 if c is None or not c["effective"]:
                     blocked = c["blocked_by"] if c else []

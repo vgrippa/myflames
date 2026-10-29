@@ -1,6 +1,7 @@
 /* Parameters catalog, local drafts and the exact-statement review sheets. */
 
-/* Edit value, Reset to default, Change… and Reset persisted value… in the
+/* Stage value for review, Reset to default, Change this parameter… and
+   Reset persisted value… in the
    inspector's action bar under the parameter's name. */
 .config-actions {
   display: flex;
@@ -90,6 +91,29 @@
   outline: 2px solid var(--focus);
   outline-offset: 1px;
 }
+/* A set-typed value (sql_mode): a one-line control that opens the member
+ * checkboxes; the table cell stays one line. */
+.set-value { display: inline-flex; align-items: center; gap: var(--space-2); min-width: 0; max-width: 100%; }
+.set-value-button {
+  display: inline-flex;
+  align-items: center;
+  height: var(--control-h);
+  min-width: 0;
+  max-width: 100%;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--control-line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+.set-value-button:disabled { opacity: 0.6; cursor: default; }
+.set-value-summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.set-value-members { display: grid; gap: var(--space-1); }
+.set-value-member { display: flex; align-items: center; gap: var(--space-2); font-family: var(--font-mono); font-size: var(--text-sm); cursor: pointer; }
+.set-value-popover .hint { margin: var(--space-2) 0 0; }
 .variable-label {
   display: block;
   margin-bottom: var(--space-1);
@@ -257,7 +281,9 @@ ul.variable-problems {
 .parameter-cell-editor .variable-input,
 .parameter-cell-editor .select { width: 100%; min-width: 0; }
 .parameter-cell-editor > .variable-input,
-.parameter-cell-editor > .select { flex: 1 1 auto; }
+.parameter-cell-editor > .select,
+.parameter-cell-editor > .set-value { flex: 1 1 auto; }
+.parameter-cell-editor > .set-value .set-value-button { flex: 1 1 auto; }
 .parameter-cell-editor .text-button { flex: 0 0 auto; padding: 0; font-size: var(--text-sm); }
 .parameter-current { max-width: 8em; overflow: hidden; text-overflow: ellipsis; }
 .parameter-staged td[data-col="value"] { background: var(--accent-soft); }

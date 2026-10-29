@@ -1,0 +1,340 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/vgrippa/myflames/docs/schemas/parameter-version-compare-1.0.json",
+  "title": "myflames parameter-version-compare-1.0",
+  "description": "The parameter changes between two cataloged releases of one engine. Emitted by param_versions.compare(), POST /api/config/versions/compare and myflames config versions compare --json.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "engine",
+    "product",
+    "from",
+    "to",
+    "direction",
+    "summary",
+    "counts",
+    "changes",
+    "notes"
+  ],
+  "properties": {
+    "schema": {
+      "const": "parameter-version-compare-1.0"
+    },
+    "engine": {
+      "enum": [
+        "mysql",
+        "mariadb"
+      ]
+    },
+    "product": {
+      "type": "string"
+    },
+    "from": {
+      "type": "string"
+    },
+    "to": {
+      "type": "string"
+    },
+    "direction": {
+      "enum": [
+        "upgrade",
+        "downgrade",
+        "same"
+      ]
+    },
+    "summary": {
+      "type": "string",
+      "description": "One sentence of at most 120 characters, written by Python."
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "added",
+        "removed",
+        "deprecated",
+        "undeprecated",
+        "default",
+        "dynamic",
+        "scope",
+        "type",
+        "values",
+        "range",
+        "changed",
+        "unchanged"
+      ],
+      "properties": {
+        "added": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "removed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "deprecated": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "undeprecated": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "default": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Known defaults that differ; a default that is unknown on either side is never counted."
+        },
+        "dynamic": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "scope": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "type": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "values": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "range": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "changed": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Parameters with at least one kind of change; equals the length of changes."
+        },
+        "unchanged": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Parameters in at least one of the two releases with no counted change, including a build-only parameter present on one side only."
+        }
+      }
+    },
+    "changes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "kinds",
+          "text",
+          "from",
+          "to",
+          "since",
+          "replacement"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "kinds": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "enum": [
+                "added",
+                "removed",
+                "deprecated",
+                "undeprecated",
+                "default",
+                "dynamic",
+                "scope",
+                "type",
+                "values",
+                "range"
+              ]
+            }
+          },
+          "text": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string"
+            },
+            "description": "One sentence per kind, written by Python; a default that is unknown on one side adds a Not-compared sentence without a kind."
+          },
+          "from": {
+            "$ref": "#/definitions/factsOrAbsent"
+          },
+          "to": {
+            "$ref": "#/definitions/factsOrAbsent"
+          },
+          "since": {
+            "type": "object",
+            "description": "Per kind, the release on To's own line from which To's value holds, found by walking To's lineage back to where it meets From's lineage. Null when From's line made the difference (a downgrade, or a patch of an older series the newer one does not have; text then names that release) or both lines changed it.",
+            "additionalProperties": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "replacement": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "filter": {
+      "type": "object",
+      "description": "CLI only, with --kind or --name: what this output lists. counts and summary still describe the whole comparison.",
+      "properties": {
+        "kinds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kinds",
+        "name"
+      ],
+      "additionalProperties": false
+    },
+    "shown": {
+      "type": "integer",
+      "description": "CLI only, with --kind or --name: how many changes this output lists."
+    }
+  },
+  "definitions": {
+    "factsOrAbsent": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "scope",
+        "type",
+        "dynamic",
+        "default",
+        "default_note",
+        "min",
+        "max",
+        "values",
+        "deprecated",
+        "replacement",
+        "alias_of",
+        "plugin"
+      ],
+      "properties": {
+        "scope": {
+          "enum": [
+            "global",
+            "session",
+            "both",
+            null
+          ]
+        },
+        "type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dynamic": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "default": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The server's own text form; null with default_note null, host or unknown."
+        },
+        "default_note": {
+          "description": "null: the default is SQL NULL. host: computed at startup from the host; default holds what a lab server computed. release: the value names the release or build (version, build_id), not a default. build: the default follows the build or installation layout (paths). state: session or server state (pseudo_thread_id, gtid_executed), not a default. unknown: no default could be read.",
+          "enum": [
+            "null",
+            "host",
+            "release",
+            "build",
+            "state",
+            "unknown",
+            null
+          ]
+        },
+        "min": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "max": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "values": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "deprecated": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "enum": [
+              "server",
+              "source",
+              "manual"
+            ]
+          }
+        },
+        "replacement": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "alias_of": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "plugin": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

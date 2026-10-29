@@ -4,7 +4,8 @@ export type View =
   | "flamegraph"
   | "tree"
   | "bargraph"
-  | "workbench";
+  | "workbench"
+  | "stats";
 export type Finding = {
   text: string;
   severity: string;
@@ -57,6 +58,17 @@ export type Plan = {
   /** chart-data-2.0 for the full tree (the bundle also reads 1.0); drawn in-page by PlanChart. */
   chart_data?: ChartData;
 };
+/** Existing /api/report export endpoint. Stats is app UI, not a chart renderer. */
+export type PlanReportRequest = {
+  plan: string;
+  query?: string;
+  view?: Exclude<View, "stats">;
+  hide_literals?: boolean;
+  format?: "html" | "json";
+  /** Preserve the original sidecar's collected evidence on a JSON export. */
+  analysis?: Analysis;
+};
+
 export type Comparison = {
   analysis: {
     before: { total_time_ms: number; timing_available?: boolean };
@@ -270,6 +282,13 @@ export type Connection = {
   type?: ConnectionType;
   /** Refuse every write sent through myflames. */
   read_only?: boolean;
+  /** Through an SSH tunnel (ssh_tunnel.py): the SSH host or ~/.ssh/config
+   * Host alias; host and port are then the database as that host reaches it. */
+  ssh_host?: string;
+  /** SSH user; empty: User in ~/.ssh/config, else the local user name. */
+  ssh_user?: string;
+  /** SSH port; 0 or absent: Port in ~/.ssh/config, else 22. */
+  ssh_port?: number;
 };
 /** Production asks before every write; Development only before risky ones. */
 export type ConnectionType = "production" | "development";
@@ -285,7 +304,7 @@ export type Profile = Connection & {
 
 /** pending: written before sending, never finished; unknown: interrupted
  * after the statement may have reached the server. */
-export type AuditStatus = "pending" | "ok" | "error" | "declined" | "refused" | "unknown";
+export type AuditStatus = "pending" | "ok" | "error" | "declined" | "refused" | "unknown" | "stopped";
 /** One audit-1.0 record: statements as stored (redacted), never a password. */
 export type AuditRecord = {
   id: string;
@@ -305,6 +324,8 @@ export type AuditRecord = {
     host: string | null;
     port: number | null;
     user: string | null;
+    /** The SSH target ("deploy@bastion:2222") of a connection through SSH. */
+    ssh?: string | null;
     engine: string | null;
     server_version: string | null;
   };
@@ -345,6 +366,27 @@ export type SecretStore = {
   available: boolean;
   error?: string;
 };
+export type EvidenceKind = "sessions" | "innodb" | "locks" | "watch";
+export type InvestigationEvidence = {
+  id: string;
+  kind: EvidenceKind;
+  captured_at: string;
+  title: string;
+  text: string;
+  data: Record<string, unknown> | null;
+  data_trimmed?: boolean;
+  text_trimmed?: boolean;
+  note?: string;
+};
+export type InvestigationEvidenceSummary = {
+  id: string;
+  kind: EvidenceKind;
+  captured_at: string;
+  title: string;
+  data_trimmed?: boolean;
+  text_trimmed?: boolean;
+  note?: string;
+};
 export type Bundle = {
   schema_version: "investigation-1.0";
   id?: string;
@@ -359,6 +401,7 @@ export type Bundle = {
     notes?: string;
     capture?: Capture;
   }[];
+  evidence?: InvestigationEvidence[];
   updated_at?: string;
 };
 /**
@@ -366,10 +409,44 @@ export type Bundle = {
  * Home and Library show, without the saved plans; `getInvestigation` returns
  * the complete bundle for Open, Compare and Export.
  */
-export type InvestigationSummary = Omit<Bundle, "schema_version" | "plans"> & {
+export type InvestigationSummary = Omit<Bundle, "schema_version" | "plans" | "evidence"> & {
   schema_version: "investigation-summary-1.0";
   id: string;
   plans: { id: string; name: string; capture?: { mode?: string | null } }[];
+  evidence?: InvestigationEvidenceSummary[];
+};
+export type WatchReport = {
+  schema_version: "watch-1.0";
+  engine?: string | null;
+  server_version?: string | null;
+  server_product?: string | null;
+  threads_running: number | null;
+  longest_statement: {
+    id: number;
+    seconds: number;
+    user: string | null;
+    db: string | null;
+  } | null;
+  /** Seconds an InnoDB transaction has waited for its row lock (trx_wait_started), never a running time. */
+  longest_lock_wait: {
+    id: number;
+    seconds: number;
+  } | null;
+  /** A statement waiting for a metadata or table lock: seconds are how long the statement has run. */
+  longest_waiting_statement?: {
+    id: number;
+    seconds: number;
+    state: string;
+  } | null;
+  read_at: string;
+  reason?: string | null;
+  errors: {
+    threads_running: string | null;
+    longest_statement: string | null;
+    longest_lock_wait: string | null;
+    longest_waiting_statement?: string | null;
+  };
+  notes: string[];
 };
 export type InvestigationCursor = { updated_at: string; id: string };
 /** investigation-list-1.0: newest first; `next_cursor` is null on the last page. */
@@ -453,6 +530,17 @@ export type TopStatement = {
   table_match?: { schema: string; table: string; kind: "qualified" | "unqualified"; label: string };
   /** Origin source e.g. "mysql.slow_log" or "performance_schema" */
   source?: string;
+  /** Read against the whole server (top-1.0 with server context; absent in
+   * older replies and the Full analysis): SUM_CPU_TIME and the quantiles
+   * (upper bounds of the histogram bucket), null where the server has no such
+   * column (MariaDB, older MySQL). */
+  cpu_ms?: number | null;
+  p95_ms?: number | null;
+  p99_ms?: number | null;
+  p999_ms?: number | null;
+  /** First seen in the last 24 hours, decided on the server; false while the
+   * counters cover a day or less (then every statement would be new). */
+  new?: boolean;
 };
 /** What a digest list covers: uptime, the oldest FIRST_SEEN listed, the
  * overflow row (DIGEST IS NULL) and Performance_schema_digest_lost. */
@@ -461,6 +549,45 @@ export type TopCoverage = {
   first_seen: string | null;
   digest_lost: number | null;
   overflow: { executions: number; total_ms: number } | null;
+  /** The oldest FIRST_SEEN of the whole digest table when it began more than
+   * an hour after the server started (reset, or statements began later). */
+  counting_since?: string | null;
+};
+/** Digest rows summed: the whole digest table (totals) or the rows a list
+ * does not hold (others). */
+export type TopTotals = { digests: number; total_ms: number; executions: number };
+/** One bucket of a statement's latency histogram (digest-histogram-1.0);
+ * high_ms is null for the open-ended last bucket. */
+export type DigestHistogramBucket = { bucket: number; low_ms: number; high_ms: number | null; count: number };
+export type DigestHistogram = {
+  schema_version: "digest-histogram-1.0";
+  engine: string;
+  server_version: string | null;
+  flavor?: string;
+  server_product?: string | null;
+  schema: string | null;
+  digest: string;
+  available: boolean;
+  reason: string | null;
+  buckets: DigestHistogramBucket[];
+};
+/** Read-only metadata for names found in statement text, not proof of access. */
+export type DigestTable = {
+  schema: string | null;
+  name: string;
+  found: boolean;
+  type: "table" | "view" | "system view" | "sequence" | null;
+  engine: string | null;
+  rows_estimate: number | null;
+  data_bytes: number | null;
+  index_bytes: number | null;
+  indexes: { name: string; unique: boolean; columns: string[]; visible: boolean | null }[];
+};
+export type DigestTables = {
+  schema_version: "digest-tables-1.0";
+  method: "statement text";
+  tables: DigestTable[];
+  notes: string[];
 };
 /** Orders of Top statements: the four rankings plus the workload attribution
  * filters (only digests whose counter is above zero). */
@@ -494,6 +621,13 @@ export type TopReport = {
   coverage?: TopCoverage;
   /** With a table filter: the label, its caveats and how many digests were checked. */
   match?: { label: string; caveats: string[]; candidates: number; capped: boolean };
+  /** Every digest row of the server (null when unread). */
+  totals?: TopTotals | null;
+  /** The digests this list does not hold, or null when it holds them all. */
+  others?: TopTotals | null;
+  /** MySQL with SUM_CPU_TIME: whether the events_statements_cpu consumer is
+   * on (null: unread); null itself on MariaDB or without the column. */
+  cpu?: { collected: boolean | null } | null;
 };
 export type SlowQueriesReport = {
   schema_version: "slow-queries-1.0";
@@ -873,6 +1007,14 @@ export type TableColumnInfo = {
 };
 export function fetchTableColumns(connection: Connection, schema: string, table: string) {
   return api<{ schema: string; table: string; columns: TableColumnInfo[] }>("live/table-columns", { connection, schema, table });
+}
+/** The latency histogram of one statement digest (MySQL only; read-only). */
+export function readDigestTables(connection: Connection, schema: string | null, text: string, signal?: AbortSignal) {
+  return api<DigestTables>("live/digest-tables", { connection, schema, text }, signal);
+}
+
+export function readDigestHistogram(connection: Connection, schema: string | null, digest: string, signal?: AbortSignal) {
+  return api<DigestHistogram>("live/digest-histogram", { connection, schema, digest }, signal);
 }
 export type KillResult = {
   schema_version: "kill-1.0";
@@ -1492,6 +1634,42 @@ export type SessionTrx = {
   read_only: boolean | null;
   operation_state: string | null;
 };
+/** Shared by sessions-1.0 and the read-only ddl-progress-1.0 poll. */
+export type DdlProgressItem = {
+  id: number;
+  stage: string;
+  stage_label: string;
+  percent: number | null;
+  completed: number | string | null;
+  estimated: number | string | null;
+  elapsed_s: number | null;
+  left_s: number | null;
+  statement_kind: string;
+  source: "performance_schema" | "processlist_progress";
+  units: "rows" | "work_units" | null;
+  /** Why the percentage is unknown (the server's estimate trails the work done). */
+  note?: string | null;
+};
+export type DdlProgress = {
+  available: boolean;
+  reason: string | null;
+  missing: string[];
+  source: "performance_schema" | "processlist_progress" | null;
+  items: DdlProgressItem[];
+};
+export type DdlProgressReport = DdlProgress & {
+  schema_version: "ddl-progress-1.0";
+  engine?: string | null;
+  flavor?: "mysql" | "percona" | "mariadb" | null;
+  server_product?: string | null;
+  server_version?: string | null;
+  taken_at?: string;
+  uptime_s?: number | null;
+  performance_schema?: boolean;
+};
+export function ddlProgress(connection: Connection, connection_ids: number[], signal?: AbortSignal) {
+  return api<DdlProgressReport>("live/ddl-progress", { connection, connection_ids }, signal);
+}
 export type Session = {
   id: number;
   user: string | null;
@@ -1510,6 +1688,7 @@ export type Session = {
   trx: SessionTrx | null;
   /** innodb: a row lock or an InnoDB table lock (INNODB_TRX LOCK WAIT); metadata; table (table-level lock). */
   lock_wait: { kind: "innodb" | "metadata" | "table"; wait_s: number | null; detail: string | null } | null;
+  ddl?: DdlProgressItem | null;
   progress: { stage: number; max_stage: number; pct: number } | null;
   memory_used: number | null;
   rows_examined: number | null;
@@ -1527,6 +1706,7 @@ export type SessionsReport = PerfBase & {
   /** Server observed while reading the report; absent in older reports. */
   server_identity?: KillServerIdentity;
   schema_version: "sessions-1.0";
+  ddl?: DdlProgress;
   source: string;
   source_mode?: "auto" | "show_processlist";
   ps_show_processlist?: "ON" | "OFF" | null;
@@ -1945,6 +2125,29 @@ export type EditorHistoryItem = {
   status: string;
   error_code: number | null;
 };
+/** saved-query-1.0 (/api/editor/saved/*): a query kept on this computer.
+ * Its SQL, name and note are redacted (dbops.redact, as the history) before
+ * they are stored; an empty folder is no folder. */
+export type SavedQuery = {
+  id: string;
+  schema_version: "saved-query-1.0";
+  name: string;
+  folder: string;
+  sql: string;
+  note: string;
+  database: string | null;
+  created: string;
+  updated: string;
+};
+export type SavedQueryList = { items: SavedQuery[]; max_entries: number; max_bytes: number; max_sql: number };
+/** The saved queries, most recently saved, renamed or moved first. */
+export const listSavedQueries = (signal?: AbortSignal) => api<SavedQueryList>("editor/saved/list", {}, signal);
+/** Save a query; *redacted* says a credential in it was replaced by [redacted]. */
+export const saveQuery = (query: { name: string; folder: string; sql: string; note?: string; database?: string | null }) =>
+  api<{ saved: SavedQuery; redacted: boolean }>("editor/saved/save", query);
+export const renameSavedQuery = (id: string, name: string) => api<{ saved: SavedQuery }>("editor/saved/rename", { id, name });
+export const moveSavedQuery = (id: string, folder: string) => api<{ saved: SavedQuery }>("editor/saved/move", { id, folder });
+export const deleteSavedQuery = (id: string) => api<{ deleted: number }>("editor/saved/delete", { id });
 export type EditorExport = { format: string; content: string; mime: string; filename: string };
 /** catalog-1.0: the schema browser's tables of one schema, or one table's columns and indexes. */
 export type CatalogTables = {

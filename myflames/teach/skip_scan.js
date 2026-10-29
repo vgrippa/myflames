@@ -26,23 +26,18 @@ function skipScanCost(tableRows, ndvLeading, selectivity) {
 var W = 800, H = 400;
 var stage = null;
 
-/* Distinct leading-column values displayed in the animation. */
+/* Distinct leading-column values, in index order ('F' sorts before 'M'). */
 var GROUPS = [
-  {label: "gender = M", color: "var(--svg-token)", light: "var(--svg-token-soft)"},
-  {label: "gender = F", color: "var(--svg-group-alt)", light: "var(--svg-group-alt-soft)"}
+  {value: "F", label: "gender = F", color: "var(--svg-group-alt)", light: "var(--svg-group-alt-soft)"},
+  {value: "M", label: "gender = M", color: "var(--svg-token)", light: "var(--svg-token-soft)"}
 ];
 
-/* We show a few sample B-values inside each group. */
+/* A few sample ages inside each group, in index order. */
 var SAMPLE_ROWS = [
-  {age: 18, match: false},
-  {age: 22, match: false},
-  {age: 25, match: true},
-  {age: 27, match: true},
-  {age: 30, match: true},
-  {age: 35, match: false},
-  {age: 42, match: false},
-  {age: 55, match: false}
+  {age: 18}, {age: 22}, {age: 25}, {age: 27},
+  {age: 30}, {age: 35}, {age: 42}, {age: 55}
 ];
+var RANGE_LO = 25, RANGE_HI = 30;
 
 function buildStage() {
   var svg = document.getElementById("skip-scan-svg");
@@ -51,9 +46,8 @@ function buildStage() {
   var groupCount = GROUPS.length;
   var rowCount = SAMPLE_ROWS.length;
   var groupW = (W - 40) / groupCount;
-  var cellW = Math.min(60, (groupW - 30) / rowCount);
   var cellH = 28;
-  var groupY = 90;
+  var groupY = 70;
   var groupH = cellH * rowCount + 40;
 
   /* Title */
@@ -61,14 +55,14 @@ function buildStage() {
     x: W / 2, y: 24, "text-anchor": "middle",
     "font-size": 14, "font-weight": 700, fill: "var(--svg-ink)"
   });
-  title.textContent = "Composite Index (gender, age)";
+  title.textContent = "Index idx_gender_age (gender, age): leaf entries in index order";
   svg.appendChild(title);
 
   var subtitle = anim.svgEl("text", {
     x: W / 2, y: 44, "text-anchor": "middle",
     "font-size": 11, fill: "var(--svg-ink-muted)"
   });
-  subtitle.textContent = "Skip Scan hops between distinct gender values, range-scanning age within each";
+  subtitle.textContent = "Skip scan seeks to age 25 inside each gender and stops after age 30";
   svg.appendChild(subtitle);
 
   var groups = [];
@@ -93,7 +87,7 @@ function buildStage() {
     lbl.textContent = grp.label;
     svg.appendChild(lbl);
 
-    /* Row cells */
+    /* Entry cells */
     var cells = [];
     var cellStartY = groupY + 30;
     for (var r = 0; r < rowCount; r++) {
@@ -109,7 +103,7 @@ function buildStage() {
       var cellText = anim.svgEl("text", {
         x: cx + 8, y: cy + 17, "font-size": 11, fill: "var(--svg-ink)"
       });
-      cellText.textContent = "age = " + SAMPLE_ROWS[r].age;
+      cellText.textContent = "(" + grp.value + ", age " + SAMPLE_ROWS[r].age + ")";
       svg.appendChild(cellText);
 
       var cellIcon = anim.svgEl("text", {
@@ -119,13 +113,13 @@ function buildStage() {
       cellIcon.textContent = "";
       svg.appendChild(cellIcon);
 
-      cells.push({bg: cellBg, icon: cellIcon, match: SAMPLE_ROWS[r].match, age: SAMPLE_ROWS[r].age});
+      cells.push({bg: cellBg, icon: cellIcon, age: SAMPLE_ROWS[r].age, y: cy});
     }
 
-    groups.push({box: box, cells: cells, label: grp.label, color: grp.color});
+    groups.push({box: box, cells: cells, label: grp.label, value: grp.value, color: grp.color, x: gx});
   }
 
-  /* Cursor pill that hops between groups */
+  /* Cursor: the scan's position in the index */
   var cursor = anim.svgEl("rect", {
     x: 0, y: 0, width: 10, height: cellH - 4,
     rx: 3, ry: 3, fill: "var(--svg-build)", opacity: 0
@@ -133,15 +127,15 @@ function buildStage() {
   svg.appendChild(cursor);
 
   /* Summary area at bottom */
-  var summaryY = groupY + groupH + 16;
+  var summaryY = groupY + groupH + 12;
   var summaryBox = anim.svgEl("rect", {
-    x: 20, y: summaryY, width: W - 40, height: 40, rx: 6, ry: 6,
+    x: 20, y: summaryY, width: W - 40, height: 34, rx: 6, ry: 6,
     fill: "var(--svg-ok-soft)", stroke: "var(--svg-ok-soft)", "stroke-width": 1
   });
   svg.appendChild(summaryBox);
   var summaryText = anim.svgEl("text", {
-    x: W / 2, y: summaryY + 25, "text-anchor": "middle",
-    "font-size": 13, "font-weight": 600, fill: "var(--svg-ok)"
+    x: W / 2, y: summaryY + 22, "text-anchor": "middle",
+    "font-size": 12, "font-weight": 600, fill: "var(--svg-ok)"
   });
   summaryText.textContent = "";
   svg.appendChild(summaryText);
@@ -160,6 +154,7 @@ function resetStage() {
     for (var r = 0; r < cells.length; r++) {
       cells[r].bg.setAttribute("fill", "var(--svg-node-bg)");
       cells[r].bg.setAttribute("stroke", "var(--svg-edge)");
+      cells[r].bg.setAttribute("stroke-dasharray", "");
       cells[r].icon.textContent = "";
     }
   }
@@ -167,97 +162,154 @@ function resetStage() {
   stage.summaryText.textContent = "";
 }
 
+/* Entry states: read to learn the gender, sent (in the range), read past
+   the range (stops it), and never read (jumped over by a seek). */
+function markCell(cell, state, gender) {
+  if (state === "prefix") {
+    cell.bg.setAttribute("fill", "var(--svg-build-soft)");
+    cell.bg.setAttribute("stroke", "var(--svg-build)");
+    cell.icon.textContent = "read: gender is " + gender;
+    cell.icon.setAttribute("fill", "var(--svg-build)");
+  } else if (state === "match") {
+    cell.bg.setAttribute("fill", "var(--svg-ok-soft)");
+    cell.bg.setAttribute("stroke", "var(--svg-ok)");
+    cell.icon.textContent = "✔ in 25..30, sent";
+    cell.icon.setAttribute("fill", "var(--svg-ok)");
+  } else if (state === "past") {
+    cell.bg.setAttribute("fill", "var(--svg-token-soft)");
+    cell.bg.setAttribute("stroke", "var(--svg-token)");
+    cell.icon.textContent = "read: past 30, range ends";
+    cell.icon.setAttribute("fill", "var(--svg-token-ink)");
+  } else {
+    cell.bg.setAttribute("fill", "var(--svg-node-muted)");
+    cell.bg.setAttribute("stroke", "var(--svg-node-stroke)");
+    cell.bg.setAttribute("stroke-dasharray", "4 3");
+    cell.icon.textContent = "never read";
+    cell.icon.setAttribute("fill", "var(--svg-ink-muted)");
+  }
+}
+
+function fmtFull(n) {
+  return Math.round(n).toLocaleString("en-US");
+}
+
 function buildTimeline() {
   resetStage();
   var tl = anim.timeline();
   var phase = document.getElementById("phase-label");
-  var totalMatch = 0;
-  var totalSkip = 0;
-
-  tl.mark("Start: Skip Scan");
-  tl.call(function() {
-    phase.textContent = "Skip Scan begins \u2014 iterating over distinct values of gender";
-    stage.cursor.setAttribute("opacity", "1");
+  var drawn = stage.groups.length * SAMPLE_ROWS.length;
+  // Per group: the first entry (to learn the gender), the matches, and the
+  // one entry past the range. The sample's first age is below the range.
+  var matchesPerGroup = 0;
+  SAMPLE_ROWS.forEach(function(row) {
+    if (row.age >= RANGE_LO && row.age <= RANGE_HI) matchesPerGroup++;
   });
-  tl.delay(600);
+  var matchCount = matchesPerGroup * stage.groups.length;
+  var readCount = (matchesPerGroup + 2) * stage.groups.length;
 
+  function moveCursor(gx, toY, duration) {
+    var fromX, fromY, fromOpacity;
+    tl.call(function() {
+      fromX = parseFloat(stage.cursor.getAttribute("x")) || gx + 2;
+      fromY = parseFloat(stage.cursor.getAttribute("y")) || toY;
+      fromOpacity = parseFloat(stage.cursor.getAttribute("opacity")) || 0;
+    });
+    tl.add({
+      from: 0, to: 1, duration: duration, ease: anim.easeInOutCubic,
+      onUpdate: function(t) {
+        stage.cursor.setAttribute("x", anim.lerp(fromX, gx + 2, t));
+        stage.cursor.setAttribute("y", anim.lerp(fromY, toY, t));
+        stage.cursor.setAttribute("opacity", anim.lerp(fromOpacity, 1, t));
+      }
+    });
+  }
+
+  tl.mark("Find the first gender");
   for (var g = 0; g < stage.groups.length; g++) {
     (function(gi) {
       var grp = stage.groups[gi];
-      var gx = 20 + gi * stage.groupW;
       var cells = grp.cells;
+      var first = cells[0];
+      var loIdx = 0;
+      while (cells[loIdx].age < RANGE_LO) loIdx++;
+      var hiIdx = loIdx;
+      while (hiIdx + 1 < cells.length && cells[hiIdx + 1].age <= RANGE_HI) hiIdx++;
+      var pastIdx = hiIdx + 1;
 
-      tl.mark("Group: " + grp.label);
+      /* 1. Learn the next gender value: the first entry of the index, or
+         the first entry after every entry of the previous gender. */
+      if (gi === 0) {
+        tl.beat("first-prefix");
+        tl.call(function() {
+          phase.textContent = "Read the first entry of the index, (" + grp.value + ", age " + first.age +
+            "): the first gender value is " + grp.value;
+        });
+      } else {
+        var prev = stage.groups[gi - 1].value;
+        tl.beat("next-prefix");
+        tl.mark("Next gender: " + grp.value);
+        tl.call(function() {
+          phase.textContent = "Seek past every " + prev + " entry: the next entry is (" + grp.value +
+            ", age " + first.age + "), so the next gender value is " + grp.value;
+        });
+      }
+      moveCursor(grp.x, first.y, gi === 0 ? 300 : 520);
+      tl.call(function() { markCell(first, "prefix", grp.value); });
+      tl.delay(240);
 
-      /* Jump cursor to this group. tl.tween() never existed on the
-         timeline API — the call here was buggy and silently killed
-         the lesson script (caught 2026-04-25 by the headless harness).
-         The timeline only exposes add()/delay()/call()/mark(). The
-         right pattern is tl.call() to capture from-coords, then
-         tl.add() to interpolate. */
-      var fromX, fromY, fromOpacity;
-      var toX = gx + 2, toY = stage.cellStartY;
+      /* 2. Seek straight to (g, 25): the ages below 25 are jumped over. */
+      tl.beat("seek");
+      tl.mark("Seek within " + grp.label);
       tl.call(function() {
-        phase.textContent = "Jump to group: " + grp.label;
-        fromX = parseFloat(stage.cursor.getAttribute("x")) || 0;
-        fromY = parseFloat(stage.cursor.getAttribute("y")) || 0;
-        fromOpacity = parseFloat(stage.cursor.getAttribute("opacity")) || 0;
+        phase.textContent = "Seek to the first entry with gender = " + grp.value + " and age >= " + RANGE_LO +
+          ": (" + grp.value + ", age " + cells[loIdx].age + "). The ages between are jumped over, never read";
+        for (var k = 1; k < loIdx; k++) markCell(cells[k], "never");
       });
-      tl.add({
-        from: 0, to: 1, duration: 300, ease: anim.easeOutCubic,
-        onUpdate: function(t) {
-          stage.cursor.setAttribute("x", anim.lerp(fromX, toX, t));
-          stage.cursor.setAttribute("y", anim.lerp(fromY, toY, t));
-          stage.cursor.setAttribute("opacity", anim.lerp(fromOpacity, 1, t));
-        }
-      });
+      moveCursor(grp.x, cells[loIdx].y, 360);
+      tl.delay(200);
 
-      /* Scan within group */
-      for (var r = 0; r < cells.length; r++) {
+      /* 3. Read the range; the first entry past 30 ends it. */
+      tl.beat("range");
+      tl.call(function() {
+        phase.textContent = "Read " + grp.label + " entries while age <= " + RANGE_HI + "…";
+      });
+      for (var r = loIdx; r <= hiIdx; r++) {
         (function(ri) {
-          var cell = cells[ri];
-          var cy = stage.cellStartY + ri * stage.cellH;
-
-          tl.call(function() {
-            /* Move cursor alongside */
-            stage.cursor.setAttribute("y", String(cy));
-            /* Highlight current cell being examined */
-            cell.bg.setAttribute("fill", "var(--svg-build-soft)");
-            cell.bg.setAttribute("stroke", "var(--svg-build)");
-            phase.textContent = grp.label + " \u2014 checking age = " + cell.age + " (BETWEEN 25 AND 30?)";
-          });
-          tl.delay(250);
-
-          tl.call(function() {
-            if (cell.match) {
-              cell.bg.setAttribute("fill", "var(--svg-ok-soft)");
-              cell.bg.setAttribute("stroke", "var(--svg-ok)");
-              cell.icon.textContent = "\u2714 match";
-              cell.icon.setAttribute("fill", "var(--svg-ok)");
-              totalMatch++;
-            } else {
-              cell.bg.setAttribute("fill", "var(--svg-node-muted)");
-              cell.bg.setAttribute("stroke", "var(--svg-node-stroke)");
-              cell.icon.textContent = "skip";
-              cell.icon.setAttribute("fill", "var(--svg-ink-muted)");
-              totalSkip++;
-            }
-          });
-          tl.delay(200);
+          moveCursor(grp.x, cells[ri].y, 180);
+          tl.call(function() { markCell(cells[ri], "match"); });
+          tl.delay(160);
         })(r);
       }
-
-      tl.delay(200);
+      if (pastIdx < cells.length) {
+        moveCursor(grp.x, cells[pastIdx].y, 180);
+        tl.call(function() {
+          markCell(cells[pastIdx], "past");
+          for (var k = pastIdx + 1; k < cells.length; k++) markCell(cells[k], "never");
+          var ages = [];
+          for (var a = loIdx; a <= hiIdx; a++) ages.push(cells[a].age);
+          phase.textContent = grp.label + ": ages " + ages.join(", ") + " are in 25 to 30 and sent. (" +
+            grp.value + ", age " + cells[pastIdx].age + ") is past 30, so this range ends; the later " +
+            grp.value + " entries are never read";
+        });
+      }
+      tl.delay(240);
     })(g);
   }
 
-  tl.delay(400);
+  /* 4. No gender left. */
+  tl.beat("end");
   tl.mark("Summary");
   tl.call(function() {
     stage.cursor.setAttribute("opacity", "0");
-    var totalRows = stage.groups.length * SAMPLE_ROWS.length;
-    phase.textContent = "\u2713 Done \u2014 matched " + totalMatch + " rows from " + stage.groups.length + " groups, skipped " + totalSkip;
-    stage.summaryText.textContent = "Skip Scan: " + totalMatch + " matching rows found across " + stage.groups.length + " groups (" + totalSkip + " skipped) \u2014 avoided full table scan of " + totalRows + " rows";
+    var c = teachRuntime.readControls();
+    var cost = skipScanCost(c.table_rows, c.ndv_leading, c.selectivity);
+    phase.textContent = "✓ Seek past every " + stage.groups[stage.groups.length - 1].value +
+      " entry: none left, so the skip scan is done. At " + fmtFull(c.table_rows) + " rows and " +
+      fmtFull(c.ndv_leading) + " values of the first column, that is " + fmtFull(c.ndv_leading) +
+      " groups, each with 2 seeks and one short range";
+    stage.summaryText.textContent = "Read " + readCount + " of the " + drawn + " entries drawn: " + matchCount +
+      " matches, " + stage.groups.length + " to learn the genders, " + stage.groups.length +
+      " past a range; " + (drawn - readCount) + " never read";
   });
 
   return tl;
@@ -269,7 +321,7 @@ function buildCurrentTimeline() {
 
 function resetAnim() {
   resetStage();
-  document.getElementById("phase-label").textContent = "Ready \u2014 press Play";
+  document.getElementById("phase-label").textContent = "Ready: press Next step, or Play to run it all";
 }
 
 function renderChart(tableRows) {

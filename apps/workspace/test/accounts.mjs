@@ -264,13 +264,13 @@ const list = { schema_version: "accounts-1.0", engine: "mysql", version: "8.4.0"
   accounts: [{ ...target, plugin: "caching_sha2_password", locked: false, expired: false, role: false }, { name: "reader", host: "%", role: true, locked: true }, { name: "mysql.sys", host: "localhost", locked: true }],
   role_grants: [{ role: { name: "reader", host: "%" }, grantee: target, admin_option: false }], default_roles: [] };
 const grantMode = process.argv.includes("--grants");
-let scopeDelay = 0, scopeFailure = false;
+let scopeDelay = 0, scopeFailure = false, columnFailure = false;
 const granted = new Set();
 const catalog = {
   global: [{name:"SELECT"}, {name:"FLUSH_TABLES", dynamic:true, grantable_here:true, description:"Flush tables."}],
   database: [{name:"CREATE ROUTINE",dynamic:false,grantable_here:true,description:"Create stored routines."}, {name:"SELECT",grantable_here:true}, {name:"GLOBAL_ONLY_TEST",grantable_here:false}],
   table: [{name:"SELECT",grantable_here:true}], column:[{name:"SELECT",grantable_here:true}],
-  routine:[{name:"EXECUTE",grantable_here:true}], proxy:[]
+  routine:[{name:"EXECUTE",grantable_here:true}], proxy:[{name:"PROXY",grantable_here:true,description:"Act as another account."}]
 };
 const baseDetail = detail;
 const readDetail = user => {
@@ -293,6 +293,9 @@ try {
     "/api/accounts/read": body => ({ status: 200, body: readDetail(body.user) }),
     "/api/accounts/scope-objects": body => ({status:scopeFailure ? 400 : 200, delay:scopeDelay,
       body:scopeFailure ? {error:"Object list unavailable."} : {database:body.database,tables:[{name:body.database==="shop"?"orders":"items"}],procedures:[{name:"recount"}],functions:[{name:"total"}],truncated:true,warnings:[]}}),
+    "/api/live/table-columns": body => ({status:columnFailure ? 400 : 200,
+      body:columnFailure ? {error:"Column list unavailable."} : {schema:body.schema,table:body.table,
+        columns:[{name:"id",type:"int",nullable:false,default:null,key:"PRI",extra:"auto_increment"},{name:"status",type:"varchar(20)",nullable:false,default:null,key:"",extra:""}]}}),
     "/api/accounts/plan": body => {
       planCount++;
       if (planFailure || planCount === planFailureAt) return { status: 400, body: { error: "The account changed during review." } };
@@ -414,6 +417,32 @@ try {
     await page.select(field("Routine kind"),"FUNCTION"); await page.select(field("Routine"),"total"); await click("Use scope");
     await rowInput("EXECUTE"); await page.locator("button ::-p-text(Review changes)").click(); await page.waitForSelector(".account-review");
     assert.equal(latestPlan.request.kind,"FUNCTION"); assert.equal(latestPlan.request.routine,"total"); await dismiss(); await click("Discard");
+    // Column grants pick from the chosen table's columns, read from the server.
+    await page.select(field("Grant level"),"column"); await click("Add scope"); await page.select(field("Database"),"shop");
+    await page.waitForFunction(()=>document.querySelector('select[aria-label="Table"]')?.textContent.includes("orders"));
+    await page.select(field("Table"),"orders");
+    await page.waitForFunction(()=>document.querySelector('select[aria-label="Column"]')?.textContent.includes("status"));
+    await page.select(field("Column"),"status"); await click("Use scope");
+    await rowInput("SELECT"); await page.locator("button ::-p-text(Review changes)").click(); await page.waitForSelector(".account-review");
+    assert.deepEqual(latestPlan.request.columns,["status"],"the picked column stages the same request as a typed one");
+    await dismiss(); await click("Discard");
+    // Columns that cannot be read fall back to an exact name, with the reason.
+    columnFailure=true; await click("Add scope"); await page.select(field("Database"),"shop");
+    await page.waitForFunction(()=>document.querySelector('select[aria-label="Table"]')?.textContent.includes("orders"));
+    await page.select(field("Table"),"orders");
+    await page.waitForSelector('.account-scope-form [role="alert"]');
+    assert.match(await h.text('.account-scope-form'),/Enter the exact name/);
+    await page.type('.account-scope-form input',"manual_col"); await click("Use scope"); columnFailure=false;
+    assert.match(await page.$eval(field("Grant scope"),e=>e.selectedOptions[0].textContent),/manual_col/);
+    // Proxy scopes offer the loaded accounts and hosts; free text stays.
+    await page.select(field("Grant level"),"proxy"); await click("Add scope");
+    const dataLists=await page.$$eval('.account-scope-form datalist',ds=>ds.map(d=>[...d.options].map(o=>o.value)));
+    assert.deepEqual(dataLists,[["app<probe>","mysql.sys"],["%","localhost"]],"proxy picks come from the loaded accounts");
+    const proxyInputs=await page.$$('.account-scope-form input[list]');
+    assert.equal(proxyInputs.length,2,"proxied user and host keep free text");
+    await proxyInputs[1].type("%"); await click("Use scope");
+    assert.match(await page.$eval(field("Grant scope"),e=>e.selectedOptions[0].textContent),/\(anonymous\)@%/);
+    await page.select(field("Grant level"),"routine");
     scopeFailure=true; await click("Add scope"); await page.select(field("Database"),"shop");
     await page.waitForSelector('.account-scope-form [role="alert"]');
     assert.match(await h.text('.account-scope-form'),/Enter the exact name/);

@@ -28,6 +28,14 @@
   var zoomLevel = root.querySelector('[data-action="reset"]');
   var minimum = width / 5;
   var maximum = Math.max(width * 8, graphWidth * 2, graphHeight * width / height * 2);
+  // Fit never makes the smallest text (.wb-caption, .wb-edge-label: 11px)
+  // smaller than 11 px on screen, even past the 500% zoom-in limit; it is
+  // redone when the page changes the SVG's screen scale while still fitted
+  // (charts/core/zoom.ts, keep in step).
+  var SMALLEST_TEXT_PX = 11;
+  var MIN_TEXT_PX = 11;
+  var fitted = false;
+  var fittedScale = 1;
 
   function stopWheel() {
     if (wheelFrame !== null) window.cancelAnimationFrame(wheelFrame);
@@ -45,14 +53,29 @@
     zoomIn.disabled = box.w <= minimum + .00001;
     zoomOut.disabled = box.w >= maximum - .00001;
   }
+  function screenScale() {
+    var matrix = root.getScreenCTM();
+    var scale = matrix ? Math.sqrt(matrix.a * matrix.a + matrix.b * matrix.b) : 0;
+    return isFinite(scale) && scale > 0 ? scale : 1;
+  }
   function fit() {
     stopWheel();
-    var ratio = Math.max((graphWidth + 56) / width, (graphHeight + 56) / height);
-    box.w = width * ratio;
-    box.h = height * ratio;
-    box.x = (graphWidth - box.w) / 2;
-    box.y = (graphHeight - box.h) / 2;
+    // Fit the whole plan, but stop where the smallest text would drop below
+    // MIN_TEXT_PX on screen; a larger plan starts at its first input (top
+    // left) and the user pans or zooms out. The readable bound wins over
+    // the 500% zoom-in limit in a tiny embedding.
+    fittedScale = screenScale();
+    var readable = fittedScale * SMALLEST_TEXT_PX / MIN_TEXT_PX;
+    var ratio = Math.min(Math.max((graphWidth + 56) / width, (graphHeight + 56) / height), readable);
+    box.w = Math.min(Math.min(maximum, Math.max(minimum, width * ratio)), width * readable);
+    box.h = box.w * height / width;
+    box.x = graphWidth + 56 > box.w + .5 ? -28 : (graphWidth - box.w) / 2;
+    box.y = graphHeight + 56 > box.h + .5 ? -28 : (graphHeight - box.h) / 2;
+    fitted = true;
     paint();
+  }
+  function rescale() {
+    if (fitted && Math.abs(screenScale() - fittedScale) > 1e-6) fit();
   }
   function animateWheel(time) {
     // A bounded logarithmic target avoids a backlog from macOS momentum events.
@@ -76,7 +99,9 @@
     }
   }
   function zoom(factor, px, py) {
-    var next = Math.min(maximum, Math.max(minimum, box.w * factor));
+    fitted = false;
+    // From a fit past the limits, zoom only moves back toward them.
+    var next = Math.min(Math.max(maximum, box.w), Math.max(Math.min(minimum, box.w), box.w * factor));
     var ratio = next / box.w;
     box.x += box.w * px * (1 - ratio);
     box.y += box.h * py * (1 - ratio);
@@ -123,6 +148,7 @@
         case 'in': zoom(.8, .5, .5); break;
         case 'out': zoom(1.25, .5, .5); break;
         case 'reset':
+          fitted = false;
           box = {x: (graphWidth - width) / 2, y: -28, w: width, h: height};
           paint(); break;
       }
@@ -168,6 +194,7 @@
     var dx = event.clientX - drag.x, dy = event.clientY - drag.y;
     if (Math.abs(dx) + Math.abs(dy) > 4) {
       moved = true;
+      fitted = false;
       viewport.setPointerCapture(event.pointerId);
       var matrix = viewport.getScreenCTM();
       box.x = drag.bx - dx / matrix.a;
@@ -183,5 +210,8 @@
   viewport.addEventListener('pointercancel', release);
   viewport.addEventListener('pointerleave', function () { if (!moved) drag = null; });
   viewport.addEventListener('dblclick', fit);
+  // A page that scales the SVG with its column changes its screen scale.
+  if (typeof ResizeObserver === 'function') new ResizeObserver(rescale).observe(root);
+  else window.addEventListener('resize', rescale);
   fit();
 })();

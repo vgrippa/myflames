@@ -83,6 +83,8 @@ function buildStage() {
     });
     pl.textContent = JOIN_PAIRS[p].cust.name + " \u00d7 " + JOIN_PAIRS[p].order.desc;
     svg.appendChild(pl);
+    pl.cx = px + 50;
+    pl.cy = py - 4;
     pairLabels.push(pl);
   }
 
@@ -91,7 +93,7 @@ function buildStage() {
   var tempLbl = anim.svgEl("text", {
     x: 20, y: tempY, "font-size": 12, "font-weight": 700, fill: "var(--svg-build-ink)"
   });
-  tempLbl.textContent = "Weedout temp table (key = customer rowid)";
+  tempLbl.textContent = "Inserts into the weedout temp table (unique key = customer rowid)";
   svg.appendChild(tempLbl);
 
   var tempRect = anim.svgEl("rect", {
@@ -133,7 +135,7 @@ function buildStage() {
       x: 280, y: sy, "font-size": 9, "font-weight": 700, fill: "var(--svg-build-ink)", opacity: 0
     });
     svg.appendChild(sResult);
-    tempSlots.push({ rowid: sRowid, name: sName, result: sResult });
+    tempSlots.push({ rowid: sRowid, name: sName, result: sResult, cx: 92, cy: sy - 3 });
   }
 
   // Duplicate counter on the right side of temp table
@@ -165,8 +167,10 @@ function buildStage() {
   });
   svg.appendChild(resultRect);
 
+  // Placeholder until the first customer arrives, then the summary line
+  // under the customer names (it used to sit on top of them).
   var resultContent = anim.svgEl("text", {
-    x: W / 2, y: resultY + 45, "text-anchor": "middle",
+    x: W / 2, y: resultY + 56, "text-anchor": "middle",
     "font-size": 11, "font-weight": 600, fill: "var(--svg-ok)"
   });
   resultContent.textContent = "(unique customers appear here)";
@@ -184,7 +188,7 @@ function buildStage() {
   for (var r = 0; r < 5; r++) {
     var rx = 80 + r * 150;
     var rl = anim.svgEl("text", {
-      x: rx, y: resultY + 35, "font-size": 10, "font-weight": 700, fill: "var(--svg-ok)", opacity: 0
+      x: rx, y: resultY + 32, "font-size": 10, "font-weight": 700, fill: "var(--svg-ok)", opacity: 0
     });
     svg.appendChild(rl);
     resultLabels.push(rl);
@@ -206,7 +210,12 @@ function buildStage() {
 
 function resetStage() {
   if (!stage) return;
-  stage.pairLabels.forEach(function(l) { l.setAttribute("opacity", 0); });
+  stage.pairLabels.forEach(function(l) {
+    l.setAttribute("opacity", 0);
+    l.setAttribute("fill", "var(--svg-token-ink)");
+    l.setAttribute("font-weight", 600);
+    l.removeAttribute("text-decoration");
+  });
   stage.tempSlots.forEach(function(s) {
     s.rowid.setAttribute("opacity", 0);
     s.name.setAttribute("opacity", 0);
@@ -216,138 +225,170 @@ function resetStage() {
   stage.newCounterLbl.textContent = "New: 0";
   stage.resultContent.textContent = "(unique customers appear here)";
   stage.resultLabels.forEach(function(l) { l.setAttribute("opacity", 0); l.textContent = ""; });
+  stage.resultRect.setAttribute("stroke-width", 1.5);
   stage.statusLbl.textContent = "";
   stage.tuples.forEach(function(t) { if (t.parentNode) t.parentNode.removeChild(t); });
   stage.tuples = [];
+}
+
+function spawnRowidPill(text, cx, cy) {
+  var g = anim.svgEl("g", { opacity: 0, transform: "translate(" + cx + "," + cy + ")" });
+  var tw = Math.max(80, text.length * 6 + 14);
+  g.appendChild(anim.svgEl("rect", {
+    x: -tw / 2, y: -9, width: tw, height: 18, rx: 9, ry: 9,
+    fill: "var(--svg-build)", stroke: "var(--svg-ink)", "stroke-width": 1
+  }));
+  var lbl = anim.svgEl("text", {
+    x: 0, y: 4, "text-anchor": "middle",
+    "font-size": 9, "font-weight": 700, fill: "var(--svg-on-solid)"
+  });
+  lbl.textContent = text;
+  g.appendChild(lbl);
+  stage.svg.appendChild(g);
+  stage.tuples.push(g);
+  return g;
+}
+
+// Every outcome is decided from the data when the timeline is built, so a
+// step shows the same counts whether it was played, stepped to or scrubbed.
+function weedoutPlan() {
+  var seen = {}, dups = 0, news = 0, plan = [];
+  for (var i = 0; i < JOIN_PAIRS.length; i++) {
+    var rowid = JOIN_PAIRS[i].cust.id;
+    var dup = !!seen[rowid];
+    seen[rowid] = true;
+    if (dup) dups++; else news++;
+    plan.push({ pair: JOIN_PAIRS[i], rowid: rowid, dup: dup, dups: dups, news: news, resultIdx: news - 1 });
+  }
+  return plan;
 }
 
 function buildTimeline() {
   resetStage();
   var tl = anim.timeline();
   var phase = document.getElementById("phase-label");
-  var seen = {};        // rowid -> true
-  var dupCount = 0;
-  var newCount = 0;
-  var slotIdx = 0;
-  var resultIdx = 0;
+  var plan = weedoutPlan();
+  var total = plan.length;
+  var uniques = plan[total - 1].news, discarded = plan[total - 1].dups;
 
-  // ---- Phase 1: Show the inner join producing rows ----
+  // ---- Phase 1: the inner join produces rows (one guided step) ----
   tl.mark("Inner join (with duplicates)");
+  // Guided steps: kinds map to the simplified code (GUIDE in semijoin_weedout.py).
+  tl.beat("join");
   tl.call(function() {
-    phase.textContent = "Phase 1 \u2014 MySQL runs the subquery as an inner join (produces duplicates)";
+    phase.textContent = "Phase 1: the IN subquery runs as an inner join of customers and orders, " +
+      "so a customer appears once per matching order";
   });
-
-  for (var i = 0; i < JOIN_PAIRS.length; i++) {
+  for (var i = 0; i < total; i++) {
     (function(idx) {
+      var pair = plan[idx].pair;
       tl.call(function() {
-        var pair = JOIN_PAIRS[idx];
-        stage.pairLabels[idx].setAttribute("opacity", 1);
-        phase.textContent = "Join row " + (idx + 1) + "/" + JOIN_PAIRS.length +
-          ": " + pair.cust.name + " \u00d7 " + pair.order.desc;
+        phase.textContent = "Join row " + (idx + 1) + " of " + total + ": " + pair.cust.name +
+          " × " + pair.order.desc;
       });
-      tl.delay(350);
+      tl.add({
+        from: 0, to: 1, duration: 160, ease: anim.easeOutCubic,
+        onUpdate: function(v) { stage.pairLabels[idx].setAttribute("opacity", v.toFixed(2)); }
+      });
+      tl.delay(190);
     })(i);
   }
-
-  tl.delay(600);
-  tl.call(function() {
-    phase.textContent = "Inner join produced " + JOIN_PAIRS.length +
-      " rows \u2014 but some customers appear multiple times. Now weedout begins\u2026";
-  });
-  tl.delay(800);
-
-  // ---- Phase 2: Weedout — try inserting each rowid into temp table ----
-  tl.mark("Weedout (dedup via temp table)");
-  tl.call(function() {
-    phase.textContent = "Phase 2 \u2014 for each join row, try INSERT into temp table keyed on customer rowid";
-  });
   tl.delay(400);
+  tl.call(function() {
+    phase.textContent = "The inner join produced " + total + " rows for " + uniques +
+      " customers: some customers appear more than once. Next, the weedout";
+    stage.statusLbl.textContent = "Alice and Carol each appear more than once";
+  });
+  tl.delay(700);
 
-  for (var j = 0; j < JOIN_PAIRS.length; j++) {
+  // ---- Phase 2: weedout, one guided step per join row ----
+  tl.mark("Weedout (dedup via temp table)");
+  for (var j = 0; j < total; j++) {
     (function(idx) {
-      var pair = JOIN_PAIRS[idx];
-      var rowid = pair.cust.id;
-      var isDuplicate = false;
+      var step = plan[idx];
+      var pair = step.pair;
+      var label = stage.pairLabels[idx];
+      var slot = stage.tempSlots[idx];
+      var pill = null;
+      var path = anim.path(label.cx, label.cy, (label.cx + slot.cx) / 2, Math.min(label.cy, slot.cy) - 20,
+        slot.cx, slot.cy);
 
+      tl.beat(step.dup ? "weed-dup" : "weed-new");
       tl.call(function() {
-        // Highlight the current join pair
-        stage.pairLabels[idx].setAttribute("fill", "var(--svg-group)");
-
-        isDuplicate = !!seen[rowid];
-        if (!isDuplicate) {
-          seen[rowid] = true;
+        label.setAttribute("fill", "var(--svg-group)");
+        label.setAttribute("font-weight", 800);
+        phase.textContent = "Weedout, join row " + (idx + 1) + " of " + total + ": " + pair.cust.name +
+          " × " + pair.order.desc + " → INSERT rowid=" + step.rowid + " into the temp table";
+        stage.statusLbl.textContent = "Trying to insert rowid=" + step.rowid + " (" + pair.cust.name + ")";
+      });
+      // The rowid travels from the join row to the temp table.
+      tl.add({
+        from: 0, to: 1, duration: 420, ease: anim.easeInOutQuad,
+        onUpdate: function(t) {
+          if (!pill) pill = spawnRowidPill("rowid=" + step.rowid + " " + pair.cust.name, label.cx, label.cy);
+          var p = path(t);
+          pill.setAttribute("transform", "translate(" + p.x.toFixed(1) + "," + p.y.toFixed(1) + ")");
+          pill.setAttribute("opacity", Math.min(1, t * 5).toFixed(2));
         }
-
-        // Show in temp table
-        if (slotIdx < stage.tempSlots.length) {
-          var slot = stage.tempSlots[slotIdx];
-          slot.rowid.textContent = "rowid=" + rowid;
-          slot.name.textContent = pair.cust.name;
-          slot.rowid.setAttribute("opacity", 1);
-          slot.name.setAttribute("opacity", 1);
-          slot.result.setAttribute("opacity", 1);
-
-          if (isDuplicate) {
-            slot.result.textContent = "\u2717 duplicate \u2014 discard";
-            slot.result.setAttribute("fill", "var(--svg-danger)");
-            slot.rowid.setAttribute("fill", "var(--svg-danger)");
-            slot.name.setAttribute("fill", "var(--svg-danger)");
-            dupCount++;
-            stage.dupCounterLbl.textContent = "Duplicates: " + dupCount;
-          } else {
-            slot.result.textContent = "\u2713 new \u2014 emit to result";
-            slot.result.setAttribute("fill", "var(--svg-ok)");
-            slot.rowid.setAttribute("fill", "var(--svg-ok)");
-            slot.name.setAttribute("fill", "var(--svg-ok)");
-            newCount++;
-            stage.newCounterLbl.textContent = "New: " + newCount;
-
-            // Add to result zone
-            if (resultIdx < stage.resultLabels.length) {
-              stage.resultLabels[resultIdx].textContent = pair.cust.name;
-              anim.tween({
-                from: 0, to: 1, duration: 250, ease: anim.easeOutCubic,
-                onUpdate: function() {
-                  var ri = resultIdx - 1;
-                  if (ri >= 0 && ri < stage.resultLabels.length) {
-                    stage.resultLabels[ri].setAttribute("opacity", 1);
-                  }
-                }
-              });
-              stage.resultLabels[resultIdx].setAttribute("opacity", 1);
-              resultIdx++;
-            }
+      });
+      tl.call(function() {
+        slot.rowid.textContent = "rowid=" + step.rowid;
+        slot.name.textContent = pair.cust.name;
+        slot.rowid.setAttribute("opacity", 1);
+        slot.name.setAttribute("opacity", 1);
+        slot.result.setAttribute("opacity", 1);
+        var color = step.dup ? "var(--svg-danger)" : "var(--svg-ok)";
+        slot.result.textContent = step.dup ? "✗ duplicate key: discard" : "✓ inserted: new, emit";
+        slot.result.setAttribute("fill", color);
+        slot.rowid.setAttribute("fill", color);
+        slot.name.setAttribute("fill", color);
+        stage.dupCounterLbl.textContent = "Duplicates: " + step.dups;
+        stage.newCounterLbl.textContent = "New: " + step.news;
+        label.setAttribute("fill", color);
+        label.setAttribute("font-weight", 600);
+        if (step.dup) {
+          label.setAttribute("text-decoration", "line-through");
+          phase.textContent = "Join row " + (idx + 1) + " of " + total + ": rowid=" + step.rowid +
+            " is already in the temp table (duplicate key), so this " +
+            pair.cust.name + " row is discarded";
+          stage.statusLbl.textContent = "✗ " + pair.cust.name + " was already returned: discard";
+        } else {
+          if (step.resultIdx < stage.resultLabels.length) {
+            stage.resultLabels[step.resultIdx].textContent = pair.cust.name;
+            stage.resultLabels[step.resultIdx].setAttribute("opacity", 1);
           }
-          slotIdx++;
+          stage.resultContent.textContent = "";
+          phase.textContent = "Join row " + (idx + 1) + " of " + total + ": rowid=" + step.rowid +
+            " is new, the insert succeeds and " +
+            pair.cust.name + " is returned";
+          stage.statusLbl.textContent = "✓ " + pair.cust.name + " is returned (first time seen)";
         }
-
-        var action = isDuplicate ? "DUPLICATE \u2014 discard" : "NEW \u2014 emit";
-        phase.textContent = "Row " + (idx + 1) + ": " + pair.cust.name +
-          " (rowid=" + rowid + ") \u2192 " + action;
       });
-      tl.delay(500);
-
-      // Reset highlight
-      tl.call(function() {
-        stage.pairLabels[idx].setAttribute("fill", "var(--svg-token)");
+      tl.add({
+        from: 1, to: 0, duration: 160, ease: anim.easeInCubic,
+        onUpdate: function(v) { if (pill) pill.setAttribute("opacity", v.toFixed(2)); },
+        onComplete: function() {
+          if (pill && pill.parentNode) pill.parentNode.removeChild(pill);
+          pill = null;
+        }
       });
+      tl.delay(380);
     })(j);
   }
 
-  tl.delay(500);
-
   // ---- Phase 3: Done ----
   tl.mark("Done");
+  tl.beat("done");
   tl.call(function() {
-    phase.textContent = "\u2713 Weedout complete \u2014 " + newCount + " unique customers, " +
-      dupCount + " duplicates discarded";
-    stage.statusLbl.textContent = JOIN_PAIRS.length + " join rows \u2192 " +
-      newCount + " unique results. Duplication factor: " +
-      (JOIN_PAIRS.length / newCount).toFixed(1) + "\u00d7";
-    stage.resultContent.textContent = newCount + " unique customers emitted";
+    phase.textContent = "✓ Weedout complete: " + uniques + " unique customers returned, " +
+      discarded + " duplicates discarded";
+    stage.statusLbl.textContent = total + " join rows → " + uniques +
+      " unique results. Duplication factor: " + (total / uniques).toFixed(1) + "×";
+    stage.resultContent.textContent = uniques + " unique customers emitted";
     stage.resultRect.setAttribute("stroke", "var(--svg-ok)");
     stage.resultRect.setAttribute("stroke-width", 2.5);
   });
+  tl.delay(500);
 
   return tl;
 }
@@ -357,7 +398,7 @@ function buildCurrentTimeline() {
 }
 function resetAnim() {
   resetStage();
-  document.getElementById("phase-label").textContent = "Ready \u2014 press Play";
+  document.getElementById("phase-label").textContent = "Ready: press Next step, or Play to run it all";
 }
 
 function renderChart(outerRows, innerMatches) {

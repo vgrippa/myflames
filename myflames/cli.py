@@ -73,6 +73,9 @@ def _resolve_query_text(args, json_text):
             query_text = (raw_data.get("query") or "").strip()
         except Exception:
             query_text = ""
+    if getattr(args, "hide_literals", False):
+        from .plan_privacy import hide_literals
+        query_text = hide_literals(query_text)
     return query_text
 
 
@@ -344,6 +347,9 @@ def _maybe_write_sidecar(args, root, analysis, json_text, live_artifacts, query_
             query_raw=query_text or None,
             query_beautified=query_beautified,
         )
+        if getattr(args, 'hide_literals', False):
+            from .plan_privacy import hide_analysis_literals, plan_literal_labels
+            payload = hide_analysis_literals(payload, plan_literal_labels(root))
         write_sidecar(sidecar_path, payload)
         if not getattr(args, "quiet", False):
             sys.stderr.write("Sidecar: {}\n".format(sidecar_path))
@@ -479,6 +485,7 @@ def _cmd_compare(argv, alias_warning=None):
         "--output", "-o", default=None, metavar="PATH",
         help="Write output to file instead of stdout",
     )
+    parser.add_argument("--hide-literals", action="store_true", help="Replace literal values with ? in shared plan HTML and JSON.")
     _add_quiet_flag(parser)
     args = _parse_alias_args(parser, argv, alias_warning)
 
@@ -489,7 +496,7 @@ def _cmd_compare(argv, alias_warning=None):
 
     if args.digest or args.as_json:
         from .output_compare_sidecar import build_compare_sidecar
-        sidecar = build_compare_sidecar(json_before, json_after)
+        sidecar = build_compare_sidecar(json_before, json_after, hide_literals=args.hide_literals)
         if args.as_json:
             import json as _json
             _write_output(_json.dumps(sidecar, indent=2), args.output, quiet=args.quiet)
@@ -499,7 +506,7 @@ def _cmd_compare(argv, alias_warning=None):
         return
 
     from .output_compare import render_compare
-    html = render_compare(json_before, json_after, title=args.title)
+    html = render_compare(json_before, json_after, title=args.title, hide_literals=args.hide_literals)
     _write_output(html, args.output, quiet=args.quiet)
 
 
@@ -963,10 +970,56 @@ def _cmd_findings_deprecated(argv):
     ))
 
 
+def _exit_on_signal(signum, frame):
+    # Once: a second signal ends the process at once (each SSH tunnel's
+    # watchdog still stops its ssh).
+    import signal
+    for name in ("SIGTERM", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            try:
+                signal.signal(sig, signal.SIG_DFL)
+            except (ValueError, OSError):
+                pass
+    raise SystemExit(128 + signum)
+
+
+def _close_on_termination_signals():
+    """SIGTERM and SIGHUP end the CLI like sys.exit (status 128 + signal), so
+    ``finally`` blocks and atexit handlers run: SSH tunnels close
+    (ssh_tunnel.TUNNELS) and temporary files go. Only from the main thread
+    and only for a signal still at its default action (a handler set by a
+    program that embeds myflames is kept)."""
+    import signal
+    import threading
+    if threading.current_thread() is not threading.main_thread():
+        return
+    for name in ("SIGTERM", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            if signal.getsignal(sig) is signal.SIG_DFL:
+                signal.signal(sig, _exit_on_signal)
+        except (ValueError, OSError):
+            pass
+
+
 def main():
+    _close_on_termination_signals()
     _utf8_standard_streams()
     # Handle subcommands before argparse to avoid conflicts with positional args
     if len(sys.argv) > 1:
+        if (len(sys.argv) > 2 and
+                (sys.argv[1] == 'config' and sys.argv[2] in ('snapshot', 'compare') or
+                 sys.argv[1] == 'accounts' and sys.argv[2] in ('compare', 'export'))):
+            from .compare_cli import command
+            command(sys.argv[1], sys.argv[2], sys.argv[3:])
+            return
+        if len(sys.argv) > 2 and sys.argv[1] == 'config' and sys.argv[2] == 'versions':
+            from .param_versions_cli import command
+            command(sys.argv[3:])
+            return
         if sys.argv[1] == "sql":
             from .sql_cli import cmd_sql
             cmd_sql(sys.argv[2:])
@@ -977,6 +1030,10 @@ def main():
             from . import workspace_cli
             command = getattr(workspace_cli, "cmd_" + sys.argv[1].replace("-", "_"))
             command(sys.argv[2:])
+            return
+        if sys.argv[1] == "schema":
+            from .schema_versions_cli import cmd_schema
+            cmd_schema(sys.argv[2:])
             return
         if sys.argv[1] in ("privileges", "accounts"):
             from . import accounts_cli
@@ -1090,9 +1147,12 @@ Subcommands:
   waits     Top wait events over a window, by class, since start; uninstrumented classes
   indexes   Unused and redundant indexes, tables read mostly by full scans (--schema)
   tables    Tables without a primary key or usable unique key; InnoDB free space (--fresh)
+  schema    Save schema versions locally; compare saved, file or live schemas; sync script
   io        Tables and files with the most I/O over a window, and since server start
   config    Review key settings: engine default, source, ok/watch/problem (--fail-on);
-            config set / reset-persist change one variable after you confirm
+            config set / reset-persist change one variable after you confirm;
+            config snapshot save/list/show/delete; config compare SOURCE TARGET;
+            config versions list/compare FROM TO/history NAME (release catalogs)
   instruments  Performance Schema instruments/consumers: gain, cost, SQL to run (--preset)
   report    Full analysis: every Server view once, ranked findings, sections (--html, --fail-on)
   replication  Replication channels and lag; skip one failed transaction; skip-loop until stopped
@@ -1103,7 +1163,7 @@ Subcommands:
   clone     CLONE INSTANCE from a MySQL donor into the recipient (in place or --data-directory)
   profiles  List saved connection profiles; set type/read-only; forget or delete one
   privileges  The connection's effective privileges and, per action, allowed, denied or not verifiable
-  accounts  Users and roles: list, show, create, drop, rename, lock, unlock, expire, password,
+  accounts  Compare SOURCE TARGET; export SIDE --account USER@HOST; users and roles: list, show, create, drop, rename, lock, unlock, expire, password,
             grant, revoke, role grant/revoke/default (writes confirm, re-read and are audited)
   audit     Local audit trail of server writes: list, export (JSON/CSV), purge
   compare   Compare before/after EXPLAIN JSON files (--digest/--json for agents)
@@ -1146,6 +1206,7 @@ Subcommands:
         "--no-collect-variables", action="store_true", dest="no_collect_variables",
         help="Disable SHOW SESSION VARIABLES collection (enabled by default).",
     )
+    parser.add_argument("--hide-literals", action="store_true", help="Replace literal values with ? in shared plan HTML and JSON.")
     # ---- Sidecar flags ----
     sidecar_grp = parser.add_argument_group("Sidecar (machine-readable output)")
     sidecar_grp.add_argument(
@@ -1288,6 +1349,9 @@ Subcommands:
             live_artifacts = _capture_artifacts(imported)
             if not args.query and not args.query_file and imported.get("query"):
                 args.query = imported["query"]
+    if args.hide_literals:
+        from .parser import hide_plan_json_literals
+        json_text = hide_plan_json_literals(json_text)
     root = _parse_explain_input(json_text)
 
     # Detect output format from --output extension
@@ -1317,6 +1381,7 @@ Subcommands:
             colors=args.colors,
             inverted=args.inverted,
             alternate_json_href=alternate_href,
+            hide_literals=args.hide_literals,
         )
         _write_output(html, output_path, quiet=args.quiet)
         # Auto-emit the myteach bundle alongside so the in-report

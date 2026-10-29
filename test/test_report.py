@@ -26,7 +26,7 @@ from unittest import mock
 
 from _perf_replay import (PASSWORD, FakeFactory, FakeTime, ReplayConn, _Refused, batch, index_partition_keys,
                           replay as raw_replay, run_cli, run_main, simulated_index_partitioning)
-from myflames import cluster, discover, report, server_checks, ui
+from myflames import cluster, discover, report, server_checks, ui, ddl_progress, dbops
 from myflames.connector import ConnectorError, MySQLConnection
 from myflames.perf_common import Server, _table_count_sql, scope_sql
 from test_connector import option_file_client
@@ -52,6 +52,14 @@ def replay(view, name, **kwargs):
     other new statement still fails through ReplayConn.
     """
     conn, data = raw_replay(view, name, **kwargs)
+    # Synthetic supplement to recordings made before DDL progress was read.
+    # Exact SQL only: no active stages, consumer off, stage instruments enabled.
+    engine = 'mariadb' if name.startswith('mariadb') else 'mysql'
+    if name != 'mariadb-11.4-default':  # P_S off reuses existing processlist columns.
+        conn.answers['/*myflames:sessions*/ ' + ddl_progress.progress_sql(engine)] = [batch(
+            [['consumer', None, n, 'NO' if n == 'events_stages_current' else 'YES'] for n in ddl_progress.CONSUMERS] +
+            [['instrument', None, n, 'YES', 'YES'] for n in ddl_progress.STAGES
+             if engine != 'mariadb' or not n.endswith('(flush)')])]
     for sql, answers in list(conn.answers.items()):
         if sql.startswith('/*myflames:tables*/ SELECT TABLE_SCHEMA, TABLE_NAME, ENGINE,'):
             where = sql.split(' WHERE ', 1)[1]
@@ -145,7 +153,12 @@ class ReportShape(unittest.TestCase):
             body = sql[match.end():]
             self.assertRegex(body, READ_FORMS, sql)
             if match.group(1) != 'discover':
-                self.assertNotRegex(body, WRITE_WORDS, sql)
+                if body in (ddl_progress.progress_sql('mysql'), ddl_progress.progress_sql('mariadb')):
+                    # These exact SELECTs contain ALTER/INSERT/FLUSH only in
+                    # stage-name string literals, not as executable SQL.
+                    self.assertEqual(dbops.classify(body)['kind'], 'read')
+                else:
+                    self.assertNotRegex(body, WRITE_WORDS, sql)
             self.assertNotIn('authentication_string,', body)
             self.assertNotIn('Password', body)
 

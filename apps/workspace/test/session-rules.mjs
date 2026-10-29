@@ -61,6 +61,20 @@ test("legacy view names come from own entries only", () => {
   assert.equal(normalizeLab({ slow: { kind: "constructor" } }).slow.kind, "health");
 });
 
+test("a digest tab keeps its collapsed-list parameters, only among its fill names", () => {
+  const lab = normalizeLab({
+    tabs: [
+      { id: "a", name: "Top #3", sql: "SELECT * FROM t WHERE id IN (:p1) AND d > :p2", parameters: "{}",
+        fill: ["p1", "p2"], fill_note: "Fill in p1 and p2.", fill_lists: ["p1", "p1", "p9", 7, "x"] },
+      { id: "b", name: "No fill", sql: "SELECT 1", parameters: "{}", fill_lists: ["p1"] },
+    ],
+  });
+  assert.deepEqual(lab.tabs[0].fill_lists, ["p1"], "unknown, repeated and non-text names are dropped");
+  assert.equal("fill_lists" in lab.tabs[1], false, "no fill, no lists");
+  assert.equal(sameLab(lab, normalizeLab({ ...lab, tabs: [{ ...lab.tabs[0], fill_lists: undefined }, lab.tabs[1]] })), false,
+    "a change of the list names is an edit");
+});
+
 test("tab ids are cut to 100 characters before they are deduplicated", () => {
   const stem = "t".repeat(100);
   const lab = normalizeLab({

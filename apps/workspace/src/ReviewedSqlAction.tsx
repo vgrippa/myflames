@@ -3,11 +3,17 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { api, type Connection, type EditorConfirmation, type EditorReply } from "./api";
 import { connectionKey } from "./binding";
+import { ConnectionTypeBand } from "./Connections";
 import { ActionStatus, ConfirmSheet, Disclosure, writeFailure, type ActionPhase } from "./kit";
 import { editorPrivilegeGate, PrivilegeGate, type EditorPrivilegePreview } from "./privileges";
 
 type Request = { tab_id: string; connection: Connection; sql: string; require_confirmation: true; wait: number; limit: number };
-type Review = EditorConfirmation & { typed_target?: string | null };
+type Review = EditorConfirmation & {
+  typed_target?: string | null;
+  /** An ALTER's review: the predicted algorithm (alter_algorithm.py). */
+  alter_preflight?: { prediction?: { predicted: boolean; summary: string | null; text: string | null;
+    reason: string } | null } | null;
+};
 type Action = {
   request: Request; key: string; label: string; warning: string; phase: "review" | "confirm" | "running" | "unknown" | "done";
   confirmation?: Review; reply?: EditorReply; message: string; error: boolean;
@@ -212,7 +218,9 @@ export function ReviewedSqlProvider({ connection, disabled, onComplete, children
       else if (!current.current && active?.phase === "done") setActive(null);
     } }}>
     <span ref={anchor} style={{ display: "none" }} />{children}
-    {active?.confirmation && !active.left && <ConfirmSheet title={`${active.label}?`} description={active.confirmation.text}
+    {active?.confirmation && !active.left && <ConfirmSheet
+      band={<ConnectionTypeBand connection={active.request.connection} type={active.confirmation.connection_type} />}
+      title={`${active.label}?`} description={active.confirmation.text}
       busy={active.phase !== "confirm"} busyLabel="Sending…"
       onLeave={active.sent ? leave : undefined}
       leaveText="It may still be running on the server. Close does not stop it; the outcome shows under the toolbar."
@@ -223,6 +231,13 @@ export function ReviewedSqlProvider({ connection, disabled, onComplete, children
         <div><dt>Type</dt><dd>{active.confirmation.connection_type}</dd></div></dl>
       {!compatible(active) && <p role="alert">The active connection or its policy changed. Cancel this review and prepare it again.</p>}
       {active.warning && <p className="hint">{active.warning}</p>}
+      {active.confirmation.alter_preflight?.prediction && (() => {
+        const prediction = active.confirmation.alter_preflight!.prediction!;
+        return <p className="hint" data-alter-prediction="">
+          Predicted: {prediction.predicted ? `${prediction.summary}. ${prediction.text}`
+            : `not predicted. ${prediction.reason.replace(/^Not predicted:?\s*/, "")}`}
+        </p>;
+      })()}
       {active.confirmation.warnings.map((warning, index) => <p className="hint" key={index}>{warning}</p>)}
       <pre className="sql-preview" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{active.confirmation.statements.join("\n\n")}</pre>
       {active.confirmation.typed_target != null && <label>Type {active.confirmation.typed_target}<input value={typed} onChange={event => setTyped(event.target.value)} /></label>}

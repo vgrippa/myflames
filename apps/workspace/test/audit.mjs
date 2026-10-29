@@ -147,17 +147,27 @@ with sqlite3.connect(sys.argv[1]) as db:
   await idle();
   assert.deepEqual(await rows(), ["ok", "error", "unknown", "pending", "refused", "declined", "declined"]);
   assert.deepEqual(await texts(`${table} thead th[data-col] .th-label`), [
-    "Time", "Status", "Connection", "Type", "Operation", "Statements", "Error", "Duration",
+    "Time", "Status", "Operation", "Connection", "Type", "Statements", "Error", "Duration",
   ]);
   assert.match(await text(`${view} .summary-line`), /^7 records · newest first · Kept 90 days$/);
   const row = (id) => `${table} tr[data-row-key="${id}"]`;
-  assert.match(await text(row(ids.ok)), /Done\s*Shop primary\s*Production\s*Kill connection\s*KILL CONNECTION 93/);
+  assert.match(await text(row(ids.ok)), /Done\s*Kill connection\s*Shop primary\s*Production\s*KILL CONNECTION 93/);
   // The cell drops the myflames tag; its tooltip and the inspector keep the statement as stored.
   assert.equal(await page.$eval(`${row(ids.ok)} td[data-col="statements"] .cell-name`, (e) => e.title), "/*myflames:kill*/ KILL CONNECTION 93");
-  assert.match(await text(row(ids.error)), /Failed\s*Shop primary.*Kill query.*1095: ERROR 1095 \(HY000\): You are not owner of thread 94/);
-  assert.match(await text(row(ids.unknown)), /Outcome unknown\s*Reports\s*Development\s*Kill connection.*2013/);
-  assert.match(await text(row(ids.pending)), /Not finished\s*root@127\.0\.0\.1:3310\s*Production/);
-  assert.match(await text(row(ids.refused)), /Refused\s*Reports\s*Development · Read-only/);
+  assert.match(await text(row(ids.error)), /Failed\s*Kill query\s*Shop primary.*1095: ERROR 1095 \(HY000\): You are not owner of thread 94/);
+  assert.match(await text(row(ids.unknown)), /Outcome unknown\s*Kill connection\s*Reports\s*Development.*2013/);
+  assert.match(await text(row(ids.pending)), /Not finished\s*Kill connection\s*root@127\.0\.0\.1:3310\s*Production/);
+  // Type and Read-only are two pills, never one truncating string.
+  const refusedPills = await page.$$eval(`${row(ids.refused)} td[data-col="type"] .type-tag`, (els) =>
+    els.map((e) => {
+      const box = e.getBoundingClientRect();
+      const cell = e.closest("td").getBoundingClientRect();
+      return { text: e.textContent, fits: box.right <= cell.right + 1 };
+    }));
+  assert.deepEqual(refusedPills, [{ text: "Development", fits: true }, { text: "Read-only", fits: true }], "both pills fit their cell");
+  // With records listed, the About ⓘ sits in the summary line, not alone in the toolbar.
+  assert.ok(await page.$(`${view} .summary-line button[aria-label="About Audit log"]`));
+  assert.equal(await page.$(`${view} .view-toolbar button[aria-label="About Audit log"]`), null);
   // Statements as stored: the password never reaches the page.
   assert.match(await text(row(ids.declined)), /IDENTIFIED BY '\[redacted\]'/);
   assert.equal(await page.evaluate(() => document.body.textContent.includes("hunter2")), false);
@@ -219,9 +229,31 @@ with sqlite3.connect(sys.argv[1]) as db:
     return dt?.nextElementSibling?.textContent;
   }, name);
   assert.equal(await field("Kill mode"), "connection");
-  assert.equal(await field("Action"), "confirm");
-  assert.equal(await field("Object kind"), "risky");
-  assert.equal(await field("Category"), "kill");
+  // Stored keys read as words: the policy's confirm, risky, kill and
+  // production, and the timeout outcome, each with the stored key on hover.
+  assert.equal(await field("Action"), "Requires confirmation");
+  assert.equal(await field("Object kind"), "Risky");
+  assert.equal(await field("Category"), "Kill");
+  assert.equal(await field("Outcome"), "Timed out");
+  assert.equal(await page.evaluate(() => {
+    const dt = [...document.querySelectorAll(".view-inspector .inspector-fields dt")].find((e) => e.textContent === "Outcome");
+    return dt?.nextElementSibling?.querySelector("span")?.title;
+  }), 'Stored as "timeout"');
+  // The policy names the type the write was judged by, labeled apart from the
+  // connection's own type; a difference is explained.
+  assert.equal(await field("Judged as"), "Production");
+  assert.match(inspector, /The connection is Development; this write was judged as Production\./);
+  // Times are local, with the stored UTC value on hover (as in the table).
+  const attempted = await page.evaluate(() => {
+    const dt = [...document.querySelectorAll(".view-inspector .inspector-fields dt")].find((e) => e.textContent === "Attempted");
+    const span = dt?.nextElementSibling?.querySelector("span");
+    return { title: span?.title || "", text: span?.textContent || "" };
+  });
+  assert.match(attempted.title, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+\+00:00 \(UTC\)$/);
+  assert.notEqual(attempted.text.includes("(UTC)"), true, "the visible time is local, as in the table");
+  // The statement carries its Copy.
+  const copy = await page.$eval('.view-inspector .audit-statement button[aria-label^="Copy statement"]', (e) => e.textContent);
+  assert.equal(copy, "Copy");
   const label = await page.evaluateHandle(() =>
     [...document.querySelectorAll(".view-inspector .inspector-fields dt")].find((e) => e.textContent === "Connection ID"),
   );
@@ -247,7 +279,7 @@ with sqlite3.connect(sys.argv[1]) as db:
   await page.waitForFunction(() => !document.querySelector(".view-inspector"));
 
   // 5. DataTable contract: the Columns menu hides and shows a column.
-  await page.click(`${table} .table-columns-button`);
+  await page.click(`button[aria-label="Columns of Audit records"]`);
   await page.waitForSelector('[role=dialog][aria-label="Columns of Audit records"]');
   await page.click('[role=dialog][aria-label="Columns of Audit records"] input[data-col="error"]');
   assert.equal(await page.$(`${table} th[data-col="error"]`), null);

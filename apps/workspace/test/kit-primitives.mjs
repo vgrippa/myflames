@@ -51,6 +51,15 @@ const bundle = await build({ stdin: { resolveDir: path.join(here, '../src'), loa
           columns={[{ key: 'text', label: 'Text', render: r => r.text }]} selection={{ key: 'copyable', select() {} }}
           rowContextMenu={() => [{ label: 'Inspect row', onClick() {} }, { label: 'Unavailable action', disabled: true, hint: 'Read-only connection', onClick() {} }]} />
       </div>
+      <section id="gutter-fixture">
+        {[false, true].map(actions => <DataTable key={String(actions)} label={'Gutter ' + actions}
+          rows={[{id:'duration', value:'906.0 ms'}]} rowKey={r => r.id}
+          rowAction={actions ? () => <button className="row-more" aria-label="Duration actions">…</button> : undefined}
+          columns={[
+            {key:'name',label:'Statement',flex:true,minWidth:160,render:()=> 'SELECT * FROM customer_orders'},
+            {key:'duration',label:'Duration',num:true,sort:()=>906,render:r=>r.value}
+          ]} />)}
+      </section>
       <div id="busy-look">
         <Checkbox className="busy-check" checked={false} busy onChange={() => {}}>Busy switch</Checkbox>
         <Checkbox className="idle-check" checked={false} onChange={() => {}}>Idle switch</Checkbox>
@@ -63,7 +72,7 @@ const bundle = await build({ stdin: { resolveDir: path.join(here, '../src'), loa
   }
   createRoot(document.getElementById('root')).render(<Demo />);
 ` }, bundle: true, platform: 'browser', format: 'iife', write: false, jsx: 'automatic', loader: { '.css': 'empty' } });
-const css = (await Promise.all(['style.css', 'kit.css'].map(file => readFile(path.join(here, '../src', file), 'utf8')))).join('\n');
+const css = (await Promise.all(['style.css', 'kit.css'].map(file => readFile(path.join(here, '../src', file), 'utf8')))).join('\n') + '\n#gutter-fixture { max-width: 1000px; }';
 if (process.argv.includes('--compile-only')) { console.log('kit-primitives browser fixture compiled; interactions not run'); process.exit(0); }
 const browser = await puppeteer.launch({ headless: 'shell' });
 try {
@@ -89,6 +98,41 @@ try {
   await page.locator('.popover button').click();
   await page.waitForFunction(() => !document.querySelector('.popover'));
   assert.equal(await page.$$eval('.split-button button', els => els.every(e => e.disabled)), true);
+  // The permanent Columns gutter is disjoint from the scroll viewport at
+  // every scroll offset. At the right end, both the last header and its
+  // right-aligned unit fit before the menu. Exercise row actions too.
+  for (const theme of ['light', 'dark']) for (const width of [1440, 720]) {
+    await page.emulateMediaFeatures([{name:'prefers-color-scheme',value:theme}]);
+    await page.setViewport({width,height:width===1440?900:600});
+    for (const actions of [false,true]) {
+      const region = '[aria-label="Gutter ' + actions + '"]';
+      const selector = region + ' th[data-col="name"] [role="separator"]';
+      for (const wide of [false,true]) {
+        await page.focus(selector);
+        await page.keyboard.press(wide ? 'End' : 'Home');
+        await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))));
+        const measurements = await page.$eval(region, wrap => {
+          const frame=wrap.closest('.data-table-frame'), menu=frame.querySelector('.table-columns-cell');
+          const last=wrap.querySelector('th[data-col="duration"]'), value=wrap.querySelector('td[data-col="duration"]');
+          const end=wrap.scrollWidth-wrap.clientWidth, samples=[];
+          for (const offset of [0,end/2,end]) {
+            wrap.scrollLeft=offset;
+            samples.push({viewportRight:wrap.getBoundingClientRect().right,menuLeft:menu.getBoundingClientRect().left});
+          }
+          const range=document.createRange();range.selectNodeContents(value);
+          return {end,samples,lastRight:last.getBoundingClientRect().right,menuLeft:menu.getBoundingClientRect().left,
+            valueRight:range.getBoundingClientRect().right,cellRight:value.getBoundingClientRect().right,
+            clipped:value.scrollWidth>value.clientWidth};
+        });
+        assert.equal(measurements.end>0,wide,JSON.stringify({width,actions,wide,measurements}));
+        for (const sample of measurements.samples) assert.ok(sample.viewportRight<=sample.menuLeft+1,JSON.stringify(sample));
+        assert.ok(measurements.lastRight<=measurements.menuLeft+1,JSON.stringify(measurements));
+        assert.ok(measurements.valueRight<=measurements.cellRight+1,JSON.stringify(measurements));
+        assert.equal(measurements.clipped,false,'the duration keeps its ms unit');
+      }
+    }
+  }
+  await page.setViewport({width:1000,height:900});
   const handle = '.split-pane-handle';
   await page.focus(handle);
   await page.keyboard.press('ArrowDown');

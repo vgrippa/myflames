@@ -270,21 +270,21 @@ try {
   await page.waitForFunction(() => !document.querySelector(".view-inspector"));
   assert.equal(await page.$eval(`${view} .data-table-wrap[aria-label="Transactions"]`, (e) => e.scrollWidth - e.clientWidth), 0,
     "Transactions fit at 1440 px");
-  await page.click(`${view} table[aria-label="Transactions"] .table-columns-button`);
+  await page.click(`${view} button[aria-label="Columns of Transactions"]`);
   assert.deepEqual(await page.$$eval('.popover input[data-col=structs], .popover input[data-col=iso]', (els) => els.map((e) => e.checked)), [false, false]);
   await page.click('.popover input[data-col=iso]');
   await page.keyboard.press("Escape");
   await page.waitForSelector(`${view} th[data-col=iso]`);
   assert.match(await text(`${view} table[aria-label="Transactions"] tbody`), /REPEATABLE READ/, "Columns shows isolation");
-  await page.click(`${view} table[aria-label="Transactions"] .table-columns-button`);
+  await page.click(`${view} button[aria-label="Columns of Transactions"]`);
   await page.click('.popover input[data-col=iso]');
   await page.keyboard.press("Escape");
   assert.equal(await page.$(`${view} th[data-col=iso]`), null, "Columns can hide isolation explicitly");
-  await page.click(`${view} table[aria-label="Transactions"] .table-columns-button`);
+  await page.click(`${view} button[aria-label="Columns of Transactions"]`);
   await page.click('.popover input[data-col=structs]');
   await page.keyboard.press("Escape");
   await page.waitForSelector(`${view} th[data-col=structs]`);
-  await page.click(`${view} table[aria-label="Transactions"] .table-columns-button`);
+  await page.click(`${view} button[aria-label="Columns of Transactions"]`);
   await page.click('.popover .columns-reset');
   await page.keyboard.press("Escape");
   assert.equal(await page.$(`${view} th[data-col=structs]`), null, "Reset turns Lock structs off again");
@@ -297,6 +297,12 @@ try {
   assert.doesNotMatch(rootText, /KILL QUERY/, "an idle blocker has no statement to stop");
   assert.match(rootText, /To end it, run this yourself in a SQL client/);
   assert.match(rootText, /not running a statement, so there is no plan to show/);
+  // Transaction once (its section; the id is ID) and one age, from one read:
+  // Open for (INNODB_TRX), not also the process list's idle time a second apart.
+  assert.match(rootText, /TransactionID1913StateRUNNINGOpen for7 min 52 s/);
+  assert.equal((rootText.match(/Transaction/g) || []).length, 1, rootText);
+  assert.deepEqual(rootText.match(/\d+ min \d+ s/g), ["7 min 52 s"]);
+  assert.match(rootText, /Root blockerIdle in transactionroot@localhost/);
   assert.equal(await page.$('.view-inspector [aria-label^="Show plan"]'), null);
   await assertPrivilege(page, '.view-inspector [aria-label="Kill blocker: connection 23"]', "unknown");
   assert.equal((await page.$$('.view-inspector [aria-label="Kill blocker: connection 23"]')).length, 1);
@@ -477,6 +483,8 @@ try {
   await openBlocker();
   await page.locator(killButton).click();
   await page.waitForSelector("dialog.kill-dialog[open]");
+  assert.equal(await page.$eval("dialog.kill-dialog .connection-type-band", (e) => e.dataset.connectionType), "production");
+  assert.match(await text("dialog.kill-dialog .connection-type-band"), /^Production\s*·\s*Local MySQL \(127\.0\.0\.1:3306\)$/);
   const dialogText = await text("dialog.kill-dialog");
   assert.match(dialogText, /End connection 53\?/);
   assert.match(dialogText, /Connection\s*53/);
@@ -740,6 +748,30 @@ try {
   // Narrow viewport: tables scroll inside their container, never the page.
   mocks["/api/live/locks"] = { status: 200, body: mysql };
   await reload();
+  // The 720 px window: the blocking tree fits its frame. The lock a session
+  // waits for wraps instead of being cut before its table, Wait stays in
+  // view, and Statement (shown in the inspector) steps aside.
+  await page.setViewport({ width: 720, height: 600 });
+  await page.waitForFunction((v) => getComputedStyle(document.querySelector(`${v} .lock-tree th.tree-statement`)).display === "none", {}, view);
+  const narrowTree = await page.$eval(`${view} .lock-tree`, (wrap) => {
+    const frame = wrap.getBoundingClientRect();
+    return {
+      overflow: wrap.scrollWidth - wrap.clientWidth,
+      cells: [...wrap.querySelectorAll("tbody tr")].map((row) => {
+        const cell = row.querySelector("td.cell-flex");
+        const span = cell.querySelector(".cell-truncate");
+        return { text: cell.textContent, cut: !!span && span.scrollWidth > span.clientWidth + 1,
+          inside: cell.getBoundingClientRect().right <= frame.right + 1,
+          wait: row.querySelector("td.num").getBoundingClientRect().right <= frame.right + 1 };
+      }),
+    };
+  });
+  assert.equal(narrowTree.overflow, 0, "the blocking tree does not scroll sideways at 720 px");
+  for (const cell of narrowTree.cells) assert.ok(!cell.cut && cell.inside && cell.wait, JSON.stringify(cell));
+  assert.ok(narrowTree.cells.some((c) => /^row lock X,REC_NOT_GAP \(record only\) on lk\.t index PRIMARY \[1\]$/.test(c.text)));
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth), 0);
+  await page.setViewport({ width: 1440, height: 1000 });
+  await page.waitForFunction((v) => getComputedStyle(document.querySelector(`${v} .lock-tree th.tree-statement`)).display !== "none", {}, view);
   await show("rows");
   await page.setViewport({ width: 390, height: 844 });
   await new Promise((r) => setTimeout(r, 200));

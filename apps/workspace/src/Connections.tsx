@@ -5,17 +5,39 @@ import { createContext, useContext, useEffect, useId, useRef, useState } from "r
 import { createPortal } from "react-dom";
 import { api, type Connection, type ConnectionType, type Profile, type SecretStore } from "./api";
 import { Icon } from "./components";
-import { connectionKey } from "./binding";
+import { connectionKey, connectionLabel, hostHasSpace, sshKey, trimPasted, trimPastedEnd } from "./binding";
 import { ActionButton, ActionStatus, Checkbox, ConfirmSheet, DataTable, InfoPopover, InspectorContext, Popover, closePopovers,
   SearchField, Segmented, Select, ViewLayout, useFocusScope, type Column } from "./kit";
 import { actionLabel, privilegeResult, usePrivileges } from "./privileges";
 import { defaultConnection, relativeTime, SSL_MODES, type SessionConnection } from "./session";
 
-/** connection/test: the version, and the product the server names in @@version_comment. */
-type ConnectionTestResult = { version: string; engine?: string; flavor?: string; product?: string };
+/** connection/test: the version, the product named in @@version_comment, and the bounded database list. */
+type ConnectionTestResult = {
+  version: string;
+  engine?: string;
+  flavor?: string;
+  product?: string;
+  schemas?: string[];
+  databases?: string[];
+  databases_truncated?: boolean;
+  databases_error?: string;
+  /** "Through SSH host bastion" for a test that went through an SSH tunnel. */
+  through_ssh?: string;
+};
+const SYSTEM_DATABASES = new Set(["mysql", "sys", "performance_schema", "information_schema"]);
+const TYPE_DATABASE_OPTION = "__type_database__";
+const SHOW_SYSTEM_DATABASES_OPTION = "__show_system_databases__";
+const HIDE_SYSTEM_DATABASES_OPTION = "__hide_system_databases__";
+function isSystemDatabase(name: string) {
+  return SYSTEM_DATABASES.has(name.trim().toLowerCase());
+}
 /** "8.4.11", "11.8.9-MariaDB-log" (they name themselves), "Percona Server 8.4.11-11". */
 function testedServer(r: ConnectionTestResult) {
   return r.flavor === "percona" && r.product ? `${r.product} ${r.version}` : r.version;
+}
+/** "Connected · 8.4.11", with " · Through SSH host bastion" through SSH. */
+function testedText(r: ConnectionTestResult) {
+  return `Connected · ${testedServer(r)}${r.through_ssh ? ` · ${r.through_ssh}` : ""}`;
 }
 
 /** The connection the Query editor and Server send requests to. The password
@@ -39,23 +61,74 @@ export function passwordStatus(p?: Profile) {
     ? `Password ${storedIn(p.secret_backend, p.secret_backend_label)}`
     : "No saved password";
 }
-/** The non-secret fields of a connection or saved connection, in session order. */
+/** The non-secret fields of a connection or saved connection, in session
+ * order. Spaces pasted around the host or CA path, or after the database,
+ * are dropped as the server drops them (live.connection_options). */
 export function connectionFields(c: Partial<Connection>): SessionConnection {
   return {
     name: c.name || "",
-    host: c.host || "",
+    host: trimPasted(c.host || ""),
     port: c.port || 3306,
     user: c.user || "",
-    database: c.database || "",
+    database: trimPastedEnd(c.database || ""),
     ssl_mode: c.ssl_mode || "PREFERRED",
-    ssl_ca: c.ssl_ca || "",
+    ssl_ca: trimPasted(c.ssl_ca || ""),
     read_only: c.read_only === true,
+    ...sshFields(c),
   };
 }
-/** "analyst@127.0.0.1:3306" */
-export function connectionTarget(c: Pick<Connection, "user" | "host" | "port">) {
+/** The form's settings as they are sent: the same trimming as connectionFields.
+ * SSH user and port without an SSH host are sent too, so the server says what is missing. */
+function tidy(c: Connection): Connection {
+  const { ssh_host: _host, ssh_user: _user, ssh_port: _port, ...rest } = c;
+  const user = trimPasted(c.ssh_user || ""), port = Number(c.ssh_port) || 0;
+  return { ...rest, host: trimPasted(c.host || ""), database: trimPastedEnd(c.database || ""), ssl_ca: trimPasted(c.ssl_ca || ""),
+    ...sshFields(c), ...(user ? { ssh_user: user } : {}), ...(port ? { ssh_port: port } : {}) };
+}
+/**
+ * What the user meant by the text in the Host field: a host name or address
+ * without the spaces a paste brings along, or the parts of a pasted
+ * "host:port", "[IPv6]:port" or mysql:// / mariadb:// URL. Null when there is
+ * nothing to change.
+ */
+export function splitHost(text: string): { host: string; port?: number; user?: string; password?: string; database?: string } | null {
+  const value = trimPasted(text);
+  const url = /^(mysql|mariadb|mysqlx):\/\//i.test(value) ? (() => { try { return new URL(value); } catch { return null; } })() : null;
+  if (url) {
+    const decode = (s: string) => { try { return decodeURIComponent(s); } catch { return s; } };
+    const host = url.hostname.replace(/^\[(.*)\]$/, "$1");
+    if (!host) return null;
+    const database = decode(url.pathname.replace(/^\//, ""));
+    return {
+      host,
+      ...(url.port ? { port: Number(url.port) } : {}),
+      ...(url.username ? { user: decode(url.username) } : {}),
+      ...(url.password ? { password: decode(url.password) } : {}),
+      ...(database ? { database } : {}),
+    };
+  }
+  // One colon only: an IPv6 address has several and keeps them.
+  const pair = value.match(/^\[([0-9A-Fa-f:.]+(?:%[\w.-]+)?)\]:(\d{1,5})$/) || value.match(/^([^:\s[\]]+):(\d{1,5})$/);
+  if (pair && Number(pair[2]) >= 1 && Number(pair[2]) <= 65535) return { host: pair[1], port: Number(pair[2]) };
+  const bracketed = value.match(/^\[([0-9A-Fa-f:.]+(?:%[\w.-]+)?)\]$/);
+  if (bracketed) return { host: bracketed[1] };
+  return value === text ? null : { host: value };
+}
+/** "analyst@127.0.0.1:3306", or "analyst@127.0.0.1:3306 via bastion" through SSH. */
+export function connectionTarget(c: Pick<Connection, "user" | "host" | "port"> & Partial<Pick<Connection, "ssh_host">>) {
   if (!c.host) return "No connection";
-  return `${c.user ? `${c.user}@` : ""}${c.host}:${c.port}`;
+  const via = trimPasted(c.ssh_host || "");
+  return `${c.user ? `${c.user}@` : ""}${c.host}:${c.port}${via ? ` via ${via}` : ""}`;
+}
+/** Default name for a new connection: user@host (plus :port when port is not 3306). */
+export function defaultConnectionName(user: string, host: string, port: number): string {
+  const split = splitHost(host || "");
+  const h = split ? split.host : trimPasted(host || "");
+  const u = (split?.user ?? user ?? "").trim();
+  const p = split?.port ?? Number(port);
+  if (!h) return u;
+  const portSuffix = Number.isInteger(p) && p >= 1 && p <= 65535 && p !== 3306 ? `:${p}` : "";
+  return `${u ? `${u}@` : ""}${h}${portSuffix}`;
 }
 // ---- Write safety: Production, Development, Read-only (db-operations) ------
 
@@ -73,9 +146,11 @@ export type Safety = {
   /** False until the saved connections are loaded (the type is not known yet). */
   known: boolean;
 };
-/** Host, port, user and TLS settings, compared like workspace_store.ENDPOINT_FIELDS. */
+/** Host, port, user, TLS and SSH settings, compared like workspace_store.ENDPOINT_FIELDS. */
 function endpoint(c: Partial<Connection>) {
-  return JSON.stringify([c.host || "127.0.0.1", Number(c.port) || 3306, c.user || "", c.ssl_mode || "", c.ssl_ca || ""]);
+  const base = [trimPasted(c.host || "") || "127.0.0.1", Number(c.port) || 3306, c.user || "", c.ssl_mode || "", trimPasted(c.ssl_ca || "")];
+  const ssh = sshKey(c);
+  return JSON.stringify(ssh ? [...base, ssh] : base);
 }
 export function sameEndpoint(a: Partial<Connection>, b: Partial<Connection>) {
   return endpoint(a) === endpoint(b);
@@ -112,8 +187,10 @@ export function TypeDot({ type, readOnly }: { type: ConnectionType; readOnly?: b
   const label = readOnly ? `${TYPE_LABEL[type]}, read-only` : TYPE_LABEL[type];
   return <span className={`type-dot is-${readOnly ? "read-only" : type}`} role="img" aria-label={label} title={label} />;
 }
-/** Type and Read-only in a connection row. */
-function SafetyTags({ type, readOnly }: { type: ConnectionType; readOnly: boolean }) {
+/** Type and Read-only as two compact pills in a connection row or the Audit
+ * log. They never merge into one truncating string: a read-only Development
+ * connection keeps its teal pill and the Read-only outline beside it. */
+export function SafetyTags({ type, readOnly }: { type: ConnectionType; readOnly: boolean }) {
   return (
     <span className="safety-tags">
       <span className={`type-tag is-${type}`}>{TYPE_LABEL[type]}</span>
@@ -184,6 +261,69 @@ export function SafetyStatus({
   );
 }
 
+/** A thin decorative strip along the top edge of the window on places that send
+ * to the connection in use. Hidden from assistive technology; the type word
+ * stays in the window footer. */
+export function ConnectionTypeStrip({ safety }: { safety: Safety }) {
+  const state = !safety.known ? "production" : safety.read_only ? "read-only" : safety.type;
+  return <div className={`connection-type-strip is-${state}`} data-connection-strip={state} aria-hidden="true" />;
+}
+
+/** The band at the top of every write review sheet: names the connection's
+ * type in words and shows the reviewed connection target, colored with the
+ * same token as the top-edge strip. The target is connectionLabel's, so a
+ * connection through SSH reads "Prod (app@127.0.0.1:3306 via bastion)": the
+ * database host alone would name another server. */
+export function ConnectionTypeBand({
+  connection,
+  label,
+  type,
+  readOnly,
+}: {
+  connection?: {
+    name?: string | null;
+    host?: string | null;
+    port?: number | null;
+    user?: string | null;
+    ssl_mode?: string | null;
+    ssh_host?: string | null;
+    type?: ConnectionType | string | null;
+    read_only?: boolean | null;
+  } | null;
+  label?: string;
+  type?: string;
+  readOnly?: boolean;
+}) {
+  const rawType = type || connection?.type;
+  const resolvedType: ConnectionType = rawType === "development" ? "development" : "production";
+  const isReadOnly = readOnly ?? connection?.read_only === true;
+  const state = isReadOnly ? "read-only" : resolvedType;
+  const typeWord = isReadOnly ? `Read-only (${TYPE_LABEL[resolvedType]})` : TYPE_LABEL[resolvedType];
+  const full = connection?.host
+    ? {
+        name: connection.name || undefined,
+        host: connection.host,
+        port: connection.port || 3306,
+        user: connection.user || "",
+        ssl_mode: connection.ssl_mode || "",
+        ssh_host: connection.ssh_host || "",
+      }
+    : null;
+  const targetText = full
+    ? full.name
+      ? connectionLabel(full)
+      : label || connectionLabel(full)
+    : label || "No connection";
+  return (
+    <div className={`connection-type-band is-${state}`} data-connection-type={state}>
+      <span className="connection-type-band-dot" aria-hidden="true" />
+      <strong>{typeWord}</strong>
+      <span className="connection-type-band-sep" aria-hidden="true">·</span>
+      <span className="connection-type-band-target" title={targetText}>{targetText}</span>
+    </div>
+  );
+}
+
 /** What a request sends: the active settings, its typed password, and the
  * saved connection id so the server can fill a remembered password, with the
  * type and read-only flag it is judged by (binding.ts connectionKey). */
@@ -214,8 +354,8 @@ type RowTest = { identity: string; seq: number } & ({ state: "testing" } | { sta
 
 /**
  * The Connections section of Home: saved connections as rows, and a form to
- * add or edit one. Save connection asks about a duplicate name and about the
- * typed password; a successful Test connection offers to save the password.
+ * add or edit one. A duplicate name is refused inline; Save connection asks
+ * about the typed password; a successful Test connection offers to save it.
  */
 export function Connections({
   profiles,
@@ -227,6 +367,8 @@ export function Connections({
   onActiveDeleted,
   loading = false,
   loadError = "",
+  addRequest = 0,
+  onAddHandled,
 }: {
   profiles: Profile[];
   secretStore: SecretStore | null;
@@ -240,11 +382,20 @@ export function Connections({
   loadError?: string;
   /** Clear both settings and typed credentials after removing the active row. */
   onActiveDeleted: () => void;
+  /** Above zero: New connection… was chosen elsewhere (picker, palette); open
+   * the Add connection form, then call onAddHandled so it opens only once. */
+  addRequest?: number;
+  onAddHandled?: () => void;
 }) {
   // null: the form is closed. "": a new connection. Otherwise the id being edited.
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<Connection>(blank);
   const [schemas, setSchemas] = useState<string[]>([]);
+  const [schemasError, setSchemasError] = useState("");
+  const [showSystemSchemas, setShowSystemSchemas] = useState(false);
+  const [typingSchema, setTypingSchema] = useState(false);
+  const schemaInputRef = useRef<HTMLInputElement>(null);
+  const nameEditedRef = useRef(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [testing, setTesting] = useState(false);
@@ -267,10 +418,9 @@ export function Connections({
   const useGen = useRef(0);
   const choice = () => JSON.stringify([useGen.current, activeRef.current.id, activeRef.current.fields]);
   const rowSeq = useRef(0);
-  // Save connection asks about a duplicate name, then about the password.
-  // `target` undefined = the connection being edited (or a new one); "" = new.
+  // Save connection asks whether to keep the typed password. `target`
+  // undefined = the connection being edited (or a new one); "" = new.
   const [savePrompt, setSavePrompt] = useState<null | {
-    duplicate?: Profile;
     askPassword: boolean;
     target?: string;
   }>(null);
@@ -320,21 +470,40 @@ export function Connections({
   const savedPassword = !!profile?.has_saved_password;
   const usingSaved = savedPassword && !draft.password;
   const formConnection: Connection = editingId
-    ? { ...draft, profile_id: editingId }
-    : draft;
+    ? { ...tidy(draft), profile_id: editingId }
+    : tidy(draft);
+  const hostProblem = hostHasSpace(draft.host || "") ? "A host name or IP address cannot contain spaces." : "";
+  const portProblem = Number.isInteger(draft.port) && draft.port >= 1 && draft.port <= 65535 ? "" : "Enter a port from 1 to 65535.";
+  const trimmedName = (draft.name || "").trim();
+  const duplicateProfile = trimmedName
+    ? profiles.find(
+        (p) =>
+          p.id !== editingId &&
+          !deletedIds.includes(p.id) &&
+          (p.name || "").trim().toLowerCase() === trimmedName.toLowerCase(),
+      )
+    : undefined;
+  const nameProblem = duplicateProfile
+    ? `A saved connection named ${(duplicateProfile.name || "").trim()} already exists.`
+    : "";
+  const userSchemas = schemas.filter((s) => !isSystemDatabase(s));
+  const systemSchemas = schemas.filter((s) => isSystemDatabase(s));
+  const visibleSchemas = showSystemSchemas ? [...userSchemas, ...systemSchemas] : userSchemas;
+  const showSchemaSelect = schemas.length > 0 && !typingSchema && !schemasError;
   const canRemember = !!secretStore?.available;
   const movedFromDevelopment = !!devFor && devFor.key !== endpoint(draft);
   const shownType: ConnectionType = devFor && !movedFromDevelopment ? "development" : "production";
   /** Development for the endpoint of *c* (null: Production). */
   const developmentFor = (c: Partial<Connection>) => ({
     key: endpoint(c),
-    label: `${connectionTarget({ user: c.user || "", host: c.host || "", port: c.port || 3306 })}${c.ssl_mode ? ` (TLS ${c.ssl_mode})` : ""}`,
+    label: `${connectionTarget({ user: c.user || "", host: c.host || "", port: c.port || 3306, ssh_host: c.ssh_host })}${c.ssl_mode ? ` (TLS ${c.ssl_mode})` : ""}`,
   });
 
   function openForm(p?: Profile, fields?: SessionConnection) {
     formGen.current++;
     draftGen.current++;
     const source = p || fields;
+    nameEditedRef.current = !!source;
     const key = p?.id || (fields === active.fields ? "active" : "");
     setCursor(key);
     setSelected(key ? [key] : []);
@@ -343,11 +512,14 @@ export function Connections({
     setDraft(
       source
         ? { ...connectionFields(source), password: fields === active.fields ? active.password : "", type: p?.type === "development" ? "development" : "production" }
-        : blank(),
+        : (() => { const b = blank(); return { ...b, name: defaultConnectionName(b.user || "", b.host || "", b.port || 3306) }; })(),
     );
     setSavePrompt(null);
     setOfferSave(false);
     setSchemas([]);
+    setSchemasError("");
+    setShowSystemSchemas(false);
+    setTypingSchema(false);
     setStatus("");
     setError("");
     if (!sheet) window.setTimeout(() => nameField.current?.focus());
@@ -359,13 +531,47 @@ export function Connections({
     setSavePrompt(null);
     setOfferSave(false);
   }
+  // New connection… from the picker or the palette.
+  useEffect(() => {
+    if (!addRequest) return;
+    openForm();
+    onAddHandled?.();
+  }, [addRequest]);
   function chooseType(type: ConnectionType) {
     setDevFor(type === "development" ? developmentFor(draft) : null);
   }
+  /** Leaving Host: drop pasted spaces and move a pasted port, user, password
+   * or database (host:port, [IPv6]:port, a mysql:// URL) to their fields. */
+  function tidyHost() {
+    const parts = splitHost(draft.host || "");
+    if (!parts) return;
+    const moved: string[] = [];
+    edit("host", parts.host);
+    if (parts.port !== undefined && parts.port !== draft.port) { edit("port", parts.port); moved.push("port"); }
+    if (parts.user !== undefined) { edit("user", parts.user); moved.push("user"); }
+    if (parts.password !== undefined) { edit("password", parts.password); moved.push("password"); }
+    if (parts.database !== undefined) { edit("database", parts.database); moved.push("schema"); }
+    if (moved.length) {
+      statusFromTest.current = false;
+      setStatus(`Moved the ${moved.join(", ").replace(/, ([^,]*)$/, " and $1")} from Host to ${moved.length === 1 ? "its field" : "their fields"}.`);
+    }
+  }
   function edit<K extends keyof Connection>(key: K, value: Connection[K]) {
-    setDraft((c) => ({ ...c, [key]: value }));
+    if (key === "name") nameEditedRef.current = true;
+    setDraft((c) => {
+      const next = { ...c, [key]: value };
+      if (!editingId && !nameEditedRef.current && (key === "host" || key === "user" || key === "port")) {
+        next.name = defaultConnectionName(next.user || "", next.host || "", next.port || 3306);
+      }
+      return next;
+    });
     // Type and Read-only do not change what a test connects to.
     if (key === "type" || key === "read_only") return;
+    if (key !== "name" && key !== "database") {
+      setSchemas([]);
+      setSchemasError("");
+      setTypingSchema(false);
+    }
     draftGen.current++;
     if (editingId) setRowTests(tests => {
       const next = { ...tests };
@@ -397,10 +603,11 @@ export function Connections({
     const gen = formGen.current;
     const chosen = choice();
     const startedOn = activeRef.current.id;
-    const { password, ...rest } = draft;
+    const { password, ...rest } = tidy(draft);
+    const resolvedName = (rest.name || "").trim() || defaultConnectionName(rest.user || "", rest.host || "", rest.port || 3306);
     // The type is always sent: the one on screen (a moved Development
     // connection shows and saves Production until Development is chosen again).
-    const settings = { ...rest, type: shownType, read_only: draft.read_only === true };
+    const settings = { ...rest, name: resolvedName, type: shownType, read_only: draft.read_only === true };
     try {
       const target = profiles.find((p) => p.id === targetId);
       const storeTyped = withPassword && !!password;
@@ -437,24 +644,18 @@ export function Connections({
       setSaving(false);
     }
   }
-  /** Save connection: confirm a duplicate name, then ask whether to keep the
+  /** Save connection: refuse a duplicate name, then ask whether to keep the
    * typed password, so the choice is never a checkbox that is easy to miss. */
   function startSave() {
     setError("");
     setOfferSave(false);
-    const name = (draft.name || "").trim().toLowerCase();
-    const duplicate =
-      !editingId && name
-        ? profiles.find((p) => (p.name || "").trim().toLowerCase() === name)
-        : undefined;
+    if (nameProblem || hostProblem || portProblem) {
+      if (nameProblem) nameField.current?.focus();
+      return;
+    }
     const askPassword = !!draft.password && canRemember;
-    if (duplicate || askPassword) setSavePrompt({ duplicate, askPassword });
+    if (askPassword) setSavePrompt({ askPassword });
     else void saveProfile(false);
-  }
-  /** Duplicate name resolved: replace (its id) or save as new (""). */
-  function chooseTarget(target: string) {
-    if (savePrompt?.askPassword) setSavePrompt({ ...savePrompt, target });
-    else void saveProfile(false, target);
   }
   async function testForm() {
     // The answer belongs to these settings: it is dropped once the fields
@@ -468,14 +669,18 @@ export function Connections({
     // The result line belongs to this test from now on.
     if (statusFromTest.current) { statusFromTest.current = false; setStatus(""); }
     try {
-      const r = await api<ConnectionTestResult & { schemas: string[] }>(
+      const r = await api<ConnectionTestResult>(
         "connection/test",
         { connection: formConnection },
       );
       if (draftGen.current !== gen || testSeq.current !== seq) return;
-      setSchemas(r.schemas);
+      const dbs = Array.isArray(r.databases) ? r.databases : Array.isArray(r.schemas) ? r.schemas : [];
+      setSchemas(dbs);
+      setSchemasError(r.databases_error || "");
+      setTypingSchema(false);
+      setShowSystemSchemas(!!draft.database && isSystemDatabase(draft.database));
       statusFromTest.current = true;
-      setStatus(`Connected · ${testedServer(r)}`);
+      setStatus(testedText(r));
       if (tested.editing && !savedPassword && tested.password && canRemember)
         setOfferSave(true);
     } catch (e) {
@@ -571,7 +776,7 @@ export function Connections({
     setRowTests((t) => ({ ...t, [key]: { state: "testing", identity, seq } }));
     try {
       const r = await api<ConnectionTestResult>("connection/test", { connection });
-      put({ state: "ok", text: `Connected · ${testedServer(r)}`, identity, seq });
+      put({ state: "ok", text: testedText(r), identity, seq });
     } catch (e) {
       put({ state: "failed", text: (e as Error).message, identity, seq });
     }
@@ -612,32 +817,29 @@ export function Connections({
         setSelected(ids => checked ? [...new Set([...ids, row.key])] : ids.filter(id => id !== row.key));
       }}><span className="visually-hidden">Select {row.fields.name || connectionTarget(row.fields)}</span></Checkbox>
     ) },
-    { key: "name", label: "Name", primary: true, flex: true, width: 160, minWidth: 160, sort: row => row.fields.name,
+    { key: "name", label: "Name", primary: true, width: 140, minWidth: 120, sort: row => row.fields.name,
       render: row => <span className="cell-name">
         <TypeDot type={row.profile?.type || "production"} readOnly={row.fields.read_only} />
         <strong className="cell-truncate" title={row.fields.name || connectionTarget(row.fields)}>{row.fields.name || connectionTarget(row.fields)}</strong>
-        <span className="connection-type-short" aria-hidden="true">
-          {row.fields.read_only ? "Read-only" : row.profile?.type === "development" ? "Dev" : "Prod"}
+        <span className={`connection-type-short${row.fields.read_only ? " is-read-only" : ""}`} aria-hidden="true">
+          {row.profile?.type === "development" ? "Dev" : "Prod"}
         </span>
       </span> },
-    { key: "type", label: "Type", width: 132, sort: row => row.profile?.type || "production", render: row => (
-      <span className={`type-tag is-${row.fields.read_only ? "read-only" : row.profile?.type || "production"}`}
-        title={`${TYPE_LABEL[row.profile?.type || "production"]}${row.fields.read_only ? " · Read-only" : ""}`}>
-        {row.profile?.type === "development" ? "Development" : "Production"}{row.fields.read_only ? " · Read-only" : ""}
-      </span>
+    { key: "type", label: "Type", width: 184, minWidth: 184, sort: row => row.profile?.type || "production", render: row => (
+      <SafetyTags type={row.profile?.type || "production"} readOnly={row.fields.read_only} />
     ) },
-    { key: "endpoint", label: "user@host:port", width: 200, sort: row => connectionTarget(row.fields),
+    { key: "endpoint", label: "user@host:port", flex: true, width: 200, minWidth: 140, sort: row => connectionTarget(row.fields),
       render: row => <span className="cell-truncate" title={connectionTarget(row.fields)}>{connectionTarget(row.fields)}</span> },
-    { key: "schema", label: "Default schema", width: 140, sort: row => row.fields.database,
+    { key: "schema", label: "Default database", width: 140, sort: row => row.fields.database,
       render: row => row.fields.database
         ? <span className="cell-truncate" title={row.fields.database}>{row.fields.database}</span>
-        : <span className="cell-truncate cell-empty" title="No default schema">—<span className="visually-hidden">No default schema</span></span> },
-    { key: "password", label: "Password", width: 96, sort: row => row.profile?.has_saved_password ? 1 : 0,
+        : <span className="cell-truncate cell-empty" title="No default database">—<span className="visually-hidden">No default database</span></span> },
+    { key: "password", label: "Password", width: 88, sort: row => row.profile?.has_saved_password ? 1 : 0,
       render: row => <span className="cell-truncate" title={passwordStatus(row.profile)}>{row.profile?.has_saved_password ? "Saved" : "Not saved"}</span> },
-    { key: "last-used", label: "Last used", width: 140, title: "Usage observed during this window; earlier use is not recorded.",
+    { key: "last-used", label: "Last used", width: 96, title: "Usage observed during this window; earlier use is not recorded.",
       sort: row => lastUsed.get(row.key) || "", render: row => row.profile?.id === active.id || row.key === "active" ? <span title="In use">In use</span>
         : lastUsed.has(row.key) ? <time className="cell-truncate" title={new Date(lastUsed.get(row.key)!).toLocaleString()} dateTime={lastUsed.get(row.key)}>{relativeTime(lastUsed.get(row.key)!)}</time>
-          : <span className="cell-truncate" title="Usage before this window is not recorded.">Not recorded</span> },
+          : <span className="cell-empty" title="Not used in this window. Earlier use is not recorded.">—<span className="visually-hidden">Not used in this window</span></span> },
   ];
   function rowMenu(row: ConnectionRow) {
     const name = row.fields.name || connectionTarget(row.fields);
@@ -680,15 +882,25 @@ export function Connections({
               <input
                 ref={nameField}
                 value={draft.name}
+                aria-invalid={nameProblem ? true : undefined}
+                aria-describedby={nameProblem ? "connection-name-problem" : undefined}
                 onChange={(e) => edit("name", e.target.value)}
               />
+              {nameProblem && <span className="form-error" id="connection-name-problem" role="alert">{nameProblem}</span>}
             </label>
             <label className="field">
               Host
               <input
                 value={draft.host}
+                spellCheck={false}
+                autoCapitalize="off"
+                autoCorrect="off"
+                aria-invalid={hostProblem ? true : undefined}
+                aria-describedby={hostProblem ? "connection-host-problem" : undefined}
                 onChange={(e) => edit("host", e.target.value)}
+                onBlur={tidyHost}
               />
+              {hostProblem && <span className="form-error" id="connection-host-problem" role="alert">{hostProblem}</span>}
             </label>
             <div className="field-pair">
               <label className="field">
@@ -697,9 +909,12 @@ export function Connections({
                   type="number"
                   min="1"
                   max="65535"
-                  value={draft.port}
-                  onChange={(e) => edit("port", +e.target.value)}
+                  value={draft.port || ""}
+                  aria-invalid={portProblem ? true : undefined}
+                  aria-describedby={portProblem ? "connection-port-problem" : undefined}
+                  onChange={(e) => edit("port", e.target.value === "" ? 0 : +e.target.value)}
                 />
+                {portProblem && <span className="form-error" id="connection-port-problem" role="alert">{portProblem}</span>}
               </label>
               <label className="field">
                 User
@@ -754,17 +969,63 @@ export function Connections({
               )}
             </div>
             <label className="field">
-              Schema
-              <input
-                list="schema-list"
-                value={draft.database}
-                onChange={(e) => edit("database", e.target.value)}
-              />
+              Default database
+              {showSchemaSelect ? (
+                <Select
+                  label="Default database"
+                  value={draft.database}
+                  options={[
+                    ["", "None"],
+                    ...(draft.database && !visibleSchemas.includes(draft.database)
+                      ? [[draft.database, draft.database] as [string, string]]
+                      : []),
+                    ...visibleSchemas.map((s): [string, string] => [s, s]),
+                    ...(systemSchemas.length > 0
+                      ? [
+                          (showSystemSchemas
+                            ? [HIDE_SYSTEM_DATABASES_OPTION, "Hide system databases"]
+                            : [SHOW_SYSTEM_DATABASES_OPTION, "Show system databases"]) as [string, string],
+                        ]
+                      : []),
+                    [TYPE_DATABASE_OPTION, "Type a name…"],
+                  ]}
+                  onChange={(v) => {
+                    if (v === SHOW_SYSTEM_DATABASES_OPTION) {
+                      setShowSystemSchemas(true);
+                      return;
+                    }
+                    if (v === HIDE_SYSTEM_DATABASES_OPTION) {
+                      setShowSystemSchemas(false);
+                      return;
+                    }
+                    if (v === TYPE_DATABASE_OPTION) {
+                      setTypingSchema(true);
+                      window.setTimeout(() => schemaInputRef.current?.focus());
+                      return;
+                    }
+                    edit("database", v);
+                  }}
+                />
+              ) : (
+                <input
+                  ref={schemaInputRef}
+                  aria-label="Default database"
+                  list="schema-list"
+                  value={draft.database}
+                  aria-describedby={schemasError ? "connection-schema-hint" : undefined}
+                  onChange={(e) => edit("database", e.target.value)}
+                />
+              )}
               <datalist id="schema-list">
-                {schemas.map((s) => (
+                {visibleSchemas.map((s) => (
                   <option key={s} value={s} />
                 ))}
               </datalist>
+              {schemasError && (
+                <span className="hint" id="connection-schema-hint">
+                  Could not read the database list ({schemasError}). Type a database name instead.
+                </span>
+              )}
             </label>
           </div>
           <div className="connection-safety" role="group" aria-labelledby="connection-type-label">
@@ -821,6 +1082,7 @@ export function Connections({
               </label>
             </div>
           </details>
+          <SshSettings draft={draft} edit={edit} formKey={formGen.current} />
           <div className="button-row">
             {/* Busy buttons keep focus (aria-disabled): a spinner, a
                 present-tense label, and a second click sends nothing. */}
@@ -836,16 +1098,28 @@ export function Connections({
               primary
               busy={saving}
               busyLabel="Saving…"
-              disabled={!saving && (busy || !!savePrompt || deleting)}
+              disabled={!saving && (busy || !!savePrompt || deleting || !!nameProblem)}
               onClick={startSave}
             >
               Save connection
             </ActionButton>
             <button
               className="button"
-              onClick={() =>
-                use(editingId || "", connectionFields(draft), draft.password || "")
-              }
+              disabled={saving}
+              onClick={closeForm}
+            >
+              Cancel
+            </button>
+            <button
+              className="button"
+              onClick={() => {
+                // The server refuses these too (Test, Save); Use must not
+                // quietly connect to another port or host instead.
+                const ssh = sshProblem(draft);
+                if (hostProblem || portProblem || ssh) { setError(hostProblem || portProblem || ssh); return; }
+                const resolvedName = (draft.name || "").trim() || defaultConnectionName(draft.user || "", draft.host || "", draft.port || 3306);
+                use(editingId || "", connectionFields({ ...draft, name: resolvedName }), draft.password || "");
+              }}
             >
               {editingId ? "Use" : "Use without saving"}
             </button>
@@ -858,36 +1132,6 @@ export function Connections({
               ref={savePromptRef}
               tabIndex={-1}
             >
-              {savePrompt.duplicate && savePrompt.target === undefined ? (
-                <>
-                  <p id="save-prompt-title">
-                    <strong>
-                      A connection named “{savePrompt.duplicate.name}” already
-                      exists.
-                    </strong>{" "}
-                    Replace it with these settings, or save a new one?
-                  </p>
-                  <div className="button-row">
-                    <button
-                      className="button primary"
-                      autoFocus
-                      disabled={saving}
-                      onClick={() => chooseTarget(savePrompt.duplicate!.id)}
-                    >
-                      Replace
-                    </button>
-                    <button className="button" disabled={saving} onClick={() => chooseTarget("")}>
-                      Save as new
-                    </button>
-                    <button
-                      className="text-button"
-                      onClick={() => setSavePrompt(null)}
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </>
-              ) : (
                 <>
                   <p id="save-prompt-title">
                     <strong>Also save the password?</strong> It will be{" "}
@@ -922,7 +1166,6 @@ export function Connections({
                     </button>
                   </div>
                 </>
-              )}
             </div>
           )}
           {offerSave && profile && !savedPassword && draft.password && (
@@ -954,7 +1197,7 @@ export function Connections({
           )}
           {editingId && profile && (
             <button
-              className="text-button delete-connection"
+              className="text-button danger delete-connection"
               disabled={saving || deleting}
               onClick={() => askDelete([{ key: profile.id, fields: connectionFields(profile), profile }])}
             >
@@ -1067,6 +1310,7 @@ export function ConnectionPicker({
   onPassword,
   onPasswordCommit,
   onManage,
+  onAdd,
   onAccount,
   note,
 }: {
@@ -1078,6 +1322,8 @@ export function ConnectionPicker({
   onPassword: (password: string) => void;
   onPasswordCommit?: () => void;
   onManage: () => void;
+  /** New connection…: Home's Add connection form. */
+  onAdd?: () => void;
   /** Opens Account and privileges for the connection in use. */
   onAccount?: () => void;
   /** A one-off remark, such as a connection that no longer exists. */
@@ -1114,6 +1360,13 @@ export function ConnectionPicker({
           <span className="connection-pill-name">{name}</span>
           <span className="picker-target">{active.fields.name ? ` · ${connectionTarget(active.fields)}` : ""}</span>
           {hasConnection && safety.known && <SafetyTags type={safety.type} readOnly={safety.read_only} />}
+          {/* Where the pills yield to width, a short type word stays beside the
+              dot (the Popover label names the type in full). */}
+          {hasConnection && safety.known && (
+            <span className={`connection-pill-type is-${safety.type}${safety.read_only ? " is-read-only" : ""}`} aria-hidden="true">
+              {safety.type === "development" ? "Dev" : "Prod"}
+            </span>
+          )}
           <span className="down-chevron"><Icon name="disclosure" size={12} /></span>
         </>}>
         <div className="picker-panel">
@@ -1130,11 +1383,17 @@ export function ConnectionPicker({
           {hasConnection && safety.known && <SafetyTags type={safety.type} readOnly={safety.read_only} />}
           <p className={`picker-state${saved && !active.password ? " saved" : ""}`}>{state}</p>
           {showPassword ? <label className="field">Session password
-            <input ref={passwordField} type="password" className="picker-password" aria-label={`Password for ${name}`}
-              placeholder={saved ? "Saved password" : "Password"} autoComplete="current-password"
-              value={active.password} onChange={(e) => onPassword(e.target.value)}
-              onBlur={() => commitPassword()}
-              onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); commitPassword(); } }} />
+            <span className="picker-password-row">
+              <input ref={passwordField} type="password" className="picker-password" aria-label={`Password for ${name}`}
+                placeholder={saved ? "Saved password" : "Password"} autoComplete="current-password"
+                value={active.password} onChange={(e) => onPassword(e.target.value)}
+                onBlur={() => commitPassword()}
+                onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); commitPassword(); } }} />
+              <button type="button" className="button picker-password-set" disabled={active.password === committedPassword.current}
+                title="Use this password for this window"
+                onClick={() => commitPassword()}>Set</button>
+            </span>
+            <span className="hint">Set, Enter or leaving the field applies it for this window. It is never saved.</span>
           </label> : <button className="button" onClick={() => setOverride(true)}>Use a different password</button>}
           {saved && showPassword && <button className="button" onClick={() => { onPassword(""); commitPassword(""); setOverride(false); }}>Use saved password</button>}
           </>}
@@ -1142,9 +1401,11 @@ export function ConnectionPicker({
           {note && <p className="hint picker-note" role="status">{note}</p>}
           {hasConnection && privileges?.report?.account && <p className="hint picker-account">Connected as {privileges.report.account}</p>}
           <div className="picker-actions">
+            {onAdd && <button type="button" className="button picker-new" onClick={() => { closePopovers(); onAdd(); }}>
+              <Icon name="plus" size={14} /> New connection…</button>}
+            <button type="button" className="button picker-manage" onClick={() => { closePopovers(); onManage(); }}>Manage connections…</button>
             {hasConnection && privileges && onAccount && <button type="button" className="button picker-account-button" aria-haspopup="dialog"
               onClick={() => { closePopovers(); onAccount(); }}>Account and privileges…</button>}
-            <button type="button" className="button picker-manage" onClick={() => { closePopovers(); onManage(); }}>Manage connections…</button>
           </div>
         </div>
       </Popover>
@@ -1205,5 +1466,119 @@ export function AccountPrivilegesSheet({ name, hasConnection, onClose }: {
       </div>
     </dialog>,
     document.body,
+  );
+}
+
+// ---- Connect through SSH (myflames/ssh_tunnel.py) ----------------------------
+//
+// A connection can reach its server through an SSH tunnel that the backend
+// opens with the system ssh and the user's own ~/.ssh/config, keys and agent.
+// Host and Port then name the database as the SSH host reaches it.
+
+/** The SSH fields of a connection as they are sent (pasted spaces dropped),
+ * or none for a direct connection: SSH user and port count only with a host. */
+export function sshFields(c: Partial<Connection>): Pick<Connection, "ssh_host" | "ssh_user" | "ssh_port"> {
+  const host = trimPasted(c.ssh_host || "");
+  if (!host) return {};
+  const user = trimPasted(c.ssh_user || ""), port = Number(c.ssh_port) || 0;
+  return { ssh_host: host, ...(user ? { ssh_user: user } : {}), ...(port ? { ssh_port: port } : {}) };
+}
+/** What is wrong with the SSH fields, as the server checks them
+ * (ssh_tunnel.ssh_fields), or "". */
+export function sshProblem(c: Partial<Connection>): string {
+  const host = trimPasted(c.ssh_host || ""), user = trimPasted(c.ssh_user || ""), port = Number(c.ssh_port) || 0;
+  if (!host) return user || port ? "Enter the SSH host, or clear SSH user and SSH port." : "";
+  if (host.includes("@")) return "Enter the SSH user in SSH user, not in SSH host.";
+  if (/[:/]/.test(host)) return "Enter only the SSH host name or alias in SSH host, and the port in SSH port.";
+  if (!/^[A-Za-z0-9_][A-Za-z0-9._-]{0,252}$/.test(host))
+    return "SSH host: letters, digits, dots, hyphens and underscores, not starting with a hyphen.";
+  if (user && !/^[A-Za-z0-9_][A-Za-z0-9._@-]{0,127}$/.test(user))
+    return "SSH user: letters, digits, dots, hyphens, underscores or @, not starting with a hyphen or @.";
+  if (port && !(Number.isInteger(port) && port >= 1 && port <= 65535)) return "Enter an SSH port from 1 to 65535, or leave it empty.";
+  return "";
+}
+/** ssh/hosts (ssh-hosts-1.0): Host aliases of ~/.ssh/config, and whether ssh is installed. */
+type SshHosts = { hosts: string[]; ssh_found: boolean; message: string };
+
+/** Connect through SSH: the SSH host (a pick list of the Host aliases in
+ * ~/.ssh/config, or any host name), SSH user and SSH port. Open while the
+ * form's connection goes through SSH. */
+function SshSettings({ draft, edit, formKey }: {
+  draft: Connection;
+  edit: <K extends keyof Connection>(key: K, value: Connection[K]) => void;
+  /** Changes when the form opens another connection. */
+  formKey: number;
+}) {
+  const through = trimPasted(draft.ssh_host || "");
+  const [open, setOpen] = useState(!!through);
+  const [hosts, setHosts] = useState<SshHosts | null>(null);
+  const asked = useRef(false);
+  const listId = useId(), problemId = useId(), hintId = useId();
+  const problem = sshProblem(draft);
+  // Another connection in the form: open only when it goes through SSH.
+  useEffect(() => setOpen(!!trimPasted(draft.ssh_host || "")), [formKey]);
+  // The aliases are read once, when the section is first opened.
+  useEffect(() => {
+    if (!open || asked.current) return;
+    asked.current = true;
+    api<SshHosts>("ssh/hosts", {}).then(setHosts, () => setHosts({ hosts: [], ssh_found: true, message: "" }));
+  }, [open]);
+  return (
+    // No class: a plain <details> gets the shared disclosure chevron (kit.css), like TLS settings.
+    <details data-section="ssh" open={open} onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}>
+      <summary>Connect through SSH{through ? ` · ${through}` : ""}</summary>
+      <div className="connection-fields">
+        <label className="field">
+          SSH host
+          <input
+            list={listId}
+            value={draft.ssh_host || ""}
+            spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
+            placeholder="Host alias or host name"
+            aria-invalid={problem ? true : undefined}
+            aria-describedby={problem ? `${problemId} ${hintId}` : hintId}
+            onChange={(e) => edit("ssh_host", e.target.value)}
+          />
+          <datalist id={listId}>
+            {(hosts?.hosts || []).map((h) => (
+              <option key={h} value={h} />
+            ))}
+          </datalist>
+        </label>
+        {/* Port before user, like the database's Port and User above. */}
+        <div className="field-pair">
+          <label className="field">
+            SSH port
+            <input
+              type="number"
+              min="1"
+              max="65535"
+              value={draft.ssh_port || ""}
+              placeholder="22"
+              onChange={(e) => edit("ssh_port", e.target.value === "" ? 0 : +e.target.value)}
+            />
+          </label>
+          <label className="field">
+            SSH user
+            <input
+              value={draft.ssh_user || ""}
+              spellCheck={false}
+              autoCapitalize="off"
+              autoCorrect="off"
+              placeholder="From ~/.ssh/config"
+              onChange={(e) => edit("ssh_user", e.target.value)}
+            />
+          </label>
+        </div>
+      </div>
+      {problem && <span className="form-error" id={problemId} role="alert">{problem}</span>}
+      <p className="hint" id={hintId}>
+        Uses your SSH keys or agent. Password sign-in to SSH is not supported.
+        {through ? " Host and Port above are the database as the SSH host reaches it, often 127.0.0.1." : ""}
+      </p>
+      {hosts && !hosts.ssh_found && <p className="hint safety-hint is-warning" role="note">{hosts.message}</p>}
+    </details>
   );
 }

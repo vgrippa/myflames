@@ -356,11 +356,15 @@ def _attribution(conn, server, runs, workers, cancel, password):
         out["fix"] = "Missing: %s. Instruments shows the statements that turn them on." % "; ".join(top["missing"])
         return out
     tables = _attribution_tables((runs.get("indexes") or {}).get("report"))
-    jobs = [("full_join", lambda c: discover.top_report(c, ATTRIBUTION_LIMIT, None, "full_join"))]
+    # The attribution needs no whole-server ranking (server_context): its
+    # lists read exactly the statements SHARED_METADATA_SQL describes.
+    jobs = [("full_join", lambda c: discover.top_report(c, ATTRIBUTION_LIMIT, None, "full_join",
+                                                        server_context=False))]
     for entry in tables:
         name = (entry["schema"], entry["table"])
         jobs.append(("table:%s.%s" % name,
-                     lambda c, name=name: discover.top_report(c, ATTRIBUTION_LIMIT, None, "no_index", name)))
+                     lambda c, name=name: discover.top_report(c, ATTRIBUTION_LIMIT, None, "no_index", name,
+                                                              server_context=False)))
     # The inner guard checks again after a metadata waiter acquires the
     # context lock; cancellation must not start a queued server read.
     results = _run_all(_AttributionContext(_Guarded(conn, cancel)), jobs, workers, cancel, password)

@@ -43,6 +43,16 @@ try {
   assert.deepEqual(await page.$$eval(`${view} .innodb-section`, (els) => els.map((e) => e.id.replace("innodb-", ""))),
     mysql.sections.map((s) => s.key));
   assert.match(await text(`${section("transactions")} > summary`), /Transactions and purge\s*Problem/);
+  // Every section summary has the same gaps: title, status (a quiet OK and
+  // No threshold included) and summary sit 8 px apart, never run together.
+  const gaps = await page.$$eval(`${view} .innodb-section > summary`, (els) => els.map((e) => {
+    const title = e.querySelector(".innodb-section-title").getBoundingClientRect();
+    const pill = e.querySelector(".status-pill");
+    const line = e.querySelector(".innodb-section-summary").getBoundingClientRect();
+    return [pill.textContent, Math.round(pill.getBoundingClientRect().left - title.right), Math.round(line.left - pill.getBoundingClientRect().right)];
+  }));
+  assert.ok(gaps.some(([word]) => word === "OK") && gaps.some(([word]) => word === "Problem"), JSON.stringify(gaps));
+  for (const [word, before, after] of gaps) assert.deepEqual([before, after], [8, 8], `${word}: ${before} px before, ${after} px after`);
   assert.match(await text(`${section("transactions")} .innodb-section-summary`), /history list length/);
   assert.deepEqual(await page.$$eval(`${view} .innodb-section`, (els) => els.map((e) => e.open)),
     mysql.sections.map((s) => s.status === "watch" || s.status === "problem"), "only attention sections start expanded");

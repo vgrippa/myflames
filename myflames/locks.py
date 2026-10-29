@@ -2670,7 +2670,7 @@ def kill_session(conn, connection_id, mode="connection", expect=None, settle_s=0
     safety = (audit.safety if audit is not None else None) or dbops.connection_safety(connection=connection)
     if connection is None:
         connection = {key: getattr(conn, key, None) for key in
-                      ("host", "port", "user", "ssl_mode", "ssl_ca")}
+                      ("host", "port", "user", "ssl_mode", "ssl_ca", "ssh_host", "ssh_user", "ssh_port")}
         connection["profile_id"] = safety.get("profile_id")
     policy = dbops.decide(dbops.classify(statement), safety["type"], safety["read_only"],
                           safety.get("profile_name"))
@@ -2906,7 +2906,8 @@ def kill_cli(conn, connection_id, mode="connection", assume_yes=False, quiet=Fal
     stderr = stderr if stderr is not None else sys.stderr
     from . import dbops
     safety = (audit.safety if audit is not None else None) or dbops.connection_safety()
-    connection = {key: getattr(conn, key, None) for key in ("host", "port", "user", "ssl_mode", "ssl_ca")}
+    connection = {key: getattr(conn, key, None) for key in ("host", "port", "user", "ssl_mode", "ssl_ca",
+                                                             "ssh_host", "ssh_user", "ssh_port")}
     connection["profile_id"] = safety.get("profile_id")
     statement = KILL_TAG + ("KILL QUERY %d" if mode == "query" else "KILL CONNECTION %d") % connection_id
     decision = dbops.decide(dbops.classify(statement), safety["type"], safety["read_only"],

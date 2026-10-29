@@ -141,6 +141,7 @@ test("fill notice names the parameters and the collapsed lists", () => {
   assert.match(many, /cut off/);
   assert.match(many, /p1 to p3/);
   assert.match(many, /p2 replaces a collapsed list/);
+  assert.match(many, /give it a JSON list, such as \[1, 2\]\.$/, "a list binds several values");
   assert.match(
     fillNotice({ names: ["p1", "p2"], lists: [], reason: "placeholders" }),
     /p1 and p2/,

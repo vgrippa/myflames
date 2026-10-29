@@ -3,9 +3,10 @@
 // (tables, grouped lists, inspector) are in kit.tsx.
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { api, formatNumber, type Connection, type SchemaCatalog } from "./api";
-import { DataTable, Popover, Select, closePopovers } from "./kit";
+import { DataTable, InfoPopover, Popover, Select, closePopovers } from "./kit";
 import { durationText } from "./duration";
 import { connectionKey } from "./binding";
+import { useViewOnScreen } from "./viewOnScreen";
 import { Icon, type IconName } from "./components";
 import "./perf.css";
 
@@ -149,31 +150,73 @@ export function CopySql({ sql, label }: { sql: string; label: string }) {
   );
 }
 
+/** The schema a Server view reads with (Top statements, I/O): a choice of the
+ * databases of the connection in use, All schemas ("") first. When the list
+ * cannot be read, or lists none, a text field with the reason in its ⓘ. The
+ * value is the database name either way, so the read is the same. */
 export function SchemaField({
   value,
   onChange,
   disabled,
   id,
+  connection,
 }: {
   value: string;
   onChange: (value: string) => void;
   disabled?: boolean;
   id: string;
+  /** Its databases are listed (one cached read, only while the view is on screen). */
+  connection: Connection;
 }) {
+  const onScreen = useViewOnScreen();
+  const { catalog, error, loading } = useSchemaCatalog(connection, onScreen && !!(connection.host || connection.profile_id));
+  const hintId = useId();
+  const schemas = catalog?.schemas || [];
+  if (error || (catalog && !schemas.length)) {
+    const reason = `${error ? `Could not list databases (${error}).` : "The server listed no databases for this account."} Type a schema name, or leave it empty for all schemas.`;
+    return (
+      <div className="toolbar-field perf-schema">
+        <label htmlFor={id}>Schema</label>
+        <input
+          id={id}
+          value={value}
+          maxLength={64}
+          spellCheck={false}
+          autoCapitalize="off"
+          autoCorrect="off"
+          placeholder="All schemas"
+          aria-describedby={hintId}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.value.replace(/[\n\r\0]/g, ""))}
+        />
+        <span id={hintId} className="visually-hidden">{reason}</span>
+        <InfoPopover label="Why the schema is typed">
+          <p>{reason}</p>
+        </InfoPopover>
+      </div>
+    );
+  }
+  const chosen = value.trim();
+  const names = (system: boolean) => schemas.filter((s) => s.system === system).map((s) => s.name);
+  const user = names(false);
+  const system = names(true);
+  // A name the list does not have (restored with the workspace, or a link's) stays chosen.
+  const extra = chosen && !schemas.some((s) => s.name === chosen) ? chosen : "";
   return (
     <label className="toolbar-field perf-schema" htmlFor={id}>
       <span>Schema</span>
-      <input
-        id={id}
-        value={value}
-        maxLength={64}
-        spellCheck={false}
-        autoCapitalize="off"
-        autoCorrect="off"
-        placeholder="All schemas"
-        disabled={disabled}
-        onChange={(e) => onChange(e.target.value.replace(/[\n\r\0]/g, ""))}
-      />
+      <select id={id} className="select" value={chosen} disabled={disabled} aria-busy={loading || undefined}
+        onChange={(e) => onChange(e.target.value)}>
+        <option value="">All schemas</option>
+        {extra && <option value={extra}>{extra}</option>}
+        {user.map((name) => <option key={name} value={name}>{name}</option>)}
+        {system.length > 0 && (
+          <optgroup label="System databases">
+            {system.map((name) => <option key={name} value={name}>{name}</option>)}
+          </optgroup>
+        )}
+        {loading && !catalog && <option value="" disabled>Listing databases…</option>}
+      </select>
     </label>
   );
 }

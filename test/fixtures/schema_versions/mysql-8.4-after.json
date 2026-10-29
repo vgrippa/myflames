@@ -1,0 +1,232 @@
+{
+ "schema_version": "schema-snapshot-1.0",
+ "myflames_version": "3.3.0",
+ "taken_at": "2026-10-26T23:09:17.016601+00:00",
+ "database": "sv_b",
+ "server": {
+  "engine": "mysql",
+  "flavor": "mysql",
+  "server_product": "MySQL",
+  "server_version": "8.4.11",
+  "hostname": "9f534bddf63e",
+  "host": "127.0.0.1",
+  "port": 33584,
+  "lower_case_table_names": "0"
+ },
+ "connection": {},
+ "read_settings": {
+  "database": "information_schema",
+  "sql_mode": "",
+  "sql_quote_show_create": "1",
+  "show_create_table_verbosity": "OFF",
+  "show_gipk_in_create_table_and_information_schema": "ON",
+  "show_create_table_skip_secondary_engine": "OFF"
+ },
+ "coverage": {
+  "tables": {
+   "state": "complete",
+   "reason": ""
+  },
+  "routines": {
+   "state": "complete",
+   "reason": ""
+  },
+  "triggers": {
+   "state": "complete",
+   "reason": ""
+  },
+  "events": {
+   "state": "complete",
+   "reason": ""
+  }
+ },
+ "objects": [
+  {
+   "type": "database",
+   "name": "sv_b",
+   "character_set": "utf8mb4",
+   "collation": "utf8mb4_bin",
+   "ddl": "CREATE DATABASE `sv_b` /*!40100 DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin */ /*!80016 DEFAULT ENCRYPTION='N' */"
+  },
+  {
+   "type": "table",
+   "name": "audit",
+   "columns": {},
+   "ddl": "CREATE TABLE `audit` (\n  `id` bigint NOT NULL AUTO_INCREMENT,\n  `customer_id` int unsigned NOT NULL,\n  `at` datetime NOT NULL,\n  PRIMARY KEY (`id`),\n  KEY `k_cust` (`customer_id`),\n  CONSTRAINT `fk_audit_customer` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin"
+  },
+  {
+   "type": "table",
+   "name": "customers",
+   "columns": {
+    "status": [
+     "utf8mb4",
+     "utf8mb4_0900_ai_ci"
+    ],
+    "email": [
+     "utf8mb4",
+     "utf8mb4_0900_ai_ci"
+    ],
+    "phone": [
+     "utf8mb4",
+     "utf8mb4_0900_ai_ci"
+    ],
+    "name": [
+     "latin1",
+     "latin1_swedish_ci"
+    ],
+    "full_name": [
+     "utf8mb4",
+     "utf8mb4_0900_ai_ci"
+    ]
+   },
+   "ddl": "CREATE TABLE `customers` (\n  `id` int unsigned NOT NULL AUTO_INCREMENT,\n  `status` enum('a','b','c') NOT NULL DEFAULT 'a',\n  `email` varchar(255) NOT NULL COMMENT 'login',\n  `phone` varchar(20) DEFAULT NULL,\n  `name` varchar(80) CHARACTER SET latin1 COLLATE latin1_swedish_ci DEFAULT NULL,\n  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,\n  `full_name` varchar(200) GENERATED ALWAYS AS (concat(convert(`name` using utf8mb4),_utf8mb4' ',`email`)) VIRTUAL,\n  PRIMARY KEY (`id`),\n  UNIQUE KEY `uq_email` (`email`),\n  KEY `idx_created` (`created_at` DESC),\n  KEY `idx_name` (`name`(20)),\n  KEY `idx_status` (`status`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Customer accounts'"
+  },
+  {
+   "type": "table",
+   "name": "item_tags",
+   "columns": {
+    "tag": [
+     "utf8mb4",
+     "utf8mb4_0900_ai_ci"
+    ]
+   },
+   "ddl": "CREATE TABLE `item_tags` (\n  `item_id` bigint unsigned NOT NULL,\n  `tag` varchar(20) NOT NULL,\n  PRIMARY KEY (`item_id`,`tag`),\n  CONSTRAINT `fk_tag_item` FOREIGN KEY (`item_id`) REFERENCES `items` (`id`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci"
+  },
+  {
+   "type": "table",
+   "name": "items",
+   "columns": {
+    "label": [
+     "utf8mb4",
+     "utf8mb4_0900_ai_ci"
+    ]
+   },
+   "ddl": "CREATE TABLE `items` (\n  `id` bigint unsigned NOT NULL,\n  `label` varchar(40) NOT NULL,\n  PRIMARY KEY (`id`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci"
+  },
+  {
+   "type": "table",
+   "name": "logs",
+   "columns": {},
+   "ddl": "CREATE TABLE `logs` (\n  `id` int NOT NULL,\n  `at` date NOT NULL,\n  PRIMARY KEY (`id`,`at`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci\n/*!50100 PARTITION BY RANGE (year(`at`))\n(PARTITION p2025 VALUES LESS THAN (2026) ENGINE = InnoDB,\n PARTITION p2026 VALUES LESS THAN (2027) ENGINE = InnoDB,\n PARTITION p2027 VALUES LESS THAN (2028) ENGINE = InnoDB) */"
+  },
+  {
+   "type": "table",
+   "name": "notes",
+   "columns": {
+    "body": [
+     "latin1",
+     "latin1_swedish_ci"
+    ],
+    "title": [
+     "latin1",
+     "latin1_swedish_ci"
+    ]
+   },
+   "ddl": "CREATE TABLE `notes` (\n  `id` int NOT NULL,\n  `body` varchar(100) CHARACTER SET latin1 DEFAULT NULL,\n  `title` char(10) CHARACTER SET latin1 NOT NULL DEFAULT '',\n  PRIMARY KEY (`id`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin"
+  },
+  {
+   "type": "table",
+   "name": "orders",
+   "columns": {
+    "note": [
+     "utf8mb4",
+     "utf8mb4_0900_ai_ci"
+    ],
+    "currency": [
+     "utf8mb4",
+     "utf8mb4_0900_ai_ci"
+    ]
+   },
+   "ddl": "CREATE TABLE `orders` (\n  `id` bigint NOT NULL AUTO_INCREMENT,\n  `customer_id` int unsigned NOT NULL,\n  `total` decimal(12,2) NOT NULL,\n  `note` mediumtext,\n  `currency` char(3) NOT NULL DEFAULT 'USD',\n  `hidden_c` int DEFAULT NULL /*!80023 INVISIBLE */,\n  PRIMARY KEY (`id`),\n  KEY `fk_customer` (`customer_id`),\n  KEY `idx_note_hidden` (`customer_id`) /*!80000 INVISIBLE */,\n  KEY `idx_func` (((`total` * 2))),\n  FULLTEXT KEY `ft_note` (`note`),\n  CONSTRAINT `fk_orders_customer` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE RESTRICT\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci"
+  },
+  {
+   "type": "view",
+   "name": "v_big",
+   "character_set_client": "utf8mb4",
+   "collation_connection": "utf8mb4_0900_ai_ci",
+   "ddl": "CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`%` SQL SECURITY DEFINER VIEW `sv_b`.`v_big` AS select `sv_b`.`v_orders`.`id` AS `id`,`sv_b`.`v_orders`.`email` AS `email` from `sv_b`.`v_orders` where (`sv_b`.`v_orders`.`total` > 1000)"
+  },
+  {
+   "type": "view",
+   "name": "v_orders",
+   "character_set_client": "utf8mb4",
+   "collation_connection": "utf8mb4_0900_ai_ci",
+   "ddl": "CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`%` SQL SECURITY DEFINER VIEW `sv_b`.`v_orders` AS select `o`.`id` AS `id`,`c`.`email` AS `email`,`o`.`total` AS `total` from (`sv_b`.`orders` `o` join `sv_b`.`customers` `c` on((`c`.`id` = `o`.`customer_id`))) where (`o`.`total` > 10)"
+  },
+  {
+   "type": "procedure",
+   "name": "p_touch",
+   "sql_mode": "ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION",
+   "character_set_client": "utf8mb4",
+   "collation_connection": "utf8mb4_0900_ai_ci",
+   "database_collation": "utf8mb4_bin",
+   "ddl": "CREATE DEFINER=`root`@`%` PROCEDURE `p_touch`(IN cid INT)\nBEGIN\n  UPDATE customers SET name = 'touched' WHERE id = cid;\nEND"
+  },
+  {
+   "type": "function",
+   "name": "f_double",
+   "sql_mode": "ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION",
+   "character_set_client": "utf8mb4",
+   "collation_connection": "utf8mb4_0900_ai_ci",
+   "database_collation": "utf8mb4_0900_ai_ci",
+   "ddl": "CREATE DEFINER=`root`@`%` FUNCTION `f_double`(x INT) RETURNS int\n    DETERMINISTIC\nRETURN x * 2"
+  },
+  {
+   "type": "function",
+   "name": "f_triple",
+   "sql_mode": "ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION",
+   "character_set_client": "utf8mb4",
+   "collation_connection": "utf8mb4_0900_ai_ci",
+   "database_collation": "utf8mb4_bin",
+   "ddl": "CREATE DEFINER=`root`@`%` FUNCTION `f_triple`(x INT) RETURNS int\n    DETERMINISTIC\nRETURN x * 3"
+  },
+  {
+   "type": "trigger",
+   "name": "trg_bi",
+   "table": "orders",
+   "timing": "BEFORE",
+   "event": "INSERT",
+   "order": 2,
+   "sql_mode": "ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION",
+   "character_set_client": "utf8mb4",
+   "collation_connection": "utf8mb4_0900_ai_ci",
+   "database_collation": "utf8mb4_0900_ai_ci",
+   "ddl": "CREATE DEFINER=`root`@`%` TRIGGER `trg_bi` BEFORE INSERT ON `orders` FOR EACH ROW SET NEW.total = ROUND(NEW.total, 2)"
+  },
+  {
+   "type": "trigger",
+   "name": "trg_bi0",
+   "table": "orders",
+   "timing": "BEFORE",
+   "event": "INSERT",
+   "order": 1,
+   "sql_mode": "ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION",
+   "character_set_client": "utf8mb4",
+   "collation_connection": "utf8mb4_0900_ai_ci",
+   "database_collation": "utf8mb4_bin",
+   "ddl": "CREATE DEFINER=`root`@`%` TRIGGER `trg_bi0` BEFORE INSERT ON `orders` FOR EACH ROW SET NEW.currency = UPPER(NEW.currency)"
+  },
+  {
+   "type": "event",
+   "name": "ev_cleanup",
+   "sql_mode": "ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION",
+   "time_zone": "SYSTEM",
+   "character_set_client": "utf8mb4",
+   "collation_connection": "utf8mb4_0900_ai_ci",
+   "database_collation": "utf8mb4_bin",
+   "ddl": "CREATE DEFINER=`root`@`%` EVENT `ev_cleanup` ON SCHEDULE EVERY 2 DAY STARTS '2026-01-01 00:00:00' ON COMPLETION NOT PRESERVE DISABLE DO DELETE FROM logs WHERE at < '2000-01-01'"
+  }
+ ],
+ "notes": [],
+ "counts": {
+  "database": 1,
+  "table": 7,
+  "view": 2,
+  "procedure": 1,
+  "function": 2,
+  "trigger": 2,
+  "event": 1,
+  "unreadable": 0
+ },
+ "checksum": "sha256:86d346b265ce1c00ea25b20072f8d25d94017b1b9d24e5793aeaea0b64cc59d7"
+}

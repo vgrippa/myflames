@@ -6,9 +6,9 @@
 // process, which lists them again after a reload or a lost Start reply.
 import { useEffect, useRef, useState, type ComponentProps, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { privilegeResult, targetPrivilege, usePrivilege, usePrivileges } from "./privileges";
-import { download, recordDeclined, type Connection } from "./api";
+import { download, recordDeclined, type Connection, type Profile } from "./api";
 import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "./binding";
-import { TYPE_LABEL, useWritePolicy } from "./Connections";
+import { ConnectionTypeBand, TYPE_LABEL, useWritePolicy } from "./Connections";
 import { SchemaPicker, useSchemaCatalog } from "./PerfShared";
 import {
   ActionButton, ActionStatus, useSince, writeFailure, Checkbox, ConfirmSheet, DataTable, EmptyState, Fields, FormGrid, FormRow, InspectorSection,
@@ -51,6 +51,11 @@ const checkTone = (check: Verification): Tone => check.status === "passed" ? "ok
 const checkWord = (check: Verification) => check.status === "passed" ? "Passed" : check.status === "failed" ? "Failed" : "Not checked";
 const validInteger = (value: number, min: number, max: number) => Number.isInteger(value) && value >= min && value <= max;
 const VERSION = /^\d+\.\d+\.\d+$/;
+/** Restore's "New database…" choice (no database name contains NUL). */
+const NEW_DATABASE = "\u0000new";
+/** The donor TLS modes Clone offers: it always requires TLS. */
+const DONOR_TLS = ["REQUIRED", "VERIFY_CA", "VERIFY_IDENTITY"];
+type DonorFill = { id: string; name: string; host: string; port: number; user: string; ssl_mode: string; ssl_ca: string; raised: boolean };
 
 /** One upgrade finding's result: what the check found, or that it passed,
  * could not run, or was not checked (never a severity for a check that passed). */
@@ -151,7 +156,7 @@ function JobProgress({ bound, currentKey, cancelling, onCancel }: {
   </section>;
 }
 
-export function MaintenanceView({ connection, disabled, onBack, selection, section, onSection, memory, onMemory, targetVersions = [], missingPrivileges = {} }: {
+export function MaintenanceView({ connection, disabled, onBack, selection, section, onSection, memory, onMemory, targetVersions = [], missingPrivileges = {}, profiles = [] }: {
   connection: Connection; disabled: boolean; onBack?: () => void; selection: Selection;
   section: MaintenanceSection; onSection: (section: MaintenanceSection) => void;
   /** Server owns memory; never serialize this object into the workspace. */
@@ -159,6 +164,8 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   /** Optional version catalog supplied by the integrator. An exact custom
    * version is always available; the backend validates version/tool ranges. */
   targetVersions?: string[]; missingPrivileges?: MissingPrivileges;
+  /** Saved connections (no passwords): Clone's donor can be filled from one. */
+  profiles?: Profile[];
 }) {
   const reads = useConnectionReads(connection);
   const captureScope = useOpsScope(connection);
@@ -183,6 +190,8 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   const [directory, setDirectory] = useState("");
   const [restoreDirectory, setRestoreDirectory] = useState("");
   const [restoreSchema, setRestoreSchema] = useState("");
+  /** Restore into a database the list does not have (typed). */
+  const [restoreNew, setRestoreNew] = useState(false);
   const [existing, setExisting] = useState<"refuse" | "ignore" | "drop">("refuse");
   const [allowSource, setAllowSource] = useState(false);
   const [resume, setResume] = useState(false);
@@ -193,6 +202,8 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   // Neither the donor nor Prepared is ever passed to onMemory or onSection.
   const [donor, setDonor] = useState<Connection>({ name: "Donor", host: "", port: 3306, user: "", database: "", ssl_mode: "REQUIRED", password: "" });
   const [donorAddress, setDonorAddress] = useState("");
+  /** The saved connection the donor fields were last filled from. */
+  const [donorFill, setDonorFill] = useState<DonorFill | null>(null);
   const [cloneMode, setCloneMode] = useState<"in_place" | "directory">("in_place");
   const [dataDirectory, setDataDirectory] = useState("");
   const [prepared, setPrepared] = useState<Prepared | null>(null);
@@ -228,7 +239,6 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   currentKey.current = key;
   // Nothing reads while the view is off screen (viewOnScreen.ts).
   const onScreen = useViewOnScreen();
-  const catalog = useSchemaCatalog(connection, onScreen && section === "dump" && scope !== "instance");
   // The one chosen database's tables, read when it is chosen and Dump is on
   // screen. The chosen tables last while that database stays the only one.
   const oneSchema = scope === "schemas" && schemas.length === 1 ? schemas[0] : "";
@@ -238,6 +248,24 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   const unknownTables = tables.filter((name) => !loadedTables.has(name));
   const tableScope = !!oneSchema && tables.length > 0;
   const tools = memory.tools?.key === key ? memory.tools.report : null;
+  // Dump's databases, and Restore's Default database once its form is shown.
+  const catalog = useSchemaCatalog(connection, onScreen && ((section === "dump" && scope !== "instance") || (section === "restore" && !!tools)));
+  const restoreDatabases = (catalog.catalog?.schemas || []).filter((s) => !s.system).map((s) => s.name);
+  // The donor is another server: every saved connection but the one in use.
+  // Not one through SSH: CLONE runs from server to server, never through
+  // this computer's tunnel (the backend refuses it, lifecycle.refuse_clone_through_ssh).
+  const savedDonors = profiles.filter((p) => p.host && p.id !== connection.profile_id && !p.ssh_host);
+  const filledFrom = donorFill && donor.host === donorFill.host && donor.port === donorFill.port && donor.user === donorFill.user &&
+    (donor.ssl_mode || "REQUIRED") === donorFill.ssl_mode && (donor.ssl_ca || "") === donorFill.ssl_ca ? donorFill : null;
+  function fillDonor(id: string) {
+    const p = savedDonors.find((x) => x.id === id);
+    if (!p) return;
+    const fields = { host: p.host, port: p.port, user: p.user, ssl_mode: DONOR_TLS.includes(p.ssl_mode) ? p.ssl_mode : "REQUIRED", ssl_ca: p.ssl_ca || "" };
+    // Never a password: a remembered one stays in the secret store, and one
+    // typed earlier was for the donor these fields named before.
+    setDonor((d) => ({ ...d, ...fields, password: "" }));
+    setDonorFill({ id: p.id, name: p.name, raised: fields.ssl_mode !== p.ssl_mode, ...fields });
+  }
   const dumpToolName = tools?.offered.dump.find(name => !sqlDump || name !== "mysqlsh");
   const dumpTool = dumpToolName ? tools?.tools[dumpToolName] : undefined;
   const dumpCapabilities = tableScope ? dumpTool?.dump_table_capabilities : dumpTool?.dump_capabilities;
@@ -629,7 +657,21 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
         <div className="ops-target"><span>Restores into</span><strong>{connectionLabel(connection)}</strong></div>
         <FolderField key={`restore:${key}`} label="Dump folder" value={restoreDirectory} onChange={setRestoreDirectory} disabled={formDisabled} hint="A completed myflames dump with its checksummed manifest." />
         <details><summary>Options</summary>
-          <FormField label="Default database" value={restoreSchema} onChange={setRestoreSchema} hint="SQL dumps can name other databases; this does not confine the restore." />
+          {catalog.error ? (
+            <FormField label="Default database" value={restoreSchema} onChange={setRestoreSchema} placeholder="As in the dump"
+              hint={`Could not list databases (${catalog.error}). Type a name, or leave it empty. SQL dumps can name other databases; this does not confine the restore.`} />
+          ) : <>
+            <label className="ops-field"><span>Default database</span>
+              <Select label="Default database" value={restoreNew ? NEW_DATABASE : restoreSchema}
+                options={[["", "As in the dump"],
+                  ...(restoreSchema && !restoreNew && !restoreDatabases.includes(restoreSchema) ? [[restoreSchema, restoreSchema] as [string, string]] : []),
+                  ...restoreDatabases.map((name): [string, string] => [name, name]),
+                  [NEW_DATABASE, "New database…"]]}
+                onChange={(v) => { setRestoreNew(v === NEW_DATABASE); setRestoreSchema(v === NEW_DATABASE ? "" : v); }} />
+              <span className="hint">{catalog.loading ? "Listing databases…" : "SQL dumps can name other databases; this does not confine the restore."}</span>
+            </label>
+            {restoreNew && <FormField label="New database name" value={restoreSchema} onChange={setRestoreSchema} />}
+          </>}
           <label className="ops-field"><span>Existing objects</span><Select label="Existing objects" value={existing} options={[["refuse", "Stop if any exist"], ["ignore", "Skip existing (MySQL Shell only)"], ["drop", "Drop and recreate"]]} onChange={(v) => { if (v === "refuse" || v === "ignore" || v === "drop") setExisting(v); }} /></label>
           <Checkbox checked={allowSource} onChange={setAllowSource}>Allow restoring into the server the dump came from</Checkbox>
           <Checkbox checked={resume} onChange={setResume}>Resume an interrupted MySQL Shell load</Checkbox>
@@ -638,6 +680,13 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
       </>)}
       {section === "clone" && tools && (!tools.offered.clone ? <PrerequisiteGate>{tools.server.engine === "mariadb" ? "MariaDB has no clone plugin: copy a server with mariadb-backup on its host instead." : "Clone is not offered for this server version."}</PrerequisiteGate> : form(<>
         <div className="ops-target"><span>Recipient (the connection in use)</span><strong>{connectionLabel(connection)}</strong></div>
+        {savedDonors.length > 0 && <label className="ops-field"><span>Fill from saved connection</span>
+          <Select label="Fill from saved connection" value={filledFrom?.id || ""} onChange={fillDonor}
+            options={[["", "Choose a connection"], ...savedDonors.map((p): [string, string] => [p.id, `${p.name} · ${p.host}:${p.port}`])]} />
+          <span className="hint" aria-live="polite">{filledFrom
+            ? `Filled from ${filledFrom.name}${filledFrom.raised ? "; TLS set to Required, which clone needs" : ""}. Enter the password.`
+            : "Fills host, port, user and TLS, never a password."}</span>
+        </label>}
         <FormField label="Donor host" value={donor.host} onChange={(v) => setDonor({ ...donor, host: v })} />
         <label className="ops-field"><span>Donor port</span><NumberField min={1} max={65535} value={donor.port} onChange={(v) => setDonor({ ...donor, port: +v })} /></label>
         <FormField label="Donor user" value={donor.user} onChange={(v) => setDonor({ ...donor, user: v })} />
@@ -653,7 +702,9 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
       {shownPlan && <details className="ops-details"><summary>Planned commands and warnings</summary><Commands label="Planned commands" text={shownPlan.report.commands.join("\n")} />{shownPlan.report.warnings.map((line, i) => <p key={i}>{line}</p>)}</details>}
 
     </ViewLayout>
-    {sheet && !startLeft && <ConfirmSheet className="ops-confirm" eyebrow={sheet.report.operation.toUpperCase()}
+    {sheet && !startLeft && <ConfirmSheet className="ops-confirm"
+      band={<ConnectionTypeBand connection={pConnection(sheet)} label={sheet.label} />}
+      eyebrow={sheet.report.operation.toUpperCase()}
       title={sheet.report.operation === "dump" ? `Dump into the folder ${folderName(sheet.report.target)}?` : sheet.report.operation === "restore" ? `Restore into ${sheet.report.target}?` : `Clone into ${sheet.report.target}?`}
       description={sheet.report.operation === "dump" ? "The dump reads the server and writes only into the folder." : "This changes the server and cannot be undone."}
       busy={busy} busyLabel="Starting…" progress="Waiting for the server to start the job" onLeave={() => setStartLeft(true)}

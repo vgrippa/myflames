@@ -11,6 +11,8 @@ import { assertPrivilege, privilegeAnswer, load, open, pause, SERVER_GROUPS, WOR
 const active = await load("sessions-mysql-8.4-active.json");
 const all = await load("sessions-mysql-8.4.json");
 const mariadb = await load("sessions-mariadb-11.4.json");
+const ddlProgress = await load("ddl-progress.json");
+const instruments = await load("instruments-mysql-8.4.json");
 const noProcess = await load("sessions-mysql-8.4-noproc.json");
 // Synthetic identities supplement the older live recordings without rewriting them.
 for (const report of [active, all, noProcess]) report.server_identity = { server_uuid: "sessions-server-uuid" };
@@ -44,6 +46,7 @@ const kill = { status: 200, body: { schema_version: "kill-1.0", status: "killed"
 const h = await open("/api/live/sessions", "sessions", {
   "/api/live/explain-connection": { status: 200, body: plan },
   "/api/live/kill": kill,
+  "/api/live/instruments": { status: 200, body: instruments },
   // A cancelled Kill is recorded in the audit trail as declined.
   "/api/audit/declined": { status: 200, body: { audit_id: "a1", status: "declined" } },
 }, { list: "docked" });
@@ -97,8 +100,48 @@ try {
   assert.equal(await page.$eval("dialog.mass-kill-dialog .segmented", (e) => e.getAttribute("aria-label")), "Kill mode");
   assert.doesNotMatch(await text("dialog.mass-kill-dialog"), /mass kill/i);
 
+  // Ignore users offers the users of the loaded sessions as a pick list, and
+  // Match host offers their client hosts; both keep a free-text path.
+  assert.deepEqual(
+    await page.$$eval(".mass-kill-user-picks .mass-kill-checkbox-label", (es) => es.map((e) => e.textContent.trim())),
+    ["noproc", "root"],
+    "Ignore users lists the sessions' users",
+  );
+  assert.deepEqual(await page.$$eval("#mk-hosts option", (es) => es.map((e) => e.value)), ["172.17.0.1"], "Match host offers the client hosts");
+
   await button("All clients", "dialog.mass-kill-dialog ");
   const eligible = active.sessions.filter(s => s.thread_kind === "client" && !s.flags.includes("own_connection") && !s.flags.includes("system_thread"));
+  // Ticking a user in the pick list filters exactly like typing the name did,
+  // and the chosen names stay visible.
+  const ignoreBox = async (name) => {
+    const handle = await page.evaluateHandle((n) => [...document.querySelectorAll(".mass-kill-user-picks .mass-kill-checkbox-label")]
+      .find((e) => e.textContent.trim() === n)?.querySelector("input"), name);
+    const el = handle.asElement();
+    assert.ok(el, `Ignore users checkbox ${name}`);
+    return el;
+  };
+  const clearInput = (selector) => page.$eval(selector, (input) => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.waitForFunction(() => document.querySelector(".preview-title strong")?.textContent === "Preview: 9 matching sessions");
+  await (await ignoreBox("root")).click();
+  await page.waitForFunction(() => document.querySelector(".preview-title strong")?.textContent === "Preview: 1 matching sessions");
+  assert.deepEqual(await page.$$eval(".mass-kill-table tbody tr td:nth-child(2) strong", (es) => es.map((e) => Number(e.textContent))), [103],
+    "ticking root ignores exactly the root sessions");
+  assert.equal(await text(".mass-kill-ignore-summary"), "Ignoring: root");
+  await (await ignoreBox("root")).click();
+  await page.waitForFunction(() => document.querySelector(".preview-title strong")?.textContent === "Preview: 9 matching sessions");
+  // A name outside the list still goes in the text field.
+  await page.type("#mk-ignore-extra", "noproc");
+  await page.waitForFunction(() => document.querySelector(".preview-title strong")?.textContent === "Preview: 8 matching sessions");
+  assert.equal(await text(".mass-kill-ignore-summary"), "Ignoring: noproc");
+  await clearInput("#mk-ignore-extra");
+  // Match host still takes free text (patterns); the datalist only suggests.
+  await page.type("#mk-host", "10.9.");
+  await page.waitForFunction(() => document.querySelector(".preview-title strong")?.textContent === "Preview: 0 matching sessions");
+  await clearInput("#mk-host");
+  await page.waitForFunction(() => document.querySelector(".preview-title strong")?.textContent === "Preview: 9 matching sessions");
   for (const pattern of [String.raw`\S`, String.raw`\D`, String.raw`\W`, String.raw`\B`, " SELECT", "["]) {
     await page.$eval("#mk-query", (input, value) => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, value);
@@ -561,6 +604,47 @@ try {
   assert.deepEqual(await page.$$eval(`${view} tbody tr`, (els) => els.slice(0, 2).map((e) => e.dataset.session)), ["98", "102"], "smallest first, by seconds");
   await page.click(`${view} th[data-col=time] button`);
 
+  // DDL progress is additive: same session, exact counters in its inspector,
+  // compact text plus a bar on the existing State cell, and opt-in following.
+  const ddlReport = structuredClone(active);
+  const ddlItem = { ...ddlProgress.items[0], id: 95 };
+  ddlReport.ddl = { ...ddlProgress, items: [ddlItem] };
+  ddlReport.sessions.find(x => x.id === 95).ddl = ddlItem;
+  state.fallback = { status: 200, body: ddlReport };
+  await h.refresh();
+  await page.waitForSelector(`${row(95)} .ddl-meter progress`);
+  assert.match(await text(`${row(95)} td[data-col=state]`), /42%/);
+  assert.match(await page.$eval(`${row(95)} .ddl-meter`, el => el.title), /Copying rows.*2 min 54 s left \(estimate\)/);
+  await button("Follow progress", `${view} `);
+  assert.equal(await page.$eval(`${view} .auto-refresh select`, el => el.value), "10");
+  await page.select(`${view} .auto-refresh select`, "0");
+  await page.click(`${row(95)} td[data-col=state]`, { clickCount: 2 });
+  await inspectorHas(/DDL progress.*Copying rows.*stage\/sql\/copy to tmp table.*Elapsed.*2 min 6 s.*Time left \(estimate\).*2 min 54 s.*42[,.]?000 of 100[,.]?000/);
+  for (const width of [1440, 720]) {
+    await page.setViewport({ width, height: 900 });
+    for (const scheme of ["light", "dark"]) {
+      await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: scheme }]);
+      await pause(200);
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+      await page.screenshot({ path: path.join(h.shots, `ddl-progress-${width}-${scheme}.png`), fullPage: true });
+    }
+  }
+  await page.setViewport({ width: 1440, height: 1000 });
+  await page.click(`${view} .detail-back`);
+  const missingDdl = structuredClone(ddlReport);
+  missingDdl.ddl = { available: false, source: null, items: [], missing: ["events_stages_current"],
+    reason: "Turn on events_stages_current for DDL stage tracking." };
+  missingDdl.sessions.find(x => x.id === 95).ddl = null;
+  state.fallback = { status: 200, body: missingDdl };
+  await h.refresh();
+  await page.waitForSelector(`${view} [data-instruments-row="consumer:events_stages_current"]`);
+  assert.match(await text(`${view} .ddl-unavailable`), /events_stages_current.*Turn on stage tracking…/);
+  const writesBefore = state.other.filter(x => /reviewed.*apply|instruments.*apply/.test(x.path)).length;
+  await page.click(`${view} [data-instruments-row="consumer:events_stages_current"]`);
+  await h.onView("instruments");
+  await page.waitForFunction(() => /events_stages_current/.test(document.querySelector(".instruments-panel .detail-title, .instruments-panel .inspector-title, .instruments-panel .view-inspector")?.textContent || ""));
+  assert.equal(state.other.filter(x => /reviewed.*apply|instruments.*apply/.test(x.path)).length, writesBefore,
+    "navigation never turns tracking on by itself");
   assert.deepEqual(h.errors, []);
   console.log("sessions view: ok");
 } finally {

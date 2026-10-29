@@ -114,7 +114,7 @@ scripts/
 2. **Lesson file** — add `teach/<family>/your_lesson.py` (or a top-level `teach/your_lesson.py` if it does not fit a family yet), following an existing lesson in that family.
 3. **Register** — add the lesson to the `LESSONS` dict in `teach/<family>/__init__.py` (merged into `teach/__init__.py` automatically).
 4. **Tests** — add cost-model unit tests and HTML content assertions to `test/test_teach.py`.
-5. **Generate HTML** — run `python3 -m myflames teach your_lesson -o docs/teach/your_lesson.html`.
+5. **Generate HTML** — run `python3 -m myflames teach your_lesson -o docs/teach/<family>/your_lesson.html` (the folder is `FAMILY_DIRS` in `teach/__init__.py`).
 6. **Update docs** — add the lesson to `docs/teach/index.html` and the README.
 
 ## Adding a new advisor rule
@@ -143,10 +143,10 @@ cp -a docs/demos /tmp/demos_bak
 rm -f docs/demos/*
 python3 scripts/regenerate_docs_demos.py /tmp/demos_bak
 
-# Regenerate all teach lessons (excludes hand-edited docs/teach/index.html)
-for lesson in $(python3 -c "from myflames.teach import LESSONS; print(' '.join(sorted(LESSONS)))"); do
-  python3 -m myflames teach "$lesson" -o "docs/teach/$lesson.html"
-done
+# Regenerate all teach lessons into their family folders (docs/teach/<family>/;
+# test_teach.py fails while a committed page differs from the renderer)
+python3 -c "from myflames.teach import LESSONS, FAMILY_DIRS; [print(k, FAMILY_DIRS[v['family']]) for k, v in sorted(LESSONS.items())]" |
+  while read lesson dir; do python3 -m myflames teach "$lesson" -q -o "docs/teach/$dir/$lesson.html"; done
 ```
 
 ## Editing lesson JavaScript

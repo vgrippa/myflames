@@ -164,7 +164,7 @@ class BaseLiveServerTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         try:
-            _docker("rm", "-f", cls.container, check=False)
+            _docker("rm", "-f", "-v", cls.container, check=False)
         except Exception:
             pass
 

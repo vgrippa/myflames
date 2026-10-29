@@ -1,0 +1,197 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/vgrippa/myflames/docs/schemas/schema-version-list-1.0.json",
+  "title": "myflames saved schema versions (schema-version-list-1.0)",
+  "description": "Saved schema versions in the workspace store, newest first (workspace_store.schema_version_list). Never holds definitions; a saved version is opened with myflames schema show or /api/schema-versions/get. Items of save and import also carry same_as.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "items"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "schema-version-list-1.0"
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "saved_at",
+          "source_key",
+          "number",
+          "name",
+          "note",
+          "database",
+          "taken_at",
+          "server",
+          "connection",
+          "counts",
+          "checksum",
+          "myflames_version",
+          "complete"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "saved_at": {
+            "type": "string"
+          },
+          "source_key": {
+            "type": "string",
+            "description": "host:port/database: the history the version belongs to."
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "name": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          },
+          "database": {
+            "type": "string"
+          },
+          "taken_at": {
+            "type": "string"
+          },
+          "server": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "engine"
+            ],
+            "properties": {
+              "engine": {
+                "enum": [
+                  "mysql",
+                  "mariadb"
+                ]
+              },
+              "flavor": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "server_product": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "server_version": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "hostname": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "host": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "port": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 1,
+                "maximum": 65535
+              },
+              "lower_case_table_names": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "ssh_host": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Present only when the server was read through an SSH tunnel: the SSH host (host and port are then the database as that SSH host reaches it). Part of the server's identity: the same host and port through another SSH host, or none, is another server."
+              },
+              "ssh_user": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The SSH user, when one was given (else the user's ~/.ssh/config decides)."
+              },
+              "ssh_port": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 65535,
+                "description": "The SSH port, when one was given."
+              }
+            }
+          },
+          "connection": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "profile_id": {
+                "type": "string"
+              },
+              "profile_name": {
+                "type": "string"
+              }
+            }
+          },
+          "counts": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "checksum": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "myflames_version": {
+            "type": "string"
+          },
+          "complete": {
+            "type": "boolean",
+            "description": "Every kind's coverage is complete."
+          },
+          "same_as": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Save and import only: the latest earlier version of the database with the same checksum.",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "number",
+              "name"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "number": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

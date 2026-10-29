@@ -521,6 +521,10 @@ class Run(object):
 class EditorSession(object):
     """One client process (one server session) for one editor tab."""
 
+    #: Extra client options for a private session that needs them (Import
+    #: CSV's LOAD DATA LOCAL session adds --local-infile=1); editor tabs add none.
+    client_flags = ()
+
     def __init__(self, tab_id, identity, options, connection_type="production", read_only=False,
                  safe_updates=None, idle_seconds=DEFAULT_IDLE_SECONDS, name=None, profile_id=None):
         self.tab_id = tab_id
@@ -588,6 +592,9 @@ class EditorSession(object):
         self._conn = conn
         credentials = contextlib.ExitStack()
         try:
+            # Through SSH, the session's client needs the tunnel for as long as
+            # it runs: held until end() closes the connection object.
+            conn.hold_transport()
             defaults = credentials.enter_context(conn._invocation_defaults())
             binary = conn._resolve_binary()
             self._client_home = tempfile.TemporaryDirectory(prefix="myflames-editor-")
@@ -597,6 +604,7 @@ class EditorSession(object):
             argv = [binary, "--defaults-file=" + defaults, "--xml", "--binary-as-hex", "--binary-mode",
                     "--comments", "--force", "--quick", "--unbuffered", "-vv", "--skip-reconnect"]
             argv.extend(CLIENT_CHARSET_FLAGS)
+            argv.extend(self.client_flags)
             if _client_features(binary, env).get("skip_commands"):
                 argv.append("--skip-commands")
             if options.get("database"):
@@ -2078,12 +2086,75 @@ def history_entry(run, snapshot, session, password=None):
             "error_code": error.get("code")}
 
 
+# ---- saved queries ----------------------------------------------------------------------
+
+#: Bounds like the history's: count and stored size are capped, but a full
+#: store refuses a new query instead of dropping one the user chose to keep.
+SAVED_QUERY_MAX_ENTRIES = 500
+SAVED_QUERY_MAX_BYTES = 4 * 1024 * 1024
+SAVED_QUERY_SQL_CAP = HISTORY_SQL_CAP
+SAVED_QUERY_NAME_CAP = 200
+SAVED_QUERY_FOLDER_CAP = 200
+SAVED_QUERY_NOTE_CAP = 2000
+SAVED_QUERY_DATABASE_CAP = 255
+
+
+def _saved_text(value, label, cap, required=False, one_line=True):
+    """*value* trimmed (and on one line), or ValueError with *label*."""
+    if value is None and not required:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError("%s must be text." % label)
+    if one_line:
+        value = " ".join(value.split())
+    value = value.strip()
+    if required and not value:
+        raise ValueError("%s is required." % label)
+    if len(value) > cap:
+        raise ValueError("%s must be at most %d characters." % (label, cap))
+    return value
+
+
+def saved_query_name(value):
+    """A saved query's name: one line, redacted like its SQL."""
+    from . import dbops
+    return dbops.redact(_saved_text(value, "A name", SAVED_QUERY_NAME_CAP, required=True)) or ""
+
+
+def saved_query_folder(value):
+    """A saved query's folder: one line; an empty string is no folder."""
+    return _saved_text(value, "The folder name", SAVED_QUERY_FOLDER_CAP)
+
+
+def saved_query_entry(name, folder, sql, note, database):
+    """One saved-query-1.0 record. The SQL (and the name and note) go
+    through dbops.redact, the function that redacts the run history, before
+    anything is stored; credentials are never kept."""
+    from . import dbops
+    name = saved_query_name(name)
+    folder = saved_query_folder(folder)
+    if not isinstance(sql, str) or not sql.strip():
+        raise ValueError("There is no SQL to save.")
+    sql = dbops.redact(sql) or ""
+    if len(sql) > SAVED_QUERY_SQL_CAP:
+        raise ValueError("A saved query keeps at most {:,} characters of SQL; this one has {:,}."
+                         .format(SAVED_QUERY_SQL_CAP, len(sql)))
+    note = dbops.redact(_saved_text(note, "The note", SAVED_QUERY_NOTE_CAP, one_line=False)) or ""
+    database = _saved_text(database, "The database", SAVED_QUERY_DATABASE_CAP) or None
+    stamp = _now()
+    return {"schema_version": "saved-query-1.0", "name": name, "folder": folder,
+            "sql": sql, "note": note, "database": database,
+            "created": stamp, "updated": stamp}
+
+
 # ---- the HTTP API -----------------------------------------------------------------------
 
 #: Every editor endpoint (ui.py adds them to its allowlist).
 PATHS = ("/api/editor/open", "/api/editor/run", "/api/editor/status", "/api/editor/stop",
          "/api/editor/commit", "/api/editor/rollback", "/api/editor/close", "/api/editor/history",
-         "/api/editor/export", "/api/editor/preview")
+         "/api/editor/export", "/api/editor/preview",
+         "/api/editor/saved/list", "/api/editor/saved/save", "/api/editor/saved/rename",
+         "/api/editor/saved/move", "/api/editor/saved/delete")
 #: Writes: the policy runs first, the saved password is filled only after it.
 WRITE_PATHS = ("/api/editor/run", "/api/editor/commit")
 #: Open a database connection with the request's connection (ui fills the saved password).
@@ -2367,20 +2438,165 @@ def _alter_review(plan, session):
         ps_on = bool(facts and len(facts[0]) > 1 and str(facts[0][1]).upper() in ("1", "ON"))
         review = locks.alter_table_preflight(reader, schema, names[-1], session.engine,
                                              session.server_version, ps_on)
-        review["suggestion"] = _alter_suggestion(unit, review, session.engine, session.server_version)
-        if review["suggestion"]:
-            review["warnings"].append("Optional rewrite: INPLACE and LOCK=NONE request an online operation; "
-                "the server checks support. INPLACE can still rebuild the table. Copy the SQL into the editor "
-                "and review it again to use it.")
+        try:
+            review["prediction"] = _alter_prediction(reader, unit["send"], schema, names[-1], session.engine,
+                                                     session.server_version)
+        except Exception as exc:  # advisory: a prediction problem never blocks the review
+            review["prediction"] = {"predicted": False, "algorithm": None, "rebuild": None,
+                                    "concurrent_dml": None, "summary": None, "text": None, "clauses": [],
+                                    "notes": [], "needs": [], "source": "",
+                                    "reason": "Not predicted: %s." % exc.__class__.__name__}
+        if review["prediction"].get("algorithm") == "INSTANT":
+            # On MySQL, ALGORITHM=INPLACE turns an instant ADD/DROP COLUMN into
+            # a rebuild (handler0alter.cc:1053-1056), so never suggest it here.
+            review["suggestion"] = None
+            review["warnings"].append("No rewrite offered: the server is predicted to run this ALTER instantly.")
         else:
-            review["warnings"].append("No rewrite offered: this form, engine, version or existing ALGORITHM/LOCK "
-                                       "clause is not covered by the verified suggestion.")
+            review["suggestion"] = _alter_suggestion(unit, review, session.engine, session.server_version)
+            if review["suggestion"]:
+                review["warnings"].append("Optional rewrite: INPLACE and LOCK=NONE request an online operation; "
+                    "the server checks support. INPLACE can still rebuild the table. Copy the SQL into the editor "
+                    "and review it again to use it.")
+            else:
+                review["warnings"].append("No rewrite offered: this form, engine, version or existing "
+                                           "ALGORITHM/LOCK clause is not covered by the verified suggestion.")
         review["warnings"].append("A COPY or rebuild can need extra disk space and delay replicas. "
                                    "Check Server > Locks while ALTER runs. The lock wait limit is per wait, "
                                    "not a limit on the ALTER's total duration.")
         return review
     finally:
         session.run_lock.release()
+
+
+# Session settings alter_algorithm.predict reads, per engine. Every name
+# exists on the supported versions (MySQL 8.4+, MariaDB 10.11+); MariaDB's
+# alter_algorithm is read only before 11.5, which ignores it.
+_PREDICTION_SETTINGS = {
+    "mysql": ("foreign_key_checks", "sql_mode", "innodb_page_size", "old_alter_table"),
+    "mariadb": ("foreign_key_checks", "sql_mode", "innodb_page_size", "innodb_strict_mode",
+                "innodb_instant_alter_column_allowed", "old_mode", "innodb_file_per_table"),
+}
+_BOOLEAN_SETTINGS = ("foreign_key_checks", "old_alter_table", "innodb_strict_mode", "innodb_file_per_table")
+_PLAIN_NAME = re.compile(r"[A-Za-z0-9_]+\Z")
+
+
+def _setting(name, value):
+    if value is None:
+        return None
+    if name in _BOOLEAN_SETTINGS:
+        return str(value).upper() in ("1", "ON", "TRUE")
+    if name == "innodb_page_size":
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+    return str(value)
+
+
+def _alter_prediction(reader, send, schema, table, engine, version):
+    """alter_algorithm.predict for the reviewed ALTER, from the table's SHOW
+    CREATE TABLE and the session's settings. Read-only and bounded: SHOW
+    CREATE TABLE, one SELECT of settings, then only the facts the prediction
+    asks for (InnoDB's dictionary row of the table, the columns other tables'
+    foreign keys reference, the default collations). A failed read leaves its
+    facts unknown; a statement that depends on them is not predicted."""
+    from . import alter_algorithm
+    from .locks import _lit
+    from .server_info import server_version_tuple
+
+    def unread(reason):
+        return {"predicted": False, "algorithm": None, "rebuild": None, "concurrent_dml": None,
+                "summary": None, "text": None, "reason": reason, "source": "", "clauses": [], "notes": [],
+                "needs": []}
+
+    if engine not in ("mysql", "mariadb"):
+        return unread("Only MySQL and MariaDB are predicted.")
+    if not schema or not table:
+        return unread("Not predicted: the table's database is not known.")
+    quoted = "`%s`.`%s`" % (schema.replace("`", "``"), table.replace("`", "``"))
+    try:
+        rows = reader.query_lock_rows(TAG + "SHOW CREATE TABLE " + quoted)
+    except ConnectorError as exc:
+        return unread("Not predicted: SHOW CREATE TABLE failed: %s" % exc)
+    if not rows or len(rows[0]) < 2 or not rows[0][1] or not str(rows[0][1]).lstrip().upper().startswith("CREATE"):
+        return unread("Not predicted: SHOW CREATE TABLE returned no table definition.")
+    ddl = rows[0][1]
+    facts = {}
+    names = list(_PREDICTION_SETTINGS[engine])
+    if engine == "mariadb" and server_version_tuple(version or "") < (11, 5, 0):
+        names.append("alter_algorithm")
+    try:
+        row = reader.query_lock_rows(TAG + "SELECT " + ", ".join("@@" + name for name in names))
+        if row:
+            facts.update((name, _setting(name, value)) for name, value in zip(names, row[0]))
+    except ConnectorError:
+        pass  # predict() states the defaults it assumes instead
+    prediction = alter_algorithm.predict(send, ddl, engine, version, facts)
+    needs = set(prediction.get("needs") or [])
+    more = False
+    if needs & {"total_row_versions", "fts_doc_id_index", "system_tablespace"} and _PLAIN_NAME.match(schema) \
+            and _PLAIN_NAME.match(table):
+        # InnoDB names a table "db/table" (lowercase with lower_case_table_names);
+        # other characters are encoded, so only plain names are looked up.
+        name = "%s/%s" % (schema, table)
+        targets = ", ".join(_lit(n) for n in sorted({name, name.lower()}))
+        if engine == "mysql":
+            sql = ("SELECT t.TOTAL_ROW_VERSIONS, (SELECT COUNT(*) FROM information_schema.INNODB_INDEXES i "
+                   "WHERE i.TABLE_ID = t.TABLE_ID AND i.NAME = 'FTS_DOC_ID_INDEX') "
+                   "FROM information_schema.INNODB_TABLES t WHERE t.NAME IN (%s)" % targets)
+        else:
+            sql = ("SELECT t.SPACE, (SELECT COUNT(*) FROM information_schema.INNODB_SYS_INDEXES i "
+                   "WHERE i.TABLE_ID = t.TABLE_ID AND i.NAME = 'FTS_DOC_ID_INDEX') "
+                   "FROM information_schema.INNODB_SYS_TABLES t WHERE t.NAME IN (%s)" % targets)
+        try:
+            found = reader.query_lock_rows(TAG + sql)
+        except ConnectorError:
+            found = []
+        if len(found) == 1 and len(found[0]) >= 2:
+            first, fts = found[0][0], found[0][1]
+            try:
+                if engine == "mysql":
+                    facts["total_row_versions"] = int(first)
+                else:
+                    facts["system_tablespace"] = int(first) == 0
+                facts["fts_doc_id_index"] = int(fts) > 0
+                more = True
+            except (TypeError, ValueError):
+                pass
+    if "referenced_columns" in needs:
+        if engine == "mysql":
+            sql = ("SELECT DISTINCT REFERENCED_COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE "
+                   "WHERE REFERENCED_TABLE_SCHEMA = %s AND REFERENCED_TABLE_NAME = %s LIMIT 1001"
+                   % (_lit(schema), _lit(table)))
+        elif _PLAIN_NAME.match(schema) and _PLAIN_NAME.match(table):
+            # InnoDB's own dictionary, rather than an information_schema scan of every table.
+            name = "%s/%s" % (schema, table)
+            sql = ("SELECT DISTINCT c.REF_COL_NAME FROM information_schema.INNODB_SYS_FOREIGN f "
+                   "JOIN information_schema.INNODB_SYS_FOREIGN_COLS c ON c.ID = f.ID WHERE f.REF_NAME IN (%s) "
+                   "LIMIT 1001" % ", ".join(_lit(n) for n in sorted({name, name.lower()})))
+        else:
+            sql = None
+        if sql:
+            try:
+                found = reader.query_lock_rows(TAG + sql)
+                if len(found) <= 1000:
+                    facts["referenced_columns"] = [r[0] for r in found if r and r[0]]
+                    more = True
+            except ConnectorError:
+                pass
+    if "default_collations" in needs and engine == "mariadb":
+        try:
+            found = reader.query_lock_rows(TAG + "SELECT CHARACTER_SET_NAME, DEFAULT_COLLATE_NAME "
+                                           "FROM information_schema.CHARACTER_SETS")
+            facts["default_collations"] = {r[0]: r[1] for r in found if len(r) >= 2}
+            more = True
+        except ConnectorError:
+            pass
+    if more:
+        prediction = alter_algorithm.predict(send, ddl, engine, version, facts)
+        if "referenced_columns" in facts and engine == "mysql":
+            prediction["notes"].append("Foreign keys in tables this account cannot see are not counted.")
+    return prediction
 
 
 def _alter_suggestion(unit, review, engine, version):
@@ -2639,7 +2855,8 @@ def _confirmation(decision, token, statements, name, options):
 def _audit_trail(store, operation, safety, options, password, decision):
     from . import dbops
     return dbops.AuditTrail(store, operation, "ui",
-                            connection={k: options.get(k) for k in ("host", "port", "user")}, safety=safety,
+                            connection={k: options.get(k) for k in ("host", "port", "user", "ssh_host", "ssh_user",
+                                                                    "ssh_port")}, safety=safety,
                             password=password, policy=dbops.policy_summary(decision))
 
 
@@ -3099,6 +3316,25 @@ def api_response(path, payload, workspace, fill_password=None):
             raise ValueError("Invalid profile_id.")
         return {"items": store.history_list(limit, profile_id or None), "max_entries": HISTORY_MAX_ENTRIES,
                 "max_bytes": HISTORY_MAX_BYTES}
+    if path == "/api/editor/saved/list":
+        limit = int(_number(payload, "limit", SAVED_QUERY_MAX_ENTRIES, 1, SAVED_QUERY_MAX_ENTRIES, "limit"))
+        return {"items": store.saved_query_list(limit), "max_entries": SAVED_QUERY_MAX_ENTRIES,
+                "max_bytes": SAVED_QUERY_MAX_BYTES, "max_sql": SAVED_QUERY_SQL_CAP}
+    if path == "/api/editor/saved/save":
+        sql = payload.get("sql")
+        entry = saved_query_entry(payload.get("name"), payload.get("folder"), sql,
+                                  payload.get("note"), payload.get("database"))
+        entry["id"] = store.saved_query_save(entry, SAVED_QUERY_MAX_ENTRIES, SAVED_QUERY_MAX_BYTES)
+        # The SQL changed only where a credential was replaced.
+        return {"saved": entry, "redacted": entry["sql"] != sql}
+    if path == "/api/editor/saved/rename":
+        return {"saved": store.saved_query_rename(payload.get("id"), saved_query_name(payload.get("name")))}
+    if path == "/api/editor/saved/move":
+        return {"saved": store.saved_query_move(payload.get("id"), saved_query_folder(payload.get("folder")))}
+    if path == "/api/editor/saved/delete":
+        if store.saved_query_delete(payload.get("id")) == 0:
+            raise ValueError("That saved query is no longer kept on this computer.")
+        return {"deleted": 1}
     registry = _registry(workspace)
     if path == "/api/editor/run":
         return _run_api(payload, workspace, fill_password)

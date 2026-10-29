@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/vgrippa/myflames/docs/schemas/digest-histogram-1.0.json",
+  "title": "myflames statement latency histogram (digest-histogram-1.0)",
+  "description": "The latency histogram of one statement digest (myflames/discover.py digest_histogram, /api/live/digest-histogram): the buckets of performance_schema.events_statements_histogram_by_digest that hold at least one call, for one SCHEMA_NAME (null matches a digest recorded without a default schema) and one DIGEST, in bucket order. MySQL keeps 450 buckets per digest: bucket 0 below 10 microseconds, then bounds growing by a factor of 10^(1/50), the last one open-ended. Counts are cumulative since the digest was first seen. MariaDB keeps no histogram: available is false with a reason. Read-only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "engine",
+    "server_version",
+    "flavor",
+    "server_product",
+    "schema",
+    "digest",
+    "available",
+    "reason",
+    "buckets"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "digest-histogram-1.0"
+    },
+    "engine": {
+      "enum": [
+        "mysql",
+        "mariadb"
+      ]
+    },
+    "server_version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "flavor": {
+      "type": "string"
+    },
+    "server_product": {
+      "type": "string"
+    },
+    "schema": {
+      "description": "The digest's default schema, or null for a digest recorded without one.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "digest": {
+      "description": "The full digest in lowercase hexadecimal.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{32,64}$"
+    },
+    "available": {
+      "description": "False on MariaDB or on a MySQL server without the histogram table; the workspace then omits the histogram.",
+      "type": "boolean"
+    },
+    "reason": {
+      "description": "Why no histogram is available, or null.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "buckets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "bucket",
+          "low_ms",
+          "high_ms",
+          "count"
+        ],
+        "properties": {
+          "bucket": {
+            "description": "BUCKET_NUMBER, 0 to 449.",
+            "type": "integer",
+            "minimum": 0
+          },
+          "low_ms": {
+            "description": "BUCKET_TIMER_LOW in milliseconds.",
+            "type": "number",
+            "minimum": 0
+          },
+          "high_ms": {
+            "description": "BUCKET_TIMER_HIGH in milliseconds, or null for the open-ended last bucket.",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "count": {
+            "description": "COUNT_BUCKET: calls whose time fell in this bucket (always above zero here).",
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    }
+  }
+}

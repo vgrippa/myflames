@@ -43,6 +43,8 @@ async function start() {
   const env = backendEnvironment(dataDirectory);
   env.HOME = isolatedBackendHome(dataDirectory, os.homedir());
   env.USERPROFILE = env.HOME;
+  // ssh reads ~/.ssh from the user's real home (see backendEnvironment).
+  env.MYFLAMES_SSH_HOME = os.homedir();
   // A downloaded update goes to the user's real Downloads folder, not the isolated HOME.
   env.MYFLAMES_DOWNLOADS_DIR = app.getPath('downloads');
   // The packaged backend entry stops itself if this process dies uncleanly.
@@ -67,8 +69,13 @@ async function start() {
   backend.url = null; // Only the initial load needs this one-use secret.
   const browserSession = session.fromPartition(`desktop-${crypto.randomUUID()}`);
   await browserSession.setProxy({ mode: 'direct' });
-  browserSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
-  browserSession.setPermissionCheckHandler(() => false);
+  // One permission is granted, and only to the workspace's own page: the
+  // Fullscreen API, for Learn's Full screen (the lesson's container is the
+  // full-screen element; Escape leaves). Every other request is refused.
+  const fullscreenOnly = (permission, url) => permission === 'fullscreen' && sameOrigin(url || '', origin);
+  browserSession.setPermissionRequestHandler((_contents, permission, callback, details) =>
+    callback(fullscreenOnly(permission, details && details.requestingUrl)));
+  browserSession.setPermissionCheckHandler((_contents, permission, requestingOrigin) => fullscreenOnly(permission, requestingOrigin));
   browserSession.setDevicePermissionHandler(() => false);
   browserSession.webRequest.onBeforeRequest((details, callback) => {
     // The startup smoke exercises local keyword completion only. Never let its

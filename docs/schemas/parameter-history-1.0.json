@@ -1,0 +1,319 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/vgrippa/myflames/docs/schemas/parameter-history-1.0.json",
+  "title": "myflames parameter-history-1.0",
+  "description": "Every cataloged change of one parameter in one engine, oldest first. Emitted by param_versions.history(), POST /api/config/versions/history and myflames config versions history --json.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "engine",
+    "product",
+    "name",
+    "found",
+    "summary",
+    "first",
+    "latest",
+    "current",
+    "series",
+    "events",
+    "suggestions",
+    "notes",
+    "build_only",
+    "default_rule",
+    "aliases"
+  ],
+  "properties": {
+    "schema": {
+      "const": "parameter-history-1.0"
+    },
+    "engine": {
+      "enum": [
+        "mysql",
+        "mariadb"
+      ]
+    },
+    "product": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "found": {
+      "type": "boolean",
+      "description": "false when the engine's catalog has no parameter of this name; series and events are then empty and suggestions holds close names."
+    },
+    "summary": {
+      "type": "string",
+      "description": "One sentence of at most 120 characters, written by Python."
+    },
+    "first": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "The first cataloged version where the parameter is present."
+    },
+    "latest": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "The latest cataloged version where the parameter is present."
+    },
+    "current": {
+      "$ref": "#/definitions/factsOrAbsent",
+      "description": "The facts at the latest version where the parameter is present."
+    },
+    "series": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "series",
+          "ranges"
+        ],
+        "properties": {
+          "series": {
+            "type": "string"
+          },
+          "ranges": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "from",
+                "to",
+                "facts"
+              ],
+              "properties": {
+                "from": {
+                  "type": "string"
+                },
+                "to": {
+                  "type": "string"
+                },
+                "facts": {
+                  "$ref": "#/definitions/factsOrAbsent",
+                  "description": "null for a span of releases where the parameter is absent."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "events": {
+      "type": "array",
+      "description": "One entry per cataloged version whose facts differ from its lineage predecessor; a name present in the first cataloged release has no added event.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "previous",
+          "series",
+          "kinds",
+          "text",
+          "before",
+          "after"
+        ],
+        "properties": {
+          "version": {
+            "type": "string"
+          },
+          "previous": {
+            "type": "string",
+            "description": "The lineage predecessor: the previous release of the series, or the latest-dated earlier release of an earlier series."
+          },
+          "series": {
+            "type": "string"
+          },
+          "kinds": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "enum": [
+                "added",
+                "removed",
+                "deprecated",
+                "undeprecated",
+                "default",
+                "dynamic",
+                "scope",
+                "type",
+                "values",
+                "range"
+              ]
+            }
+          },
+          "text": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string"
+            }
+          },
+          "before": {
+            "$ref": "#/definitions/factsOrAbsent"
+          },
+          "after": {
+            "$ref": "#/definitions/factsOrAbsent"
+          }
+        }
+      }
+    },
+    "suggestions": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "string"
+      }
+    },
+    "build_only": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "One sentence when the parameter exists only in builds with a given option (innodb_numa_interleave); its appearing or disappearing is then never an added or removed event."
+    },
+    "default_rule": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "How the server sets this default at the latest release, when it computes it at startup (a reviewed source rule), else null."
+    },
+    "aliases": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Names that are aliases of this parameter at the latest release (alias_of equals this name)."
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "definitions": {
+    "factsOrAbsent": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "scope",
+        "type",
+        "dynamic",
+        "default",
+        "default_note",
+        "min",
+        "max",
+        "values",
+        "deprecated",
+        "replacement",
+        "alias_of",
+        "plugin"
+      ],
+      "properties": {
+        "scope": {
+          "enum": [
+            "global",
+            "session",
+            "both",
+            null
+          ]
+        },
+        "type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dynamic": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "default": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "default_note": {
+          "description": "null: the default is SQL NULL. host: computed at startup from the host; default holds what a lab server computed. release: the value names the release or build (version, build_id), not a default. build: the default follows the build or installation layout (paths). state: session or server state (pseudo_thread_id, gtid_executed), not a default. unknown: no default could be read.",
+          "enum": [
+            "null",
+            "host",
+            "release",
+            "build",
+            "state",
+            "unknown",
+            null
+          ]
+        },
+        "min": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "max": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "values": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "deprecated": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "enum": [
+              "server",
+              "source",
+              "manual"
+            ]
+          }
+        },
+        "replacement": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "alias_of": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "plugin": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

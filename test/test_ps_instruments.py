@@ -251,6 +251,23 @@ class TestLiveReplay(unittest.TestCase):
                 self.assertEqual(result['status']['sizes']['performance_schema_events_statements_history_size'], 10)
                 self.assertIsNone(result['status']['enable'])
 
+    def test_cpu_time_is_an_optional_mysql_consumer_of_top_statements(self):
+        """SUM_CPU_TIME grows only while events_statements_cpu is on (off by
+        default); MariaDB has no such consumer, so it is never named there."""
+        for name in MYSQL:
+            with self.subTest(server=name):
+                top = by(report(name)[0]['features'], 'key')['top']
+                self.assertEqual(top['status'], 'ready')
+                self.assertIn('consumer events_statements_cpu is off', top['optional_missing'])
+                self.assertIn('consumer:events_statements_cpu', top['rows'])
+        for name in MARIADB_PS:
+            with self.subTest(server=name):
+                top = by(report(name)[0]['features'], 'key')['top']
+                self.assertNotIn('events_statements_cpu', ' '.join(top['optional_missing'] + top['rows']))
+        self.assertEqual(m._features_for_consumer('events_statements_cpu'),
+                         [{'key': 'top', 'label': 'Top statements', 'view': 'top', 'required': False}])
+        self.assertEqual(m.TABLES['events_statements_histogram_by_digest'], ('top',))
+
     def test_mariadb_defaults_with_performance_schema_on(self):
         for name in MARIADB_PS:
             with self.subTest(server=name):

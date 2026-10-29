@@ -1,0 +1,308 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/vgrippa/myflames/docs/schemas/schema-snapshot-1.0.json",
+  "title": "myflames schema version (schema-snapshot-1.0)",
+  "description": "One database's definitions as its server prints them (myflames/schema_versions.py capture): SHOW CREATE output of the database, its tables, views, sequences, stored routines, packages, triggers and events, read in one session with sql_mode '' and a fixed default database. AUTO_INCREMENT=N is removed from table options. An object the account cannot read has ddl null and a reason. coverage says, per kind, whether SHOW GRANTS proves every object was listed. checksum is sha256 over what a comparison looks at. Read-only: nothing is written to the server.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "myflames_version",
+    "taken_at",
+    "database",
+    "server",
+    "connection",
+    "read_settings",
+    "coverage",
+    "objects",
+    "notes",
+    "counts",
+    "checksum"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "schema-snapshot-1.0"
+    },
+    "myflames_version": {
+      "type": "string"
+    },
+    "taken_at": {
+      "type": "string"
+    },
+    "database": {
+      "type": "string"
+    },
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "engine"
+      ],
+      "properties": {
+        "engine": {
+          "enum": [
+            "mysql",
+            "mariadb"
+          ]
+        },
+        "flavor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "server_product": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "server_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hostname": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "host": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "port": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "lower_case_table_names": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ssh_host": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Present only when the server was read through an SSH tunnel: the SSH host (host and port are then the database as that SSH host reaches it). Part of the server's identity: the same host and port through another SSH host, or none, is another server."
+        },
+        "ssh_user": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The SSH user, when one was given (else the user's ~/.ssh/config decides)."
+        },
+        "ssh_port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "The SSH port, when one was given."
+        }
+      }
+    },
+    "connection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "profile_id": {
+          "type": "string"
+        },
+        "profile_name": {
+          "type": "string"
+        }
+      }
+    },
+    "read_settings": {
+      "type": "object",
+      "additionalProperties": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "description": "The session settings the definitions were read with."
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "state",
+          "reason"
+        ],
+        "properties": {
+          "state": {
+            "enum": [
+              "complete",
+              "unknown"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "objects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "type",
+          "name",
+          "ddl"
+        ],
+        "properties": {
+          "type": {
+            "enum": [
+              "database",
+              "table",
+              "view",
+              "sequence",
+              "procedure",
+              "function",
+              "package",
+              "package_body",
+              "trigger",
+              "event"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "ddl": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why ddl is null: the account cannot read it, or the server returned no definition."
+          },
+          "character_set": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "collation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "columns": {
+            "type": "object",
+            "description": "Text columns of a table: name -> [effective character set, collation] from information_schema.COLUMNS.",
+            "additionalProperties": {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "character_set_client": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "collation_connection": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "database_collation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sql_mode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "time_zone": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "table": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "timing": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "event": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "order": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "checksum": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "name": {
+      "type": "string",
+      "description": "An exported version's name (myflames schema export)."
+    },
+    "note": {
+      "type": "string",
+      "description": "An exported version's note."
+    }
+  }
+}

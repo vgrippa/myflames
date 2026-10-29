@@ -725,3 +725,7 @@ aside.glossary-aside { background: #f1f8ff; }
 /* Footer */
 .site-footer{margin-top:2rem;padding:1rem 1.25rem;border-top:1px solid #e2e6ee;font-size:.85rem;color:#5a6270;text-align:center}
 .site-footer a{color:inherit;font-weight:600}
+
+/* Stats can include wide identifiers without widening the shared page. */
+.plan-stats-scroll { max-width: 100%; overflow-x: auto; }
+.plan-statistics th, .plan-statistics td { text-align: start; padding: 6px 10px; }

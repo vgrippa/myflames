@@ -43,8 +43,11 @@ import {
 } from "./kit";
 import "./sessions.css";
 import { Icon } from "./components";
+import { DdlDetails, DdlMeter, DdlUnavailable } from "./DdlProgress";
 
 const AUTO_INTERVALS = [10, 30, 60];
+// A navigation hint only. SQL execution/review keeps its server classifier.
+const DDL_START = /^\s*(?:(?:\/\*[\s\S]*?\*\/|--[^\n]*|#[^\n]*)\s*)*(?:ALTER|CREATE|DROP|TRUNCATE|RENAME|OPTIMIZE|REPAIR)\b/i;
 const FLAGS: Record<SessionFlag, [string, "warn" | "danger" | "neutral" | "info"]> = {
   long_running: ["Long running", "warn"],
   idle_in_trx: ["Idle in transaction", "warn"],
@@ -427,7 +430,7 @@ export function SessionsView({
     },
     { key: "db", label: "Database", sort: (x) => x.db || "", render: (x) => x.db || <span className="cell-muted">—</span> },
     { key: "command", label: "Command", sort: (x) => x.command || "", render: (x) => x.command || "—" },
-    { key: "state", label: "State", title: "What the session is doing now: the server's State, or its command (Sleep, Daemon) when it reports none", width: 220, sort: (x) => x.state || x.command || "", render: (x) => x.state ? <span className="cell-truncate" title={x.state}>{x.state}</span> : x.command ? <span className="cell-muted" title={`No state; command ${x.command}`}>{x.command}</span> : <span className="cell-muted">—</span> },
+    { key: "state", label: "State", title: "What the session is doing now: the server's State, or its command (Sleep, Daemon) when it reports none", width: 220, sort: (x) => x.ddl?.stage_label || x.state || x.command || "", render: (x) => x.ddl ? <span className="session-ddl-state"><span className="cell-truncate" title={x.state || undefined}>{x.ddl.stage_label}</span><DdlMeter item={x.ddl} /></span> : x.state ? <span className="cell-truncate" title={x.state}>{x.state}</span> : x.command ? <span className="cell-muted" title={`No state; command ${x.command}`}>{x.command}</span> : <span className="cell-muted">—</span> },
     // Time sits next to State because the state is what it measures; the cell
     // says the duration in words, the tooltip the exact seconds.
     { key: "time", label: "Time", title: "How long the session has been in its current state", num: true, width: 96, sort: (x) => x.time_s, render: (x) => <Duration value={x.time_s} /> },
@@ -549,6 +552,7 @@ export function SessionsView({
               </button>
             </InspectorSection>
           )}
+          {x.ddl && <InspectorSection title="DDL progress"><DdlDetails item={x.ddl} /></InspectorSection>}
           {x.info ? (
             <InspectorSection title="Statement">
               <pre className="inspector-sql">
@@ -575,7 +579,7 @@ export function SessionsView({
                 ["Database", x.db || "—"],
                 ["Host", x.host || "—"],
                 ["Thread", x.thread_kind === "client" ? "Client" : x.thread_kind === "daemon" ? "Server (daemon)" : "Replication"],
-                x.progress && ["Progress", `stage ${x.progress.stage} of ${x.progress.max_stage}, ${x.progress.pct.toFixed(1)}%`],
+                x.progress && !x.ddl && x.progress.max_stage && ["Progress", `stage ${x.progress.stage} of ${x.progress.max_stage}, ${x.progress.pct.toFixed(1)}%`],
                 x.rows_examined !== null && ["Rows examined", number(x.rows_examined)],
                 x.memory_used !== null && ["Memory", `${number(x.memory_used)} B`],
               ]}
@@ -732,6 +736,7 @@ export function SessionsView({
             <SummaryLine tone={tone(s.status)} notes={report.notes}>
               {summaryParts.join(" · ")}
             </SummaryLine>
+            {report.ddl && !other && <DdlUnavailable progress={report.ddl} />}
             <FactStrip
               label="Connections"
               facts={[
@@ -801,6 +806,8 @@ export function SessionsView({
                   onChange={(v) => onMinSecondsChange(Math.max(0, Math.round(+v) || 0))}
                 />
               </label>
+              {!auto && !other && report?.sessions.some(x => x.ddl || (x.command !== "Sleep" && DDL_START.test(x.info || ""))) &&
+                <button type="button" className="text-button" onClick={() => setAuto(AUTO_INTERVALS[0])}>Follow progress</button>}
               <SearchField label="Filter sessions" value={search} onChange={setSearch} placeholder="Filter" />
             </div>
               <PriorityTable

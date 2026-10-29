@@ -41,6 +41,7 @@ import shutil
 import signal
 import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -77,9 +78,10 @@ REMOVED_VARIABLES = {'query_cache_size': (8, 0, 0), 'query_cache_type': (8, 0, 0
 #: Words that became reserved in a release. 8.0.14 and later: the
 #: <lexer.keyword> declarations in sql/sql_yacc.yy per release tag (what
 #: gen_keyword_list.cc turns into information_schema.KEYWORDS), checked against
-#: KEYWORDS read live on MySQL 8.0.46, 8.4.11 and 9.7.2 (8.4 added QUALIFY and
-#: TABLESAMPLE, 9.7 EXTERNAL and LIBRARY; see test/fixtures/lifecycle/
-#: PROVENANCE.txt). 8.0.11: the 8.0 keyword manual's new reserved words, each
+#: KEYWORDS read live on MySQL 8.0.46, 8.4.11 and 9.7.2 (QUALIFY came in
+#: 8.3.0, mysql-8.3.0 sql/lex.h:548; TABLESAMPLE in 8.4; LIBRARY and EXTERNAL
+#: in 9.x; see test/fixtures/lifecycle/PROVENANCE.txt). MANUAL and PARALLEL
+#: are keywords but stay usable as names (accepted unquoted on 8.4.11 live). 8.0.11: the 8.0 keyword manual's new reserved words, each
 #: reserved on 8.0.46 live. A word counts when source < version <= target; on
 #: an 8.0+ source the source's own KEYWORDS list drops words it already reserves.
 RESERVED_SINCE = (
@@ -89,7 +91,8 @@ RESERVED_SINCE = (
                   'SYSTEM', 'WINDOW')),
     ((8, 0, 14), ('LATERAL',)),
     ((8, 0, 31), ('INTERSECT',)),
-    ((8, 4, 0), ('QUALIFY', 'TABLESAMPLE')),
+    ((8, 3, 0), ('QUALIFY',)),
+    ((8, 4, 0), ('TABLESAMPLE',)),
     ((9, 2, 0), ('LIBRARY',)),
     ((9, 4, 0), ('EXTERNAL',)),
 )
@@ -114,6 +117,11 @@ class Refused(LifecycleError):
 
 class RestoreTargetMismatch(Refused):
     """The typed restore target differs from the reviewed target; nothing ran."""
+
+
+class ToolLimit(LifecycleError):
+    """ToolGroups.MAX_GROUPS process groups are listed; nothing was started."""
+    limit = True
 
 
 _ANSI = re.compile(r'(?:\x1b|\\u001[bB]|\\x1[bB])\[[0-9;?]*[ -/]*[@-~]')
@@ -303,6 +311,7 @@ def read_server(conn, connection=None):
 
 def _options(connection):
     """Validate all option-file fields, including those not accepted by live.py."""
+    from .live import clean_host, trim
     allowed = ('host', 'user', 'password', 'database', 'ssl_mode', 'ssl_ca',
                'ssl_cert', 'ssl_key', 'ssl_cipher', 'socket')
     out = {}
@@ -311,12 +320,25 @@ def _options(connection):
         if value is not None:
             if not isinstance(value, str) or len(value) > 4096 or '\x00' in value or (key != 'password' and any(c in value for c in '\r\n')):
                 raise ValueError('Invalid connection field: ' + key)
+            # The same trimming as live.connection_options: pasted spaces
+            # around a host or a path, never inside a user name or password.
+            if key == 'host':
+                value = clean_host(value)
+            elif key in ('ssl_ca', 'ssl_cert', 'ssl_key', 'socket'):
+                value = trim(value)
+            elif key == 'database':
+                value = trim(value, start=False)
             out[key] = value
     port = connection.get('port', 3306)
     if isinstance(port, bool) or not str(port).isdigit() or not 1 <= int(port) <= 65535:
         raise ValueError('Port must be 1..65535.')
     out['port'] = int(port)
     out.setdefault('host', '127.0.0.1')
+    # Through SSH (ssh_tunnel.py): validated like live.connection_options;
+    # clients and tools then connect to the tunnel's local end over TCP.
+    from .ssh_tunnel import check_connection, ssh_fields
+    out.update(ssh_fields(connection))
+    check_connection(out)
     return out
 
 
@@ -343,6 +365,20 @@ def _credentials(connection, tool):
         # let the default port override an explicitly reviewed socket.
         options.pop('port', None)
     shell = tool.get('name') == 'mysqlsh'
+    with contextlib.ExitStack() as stack:
+        if options.get('ssh_host'):
+            # The tool connects to the SSH tunnel's local end, held while it runs.
+            from .ssh_tunnel import TUNNELS, spec_of
+            lease = stack.enter_context(TUNNELS.lease(spec_of(options)))
+            options['host'], options['port'] = '127.0.0.1', lease.port
+        for key in ('ssh_host', 'ssh_user', 'ssh_port'):
+            options.pop(key, None)  # Never a client option.
+        with _credential_file(options, tool, shell) as result:
+            yield result
+
+
+@contextlib.contextmanager
+def _credential_file(options, tool, shell):
     with tempfile.TemporaryDirectory(prefix='myflames-lifecycle-') as home:
         path = os.path.join(home, 'connection.cnf')
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -442,12 +478,33 @@ def _group_alive(pgid):
 
     macOS answers EPERM when the group holds only an unreaped zombie; that
     group runs nothing, and a group of another user is not ours to stop.
+    Linux answers success for a zombie, so there /proc decides.
     """
     try:
         os.killpg(pgid, 0)
-        return True
     except (ProcessLookupError, PermissionError):
         return False
+    if sys.platform.startswith('linux'):
+        return _linux_group_runs(pgid)
+    return True
+
+
+def _linux_group_runs(pgid):
+    """True when a process of group *pgid* is not a zombie (/proc/PID/stat:
+    the state and the process group follow the parenthesised command)."""
+    try:
+        pids = [name for name in os.listdir('/proc') if name.isdigit()]
+    except OSError:
+        return True
+    for pid in pids:
+        try:
+            with open('/proc/%s/stat' % pid) as handle:
+                fields = handle.read().rsplit(')', 1)[1].split()
+        except (OSError, IndexError):
+            continue
+        if len(fields) > 2 and fields[2] == str(pgid) and fields[0] not in ('Z', 'X'):
+            return True
+    return False
 
 
 def _signal_group(pgid, sig):
@@ -470,20 +527,31 @@ class ToolGroups(object):
 
     Tools start through start(), which lists the new group before another
     tool can start or shutdown can take its snapshot, and refuses once
-    shutdown began. A group stays listed until it is confirmed gone. The file
+    shutdown began. A group stays listed until it is confirmed gone. SSH
+    tunnels (ssh_tunnel.py) are listed as *service* groups: the supervisor
+    stops them like tools, but terminate() leaves them to their owner, which
+    closes them after the jobs' own KILL QUERY went through them. The file
     is replaced atomically and kept after a clean close (listing nothing).
     When it cannot be rewritten it is removed: it never lists a group that
     may have ended (that id could name another program's group), and the
     supervisor treats a missing file as unconfirmed. A tool whose group
     cannot be recorded is stopped at once (LifecycleJob.process_tool).
+    At most MAX_GROUPS groups are listed: start() refuses another tool or
+    tunnel (ToolLimit) rather than list more than the supervisor reads.
     """
     SCHEMA = 'tool-groups-1.0'
+    #: The most groups listed at once. apps/desktop/backend.cjs
+    #: (MAX_TOOL_GROUPS) reads a list of at most this many; a longer one is
+    #: unreadable there and a forced quit would kill nothing. Keep both equal.
+    MAX_GROUPS = 16
 
     def __init__(self, path=None):
         self.lock = threading.Lock()
         self._spawn_lock = threading.Lock()
         self.closed = False
         self.groups = set()
+        #: Listed groups whose owner stops them (SSH tunnels), not terminate().
+        self.services = set()
         self.path = None
         if path and os.name == 'posix':
             refusal = 'The tool process group file must be in a private directory owned by this user.'
@@ -539,22 +607,31 @@ class ToolGroups(object):
         with contextlib.suppress(OSError):
             os.close(os.open(self.path, os.O_WRONLY | os.O_TRUNC | getattr(os, 'O_NOFOLLOW', 0)))
 
-    def add(self, pgid):
+    def add(self, pgid, service=False):
         with self.lock:
             self.groups.add(pgid)
+            if service:
+                self.services.add(pgid)
             return self._publish()
 
-    def start(self, spawn):
+    def start(self, spawn, service=False):
         """Run *spawn* (returns a Popen in a new session) and list its group.
 
         Returns (process, recorded). Serialized with close_spawning(), so a
         tool started before shutdown is listed before shutdown's snapshot.
+        *service*: an SSH tunnel, which its owner stops (see terminate()).
         """
         with self._spawn_lock:
             if self.closed:
                 raise LifecycleError('The workspace is closing; the tool was not started.')
+            with self.lock:
+                full = len(self.groups) >= self.MAX_GROUPS
+            if full:
+                raise ToolLimit('%d dump, restore, clone or SSH tunnel processes are running, as many as myflames '
+                                'can stop safely if it has to quit. Wait for one to finish, then try again; an '
+                                'SSH tunnel closes a few minutes after its last use.' % self.MAX_GROUPS)
             process = spawn()
-            return process, self.add(process.pid)
+            return process, self.add(process.pid, service)
 
     def close_spawning(self, timeout=2.0):
         """Refuse new tools. Waits up to *timeout* for a start in progress."""
@@ -565,13 +642,26 @@ class ToolGroups(object):
 
     def discard(self, pgid):
         with self.lock:
+            self.services.discard(pgid)
             if pgid in self.groups:
                 self.groups.discard(pgid)
                 self._publish()
 
-    def snapshot(self):
-        with self.lock:
-            return sorted(self.groups)
+    def snapshot(self, timeout=-1):
+        """The listed groups. With *timeout*, waits at most that long for the
+        lock, then copies the list without it (a last-resort kill must not
+        hang behind a stuck shutdown)."""
+        locked = self.lock.acquire(timeout=timeout)
+        try:
+            for _ in range(3):
+                try:
+                    return sorted(self.groups)
+                except RuntimeError:  # Changed while copied without the lock.
+                    continue
+            return []
+        finally:
+            if locked:
+                self.lock.release()
 
     def _wait(self, groups, seconds):
         """Drop the groups that are gone; return those still alive after *seconds*."""
@@ -593,12 +683,14 @@ class ToolGroups(object):
             _signal_group(pgid, 9)  # POSIX SIGKILL
         self._wait([pgid], wait)
 
-    def terminate(self, term_wait=1.0, kill_wait=1.0):
+    def terminate(self, term_wait=1.0, kill_wait=1.0, services=False):
         """SIGTERM every listed group, SIGKILL the ones alive after *term_wait*.
 
-        Returns the groups still alive after a further *kill_wait* seconds.
+        Service groups (SSH tunnels) only with *services*. Returns the groups
+        still alive after a further *kill_wait* seconds.
         """
-        groups = self.snapshot()
+        with self.lock:
+            groups = sorted(g for g in self.groups if services or g not in self.services)
         for pgid in groups:
             _signal_group(pgid, signal.SIGTERM)
         alive = self._wait(groups, term_wait)
@@ -1606,7 +1698,7 @@ def bind_profile_policy(job, connection, safety, get_profile, write=True):
     connection, safety = copy.deepcopy(connection), copy.deepcopy(safety)
     profile_id = connection.get('profile_id')
     profile = get_profile(profile_id) if profile_id else None
-    fields = ('host', 'port', 'user', 'ssl_mode', 'ssl_ca')
+    fields = ('host', 'port', 'user', 'ssl_mode', 'ssl_ca', 'ssh_host', 'ssh_user', 'ssh_port')
     endpoint = tuple((profile or {}).get(key) for key in fields)
     previous = getattr(job, 'policy_check', None)
 
@@ -1947,6 +2039,12 @@ def prepare_restore(conn, connection, directory, schema=None, tools=None, allow_
     target = '%s:%s' % (connection.get('host', '127.0.0.1'), connection.get('port', 3306))
     if schema:
         target += '/' + schema
+    from .ssh_tunnel import target_text
+    through = target_text(connection)
+    if through:
+        # The typed confirmation names the SSH host too: 127.0.0.1:3306 there
+        # is another server than 127.0.0.1:3306 here.
+        target += ' via ' + through
     if shell_dump:
         progress_file = _load_progress_file(request, server)
         request['progress_file'] = progress_file
@@ -2286,8 +2384,30 @@ def require_clone_recipient_tls(donor_connection, recipient_connection, saved=Fa
                       'to receive the donor password.')
 
 
+def refuse_clone_through_ssh(donor_connection, recipient_connection):
+    """CLONE INSTANCE is server to server: the recipient connects to the donor
+    over its own network, never through this computer's SSH tunnel. Refuse a
+    donor or recipient connection through SSH (Refused), before anything is
+    read or sent."""
+    from .ssh_tunnel import target_text
+    donor = target_text(donor_connection or {})
+    if donor:
+        raise Refused('The donor is reached through SSH host %s. CLONE INSTANCE runs between the two servers: the '
+                      'recipient connects to the donor over its own network, never through this computer\'s SSH '
+                      'tunnel, so myflames cannot check which server it would copy. Choose a donor connection '
+                      'without SSH (the donor as the recipient reaches it), or copy the data with dump and '
+                      'restore.' % donor)
+    recipient = target_text(recipient_connection or {})
+    if recipient:
+        raise Refused('The recipient is reached through SSH host %s. CLONE INSTANCE runs on the recipient, which '
+                      'connects to the donor over its own network, so the donor address read here may not be the '
+                      'one it reaches. Run the clone from a recipient connection without SSH, or copy the data '
+                      'with dump and restore.' % recipient)
+
+
 def prepare_clone(donor_conn, recipient_conn, donor_connection, recipient_connection, data_directory=None,
                   require_ssl=True, directory_probe=None, tools=None, donor_address=None):
+    refuse_clone_through_ssh(donor_connection, recipient_connection)
     if donor_connection.get('ssl_mode') in ('REQUIRED', 'VERIFY_CA', 'VERIFY_IDENTITY') and require_ssl is False:
         raise Refused('The donor requires TLS; clone must use REQUIRE SSL.')
     require_clone_recipient_tls(donor_connection, recipient_connection)
@@ -2348,6 +2468,7 @@ def clone_job(donor_connection, recipient_connection, plan, confirmed=False, typ
               restart_wait=RESTART_WAIT):
     if isinstance(poll_interval, bool) or not isinstance(poll_interval, (int, float)) or not 0.1 <= poll_interval <= 60:
         raise ValueError('Clone poll interval must be 0.1..60 seconds.')
+    refuse_clone_through_ssh(donor_connection, recipient_connection)
     donor_connection, recipient_connection = copy.deepcopy(donor_connection), copy.deepcopy(recipient_connection)
     request = copy.deepcopy(plan.get('request', {}))
     donor_address = request.get('donor_address')
@@ -2504,9 +2625,10 @@ def prepare_physical_backup(conn, connection, directory, tools=None, same_host_c
     _empty_directory(directory)
     tool = _pick(detect_tools() if tools is None else tools, ('mariadb-backup',), 'mariadb')
     checks = [_verification('engine', 'passed' if server['engine'] == 'mariadb' else 'failed', 'mariadb-backup requires MariaDB.'),
-              _verification('local_files', 'passed' if guidance['local_files_detected'] and
+              _verification('local_files', 'passed' if guidance['local_files_detected'] and not connection.get('ssh_host') and
                             connection.get('host') in ('localhost', '127.0.0.1', '::1') and same_host_confirmed is True else 'failed',
-                            'Requires the matching local Unix socket, accessible datadir, and explicit same_host_confirmed.'),
+                            'Requires the matching local Unix socket, accessible datadir, and explicit same_host_confirmed '
+                            '(never through SSH: the server is then on another computer).'),
               _verification('tool_version', 'passed' if version_tuple(tool['version'])[:2] == version_tuple(server['version'])[:2] else 'failed',
                             'Use mariadb-backup from the same server major.minor series.'),
               _privileges_check(conn, [('RELOAD', 'ALL', 'ALL PRIVILEGES'), ('PROCESS', 'ALL', 'ALL PRIVILEGES')])]

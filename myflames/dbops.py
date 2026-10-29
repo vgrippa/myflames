@@ -1041,29 +1041,52 @@ def connection_safety(profile=None, connection=None):
 
 def _same_endpoint(profile, connection):
     from .live import connection_options
-    from .workspace_store import ENDPOINT_FIELDS
+    from .workspace_store import ENDPOINT_FIELDS, endpoint_value
     try:
         options = connection_options({k: v for k, v in connection.items() if k != "password"})
     except (ValueError, TypeError):
         return False
-    return all((options.get(f) or "") == (profile.get(f) or "") for f in ENDPOINT_FIELDS)
+    return all(endpoint_value(options, f) == endpoint_value(profile, f) for f in ENDPOINT_FIELDS)
+
+
+def ssh_identity(connection):
+    """The SSH part of a connection identity: ``["ssh", host, user, port]``
+    (user "" and port 0 when not set), or None without an SSH host. The
+    same list as ``sshKey()`` in apps/workspace/src/binding.ts."""
+    from .workspace_store import endpoint_value
+    c = connection if isinstance(connection, dict) else {}
+    host = endpoint_value(c, "ssh_host")
+    if not host:
+        return None
+    try:
+        port = int(c.get("ssh_port") or 0)
+    except (TypeError, ValueError):
+        port = 0
+    return ["ssh", host, endpoint_value(c, "ssh_user"), port]
 
 
 def connection_identity(connection, safety=None):
     """The key reports and confirmations are bound to, as JSON text: the same
     list as ``connectionKey()`` in apps/workspace/src/binding.ts (saved
-    connection id, host, port, user, TLS mode and CA), followed by the type
-    and read-only flag when they are not the defaults (production,
-    read-write), so a Production read-write key is unchanged. Never the
-    password or the default schema. *safety* is :func:`connection_safety`;
-    without it the connection's own ``type`` and ``read_only`` are used."""
+    connection id, host, port, user, TLS mode and CA, then
+    :func:`ssh_identity` only for a connection through SSH), followed by the
+    type and read-only flag when they are not the defaults (production,
+    read-write), so a Production read-write key is unchanged and a
+    connection without SSH keeps its key byte for byte. Never the password
+    or the default schema. *safety* is :func:`connection_safety`; without it
+    the connection's own ``type`` and ``read_only`` are used."""
+    from .workspace_store import endpoint_value
     c = connection if isinstance(connection, dict) else {}
     try:
         port = int(c.get("port") or 0)
     except (TypeError, ValueError):
         port = 0
-    key = [c.get("profile_id") or "", c.get("host") or "", port, c.get("user") or "", c.get("ssl_mode") or "",
-           c.get("ssl_ca") or ""]
+    # Host and CA path trimmed like live.connection_options (and connectionKey).
+    key = [c.get("profile_id") or "", endpoint_value(c, "host"), port, c.get("user") or "", c.get("ssl_mode") or "",
+           endpoint_value(c, "ssl_ca")]
+    ssh = ssh_identity(c)
+    if ssh:
+        key.append(ssh)
     source = safety if isinstance(safety, dict) else c
     ctype = source.get("type") if source.get("type") in CONNECTION_TYPES else DEFAULT_CONNECTION_TYPE
     read_only = source.get("read_only") is True
@@ -1078,7 +1101,8 @@ IDENTITY_ENDPOINT_FIELDS = 6
 
 def identity_endpoint(identity):
     """The endpoint part of a :func:`connection_identity` text (saved
-    connection id, host, port, user, TLS mode and CA, without the type and
+    connection id, host, port, user, TLS mode and CA, and the SSH target of a
+    connection through SSH, without the type and
     read-only flag), as JSON text in the same form. Two identities with the
     same endpoint reach the same server through the same saved connection;
     they differ only in the write policy. Server-held jobs (skip loops,
@@ -1091,7 +1115,11 @@ def identity_endpoint(identity):
         return identity
     if not isinstance(key, list):
         return identity
-    return json.dumps(key[:IDENTITY_ENDPOINT_FIELDS], separators=(",", ":"), ensure_ascii=False)
+    # A connection through SSH has its SSH target (a list) right after the
+    # endpoint fields; the type that may follow is text.
+    size = IDENTITY_ENDPOINT_FIELDS + (1 if len(key) > IDENTITY_ENDPOINT_FIELDS
+                                       and isinstance(key[IDENTITY_ENDPOINT_FIELDS], list) else 0)
+    return json.dumps(key[:size], separators=(",", ":"), ensure_ascii=False)
 
 
 def decide(verdict, connection_type=DEFAULT_CONNECTION_TYPE, read_only=False, name=None):
@@ -1559,12 +1587,65 @@ def error_code(text):
     return int(m.group(1)) if m else None
 
 
+#: The connection errors any read can meet (connection_error_text), in plain
+#: words with what to check. Numbers from include/errmsg.h, the same in MySQL
+#: and MariaDB: 2002 CR_CONNECTION_ERROR and 2003 CR_CONN_HOST_ERROR (could
+#: not connect; the MariaDB client reports a refused TCP connection as 2002
+#: too), 2005 CR_UNKNOWN_HOST, 2006 CR_SERVER_GONE_ERROR and 2013
+#: CR_SERVER_LOST; 1045 is the server's ER_ACCESS_DENIED_ERROR.
+_CANNOT_CONNECT = "Could not connect to the server. Check that it is running and that the host and port are right."
+_CANNOT_CONNECT_SOCKET = "Could not connect to the server. Check that it is running and that the socket path is right."
+_UNKNOWN_HOST = "Could not find the server's host name. Check the host for a typing error, or use its IP address."
+_LOST = ("Lost the connection to the server. Check that it is still running: it may have restarted, "
+         "or a network or time limit ended the connection.")
+_ACCESS_DENIED = ("The server refused the user name or password. Check both, and that the account may "
+                  "connect from your address.")
+_ACCESS_DENIED_NO_PASSWORD = "The server refused the login, and no password was sent. Enter the password, or check the user name."
+
+
+def connection_error_text(text):
+    """*text* led by plain words and what to check when it carries one of the
+    common connection errors (could not connect, unknown host, lost
+    connection, access denied), else None.
+
+    The client's error line follows the lead unchanged from its ``ERROR n``
+    on (what comes after it, such as an SSH tunnel note, stays). The client
+    wrapper ("mysql client exited 1: ") is dropped. When no session was
+    opened (could not connect, unknown host, access denied) the caller's
+    context before the error ("Could not read the server status: ") is
+    dropped too, since nothing was read or sent; a connection lost on the
+    way keeps it ("Could not end connection 41: "), because what was being
+    done matters there. 1045 gets the user name and password hint only when
+    the message says Access denied, so no other failure reads as a password
+    problem.
+    """
+    raw = re.sub(r"mysql client exited \d+:\s*", "", str(text or ""))
+    m = re.search(r"\bERROR\s+(\d{3,5})\b", raw)
+    if not m:
+        return None
+    code = int(m.group(1))
+    tail = " ".join(raw[m.start():].split())
+    if code in (2002, 2003):
+        lead = _CANNOT_CONNECT_SOCKET if "through socket" in tail else _CANNOT_CONNECT
+    elif code == 2005:
+        lead = _UNKNOWN_HOST
+    elif code in (2006, 2013):
+        return _LOST + " " + " ".join(raw.split())
+    elif code == 1045 and "Access denied" in tail:
+        lead = _ACCESS_DENIED_NO_PASSWORD if "(using password: NO)" in tail else _ACCESS_DENIED
+    else:
+        return None
+    return lead + " " + tail
+
+
 # ---- the audit trail --------------------------------------------------------------------
 
 AUDIT_SCHEMA_VERSION = "audit-1.0"
 #: pending: written before sending, not finished (myflames stopped); unknown:
 #: interrupted or timed out after the statement may have reached the server.
-AUDIT_STATUSES = ("pending", "ok", "error", "declined", "refused", "unknown")
+#: "stopped": the person stopped a write that was under way (Import CSV); what
+#: was kept is in rows_affected and the message.
+AUDIT_STATUSES = ("pending", "ok", "error", "declined", "refused", "unknown", "stopped")
 SURFACES = ("ui", "cli")
 _TEXT_CAP = 20000
 
@@ -1584,10 +1665,12 @@ def _connection_fields(connection, safety, engine, server_version):
     connection = connection if isinstance(connection, dict) else {}
     safety = safety or connection_safety(None, connection)
     port = connection.get("port")
+    from .ssh_tunnel import target_text
     return {"profile_id": safety.get("profile_id"), "profile_name": safety.get("profile_name"),
             "connection_type": safety.get("type"), "read_only": bool(safety.get("read_only")),
             "host": connection.get("host"), "port": port if isinstance(port, int) else None,
-            "db_user": connection.get("user"), "engine": engine, "server_version": server_version}
+            "db_user": connection.get("user"), "ssh": target_text(connection), "engine": engine,
+            "server_version": server_version}
 
 
 def _json(value, password):
@@ -1752,7 +1835,7 @@ class AuditTrail(object):
 AUDIT_CSV_COLUMNS = ("id", "attempted_at", "finished_at", "status", "outcome", "surface", "os_user", "operation",
                      "profile_name", "connection_type", "read_only", "host", "port", "user", "engine",
                      "server_version", "statements", "target", "verified", "error_code", "message",
-                     "rows_affected", "duration_ms")
+                     "rows_affected", "duration_ms", "ssh")
 
 
 def audit_report(store, since_days=None, server=None, limit=None, status=None, before=None):
@@ -1792,7 +1875,8 @@ def audit_csv(records):
         c = r.get("connection") or {}
         values = {"profile_name": c.get("profile_name"), "connection_type": c.get("type"),
                   "read_only": c.get("read_only"), "host": c.get("host"), "port": c.get("port"),
-                  "user": c.get("user"), "engine": c.get("engine"), "server_version": c.get("server_version"),
+                  "user": c.get("user"), "ssh": c.get("ssh"), "engine": c.get("engine"),
+                  "server_version": c.get("server_version"),
                   "statements": "\n".join(r.get("statements") or [])}
         writer.writerow([_csv_cell(values[k] if k in values else r.get(k)) for k in AUDIT_CSV_COLUMNS])
     return buffer.getvalue()

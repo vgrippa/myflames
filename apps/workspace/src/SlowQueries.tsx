@@ -1060,7 +1060,7 @@ export function TopStatementsView({
       controls={
         <>
           <ToolbarSelect label="Rank by" value={order} options={ORDERS} onChange={onOrderChange} />
-          <SchemaField id="top-schema" value={schema} onChange={onSchemaChange} />
+          <SchemaField id="top-schema" connection={connection} value={schema} onChange={onSchemaChange} />
           {state.table && (
             <p className="perf-focus top-table-chip" data-table={tableName(state.table)}>
               Table: <code>{tableName(state.table)}</code>

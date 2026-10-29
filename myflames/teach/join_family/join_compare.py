@@ -16,6 +16,84 @@ from .._cost_model import JOIN_BUFFER_SIZE_DEFAULT, MYSQL_BNL_REMOVED_IN
 
 _LESSON_JS_TEMPLATE = _html.load_lesson_js(__file__)
 
+# Guided steps (see _html.normalize_guide). join_compare.js advances both
+# panels together, one slice per step, and marks each slice with the part of
+# each join it runs (tl.beat(kind)). No MySQL function notes: block nested
+# loop is MariaDB's, and the hash join functions are not on
+# _html.VERIFIED_SERVER_FUNCTIONS.
+GUIDE = {
+    "code": {
+        "title": "BNL (MariaDB) and hash join (MySQL)",
+        "lines": [
+            ("bnl-block", 0, "BNL: for each block of customers that fits join_buffer_size:"),
+            ("bnl-scan", 1, "scan all of orders, comparing each order with the block"),
+            ("bnl-end", 0, "BNL: no customers left, done"),
+            ("hash-build", 0, "Hash: put every customer in bucket hash(signup_month)"),
+            ("hash-probe", 0, "Hash: for each order, look only in bucket hash(signup_month)"),
+            ("hash-end", 0, "Hash: every order probed, done"),
+            ("compare", 0, "compare the two counts of row comparisons"),
+        ],
+    },
+    "beats": {
+        "block-build": ["bnl-block", "bnl-scan", "hash-build"],
+        "block-probe": ["bnl-block", "bnl-scan", "hash-probe"],
+        "probe-only": ["bnl-end", "hash-probe"],
+        "block-only": ["bnl-block", "bnl-scan", "hash-end"],
+        "compare": ["bnl-end", "hash-end", "compare"],
+    },
+    "quiz": [
+        {
+            "question": "As customers grows, which join's work grows faster?",
+            "choices": [
+                ("MariaDB's block nested loop, because orders is scanned again for every block",
+                 True,
+                 "More customers means more blocks, and each block is another full scan of "
+                 "orders, while the hash join still reads each table about once."),
+                ("MySQL's hash join, because its hash table gets bigger", False,
+                 "The hash table grows with customers, but each order still probes one bucket, "
+                 "so the work stays about n + m."),
+                ("Neither, since both read every row", False,
+                 "Both read every row at least once, but the block nested loop reads orders "
+                 "again for every block."),
+            ],
+        },
+        {
+            "question": ("MariaDB can also hash its join buffer (join_cache_level 3 or 4). How "
+                         "does that differ from MySQL's hash join?"),
+            "choices": [
+                ("MariaDB still scans orders once for every buffer full of customers", True,
+                 "The hashed buffer speeds up matching inside each block, but the other table is "
+                 "still read once per buffer fill, while MySQL builds one hash table and spills "
+                 "to disk if it must."),
+                ("It is the same algorithm under another name", False,
+                 "MySQL builds one hash table from the whole build input and reads the probe "
+                 "input once in the usual case; MariaDB's hashed buffer is still a block nested "
+                 "loop."),
+                ("MariaDB's version needs an index on signup_month", False,
+                 "MariaDB builds the hash key from the equality in the ON clause, so it works "
+                 "without an index, the case this lesson shows."),
+            ],
+        },
+        {
+            "question": ("join_buffer_size defaults to 256 KiB in both engines. What does raising "
+                         "it do for this query?"),
+            "choices": [
+                ("BNL needs fewer blocks (up to MariaDB's join_buffer_space_limit), so fewer "
+                 "scans of orders, and the hash join spills to disk less often", True,
+                 "Both joins keep rows in the join buffer, so a bigger buffer means fewer "
+                 "rescans for MariaDB's block nested loop and less spilling for MySQL's hash "
+                 "join."),
+                ("Nothing for the hash join, which does not use the join buffer", False,
+                 "MySQL sizes its in-memory hash table by join_buffer_size and spills to disk "
+                 "past it."),
+                ("It makes MariaDB switch to a hash join", False,
+                 "The algorithm comes from join_cache_level, not from the buffer size; a bigger "
+                 "buffer only packs more customers into each block."),
+            ],
+        },
+    ],
+}
+
 
 def render() -> str:
     controls_html = f"""
@@ -63,9 +141,10 @@ def render() -> str:
         "What you'll see in the animation",
         [
             "Left panel — MariaDB BNL: customers rows pack into blocks; a yellow sweep bar crosses the orders table once per block. One sweep = one full scan of orders.",
-            "Right panel — MySQL 8.4 hash join: orange build-tuples fly into hash buckets (phase 1), then teal probe-tuples fly into those buckets (phase 2). Only one pass of each side.",
+            "Right panel — MySQL 8.4 hash join: labelled customer pills ('Acme Corp Jan') fly into month buckets (build), then labelled order pills ('#101 Jan') fly into those buckets (probe). Only one pass of each side.",
             "Both panels run the same input in parallel so you can feel the asymptotic difference — BNL grows quadratically with customers, hash grows linearly.",
             "Each panel has its own row-pair comparison counter. The ratio is shown above as 'Speedup (hash vs BNL)'. At small sizes it is close to 1×; crank the sliders and watch it grow.",
+            "Next step moves both panels forward together by one slice; the simplified code beside the drawing highlights the line each join is on.",
         ],
     )
 
@@ -73,7 +152,7 @@ def render() -> str:
 <section class="stage">
   {query_card_html}
   {explainer_html}
-  {_html.stage_toolbar("Ready — press Play")}
+  {_html.stage_toolbar("Ready: press Next step, or Play to run it all")}
   <div class="stage-with-phases">
     <div style="flex:1;min-width:0;display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start">
       <div>
@@ -123,10 +202,11 @@ def render() -> str:
 
     <p>MySQL 8.4's hash join (and PostgreSQL's, and most analytics
     engines') is a two-phase algorithm: <em>build</em> a single in-memory
-    hash table from the smaller input, then stream the larger input
-    through once. That's <code>O(build + probe)</code>. Hash join has
-    existed in MariaDB in a limited form since 10.4 but is not the
-    default, and its heuristics are different from MySQL's.</p>
+    hash table from one input (usually the smaller), then stream the other
+    input through once. That's <code>O(build + probe)</code>. MariaDB has
+    long had its hashed join buffer (BNLH, <code>join_cache_level</code> 3
+    and up), but it is not used at the default level 2, and it still works
+    block by block.</p>
 
     <p>Takeaway: when you see "hash join" in a MariaDB EXPLAIN, check
     which <code>join_cache_level</code> is active. In MySQL 8.4 there's
@@ -153,4 +233,5 @@ def render() -> str:
         readout_html=readout_html,
         learn_more_html=learn_more_html,
         lesson_js=lesson_js,
+        guide=GUIDE,
     )

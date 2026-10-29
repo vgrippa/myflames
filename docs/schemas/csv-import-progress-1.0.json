@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/vgrippa/myflames/docs/schemas/csv-import-progress-1.0.json",
+  "title": "myflames Import CSV progress (csv-import-progress-1.0)",
+  "description": "What a plan check (kind plan) or an import (kind apply) is doing now, by the request's progress_id. No SQL and no credentials. phase: checking, creating, sending, committing, rolling_back, finished, or unknown for an id this workspace does not know. in_flight is true while a data statement is with the server (Stop then sends KILL QUERY for LOAD DATA; INSERT stops before the next statement).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "phase",
+    "rows_total",
+    "rows_checked",
+    "rows_sent",
+    "rows_committed",
+    "batches_done",
+    "batches_total",
+    "in_flight",
+    "started_at",
+    "elapsed_s",
+    "stop_requested"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "csv-import-progress-1.0"
+    },
+    "kind": {
+      "enum": [
+        "plan",
+        "apply",
+        null
+      ]
+    },
+    "phase": {
+      "enum": [
+        "checking",
+        "creating",
+        "sending",
+        "committing",
+        "rolling_back",
+        "finished",
+        "unknown"
+      ]
+    },
+    "rows_total": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "rows_checked": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "rows_sent": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "rows_committed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "batches_done": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "batches_total": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "in_flight": {
+      "type": "boolean"
+    },
+    "started_at": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "elapsed_s": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "stop_requested": {
+      "type": "boolean"
+    }
+  }
+}

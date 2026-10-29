@@ -169,20 +169,20 @@ try {
   const last = (pathname) => (seen[pathname] || []).at(-1);
   const overflow = () => page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
 
-  // 1. Places: thirteen, in order (Cluster right after Replication, then
-  // ProxySQL; Query digest and Database diagram right below the Query editor
-  // in the SQL workspace group), each with its own icon.
-  const places = ["Home", "Server", "Workload", "Replication", "Cluster", "ProxySQL", "Tuning", "Query editor", "Query digest", "Database diagram", "Plans", "Investigations", "Learn"];
+  // 1. Places: fourteen, in order (Cluster right after Replication, then
+  // ProxySQL; Query digest, Database diagram and Schema versions right below
+  // the Query editor in the SQL workspace group), each with its own icon.
+  const places = ["Home", "Server", "Workload", "Replication", "Cluster", "ProxySQL", "Tuning", "Query editor", "Query digest", "Database diagram", "Schema versions", "Plans", "Investigations", "Learn"];
   assert.deepEqual(await texts(".main-nav button"), places);
   const icons = await page.$$eval(".main-nav button svg", (els) => els.map((e) => e.innerHTML));
-  assert.equal(icons.length, 13);
-  assert.equal(new Set(icons).size, 13, "every place has a distinct icon");
-  // The SQL workspace group: Query editor, Query digest, Database diagram, Plans.
+  assert.equal(icons.length, 14);
+  assert.equal(new Set(icons).size, 14, "every place has a distinct icon");
+  // The SQL workspace group: Query editor, Query digest, Database diagram, Schema versions, Plans.
   assert.deepEqual(await page.$$eval(".main-nav > *", (els) => {
     const start = els.findIndex((e) => e.textContent === "SQL workspace");
     const end = els.findIndex((e) => e.textContent === "Library");
     return els.slice(start + 1, end).map((e) => e.textContent);
-  }), ["Query editor", "Query digest", "Database diagram", "Plans"]);
+  }), ["Query editor", "Query digest", "Database diagram", "Schema versions", "Plans"]);
   assert.equal(await page.$eval(".brand", (e) => e.getAttribute("aria-label")), "myflames Home");
   assert.equal(await page.title(), "myflames · Performance workspace");
 
@@ -208,7 +208,7 @@ try {
   const screens = {
     Plans: ".plans-empty",
     "Query editor": ".query-lab",
-    "Query digest": ".digest-place .query-digest-container",
+    "Query digest": ".digest-place .qd-place",
     "Database diagram": ".server-place.is-diagram-place .server-view[data-view=diagram]",
     Server: ".server-place",
     Workload: ".server-place",
@@ -380,10 +380,10 @@ try {
   assert.equal(await page.$eval(settings, (e) => e.getAttribute("aria-expanded")), "true");
   assert.match(await text("#settings-popover"), /Restore workspace on startup/);
   // Saved passwords exist (Keychain); they are never part of the workspace.
-  assert.equal(await text("#session-toggle-hint"), "Off clears the saved workspace.");
-  await page.click('#settings-popover button[aria-label="About restoring the workspace"]');
-  assert.match(await text('.popover[aria-label="About restoring the workspace"]'), /Passwords are never part of the workspace\./);
-  await page.keyboard.press("Escape");
+  assert.equal(await text("#session-toggle-hint"), "Off clears the saved workspace. Passwords are never saved in it.");
+  assert.equal(await page.$('#settings-popover button[aria-label="About restoring the workspace"]'), null);
+  assert.equal(await page.$('#settings-popover button[aria-label="About Home news"]'), null);
+  assert.equal(await text("#news-toggle-hint"), "Planet MySQL and the MariaDB Foundation, read over HTTPS while Home is open.");
   assert.equal(await page.$eval("#settings-popover .session-toggle input", (e) => e.checked), true);
   assert.equal(
     await page.evaluate(() => document.activeElement?.closest("#settings-popover") !== null),
@@ -411,15 +411,11 @@ try {
   const focusLabel = () => page.evaluate(() => document.activeElement?.getAttribute("aria-label"));
   await page.click(settings);
   await page.waitForSelector("#settings-popover");
-  // Keyboard reachable: Tab from the startup option reaches its info button,
-  // the news switch and its info button, then the menu items.
-  await page.keyboard.press("Tab");
-  assert.equal(await focusLabel(), "About restoring the workspace");
+  // The switches keep their visible hints, without duplicate info stops.
   await page.keyboard.press("Tab");
   assert.equal(await page.evaluate(() => document.activeElement?.closest(".news-toggle")?.textContent.trim()),
     "Show MySQL and MariaDB news on Home");
-  await page.keyboard.press("Tab");
-  assert.equal(await focusLabel(), "About Home news");
+
   await page.keyboard.press("Tab");
   assert.equal(await focused(), "Audit log");
   await page.keyboard.press("Tab");
@@ -530,6 +526,7 @@ try {
   for (const label of ["Query editor", "Query digest", "Database diagram", "Server", "Workload", "Replication", "Cluster", "ProxySQL", "Tuning"]) {
     await go(label);
     await page.waitForSelector(`${safety}.is-production`);
+    assert.equal(await page.$eval(".connection-type-strip", (e) => [e.dataset.connectionStrip, e.getAttribute("aria-hidden")].join(" ")), "production true");
     assert.equal(await text(`${safety} strong`), "Production");
     assert.match(await text(safety), /^Production\s*· changes ask first$/);
     // The sentence names the note; Retry sits outside it as its own button.
@@ -561,6 +558,7 @@ try {
   for (const label of ["Plans", "Learn", "Investigations", "Home"]) {
     await go(label);
     assert.equal(await page.$('[data-status="safety"]'), null, `no safety state on ${label}`);
+    assert.equal(await page.$(".connection-type-strip"), null, `no connection type strip on ${label}`);
   }
 
   // 5. Open plans: a quiet list with a count; Baseline only with 2+ plans.
@@ -839,8 +837,8 @@ try {
   const stagingRow = connectionRow("Staging");
   assert.match(await text(prodRow), /analyst@db\.prod:3306shop/);
   assert.equal(await page.$eval(prodRow + " [data-col=password] span", el => el.title), "Password saved in macOS Keychain");
-  // No default schema reads as a dash (named for screen readers).
-  assert.match(await text(stagingRow), /dev@db\.staging:3307—No default schemaNot saved/);
+  // No default database reads as a dash (named for screen readers).
+  assert.match(await text(stagingRow), /dev@db\.staging:3307—No default databaseNot saved/);
   // The cell reads "Not saved"; its tooltip keeps the full status.
   assert.equal(await text(stagingRow + " [data-col=password]"), "Not saved");
   assert.equal(await page.$eval(stagingRow + " [data-col=password] span", el => el.title), "No saved password");
@@ -895,7 +893,7 @@ try {
   // Edit: change a saved connection's schema.
   await connectionAction(page, "Staging", "Edit");
   await page.waitForFunction(() => document.querySelector("#connection-form-title")?.textContent === "Edit “Staging”");
-  await setField("Schema", "reports");
+  await setField("Default database", "reports");
   await button("Save connection");
   await page.waitForFunction(() => /Connection "Staging" saved/.test(document.querySelector(".connections .notice")?.textContent || ""));
   assert.equal(last("/api/profiles/save").id, "p2");
@@ -920,8 +918,8 @@ try {
   assert.equal(await page.$(picker + " select"), null, "connection options start closed");
   await openConnectionPicker(page);
   assert.equal(await page.$eval(picker + " select", (e) => e.selectedOptions[0].textContent), "Prod");
-  // Account and privileges lives in the picker, beside Manage connections.
-  assert.deepEqual(await texts(picker + " .picker-actions button"), ["Account and privileges…", "Manage connections…"]);
+  // New connection…, Manage connections… and Account and privileges live in the picker.
+  assert.deepEqual(await texts(picker + " .picker-actions button"), ["New connection…", "Manage connections…", "Account and privileges…"]);
   await button("Account and privileges…", picker + " ");
   await page.waitForSelector("dialog.account-sheet[open]");
   assert.match(await text("dialog.account-sheet .sheet-lead"), /^Prod$/);
@@ -1107,38 +1105,90 @@ try {
     count: 120, total_ms: 9000 - i * 10, avg_ms: 45, max_ms: 90, rows_examined: 360000, rows_sent: 1200, examined_per_sent: 300,
     no_index_used: 120, no_good_index_used: 0, tmp_disk_tables: 0, sort_merge_passes: 0, sample_text: null, sample_truncated: false,
     first_seen: "2026-10-12 10:00:00", last_seen: "2026-10-12 11:00:00", flags: ["no_index_used"], capture_problem: null });
-  handlers["/api/live/top"] = (body) => ({ schema_version: "top-1.0", engine: "mysql", server_version: "8.4.3", order: body.order, notes: [],
-    statements: Array.from({ length: body.limit }, (_, i) => digestRow(i)) });
-  const digestRows = (p) => p.$$eval(".digest-place .query-digest-table tbody tr", (els) => els.length);
+  // 1,000 digests on the server: the list ends with one closing "other statements" row.
+  handlers["/api/live/top"] = (body) => {
+    const statements = Array.from({ length: body.limit }, (_, i) => digestRow(i));
+    const listed = statements.reduce((n, s) => n + s.total_ms, 0);
+    return { schema_version: "top-1.0", engine: "mysql", server_version: "8.4.3", order: body.order, notes: [], statements,
+      totals: { digests: 1000, total_ms: listed + 50000, executions: 120 * body.limit + 3000 },
+      others: { digests: 1000 - body.limit, total_ms: 50000, executions: 3000 }, cpu: { collected: false } };
+  };
+  const digestRows = (p) => p.$$eval(".digest-place tbody tr[data-row-key]", (els) => els.length);
   await page.setViewport({ width: 1440, height: 900 });
   await go("Query digest");
-  await page.select('.digest-place [aria-label="Row limit"]', "100");
-  await page.waitForFunction(() => document.querySelectorAll(".digest-place .query-digest-table tbody tr").length === 100);
+  await page.select('.digest-place select[aria-label="Statements to load"]', "100");
+  await page.waitForFunction(() => document.querySelectorAll(".digest-place tbody tr[data-row-key]").length === 100);
   for (const [width, height] of [[1440, 900], [720, 520]]) {
     await page.setViewport({ width, height });
     await new Promise((r) => setTimeout(r, 300));
     const box = await page.evaluate(() => {
-      const el = (s) => document.querySelector(s);
-      const scrolls = (s) => { const e = el(s); return !!e && e.scrollHeight > e.clientHeight + 1 && /auto|scroll/.test(getComputedStyle(e).overflowY); };
+      // The nearest box around the rows that scrolls them (the shared table or its view).
+      const root = document.querySelector(".digest-place .qd-place");
+      let scroller = null;
+      for (let e = root.querySelector("tbody tr[data-row-key]")?.parentElement; e && e !== root.parentElement; e = e.parentElement) {
+        if (e.scrollHeight > e.clientHeight + 1 && /auto|scroll/.test(getComputedStyle(e).overflowY)) { scroller = e; break; }
+      }
+      document.querySelectorAll("[data-test-scroller]").forEach((e) => e.removeAttribute("data-test-scroller"));
+      scroller?.setAttribute("data-test-scroller", "");
+      const r = (s) => root.querySelector(s)?.getBoundingClientRect();
       return { page: document.scrollingElement.scrollHeight - innerHeight, wide: document.documentElement.scrollWidth - innerWidth,
-        table: scrolls(".query-digest-table-wrapper"), split: scrolls(".query-digest-main-split"),
-        bottom: el(".query-digest-container").getBoundingClientRect().bottom, footer: el(".window-statusbar").getBoundingClientRect().top };
+        rows: !!scroller, bottom: root.getBoundingClientRect().bottom, footer: document.querySelector(".window-statusbar").getBoundingClientRect().top,
+        toolbar: r(".view-toolbar").bottom, summary: r(".qd-summary")?.top ?? Infinity,
+        others: r(".qd-others") ? { top: r(".qd-others").top, bottom: r(".qd-others").bottom, rows: r(".data-table-frame").bottom } : null };
     });
+    // The closing row stays in view under the scrolling rows, above the footer.
+    assert.ok(box.others && box.others.bottom <= box.footer + 1 && box.others.top >= box.others.rows - 1,
+      `${width}: the other-statements row closes the table above the footer ${JSON.stringify(box)}`);
+    // A narrow window wraps the toolbar onto several rows: the source line stays below it.
+    assert.ok(box.summary >= box.toolbar - 1, `${width}: the source line starts below the toolbar ${JSON.stringify(box)}`);
     assert.ok(box.page <= 1, `${width}: Query digest does not grow the page with its rows ${JSON.stringify(box)}`);
     assert.ok(box.wide <= 0, `${width}: no sideways scroll ${JSON.stringify(box)}`);
-    assert.ok(width > 1000 ? box.table : box.table || box.split,
-      `${width}: the rows scroll in their own area ${JSON.stringify(box)}`);
+    assert.ok(box.rows, `${width}: the rows scroll in their own area ${JSON.stringify(box)}`);
     assert.ok(box.bottom <= box.footer + 1, `${width}: Query digest ends at the footer ${JSON.stringify(box)}`);
     if (width > 1000) {
-      const scrolled = await page.$eval(".query-digest-table-wrapper", (e) => {
+      const scrolled = await page.$eval("[data-test-scroller]", (e) => {
         e.scrollTop = 100;
         return e.scrollTop;
       });
       assert.ok(scrolled > 0, "the desktop table really scrolls, rather than clipping its rows");
       assert.equal(await page.evaluate(() => document.scrollingElement.scrollTop), 0);
-      await page.$eval(".query-digest-table-wrapper", (e) => { e.scrollTop = 0; });
+      await page.$eval("[data-test-scroller]", (e) => { e.scrollTop = 0; });
     }
   }
+  await page.setViewport({ width: 1440, height: 1000 });
+
+  // The summary line leads with the numbers and fits the 120-character budget.
+  await page.setViewport({ width: 1440, height: 900 });
+  await new Promise((r) => setTimeout(r, 200));
+  const digestSummary = await page.$eval(".digest-place .qd-summary .summary-text", (e) => e.textContent || "");
+  assert.match(digestSummary, /^100 statements · [\d.,]+ [a-z]+ total · 12,000 executions/);
+  assert.ok(digestSummary.length <= 120, `the summary line is ${digestSummary.length} characters: ${digestSummary}`);
+  // The inspector's digest hash is one middle-truncated line, first and last
+  // characters kept, with the full value on hover and in Copy.
+  await page.click(".digest-place tbody tr[data-row-key]:first-child td[data-col=statement]");
+  await page.waitForSelector(".digest-place .view-inspector .qd-digest code");
+  const fullDigest = digestRow(0).digest;
+  assert.deepEqual(await page.$eval(".digest-place .view-inspector .qd-digest code", (e) => [e.textContent, e.title]),
+    [`${fullDigest.slice(0, 16)}…${fullDigest.slice(-8)}`, fullDigest]);
+  await page.click(".digest-place .view-inspector button[aria-label='Close inspector']");
+  // At the 720 px minimum the controls take at most two rows below the title,
+  // nothing overflows, and at least 7 rows stay on screen.
+  await page.setViewport({ width: 720, height: 600 });
+  await new Promise((r) => setTimeout(r, 300));
+  const narrowDigest = await page.evaluate(() => {
+    const controls = [...document.querySelectorAll(".digest-place .toolbar-controls > *")]
+      .filter((e) => e.getBoundingClientRect().height > 0);
+    const tops = [...new Set(controls.map((e) => Math.round(e.getBoundingClientRect().top)))];
+    const header = document.querySelector(".digest-place .data-table-frame thead").getBoundingClientRect();
+    const footer = document.querySelector(".window-statusbar").getBoundingClientRect().top;
+    const rows = [...document.querySelectorAll(".digest-place tbody tr[data-row-key]")]
+      .filter((e) => { const r = e.getBoundingClientRect(); return r.top >= header.bottom - 1 && r.bottom <= footer + 1; }).length;
+    return { controlRows: tops.length, headerY: Math.round(header.top), rows,
+      wide: document.documentElement.scrollWidth - innerWidth };
+  });
+  assert.ok(narrowDigest.controlRows <= 2, `the controls take at most two rows at 720 px ${JSON.stringify(narrowDigest)}`);
+  assert.ok(narrowDigest.rows >= 7, `at least 7 rows visible at 720x600, got ${narrowDigest.rows} (header at y=${narrowDigest.headerY})`);
+  assert.ok(narrowDigest.wide <= 0, `no sideways scroll at 720 px ${JSON.stringify(narrowDigest)}`);
   await page.setViewport({ width: 1440, height: 1000 });
 
   // 11. Reopening a workspace snapshot that is also on Query digest (another
@@ -1162,14 +1212,15 @@ try {
     }
     throw new Error(`${what}: ${JSON.stringify(last)}`);
   };
-  const search = '.digest-place input[placeholder^="Filter queries"]';
+  const search = '.digest-place input[aria-label="Filter statements"]';
+  const rankBy = '.digest-place select[aria-label="Rank by"]';
   await page.type(search, "t7");
-  await page.click(".digest-place .query-digest-table tbody tr:last-child");
-  assert.match(await text(".digest-place tr.is-selected .query-digest-sql-text"), /FROM t79 /);
-  const oldDigest = await page.$(".digest-place .query-digest-container");
+  await page.click(".digest-place tbody tr[data-row-key]:last-child");
+  assert.match(await text(".digest-place tr.is-selected .qd-statement"), /FROM t79 /);
+  const oldDigest = await page.$(".digest-place .qd-place");
   const releaseOldRead = hold("/api/live/top", (body) => body.extra_metrics && body.order === "scans");
-  await page.locator('.digest-place [role="tab"] ::-p-text(Full scans)').click();
-  await page.waitForFunction(() => document.querySelector(".digest-place .query-digest-actions button")?.disabled);
+  await page.select(rankBy, "scans");
+  await page.waitForFunction(() => document.querySelector('.digest-place [data-action="refresh"]')?.getAttribute("aria-busy") === "true");
   for (let i = 0; i < 200 && last("/api/live/top")?.order !== "scans"; i++) await new Promise((r) => setTimeout(r, 50));
   assert.equal(last("/api/live/top").order, "scans");
   const connectionBefore = last("/api/live/top").connection;
@@ -1181,7 +1232,7 @@ try {
   await other.setViewport({ width: 1440, height: 1000 });
   await other.goto(url, { waitUntil: "networkidle0" });
   await other.waitForFunction(() => document.querySelector(".session-status")?.dataset.state !== "loading");
-  await other.waitForFunction(() => document.querySelectorAll(".digest-place .query-digest-table tbody tr").length === 50);
+  await other.waitForFunction(() => document.querySelectorAll(".digest-place tbody tr[data-row-key]").length === 50);
   // Pause a real save from the first tab, then return to Query digest before
   // the second tab advances the revision. No connection fields change.
   await page.bringToFront();
@@ -1199,7 +1250,7 @@ try {
   await page.bringToFront();
   const readsBefore = seen["/api/live/top"].length;
   assert.equal(await page.$eval(search, (e) => e.value), "t7");
-  assert.equal(await text('.digest-place [role="tab"][aria-selected="true"]'), "Full scans");
+  assert.equal(await page.$eval(rankBy, (e) => e.value), "scans");
   assert.deepEqual(await active(), ["Query digest"]);
   releaseSave();
   await page.waitForFunction(() => document.querySelector(".session-notice")?.textContent.includes("changed in another browser tab"));
@@ -1208,22 +1259,23 @@ try {
   assert.equal(await page.$eval(search, (e) => e.value), "", "the reopened Query digest starts with no search");
   assert.equal(await oldDigest.evaluate((e) => e.isConnected), false, "the old digest was unmounted");
   await oldDigest.dispose();
-  assert.equal(await text('.digest-place [role="tab"][aria-selected="true"]'), "By total time");
-  assert.equal(await page.$eval('.digest-place [aria-label="Row limit"]', (e) => e.value), "50");
-  await page.waitForFunction(() => document.querySelectorAll(".digest-place .query-digest-table tbody tr").length === 50);
+  assert.equal(await page.$eval(rankBy, (e) => e.value), "time");
+  assert.equal(await page.$eval('.digest-place select[aria-label="Statements to load"]', (e) => e.value), "50");
+  await page.waitForFunction(() => document.querySelectorAll(".digest-place tbody tr[data-row-key]").length === 50);
   assert.ok(seen["/api/live/top"].length > readsBefore, "the reopened Query digest reads again");
   const reopened = last("/api/live/top");
   assert.equal(reopened.order, "time");
   assert.equal(reopened.limit, 50);
   for (const field of ["profile_id", "host", "port", "user", "database", "ssl_mode", "ssl_ca", "type", "read_only"])
     assert.equal(reopened.connection[field], connectionBefore[field], `reset kept connection ${field}`);
-  assert.match(await text(".digest-place tr.is-selected .query-digest-sql-text"), /FROM t0 /);
+  // A fresh report selects nothing, so the old selection is gone too.
+  assert.equal(await page.$(".digest-place tr.is-selected"), null);
   releaseOldRead();
   // Flush the old interception before checking that it cannot replace the
   // freshly opened report or restore the old selection.
   await page.waitForNetworkIdle();
   assert.equal(await digestRows(page), 50);
-  assert.match(await text(".digest-place tr.is-selected .query-digest-sql-text"), /FROM t0 /);
+  assert.equal(await page.$(".digest-place tr.is-selected"), null, "the old read restores no selection");
   await other.close();
 
   assert.deepEqual(errors, []);

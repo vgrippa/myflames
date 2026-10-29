@@ -23,10 +23,15 @@ The zoom controls read **−**, the percentage, **+**, then **Fit** (the same
 order as the Database diagram). The percentage follows the buttons, wheel
 gestures and **Fit**; click it to reset to 100%. Buttons highlight when activated; a
 disabled zoom button means that direction has reached its limit.
-Initial view fitting scales the diagram between 75% and 100%, prioritizing width
-so that wide trees remain readable instead of shrinking into illegible text.
-Trees start positioned at the top inputs, and larger trees remain pannable by
-dragging the canvas. In Compare mode, plans stack vertically at narrow viewport
+Fitting (on open, **Fit**, a double click, and a resize while fitted) never
+makes the smallest card or edge text (11 px) smaller than 11 px on screen. In
+the workspace the diagram fits its width without going past 100%; in reports
+and the standalone SVG it fits the whole plan. A plan too large for that
+starts at its top inputs and stays pannable by dragging the canvas; zoom out
+with **−** or the wheel to see more of it at once. When a report page scales
+the chart with its column, a chart that is still fitted refits at the new
+size (a zoom or pan you made is kept), and a very small chart may zoom in
+past the 500% button limit to keep its text readable. In Compare mode, plans stack vertically at narrow viewport
 widths to preserve readable card layouts.
 
 Data flows from inputs at the top toward the plan output below. Every node and
@@ -87,8 +92,8 @@ live in [`docs/demos/mysql-joins/`](demos/mysql-joins/).
   and zero vertical deltas do not zoom. Fit, buttons, and dragging stop pending
   wheel motion.
 - Use **−**, **100%**, **+**, or **Fit** to change the viewport. **Fit**
-  fits width first between 75% and 100%, starting at the top inputs while
-  leaving taller trees pannable.
+  returns to the opening view: the plan fitted as far as its 11 px text
+  allows, starting at the top inputs when it is larger, and pannable.
 - Search node details (**Search operators**) to dim nonmatching operations.
 - Each edge's rows label sits on an opaque chip, so the edge line never runs
   through the words.
@@ -122,8 +127,9 @@ The view uses myflames' existing parser, including its MySQL and MariaDB
 normalization. It is not a complete reproduction of Workbench: it does not add
 Workbench's raw-schema support, query-block reconstruction, or metadata that
 the current parser does not retain (such as some query-block metadata).
-There is one downward orientation; wide plans initially fit width between 75%
-and 100%, starting at the top inputs, while larger trees can be panned. In
+There is one downward orientation; plans open fitted only as far as keeps
+their text at 11 px or more, starting at the top inputs, while larger trees
+can be panned. In
 Compare mode, plans stack vertically at narrow widths to maintain card
 legibility. Zoom in or out to inspect individual cards. The separate output
 terminal is a visual endpoint, not another measured operator. Existing

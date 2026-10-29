@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, download, safePreview } from "./api";
 import { Icon } from "./components";
 import { bindFrameAppearance, themeFrame } from "./charts/core/appearance";
@@ -9,7 +9,14 @@ import {
   Select,
   SummaryLine,
   moveRowFocus,
+  useFocusScope,
 } from "./kit";
+
+/** Message type shared with the lesson page (teachFocus in myflames/teach/_html.py). */
+const FOCUS_MESSAGE = "myflames-lesson-focus";
+/** "native": the browser's full screen; "overlay": the lesson covers the
+ *  window (the Fullscreen API is refused or missing). */
+type FocusMode = "" | "native" | "overlay";
 
 type Lesson = {
   key: string;
@@ -50,6 +57,17 @@ export function Teach({
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
   const lessonFrame = useRef<HTMLIFrameElement>(null);
+  const lessonHost = useRef<HTMLDivElement>(null);
+  const fullScreenButton = useRef<HTMLButtonElement>(null);
+  const exitButton = useRef<HTMLButtonElement>(null);
+  const [focusMode, setFocusMode] = useState<FocusMode>("");
+  const focusNow = useRef<FocusMode>("");
+  focusNow.current = focusMode;
+  const requesting = useRef(false);
+  // Each request and each leave counts: a request that settles after the
+  // lesson was left (another place, another lesson) changes nothing.
+  const requestGen = useRef(0);
+  const focused = focusMode !== "";
   useEffect(() => {
     if (active && initialLesson) setLessonKey(initialLesson);
   }, [active, initialLesson]);
@@ -106,6 +124,82 @@ export function Teach({
     return () => controller.abort();
   }, [active, lessonKey, retry]);
 
+  // Full screen: the workspace owns it and tells the lesson to switch to its
+  // focus layout (only the animation, its controls, caption and numbers).
+  const tellLesson = (focus: boolean) =>
+    lessonFrame.current?.contentWindow?.postMessage({ type: FOCUS_MESSAGE, focus }, "*");
+  const leaveFullScreen = useCallback(() => {
+    requestGen.current += 1;
+    const host = lessonHost.current;
+    const done = () => setFocusMode("");
+    if (host && document.fullscreenElement === host) {
+      // The rest of the page stays inert until the browser has left full
+      // screen; end the mode then, so focus can return to the Full screen
+      // button (fullscreenchange usually gets there first).
+      document.exitFullscreen().then(done, done);
+      return;
+    }
+    done();
+  }, []);
+  function enterFullScreen() {
+    const host = lessonHost.current;
+    if (!host || focusNow.current || requesting.current) return;
+    if (!document.fullscreenEnabled || typeof host.requestFullscreen !== "function") {
+      setFocusMode("overlay");
+      return;
+    }
+    requesting.current = true;
+    const gen = ++requestGen.current;
+    const current = () => gen === requestGen.current && lessonHost.current === host;
+    host.requestFullscreen().then(
+      () => {
+        if (current()) setFocusMode(document.fullscreenElement === host ? "native" : "overlay");
+        // Granted after the lesson was left: give the screen back.
+        else if (document.fullscreenElement === host) void document.exitFullscreen().catch(() => {});
+      },
+      () => { if (current()) setFocusMode("overlay"); },
+    ).finally(() => {
+      requesting.current = false;
+    });
+  }
+  useEffect(() => {
+    tellLesson(focused);
+  }, [focused, html]);
+  useEffect(() => {
+    // Escape and the browser's own controls end native full screen.
+    const change = () => {
+      if (focusNow.current === "native" && document.fullscreenElement !== lessonHost.current) {
+        setFocusMode("");
+      }
+    };
+    document.addEventListener("fullscreenchange", change);
+    return () => document.removeEventListener("fullscreenchange", change);
+  }, []);
+  useEffect(() => {
+    // Escape pressed inside the lesson reaches only the lesson, which asks to
+    // leave. Accept that request from this lesson's frame only.
+    const receive = (event: MessageEvent) => {
+      const frame = lessonFrame.current;
+      const data = event.data;
+      if (!frame || event.source !== frame.contentWindow) return;
+      if (!data || data.type !== FOCUS_MESSAGE || data.focus !== false) return;
+      leaveFullScreen();
+    };
+    window.addEventListener("message", receive);
+    return () => window.removeEventListener("message", receive);
+  }, [leaveFullScreen]);
+  useEffect(() => {
+    if (!active || !html) leaveFullScreen();
+  }, [active, html, leaveFullScreen]);
+  // Escape in the workspace leaves, Tab stays inside, and focus returns to the
+  // Full screen button.
+  useFocusScope(lessonHost, {
+    open: focused,
+    onClose: leaveFullScreen,
+    initialFocus: () => lessonFrame.current,
+    returnFocus: () => fullScreenButton.current,
+  });
+
   function openLesson(key: string) {
     setError("");
     setLessonKey(key);
@@ -137,7 +231,7 @@ export function Teach({
       {lesson ? (
         <>
           <div
-            className="view-toolbar teach-toolbar"
+            className="view-toolbar teach-toolbar is-lesson"
             role="toolbar"
             aria-label="Lesson controls"
           >
@@ -174,9 +268,11 @@ export function Teach({
                   >
                     Previous lesson
                   </button>
+                  {/* "Lesson", never "Step": a step is one beat of the
+                      lesson's own animation (its step bar says "Step 2 of 8"). */}
                   <span className="teach-step-position">
                     {position >= 0
-                      ? `Step ${position + 1} of ${catalog.curriculum.length}`
+                      ? `Lesson ${position + 1} of ${catalog.curriculum.length}`
                       : "Additional topic"}
                   </span>
                   <button
@@ -197,6 +293,8 @@ export function Teach({
                 type="button"
                 className="button small"
                 disabled={!html}
+                aria-label="Download lesson"
+                title="Download lesson"
                 onClick={() =>
                   download(
                     html,
@@ -206,7 +304,19 @@ export function Teach({
                 }
               >
                 <Icon name="export" size={14} />
-                <span>Download lesson</span>
+                {/* Icon only in a narrow window, so Full screen keeps one row. */}
+                <span className="teach-wide-label">Download lesson</span>
+              </button>
+              <button
+                ref={fullScreenButton}
+                type="button"
+                className="button small"
+                disabled={!html}
+                aria-label="Show the lesson animation full screen"
+                onClick={enterFullScreen}
+              >
+                <Icon name="fullscreen" size={14} />
+                <span>Full screen</span>
               </button>
             </div>
           </div>
@@ -229,14 +339,54 @@ export function Teach({
             </div>
           )}
           {html && (
-            <iframe
-              ref={lessonFrame}
-              key={lessonKey}
-              title={`Lesson: ${lesson.title}`}
-              className="lesson-frame"
-              sandbox="allow-scripts allow-downloads allow-modals"
-              srcDoc={safePreview(themeFrame(markEmbedded(html)))}
-            />
+            <div
+              ref={lessonHost}
+              className={`lesson-host${focused ? " is-focus" : ""}${focusMode === "overlay" ? " is-overlay" : ""}`}
+              tabIndex={-1}
+              role={focused ? "dialog" : undefined}
+              aria-modal={focused ? true : undefined}
+              aria-label={focused ? `${lesson.title}, full screen` : undefined}
+            >
+              {focused && (
+                <div className="lesson-focus-bar">
+                  <span className="lesson-focus-title">{lesson.title}</span>
+                  <button
+                    ref={exitButton}
+                    type="button"
+                    className="button small"
+                    title="Exit full screen (Esc)"
+                    onClick={leaveFullScreen}
+                  >
+                    <Icon name="exit-fullscreen" size={14} />
+                    <span>Exit full screen</span>
+                  </button>
+                </div>
+              )}
+              <iframe
+                ref={lessonFrame}
+                key={lessonKey}
+                title={`Lesson: ${lesson.title}`}
+                className="lesson-frame"
+                sandbox="allow-scripts allow-downloads allow-modals"
+                allow="fullscreen"
+                tabIndex={0}
+                onLoad={() => tellLesson(focusNow.current !== "")}
+                srcDoc={safePreview(themeFrame(markEmbedded(html)))}
+              />
+              {focused && (
+                // Tab past the lesson's last control wraps to Exit; Shift+Tab
+                // from Exit (wrapped here by the focus scope) enters the lesson.
+                <span
+                  className="lesson-focus-wrap"
+                  tabIndex={0}
+                  onFocus={(event) =>
+                    event.relatedTarget === exitButton.current
+                      ? lessonFrame.current?.focus()
+                      : exitButton.current?.focus()
+                  }
+                />
+              )}
+            </div>
           )}
         </>
       ) : (
@@ -356,7 +506,7 @@ export function Teach({
                               {step >= 0 && (
                                 <span className="row-value">
                                   <span className="row-secondary">
-                                    Step {step + 1} of{" "}
+                                    Lesson {step + 1} of{" "}
                                     {catalog.curriculum.length}
                                   </span>
                                 </span>

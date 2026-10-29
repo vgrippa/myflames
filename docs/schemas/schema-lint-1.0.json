@@ -1,0 +1,188 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/vgrippa/myflames/docs/schemas/schema-lint-1.0.json",
+  "title": "myflames schema lint (schema-lint-1.0)",
+  "description": "Read-only review of a validated schema snapshot. Findings are watch-level review prompts, not migration SQL. not_judged lists unavailable or incomplete evidence, including offline live checks. A missing finding is not proof of schema correctness. No connection credentials are serialized.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "database",
+    "server",
+    "findings",
+    "not_judged"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "schema-lint-1.0"
+    },
+    "database": {
+      "type": "string"
+    },
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "engine"
+      ],
+      "properties": {
+        "engine": {
+          "enum": [
+            "mysql",
+            "mariadb"
+          ]
+        },
+        "flavor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "server_product": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "server_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hostname": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "host": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "port": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "lower_case_table_names": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ssh_host": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Present only when the server was read through an SSH tunnel: the SSH host (host and port are then the database as that SSH host reaches it). Part of the server's identity: the same host and port through another SSH host, or none, is another server."
+        },
+        "ssh_user": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The SSH user, when one was given (else the user's ~/.ssh/config decides)."
+        },
+        "ssh_port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "The SSH port, when one was given."
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "rule",
+          "object",
+          "column",
+          "status",
+          "text",
+          "detail"
+        ],
+        "properties": {
+          "rule": {
+            "enum": [
+              "money_float",
+              "utf8mb3",
+              "myisam",
+              "zero_date",
+              "reserved_word",
+              "fk_index",
+              "fk_parent_key",
+              "definer_missing"
+            ]
+          },
+          "object": {
+            "type": "string",
+            "description": "Object type and name, for example table orders."
+          },
+          "column": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Column name, comma-separated foreign-key column names, or null for an object-wide observation."
+          },
+          "status": {
+            "const": "watch"
+          },
+          "text": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "not_judged": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "rule",
+          "object",
+          "column",
+          "reason"
+        ],
+        "properties": {
+          "rule": {
+            "enum": [
+              "money_float",
+              "utf8mb3",
+              "myisam",
+              "zero_date",
+              "reserved_word",
+              "fk_index",
+              "fk_parent_key",
+              "definer_missing"
+            ]
+          },
+          "object": {
+            "type": "string",
+            "description": "Object type and name, for example table orders."
+          },
+          "column": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Column name, comma-separated foreign-key column names, or null for an object-wide observation."
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

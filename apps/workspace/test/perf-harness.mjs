@@ -282,6 +282,8 @@ export async function open(endpoint, name, extra = {}, { fallback = null, list =
       const row = await page.waitForSelector(selector, { visible: true });
       // Locator waits for a stable box after Back restores list scroll/focus.
       const target = (await row.$("[data-row-key]")) ? `${selector} [data-row-key]` : selector;
+      // Centered first: scrolled only as far as needed, a row can sit under the fixed top bar.
+      await page.$eval(target, (e) => e.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" }));
       await page.locator(target).click();
       await page.waitForSelector(".view-inspector .inspector-title");
     },

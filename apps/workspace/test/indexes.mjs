@@ -235,7 +235,7 @@ try {
   await waitCalls(3);
   assert.deepEqual([topCalls()[2].body.order, topCalls()[2].body.table], ["no_index", undefined]);
   await page.waitForFunction(() => !/naming/.test(document.querySelector(".server-view[data-view=top] .summary-line")?.textContent || "naming"));
-  await page.type("#top-schema", "mfshop");
+  await page.select("#top-schema", "mfshop");
 
   // Back in Indexes: the report is kept (no second read) and the list tab starts again at its
   // default; the statements read earlier are kept, so opening the table shows them without a read.
@@ -460,6 +460,12 @@ try {
   await menuItem(".row-action-menu [role=menuitem]", "Set invisible…");
   await expectReview(toggle);
   await h.select(oddRow);
+  assert.equal(await page.$$eval('.view-inspector [data-reviewed-sql]', buttons => buttons.filter(button => /^Set invisible/.test(button.textContent)).length), 1);
+  assert.equal(await page.$$eval('.view-inspector [data-reviewed-sql]', buttons => buttons.filter(button => /^Drop index/.test(button.textContent)).length), 1);
+  assert.equal(await page.$$eval('.view-inspector .inspector-block', sections => {
+    const advice=sections.find(section=>section.querySelector('h4')?.textContent==='What to do');
+    return advice ? advice.querySelectorAll('[data-reviewed-sql]').length : -1;
+  }), 0, 'What to do keeps the explanation and SQL previews, with no second write action');
   await page.$$eval('.view-inspector [data-reviewed-sql]', buttons => buttons.find(button => button.textContent.startsWith("Drop index"))?.click());
   await expectReview(drop);
   const contextAction = async label => {

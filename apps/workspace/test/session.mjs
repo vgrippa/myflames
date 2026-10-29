@@ -320,7 +320,7 @@ try {
     // The connection in use comes back, without its password.
     await openConnectionPicker(p);
     const picker = await p.$eval(".window-toolbar .connection-picker", (e) => e.textContent);
-    assert.match(picker, /Local MySQL \(not saved\)/);
+    assert.match(picker, /analyst@db\.internal \(not saved\)/);
     assert.match(picker, /analyst@db\.internal:3306/);
     assert.equal(
       await p.$eval(".window-toolbar .picker-password", (e) => e.value),

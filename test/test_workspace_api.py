@@ -158,7 +158,9 @@ class TestWorkspaceAPI(unittest.TestCase):
             status, body, _ = self.request('/api/connection/test', {'connection': {
                 'host': 'localhost', 'port': '3307', 'password': 'secret-for-test'}})
             self.assertEqual((status, body), (200, {'version': '9.7.0', 'engine': 'mysql', 'flavor': 'mysql',
-                                                    'product': 'MySQL', 'schemas': ['inventory', 'reporting']}))
+                                                    'product': 'MySQL', 'schemas': ['inventory', 'reporting'],
+                                                    'databases': ['inventory', 'reporting'],
+                                                    'databases_truncated': False}))
             self.assertEqual(connection.call_args[1]['port'], 3307)
             self.assertEqual(connection.call_args[1]['password'], 'secret-for-test')
             conn.query_rows.assert_called_once_with('SHOW DATABASES')

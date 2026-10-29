@@ -91,7 +91,7 @@ def fingerprint(account):
 
 def _connection(conn):
     return {k: getattr(conn, k, None) for k in ('host', 'port', 'user', 'ssl_mode', 'ssl_ca', 'ssl_cert', 'ssl_key',
-                                                 'ssl_cipher')}
+                                                 'ssl_cipher', 'ssh_host', 'ssh_user', 'ssh_port')}
 
 
 def _same_sql_connection(conn, reviewed):

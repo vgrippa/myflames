@@ -421,6 +421,13 @@ def _mariadb_report(conn, server, reader, report):
     # Remote hints only join path strings: never resolve local symlinks for a
     # server whose host checks have not passed.
     hint = _how_to_view(path, datadir)
+    through = getattr(conn, 'ssh_host', None)
+    if through:
+        # Through SSH the database host (often 127.0.0.1) is as the SSH host
+        # sees it: the server is never on this computer.
+        return _unavailable(report, 'remote', 'This MariaDB server is reached through SSH host %s, so it runs on '
+                            'another computer, and MariaDB has no SQL access to its error log, so the log file '
+                            'cannot be read from here.' % through, hint)
     if not local_connection(getattr(conn, 'host', None)):
         return _unavailable(report, 'remote', 'This MariaDB server runs on another computer, and MariaDB has no SQL '
                             'access to its error log, so the log file cannot be read from here.', hint)

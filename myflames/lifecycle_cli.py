@@ -521,6 +521,8 @@ def _donor_settings(args, passwords, recipient=None):
                             user=args.donor_user, password=args.donor_password, database=None,
                             ssl_mode=args.donor_ssl_mode, ssl_ca=args.donor_ssl_ca)
     profile, planned = _planned(ns)
+    # Before any password prompt or connection: CLONE never goes through SSH.
+    lc.refuse_clone_through_ssh(planned, recipient or {})
     safety = dbops.connection_safety(profile, planned)
     if args.no_require_ssl and (planned.get('ssl_mode') in ('REQUIRED', 'VERIFY_CA', 'VERIFY_IDENTITY') or
                                (profile or {}).get('ssl_mode') in ('REQUIRED', 'VERIFY_CA', 'VERIFY_IDENTITY')):

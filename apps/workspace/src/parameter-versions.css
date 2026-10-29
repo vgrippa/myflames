@@ -1,0 +1,285 @@
+/* Parameters > Versions (ParameterVersions.tsx): Compare versions and
+   Parameter history over the release catalog. Tokens only (web-design);
+   badges are the comparison badges of compare-shared.css. */
+.pv-panel,
+.pv-result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.pv-result.is-stale {
+  opacity: 0.6;
+  transition: opacity var(--motion-hover);
+}
+
+/* Mode, engine and the releases (or the parameter) on one row that wraps. */
+.pv-setup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  min-width: 0;
+}
+.pv-setup .segmented { flex: none; }
+/* From, Swap and To wrap together. */
+.pv-releases {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.pv-field .select { max-width: 160px; }
+.pv-swap { flex: none; }
+.pv-panel > .action-status { margin: 0; }
+
+.pv-default-rule,
+.pv-build-only {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+}
+.pv-notes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.pv-notes p {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+}
+
+.pv-result .summary-line { margin: 0; }
+.pv-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  min-width: 0;
+}
+.pv-filters .toolbar-search { flex: 0 1 220px; min-width: 160px; }
+.pv-filters .toolbar-search input { width: 100%; }
+
+/* Change badges: at most three, the rest named on hover. */
+.pv-kinds {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.pv-more {
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+}
+.pv-name,
+.pv-value code,
+.pv-version code {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+.pv-value { min-width: 0; }
+.pv-pair {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pv-pair > .pv-value {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pv-arrow { flex: none; color: var(--ink-muted); }
+.pv-value.muted { color: var(--ink-muted); }
+.pv-empty {
+  margin: var(--space-4);
+  color: var(--ink-muted);
+}
+
+/* The inspector: Python's sentences, the replacement, then the facts. */
+.pv-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.pv-sentences {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding-left: var(--space-4);
+  font-size: var(--text-md);
+  line-height: var(--leading-md);
+}
+.pv-replacement {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+}
+.pv-replacement code { color: var(--ink); }
+.pv-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.pv-facts thead th:first-child { width: 34%; }
+.pv-facts th[scope="row"] { overflow-wrap: normal; }
+.pv-facts td { overflow-wrap: break-word; }
+/* A range breaks after "to" before it breaks inside the maximum. */
+.pv-facts .pv-part,
+.pv-latest .pv-part { display: inline-block; }
+
+/* The parameter field and its list of catalog names. */
+.pv-combobox { min-width: 0; }
+.pv-combobox-anchor {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+}
+.pv-combobox-input input { width: 260px; max-width: 100%; }
+/* Under the field, from its left edge. */
+.pv-combobox-list {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + var(--space-1));
+  left: 0;
+  width: max(100%, 300px);
+  max-height: 280px;
+  overflow: auto;
+  padding: var(--space-1);
+  background: var(--surface-raised);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-raised);
+}
+.pv-combobox-list[hidden] { display: none; }
+.pv-option {
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  cursor: default;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pv-option code { font-family: var(--font-mono); font-size: var(--text-sm); }
+.pv-option[aria-selected="true"] {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+.pv-combobox-more {
+  margin: var(--space-1) var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+}
+
+/* Parameter history: the latest facts beside the changes, stacked when narrow. */
+.pv-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+}
+.pv-suggestions code { font-family: var(--font-mono); }
+.pv-history {
+  display: grid;
+  grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+  min-width: 0;
+}
+.pv-latest,
+.pv-changes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.pv-latest h3,
+.pv-changes h3 {
+  margin: 0;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+.pv-latest .inspector-fields { margin: 0; }
+.pv-history-frame {
+  max-width: 100%;
+  max-height: min(70vh, 760px);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.pv-history-frame:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.pv-history-table {
+  width: 100%;
+  min-width: 520px;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.pv-history-table th,
+.pv-history-table td {
+  padding: var(--space-1) var(--space-3);
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+.pv-history-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  background: var(--surface-subtle);
+}
+.pv-history-table .pv-series-row th {
+  padding-top: var(--space-2);
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--surface-subtle);
+}
+.pv-history-table tbody:last-child tr:last-child td { border-bottom: 0; }
+.pv-version { white-space: nowrap; width: 88px; }
+.pv-change { min-width: 200px; }
+.pv-change .pv-kinds { flex-wrap: wrap; margin-right: var(--space-2); }
+.pv-text { color: var(--ink); }
+.pv-history-table td:nth-child(3),
+.pv-history-table td:nth-child(4) { width: 22%; overflow-wrap: break-word; }
+
+/* Narrow: the changes first, then the facts (key/value lists stack there). */
+@container view (max-width: 900px) {
+  .pv-history { grid-template-columns: minmax(0, 1fr); }
+  .pv-changes { order: -1; }
+}
+@container view (max-width: 760px) {
+  .pv-setup { gap: var(--space-2); }
+  .pv-field .select { max-width: 120px; }
+  .pv-combobox-input input { width: 200px; }
+}

@@ -1,0 +1,997 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/vgrippa/myflames/docs/schemas/account-compare-1.0.json",
+  "title": "myflames account-compare-1.0",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "account-compare-1.0"
+    },
+    "compared_at": {
+      "type": "string"
+    },
+    "source": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "live",
+            "unavailable"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "number": {
+          "type": "integer"
+        },
+        "label": {
+          "type": "string"
+        },
+        "saved_at": {
+          "type": "string"
+        },
+        "file": {
+          "type": "string"
+        },
+        "server": {
+          "type": "object",
+          "properties": {
+            "engine": {
+              "enum": [
+                "mysql",
+                "mariadb"
+              ]
+            },
+            "flavor": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "server_product": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "server_version": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "profile_id": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "profile_name": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "host": {
+              "type": "string"
+            },
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            }
+          },
+          "required": [
+            "host",
+            "port",
+            "engine"
+          ],
+          "additionalProperties": false
+        },
+        "captured_at": {
+          "type": "string"
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "target": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "live",
+            "unavailable"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "number": {
+          "type": "integer"
+        },
+        "label": {
+          "type": "string"
+        },
+        "saved_at": {
+          "type": "string"
+        },
+        "file": {
+          "type": "string"
+        },
+        "server": {
+          "type": "object",
+          "properties": {
+            "engine": {
+              "enum": [
+                "mysql",
+                "mariadb"
+              ]
+            },
+            "flavor": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "server_product": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "server_version": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "profile_id": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "profile_name": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "host": {
+              "type": "string"
+            },
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            }
+          },
+          "required": [
+            "host",
+            "port",
+            "engine"
+          ],
+          "additionalProperties": false
+        },
+        "captured_at": {
+          "type": "string"
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "complete": {
+      "type": "boolean"
+    },
+    "identical": {
+      "type": "boolean"
+    },
+    "counts": {
+      "type": "object",
+      "properties": {
+        "different": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "only_in_source": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "only_in_target": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "identical": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "not_compared": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "different",
+        "only_in_source",
+        "only_in_target",
+        "identical",
+        "not_compared"
+      ],
+      "additionalProperties": false
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "host": {
+            "type": "string"
+          },
+          "account": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "different",
+              "only_in_source",
+              "only_in_target",
+              "identical",
+              "not_compared"
+            ]
+          },
+          "status_text": {
+            "enum": [
+              "Different",
+              "Only in source",
+              "Only in target",
+              "Identical",
+              "Not compared"
+            ]
+          },
+          "source": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "host": {
+                    "type": "string"
+                  },
+                  "role": {
+                    "type": "boolean"
+                  },
+                  "exists": {
+                    "type": "boolean"
+                  },
+                  "attributes_checked": {
+                    "type": "boolean"
+                  },
+                  "defaults_checked": {
+                    "type": "boolean"
+                  },
+                  "tls_checked": {
+                    "type": "boolean"
+                  },
+                  "error": {
+                    "type": "string"
+                  },
+                  "grants": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "roles": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string"
+                        },
+                        "host": {
+                          "type": "string"
+                        },
+                        "admin_option": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "host"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "default_roles": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string"
+                        },
+                        "host": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "host"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "attributes": {
+                    "type": "object",
+                    "properties": {
+                      "plugins": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "locked": {
+                        "type": "boolean"
+                      },
+                      "expired": {
+                        "type": "boolean"
+                      },
+                      "limits": {
+                        "type": "object",
+                        "properties": {
+                          "MAX_QUERIES_PER_HOUR": {
+                            "type": "string"
+                          },
+                          "MAX_UPDATES_PER_HOUR": {
+                            "type": "string"
+                          },
+                          "MAX_CONNECTIONS_PER_HOUR": {
+                            "type": "string"
+                          },
+                          "MAX_USER_CONNECTIONS": {
+                            "type": "string"
+                          },
+                          "MAX_STATEMENT_TIME": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [],
+                        "additionalProperties": false
+                      },
+                      "password_options": {
+                        "type": "object",
+                        "properties": {
+                          "expire": {
+                            "type": [
+                              "string",
+                              "integer"
+                            ]
+                          },
+                          "expire_days": {
+                            "type": [
+                              "string",
+                              "integer"
+                            ]
+                          },
+                          "history": {
+                            "type": [
+                              "string",
+                              "integer"
+                            ]
+                          },
+                          "reuse_interval": {
+                            "type": [
+                              "string",
+                              "integer"
+                            ]
+                          },
+                          "require_current": {
+                            "type": [
+                              "string",
+                              "integer"
+                            ]
+                          },
+                          "failed_login_attempts": {
+                            "type": [
+                              "string",
+                              "integer"
+                            ]
+                          },
+                          "lock_time": {
+                            "type": [
+                              "string",
+                              "integer"
+                            ]
+                          }
+                        },
+                        "required": [],
+                        "additionalProperties": false
+                      },
+                      "tls": {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "oneOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "cipher_hex": {
+                            "oneOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "issuer_hex": {
+                            "oneOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "subject_hex": {
+                            "oneOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [],
+                        "additionalProperties": false
+                      }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                  },
+                  "system": {
+                    "type": "boolean",
+                    "description": "Built-in system account according to accounts.SYSTEM_ACCOUNTS."
+                  }
+                },
+                "required": [
+                  "name",
+                  "host",
+                  "role",
+                  "exists",
+                  "grants",
+                  "roles",
+                  "default_roles",
+                  "attributes"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "target": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "host": {
+                    "type": "string"
+                  },
+                  "role": {
+                    "type": "boolean"
+                  },
+                  "exists": {
+                    "type": "boolean"
+                  },
+                  "attributes_checked": {
+                    "type": "boolean"
+                  },
+                  "defaults_checked": {
+                    "type": "boolean"
+                  },
+                  "tls_checked": {
+                    "type": "boolean"
+                  },
+                  "error": {
+                    "type": "string"
+                  },
+                  "grants": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "roles": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string"
+                        },
+                        "host": {
+                          "type": "string"
+                        },
+                        "admin_option": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "host"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "default_roles": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string"
+                        },
+                        "host": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "host"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "attributes": {
+                    "type": "object",
+                    "properties": {
+                      "plugins": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "locked": {
+                        "type": "boolean"
+                      },
+                      "expired": {
+                        "type": "boolean"
+                      },
+                      "limits": {
+                        "type": "object",
+                        "properties": {
+                          "MAX_QUERIES_PER_HOUR": {
+                            "type": "string"
+                          },
+                          "MAX_UPDATES_PER_HOUR": {
+                            "type": "string"
+                          },
+                          "MAX_CONNECTIONS_PER_HOUR": {
+                            "type": "string"
+                          },
+                          "MAX_USER_CONNECTIONS": {
+                            "type": "string"
+                          },
+                          "MAX_STATEMENT_TIME": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [],
+                        "additionalProperties": false
+                      },
+                      "password_options": {
+                        "type": "object",
+                        "properties": {
+                          "expire": {
+                            "type": [
+                              "string",
+                              "integer"
+                            ]
+                          },
+                          "expire_days": {
+                            "type": [
+                              "string",
+                              "integer"
+                            ]
+                          },
+                          "history": {
+                            "type": [
+                              "string",
+                              "integer"
+                            ]
+                          },
+                          "reuse_interval": {
+                            "type": [
+                              "string",
+                              "integer"
+                            ]
+                          },
+                          "require_current": {
+                            "type": [
+                              "string",
+                              "integer"
+                            ]
+                          },
+                          "failed_login_attempts": {
+                            "type": [
+                              "string",
+                              "integer"
+                            ]
+                          },
+                          "lock_time": {
+                            "type": [
+                              "string",
+                              "integer"
+                            ]
+                          }
+                        },
+                        "required": [],
+                        "additionalProperties": false
+                      },
+                      "tls": {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "oneOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "cipher_hex": {
+                            "oneOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "issuer_hex": {
+                            "oneOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "subject_hex": {
+                            "oneOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [],
+                        "additionalProperties": false
+                      }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                  },
+                  "system": {
+                    "type": "boolean",
+                    "description": "Built-in system account according to accounts.SYSTEM_ACCOUNTS."
+                  }
+                },
+                "required": [
+                  "name",
+                  "host",
+                  "role",
+                  "exists",
+                  "grants",
+                  "roles",
+                  "default_roles",
+                  "attributes"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "differences": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "grants": {
+                    "type": "object",
+                    "properties": {
+                      "only_in_source": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "only_in_target": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "required": [
+                      "only_in_source",
+                      "only_in_target"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "roles": {
+                    "type": "object",
+                    "properties": {
+                      "only_in_source": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "name": {
+                              "type": "string"
+                            },
+                            "host": {
+                              "type": "string"
+                            },
+                            "admin_option": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "name",
+                            "host"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "only_in_target": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "name": {
+                              "type": "string"
+                            },
+                            "host": {
+                              "type": "string"
+                            },
+                            "admin_option": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "name",
+                            "host"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "only_in_source",
+                      "only_in_target"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "default_roles": {
+                    "type": "object",
+                    "properties": {
+                      "only_in_source": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "name": {
+                              "type": "string"
+                            },
+                            "host": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "name",
+                            "host"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "only_in_target": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "name": {
+                              "type": "string"
+                            },
+                            "host": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "name",
+                            "host"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "only_in_source",
+                      "only_in_target"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "attributes": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string"
+                        },
+                        "source": {},
+                        "target": {}
+                      },
+                      "required": [
+                        "name",
+                        "source",
+                        "target"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "grants",
+                  "roles",
+                  "default_roles",
+                  "attributes"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "system": {
+            "type": "boolean",
+            "description": "Built-in system account according to accounts.SYSTEM_ACCOUNTS. Kept in comparisons and omitted from default SQL exports unless explicitly chosen."
+          }
+        },
+        "required": [
+          "name",
+          "host",
+          "account",
+          "status",
+          "status_text",
+          "source",
+          "target",
+          "differences"
+        ],
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "not_compared"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "reason"
+              ]
+            }
+          }
+        ]
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "compared_at",
+    "source",
+    "target",
+    "complete",
+    "identical",
+    "counts",
+    "notes",
+    "items"
+  ],
+  "additionalProperties": false,
+  "description": "Credential-free direct grants, granted roles, default roles and non-secret attributes by exact user and host. Inherited grants are represented by their own role rows, never conflated with the direct account. Grant text normalizes privilege/column order, spacing and quoting; identifier case is significant. Unreadable attributes, account details or sides produce not_compared with a reason. Authentication hashes and internal parsed privilege models are never emitted. Rows and their side accounts expose system as a boolean for built-in system accounts. Protected ordinary users remain ordinary accounts."
+}

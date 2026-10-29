@@ -22,7 +22,7 @@ const server = spawn(
   process.env.PYTHON || "python3",
   [
     "-c",
-    "from myflames.ui import WorkspaceServer; import sys; s=WorkspaceServer(store_path=sys.argv[1]); print(s.launch_url,file=sys.stderr,flush=True); s.serve_forever()",
+    "from myflames.ui import WorkspaceServer; import myflames.ui as ui; import os,sys; from pathlib import Path; ui.ASSET_DIR=Path(os.environ.get('WORKSPACE_ASSETS', str(ui.ASSET_DIR))); s=WorkspaceServer(store_path=sys.argv[1]); print(s.launch_url,file=sys.stderr,flush=True); s.serve_forever()",
     path.join(directory, "workspace.sqlite3"),
   ],
   // A throwaway HOME and the vault backend: never ~/.myflames or the OS keychain.
@@ -132,9 +132,13 @@ const mock = {
   probe: [],
 };
 const seen = [];
+const ddlFixture = JSON.parse(await fs.readFile(new URL("./fixtures/ddl-progress.json", import.meta.url), "utf8"));
+mock.ddl = ddlFixture;
 const calls = (p) => seen.filter((s) => s.path === p).map((s) => s.body);
 function reply(p, body) {
   switch (p) {
+    case "/api/live/ddl-progress":
+      return mock.ddl;
     case "/api/editor/preview":
       if (mock.holdPreview) return null;
       return mock.preview ? mock.preview(body) : previewReply("unknown");
@@ -228,7 +232,12 @@ try {
   await page.setRequestInterception(true);
   page.on("request", (request) => {
     const p = new URL(request.url()).pathname;
-    if (!p.startsWith("/api/editor/") && p !== "/api/live/schemas" && p !== "/api/live/catalog" && p !== "/api/live/privileges") {
+    // Saved queries are answered by the real server (its throwaway store).
+    if (p.startsWith("/api/editor/saved/")) {
+      seen.push({ path: p, body: JSON.parse(request.postData() || "{}") });
+      return request.continue();
+    }
+    if (!p.startsWith("/api/editor/") && p !== "/api/live/schemas" && p !== "/api/live/catalog" && p !== "/api/live/privileges" && p !== "/api/live/ddl-progress") {
       if (p.startsWith("/api/live/") || p.startsWith("/api/connection/")) {
         // Recorded, so a test can prove nothing was captured.
         seen.push({ path: p, body: JSON.parse(request.postData() || "{}") });
@@ -401,7 +410,7 @@ try {
     status: "complete",
     session: session(),
     run: run(
-      [statement(0, "SELECT 1", 0), statement(1, "SELECT a, b, c", 10), statement(2, "UPDATE t SET a = 1 WHERE id = 2", 26, { kind: "write", verb: "update" })],
+      [statement(0, "SELECT 1", 0), statement(1, "SELECT a, b, c FROM shop.orders", 10), statement(2, "UPDATE t SET a = 1 WHERE id = 2", 43, { kind: "write", verb: "update" })],
       [
         rows(0, ["one"], [["1"], ["2"]]),
         rows(1, ["a", "b", "c", { name: "data", hex: true, type: null }], [[null, "", "NULL", "0xCAFE"]], { duration_ms: 1200 }),
@@ -467,11 +476,15 @@ try {
   await page.locator(".result-export button ::-p-text(Export)").click();
   await page.waitForSelector(".popover .export-binary");
   await page.locator(".popover label ::-p-text(Treat data as binary)").click();
+  // The SQL INSERT target starts as the one table the statement read; it stays editable.
+  assert.deepEqual(await page.$$eval(".popover .export-sql input", (els) => els.map((e) => e.value)), ["orders", "shop"]);
+  await page.$eval(".popover .export-sql input", (e) => e.select());
   await page.type(".popover .export-sql input", "orders_copy");
   await page.locator(".popover button ::-p-text(Download SQL)").click();
   body = await until(() => calls("/api/editor/export")[1], "no SQL export");
   assert.equal(body.format, "sql");
   assert.equal(body.table, "orders_copy");
+  assert.equal(body.schema, "shop");
   assert.equal(body.result.columns[3].binary, true, "marked binary only after the user chose it");
   await page.locator(".result-export button ::-p-text(Export)").click();
   await page.locator(".popover button ::-p-text(Copy as TSV)").click();
@@ -579,6 +592,13 @@ try {
   assert.deepEqual(body.selection, { start: 0, end: 20 });
   await page.waitForFunction(() => /rows may differ/.test(document.querySelector(".result-note")?.textContent || ""));
   assert.equal((await page.$$(".result-table tbody tr[data-row-key]")).length, 5);
+  // No schema in the statement and no USE before it in this run: the schema
+  // stays empty (an earlier run may have changed the session's database).
+  await page.locator(".result-export button ::-p-text(Export)").click();
+  await page.waitForSelector(".popover .export-sql input");
+  assert.deepEqual(await page.$$eval(".popover .export-sql input", (els) => els.map((e) => e.value)), ["orders", ""]);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".popover .export-sql"));
 
   // 7. Transactions: the indicator, Roll back, Commit, and closing a tab.
   mock.run.push({ status: "complete", session: session({ in_transaction: true, autocommit: true }), run: run([statement(0, "START TRANSACTION", 0, { kind: "write" })], [{ type: "ok", statement: 0, affected_rows: 0, info: null, warnings: 0, duration_ms: 1 }]) });
@@ -712,18 +732,38 @@ try {
   // ALTER review includes the guard, table evidence and an optional (never executed) rewrite.
   const guard = "/*myflames:editor*/ SET SESSION lock_wait_timeout = 5";
   const suggestion = WRITE + ", ALGORITHM=INPLACE, LOCK=NONE";
+  const alterPreflight = { schema: "app", table: "t", table_engine: "InnoDB", engine: "mysql", version: "8.4.11",
+    approx_bytes: 123456, metadata_known: true, transactions_known: true, metadata_locks: [
+      { connection_id: 81, lock_type: "SHARED_READ", status: "GRANTED" }],
+    transactions: [{ connection_id: 81, age_s: 120, query: "SELECT * FROM t" }],
+    unattributed_transactions: [], suggestion,
+    // alter_algorithm.predict's payload: the statement and each clause.
+    prediction: { predicted: true, algorithm: "INPLACE", rebuild: true, concurrent_dml: true,
+      summary: "INPLACE, rebuilds the table", text: "Rebuilds the table in place; concurrent writes continue.",
+      reason: "InnoDB does this in place, but must rebuild the table (a new clustered index) to do it.",
+      source: "mysql-server storage/innobase/handler/handler0alter.cc:128-138 INNOBASE_ALTER_REBUILD",
+      notes: ["The ALTER waits for a metadata lock at its start and end."],
+      clauses: [{ text: "ADD COLUMN x INT", algorithm: "INPLACE", rebuild: true, concurrent_dml: true,
+        summary: "INPLACE, rebuilds the table", outcome: "Rebuilds the table in place; concurrent writes continue.",
+        reason: "The table has used all its instant row versions, so the server rebuilds it.",
+        source: "mysql-server storage/innobase/handler/handler0alter.cc:1073-1083 is_valid_row_version" }] } };
   await setText(WRITE);
   mock.run.push({ status: "needs_confirmation", session: session(),
     confirmation: confirmation("alter-review", [guard, WRITE], { tone: "danger", category: "ddl",
-      alter_preflight: { schema: "app", table: "t", table_engine: "InnoDB", engine: "mysql", version: "8.4.11",
-        approx_bytes: 123456, metadata_known: true, transactions_known: true, metadata_locks: [
-          { connection_id: 81, lock_type: "SHARED_READ", status: "GRANTED" }],
-        transactions: [{ connection_id: 81, age_s: 120, query: "SELECT * FROM t" }],
-        unattributed_transactions: [], suggestion } }) });
+      alter_preflight: alterPreflight }) });
   mock.run.push({ status: "declined", message: "Nothing was sent.", session: session() });
   await chord("Enter");
   await page.waitForSelector('[aria-label="ALTER TABLE preflight"]');
-  assert.match(await text('[aria-label="ALTER TABLE preflight"]'), /123,456 bytes/);
+  // The prediction sits with the size and lock evidence; its reasons are in a disclosure.
+  assert.match(await text('[aria-label="ALTER TABLE preflight"] .alter-prediction'),
+    /INPLACE, rebuilds the table\. Rebuilds the table in place; concurrent writes continue\./);
+  assert.equal(await page.$eval('[aria-label="ALTER prediction details"]', (e) => e.checkVisibility()), false,
+    "per-clause reasons start folded");
+  await page.locator('[aria-label="ALTER TABLE preflight"] summary ::-p-text(Why)').click();
+  assert.match(await text('[aria-label="ALTER prediction details"]'), /ADD COLUMN x INT: INPLACE, rebuilds the table\. The table has used all its instant row versions/);
+  assert.match(await text('[aria-label="ALTER prediction details"]'), /Source: mysql-server/);
+  assert.match(await text('[aria-label="ALTER TABLE preflight"]'), /120\.6 KiB \(data and indexes\)/);
+  assert.equal(await page.$eval('[aria-label="ALTER TABLE preflight"] dd[title]', e => e.title), "123,456 bytes (data and indexes)");
   assert.match(await text('[aria-label="ALTER TABLE preflight"]'), /5 seconds/);
   assert.match(await text('[aria-label="ALTER TABLE preflight"] details'), /Connection 81: transaction open 2 min 0 s; SELECT \* FROM t/);
   assert.doesNotMatch(await text('[aria-label="ALTER TABLE preflight"] details'), /transaction open 120 seconds/);
@@ -747,6 +787,58 @@ try {
   assert.equal(calls("/api/editor/run").at(-1).decline, true);
   assert.equal(calls("/api/editor/run").length - runsBefore, 1, "one Cancel sends one decline");
   assert.equal(calls("/api/audit/declined").length, declinedBefore, "and no second decline record");
+  // The decline is a request of its own: until its reply, Run stays pending
+  // and its shortcut does nothing, so wait for the outcome it reports.
+  await page.waitForFunction(() => /Cancelled\. Nothing was sent/.test(document.querySelector(".statusbar-note")?.textContent || ""));
+
+  // The running ALTER polls only its own session. A hidden editor, Stop,
+  // and the run ending each stop automatic database progress reads.
+  // The real flow: Run asks for the ALTER review, Run ALTER TABLE sends the
+  // guard and the ALTER, and the ALTER is still running when the reply comes.
+  const ddlRun = run([
+    statement(0, guard, 0, { verb: "SET SESSION", kind: "write", category: "session", generated: true, end: 0 }),
+    statement(1, WRITE, 0, { verb: "ALTER TABLE", kind: "risky", category: "ddl", status: "running" }),
+  ], [{ type: "ok", statement: 0, affected_rows: 0, info: null, warnings: 0, duration_ms: 1 }],
+  { id: "run-ddl", state: "running", finished_at: null });
+  mock.holdStatus = true;
+  mock.run.push({ status: "needs_confirmation", session: session(),
+    confirmation: confirmation("alter-run", [guard, WRITE], { tone: "danger", category: "ddl", alter_preflight: alterPreflight }) });
+  mock.run.push({ status: "running", session: session({ state: "running" }), run: ddlRun });
+  assert.equal(calls("/api/live/ddl-progress").length, 0, "no progress read before an ALTER runs");
+  await chord("Enter");
+  await page.waitForSelector('[aria-label="ALTER TABLE preflight"]');
+  assert.equal(await page.$(".ddl-editor"), null, "the review alone reads no progress");
+  await page.locator(".editor-confirm button ::-p-text(Run ALTER TABLE)").click();
+  await until(() => calls("/api/editor/run").some((c) => c.confirm_token === "alter-run"), "the confirmed ALTER was not sent");
+  await page.waitForSelector('.ddl-editor progress[value="42"]');
+  assert.deepEqual(calls("/api/live/ddl-progress").at(-1).connection_ids, [42]);
+  assert.match(await text(".ddl-editor"), /Copying rows.*2 min 54 s left \(estimate\).*42%/);
+  // On screen it keeps reading, one read 2 s after the last one settled.
+  const shownDdlReads = calls("/api/live/ddl-progress").length;
+  await until(() => calls("/api/live/ddl-progress").length > shownDdlReads, "progress was not read again while the ALTER runs", 4000);
+  await page.locator('.main-nav button ::-p-text(Home)').click();
+  const hiddenDdlReads = calls("/api/live/ddl-progress").length;
+  await pause(2200);
+  assert.equal(calls("/api/live/ddl-progress").length, hiddenDdlReads, "hidden editor sends no progress reads");
+  mock.ddl = { schema_version: "ddl-progress-1.0", available: false, source: null, items: [],
+    missing: ["events_stages_current"], reason: "Turn on events_stages_current for DDL stage tracking." };
+  await page.locator('.main-nav button ::-p-text(Query editor)').click();
+  await page.waitForSelector('.ddl-editor [data-instruments-row="consumer:events_stages_current"]');
+  assert.equal(await page.$$eval(".ddl-editor .ddl-unavailable", es => es.length), 1, "one quiet diagnostic");
+  // The same consumer link is covered end-to-end in sessions.mjs; here its
+  // address is asserted without navigating away from the running tab.
+  await page.click('[data-action="stop"]');
+  const stoppedDdlReads = calls("/api/live/ddl-progress").length;
+  await page.waitForFunction(() => !document.querySelector(".ddl-editor"));
+  await pause(2200);
+  assert.equal(calls("/api/live/ddl-progress").length, stoppedDdlReads, "Stop ends progress polling");
+  mock.holdStatus = false;
+  const ddlDone = { ...ddlRun, state: "stopped", stopped: { by: "user", interrupted: true, message: "Stopped." },
+    statements: ddlRun.statements.map(s => (s.status === "running" ? { ...s, status: "stopped" } : s)) };
+  for (const entry of heldStatus.splice(0)) answerHeld(entry, { status: "idle", session: session(), run: ddlDone });
+  await idle();
+  assert.equal(await page.$(".ddl-editor"), null);
+  mock.ddl = ddlFixture;
 
   // 9. History: the list, search, and click to insert at the cursor.
   mock.history.items = [
@@ -817,7 +909,7 @@ try {
   for (const key of ["F10", "ContextMenu"]) await keyboardMenuTo(schemaOpener, key);
   await (await treeRow("table", "orders")).click({ button: "right" });
   await page.waitForSelector(".context-menu[role=menu]");
-  assert.deepEqual(await texts(".context-menu [role=menuitem]"), ["Insert name", "SELECT * … LIMIT 100", "Show CREATE TABLE", "Edit table data…", "Open in Indexes", "Open in Tables"]);
+  assert.deepEqual(await texts(".context-menu [role=menuitem]"), ["Insert name", "SELECT * … LIMIT 100", "Show CREATE TABLE", "Edit table data…", "Import CSV…", "Open in Indexes", "Open in Tables"]);
   await page.locator(".context-menu [role=menuitem] ::-p-text(SELECT * … LIMIT 100)").click();
   body = await until(() => calls("/api/editor/run").find((b) => b.sql?.includes("LIMIT 100")), "SELECT … LIMIT 100 did not run");
   assert.equal(body.sql, "SELECT * FROM testdb.users;\n\nSELECT * FROM testdb.orders LIMIT 100;");
@@ -947,6 +1039,374 @@ try {
   assert.deepEqual(await column("c0"), ["-1.55", "9007199254740992", "9007199254740993"]);
   await page.click(".result-table th[data-col=c1] .sort-button");
   assert.deepEqual(await column("c1"), ["0.30000000000000001", "0.3", "-1.5"]);
+
+  // R1b. Result cells: a selection totals its numbers in the footer (exact
+  // past 2^63, NULL counted apart), copies as tab-separated text, and the row
+  // panel shows a row (JSON laid out, NULL as NULL, binary as hex).
+  await page.evaluate(() => Object.defineProperty(navigator, "clipboard", { configurable: true,
+    value: { writeText: async (value) => { (window.__copied = window.__copied || []).push(value); } } }));
+  const copied = () => page.evaluate(() => (window.__copied || []).at(-1));
+  await newTab();
+  mock.run.push({ status: "complete", session: session(), run: run([statement(0, "SELECT id, amount, doc, note, bin FROM t", 0)],
+    [rows(0, ["id", "amount", { name: "doc", hex: false, type: "json" }, "note", { name: "bin", hex: true, type: null }], [
+      ["1", "9223372036854775807", '{"id": 9007199254740993, "tags": ["a"]}', null, "0xCAFE"],
+      ["2", "1", "[1, 2]", "", "0x00"],
+      ["3", null, "plain", "x", "0x01"],
+    ])]) });
+  await setText("SELECT id, amount, doc, note, bin FROM t");
+  await chord("Enter");
+  await page.waitForSelector(".result-table td[data-col=c4]");
+  const footer = () => text(".result-grid-footer");
+  const cell = (row, col) => `.result-table tbody tr[data-row-key="${row}"] td[data-col="c${col}"]`;
+  const selectedCells = () => page.$$eval(".result-table tbody tr[data-sel] td.is-sel-col", (els) => els.length);
+  assert.equal(await footer(), "Select cells to see their totals");
+  await page.click(cell(0, 1));
+  assert.equal(await footer(), "Count 1 · Sum 9223372036854775807 · Avg 9223372036854775807 · Min 9223372036854775807 · Max 9223372036854775807");
+  assert.equal(await selectedCells(), 1);
+  // ⌘C on one cell copies its value as is.
+  await chord("c");
+  await page.waitForFunction(() => (window.__copied || []).length === 1);
+  assert.equal(await copied(), "9223372036854775807");
+  await page.keyboard.down("Shift");
+  await page.click(cell(2, 1));
+  await page.keyboard.up("Shift");
+  assert.equal(await footer(), "3 cells · Count 2 · Sum 9223372036854775808 · Avg 4611686018427387904 · Min 1 · Max 9223372036854775807 · 1 NULL",
+    "a BIGINT sum is exact and NULL is skipped and counted");
+  // Shift+Right widens the range to the JSON column (text: counted, not summed).
+  await page.keyboard.down("Shift");
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.up("Shift");
+  assert.equal(await selectedCells(), 6);
+  assert.match(await footer(), /^6 cells · Count 2 · Sum 9223372036854775808 · /);
+  await page.screenshot({ path: path.join(shots, "editor-selection-1440.png") });
+  // ⌘C copies the selection as tab-separated text (screen order, NULL empty).
+  await page.evaluate(() => getSelection()?.removeAllRanges());
+  await chord("c");
+  await page.waitForFunction(() => (window.__copied || []).length === 2);
+  assert.equal(await copied(), '9223372036854775807\t"{""id"": 9007199254740993, ""tags"": [""a""]}"\r\n1\t[1, 2]\r\n\tplain');
+  // A row number selects its row; Option/Alt+click on a header the column (no sort).
+  await page.click('.result-table tbody tr[data-row-key="1"] td[data-col="#"]');
+  assert.equal(await footer(), "5 cells · Count 2 · Sum 3 · Avg 1.5 · Min 1 · Max 2");
+  await page.keyboard.down("Alt");
+  await page.click(".result-table th[data-col=c0] .sort-button");
+  await page.keyboard.up("Alt");
+  assert.equal(await footer(), "Count 3 · Sum 6 · Avg 2 · Min 1 · Max 3");
+  assert.equal(await page.$eval(".result-table th[data-col=c0]", (e) => e.getAttribute("aria-sort")), "none", "Alt+click selects, it does not sort");
+  assert.ok(await page.$(".result-table th[data-col=c0].is-sel-col"), "the selected column's header is marked");
+  // ⌘A selects every cell: the sum stays exact.
+  await page.focus('.result-table tbody tr[data-row-key="0"]');
+  await chord("a");
+  assert.equal(await footer(), "15 cells · Count 5 · Sum 9223372036854775814 · Avg 1844674407370955162.8 · Min 1 · Max 9223372036854775807 · 2 NULL");
+  // The cell menu: view actions first, then copy.
+  await page.click(cell(0, 2), { button: "right" });
+  await page.waitForSelector('.context-menu[aria-label="Result actions"]');
+  assert.deepEqual((await texts('.context-menu[aria-label="Result actions"] [role=menuitem]')).map((t) => t.replace(/(⌘C|Ctrl\+C|Return|Enter)$/, "")),
+    ["Show row", "Select column (doc)", "Copy selection (15 cells)", "Copy value (doc)", "Copy row", "Copy column (doc)", "Copy all rows with header"],
+    "a right click inside the selection keeps it");
+  await page.keyboard.press("Escape");
+  await page.waitForSelector('.context-menu[aria-label="Result actions"]', { hidden: true });
+  // Double-click shows the row: every column, its type when known.
+  await page.click(cell(0, 0), { count: 2 });
+  await page.waitForSelector(".row-panel");
+  assert.equal(await text(".row-panel-title"), "Row 1");
+  assert.equal(await text(".row-panel-pos"), "· 1 of 3");
+  assert.deepEqual(await texts(".row-panel-name"), ["id", "amount", "doc", "note", "bin"]);
+  assert.equal(await text('.row-panel-field[data-col="c2"] .row-panel-type'), "json");
+  assert.equal(await text('.row-panel-field[data-col="c2"] .row-panel-json'), '{\n  "id": 9007199254740993,\n  "tags": [\n    "a"\n  ]\n}',
+    "JSON is laid out and its BIGINT keeps every digit");
+  assert.equal(await text('.row-panel-field[data-col="c3"] dd'), "NULL");
+  assert.ok(await page.$('.row-panel-field[data-col="c3"] dd .sql-null'), "NULL is a muted token, never empty");
+  assert.equal(await text('.row-panel-field[data-col="c4"] .row-panel-text'), "0xCAFE");
+  assert.match(await text('.row-panel-field[data-col="c4"] .row-panel-size'), /^2 bytes, shown as hex$/);
+  await page.click('.row-panel-field[data-col="c2"] .row-panel-copy');
+  await page.waitForFunction(() => (window.__copied || []).length === 3);
+  assert.equal(await copied(), '{\n  "id": 9007199254740993,\n  "tags": [\n    "a"\n  ]\n}');
+  // Up and Down move between rows while the panel is open (from the panel too).
+  await page.keyboard.press("ArrowDown");
+  await page.waitForFunction(() => document.querySelector(".row-panel-title")?.textContent === "Row 2");
+  assert.equal(await text('.row-panel-field[data-col="c3"] dd'), "empty string", "an empty string says so");
+  assert.equal(await text('.row-panel-field[data-col="c2"] .row-panel-json'), "[\n  1,\n  2\n]");
+  await page.focus('.result-table tbody tr[data-row-key="1"]');
+  await page.keyboard.press("ArrowDown");
+  await page.waitForFunction(() => document.querySelector(".row-panel-title")?.textContent === "Row 3");
+  assert.equal(await page.$('.row-panel-field[data-col="c2"] .row-panel-json'), null, "plain text is not JSON");
+  assert.equal(await text('.row-panel-field[data-col="c1"] dd'), "NULL");
+  // Escape in the panel closes it and returns focus to the row; Return opens it again.
+  await page.focus(".row-panel-fields");
+  await page.keyboard.press("ArrowUp");
+  await page.waitForFunction(() => document.querySelector(".row-panel-title")?.textContent === "Row 2");
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".row-panel", { hidden: true });
+  await page.waitForFunction(() => document.activeElement?.matches('.result-table tbody tr[data-row-key="1"]'));
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(".row-panel");
+  assert.equal(await text(".row-panel-title"), "Row 2");
+  // Narrow sheets share one slot; opening either side panel closes Show row.
+  // Programmatic activation covers a queued row action while another sheet
+  // already occupies the results area (the original stacked-sheet regression).
+  await page.setViewport({ width: 720, height: 600 });
+  await page.waitForFunction(() => document.querySelector(".editor-workbench.is-narrow"));
+  const activateRow = async () => {
+    await page.$eval('.result-table tbody tr[data-row-key="1"]', e => e.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+    await page.waitForSelector(".row-panel", { visible: true });
+    await page.waitForFunction(() => !!document.activeElement?.closest(".row-panel"));
+  };
+  const visibleSheets = () => page.$$eval('.row-panel, .schema-browser, .history-panel', es =>
+    es.filter(e => !e.closest("[hidden]") && e.getClientRects().length).map(e => e.classList[0]));
+  for (const pane of ["schema browser", "run history"]) {
+    const toggle = `.editor-toolbar button[aria-label="Show the ${pane}"]`;
+    await page.click(toggle);
+    await page.waitForSelector(".row-panel", { hidden: true });
+    const side = pane === "schema browser" ? ".schema-browser" : ".history-panel";
+    await page.waitForFunction(s => !!document.activeElement?.closest(s), {}, side);
+    assert.equal((await visibleSheets()).length, 1, "opening a side sheet closes the row sheet");
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(s => document.activeElement === document.querySelector(s), {}, toggle);
+    await page.click(toggle);
+    await activateRow();
+    assert.deepEqual(await visibleSheets(), ["row-panel"], "opening a row closes Schemas or History");
+    assert.equal(await page.$eval(".row-panel", e => getComputedStyle(e).position), "fixed");
+    await page.keyboard.press("Escape");
+    await page.waitForSelector(".row-panel", { hidden: true });
+    await page.waitForFunction(() => document.activeElement?.matches('.result-table tbody tr[data-row-key="1"]'));
+    await page.keyboard.press("Enter");
+    await page.waitForSelector(".row-panel", { visible: true });
+  }
+  // Closing the sheet after Next row returns focus to the row now shown, not
+  // to the row the sheet was opened from.
+  const shownBefore = await page.$eval(".row-panel", e => e.dataset.row);
+  await page.click('.row-panel button[aria-label="Next row"]');
+  await page.waitForFunction(r => document.querySelector(".row-panel")?.dataset.row !== r, {}, shownBefore);
+  const shown = await page.$eval(".row-panel", e => e.dataset.row);
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".row-panel", { hidden: true });
+  await page.waitForFunction(r => document.activeElement?.matches(`.result-table tbody tr[data-row-key="${r}"]`), {}, shown);
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(".row-panel", { visible: true });
+  // A wide window keeps Schemas, History, the grid and Show row side by side.
+  await page.setViewport({ width: 1440, height: 900 });
+  await page.waitForFunction(() => !document.querySelector(".editor-workbench.is-narrow"));
+  for (const pane of ["schema browser", "run history"]) {
+    const show = await page.$(`.editor-toolbar button[aria-label="Show the ${pane}"]`);
+    if (show) await show.click();
+  }
+  assert.equal((await visibleSheets()).length, 3);
+  const boxes = await page.$$eval('.schema-browser, .row-panel, .history-panel', es => es.map(e => {
+    const r = e.getBoundingClientRect(); return { name: e.classList[0], left: r.left, right: r.right, position: getComputedStyle(e).position };
+  }));
+  assert.ok(boxes.every(b => b.position !== "fixed"), "wide panels stay docked");
+  const schemaBox = boxes.find(b => b.name === "schema-browser");
+  const rowBox = boxes.find(b => b.name === "row-panel");
+  const historyBox = boxes.find(b => b.name === "history-panel");
+  assert.ok(schemaBox.right <= rowBox.left && rowBox.right <= historyBox.left, "wide panels do not overlap");
+  await page.click('.history-panel button[aria-label="Hide the history"]');
+  if (process.env.PLANSED_SHOTS) {
+    await fs.mkdir(process.env.PLANSED_SHOTS, { recursive: true });
+    for (const width of [1440, 720]) for (const theme of ["light", "dark"]) {
+      await page.setViewport({ width, height: width === 1440 ? 900 : 600 });
+      await page.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
+      if (width === 720) {
+        // Each narrow capture reproduces row opening after Schemas was open.
+        await page.click('.editor-toolbar button[aria-label="Show the schema browser"]');
+        await activateRow();
+        assert.deepEqual(await visibleSheets(), ["row-panel"]);
+      }
+      await pause(150);
+      const measured = await page.$eval(".row-panel", e => {
+        const r = e.getBoundingClientRect(); return { width: r.width, height: r.height,
+          fieldsVisible: [...e.querySelectorAll(".row-panel-field")].filter(f => f.getBoundingClientRect().bottom <= r.bottom).length };
+      });
+      console.log(JSON.stringify({ screen: "row-panel", width, theme, ...measured }));
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+      await page.screenshot({ path: path.join(process.env.PLANSED_SHOTS, `editor-row-panel-${width}-${theme}.png`) });
+    }
+    await page.evaluate(() => delete document.documentElement.dataset.theme);
+  }
+  await page.setViewport({ width: 720, height: 520 });
+  await pause(200);
+  assert.equal(await page.$eval(".row-panel", (e) => getComputedStyle(e).position), "fixed");
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  await page.screenshot({ path: path.join(shots, "editor-row-panel-720.png") });
+  await page.setViewport({ width: 1440, height: 1000 });
+  await page.click('.row-panel button[aria-label="Close the row panel"]');
+  await page.waitForSelector(".row-panel", { hidden: true });
+  // A long result (drawn as it scrolls): a whole column totals every loaded
+  // row, drawn or not, and the sum stays exact past 2^53.
+  const longValues = Array.from({ length: 400 }, (_, k) => String(9007199254740993n + BigInt(k)));
+  mock.run.push({ status: "complete", session: session(), run: run([statement(0, "SELECT n FROM big", 0)],
+    [rows(0, ["n"], longValues.map((v) => [v]))]) });
+  await setText("SELECT n FROM big");
+  await chord("Enter");
+  await page.waitForFunction(() => document.querySelector(".results-tabs [role=tab]")?.textContent.includes("400 rows"));
+  assert.ok((await page.$$(".result-table tbody tr[data-row-key]")).length < 400, "only the rows in view are drawn");
+  await page.keyboard.down("Alt");
+  await page.click(".result-table th[data-col=c0] .sort-button");
+  await page.keyboard.up("Alt");
+  const longSum = longValues.reduce((a, v) => a + BigInt(v), 0n);
+  assert.equal(await footer(), `Count 400 · Sum ${longSum} · Avg 9007199254741192.5 · Min 9007199254740993 · Max 9007199254741392`);
+  // A column hidden from the Columns menu stays out of selections, totals,
+  // copied text and arrow keys; the row panel still shows every column.
+  mock.run.push({ status: "complete", session: session(), run: run([statement(0, "SELECT a, b, c FROM h", 0)],
+    [rows(0, ["a", "b", "c"], [["1", "100", "2"], ["3", "200", "4"]])]) });
+  await setText("SELECT a, b, c FROM h");
+  await chord("Enter");
+  await page.waitForSelector(".result-table td[data-col=c2]");
+  const columnsMenu = '[role=dialog][aria-label="Columns of Result 1"]';
+  await page.click(".result-grid .table-columns-button");
+  await page.waitForSelector(`${columnsMenu} input[data-col="c1"]`);
+  await page.click(`${columnsMenu} input[data-col="c1"]`);
+  await page.waitForFunction(() => !document.querySelector(".result-table th[data-col=c1]"));
+  await page.keyboard.press("Escape");
+  await page.waitForFunction((m) => !document.querySelector(m), {}, columnsMenu);
+  const copies = () => page.evaluate(() => (window.__copied || []).length);
+  await page.click(cell(0, 0));
+  await page.keyboard.down("Shift");
+  await page.click(cell(0, 2));
+  await page.keyboard.up("Shift");
+  assert.equal(await footer(), "Count 2 · Sum 3 · Avg 1.5 · Min 1 · Max 2", "the hidden b (100) is not counted");
+  await page.evaluate(() => getSelection()?.removeAllRanges());
+  let copyCount = await copies();
+  await chord("c");
+  await page.waitForFunction((n) => (window.__copied || []).length === n + 1, {}, copyCount);
+  assert.equal(await copied(), "1\t2", "the hidden column is not copied");
+  // Left and Right step over the hidden column.
+  await page.click(cell(1, 0));
+  await page.keyboard.press("ArrowRight");
+  assert.equal(await footer(), "Count 1 · Sum 4 · Avg 4 · Min 4 · Max 4");
+  assert.ok(await page.$('.result-table th[data-col="c2"].is-focus-col'), "focus moved to c, not to the hidden b");
+  await page.keyboard.press("ArrowLeft");
+  assert.equal(await footer(), "Count 1 · Sum 3 · Avg 3 · Min 3 · Max 3");
+  // A row number selects the row's visible cells; ⌘A every visible cell.
+  await page.click('.result-table tbody tr[data-row-key="1"] td[data-col="#"]');
+  assert.equal(await footer(), "Count 2 · Sum 7 · Avg 3.5 · Min 3 · Max 4");
+  await page.focus('.result-table tbody tr[data-row-key="0"]');
+  await chord("a");
+  assert.equal(await footer(), "Count 4 · Sum 10 · Avg 2.5 · Min 1 · Max 4");
+  // Copy row and Copy all rows with header leave the hidden column out too.
+  for (const [item, expected] of [["Copy row", "1\t2"], ["Copy all rows with header", "a\tc\r\n1\t2\r\n3\t4"]]) {
+    copyCount = await copies();
+    await page.click(cell(0, 0), { button: "right" });
+    await page.waitForSelector('.context-menu[aria-label="Result actions"]');
+    await page.locator(`.context-menu[aria-label="Result actions"] [role=menuitem] ::-p-text(${item})`).click();
+    await page.waitForFunction((n) => (window.__copied || []).length === n + 1, {}, copyCount);
+    assert.equal(await copied(), expected, item);
+  }
+  await page.click(cell(0, 0), { count: 2 });
+  await page.waitForSelector(".row-panel");
+  assert.deepEqual(await texts(".row-panel-name"), ["a", "b", "c"], "the row panel shows every column");
+  await page.click('.row-panel button[aria-label="Close the row panel"]');
+  await page.waitForSelector(".row-panel", { hidden: true });
+
+  // R1c. Saved queries: Save query… from the tab menu (credentials redacted
+  // by the server), the Saved tab with folders and search, opening one in a
+  // new tab (nothing runs), then Rename…, Move to folder… and Delete….
+  await newTab();
+  const savedSql = "SELECT * FROM orders WHERE id = 7;\nCREATE USER 'u'@'%' IDENTIFIED BY 'hunter2'";
+  await setText(savedSql);
+  const savedTabName = await text(".query-tablist [role=tab][aria-selected=true] .query-tab-label");
+  await page.click(".query-tablist [role=tab][aria-selected=true]", { button: "right" });
+  await page.waitForSelector(".query-tab-menu");
+  await page.locator(".query-tab-menu [role=menuitem] ::-p-text(Save query…)").click();
+  await page.waitForSelector("dialog.saved-query-sheet[open]");
+  await page.waitForFunction(() => document.activeElement?.matches("dialog.saved-query-sheet input"));
+  assert.equal(await page.$eval("dialog.saved-query-sheet input", (e) => e.value), savedTabName, "the name starts as the tab's");
+  await page.waitForFunction(() => !document.querySelector("dialog.saved-query-sheet .hint")?.textContent.includes("Reading"));
+  assert.deepEqual(await page.$$eval("dialog.saved-query-sheet select option", (els) => els.map((e) => e.textContent)), ["No folder", "New folder…"]);
+  await page.keyboard.type("Orders by id");
+  await page.select("dialog.saved-query-sheet select", "new");
+  await page.waitForSelector('dialog.saved-query-sheet input[id$="-folder-new"]');
+  await page.type('dialog.saved-query-sheet input[id$="-folder-new"]', "Reports");
+  await page.screenshot({ path: path.join(shots, "editor-save-query-1440.png") });
+  const runsBeforeSaved = calls("/api/editor/run").length;
+  await page.keyboard.press("Enter");
+  await page.waitForSelector("dialog.saved-query-sheet", { hidden: true });
+  const saveBody = calls("/api/editor/saved/save").at(-1);
+  assert.equal(saveBody.name, "Orders by id");
+  assert.equal(saveBody.folder, "Reports");
+  assert.equal(saveBody.sql, savedSql);
+  assert.equal(JSON.stringify(saveBody).includes("password"), false, "no connection credentials in the request");
+  await page.waitForFunction(() => /^Saved “Orders by id” in Reports\. It is under Saved in the side panel\. Credentials in it were replaced by \[redacted\]\.$/
+    .test(document.querySelector(".editor-feedback")?.textContent || ""));
+  await page.click('button[aria-label="Show the run history"]');
+  await page.click("#editor-side-tab-saved");
+  await page.waitForSelector(".saved-item");
+  assert.deepEqual(await texts(".saved-folder .saved-folder-name"), ["Reports"]);
+  assert.equal(await text(".saved-item .saved-name"), "Orders by id");
+  await page.screenshot({ path: path.join(shots, "editor-saved-1440.png") });
+  const shownSql = await page.$eval(".saved-item", (e) => e.title);
+  assert.equal(shownSql.includes("hunter2"), false, "the stored SQL is redacted");
+  assert.match(shownSql, /IDENTIFIED BY '\[redacted\]'/);
+  // Search filters by name, folder or SQL; a folder collapses.
+  await page.type("#editor-side-panel-saved input[type=search]", "nothing like this");
+  await page.waitForFunction(() => !document.querySelector(".saved-item"));
+  assert.match(await text("#editor-side-panel-saved"), /Nothing matches\./);
+  await page.$eval("#editor-side-panel-saved input[type=search]", (e) => { e.focus(); e.select(); });
+  await page.keyboard.press("Backspace");
+  await page.click(".saved-folder");
+  await page.waitForFunction(() => !document.querySelector(".saved-item") && document.querySelector(".saved-folder")?.getAttribute("aria-expanded") === "false");
+  await page.click(".saved-folder");
+  await page.waitForSelector(".saved-item");
+  // Opening it adds a tab with its SQL; nothing runs.
+  const tabsBeforeOpen = await tabCount();
+  await page.click(".saved-item");
+  await page.waitForFunction((n) => document.querySelectorAll(".query-tablist [role=tab]").length === n + 1, {}, tabsBeforeOpen);
+  assert.equal(await text(".query-tablist [role=tab][aria-selected=true] .query-tab-label"), "Orders by id");
+  assert.equal(await page.$eval(EDITOR, (e) => e.value), "SELECT * FROM orders WHERE id = 7;\nCREATE USER 'u'@'%' IDENTIFIED BY '[redacted]'");
+  assert.equal(calls("/api/editor/run").length, runsBeforeSaved, "opening a saved query runs nothing");
+  assert.match(await text(".editor-feedback"), /^Opened the saved query “Orders by id” in a new tab\. Nothing ran\./);
+  // Rename… from the row menu.
+  const savedMenu = async (label) => {
+    await page.click(".saved-item", { button: "right" });
+    await page.waitForSelector('.context-menu[aria-label^="Saved query"]');
+    assert.deepEqual((await texts('.context-menu[aria-label^="Saved query"] [role=menuitem]')),
+      ["Open in a new tab", "Insert at the cursor", "Rename…", "Move to folder…", "Delete…"]);
+    await page.locator(`.context-menu[aria-label^="Saved query"] [role=menuitem] ::-p-text(${label})`).click();
+  };
+  await savedMenu("Rename…");
+  await page.waitForSelector("dialog.saved-query-sheet[open]");
+  await page.waitForFunction(() => document.activeElement?.matches("dialog.saved-query-sheet input"));
+  await page.keyboard.type("Order lookup");
+  await page.keyboard.press("Enter");
+  await page.waitForSelector("dialog.saved-query-sheet", { hidden: true });
+  await page.waitForFunction(() => document.querySelector(".saved-item .saved-name")?.textContent === "Order lookup");
+  assert.match(await text(".saved-outcome"), /Renamed “Orders by id” to “Order lookup”\./);
+  await page.waitForFunction(() => document.activeElement?.matches(".saved-item"), {}, );
+  // Move to folder…: out of Reports (no folder groups are left).
+  await savedMenu("Move to folder…");
+  await page.waitForSelector("dialog.saved-query-sheet[open]");
+  assert.equal(await page.$eval("dialog.saved-query-sheet select", (e) => e.value), "f:Reports", "the current folder is chosen");
+  await page.select("dialog.saved-query-sheet select", "none");
+  await page.click("dialog.saved-query-sheet [data-action=saved-confirm]");
+  await page.waitForSelector("dialog.saved-query-sheet", { hidden: true });
+  await page.waitForFunction(() => !document.querySelector(".saved-folder") && !!document.querySelector(".saved-item"));
+  assert.match(await text(".saved-outcome"), /Moved “Order lookup” out of its folder\./);
+  assert.equal(calls("/api/editor/saved/move").at(-1).folder, "");
+  // Delete… asks once.
+  await savedMenu("Delete…");
+  await page.waitForSelector(".confirm-sheet[open]");
+  assert.match(await text(".confirm-sheet[open] h2"), /^Delete “Order lookup”\?$/);
+  await page.locator(".confirm-sheet[open] button ::-p-text(Delete)").click();
+  await page.waitForFunction(() => !document.querySelector(".saved-item"));
+  assert.match(await text(".saved-outcome"), /Deleted “Order lookup”\./);
+  assert.match(await text("#editor-side-panel-saved"), /Save a query from its tab's menu/);
+  assert.equal(calls("/api/editor/saved/delete").length, 1);
+  // The palette's Save query… opens the same sheet for the current tab; Escape saves nothing.
+  const savesBefore = calls("/api/editor/saved/save").length;
+  await page.keyboard.down(MOD); await page.keyboard.press("k"); await page.keyboard.up(MOD);
+  await page.waitForSelector("dialog.command-palette[open]");
+  await page.type('input[aria-label="Search commands"]', "save query");
+  assert.match(await page.$eval("dialog.command-palette [role=option]", (e) => e.textContent), /Save query…/);
+  await page.keyboard.press("Enter");
+  await page.waitForSelector("dialog.saved-query-sheet[open]");
+  assert.equal(await page.$eval("dialog.saved-query-sheet input", (e) => e.value), "Orders by id", "the name starts as the current tab's");
+  assert.deepEqual(await page.$$eval("dialog.saved-query-sheet select option", (els) => els.map((e) => e.textContent)), ["No folder", "New folder…"]);
+  await page.keyboard.press("Escape");
+  await page.waitForSelector("dialog.saved-query-sheet", { hidden: true });
+  assert.equal(calls("/api/editor/saved/save").length, savesBefore, "Escape saves nothing");
+  // The History tab reads the history again when it is shown.
+  await page.click("#editor-side-tab-history");
+  await page.waitForSelector(".history-item");
+  await page.click('button[aria-label="Hide the history"]');
 
   // R2. Escape that ends an input method's composition does not stop a run.
   const imeRun = run([statement(0, "SELECT SLEEP(3)", 0, { status: "running" })], [], { state: "running", id: "run-ime" });

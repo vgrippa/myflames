@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/vgrippa/myflames/docs/schemas/parameter-version-catalog-1.0.json",
+  "title": "myflames parameter-version-catalog-1.0",
+  "description": "The offline parameter version catalogs: every engine, its cataloged releases, skipped tags and parameter names. Emitted by param_versions.catalog_index(), POST /api/config/versions and myflames config versions list --json.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "engines"
+  ],
+  "properties": {
+    "schema": {
+      "const": "parameter-version-catalog-1.0"
+    },
+    "engines": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "engine",
+          "product",
+          "available",
+          "versions",
+          "skipped",
+          "names",
+          "generated",
+          "notes"
+        ],
+        "properties": {
+          "engine": {
+            "enum": [
+              "mysql",
+              "mariadb"
+            ]
+          },
+          "product": {
+            "type": "string"
+          },
+          "available": {
+            "type": "boolean",
+            "description": "false when this build has no generated catalog module for the engine; versions, skipped and names are then empty and notes carries the reason."
+          },
+          "versions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "version",
+                "series",
+                "maturity",
+                "date"
+              ],
+              "properties": {
+                "version": {
+                  "type": "string"
+                },
+                "series": {
+                  "type": "string",
+                  "description": "The first two numeric components, for example 8.0."
+                },
+                "maturity": {
+                  "type": "string",
+                  "description": "GA, LTS or INNOVATION for MySQL; stable for MariaDB."
+                },
+                "date": {
+                  "type": "string",
+                  "description": "The source tag date, YYYY-MM-DD."
+                }
+              }
+            }
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "version",
+                "reason"
+              ],
+              "properties": {
+                "version": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "generated": {
+            "type": "object",
+            "description": "The catalog module's GENERATED record: generation date, runtime and sources."
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  }
+}

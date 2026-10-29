@@ -200,6 +200,137 @@ try {
   );
   await page.click(".library-item");
   assert.match(await page.$eval(".library-detail h2", (e) => e.textContent), /Index investigation/);
+  assert.equal(await page.$(".library-evidence"), null, "plans-only investigations look as before without an Evidence section");
+  // Save an investigation with evidence and verify the Evidence section, monospace text block, Copy and Download.
+  await page.evaluate(async () => {
+    const auth = await (await fetch("/api/auth/session", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Myflames-Bootstrap": "1",
+        "X-Myflames-Token": localStorage.getItem("myflames.session-proof") || "",
+      },
+      body: "{}",
+    })).json();
+    await fetch("/api/investigations/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Myflames-Token": auth.token },
+      body: JSON.stringify({
+        value: {
+          schema_version: "investigation-1.0",
+          name: "Capture: threads running 57 on prod-eu, 2026-10-27 14:02",
+          notes: "Captured automatically when threads running 57 on prod-eu.",
+          tags: ["watch", "capture"],
+          baseline_id: "",
+          plans: [],
+          evidence: [
+            {
+              id: "watch-1",
+              kind: "watch",
+              captured_at: "2026-10-27T14:02:31Z",
+              title: "Watch trigger snapshot",
+              text: "",
+              data: {
+                schema_version: "watch-1.0",
+                engine: "mysql",
+                server_version: "8.4.11",
+                read_at: "2026-10-27T14:02:31Z",
+                threads_running: 57,
+                longest_statement: { id: 42, seconds: 19, user: "app", db: "shop" },
+                longest_lock_wait: { id: 88, seconds: 12 },
+              },
+            },
+            {
+              id: "sessions-1",
+              kind: "sessions",
+              captured_at: "2026-10-27T14:02:32Z",
+              title: "Processlist",
+              text: "Sessions · MySQL 8.4.11\n#42 app shop Query 19s SELECT * FROM orders",
+              data: { schema_version: "sessions-1.0" },
+            },
+          ],
+        },
+      }),
+    });
+  });
+  await page.locator('[aria-label="Search investigations"]').fill("prod-eu");
+  await page.waitForFunction(() => document.querySelector(".library-detail h2")?.textContent?.includes("Capture: threads running 57 on prod-eu"));
+  await page.waitForSelector(".library-evidence [data-evidence-id]");
+  const evItems = await page.$$eval(".library-evidence [data-evidence-id]", (els) =>
+    els.map((e) => [e.dataset.evidenceKind, e.querySelector(".row-title")?.textContent, e.querySelector(".row-detail")?.textContent]),
+  );
+  assert.equal(evItems.length, 2);
+  assert.equal(evItems[0][0], "watch");
+  assert.equal(evItems[0][1], "Watch trigger snapshot");
+  // Evidence times are local, like the capture's name (the fixture instant is UTC).
+  const at = new Date("2026-10-27T14:02:31Z"), pad = (n) => String(n).padStart(2, "0");
+  const local = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`;
+  assert.ok(evItems[0][2]?.includes(local), `${evItems[0][2]} shows ${local}`);
+  await page.click('.library-evidence [data-evidence-kind="watch"]');
+  await page.waitForSelector(".library-evidence-view .library-evidence-text");
+  assert.match(await page.$eval(".library-evidence-view .library-evidence-text", (e) => e.textContent), /Threads running: 57/);
+  await button("Download", ".library-evidence-actions ");
+  await page.waitForSelector(".library-evidence-view [role=status]");
+  assert.equal(await page.$eval(".library-evidence-view [role=status]", (e) => e.textContent),
+    "Downloaded watch-trigger-snapshot-watch-1.txt.");
+  // The browser writes a download after the click returns: wait for the file.
+  const evDownloaded = path.join(directory, "watch-trigger-snapshot-watch-1.txt");
+  for (let i = 0; i < 100; i++) {
+    try { await fs.access(evDownloaded); break; } catch { await new Promise((r) => setTimeout(r, 50)); }
+  }
+  assert.match(await fs.readFile(evDownloaded, "utf8"), /Threads running: 57/, "the downloaded text is the evidence text");
+  // The evidence view in light and dark, at the 720 px minimum window and 1440 px:
+  // long lines scroll inside the text block, never the page.
+  await page.click('.library-evidence [data-evidence-kind="sessions"]');
+  await page.waitForFunction(() => /#42 app shop/.test(document.querySelector(".library-evidence-text")?.textContent || ""));
+  for (const width of [720, 1440]) {
+    for (const theme of ["light", "dark"]) {
+      await page.setViewport({ width, height: 900 });
+      await page.evaluate((t) => { document.documentElement.dataset.theme = t; }, theme);
+      await new Promise((r) => setTimeout(r, 100));
+      const fit = await page.evaluate(() => {
+        const view = document.querySelector(".library-evidence-view").getBoundingClientRect();
+        const detail = document.querySelector(".library-detail").getBoundingClientRect();
+        return { page: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+          inside: view.left >= detail.left - 1 && view.right <= detail.right + 1 };
+      });
+      assert.ok(fit.page <= 0 && fit.inside, `evidence fits at ${width}px (${theme}): ${JSON.stringify(fit)}`);
+      await page.screenshot({ path: path.join(directory, `evidence-${width}-${theme}.png`) });
+    }
+  }
+  await page.evaluate(() => { delete document.documentElement.dataset.theme; });
+  await page.setViewport({ width: 1512, height: 1050 });
+  // An investigation of evidence only lists its items, not an empty Plans box.
+  assert.equal(await page.$(".library-detail .library-plans"), null);
+  assert.match(await page.$eval(".library-item.is-selected small", (e) => e.textContent), /^2 evidence items/);
+  await page.evaluate(async () => {
+    const auth = await (await fetch("/api/auth/session", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Myflames-Bootstrap": "1",
+        "X-Myflames-Token": localStorage.getItem("myflames.session-proof") || "",
+      },
+      body: "{}",
+    })).json();
+    const list = await (await fetch("/api/investigations/list", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Myflames-Token": auth.token },
+      body: JSON.stringify({ search: "prod-eu" }),
+    })).json();
+    for (const item of (list.items || []).filter((i) => i.name.includes("prod-eu"))) {
+      await fetch("/api/investigations/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Myflames-Token": auth.token },
+        body: JSON.stringify({ id: item.id }),
+      });
+    }
+  });
+  // Clearing the search lists the saved investigations again, without the deleted capture.
+  await page.click('[aria-label="Search investigations"]', { clickCount: 3 });
+  await page.keyboard.press("Backspace");
+  await page.waitForFunction(() => document.querySelector(".library-detail h2")?.textContent?.includes("Index investigation"));
+  assert.equal(await page.$$eval(".library-item", (els) => els.filter((e) => e.textContent.includes("prod-eu")).length), 0);
   await button("Open all", ".library-actions ");
   await frame();
   assert.equal((await page.$$(".plan-item")).length, 1);
@@ -344,9 +475,9 @@ try {
   assert.ok(narrowPanes[1].top >= narrowPanes[0].bottom - 1, "phone comparison stacks Before then After");
   for (const pane of narrowPanes) {
     assert.ok(pane.left >= 0 && pane.right <= 390 && Math.abs(pane.canvasWidth - pane.width) < 2);
-    // The zoom floor is 0.75; the measured ratio of two rendered widths can
-    // land a rounding error below it (0.74999998).
-    assert.ok(pane.zoom >= 0.75 - 1e-6 && pane.zoom <= 1, JSON.stringify(pane));
+    // Fit keeps Visual Explain's 11 px text at 11 px (zoom 1, core/zoom.ts);
+    // the measured ratio of two rendered widths can land a rounding error off it.
+    assert.ok(pane.zoom >= 1 - 1e-6 && pane.zoom <= 1 + 1e-6, JSON.stringify(pane));
     assert.equal(pane.y, -28, "each comparison starts at the inputs");
   }
   assert.equal(

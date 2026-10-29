@@ -223,7 +223,8 @@ function spawnInnerPill(tl, row, order, slotIdx, opts) {
   var x0 = row.cx + 4;
   var y0 = row.cy;
   var slotClamped = Math.min(slotIdx, PROBE_MAX_SLOTS - 1);
-  var x1 = stage.probePanelX + 6;
+  // Land inside the panel: the pill's rect starts 46 px left of its anchor.
+  var x1 = stage.probePanelX + 40;
   var y1 = stage.probePanelY + slotClamped * PROBE_SLOT_H;
   var cx = (x0 + x1) / 2;
   var cy = Math.min(y0, y1) - 34 - slotIdx * 4;
@@ -280,12 +281,20 @@ function clearProbe(tl, headline) {
   });
 }
 
+// Guided-step kind for one customer (GUIDE in semijoin_firstmatch.py maps
+// each kind to the simplified-code lines it runs).
+function stepKind(act, orders) {
+  if (!orders.length) return "no-match";
+  return act === 1 ? "naive-row" : "first-match";
+}
+
 function buildTimeline() {
   resetStage();
   var tl = anim.timeline();
   var phase = document.getElementById("phase-label");
   var naiveRead = 0;
   var fmRead = 0;
+  var n = stage.outerRows.length;
 
   function setCounters() {
     stage.naiveCounter.textContent = "Naive join inner rows read: " + naiveRead;
@@ -296,18 +305,20 @@ function buildTimeline() {
   tl.mark("Act 1 — naive join (reads every match)");
   tl.call(function() {
     phase.textContent =
-      "Act 1/2 — a plain inner join reads EVERY matching order per customer (wasted work for IN)";
+      "Act 1 of 2: a plain inner join reads EVERY matching order per customer (wasted work for IN)";
   });
   tl.delay(500);
 
-  for (var i = 0; i < stage.outerRows.length; i++) {
+  for (var i = 0; i < n; i++) {
     (function(idx) {
       var row = stage.outerRows[idx];
       var c = row.data;
       var orders = ORDERS_BY_CUSTOMER[c.id] || [];
 
+      tl.beat(stepKind(1, orders));
       clearProbe(tl,
-        "Act 1 — checking " + c.name + " (id=" + c.id + "): reading ALL matching orders");
+        "Act 1, customer " + (idx + 1) + " of " + n + ": " + c.name + " (id=" + c.id +
+        "), a plain join reads ALL of " + c.name + "'s matching orders");
       driveRow(tl, row);
 
       for (var j = 0; j < orders.length; j++) {
@@ -316,24 +327,26 @@ function buildTimeline() {
           tl.call(function() {
             naiveRead += 1;
             setCounters();
-            phase.textContent = "Act 1 — " + c.name + " (id=" + c.id +
+            phase.textContent = "Act 1, " + c.name + " (id=" + c.id +
               ") reads order #" + orders[jj].oid + " $" + orders[jj].total +
-              " (" + (jj + 1) + "/" + orders.length + ")";
+              " (" + (jj + 1) + " of " + orders.length + ")";
           });
           tl.delay(90);
         })(j);
       }
 
       tl.call(function() {
-        var n = orders.length;
-        if (n === 0) {
+        var k = orders.length;
+        if (k === 0) {
           stage.verdict.textContent = c.name + " (id=" + c.id + ") → no orders > $1000";
           row.badge.textContent = "no match";
           row.badge.setAttribute("fill", "var(--svg-ink-muted)");
+          phase.textContent = "Act 1, " + c.name + " (id=" + c.id +
+            ") has no order over $1000, so nothing is returned for " + c.name;
         } else {
           stage.verdict.textContent = c.name + " (id=" + c.id + ") → read all " +
-            n + (n === 1 ? " order" : " orders");
-          row.badge.textContent = "read " + n;
+            k + (k === 1 ? " order" : " orders");
+          row.badge.textContent = "read " + k;
           row.badge.setAttribute("fill", "var(--svg-danger)");
         }
         row.badge.setAttribute("opacity", 1);
@@ -343,10 +356,11 @@ function buildTimeline() {
     })(i);
   }
 
+  // Act boundary (end of the last Act 1 step): what happened, what is next.
   tl.call(function() {
     phase.textContent =
-      "Act 1 done — naive join read " + naiveRead +
-      " inner rows. But IN only needs to know a match EXISTS. Watch FirstMatch…";
+      "Act 1 done: the plain join read " + naiveRead +
+      " inner rows. But IN only needs to know a match EXISTS. Next, FirstMatch…";
     stage.statusLbl.textContent =
       "Every order past the first was wasted work for the IN check.";
   });
@@ -354,6 +368,8 @@ function buildTimeline() {
 
   // ================= ACT 2 — FirstMatch early-out =================
   tl.mark("Act 2 — FirstMatch (stops on first)");
+  // The first Act 2 step starts here, so the reset belongs to it.
+  tl.beat(stepKind(2, ORDERS_BY_CUSTOMER[stage.outerRows[0].data.id] || []));
   tl.call(function() {
     // Reset outer rows to rest so the second pass reads clean.
     for (var k = 0; k < stage.outerRows.length; k++) {
@@ -362,32 +378,35 @@ function buildTimeline() {
       rr.bg.setAttribute("stroke", OUTER_STROKE);
       rr.badge.setAttribute("opacity", 0);
     }
+    stage.statusLbl.textContent = "";
     phase.textContent =
-      "Act 2/2 — same query as a semijoin: stop the inner scan on the FIRST match";
+      "Act 2 of 2: the same query as a semijoin stops the inner scan on the FIRST match";
   });
   tl.delay(500);
 
-  for (var m = 0; m < stage.outerRows.length; m++) {
+  for (var m = 0; m < n; m++) {
     (function(idx) {
       var row = stage.outerRows[idx];
       var c = row.data;
       var orders = ORDERS_BY_CUSTOMER[c.id] || [];
 
+      if (idx > 0) tl.beat(stepKind(2, orders));
       clearProbe(tl,
-        "Act 2 — checking " + c.name + " (id=" + c.id + "): scan until the first match");
+        "Act 2, customer " + (idx + 1) + " of " + n + ": " + c.name + " (id=" + c.id +
+        "), scan " + c.name + "'s orders until the first match");
       driveRow(tl, row);
 
       if (orders.length === 0) {
-        // No match: the inner side is scanned but finds nothing.
+        // No match: the inner side is checked but holds no qualifying order,
+        // so no inner row is read (the same count as Act 1).
         tl.call(function() {
-          fmRead += 1;               // one probe to discover "no rows"
           setCounters();
-          stage.verdict.textContent = c.name + " (id=" + c.id + ") → no match — not in result";
+          stage.verdict.textContent = c.name + " (id=" + c.id + ") → no match, not in result";
           row.badge.textContent = "no match";
           row.badge.setAttribute("fill", "var(--svg-ink-muted)");
           row.badge.setAttribute("opacity", 1);
-          phase.textContent = "Act 2 — " + c.name + " (id=" + c.id +
-            ") has no order > $1000 → excluded from the IN result";
+          phase.textContent = "Act 2, " + c.name + " (id=" + c.id +
+            ") has no order over $1000, so " + c.name + " is left out of the IN result";
         });
         settleRow(tl, row, false);
         tl.delay(650);
@@ -399,11 +418,11 @@ function buildTimeline() {
       tl.call(function() {
         fmRead += 1;
         setCounters();
-        phase.textContent = "Act 2 — " + c.name + " (id=" + c.id +
+        phase.textContent = "Act 2, " + c.name + " (id=" + c.id +
           ") → order #" + orders[0].oid + " $" + orders[0].total +
-          " matches → emit " + c.name + ", STOP scanning";
+          " matches → return " + c.name + " and STOP scanning " + c.name + "'s orders";
         stage.verdict.textContent = c.name + " (id=" + c.id +
-          ") → first match on order #" + orders[0].oid + " — emit, short-circuit";
+          ") → match on #" + orders[0].oid + ": emit, stop";
         row.badge.textContent = "✓ emit (read 1)";
         row.badge.setAttribute("fill", "var(--svg-ok)");
         row.badge.setAttribute("opacity", 1);
@@ -419,10 +438,9 @@ function buildTimeline() {
       }
       tl.call(function() {
         if (orders.length > 1) {
-          phase.textContent = "Act 2 — " + c.name + "'s other " +
-            (orders.length - 1) + " matching order" +
-            (orders.length - 1 === 1 ? "" : "s") +
-            " are SKIPPED (greyed) — MySQL never reads them";
+          phase.textContent = "Act 2, " + c.name + "'s other " +
+            (orders.length - 1 === 1 ? "matching order is" : (orders.length - 1) + " matching orders are") +
+            " SKIPPED (greyed): the server never reads " + (orders.length - 1 === 1 ? "it" : "them");
         }
       });
       settleRow(tl, row, true);
@@ -431,12 +449,13 @@ function buildTimeline() {
   }
 
   tl.mark("Consequence");
+  tl.beat("done");
   tl.call(function() {
     phase.textContent =
       "FirstMatch read " + fmRead + " inner rows vs " + naiveRead +
-      " for the naive join — IN asks does-it-exist, so the inner scan short-circuits";
+      " for the naive join: IN asks does-it-exist, so the inner scan short-circuits";
     stage.statusLbl.textContent =
-      "Saved " + (naiveRead - fmRead) + " inner-row reads on 5 customers. " +
+      "Saved " + (naiveRead - fmRead) + " inner-row reads on " + n + " customers. " +
       "At scale the gap is outer_rows × (matches − 1).";
   });
   tl.delay(700);
@@ -449,7 +468,7 @@ function buildCurrentTimeline() {
 
 function resetAnim() {
   resetStage();
-  document.getElementById("phase-label").textContent = "Ready — press Play";
+  document.getElementById("phase-label").textContent = "Ready: press Next step, or Play to run it all";
 }
 
 function renderChart(innerMatches, currentOuterRows) {

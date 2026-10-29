@@ -9,8 +9,8 @@ import { useViewOnScreen } from "./viewOnScreen";
 import type { ActionPrivilege } from "./accountsApi";
 import { privilegeResult, usePrivilege } from "./privileges";
 import { recordDeclined, type Connection } from "./api";
-import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "./binding";
-import { useWritePolicy } from "./Connections";
+import { connectionKey, connectionLabel, endpointKey, useConnectionReads, type Bound } from "./binding";
+import { ConnectionTypeBand, useWritePolicy } from "./Connections";
 import { InstrumentsLink } from "./Instruments";
 import {
   ActionButton, ActionStatus, Checkbox, ConfirmSheet, DataTable, Disclosure, EmptyState, FactStrip, Fields,
@@ -149,15 +149,7 @@ export function ReplicationView({ connection, disabled, selection, report: bound
   // (dbops.identity_endpoint), so after a change of type or Read-only on the
   // same saved connection the loop is read again under the new key and keeps
   // its Stop. Any other connection has its own loops.
-  const endpointOf = (value: string) => {
-    try {
-      const parts: unknown = JSON.parse(value);
-      return Array.isArray(parts) ? JSON.stringify(parts.slice(0, 6)) : value;
-    } catch {
-      return value;
-    }
-  };
-  const sameEndpoint = !!boundLoops && endpointOf(boundLoops.key) === endpointOf(reads.key);
+  const sameEndpoint = !!boundLoops && endpointKey(boundLoops.key) === endpointKey(reads.key);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const confirmationRef = useRef(confirmation);
   confirmationRef.current = confirmation;
@@ -674,7 +666,9 @@ export function ReplicationView({ connection, disabled, selection, report: bound
 
       </> : <EmptyState icon="replication" title="Read replication status" action={<ToolbarButton primary disabled={disabled || !!reads.loading} onClick={() => { void load(); }}>Load</ToolbarButton>}>Channels, thread states, the last error and lag signals of the connection in use. It only reads.</EmptyState>}
     </ViewLayout>
-    {c && !left && <ConfirmSheet className="ops-confirm" eyebrow={c.kind === "one" ? "SKIP TRANSACTION" : "SKIP UNTIL STOPPED"}
+    {c && !left && <ConfirmSheet className="ops-confirm"
+      band={<ConnectionTypeBand connection={c.connection} label={c.label} />}
+      eyebrow={c.kind === "one" ? "SKIP TRANSACTION" : "SKIP UNTIL STOPPED"}
       returnFocus={() => reviewOpener.current?.isConnected ? reviewOpener.current : null}
       title={`${c.kind === "one" ? "Skip the failed transaction" : "Skip failures until stopped"} on ${channelPhrase(c.engine, c.plan.channel)}?`}
       description="myflames reads the failure again right before sending and stops if it changed. A skipped transaction cannot be undone."

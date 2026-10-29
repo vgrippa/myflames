@@ -259,12 +259,14 @@ def render_tree(root, width=1200, title="MySQL Query Plan", unit_display="ms", a
             f'<text class="row-time" x="{self_col_x + SELF_W - 4}" y="{text_y}"'
             f' text-anchor="end" pointer-events="none">{xml_escape(_format_time(self_t))}</text>'
         )
-        # Total time (blank if same as self)
-        if abs(total_t - self_t) > 0.001:
-            lines.append(
-                f'<text class="row-time" x="{total_col_x + TOTAL_W - 4}" y="{text_y}"'
-                f' text-anchor="end" pointer-events="none">{xml_escape(_format_time(total_t))}</text>'
-            )
+        # Total (inclusive) time on every row, leaves included, so the column
+        # never has gaps where a leaf's total equals its self time. An
+        # unmeasured operator gets _format_time's dash here, as in Self
+        # (charts/tree.ts prints the same).
+        lines.append(
+            f'<text class="row-time" x="{total_col_x + TOTAL_W - 4}" y="{text_y}"'
+            f' text-anchor="end" pointer-events="none">{xml_escape(_format_time(total_t))}</text>'
+        )
         # Percentage
         pct_str = f"{pct:.0f}%" if pct >= 1 else f"{pct:.1f}%"
         lines.append(

@@ -1,3 +1,6 @@
+import { bytes } from "./PerfShared";
+import { AlterPredictionWhy, notPredictedReason, type AlterPrediction } from "./AlterPrediction";
+import { engineName } from "./OpsShared";
 import {
   forwardRef,
   useCallback,
@@ -13,6 +16,8 @@ import {
 } from "react";
 import {
   api,
+  ddlProgress,
+  type DdlProgress,
   ApiError,
   type Capture,
   type Connection,
@@ -24,6 +29,7 @@ import {
   type EditorSession,
   type EditorStop,
   type Plan,
+  type SavedQuery,
   type TopStatement,
 } from "./api";
 import type { DigestAction } from "./SlowQueries";
@@ -49,18 +55,24 @@ import {
 } from "./session";
 import { connectionKey, connectionLabel } from "./binding";
 import { Icon } from "./components";
-import { ActionButton, ActionStatus, IDLE_ACTION, writeFailure, type ActionState, Checkbox, ConfirmSheet, EmptyState, IconButton, InfoPopover, NumberField, StatusPill, useWindowStatus, type Tone } from "./kit";
-import { useWritePolicy, TYPE_LABEL } from "./Connections";
+import { ActionButton, ActionStatus, IDLE_ACTION, writeFailure, type ActionState, Checkbox, ConfirmSheet, EmptyState, IconButton, InfoPopover, NumberField, StatusPill, useFocusScope, useWindowStatus, type Tone } from "./kit";
+import { ConnectionTypeBand, useWritePolicy, TYPE_LABEL } from "./Connections";
 import { SqlEditor, type Range } from "./SqlEditor";
 import { ResultsPane, rowResults } from "./ResultsPane";
 import { SchemaBrowser } from "./SchemaBrowser";
-import { HistoryPanel } from "./HistoryPanel";
+import { HistoryPanel, type SidePanelTab } from "./HistoryPanel";
+import { SaveQuerySheet } from "./SavedQueries";
+import { FillParametersSheet } from "./FillParameters";
+import { fillFields } from "./fillValues";
 import { SafeUpdatesInfo } from "./SafeUpdatesInfo";
 import { QueryTabMenu, MAX_TAB_NAME, clipName, copyName } from "./QueryTabMenu";
 import { editorPrivilegeGate, isPrivilegeDenial, privilegeButtonProps, usePrivilege, usePrivileges, type EditorPrivilegePreview } from "./privileges";
 import { lazyComponent } from "./lazy";
 import { MAC } from "./platform";
 import "./editor.css";
+import { DdlMeter, DdlUnavailable, ddlLeft } from "./DdlProgress";
+import { followDdlProgress } from "./ddlProgressPoll";
+import { useImportCsv } from "./importCsvApi";
 
 // Opened on request (Table data, the Query Digest mode): their chunks load
 // the first time they open (lazy.tsx).
@@ -111,6 +123,8 @@ export type QueryLabHandle = {
   renameTab: () => void;
   /** Format the selection, or the whole tab (the palette's Format SQL). */
   formatSql: () => void;
+  /** Save the current tab's SQL as a saved query (the palette's Save query…). */
+  saveQuery: () => void;
 };
 function parseParameters(text: string): unknown {
   try {
@@ -239,6 +253,7 @@ type DdlConfirmation = EditorConfirmation & {
     unattributed_transactions?: { connection_id: number | null; age_s: number | null }[];
     sessions?: { connection_id: number | null; time_s?: number | null; query?: string | null }[];
     suggestion?: string | null;
+    prediction?: AlterPrediction | null;
   } | null;
 };
 type Pending = {
@@ -425,6 +440,9 @@ export const QueryLab = forwardRef<
     /** Reports whether a capture started here is running. */
     onBusyChange?: (busy: boolean) => void;
     onConnected?: (connection: Connection) => void;
+    /** Automatic DDL reads stop when the kept editor leaves the screen. */
+    onScreen?: boolean;
+    onOpenInstruments?: (row: string) => void;
     /** Open Indexes or Tables on one table (the schema browser's menu); *from*
      * is the key of the connection the name was read from. */
     onOpenTable?: (view: "indexes" | "tables", schema: string, table: string, from: string) => void;
@@ -440,6 +458,8 @@ export const QueryLab = forwardRef<
     onTabsNow,
     onBusyChange,
     onConnected,
+    onScreen = true,
+    onOpenInstruments,
     onOpenTable,
   },
   ref,
@@ -476,8 +496,9 @@ export const QueryLab = forwardRef<
     if (!panel || !wrap || !panel.offsetHeight) return;
     const splitter = panel.querySelector<HTMLElement>(".editor-splitter");
     const feedback = panel.querySelector<HTMLElement>(".editor-feedback");
+    const ddlFeedback = panel.querySelector<HTMLElement>(".ddl-editor");
     const room = Math.floor(panel.getBoundingClientRect().bottom - wrap.getBoundingClientRect().top
-      - (splitter?.offsetHeight || 0) - (feedback?.offsetHeight || 0));
+      - (splitter?.offsetHeight || 0) - (feedback?.offsetHeight || 0) - (ddlFeedback?.offsetHeight || 0));
     if (room === measuredRoom.current) return;
     measuredRoom.current = room;
     setEditorRoom(room);
@@ -508,6 +529,9 @@ export const QueryLab = forwardRef<
   const [error, setError] = useState("");
   // A staged table draft remains bound to the connection it was opened from.
   const [tableData, setTableData] = useState<{ connection: Connection; schema: string; table: string } | null>(null);
+  // Import CSV from the Schemas panel: one import at a time, bound to the
+  // connection it was opened on; its line stays under the toolbar.
+  const importCsv = useImportCsv(connection);
   const [job, setJob] = useState<Job | null>(null);
   // The connection the capture was started on: the server answers its status
   // and Cancel only for that connection.
@@ -530,6 +554,8 @@ export const QueryLab = forwardRef<
   const editor = useRef<HTMLTextAreaElement>(null);
   const parametersField = useRef<HTMLTextAreaElement>(null);
   const [parametersOpen, setParametersOpen] = useState(false);
+  /** The tab whose parameter form is open (a digest that needs values). */
+  const [fillFormTab, setFillFormTab] = useState<string | null>(null);
   const [analysisOptionsOpen, setAnalysisOptionsOpen] = useState(false);
   const [runOptionsOpen, setRunOptionsOpen] = useState(false);
   const [renaming, setRenaming] = useState<{ id: string; name: string; invalid?: boolean } | null>(null);
@@ -634,6 +660,25 @@ export const QueryLab = forwardRef<
   // continuation such as Commit and close reads it before React renders).
   const runtimeRef = useRef(runtime);
   const rt = runtime[tab.id] || blankRuntime();
+  const [ddl, setDdl] = useState<{ owner: string; progress: DdlProgress } | null>(null);
+  const ddlOwner = JSON.stringify([tab.id, rt.gen, rt.run?.id, rt.sessionKey]);
+  const ddlEligible = rt.running && rt.run?.state === "running" && !rt.stopping && rt.stopGen !== rt.gen &&
+    !tableData && !!rt.run.statements.some(s =>
+      // Only statements that rebuild or copy a table report stage progress
+      // (ALTER USER or ALTER VIEW would only show "turn on tracking").
+      /^(ALTER TABLE|OPTIMIZE TABLE|OPTIMIZE)\b/i.test(s.verb || "") ||
+      (/^CREATE INDEX$/i.test(s.verb || "") || /^\s*CREATE\s+(?:UNIQUE\s+|FULLTEXT\s+|SPATIAL\s+)?INDEX\b/i.test(s.text)));
+  const ddlId = rt.session?.connection_id;
+  const ddlConnection = rt.sessionConnection;
+  useEffect(() => {
+    if (!onScreen || !ddlEligible || !ddlId || !ddlConnection) return;
+    return followDdlProgress(
+      signal => ddlProgress(ddlConnection, [ddlId], signal),
+      progress => setDdl({ owner: ddlOwner, progress }),
+    );
+  }, [onScreen, ddlEligible, ddlId, ddlConnection, ddlOwner]);
+  const ddlShown = ddlEligible && onScreen && ddl?.owner === ddlOwner ? ddl.progress : null;
+  const ddlItem = ddlShown?.items.find(item => item.id === ddlId);
   useLayoutEffect(measureEditorRoom, [
     measureEditorRoom,
     tabId,
@@ -643,15 +688,28 @@ export const QueryLab = forwardRef<
     layout.height,
     Boolean(rt.run),
     Boolean(rt.note),
+    ddlEligible,
+    ddlShown,
   ]);
   const [pending, setPending] = useState<Pending | null>(null);
   const [pendingBusy, setPendingBusy] = useState(false);
   const [closing, setClosing] = useState<{ tabId: string; known: boolean; keepTab: boolean } | null>(null);
   const [closingBusy, setClosingBusy] = useState(false);
   const [historyTick, setHistoryTick] = useState(0);
+  /** Bumped after Save query…, so an open Saved tab reads again. */
+  const [savedTick, setSavedTick] = useState(0);
+  /** The side panel's tab: History or Saved (page memory only). */
+  const [sideTab, setSideTab] = useState<SidePanelTab>("history");
+  /** The tab whose SQL Save query… is saving. */
+  const [saveFor, setSaveFor] = useState<string | null>(null);
   const narrow = useNarrow();
   // Below NARROW px the panes are sheets, closed until asked for in this page.
   const [sheet, setSheet] = useState<"" | "browser" | "history">("");
+  const browserSheet = useRef<HTMLDivElement>(null);
+  const historySheet = useRef<HTMLDivElement>(null);
+  const sheetOpener = useRef<HTMLElement | null>(null);
+  useFocusScope(browserSheet, { open: narrow && onScreen && !tableData && sheet === "browser", onClose: () => setSheet(""), returnFocus: () => sheetOpener.current });
+  useFocusScope(historySheet, { open: narrow && onScreen && !tableData && sheet === "history", onClose: () => setSheet(""), returnFocus: () => sheetOpener.current });
   const showBrowser = narrow ? sheet === "browser" : layout.browser;
   const showHistory = narrow ? sheet === "history" : layout.history;
   const polls = useRef(new Map<string, AbortController>());
@@ -693,7 +751,28 @@ export const QueryLab = forwardRef<
     formatSql: () => {
       whenShown(() => void formatSql());
     },
+    saveQuery: () => startSaveQuery(tab.id),
   }));
+  /** Save query…: the sheet asks for a name (the tab's), a folder and a note. */
+  function startSaveQuery(id: string) {
+    const t = tabs.find((x) => x.id === id);
+    if (!t) return;
+    if (!t.sql.trim()) {
+      note(id, "There is no SQL in this tab to save.", true);
+      return;
+    }
+    setSaveFor(id);
+  }
+  /** Open a saved query in a new tab, its SQL as saved; nothing runs. */
+  function openSaved(q: SavedQuery) {
+    const id = crypto.randomUUID();
+    setTabs((ts) => [...ts, { id, name: clipName(q.name).trimEnd() || `Query ${ts.length + 1}`, sql: q.sql, parameters: "{}" }]);
+    setTabId(id);
+    const where = q.database && q.database !== connection.database ? ` It was saved for the database ${q.database}.` : "";
+    note(id, `Opened the saved query “${q.name}” in a new tab. Nothing ran.${where}`);
+    if (narrow) setSheet("");
+    window.requestAnimationFrame(() => editor.current?.focus());
+  }
   /** Run *action* once the editor is on screen; never on a hidden editor. */
   function whenShown(action: () => void, frames = 30) {
     if (tabPanel.current?.offsetParent && editor.current?.offsetParent) action();
@@ -749,6 +828,7 @@ export const QueryLab = forwardRef<
     if (q.names.length && !refused) {
       next.fill = q.names;
       next.fill_note = fillNotice(q);
+      if (q.lists.length) next.fill_lists = q.lists;
     }
     setTabs((ts) => [...ts, next]);
     setTabId(next.id);
@@ -761,17 +841,13 @@ export const QueryLab = forwardRef<
     }
     if (row.analysis_warning) {
       setAnalysisWarning({ tab: next.id, text: row.analysis_warning });
-      if (q.names.length) setParametersOpen(true);
-      window.setTimeout(() => editor.current?.focus());
+      if (q.names.length) setFillFormTab(next.id);
+      else window.setTimeout(() => editor.current?.focus());
       return;
     }
     if (q.names.length) {
-      // Nothing runs until the values are filled in.
-      setParametersOpen(true);
-      window.setTimeout(() => {
-        parametersField.current?.focus();
-        parametersField.current?.scrollIntoView({ block: "nearest" });
-      });
+      // Nothing runs until the values are filled in: the form asks for them.
+      setFillFormTab(next.id);
       return;
     }
     if (action === "open") {
@@ -790,6 +866,37 @@ export const QueryLab = forwardRef<
       editor.current?.scrollIntoView({ block: "nearest" }),
     );
     void startCapture(next, q.sql, {}, action, `Top statements #${rank}`);
+  }
+  /** Later: close the form and edit the Parameters JSON by hand, as before it. */
+  function editParametersByHand() {
+    setFillFormTab(null);
+    setParametersOpen(true);
+    window.setTimeout(() => {
+      parametersField.current?.focus();
+      parametersField.current?.scrollIntoView({ block: "nearest" });
+    });
+  }
+  /** Use values: the form's values go into the tab's Parameters JSON. Names
+   * given a value (NULL included) no longer need one; nothing runs. */
+  function applyFillValues(id: string, parameters: string, filled: string[], remaining: string[]) {
+    setFillFormTab(null);
+    const t = tabs.find((x) => x.id === id);
+    const fill = (t?.fill || []).filter((n) => remaining.includes(n));
+    const lists = (t?.fill_lists || []).filter((n) => fill.includes(n));
+    changeTab({
+      parameters,
+      fill: fill.length ? fill : undefined,
+      fill_lists: lists.length ? lists : undefined,
+      // The first notice names every parameter: once some have values the
+      // generic one names those still missing.
+      ...(filled.length ? { fill_note: undefined } : {}),
+    }, id);
+    const still = remaining.length
+      ? `${listNames(remaining)} still ${remaining.length === 1 ? "needs a value" : "need values"}`
+      : "";
+    note(id, filled.length
+      ? `Values for ${listNames(filled)} are in Parameters${still ? `; ${still}` : ""}. Nothing ran.`
+      : `No values were given; ${still}.`);
   }
   const received = useRef("");
   const reportRef = useRef(onStateChange);
@@ -1910,9 +2017,11 @@ export const QueryLab = forwardRef<
       return value === l.height ? l : { ...l, height: value };
     });
   }
-  function togglePane(pane: "browser" | "history") {
-    if (narrow) setSheet((s) => (s === pane ? "" : pane));
-    else setLayout((l) => ({ ...l, [pane]: !l[pane] }));
+  function togglePane(pane: "browser" | "history", opener?: HTMLElement) {
+    if (narrow) {
+      if (sheet !== pane) sheetOpener.current = opener || (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+      setSheet(s => s === pane ? "" : pane);
+    } else setLayout((l) => ({ ...l, [pane]: !l[pane] }));
   }
 
   const pendingFill = unfilled(tab, tab.sql, parseParameters(tab.parameters));
@@ -1984,7 +2093,8 @@ export const QueryLab = forwardRef<
         }} /> }
       <div hidden={!!tableData} className={`editor-workbench${showBrowser ? " has-browser" : ""}${showHistory ? " has-history" : ""}${narrow ? " is-narrow" : ""}`}>
         {/* Kept mounted while hidden, so what was read stays when it opens again. */}
-        <div className="schema-browser-slot" hidden={!showBrowser}>
+        <div ref={browserSheet} className="schema-browser-slot" hidden={!showBrowser}
+          role={narrow && showBrowser ? "dialog" : undefined} aria-label="Schemas" tabIndex={-1}>
           <SchemaBrowser
             connection={connection}
             width={narrow ? 0 : layout.browser_width}
@@ -2001,6 +2111,13 @@ export const QueryLab = forwardRef<
               // A second click cannot replace a draft before the grid's own
               // discard confirmation has called onClose.
               setTableData(current => current || { connection: { ...connection }, schema, table });
+            }}
+            onImportCsv={(target, from) => {
+              if (from !== connectionKey(connection)) {
+                setError("The connection changed. Reload the schemas before importing.");
+                return;
+              }
+              importCsv.start(target);
             }}
           />
         </div>
@@ -2123,6 +2240,10 @@ export const QueryLab = forwardRef<
                     onDuplicate={() => {
                       setTabMenu(null);
                       duplicateTab(tabMenu.id);
+                    }}
+                    onSave={() => {
+                      setTabMenu(null);
+                      startSaveQuery(tabMenu.id);
                     }}
                     onClose={() => {
                       const id = tabMenu.id;
@@ -2374,13 +2495,13 @@ export const QueryLab = forwardRef<
                   icon="browser"
                   label={showBrowser ? "Hide the schema browser" : "Show the schema browser"}
                   aria-pressed={showBrowser}
-                  onClick={() => togglePane("browser")}
+                  onClick={event => togglePane("browser", event.currentTarget)}
                 />
                 <IconButton
                   icon="history"
                   label={showHistory ? "Hide the run history" : "Show the run history"}
                   aria-pressed={showHistory}
-                  onClick={() => togglePane("history")}
+                  onClick={event => togglePane("history", event.currentTarget)}
                 />
                 <InfoPopover label="Query editor shortcuts">
                   <p>
@@ -2389,7 +2510,12 @@ export const QueryLab = forwardRef<
                     Ctrl+Space opens SQL suggestions; Ctrl+Shift+Space also works when the system reserves Ctrl+Space.
                     {" "}{FORMAT_KEYS} formats the selection or the whole tab.
                   </p>
-                  <p>Right-click a tab, or press Shift+F10 on it, to rename, duplicate or close it.</p>
+                  <p>Right-click a tab, or press Shift+F10 on it, to rename, duplicate, save or close it.</p>
+                  <p>
+                    In a result, click a cell; Shift+click or Shift+arrows select a range, a row number selects its row,
+                    and {MAC ? "Option" : "Alt"}+click on a column header selects the column. The line under the result
+                    totals the selection; {MAC ? "⌘C" : "Ctrl+C"} copies it. Double-click a row, or press {MAC ? "Return" : "Enter"} on it, to show it.
+                  </p>
                   <p>Each tab keeps one session, so SET SESSION, temporary tables and transactions last until the tab closes.</p>
                 </InfoPopover>
               </div>
@@ -2437,10 +2563,15 @@ export const QueryLab = forwardRef<
               </div>
             )}
             {pendingFill.length > 0 && (
-              <p className="notice fill-notice" role="status">
-                {tab.fill_note ||
-                  `Fill in ${listNames(pendingFill)} under Parameters with real values, then run Explain.`}
-              </p>
+              <div className="notice fill-notice" role="status">
+                <span>
+                  {tab.fill_note ||
+                    `Fill in ${listNames(pendingFill)} under Parameters with real values, then run Explain.`}
+                </span>
+                <button type="button" className="text-button" data-action="fill-values" onClick={() => setFillFormTab(tab.id)}>
+                  Fill in values…
+                </button>
+              </div>
             )}
             {mismatch && session && (
               <div className="editor-banner is-warn" data-banner="mismatch">
@@ -2466,6 +2597,7 @@ export const QueryLab = forwardRef<
               </div>
             )}
             <ActionStatus className="editor-session-status" state={rt.sessionFeedback} />
+            {importCsv.element}
             {batchRunning && (
               <p className="hint">
                 Explain and Run analysis wait while Explain top N runs on Server.
@@ -2518,6 +2650,16 @@ export const QueryLab = forwardRef<
                 }
               }}
             />
+            {ddlEligible && <div className="ddl-editor" aria-label="DDL progress">
+              <div className="action-status">
+                <span className="action-status-text" role="status" aria-live="polite">
+                  {ddlItem ? `${ddlItem.stage_label}. ${ddlLeft(ddlItem)}` : ""}
+                </span>
+                {ddlItem && <DdlMeter item={ddlItem} />}
+              </div>
+              {ddlShown && <DdlUnavailable progress={ddlShown}
+                onOpenInstruments={rt.sessionKey === connectionKey(connection) ? onOpenInstruments : undefined} />}
+            </div>}
             <div
               className="editor-splitter"
               role="separator"
@@ -2555,6 +2697,7 @@ export const QueryLab = forwardRef<
               }}
             />
             <ResultsPane
+              rowPanel={{ narrow: narrow && onScreen && !tableData, blocked: narrow && sheet !== "", onOpen: () => setSheet("") }}
               run={rt.run}
               running={running}
               base={0}
@@ -2567,6 +2710,7 @@ export const QueryLab = forwardRef<
               selected={tab.result_tab || ""}
               onSelect={(key) => changeTab({ result_tab: key })}
               engine={session?.engine || null}
+              backslash={session?.backslash_escapes !== false}
               plan={planPane}
               onJump={jump}
               onLoadMore={loadMore}
@@ -2594,11 +2738,56 @@ export const QueryLab = forwardRef<
               role="status" hidden={!rt.note}>{rt.note}</p>
           </div>
         </div>
-        {showHistory && <HistoryPanel refresh={historyTick} onInsert={insertAtCursor} onClose={() => togglePane("history")} />}
+        {showHistory && <div ref={historySheet} className="history-panel-slot"
+          role={narrow ? "dialog" : undefined} aria-label="History and saved queries" tabIndex={-1}>
+          <HistoryPanel refresh={historyTick} savedRefresh={savedTick} tab={sideTab} onTab={setSideTab}
+            onInsert={insertAtCursor} onOpenSaved={openSaved} onClose={() => togglePane("history")} />
+        </div>}
       </div>
+      {saveFor && (() => {
+        const t = tabs.find((x) => x.id === saveFor);
+        if (!t) return null;
+        return (
+          <SaveQuerySheet
+            key={t.id}
+            name={t.name}
+            sql={t.sql}
+            database={connectionFor(t).database || null}
+            onClose={() => setSaveFor(null)}
+            onSaved={(saved, redacted) => {
+              setSaveFor(null);
+              setSavedTick((n) => n + 1);
+              note(t.id, `Saved “${saved.name}”${saved.folder ? ` in ${saved.folder}` : ""}. It is under Saved in the side panel.${
+                redacted ? " Credentials in it were replaced by [redacted]." : ""}`);
+            }}
+          />
+        );
+      })()}
+      {fillFormTab && (() => {
+        const t = tabs.find((x) => x.id === fillFormTab);
+        if (!t?.fill?.length) return null;
+        return (
+          <FillParametersSheet
+            key={t.id}
+            tabName={t.name}
+            fields={fillFields(t.sql, t.fill, t.fill_lists)}
+            parameters={t.parameters}
+            returnFocus={() => editor.current}
+            onUse={(parameters, filled, remaining) => applyFillValues(t.id, parameters, filled, remaining)}
+            onLater={editParametersByHand}
+            onClose={() => setFillFormTab(null)}
+          />
+        );
+      })()}
       {pending && (
         <ConfirmSheet
           className="editor-confirm"
+          band={
+            <ConnectionTypeBand
+              connection={(pending.payload.connection as Connection | undefined) || pending.confirmation.connection}
+              type={pending.confirmation.connection_type}
+            />
+          }
           eyebrow={
             pending.confirmation.alter_preflight
               ? "ALTER TABLE"
@@ -2646,7 +2835,7 @@ export const QueryLab = forwardRef<
             <div>
               <dt>Connection</dt>
               <dd>
-                {pending.confirmation.connection.name} · {pending.confirmation.connection.user}@{pending.confirmation.connection.host}:
+                {pending.confirmation.connection.name} · {pending.confirmation.connection.user ? `${pending.confirmation.connection.user}@` : ""}{pending.confirmation.connection.host}:
                 {pending.confirmation.connection.port}
               </dd>
             </div>
@@ -2679,11 +2868,18 @@ export const QueryLab = forwardRef<
           )}
           {pending.confirmation.alter_preflight && (() => {
             const review = pending.confirmation.alter_preflight;
+            const prediction = review.prediction;
             return <section aria-label="ALTER TABLE preflight">
               <dl className="sheet-facts">
+                {prediction && <div><dt>Predicted</dt><dd className="alter-prediction"
+                  data-algorithm={prediction.predicted ? prediction.algorithm ?? "" : "none"}>
+                  {prediction.predicted
+                    ? <><strong>{prediction.summary}</strong>. {prediction.text}</>
+                    : <>Not predicted. {notPredictedReason(prediction.reason)}</>}
+                </dd></div>}
                 <div><dt>Table</dt><dd>{review.schema || "(no database)"}.{review.table} · {review.table_engine || "engine unknown"}</dd></div>
-                <div><dt>Server</dt><dd>{review.engine} {review.version}</dd></div>
-                <div><dt>Approximate size</dt><dd>{review.approx_bytes == null ? "Unknown" : `${review.approx_bytes.toLocaleString()} bytes (data and indexes)`}</dd></div>
+                <div><dt>Server</dt><dd>{engineName(review.engine, review.version)}</dd></div>
+                <div><dt>Approximate size</dt><dd title={review.approx_bytes == null ? undefined : `${review.approx_bytes.toLocaleString()} bytes (data and indexes)`}>{review.approx_bytes == null ? "Unknown" : `${bytes(review.approx_bytes)} (data and indexes)`}</dd></div>
                 <div><dt>Metadata locks</dt><dd>{review.metadata_known ? `${review.metadata_locks.length} observed` : "Unknown"}{review.truncated ? " (incomplete snapshot)" : ""}</dd></div>
                 <div><dt>Open transactions on table</dt><dd>{review.metadata_known && review.transactions_known ? `${review.transactions.length} observed` : "Unknown"}</dd></div>
                 <div><dt>Lock wait limit</dt><dd>5 seconds per metadata-lock wait; retained in this tab's session</dd></div>
@@ -2696,6 +2892,7 @@ export const QueryLab = forwardRef<
                 </ul>
                 <p>{review.unattributed_transactions?.length || 0} other open transactions; table ownership not established. This snapshot cannot rule out new or uninstrumented locks. Check Server → Locks while ALTER runs.</p>
               </details>
+              {prediction && <AlterPredictionWhy prediction={prediction} />}
               {review.suggestion && <details><summary>Optional SQL with explicit algorithm and lock</summary>
                 <p>Copy this into the editor and review it again to use it. The server checks support; INPLACE can still rebuild the table.</p>
                 <pre className="sheet-statements" aria-label="Suggested ALTER SQL">{review.suggestion};</pre>
@@ -2724,6 +2921,11 @@ export const QueryLab = forwardRef<
       )}
       {closing && (
         <ConfirmSheet
+          band={
+            <ConnectionTypeBand
+              connection={sessionConnectionOf(closing.tabId) || runtime[closing.tabId]?.session?.connection || connection}
+            />
+          }
           eyebrow="Transaction"
           title={
             closing.keepTab

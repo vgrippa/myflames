@@ -409,14 +409,36 @@ try {
   assert.deepEqual(sent.source, { kind: "digest", digest: C, schema: "shop" });
 
   // 4. Normalized text: :p1, :p2 and a parameters skeleton; nothing runs
-  // until the values are filled in.
+  // until the values are filled in. The parameter form asks for them first:
+  // each marker with a few words of SQL around it, a type and a value.
   await nav("Workload");
   await row(3);
   await page.locator('[aria-label="Explain statement 3"]').click();
+  await page.waitForSelector("dialog.fill-sheet[open]");
+  assert.equal(await activeTab(), "Top #3 · orders");
+  const fillPart = (name, selector) => `dialog.fill-sheet [data-parameter="${name}"] ${selector}`;
+  assert.equal(await text(fillPart("p1", ".fill-context")), "… `customer_id` IN (▢) AND …");
+  assert.equal(await text(fillPart("p2", ".fill-context")), "… AND `created_at` > ▢");
+  assert.equal(await page.$eval(fillPart("p1", "select"), (e) => e.value), "number", "an id compares as a number");
+  assert.equal(await page.$eval(fillPart("p2", "select"), (e) => e.value), "text");
+  assert.deepEqual(await page.$$eval(fillPart("p1", "select option"), (els) => els.map((e) => e.textContent)), ["Number", "Text", "NULL"]);
+  assert.match(await text(fillPart("p1", ".hint")), /several values separated by commas/, "a collapsed list says so");
+  assert.equal(await page.$(fillPart("p2", ".hint")), null);
+  await page.waitForFunction((sel) => document.activeElement === document.querySelector(sel), {}, fillPart("p1", "input"));
+  assert.equal(starts.length, 2, "the form runs nothing");
+  await page.screenshot({ path: path.join(directory, "digest-fill-form.png") });
+  // Escape closes the form and returns to the editor; the notice offers it again.
+  await page.keyboard.press("Escape");
+  await page.waitForSelector("dialog.fill-sheet", { hidden: true });
+  await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "SQL editor");
+  await page.locator(".fill-notice button ::-p-text(Fill in values…)").click();
+  await page.waitForSelector("dialog.fill-sheet[open]");
+  // Later keeps today's path: the Parameters JSON, open and focused.
+  await page.locator("dialog.fill-sheet button ::-p-text(Later)").click();
+  await page.waitForSelector("dialog.fill-sheet", { hidden: true });
   await page.waitForFunction(
     () => document.activeElement?.getAttribute("aria-label") === "Query parameters",
   );
-  assert.equal(await activeTab(), "Top #3 · orders");
   assert.equal(
     await page.$eval('[aria-label="SQL editor"]', (e) => e.value),
     "SELECT * FROM `orders` WHERE `customer_id` IN (:p1) AND `created_at` > :p2",
@@ -449,6 +471,86 @@ try {
   assert.match(await text(".primary-finding .strip-body"), /From Top statements: bbbbbbbbbbbb/);
   await page.screenshot({ path: path.join(directory, "digest-plan.png") });
 
+  // 4b. Use values writes the form into the Parameters JSON (a JSON list for
+  // IN (...)); Enter moves to the next value, then to Use values; a value
+  // that is not a number stays in the form with its reason; nothing runs.
+  await nav("Workload");
+  await row(3);
+  const beforeForm = starts.length;
+  await page.locator('[aria-label="Explain statement 3"]').click();
+  await page.waitForSelector("dialog.fill-sheet[open]");
+  await page.waitForFunction((sel) => document.activeElement === document.querySelector(sel), {}, fillPart("p1", "input"));
+  await page.keyboard.type("7, x");
+  await page.keyboard.press("Enter");
+  await page.waitForFunction((sel) => document.activeElement === document.querySelector(sel), {}, fillPart("p2", "input"));
+  await page.keyboard.type("2026-01-01");
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => document.activeElement?.dataset.action === "use-values");
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(fillPart("p1", ".form-error"));
+  assert.match(await text(fillPart("p1", ".form-error")), /“x” is not a number/);
+  assert.equal(await page.$eval(fillPart("p1", "input"), (e) => e === document.activeElement && e.getAttribute("aria-invalid")), "true");
+  await page.$eval(fillPart("p1", "input"), (e) => e.select());
+  await page.keyboard.type("7, 8");
+  await page.click("dialog.fill-sheet [data-action=use-values]");
+  await page.waitForSelector("dialog.fill-sheet", { hidden: true });
+  await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "SQL editor");
+  assert.deepEqual(JSON.parse(await page.$eval('[aria-label="Query parameters"]', (e) => e.value)), { p1: [7, 8], p2: "2026-01-01" });
+  assert.equal(await page.$(".fill-notice"), null, "every value is filled in");
+  assert.match(await text(".editor-feedback"), /^Values for p1 and p2 are in Parameters\. Nothing ran\.$/);
+  assert.equal(starts.length, beforeForm, "Use values runs nothing");
+  await clickExact(".editor-actions button", "Explain");
+  for (const end = Date.now() + 10000; starts.length === beforeForm && Date.now() < end;) await new Promise((r) => setTimeout(r, 50));
+  sent = starts[beforeForm];
+  assert.ok(sent, "Explain started a capture");
+  await heading("Top #3 · orders");
+  assert.deepEqual(sent.parameters, { p1: [7, 8], p2: "2026-01-01" }, "the list reaches the capture as a JSON array");
+
+  // 4c. Reopening the form while one value is still missing never rebuilds
+  // another the user already gave: a list the comma field cannot hold (NULL
+  // in it) is shown read-only as JSON and kept exactly by Use values.
+  await nav("Workload");
+  await row(3);
+  const beforeKept = starts.length;
+  await page.locator('[aria-label="Explain statement 3"]').click();
+  await page.waitForSelector("dialog.fill-sheet[open]");
+  await page.locator("dialog.fill-sheet button ::-p-text(Later)").click();
+  await page.waitForSelector("dialog.fill-sheet", { hidden: true });
+  await page.locator('[aria-label="Query parameters"]').fill('{"p1": [1, null, 2], "p2": null}');
+  // Escape closes the options popover (it covers the notice), then the notice reopens the form.
+  await page.keyboard.press("Escape");
+  await page.waitForSelector('[role=dialog][aria-label="Explain and Run analysis options"]', { hidden: true });
+  await page.locator('.fill-notice button[data-action="fill-values"]').click();
+  await page.waitForSelector("dialog.fill-sheet[open]");
+  await page.waitForSelector(fillPart("p1", ".fill-json"));
+  assert.equal(await text(fillPart("p1", ".fill-json")), "[1,null,2]", "the list is shown as it is, read-only");
+  assert.equal(await page.$(fillPart("p1", "input")), null, "no comma field for it");
+  assert.match(await text(fillPart("p1", ".hint")), /^A list with NULL in it stays as it is\. Choose Later to edit it in Parameters\.$/);
+  // Screenshots, light and dark at 1440 and 720 px (then back as it was).
+  {
+    const theme = await page.evaluate(() => document.documentElement.dataset.theme ?? null);
+    const viewport = page.viewport();
+    for (const [width, height] of [[1440, 900], [720, 520]]) {
+      await page.setViewport({ width, height });
+      for (const scheme of ["light", "dark"]) {
+        await page.evaluate((t) => { document.documentElement.dataset.theme = t; }, scheme);
+        await new Promise((r) => setTimeout(r, 150));
+        await page.screenshot({ path: path.join(directory, `digest-fill-locked-${width}-${scheme}.png`) });
+      }
+    }
+    await page.evaluate((t) => { if (t === null) delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t; }, theme);
+    if (viewport) await page.setViewport(viewport);
+  }
+  await page.waitForFunction((sel) => document.activeElement === document.querySelector(sel), {}, fillPart("p2", "input"));
+  await page.keyboard.type("2026-01-01");
+  await page.click("dialog.fill-sheet [data-action=use-values]");
+  await page.waitForSelector("dialog.fill-sheet", { hidden: true });
+  assert.deepEqual(JSON.parse(await page.$eval('[aria-label="Query parameters"]', (e) => e.value)), { p1: [1, null, 2], p2: "2026-01-01" },
+    "the list the user gave is kept exactly");
+  assert.equal(await page.$(".fill-notice"), null);
+  assert.match(await text(".editor-feedback"), /^Values for p2 are in Parameters\. Nothing ran\.$/);
+  assert.equal(starts.length, beforeKept, "Use values runs nothing");
+
   // 5. Explain top N: the two-capture limit, a failure, skipped rows, and
   // plans added without leaving Server.
   await nav("Workload");
@@ -456,6 +558,7 @@ try {
   await setField("Top N", "3");
   mock.busyOnce = true;
   const before = (await page.$$(".plan-item")).length;
+  const batchFrom = starts.length;
   await page.locator("button ::-p-text(Explain top 3)").click();
   await page.waitForSelector(".batch-summary");
   // Editor runs wait while the batch runs (the first start waits a second
@@ -473,7 +576,7 @@ try {
     { timeout: 30000 },
   );
   assert.equal(mock.busyReplies, 1);
-  const batchStarts = starts.slice(3);
+  const batchStarts = starts.slice(batchFrom);
   assert.deepEqual(batchStarts.map((s) => s.query), [SAMPLE_1, SAMPLE_4, "SELECT * FROM missing WHERE a = 1"]);
   assert.ok(batchStarts.every((s) => s.mode === "explain" && s.trace === false && s.timeout === 45));
   assert.deepEqual(batchStarts.map((s) => s.source.digest), [A, C, D]);

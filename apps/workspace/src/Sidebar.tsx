@@ -7,11 +7,11 @@ import type { ReactNode } from "react";
 import { AboutDialog } from "./About";
 import { time, type Plan } from "./api";
 import { Icon, type IconName } from "./components";
-import { Checkbox, CountBadge, InfoPopover, Popover, closePopovers, useFocusScope } from "./kit";
+import { Checkbox, CountBadge, Popover, closePopovers, useFocusScope } from "./kit";
 import { NewsSetting } from "./HomeNews";
 import type { SaveStatus } from "./session";
 
-export type Place = "home" | "server" | "workload" | "replication" | "cluster" | "proxysql" | "tuning" | "query" | "digest" | "diagram" | "plans" | "investigations" | "learn";
+export type Place = "home" | "server" | "workload" | "replication" | "cluster" | "proxysql" | "tuning" | "query" | "digest" | "diagram" | "schema" | "plans" | "investigations" | "learn";
 export const PLACES: { key: Place; label: string; icon: IconName }[] = [
   { key: "home", label: "Home", icon: "home" },
   { key: "server", label: "Server", icon: "server" },
@@ -23,6 +23,7 @@ export const PLACES: { key: Place; label: string; icon: IconName }[] = [
   { key: "query", label: "Query editor", icon: "query" },
   { key: "digest", label: "Query digest", icon: "analysis" },
   { key: "diagram", label: "Database diagram", icon: "diagram" },
+  { key: "schema", label: "Schema versions", icon: "branches" },
   { key: "plans", label: "Plans", icon: "plan" },
   { key: "investigations", label: "Investigations", icon: "investigation" },
   { key: "learn", label: "Learn", icon: "learn" },
@@ -430,18 +431,11 @@ export function Sidebar({
               >
                 Restore workspace on startup
               </Checkbox>
-              <InfoPopover label="About restoring the workspace">
-                <p>
-                  {skipRestore
-                    ? "Started with --no-restore. The saved workspace is kept for the next launch."
-                    : "Turning this off clears the saved workspace. Passwords are never part of the workspace."}
-                </p>
-              </InfoPopover>
             </div>
             <p className="hint" id="session-toggle-hint">
               {skipRestore
-                ? "Off for this launch (--no-restore)."
-                : "Off clears the saved workspace."}
+                ? "Off for this launch (--no-restore); the saved workspace is kept."
+                : "Off clears the saved workspace. Passwords are never saved in it."}
             </p>
             <NewsSetting />
             <div className="settings-menu">

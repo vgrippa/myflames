@@ -53,9 +53,33 @@ var PATH_LABELS_PK = [
   "#42 alice@ex"
 ];
 
-function getPathLabel(treeIdx, levelIdx, levelsShown, traversals) {
+// The covering index of the "Covering secondary index" lookup holds
+// (email, first_name, last_name, country_code) plus the primary key id.
+var COVERING_INDEX_COLUMNS = "(email, first_name, last_name, country_code)";
+
+// The query card follows the Lookup type.
+var QUERY_SQL = {
+  pk: "-- Clustered primary key lookup\n" +
+      "SELECT id, first_name, last_name, country_code\n" +
+      "FROM   users\n" +
+      "WHERE  id = 42;",
+  secondary_covering: "-- Covering secondary index lookup\n" +
+      "SELECT id, first_name, last_name, country_code\n" +
+      "FROM   users\n" +
+      "WHERE  email = 'alice@example.com';   -- index on " + COVERING_INDEX_COLUMNS,
+  secondary_noncovering: "-- Non-covering secondary index lookup\n" +
+      "SELECT id, first_name, last_name, country_code\n" +
+      "FROM   users\n" +
+      "WHERE  email = 'alice@example.com';   -- idx_users_email contains only (email, id)"
+};
+
+function getPathLabel(treeIdx, levelIdx, levelsShown, traversals, keyType) {
   var isLeaf = (levelIdx === levelsShown - 1);
   if (traversals === 1) {
+    if (keyType === "secondary_covering") {
+      if (isLeaf) return "alice@ex #42";
+      return PATH_LABELS_SEC[Math.min(levelIdx, PATH_LABELS_SEC.length - 1)];
+    }
     if (isLeaf) return "#42 alice@ex";
     return PATH_LABELS_PK[Math.min(levelIdx, PATH_LABELS_PK.length - 1)];
   }
@@ -67,8 +91,10 @@ function getPathLabel(treeIdx, levelIdx, levelsShown, traversals) {
   return PATH_LABELS_CLUS[Math.min(levelIdx, PATH_LABELS_CLUS.length - 1)];
 }
 
-function getTokenLabel(traversals, treeIdx) {
-  if (traversals === 1) return "looking for id=42";
+function getTokenLabel(traversals, treeIdx, keyType) {
+  if (traversals === 1) {
+    return keyType === "secondary_covering" ? "looking for email=alice@\u2026" : "looking for id=42";
+  }
   if (treeIdx === 0) return "looking for email=alice@\u2026";
   return "looking for id=42";
 }
@@ -76,17 +102,18 @@ function getTokenLabel(traversals, treeIdx) {
 // ---------- tree rendering ----------
 var W = 800, H = 400;
 var treeState = {
-  height: 3, traversals: 1, nodes: [[],[]], token: null,
+  height: 3, traversals: 1, keyType: "pk", nodes: [[],[]], token: null,
   tokenLabel: null,
   pkLink: null, pkLinkLabel: null, leafLabels: [],
   edges: [[],[]]   // per-tree array of { line, onPath } for parent->child edges
 };
 
-function buildTrees(height, traversals) {
+function buildTrees(height, traversals, keyType) {
   var svg = document.getElementById("btree-svg");
   while (svg.firstChild) svg.removeChild(svg.firstChild);
   treeState.height = height;
   treeState.traversals = traversals;
+  treeState.keyType = keyType || (traversals === 2 ? "secondary_noncovering" : "pk");
   treeState.nodes = [[], []];
   treeState.edges = [[], []];
   treeState.leafLabels = [];
@@ -121,7 +148,11 @@ function buildTrees(height, traversals) {
   globalDefs.appendChild(treeArrowHi);
   svg.appendChild(globalDefs);
 
-  var treeNames = (traversals === 2) ? ["Secondary B+tree \u2014 idx_users_email", "Clustered B+tree \u2014 users (PK)"] : ["Clustered B+tree \u2014 users (PK)"];
+  var treeNames = (traversals === 2)
+    ? ["Secondary B+tree \u2014 idx_users_email", "Clustered B+tree \u2014 users (PK)"]
+    : (treeState.keyType === "secondary_covering"
+      ? ["Covering secondary B+tree \u2014 " + COVERING_INDEX_COLUMNS]
+      : ["Clustered B+tree \u2014 users (PK)"]);
   for (var t = 0; t < traversals; t++) {
     var ox = t * treeWidth;
     var heading = anim.svgEl("text", {
@@ -189,7 +220,7 @@ function buildTrees(height, traversals) {
           x: nd.cx, y: nd.cy - 2, "text-anchor": "middle",
           "font-size": 9, "font-weight": 600, fill: "var(--svg-ink-muted)"
         });
-        lvLbl.textContent = (lv3 === 0) ? "root" : (lv3 === levels - 1 ? "leaf" : "L" + lv3);
+        lvLbl.textContent = (lv3 === 0) ? "root" : (lv3 === levels - 1 ? "leaf" : "internal");
         svg.appendChild(lvLbl);
         // Data label: second line inside the node, shows key ranges when visited
         var dataLbl = anim.svgEl("text", {
@@ -296,7 +327,7 @@ function resetTreeColors() {
         lvlNodes[n].rect.setAttribute("fill", "var(--svg-node-bg)");
         lvlNodes[n].rect.setAttribute("stroke", "var(--svg-node-stroke)");
         lvlNodes[n].rect.setAttribute("stroke-width", 1);
-        var orig = (lv === 0) ? "root" : (lv === treeState.nodes[t].length - 1 ? "leaf" : "L" + lv);
+        var orig = (lv === 0) ? "root" : (lv === treeState.nodes[t].length - 1 ? "leaf" : "internal");
         lvlNodes[n].label.textContent = orig;
         lvlNodes[n].label.setAttribute("font-size", 9);
         lvlNodes[n].label.setAttribute("font-weight", 600);
@@ -352,10 +383,31 @@ function buildDescentTimeline() {
   var levelsShown = Math.min(treeState.height, 4);
   var phaseLabel = document.getElementById("phase-label");
 
+  // Guided steps: one per page read. The kind names the simplified-code
+  // lines the step runs (GUIDE in btree.py).
+  var BEAT_KINDS = {
+    one: ["root", "internal", "leaf"],
+    secondary: ["sec-root", "sec-internal", "sec-leaf"],
+    clustered: ["clus-root", "clus-internal", "clus-leaf"]
+  };
+  function beatKind(treeIdx, levelIdx, isLeaf) {
+    var kinds = treeState.traversals === 1 ? BEAT_KINDS.one
+      : (treeIdx === 0 ? BEAT_KINDS.secondary : BEAT_KINDS.clustered);
+    return kinds[levelIdx === 0 ? 0 : (isLeaf ? 2 : 1)];
+  }
+  var covering = treeState.traversals === 1 && treeState.keyType === "secondary_covering";
+  function treeName(treeIdx) {
+    if (treeState.traversals === 2 && treeIdx === 0) return "idx_users_email (secondary)";
+    if (covering) return "covering index (secondary)";
+    return "users PK (clustered)";
+  }
+
   // Walk one tree (descend root -> leaf, pulsing each node). Step offset
   // allows the token to start at the root position without a fade-in
-  // when it's arriving over the PK link.
-  function addTreeDescent(treeIdx, fadeInFromAbove) {
+  // when it's arriving over the PK link. The clustered walk of a
+  // two-tree lookup starts its first step before the token moves there.
+  function addTreeDescent(treeIdx, fadeInFromAbove, rootStepStarted) {
+    if (!rootStepStarted) tl.beat(beatKind(treeIdx, 0, false));
     tl.call(function() {
       var rootNode = treeState.nodes[treeIdx][0].find(function(n) { return n.onPath; });
       if (fadeInFromAbove && rootNode) {
@@ -363,13 +415,15 @@ function buildDescentTimeline() {
         token.setAttribute("opacity", 0);
       }
       // Update token label text for the current tree
-      var tLabel = getTokenLabel(treeState.traversals, treeIdx);
+      var tLabel = getTokenLabel(treeState.traversals, treeIdx, treeState.keyType);
       tokenLabel.textContent = tLabel;
 
       phaseLabel.textContent = (treeState.traversals === 2
         ? (treeIdx === 0 ? "Walking idx_users_email (secondary) for WHERE email = 'alice@example.com'"
                          : "Walking users PK (clustered) using PK=42 from the secondary leaf")
-        : "Walking users PK (clustered) for WHERE id = 42");
+        : (covering ? "Walking the covering index " + COVERING_INDEX_COLUMNS +
+                      " for WHERE email = 'alice@example.com'"
+                    : "Walking users PK (clustered) for WHERE id = 42"));
     });
     if (fadeInFromAbove) {
       tl.add({
@@ -385,11 +439,21 @@ function buildDescentTimeline() {
         var activeNode = treeState.nodes[treeIdx][levelIdx].find(function(n) { return n.onPath; });
         if (!activeNode) return;
         var isLeaf = (levelIdx === levelsShown - 1);
-        var nodeDataLabel = getPathLabel(treeIdx, levelIdx, levelsShown, treeState.traversals);
+        var nodeDataLabel = getPathLabel(treeIdx, levelIdx, levelsShown, treeState.traversals,
+                                         treeState.keyType);
+        // The covering leaf's caption says why the walk ends there.
+        var captionData = (covering && isLeaf)
+          ? "alice@example.com, id 42 and every column the query asked for"
+          : nodeDataLabel;
+        if (levelIdx > 0) tl.beat(beatKind(treeIdx, levelIdx, isLeaf));
         tl.call(function() {
-          phaseLabel.textContent = "Tree " + (treeIdx + 1) + "/" + treeState.traversals +
-            " \u2014 descending to " + (levelIdx === 0 ? "root" : (isLeaf ? "leaf" : "level " + levelIdx)) +
-            " \u2014 " + nodeDataLabel;
+          // Number each page read while the whole tree is drawn.
+          var pageName = levelIdx === 0 ? "root page" : (isLeaf ? "leaf page" : "internal page");
+          var read = treeState.height <= levelsShown
+            ? "page read " + (treeIdx * levelsShown + levelIdx + 1) + " of " +
+              (levelsShown * treeState.traversals) + ": "
+            : "";
+          phaseLabel.textContent = treeName(treeIdx) + ", " + read + pageName + ", " + captionData;
         });
         var currentPos;
         if (levelIdx === 0) {
@@ -442,7 +506,7 @@ function buildDescentTimeline() {
   }
 
   if (treeState.traversals === 1) {
-    tl.mark("Descend clustered B+tree");
+    tl.mark(covering ? "Descend covering secondary index" : "Descend clustered B+tree");
     addTreeDescent(0, true);
   } else {
     // Secondary descent
@@ -454,11 +518,12 @@ function buildDescentTimeline() {
     var clusLeaf = treeState.nodes[1][levelsShown - 1].find(function(n) { return n.onPath; });
     if (secLeaf && clusLeaf) {
       tl.delay(240);
+      tl.beat("pk-hop");
       tl.mark("Follow PK pointer");
       tl.call(function() {
         secLeaf.rect.setAttribute("fill", "var(--svg-hop-soft)");
         secLeaf.rect.setAttribute("stroke", "var(--svg-hop)");
-        phaseLabel.textContent = "Secondary leaf has PK=42 \u2014 following the pointer to the clustered leaf";
+        phaseLabel.textContent = "The secondary leaf record holds PK=42, the key that finds the row in the clustered tree";
       });
       tl.add({
         from: 0, to: 1, duration: 300, ease: anim.easeOutCubic,
@@ -496,6 +561,7 @@ function buildDescentTimeline() {
     }
     // Clustered descent - highlight the remaining path from
     // root -> ... -> leaf for completeness.
+    tl.beat("clus-root");
     tl.mark("Descend clustered B+tree");
     tl.call(function() {
       phaseLabel.textContent = "InnoDB walks the clustered B+tree top-down using PK=42";
@@ -524,12 +590,16 @@ function buildDescentTimeline() {
         }
       });
     }
-    addTreeDescent(1, false);
+    addTreeDescent(1, false, true);
   }
 
+  // A covering lookup checks that the leaf holds every column and returns.
+  tl.beat(covering ? "covered" : "done");
   tl.mark("Lookup complete");
   tl.call(function() {
-    phaseLabel.textContent = "\u2713 Lookup complete \u2014 found user #42 (alice@example.com)";
+    phaseLabel.textContent = covering
+      ? "\u2713 Lookup complete \u2014 the covering leaf held every column for user #42 (alice@example.com), so the clustered index is never read"
+      : "\u2713 Lookup complete \u2014 found user #42 (alice@example.com)";
     tokenLabel.setAttribute("opacity", 0);
     var finalLeaf = treeState.nodes[treeState.traversals - 1][levelsShown - 1].find(function(n) { return n.onPath; });
     if (finalLeaf) {
@@ -537,12 +607,17 @@ function buildDescentTimeline() {
       finalLeaf.rect.setAttribute("stroke", "var(--svg-ok)");
     }
   });
+  // The token leaves so the found leaf's label can be read.
+  tl.add({
+    from: 1, to: 0, duration: 240, ease: anim.easeInCubic,
+    onUpdate: function(v) { token.setAttribute("opacity", v); }
+  });
   return tl;
 }
 
 function resetAnim() {
   resetTreeColors();
-  document.getElementById("phase-label").textContent = "Ready \u2014 press Play";
+  document.getElementById("phase-label").textContent = "Ready: press Next step, or Play to run it all";
 }
 
 // ---------- complexity chart ----------
@@ -597,7 +672,9 @@ function recompute() {
     : "O(log users) = O(log n)";
   document.getElementById("out-explanation").textContent = cost.explanation;
 
-  buildTrees(cost.height, cost.traversals);
+  var sql = document.querySelector(".query-sql");
+  if (sql && QUERY_SQL[keyType]) sql.textContent = QUERY_SQL[keyType];
+  buildTrees(cost.height, cost.traversals, keyType);
   resetTreeColors();
   renderChart(keySize, pageSize, keyType, rows);
 }

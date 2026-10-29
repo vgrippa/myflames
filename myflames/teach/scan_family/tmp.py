@@ -15,14 +15,89 @@ The limit depends on the engine (see ``tmp_table_cost`` in
 * MariaDB: the smaller of the two as well, spilling to Aria instead of
   InnoDB.
 
-Concrete sample data: employees grouped by department, counting
-headcount per department.
+Concrete sample data: orders grouped by customer_id. The temp table keeps
+one row per group (MySQL TemptableAggregateIterator updates a group it
+finds and inserts a new one; MariaDB end_update does the same), so its
+size is groups x row size, not the number of orders read.
 """
 from .. import _html
 from .._cost_model import TMP_TABLE_SIZE_DEFAULT, MAX_HEAP_TABLE_SIZE_DEFAULT
 
 
 _LESSON_JS_TEMPLATE = _html.load_lesson_js(__file__)
+
+# Guided steps (see _html.normalize_guide). tmp.js marks creating the table,
+# each batch of new groups, the conversion to disk and the end with
+# tl.beat(kind). Function names are on _html.VERIFIED_SERVER_FUNCTIONS
+# (checked in mysql-server 8.4.9 and 9.7.0).
+GUIDE = {
+    "code": {
+        "title": "GROUP BY with an internal temp table",
+        "lines": [
+            ("create", 0, "create an in-memory temp table with a key on customer_id"),
+            ("loop", 0, "for each row read from orders:"),
+            ("group", 1, "its customer_id row exists: update COUNT and SUM",
+             "TemptableAggregateIterator::Init"),
+            ("insert", 1, "a new customer_id: insert a row for that group"),
+            ("full", 2, "if the in-memory table is at its size limit:"),
+            ("convert", 3, "create an on-disk table and copy every row into it",
+             "create_ondisk_from_heap"),
+            ("disk", 1, "after a conversion, every group lives in the on-disk table"),
+            ("send", 0, "read the finished groups back and send them"),
+        ],
+    },
+    "beats": {
+        "start": ["create"],
+        "insert-mem": ["loop", "group", "insert"],
+        "insert-full": ["loop", "insert", "full"],
+        "convert": ["convert"],
+        "insert-disk": ["loop", "insert", "disk"],
+        "done": ["send"],
+    },
+    "quiz": [
+        {
+            "question": ("The query groups 1,000,000 orders by customer_id, and they belong to "
+                         "10,000 customers. How many rows does the temp table hold at the end?"),
+            "choices": [
+                ("10,000, one per customer_id", True,
+                 "Each orders row either updates its customer's row (COUNT and SUM) or "
+                 "inserts it, so the table grows with the number of groups, not orders."),
+                ("1,000,000, one per order", False,
+                 "An order whose customer_id is already in the table only updates that "
+                 "group's row; nothing new is inserted."),
+                ("1, a running total", False,
+                 "GROUP BY needs one result row per customer_id, so each group keeps its "
+                 "own row."),
+            ],
+        },
+        {
+            "question": ("On MySQL 8.4 with the default TempTable engine, which setting do you "
+                         "raise to keep a bigger temp table in memory?"),
+            "choices": [
+                ("tmp_table_size", True,
+                 "TempTable limits each table to tmp_table_size and ignores "
+                 "max_heap_table_size (all TempTable tables also share temptable_max_ram)."),
+                ("max_heap_table_size", False,
+                 "That limit applies to MEMORY temp tables and to MariaDB, where the smaller "
+                 "of the two settings wins; TempTable ignores it."),
+                ("sort_buffer_size", False,
+                 "That buffer is for filesort; it does not size internal temp tables."),
+            ],
+        },
+        {
+            "question": "What happens to the rows already in memory when the table hits its limit?",
+            "choices": [
+                ("They are copied into a new on-disk table, and the query continues there", True,
+                 "MySQL creates an on-disk InnoDB table (MariaDB an Aria table), copies every "
+                 "row into it and keeps using it until the query ends."),
+                ("They stay in memory, and only new groups go to disk", False,
+                 "The whole table moves; one table is never split between memory and disk."),
+                ("The oldest groups are dropped to make room", False,
+                 "A temp table never drops rows; losing groups would make the result wrong."),
+            ],
+        },
+    ],
+}
 
 
 def render() -> str:
@@ -32,15 +107,15 @@ def render() -> str:
   <div class="control-grid">
 
     <div class="control">
-      <label for="rows">Rows to materialize: <span class="value-pill" data-pill-for="rows">10000</span></label>
+      <label for="rows">Groups (temp table rows): <span class="value-pill" data-pill-for="rows">10000</span></label>
       <input type="range" id="rows" name="rows" min="100" max="1000000" step="100" value="10000">
-      <div class="hint">Total rows inserted into the internal temp table.</div>
+      <div class="hint">Distinct customer_id values: the temp table keeps one row per group.</div>
     </div>
 
     <div class="control">
       <label for="row_size">Row size (bytes): <span class="value-pill" data-pill-for="row_size">200</span></label>
       <input type="range" id="row_size" name="row_size" min="32" max="4096" step="8" value="200">
-      <div class="hint">Size of each materialized row in the temp table.</div>
+      <div class="hint">Size of one group row in the temp table (key, COUNT, SUM and overhead).</div>
     </div>
 
     <div class="control">
@@ -72,23 +147,24 @@ def render() -> str:
     query_card_html = _html.query_card(
         sql=(
             "-- GROUP BY without index → internal temp table\n"
-            "SELECT   department, COUNT(*) AS headcount\n"
-            "FROM     employees\n"
-            "GROUP BY department\n"
-            "HAVING   COUNT(*) > 5;"
+            "SELECT   customer_id, COUNT(*) AS orders, SUM(total) AS spent\n"
+            "FROM     orders\n"
+            "GROUP BY customer_id;"
         ),
         note=(
-            "No index matches GROUP BY department, so the server groups the rows "
-            "in an internal temporary table. The table starts in memory and moves "
-            "to disk if it outgrows its size limit."
+            "No index on orders(customer_id), so the server groups the rows in an "
+            "internal temporary table with one row per customer. The table starts in "
+            "memory and moves to disk if it outgrows its size limit."
         ),
     )
 
     explainer_html = _html.explainer(
         "What you'll see in the animation",
         [
-            "Each pill is a sample employees row such as \"Alice (Engineering)\". "
-            "The 12 pills each stand for one twelfth of the rows you set above.",
+            "The temp table holds one row per customer_id: an order for a customer it "
+            "already has only updates that row's COUNT and SUM. Each pill is a new group "
+            "such as \"customer_id=1001\", and the 12 pills each stand for one twelfth "
+            "of the groups you set above.",
             "Green box: the in-memory temp table. Its bar fills toward the size "
             "limit printed above it on the right.",
             "That limit depends on the engine. MySQL's default, TempTable, uses "
@@ -99,6 +175,8 @@ def render() -> str:
             "that conversion.",
             "Try it: set max_heap_table_size below tmp_table_size, then switch the "
             "engine and watch the limit move (or not).",
+            "Next step inserts one batch of groups at a time; the simplified code beside "
+            "the drawing highlights the lines each step runs.",
         ],
     )
 
@@ -106,7 +184,7 @@ def render() -> str:
 <section class="stage">
   {query_card_html}
   {explainer_html}
-  {_html.stage_toolbar("Ready — press Play")}
+  {_html.stage_toolbar("Ready: press Next step, or Play to run it all")}
   <div class="stage-with-phases">
     <svg id="tmp-svg" viewBox="0 0 800 380" xmlns="http://www.w3.org/2000/svg"></svg>
     {_html.phase_nav()}
@@ -121,9 +199,9 @@ def render() -> str:
   <div class="readout-grid">
     <div class="item"><p class="label">Effective limit {ht("The most this one temp table can hold in memory. TempTable (MySQL's default) uses tmp_table_size. The MEMORY engine and MariaDB use the smaller of tmp_table_size and max_heap_table_size.")}</p><p class="value" id="out-limit">—</p></div>
     <div class="item"><p class="label">Limit set by {ht("The setting to raise if you want this table to stay in memory. With MEMORY or MariaDB, raising the larger setting changes nothing: raise the smaller one, or both.")}</p><p class="value" id="out-source">—</p></div>
-    <div class="item"><p class="label">In-memory capacity (rows) {ht("How many rows fit under the limit before the conversion to disk starts: the limit divided by the row size.")}</p><p class="value" id="out-cap">—</p></div>
-    <div class="item"><p class="label">Rows inserted in memory {ht("Rows inserted while the temp table is still in memory. These are fast: no disk I/O.")}</p><p class="value" id="out-mem-rows">—</p></div>
-    <div class="item"><p class="label">Rows inserted on disk {ht("Rows inserted after the table outgrew its limit and moved to an on-disk table (InnoDB on MySQL, Aria on MariaDB).")}</p><p class="value" id="out-disk-rows">—</p></div>
+    <div class="item"><p class="label">In-memory capacity (group rows) {ht("How many group rows fit under the limit before the conversion to disk starts: the limit divided by the row size.")}</p><p class="value" id="out-cap">—</p></div>
+    <div class="item"><p class="label">Group rows inserted in memory {ht("Groups inserted while the temp table is still in memory. These are fast: no disk I/O.")}</p><p class="value" id="out-mem-rows">—</p></div>
+    <div class="item"><p class="label">Group rows inserted on disk {ht("Groups inserted after the table outgrew its limit and moved to an on-disk table (InnoDB on MySQL, Aria on MariaDB).")}</p><p class="value" id="out-disk-rows">—</p></div>
     <div class="item"><p class="label">Disk conversion? {ht("Yes means the table outgrew its limit. The server then copies every row already in memory into a new on-disk table, which is slow.")}</p><p class="value ok" id="out-conversion">—</p></div>
   </div>
   <div class="explanation" id="out-explanation"></div>
@@ -189,7 +267,7 @@ def render() -> str:
         lesson_id="tmp",
         title="Temporary tables: in-memory to on-disk conversion",
         subtitle=(
-            "Watch a GROUP BY fill an in-memory temp table, hit its size limit, "
+            "Watch a GROUP BY fill an in-memory temp table with one row per group, hit its size limit, "
             "and convert to an on-disk table. That cliff is why your query "
             "suddenly slows down, and the engine decides where the cliff is."
         ),
@@ -199,4 +277,5 @@ def render() -> str:
         readout_html=readout_html,
         learn_more_html=learn_more_html,
         lesson_js=lesson_js,
+        guide=GUIDE,
     )

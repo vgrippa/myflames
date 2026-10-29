@@ -23,6 +23,9 @@ const {
   lineCount,
   sqlRun,
   delimiterAt,
+  singleTableRead,
+  usedDatabase,
+  insertDefaults,
 } = await import(
   "data:text/javascript;base64," + Buffer.from(code).toString("base64")
 );
@@ -317,6 +320,58 @@ test("line helpers", () => {
   assert.equal(lineOf("a\nb\r\nc\rd", 7), 4);
   assert.equal(lineCount("one"), 1);
   assert.equal(lineCount("one\r\ntwo\nthree"), 3);
+});
+
+test("the table a single-table read names (SQL INSERT export defaults)", () => {
+  const read = (sql, backslash) => singleTableRead(sql, backslash);
+  assert.deepEqual(read("SELECT * FROM orders"), { schema: "", table: "orders" });
+  assert.deepEqual(read("select id, total from shop.orders o where id > 3 order by id limit 10;"), { schema: "shop", table: "orders" });
+  assert.deepEqual(read("SELECT a FROM `my db`.`odd``name` AS x"), { schema: "my db", table: "odd`name" });
+  assert.deepEqual(read("-- note\n/* hint */ SELECT /*+ NO_ICP(t) */ * FROM t FORCE INDEX (PRIMARY) WHERE a = 'x FROM y'"), { schema: "", table: "t" });
+  assert.deepEqual(read("SELECT EXTRACT(YEAR FROM created), TRIM(LEADING '0' FROM code) FROM sales.invoices"), { schema: "sales", table: "invoices" });
+  assert.deepEqual(read("TABLE inventory.items ORDER BY id LIMIT 5"), { schema: "inventory", table: "items" });
+  assert.deepEqual(read("SELECT * FROM t FOR UPDATE"), { schema: "", table: "t" });
+  for (const sql of [
+    "SELECT * FROM a JOIN b ON a.id = b.id",
+    "SELECT * FROM a, b",
+    "SELECT * FROM a NATURAL JOIN b",
+    "SELECT * FROM (SELECT 1) d",
+    "SELECT * FROM a WHERE id IN (SELECT id FROM b)",
+    "SELECT (SELECT max(id) FROM b) FROM a",
+    "SELECT 1 FROM a UNION SELECT 2 FROM b",
+    "WITH c AS (SELECT 1) SELECT * FROM c",
+    "SELECT 1",
+    "SELECT 1 FROM DUAL",
+    "SELECT * FROM t PARTITION (p0)",
+    "SELECT * FROM t /*!80000 JOIN u */",
+    "UPDATE t SET a = 1",
+    "SHOW TABLES FROM shop",
+    "",
+  ]) assert.equal(read(sql), null, sql);
+  // A string ends where the server's sql_mode says it does: with
+  // NO_BACKSLASH_ESCAPES 'a\' is a whole string, otherwise \' escapes the quote.
+  assert.deepEqual(read("SELECT 'a\\' FROM t", false), { schema: "", table: "t" });
+  assert.equal(read("SELECT 'a\\' FROM t", true), null);
+  assert.equal(usedDatabase("USE shop"), "shop");
+  assert.equal(usedDatabase("use `my db`;"), "my db");
+  assert.equal(usedDatabase("/* c */ USE shop"), "shop");
+  assert.equal(usedDatabase("USE shop extra"), null);
+  assert.equal(usedDatabase("SELECT 1"), null);
+});
+
+test("SQL INSERT export defaults for a result", () => {
+  const st = (index, text, status = "ok") => ({ index, text, status });
+  const run = { statements: [st(0, "SELECT * FROM orders"), st(1, "USE archive"), st(2, "SELECT id FROM orders"),
+    st(3, "SELECT * FROM audit.log"), st(4, "USE broken", "error"), st(5, "SELECT 1 FROM t"), st(6, "SELECT * FROM a JOIN b")] };
+  const result = (statement) => ({ statement });
+  // No schema name: a USE earlier in this run, else empty (an earlier run may
+  // have changed the session's database, so the tab's database is no default).
+  assert.deepEqual(insertDefaults(run, result(0)), { table: "orders", schema: "" });
+  assert.deepEqual(insertDefaults(run, result(2)), { table: "orders", schema: "archive" });
+  assert.deepEqual(insertDefaults(run, result(3)), { table: "log", schema: "audit" });
+  assert.deepEqual(insertDefaults(run, result(5)), { table: "t", schema: "archive" }, "a failed USE changed nothing");
+  assert.deepEqual(insertDefaults(run, result(6)), { table: "", schema: "" }, "no guess for a join");
+  assert.deepEqual(insertDefaults(null, result(0)), { table: "", schema: "" });
 });
 
 console.log(`SQL selection: ${passed} tests passed.`);

@@ -17,6 +17,7 @@ This is the detailed contract per feature; [AGENTS.md](../AGENTS.md) has the rul
   - [SQL CLI](#sql-cli)
   - [Query editor sessions](#query-editor-sessions)
   - [Run](#run)
+  - [Plan Stats and shared-plan literal hiding](#plan-stats-and-shared-plan-literal-hiding)
   - [Digest](#digest)
   - [Plan diff](#plan-diff)
   - [CI gate](#ci-gate)
@@ -41,6 +42,10 @@ This is the detailed contract per feature; [AGENTS.md](../AGENTS.md) has the rul
   - [Users and roles: privileges, accounts](#users-and-roles-privileges-accounts)
   - [Privilege catalogs and adding scopes](#privilege-catalogs-and-adding-scopes)
   - [Database diagram](#database-diagram)
+  - [Schema versions](#schema-versions)
+  - [Compare servers: parameters and accounts](#compare-servers-parameters-and-accounts)
+  - [Parameter version catalogs](#parameter-version-catalogs)
+  - [Learn guided lessons](#learn-guided-lessons)
   - [MySQL Shell](#mysql-shell)
   - [--quiet / -q](#--quiet---q)
   - [MCP server](#mcp-server)
@@ -49,6 +54,7 @@ This is the detailed contract per feature; [AGENTS.md](../AGENTS.md) has the rul
   - [MariaDB Fixtures](#mariadb-fixtures)
 - [Visual Explain (merged Diagram / Workbench)](#visual-explain-merged-diagram--workbench)
 - [Investigation engine](#investigation-engine)
+- [Import CSV](#import-csv)
 - [Workspace navigation and configuration controls](#workspace-navigation-and-configuration-controls)
   - [Action feedback](#action-feedback)
   - [Tables and indexes: browse and export](#tables-and-indexes-browse-and-export)
@@ -77,6 +83,23 @@ any group in its last list, never signalling an id it already saw gone. The
 file is opened without following links or blocking, and a missing, oversized or
 malformed list counts as unconfirmed. `stop()` resolves only when all are gone
 (7 s in total) and otherwise rejects, which shows the shutdown-incomplete dialog.
+SSH tunnels (`myflames/ssh_tunnel.py`) are listed in the same file as service
+groups (`ToolGroups.add/start(..., service=True)`): `ToolGroups.terminate(services=False)`
+stops only the lifecycle tools, so a job's KILL QUERY can still go through its
+tunnel, and `backend.cjs` kills the service groups with the tools when it must
+kill the backend (it accepts at most `MAX_TOOL_GROUPS`, 16, listed groups,
+the same number as `lifecycle.ToolGroups.MAX_GROUPS`, which refuses a 17th tool
+or tunnel before spawning it; tunnels alone are capped at 8). A group that
+holds only zombies counts as gone (`lifecycle._group_alive`: macOS answers
+EPERM for it, and on Linux the group runs only while `/proc/PID/stat` shows a
+member in a state other than Z or X), so dump, restore, clone and tunnel
+cleanup never waits on one. When the desktop dies and the backend's own
+shutdown hangs for 5 s, `backend-entry.py` SIGKILLs the groups the backend
+owns before its own group (see [SSH tunnels](#ssh-tunnels)).
+`backendEnvironment` sets `MYFLAMES_SSH_HOME` (the inherited real home) and, on
+POSIX, `MYFLAMES_SSH_AUTH_SOCK` (the inherited agent socket); `main.cjs` sets
+`MYFLAMES_SSH_HOME` from `os.homedir()`. The backend's own HOME stays isolated,
+and database clients never see either variable.
 Client discovery appends fixed macOS installation directories without shell
 startup scripts; on Windows it appends the installers' versioned `bin` folders
 (`MySQL\MySQL Server *`, `MariaDB *`, then `MySQL\MySQL Shell *` under each Program
@@ -339,7 +362,12 @@ the window-open handler always denies a new app window. Tests:
   focus to the toggle. At 650 px and below it keeps the Menu drawer.
   The footer has one autosave status and a Settings popover (Restore
   workspace on startup, Show MySQL and MariaDB news on Home, Audit log, About
-  myflames). Saved connections and the connection picker are in
+  myflames). The two switches carry their explanation in a visible hint tied by
+  `aria-describedby` ("Off clears the saved workspace. Passwords are never
+  saved in it.", or "Off for this launch (--no-restore); the saved workspace is
+  kept."; "Planet MySQL and the MariaDB Foundation, read over HTTPS while Home
+  is open."), with no separate information button; Home's news section keeps
+  its own. Saved connections and the connection picker are in
   `Connections.tsx`; the UI says "connection", the API/CLI keep `profile`. The
   connection in use is `query_lab.profile_id` + `query_lab.connection` in the
   session (its password stays in page memory; `connection.read_only` is the
@@ -358,7 +386,8 @@ the window-open handler always denies a new app window. Tests:
   read-only, development or unknown, a dot plus words, `role="note"` with the
   full sentence as `aria-label` and tooltip, and Retry after a failed read.
   Nothing sits under the top bar (`--topbar-height` is the top bar row), and
-  the picker shows `TypeDot` and the type tag. The Audit
+  the picker shows `TypeDot` and `SafetyTags` (a short type word in place of
+  the pills where they yield to width; see Home connections below). The Audit
   log is `Audit.tsx` (session mode `audit`, no place active). Stored session `mode` values keep
   the earlier names (`inspect`, `compare`, `query`, `library`, `teach`) plus
   `home`, `server` and `audit`; `placeOf` in `main.tsx` maps them to places. Naming follows
@@ -430,7 +459,7 @@ the window-open handler always denies a new app window. Tests:
   `--no-restore` skips restore and autosave for one launch without deleting the
   session. Test with `test/test_session.py` and `npm run test:session`.
   Its Learn catalog and lesson player use the existing `LESSONS` registry
-  and `CURRICULUM` order. The Learn place uses a view toolbar (Search lessons, Family filter, Start learning), a one-line summary ("23 lessons, 16 in the learning path") and grouped rows by family, ordered by the learning path, each with its summary and "Step n of 16". An open lesson has one compact toolbar (All lessons, Previous lesson, Step n of 16, Next lesson, Download lesson) and fills the remaining height; the top bar shows the lesson title. The workspace adds `data-embedded="true"` to the lesson page, which hides its own header and footer. Lesson pages and the standalone catalog (`myflames teach --index`, which includes a lesson filter) use the workspace's light and dark tokens (`prefers-color-scheme`, `data-theme` overrides, and `?theme=` / `?embedded=1` URL parameters), restyled controls, and semantic `--svg-*` drawing colors resolved by `anim.cssVar` and `anim.palette`, so drawings redraw when the appearance changes and keep their meaning (descent path, arrival pulse, PK hop, build vs probe, hit, spill). Lesson titles use a colon ("B+tree lookup: how InnoDB finds a row"). See `docs/LOCAL_UI.md` and `docs/QUERY_WORKSPACE.md`. Test with `test/test_ui.py` and the CLI suite.
+  and `CURRICULUM` order. The Learn place uses a view toolbar (Search lessons, Family filter, Start learning), a one-line summary ("23 lessons, 16 in the learning path") and grouped rows by family, ordered by the learning path, each with its summary and "Lesson n of 16" ("Additional topic" off the path; never "Step", which is a beat of a lesson's own step bar). An open lesson has one thin toolbar, one control high (`.teach-toolbar.is-lesson`: All lessons, Previous lesson, Lesson n of 16, Next lesson, Download lesson, Full screen; it stays out of the top bar, which has no room for them at the 720 px minimum) and fills exactly the remaining height; the top bar shows the lesson title. `render_page` orders every lesson through `arrange_lesson(controls_html, stage_html)`: the banner, `section.controls` (parameters), `section.stage` (toolbar, scrubber, step bar, drawing and simplified code), `section.about-example#about-example` ("About this example": the `query_card`, then the `explainer`, side by side when there is room; lessons keep writing both cards in their stage HTML and `arrange_lesson` moves them by the exact markup the two helpers write), then the readout and Learn more; DOM order is the visual order. It also turns each control's `div.hint` into a `span.help-tip` (?) in a `.control-head` beside, never inside, its label, and appends its id to the control's `aria-describedby` (a hint keeps its own id, else `hint-<control id>`, never colliding with an id on the page); the tip opens on hover of the (?) or while the control has keyboard focus, and the controls heading gets `a.about-link` to `#about-example`. In-page `#` links are handled by the runtime (`teachFocus`: scrollIntoView, smooth unless reduced motion, focus to the section's h2) because an srcdoc frame resolves them against the workspace's address. Stage drawings fit the frame through the shared fit rule in `_BASE_CSS` (`max-height: max(160px, calc(100vh - var(--stage-chrome, 96px)))`); `teachFocus.fit()` measures `--stage-chrome` from the stage toolbar to the drawing plus captions and 24 px, and also counts what sits above the toolbar (page margin, banner, the one-row parameters) while that is at most a quarter of the window height and costs every stage drawing at most 15% of its scale; otherwise (wrapped parameters, a short window) the drawing fits under its toolbar as before. `test_teach.TestLessonPageOrder` checks the order for all 23 lessons and that the committed `docs/teach` pages equal the renderer. Full screen: `Teach.tsx` requests the browser's full screen on the lesson host (the desktop app grants only this permission, `fullscreenOnly` in `apps/desktop/main.cjs`; a refused request falls back to an overlay over the window, and one that settles after the lesson was left changes nothing) and posts `{type: "myflames-lesson-focus", focus}` to the frame; `teachFocus` in `myflames/teach/_html.py` accepts it only from its parent and switches to `html[data-focus="true"]`, moving the stage toolbar, scrubber, stage, phase label and readout grid into a fixed shell and back to their exact places on exit (lesson code keeps its element references); `main#lesson-main` becomes the Details panel. Escape in the lesson posts `focus: false`, which the workspace accepts only from that frame. A standalone page uses its own `#btn-fullscreen`. Covered by `test/learn-fullscreen.mjs` and `test_teach.TestLessonFitAndFullScreen`. The workspace adds `data-embedded="true"` to the lesson page, which hides its own header and footer. Lesson pages and the standalone catalog (`myflames teach --index`, which includes a lesson filter) use the workspace's light and dark tokens (`prefers-color-scheme`, `data-theme` overrides, and `?theme=` / `?embedded=1` URL parameters), restyled controls, and semantic `--svg-*` drawing colors resolved by `anim.cssVar` and `anim.palette`, so drawings redraw when the appearance changes and keep their meaning (descent path, arrival pulse, PK hop, build vs probe, hit, spill). Lesson titles use a colon ("B+tree lookup: how InnoDB finds a row"). See `docs/LOCAL_UI.md` and `docs/QUERY_WORKSPACE.md`. Test with `test/test_ui.py` and the CLI suite.
   Lessons use SVG only. The catalog exposes each lesson's key, title, summary
   and family; the workspace requests a lesson by key. The lesson API accepts
   an omitted `view` or `"2d"` for older clients and rejects any other value with
@@ -559,6 +588,33 @@ the same width. Already measured rows keep their cache. `sortRows` reads each ro
 `formatNumber` (`api.ts`) reuses one `Intl.NumberFormat` per options for
 `time`, `number`, `count` and `CompactNumber`: `toLocaleString` with options
 builds a new formatter on every call.
+
+Columns gutter: `DataTable`'s **Columns** control sits in a fixed 36 px
+gutter inside the table frame, outside the horizontally scrolling data
+viewport. A sticky header cell (or a trailing colgroup slot alone) is not
+enough: it overlays earlier data whenever the table overflows sideways. Width
+calculations use the data viewport, which excludes the gutter, so at every
+scroll offset the viewport ends at or before the gutter's left edge, and at the
+right end the last header and its numeric value end before it too; a table
+whose column minimums exceed the viewport still scrolls inside its frame. A
+trailing 36 px column exists only when the table has row actions, which scroll
+with their row (36 px more width in those tables, and no fixed control over a
+scrolling value); tables without row actions keep no empty trailing column.
+Resize handles, sorting, virtualization, persisted widths and hidden keys and
+the numeric minimum widths are unchanged. Suites find Columns by its
+accessible name, since it is outside the scrolling table; `kit-static.mjs`
+checks the markup without a browser and `kit-primitives.mjs` measures fitted
+and overflowing tables at 1440x900 and 720x600 in both appearances, with and
+without row actions, at the start, middle and end scroll offsets.
+Tables and Indexes use `PaginatedReportTable`'s filter, count, Rows, Export and
+paging locations (Tables' **Filter tables** joined that group; schema scope and
+Fresh numbers stay in `ViewLayout`'s toolbar), and every Tables list marks
+Table as its `primary` flexible column with a 220 px minimum. Indexes advice
+(unused and redundant) holds explanations and copyable SQL only: Set
+invisible/visible (Set ignored/not ignored on MariaDB) and Drop index have one
+write-action home in the inspector's action bar, with row and context menus as
+contextual entry points. `indexes.css` is registered in `styles.ts` to keep the
+fixed stylesheet order.
 ### Local authentication and request limits
 
 `WorkspaceServer.launch_url` carries a random, one-use `#launch=` secret, valid
@@ -683,6 +739,295 @@ Local `audit purge` has its separate confirmation contract.
   and `_migrate` writes the two fields into older profile rows once; `_present`
   also defaults them on read. The type, never the password, is part of the
   connection identity reports and confirmations are bound to.
+
+  Pasted connection fields: `live.connection_options` (every API request,
+  profile save and test, the CLI connection flags) and `lifecycle._options`
+  (dump, restore, clone) trim white space (`str.isspace`, so also the no-break
+  space) and `live.INVISIBLE` (zero-width spaces and joiners, word joiner, byte
+  order mark) from both ends of `host`, `ssl_ca` (and the lifecycle
+  `ssl_cert`, `ssl_key`, `socket`), and from the end of `database` (MySQL and
+  MariaDB refuse a database name ending in a space: `check_table_name` in
+  `sql/table.cc`; a leading space is legal and kept). `user` and `password` are
+  never changed. `live.clean_host` refuses a space inside the host, a `/` (a
+  URL or path) and `host:port`, and removes the brackets of `[IPv6]`; a host
+  that is only spaces counts as empty (127.0.0.1). Endpoint comparisons trim
+  the same way (`workspace_store.endpoint_value`, used by `_same_endpoint`,
+  `dbops._same_endpoint` and `dbops.connection_identity`, and `trimPasted` in
+  `binding.ts` `connectionKey`), so a profile saved with a spaced host keeps
+  its saved password and its Development type. The Home form trims Host when
+  it loses focus and splits a pasted `host:port`, `[IPv6]:port` or
+  `mysql://user:password@host:port/db` into its fields (`splitHost` in
+  `Connections.tsx`); Port must be 1 to 65535 before Use. Tests:
+  `test_live.py` (`test_pasted_spaces_around_host_and_paths_are_dropped`,
+  `test_connection_identity_ignores_pasted_spaces`), `test_secret_store.py`
+  (`test_pasted_host_spaces_keep_the_saved_password`) and `test_lifecycle.py`.
+
+  New connection… (the picker's menu and the palette's **New connection**)
+  goes Home and opens the Add connection form once: `main.tsx` raises
+  `addConnection`, `Connections` (`addRequest`, `onAddHandled`) opens the form
+  and clears the request.
+  Connection form (`Connections.tsx`): a new connection's name is
+  `defaultConnectionName(user, host, port)`, `user@host` plus `:port` when the
+  port is a valid port other than 3306, kept in step with User, Host and Port
+  until the name is edited or a preset or saved connection is loaded. Names
+  compare after `trim().toLowerCase()`: when another saved connection has the
+  same name, `#connection-name-problem` says "A saved connection named NAME
+  already exists.", the field is `aria-invalid` and Save is disabled; editing a
+  connection may keep its own name. `/api/connection/test`
+  (`ui._test_connection_response`) opens one `MySQLConnection`, reads
+  `server_version()` and `server_version_comment()` (identity through
+  `server_info.product_identity`), then `query_rows("SHOW DATABASES")` in the
+  same request, and returns `version`, `engine`, `flavor`, `product`,
+  `schemas` and `databases` (the same list, at most `_TEST_DATABASES_LIMIT`,
+  1,000) and `databases_truncated`, plus `databases_error` only when SHOW
+  DATABASES failed after the connection succeeded (password redacted; the test
+  still succeeds) and `through_ssh` only for a connection through SSH. With
+  `databases`, Default database is a pick list (`mysql`, `sys`,
+  `performance_schema` and `information_schema` behind **Show system
+  databases**, and **Type a name…** back to the text field with its datalist);
+  with `databases_error` it stays a text field with `#connection-schema-hint`
+  saying why. Tests: `test_ui.py`
+  (`test_connection_test_databases_bounded_and_error_path`),
+  `test_workspace_api.py` (`test_connection_and_preset_routes`),
+  `apps/workspace/test/connections.mjs`.
+
+  Home connections, the picker pill and the form (`Connections.tsx`,
+  `style.css`; no endpoint or JSON change): `SafetyTags` is the type pill
+  (`.type-tag.is-production` purple, `.is-development` teal) plus, when set, a
+  Read-only outline pill; neither truncates (`.safety-tags` does not wrap in
+  the table), and the Home table, the picker and the Audit log's Type column
+  share it. The table's columns are select (48 px), Name, Type (184 px), the
+  user@host:port address (`flex: true`, the leftover width), **Default
+  database**, Password and Last used; an empty database and a connection not
+  used in this window show "—" with the reason as `title` and in visually
+  hidden text ("Not used in this window. Earlier use is not recorded."). The
+  compact preset keeps a short type word beside each name
+  (`.connection-type-short`: Prod or Dev; a read-only connection keeps its
+  word with an outline, as in the picker). The form panel caps at 560 px, has Cancel beside
+  Save connection, and Delete connection is a `text-button danger`. The
+  picker pill hides `.picker-target` at 1,100 px and below, and
+  `.safety-tags` there in the top bar (`.window-toolbar`) and everywhere at
+  650 px and below, showing `.connection-pill-type` in their place: `aria-hidden` (the Popover label keeps the
+  full type), Prod or Dev in `--env-prod-text` or `--env-dev-text`, never a
+  status color, and for a read-only connection the same word with a
+  `currentColor` outline. The Session password field commits on **Set**
+  (`.picker-password-set`, disabled until the value differs from the committed
+  one), Enter or blur, all through the same `commitPassword`, with the hint
+  "Set, Enter or leaving the field applies it for this window. It is never
+  saved." Tests: `connections.mjs`, `profiles.mjs` (720 px pill, Set and the
+  hint), `kit-static.mjs` (the two pills, the header, the "—" cell).
+
+  Connection type on screen: `ConnectionTypeStrip` is a 3 px decorative strip
+  (`aria-hidden`, no text, `pointer-events: none`) fixed to the window's top
+  edge inside `.topbar-stack` on the places that show `SafetyStatus` (Query
+  editor, Query digest, Database diagram, Schema versions, Server, Workload,
+  Replication, Cluster, ProxySQL, Tuning), colored by `--conn-prod-strip`,
+  `--conn-dev-strip` or `--conn-readonly-strip` in both appearances; the type
+  word stays in the window footer. `ConnectionTypeBand` (`ConfirmSheet.band`)
+  heads every write review and confirmation sheet (`ActionReview.tsx`,
+  `ReviewedSqlAction.tsx` and Instruments through it, `MassKillDialog.tsx`,
+  `Locks.tsx`, `Config.tsx`, `Accounts.tsx`, `Maintenance.tsx`,
+  `TableData.tsx`, `QueryLab.tsx`, `Replication.tsx`, `TableAlterDialog.tsx`)
+  with the type word and the connection label ("Production · prod-eu
+  (10.0.0.5:3306)"), styled by `--conn-*-band-bg`, `-text` and `-line`. It
+  names the connection the plan is bound to (`plan.connection`,
+  `via.connection`, `session.connection`), never the picker's later choice.
+  Tests: `config.mjs`, `locks.mjs`, `navigation.mjs`.
+
+#### SSH tunnels
+
+A connection (its settings, a profile through `PROFILE_FIELDS`, the session's
+connection in use) may carry `ssh_host`, `ssh_user` and `ssh_port`;
+`connection_options` outputs them only when set. Code: `myflames/ssh_tunnel.py`,
+wired through `connector.py`, `live.py`, `lifecycle.py`, `workspace_store.py`,
+`dbops.py`, `ui.py`, `workspace_cli.py`, `replication.py`, `error_log.py`,
+`editor_session.py`, `Connections.tsx` (`SshSettings`), `binding.ts` and the
+desktop launcher.
+
+- Validation: `ssh_tunnel.ssh_fields` (host `^[A-Za-z0-9_][A-Za-z0-9._-]{0,252}$`,
+  user `^[A-Za-z0-9_][A-Za-z0-9._@-]{0,127}$`, so neither starts with `-` nor
+  holds spaces, quotes, `%`, `:`, `/` or `;`; port 1 to 65535; pasted spaces
+  trimmed; a user or port without a host refused) and
+  `ssh_tunnel.check_connection` (the database host must be a host name or an
+  IP address for `-L`, IPv6 bracketed; no socket; no VERIFY_IDENTITY, since the
+  client would check 127.0.0.1). `sshProblem` in `Connections.tsx` is the
+  client-side twin; Use refuses while it reports a problem.
+- Process: `ssh -N -T -o BatchMode=yes -o ExitOnForwardFailure=yes -o
+  LogLevel=DEBUG1 -o UpdateHostKeys=no -o PermitLocalCommand=no -o
+  ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=3`, plus
+  `-o ControlMaster=no -o ControlPath=none` on POSIX (no shared master outlives
+  myflames), `-p PORT` and `-l USER` as separate arguments when set, then
+  `-L 127.0.0.1:LOCAL:DBHOST:DBPORT -- TARGET`. `LogLevel` on the command line
+  wins over any ssh_config setting; ClearAllForwardings is never passed (it
+  would clear the tunnel's own `-L`), and there is no Unix-socket forward (the
+  MySQL client treats a socket as secure transport and would send the password
+  in clear). It is an argument list (no shell) with stdin from `/dev/null`, in
+  its own process group (a POSIX session; on Windows a new process group
+  without a window), so a terminal Ctrl+C cannot cut the tunnel under the KILL
+  QUERY that cancels a statement. ssh gets an allowlisted environment (PATH,
+  locale, temp and system roots) plus the real home (`MYFLAMES_SSH_HOME`) and
+  agent socket (`MYFLAMES_SSH_AUTH_SOCK`, else `SSH_AUTH_SOCK`), no `DISPLAY`
+  or `SSH_ASKPASS`, and never a database password (that stays in the 0600
+  client option file). Keys and the agent only: SSH passwords are never
+  accepted or stored, and myflames never accepts a host key (the user's own
+  `StrictHostKeyChecking` still applies). `find_ssh` never uses
+  `shutil.which`: on Windows it takes `%SystemRoot%\System32\OpenSSH\ssh.exe`,
+  then `Sysnative`, then only `ssh.exe` in absolute PATH folders with a drive
+  or UNC share (quotes stripped); on POSIX PATH first, then `/usr/bin`,
+  `/usr/local/bin`, `/opt/homebrew/bin` and `/opt/local/bin`. Empty, `.` and
+  relative PATH entries are skipped everywhere; otherwise "ssh was not found".
+  The host, user, database name and IPv6 patterns end with `\Z`, so a trailing
+  newline never reaches `-L`.
+- Watchdog (POSIX, `myflames/ssh_watchdog.py`, stdlib only and importing
+  nothing from myflames): ssh starts as `python -I ssh_watchdog.py -- ssh ...`
+  (the packaged backend: `myflames-backend __myflames_ssh_watchdog -- ssh
+  ...`, dispatched at the top of `backend-entry.py` before the CLI loads). The
+  watchdog leads the tunnel's process group with a stdin pipe only the opening
+  process holds, starts ssh in that group with stderr passed straight through,
+  exits with ssh's status, forwards SIGTERM, SIGHUP and SIGINT (SIGKILL after
+  `GRACE`, 2 s), and when the pipe closes (the owner ended, SIGKILL included)
+  stops ssh and kills what is left of the group, such as a ProxyCommand.
+- Job object (Windows, `myflames/win_job.py`, stdlib only: ctypes and the
+  documented kernel32 calls `CreateJobObjectW`, `SetInformationJobObject` with
+  `JobObjectExtendedLimitInformation`, `SetHandleInformation`,
+  `AssignProcessToJobObject`, `CreateToolhelp32Snapshot`/`Thread32First`/
+  `Thread32Next`, `OpenThread`, `ResumeThread`, `CloseHandle`; nothing runs at
+  import). `TunnelManager._spawn` starts ssh.exe with `CREATE_NEW_PROCESS_GROUP
+  | CREATE_NO_WINDOW | CREATE_SUSPENDED` and no watchdog, then `_join_job`
+  calls `win_job.JOB.adopt(popen)`: `KillOnCloseJob.handle()` creates the
+  process's one job once with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` and a
+  non-inheritable handle that myflames never closes (a failed setup closes the
+  empty job and is tried again next time), `adopt` assigns `popen._handle` and
+  then resumes the threads of `popen.pid`, raising `OSError`. When the process
+  ends in any way (a normal exit, a crash, `taskkill /F`), Windows closes the
+  handle and ends every ssh in the job with what it started. When creating the
+  job, assigning or resuming fails, ssh is killed and waited for (2 s) before
+  it ran, its pipes closed, and the tunnel refused: "Windows could not tie the
+  SSH tunnel to myflames (job object: REASON), so ssh was stopped before it
+  connected. Nothing was sent." An interrupt (`KeyboardInterrupt`) while
+  ssh.exe waits suspended also kills it first, then is raised again. Struct
+  layouts are plain ctypes types, so tests check them on any OS (64-bit: basic
+  limit 64 bytes, extended 144, THREADENTRY32 28). A process started from an
+  SSH session is already in sshd's session job (no kill on close), and the
+  assignment nests ssh.exe under it (Windows 8 and later); in the desktop app
+  libuv's job for the backend allows silent breakaway, so ssh.exe is in no job
+  before the assignment. The desktop's Windows stop (`taskkill /PID backend /T
+  /F`) is unchanged; the job covers a backend crash, a backend killed by itself
+  or the user, and an Electron crash (libuv's kill-on-close job ends the
+  backend, whose job then ends ssh). Windows tunnels are not recorded in
+  `ToolGroups` (process groups are POSIX). A normal close terminates only
+  ssh.exe, so a ProxyCommand it started stays in the job until the backend
+  exits; a backend that dies between starting ssh.exe and assigning it leaves a
+  suspended ssh.exe that never ran (no port, no connection). Dump, restore and
+  clone tools are not in the job and still outlive a crashed backend on
+  Windows. Windows ssh.exe (OpenSSH_for_Windows 9.5p2 on Windows 11) reads
+  `~/.ssh/config`, keys and `known_hosts` from the account's profile folder and
+  ignores `HOME` and `USERPROFILE`; the Host alias list (`config_hosts`,
+  `/api/ssh/hosts`) reads `MYFLAMES_SSH_HOME`, the same folder in practice. The
+  environment allowlist never passes Win32-OpenSSH sshd's
+  `C28FC6F98A2C44ABBBD89D6A3037D0D9_POSIX_FD_STATE`, which makes an inheriting
+  ssh.exe hang before it signs in. Readiness is unchanged there (DEBUG1 lines
+  end in CRLF, stripped). Tests: `test_ssh_tunnel.TestWindowsJob` (mocks, any
+  OS) and `TestWindowsJobLive` (Windows only, real kernel32).
+- Readiness and errors: the local port comes from binding 127.0.0.1:0. The
+  tunnel is ready only when ssh's own DEBUG1 lines on stderr say, in order and
+  within `READY_TIMEOUT` (15 s) while ssh still runs, `Local forwarding
+  listening on 127.0.0.1 port LOCAL.`, then `channel N: new port-listener
+  [port listener]` (`channel N: new [port listener]` before OpenSSH 9), then
+  `Entering interactive session.`. No TCP probe is made, so another local
+  program listening on the port first never gets a lease (and nothing reaches
+  the database while the tunnel opens); a session entered without this
+  forward (ClearAllForwardings in ssh_config) fails at once naming that
+  setting, and an ssh that never confirms times out and is stopped. Debug
+  lines are matched and dropped: `stderr_text()` keeps only other lines and
+  `failure_message` ignores them. A lease whose ssh ended is never reused
+  (`Lease.alive()`), and the connector's legacy option file never names the
+  port of a dead tunnel. A forward that failed to bind is retried once on a
+  new port. ssh's messages become plain
+  sentences (unknown host key: "Run `ssh X` once in Terminal to check and
+  accept it"; changed host key; Permission denied for keys or agent; could not
+  resolve; refused; timed out; no route; local port in use; the hint for an
+  unknown host key says `ssh -p PORT HOST` for a non-default SSH port),
+  otherwise the last non-debug line of its output with terminal controls
+  escaped. When the forward cannot
+  reach the database (ssh logs `open failed`), `MySQLConnection.run` adds "SSH
+  host X could not reach the database at H:P (reason)", "does not allow port
+  forwarding (AllowTcpForwarding)" or "could not resolve the database host" to
+  the client's error.
+- Sharing and lifetime: `TUNNELS` (`TunnelManager`) keys tunnels by SSH host,
+  SSH user, SSH port, database host and database port, and leases one per
+  client invocation, editor session (held for the session) or lifecycle tool
+  run. Every client path (`MySQLConnection._invocation_defaults`, the editor
+  session, `lifecycle._credentials`) writes `host=127.0.0.1`, the tunnel's port
+  and `protocol=TCP`; a connector with `ssh_host` and no tunnel refuses to build
+  an option file (fail closed). A tunnel closes after `IDLE_SECONDS` (300)
+  without users and at shutdown. `WorkspaceServer.server_close` starts a timer
+  that runs `TUNNELS.close_all()` after `TUNNEL_CLOSE_SECONDS` (3 s) even while
+  the editor and lifecycle cleanup (which may still send KILL QUERY through a
+  tunnel) runs on, and calls it again in a `finally`, so a failed cleanup never
+  skips it; `close_all` signals every tunnel first, then waits, and a second
+  caller waits for the first. The CLI closes them at exit: `cli.main()` first
+  calls `_close_on_termination_signals()`, which turns SIGTERM and SIGHUP into
+  `SystemExit(128 + signal)` (main thread only, only for a signal still at
+  `SIG_DFL`), so atexit runs and the status is 143 or 129. The MCP server
+  installs no handlers; the watchdog (POSIX) or the job object (Windows)
+  covers it. After the desktop
+  died and the backend's shutdown hung for 5 s, `backend-entry.py`
+  (`_kill_owned_groups()`) SIGKILLs every group the backend owns
+  (`TUNNELS.owned_groups()`: each tunnel's group and every group of the
+  attached ToolGroups, read under a 0.5 s lock bound with
+  `ToolGroups.snapshot(timeout=)`), never its own, before it SIGKILLs its own
+  group. At most `MAX_TUNNELS` (8) are open, idle ones evicted first, and
+  tunnels count toward `lifecycle.ToolGroups.MAX_GROUPS` (16, the same number
+  as `MAX_TOOL_GROUPS` in `apps/desktop/backend.cjs`) with dump, restore and
+  clone tools: `start()` refuses another one with `ToolLimit` and spawns
+  nothing. A tunnel whose ssh died starts again on a new port on the
+  next use, never under a running statement. It listens only on 127.0.0.1:
+  another local user can reach that port while it is open, as with any
+  `ssh -L`, and still needs database credentials; VERIFY_CA through the tunnel
+  protects against a port taken over after ssh dies.
+- Identity: `dbops.connection_identity` appends `["ssh", host, user, port]`
+  after the six endpoint fields only when SSH is set (`identity_endpoint`
+  keeps it); `workspace_store.ENDPOINT_FIELDS` and the saved-password
+  fingerprint include the SSH target only when set; `connectionKey` and
+  `endpointKey` in `binding.ts` do the same. Identities without SSH are
+  byte-for-byte unchanged. A saved password is released only when the SSH
+  target matches the profile, and a Development type falls back to Production
+  the same way.
+- CLI: `profiles set NAME --ssh HOST [--ssh-user USER] [--ssh-port PORT]` or
+  `--no-ssh` (`WorkspaceStore.set_profile_ssh`); a changed tunnel points the
+  profile at another endpoint, so its saved password is forgotten and it becomes
+  production unless `--type` is given. `--ssh-user` and `--ssh-port` need
+  `--ssh` ("--ssh-user and --ssh-port need --ssh HOST", exit 2), and `set` with
+  nothing to change says "choose --type, --read-only, --read-write, --ssh or
+  --no-ssh". `profiles list` shows `host:port via user@sshhost:port` in HOST (user and SSH port only when set);
+  its JSON carries the fields.
+- Workspace: `POST /api/ssh/hosts` returns `ssh-hosts-1.0` `{hosts, ssh_found,
+  message}`: the Host aliases of `~/.ssh/config` and its Includes (at most 32
+  files of 256 KiB, depth 4, 500 names; no patterns, negations or names the
+  field refuses). It runs no ssh and reads no network. `/api/connection/test`
+  adds `through_ssh: "Through SSH host X"`. `SshSettings` is a plain `<details
+  data-section="ssh">` (Connect through SSH), open for a connection through SSH;
+  its SSH host field offers the aliases, read once when the section first
+  opens. `connectionTarget` and `connectionLabel` add "via HOST", and
+  `ConnectionTypeBand` uses that label, so every write review names the SSH
+  host ("Prod (app@127.0.0.1:3306 via bastion)").
+- Locality and CLONE: `lifecycle.refuse_clone_through_ssh` refuses CLONE when
+  the donor or the recipient uses SSH (the recipient connects to the donor
+  itself), and Clone's saved-donor list leaves such connections out; the
+  MariaDB error-log file read, replication loopback source matching
+  (`replication.reached_host`) and the physical backup locality check treat
+  SSH as remote. A restore's typed target names the SSH target
+  ("127.0.0.1:3306/shop via deploy@bastion").
+- Tests: `test/test_ssh_tunnel.py` (`TestReadiness`, `TestOwnerExit`,
+  `TestWorkspaceShutdown`, `TestDesktopEntry` and the Windows lookup tests; the
+  fake ssh `test/_fake_ssh.py` logs what OpenSSH logs at DEBUG1; the live sshd
+  test runs only with `MYFLAMES_SSH_LIVE=1`),
+  `apps/workspace/test/connections-ssh.mjs` (run after `npm run build` with
+  `node test/connections-ssh.mjs`; it also renders `ConnectionTypeBand` with
+  `react-dom/server`), `apps/desktop/test/backend.test.cjs` (a full list of
+  tool groups is read, one more is not).
+
 ### Write safety and audit
 
 `myflames/dbops.py` is the one safety layer for every statement that changes
@@ -818,7 +1163,13 @@ server state (db-operations skill). Its parts:
   (`settings` table, `audit_retention_days`, 1 to 3650), purged on every insert
   and when the setting changes. `audit-1.0` envelope: `{schema_version,
   retention_days, records[]}`; each record has a nested `connection` object.
-  CSV export flattens it and quotes cells starting with `= + - @`.
+  A write through SSH also records `connection.ssh` (only when set) in the
+  `ssh` column, which `WorkspaceStore._add_audit_ssh` adds on demand without a
+  `user_version` bump; every audit site passes `ssh_host`, `ssh_user` and
+  `ssh_port` with host, port and user, and the Audit log inspector says
+  Through SSH.
+  CSV export flattens it, puts the `ssh` column last and quotes cells
+  starting with `= + - @`.
 - CLI: `python3 -m myflames audit [list|export] [--since DAYS] [--server NAME]
   [--json|--csv] [-o PATH] [-q]` (`list` is the default, `--limit N` default 50,
   text columns WHEN (UTC), STATUS, FROM, OPERATION, SERVER, STATEMENT, ID;
@@ -839,6 +1190,27 @@ server state (db-operations skill). Its parts:
   `recordDeclined`, with the tagged KILL and the identity it would have sent). Write endpoints are listed in `ui._WRITE_PATHS`: they fill
   the saved password themselves, after the policy, and are never in
   `_SERVER_VIEW_PATHS`.
+- Workspace (`Audit.tsx`, `audit.css`): only labels and words change on
+  screen; stored values stay as recorded. Columns are Time, Status,
+  Operation, Connection, Type (`SafetyTags`), Statements, Error, Duration;
+  Type and Duration are `detailColumns`, dropped by the compact preset when the
+  view is narrower than 960 px. Times are local (`when`) with
+  `"<stored value> (UTC)"` as `title`, in the table and the inspector's
+  Record section. The inspector maps stored outcome keys (`OUTCOME_WORDS`:
+  `timeout` Timed out, `gone` Already ended, `unverified` Could not verify,
+  and so on) and policy values (`POLICY_WORDS`: `confirm` Requires confirmation,
+  `risky` Risky, `production` Production) to words, with `Stored as "KEY"`
+  on hover; sections share one label column; each statement has its own
+  Copy (copied as stored). The policy's `connection_type` is labelled
+  **Judged as** (`POLICY_LABELS`). It can differ from the record's
+  `connection.type` (the saved connection's type) because
+  `connection_safety` judges a connection used with other settings than the
+  saved ones as Production; the inspector then says "The connection is
+  Development; this write was judged as Production." with that reason. The
+  About ⓘ sits in the summary line once records are listed and keeps its
+  toolbar place while the log is empty. Tests: `apps/workspace/test/audit.mjs`
+  (column order, Type pills, inspector words and hovers, Judged as, local
+  times, statement Copy, the ⓘ).
 - Tests: `test/test_dbops.py` (classification table, splitting, both
   backslash readings, policy matrix, privileges on both engines, redaction,
   audit lifecycle with a crash left pending, retention and purge, export,
@@ -923,7 +1295,10 @@ changes. `_emit` builds the payload separately from diagnostics and passes it to
 `--insert-table` implements query-editor section 10's user-named INSERT target.
 ALTER opens a session for its read-only preflight before prompting; read-only,
 script-shape and non-TTY/`--yes` checks still precede credentials. The final
-policy read also covers edits during that review.
+policy read also covers edits during that review. The confirmation on stderr
+prints `myflames: ALTER predicted: SUMMARY. TEXT REASON` (or the reason it was
+not predicted) before `myflames: ALTER preflight: {json}`, whose JSON carries
+the same `prediction` as the workspace review; no flag or help text changed.
 
 ### Query editor sessions
 
@@ -1089,7 +1464,10 @@ planner, write gate and session engine from the CLI.
   caps collections at 500, attributes transactions through granted MDL, and
   labels unavailable/truncated coverage and unattributed open transactions.
   Approximate size is `information_schema.TABLES.DATA_LENGTH + INDEX_LENGTH`
-  for the persistent table; temporary tables may be absent or shadow it.
+  for the persistent table; temporary tables may be absent or shadow it. The
+  review writes `approx_bytes` (unchanged) with `PerfShared.bytes` in binary
+  units ("120.6 KiB (data and indexes)"), the grouped exact bytes on hover, and
+  Unknown for null.
   The response's `alter_preflight` includes schema, table, engine/version,
   table_engine, approx_bytes, metadata_locks, transactions,
   unattributed_transactions, sessions, coverage flags, warnings and suggestion.
@@ -1098,7 +1476,11 @@ planner, write gate and session engine from the CLI.
   rechecks DATABASE() under `run_lock` before an unqualified ALTER, closing
   the gap for a concurrent USE between review and execution.
   `_alter_suggestion` offers INPLACE/LOCK=NONE only for recognized InnoDB
-  ADD/DROP COLUMN or INDEX forms on MySQL 8.4+ and MariaDB 10.11+. Existing
+  ADD/DROP COLUMN or INDEX forms on MySQL 8.4+ and MariaDB 10.11+, and never
+  when the prediction below is INSTANT (the review then says "No rewrite
+  offered: the server is predicted to run this ALTER instantly."; on MySQL
+  ALGORITHM=INPLACE turns an instant ADD or DROP COLUMN into a rebuild,
+  `handler0alter.cc:1053-1056`). Existing
   algorithm/lock clauses, partitioning, comments and unknown cases get no
   rewrite, with an explanation. Suggested SQL is displayed separately; using
   it requires editing and a new review. INPLACE can rebuild a table, and
@@ -1116,6 +1498,74 @@ planner, write gate and session engine from the CLI.
   `sql/sys_vars.cc:1592-1596`. See also the official
   [MySQL operations table](https://dev.mysql.com/doc/refman/8.4/en/innodb-online-ddl-operations.html)
   and [MariaDB online DDL overview](https://mariadb.com/docs/server/server-usage/storage-engines/innodb/innodb-online-ddl/innodb-online-ddl-overview).
+  Callers send the ALTER alone: the Tables view's Add column… and Remove
+  column… (`TableAlterDialog.tsx`) once prefixed their own `SET SESSION
+  lock_wait_timeout` line, which `_decision` refuses ("Review ALTER
+  separately"), so they could never run.
+- ALTER prediction (`myflames/alter_algorithm.py`): `predict(alter_sql,
+  create_table_sql, engine, version, facts=None)` never raises for SQL input
+  and mirrors the server's three steps (`fill_alter_inplace_info` flags,
+  `mysql_alter_table`'s forced COPY cases, InnoDB's
+  `check_if_supported_inplace_alter`), each rule citing mysql-server 9.7 or
+  mariadb-server 13.0 and version-gated where mysql-8.4.0, mariadb-10.11.16 or
+  11.4.10 differ. It returns `predicted`, `algorithm` (`INSTANT`, `INPLACE`,
+  `COPY` or null), `rebuild`, `concurrent_dml`, `summary` ("INPLACE, rebuilds
+  the table"), `text` (the outcome sentence), `reason`, `source`, `clauses`
+  (`{text, algorithm, rebuild, concurrent_dml, summary, outcome, reason,
+  source}` per clause), `notes` and `needs`. The statement's outcome is all
+  clauses together, as the server computes it; when that is slower than every
+  clause alone, `notes` says "Together these clauses…". `facts` may carry
+  `foreign_key_checks`, `sql_mode`, `innodb_page_size`, `innodb_strict_mode`,
+  `old_alter_table` (MySQL), `alter_algorithm` (MariaDB before 11.5),
+  `old_mode`, `innodb_instant_alter_column_allowed` and
+  `innodb_file_per_table` (MariaDB): a missing setting falls back to the
+  server default and `notes` says "Assumes the server defaults: …". Table
+  facts have no default: `total_row_versions` (MySQL INNODB_TABLES; the
+  budget is 64 through 9.0.1 and 255 from 9.1.0), `fts_doc_id_index` (a
+  hidden FTS_DOC_ID left by an old FULLTEXT index), `system_tablespace`
+  (MariaDB), `referenced_columns` (other tables' foreign keys) and
+  `default_collations` (MariaDB `character_set_collations`); when the outcome
+  depends on a missing one the result is `predicted: false` and it is listed
+  in `needs`. Not predicted: MySQL before 8.4 or from 10, MariaDB before 10.11
+  or from 13.1; partitioned, temporary, system-versioned and non-InnoDB
+  tables, functional index parts and MariaDB compressed columns; partition and
+  tablespace clauses, ENABLE/DISABLE KEYS, WITH/WITHOUT VALIDATION, ADD PERIOD
+  or SYSTEM VERSIONING; table options other than COMMENT, AUTO_INCREMENT,
+  character set and collation, ROW_FORMAT, KEY_BLOCK_SIZE, ENGINE and the
+  STATS_*, MIN_ROWS, MAX_ROWS and CHECKSUM family; generated column
+  expression, type or storage changes, dropping or renaming a column a
+  generated column reads, inline REFERENCES, VECTOR columns or indexes,
+  MariaDB column-level CHECK in ADD or MODIFY; a row near InnoDB's record
+  limit; ALTER IGNORE on MySQL; MariaDB `alter_algorithm` values other than
+  DEFAULT or COPY and a non-default `innodb_instant_alter_column_allowed`.
+  `editor_session._alter_review` adds `prediction` to `alter_preflight` from
+  reads through the same locked helper: `SHOW CREATE TABLE`, one `SELECT @@…`
+  of the engine's `_PREDICTION_SETTINGS`, and only when `needs` asks one
+  INNODB_TABLES (MySQL) or INNODB_SYS_TABLES (MariaDB) row with
+  FTS_DOC_ID_INDEX, KEY_COLUMN_USAGE (MySQL) or INNODB_SYS_FOREIGN (MariaDB)
+  for referenced columns, and CHARACTER_SETS (MariaDB). A failed read leaves
+  its fact unknown; an exception gives `predicted: false` with its class name
+  and never blocks the review. QueryLab's ALTER sheet shows a Predicted fact
+  row first and a `<details>` "Why: …" (`AlterPrediction.tsx`
+  `AlterPredictionWhy`, shared with Schema versions) with each clause's
+  reason and source and the notes; `ReviewedSqlAction` (Indexes' Set
+  invisible… and Drop, Tables' Add column… and Remove column…) shows one
+  "Predicted: …" line. Live evidence: `test/fixtures/alter_algorithm/
+  live-mysql-8.4.json` (MySQL 8.4.11) and `live-mariadb-11.4.json` (MariaDB
+  11.4.13), 107 cases each, every case run with no ALGORITHM clause and with
+  INSTANT, INPLACE with LOCK=NONE, INPLACE, COPY with LOCK=NONE and COPY on a
+  fresh 100-row table (rebuild seen from the InnoDB table id, COPY from rows
+  affected, concurrency from whether LOCK=NONE was accepted).
+  `test_alter_algorithm.LiveFixtureTests` asserts every outcome and every
+  accepted or refused explicit attempt. Not live-checked (source only):
+  row-version exhaustion, MySQL's empty-table INPLACE preference (8.4.4+ and
+  9.2+, a note), `old_alter_table`, MariaDB `old_mode=LOCK_ALTER_TABLE_COPY`,
+  MariaDB 10.11 and MySQL 9.x behaviour. `scripts/record-alter-algorithm-fixtures.py`
+  rebuilds the fixtures on a lab server only: loopback `--host`, its own
+  database `myflames_alter_probe` (dropped at the end), `sql_log_bin = 0`, and
+  the password from the GA matrix credentials file in a 0600 defaults file,
+  never printed. Tests: `test/test_alter_algorithm.py`, `apps/workspace/test/
+  editor.mjs` (the Predicted row and the Why disclosure).
 - History: one `records` row of kind `editor_history` per run
   (`WorkspaceStore.history_add|history_list|history_clear`): SQL redacted with
   `dbops.redact` (and the connection's password), connection name, host and
@@ -1212,7 +1662,10 @@ planner, write gate and session engine from the CLI.
   (results tabs, `DataTable` grid, Messages, Export, copy menu),
   `SchemaBrowser.tsx` (on demand: `/api/live/schemas` through
   `useSchemaCatalog`, then `/api/live/catalog`, cached per connection key and
-  kept while hidden), `HistoryPanel.tsx`, `editor.css`. Session restore: tab
+  kept while hidden; before Load schemas is pressed for the connection
+  identity it is the only read control, and only then does the header show
+  Reload schemas, keeping the busy, retry and connection-scoped behavior),
+  `HistoryPanel.tsx`, `editor.css`. Session restore: tab
   `limit`, `selection`, `result_tab`, and `query_lab.editor_layout` (height,
   browser and width, history, run time limit), reported only once changed
   from the defaults. Browser suite `test/editor.mjs` (`npm run test:editor`).
@@ -1321,12 +1774,135 @@ planner, write gate and session engine from the CLI.
   (`TABLE_ROWS`, the server's estimate) and `bytes` (`DATA_LENGTH + INDEX_LENGTH`) to each table,
   None for views, and `stats` to the report; Maintenance > Dump reads it for the one chosen database
   (MariaDB opens each table of that schema to answer). Tests: `test/test_schema_browser.py`, `test/test_ui.py`.
+
+#### Saved queries, the fill form and result selection
+
+- Saved queries: `/api/editor/saved/list` (optional `limit` 1 to 500),
+  `/api/editor/saved/save` (`name`, `sql`, optional `folder`, `note`,
+  `database`; answers `{saved, redacted}`), `/api/editor/saved/rename` (`id`,
+  `name`), `/api/editor/saved/move` (`id`, `folder`; empty or null is no
+  folder) and `/api/editor/saved/delete` (`id`), dispatched by
+  `editor_session.api_response`, allowlisted in `ui.py` and typed in `api.ts`
+  (`listSavedQueries`, `saveQuery`, `renameSavedQuery`, `moveSavedQuery`,
+  `deleteSavedQuery`). They are local only: none opens a connection, none is a
+  write or connection path, and nothing is audited. Records are
+  `saved-query-1.0` (`docs/schemas/saved-query-1.0.json`: `schema_version`,
+  `name`, `folder`, `sql`, `note`, `database`, `created`, `updated`, plus the
+  32-hex `id` on reads), stored as `workspace_store` records of kind
+  `saved_query` (`SAVED_QUERY_KIND`), apart from `editor_history`, so Clear
+  history leaves them. SQL, name and note pass `dbops.redact` (the run
+  history's redaction) before storage, and the store strips `password` keys
+  again; `redacted: true` when the SQL changed, and the editor says
+  "Credentials in it were replaced by [redacted]." Bounds: SQL at most
+  `SAVED_QUERY_SQL_CAP` = `HISTORY_SQL_CAP` (20,000 characters, after
+  redaction), name and folder 200 characters on one line (white space
+  collapsed), note 2,000, database 255; at most 500 records and 4 MiB of
+  stored JSON. A full store refuses ("Delete some, then save again") and never
+  drops a saved query. UI: `SavedQueries.tsx` in the **Saved** tab beside
+  **History** (`HistoryPanel.tsx`, `Segmented` with ids `editor-side-tab-*` /
+  `editor-side-panel-*`; each tab reads only while shown), grouped by folder
+  (unfiled first, folders by name, each collapsible; Left and Right collapse
+  and expand, Up and Down move) with a search over name, folder, SQL, note and
+  database. A click opens the SQL in a new tab named after it and runs nothing
+  (the note names the database it was saved for when that differs). The row
+  menu (kit `ContextMenu`) has Open in a new tab, Insert at the cursor,
+  Rename…, Move to folder… and Delete… (a ConfirmSheet). **Save query…** is in
+  the tab menu after Duplicate and in the palette (`query-save`,
+  `QueryLabHandle.saveQuery`); its sheet starts with the tab's name, No folder,
+  the existing folders (read when it opens) or New folder…, and an optional
+  note. Saved queries keep SQL only, not the Parameters JSON or row limit; the
+  database is information and never switches the connection. Tests:
+  `test/test_saved_queries.py`, `apps/workspace/test/editor.mjs`,
+  `editor-tools.mjs`.
+- Fill form (`FillParameters.tsx`, pure helpers `fillValues.ts`): opens when
+  `openDigest` (Top statements, Query digest) produced parameters for a
+  statement capture accepts, also with an analysis warning, and never for a
+  refused one. Each `:pN` gets its SQL context (markers inside quotes and
+  comments ignored), a type (Number where the SQL is numeric: LIMIT or OFFSET,
+  arithmetic, a compared column named like an id or a count; Text otherwise;
+  NULL) and a value. A collapsed list (`QueryTab.fill_lists`, normalized in
+  `session.ts`) takes comma-separated values and becomes a JSON array. **Use
+  values** writes into the Parameters JSON (the source of truth; other keys
+  kept; an emptied field is null again) and removes the names given a value,
+  NULL included, from `fill`; it never runs anything. Numbers with more than
+  15 significant digits are refused, because a double would round them. Enter
+  moves to the next value, then to Use values; Escape returns focus to the
+  editor; **Later** opens the Parameters popover; **Fill in values…** on the
+  notice opens the form again, also after a restore. `live.bind_query` binds a
+  JSON list (1 to 1,000 finite numbers, strings, booleans or nulls) as a
+  comma-separated list for `IN (:p1)`, refusing an empty list, a nested list
+  or an object with the parameter's name; `myflames capture --parameters`
+  shares it, and the `--statement-digest` note reads "give it a JSON list, such
+  as [1, 2], or write the list into the SQL". Tests: `fill-values.mjs`,
+  `digest-actions.mjs`, `placeholders.mjs`, `session-rules.mjs`,
+  `test/test_digest_capture.py`, `test/test_saved_queries.py` (list binding).
+- Result selection (`ResultsPane.tsx` `ResultGrid`, `resultTotals.ts`): the
+  grid sorts its rows itself (controlled `DataTable` `sort`), so a selection is
+  a rectangle in screen order, kept by the rows' original indexes across
+  re-sorting. A click selects a cell; Shift+click and Shift with the arrow keys
+  (Up, Down, Home, End and the Page keys through the table, Left and Right in
+  the grid) extend it; Left and Right move the focused cell; a row number
+  selects its row; Option+click (Alt+click) on a header, or **Select column** in
+  the cell menu, selects a column (Shift adds columns; a plain click still
+  sorts); ⌘A/Ctrl+A selects every cell. Selected cells carry `tr[data-sel]`
+  and the column classes `is-sel-col` / `is-focus-col` (no imperative DOM), so
+  long windowed results work. The footer reads "Count N · Sum S · Avg A · Min
+  m · Max M" over the numeric cells, prefixed with "C cells" when others are
+  selected too, "N cells" when none is numeric, and "· K NULL" for skipped
+  NULLs. Sums, Min and Max are exact BigInt fixed-point decimals (2^63 and long
+  DECIMAL values never round); Avg is rounded half away from zero at six digits
+  past the longest fraction; a value with an exponent switches the line to
+  doubles, labeled "approximate (floating point)". ⌘C/Ctrl+C copies the
+  selection as TSV (NULL empty, the existing `tsv`), one cell as its raw value,
+  and the row when nothing is selected. Cell menu order: Show row, Select
+  column (name), Copy selection (N cells) when several cells are selected,
+  Copy value, Copy row, Copy column, Copy all rows with header. A range across
+  a column hidden in `DataTable` still includes its values in totals and
+  copies.
+- Row panel: **Show row** (double-click, Return or Enter through `DataTable
+  onActivate`, or the menu) shows the focused row beside the grid (300 px; a
+  fixed bottom sheet at 720 px and below): column name, type when known
+  (`EditorColumn.type`) and value. NULL is the muted `sql-null` token, never
+  empty; an empty string reads "empty string"; a hex-guessed binary column
+  stays hex with its byte size; JSON (a type containing `json`, or text that
+  parses as an object or array) is laid out by `prettyJson`, which copies number
+  and string tokens verbatim (a BIGINT inside JSON keeps every digit), with
+  **Copy JSON**. Up and Down move rows in the grid or the panel (buttons too);
+  Escape or Close closes it and returns focus to the row it shows (`closePanel`
+  reveals and focuses `sel.focus.i`, which Previous row and Next row may have
+  moved), not the row it was opened from; in a narrow window this runs after
+  the sheet's focus scope returned to its opener. A new result closes it and
+  clears the selection. Tests: `result-totals.mjs`, `editor.mjs`.
+- Narrow sheets (720 px and below, `NARROW` in `QueryLab.tsx`): the editor
+  shows one bottom sheet at a time. `ResultGrid` gets `rowPanel={{narrow,
+  blocked, onOpen}}`: opening a row calls `onOpen`, which clears the editor's
+  narrow side-sheet choice (Schemas or History), and while a side sheet is open
+  (`blocked`) the grid closes its row panel during render, not in an effect (an
+  effect's update would lose to the Escape that closes Schemas and could
+  briefly reopen the row sheet), and forgets its local open state, so closing
+  Schemas or History never brings an old row sheet back. Narrow panels use the
+  shared `useFocusScope` (initial focus, Tab containment, Escape, return to the
+  opener); the scopes are inactive while the retained editor is off screen or
+  Table data replaces it, and opening another sheet never restores focus into
+  the hidden one. Wide Schemas, History and row panels stay independent and
+  docked. Tests: `editor-sheets-unit.mjs` (the real handlers, no browser),
+  `editor.mjs` (720x600 exclusion both ways, focus, no stale reopening, and
+  nonoverlapping docked panels at 1440x900).
+
 ### Run
 
 The execution tree's **Self of total** column uses the operator's self time
 divided by the plan's total time. `output_tree.py` and `charts/tree.ts` draw
 the fill over a hairline baseline, with matching column text and scale; the
-baseline still shows when the self-time fill is too small to draw.
+baseline still shows when the self-time fill is too small to draw. The
+**Total** column prints every row's inclusive time (`_format_time(total_time)`
+in Python, `treeTime(total_ms)` in TypeScript), leaves included: the old rule
+left it blank when `|total - self| <= 0.001`, which was de-duplication, not a
+measured-or-not rule, and made the hottest leaf look like a gap. Unmeasured
+operators print `—` in Self and Total (never blank, never `0 ms`). The details
+strip and search text (`_row_info` / `rowInfo`) still add `Total:` only when it
+differs from self. Tests: `test_measurement_semantics.TestTreeTotalColumn`,
+`charts.mjs`, `parity.mjs`.
 
 `python3 -m myflames --type [flamegraph|bargraph|diagram|tree|workbench] explain.json > output.svg`
 
@@ -1435,6 +2011,148 @@ Root rendering uses the shared connection flags and `--profile` resolution. `-e/
 
 An unreadable `--query-file` and a failed explicit `--sidecar PATH` exit 2. Automatically derived sidecars and lesson bundles remain best-effort. `guide [-o PATH] [-q]` parses its arguments and rejects unsupported flags. `teach LESSON` and `teach --index` / `--catalog` use `_write_output` for stdout/file routing, quiet status and exit 2 on write failures.
 
+### Plan Stats and shared-plan literal hiding
+
+`chart_data.build_chart_data` adds optional `stats` and `groups` to
+`chart-data-1.0` and `chart-data-2.0`, and a `group` to each node; both JSON
+Schemas describe them, and existing fields, versions, node identities and input
+order keep their meaning (reports and explore pages still embed 1.0, the
+workspace receives 2.0). Python computes every aggregate
+(`chart_data._aggregate_stats`):
+
+- `stats.tables` and `stats.operators` rows have `label`, `count`, `node_ids`,
+  `self_ms`, `share`, `actual_rows`, `estimated_rows` and `loops`; table rows
+  add `schema`, `table` and `operators`. `stats.note` states the units.
+- `self_ms` sums the canonical self times the other charts use, over all loops,
+  and never adds inclusive times. `share` is a fraction of the root's elapsed
+  time, not a percentage of the largest operator, null without a positive
+  measured root, and can exceed 1 because separate branches can overlap the
+  root's timing scope.
+- `actual_rows` counts rows produced across accesses and loops, not distinct
+  table rows: MySQL actual rows per loop times loops; MariaDB `rows_returned`
+  when present (its reported filter already applied) times loops.
+  `estimated_rows` sums the estimates per loop and never multiplies them by
+  actual loops. One missing counter makes that aggregate null rather than a
+  partial sum. Without ANALYZE, counts and estimates remain; times, shares,
+  actual rows and loops are unknown.
+- A group key is the JSON tuple of the normalized operator type (case-folded,
+  without conditions, table or index suffixes and occurrence values), schema,
+  table and index: predicates never split a group, while another table,
+  schema or index does. `groups` maps each key to an aggregate over the whole
+  original plan. Focus and collapse never change aggregates, and operator
+  order is unchanged.
+
+The workspace's **Stats** (`PlanStats.tsx`) is a view of Plans, not a renderer
+in `MyflamesCharts.availableViews()`; it uses kit DataTables outside the chart
+runtime ("Time per table", "Time per operator type"). Selecting a Stats row
+selects its first operator and highlights all of its `node_ids` on return to a
+chart, clearing focus and collapse so the matches show. **All occurrences** in
+the workspace operator inspector (`ContextPanel.tsx`; every chart view and both
+Compare panes; `AllOccurrences` in `PlanStats.tsx`) keeps the group's count,
+Self time in total, Share of plan time and Back to measurements, and lists the
+members as a `listbox` of selectable two-line rows that fit the inspector,
+sorted by numeric `self_ms` descending with unknown last (it sorts a new
+presentation array, never plan inputs). A row shows the last two ancestor
+labels of its path, drawn from existing parent links (the full path in its
+`title` and accessible name; the current operator is the inspector heading),
+then self time, the share of the unprojected root total (never a focused
+branch's), and per-loop rows × loops, with the existing time and count
+formatting and tabular numbers; missing measurements and a zero plan total stay
+Unknown or Not measured, never NaN or Infinity. Arrows, Home and End move focus
+(roving tab index); Enter, Space or a click select through the existing
+operator callback, which reveals the node in the chart. Tests:
+`plan-occurrences-unit.mjs` (the real component and handlers, no browser) and
+`plan-occurrences.mjs` (rows, accessible paths, keyboard, overflow). HTML
+reports have collapsed Stats tables with the same aggregates; exporting HTML
+while viewing Stats uses Visual Explain plus that section. Standalone `explore`
+pages keep their chart and metric list.
+
+Narrow Plans and one-plan Compare: at 900 px and below the operator inspector
+(`ContextPanel.tsx`) with nothing selected keeps its section tabs (Findings,
+Lessons and Operators need no selection); only while Measurements is chosen
+(`data-empty` is `!selected && tab === "measurements"`) the empty title and
+Measurements body give way to the one line "Select an operator to see its
+details", with the metric mount kept in the DOM, and the empty Explore chart
+fills the window above that hint and the footer. That fixed-height layout
+(`.plan-screen:has(.plan-inspector[data-empty="true"])` in `style.css`)
+excludes Stats (`:not(:has(.plan-statistics))`): a page of tables keeps
+scrolling with the page. Choosing an operator restores
+the inspector. The inspector sits in flow below the chart at widths of 1,000 px
+and below. In Compare, the first imported plan selects Before and leaves After
+empty; later imports select After; opening a one-plan investigation or
+restoring an older one-plan session also leaves After empty, and the empty
+state's **Import plan…** calls the existing `openImport`. Tests:
+`plan-editor-unit.mjs` (no browser) and `plan-editor-layout.mjs` (four chart
+modes, empty and selected inspectors, one-plan Compare and keyboard import at
+1440x900 and 720x600 in both appearances).
+
+Literal hiding: `plan_privacy.hide_literals(text, backslash_escapes=None,
+ansi_quotes=False)` replaces SQL strings, decimal, exponent, hex and bit
+literals and quoted date and time values with `?`; signs stay operators, and
+NULL, TRUE and FALSE stay keywords. Placeholders and identifiers (backticks
+with doubled or escaped quotes) stay. Comments, executable comments included,
+become `?` entirely, because they can hold any private text. An unknown
+backslash mode (the sharing default) hides the union of both readings; double
+quotes are strings unless ANSI_QUOTES is known. `parser.hide_plan_json_literals`
+uses the canonical JSON loader (MariaDB's duplicate join members included) and
+never parses EXPLAIN elsewhere; it redacts, element by element in lists, the
+fields `operation`, `condition`, `attached_condition`, `index_condition`,
+`pushed_index_condition`, `having_condition`, `const_condition`,
+`hash_condition`, `ranges`, `range`, `sort_key`, `sort_fields`,
+`grouping_operation`, `expression`, `cache`, `query`, `query_text`,
+`query_sql` and `sql`, and `message` with the prose rule below.
+`parser.hide_parsed_plan_literals` keeps node IDs and timings for explore's
+selection and focus. Sidecars also hide literals in `raw`, `beautified`,
+`ddl`, the labels (`short_label`, `full_label`, `folded_label`, `node_labels`,
+`label`; canonical label rebuilding keeps identifiers and measurement
+annotations), `query_text_lines` and collected `schema` DDL with the SQL rule,
+and in generated prose (`executive_summary`, `why`, `action`, `rationale`,
+`note`, `reason`, `text`, `message`, `explanation`, `description`, `hint`,
+`summary`, `recommendation`) with the prose rule: quoted values and the
+numeric operands of `=`, `<>`, `!=`, `<`, `>`, `<=`, `>=`, `<=>`, LIKE, NOT
+LIKE, IN lists and BETWEEN are hidden, also inside copied parenthesised
+conditions, while counts, comma-formatted row totals, timings, percentages,
+loops, versions, contractions, possessives and number references such as
+`Query #12` stay. In prose too, double-quoted text is a string unless
+ANSI_QUOTES is known, so a quoted left operand is hidden; backtick names stay.
+Collected schema redaction scans the DDL and expression fields (a column's
+`rest`, DEFAULT values, unquoted structured defaults included, generated,
+CHECK and partition expressions, view and routine definitions and bodies, and
+functional index expressions) and keeps structured table, column and index
+names, type text and key-part lengths. Custom report and comparison titles are
+hidden before the markup, metadata and embedded chart data are built. HTML
+reports and CLI sidecars are redacted after collected evidence and generated
+prose have been added. A comparison's matching, confidence, statuses, node
+IDs, deltas and verdict counts always come from the original plans; only its
+presentation is redacted, the same in the API, CLI JSON, `--digest` and
+HTML. This is display redaction with lexical context, not a natural-language
+parser or identifier anonymization, and its result is never executable SQL.
+Numeric metric fields, node IDs, table, schema and index names, versions and
+collected variables stay.
+
+`POST /api/report` accepts `hide_literals` (boolean, default false for older
+callers) and an optional `query`; `format: "json"` returns `{analysis}` (the
+existing sidecar), redacting an optional validated `analysis` sidecar on a copy
+(evidence, timestamps and node references kept) or building one from the plan.
+`POST /api/compare` accepts `hide_literals` and returns the existing
+`{analysis, html}`. Neither endpoint is new; the original plans, editor SQL,
+captures and investigations are never changed, and export retries keep the
+literal-hiding choice. The workspace's Export menu choice **Hide literal
+values** (a `role="menuitemcheckbox"` item from the shared `ExportMenu`
+`toggles`, above the formats and part of the menu's arrow-key and Tab
+navigation; Space or Return toggles it and the menu stays open, which opens on
+the first format) starts checked and applies to HTML and JSON; HTML, explore and comparison pages then say **Literal values
+hidden**. CLI: `--hide-literals` ("Replace literal values with ? in shared plan
+HTML and JSON.") on the root command (HTML and its sidecar, applied after any
+live execution or capture, never to the SQL sent), `explore` and `compare`
+(HTML, `--json` and `--digest`; the deprecated `diff` alias inherits it). The
+live `report` command is a server report and has no such flag. Tests:
+`test/test_plan_analysis.py`, `test/test_cli_contract.py`,
+`test/test_chart_data.py`, `apps/workspace/test/charts.mjs`, `parity.mjs`,
+`browser.mjs` (an export with the option off keeps the original sidecar, and a
+plan with private predicates exported with it on hides them while every
+summary measurement stays).
+
 ### Digest
 
 - **Digest** (AI-era): `python3 -m myflames digest explain.json`: emits the compact, source-grounded digest of a plan (pipe to an LLM). `--cost` shows the token + $ saving vs pasting the raw plan; `--show-prompts` prints both prompts; `--tokenizer {heuristic,claude,gpt}` selects how tokens are counted (`claude` = Anthropic `count_tokens`, needs `myflames[tokens]` + `ANTHROPIC_API_KEY`; `gpt` = tiktoken, keyless, needs `myflames[gpt]`); `--json` for machine output (implies `--cost`, conflicts with `--show-prompts`; `--cost --json` is valid). Lives in `myflames/digest.py`. (Deprecated alias `tokens` still works: it warns on stderr and defaults to `--cost`.)
@@ -1471,9 +2189,189 @@ mode falls back to digest data. Slow-log rows keep existing fields but return
 null for unmeasured index-use, scan, join, temporary-table and sort counters;
 rows-examined ratios do not imply an access method.
 
+Query digest against the whole server: `discover.top_report(...,
+server_context=True)`, the default for `/api/live/top`, `myflames top` and MCP
+`top_statements`, adds one aggregate read, `_CONTEXT_SQL`: `COUNT(*)`,
+`SUM(SUM_TIMER_WAIT)`, `SUM(COUNT_STAR)`, `MIN(FIRST_SEEN)` and
+`TIMESTAMPDIFF(SECOND, MIN(FIRST_SEEN), NOW())` over
+`events_statements_summary_by_digest` (the overflow row included, so it counts
+as one digest), plus the `events_statements_cpu` consumer as a scalar subquery
+(NULL on MariaDB). It is best effort: a refused or odd reply leaves the new
+fields null and the list stands. `top-1.0` additions: `totals` (`digests`,
+`total_ms`, `executions` of every digest row), `others` (the same three for the
+digests the list does not hold, never negative, null when the list holds them
+all), `cpu` (`{collected: true|false|null}` on MySQL when the rows carried
+SUM_CPU_TIME: false while the consumer is off, null when unread; `cpu` is null
+on MariaDB and on MySQL without the column), `coverage.counting_since` (the
+oldest FIRST_SEEN of the whole table when counting began more than
+`COUNTING_GAP_S`, an hour, after the server started) and, per statement,
+`cpu_ms`, `p95_ms`, `p99_ms`, `p999_ms` (null where the server has no such
+column) and `new`. The optional MySQL columns `SUM_CPU_TIME`, `QUANTILE_95`,
+`QUANTILE_99` and `QUANTILE_999` are requested with server context on MySQL
+only and dropped one at a time when the server answers Unknown column, never
+chosen by version number. Each quantile is the upper bound of the histogram
+bucket that holds it (`table_esms_by_digest.cc`); SUM_CPU_TIME grows only while
+`events_statements_cpu` is ENABLED, which is off by default. `new` comes from
+the server's own `FIRST_SEEN > NOW() - INTERVAL 24 HOUR` and is true only while
+Uptime is above 86,400 s and, when known, the oldest FIRST_SEEN is older than
+that too (after a digest table reset every statement would be new); the raw
+flag is not sent. Both time comparisons use session-local time, so a daylight
+saving change can shift them by an hour. Without server context the digest
+statement and metadata reads are exactly as before: the Full analysis
+attribution (`report._attribution`) passes `server_context=False`, so
+`SHARED_METADATA_SQL` and the replayed recordings do not change.
+`sample_truncated` also recognizes MySQL's cut marker (a sample ending in "..."
+within 12 bytes of `performance_schema_max_sql_text_length`, or one at the
+limit), with one note "Sample text was cut at N bytes
+(performance_schema_max_sql_text_length)."; "Counting since <time>: the digest
+table was reset or statements began after the server started." appears only
+with `counting_since`.
+
+`POST /api/live/digest-histogram` (read-only, in `_SERVER_VIEW_PATHS` and the
+POST allowlist) takes `connection`, `digest` (32 to 64 hex characters,
+validated before connecting) and `schema` (the statement's default schema;
+empty or null matches `SCHEMA_NAME IS NULL`; sent as a hex literal), and
+answers `digest-histogram-1.0` (`docs/schemas/digest-histogram-1.0.json`) from
+`discover.digest_histogram`: the buckets of
+`performance_schema.events_statements_histogram_by_digest` with
+`COUNT_BUCKET > 0`, in bucket order (`bucket`, `low_ms`, `high_ms` null for the
+open last bucket, `count`). MariaDB and a MySQL without the table answer
+`available: false` with a reason; a denied read names the GRANT.
+`ps_instruments.FEATURES["top"]` lists the histogram table and the optional
+consumer `events_statements_cpu`, gated to MySQL by `consumer_engines` (like
+`instrument_engines`): a default MySQL server keeps Top statements Ready and
+names the consumer as optional, and MariaDB never names it.
+
+Workspace (`QueryDigest.tsx`, `latencyHistogram.ts`, `query-digest.css`): Share
+of total time divides by `totals.total_ms` when present (the header title and
+the bar's accessible name say "of the server's total statement time"), else by
+the loaded total (the slow log). The summary line keeps the loaded totals and
+leads with the numbers: `{n} statements · {total} total · {executions}
+executions · since {uptime} ago`, the "since" part only for Performance Schema
+rankings with a known uptime, its `title` "Counted since the server started …
+ago, or since the digest table was last reset."; slow-query reports show the
+numbers only, and `· {n} shown` trails while a schema or text filter is
+active. It stays within 120 characters. The ⓘ popover beside the title
+(`sourceSentence`) names the table the report on screen read
+(`performance_schema.events_statements_summary_by_digest` or `mysql.slow_log`,
+or the digest table the slow-query read fell back to) and the counting window,
+in at most six lines. `others` is one closing line under the table frame ("N
+other statements · X% of total time · M calls"), never a selectable row. New
+is an info `Pill` before the statement text and in the inspector, titled
+"First seen <time>". Inspector fact lists (`Fields`) share one 40% label
+column (the kit's 900 px stacking rule still applies below it); the digest row
+and the CPU note span both columns (`dd:has(> .qd-digest)`, `dd:has(>
+.qd-cpu-note)`, empty `dt` hidden). `DigestValue` middle-truncates the digest
+in JS (the first 16 characters, "…", the last 8, when longer than 34) with the
+full value in `title`, and its Copy button copies the full value. `SeenAt`
+writes First seen and Last seen in the server's own clock: FIRST_SEEN and
+LAST_SEEN carry no time zone, so their digits are parsed as UTC and formatted
+with `timeZone: "UTC"` (`month: "short", day: "numeric", year: "numeric",
+hour: "numeric", minute: "2-digit"`), never shifted to this computer's zone,
+with "Server time: <exact value>" in `title` and the value in `dateTime`; never
+call them local time. The toolbar puts Statements to load before the filter,
+and a `.qd-toolbar-break` (a 100%-basis, zero-height flex item shown only by
+the `@container view (max-width: 760px)` rule) keeps Rank by, Schema and Top on
+the first control row and the growing filter and Export on the second; Refresh
+stays in the shared `.toolbar-end` beside the title. CPU time is a column
+hidden by default (`detailColumns={["cpu"]}`, shown from the Columns menu) and
+an inspector fact; Not collected carries "events_statements_cpu consumer is
+off" on hover, and one muted line under it reads "events_statements_cpu is
+off." with an `InstrumentsLink` to
+`consumer:events_statements_cpu` (Query digest provides
+`InstrumentsLinkContext` from `main.tsx`'s `openInstrumentsRow`, like
+Replication). The inspector's Latency section (MySQL rankings with quantiles)
+shows P95, P99 and P99.9, then the histogram, read through
+`readDigestHistogram` only when the section intersects the screen
+(IntersectionObserver), the view is on screen and the report belongs to the
+connection in use; once per statement per report, a newer read aborts the
+previous one, a new report clears them, and an answer after a connection switch
+is dropped. Loading, Stop (after 10 s) and Try again use `ViewStatus`; another
+connection's report says "From <connection>; refresh to read this server." and
+reads nothing. The chart groups five MySQL buckets per bar (a tenth of a decade,
+by bucket number, since the bounds arrive rounded), snaps its axis to whole
+decades with ticks at 10 µs, 100 µs, 1 ms and so on (every other label when
+crowded), draws bars at most 16 px wide in `--accent`, axis and ticks in
+`--line-strong` and labels in `--ink-muted`, gives each bar a `<title>` ("501
+to 631 ms: 1 call (50.0%)"), is `role="img"` named by its summary, shows the
+summary as a caption ("Most calls took X to Y; the slowest took Z.": the
+narrowest run of bars holding more than half of the calls, and the digest's
+MAX_TIMER_WAIT) and has a collapsed Buckets table. The text report adds the
+server totals, the not-loaded line, New, P95, P99, P99.9 and CPU time; the CSV
+adds P95, P99, P99.9, CPU Time (blank when not collected), First Seen and New
+at the end. Tests: `test/test_discover.py` (`TestServerContext`,
+`TestDigestHistogram`), `test/test_ps_instruments.py`,
+`apps/workspace/test/latency-histogram.mjs` (`npm run test:latency-histogram`),
+`percona.mjs`, `navigation.mjs`.
+
+**Tables section.** `POST /api/live/digest-tables` (read-only, in the POST
+allowlist and `_SERVER_VIEW_PATHS`, so saved-password lookup and redacted
+connection errors follow the live-read path; 30 s client query limit) takes
+`connection`, `schema` (the statement's default schema, string or null) and
+`text` (normalized digest text or sample SQL). `discover.check_digest_tables`
+validates both before a connection opens: the schema with
+`perf_common.check_schema`, the text as a string of at most 1,000,000
+characters without NUL. `discover.digest_tables(conn, schema, text)` answers
+`digest-tables-1.0` (`docs/schemas/digest-tables-1.0.json`): `method:
+"statement text"`, `tables` and `notes`. Each table has `schema`, `name`,
+`found`, `type` (`table`, `view`, `system view`, `sequence`, or null without
+metadata), `engine`, `rows_estimate`, `data_bytes`, `index_bytes` and
+`indexes` (`name`, `unique`, ordered string `columns`, nullable `visible`).
+Unknown measurements stay null and no row count is computed; missing
+metadata can mean no privilege, not only a missing object.
+
+Names come from `collectors.extract_table_references(sql, default_schema,
+limit)`, which returns schema and table pairs and caveats (the older
+`extract_table_names` delegates to it and keeps its string-list API): joins,
+comma lists, nested queries, DML targets, CTE scope (recursive and multiple
+CTEs), derived-table wrappers; CTE names and aliases are left out while their
+bodies are read, a qualified name is never hidden by a same-named CTE, table
+functions and DUAL are left out, backquoted names keep dots and doubled
+backquotes, and exact spelling is deduplicated without folding case. At most
+20 pairs, 100,000 tokens and 64 nesting levels, each limit with a note.
+Unqualified names use the statement's default schema, never the picker's
+later database; without one the name stays `schema: null`, `found: false`
+with a note and is never read, and invalid names are not read either. A
+statement with no resolvable name sends no metadata query. Otherwise there
+are at most two bounded reads and no engine, version or catalog probe: one
+`information_schema.TABLES` SELECT (at most 21 rows, the last a truncation
+sentinel; it also returns `@@lower_case_table_names`, so binary predicates
+keep exact case when it is 0) and one `information_schema.STATISTICS`
+`SELECT *` read as named XML rows (MySQL's `IS_VISIBLE` and functional
+`EXPRESSION` without a retry; key parts ordered by `SEQ_IN_INDEX`, PRIMARY
+first, at most 4,096 with an incomplete-list note). Every OR branch fixes both
+schema and table as hex literals. MariaDB's absent `IS_VISIBLE` stays null
+(its ignored-index property is not shown as visibility). It never reads row
+data, expands a view or routine, runs ANALYZE or SHOW TABLE STATUS, or reads
+a whole schema's catalog; Tables and Indexes keep their schema-size consent.
+It is a text matcher, not a SQL resolver: double quotes are strings (an
+ANSI_QUOTES identifier can be missed), and a cut or unusual statement can
+hide names.
+
+Workspace: `api.ts` `readDigestTables` (`DigestTable`, `DigestTables`).
+`QueryDigest.tsx` shows **Tables** below Latency (before Normalized SQL when
+Latency does not apply), labelled "Found in the statement text" with an ⓘ
+saying it is a text match, not proof of access; it prefers the normalized
+text and falls back to the sample. Rows (estimate), Data, Indexes and each
+index's columns (unique, invisible) are shown; **Open in Indexes**, only for
+found base tables, uses the connection-bound `openServerTable` route. A read
+starts only while the section intersects the viewport, Query digest is on
+screen and its report belongs to the connection in use; leaving the section,
+closing or changing the inspector, hiding the place or replacing the report
+aborts it, and late replies after a cancel or connection switch are dropped.
+Completed and failed results are kept per statement per report (theme or
+width changes never read again; Refresh replaces them). `ViewStatus` gives
+busy feedback, Stop after 10 s, Try again and one error beside the section.
+Tests: `test/test_digest_tables.py`, `test/test_collectors.py`,
+`apps/workspace/test/percona.mjs` (with `apps/workspace/test/fixtures/digest-tables.json`:
+no read before selection, below the fold or while hidden; the request's
+schema and text; rows, indexes, visibility and views; the base-table-only
+Open in Indexes; cached reads on resize, theme and row return; one error
+without an automatic retry; light and dark at 1440 and 720 px).
+
 ### Locks
 
-`python3 -m myflames locks [--waits-only | --deadlock] [--limit N] [--json]` (`locks-1.1`), in `myflames/locks.py`: DDL statements waiting for a metadata lock (`ddl_waits`: from process-list wait states plus PENDING metadata locks; blockers `exact` from `performance_schema.metadata_locks`, `granted_locks` from MariaDB's optional `METADATA_LOCK_INFO`, else `likely` open transactions with an honest note; sessions queued behind the DDL), blocking tree over row and metadata lock waits with root blockers, INNODB_TRX transactions, row locks (MySQL `performance_schema.data_locks`, all locks; MariaDB `INNODB_LOCKS`, waits only), metadata locks with myflames' own GRANTED/PENDING compatibility check (not `sys.schema_table_lock_waits`), `kill_privilege` from plain `SHOW GRANTS` (active roles included; a hint, the server decides), and the parsed latest deadlock. The report only reads: never touch `setup_instruments`/`setup_consumers`; owner of a lock comes from `ENGINE_TRANSACTION_ID` → INNODB_TRX, not `THREAD_ID`. Keep the data_locks latch caution (MySQL < 8.0.40, 8.1–8.4.2, 9.0.x) and no default auto-refresh. The one write is `kill_session` (`kill-1.0`): `myflames locks --kill ID [--query] [--yes]` and the UI's **Kill blocker** (`POST /api/live/kill` with `connection_id`, `mode`, `expect`), one session per explicit, confirmed request; the workspace also offers a separately reviewed batch of at most 200 targets. It re-reads the session (same source as the report) and refuses when it is gone, a different session (user/host/thread/`trx_started` changed), its own or a myflames-tagged session, a server thread, already rolling back (INNODB_TRX `ROLLING BACK`; a "Killed" command alone is not proof, MariaDB shows it after KILL QUERY on an idle session), a prepared XA transaction on MySQL (idle session whose last statement in `events_statements_current` is `XA PREPARE`; the xid is copied only when well formed: ending the session releases nothing, so show `XA COMMIT`/`XA ROLLBACK` instead of Kill; MariaDB needs no check, it releases a detached XA transaction's metadata locks), or KILL QUERY on an idle session; server errors 1094/1095 become `gone`/`denied` results. A MySQL ALTER that adds a foreign key or renames also locks parent tables: `ddl_waits[].table` is the object it waits on, `statement_table` the one it names. CLI exit codes: 0 ended, 1 a sent operation failed, 2 an unsent refusal, decline, or error; refuses on a non-TTY without `--yes`. Both paths run the write policy first ([Write safety and audit](#write-safety-and-audit)): KILL is risky, so a read-only connection refuses it before any connection opens (CLI: before the password prompt; result `status: "refused"`, `engine: null`), and Production and Development both confirm (the CLI prompt or `--yes`; the UI sheet's `expect`). Every attempt writes an audit record (`kill_session(..., audit=)`, `kill_cli(..., audit=, policy_text=)`): refusals and declines as such, otherwise `pending` before the KILL is sent and `ok` or `error` (with the server error code) after; kill-1.0 results gain `audit_id`. Kill confirms and executions are bound to `connection_identity` and `server_identity` (MySQL `server_uuid`; MariaDB `server_id`, `hostname`, `version`); `locks.lock_report(identity=True)` includes the opt-in `server_identity` for the workspace Kill sheet (the CLI Kill re-reads it), and any mismatch or missing identity after confirmation refuses without sending. UI: `Locks.tsx` (Contention group in `Server.tsx`), `/api/live/locks` and `/api/live/kill` (saved-password helper, not in `_SERVER_VIEW_PATHS`); tests `test/test_locks.py`, `apps/workspace/test/locks.mjs` (fixtures captured from live servers in `apps/workspace/test/fixtures/`).
+`python3 -m myflames locks [--waits-only | --deadlock] [--limit N] [--json]` (`locks-1.1`), in `myflames/locks.py`: DDL statements waiting for a metadata lock (`ddl_waits`: from process-list wait states plus PENDING metadata locks; blockers `exact` from `performance_schema.metadata_locks`, `granted_locks` from MariaDB's optional `METADATA_LOCK_INFO`, else `likely` open transactions with an honest note; sessions queued behind the DDL), blocking tree over row and metadata lock waits with root blockers, INNODB_TRX transactions, row locks (MySQL `performance_schema.data_locks`, all locks; MariaDB `INNODB_LOCKS`, waits only), metadata locks with myflames' own GRANTED/PENDING compatibility check (not `sys.schema_table_lock_waits`), `kill_privilege` from plain `SHOW GRANTS` (active roles included; a hint, the server decides), and the parsed latest deadlock. The report only reads: never touch `setup_instruments`/`setup_consumers`; owner of a lock comes from `ENGINE_TRANSACTION_ID` → INNODB_TRX, not `THREAD_ID`. Keep the data_locks latch caution (MySQL < 8.0.40, 8.1–8.4.2, 9.0.x) and no default auto-refresh. The one write is `kill_session` (`kill-1.0`): `myflames locks --kill ID [--query] [--yes]` and the UI's **Kill blocker** (`POST /api/live/kill` with `connection_id`, `mode`, `expect`), one session per explicit, confirmed request; the workspace also offers a separately reviewed batch of at most 200 targets. It re-reads the session (same source as the report) and refuses when it is gone, a different session (user/host/thread/`trx_started` changed), its own or a myflames-tagged session, a server thread, already rolling back (INNODB_TRX `ROLLING BACK`; a "Killed" command alone is not proof, MariaDB shows it after KILL QUERY on an idle session), a prepared XA transaction on MySQL (idle session whose last statement in `events_statements_current` is `XA PREPARE`; the xid is copied only when well formed: ending the session releases nothing, so show `XA COMMIT`/`XA ROLLBACK` instead of Kill; MariaDB needs no check, it releases a detached XA transaction's metadata locks), or KILL QUERY on an idle session; server errors 1094/1095 become `gone`/`denied` results. A MySQL ALTER that adds a foreign key or renames also locks parent tables: `ddl_waits[].table` is the object it waits on, `statement_table` the one it names. CLI exit codes: 0 ended, 1 a sent operation failed, 2 an unsent refusal, decline, or error; refuses on a non-TTY without `--yes`. Both paths run the write policy first ([Write safety and audit](#write-safety-and-audit)): KILL is risky, so a read-only connection refuses it before any connection opens (CLI: before the password prompt; result `status: "refused"`, `engine: null`), and Production and Development both confirm (the CLI prompt or `--yes`; the UI sheet's `expect`). Every attempt writes an audit record (`kill_session(..., audit=)`, `kill_cli(..., audit=, policy_text=)`): refusals and declines as such, otherwise `pending` before the KILL is sent and `ok` or `error` (with the server error code) after; kill-1.0 results gain `audit_id`. Kill confirms and executions are bound to `connection_identity` and `server_identity` (MySQL `server_uuid`; MariaDB `server_id`, `hostname`, `version`); `locks.lock_report(identity=True)` includes the opt-in `server_identity` for the workspace Kill sheet (the CLI Kill re-reads it), and any mismatch or missing identity after confirmation refuses without sending. UI: `Locks.tsx` (Contention group in `Server.tsx`), `/api/live/locks` and `/api/live/kill` (saved-password helper, not in `_SERVER_VIEW_PATHS`); tests `test/test_locks.py`, `apps/workspace/test/locks.mjs` (fixtures captured from live servers in `apps/workspace/test/fixtures/`). The blocking tree's frame is a size container (`lock-tree` in `locks.css`): below 960 px of frame width (the 720 px window, or the inspector beside it) the Waits for cell wraps with no 38ch cap or ellipsis, the Session cell's pills wrap under the name (column 44%), Wait keeps a fixed column and Statement (shown in the inspector) is hidden, so the tree never scrolls sideways; at 1440 px nothing changes (Waits for capped at 38ch, Statement at least 200 px). The tree inspector's Transaction section labels the id ID and shows one age, Open for (`trx_age_s`, INNODB_TRX); the Idle in transaction pill carries the process list's idle time only when the transaction age is unknown. `locks.mjs` checks both widths and the single age.
 Bulk Kill (`/api/live/kill/bulk`, `kill-bulk-1.0`) validates every target before
 policy gating and records an audit row per target even for unconfirmed,
 read-only, expired-review, credential and connection failures. It reads server
@@ -1515,9 +2413,83 @@ its text is cut to `INFO_CAP` Unicode characters in Python after recording the
 full UTF-8 byte length. The shared `READ_CAP` of 10,000 rows and partial-summary
 note apply to this source too; the connector still bounds the full response.
 
+#### DDL progress
+
+`myflames/ddl_progress.py`; the shape is in `docs/schemas/ddl-progress-1.0.json`
+(no sessions JSON Schema exists). `sessions-1.0` adds `ddl: {available,
+reason, missing, source, items}`, and each matching session row adds `ddl`
+(else null); MariaDB's per-stage `progress` stays. Items are `{id, stage,
+stage_label, percent, completed, estimated, elapsed_s, left_s,
+statement_kind, source, units}`, plus `note` when the server has no usable
+estimate. Counters beyond JavaScript's safe integers are decimal strings.
+`units` is `rows` for copy to tmp table, `work_units` for InnoDB stages, and
+null for MariaDB native percentages (whose completed and estimated counts are
+null). `available` means tracking is ready or an item was read; `missing`
+names disabled consumers and instruments even with partial coverage; an empty
+result with tracking on says no reporting stage is active, without claiming
+every DDL reports progress. Read errors keep their reason and never fail the
+sessions report.
+
+Each sessions report adds at most one bounded SELECT when Performance Schema is
+on: the three stage consumer settings, the known progress instruments and the
+active stages (`END_EVENT_ID IS NULL`) through UNION ALL, joined through
+`threads.THREAD_ID` and `PROCESSLIST_ID`, at most 10,011 rows with bounded
+statement text; MariaDB's native rows are part of that read. With Performance
+Schema off it reuses MariaDB's processlist STAGE, MAX_STAGE and PROGRESS and
+sends nothing more (SHOW PROCESSLIST has an overall percentage without a stage
+count, so its label invents none, and a zero from SHOW alone is not progress).
+Progress ids absent from the report's visible processlist snapshot are dropped.
+Performance Schema work counters already describe the whole ALTER; MariaDB's
+are combined as `100 * (STAGE - 1 + PROGRESS / 100) / MAX_STAGE`, the server's
+SHOW formula. A running percentage stays at most 99. Time left uses the
+unrounded fraction, only at 1% or more with positive work done and at least
+one elapsed second (processlist time, not stage timers). When known work done
+meets or passes a positive estimate (InnoDB sets the estimate to the larger of
+its statistics-based formula and the work completed, so out-of-date statistics
+make them equal; the same for COPY rows past `stats.records`), percentage and
+time left are null and the item's `note` says "The server has no estimate yet:
+it grows with the work done (table statistics may be out of date)." A zero or
+unknown estimate also leaves percentage and time left null, with `note` null.
+TIMED=NO alone is
+not reported missing: work counters need no timer.
+
+`POST /api/live/ddl-progress` takes `{connection, connection_ids}` (1 to 200
+positive safe integers, deduplicated after validation) and answers
+`ddl-progress-1.0` with the same `ddl` object and the server metadata (null
+product metadata when preflight fails). It is in the connection-password and
+HTTP allowlists, with a 5 s query limit: a metadata read (version, version
+comment, Performance Schema), then one bounded progress read; on MariaDB only,
+when that read fails (SELECT on Performance Schema denied), one more bounded
+native read, with the original error kept. Every statement is a SELECT or
+SHOW: nothing enables instrumentation, changes consumers, sends DDL, retries a
+write or changes the ALTER review; consumer changes stay with Instruments'
+reviewed SQL, and persistence with its option-file guidance.
+
+Processlist draws a compact bar and number in the State cell (the raw stage
+and the estimate on hover) and a DDL progress inspector section (exact elapsed
+and estimated seconds on hover, work counts); **Follow progress** chooses the
+shortest Auto-refresh interval, 10 s. Reads keep the on-screen guard. The
+Query editor (`DdlProgress.tsx`, `ddlProgressPoll.ts`; `main.tsx` passes its
+on-screen state and `openInstrumentsRow`) polls only for a running ALTER
+TABLE, OPTIMIZE TABLE or CREATE INDEX of the tab, bound to the tab, the run
+generation and the session's original connection id and credentials, with one
+outstanding read and the next 2 s after it settles; leaving the screen, a
+hidden document, a tab switch, Table data, completion and Stop cancel it, and
+disposed or aborted replies never restore old progress. Run-state polling is
+unchanged. Missing tracking appears once, with **Turn on stage tracking…** to
+the exact Instruments row (`InstrumentsLinkContext`); an editor session on
+another connection gets the diagnostic without the link. `myflames sessions`
+text adds a DDL PROGRESS section with one line per item ("ALTER on 42: copying
+rows (stage/sql/copy to tmp table) 42%, about 2 min 54 s left (estimate)") and
+a line naming what to turn on; its help is unchanged. Tests:
+`test/test_ddl_progress.py`, `test/test_sessions.py`, `test/test_report.py`
+(the replay adds an exact synthetic answer for the new SELECT when Performance
+Schema is on), `apps/workspace/test/ddl-progress-unit.mjs` and
+`ddl-progress-poll.mjs` (no browser or socket), `sessions.mjs`, `editor.mjs`.
+
 ### InnoDB
 
-`python3 -m myflames innodb [--raw] [--fail-on problem|watch] [--json] [-o PATH] [-q]` (`innodb-1.0`), in `myflames/innodb_status.py`: `SHOW ENGINE INNODB STATUS` split into sections (`parse_status` is pure) and post-processed into `sections[]` of `{key, title, present, status, summary, items[], data, links[]}` (semaphores, transactions and purge, deadlock via `locks.parse_latest_deadlock`, foreign key error, file I/O, change buffer, adaptive hash index, redo log with health.py's pressure points against the capacity in use (`Innodb_redo_log_capacity_resized`, then "Log capacity used", never "Log capacity"), buffer pool with instances, row operations, background). InnoDB's `config` link reads "Open Parameters". Never return the raw text unless `raw: true` / `--raw`. Unknown or missing lines are tolerated (`parse`, `notes`); a sub-second averaging window drops the rates. Without PROCESS: `available: false`, `error.code: no_process`, CLI exit 2. UI endpoint `POST /api/live/innodb`; tests `test/test_innodb_status.py` with real captures in `test/fixtures/innodb/`.
+`python3 -m myflames innodb [--raw] [--fail-on problem|watch] [--json] [-o PATH] [-q]` (`innodb-1.0`), in `myflames/innodb_status.py`: `SHOW ENGINE INNODB STATUS` split into sections (`parse_status` is pure) and post-processed into `sections[]` of `{key, title, present, status, summary, items[], data, links[]}` (semaphores, transactions and purge, deadlock via `locks.parse_latest_deadlock`, foreign key error, file I/O, change buffer, adaptive hash index, redo log with health.py's pressure points against the capacity in use (`Innodb_redo_log_capacity_resized`, then "Log capacity used", never "Log capacity"), buffer pool with instances, row operations, background). InnoDB's `config` link reads "Open Parameters". Never return the raw text unless `raw: true` / `--raw`. Unknown or missing lines are tolerated (`parse`, `notes`); a sub-second averaging window drops the rates. Without PROCESS: `available: false`, `error.code: no_process`, CLI exit 2. UI endpoint `POST /api/live/innodb`; tests `test/test_innodb_status.py` with real captures in `test/fixtures/innodb/`. In the workspace every section summary keeps 8 px between its title, status and summary, a quiet OK and No threshold included (`perf.css`; `apps/workspace/test/innodb.mjs` measures both gaps).
 
 ### Error log
 
@@ -1532,7 +2504,7 @@ note apply to this source too; the connector still bounds the full response.
 ### Server identity: Percona Server
 
 - Connection tests pass both `@@version` and `@@version_comment` to `product_identity`. With version `11.4.13` and comment `MariaDB Server`, they return `engine: mariadb`, `flavor: mariadb` and `product: MariaDB`.
-- Query digest keeps `server_product` from both `top-1.0` and `slow-queries-1.0`, including slow-log reads and their Performance Schema fallback. The latter carries the same additive `flavor` and `server_product` fields via `conn_identity`. Its footer uses only the active connection's report; both the footer and text export use `engineName`.
+- Query digest (`QueryDigest.tsx`, `query-digest.css`) uses `ViewLayout`, `SummaryLine`, `Select`, `SearchField`, `DataTable`, the shared inspector and `ExportMenu`. It retains `coverage` and `notes` as well as `server_product` from `top-1.0` and `slow-queries-1.0` (the slow endpoint's additive `notes` is typed locally). Rankings name `performance_schema.events_statements_summary_by_digest`; slow mode first reads individual `mysql.slow_log` executions and, if none are available, reads digest summaries filtered and ordered by `MAX_TIMER_WAIT`, never statement history. The summary line uses the bound report's loaded-row totals and its uptime when provided, and the title's ⓘ names its mode and source table (see the Query digest workspace paragraph above); text filtering does not change the share denominator. Conditional notes preserve digest loss, overflow and source failures. Unknown slow-log counters remain unknown in facts and exports. Measured cells use the view's own `Ms` component: the text Top statements writes ("59.04 ms", "1.20 s"), the exact milliseconds on hover, and sorting on the raw millisecond value. Schema plus digest/text and row position identify rows; rank remains the server ranking through sorting/filtering. Inspector and row menu actions disable on another connection's report, Explain also disables for `capture_problem`, and dispatch checks `bound.key === reads.currentKey()`. The inspector is a pane or a sheet below 1040 px. `useOpenRead` reads on opening; mode, limit and default-database changes reread while on screen. Export offers Text report (shared sheet preview/Copy/download, headed `# myflames query digest`) and CSV for all loaded rows. The text keeps `# Server:` and `# Filter mode:` plus source/coverage; preview text and filename are frozen when opened. Its footer uses only the active connection's report; both the footer and text export use `engineName`. The slow envelope carries additive `flavor` and `server_product` via `conn_identity`.
 - Two levels describe a server (`myflames/server_info.py`). The engine, `mysql` or `mariadb` (`detect_flavor`), decides rules, SQL and variable names. The flavor, `mysql`, `percona` or `mariadb`, and the product name, MySQL, Percona Server, Percona XtraDB Cluster or MariaDB (`product_identity(version, version_comment)`), decide only how the server is named and which Percona additions are read. Percona Server for MySQL and Percona XtraDB Cluster are engine `mysql`: every MySQL rule applies.
 - Percona names itself only in `@@version_comment` ("Percona Server (GPL), Release 11, Revision 57878ff8", "Percona XtraDB Cluster (GPL), Release rel11, ..."; read live on 8.0.46-37, 8.4.11-11 and PXC 8.4.11-11.1). Its `version_suffix` variable can change the `@@version` suffix, so the version never decides when the comment is known. Where only the version is known (a relay log's format event for Replication's source version, the Privileges read and the Query editor's hello, which read `VERSION()` alone), `identity_from_version` names Percona Server by its numeric release suffix (`8.4.11-11`); MySQL builds carry none.
 - Every view envelope carries `flavor` and `server_product` (`perf_common.base_report`, `Server.flavor` and `Server.product`; health, locks, top, running, replication, cluster, report and the single variable read add them too; `report-1.0` and `cluster-1.0` schemas list them; the Full analysis header's `server` has `flavor` and `product`; Replication's `source_version` has `flavor` and `product`; `/api/connection/test` returns `engine`, `flavor` and `product`). Text summaries use `server_info.product_name` / `server_label`, which fall back to MySQL or MariaDB for older reports; the workspace uses `engineLabel` (PerfShared) and `engineName(engine, version, product)` (OpsShared, which keeps Percona's release number: "Percona Server 8.4.11-11").
@@ -1546,6 +2518,106 @@ Health and configuration advice share version-aware limits. MariaDB `innodb_log_
 
 Health text prints `Statements: myflames top --order full_join` once when a
 `select_full_join` metric or diagnostic is watch/problem; other statuses omit it.
+
+Live charts (`Health.tsx`): the workspace keeps the last `HISTORY_LIMIT` (60)
+readings per connection in memory, cleared on a connection switch and never
+saved to session storage or SQLite, and shows the section **Live charts**
+above Diagnostics once one reading exists, from the `health-1.0` keys
+`queries` (Queries per second), `threads_running` (Threads running),
+`bp_disk_reads` (Buffer pool reads from disk per second) and
+`threads_connected` (Connections in use: the count of open connections, never
+`connections_used`, which is the share of `max_connections`); no server metric
+is computed in TypeScript. With one reading (`.health-live-charts.is-pending`)
+each card holds only its title and value (two grid rows, no SVG, no Min or
+Max) and the screen reader summary "`<title>`: `<value>`, one reading so
+far."; the head says "Charts start with the next reading. Turn on
+Auto-refresh." (Auto-refresh Off) or "Charts start with the next reading
+(every N s).". From two readings each chart has a title, the latest value,
+the Min and Max of the readings shown, a zero baseline, each reading's local
+time and value on hover, and an accessible summary
+(`svg[role="img"][aria-label]` plus `.health-chart-summary`). When every
+reading shows the same text at the precision displayed
+(`kit.trendRange(...).steady`, which only formats the server's values and
+compares the text) the range line reads "Steady over the last N readings"
+(card class `is-steady`) and the summary "`<title>`: steady at `<value>` over
+the last N readings.". The inspector's trend follows the same rule: before
+the second reading the value and "The chart starts with the next reading."
+(`data-trend="pending"`, never a one-point chart), and for equal readings
+"Steady at X over the last N readings." (`data-trend="steady"`); a
+`Sparkline` whose samples all show the same text labels itself "`<label>`,
+last N samples: steady at X". `rememberHealth` treats an answer with the same
+`taken_at` as the report already kept for that connection as the same
+reading: it replaces the report and adds nothing, so one reading never draws
+as two (real reads always carry a new `taken_at`; mocks and replays need a
+distinct one per reading). Charts update only with Health's own reads, so off
+screen they stop.
+
+At 900 px and below, where tiles scroll in one strip, each tile group heading
+carries `.tile-section-status` (`kit.css`, hidden above 900 px): a
+`StatusPill` of the group's worst status and its share in words from
+`groupStatusText` ("1 problem, 1 to watch", "2 problems"; problem and watch
+only, nothing when all is well), so Diagnostics' own count plus the groups add
+up to the summary line. The FactStrip's Details fold holds only server facts,
+which carry no status, so it has no marker. Tests:
+`apps/workspace/test/health-watch-unit.mjs` (`rememberHealth`, `trendRange`,
+`pendingTrendText`, `groupStatusText`) and `health.mjs` (one reading, steady
+readings, the group headings at 720 px and their absence at 1440 px).
+
+**Capture when…** is a toolbar popover built from kit controls: three
+conditions (Threads running at or above N, A row lock wait older than N s, A
+statement running longer than N s; whole numbers, checked at Start with the
+error beside the field), a Check interval (5, 10, 30 or 60 s) and Stop after
+the first capture (on by default). The watch lives in Server memory
+(`HealthMemory.watch`, never saved) and belongs to the connection it started
+on. Checks run only while Health is on screen, the page is visible and the
+Query editor is not capturing (the status says paused otherwise); the first
+runs at Start, and a connection switch stops checking. The status reads
+"Watching: checked N times, last at HH:MM:SS." in this computer's local time,
+with Stop, and names the conditions a read could not judge ("Not judged: …",
+"Partly judged: …"); an unread value is never taken as zero
+(`judgeWatch`, inclusive thresholds).
+
+Each check is `POST /api/live/watch` (`watch.watch_report`, `watch-1.0` in
+`docs/schemas/watch-1.0.json`: `{schema_version, engine, server_version,
+server_product, read_at, threads_running, longest_statement,
+longest_lock_wait, longest_waiting_statement, errors, notes, reason}`), one
+bounded read-only check: `SHOW GLOBAL STATUS LIKE 'Threads_running'`, the
+process list (`sessions._processlist_sql`; sleeping and daemon threads are not
+statements) and `information_schema.INNODB_TRX` (`locks._read_transactions`).
+`longest_lock_wait.seconds` is only how long an InnoDB transaction has waited
+for its row lock (`INNODB_TRX.trx_wait_started`, the one wait time the server
+records), never a statement's or transaction's running time (process list
+TIME counts from the statement's start), and a wait without a recorded start
+is not judged. A watch never reads `performance_schema.data_lock_waits` (it
+records no wait start and holds InnoDB's lock-system latch on older versions);
+without INNODB_TRX (no PROCESS) row lock waits are not judged and the reason
+is kept. Metadata and table lock waiters are `longest_waiting_statement`
+`{id, seconds, state}`, where seconds is how long the waiting statement has
+run: reported (and in the evidence text), never judged as a lock wait, and
+still caught by "A statement running longer than N s". A source that could
+not be read is named in `errors.<field>` and `notes`; without PROCESS,
+`longest_statement` and `longest_waiting_statement` say the process list
+shows only the account's own sessions.
+
+A met condition captures once: with Stop after the first capture off, the
+next capture waits until a check finds no condition met. The capture reads
+`/api/live/sessions` (`active_only: false`), `/api/live/innodb` and
+`/api/live/locks` on the connection the check used, with progress in the
+status line (Stop after 10 s), then saves "Capture: <condition> on
+<connection name>, YYYY-MM-DD HH:MM" (local time) with notes listing the
+conditions and anything not captured, and shows "Saved capture." with **Open
+investigation** and Dismiss. A capture goes on after Health is left or the
+connection changes (its outcome names its own connection); Stop ends both
+the watch and a capture. `POST /api/live/watch/capture`
+(`watch.capture_evidence`, `watch-capture-1.0`, 30 s query limit) builds the
+same evidence in one request; the workspace does not use it, since it reads
+the three views itself for step progress. Both are in `_SERVER_VIEW_PATHS`.
+Tests: `test/test_watch.py` (MySQL 8.4 and MariaDB 11.4 reports; a 60 s
+statement waiting 2 s reads 2 s; no data_lock_waits without PROCESS; a 600 s
+ALTER waiting for its metadata lock is never a lock wait; evidence stored
+without credentials), `apps/workspace/test/health-watch-unit.mjs` (in `npm run
+test:health`: `judgeWatch`, `switchHealthConnection`, the local clock),
+`apps/workspace/test/health.mjs`, `investigation.mjs`.
 
 ### Waits, Indexes, Tables, I/O, Config
 
@@ -1568,8 +2640,8 @@ Backend `myflames/variables.py` (contract: the db-operations skill; facts and so
 - `apply_change(conn, plan, expect, decision, confirmed, audit)` (`variable-change-1.0`): `dbops.gate` first (SET GLOBAL, PERSIST, PERSIST_ONLY and RESET PERSIST are risky, so Production and Development confirm; SET SESSION follows dbops' variable lists; read-only refuses), then a fresh read and plan; nothing is sent when the plan is refused, its statement differs from `expect.statement`, or the global, session (session mode) or persisted value changed. The audit record is written before sending; one statement tagged `/*myflames:variable*/` with `dbops.WRITE_CLIENT_FLAGS`; SET SESSION and its `SHOW SESSION VARIABLES` go in one client call (one session). Server errors: `denied` (1227, 1095, 3630, 1142, 1044, 1045), `refused_by_server` (1228, 1229, 1238, 1231, 1232, 1193, 1621, 3615, 3976, 1210, 1290), `interrupted` (1317, 1205, 1213), else `failed`; client errors (2000 and up) raise, and an interrupt, time limit or 2013 leaves the record `unknown`. Then the variable is read again (`after {global, session, persisted, resize_status}`): `changed` (`adjusted` when the server rounded or clamped it) or `unchanged` (the server kept the old value, a warning-only refusal). Audit operations `set_global`, `set_persist`, `set_persist_only`, `set_session`, `reset_persist`.
 - `python3 -m myflames config set NAME VALUE [--persist | --persist-only | --session] [--yes] [--json] [-o PATH] [-q]` and `config reset-persist NAME [--yes] [--json] [-o PATH] [-q]` (`change_cli`): the policy from `--profile` runs before any prompt or connection (read-only refuses, exit 2); the plan (statement, values, effect, privileges, caveats, undo) on stderr; `[y/N]` when the policy confirms (a harmless SET SESSION on Development runs without); non-TTY needs `--yes`. Exit 0 changed or already set to the requested value, 1 a sent change was denied, refused by the server or not applied, 2 an unsent refusal, decline, bad input or connection failure. `myflames config` alone stays the read-only review. `config set --session` prints a stderr note that it applies only to the one-off connection myflames opens, useful to test a value; `--yes -q` suppresses this note with the plan.
 - Endpoints: `POST /api/live/variable` (`name`) and `POST /api/live/variable/plan` (`name`, `value`, `mode`; adds `policy {action, tone, title, text, connection_type, read_only}`) read with the saved password like the views (`_VARIABLE_READ_PATHS`, not `_SERVER_VIEW_PATHS`); `POST /api/live/variable/apply` (`name`, `value`, `mode`, `expect`, `confirmed: true`; `_WRITE_PATHS`: policy, then the saved password, then `apply_change`). A refused or unconfirmed request is audited.
-- UI (**Parameters**, `Config.tsx` + `config.css`, modelled on an AWS RDS parameter group): reads on open (one attempt per connection; Refresh retries), while the sidebar badge still comes from the checks. One table lists every global parameter the server reports with columns Name, Value, Allowed values, Apply type (Dynamic, Static, Unknown), Source, Data type, and Description; search ("Filter parameters") matches name, value and description, and the Show filter offers All, Modified (source is not the compiled default), Dynamic, Static, Recommendations (parameters covered by a Watch or Problem check), and Pending while editing. The view toolbar stays pinned under the top bar. **Edit** turns the Value column into inline controls (switch, list or text box from the parameter's type) for changeable parameters: MySQL dynamic (applies now) and MySQL persistable static (applies after the next restart through `SET PERSIST_ONLY`), or MariaDB dynamic only; MariaDB static parameters are option-file only and parameters with an unknown apply type are not editable in the table. **Preview changes** lists Name, Current value, New value, Apply type and When it applies. **Review and apply** opens one batch review for up to 25 changes: the server plans each change (exact statement, problems, privileges, effect, undo); MySQL dynamic rows use "Keep after restart" (checked: `SET PERSIST`, unchecked: `SET GLOBAL`), MySQL static rows use `SET PERSIST_ONLY`, and MariaDB rows use `SET GLOBAL` and show the option file line to copy. Confirm applies the changes one at a time (each re-read and checked first), stops at the first change that is not confirmed, and shows a result per row; Cancel or Escape records a declined attempt for every planned row in the audit trail. The inspector has one compact section per parameter: one sentence (`oneLine`: the server's description, else the opening sentence of a check whose first setting it is), the **Documentation** link (`documentationLink`), and **Current value** (Value, Default, Source with path and who set it when, Changes in words from apply type, scope and `modifiable`, Allowed values, Persisted on MySQL, and Checked when covering checks do not flag it); a **Recommendation** follows only for a Watch or Problem check, the most severe one (reason, `action.text`, the statement and option file line as CopySql, the caveat), naming any other flagging check once. The actions sit in the inspector's action bar: **Edit value**, **Reset to default** (stages `DEFAULT` for MySQL numeric and boolean dynamic parameters), **Change…** (the single-parameter `VariableSheet` with every mode, including This session only), and **Reset persisted value…** (MySQL, when persisted). Permission details appear in the review dialog body; entry and confirmation buttons omit the Unverified badge.
-- Session in Parameters (**Change…** > This session only) prepares SQL only. `ConfigView.onOpenSql(sql)` receives the exact server-planned `SET SESSION` statement plus its terminator; `VariableSheet` calls it for **Open in Query editor**, never `/api/live/variable/apply`. Cancel/Escape on a Session draft creates no declined audit. The editor owns execution and its existing policy checks. The planning session value is labelled as a snapshot; its undo is omitted because the editor may have a different value. Without the optional callback the button is disabled and the statement stays copyable. Shell integration: pass `onOpenSql` through `Server` to `ConfigView`; in `main.tsx` call `labRef.current?.openSql(sql)` and `setMode("query")`. Add `openSql` to `QueryLabHandle` and its imperative handle to update the current tab via `changeTab`, clear stale digest source/selection metadata, and focus it without calling `send` or capture. These shell files are owned separately from Config. `node test/config.mjs --unit` checks the handoff without a browser.
+- UI (**Parameters**, `Config.tsx` + `config.css`, modelled on an AWS RDS parameter group): reads on open (one attempt per connection; Refresh retries), while the sidebar badge still comes from the checks. One table lists every global parameter the server reports with columns Name, Value, Allowed values, Apply type (Dynamic, Static, Unknown), Source, Data type, and Description; search ("Filter parameters") matches name, value and description, and the Show filter offers All, Modified (source is not the compiled default), Dynamic, Static, Recommendations (parameters covered by a Watch or Problem check), and Pending while editing. The view toolbar stays pinned under the top bar. **Edit** turns the Value column into inline controls (switch, list or text box from the parameter's type) for changeable parameters: MySQL dynamic (applies now) and MySQL persistable static (applies after the next restart through `SET PERSIST_ONLY`), or MariaDB dynamic only; MariaDB static parameters are option-file only and parameters with an unknown apply type are not editable in the table. **Preview changes** lists Name, Current value, New value, Apply type and When it applies. **Review and apply** opens one batch review for up to 25 changes: the server plans each change (exact statement, problems, privileges, effect, undo); MySQL dynamic rows use "Keep after restart" (checked: `SET PERSIST`, unchecked: `SET GLOBAL`), MySQL static rows use `SET PERSIST_ONLY`, and MariaDB rows use `SET GLOBAL` and show the option file line to copy. Confirm applies the changes one at a time (each re-read and checked first), stops at the first change that is not confirmed, and shows a result per row; Cancel or Escape records a declined attempt for every planned row in the audit trail. The inspector has one compact section per parameter: one sentence (`oneLine`: the server's description, else the opening sentence of a check whose first setting it is), the **Documentation** link (`documentationLink`), and **Current value** (Value, Default, Source with path and who set it when, Changes in words from apply type, scope and `modifiable`, Allowed values, Persisted on MySQL, and Checked when covering checks do not flag it); a **Recommendation** follows only for a Watch or Problem check, the most severe one (reason, `action.text`, the statement and option file line as CopySql, the caveat), naming any other flagging check once. The actions sit in the inspector's action bar: **Stage value for review** (`editParameter`: turns on inline editing, filters the table to that parameter and focuses its value control), **Reset to default** (stages `DEFAULT` for MySQL numeric and boolean dynamic parameters), **Change this parameter…** (the single-parameter `VariableSheet` with every mode, including This session only), and **Reset persisted value…** (MySQL, when persisted); exact review, policy checks, connection binding, cancel and apply are unchanged. While the shared inspector is a sheet (below 1,040 px) the table uses the existing compact preset (`compact={sharedInspector?.sheet}`, `detailColumns={["allowed", "type", "description"]}`): Name, Value, Apply type and Source stay, and Allowed values (still in the inspector), Data type and Description become detail columns that Columns can restore through the persisted-width override. Permission details appear in the review dialog body; entry and confirmation buttons omit the Unverified badge.
+- Session in Parameters (**Change this parameter…** > This session only) prepares SQL only. `ConfigView.onOpenSql(sql)` receives the exact server-planned `SET SESSION` statement plus its terminator; `VariableSheet` calls it for **Open in Query editor**, never `/api/live/variable/apply`. Cancel/Escape on a Session draft creates no declined audit. The editor owns execution and its existing policy checks. The planning session value is labelled as a snapshot; its undo is omitted because the editor may have a different value. Without the optional callback the button is disabled and the statement stays copyable. Shell integration: pass `onOpenSql` through `Server` to `ConfigView`; in `main.tsx` call `labRef.current?.openSql(sql)` and `setMode("query")`. Add `openSql` to `QueryLabHandle` and its imperative handle to update the current tab via `changeTab`, clear stale digest source/selection metadata, and focus it without calling `send` or capture. These shell files are owned separately from Config. `node test/config.mjs --unit` checks the handoff without a browser.
 
 
 Numeric configuration literals use exact fixed-point text (for example `10` and `0.00000001`), including SQL, audit statements and option-file lines. When verified before/after values already satisfy every requested scope, the result is `unchanged` with a successful audit outcome; it is not counted as a change. A new persisted value still counts as changed even when the running value already matches. CLI plans and alternatives name SQL operations and `config set` flags.
@@ -1639,6 +2711,7 @@ Backend `myflames/replication.py` (contract and evidence: the replication skill 
 - `SkipLoop` (`replication-skip-loop-1.0`): selected error codes only (none preselected), `max_skips` 1 to 1000 (CLI default 10), optional duration, check interval 1 to 60 s with the wait doubling per consecutive skip up to 60 s. Stops at once (`STOP_REASONS`, `needs_attention`): user stop (wakes a waiting loop), cap, duration, an unselected error, the same transaction failing again, the applier stopped without an error, channel gone or now Group Replication, source host/port/UUID, gtid_mode, AGAT or skip method changed, Uptime went down or the boot-time interval estimated from Uptime and the monotonic clock changed, lost connection, a refused, denied or failed skip. Receiver reconnect monitoring is optional at startup: readable, enabled stage counters capture an epoch and a changed epoch stops with `receiver_reconnected`. If those counters become disabled, absent or unreadable after being enabled, stop with `receiver_unverified`; never silently drop an active guard. When instrumentation is off, absent or denied at startup, or Performance Schema is off, the loop runs with the other guards and keeps reconnect monitoring off for that run. Loop snapshots carry `receiver_guard` (`"on"` or `"off"`), `receiver_guard_reason` (string or null), `receiver_guard_instrument` (exact stage name, null before the engine is known), and `receiver_guard_note` (coverage and enable guidance). `Start` reads the initial receiver identity on the loop's own connection before returning, bounded by the existing connection/query timeouts, so its first snapshot already reports actual coverage and the instrument; pending initialization is never reported as disabled instrumentation. `receiver_guard_plan(conn, report)` reads this coverage for a confirmation without changing instrumentation; the workspace replication response includes these fields at the report level and on each `skip_plan`. The confirmation and running status should display the note and reason. Echo `receiver_guard` to `skip-loop/start`: `"on"` requires coverage from the first loop read, so losing it after confirmation also stops. `replication_receiver` in Instruments maps `events_stages_summary_by_thread_by_event_name`, `threads`, `global_instrumentation`, `thread_instrumentation` and the engine-specific `stage/sql/Checking source version` (MySQL) or `stage/sql/Checking master version` (MariaDB). Both stages are off by default; counts suffice without timing, and receiver background threads do not depend on `setup_actors`. myflames never enables instruments. Each skip goes through `skip_one` with the loop's decision and is one audit record (`replication_skip_loop`). Workspace loops reload the profile from the store before every skip and recheck at the send boundary. A changed policy, deleted profile or moved endpoint stops with `policy_changed`; editing a profile to read-only or deleting it also signals its registered loops immediately. `WorkspaceServer.server_close` stops and joins all loops. Status and Stop remain usable after a policy change. In memory only: nothing resumes after a restart.
 - `python3 -m myflames replication skip-loop --channel NAME --errors 1062,1032 [--max N] [--max-minutes M] [--interval S] [--yes] [--json] [-o PATH] [-q]`: runs in the foreground and prints each live event on stderr (suppressed by `-q`); writes the final JSON snapshot of a started loop, or the final message without `--json` to stdout or `-o`, with identical payload bytes for either destination; Ctrl+C stops it. Exit 0 stopped by Ctrl+C, `--max` or `--max-minutes`, 1 a started loop stopped on a condition that needs attention, 2 an unsent refusal, decline, bad input or connection failure (also a lost connection).
 - An unexpected exception in any endpoint answers 500 with a neutral sentence that never carries the cause (`ui._unexpected_error_message`: plan endpoints "Could not render this plan. Try another view or the CLI."; `/api/live/*` "Could not read this from the server. Try Refresh or the CLI."; others "Could not complete the request. Try again or use the CLI.") and writes the traceback to stderr with every password replaced by `[redacted]`: values under any request key containing `password`, and the saved password of a connection that sends `profile_id` without one, also in their repr and JSON-escaped forms (`ui._log_unexpected_error`). Tests `test_unexpected_error_is_neutral_for_live_reads_and_logged_to_stderr` and `test_unexpected_error_log_redacts_every_password_form` in `test/test_ui.py`.
+- Every 400 answer of `do_POST` (ValueError and friends, and ConnectorError) goes through `ui.request_error_text`. A common connection error leads with plain words and what to check (`dbops.connection_error_text`), then the client's line from `ERROR n` on, with the `mysql client exited N:` wrapper dropped and anything after the line (an SSH tunnel note) kept. 2002/2003: "Could not connect to the server. Check that it is running and that the host and port are right." ("… the socket path is right." for a socket failure; MariaDB's client reports a refused TCP connection as 2002). 2005: "Could not find the server's host name. Check the host for a typing error, or use its IP address." 2006/2013: "Lost the connection to the server. Check that it is still running: it may have restarted, or a network or time limit ended the connection." followed by the whole original message, so a write's context ("Could not end connection 41: …") stays. 1045 only when the text says Access denied: "The server refused the user name or password. Check both, and that the account may connect from your address." ("The server refused the login, and no password was sent. Enter the password, or check the user name." for `(using password: NO)`); a 1045 without Access denied gets no password hint. For 2002, 2003, 2005 and 1045 no session was opened, so a reader's context before the error ("Could not read the server status: ") is dropped. Other messages keep their words; only one that does not start with "Could not ", "Cannot ", "Can't ", "Unable to " or "Failed to " gets "Could not complete the request: ", and a ConnectorError without a mapped code passes through unchanged. Codes come from `include/errmsg.h` (texts checked in MySQL's `libmysql/errmsg.cc` and MariaDB's `sql-common/errmsg.c`). The CLI still prints its own context ("Could not read the server status: ERROR 2003 …"), and Cluster's `failureText` keeps its one sentence. Tests: `TestConnectionErrorText` in `test/test_dbops.py`; `test_failed_reads_lead_with_plain_words_on_every_server_view` and `test_a_reader_context_and_the_generic_prefix_never_stack` in `test/test_ui_http.py`.
 - Saved passwords are bound to the exact `ENDPOINT_FIELDS` (`host`, `port`, `user`, `ssl_mode`, `ssl_ca`): a profile saved without `ssl_mode` means the client's own default (not PREFERRED for every client, for example MariaDB 11.4+ verifies by default), so a request that names PREFERRED is refused until the profile is saved with it (`test_saved_password_binds_to_the_exact_tls_mode`). `scripts/ga-matrix.sh profiles` saves `ssl_mode` PREFERRED for that reason; an endpoint mismatch also shows the connection as Production in the picker (`connectionSafety`).
 - Endpoints: `POST /api/live/replication` (status; `_CONNECTION_PATHS`, saved-password helper), `POST /api/live/replication/skip` (`channel`, `expect`, `statements`, `confirmed: true`; `_WRITE_PATHS`: policy, then the saved password, then `skip_one`), `POST /api/live/replication/skip-loop/start` (`channel`, `codes`, `max_skips`, `max_minutes`, `poll_s`, `confirmed: true`; same order; the loop keeps its own connection and closes it when it stops), `.../skip-loop/status` (`job_id` or every loop of this connection) and `.../skip-loop/stop` (`job_id`). Loops live in `workspace.replication_loops` (`SkipLoopRegistry`) keyed by `dbops.connection_identity` and matched by its endpoint (`dbops.identity_endpoint`: saved connection id, host, port, user, TLS), so status and stop from another connection are refused while a change of the connection's type or read-only flag keeps them (one loop per channel and endpoint); status and stop open no connection. A refused or unconfirmed request is audited.
 - Workspace UI (`ReplicationPlace.tsx` and `Replication.tsx`, the standalone Replication place): the channel table and inspector; Skip this transaction and Skip until stopped re-read the failure before their sheets open, show the tagged statements, plan again (nothing sent) when the identity or statements changed or the sheet is older than `PLAN_TTL_MS` (60 s), and call `audit/declined` on Cancel and Escape. Loop status is read once a replica report is shown, while a loop runs, and after Start or Stop; a running loop's line (with Stop) also sits above other Server views. The session keeps only `slow.replication_loop_active`, so a restored workspace mounts Replication, reads loop status, and says "Stopped when myflames restarted" when the registry is empty; it never starts a loop. Both views take `missingPrivileges` (`opsApi.MissingPrivileges`, "Requires CLONE_ADMIN") to grey an action with its reason once a privilege context passes it; absent means unknown and the server decides. Browser suite `apps/workspace/test/replication.mjs`.
@@ -1902,6 +2975,962 @@ session restore. Refresh all reloads live diagrams for their original database
 and preserves positions. Before the first build it can use the selected database;
 imported diagrams are excluded.
 
+### Schema versions
+
+Save one database's schema on this computer and compare any two schemas: a
+saved version, a `schema-snapshot-1.0` file, or a database read now through a
+connection. A comparison has a source (the schema to match) and a target (the
+schema that would change); its sync script changes the target to match the
+source. Modules: `myflames/schema_versions.py` (capture, validation,
+checksum, comparison, text and Markdown), `myflames/schema_sync.py`
+(the sync script), `myflames/schema_ddl.py` (splitting `SHOW CREATE` output),
+`myflames/schema_versions_api.py` (workspace endpoints),
+`myflames/schema_versions_cli.py` (`myflames schema`) and the
+`schema_version_*` methods of `WorkspaceStore`. Contracts:
+`docs/schemas/schema-snapshot-1.0.json`, `schema-compare-1.0.json`,
+`schema-version-list-1.0.json`.
+
+**Reading a database** (`capture(conn, database, source)`) is read-only and
+bounded by `READ_SECONDS` (120) for the whole read. `information_schema` and
+`performance_schema` are refused; above `MAX_TABLES` (2,000, the
+`ALL_SCHEMAS_TABLE_LIMIT`), `MAX_OBJECTS` (5,000) or `MAX_COLUMNS` (200,000
+text columns) it refuses. Statements, all tagged `/*myflames:schema-versions*/`:
+
+1. `SHOW GLOBAL VARIABLES` for version, version_comment, hostname,
+   lower_case_table_names and the `SESSION_SETTINGS` variables.
+2. One `conn.run` with the inventory: `SCHEMATA`, `TABLES` (BASE TABLE,
+   SYSTEM VERSIONED, VIEW, SEQUENCE), `ROUTINES` (PROCEDURE, FUNCTION,
+   PACKAGE, PACKAGE BODY), `TRIGGERS` (with timing, event and
+   `ACTION_ORDER`), `EVENTS`, and `COLUMNS` with a collation (the effective
+   character set and collation of text columns), each row led by a one-letter
+   marker. Other types are named in `notes`; MySQL 9.2+ JavaScript libraries
+   are not read.
+3. `privileges.read_privileges` for `coverage` (below).
+4. One `conn.run_script` (stdin, `--force --skip-reconnect --comments
+   --binary-mode`): `USE information_schema`, `SET SESSION` of each
+   `SESSION_SETTINGS` entry the server has (`sql_mode = ''`,
+   `sql_quote_show_create = 1`; MySQL `show_create_table_verbosity = OFF`,
+   `show_gipk_in_create_table_and_information_schema = ON`, from 8.0.18
+   `show_create_table_skip_secondary_engine = OFF`), then `SHOW CREATE
+   DATABASE` and one `SHOW CREATE <type>` per object. The default database and
+   sql_mode change the printed text (`SHOW CREATE VIEW` drops the view's own
+   database name when it is the default; ANSI_QUOTES and MariaDB's
+   NO_*_OPTIONS and ORACLE modes change quoting and options), so both are
+   fixed. Rows map to the statements that did not fail, in order; failures
+   come from `ERROR n (state) at line N` on stderr. A row count that does not
+   match, a failed SET line, or a client error 2000-2999 fails the read.
+
+Per object: tables strip `AUTO_INCREMENT=N` from the options line
+(`schema_ddl.strip_auto_increment`, before any quoted option); views keep
+`character_set_client` and `collation_connection`; routines, packages,
+triggers and events keep `sql_mode` (and events `time_zone`) and the client
+character set and collations. Errors 1146, 1360, 1539 (and 1049 for the
+database) mean the object was dropped during the read: it is left out with a
+note. 1305 from `SHOW CREATE PROCEDURE` is kept as unreadable, because the
+server answers it for a routine the account cannot see too
+(mysql-server sql/sp.cc:1705-1713, mariadb-server sql/sp.cc:2039-2048). 1044,
+1142, 1143, 1227 and 1370 are "The account cannot read it" with the server's
+words; a NULL routine definition says which privilege shows it (`ROUTINE_HINT`:
+the definer, SHOW_ROUTINE or global SELECT on MySQL; the definer, SHOW CREATE
+ROUTINE from 11.3 or SELECT on `mysql.proc` on MariaDB). An unreadable object
+has `ddl` null and `reason`.
+
+`coverage` (tables, routines, triggers, events): `complete` when SHOW GRANTS
+proves every object of that kind is listed, else `unknown` with the privilege
+that would. Tables: any table privilege on the database (MySQL
+`TABLE_OP_ACLS`; MariaDB `TABLE_ACLS`, which adds GRANT OPTION and DELETE
+HISTORY). Routines: EXECUTE, CREATE ROUTINE or ALTER ROUTINE on the
+database, else global SELECT or SHOW_ROUTINE (MySQL), SELECT on `mysql.proc`
+or SHOW CREATE ROUTINE (MariaDB). Triggers: TRIGGER on the database. Events:
+EVENT on the database. `privileges.has` never proves an absence below the
+global level, so `unknown` means "may be incomplete", never "missing".
+
+`checksum` is sha256 over each object's type, name, ddl and compared fields
+(definers included), so equal checksums mean no difference.
+
+**Comparing** (`compare(source, target, source_meta, target_meta,
+ignore_definers)`): objects pair by namespace (tables, views and sequences
+share `relation`; routines, packages, triggers, events and the database each
+their own) and exact name, then without regard to letter case when that pairs
+one object on each side (a `name` change; `target_name` keeps the target's
+spelling). Each is `different`, `only_in_source`, `only_in_target`,
+`identical` or `not_compared` (a side's definition could not be read;
+`reason` says which). The DDL fields depend on the status: `only_in_source`
+has `source_ddl`, `only_in_target` has `target_ddl`, `different` has both,
+`not_compared` has both with null for the unreadable side, and `identical` entries omit both (with `changes`
+and `target_name`). Tables
+(`table_changes`) compare elements from `schema_ddl.split_table`: columns in
+the source's order (`moved` when outside the longest common order), keys, foreign keys, checks, other constraints, MariaDB
+periods, table options and partitioning. A column compares without the
+CHARACTER SET and COLLATE that follow its type (`schema_ddl.column_body`),
+because MySQL prints them from the column's history as well as its value
+(`is_explicit_collation`, mysql-server sql/sql_show.cc:2533-2560), and with
+its effective character set and collation from `COLUMNS` instead
+(`collation` on the change). Other objects compare the definition without the
+definer and with each side's own database name made neutral in backquoted
+`db`. qualifiers, the definer (`definer_only` when nothing else differs;
+`ignore_definers` leaves it out), `sql_mode`, an event's `time_zone`, and for
+triggers their order among the triggers both sides share on the same table,
+timing and event. A change is `different`, `only_in_source`,
+`only_in_target` or `moved` with the `source` and `target` text; every change
+has `label` ("column email") and `text` (the sentence the CLI prints), every
+different object `summary` and a unified `diff` (`[op, text]`, from the
+target's definition to the source's: `-` only in the target, `+` only in the
+source). `notes` name different engines,
+versions, database names and `lower_case_table_names`, and every side whose
+coverage is not complete.
+
+**Sync script** (`schema_sync.build(target, source, report)`, `sync` in the
+report): statements that would change the target to match the source,
+ordered by phase (`session`: `USE`; `database` (MySQL `READ ONLY = 0` first
+when the target is a read-only database); `drop_objects`;
+`drop_foreign_keys`; `drop_checks`; `drop_tables`; `create_sequences`;
+`alter_tables`; `create_tables`; `add_foreign_keys`; `routines`; `views`;
+`triggers`; `events`; `database_end`: `READ ONLY = 1` when the source is
+read-only). Its header says "Changes the target" and "To match the source".
+Tables only in the target go
+before the ALTERs (a removed child's foreign key blocks changes to its parent,
+and foreign key and MySQL check names are unique per database); new sequences
+before them (a column default can call `NEXT VALUE FOR`). Each has `risks`
+(`drops_data`, `may_change_data`, `checks_rows`, `drops_privileges`; these
+codes are unchanged), `risk_details` (the sentence shape of **Risks** below),
+`warnings` and `compound` (the script wraps it in `DELIMITER`). Rules:
+
+- Checks that are removed or change are dropped first, one ALTER TABLE per
+  table (`DROP CHECK` on MySQL from 8.0.16, `DROP CONSTRAINT` on MariaDB).
+  Then one ALTER TABLE per changed table: dropped keys and columns; added and
+  changed columns in the source's order (`AFTER` or `FIRST` only when a
+  column has to move); keys and checks; then only the table options that
+  differ (never ENGINE again; options the source lacks are reset by
+  `_RESET_OPTION` or named as
+  not generated; a changed `KEY_BLOCK_SIZE` warns that kept indexes keep
+  theirs; `DATA DIRECTORY` and `INDEX DIRECTORY` are left to the user); then
+  the new partitioning or `REMOVE PARTITIONING` at its end, without a comma
+  (MySQL drops a column the old partitioning uses only in the statement that
+  repartitions). A text column names its character set and collation (after
+  MariaDB's `COMPRESSED` comment). On MySQL a second new FULLTEXT key is its
+  own ALTER TABLE (InnoDB adds one per statement). A generated column that
+  switches between STORED and VIRTUAL, or becomes (not) generated, is not
+  generated (MODIFY refuses it).
+- Foreign keys that are removed or change, and unchanged ones on or to a
+  column whose type changes or a key that is dropped or changes, are dropped
+  first and added after the tables; new tables are created without them.
+- Views are created after routines (a view may call a function), in
+  dependency order, `CREATE OR REPLACE` when they exist. MySQL routines are
+  dropped and created (no OR REPLACE; DROP revokes routine grants while
+  `automatic_sp_privileges` is ON); MariaDB uses `CREATE OR REPLACE`, which
+  keeps them, and a replaced package gets its body again. Every routine,
+  trigger and event is created under its own `sql_mode` (and an event under
+  its `time_zone`), restored to the saved session values right after.
+  Triggers of one table, timing and event are recreated in the source's order
+  when a new or changed one must run before one that stays.
+- The source's database name is replaced by the target's in copied
+  definitions.
+- Not generated (in `skipped` and as script comments): objects not compared,
+  definitions the source could not read, changed sequences (use ALTER SEQUENCE so
+  the next value is kept), system-versioning changes, generated-column
+  storage changes, letter-case renames, tables whose definition could not be
+  split. Warnings name possible table and column renames, other engines, a
+  newer source server version, definers, backslash escapes (run without
+  NO_BACKSLASH_ESCAPES), events with a fixed AT or ENDS time (not created or
+  created disabled once it has passed) and named event time zones (need the
+  time zone tables).
+
+**Choosing objects.** Every entry has `key`, `namespace:name` with the name's
+case kept (tables, views and sequences share `relation`, so a table replaced by
+a view keeps one key); `--json` shows the keys `--only` takes.
+`schema_sync.build` takes `chosen_keys`: absent or None means every entry
+except `only_in_target`, so no object only in the target is dropped by
+default (changes within a chosen object, such as a DROP COLUMN or a
+replacement by another type, still are, with a `-- WARNING:` line and
+Drops data); an empty list
+means no statements; unknown, malformed or duplicate keys are input errors.
+`sync` adds `chosen_keys` and `omitted: [{key, reason}]`, and the header counts
+the omitted differences and the objects only in the target that were not
+dropped. Changes inside a chosen table, dropped columns included, stay in with
+their risk text. A chosen identical entry permits the dependency maintenance
+it needs but is not itself a difference.
+
+A choice never expands to unchosen objects. `schema_sync._Selection` computes
+the target the choice keeps before `_Plan` writes anything, and planning is
+tentative until planner skips and dependency closure reach a fixed point: an
+unreadable object or a skipped table (one ungenerated column change is enough)
+counts as kept whole, and no SQL from an earlier tentative plan is returned.
+A kept table's incoming foreign key blocks a parent DROP, a column removal, a
+type, character set or collation change, or a change to the index it uses. A
+source foreign key must match the kept parent's columns, both tables must be
+InnoDB, and the parent needs a full leftmost index on those columns (prefix,
+expression-led, FULLTEXT, SPATIAL, VECTOR and HASH indexes do not count;
+integer display widths and string lengths alone do not make types
+incompatible); on MySQL 8.4 and later, or an unknown MySQL version, the kept
+parent needs a complete PRIMARY KEY or UNIQUE key on them, since snapshots do
+not record `restrict_fk_on_non_standard_key` and its default is ON. Table
+names in these checks follow each snapshot's `lower_case_table_names` (0 keeps
+case, 1 and 2 fold it); without it names are case-sensitive and a warning says
+so. Source foreign key names are checked against kept target tables on both
+engines (database-wide, so on MariaDB 12.1 and later, where names are per
+table, this can withhold a change that would have worked), and CHECK names
+across tables on MySQL only. Every change on a blocked table is withheld
+together (no half-created table, orphan foreign key or foreign key dropped
+without its replacement); foreign keys and known local view, routine, default
+and sequence references propagate the block, while literals, comments and
+other schemas do not, and dynamic SQL is not resolved. Trigger reorder groups
+with an unchosen or unreadable member, a package replacement or drop that
+would lose an unchosen or unreadable body, an unchosen read-only database
+(never opened for DDL) and an unchosen source read-only option are skipped
+too. Every skip is in `sync.skipped` with Python's reason, repeated as a
+one-line script comment; `objects[].blocked_by` lists the original keys to
+choose (empty when nothing blocks; comparisons built with `sync=False` may
+omit it). The workspace shows Not generated and **Needs** with those names, and
+never adds a blocker to the choice.
+
+**Risks.** Entries and their changes carry `risks: {destructive: [],
+data_dependent: [], rebuild}`, sentences written by Python; statements carry
+the same shape as `risk_details`. Destructive: dropped objects, a replacement by another type that
+drops the target, MySQL routines dropped and created, events and triggers
+dropped and created, dropped columns. Data-dependent: PRIMARY or UNIQUE added,
+NULL to NOT NULL, narrowing and other lossy conversions, changed character
+sets or collations, FOREIGN KEY or CHECK added. Known integer, string, decimal
+and float widenings, integer display widths, quoted SQL words and comments
+create none, and ENUM member case is kept. Every emitted sentence sits right
+above its statement as `-- WARNING:` (destructive) or `-- CHECK:`
+(data-dependent) on one line; `sync.summary.warnings` counts those lines,
+repeats on different statements included. Informational notes stay separate.
+The workspace labels them **Drops data** and **May fail**.
+
+**ALTER predictions.** `_predict_algorithms` runs once selection and planner
+skips reach their fixed point and calls `alter_algorithm.predict` (see [Query
+editor sessions](#query-editor-sessions)) once per emitted `ALTER TABLE` with
+the target's original captured table DDL, the target engine and
+`server_version`, and no `facts`. It never reads a server, never invents
+hidden table facts and never uses the source's DDL; a later ALTER on the same
+table still uses the original target definition, and a table the script
+creates has no target definition, so its ALTER is not predicted. Each such
+statement gets `algorithm` (`predicted`, `algorithm` INSTANT, INPLACE, COPY or
+null, `rebuild`, `concurrent_dml`, `summary`, `reason`, `source`, `needs`,
+`clauses`, `notes`; the notes keep the predictor's default-setting
+assumptions and add "Uses the captured target definition; no live table facts
+were read."). A known COPY or rebuild sets the statement's
+`risk_details.rebuild` to "Copies the table (COPY)" or "Rebuilds the table in
+place (INPLACE)" followed by "; writes continue." or "; writes wait until it
+finishes."; an entry joins the unique sentences of its statements, and a
+change gets one only when it maps to exactly one ALTER (a replacement split
+over DROP and ADD keeps null). Null means no known copy or rebuild, or not
+predicted; `algorithm` tells them apart. Reselection clears and recomputes
+every value from the final plan. Each sentence is one more `-- WARNING:` line
+(counted in `sync.summary.warnings`), and every emitted ALTER gets one
+`-- ALGORITHM:` line after its WARNING and CHECK lines: `INSTANT`, the INPLACE
+summary (with ", writes wait" when known), `COPY, writes continue` or `COPY,
+writes wait`, or `not predicted (reason)`. No ALGORITHM= or LOCK= clause is
+ever added. The workspace shows **Rebuilds table** (its title the sentence) in
+Differences, change details and the sync review, and each emitted ALTER's
+**Predicted** line with the shared `AlterPredictionWhy` disclosure in the
+full-width detail. Endpoints, requests and CLI flags are unchanged; `myflames
+schema compare … --sql` prints the new comments. Ordinary stored ADD COLUMN
+is not guaranteed INSTANT offline (MySQL needs the hidden FTS and row-version
+facts, MariaDB the hidden FTS fact), and INT to BIGINT needs other tables'
+foreign keys, so those stay not predicted with their `needs`. Tests:
+`test/test_schema_sync.py`, `apps/workspace/test/schema-versions.mjs` (the
+Risk label and title, the Predicted line, clause reasons and sources, script
+comments).
+
+**Checks** (`myflames/schema_lint.py`; `schema_lint.lint(snapshot,
+server=None)` returns `schema-lint-1.0`, `docs/schemas/schema-lint-1.0.json`):
+the input is validated as `schema-snapshot-1.0`; the result has the captured
+`database` and `server`, `findings` `{rule, status: "watch", object, column,
+text, detail}` and `not_judged` `{rule, object, column, reason}`. `object` is a
+type and name such as `table orders`; `column` is null, a column name, or the
+ordered child columns of a foreign key joined by commas. Rules: `money_float`
+(a FLOAT, DOUBLE or REAL column whose name suggests money, such as price,
+amount, cost, total, balance, salary, fee, tax, payment or revenue; the name
+is a heuristic, never proof), `utf8mb3` (the effective column character set
+wins over a printed `utf8` alias), `myisam`, `zero_date` (a zero default on a
+DATE, DATETIME or TIMESTAMP column; only MySQL gets the default NO_ZERO_DATE
+and strict mode explanation), `reserved_word` (current words from
+`information_schema.KEYWORDS` on a live MySQL 8.0.11 or later, where that
+table first appears (mysql-8.0.11 `sql/dd/impl/system_views/keywords.cc`), at
+most 10,000 rows, a row whose WORD is NULL skipped; future words from
+`lifecycle.RESERVED_SINCE` (shared with the upgrade check: QUALIFY from 8.3.0,
+mysql-8.3.0 `sql/lex.h`, TABLESAMPLE from 8.4.0, LIBRARY from 9.2.0, EXTERNAL
+from 9.4.0; MANUAL and PARALLEL are keywords MySQL 8.4.11 accepts as unquoted
+column names, so they are not listed), offline too, kept even when a newer connected
+server already reserves them; Not judged on MariaDB, with one database-level
+reason when the list cannot be read), `fk_index`, `fk_parent_key` (both
+engines; only MySQL 8.4 and later gets the `restrict_fk_on_non_standard_key`
+explanation) and `definer_missing` (only for a named connection whose host,
+port and engine match the snapshot, using the complete accounts list). The
+optional live context is `{connection, host, port}` from validated connection
+options; a failed open passes `{connection: null, host, port, error}` and the
+offline findings stay. Live reads share a 30 s deadline (`READ_SECONDS`) and
+check the actual version and version comment. Missing live metadata,
+unreadable definitions or accounts, a parent table in another database and
+incomplete inventories are Not judged, never clean, and passwords are redacted
+from failed-read reasons. No SQL is generated or sent to change a server.
+
+**Comparison cache.** `/api/schema-versions/compare` accepts optional
+`chosen_keys` and returns `comparison_id`. `/api/schema-versions/sync` takes
+`{comparison_id, chosen_keys}` and returns a full comparison with the rebuilt
+SQL and Markdown. Sync never reads a server or trusts DDL from the client: it
+rebuilds from validated, compressed snapshots cached per `WorkspaceStore` in
+memory (at most four comparisons and 64 MiB, ten minutes from creation; an
+expired or evicted ID asks for Compare again, and IDs never work in another
+workspace instance). Deleting a saved version does not change a captured
+comparison. `/api/schema-versions/lint` takes `{id, connection?, database?}`
+where `id` is a saved version, `latest` or `live` (`live` needs the connection
+and database and reads without saving; a saved or latest version without a
+connection is checked offline). The `ui.py` allowlist comes from
+`schema_versions_api.PATHS`, so both endpoints are registered with it, and
+`LIVE_PATHS` (save, compare, lint) are the ones that open connections.
+
+Round trip, verified live on MySQL 8.4.11 and MariaDB 11.4.13 (2026-10-26)
+and kept by `test/test_schema_versions_live.py` (Docker): running the script
+on a copy of the target, in both directions, and reading it again gives no
+differences except what is listed as not generated, including a removed child
+table whose parent changes type, a check that moves to another table,
+repartitioning that drops the old partitioning column, two new FULLTEXT keys,
+a MariaDB sequence used as a column default, and a read-only MySQL target.
+
+**Storage**: the store's `schema_versions` table (`id, saved_at, source_key,
+number, name, note, summary, payload`), created on demand like
+`investigation_summaries`; `payload` is zlib-compressed snapshot JSON, decoded
+only by `schema_version_get` (bounded inflate, then `validate_snapshot`).
+`number` counts per `source_key` (`host:port/database`, with the SSH target
+after the port for a read through SSH: `127.0.0.1:3306 via deploy@bastion/shop`).
+A read through SSH records `ssh_host` and, when given, `ssh_user` and
+`ssh_port` in the snapshot's `server` (`schema_versions.read_source`; absent
+for a direct read, so its snapshot and key are unchanged), and that SSH target
+is part of the server's identity everywhere Schema versions matches a server.
+`schema_version_save`
+returns `same_as` when the latest version of that database has the same
+checksum. `schema_version_find` resolves an ID, an ID prefix of 6 or more
+characters, an exact name, or `latest` (of a source).
+
+**Workspace API** (`schema_versions_api.py`, not in `_CONNECTION_PATHS`: each
+live side fills its own connection's saved password): `/api/schema-versions/`
+`list`, `get`, `update`, `delete`, `export` (`{filename, text}`), `import`
+(`{text}`; the request body may be as large as a session save, but
+`schema_versions.parse_file` refuses text over 36 MiB of UTF-8, which is
+`MAX_SNAPSHOT_BYTES` (32 MiB) plus 4 MiB, and snapshot validation and storage
+add their own bounds), `save` (`{connection, database,
+name, note}`), `compare` (`{source, target, ignore_definers, markdown,
+chosen_keys}`; a side is `{version: ID}` or `{live: {connection, database}}`;
+`markdown: true` adds `markdown`; the answer has `comparison_id`), `sync`
+(`{comparison_id, chosen_keys}`) and `lint` (`{id, connection?, database?}`),
+as described above. Live reads use `query_timeout = READ_SECONDS`; errors
+redact the password.
+
+**Place** (`SchemaVersions.tsx`, `schemaVersionsApi.ts`,
+`schema-versions.css`; mounted on first visit and kept hidden like Query
+digest): Saved versions (table `schema.versions`; a Database choice in the
+toolbar from `useSchemaCatalog` of the connection in use plus the databases
+with saved versions, never a typed filter; inspector with the objects and
+definitions, Compare with the database now, Compare with…, Export, Rename…,
+Delete…; Save version… and Import… in the toolbar, Save starting with the
+chosen database) and Compare (Source and Target each a saved version or a
+database now through the connection in use or a saved connection with a
+saved password, filled in on open: the target a database of the connection in
+use, the source the newest version of that database; Ignore definers;
+Differences table `schema.differences` with **Include in sync script** (a
+checkbox per object; the header chooses every object, identical ones hidden
+from the list included), Status, Type, Name, Sync script (what the script does
+to the target, Excluded, or Not generated), Risk (Drops data and May fail
+pills, then **Needs** and the objects to choose) and Details; a new choice
+calls `/api/schema-versions/sync`, guarded by comparison identity and request
+revision, and the last SQL stays greyed while it is pending or stale, with
+Copy, Download, Open in Query editor and the exports off; a selected difference opens
+over the whole view (`detailBackLabel` "Back to differences") with What
+differs as a Source | Target table from each change's `label`, `source` and
+`target`, and both definitions side by side from the unified `diff`
+(`splitRows`: removed lines are the target's, added lines the source's,
+unchanged stretches outside the hunks fold into a gap); Sync script with Copy
+script, Download .sql and Open in Query editor, enabled only when the target
+is a database read now through the connection in use's server (`kind`
+`live`; a saved version is a past state; the same server is the same host,
+port and SSH target, `serverMatch` in `schemaVersionsApi.ts`: 127.0.0.1:3306
+through another SSH host, or with SSH on one side only, is refused with the
+reason); Export Markdown, JSON or the sync script). Compare with the database
+now uses the version as the source and the database as the target, through
+the connection in use or a saved connection that reaches the same server by
+the same rule, and the automatic source prefers the newest version of the
+target's database from that server. Lint's definer check (`schema_lint`) also
+requires the same SSH target. Opening the place on screen reads the saved list and
+the database list of the connection in use (`useSchemaCatalog`,
+`/api/live/schemas`) for the Database choice; a schema is captured only by
+Save version or Compare, and Checks read live metadata only while open.
+Refresh reads the saved list again. The
+Compare tab has no Refresh: Compare is its one way to read again. A version
+whose account could not see every kind of object has a May be incomplete pill
+in its Name cell (words, never color alone). A saved version's inspector has
+**Checks**, a disclosure that calls `/api/schema-versions/lint` with the
+connection in use (when one is chosen) only when it is open, the inspector is
+on screen and the view is on screen; Stop and Try again use the shared action
+feedback, Not judged entries sit under Details, and changing the version or the
+connection invalidates the read. Selecting a version alone never reads.
+
+**Comparison badges and setup bar** (`compareShared.tsx`, `compare-shared.css`
+imported only by `styles.ts`; shared by Schema versions, Parameters > Compare
+and Users and roles > Compare). A comparison describes a relationship, never a
+server's health. `ComparisonBadge` maps each status to a tone: Different
+accent text and tint; Only in source, Only in target and Moved a neutral
+outline on an opaque surface (so selection never lowers its text contrast);
+Not compared a muted surface; Identical a faint surface with readable text.
+These badges never use `is-ok`, `is-warn` or `is-danger`, an Identical summary
+has no health marker, and schema definition line highlights use accent and
+neutral surfaces. Drops data, May fail and Rebuilds table keep their risk
+colors and meanings. `ComparisonSetup` keeps the setup open before the first
+result; only a successful Compare collapses it into one bar (Source → Target,
+Swap, Change…, Compare) at every width, and when that first result replaces
+the setup, focus moves to the bar's Compare. Sync selection regeneration never
+collapses it; a failure or Stop keeps the previous result and the setup as the
+user left it. Change… carries `aria-expanded` and `aria-controls` and toggles
+the setup; Escape inside the expanded setup collapses it and returns focus to
+Change…. The bar keeps naming the sides the result came from (`result.sides`
+in Parameters and Users and roles, the compared labels in Schema versions)
+until Compare runs again, with their identity and read or capture stamps in
+its tooltip and accessible text. Swap and Change… only change the chosen
+sides and run nothing; the view then says "The chosen sides changed (next:
+Source X → Target Y). Press Compare to update the differences." (Schema
+versions too, for a changed schema choice). A connection switch keeps the
+result greyed and the bar usable. A side's read error appears once, beside the
+bar or inside the expanded side, and Manage snapshots and Refresh choices stay
+reachable through Change…, their outcomes visible when the setup closes. Before
+the first result Schema versions shows Source and Target as side-by-side
+compact cards (also at 720 px), each role's hint in its label's `title`. No
+endpoint, JSON schema, server read or write, CLI subcommand or flag changed.
+Tests: `server-compare.mjs --unit` (all six badge words and tones, no health
+classes, initial, collapsed and expanded setups), `server-compare.mjs` and
+`schema-versions.mjs` in a browser (collapse, Change… toggling, Escape and
+focus, Swap without reads, a failed Compare keeping the setup, badge classes,
+strip position, visible rows and contrast at 720x600 and 1440x900 in both
+appearances).
+
+**CLI**: `myflames schema read|save|list|show|compare|edit|delete|export|import`
+(`schema_versions_cli.py`); see the README command table. A compare side is a
+saved version, `latest` (newest version of the other side's
+`host:port/database`), `live` (connection flags and `-D`),
+`profile:NAME[/DATABASE]` (a saved connection with its saved password) or a
+`.json` / `file:PATH` snapshot: `myflames schema compare SOURCE TARGET`, and
+`--sql` prints the sync script that changes TARGET to match SOURCE. It leaves
+out objects only in the target unless `--include-drops` includes every object;
+repeatable `--only KEY` chooses exactly the objects named (objects only in the
+target included when named); the two are mutually exclusive.
+`--fail-on any` exits 1 when the sides differ, `--fail-on drops` when any
+object is only in the target, chosen or not, or a chosen sync statement drops
+data. `myflames schema lint SIDE [--fail-on watch] [--json] [-o PATH] [-q]`
+takes the same sides: exit 0 for a report, 1 when `--fail-on watch` meets a
+Watch finding (Not judged never trips it), 2 for bad input or a failed live
+capture; a saved or file side does not connect just because connection
+settings exist, and invalid input leaves an existing output file untouched.
+Snapshot files for `import`, `compare` and `lint` are read in binary, at most
+`MAX_SNAPSHOT_BYTES` (32 MiB) plus one byte, and refused before decoding when
+larger (exit 2, no server contacted).
+
+Tests: `test/test_schema_ddl.py`, `test/test_schema_versions.py` (replay of
+the recorded reads in `test/fixtures/schema_versions`, store and API),
+`test/test_schema_sync.py`, `test/test_schema_versions_cli.py`,
+`test/test_schema_versions_review.py` (review regressions),
+`test/test_schema_lint.py` (every rule with Watch, clean and Not judged
+paths, engine and version gates, bounded live reads, CLI exits and the API),
+`test/test_schema_versions_contracts.py` (the JSON Schemas, `blocked_by`
+included) and
+`test/test_schema_versions_live.py` (round trips in MySQL 8.4 and MariaDB 11.4
+containers it starts, skipped without Docker); replays come from
+`test/_schema_replay.py`. Browser: `apps/workspace/test/schema-versions.mjs`
+(`npm run test:schema-versions`).
+
+### Compare servers: parameters and accounts
+
+Compare global parameters, or users and roles, between two sides without
+changing either server. Modules: `myflames/param_compare.py`,
+`myflames/account_compare.py`, `myflames/compare_api.py` (endpoints),
+`myflames/compare_cli.py` (`config compare`, `config snapshot`, `accounts
+compare`, `accounts export`) and the `parameter_snapshot_*` methods of
+`WorkspaceStore`. Contracts: `docs/schemas/parameter-snapshot-1.0.json`,
+`parameter-snapshot-list-1.0.json`, `parameter-compare-1.0.json`,
+`account-compare-1.0.json`.
+
+**Capture.** `param_compare.capture(conn, server=None, label='')` reads the
+existing `config_report(..., parameters=True)` projection and copies
+`parameters-1.0.notes` (not the configuration review's notes; validation also
+removes that boilerplate from older snapshots). `account_compare.capture(conn,
+server=None)` uses `accounts.list_accounts` and `accounts.read_account(...,
+include_catalog=False)` plus one SELECT of User, Host, ssl_type and the HEX of
+ssl_cipher, x509_issuer and x509_subject from `mysql.user`; no new SQL selects
+a credential field, and SHOW CREATE USER text is never exported. Each side
+opens a fresh `MySQLConnection` with the isolated client environment and the
+saved-password endpoint checks, at most 30 s per query and 120 s per side
+(`BoundedConnection`, role expansion included); the two sides are read one
+after the other. Accounts: at most 1,000, with an incomplete note beyond.
+Parameter files and snapshots: at most 10,000 items and 8 MiB
+(`MAX_FILE_BYTES`; CLI files are read in binary, refused before decoding when
+larger).
+
+**Comparison.** Both reports have `schema_version`, `compared_at`, `source`,
+`target`, `items`, `notes`, `counts`, `complete` and `identical`. Statuses are
+those of Schema versions (`different`, `only_in_source`, `only_in_target`,
+`identical`, `not_compared`), each row with `status_text` (Different, Only in
+source, Only in target, Identical, Not compared); `not_compared` always has a
+reason, and there is no Added/Removed or Before/After wording. `identical`
+needs complete inventories and no unreadable rows or side errors. A connection
+or profile failure becomes that side's `error` with `kind: unavailable`; the
+other side is still read and the rows are Not compared with a reason. Missing
+or malformed selectors are side errors too; local CRUD and export validation
+failures are HTTP 400.
+
+- Parameter rows: `name`, `status`, `status_text`, `identity`, `group`, the
+  `source` and `target` items (or null), `source_at_default` and
+  `target_at_default` (null when the default is unknown) and an optional
+  `reason`. Raw values are never replaced. Only typed values are normalized to
+  compare: booleans (ON, OFF, TRUE, FALSE, 1, 0), byte sizes with K to E
+  suffixes and optional B or iB, exact numbers, and enum and set words (white
+  space ignored, case-insensitive). Other strings and paths keep every space,
+  tab, line break and letter case, in values and in default checks. Truncated
+  or redacted values, and parameters missing on an incomplete side, are Not
+  compared. `IDENTITY_NAMES` (`server_id`, `server_uuid`, `hostname`, `port`
+  and the like) are still compared and flagged `identity`. `group` comes from
+  the existing parameter-to-check associations; none is invented. A MySQL and
+  MariaDB pair adds a note and still compares.
+- Snapshot validation is an allowlist: it drops connection credentials and
+  unknown fields, redacts SQL credentials with the dbops helpers, and replaces
+  with `[redacted]` the values and defaults of `_SECRET_VARIABLES` (an
+  explicit list of credential-bearing server and plugin settings;
+  `wsrep_sst_auth` stays redacted even when the server already masks it) and
+  any value with credential URL, `user:password` or SQL credential syntax;
+  allowed-value lists keep no recognized credential. Password policy
+  settings, authentication plugin tuning (such as the `caching_sha2_password`
+  settings) and key file paths stay comparable; numeric host:port values and
+  Windows paths are kept. Snapshots saved before this rule need a fresh
+  capture to recover values that were redacted.
+- Account rows pair exact (name, host) with a structured `name` and `host`, a
+  display `account`, the `source` and `target` projections, `differences`
+  (`grants`, `roles` and `default_roles`, each with `only_in_source` and
+  `only_in_target`, and `attributes: [{name, source, target}]` for the plugin,
+  locked, expired, resource limits, password policy and TLS requirements, the
+  TLS cipher, issuer and subject as hex) and `system` (true for
+  `accounts.SYSTEM_ACCOUNTS`, also on each side; optional in the schema so
+  older reports stay valid). Grant lines compare after normalizing privilege
+  and column order, spacing and quote style (identifier case, options and
+  scope kept), line by line; MariaDB's inherited role lines stay with their
+  roles (`grant_source`). Unreadable attributes or grants make the row Not
+  compared while known differences stay; an account that disappeared during
+  capture, or is missing from an incomplete list, is Not compared. Password
+  hashes, credential clauses, internal privilege models and other attribute
+  keys are never emitted.
+
+**Export** (`account_compare.export_sql(side, chosen=None)`; text only, never
+sent to a server and never in the execution audit): the chosen accounts and
+the roles they need, transitively (cycles bounded by the chosen set), with
+every CREATE before any grant: roles first, then users as `CREATE USER IF NOT
+EXISTS` without IDENTIFIED and with a comment to set the password, then direct
+privilege grants before restrictions, role grants with their admin option, and
+`SET DEFAULT ROLE` (TO on MySQL; FOR and a hostless role on MariaDB). MariaDB
+PUBLIC is not created; package grants use the Oracle-mode wrapper with exact
+session-mode restoration; names go through the existing quoting builders. The
+text says TLS requirements, resource limits and authentication are not
+copied. Without a choice, built-in system accounts are left out with one
+`-- Omitted system accounts: ...` line (an unreadable omitted account does not
+block the export, and a side with only system accounts exports comments);
+`chosen=[]` exports nothing; a chosen system account is exported, and a system
+role a chosen account needs must be chosen too. Protected accounts such as
+root are ordinary export candidates. A missing chosen account, an unreadable
+detail or dependency, unparsed grant syntax, an inconsistent default-role
+grant, or an incomplete inventory without a choice refuses before any output
+file is written.
+
+**Snapshots.** The store's `parameter_snapshots` table holds zlib-compressed
+JSON with a summary, an exact UUID `id`, `label` (at most 200 characters),
+`saved_at`, `source_key` (JSON `[host, port]`) and `number` (per host:port,
+the highest kept number plus one, under BEGIN IMMEDIATE). IDs are exact: no
+prefix or label lookup. `parameter_snapshot_list(source=None, limit=1000)`
+takes 1 to 5,000; `latest` resolves with its own query. Reads bound
+decompression to 8 MiB and validate again.
+
+**Endpoints** (POST JSON, workspace authentication, in the `ui.py` allowlist
+through `compare_api.PATHS`; outside `_CONNECTION_PATHS`, because each side
+fills its own saved password; none runs generated SQL or writes a server):
+
+| Endpoint | Request | Response |
+| --- | --- | --- |
+| `/api/config/snapshots/list` | `{source_key?, limit?}` | `parameter-snapshot-list-1.0` |
+| `/api/config/snapshots/save` | `{connection, label?}` | The saved summary: `id`, `number`, `label`, `server`, `captured_at`, `saved_at`, `source_key`, `complete`, `count` |
+| `/api/config/snapshots/get` | `{id}` (`latest` accepted) | The summary plus `snapshot` (`parameter-snapshot-1.0`) |
+| `/api/config/snapshots/delete` | `{id}` | `{deleted: true, id}`; a missing ID is refused |
+| `/api/config/compare` | `{source, target}`, each `{live: {connection}}`, `{profile: NAME_OR_ID}`, `{snapshot: ID_OR_LATEST}` or `{file: JSON_TEXT}` | `parameter-compare-1.0` |
+| `/api/accounts/compare` | `{source, target}`, each `live` or `profile` | `account-compare-1.0` |
+| `/api/accounts/export` | `{side, accounts?: ["user@host", ...]}` | `{filename: "account-grants.sql", text, side}` |
+
+A file side is JSON text, never a path for the backend to open. `latest` while
+comparing means the newest snapshot of the other side's host:port; both sides
+cannot be `latest`, and an unidentified other side asks for an explicit ID.
+Outside a comparison, `latest` is the newest snapshot of all.
+
+**Workspace** (`ServerCompare.tsx`, `compareApi.ts`, `server-compare.css`,
+hosted by `Config.tsx` and `Accounts.tsx`): a segmented control (`Parameters |
+Compare`, `Users and roles | Compare`) keeps the list as the default tab; both
+tabs stay mounted after their first visit, preserving drafts and account write
+outcomes, and `ViewOnScreenContext` scopes each, so list reads (`useOpenRead`)
+happen only while their list is on screen. Compare never reads a server on its
+own (not on a connection change or a return to the tab). Its choices (This
+connection, saved connections by name, numbered snapshots with label and time,
+and **Latest snapshot of** each saved server address, from up to 5,000
+summaries) come from local reads, with **Refresh choices**; a latest choice is
+resolved again at Compare time with a source-key-scoped list read and sent as
+the exact ID, and a saved side sends only `{profile: id}`. Being on screen
+gates starting a read (`useViewOnScreen`); a comparison, catalog or export
+request already started can finish while hidden. Comparisons and exports
+are cancelled by a change of the connection in use (`useAction(key)`) or
+Stop, and replies from a cancelled request are ignored. **Save snapshot…** (Parameters toolbar) captures the connection in use
+when its sheet opens, takes an optional label and reports "Saved snapshot #N ·
+server"; **Manage snapshots (N)** deletes after one confirmation, and local
+choices update without being overwritten by an older catalog reply. The Source
+→ Target bar, Swap, Differences with Filter differences, and full-width detail
+with Back follow Schema versions; **Show identical** and **Show
+server-specific settings** fold rows while the counts cover every row; an
+unreadable missing side says Not read; side errors appear once beside their
+side. A report keeps the connection and selectors it was made with: a
+connection switch greys only the result (`ViewLayout.otherConnection`) without
+reading, while the Source → Target bar and Compare stay live and the note
+offers Compare; changed side choices keep the old labels and ask for Compare
+again. Compare is disabled with a reason when both sides are the same; Target
+starts with the latest snapshot of the server in use (Parameters) or another
+saved connection. Both details are one Setting | Source | Target table, as
+Schema versions' What differs, with Different in words; differences sort
+Different first, empty raw values read Empty, and a note says what the
+filters hide. Before the first result the setup copies Schema versions
+(chevron and swap icon button, uppercase side labels, equal-height sides; at
+the 1100 and 820 px breakpoints Compare moves to its own row and both sides
+stay side by side, also at 720 px); after it the shared collapsed bar and the
+neutral comparison badges of `compareShared.tsx` take over (see **Comparison
+badges and setup bar** under Schema versions), and compared sides read like
+Schema versions' (snapshot number and label, saved connection name, read or
+captured time). Parameters
+is kept mounted after its first visit (`.server-keep` in `Server.tsx`, like
+Users and roles, Instruments and Tables), so a comparison, a save in flight
+and staged edits survive a switch to another Server view; each tab passes
+the floating list of views only to the tab on screen, and focus after
+choosing a view goes to that tab's title. A slow Save snapshot can be left
+with Close while it continues (`ConfirmSheet onLeave`), and hiding the view
+aborts neither a save nor a comparison the user started. Account detail
+groups grants Only in source, Only in target and In both (the source
+spelling of lines Python matched; the browser parses no grants); TLS, limits
+and password policy read as words. Rows whose `account-compare-1.0` entry has
+`system: true` carry a **System** pill, and All accounts only in source
+leaves them out and says what it chose; an explicit checkbox still exports
+one. **Export
+grants as SQL** (Export side, a checkbox per account by structured identity
+quoted through `sqlIdent.bt`, and All accounts only in source across the whole
+report) reads the chosen side again with the retained selectors, says
+passwords are not included and nothing is executed, keeps the SQL in memory
+with Copy and Download .sql, and is unavailable for a greyed report.
+
+**CLI**: `myflames config snapshot save [--label TEXT] [--json] [-o PATH]
+[-q]` with the shared connection flags, `snapshot list`, `snapshot show
+SNAPSHOT` (an ID or `latest`) and `snapshot delete SNAPSHOT [--yes]` (asks
+`[y/N]`, needs `--yes` without a terminal, deletes local data only); `myflames
+config compare SOURCE TARGET [--json] [--all] [--fail-on different] [-o PATH]
+[-q]` (sides `live`, `profile:NAME`, `snapshot:ID`, `latest`, `file:PATH` or a
+`.json` path; text folds Identical and identity rows unless `--all`, and JSON
+always has every row); `myflames accounts compare SOURCE TARGET [--json]
+[--fail-on different] [-o PATH] [-q]` (`live` or `profile:NAME`); `myflames
+accounts export SIDE [--account USER@HOST ...] [-o PATH] [-q]`. The shared
+connection flags apply to the `live` side only; each profile uses its own
+validated fields and saved password, and passwordless profiles work. Exit
+codes: 0 success; 1 when `--fail-on different` finds Different, Only in source
+or Only in target (identity rows included, even when the text folds them); 2
+for bad input, an unreadable side or Not compared rows. A partial comparison
+is still written with exit 2, while a failure before the payload leaves an
+existing output file untouched. Diagnostics go to stderr through `_emit_text`;
+`-q` keeps the payload.
+
+Tests: `test/test_param_compare.py`, `test/test_account_compare.py`,
+`test/test_compare_api_cli.py`; browser `apps/workspace/test/server-compare.mjs`
+(`npm run test:server-compare`; `--unit` validates the fixtures against the
+JSON Schemas and runs the typed API helpers, `--compile-only` builds the
+fixture page, `COMPARE_SHOTS` keeps screenshots), with
+`test/fixtures/server-compare.json` generated by the Python comparison and
+export functions.
+
+### Parameter version catalogs
+
+Which parameters differ between two MySQL or MariaDB releases, and every
+release where one parameter changed or was deprecated, answered offline from
+catalogs shipped with the package. Files: `myflames/param_versions.py` (the
+API), `myflames/param_versions_cli.py` (`myflames config versions`), the
+generated `myflames/sysvar_history_mysql.py` and
+`myflames/sysvar_history_mariadb.py` (written by
+`scripts/gen_sysvar_history.py`, committed), and the contracts
+`docs/schemas/parameter-version-catalog-1.0.json`,
+`parameter-version-compare-1.0.json` and `parameter-history-1.0.json`. The
+workspace view is `apps/workspace/src/ParameterVersions.tsx` +
+`paramVersionsApi.ts` + `parameter-versions.css`, a third tab of
+`ServerCompareHost` (kind `"parameters"` only). Nothing in the feature reads
+a server, opens a connection or writes an audit record.
+
+**Where the facts come from.** Every catalog fact about names, scope, type,
+default, range, allowed values and dynamic comes from running servers: the
+lab script `scripts/record-sysvar-catalog.py` (lab-only, not committed, like
+`scripts/record-alter-algorithm-fixtures.py`) starts each release in scope in
+a throwaway container with `--no-defaults` (no option file read) and reads
+the server itself: MySQL from `performance_schema.global_variables`,
+`variables_by_thread`, `variables_info` and `variables_metadata` where
+present, with `mysqld --no-defaults --verbose --help` for defaults, and
+MariaDB from `information_schema.SYSTEM_VARIABLES`. A guard refuses a record
+with any value from an option file. It writes one `sysvar-runtime-1.0` record
+per release under `local/param-versions-2026-10-28/runtime/<engine>/`; its
+own tests are `test/test_record_sysvar_catalog.py` (also lab-only). MySQL
+builds are Oracle's official Docker images; MariaDB builds are MariaDB's own
+Ubuntu packages as in the official Docker image (or the same packages when no
+image exists), and other builds can compile other defaults. Source tags and
+the official MySQL manual's added/deprecated/removed pages (saved pages, read
+offline) only add what a running server cannot report: deprecation evidence
+(`server`, `source`, `manual`, in that sorted order), replacement names,
+aliases (`alias_of`) and, only when a record could not say, the dynamic flag.
+Scope: MySQL GA, LTS and Innovation releases from 8.0.11 (including 8.1 to
+8.3, 9.x and 26.x); MariaDB stable releases from 10.6. A release with a tag
+but no image or package that could be run goes to SKIPPED with the reason,
+never filled from documentation. Percona Server uses the MySQL catalog;
+variables only Percona adds are not cataloged. `default_note`: null (a plain
+default), `"null"` (SQL NULL), `"host"` (computed at startup from the host or
+derived at startup; the default holds what a lab server computed),
+`"release"` (the value names the release or build, such as `version` and
+`build_id`; never compared), `"build"` (the default follows the build's
+installation layout, such as `socket` and `plugin_dir`; never compared) or
+`"unknown"`. The generator sets `"host"` from the lab's two-host comparison,
+MariaDB's `origin` AUTO and a reviewed source list (`HOST_REVIEW` in
+`scripts/gen_sysvar_history.py`, each entry with its source location, first
+and last release and reason; `RELEASE_NAMES` and `BUILD_NAMES` hold the other
+two lists). A default lowered only when the operating system grants too few
+open files (`max_connections`, `table_open_cache`, `table_definition_cache`,
+the Performance Schema autosized sizes) is reviewed and left unmarked, so a
+real change of it is still compared. `BUILD_ONLY` maps names whose presence
+follows build options (`innodb_numa_interleave`, NUMA builds only) to one
+sentence: compare counts them unchanged and says why in `notes`, and history
+drops their added and removed events and returns the sentence as
+`build_only`.
+
+**Catalog module format.** Each generated module holds `ENGINE`, `GENERATED`
+(`on`, `runtime`, `source`, `manual` per series), `VERSIONS` (one tuple per
+cataloged release: version, tag, maturity, tag date, previous index or None,
+method), `SKIPPED` ((version, reason)), `FIELDS` (`scope`, `type`, `dynamic`,
+`default`, `default_note`, `min`, `max`, `values`, `deprecated`,
+`replacement`, `alias_of`, `plugin`) and `HISTORY`: per parameter a
+run-length list `((first_index, facts_or_None), ...)` over VERSIONS in
+numeric order, where facts is a tuple in FIELDS order and None means absent
+from that version on; a run list starts at the first version where the name
+exists (no leading `(0, None)`), so before its first entry the name is
+absent. The previous index is the lineage: within a series the previous
+release; the first release of a series follows the latest-dated release (by
+tag date) of the nearest earlier series that has one. Generated modules are
+byte-for-byte deterministic for the same inputs and `--generated-on`, and are
+imported with plain `from . import sysvar_history_<engine>` inside functions
+so PyInstaller sees them.
+
+**Regenerating** (offline; the source checkouts are read with
+`git for-each-ref`, `git ls-tree` and `git cat-file --batch`, never checked
+out; the C++ declaration reader is `scripts/gen_mysql_sysvars.py`, imported).
+First the lab script (needs Docker; only where new runtime records are
+wanted), then the generator:
+
+```
+python3 scripts/record-sysvar-catalog.py --list
+python3 scripts/record-sysvar-catalog.py --jobs 3 \
+    --hub-tags hub-mysql.json hub-mariadb.json \
+    --log local/param-versions-2026-10-28/runtime/run-full.log
+python3 scripts/gen_sysvar_history.py \
+    --runtime local/param-versions-2026-10-28/runtime \
+    --manual local/param-versions-2026-10-28/manual \
+    --mysql-source ../mysql-server --mariadb-source ../mariadb-server \
+    --report local/param-versions-2026-10-28/VALIDATION.md \
+    [--engine mysql|mariadb] [--output-dir myflames] [--cache DIR] [--generated-on YYYY-MM-DD]
+```
+
+`--cache DIR` keeps parsed source facts per tag, keyed by the blob ids of the
+files read and a digest of the parsing code, so a rerun takes seconds and is
+byte-identical; an engine with no usable record is reported and its module is
+left as it was. The validation report compares every running server with its
+source tag: unexplained names in either direction, scope and read-only
+disagreements, deprecation warnings that are not evidence (a warning that
+deprecates changing a variable at runtime or one of its values is not
+deprecation of the variable), defaults that change at almost every release
+(such as `build_id`), and every skipped release.
+
+**Python API and contracts** (`myflames/param_versions.py`). `ENGINES =
+("mysql", "mariadb")`; `load(engine, module=None)` (tests pass a fixture
+module) returns a `Catalog`; a missing or malformed module raises
+`CatalogError` (a ValueError), and `catalog_index()` instead reports that
+engine with `available: false` and the reason in `notes`. `catalog_index()`
+emits `parameter-version-catalog-1.0`; `resolve_version(engine, text)`
+extracts the numeric release from texts like `8.4.6-6`,
+`11.4.5-MariaDB-log` or a tag and returns it when cataloged, else None;
+`compare(engine, from_version, to_version)` emits
+`parameter-version-compare-1.0`; `history(engine, name)` emits
+`parameter-history-1.0`. Change kinds in order: `added`, `removed`,
+`deprecated`, `undeprecated`, `default`, `dynamic`, `scope`, `type`,
+`values`, `range`. A value unknown on either side is never a change of that
+kind; an unknown default adds a Not-compared sentence and a report note.
+Comparisons never count an unknown default, a host-dependent default on both
+sides, or a release, build or state value as a default change, and MySQL
+before 9.0 reports no data types (null in the catalog, shown Unknown, never a
+type change). `Catalog.where` places each difference by walking both lineages
+back to where they meet: made on To's own line, `since[kind]` is the release
+from which To's value holds (the walk never passes the meeting point) and the
+sentence ends "in X"; made on From's line (most differences of a downgrade,
+or a patch of an older series that the newer series does not have),
+`since[kind]` is null and `_from_line_sentence` names the release from From's
+side ("8.0.38 changed the range (...); 8.4.0 keeps the earlier range.");
+changed on both lines, the line that passed through the other side's
+value is named, else null with no release named. When From lacks a parameter
+To has deprecated, the deprecation is To's own ("Deprecated in V", or "since
+the first cataloged release or earlier"); `readded` adds "It was removed in R
+and added again in V." for a gap on To's line. `from_line_twin` adds
+the release of From's own series that made the same change after the lines
+split ("Deprecated in 8.1.0 (8.0.34 on the 8.0 line)."); `when` names a
+release with the unread releases its lineage step skips ("in 10.6.6 or
+10.6.7 (10.6.6 could not be read)", from SKIPPED's tag dates). A parameter
+that arrives deprecated is added and deprecated; `_replacement_note` says
+when the suggested replacement is itself deprecated at To; `_successor` names
+a removed parameter's replacement when To has it. A boolean declared again as
+an enum whose values are only ON and OFF and a maximum that moved by less
+than a block are not changes (a boolean compares as the values OFF and ON). `DEFAULT_RULES` (reviewed, per period) gives the sentence that
+follows a computed default's change and history's `default_rule`; history's
+`aliases` lists names whose alias_of is this one. History events
+compare each version with its lineage predecessor; a name present in the
+first cataloged release is "present since the first cataloged release",
+never "added". Not found: `found: false` plus at most 8 close names of the
+same engine. Every sentence is written in Python; summaries are at most 120
+characters.
+
+**Endpoints** (ui.py `_PARAM_VERSION_PATHS`; no connection, no server read,
+no audit, no store): `POST /api/config/versions` `{}` returns the catalog
+index; `POST /api/config/versions/compare` `{engine, from, to}` the compare
+report; `POST /api/config/versions/history` `{engine, name}` the history
+report (found false is 200). A bad engine, version or name is a 400 through
+the shared `request_error_text`; versions are at most 32 characters, names at
+most 64.
+
+**CLI.** `myflames config versions list [--engine mysql|mariadb] [--json]
+[-o PATH] [-q]`; `config versions compare FROM TO [--engine E] [--kind
+KIND]... [--name TEXT] [--json | --markdown] [-o PATH] [-q]`; `config
+versions history NAME [--engine E] [--json | --markdown] [-o PATH] [-q]`.
+Exit 0 on success, 2 on bad input or a version or name the catalog does not
+have; results on stdout, diagnostics on stderr. Without `--engine`, compare
+uses the engine whose catalog has both versions and exits 2 naming `--engine`
+when none or both do; history prints every engine that has the name (with
+`--json`, an array of reports). Dispatched in `cli.py` before the live
+`config` command and registered in the root epilog.
+
+**Workspace.** Server > Parameters shows Parameters | Compare | Versions;
+Versions mounts on its first visit, stays mounted, and reads the catalog
+index once when first on screen (Try again on failure; no Refresh button, and
+Refresh all does not involve it). Compare versions reads whenever Engine,
+From or To changes; Parameter history whenever the engine or the parameter
+changes, only while Versions is on screen; a superseded request is cancelled
+and late replies dropped, and a loading result keeps the previous one greyed.
+The engine follows the Parameters report of the connection in use (Percona is
+`mysql`) until the user picks one; From defaults to the server's release when
+cataloged, else the nearest earlier cataloged release, and To to the newest
+cataloged release. One-line notes cover a Percona connection ("Percona Server
+uses the MySQL catalog. Variables Percona Server adds are not cataloged."), a
+server newer than the catalog, and a skipped release's From fallback. Kind
+filters with counts (All, Added, Removed, Deprecated, Default changed,
+Other), a name filter, and **Only parameters set on <connection>** when the
+Parameters report of the connection in use is loaded and its engine matches
+(names whose `modified` is true). Badges are comparison tones only: Added and
+Removed outline, every other kind accent, never health colors; at most three
+per row. The row inspector shows both releases' facts and **Show full
+history**, which switches to Parameter history for that name; the Parameters
+list inspector's **Version history** does the same and sets the engine.
+Integers of four or more digits get exact grouping (BigInt) with the server's
+text on hover; `default_note` "null" reads NULL, "host" reads "Computed at
+startup", "build" reads "Depends on the build", "release" shows the value muted
+(never compared), "unknown" or a null default reads Unknown, and an absent
+parameter reads Not present. Parameter history shows `build_only` as one line
+under the summary.
+
+**Tests.** `test/test_param_versions.py` (fixture catalogs in
+`test/fixtures/param_versions/`: unit, compare, history, CLI through
+`cli.main`, and the three endpoints over the in-memory HTTP handler with a
+guarded connection factory proving none is opened),
+`test/test_gen_sysvar_history.py` (scope, lineage, run-length encoding,
+deprecation evidence, source parsing, deterministic output, an end-to-end run
+against a tiny git repository), `test/test_record_sysvar_catalog.py`
+(lab-only, with the lab script), and the browser suite
+`apps/workspace/test/parameter-versions.mjs` (`npm run
+test:parameter-versions`; mocked replies validated against the schemas).
+
+### Learn guided lessons
+
+A lesson opts in with two edits; `myflames/teach/_html.py` and `_anim.py` do
+the rest. In the lesson's `.js` `build()` timeline, `tl.beat("<kind>")` marks
+where each guided step starts (one idea per step: one page read, one row, one
+probe), before that step's caption call. The first step always starts at the
+timeline's first step. Every kind appears as a string literal in the `.js`
+(build kinds from a table, as `btree.js` `BEAT_KINDS` does, never by
+concatenation), and `build()` only resets the stage besides returning the
+timeline, because the guide builds one to count steps while the lesson is
+idle. In the lesson's `.py`, `GUIDE` goes to `_html.render_page(...,
+guide=GUIDE)`:
+
+- `code`: `title` (at most 60 characters) and 3 to 14 `lines`, each `(id,
+  indent 0 to 4, text up to 72 characters[, MySQL function])`.
+- `beats`: every `tl.beat` kind mapped to the line ids it runs.
+- `quiz`: two to four questions (at most 240 characters), each with two to
+  four choices, exactly one true, each with a one-sentence reason (no `e.g.`,
+  no second period, at most 260 characters).
+
+`_html.normalize_guide` refuses a bad guide with a `ValueError` naming the
+problem (ids and kinds are lowercase letters, digits and hyphens; line ids are
+unique; every beat names existing lines), and `test/test_teach.py`
+(`TestLessonGuides`) also checks that every line is reached by some beat and
+every kind is a literal in the `.js`. A function name is allowed only from
+`_html.VERIFIED_SERVER_FUNCTIONS`: add one only after finding it in
+`mysql-server` at the `mysql-8.4.9` tag and in the 9.x checkout, with its file.
+MariaDB gets no function notes, and the panel's footnote says the names are
+MySQL's. Every claim must hold for MySQL and MariaDB as the lesson presents
+them, naming the engine where they differ; route new claims to
+`mysql-correctness-reviewer`. B-tree lessons say root page, internal page and
+leaf page, never level n. The panel is labelled Simplified.
+
+On the page, **Back** and **Next step** (the main action) play one step and
+hold, and Play runs the rest; jumping to a step or scrubbing never flashes the
+pages visited, and the Phases list marks a phase only once its first step has
+begun. The code panel sits beside the drawing (under it in a narrow window,
+and in full screen) and highlights the lines of the current step. **Check
+yourself** answers at once with every choice's reason; nothing is saved or
+sent. **Explore** gives a slider over every step and, when the lesson's
+`section.controls` has inputs, an **Inputs** button under the step bar;
+changing an input shows the same step again (**Replay step** plays it), and
+leaving Explore continues the guided steps at that step. A page without
+`#lesson-guide` stops the shared guide script at once and changes no DOM. The
+suggested ready caption is `Ready: press Next step, or Play to run it all`, and
+the lesson's explainer gets one bullet saying Next step and the simplified
+code exist. Every lesson has a guide (23: the index, join, scan, cache and
+planner families), and `test_lessons_without_a_guide_still_render` renders
+one with `guide=None` to keep that path working. A lesson's family chip comes
+from `_html._LESSON_FAMILY_LABELS` (Skip scan and Rowid filter are Index
+access; Batched key access and both semijoin lessons are Join operator).
+Function notes in use cover the InnoDB B-tree, row and buffer pool calls,
+the handler scan calls, the composite, hash join, BKA/DS-MRR, weedout,
+temp-table, materialization and filesort iterators and functions, and
+`Optimize_table_order::greedy_search`,
+`::best_extension_by_limited_search` and `::best_access_path`; 9.x moved
+iterator bodies from `Read()` to `DoRead()` while keeping `Read()` on
+`RowIterator`, so names follow the 8.4.9 spelling. A long `Class::method`
+name wraps after `::`, then after an underscore, never inside a word
+(`.code-fn-part`). The Filesort lesson has a **Server** input: MariaDB's
+radix sort applies when the sort key is at most 20 bytes and the buffer holds
+1,000 to 99,999 rows (`radixsort_is_applicable`), decided by the key length
+(3 bytes for order_date), not the row size, for the in-memory sort and for
+each spilled run; choosing a server moves `sort_buffer_size` to that
+server's default (256 KiB MySQL, 2 MiB MariaDB) while it still holds the
+other's. Browser: `apps/workspace/test/learn-guide.mjs` (`npm run
+test:learn-guide`) walks every lesson with the expected lines of its first
+two steps (Nested loop join last, since the 720 px and full screen checks
+continue from it), plus per-lesson checks such as the LRU hit counts at
+`innodb_old_blocks_pct=90`, the warmup dump rule, Join order with
+`optimizer_prune_level=0` and the hypergraph steps, and Filesort's MariaDB
+radix path; add a new lesson to that loop.
+
 ### JSON and expected failures
 
 An unavailable error log or cluster report is an exception: the read completed with an `available: false` result, so `error-log --json` and `cluster --json` write that envelope to stdout or `-o` even with exit 2. Connection and setup failures still emit nothing. See [Error log](#error-log) and [Cluster](#cluster-galera-percona-xtradb-cluster-innodb-cluster).
@@ -1988,6 +4017,25 @@ Join cards have their own height; edges must attach to the actual card bounds.
 Wheel input uses normalized deltas with bounded animation (`workbench.js`, `charts/core/zoom.ts`). See `docs/WORKBENCH_VIEW.md`.
 Update the zoom percentage and directional button limits in the shared paint
 path so button, wheel, fit, and reset actions stay synchronized.
+Fit keeps text readable: `MIN_TEXT_PX = 11` in `charts/core/zoom.ts`;
+`createZoom` takes `smallestTextPx`, which `workbench.ts` passes as
+`SMALLEST_TEXT_PX = 11` (the smallest font size in `WORKBENCH_CSS`,
+`.wb-caption` and `.wb-edge-label`), and `workbench.js` carries the same two
+constants. The fit ratio is `min(wanted, screenScale * smallestTextPx /
+MIN_TEXT_PX)`, where `wanted` is the plain fit (the workspace: fit width, never
+past 100%; reports and the standalone SVG: the whole plan) and `screenScale`
+is 1 in the workspace (its ResizeObserver keeps one CSS pixel per unit) and
+`root.getScreenCTM()` in reports, so a report column that shrinks the SVG
+zooms in to keep 11 px. When the plan is larger than that view, the
+overflowing axis starts at -28 (the first inputs, top left) instead of a
+centered slice; the workspace keeps y = -28 always. The fit runs on open, on
+Fit, on double click and on resize while fitted, so Fit always returns to the
+opening view; zoom out and the wheel can still go below 11 px on request, and
+the percentage still resets to 100%. The old 75% workspace floor is gone (the
+workspace opens at 100%). Chart data is unchanged. Tests:
+`test_workbench.test_fit_keeps_the_smallest_text_at_eleven_pixels`,
+`zoom.mjs`, `browser.mjs`, `charts.mjs`, `investigation.mjs` (Compare panes
+open at zoom 1).
 
 ## Investigation engine
 
@@ -2012,6 +4060,24 @@ path so button, wheel, fit, and reset actions stay synchronized.
 - `plan_matching.py`: shared structural comparison. Uncertain matches and absent
   timing must not count as measured regressions. Honor `timing_available`.
 - `workspace_store.py`: explicit opt-in SQLite persistence and versioned bundles.
+- Investigation evidence (`workspace_store.validate_bundle`,
+  `docs/schemas/investigation-1.0.json`): an optional `evidence` list of at
+  most 30 items `{id, kind, captured_at, title, text, data}` (plus optional
+  `data_trimmed`, `text_trimmed` and `note`), `kind` one of `sessions`,
+  `innodb`, `locks` or `watch` (any other is refused). A bundle needs at least
+  one plan or one evidence item (each list holds at most 30). Before storage
+  every string in `data`, the text, the title and the note pass
+  `dbops.redact`/`redact_value` (`IDENTIFIED BY`/`AS` literals,
+  `PASSWORD('...')`, `SET PASSWORD`, `*PASSWORD =` options). Empty `text` is
+  written from the redacted `data` by `watch.format_evidence_text` (the
+  module's own `format_text`, else the report JSON). An item whose `data` exceeds 2 MiB
+  (`EVIDENCE_ITEM_MAX_BYTES`), or a bundle over 10 MiB (`BUNDLE_MAX_BYTES`),
+  loses `data` before `text`, with `data_trimmed: true` and a note.
+  `_investigation_summary` adds `{id, kind, captured_at, title}` per item only
+  when there is evidence, so plans-only investigations are unchanged.
+  Investigations (`Library.tsx`) lists an Evidence section with each item's
+  time and title, loads the full bundle on demand and shows the text in a
+  monospace block with Copy and Download.
 - `live.py`: preserve client SQL comments for statement tags; disable optimizer
   trace immediately after the target statement, before any marker SELECT.
   Status/P_S scope is the capture statement, not bare SELECT result delivery.
@@ -2054,6 +4120,207 @@ transaction, and loss of a commit reply is unknown, never retryable implicitly.
 Audit creation must succeed before writes. Closing or expiring a snapshot ends
 its owned session. See [the query guide](QUERY_WORKSPACE.md#sql-completion-and-table-data)
 for supported table types, privilege requirements and limits.
+
+## Import CSV
+
+Import CSV loads a .csv, .tsv or .txt file into an existing table or a new
+one. Entry points: the Query editor's Schemas panel (a table's menu:
+**Import CSV…**; a user database's menu: **Import CSV into a new table…**)
+and Server > Tables (a table row's menu and its inspector). There is no CLI.
+
+**Files.** `myflames/file_picker.py` (`choose_file()`: the native dialog,
+macOS osascript, Windows PowerShell OpenFileDialog, Linux zenity, 120 s, one
+dialog at a time shared with `folder_picker`, no caller input;
+`check_file(path)`: an absolute, resolved, readable regular file of at most
+4 GiB, never a folder, device, socket or FIFO; spaces around a typed path
+are trimmed only when the path as typed does not exist).
+`myflames/csv_import.py` is the pure core (reading, detection, type
+inference, conversion, quoting, statement builders; no server).
+`myflames/csv_import_api.py` holds the endpoints, the file and plan
+registries and apply. `myflames/ui.py` adds `_CSV_IMPORT_PATHS` to the POST
+allowlist, puts apply in `_WRITE_PATHS` (none in `_CONNECTION_PATHS`: the
+handler fills the saved password itself, after the policy) and calls
+`csv_imports.close()` from `server_close`. Workspace:
+`apps/workspace/src/ImportCsv.tsx` (the wizard, a lazy chunk),
+`importCsvApi.ts` (wire types and calls), `import-csv.css`, with the entry
+points in `SchemaBrowser.tsx`, `QueryLab.tsx` and `Tables.tsx`. Contracts:
+`docs/schemas/csv-inspect-1.0.json`, `csv-import-plan-1.0.json`,
+`csv-import-result-1.0.json`, `csv-import-progress-1.0.json`.
+
+**Endpoints.** All POST JSON. `/api/import/csv/choose {}` and
+`/api/import/csv/open-path {path}` answer `{file_id, name, size, modified}`
+or `{cancelled: true}`; file ids map to absolute paths in memory only (32
+files, one hour), and no later request names a path.
+`/api/import/csv/inspect {file_id, format?}` answers `csv-inspect-1.0`: the
+detected and effective format, columns with a suggested name, inferred SQL
+type and samples, a 50-row preview, an exact row count for files up to
+64 MiB (else an estimate with `rows_counted: false`) and at most 100
+problems with physical line numbers. `/api/import/csv/plan {connection,
+file_id, format, target, method, transaction, on_error, progress_id?}`
+answers `csv-import-plan-1.0`: the review token (null when not ready),
+target facts, the mapping, the full CREATE TABLE and a data summary, row
+counts, problems, blockers, privileges, policy and warnings.
+`/api/import/csv/apply {connection, token, progress_id}` answers
+`csv-import-result-1.0`: the outcome, rows sent, committed and skipped,
+`failed_at`, `server_error`, warnings, `table_rows_after` (a COUNT(*) only
+when the estimate plus the committed rows is at most 1,000,000), `drop_hint`
+and the audit id. `/api/import/csv/progress {progress_id}` answers
+`csv-import-progress-1.0` (an unknown id gets a synthetic `phase: "unknown"`);
+`/api/import/csv/stop {progress_id}` answers `{stop_requested, message}`.
+Plan and apply carry the connection so the write gate and the saved password
+apply.
+
+**Detection and reading.** Encodings: `utf-8`, `utf-8-sig`, `utf-16-le`,
+`utf-16-be`, `cp1252` (Latin-1 / Windows-1252, decoded as MySQL `latin1`);
+a BOM decides, NUL bytes reveal UTF-16 without one, then UTF-8 validity,
+else cp1252; a leading U+FEFF is dropped in every encoding. The separator is
+the most consistent field count among comma, semicolon, tab and pipe, or one
+other chosen character. The first row is the header when its values are
+distinct, filled, non-numeric and not date-like, with a confirmation from
+the later rows; a request that names a separator, quote or encoding without
+a header choice decides the header again. Reading uses the csv module with
+strict quoting (text after a closing quote is a problem), any line ending,
+quoted separators, quotes and newlines, empty lines skipped, a field limit
+of 16 MiB and at most 1,024 columns; a ragged row is a problem with its
+line, as is a wrong encoding. NULL markers are a subset of `\N` and `NULL`
+(the bare word joins when the sample has it); **Empty fields are** decides
+whether an empty field is NULL or an empty string. `skip_lines` is 0 to
+1,000. Conversion (`csv_import.convert`, a sentence per problem, never
+rounding) covers integer ranges and UNSIGNED, DECIMAL precision and scale
+(extra non-zero decimals refused), FLOAT/DOUBLE (no inf or nan), DATE,
+DATETIME, TIMESTAMP (1970 to 2038, 2106 on MariaDB 11.5+; the server decides
+the exact edge), TIME and YEAR in ISO forms, CHAR/VARCHAR length in
+characters, TEXT/BLOB sizes in bytes, utf8mb3, latin1 and ascii limits, ENUM
+and SET members, BIT, JSON (valid, no NaN or Infinity; MariaDB's JSON is
+LONGTEXT with a `json_valid` CHECK, detected from
+information_schema.CHECK_CONSTRAINTS) and booleans as 1/0 for TINYINT(1) and
+BIT(1). Spatial, VECTOR, INET, UUID and generated columns cannot be filled;
+NULL for a NOT NULL column is a problem (AUTO_INCREMENT excepted). New-table
+types come from a fixed grammar (`parse_type`, rendered by `render_type`;
+typed type text is never used as SQL), with inference over TINYINT(1), INT,
+BIGINT, BIGINT UNSIGNED, DECIMAL(p,s), DOUBLE, DATE, DATETIME(fsp),
+TIME(fsp), JSON, VARCHAR or TEXT (the widest VARCHARs become TEXT until a
+row fits 60,000 bytes) and an optional `id BIGINT UNSIGNED AUTO_INCREMENT`
+primary key.
+
+**Statement builders.** Every statement carries the
+`/*myflames:import_csv*/` tag; identifiers are backquoted. Text literals use
+plain quotes when the value has no backslash or control character, escapes
+when the session's NO_BACKSLASH_ESCAPES state is known, and
+`CONVERT(X'..' USING utf8mb4)` otherwise; binary values are `X'..'`. Apply
+refuses when the session's NO_BACKSLASH_ESCAPES state differs from the
+plan's. INSERT batches hold at most 1,000 rows and 1 MiB per statement and
+never cross a commit boundary; a single larger row goes alone up to
+`min(max_allowed_packet, 16 MiB) - 4 KiB`, and a larger row is a problem.
+LOAD DATA reads a checked copy (UTF-8, tab separated, `\N` for NULL) written
+to a private temporary folder (its chunk files are 0600) at plan time, in
+chunks of 50,000 rows or 256 MiB (or N rows with Commit every N rows), each
+unlinked after use and the folder removed at the end: `LOAD DATA LOCAL INFILE '<copy>' INTO TABLE
+... CHARACTER SET utf8mb4 FIELDS TERMINATED BY X'09' ENCLOSED BY '' ESCAPED
+BY X'5C' LINES TERMINATED BY X'0A'`, with BIT columns through user variables
+and `SET col = CAST(@cN AS UNSIGNED)`. LOCAL is IGNORE on both engines (a
+duplicate key is skipped with a warning), so after every chunk the
+affected-rows count and SHOW WARNINGS (Notes aside) are compared with the
+rows written and any difference rolls that statement's transaction back and
+fails the import.
+
+**Execution and Stop.** Apply sends `SET SESSION sql_mode = CONCAT_WS(',',
+NULLIF(@@SESSION.sql_mode, ''), 'STRICT_ALL_TABLES')`, `SET SESSION
+lock_wait_timeout = 5` and `SET SESSION innodb_lock_wait_timeout = 5`, then
+a new table's CREATE TABLE (which commits on its own), then START
+TRANSACTION, the data statements and COMMIT, once (Keep nothing) or after
+every N rows. Keep nothing is refused with the reason on a non-transactional
+engine (only InnoDB, RocksDB, TokuDB and NDB count as transactional).
+Stop ends an INSERT import between statements and sends KILL QUERY from a
+second connection to a LOAD DATA in flight; Stop is checked again before
+every COMMIT, so a Stop during the last statement still rolls back. Before
+every COMMIT the file's size and mtime are re-checked, and before the last
+statement's commit its SHA-256. With Skip and report, a row error the server
+returns on a transactional table (the `ROW_ERRORS` codes) is resent row by
+row in the same transaction and the refused rows are skipped and listed.
+Outcomes are done, failed (all or nothing keeps nothing; Commit every N rows
+keeps the committed rows and names `last_committed_line` and `next_line`),
+stopped and unknown; unknown only when a COMMIT, a CREATE TABLE or a
+statement on a non-transactional table got no reply, and it is never
+retried (a lost session on InnoDB with no COMMIT in flight is failed: the
+server rolls back an uncommitted transaction). A new table the rows could
+not fill stays, empty, and the result carries its `drop_hint` as text only,
+never sent.
+
+**Safety.** Plan reads only (variables, information_schema, SHOW GRANTS) in
+a private editor session and checks every row; the workspace can stop a slow
+check with `/stop`. Blockers (no token) include bad rows with Bad rows:
+Stop, a denied privilege, Read-only, Keep nothing on a non-transactional
+engine, LOAD DATA while `local_infile` is OFF or unreadable, an unmapped NOT
+NULL column without a default, an unsupported mapped column, a new table
+whose name exists or whose database does not, a new table without the id key
+while `sql_require_primary_key` or `innodb_force_primary_key` is ON, and a
+decode error; unknown privileges never block. Policy is
+`dbops.decide("risky", ...)`: Production and Development both review;
+Read-only refuses before any connection opens. The review token
+(`ReviewTokens(ttl=600, capacity=8)`) binds the connection identity, the
+file's size, mtime and SHA-256, the format, the target and its metadata
+fingerprint (table type, engine, every column, primary key, triggers,
+foreign keys, CHECK constraints), the mapping, the new columns, the method,
+the transaction mode, the NO_BACKSLASH_ESCAPES state and the statements; one
+apply per plan, at most two imports at once. Apply re-checks, in order, the
+policy, the token, the file (size and mtime, then a full SHA-256), the saved
+password, the private session (the local-file capability only for LOAD DATA: a
+MySQL client gets `--local-infile=0 --load-data-local-dir=<private folder>`,
+so it sends no file outside that folder; the MariaDB client has only
+`--local-infile`, reported in `method.client_limits_files` with a plan
+warning), the
+target's metadata, the NO_BACKSLASH_ESCAPES state, `@@GLOBAL.local_infile`
+for LOAD DATA, the privileges and the saved policy again, consumes the
+token and writes the pending audit record before anything is sent; every
+refusal is a 400 that says nothing was sent, audited `refused` with its
+outcome (`read_only`, `changed`, `busy`, `file_changed`, `not_connected`,
+`unverified`, `denied`, `policy_changed`, `audit_failed`, `stopped`).
+myflames never sends SET GLOBAL and never changes `local_infile`. One audit
+record per import (operation `import_csv`) holds the session settings, the
+full CREATE TABLE, the data summary (rows and statement counts, the file
+name) and the COMMIT line, never row data.
+
+**Tests.** `test/test_csv_import.py` (49 tests: reading, detection, the type
+grammar, every conversion edge, literals in the three NO_BACKSLASH_ESCAPES
+states, batches, the LOAD DATA text, inference, CREATE TABLE),
+`test/test_csv_import_api.py` (44 tests, every answer validated against its
+JSON Schema: open-path refusals, the chooser, inspect, plan blockers, the
+Read-only refusal before any connection, a changed file or metadata,
+statement order, the audit without row data, Skip and report row by row,
+Stop, a COMMIT without a reply unknown and never retried, LOAD DATA from a
+checked copy, HTTP through `WorkspaceHandler.do_POST`) and
+`test/test_file_picker.py` (8 tests). Browser:
+`apps/workspace/test/import-csv.mjs` (`npm run test:import-csv`), one
+sequential script against a real Python server with every import endpoint
+mocked to the contracts, covering both entry points, every step, the
+outcomes, the gates, and no page overflow at 1440x900 and 720x600 in light
+and dark. Run the Python tests with
+`HOME=$(mktemp -d) USERPROFILE=$HOME MYFLAMES_SECRET_BACKEND=vault python3 -m unittest discover -s test -p 'test_csv_import*.py'`
+and `-p 'test_file_picker.py'`.
+
+**Lab.** `scripts/lab-csv-import.py` runs the import against running
+servers, the way the parameter catalogs are validated:
+`python3 scripts/lab-csv-import.py [--servers mysql-8.4 mysql-9.7 mariadb-10.11 mariadb-11.4] [--out PATH] [--json PATH] [--keep-images]`.
+It needs Docker, sets its own throwaway HOME with the vault backend, starts
+`--rm` containers from `public.ecr.aws/docker/library` (MySQL 8.4.11 and
+9.7.2, MariaDB 10.11.19 and 11.4.13; two per server, `local_infile` ON and
+OFF) listening on 127.0.0.1 only, and runs 35 scenarios per server through
+`ui.api_response` (open-path, inspect, plan, apply, progress and stop) with
+an unsaved Production connection, validating every answer against the
+schemas and reading rows back with SELECT and HEX byte for byte. Containers,
+volumes and the images it pulled are removed unless `--keep-images`. The
+2026-10-29 runs passed 116 of 116, then 140 of 140 after the review round
+(exact failing row, a killed connection reported unknown, the client's
+folder restriction refusing an outside file with error 2068, names that
+differ only by case, MyISAM LOAD DATA, triggers without the TRIGGER
+privilege, explicit_defaults_for_timestamp, the generated invisible key,
+EMPTY_STRING_IS_NULL, the `stopped` audit status). The lab-only
+`apps/workspace/test/import-csv-live.mjs` drives the real wizard end to end
+against MySQL 8.4 and MariaDB 11.4 containers. The write-up is in
+`local/csv-import-2026-10-29/LAB.md`. Percona Server, MySQL 8.0, MariaDB
+11.5 and later (TIMESTAMP up to 2106), SSH tunnels and the Windows file
+chooser were not in the lab matrix and are covered by unit tests only.
 
 ## Workspace navigation and configuration controls
 
@@ -2224,7 +4491,7 @@ The Tables report is `schema-2.0`: `fragmentation[].free_pct` is a number or nul
 
 `PrivilegesProvider` refreshes after the connect revision or the session-password
 commit revision changes. Typing never increments either revision. The picker
-commits on blur or Enter, once per changed value. A connect revision refreshes
+commits on Set, blur or Enter, once per changed value. A connect revision refreshes
 status but cannot adopt draft credentials; only a password commit revision or
 a new connection identity updates the committed credential. Incidental privilege
 reads ignore an uncommitted password. `refreshProfiles` adopts only the newest request

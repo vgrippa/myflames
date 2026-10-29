@@ -51,6 +51,46 @@ class TestQueryValidation(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises((ValueError, TypeError)):
                 connection_options(value)
 
+    def test_pasted_spaces_around_host_and_paths_are_dropped(self):
+        # A pasted address often brings a space along, and the client then
+        # fails with "Unknown MySQL server host '10.0.0.5 '" (error 2005).
+        for host, clean in (('10.0.0.5 ', '10.0.0.5'), (' db.example.com', 'db.example.com'),
+                            ('\tlocalhost ', 'localhost'), ('﻿db1.internal.​', 'db1.internal.'),
+                            ('::1 ', '::1'), ('DB.Example.COM', 'DB.Example.COM')):
+            with self.subTest(host=host):
+                self.assertEqual(connection_options({'host': host})['host'], clean)
+        self.assertEqual(connection_options({'host': '  '})['host'], '127.0.0.1')
+        options = connection_options({'host': 'db', 'ssl_ca': ' /tmp/ca file.pem ', 'database': ' shop  ',
+                                      'user': ' app ', 'password': ' secret '})
+        self.assertEqual(options['ssl_ca'], '/tmp/ca file.pem')
+        # A database name cannot end with a space, but may start with one.
+        self.assertEqual(options['database'], ' shop')
+        # User names and passwords are sent exactly as typed.
+        self.assertEqual((options['user'], options['password']), (' app ', ' secret '))
+        self.assertNotIn('database', connection_options({'database': '   '}))
+        for host in ('10.0.0 .5', 'db example.com', 'db x', 'db​x'):
+            with self.subTest(host=host), self.assertRaisesRegex(ValueError, 'space'):
+                connection_options({'host': host})
+        # An IPv6 address loses the brackets a URL puts around it; a port or a
+        # URL typed into Host is refused with what to do instead.
+        self.assertEqual(connection_options({'host': '[::1]'})['host'], '::1')
+        self.assertEqual(connection_options({'host': ' [fe80::1%en0] '})['host'], 'fe80::1%en0')
+        self.assertEqual(connection_options({'host': 'fe80::1'})['host'], 'fe80::1')
+        for host in ('10.0.0.5:3307', '[::1]:3306', '[fe80::1%en0]:3307'):
+            with self.subTest(host=host), self.assertRaisesRegex(ValueError, 'Port field'):
+                connection_options({'host': host})
+        for host in ('mysql://db.example.com/shop', 'db.example.com/shop'):
+            with self.subTest(host=host), self.assertRaisesRegex(ValueError, 'not a URL'):
+                connection_options({'host': host})
+
+    def test_connection_identity_ignores_pasted_spaces(self):
+        # binding.ts connectionKey trims the same way, so a key built from the
+        # text on screen matches the one the server builds from the request.
+        plain = dbops.connection_identity({'host': '10.0.0.5', 'port': 3306, 'user': 'app', 'ssl_ca': '/ca.pem'})
+        pasted = dbops.connection_identity({'host': ' 10.0.0.5 ', 'port': 3306, 'user': 'app', 'ssl_ca': '/ca.pem '})
+        self.assertEqual(plain, pasted)
+        self.assertNotEqual(plain, dbops.connection_identity({'host': '10.0.0.5', 'port': 3306, 'user': 'app '}))
+
     def test_named_parameters_are_typed_and_never_sql_fragments(self):
         sql = bind_query('SELECT :text, :n, :f, :yes, :no, :nil',
                          {'text': "a'; DROP TABLE users; -- ☃", 'n': 42, 'f': 1.5,
