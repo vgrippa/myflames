@@ -18,6 +18,8 @@ build/
 # OS and editors
 .DS_Store
 *.log
+# Recorded slow query logs the slow log tests read.
+!test/fixtures/slowlog/*.log
 *.swp
 *~
 

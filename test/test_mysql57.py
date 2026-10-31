@@ -443,7 +443,9 @@ class Syntax(unittest.TestCase):
         root = Path(__file__).parent.parent / 'myflames'
         for name in ('privileges.py', 'accounts.py', 'live.py', 'connector.py', 'editor_session.py',
                      'alter_algorithm.py', 'csv_import_api.py'):
-            ast.parse((root / name).read_text(encoding='utf-8'), feature_version=(3, 7))
+            # feature_version needs Python 3.8; on 3.7 the parse itself checks it.
+            ast.parse((root / name).read_text(encoding='utf-8'),
+                      **({'feature_version': (3, 7)} if sys.version_info >= (3, 8) else {}))
 
 
 if __name__ == '__main__':

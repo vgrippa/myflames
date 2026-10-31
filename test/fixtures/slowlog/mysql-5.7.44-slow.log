@@ -1,0 +1,167 @@
+mysqld, Version: 5.7.44-log (MySQL Community Server (GPL)). started with:
+Tcp port: 3306  Unix socket: /var/run/mysqld/mysqld.sock
+Time                 Id Command    Argument
+# Time: 2026-10-31T12:54:03.483135Z
+# User@Host: root[root] @  [127.0.0.1]  Id:    30
+# Query_time: 0.000682  Lock_time: 0.000000 Rows_sent: 0  Rows_examined: 0
+SET timestamp=1793451243;
+SET GLOBAL slow_query_log = ON;
+# Time: 2026-10-31T12:54:03.483636Z
+# User@Host: root[root] @  [127.0.0.1]  Id:    30
+# Query_time: 0.000012  Lock_time: 0.000000 Rows_sent: 0  Rows_examined: 0
+SET timestamp=1793451243;
+# administrator command: Quit;
+# Time: 2026-10-31T12:54:03.625949Z
+# User@Host: app[app] @  [127.0.0.1]  Id:    31
+# Query_time: 0.000089  Lock_time: 0.000000 Rows_sent: 1  Rows_examined: 0
+use shop;
+SET timestamp=1793451243;
+select @@version_comment limit 1;
+# Time: 2026-10-31T12:54:03.628176Z
+# User@Host: app[app] @  [127.0.0.1]  Id:    31
+# Query_time: 0.000754  Lock_time: 0.000306 Rows_sent: 1  Rows_examined: 1
+SET timestamp=1793451243;
+SELECT id, status, total FROM orders WHERE id = 1;
+# Time: 2026-10-31T12:54:03.629002Z
+# User@Host: app[app] @  [127.0.0.1]  Id:    31
+# Query_time: 0.000088  Lock_time: 0.000035 Rows_sent: 1  Rows_examined: 1
+SET timestamp=1793451243;
+SELECT id, status, total FROM orders WHERE id = 22;
+# Time: 2026-10-31T12:54:03.629149Z
+# User@Host: app[app] @  [127.0.0.1]  Id:    31
+# Query_time: 0.000086  Lock_time: 0.000024 Rows_sent: 1  Rows_examined: 1
+SET timestamp=1793451243;
+SELECT id, status, total FROM orders WHERE id = 333;
+# Time: 2026-10-31T12:54:03.629889Z
+# User@Host: app[app] @  [127.0.0.1]  Id:    31
+# Query_time: 0.000705  Lock_time: 0.000103 Rows_sent: 6  Rows_examined: 12
+SET timestamp=1793451243;
+SELECT * FROM orders WHERE customer_id IN (1) ORDER BY created DESC LIMIT 10;
+# Time: 2026-10-31T12:54:03.630544Z
+# User@Host: app[app] @  [127.0.0.1]  Id:    31
+# Query_time: 0.000471  Lock_time: 0.000124 Rows_sent: 10  Rows_examined: 23
+SET timestamp=1793451243;
+SELECT * FROM orders WHERE customer_id IN (1, 2, 3) ORDER BY created DESC LIMIT 10;
+# Time: 2026-10-31T12:54:03.630910Z
+# User@Host: app[app] @  [127.0.0.1]  Id:    31
+# Query_time: 0.000300  Lock_time: 0.000057 Rows_sent: 10  Rows_examined: 49
+SET timestamp=1793451243;
+SELECT * FROM orders WHERE customer_id IN (4, 5, 6, 7, 8, 9, 10) ORDER BY created DESC LIMIT 10;
+# Time: 2026-10-31T12:54:03.633091Z
+# User@Host: app[app] @  [127.0.0.1]  Id:    31
+# Query_time: 0.002116  Lock_time: 0.000259 Rows_sent: 0  Rows_examined: 0
+SET timestamp=1793451243;
+INSERT INTO items (order_id, sku, qty) VALUES (901, 'FX-1', 1), (902, 'FX-2', 2), (903, 'FX-3', 3);
+# Time: 2026-10-31T12:54:03.634031Z
+# User@Host: app[app] @  [127.0.0.1]  Id:    31
+# Query_time: 0.000826  Lock_time: 0.000045 Rows_sent: 0  Rows_examined: 0
+SET timestamp=1793451243;
+INSERT INTO items (order_id, sku, qty) VALUES (904, 'FX-4', 4);
+# Time: 2026-10-31T12:54:03.636099Z
+# User@Host: app[app] @  [127.0.0.1]  Id:    31
+# Query_time: 0.001448  Lock_time: 0.000116 Rows_sent: 0  Rows_examined: 1
+SET timestamp=1793451243;
+UPDATE orders SET status = 'paid' WHERE id = 5;
+# Time: 2026-10-31T12:54:03.636521Z
+# User@Host: app[app] @  [127.0.0.1]  Id:    31
+# Query_time: 0.000059  Lock_time: 0.000000 Rows_sent: 0  Rows_examined: 0
+SET timestamp=1793451243;
+BEGIN;
+# Time: 2026-10-31T12:54:03.637277Z
+# User@Host: app[app] @  [127.0.0.1]  Id:    31
+# Query_time: 0.000707  Lock_time: 0.000070 Rows_sent: 0  Rows_examined: 1
+SET timestamp=1793451243;
+UPDATE orders SET total = total + 1 WHERE id = 6;
+# Time: 2026-10-31T12:54:03.639348Z
+# User@Host: app[app] @  [127.0.0.1]  Id:    31
+# Query_time: 0.002029  Lock_time: 0.000000 Rows_sent: 0  Rows_examined: 0
+SET timestamp=1793451243;
+COMMIT;
+# Time: 2026-10-31T12:54:03.640713Z
+# User@Host: app[app] @  [127.0.0.1]  Id:    31
+# Query_time: 0.001265  Lock_time: 0.000266 Rows_sent: 3  Rows_examined: 326
+SET timestamp=1793451243;
+SELECT o.status,
+       COUNT(*) AS n,
+       SUM(o.total) AS revenue
+  FROM orders o
+  JOIN crm.customers c ON c.id = o.customer_id
+ WHERE c.city = 'Recife'
+ GROUP BY o.status;
+# Time: 2026-10-31T12:54:03.641007Z
+# User@Host: app[app] @  [127.0.0.1]  Id:    31
+# Query_time: 0.000165  Lock_time: 0.000064 Rows_sent: 1  Rows_examined: 1
+SET timestamp=1793451243;
+SELECT note FROM orders WHERE note = 'gift; wrap
+please' LIMIT 1;
+# Time: 2026-10-31T12:54:03.742300Z
+# User@Host: app[app] @  [127.0.0.1]  Id:    31
+# Query_time: 0.101201  Lock_time: 0.000000 Rows_sent: 1  Rows_examined: 0
+SET timestamp=1793451243;
+SELECT SLEEP(0.1);
+# Time: 2026-10-31T12:54:03.747870Z
+# User@Host: app[app] @  [127.0.0.1]  Id:    31
+# Query_time: 0.003904  Lock_time: 0.000807 Rows_sent: 0  Rows_examined: 4
+SET timestamp=1793451243;
+DELETE FROM items WHERE order_id >= 901 AND order_id <= 904;
+# Time: 2026-10-31T12:54:03.748042Z
+# User@Host: app[app] @  [127.0.0.1]  Id:    31
+# Query_time: 0.000005  Lock_time: 0.000000 Rows_sent: 0  Rows_examined: 4
+SET timestamp=1793451243;
+# administrator command: Quit;
+# Time: 2026-10-31T12:54:05.129531Z
+# User@Host: report[report] @  [127.0.0.1]  Id:    32
+# Query_time: 0.000106  Lock_time: 0.000000 Rows_sent: 1  Rows_examined: 0
+use crm;
+SET timestamp=1793451245;
+select @@version_comment limit 1;
+# Time: 2026-10-31T12:54:05.132210Z
+# User@Host: report[report] @  [127.0.0.1]  Id:    32
+# Query_time: 0.000854  Lock_time: 0.000280 Rows_sent: 8  Rows_examined: 216
+SET timestamp=1793451245;
+SELECT city, COUNT(*) FROM customers GROUP BY city ORDER BY COUNT(*) DESC;
+# Time: 2026-10-31T12:54:05.133626Z
+# User@Host: report[report] @  [127.0.0.1]  Id:    32
+# Query_time: 0.000312  Lock_time: 0.000048 Rows_sent: 8  Rows_examined: 216
+SET timestamp=1793451245;
+SELECT city, COUNT(*) FROM customers GROUP BY city ORDER BY COUNT(*) DESC;
+# Time: 2026-10-31T12:54:05.133950Z
+# User@Host: report[report] @  [127.0.0.1]  Id:    32
+# Query_time: 0.000203  Lock_time: 0.000075 Rows_sent: 111  Rows_examined: 200
+SET timestamp=1793451245;
+SELECT name FROM customers WHERE name LIKE 'customer 1%';
+# Time: 2026-10-31T12:54:05.135571Z
+# User@Host: report[report] @  [127.0.0.1]  Id:    32
+# Query_time: 0.001528  Lock_time: 0.000094 Rows_sent: 1  Rows_examined: 1000
+SET timestamp=1793451245;
+SELECT COUNT(*) FROM shop.orders WHERE note IS NOT NULL AND total > 100;
+# Time: 2026-10-31T12:54:05.135742Z
+# User@Host: report[report] @  [127.0.0.1]  Id:    32
+# Query_time: 0.000007  Lock_time: 0.000000 Rows_sent: 1  Rows_examined: 1000
+SET timestamp=1793451245;
+# administrator command: Quit;
+# Time: 2026-10-31T12:54:06.504748Z
+# User@Host: root[root] @  [127.0.0.1]  Id:    33
+# Query_time: 0.000105  Lock_time: 0.000000 Rows_sent: 1  Rows_examined: 0
+SET timestamp=1793451246;
+select @@version_comment limit 1;
+# Time: 2026-10-31T12:54:06.506241Z
+# User@Host: root[root] @  [127.0.0.1]  Id:    33
+# Query_time: 0.000035  Lock_time: 0.000000 Rows_sent: 1  Rows_examined: 0
+SET timestamp=1793451246;
+SELECT 1;
+# Time: 2026-10-31T12:54:06.507440Z
+# User@Host: root[root] @  [127.0.0.1]  Id:    33
+# Query_time: 0.000049  Lock_time: 0.000000 Rows_sent: 1  Rows_examined: 0
+SET timestamp=1793451246;
+SELECT NOW();
+# Time: 2026-10-31T12:54:06.508836Z
+# User@Host: root[root] @  [127.0.0.1]  Id:    33
+# Query_time: 0.000006  Lock_time: 0.000000 Rows_sent: 1  Rows_examined: 0
+SET timestamp=1793451246;
+# administrator command: Quit;
+# Time: 2026-10-31T12:54:07.161660Z
+# User@Host: root[root] @  [127.0.0.1]  Id:    34
+# Query_time: 0.000116  Lock_time: 0.000000 Rows_sent: 1  Rows_examined: 0
+SET timestamp=1793451247;
+select @@version_comment limit 1;
