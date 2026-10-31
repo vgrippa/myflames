@@ -146,6 +146,10 @@ BUILD_NAMES = {
 # Names whose presence in the records depends on build options while the
 # source still declares them (reviewed against the source-versus-runtime
 # comparison); written to the module as BUILD_ONLY = {name: sentence}.
+# sql/sys_vars.cc and sql/auth/sql_authentication.cc up to 5.7.27:
+# #if defined(HAVE_OPENSSL) && !defined(HAVE_YASSL); 5.7.28 dropped yaSSL.
+_OPENSSL_ONLY = ("Exists only in builds that use OpenSSL: MySQL 5.7 builds with the bundled yaSSL, as the official "
+                 "images up to 5.7.27 are, lack it; 5.7.28 dropped yaSSL.")
 _SEMISYNC_OLD = ("Belongs to the rpl_semi_sync_master and rpl_semi_sync_slave plugins, which MySQL 8.0.26 "
                  "deprecated in favour of rpl_semi_sync_source and rpl_semi_sync_replica (whose "
                  "rpl_semi_sync_source_* and rpl_semi_sync_replica_* variables replace these) and no longer "
@@ -154,9 +158,15 @@ _SEMISYNC_OLD = ("Belongs to the rpl_semi_sync_master and rpl_semi_sync_slave pl
 # (DEPRECATED_SEMISYNC_LIBRARY) from 8.0.26 to 9.4.2 and drops them in 9.5.0.
 BUILD_ONLY = {
     "mysql": dict([
-        ("innodb_numa_interleave", "Exists only in builds with NUMA support (HAVE_LIBNUMA): the Debian-based "
-                                   "MySQL images up to 8.0.28 have it, the Oracle Linux images from 8.0.29 do not."),
-    ] + [(name, _SEMISYNC_OLD) for name in (
+        ("innodb_numa_interleave", "Exists only in builds with NUMA support (HAVE_LIBNUMA): the official images of "
+                                   "5.7.9, 5.7.10 and 5.7.17 to 8.0.28 have it; those of 5.7.11 to 5.7.16 and the "
+                                   "Oracle Linux images from 8.0.29 do not."),
+        ("keyring_file_data", "Belongs to the keyring_file plugin, which only the MySQL 5.7.11 build loads at "
+                              "startup by default (its early-plugin-load default names keyring_file.so); other "
+                              "releases load it only when configured."),
+    ] + [(name, _OPENSSL_ONLY) for name in (
+        "auto_generate_certs", "sha256_password_auto_generate_rsa_keys", "sha256_password_private_key_path",
+        "sha256_password_public_key_path")] + [(name, _SEMISYNC_OLD) for name in (
         "rpl_semi_sync_master_enabled", "rpl_semi_sync_master_timeout", "rpl_semi_sync_master_trace_level",
         "rpl_semi_sync_master_wait_for_slave_count", "rpl_semi_sync_master_wait_no_slave",
         "rpl_semi_sync_master_wait_point", "rpl_semi_sync_slave_enabled", "rpl_semi_sync_slave_trace_level")]),
@@ -174,8 +184,20 @@ SOURCE_DEPRECATIONS = {
         ("innodb_log_files_in_group", "8.0.30", "innodb_redo_log_capacity",
          "ha_innodb.cc help text \"... Deprecated.\"; share/messages_to_error_log.txt "
          "ER_IB_MSG_LOG_PARAMS_LEGACY_USAGE \"Please use innodb_redo_log_capacity instead.\""),
-        ("innodb_undo_tablespaces", "8.0.11", None,
+        ("innodb_undo_tablespaces", "5.7.21", None,
          "ha_innodb.cc help text \"Number of undo tablespaces to use. (deprecated)\""),
+    ),
+    "mariadb": (),
+}
+
+# Scope disagreements between a running server and its source tag that the
+# source explains (reviewed list): (name, first version, last version, reason).
+SCOPE_REVIEW = {
+    "mysql": (
+        ("gtid_executed", "5.7.9", "5.7", "5.7 also declares a session value, deprecated (session_value_ptr warns); "
+         "the server lists only the global one."),
+        ("sql_log_bin", "5.7.9", "5.7", "5.7 declares it with SESSION_VAR, but check_sql_log_bin refuses SET GLOBAL "
+         "and the server lists it as session only (8.0 declares SESSION_ONLY)."),
     ),
     "mariadb": (),
 }
@@ -219,16 +241,16 @@ _POOL_MAX_LIMIT = ("The server lowers it at startup to a quarter of the address-
 # Values that only follow other settings with all defaults are not marked.
 HOST_REVIEW = {
     "mysql": (
-        ("open_files_limit", "8.0.11", None, True, "sql/mysqld.cc adjust_open_files_limit()",
+        ("open_files_limit", "5.7.9", None, True, "sql/mysqld.cc adjust_open_files_limit()",
          "The server sets it at startup to the number of open files the operating system grants."),
-        ("max_connections", "8.0.11", None, False, "sql/mysqld.cc adjust_max_connections()", _OPEN_FILES_EDGE),
-        ("table_open_cache", "8.0.11", None, False, "sql/mysqld.cc adjust_table_cache_size()", _OPEN_FILES_EDGE),
-        ("table_definition_cache", "8.0.11", None, False, "sql/mysqld.cc adjust_table_def_size()",
+        ("max_connections", "5.7.9", None, False, "sql/mysqld.cc adjust_max_connections()", _OPEN_FILES_EDGE),
+        ("table_open_cache", "5.7.9", None, False, "sql/mysqld.cc adjust_table_cache_size()", _OPEN_FILES_EDGE),
+        ("table_definition_cache", "5.7.9", None, False, "sql/mysqld.cc adjust_table_def_size()",
          "The server sets it at startup to 400 + table_open_cache / 2, at most 2000, which is fixed while "
          "table_open_cache keeps its default."),
-        ("lower_case_file_system", "8.0.11", None, True,
+        ("lower_case_file_system", "5.7.9", None, True,
          "sql/mysqld.cc lower_case_file_system = test_if_case_insensitive(mysql_real_data_home)", _CASE_FS),
-    ) + tuple((name, "8.0.11", None, False, "sql/sys_vars.cc DEFAULT(PFS_AUTOSIZE_VALUE), storage/perfschema/"
+    ) + tuple((name, "5.7.9", None, False, "sql/sys_vars.cc DEFAULT(PFS_AUTOSIZE_VALUE), storage/perfschema/"
                "pfs_autosize.cc", "Performance Schema sizes it at startup from max_connections, table_open_cache "
                "and table_definition_cache, which is fixed while those keep their defaults.")
               for name in _PFS_AUTOSIZED) + (
@@ -247,14 +269,17 @@ HOST_REVIEW = {
          "storage/innobase/handler/ha_innodb.cc innodb_flush_method = os_is_o_direct_supported() ? ...",
          "The server sets it at startup to O_DIRECT when the data directory's file system supports it, "
          "else fsync."),
-        ("innodb_buffer_pool_instances", "8.0.11", "8.3", False,
-         "storage/innobase/handler/ha_innodb.cc innodb_buffer_pool_size_init()",
+        ("innodb_buffer_pool_instances", "5.7.9", "8.3", False,
+         "storage/innobase/srv/srv0start.cc (5.7), storage/innobase/handler/ha_innodb.cc "
+         "innodb_buffer_pool_size_init() (8.0 to 8.3)",
          "The server sets it at startup to 8 when innodb_buffer_pool_size is 1 GiB or more, else 1."),
         ("innodb_buffer_pool_instances", "8.4.0", None, False,
          "storage/innobase/handler/ha_innodb.cc innodb_buffer_pool_size_init()",
          "The server sets it at startup to 1, or, when innodb_buffer_pool_size is 1 GiB or more, to the smaller "
          "of the pool size divided by twice the chunk size and the number of CPUs divided by 4, between 1 and 64."),
-        ("innodb_page_cleaners", "8.0.11", "8.3", False, "storage/innobase/handler/ha_innodb.cc innodb_init_params()",
+        ("innodb_page_cleaners", "5.7.9", "8.3", False,
+         "storage/innobase/srv/srv0start.cc (5.7), storage/innobase/handler/ha_innodb.cc innodb_init_params() "
+         "(8.0 to 8.3)",
          "Declared as 4; the server lowers it at startup to innodb_buffer_pool_instances when that is smaller."),
         ("innodb_page_cleaners", "8.4.0", None, False, "storage/innobase/handler/ha_innodb.cc innodb_init_params()",
          "The server sets it at startup to innodb_buffer_pool_instances, also when a larger value is given."),
@@ -332,7 +357,13 @@ PACKAGES = {"mysql": "Oracle's generic Linux packages", "mariadb": "MariaDB's ge
 # cover, and the prefix their variables get: the clone plugin the lab loads,
 # and the built-in sha256_password and ngram full-text parser plugins.
 MYSQL_EXTRA_PLUGINS = (("plugin/clone/", "clone_"), ("sql/auth/sql_authentication.cc", "sha256_password_"),
-                       ("plugin/fulltext/ngram_parser/", "ngram_"))
+                       ("plugin/fulltext/ngram_parser/", "ngram_"),
+                       # 5.7: Group Replication and X Plugin under rapid/, the
+                       # validate_password plugin (the component came in 8.0).
+                       ("rapid/plugin/group_replication/", "group_replication_"),
+                       ("rapid/plugin/x/", "mysqlx_"), ("plugin/password_validation/", "validate_password_"),
+                       # keyring_file: loaded by default only in 5.7.11 (early-plugin-load).
+                       ("plugin/keyring/", "keyring_file_"))
 
 # MariaDB files that declare system variables, with the plugin prefix of
 # their MYSQL_SYSVAR/MYSQL_THDVAR declarations ("" = sql/sys_vars.cc core).
@@ -418,10 +449,11 @@ def _fields(text):
 def mysql_release(tag, text):
     """(version, maturity) of a MySQL tag in scope, else None.
 
-    Scope: plain numeric tags (a -respin tag stands for its version) from
-    8.0.11 whose MYSQL_VERSION (VERSION in old tags) has no extra suffix (no
-    -dmr or -rc). Maturity is MYSQL_VERSION_MATURITY when the file has it
-    (LTS, INNOVATION); 8.0.x tags without it are GA, and 8.1 to 8.3 tags
+    Scope: plain numeric tags (a -respin tag stands for its version) of the
+    5.7 series and from 8.0.11 whose MYSQL_VERSION (VERSION in 5.7 and early
+    8.0 tags) has no extra suffix (no -m, -dmr or -rc: 5.7.9 is the first 5.7
+    GA). Maturity is MYSQL_VERSION_MATURITY when the file has it (LTS,
+    INNOVATION); 5.7 and 8.0.x tags without it are GA, and 8.1 to 8.3 tags
     without it are INNOVATION (Oracle published them as Innovation releases;
     the field arrived in 8.4.0).
     """
@@ -431,7 +463,9 @@ def mysql_release(tag, text):
     fields = _fields(text)
     numbers = tuple(int(part) for part in match.groups())
     declared = tuple(fields.get("MYSQL_VERSION_" + part, "").strip() for part in ("MAJOR", "MINOR", "PATCH"))
-    if declared != tuple(str(number) for number in numbers) or numbers < (8, 0, 11):
+    if declared != tuple(str(number) for number in numbers):
+        return None
+    if numbers[:2] != (5, 7) and numbers < (8, 0, 11):
         return None
     if fields.get("MYSQL_VERSION_EXTRA", "").strip('"'):
         return None
@@ -962,7 +996,7 @@ def mysql_source_facts(sources):
                 if name.startswith("validate_password.") and name not in facts:
                     entry = catalog[name]
                     _merge_fact(facts, name, _fact(entry[0], _ro(entry[2]), False, None, None,
-                                                   "validate_password", ""))
+                                                   "component_validate_password", ""))
     for name, target, kind in aliases:
         base = symbols.get(target)
         entry = catalog.get(name)
@@ -1158,9 +1192,31 @@ def parse_manual(text):
     return entries
 
 
+def parse_manual_text(text):
+    """The same list from the text of the page's section extracted from the
+    official PDF manual (5.7: its HTML manual now redirects to 9.7). Bullets
+    start with "•"; page headers and numbers between them are ignored."""
+    start = re.search(r"^Options and Variables Deprecated in MySQL [\d.]+$", text, re.M)
+    if not start:
+        return []
+    end = re.search(r"^Options and Variables Removed in MySQL [\d.]+$", text[start.end():], re.M)
+    section = text[start.end():start.end() + end.start()] if end else text[start.end():]
+    entries = []
+    for item in section.split("\u2022")[1:]:
+        words = " ".join(item.split())
+        found = re.match(r"([A-Za-z0-9_.-]+): ", words)
+        version = re.search(r"Deprecated in MySQL (\d+\.\d+\.\d+)", words)
+        if not found or not version:
+            continue
+        use = _MANUAL_USE.search(words)
+        entries.append((found.group(1), version.group(1), use.group(1) if use else None))
+    return entries
+
+
 def read_manual(directory):
     """({name: [(version, replacement)]}, {series: date saved}) from a
-    directory of saved pages (added-deprecated-removed-<series>.html)."""
+    directory of saved pages (added-deprecated-removed-<series>.html, or .txt
+    for a section taken from a PDF manual)."""
     entries, saved = {}, {}
     if not directory:
         return entries, saved
@@ -1168,7 +1224,8 @@ def read_manual(directory):
     meta = {}
     if (directory / "SAVED.json").is_file():
         meta = json.loads((directory / "SAVED.json").read_text(encoding="utf-8")).get("pages", {})
-    for path in sorted(directory.glob("added-deprecated-removed-*.html")):
+    for path in sorted(list(directory.glob("added-deprecated-removed-*.html"))
+                       + list(directory.glob("added-deprecated-removed-*.txt"))):
         series = path.stem.rsplit("-", 1)[1]
         if not re.fullmatch(r"\d+\.\d+", series):
             continue
@@ -1176,7 +1233,8 @@ def read_manual(directory):
         if not stamp:
             stamp = datetime.datetime.fromtimestamp(path.stat().st_mtime, datetime.timezone.utc).strftime("%Y-%m-%d")
         saved[series] = stamp[:10]
-        for name, version, replacement in parse_manual(path.read_text(encoding="utf-8", errors="replace")):
+        parse = parse_manual_text if path.suffix == ".txt" else parse_manual
+        for name, version, replacement in parse(path.read_text(encoding="utf-8", errors="replace")):
             pair = (version, replacement)
             if pair not in entries.setdefault(name, []):
                 entries[name].append(pair)
@@ -1252,10 +1310,13 @@ def manual_applies(deprecated_in, release, dates):
     return date is None or parse_date(date) <= parse_date(release["date"])
 
 
-_QUOTED = r"'(?:@@)?(?:global\.|session\.)?([a-z0-9_.$]+)'"
+_QUOTED = r"'(?:@@|--)?(?:global\.|session\.)?([a-z0-9_.$-]+)'"
 _RUNTIME_CHANGE = re.compile(r"^(?:updating|changing|setting|modifying)\s+" + _QUOTED + r"\s+(?:is|has been)\s+"
                              r"deprecated")
 _SUBJECT = re.compile(_QUOTED + r"\s+(?:is|has been)\s+deprecated")
+# MySQL 5.7 InnoDB: "Using innodb_large_prefix is deprecated and the parameter may be removed ...",
+# "The parameter innodb_undo_logs is deprecated and may be removed ...".
+_USING = re.compile(r"^(?:using|the (?:parameter|variable|option))\s+([a-z0-9_.]+)\s+is\s+deprecated")
 
 
 def warning_kinds(name, text):
@@ -1284,7 +1345,8 @@ def warning_kinds(name, text):
         if (change and change.group(1) == target) or (
                 "read-only in a future release" in low and target in low):
             kinds["runtime_change"].append(line)
-        elif any(match.group(1) == target for match in _SUBJECT.finditer(low)):
+        elif any(match.group(1).replace("-", "_") == target for match in _SUBJECT.finditer(low)) or (
+                _USING.match(low) and _USING.match(low).group(1) == target):
             kinds["variable"].append(line)
         else:
             kinds["other"].append(line)
@@ -1365,6 +1427,16 @@ def has_origin(record):
     """Whether a runtime record carries the per-variable origin field
     (MySQL VARIABLE_SOURCE, MariaDB GLOBAL_VALUE_ORIGIN)."""
     return any(isinstance(var, dict) and "origin" in var for var in (record.get("variables") or {}).values())
+
+
+def mixed_origin(records):
+    """Versions whose record lacks the origin field while others of the same
+    engine have it (records of different lab runs), else []. MySQL 5.7 has no
+    variables_info, so its records carry no origin by design and never count."""
+    without = sorted((version for version, record in records.items()
+                      if not has_origin(record) and version_key(version) >= (8, 0, 0)), key=version_key)
+    with_origin = [version for version, record in records.items() if has_origin(record)]
+    return without if without and with_origin else []
 
 
 def build(engine, releases, records, unusable, source, manual, manual_dates=None, tag_dates=None):
@@ -1623,12 +1695,14 @@ def _ranges(versions, order):
     return ", ".join(order[a] if a == b else "%s to %s" % (order[a], order[b]) for a, b in runs)
 
 
-def compare_release(record, facts):
-    """Disagreements between one runtime record and its source facts."""
+def compare_release(record, facts, engine=None, version=None):
+    """Disagreements between one runtime record and its source facts; scope
+    disagreements that SCOPE_REVIEW explains for *version* go to
+    "scope_explained"."""
     # Variable names are case-insensitive: compare them folded to lower case.
     runtime = {name.lower(): value for name, value in record["variables"].items()}
     facts = {name.lower(): value for name, value in facts.items()}
-    result = {"only_runtime": {}, "only_source": {}, "scope": [], "read_only": []}
+    result = {"only_runtime": {}, "only_source": {}, "scope": [], "read_only": [], "scope_explained": []}
     # A plugin is loaded when any variable the source gives it is on the server.
     active = {fact.get("group") for name, fact in facts.items() if name in runtime}
     for name in sorted(set(runtime) - set(facts)):
@@ -1657,7 +1731,9 @@ def compare_release(record, facts):
     for name in sorted(set(facts) & set(runtime)):
         var, fact = runtime[name] or {}, facts[name]
         if var.get("scope") and fact.get("scope") and var["scope"] != fact["scope"]:
-            result["scope"].append((name, var["scope"], fact["scope"]))
+            explained = [entry for entry in SCOPE_REVIEW.get(engine, ())
+                         if entry[0] == name and version and in_range(version, entry[1], entry[2])]
+            result["scope_explained" if explained else "scope"].append((name, var["scope"], fact["scope"]))
         if var.get("dynamic") is not None and fact.get("ro") is not None and var["dynamic"] == fact["ro"]:
             result["read_only"].append((name, var["dynamic"], fact["ro"]))
     return result
@@ -1896,6 +1972,7 @@ def report_lines(catalog, examples=12):
               "Only S: debug | Only S: hidden | Only S: unexpl. | Scope | Read-only |",
               "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"]
     unexplained = {"only in the record": {}, "only in the source": {}, "scope": {}, "read-only": {}}
+    explained_scope = {}
     totals = {}
     for release, facts in zip(catalog["cataloged"], catalog["source"]):
         record = catalog["records"][release["version"]]
@@ -1903,7 +1980,7 @@ def report_lines(catalog, examples=12):
             lines.append("| %s | %d | not read | | | | | | | | | |" % (release["version"],
                                                                         len(record["variables"])))
             continue
-        result = compare_release(record, facts)
+        result = compare_release(record, facts, engine, release["version"])
         only_r = result["only_runtime"]
         only_s = result["only_source"]
         counts = (len(only_r.get("plugin variable the source reader does not cover", ()))
@@ -1925,12 +2002,18 @@ def report_lines(catalog, examples=12):
         for name, runtime_scope, source_scope in result["scope"]:
             unexplained["scope"].setdefault("%s (server %s, source %s)" % (name, runtime_scope, source_scope),
                                             []).append(version)
+        for name, runtime_scope, source_scope in result["scope_explained"]:
+            explained_scope.setdefault(name, []).append(version)
         for name, dynamic, ro in result["read_only"]:
             text = "%s (server %s, source %s)" % (name, "dynamic" if dynamic else "not dynamic",
                                                    "READ_ONLY" if ro else "not READ_ONLY")
             unexplained["read-only"].setdefault(text, []).append(version)
     lines.append("")
     lines.append("Totals over releases: %s." % ", ".join("%s %d" % (key, totals[key]) for key in sorted(totals)))
+    for name, versions in sorted(explained_scope.items()):
+        reason = [entry[3] for entry in SCOPE_REVIEW.get(engine, ()) if entry[0] == name]
+        lines.append("Scope disagreement the source explains (SCOPE_REVIEW), not counted above: %s at %s: %s" % (
+            name, _ranges(versions, order), reason[0] if reason else ""))
     lines.append("")
     for title, items in unexplained.items():
         if not items:
@@ -1957,7 +2040,9 @@ def report_lines(catalog, examples=12):
                 last = len(flags) - 1 - flags[::-1].index(True)
                 missing = [order[indexes[i]] for i in range(first, last + 1) if not flags[i]]
                 if missing:
-                    gaps.append("%s in %s: absent from %s" % (name, series, ", ".join(missing)))
+                    gaps.append("%s in %s: absent from %s%s" % (
+                        name, series, ", ".join(missing),
+                        " (BUILD_ONLY: presence depends on the build)" if name in BUILD_ONLY.get(engine, {}) else ""))
     lines.append("### Names that disappear and come back within one series (%d)" % len(gaps))
     lines.append("")
     lines += ["- " + gap for gap in gaps[:30]] or ["None."]
@@ -2137,9 +2222,8 @@ def main(argv=None):
     mixed = {}
     for engine in args.engine or ENGINES:
         records, _ = load_records(args.runtime, engine)
-        without = sorted((version for version, record in records.items() if not has_origin(record)),
-                         key=version_key)
-        if without and len(without) < len(records):
+        without = mixed_origin(records)
+        if without:
             mixed[engine] = without
             sys.stderr.write("WARNING: %s: %d of %d records have no origin field (an earlier lab run): %s.\n" % (
                 PRODUCTS[engine], len(without), len(records), ", ".join(without)))

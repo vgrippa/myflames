@@ -23,6 +23,16 @@ Open the generated SVG in a browser to verify. No extra dependencies required.
 
 ## Full unit-test suite
 
+Test modules added for 3.3.1: `test/test_slowlog.py` (the slow log file reader,
+fingerprints, aggregation, `mysql.slow_log`, endpoints and `myflames slow-log`,
+against the real logs in `test/fixtures/slowlog/`), `test/test_schema_export.py`
+(Export as SQL, fixtures in `test/fixtures/schema_export/`),
+`test/test_table_structure.py` (`table-structure-1.0`), `test/test_mysql57.py`
+(MySQL 5.7 privileges, Users and roles, Run analysis refusal, the editor probe,
+plans, ALTER review and Import CSV) and `test/test_mysql57_views.py` (the Server
+place replays of the 5.7.44 recordings). The browser suites that go with them
+are in `docs/UI_TESTING.md`.
+
 ```bash
 ./run-tests.sh
 # or
@@ -61,19 +71,27 @@ remaining limitations.
 ## GA version matrix (live servers)
 
 `scripts/record-perf-fixtures.py --port PORT --server NAME --view
-indexes|tables|config|io|waits|health [--schema S ...] [--parameters]` records
+indexes|tables|config|io|waits|health|locks|sessions|innodb|error-log|instruments|top|replication|watch|ddl-progress|cluster|checks|report|variable
+[--schema S ...] [--parameters] [--ids ID ...] [--name VARIABLE]` records
 one live view read from a matrix server as a replay fixture
 (`test/fixtures/perf/<view>-<server>.json`, or `test/fixtures/health/<server>.json`),
 with the password read from the matrix's credentials file and never printed;
 run it with an isolated `HOME`. The Percona fixtures that `test/test_percona.py`
-replays were recorded this way from `percona-8.0` and `percona-8.4`.
+replays were recorded this way from `percona-8.0` and `percona-8.4`, and the
+MySQL 5.7.44 ones that `test/test_mysql57_views.py` replays (`*-mysql-5.7*.json`)
+from `mysql-5.7` and `mysql-5.7-replica`.
 
-`scripts/ga-matrix.sh` starts every GA MySQL (8.0, 8.4, 9.7, 26.7), Percona
+`scripts/ga-matrix.sh` starts every GA MySQL (5.7, 8.0, 8.4, 9.7, 26.7), Percona
 Server for MySQL (8.0, 8.4; official `percona/percona-server` images pinned to
 8.0.46-37.1 and 8.4.11-11.1, arm64 and amd64) and MariaDB (10.6, 10.11, 11.4,
-11.8, 12.3, 13.0) image in Docker on 127.0.0.1 (ports 33080 to 33185), plus a
+11.8, 12.3, 13.0) image in Docker on 127.0.0.1 (ports 33057 to 33185), plus a
 GTID replica for MySQL 9.7, Percona Server 8.4 and MariaDB 11.8 (the last left
-with a duplicate-key SQL thread error). Percona Server 8.0 (port 33180) runs the
+with a duplicate-key SQL thread error) and a file-and-position replica for
+MySQL 5.7 (`mysql-5.7-replica`, port 33058). MySQL 5.7.44 has only
+linux/amd64 images, so on arm64 hosts it runs under emulation; its seed has no
+WITH RECURSIVE (5.7 has no CTEs) and draws row numbers from a temporary
+`mf_seq` table instead. `GA_PREFIX` (default `myflames-ga`) renames the
+containers and the network, so a second copy of the matrix does not collide. Percona Server 8.0 (port 33180) runs the
 thread pool and the slow log with `log_slow_verbosity=full`; Percona Server 8.4
 (33184, replica on 33185) runs with `userstat=ON`; saved connections
 `ga-percona-8.0`, `ga-percona-8.4` and `ga-percona-8.4-replica`. Each primary gets the `testdb` seed from

@@ -624,7 +624,13 @@ class ReviewFindingTests(unittest.TestCase):
 
 class GateTests(unittest.TestCase):
     def test_versions(self):
-        for engine, version in (("mysql", "8.0.36"), ("mysql", "5.7.44"), ("mariadb", "10.6.20-MariaDB"),
+        # MySQL 5.7 is named with why it is not predicted (no INSTANT there).
+        result = predict("mysql", "ADD COLUMN x INT", version="5.7.44-log")
+        self.assertFalse(result["predicted"])
+        self.assertIsNone(result["algorithm"])
+        self.assertEqual(result["reason"], "MySQL 5.7.44 is not predicted: it has no ALGORITHM=INSTANT (MySQL 8.0.12 "
+                                           "added it), and the rules were checked for MySQL 8.4 and 9.x.")
+        for engine, version in (("mysql", "8.0.36"), ("mariadb", "10.6.20-MariaDB"),
                                 ("mariadb", "10.5.0")):
             result = predict(engine, "ADD COLUMN x INT", version=version)
             self.assertFalse(result["predicted"])

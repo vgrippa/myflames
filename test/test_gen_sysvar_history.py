@@ -245,6 +245,19 @@ class TestMerge(unittest.TestCase):
                                )["variable"], ["'init_slave' is deprecated and will be removed in a future release."])
         self.assertEqual(kinds("x", "The syntax '@@x' is deprecated and will be removed in MySQL 9.0.")["variable"],
                          ["The syntax '@@x' is deprecated and will be removed in MySQL 9.0."])
+        # MySQL 5.7: InnoDB's "Using x is deprecated" and the option form '--secure-auth'.
+        using = "Using innodb_large_prefix is deprecated and the parameter may be removed in future releases."
+        self.assertEqual(kinds("innodb_large_prefix", using)["variable"], [using])
+        stats = ("Using innodb_stats_sample_pages is deprecated and the variable may be removed in future releases. "
+                 "Please use innodb_stats_transient_sample_pages instead.")
+        self.assertEqual(kinds("innodb_stats_sample_pages", stats)["variable"], [stats])
+        self.assertEqual(gen.warning_replacement(stats), "innodb_stats_transient_sample_pages")
+        parameter = ("The parameter innodb_undo_logs is deprecated and may be removed in future releases. Please use "
+                     "innodb_rollback_segments instead.")
+        self.assertEqual(kinds("innodb_undo_logs", parameter)["variable"], [parameter])
+        option = "'--secure-auth' is deprecated and will be removed in a future release."
+        self.assertEqual(kinds("secure_auth", option)["variable"], [option])
+        self.assertEqual(kinds("innodb_file_format", using)["other"], [using])
         # MariaDB's old_mode warns about a deprecated value, not the variable.
         value = "'NO_PROGRESS_INFO' is deprecated and will be removed in a future release"
         self.assertEqual(kinds("old_mode", value)["other"], [value])
@@ -438,7 +451,7 @@ class TestHostAndRelease(unittest.TestCase):
         self.assertIn("marked entries without scan evidence: innodb_parallel_read_threads at 8.4.0; "
                       "lower_case_file_system at 8.4.0; open_files_limit at 8.4.0; temptable_max_ram at 8.4.0", report)
         # Lowered only when the OS grants too few open files: reviewed and not marked.
-        self.assertIn("not marked: table_definition_cache, 8.0.11 on", report)
+        self.assertIn("not marked: table_definition_cache, 5.7.9 on", report)
 
     def test_build_layout_paths_and_build_only_presence(self):
         releases = [release("8.0.28", "2022-01-01T00:00:00Z"), release("8.0.29", "2022-04-08T00:00:00Z")]
@@ -758,6 +771,107 @@ class TestCheckerFixes(unittest.TestCase):
         facts = gen.mysql_source_facts(sources)
         self.assertIn("os_is_o_direct_supported", facts["innodb_flush_method"]["host"][0])
         self.assertTrue(facts["innodb_buffer_pool_instances"]["host"])
+
+
+class TestMySQL57(unittest.TestCase):
+    def test_scope_starts_at_the_first_57_ga(self):
+        def text(numbers, extra=""):
+            return ("MYSQL_VERSION_MAJOR=%d\nMYSQL_VERSION_MINOR=%d\nMYSQL_VERSION_PATCH=%d\n"
+                    "MYSQL_VERSION_EXTRA=%s\n" % (numbers + (extra,)))
+        files = {"mysql-5.6.51": text((5, 6, 51)), "mysql-5.7.8": text((5, 7, 8), "-rc"),
+                 "mysql-5.7.9": text((5, 7, 9)), "mysql-5.7.44": text((5, 7, 44)),
+                 "mysql-5.7.10-2": text((5, 7, 10)), "mysql-8.0.4": text((8, 0, 4), "-rc"),
+                 "mysql-8.0.11": text((8, 0, 11))}
+        found = gen.releases_from("mysql", files, {tag: "2020-01-01T00:00:00Z" for tag in files})
+        self.assertEqual([(item["version"], item["maturity"]) for item in found],
+                         [("5.7.9", "GA"), ("5.7.44", "GA"), ("8.0.11", "GA")])
+
+    def test_80_follows_the_latest_57_dated_before_it(self):
+        releases = [release("5.7.21", "2017-12-28T00:00:00Z"), release("5.7.22", "2018-03-04T00:00:00Z"),
+                    release("5.7.23", "2018-06-08T00:00:00Z"), release("8.0.11", "2018-04-08T08:17:02+02:00"),
+                    release("8.0.12", "2018-06-28T17:46:28+02:00")]
+        previous = gen.lineage(releases)
+        named = {item["version"]: (releases[index]["version"] if index is not None else None)
+                 for item, index in zip(releases, previous)}
+        self.assertEqual(named, {"5.7.21": None, "5.7.22": "5.7.21", "5.7.23": "5.7.22", "8.0.11": "5.7.22",
+                                 "8.0.12": "8.0.11"})
+
+    def test_manual_section_from_the_pdf(self):
+        text = """Options and Variables Deprecated in MySQL 5.7
+      The following system variables, status variables, and options have been deprecated in MySQL 5.7.
+
+      \u2022 Qcache_hits: Number of query cache hits. Deprecated in MySQL 5.7.20.
+
+      \u2022 innodb_undo_logs: Number of undo logs (rollback segments) used by InnoDB; alias for
+        innodb_rollback_segments. Deprecated in MySQL
+        5.7.19.
+
+
+38
+                       Options and Variables Deprecated in MySQL 5.7
+
+\u2022 tx_isolation: Default transaction isolation level. Deprecated in MySQL 5.7.20.
+                              Options and Variables Removed in MySQL 5.7
+\u2022 query_cache_size: Memory allocated to store results from old queries. Deprecated in MySQL 5.7.20.
+
+Options and Variables Removed in MySQL 5.7
+      \u2022 Max_statement_time_exceeded: Number of statements that exceeded execution timeout value.
+        Removed in MySQL 5.7.8.
+"""
+        self.assertEqual(gen.parse_manual_text(text), [
+            ("Qcache_hits", "5.7.20", None), ("innodb_undo_logs", "5.7.19", None),
+            ("tx_isolation", "5.7.20", None), ("query_cache_size", "5.7.20", None)])
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "added-deprecated-removed-5.7.txt").write_text(text, encoding="utf-8")
+            Path(directory, "SAVED.json").write_text(json.dumps({"pages": {"5.7": {"saved_at": "2026-10-31T12:31:06Z"}}}))
+            entries, saved = gen.read_manual(directory)
+        self.assertEqual(saved, {"5.7": "2026-10-31"})
+        self.assertEqual(entries["query_cache_size"], [("5.7.20", None)])
+
+    def test_57_records_have_no_origin_by_design(self):
+        records = {"5.7.44": record("5.7.44", {"a": var()}),
+                   "8.0.11": record("8.0.11", {"a": var(origin="COMPILED")})}
+        self.assertEqual(gen.mixed_origin(records), [])
+        records["8.0.12"] = record("8.0.12", {"a": var()})
+        self.assertEqual(gen.mixed_origin(records), ["8.0.12"])
+        self.assertEqual(gen.mixed_origin({"8.0.12": records["8.0.12"]}), [])    # one run, no origin anywhere
+
+    def test_57_scope_quirks_and_build_only_names(self):
+        record57 = record("5.7.44", {"sql_log_bin": var(scope="session"), "gtid_executed": var(scope="global"),
+                                     "sort_buffer_size": var(scope="global")})
+        facts = {"sql_log_bin": fact(scope="both"), "gtid_executed": fact(scope="both"),
+                 "sort_buffer_size": fact(scope="both")}
+        result = gen.compare_release(record57, facts, "mysql", "5.7.44")
+        self.assertEqual([item[0] for item in result["scope_explained"]], ["gtid_executed", "sql_log_bin"])
+        self.assertEqual([item[0] for item in result["scope"]], ["sort_buffer_size"])
+        later = gen.compare_release(record("8.0.11", {"sql_log_bin": var(scope="session")}),
+                                    {"sql_log_bin": fact(scope="both")}, "mysql", "8.0.11")
+        self.assertEqual([item[0] for item in later["scope"]], ["sql_log_bin"])
+        for name in ("auto_generate_certs", "sha256_password_auto_generate_rsa_keys", "keyring_file_data"):
+            self.assertIn(name, gen.BUILD_ONLY["mysql"])
+        self.assertIn("5.7.28 dropped yaSSL", gen.BUILD_ONLY["mysql"]["auto_generate_certs"])
+        self.assertIn("5.7.11", gen.BUILD_ONLY["mysql"]["keyring_file_data"])
+
+    def test_57_plugin_files_and_reviewed_rules(self):
+        sources = {
+            "rapid/plugin/group_replication/src/plugin.cc": '''
+                static MYSQL_SYSVAR_BOOL(start_on_boot, start_group_replication_at_boot_var,
+                    PLUGIN_VAR_OPCMDARG | PLUGIN_VAR_PERSIST_AS_READ_ONLY, "doc", NULL, NULL, 1);
+            ''',
+            "plugin/password_validation/validate_password.cc": '''
+                static MYSQL_SYSVAR_INT(length, validate_password_length, PLUGIN_VAR_RQCMDARG, "doc",
+                    NULL, NULL, 8, 0, 0, 0);
+            ''',
+        }
+        facts = gen.mysql_source_facts(sources)
+        self.assertEqual(facts["group_replication_start_on_boot"]["group"], "group_replication")
+        self.assertEqual(facts["validate_password_length"]["group"], "validate_password")
+        for name in ("open_files_limit", "innodb_buffer_pool_instances", "innodb_page_cleaners",
+                     "performance_schema_digests_size"):
+            self.assertIsNotNone(gen.review_entry("mysql", name, "5.7.9"), name)
+        self.assertIsNone(gen.review_entry("mysql", "innodb_flush_method", "5.7.44"))
+        self.assertIsNotNone(gen.source_deprecation("mysql", "innodb_undo_tablespaces", "5.7.21"))
+        self.assertIsNone(gen.source_deprecation("mysql", "innodb_undo_tablespaces", "5.7.20"))
 
 
 class TestSourceFacts(unittest.TestCase):

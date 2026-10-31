@@ -143,3 +143,126 @@ def catalog_report(conn, schema, table=None, prefix=None, after=None, stats=Fals
     except ConnectorError as exc:
         raise ValueError("Could not read %s: %s" % (schema if table is None else "%s.%s" % (schema, table),
                                                    reason(exc)))
+
+
+# ---- Table structure (Server > Tables) ---------------------------------------------------------
+
+STRUCTURE_VERSION = "table-structure-1.0"
+
+
+def _yes(value):
+    """True, False, or None when the server has no such column."""
+    return None if value is None else (value or "").upper() in ("YES", "1")
+
+
+def structure_filename(schema, table):
+    """``<schema>.<table>.sql`` with characters a file name cannot hold replaced."""
+    clean = lambda text: "".join("_" if c in '/\\:*?"<>|' or ord(c) < 32 else c for c in text)
+    return "%s.%s.sql" % (clean(schema), clean(table))
+
+
+def table_structure(conn, schema, table):
+    """``table-structure-1.0``: one table's columns (with character set,
+    collation and comment), indexes, foreign keys and its exact SHOW CREATE
+    TABLE, read from information_schema and SHOW CREATE TABLE only.
+
+    Every read selects ``*`` and reads columns by name, so a column one
+    server lacks (STATISTICS.EXPRESSION before MySQL 8.0.13, IS_VISIBLE before
+    8.0, MariaDB's IGNORED before 10.6) is None, never an error. A SHOW CREATE
+    TABLE the account may not run keeps the rest, with its reason.
+    """
+    schema = check_schema(schema)
+    table = check_table(table)
+    if schema is None or table is None:
+        raise ValueError("Choose a table.")
+    reader = Reader(conn, TAG)
+    where = "TABLE_SCHEMA = %s AND TABLE_NAME = %s" % (literal(schema), literal(table))
+    try:
+        found = reader.named("SELECT * FROM information_schema.TABLES WHERE %s" % where)
+        if not found:
+            raise ValueError("No table %s.%s, or no privilege to see it." % (schema, table))
+        info = found[0]
+        column_rows = reader.named("SELECT * FROM information_schema.COLUMNS WHERE %s ORDER BY ORDINAL_POSITION" % where)
+        index_rows = reader.named("SELECT * FROM information_schema.STATISTICS WHERE %s "
+                                  "ORDER BY INDEX_NAME = 'PRIMARY' DESC, INDEX_NAME, SEQ_IN_INDEX" % where)
+        key_rows = reader.named(
+            "SELECT * FROM information_schema.KEY_COLUMN_USAGE WHERE %s AND REFERENCED_TABLE_NAME IS NOT NULL "
+            "ORDER BY CONSTRAINT_NAME, ORDINAL_POSITION" % where)
+        rule_rows = reader.named(
+            "SELECT * FROM information_schema.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = %s AND TABLE_NAME = %s"
+            % (literal(schema), literal(table))) if key_rows else []
+    except ConnectorError as exc:
+        raise ValueError("Could not read %s.%s: %s" % (schema, table, reason(exc)))
+    columns = []
+    for row in column_rows:
+        if row.get("COLUMN_NAME") is None:
+            continue
+        columns.append({
+            "name": row["COLUMN_NAME"], "position": _count(row.get("ORDINAL_POSITION")),
+            "type": row.get("COLUMN_TYPE") or "", "nullable": _flag(row.get("IS_NULLABLE")),
+            "default": row.get("COLUMN_DEFAULT"), "extra": row.get("EXTRA") or "",
+            "comment": row.get("COLUMN_COMMENT") or "", "character_set": row.get("CHARACTER_SET_NAME"),
+            "collation": row.get("COLLATION_NAME"), "key": row.get("COLUMN_KEY") or "",
+            "generated": row.get("GENERATION_EXPRESSION") or None})
+    indexes, order = {}, []
+    for row in index_rows:
+        name = row.get("INDEX_NAME")
+        if name is None:
+            continue
+        if name not in indexes:
+            ignored = _yes(row.get("IGNORED"))
+            indexes[name] = {"name": name, "primary": name == "PRIMARY", "unique": (row.get("NON_UNIQUE") or "1") == "0",
+                             "type": row.get("INDEX_TYPE") or "", "comment": row.get("INDEX_COMMENT") or "",
+                             "visible": _yes(row.get("IS_VISIBLE")) if "IS_VISIBLE" in row
+                             else (None if ignored is None else not ignored), "columns": []}
+            order.append(name)
+        sub_part = row.get("SUB_PART")
+        indexes[name]["columns"].append({
+            "name": row.get("COLUMN_NAME"), "expression": row.get("EXPRESSION"),
+            "sub_part": int(sub_part) if sub_part and sub_part.isdigit() else None,
+            "order": {"A": "asc", "D": "desc"}.get(row.get("COLLATION") or "")})
+    rules = {row.get("CONSTRAINT_NAME"): row for row in rule_rows}
+    keys, key_order = {}, []
+    for row in key_rows:
+        name = row.get("CONSTRAINT_NAME")
+        if name is None:
+            continue
+        if name not in keys:
+            rule = rules.get(name, {})
+            keys[name] = {"name": name, "columns": [], "referenced_schema": row.get("REFERENCED_TABLE_SCHEMA"),
+                          "referenced_table": row.get("REFERENCED_TABLE_NAME"), "referenced_columns": [],
+                          "on_update": rule.get("UPDATE_RULE"), "on_delete": rule.get("DELETE_RULE")}
+            key_order.append(name)
+        keys[name]["columns"].append(row.get("COLUMN_NAME"))
+        keys[name]["referenced_columns"].append(row.get("REFERENCED_COLUMN_NAME"))
+    create, create_error = None, None
+    try:
+        shown = reader.named("SHOW CREATE TABLE %s.%s" % (_quote(schema), _quote(table)))
+        if shown:
+            create = shown[0].get("Create Table") or shown[0].get("Create View")
+        if not create:
+            create_error = "The server returned no definition."
+    except ConnectorError as exc:
+        if any(code in str(exc) for code in ("ERROR 2002", "ERROR 2003", "ERROR 2013")):
+            raise ValueError("Could not read %s.%s: %s" % (schema, table, reason(exc)))
+        create_error = "SHOW CREATE TABLE failed: %s" % reason(exc)
+    kind = (info.get("TABLE_TYPE") or "").upper()
+    comment = info.get("TABLE_COMMENT") or ""
+    if kind == "VIEW" and comment == "VIEW":
+        # Both servers fill a valid view's TABLE_COMMENT with the word VIEW; a
+        # broken view gets the error text instead, which is kept (mysql-server
+        # sql/item_strfunc.cc:4848-4869, mariadb-server sql/sql_show.cc:6172-6180).
+        comment = ""
+    return {
+        "schema_version": STRUCTURE_VERSION, "schema": schema, "table": table,
+        "type": "view" if kind == "VIEW" else "system view" if kind == "SYSTEM VIEW" else
+                "sequence" if kind == "SEQUENCE" else "table",
+        "engine": info.get("ENGINE") or None, "collation": info.get("TABLE_COLLATION") or None,
+        "comment": comment,
+        "columns": columns, "indexes": [indexes[n] for n in order], "foreign_keys": [keys[n] for n in key_order],
+        "create_table": create, "create_error": create_error, "filename": structure_filename(schema, table),
+    }
+
+
+def _quote(name):
+    return "`" + name.replace("`", "``") + "`"

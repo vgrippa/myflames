@@ -2,8 +2,10 @@
 // the Source → Target bar with Swap, the Differences table with status words,
 // and a full-width detail whose Back keeps the list. Only Compare and Export
 // read servers, and only when pressed; choices and snapshots are local data.
+// The saved connections are the window's shared list (savedConnections.ts):
+// one created, renamed or deleted on Home shows here at once.
 import { useContext, useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { api, type ConfigReport, type Connection, type Profile } from "./api";
+import type { ConfigReport, Connection } from "./api";
 import { connectionKey, connectionLabel, type Bound } from "./binding";
 import { Icon } from "./components";
 import { ComparisonBadge, ComparisonSetup } from "./compareShared";
@@ -12,6 +14,7 @@ import { ActionButton, ActionStatus, Checkbox, ConfirmSheet, DataTable, Disclosu
   Pill, SearchField, Segmented, Select, SummaryLine, ToolbarSelect, ViewLayout, ViewSwitcherContext, copyToClipboard, useAction, useInspector,
   type Column, type InspectorContent, type ViewSwitcherShared } from "./kit";
 import { localTime } from "./schemaVersionsApi";
+import { deletedConnectionLabel, refreshSavedConnections, savedConnectionDeleted, seenConnectionName, useSavedConnections } from "./savedConnections";
 import { ParameterVersions, type HistoryRequest } from "./ParameterVersions";
 import type { VersionEngine } from "./paramVersionsApi";
 import { COMPARE_ORDER, accountDifferenceText, address, compareAccounts, compareParameters, comparisonSummary, deleteSnapshot,
@@ -53,30 +56,33 @@ function ComparePill({ status, text }: { status: CompareStatus; text: string }) 
 /** Source, the direction (an arrow over the swap button), Target, then
  * Compare: Schema versions' bar, with one choice per side. A side's read
  * error is shown once, inside that side. */
-export function CompareSidesBar({ options, source, target, onSource, onTarget, onSwap, sourceError, targetError, busy, problem, disabled, onCompare, hasResult = false }: {
+export function CompareSidesBar({ options, source, target, onSource, onTarget, onSwap, sourceError, targetError, busy, problem, disabled, onCompare, hasResult = false, missingLabel }: {
   options: [string, string][]; source: string; target: string; onSource: (v: string) => void; onTarget: (v: string) => void;
+  /** How a chosen side that is not offered any more is named ("Alpha (deleted)"). */
+  missingLabel?: (value: string) => string;
   hasResult?: boolean; onSwap: () => void; sourceError?: string; targetError?: string; busy: boolean; problem: string; disabled: boolean; onCompare: () => void;
 }) {
   return <div className="server-compare-fields">
-    <SidePicker label="Source" value={source} onChange={onSource} options={options} error={sourceError} />
+    <SidePicker label="Source" value={source} onChange={onSource} options={options} error={sourceError} missingLabel={missingLabel} />
     {!hasResult && <div className="server-compare-direction">
       <span className="server-compare-arrow" aria-hidden="true"><Icon name="chevron" size={16} /></span>
       <button type="button" className="icon-button server-compare-swap" aria-label="Swap source and target" title="Swap source and target" onClick={onSwap}>
         <Icon name="compare" />
       </button>
     </div>}
-    <SidePicker label="Target" value={target} onChange={onTarget} options={options} error={targetError} />
+    <SidePicker label="Target" value={target} onChange={onTarget} options={options} error={targetError} missingLabel={missingLabel} />
     {!hasResult && <div className="server-compare-run">
       <ActionButton primary icon="compare" busy={busy} busyLabel="Comparing…" disabled={disabled || !!problem}
         title={problem || "Compare the source with the target"} onClick={onCompare}>Compare</ActionButton>
     </div>}
   </div>;
 }
-function SidePicker({ label, value, onChange, options, error }: {
-  label: string; value: string; onChange: (v: string) => void; options: [string, string][]; error?: string;
+function SidePicker({ label, value, onChange, options, error, missingLabel }: {
+  label: string; value: string; onChange: (v: string) => void; options: [string, string][]; error?: string; missingLabel?: (value: string) => string;
 }) {
   const id = useId();
-  const choices = options.some(([v]) => v === value) ? options : [...options, [value, "No longer available"] as [string, string]];
+  // A chosen side that is gone stays chosen and says so, so the choice is never silently another one.
+  const choices = options.some(([v]) => v === value) ? options : [...options, [value, missingLabel?.(value) || "No longer available"] as [string, string]];
   return <fieldset className="server-compare-side">
     <legend>{label}</legend>
     <Select label={label} value={value} onChange={onChange} options={choices} describedBy={error ? `${id}-error` : undefined} />
@@ -177,7 +183,8 @@ function ServerCompare({ kind, connection, disabled, controls, onBack, snapshots
   const inspector = useInspector();
   const key = connectionKey(connection);
   const current = useRef(key); current.current = key;
-  const [profiles, setProfiles] = useState<Profile[]>([]);
+  const saved = useSavedConnections();
+  const profiles = saved.items;
   const [catalogRead, setCatalogRead] = useState(false);
   const catalog = useAction();
   const [source, setSourceState] = useState("current"), [target, setTargetState] = useState("current");
@@ -213,11 +220,12 @@ function ServerCompare({ kind, connection, disabled, controls, onBack, snapshots
     const revision = ++snapshotChanges.current;
     const loaded = await catalog.run(async signal => {
       // Local workspace data only (saved connections, snapshots): no server is read.
-      const [p, s] = await Promise.all([api<{ items: Profile[] }>("profiles/list", {}, signal), kind === "parameters" ? listSnapshots(signal) : Promise.resolve({ items: [] as Snapshot[] })]);
-      return { profiles: p.items, snapshots: s.items };
+      // The saved connections are read into the window's shared list, so every
+      // other list of them shows the same answer.
+      const [items, s] = await Promise.all([refreshSavedConnections(), kind === "parameters" ? listSnapshots(signal) : Promise.resolve({ items: [] as Snapshot[] })]);
+      return { profiles: items, snapshots: s.items };
     }, { pending: "Reading saved connections and snapshots…", done: v => asked ? `Choices updated: ${plural(v.profiles.length, "saved connection")}${kind === "parameters" ? `, ${plural(v.snapshots.length, "snapshot")}` : ""}.` : "" });
     if (loaded.ok) {
-      setProfiles(loaded.value.profiles);
       if (revision === snapshotChanges.current && kind === "parameters") onSnapshots(loaded.value.snapshots);
       setCatalogRead(true);
     }
@@ -234,15 +242,26 @@ function ServerCompare({ kind, connection, disabled, controls, onBack, snapshots
     for (const s of snapshots) options.push([`snapshot:${s.id}`, `Snapshot ${snapshotLabel(s)}`]);
   }
   const known = (v: string) => options.some(([o]) => o === v);
-  const optionLabel = (v: string) => options.find(([o]) => o === v)?.[1] || "No longer available";
+  /** A chosen saved connection that was deleted keeps its name; a deleted
+   * snapshot (or a choice not offered any more) is No longer available. */
+  const deletedProfile = (v: string) => v.startsWith("profile:") && savedConnectionDeleted(saved, v.slice(8));
+  const missingLabel = (v: string) => deletedProfile(v) ? deletedConnectionLabel(v.slice(8)) : v.startsWith("profile:") && !saved.loaded ? "Saved connections not read yet" : "No longer available";
+  const optionLabel = (v: string) => options.find(([o]) => o === v)?.[1] || missingLabel(v);
+  const goneText = (side: "Source" | "Target", v: string) => {
+    if (!deletedProfile(v)) return `${side}: that choice is no longer available.`;
+    const name = seenConnectionName(v.slice(8));
+    return `${side}: ${name ? `the saved connection “${name}”` : "the chosen saved connection"} was deleted. Choose another ${side.toLowerCase()}.`;
+  };
   // Parameters: the latest snapshot of this server (what changed since), else
   // another saved connection, else any snapshot. Accounts: another saved connection.
   const own = snapshots.find(s => s.server.host === connection.host && Number(s.server.port) === Number(connection.port));
   const suggested = (own && `latest:${own.source_key}`) || options.find(([v]) => v.startsWith("profile:"))?.[0] || options.find(([v]) => v.startsWith("latest:"))?.[0] || "";
+  // The saved connections arrive before the snapshots: Target keeps following
+  // the suggestion (a snapshot of this server wins) until the user picks.
   useEffect(() => {
-    if (!picked.current && source === "current" && target === "current" && suggested) setTargetState(suggested);
+    if (!picked.current && source === "current" && suggested && target !== suggested) setTargetState(suggested);
   }, [suggested]);
-  const problem = !known(source) ? "Source: that choice is no longer available." : !known(target) ? "Target: that choice is no longer available."
+  const problem = !known(source) ? goneText("Source", source) : !known(target) ? goneText("Target", target)
     : source === target ? "Choose two different sides." : "";
   async function side(choice: string, signal: AbortSignal): Promise<CompareSide> {
     if (choice === "current") return { live: { connection: { ...connection } } };
@@ -356,7 +375,7 @@ function ServerCompare({ kind, connection, disabled, controls, onBack, snapshots
         </div>}
         contextText={report ? `Last compared: Source ${sideLabel(report.source)}${report.source.captured_at ? ` · ${report.source.kind === "live" ? "read" : "captured"} ${localTime(report.source.captured_at)}` : ""}; Target ${sideLabel(report.target)}${report.target.captured_at ? ` · ${report.target.kind === "live" ? "read" : "captured"} ${localTime(report.target.captured_at)}` : ""}` : undefined}
         onSwap={() => { setSource(target); setTarget(source); }} busy={comparing.pending} problem={problem} disabled={disabled} onCompare={() => void runCompare()}>
-        <CompareSidesBar hasResult={!!report} options={options} source={source} target={target} onSource={setSource} onTarget={setTarget} onSwap={() => { setSource(target); setTarget(source); }}
+        <CompareSidesBar hasResult={!!report} options={options} missingLabel={missingLabel} source={source} target={target} onSource={setSource} onTarget={setTarget} onSwap={() => { setSource(target); setTarget(source); }}
           sourceError={!stale ? report?.source.error : undefined} targetError={!stale ? report?.target.error : undefined} busy={comparing.pending}
           problem={problem} disabled={disabled} onCompare={() => void runCompare()} />
       </ComparisonSetup>

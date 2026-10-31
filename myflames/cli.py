@@ -422,7 +422,14 @@ def _run_live_explain(args):
     try:
         with conn:
             maria = conn.is_mariadb()
-            prefix = "" if maria else "SET SESSION explain_json_format_version=2;\n"
+            from .live import analyze_unsupported
+            from .server_info import server_version_tuple
+            refused = analyze_unsupported(conn.server_version(), maria)
+            if refused:
+                sys.stderr.write("EXPLAIN ANALYZE refused: {}\n".format(refused))
+                sys.exit(2)
+            prefix = ("" if maria or server_version_tuple(conn.server_version()) < (8, 3, 0)
+                      else "SET SESSION explain_json_format_version=2;\n")
             # One client/session, stopping at the first error, without reconnect:
             # a failed guard must never fall through to an unguarded ANALYZE.
             script = (prefix + "SET SESSION TRANSACTION READ ONLY;\nSTART TRANSACTION READ ONLY;\n"
@@ -1031,6 +1038,10 @@ def main():
             command = getattr(workspace_cli, "cmd_" + sys.argv[1].replace("-", "_"))
             command(sys.argv[2:])
             return
+        if sys.argv[1] == "slow-log":
+            from .slowlog_cli import cmd_slow_log
+            cmd_slow_log(sys.argv[2:])
+            return
         if sys.argv[1] == "schema":
             from .schema_versions_cli import cmd_schema
             cmd_schema(sys.argv[2:])
@@ -1111,6 +1122,7 @@ Examples:
   myflames restore /backups/shop -h staging -u admin -p # restore after typing the target
   myflames clone -h replica -u admin -p --donor-host primary --donor-user cloner --donor-password
   myflames top -h localhost -u admin -p --order full_join # statements behind joins without an index
+  myflames slow-log /var/log/mysql/slow.log --from '2026-10-31 09:00' # slow log file, by fingerprint
   myflames capture --profile prod -e 'SELECT 1'       # reuse a saved profile + password
   myflames profiles list                                # saved connection profiles
   myflames profiles set prod --type production --read-only # guard writes on a connection
@@ -1138,6 +1150,7 @@ Subcommands:
   capture   Capture a live plan and server evidence as JSON (--mode analyze executes)
   explore   Export interactive HTML with branch focus and operator metrics
   top       List the heaviest statements from Performance Schema digests
+  slow-log  Sum a slow query log file, or mysql.slow_log with --table, by fingerprint (--from, --to)
   sessions  Every connection: summary, idle in transaction, lock waits; --explain ID prints a plan
   running   Deprecated alias of sessions (statements running now; --explain ID)
   locks     Blocking tree, waiting DDL, transactions, row/metadata locks, deadlock; --kill ID
@@ -1147,7 +1160,8 @@ Subcommands:
   waits     Top wait events over a window, by class, since start; uninstrumented classes
   indexes   Unused and redundant indexes, tables read mostly by full scans (--schema)
   tables    Tables without a primary key or usable unique key; InnoDB free space (--fresh)
-  schema    Save schema versions locally; compare saved, file or live schemas; sync script
+  schema    Save schema versions locally; compare saved, file or live schemas; sync script;
+            export as SQL (export VERSION --sql)
   io        Tables and files with the most I/O over a window, and since server start
   config    Review key settings: engine default, source, ok/watch/problem (--fail-on);
             config set / reset-persist change one variable after you confirm;

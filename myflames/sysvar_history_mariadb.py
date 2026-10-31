@@ -8,7 +8,7 @@
 # (reports the release or build), build (a path of the build or installation layout).
 
 ENGINE = 'mariadb'
-GENERATED = {'on': '2026-10-29', 'runtime': 'read from running servers in lab containers', 'builds': "Values come from MariaDB's own Ubuntu packages, as in the official MariaDB Docker image; other builds can compile other defaults.", 'source': 'https://github.com/MariaDB/server', 'manual': {}}
+GENERATED = {'on': '2026-10-31', 'runtime': 'read from running servers in lab containers', 'builds': "Values come from MariaDB's own Ubuntu packages, as in the official MariaDB Docker image; other builds can compile other defaults.", 'source': 'https://github.com/MariaDB/server', 'manual': {}}
 # (version, tag, maturity, tag_date YYYY-MM-DD, previous_index or None, method "image"|"package")
 VERSIONS = (
     ('10.6.3', 'mariadb-10.6.3', 'stable', '2021-07-05', None, 'image'),

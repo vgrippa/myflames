@@ -318,8 +318,7 @@ class TestCaptureProtocol(unittest.TestCase):
         server, because the client now stops at the first error: the
         explain_json_format_version SET (added in MySQL 8.3.0) is sent only
         where it exists."""
-        for version, expected in (('8.0.36', False), ('8.2.0', False), ('8.3.0', True),
-                                  ('8.4.6-log', True), ('9.7.0', True)):
+        for version, expected in (('8.3.0', True), ('8.4.6-log', True), ('9.7.0', True)):
             self.conn.server_version.return_value = version
             job = LiveJob(payload())
             scripts = []
@@ -395,15 +394,16 @@ class TestCaptureProtocol(unittest.TestCase):
         self.assertIsNone(job.result)
 
     def test_analyze_json_on_old_mysql_gets_a_version_message(self):
-        # MySQL 8.0 answers ERROR 1235 for EXPLAIN ANALYZE FORMAT=JSON.
+        # MySQL 8.0 answers ERROR 1235 for EXPLAIN ANALYZE FORMAT=JSON: refused before sending.
         self.conn.server_version.return_value = '8.0.46'
         job = LiveJob(payload())
-        err = "ERROR 1235 (42000) at line 8: This version of MySQL doesn't yet support 'EXPLAIN ANALYZE with JSON format'"
-        with patch.object(job, '_run_script', side_effect=lambda c, s, m: ('', err)):
+        with patch.object(job, '_run_script') as run:
             job.run()
+        run.assert_not_called()
         self.assertEqual(job.state, 'failed')
-        self.assertEqual(job.error, 'EXPLAIN ANALYZE FORMAT=JSON needs MySQL 8.4 or later (this server is 8.0.46); '
-                                    'capture with --mode explain instead.')
+        self.assertEqual(job.error, 'Run analysis needs EXPLAIN ANALYZE FORMAT=JSON, which MySQL has from 8.3 (8.4 LTS '
+                                    'and later), and this server is MySQL 8.0.46; nothing was sent, so use Explain for '
+                                    'the estimated plan.')
 
     def test_error_positions_from_the_wrapped_script_are_dropped(self):
         job = LiveJob(payload(mode='explain'))
@@ -414,7 +414,7 @@ class TestCaptureProtocol(unittest.TestCase):
         self.assertIn("ERROR 1146 (42S02): Table 'testdb.nosuch' doesn't exist", job.error)
 
     def test_capture_warns_below_the_supported_floor(self):
-        for version, maria, expected in (('8.0.46', False, 'supports MySQL 8.4 or later'),
+        for version, maria, expected in (('5.6.51', False, 'supports MySQL 5.7 or later'), ('5.7.44', False, None), ('8.0.46', False, None),
                                          ('10.6.28-MariaDB', True, 'supports MariaDB 10.11 or later'),
                                          ('11.8.2-MariaDB', True, None), ('9.7.0', False, None)):
             self.conn.server_version.return_value = version

@@ -1,0 +1,653 @@
+{
+ "server": {
+  "engine": "mysql",
+  "image": "mysql:5.7.44 (linux/amd64)",
+  "version": "5.7.44-log"
+ },
+ "captured": "2026-10-31",
+ "sessions": {
+  "acct_admin": {
+   "login": "acct_admin",
+   "database": null,
+   "calls": [
+    {
+     "sql": "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), CURRENT_ROLE(), VERSION(); /*myflames:privileges*/ SHOW GRANTS; /*myflames:privileges*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandatory_roles', 'mandatory_roles', 'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')",
+     "flags": [
+      "--comments"
+     ],
+     "error": "mysql client exited 1: ERROR 1046 (3D000) at line 1: No database selected"
+    },
+    {
+     "sql": "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), NULL, VERSION(); /*myflames:privileges*/ SHOW GRANTS; /*myflames:privileges*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandatory_roles', 'mandatory_roles', 'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')",
+     "flags": [
+      "--comments"
+     ],
+     "output": "myflames_who\tacct_admin@172.17.0.1\tacct_admin@%\tNULL\t5.7.44-log\nGRANT ALL PRIVILEGES ON *.* TO 'acct_admin'@'%' WITH GRANT OPTION\nhostname\tcd12f4d6b92f\nport\t3306\nread_only\tOFF\nserver_id\t1\nserver_uuid\tc479973b-d526-11f1-aaa1-0a5a8f53bef8\nsuper_read_only\tOFF\n"
+    },
+    {
+     "sql": "SELECT @@version",
+     "flags": [],
+     "output": "5.7.44-log\n"
+    }
+   ]
+  },
+  "acct_admin@shop": {
+   "login": "acct_admin",
+   "database": "shop",
+   "calls": [
+    {
+     "sql": "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), CURRENT_ROLE(), VERSION(); /*myflames:privileges*/ SHOW GRANTS; /*myflames:privileges*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandatory_roles', 'mandatory_roles', 'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')",
+     "flags": [
+      "--comments"
+     ],
+     "error": "mysql client exited 1: ERROR 1305 (42000) at line 1: FUNCTION shop.CURRENT_ROLE does not exist"
+    },
+    {
+     "sql": "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), NULL, VERSION(); /*myflames:privileges*/ SHOW GRANTS; /*myflames:privileges*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandatory_roles', 'mandatory_roles', 'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')",
+     "flags": [
+      "--comments"
+     ],
+     "output": "myflames_who\tacct_admin@172.17.0.1\tacct_admin@%\tNULL\t5.7.44-log\nGRANT ALL PRIVILEGES ON *.* TO 'acct_admin'@'%' WITH GRANT OPTION\nhostname\tcd12f4d6b92f\nport\t3306\nread_only\tOFF\nserver_id\t1\nserver_uuid\tc479973b-d526-11f1-aaa1-0a5a8f53bef8\nsuper_read_only\tOFF\n"
+    }
+   ]
+  },
+  "acct_ops": {
+   "login": "acct_ops",
+   "database": null,
+   "calls": [
+    {
+     "sql": "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), CURRENT_ROLE(), VERSION(); /*myflames:privileges*/ SHOW GRANTS; /*myflames:privileges*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandatory_roles', 'mandatory_roles', 'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')",
+     "flags": [
+      "--comments"
+     ],
+     "error": "mysql client exited 1: ERROR 1046 (3D000) at line 1: No database selected"
+    },
+    {
+     "sql": "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), NULL, VERSION(); /*myflames:privileges*/ SHOW GRANTS; /*myflames:privileges*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandatory_roles', 'mandatory_roles', 'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')",
+     "flags": [
+      "--comments"
+     ],
+     "output": "myflames_who\tacct_ops@172.17.0.1\tacct_ops@%\tNULL\t5.7.44-log\nGRANT RELOAD, PROCESS, SUPER, CREATE USER ON *.* TO 'acct_ops'@'%'\nGRANT SELECT ON `mysql`.* TO 'acct_ops'@'%'\nhostname\tcd12f4d6b92f\nport\t3306\nread_only\tOFF\nserver_id\t1\nserver_uuid\tc479973b-d526-11f1-aaa1-0a5a8f53bef8\nsuper_read_only\tOFF\n"
+    }
+   ]
+  },
+  "acct_app": {
+   "login": "acct_app",
+   "database": null,
+   "calls": [
+    {
+     "sql": "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), CURRENT_ROLE(), VERSION(); /*myflames:privileges*/ SHOW GRANTS; /*myflames:privileges*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandatory_roles', 'mandatory_roles', 'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')",
+     "flags": [
+      "--comments"
+     ],
+     "error": "mysql client exited 1: ERROR 1046 (3D000) at line 1: No database selected"
+    },
+    {
+     "sql": "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), NULL, VERSION(); /*myflames:privileges*/ SHOW GRANTS; /*myflames:privileges*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandatory_roles', 'mandatory_roles', 'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')",
+     "flags": [
+      "--comments"
+     ],
+     "output": "myflames_who\tacct_app@172.17.0.1\tacct_app@%\tNULL\t5.7.44-log\nGRANT USAGE ON *.* TO 'acct_app'@'%'\nGRANT SELECT ON `db\\\\_x`.* TO 'acct_app'@'%'\nGRANT DELETE ON `shop%`.* TO 'acct_app'@'%'\nGRANT INSERT ON `db_x`.* TO 'acct_app'@'%'\nGRANT SELECT (status, id), INSERT (id) ON `shop`.`orders` TO 'acct_app'@'%'\nGRANT UPDATE ON `shop`.`items` TO 'acct_app'@'%'\nGRANT EXECUTE ON PROCEDURE `shop`.`p_two` TO 'acct_app'@'%'\nGRANT EXECUTE, ALTER ROUTINE ON FUNCTION `shop`.`f_double` TO 'acct_app'@'%'\nhostname\tcd12f4d6b92f\nport\t3306\nread_only\tOFF\nserver_id\t1\nserver_uuid\tc479973b-d526-11f1-aaa1-0a5a8f53bef8\nsuper_read_only\tOFF\n"
+    }
+   ]
+  },
+  "acct_app@shop": {
+   "login": "acct_app",
+   "database": "shop",
+   "calls": [
+    {
+     "sql": "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), CURRENT_ROLE(), VERSION(); /*myflames:privileges*/ SHOW GRANTS; /*myflames:privileges*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandatory_roles', 'mandatory_roles', 'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')",
+     "flags": [
+      "--comments"
+     ],
+     "error": "mysql client exited 1: ERROR 1370 (42000) at line 1: execute command denied to user 'acct_app'@'%' for routine 'shop.CURRENT_ROLE'"
+    },
+    {
+     "sql": "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), NULL, VERSION(); /*myflames:privileges*/ SHOW GRANTS; /*myflames:privileges*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandatory_roles', 'mandatory_roles', 'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')",
+     "flags": [
+      "--comments"
+     ],
+     "output": "myflames_who\tacct_app@172.17.0.1\tacct_app@%\tNULL\t5.7.44-log\nGRANT USAGE ON *.* TO 'acct_app'@'%'\nGRANT SELECT ON `db\\\\_x`.* TO 'acct_app'@'%'\nGRANT DELETE ON `shop%`.* TO 'acct_app'@'%'\nGRANT INSERT ON `db_x`.* TO 'acct_app'@'%'\nGRANT SELECT (status, id), INSERT (id) ON `shop`.`orders` TO 'acct_app'@'%'\nGRANT UPDATE ON `shop`.`items` TO 'acct_app'@'%'\nGRANT EXECUTE ON PROCEDURE `shop`.`p_two` TO 'acct_app'@'%'\nGRANT EXECUTE, ALTER ROUTINE ON FUNCTION `shop`.`f_double` TO 'acct_app'@'%'\nhostname\tcd12f4d6b92f\nport\t3306\nread_only\tOFF\nserver_id\t1\nserver_uuid\tc479973b-d526-11f1-aaa1-0a5a8f53bef8\nsuper_read_only\tOFF\n"
+    }
+   ]
+  },
+  "acct_proxy": {
+   "login": "acct_proxy",
+   "database": null,
+   "calls": [
+    {
+     "sql": "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), CURRENT_ROLE(), VERSION(); /*myflames:privileges*/ SHOW GRANTS; /*myflames:privileges*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandatory_roles', 'mandatory_roles', 'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')",
+     "flags": [
+      "--comments"
+     ],
+     "error": "mysql client exited 1: ERROR 1046 (3D000) at line 1: No database selected"
+    },
+    {
+     "sql": "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), NULL, VERSION(); /*myflames:privileges*/ SHOW GRANTS; /*myflames:privileges*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandatory_roles', 'mandatory_roles', 'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')",
+     "flags": [
+      "--comments"
+     ],
+     "output": "myflames_who\tacct_proxy@172.17.0.1\tacct_proxy@%\tNULL\t5.7.44-log\nGRANT USAGE ON *.* TO 'acct_proxy'@'%'\nGRANT PROXY ON 'acct_app'@'%' TO 'acct_proxy'@'%'\nhostname\tcd12f4d6b92f\nport\t3306\nread_only\tOFF\nserver_id\t1\nserver_uuid\tc479973b-d526-11f1-aaa1-0a5a8f53bef8\nsuper_read_only\tOFF\n"
+    }
+   ]
+  }
+ },
+ "reads": {
+  "login": "root",
+  "calls": [
+   {
+    "sql": "SELECT @@version",
+    "flags": [],
+    "output": "5.7.44-log\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SELECT User, Host, plugin, account_locked, password_expired, password_last_changed, password_lifetime, (authentication_string = '' AND plugin IN ('mysql_native_password','caching_sha2_password','sha256_password')), (authentication_string = '') FROM mysql.user ORDER BY User, Host",
+    "flags": [
+     "--comments"
+    ],
+    "output": "acct_admin\t%\tmysql_native_password\tN\tN\t2026-10-31 12:54:17\tNULL\t0\t0\nacct_app\t%\tmysql_native_password\tN\tN\t2026-10-31 12:54:17\tNULL\t0\t0\nacct_ops\t%\tmysql_native_password\tN\tN\t2026-10-31 12:54:17\tNULL\t0\t0\nacct_proxy\t%\tmysql_native_password\tN\tN\t2026-10-31 12:54:17\t30\t0\t0\nacct_sha\t%\tsha256_password\tN\tN\t2026-10-31 12:54:26\tNULL\t0\t0\nadmin2\tlocalhost\tmysql_native_password\tN\tN\t2026-10-31 12:30:47\tNULL\t0\t0\napp\t%\tmysql_native_password\tN\tN\t2026-10-31 12:30:43\tNULL\t0\t0\ndfn2\t%\tmysql_native_password\tN\tN\t2026-10-31 12:55:28\tNULL\t0\t0\nlocked\t%\tmysql_native_password\tY\tN\t2026-10-31 12:30:47\tNULL\t0\t0\nmysql.session\tlocalhost\tmysql_native_password\tY\tN\t2026-10-31 12:29:51\tNULL\t0\t0\nmysql.sys\tlocalhost\tmysql_native_password\tY\tN\t2026-10-31 12:29:51\tNULL\t0\t0\nproc\t%\tmysql_native_password\tN\tN\t2026-10-31 12:30:47\tNULL\t0\t0\nro\t%\tmysql_native_password\tN\tN\t2026-10-31 12:30:43\tNULL\t0\t0\nroot\t%\tmysql_native_password\tN\tN\t2026-10-31 12:29:56\tNULL\t0\t0\nroot\tlocalhost\tmysql_native_password\tN\tN\t2026-10-31 12:29:56\tNULL\t0\t0\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GRANTS FOR `acct_admin`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "GRANT ALL PRIVILEGES ON *.* TO 'acct_admin'@'%' WITH GRANT OPTION\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GLOBAL VARIABLES WHERE Variable_name = 'partial_revokes'",
+    "flags": [
+     "--comments"
+    ],
+    "output": ""
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW CREATE USER `acct_admin`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "CREATE USER 'acct_admin'@'%' IDENTIFIED WITH 'mysql_native_password' AS '*DF132A5275B8B460BF20B171F84AEA20D25A8CAF' REQUIRE NONE PASSWORD EXPIRE DEFAULT ACCOUNT UNLOCK\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GRANTS FOR `acct_ops`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "GRANT RELOAD, PROCESS, SUPER, CREATE USER ON *.* TO 'acct_ops'@'%'\nGRANT SELECT ON `mysql`.* TO 'acct_ops'@'%'\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GLOBAL VARIABLES WHERE Variable_name = 'partial_revokes'",
+    "flags": [
+     "--comments"
+    ],
+    "output": ""
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW CREATE USER `acct_ops`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "CREATE USER 'acct_ops'@'%' IDENTIFIED WITH 'mysql_native_password' AS '*1DA604CAEAF058D40F5AF2D9130C190AEED004B1' REQUIRE NONE PASSWORD EXPIRE DEFAULT ACCOUNT UNLOCK\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GRANTS FOR `acct_app`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "GRANT USAGE ON *.* TO 'acct_app'@'%'\nGRANT SELECT ON `db\\\\_x`.* TO 'acct_app'@'%'\nGRANT DELETE ON `shop%`.* TO 'acct_app'@'%'\nGRANT INSERT ON `db_x`.* TO 'acct_app'@'%'\nGRANT SELECT (status, id), INSERT (id) ON `shop`.`orders` TO 'acct_app'@'%'\nGRANT UPDATE ON `shop`.`items` TO 'acct_app'@'%'\nGRANT EXECUTE ON PROCEDURE `shop`.`p_two` TO 'acct_app'@'%'\nGRANT EXECUTE, ALTER ROUTINE ON FUNCTION `shop`.`f_double` TO 'acct_app'@'%'\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GLOBAL VARIABLES WHERE Variable_name = 'partial_revokes'",
+    "flags": [
+     "--comments"
+    ],
+    "output": ""
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW CREATE USER `acct_app`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "CREATE USER 'acct_app'@'%' IDENTIFIED WITH 'mysql_native_password' AS '*53940BF54950A9032C500AC5A03C99EEF2299E50' REQUIRE NONE PASSWORD EXPIRE DEFAULT ACCOUNT UNLOCK\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW PRIVILEGES",
+    "flags": [
+     "--comments"
+    ],
+    "output": "Alter\tTables\tTo alter the table\nAlter routine\tFunctions,Procedures\tTo alter or drop stored functions/procedures\nCreate\tDatabases,Tables,Indexes\tTo create new databases and tables\nCreate routine\tDatabases\tTo use CREATE FUNCTION/PROCEDURE\nCreate temporary tables\tDatabases\tTo use CREATE TEMPORARY TABLE\nCreate view\tTables\tTo create new views\nCreate user\tServer Admin\tTo create new users\nDelete\tTables\tTo delete existing rows\nDrop\tDatabases,Tables\tTo drop databases, tables, and views\nEvent\tServer Admin\tTo create, alter, drop and execute events\nExecute\tFunctions,Procedures\tTo execute stored routines\nFile\tFile access on server\tTo read and write files on the server\nGrant option\tDatabases,Tables,Functions,Procedures\tTo give to other users those privileges you possess\nIndex\tTables\tTo create or drop indexes\nInsert\tTables\tTo insert data into tables\nLock tables\tDatabases\tTo use LOCK TABLES (together with SELECT privilege)\nProcess\tServer Admin\tTo view the plain text of currently executing queries\nProxy\tServer Admin\tTo make proxy user possible\nReferences\tDatabases,Tables\tTo have references on tables\nReload\tServer Admin\tTo reload or refresh tables, logs and privileges\nReplication client\tServer Admin\tTo ask where the slave or master servers are\nReplication slave\tServer Admin\tTo read binary log events from the master\nSelect\tTables\tTo retrieve rows from table\nShow databases\tServer Admin\tTo see all databases with SHOW DATABASES\nShow view\tTables\tTo see views with SHOW CREATE VIEW\nShutdown\tServer Admin\tTo shut down the server\nSuper\tServer Admin\tTo use KILL thread, SET GLOBAL, CHANGE MASTER, etc.\nTrigger\tTables\tTo use triggers\nCreate tablespace\tServer Admin\tTo create/alter/drop tablespaces\nUpdate\tTables\tTo update existing rows\nUsage\tServer Admin\tNo privileges - allow connect only\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW DATABASES",
+    "flags": [
+     "--comments"
+    ],
+    "output": "information_schema\ndbAx\ndb_x\nlab_definer\nmysql\nperformance_schema\nshop\nsys\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GRANTS FOR `acct_proxy`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "GRANT USAGE ON *.* TO 'acct_proxy'@'%'\nGRANT PROXY ON 'acct_app'@'%' TO 'acct_proxy'@'%'\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GLOBAL VARIABLES WHERE Variable_name = 'partial_revokes'",
+    "flags": [
+     "--comments"
+    ],
+    "output": ""
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW CREATE USER `acct_proxy`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "CREATE USER 'acct_proxy'@'%' IDENTIFIED WITH 'mysql_native_password' AS '*15A7627CA1E71BAE08710A18D2235F8B5F4B3E29' REQUIRE NONE WITH MAX_USER_CONNECTIONS 3 PASSWORD EXPIRE INTERVAL 30 DAY ACCOUNT UNLOCK\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GRANTS FOR `acct_sha`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "GRANT USAGE ON *.* TO 'acct_sha'@'%'\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GLOBAL VARIABLES WHERE Variable_name = 'partial_revokes'",
+    "flags": [
+     "--comments"
+    ],
+    "output": ""
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW CREATE USER `acct_sha`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "CREATE USER 'acct_sha'@'%' IDENTIFIED WITH 'sha256_password' AS '$5$|\br\\\\n(4)[3\\\\Zil%6&]\u0007\u0002o\u0012$PlUyjisG.z4TzGUf78VHLVQr3KcoRp9COCvyCbVCl8/' REQUIRE NONE PASSWORD EXPIRE DEFAULT ACCOUNT UNLOCK\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GRANTS FOR `locked`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "GRANT USAGE ON *.* TO 'locked'@'%'\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GLOBAL VARIABLES WHERE Variable_name = 'partial_revokes'",
+    "flags": [
+     "--comments"
+    ],
+    "output": ""
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW CREATE USER `locked`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "CREATE USER 'locked'@'%' IDENTIFIED WITH 'mysql_native_password' AS '*3A5CF9F33174512222C27FD8D939A39BF8E10866' REQUIRE NONE PASSWORD EXPIRE DEFAULT ACCOUNT LOCK\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GRANTS FOR `root`@`localhost`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' WITH GRANT OPTION\nGRANT PROXY ON ''@'' TO 'root'@'localhost' WITH GRANT OPTION\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GLOBAL VARIABLES WHERE Variable_name = 'partial_revokes'",
+    "flags": [
+     "--comments"
+    ],
+    "output": ""
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW CREATE USER `root`@`localhost`",
+    "flags": [
+     "--comments"
+    ],
+    "output": "CREATE USER 'root'@'localhost' IDENTIFIED WITH 'mysql_native_password' AS '*89AC582A9B6CFE1BD46BA287547C4139796CCAD7' REQUIRE NONE PASSWORD EXPIRE DEFAULT ACCOUNT UNLOCK\n"
+   },
+   {
+    "sql": "/*myflames:accounts*/ SHOW GRANTS FOR `no_such`@`%`",
+    "flags": [
+     "--comments"
+    ],
+    "error": "mysql client exited 1: ERROR 1141 (42000) at line 1: There is no such grant defined for user 'no_such' on host '%'"
+   }
+  ]
+ },
+ "plans": {
+  "create_random": {
+   "operation": "create",
+   "name": "newbie",
+   "host": "%",
+   "options": {
+    "random_password": true
+   },
+   "statements": [
+    "SET @myflames_accounts_sql_mode = @@SESSION.sql_mode;\nSET SESSION sql_mode = CONCAT_WS(',', NULLIF(@@SESSION.sql_mode, ''), 'NO_BACKSLASH_ESCAPES');\n/*myflames:accounts*/ CREATE USER `newbie`@`%` IDENTIFIED BY '[redacted]';\nSET SESSION sql_mode = @myflames_accounts_sql_mode"
+   ],
+   "calls": [
+    {
+     "sql": "SELECT @@version",
+     "flags": [],
+     "output": "5.7.44-log\n"
+    },
+    {
+     "sql": "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), CURRENT_ROLE(), VERSION(); /*myflames:privileges*/ SHOW GRANTS; /*myflames:privileges*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandatory_roles', 'mandatory_roles', 'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')",
+     "flags": [
+      "--comments"
+     ],
+     "error": "mysql client exited 1: ERROR 1046 (3D000) at line 1: No database selected"
+    },
+    {
+     "sql": "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), NULL, VERSION(); /*myflames:privileges*/ SHOW GRANTS; /*myflames:privileges*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandatory_roles', 'mandatory_roles', 'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')",
+     "flags": [
+      "--comments"
+     ],
+     "output": "myflames_who\troot@172.17.0.1\troot@%\tNULL\t5.7.44-log\nGRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION\nhostname\tcd12f4d6b92f\nport\t3306\nread_only\tOFF\nserver_id\t1\nserver_uuid\tc479973b-d526-11f1-aaa1-0a5a8f53bef8\nsuper_read_only\tOFF\n"
+    },
+    {
+     "sql": "/*myflames:accounts*/ SHOW GRANTS FOR `newbie`@`%`",
+     "flags": [
+      "--comments"
+     ],
+     "error": "mysql client exited 1: ERROR 1141 (42000) at line 1: There is no such grant defined for user 'newbie' on host '%'"
+    }
+   ]
+  },
+  "create_typed_locked": {
+   "operation": "create",
+   "name": "newbie",
+   "host": "%",
+   "options": {
+    "locked": true
+   },
+   "statements": [
+    "SET @myflames_accounts_sql_mode = @@SESSION.sql_mode;\nSET SESSION sql_mode = CONCAT_WS(',', NULLIF(@@SESSION.sql_mode, ''), 'NO_BACKSLASH_ESCAPES');\n/*myflames:accounts*/ CREATE USER `newbie`@`%` IDENTIFIED BY '[redacted]' ACCOUNT LOCK;\nSET SESSION sql_mode = @myflames_accounts_sql_mode"
+   ],
+   "calls": [
+    {
+     "sql": "SELECT @@version",
+     "flags": [],
+     "output": "5.7.44-log\n"
+    },
+    {
+     "sql": "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), CURRENT_ROLE(), VERSION(); /*myflames:privileges*/ SHOW GRANTS; /*myflames:privileges*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandatory_roles', 'mandatory_roles', 'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')",
+     "flags": [
+      "--comments"
+     ],
+     "error": "mysql client exited 1: ERROR 1046 (3D000) at line 1: No database selected"
+    },
+    {
+     "sql": "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), NULL, VERSION(); /*myflames:privileges*/ SHOW GRANTS; /*myflames:privileges*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandatory_roles', 'mandatory_roles', 'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')",
+     "flags": [
+      "--comments"
+     ],
+     "output": "myflames_who\troot@172.17.0.1\troot@%\tNULL\t5.7.44-log\nGRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION\nhostname\tcd12f4d6b92f\nport\t3306\nread_only\tOFF\nserver_id\t1\nserver_uuid\tc479973b-d526-11f1-aaa1-0a5a8f53bef8\nsuper_read_only\tOFF\n"
+    },
+    {
+     "sql": "/*myflames:accounts*/ SHOW GRANTS FOR `newbie`@`%`",
+     "flags": [
+      "--comments"
+     ],
+     "error": "mysql client exited 1: ERROR 1141 (42000) at line 1: There is no such grant defined for user 'newbie' on host '%'"
+    }
+   ]
+  },
+  "grant_all_global": {
+   "operation": "grant",
+   "name": "acct_app",
+   "host": "%",
+   "options": {
+    "level": "global",
+    "privileges": [
+     "ALL"
+    ]
+   },
+   "statements": [
+    "/*myflames:accounts*/ GRANT ALL ON *.* TO `acct_app`@`%`"
+   ],
+   "calls": [
+    {
+     "sql": "SELECT @@version",
+     "flags": [],
+     "output": "5.7.44-log\n"
+    },
+    {
+     "sql": "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), CURRENT_ROLE(), VERSION(); /*myflames:privileges*/ SHOW GRANTS; /*myflames:privileges*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandatory_roles', 'mandatory_roles', 'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')",
+     "flags": [
+      "--comments"
+     ],
+     "error": "mysql client exited 1: ERROR 1046 (3D000) at line 1: No database selected"
+    },
+    {
+     "sql": "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), NULL, VERSION(); /*myflames:privileges*/ SHOW GRANTS; /*myflames:privileges*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandatory_roles', 'mandatory_roles', 'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')",
+     "flags": [
+      "--comments"
+     ],
+     "output": "myflames_who\troot@172.17.0.1\troot@%\tNULL\t5.7.44-log\nGRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION\nhostname\tcd12f4d6b92f\nport\t3306\nread_only\tOFF\nserver_id\t1\nserver_uuid\tc479973b-d526-11f1-aaa1-0a5a8f53bef8\nsuper_read_only\tOFF\n"
+    },
+    {
+     "sql": "/*myflames:accounts*/ SHOW GRANTS FOR `acct_app`@`%`",
+     "flags": [
+      "--comments"
+     ],
+     "output": "GRANT USAGE ON *.* TO 'acct_app'@'%'\nGRANT SELECT ON `db\\\\_x`.* TO 'acct_app'@'%'\nGRANT DELETE ON `shop%`.* TO 'acct_app'@'%'\nGRANT INSERT ON `db_x`.* TO 'acct_app'@'%'\nGRANT SELECT (status, id), INSERT (id) ON `shop`.`orders` TO 'acct_app'@'%'\nGRANT UPDATE ON `shop`.`items` TO 'acct_app'@'%'\nGRANT EXECUTE ON PROCEDURE `shop`.`p_two` TO 'acct_app'@'%'\nGRANT EXECUTE, ALTER ROUTINE ON FUNCTION `shop`.`f_double` TO 'acct_app'@'%'\n"
+    },
+    {
+     "sql": "/*myflames:accounts*/ SHOW GLOBAL VARIABLES WHERE Variable_name = 'partial_revokes'",
+     "flags": [
+      "--comments"
+     ],
+     "output": ""
+    },
+    {
+     "sql": "/*myflames:accounts*/ SHOW CREATE USER `acct_app`@`%`",
+     "flags": [
+      "--comments"
+     ],
+     "output": "CREATE USER 'acct_app'@'%' IDENTIFIED WITH 'mysql_native_password' AS '*53940BF54950A9032C500AC5A03C99EEF2299E50' REQUIRE NONE PASSWORD EXPIRE DEFAULT ACCOUNT UNLOCK\n"
+    },
+    {
+     "sql": "/*myflames:accounts*/ SHOW PRIVILEGES",
+     "flags": [
+      "--comments"
+     ],
+     "output": "Alter\tTables\tTo alter the table\nAlter routine\tFunctions,Procedures\tTo alter or drop stored functions/procedures\nCreate\tDatabases,Tables,Indexes\tTo create new databases and tables\nCreate routine\tDatabases\tTo use CREATE FUNCTION/PROCEDURE\nCreate temporary tables\tDatabases\tTo use CREATE TEMPORARY TABLE\nCreate view\tTables\tTo create new views\nCreate user\tServer Admin\tTo create new users\nDelete\tTables\tTo delete existing rows\nDrop\tDatabases,Tables\tTo drop databases, tables, and views\nEvent\tServer Admin\tTo create, alter, drop and execute events\nExecute\tFunctions,Procedures\tTo execute stored routines\nFile\tFile access on server\tTo read and write files on the server\nGrant option\tDatabases,Tables,Functions,Procedures\tTo give to other users those privileges you possess\nIndex\tTables\tTo create or drop indexes\nInsert\tTables\tTo insert data into tables\nLock tables\tDatabases\tTo use LOCK TABLES (together with SELECT privilege)\nProcess\tServer Admin\tTo view the plain text of currently executing queries\nProxy\tServer Admin\tTo make proxy user possible\nReferences\tDatabases,Tables\tTo have references on tables\nReload\tServer Admin\tTo reload or refresh tables, logs and privileges\nReplication client\tServer Admin\tTo ask where the slave or master servers are\nReplication slave\tServer Admin\tTo read binary log events from the master\nSelect\tTables\tTo retrieve rows from table\nShow databases\tServer Admin\tTo see all databases with SHOW DATABASES\nShow view\tTables\tTo see views with SHOW CREATE VIEW\nShutdown\tServer Admin\tTo shut down the server\nSuper\tServer Admin\tTo use KILL thread, SET GLOBAL, CHANGE MASTER, etc.\nTrigger\tTables\tTo use triggers\nCreate tablespace\tServer Admin\tTo create/alter/drop tablespaces\nUpdate\tTables\tTo update existing rows\nUsage\tServer Admin\tNo privileges - allow connect only\n"
+    }
+   ]
+  },
+  "lock_app": {
+   "operation": "lock",
+   "name": "acct_app",
+   "host": "%",
+   "options": {},
+   "statements": [
+    "/*myflames:accounts*/ ALTER USER `acct_app`@`%` ACCOUNT LOCK"
+   ],
+   "calls": [
+    {
+     "sql": "SELECT @@version",
+     "flags": [],
+     "output": "5.7.44-log\n"
+    },
+    {
+     "sql": "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), CURRENT_ROLE(), VERSION(); /*myflames:privileges*/ SHOW GRANTS; /*myflames:privileges*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandatory_roles', 'mandatory_roles', 'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')",
+     "flags": [
+      "--comments"
+     ],
+     "error": "mysql client exited 1: ERROR 1046 (3D000) at line 1: No database selected"
+    },
+    {
+     "sql": "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), NULL, VERSION(); /*myflames:privileges*/ SHOW GRANTS; /*myflames:privileges*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandatory_roles', 'mandatory_roles', 'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')",
+     "flags": [
+      "--comments"
+     ],
+     "output": "myflames_who\troot@172.17.0.1\troot@%\tNULL\t5.7.44-log\nGRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION\nhostname\tcd12f4d6b92f\nport\t3306\nread_only\tOFF\nserver_id\t1\nserver_uuid\tc479973b-d526-11f1-aaa1-0a5a8f53bef8\nsuper_read_only\tOFF\n"
+    },
+    {
+     "sql": "/*myflames:accounts*/ SHOW GRANTS FOR `acct_app`@`%`",
+     "flags": [
+      "--comments"
+     ],
+     "output": "GRANT USAGE ON *.* TO 'acct_app'@'%'\nGRANT SELECT ON `db\\\\_x`.* TO 'acct_app'@'%'\nGRANT DELETE ON `shop%`.* TO 'acct_app'@'%'\nGRANT INSERT ON `db_x`.* TO 'acct_app'@'%'\nGRANT SELECT (status, id), INSERT (id) ON `shop`.`orders` TO 'acct_app'@'%'\nGRANT UPDATE ON `shop`.`items` TO 'acct_app'@'%'\nGRANT EXECUTE ON PROCEDURE `shop`.`p_two` TO 'acct_app'@'%'\nGRANT EXECUTE, ALTER ROUTINE ON FUNCTION `shop`.`f_double` TO 'acct_app'@'%'\n"
+    },
+    {
+     "sql": "/*myflames:accounts*/ SHOW GLOBAL VARIABLES WHERE Variable_name = 'partial_revokes'",
+     "flags": [
+      "--comments"
+     ],
+     "output": ""
+    },
+    {
+     "sql": "/*myflames:accounts*/ SHOW CREATE USER `acct_app`@`%`",
+     "flags": [
+      "--comments"
+     ],
+     "output": "CREATE USER 'acct_app'@'%' IDENTIFIED WITH 'mysql_native_password' AS '*53940BF54950A9032C500AC5A03C99EEF2299E50' REQUIRE NONE PASSWORD EXPIRE DEFAULT ACCOUNT UNLOCK\n"
+    }
+   ]
+  },
+  "drop_definer": {
+   "operation": "drop",
+   "name": "dfn2",
+   "host": "%",
+   "options": {},
+   "statements": [
+    "/*myflames:accounts*/ DROP USER `dfn2`@`%`"
+   ],
+   "calls": [
+    {
+     "sql": "SELECT @@version",
+     "flags": [],
+     "output": "5.7.44-log\n"
+    },
+    {
+     "sql": "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), CURRENT_ROLE(), VERSION(); /*myflames:privileges*/ SHOW GRANTS; /*myflames:privileges*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandatory_roles', 'mandatory_roles', 'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')",
+     "flags": [
+      "--comments"
+     ],
+     "error": "mysql client exited 1: ERROR 1046 (3D000) at line 1: No database selected"
+    },
+    {
+     "sql": "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), NULL, VERSION(); /*myflames:privileges*/ SHOW GRANTS; /*myflames:privileges*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandatory_roles', 'mandatory_roles', 'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')",
+     "flags": [
+      "--comments"
+     ],
+     "output": "myflames_who\troot@172.17.0.1\troot@%\tNULL\t5.7.44-log\nGRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION\nhostname\tcd12f4d6b92f\nport\t3306\nread_only\tOFF\nserver_id\t1\nserver_uuid\tc479973b-d526-11f1-aaa1-0a5a8f53bef8\nsuper_read_only\tOFF\n"
+    },
+    {
+     "sql": "/*myflames:accounts*/ SHOW GRANTS FOR `dfn2`@`%`",
+     "flags": [
+      "--comments"
+     ],
+     "output": "GRANT USAGE ON *.* TO 'dfn2'@'%'\nGRANT SELECT ON `lab_definer`.* TO 'dfn2'@'%'\n"
+    },
+    {
+     "sql": "/*myflames:accounts*/ SHOW GLOBAL VARIABLES WHERE Variable_name = 'partial_revokes'",
+     "flags": [
+      "--comments"
+     ],
+     "output": ""
+    },
+    {
+     "sql": "/*myflames:accounts*/ SHOW CREATE USER `dfn2`@`%`",
+     "flags": [
+      "--comments"
+     ],
+     "output": "CREATE USER 'dfn2'@'%' IDENTIFIED WITH 'mysql_native_password' AS '*AAC9B1DDA2BA9770DA661438C99D406B29C4BA5E' REQUIRE NONE PASSWORD EXPIRE DEFAULT ACCOUNT UNLOCK\n"
+    },
+    {
+     "sql": "/*myflames:accounts*/ SELECT ID, HOST, COMMAND FROM information_schema.PROCESSLIST WHERE USER = CONVERT(X'64666e32' USING utf8mb4)",
+     "flags": [
+      "--comments"
+     ],
+     "output": ""
+    },
+    {
+     "sql": "/*myflames:accounts*/ SELECT ROUTINE_SCHEMA, ROUTINE_NAME FROM information_schema.ROUTINES WHERE DEFINER = CONVERT(X'64666e324025' USING utf8mb4)",
+     "flags": [
+      "--comments"
+     ],
+     "output": ""
+    },
+    {
+     "sql": "/*myflames:accounts*/ SELECT TABLE_SCHEMA, TABLE_NAME FROM information_schema.VIEWS WHERE DEFINER = CONVERT(X'64666e324025' USING utf8mb4)",
+     "flags": [
+      "--comments"
+     ],
+     "output": "lab_definer\tv2\n"
+    },
+    {
+     "sql": "/*myflames:accounts*/ SELECT TRIGGER_SCHEMA, TRIGGER_NAME FROM information_schema.TRIGGERS WHERE DEFINER = CONVERT(X'64666e324025' USING utf8mb4)",
+     "flags": [
+      "--comments"
+     ],
+     "output": ""
+    },
+    {
+     "sql": "/*myflames:accounts*/ SELECT EVENT_SCHEMA, EVENT_NAME FROM information_schema.EVENTS WHERE DEFINER = CONVERT(X'64666e324025' USING utf8mb4)",
+     "flags": [
+      "--comments"
+     ],
+     "output": ""
+    }
+   ]
+  },
+  "options_history": {
+   "operation": "options",
+   "name": "acct_app",
+   "host": "%",
+   "options": {
+    "password_options": {
+     "history": 3
+    }
+   },
+   "refused": "That password option is not available on this server version.",
+   "calls": [
+    {
+     "sql": "SELECT @@version",
+     "flags": [],
+     "output": "5.7.44-log\n"
+    },
+    {
+     "sql": "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), CURRENT_ROLE(), VERSION(); /*myflames:privileges*/ SHOW GRANTS; /*myflames:privileges*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandatory_roles', 'mandatory_roles', 'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')",
+     "flags": [
+      "--comments"
+     ],
+     "error": "mysql client exited 1: ERROR 1046 (3D000) at line 1: No database selected"
+    },
+    {
+     "sql": "/*myflames:privileges*/ SELECT 'myflames_who', USER(), CURRENT_USER(), NULL, VERSION(); /*myflames:privileges*/ SHOW GRANTS; /*myflames:privileges*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandatory_roles', 'mandatory_roles', 'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')",
+     "flags": [
+      "--comments"
+     ],
+     "output": "myflames_who\troot@172.17.0.1\troot@%\tNULL\t5.7.44-log\nGRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION\nhostname\tcd12f4d6b92f\nport\t3306\nread_only\tOFF\nserver_id\t1\nserver_uuid\tc479973b-d526-11f1-aaa1-0a5a8f53bef8\nsuper_read_only\tOFF\n"
+    },
+    {
+     "sql": "/*myflames:accounts*/ SHOW GRANTS FOR `acct_app`@`%`",
+     "flags": [
+      "--comments"
+     ],
+     "output": "GRANT USAGE ON *.* TO 'acct_app'@'%'\nGRANT SELECT ON `db\\\\_x`.* TO 'acct_app'@'%'\nGRANT DELETE ON `shop%`.* TO 'acct_app'@'%'\nGRANT INSERT ON `db_x`.* TO 'acct_app'@'%'\nGRANT SELECT (status, id), INSERT (id) ON `shop`.`orders` TO 'acct_app'@'%'\nGRANT UPDATE ON `shop`.`items` TO 'acct_app'@'%'\nGRANT EXECUTE ON PROCEDURE `shop`.`p_two` TO 'acct_app'@'%'\nGRANT EXECUTE, ALTER ROUTINE ON FUNCTION `shop`.`f_double` TO 'acct_app'@'%'\n"
+    },
+    {
+     "sql": "/*myflames:accounts*/ SHOW GLOBAL VARIABLES WHERE Variable_name = 'partial_revokes'",
+     "flags": [
+      "--comments"
+     ],
+     "output": ""
+    },
+    {
+     "sql": "/*myflames:accounts*/ SHOW CREATE USER `acct_app`@`%`",
+     "flags": [
+      "--comments"
+     ],
+     "output": "CREATE USER 'acct_app'@'%' IDENTIFIED WITH 'mysql_native_password' AS '*53940BF54950A9032C500AC5A03C99EEF2299E50' REQUIRE NONE PASSWORD EXPIRE DEFAULT ACCOUNT UNLOCK\n"
+    }
+   ]
+  }
+ }
+}

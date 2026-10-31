@@ -155,12 +155,17 @@ def with_definer_removed(ddl):
     return split_definer(ddl)[1]
 
 
-def requalify(text, old, new):
+def requalify(text, old, new, names=None):
     """*text* with every backquoted `old`. qualifier replaced by `new`. (the
     form the server writes view and table references in). String literals
-    and comments are kept as they are: a quoted '`old`.' is data."""
+    and comments are kept as they are: a quoted '`old`.' is data. A name
+    after a dot is never a database (`db`.`old`.`column`). When *names* (the
+    database's object names, lowercased) holds `old` itself, `old`.`x` can
+    also be a column of the table `old`, so it is replaced only when `x` is
+    one of *names* or a third part follows."""
     if not text or old == new or quote(old) + '.' not in text:
         return text
+    ambiguous = names is not None and old.lower() in names
     out, i, n = [], 0, len(text)
     while i < n:
         c = text[i]
@@ -183,7 +188,8 @@ def requalify(text, old, new):
             if ident is None:
                 out.append(text[i:])
                 break
-            if ident[0] == old and text.startswith('.', ident[1]):
+            if (ident[0] == old and text.startswith('.', ident[1]) and not (i and text[i - 1] == '.')
+                    and (not ambiguous or _names_object(text, ident[1] + 1, names))):
                 out.append(quote(new))
             else:
                 out.append(text[i:ident[1]])
@@ -192,6 +198,13 @@ def requalify(text, old, new):
             out.append(c)
             i += 1
     return ''.join(out)
+
+
+def _names_object(text, pos, names):
+    """Whether the identifier at *pos* (after `old`.) is one of *names* or is
+    itself followed by a dot (`old`.`table`.`column`)."""
+    ident = read_identifier(text, pos)
+    return ident is not None and (ident[0].lower() in names or text.startswith('.', ident[1]))
 
 
 def _literal_end(text, pos):

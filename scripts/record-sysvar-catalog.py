@@ -5,7 +5,9 @@ running server, one ``sysvar-runtime-1.0`` JSON file per release.
 Lab use only. Nothing here connects to a server this script did not start.
 For each release in scope the script pulls the official image
 (public.ecr.aws/docker/library first, then docker.io/library only when ECR has
-no such tag) and runs it as a throwaway container named ``myflames-catalog-*``
+no such tag; a Hub tag that only has a schema 1 manifest, which current Docker
+refuses, is copied into a local image with skopeo run as a throwaway container)
+and runs it as a throwaway container named ``myflames-catalog-*``
 (``--rm``, removed with its anonymous volumes, no published ports) whose
 entrypoint is ``sleep``. Through ``docker exec`` it initializes and starts the
 server with ``--no-defaults`` (no option file of the image is read, so every
@@ -23,10 +25,12 @@ x86_64 bintar; MySQL the generic Linux tarball. A release nobody can run gets a
 record with ``"skipped": "<reason>"`` and no variables.
 
 Scope (from the read-only source checkouts, never checked out):
-  MySQL   plain ``mysql-X.Y.Z`` tags (a ``-respin`` tag stands for its version)
-          from 8.0.11 whose MYSQL_VERSION (VERSION in old tags) says GA, LTS or
-          INNOVATION. A tag with no MYSQL_VERSION_MATURITY and an empty
-          MYSQL_VERSION_EXTRA is GA; ``-dmr`` and ``-rc`` are DMR and RC.
+  MySQL   plain ``mysql-X.Y.Z`` tags (a ``-respin`` tag stands for its version):
+          every 5.7 GA release (5.7.9 to 5.7.44; 5.7.1 to 5.7.6 are milestones
+          -m11 to -m16 and 5.7.7 and 5.7.8 are -rc) and everything from 8.0.11
+          whose MYSQL_VERSION (VERSION in old tags) says GA, LTS or INNOVATION.
+          A tag with no MYSQL_VERSION_MATURITY and an empty MYSQL_VERSION_EXTRA
+          is GA; ``-dmr``, ``-rc`` and ``-mNN`` are DMR, RC and milestones.
   MariaDB plain ``mariadb-X.Y.Z`` tags from 10.6 whose VERSION says
           SERVER_MATURITY=stable.
 
@@ -46,6 +50,13 @@ What is read, per engine:
           prints the option as TRUE or FALSE), otherwise null. MIN_VALUE and
           MAX_VALUE are kept only for numeric variables; the server prints a
           double's range as the raw IEEE 754 bits, which are decoded.
+          MySQL 5.7 has neither variables_info nor variables_metadata: names
+          and scopes come from performance_schema.global_variables and
+          variables_by_thread (information_schema.GLOBAL_VARIABLES and
+          SESSION_VARIABLES when performance_schema cannot be read), every
+          value is the default because the server ran with --no-defaults
+          (socket, set on the command line, takes --help's value), min, max
+          and origin are null, and type is set only by the boolean rule.
           Dynamic: ``SET GLOBAL name = @@GLOBAL.name`` (``SET SESSION`` for
           session-only names), one statement at a time, inside the throwaway
           container only: error 1238 "read only" -> false, success -> true,
@@ -63,7 +74,13 @@ What is read, per engine:
           say "deprecated" is kept in ``deprecated_warning``.
           Optional plugins, loaded before reading and tagged ``plugin``: MySQL
           group_replication, semisync (rpl_semi_sync_source/replica, else the
-          master/slave names), clone and the validate_password component;
+          master/slave names), clone, the validate_password component
+          (``component_validate_password``, 8.0 and later) and the
+          validate_password plugin (5.7, and still shipped in later releases,
+          where it is deprecated). On 5.7
+          group_replication initializes only with server_id other than 0 and
+          TABLE replica repositories: the lab sets those three for the INSTALL,
+          puts them back, and takes their defaults from --help;
           MariaDB server_audit, simple_password_check, sql_errlog and
           query_response_time. A plugin that fails to load is a note.
           Host-dependent defaults: a second, smaller server (one CPU, 1 GiB,
@@ -74,7 +91,9 @@ What is read, per engine:
 
 SET statements not probed because they act even when the value is unchanged:
   MySQL   binlog_checksum (Sys_var_enum_binlog_checksum::global_update rotates
-          the binary log on every SET).
+          the binary log on every SET); query_cache_size on 5.7
+          (fix_query_cache_size resizes and empties the query cache on every
+          SET).
   MariaDB query_response_time_flush (its update function flushes the
           statistics on every SET).
 
@@ -130,19 +149,34 @@ INT_TEXT_RE = re.compile(r"^-?\d+$")
 PROBE_MARK = "myflames-probe"
 # SET statements that act even when the value is unchanged (see the docstring).
 PROBE_SKIP = {
-    "mysql": {"binlog_checksum": "SET rotates the binary log even when the value is unchanged"},
+    "mysql": {"binlog_checksum": "SET rotates the binary log even when the value is unchanged",
+              "query_cache_size": "SET resizes and empties the query cache even when the value is unchanged"},
     "mariadb": {"query_response_time_flush": "SET flushes the query response time statistics on every update"},
 }
 MYSQL_PLUGINS = (
     # (label, statements, fallback label, fallback statements)
-    ("group_replication", ("INSTALL PLUGIN group_replication SONAME 'group_replication.so'",), None, None),
+    # MySQL 5.7's plugin refuses to initialize while server_id is 0 and the replica
+    # repositories are FILE (all three are 5.7's defaults); see PLUGIN_SETS.
+    ("group_replication", ("INSTALL PLUGIN group_replication SONAME 'group_replication.so'",),
+     "group_replication", ("SET GLOBAL server_id = 1", "SET GLOBAL master_info_repository = 'TABLE'",
+                           "SET GLOBAL relay_log_info_repository = 'TABLE'",
+                           "INSTALL PLUGIN group_replication SONAME 'group_replication.so'")),
     ("rpl_semi_sync_source", ("INSTALL PLUGIN rpl_semi_sync_source SONAME 'semisync_source.so'",),
      "rpl_semi_sync_master", ("INSTALL PLUGIN rpl_semi_sync_master SONAME 'semisync_master.so'",)),
     ("rpl_semi_sync_replica", ("INSTALL PLUGIN rpl_semi_sync_replica SONAME 'semisync_replica.so'",),
      "rpl_semi_sync_slave", ("INSTALL PLUGIN rpl_semi_sync_slave SONAME 'semisync_slave.so'",)),
     ("clone", ("INSTALL PLUGIN clone SONAME 'mysql_clone.so'",), None, None),
-    ("validate_password", ("INSTALL COMPONENT 'file://component_validate_password'",), None, None),
+    # Two forms: the component (8.0 and later, validate_password.* variables) and
+    # the plugin (5.7, and still shipped, deprecated, in 8.0 and later:
+    # validate_password_* variables). Both are loaded where they exist, so a
+    # 5.7 -> 8.0 comparison does not show the plugin's variables as removed.
+    ("component_validate_password", ("INSTALL COMPONENT 'file://component_validate_password'",), None, None),
+    ("validate_password", ("INSTALL PLUGIN validate_password SONAME 'validate_password.so'",), None, None),
 )
+# Variables a fallback install sets for a while. Their values are put back
+# right after the attempt, and their defaults come from --help, not from the
+# running server.
+PLUGIN_SETS = {"group_replication": ("server_id", "master_info_repository", "relay_log_info_repository")}
 MARIADB_PLUGINS = (
     ("server_audit", ("INSTALL SONAME 'server_audit'",), None, None),
     ("simple_password_check", ("INSTALL SONAME 'simple_password_check'",), None, None),
@@ -261,7 +295,7 @@ def compute_scope(engine, tag_names, read_file, tag_dates=None):
         key = version_key(version)
         if key[:2] < floor[:2] and engine == "mariadb":
             continue
-        if engine == "mysql" and key[0] < 8:
+        if engine == "mysql" and key[:2] < (5, 7):
             continue
         if engine == "mysql":
             text = read_file(tag, "MYSQL_VERSION")
@@ -269,7 +303,8 @@ def compute_scope(engine, tag_names, read_file, tag_dates=None):
                 text = read_file(tag, "VERSION")
             fields = parse_version_file(text)
             maturity = mysql_maturity(fields)
-            ok = key >= floor and maturity in MYSQL_MATURITIES
+            # 5.7 GA releases are in scope; from 8.0 only 8.0.11 and later.
+            ok = maturity in MYSQL_MATURITIES and (key >= floor or key[:2] == (5, 7))
         else:
             fields = parse_version_file(read_file(tag, "VERSION"))
             maturity = mariadb_maturity(fields)
@@ -278,7 +313,7 @@ def compute_scope(engine, tag_names, read_file, tag_dates=None):
         if ok:
             in_scope.append(entry)
         else:
-            if key < floor:
+            if key < floor and not (engine == "mysql" and key[:2] == (5, 7)):
                 entry["reason"] = "Before %s and %s" % (".".join(str(p) for p in floor), maturity)
             else:
                 entry["reason"] = "Maturity %s" % maturity
@@ -455,16 +490,30 @@ def blank_facts():
     return dict((field, None) for field in FIELDS)
 
 
-def mysql_variables(global_rows, thread_rows, info_rows, meta_rows, help_values, plugin_of=None):
+# Variables the lab sets on the server's command line; with no variables_info
+# (MySQL 5.7) their default comes from --help instead of the running value.
+COMMAND_LINE_NAMES = ("socket",)
+NO_INFO_NOTE = ("This release has no performance_schema.variables_info or variables_metadata (both arrived in "
+                "8.0), so VARIABLE_SOURCE, MIN_VALUE and MAX_VALUE cannot be read: min, max and origin are null, and "
+                "type is set only for booleans (an ON or OFF value with a TRUE or FALSE option in --help). The "
+                "server ran with --no-defaults, so every value read is the default; socket, which the lab sets on "
+                "the command line, takes --help's value. The origin guard cannot check this release; the "
+                "--no-defaults start is what keeps option files out.")
+
+
+def mysql_variables(global_rows, thread_rows, info_rows, meta_rows, help_values, plugin_of=None, lab_set=()):
     """Assemble variables from performance_schema reads and --help (no probe yet).
 
-    Rows are dicts as parse_xml_rows returns them. Returns (variables, notes).
+    Rows are dicts as parse_xml_rows returns them; info_rows is None when the
+    release has no performance_schema.variables_info (MySQL 5.7). Returns
+    (variables, notes).
     """
     plugin_of = plugin_of or {}
     notes = []
+    no_info = info_rows is None
     global_values = dict((r["VARIABLE_NAME"].lower(), r.get("VARIABLE_VALUE")) for r in global_rows)
     thread_values = dict((r["VARIABLE_NAME"].lower(), r.get("VARIABLE_VALUE")) for r in thread_rows)
-    info = dict((r["VARIABLE_NAME"].lower(), r) for r in info_rows)
+    info = dict((r["VARIABLE_NAME"].lower(), r) for r in (info_rows or []))
     meta = dict((r["VARIABLE_NAME"].lower(), r) for r in (meta_rows or []))
     names = set(global_values) | set(thread_values)
     missing = sorted(set(info) - names)
@@ -491,7 +540,11 @@ def mysql_variables(global_rows, thread_rows, info_rows, meta_rows, help_values,
         facts["type"] = mysql_type(row.get("DATA_TYPE") if row else None, value, help_value)
         irow = info.get(name, {})
         source = irow.get("VARIABLE_SOURCE")
-        facts["origin"] = source
+        facts["origin"] = None if no_info else source
+        if no_info and name in COMMAND_LINE_NAMES:
+            source = "COMMAND_LINE"  # the lab set it; not stored, origin stays null
+        elif name in lab_set:
+            source = "LAB"  # changed by the lab for a plugin install: default from --help
         facts["min"], facts["max"] = mysql_range(facts["type"], value, irow.get("MIN_VALUE"), irow.get("MAX_VALUE"))
         if source == "COMPILED" or source is None:
             facts["default"] = value
@@ -511,7 +564,36 @@ def mysql_variables(global_rows, thread_rows, info_rows, meta_rows, help_values,
     if scope_disagree:
         notes.append("Scope from the performance_schema tables differs from variables_metadata for: "
                      + "; ".join(scope_disagree))
+    if no_info:
+        notes.append(NO_INFO_NOTE)
+        differ = help_differences(variables, global_values, thread_values, help_values)
+        if differ:
+            notes.append("The running value differs from --help's for %d variables (the server sizes or sets "
+                         "them at startup; the running value is kept): %s" % (len(differ), ", ".join(differ)))
     return variables, notes
+
+
+def unclear_scopes(variables, notes):
+    """information_schema.SESSION_VARIABLES also lists global-only variables: global and both look alike."""
+    unclear = sorted(name for name, facts in variables.items() if facts["scope"] == "both")
+    for name in unclear:
+        variables[name]["scope"] = None
+    if unclear:
+        notes.append("information_schema.SESSION_VARIABLES also lists global-only variables, so the scope of %d "
+                     "variables found in both lists is unknown (null)." % len(unclear))
+
+
+def help_differences(variables, global_values, thread_values, help_values):
+    """Names whose running value is not --help's value written the server's way."""
+    differ = []
+    for name in sorted(variables):
+        if not help_values or name not in help_values or name in COMMAND_LINE_NAMES or \
+                variables[name].get("default_from") == "help":
+            continue
+        value = global_values[name] if name in global_values else thread_values.get(name)
+        if server_text_from_help(help_values[name], value) != value:
+            differ.append(name)
+    return differ
 
 
 def mariadb_variables(rows, plugin_of=None):
@@ -796,6 +878,7 @@ class Unavailable(LabError):
 _ACTIVE = set()
 _ACTIVE_LOCK = threading.Lock()
 _BASES = set()  # plain Linux images pulled for package runs; removed at the end of the run
+_IMAGES_BEFORE = set()  # images present when the run started (never removed)
 _BASES_LOCK = threading.Lock()
 _STOP = threading.Event()
 # Every container of this run carries the token, so a second run (another
@@ -922,6 +1005,7 @@ class Server(object):
         self.package = package
         self.name = "%s%s-%s-%s-%s" % (PREFIX, engine, version, role, RUN_TOKEN)
         self.emulated = bool(platform and platform.endswith("amd64"))
+        self.lab_set = set()  # variables the lab changed for a while (their defaults come from --help)
         self.commands = package["commands"] if package else manual_commands(engine)
         self.client = self.commands["client"]
         self.defaults_option = "--defaults-file=" + CLIENT_CNF
@@ -1057,17 +1141,26 @@ def load_plugins(server, plugins, notes):
     plugin_of = {}
     before = variable_names(server)
     for label, statements, fallback_label, fallback_statements in plugins:
-        attempts = [(label, statements)]
+        attempts = [(label, statements, False)]
         if fallback_label:
-            attempts.append((fallback_label, fallback_statements))
+            attempts.append((fallback_label, fallback_statements, True))
         errors = []
-        for attempt_label, attempt_statements in attempts:
+        for attempt_label, attempt_statements, is_fallback in attempts:
             failed = None
+            touched = PLUGIN_SETS.get(attempt_label, ()) if is_fallback else ()
+            saved = read_globals(server, touched)
             for statement in attempt_statements:
                 code, out, err = server.sql(statement, timeout=180, check=False)
                 if code != 0:
                     failed = err.strip().splitlines()[-1] if err.strip() else "exit %d" % code
                     break
+            if touched:
+                server.lab_set.update(touched)
+                restore_globals(server, saved, notes)
+                if failed is None:
+                    notes.append("%s installs here only with %s changed for the install (server_id other than 0, "
+                                 "TABLE repositories); the lab set them, put them back, and takes their defaults "
+                                 "from --help." % (attempt_label, ", ".join(touched)))
             if failed is None:
                 after = variable_names(server)
                 for name in sorted(after - before):
@@ -1081,11 +1174,30 @@ def load_plugins(server, plugins, notes):
     return loaded, plugin_of
 
 
+def read_globals(server, names):
+    """Current global values of these variables (names checked against NAME_RE)."""
+    values = {}
+    for name in names:
+        if NAME_RE.match(name):
+            rows = server.query_xml("SELECT @@GLOBAL.%s AS v" % name)
+            values[name] = rows[0].get("v") if rows else None
+    return values
+
+
+def restore_globals(server, values, notes):
+    for name, value in sorted(values.items()):
+        if value is None:
+            continue
+        literal = value if INT_TEXT_RE.match(value) else "'%s'" % value.replace("\\", "\\\\").replace("'", "''")
+        code, _, err = server.sql("SET GLOBAL %s = %s" % (name, literal), timeout=120, check=False)
+        if code != 0:
+            notes.append("Could not put %s back to %s: %s" % (name, value, err.strip()[-200:]))
+
+
 def variable_names(server):
     if server.engine == "mysql":
-        rows = server.query_xml("SELECT VARIABLE_NAME FROM performance_schema.global_variables UNION "
-                                "SELECT VARIABLE_NAME FROM performance_schema.variables_by_thread WHERE THREAD_ID = "
-                                "(SELECT THREAD_ID FROM performance_schema.threads WHERE PROCESSLIST_ID = CONNECTION_ID())")
+        global_sql, session_sql, _ = mysql_variable_sql(server)
+        rows = server.query_xml(global_sql) + server.query_xml(session_sql)
     else:
         rows = server.query_xml("SELECT VARIABLE_NAME FROM information_schema.SYSTEM_VARIABLES")
     return set(r["VARIABLE_NAME"].lower() for r in rows)
@@ -1093,17 +1205,49 @@ def variable_names(server):
 
 THREAD_SQL = ("SELECT VARIABLE_NAME, VARIABLE_VALUE FROM performance_schema.variables_by_thread WHERE THREAD_ID = "
               "(SELECT THREAD_ID FROM performance_schema.threads WHERE PROCESSLIST_ID = CONNECTION_ID())")
+PS_GLOBAL_SQL = "SELECT VARIABLE_NAME, VARIABLE_VALUE FROM performance_schema.global_variables"
+IS_GLOBAL_SQL = "SELECT VARIABLE_NAME, VARIABLE_VALUE FROM information_schema.GLOBAL_VARIABLES"
+IS_SESSION_SQL = "SELECT VARIABLE_NAME, VARIABLE_VALUE FROM information_schema.SESSION_VARIABLES"
+
+
+def mysql_variable_sql(server):
+    """(global SQL, session SQL, source name): performance_schema when it answers, else information_schema.
+
+    MySQL 5.7 has performance_schema.global_variables and variables_by_thread
+    (5.7.6 and later, with show_compatibility_56 OFF, the default from 5.7.8);
+    information_schema.GLOBAL_VARIABLES and SESSION_VARIABLES are the fallback.
+    """
+    cached = getattr(server, "variable_sql", None)
+    if cached:
+        return cached
+    code, _, _ = server.sql("SELECT COUNT(*) FROM performance_schema.global_variables", timeout=120, check=False)
+    if code == 0:
+        code, _, _ = server.sql(THREAD_SQL + " LIMIT 1", timeout=120, check=False)
+    if code == 0:
+        server.variable_sql = (PS_GLOBAL_SQL, THREAD_SQL, "performance_schema")
+    else:
+        server.variable_sql = (IS_GLOBAL_SQL, IS_SESSION_SQL, "information_schema")
+    return server.variable_sql
+
+
+def performance_schema_tables(server):
+    rows = server.query_xml("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = "
+                            "'performance_schema' AND TABLE_NAME IN ('variables_info', 'variables_metadata')")
+    return set((r.get("TABLE_NAME") or "").lower() for r in rows)
 
 
 def read_mysql(server, notes):
-    """performance_schema reads and --help for one MySQL server."""
-    global_rows = server.query_xml("SELECT VARIABLE_NAME, VARIABLE_VALUE FROM performance_schema.global_variables")
-    thread_rows = server.query_xml(THREAD_SQL)
-    info_rows = server.query_xml("SELECT * FROM performance_schema.variables_info")
-    has_meta = server.query_xml("SELECT COUNT(*) AS n FROM information_schema.TABLES WHERE TABLE_SCHEMA = "
-                                "'performance_schema' AND TABLE_NAME = 'variables_metadata'")
+    """performance_schema (or information_schema) reads and --help for one MySQL server."""
+    global_sql, session_sql, source = mysql_variable_sql(server)
+    if source != "performance_schema":
+        notes.append("Names, values and scopes were read from information_schema.GLOBAL_VARIABLES and "
+                     "SESSION_VARIABLES (performance_schema.global_variables did not answer).")
+    global_rows = server.query_xml(global_sql)
+    thread_rows = server.query_xml(session_sql)
+    tables = performance_schema_tables(server)
+    info_rows = server.query_xml("SELECT * FROM performance_schema.variables_info") if "variables_info" in tables else None
     meta_rows = None
-    if has_meta and has_meta[0].get("n") not in (None, "0"):
+    if "variables_metadata" in tables:
         meta_rows = server.query_xml("SELECT VARIABLE_NAME, VARIABLE_SCOPE, DATA_TYPE, MIN_VALUE, MAX_VALUE "
                                      "FROM performance_schema.variables_metadata")
     # performance_schema keeps at most 1024 characters of a value; read long ones whole.
@@ -1194,7 +1338,9 @@ def read_server(server, plugins, probe, notes):
     loaded, plugin_of = load_plugins(server, plugins, notes)
     if server.engine == "mysql":
         parts = read_mysql(server, notes)
-        variables, more = mysql_variables(*parts, plugin_of=plugin_of)
+        variables, more = mysql_variables(*parts, plugin_of=plugin_of, lab_set=server.lab_set)
+        if mysql_variable_sql(server)[2] != "performance_schema":
+            unclear_scopes(variables, more)
         host_values = mysql_host_values(variables)
     else:
         rows = read_mariadb(server)
@@ -1219,8 +1365,86 @@ def mysql_amd64_only(version):
     return version_key(version) < (8, 0, 29)
 
 
-def resolve_image(engine, version, hub_tags, notes, forced_platform=None):
-    """Pull the release's image; returns (ref, platform) or raises Unavailable."""
+SKOPEO = "quay.io/skopeo/stable:v1.16.1"
+LOCAL_PREFIX = "myflames-catalog-local/"
+
+
+def skopeo_reason(message):
+    """Why Docker cannot pull this old Hub image itself, or None.
+
+    Docker (containerd 2.1 and later) refuses images that only have a schema 1
+    manifest (MySQL 5.7.9 to 5.7.12), and some old schema 2 images (5.7.13 to
+    5.7.15) fail to unpack ("failed to get reader from content store"). Both
+    load fine from a docker-archive that skopeo writes.
+    """
+    message = message or ""
+    if "manifest.v1+prettyjws" in message or "no longer supported" in message:
+        return "only a schema 1 manifest, which this Docker no longer pulls"
+    if "failed to unpack image" in message or "failed to extract layer" in message:
+        return "a layer this Docker could not unpack (%s)" % message.strip().splitlines()[-1][:160]
+    return None
+
+
+def is_schema1_refusal(message):
+    return skopeo_reason(message) is not None and "schema 1" in skopeo_reason(message)
+
+
+def convert_schema1(ref, engine, version, platform, lab_dir):
+    """Copy a schema 1 image with skopeo into a local image Docker can run.
+
+    Old Docker Hub tags (MySQL 5.7.9 to 5.7.12) only have schema 1 manifests.
+    skopeo, run as a throwaway container, writes a docker-archive that
+    `docker load` accepts. Returns (local reference, source digest or None).
+    """
+    ok, message = pull(SKOPEO)
+    if not ok:
+        raise LabError("could not pull %s: %s" % (SKOPEO, message[-200:]))
+    with _BASES_LOCK:
+        _BASES.add(SKOPEO)
+    local = "%s%s:%s" % (LOCAL_PREFIX, engine, version)
+    archive = "%s-%s.tar" % (engine, version)
+    path = os.path.join(lab_dir, archive)
+    arch = (platform or "linux/amd64").split("/")[-1]
+    name = "%sskopeo-%s-%s-%s" % (PREFIX, engine, version, RUN_TOKEN)
+    with _ACTIVE_LOCK:
+        _ACTIVE.add(name)
+    try:
+        run(["docker", "run", "--rm", "--name", name, "-v", "%s:/out" % lab_dir, SKOPEO, "copy",
+             "--override-os", "linux", "--override-arch", arch, "docker://" + ref,
+             "docker-archive:/out/%s:%s" % (archive, local)], timeout=1800)
+        run(["docker", "load", "-i", path], timeout=900)
+        code, out, _ = run(["docker", "run", "--rm", "--name", name, SKOPEO, "inspect", "--override-os", "linux",
+                            "--override-arch", arch, "--format", "{{.Digest}}", "docker://" + ref],
+                           timeout=300, check=False)
+        digest = out.strip() if code == 0 and out.strip().startswith("sha256:") else None
+    finally:
+        remove_container(name)
+        if os.path.exists(path):
+            os.remove(path)
+    return local, digest
+
+
+def is_transient_pull_error(message):
+    """A registry hiccup worth one more try (not a missing tag, not a rate limit)."""
+    message = (message or "").lower()
+    if "toomanyrequests" in message or "rate limit" in message:
+        return False
+    return any(word in message for word in ("unexpected status", "i/o timeout", "connection reset", "tls handshake",
+                                            "eof", "502 bad gateway", "503 service"))
+
+
+def remove_partial_image(ref):
+    """A pull that failed while unpacking can leave the tag behind; this run made it, so remove it."""
+    code, _, _ = run(["docker", "image", "inspect", ref], timeout=60, check=False)
+    if code == 0 and ref not in _IMAGES_BEFORE:
+        run(["docker", "rmi", ref], timeout=300, check=False)
+
+
+def resolve_image(engine, version, hub_tags, notes, forced_platform=None, lab_dir=None):
+    """Pull the release's image; returns (ref to run, platform, source ref, source digest or None).
+
+    Raises Unavailable when no registry has the tag.
+    """
     platform = "linux/amd64" if engine == "mysql" and mysql_amd64_only(version) else None
     if forced_platform:
         platform = forced_platform
@@ -1231,12 +1455,22 @@ def resolve_image(engine, version, hub_tags, notes, forced_platform=None):
             continue
         ref = "%s%s:%s" % (registry, engine, version)
         ok, message = pull(ref, platform)
+        if not ok and is_transient_pull_error(message):
+            time.sleep(10)
+            ok, message = pull(ref, platform)
         if not ok and platform is None and "no matching manifest" in message:
             ok, message = pull(ref, "linux/amd64")
             if ok:
                 platform = "linux/amd64"
         if ok:
-            return ref, platform
+            return ref, platform, ref, None
+        reason = skopeo_reason(message) if registry == HUB and lab_dir else None
+        if reason:
+            remove_partial_image(ref)
+            local, digest = convert_schema1(ref, engine, version, platform, lab_dir)
+            notes.append("Docker Hub's %s has %s; skopeo (%s) copied it into the local image %s, which was run "
+                         "and removed." % (ref, reason, SKOPEO, local))
+            return local, platform, ref, digest
         tried.append("%s (%s)" % (ref, message.splitlines()[-1][:160] if message else "failed"))
         if registry == ECR and "not found" not in message.lower() and "manifest unknown" not in message.lower():
             notes.append("ECR pull failed for another reason: " + message[:200])
@@ -1408,11 +1642,14 @@ def read_release(entry, engine, args, images_before, hub_tags):
     os.makedirs(lab_dir, exist_ok=True)
     try:
         try:
-            ref, platform = resolve_image(engine, version, hub_tags, notes, args.platform)
+            ref, platform, source_ref, source_digest = resolve_image(engine, version, hub_tags, notes,
+                                                                     args.platform, lab_dir)
             pulled = ref
             meta["method"] = "image"
-            meta["image"] = ref
+            meta["image"] = source_ref
             meta["platform"], meta["image_digest"] = image_info(ref)
+            if source_ref != ref:
+                meta["image_digest"] = source_digest
         except Unavailable as missing:
             try:
                 package = package_spec(engine, version, os.path.join(args.out, ".cache"), args.out)
@@ -1512,8 +1749,8 @@ def write_versions(out_dir, engine, in_scope, excluded, source):
         rows.append(row)
     write_json(os.path.join(out_dir, "versions-%s.json" % engine),
                {"schema": VERSIONS_SCHEMA, "engine": engine, "computed_at": utc_now(), "source": source,
-                "rule": ("plain mysql-X.Y.Z tags (a -respin tag stands for its version) from 8.0.11 with maturity "
-                         "GA, LTS or INNOVATION" if engine == "mysql" else
+                "rule": ("plain mysql-X.Y.Z tags (a -respin tag stands for its version): 5.7 GA releases, and from "
+                         "8.0.11 with maturity GA, LTS or INNOVATION" if engine == "mysql" else
                          "plain mariadb-X.Y.Z tags from 10.6 with SERVER_MATURITY=stable"),
                 "versions": rows, "excluded": excluded})
     return rows
@@ -1687,6 +1924,7 @@ def main(argv=None):
                     images_before.add(HUB + ref if "/" not in ref.split(":")[0] else ref)
     # Images present now are never removed, whatever the file lists.
     images_before |= docker_images()
+    _IMAGES_BEFORE.update(images_before)
     hub_tags = load_hub_tags(args.hub_tags)
     work = []
     wanted = set(args.versions or [])

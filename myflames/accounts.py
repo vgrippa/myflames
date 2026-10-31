@@ -147,9 +147,17 @@ def parse_account(text):
 def _server(conn):
     version = conn.server_version()
     engine = detect_flavor(version)
-    if privileges.version_tuple(version) < ((10, 11, 0) if engine == 'mariadb' else (8, 0, 11)):
-        raise ValueError('Users and roles needs MySQL 8.0.11 or later, or MariaDB 10.11 or later.')
+    # MySQL 5.7.6 added SHOW CREATE USER, ALTER USER ... ACCOUNT LOCK and
+    # mysql.user.account_locked (mysql-5.7.6 sql/sql_yacc.yy,
+    # scripts/mysql_system_tables.sql); earlier servers cannot be read safely.
+    if privileges.version_tuple(version) < ((10, 11, 0) if engine == 'mariadb' else (5, 7, 6)):
+        raise ValueError('Users and roles needs MySQL 5.7.6 or later, or MariaDB 10.11 or later.')
     return engine, version
+
+
+def _has_roles(engine, version):
+    """MySQL 5.7 has no roles (privileges.NO_ROLES_NOTE); MariaDB and MySQL 8.0+ do."""
+    return engine == 'mariadb' or not privileges._mysql_before_roles(version)
 
 
 def _rows_text(rows):
@@ -556,8 +564,12 @@ def list_accounts(conn):
     SELECT on mysql: only the connected account, with a warning."""
     engine, version = _server(conn)
     reader = Reader(conn, TAG)
-    out = {'schema_version': 'accounts-1.0', 'engine': engine, 'version': version,
+    roles = _has_roles(engine, version)
+    out = {'schema_version': 'accounts-1.0', 'engine': engine, 'version': version, 'roles_supported': roles,
            'accounts': [], 'role_grants': [], 'default_roles': [], 'warnings': [], 'complete': True}
+    if not roles:
+        out['roles_note'] = privileges.NO_ROLES_NOTE
+        out['warnings'].append(privileges.NO_ROLES_NOTE)
     try:
         if engine == 'mysql':
             sql = ("SELECT User, Host, plugin, account_locked, password_expired, password_last_changed, "
@@ -565,17 +577,18 @@ def list_accounts(conn):
                    "('mysql_native_password','caching_sha2_password','sha256_password')), "
                    "(authentication_string = '') FROM mysql.user ORDER BY User, Host")
             rows = reader.rows(sql)
+            # mysql.role_edges and mysql.default_roles exist from MySQL 8.0.
             edges = reader.rows('SELECT FROM_USER, FROM_HOST, TO_USER, TO_HOST, WITH_ADMIN_OPTION FROM mysql.role_edges '
-                                'ORDER BY FROM_USER, FROM_HOST, TO_USER, TO_HOST')
+                                'ORDER BY FROM_USER, FROM_HOST, TO_USER, TO_HOST') if roles else []
             defaults = reader.rows('SELECT USER, HOST, DEFAULT_ROLE_USER, DEFAULT_ROLE_HOST FROM mysql.default_roles '
-                                   'ORDER BY USER, HOST, DEFAULT_ROLE_USER, DEFAULT_ROLE_HOST')
+                                   'ORDER BY USER, HOST, DEFAULT_ROLE_USER, DEFAULT_ROLE_HOST') if roles else []
             granted = {(r[0], r[1]) for r in edges}
             for r in rows:
                 locked, expired, empty = r[3] == 'Y', r[4] == 'Y', r[8] == '1'
                 out['accounts'].append({
                     'name': r[0], 'host': r[1], 'plugin': r[2], 'locked': locked, 'expired': expired,
                     'password_last_changed': r[5], 'password_lifetime': r[6], 'no_password': r[7] == '1',
-                    'role': (r[0], r[1]) in granted or (locked and expired and empty),
+                    'role': roles and ((r[0], r[1]) in granted or (locked and expired and empty)),
                     'system': r[0] in SYSTEM_ACCOUNTS})
             out['role_grants'] = [{'role': {'name': r[0], 'host': r[1]}, 'grantee': {'name': r[2], 'host': r[3]},
                                    'admin_option': r[4] == 'Y'} for r in edges]
@@ -792,10 +805,26 @@ def _effects(conn, engine, name, host, version=''):
         except ConnectorError:
             warnings.append('Could not list %s by definer; the list may be incomplete.' % table.lower())
     if definers:
-        if engine == 'mysql':
+        if engine == 'mysql' and privileges.version_tuple(version) < (8, 0, 22):
+            # Error 4006 arrived in mysql-8.0.22 (sql/auth/sql_user.cc); before
+            # it DROP and RENAME USER do not check definers. A missing definer
+            # gives 1449 to routines (sql_security_ctx.cc change_security_context)
+            # and to views for SUPER callers, 1045 to other view callers
+            # (mysql-5.7.44 sql/table.cc:5596-5611); 1449 seen live on 5.7.44.
+            warnings.append('%d object(s) name this account as DEFINER. This MySQL version does not check: '
+                            'afterwards its routines fail with error 1449, and its views fail with 1449 for callers '
+                            'with SUPER and 1045 for everyone else (1698 for an auth_socket login). Change the '
+                            'objects\' definer first.' % len(definers))
+        elif engine == 'mysql':
+            # The privilege that lets the statement past 4006: SET_USER_ID in
+            # 8.0.22 to 8.1, either one in 8.2 and 8.3, ALLOW_NONEXISTENT_DEFINER
+            # from 8.4 (sql/auth/sql_user.cc of each release).
+            v = privileges.version_tuple(version)
+            bypass = ('SET_USER_ID' if v < (8, 2, 0) else 'SET_USER_ID or ALLOW_NONEXISTENT_DEFINER' if v < (8, 4, 0)
+                      else 'ALLOW_NONEXISTENT_DEFINER')
             warnings.append('%d object(s) name this account as DEFINER. MySQL refuses the statement with error 4006 '
-                            'unless you hold ALLOW_NONEXISTENT_DEFINER; change the objects\' definer first. '
-                            'Never grant that privilege just to get past the error.' % len(definers))
+                            'unless you hold %s; change the objects\' definer first. '
+                            'Never grant that privilege just to get past the error.' % (len(definers), bypass))
         else:
             # ER_NO_SUCH_USER (1449) through 11.8, ER_MALFORMED_DEFINER (1446)
             # from 12.0.1 (commit 78d23a3e605); 1449 seen live on 10.11, 11.4.
@@ -1145,6 +1174,9 @@ def plan_change(conn, operation, name, host='%', role=False, actor=None, connect
     if operation not in OPERATIONS:
         raise ValueError('Unknown account operation: choose one of %s.' % ', '.join(OPERATIONS))
     engine, version = _server(conn)
+    if (role or operation == 'roles') and not _has_roles(engine, version):
+        # Refused before any read: MySQL 5.7 has no roles at all.
+        raise ValueError(privileges.NO_ROLES_NOTE)
     a = _name(name, host, engine, role)
     if role and engine == 'mariadb' and name.upper() == 'PUBLIC' and operation in ('create', 'drop'):
         raise ValueError('PUBLIC is built in and cannot be created or dropped.')
@@ -1180,9 +1212,10 @@ def plan_change(conn, operation, name, host='%', role=False, actor=None, connect
             raise ValueError('Roles have no password.')
         if password is not None:
             _password(password)
-        if random and engine == 'mysql' and privileges.version_tuple(version) < (8, 0, 18):
-            raise ValueError('A generated password needs MySQL 8.0.18 or later.')
-        if not role and random and engine == 'mariadb':
+        # MySQL generates a password itself from 8.0.18 (IDENTIFIED BY RANDOM
+        # PASSWORD); MariaDB and older MySQL get one generated here instead.
+        server_random = random and engine == 'mysql' and privileges.version_tuple(version) >= (8, 0, 18)
+        if not role and random and not server_random:
             password = generated = generate_password()
         random_result = bool(random and not role)
         if role:
@@ -1215,7 +1248,7 @@ def plan_change(conn, operation, name, host='%', role=False, actor=None, connect
                 warnings.append('Setting another account\'s password on MariaDB needs UPDATE on the mysql database; '
                                 'CREATE USER is not enough.')
         else:
-            clause = 'RANDOM PASSWORD' if random else _password(password)
+            clause = 'RANDOM PASSWORD' if server_random else _password(password)
             if password is not None:
                 passwords.append(password)
             sql = ('CREATE' if operation == 'create' else 'ALTER') + ' USER ' + a + ' IDENTIFIED BY ' + clause
@@ -1232,8 +1265,11 @@ def plan_change(conn, operation, name, host='%', role=False, actor=None, connect
                 sql += ' ACCOUNT LOCK'
             statements = [_with_password_mode(sql) if password is not None or options.get('current_password') is not None
                           else TAG + sql]
-            if random:
+            if server_random:
                 warnings.append('The server generates the password and returns it once; copy it then, myflames does '
+                                'not store it.')
+            elif random:
+                warnings.append('myflames generates the password and shows it once; copy it then, myflames does '
                                 'not store it.')
         if operation == 'create':
             action = 'create_role' if role else 'create_user'
@@ -1625,7 +1661,7 @@ def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surfac
                     break
                 break
             else:
-                if plan._random_result and engine == 'mysql':
+                if plan._random_result and engine == 'mysql' and generated is None:
                     rows = [[unescape_mysql(c) for c in line.split('\t')]
                             for line in result.split('\n') if line]
                     if rows and len(rows[0]) >= 3:

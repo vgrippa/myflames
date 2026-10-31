@@ -723,13 +723,10 @@ instruments](#performance-schema-instruments) for Instruments.
   three flags. Select a row for the full statement (with **Copy**), latency,
   rows, access and sort counters, and the actions.
 
-  The separate one-off slow-query report validates duration thresholds and limits
-  before connecting. When it reads `mysql.slow_log`, it filters by `query_time`
-  before sorting by duration and applying the limit. Its notes retain source
-  errors, access hints and instrumentation guidance, including when it falls back
-  to Performance Schema digests. Unmeasured slow-log index-use, scan, join,
-  temporary-table and sort counters are unknown (`null`), rather than zero; the
-  rows-examined ratio does not establish an access method.
+  The slow query log is read through Query digest's **Source** (Slow log table,
+  Slow log file), which replaced the one-off "Slow queries over 1 s" ranking in
+  3.3.1. Counters a slow log does not record are unknown (`null`), rather than
+  zero; the rows-examined ratio does not establish an access method.
 
 - **Sessions** (it replaces Running queries) lists the connections with their
   open InnoDB transactions, from the process list: a counter strip (connected,
@@ -1611,6 +1608,7 @@ and never lowers a saved connection's protection.
 | `schema-versions/compare` | `source` (the schema to match), `target` (the schema that would change), each `{version: id}` or `{live: {connection, database}}` (each live side gets its own saved password), `ignore_definers`, `markdown`, optional `chosen_keys` | `schema-compare-1.0` with the sync script that changes the target to match the source (never run; by default without objects only in the target), `comparison_id` and, with `markdown: true`, its Markdown export |
 | `schema-versions/sync` | `comparison_id`, `chosen_keys` (comparison keys, `namespace:name`) | The same comparison with the sync script rebuilt for that choice (`sync.chosen_keys`, `omitted`, `skipped`, `objects[].blocked_by`), from snapshots kept in memory for ten minutes; it reads no server and takes no DDL from the request. An expired `comparison_id` asks for Compare again |
 | `schema-versions/lint` | `id` (a saved version, `latest` or `live`), optional `connection`, `database` (`live` needs both and saves nothing) | `schema-lint-1.0`: `findings` (Watch) and `not_judged` (with reasons). Reads only; nothing is sent to change a server |
+| `schema-versions/export-sql` | `id`, or `live` (`connection`, `database`), or `export_id`; `database`, `create_database`, `keep_definers` | The Export as SQL script (`schema_export.py`) with its warnings, notes and summary; a live read returns `export_id` for option changes. |
 | `investigations/list` | optional `limit` (1 to 50, default 25), `cursor` (the previous page's `next_cursor`), `search` (name, tags or notes, ignoring case) | `investigation-list-1.0`: `items` (summaries newest first: `id`, `updated_at`, `name`, `notes`, `tags`, `baseline_id`, plan `id`, `name` and capture mode; never the plans) and `next_cursor` (null on the last page) |
 | `investigations/get` | `id` | The saved bundle with `id`, `updated_at` (what Open, Compare to baseline and Export read) |
 | `investigations/save` | `value`: bundle, optional `id` | Saved bundle with `id`, `updated_at`. A bundle holds at least one plan or one `evidence` item (at most 30 each: `sessions`, `innodb`, `locks` or `watch` reports with their text; data over 2 MiB, or a bundle over 10 MiB, is trimmed before the text, with a note; every string of an evidence item is stored with credentials such as `IDENTIFIED BY` literals redacted) |
@@ -1629,6 +1627,13 @@ and never lowers a saved connection's protection.
 | `live/top` | `connection`, optional `limit`, `schema` (the shared schema filter), `order` (`total`, `avg`, `examined`, `count`, or the attribution orders `full_join`, `scan`, `no_index`), `table` (`"schema.table"` or `{schema, table}`) | `top-1.0` statements and notes. Each statement has `capture_problem`: null when Explain and Run analysis can capture it, otherwise the reason, and the attribution counters `select_full_join`, `select_range_check`, `select_scan`; with `table`, each has `table_match` and the report has `table` and `match` (label "text match, not proof", caveats). `coverage`: uptime, the oldest `first_seen`, the overflow row, `digest_lost`, `counting_since` (the oldest FIRST_SEEN of the whole digest table when it began more than an hour after the server started, else null). Ranked against the whole server in one more aggregate read: `totals` (`digests`, `total_ms`, `executions` of every digest row), `others` (the digests the list does not hold, or null), `cpu` (`{collected}` on MySQL with SUM_CPU_TIME: false while the `events_statements_cpu` consumer is off, null when unread; null on MariaDB), and per statement `cpu_ms`, `p95_ms`, `p99_ms`, `p999_ms` (null where the server has no such column) and `new` (first seen in the last 24 hours, decided on the server, and only while the counters cover more than a day) |
 | `live/digest-histogram` | `connection`, `digest` (32 to 64 hexadecimal characters), `schema` (the statement's default schema; empty or null for none) | `digest-histogram-1.0`: the buckets of `performance_schema.events_statements_histogram_by_digest` with at least one call (`bucket`, `low_ms`, `high_ms` null for the open-ended last bucket, `count`). MariaDB and servers without the table answer `available: false` with a `reason`. Read when the statement's Latency section is on screen |
 | `live/digest-tables` | `connection`, `schema` (the statement's default schema, or null), `text` (normalized digest text or sample SQL, at most 1,000,000 characters) | `digest-tables-1.0`: `method` ("statement text"), `tables` (at most 20: `schema`, `name`, `found`, `type`, `engine`, `rows_estimate`, `data_bytes`, `index_bytes`, `indexes` with `name`, `unique`, `columns`, `visible`) and `notes`. Names come from the statement text; at most two bounded `information_schema` reads, never row data. A name without a schema stays unread. Read when the statement's Tables section is on screen |
+| `live/table-structure` | `connection`, `schema`, `table` | `table-structure-1.0` (`schema_browser.table_structure`); read-only; the saved password is filled like the views. |
+| `live/slow-log` | `connection`, `order`, `limit`, `from`, `to`, `user` | `slow-log-1.0` read from `mysql.slow_log` (Query digest, Slow log table); validated before connecting, 30 s. |
+| `slow-log/choose` | none | The system file chooser for a slow query log; `file_id` and the file name, or `cancelled`. |
+| `slow-log/open-path` | `path` | The same as `slow-log/choose` for a typed absolute path (a regular readable file of at most 4 GiB). |
+| `slow-log/read` | `file_id`, optional `progress_id`, `order`, `limit`, `from`, `to`, `user` | `slow-log-1.0` summed by statement fingerprint (Query digest, Slow log file); at most two reads at once. |
+| `slow-log/progress` | `progress_id` | `slow-log-progress-1.0`: bytes only, no SQL and no path. |
+| `slow-log/stop` | `progress_id` | Stops that read. |
 | `live/report` | `connection`, optional `interval` (2 to 60, default 10), `schemas` (or `schema`), `all_schemas` | `report-1.0` Full analysis: header (server, views, failures), summary, `look_first`, ranked `findings`, `sections`, `attribution`, `checklist`, notes. One run per connection at a time; an identical request joins it |
 | `report/export` | `report` (a `report-1.0` report), `format` (`html`, `markdown`, `json`, `text`, `digest`), optional `source` (`label`, `host`, `port`, `user`, `type` of the connection it was read from; other fields are dropped) | `{format, content, mime, filename}`, generated from the JSON; every format names the source connection |
 | `live/running` | `connection`, optional `min_seconds` | `running-1.0` statements. Kept for compatibility; `live/sessions` replaces it |

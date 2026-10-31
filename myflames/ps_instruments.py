@@ -74,6 +74,19 @@ same defaults) and on live MySQL 8.4, 9.7 and 26.7 and MariaDB 11.4 and 13.0:
 * setup_instruments and setup_consumers accept UPDATE, setup_actors and
   setup_objects INSERT, UPDATE and DELETE, each checked against ordinary
   table grants (M/storage/perfschema/pfs_engine_table.cc:1152-1210).
+* MySQL 5.7 (5.7.44, checked live too) has other defaults: the metadata
+  lock and transaction instruments are off (storage/perfschema/
+  pfs_instr_class.cc:251-263), memory instruments are off except
+  Performance Schema's own (1590-1601), every statement instrument is on
+  (1455-1466; no disabled stored-program instructions), stages are on only
+  with the progress flag (1412-1424: copy to tmp table, sql/mysqld.cc:9022,
+  and InnoDB's ALTER TABLE and buffer pool load stages, storage/innobase/
+  srv/srv0srv.cc:633-667) and it has no ``error`` instrument and no
+  PROPERTIES column. Of the consumers only global_instrumentation,
+  thread_instrumentation, statements_digest and the statement current and
+  history consumers are on (sql/sys_vars.cc:194-295). It has no SET
+  PERSIST_ONLY. A server whose version is below 8.0 uses the ``mysql57``
+  defaults profile (:func:`defaults_profile`).
 * Default setup_actors row ('%', '%', '%', YES, YES); default setup_objects
   disable mysql, performance_schema and information_schema for every object
   type and enable everything else (M/storage/perfschema/pfs_defaults.cc:
@@ -107,13 +120,34 @@ def sp_control(name):
 
 #: MariaDB's stages with progress information, on by default (Ma/sql/mysqld.cc:
 #: 9792, Ma/storage/innobase/srv/srv0srv.cc:477-506). MySQL marks its own in
-#: the PROPERTIES column.
+#: the PROPERTIES column; MySQL 5.7 has none, so its list is MYSQL57_PROGRESS_STAGES.
 MARIADB_PROGRESS_STAGES = (
     "stage/sql/copy to tmp table", "stage/innodb/alter table (end)", "stage/innodb/alter table (insert)",
     "stage/innodb/alter table (log apply index)", "stage/innodb/alter table (log apply table)",
     "stage/innodb/alter table (merge sort)", "stage/innodb/alter table (read PK and internal sort)",
     "stage/innodb/buffer pool load")
+#: MySQL 5.7's stages with PSI_FLAG_STAGE_PROGRESS, on by default (5.7.44
+#: sql/mysqld.cc:9022, storage/innobase/srv/srv0srv.cc:633-667).
+MYSQL57_PROGRESS_STAGES = (
+    "stage/sql/copy to tmp table", "stage/innodb/alter table (end)", "stage/innodb/alter table (flush)",
+    "stage/innodb/alter table (insert)", "stage/innodb/alter table (log apply index)",
+    "stage/innodb/alter table (log apply table)", "stage/innodb/alter table (merge sort)",
+    "stage/innodb/alter table (read PK and internal sort)", "stage/innodb/buffer pool load")
 BUILTIN_MEMORY = "memory/performance_schema/"
+
+
+def defaults_profile(server):
+    """``mysql``, ``mariadb`` or ``mysql57``: whose compiled defaults apply.
+    MySQL 5.7 differs from 8.0 and later (module docstring)."""
+    from .config_review import before_mysql80
+    if before_mysql80(server.engine, getattr(server, "version_tuple", None)):
+        return "mysql57"
+    return server.engine
+
+
+def _matches(engines, profile):
+    """A FEATURES engine restriction (a name or a tuple of names) admits *profile*."""
+    return profile in ((engines,) if isinstance(engines, str) else tuple(engines))
 
 # ---- SQL fragments shared by the groups and the presets ---------------------------------------
 
@@ -132,7 +166,7 @@ def _quote_list(names):
 
 
 def statements_where(engine):
-    """The statement instruments the engine turns on by default."""
+    """The statement instruments the engine (defaults profile) turns on by default."""
     return _MYSQL_STATEMENTS if engine == "mysql" else "NAME LIKE 'statement/%'"
 
 # ---- defaults (pure) -------------------------------------------------------------------------
@@ -140,8 +174,10 @@ def statements_where(engine):
 
 def default_state(engine, name, properties=""):
     """``(enabled, timed)`` the engine starts *name* with, ``timed`` None when
-    timing does not apply (memory, error); None for an unknown class."""
+    timing does not apply (memory, error); None for an unknown class.
+    *engine* is a defaults profile: mysql, mariadb or mysql57."""
     mysql = engine == "mysql"
+    mysql57 = engine == "mysql57"
     if name.startswith(("wait/synch/", "wait/io/socket/")):
         return False, False
     if name.startswith("wait/io/file/") or name in ("wait/io/table/sql/handler", "wait/lock/table/sql/handler",
@@ -150,13 +186,14 @@ def default_state(engine, name, properties=""):
     if name in ("wait/lock/metadata/sql/mdl", "transaction"):
         return (True, True) if mysql else (False, False)
     if name == "error":
-        return True, None
+        return (True, None) if not mysql57 else None
     if name.startswith("statement/"):
         if mysql and sp_control(name):
             return False, False
         return True, True
     if name.startswith("stage/"):
-        progress = ("progress" in (properties or "").split(",")) if mysql else name in MARIADB_PROGRESS_STAGES
+        progress = (("progress" in (properties or "").split(",")) if mysql else
+                    name in MYSQL57_PROGRESS_STAGES if mysql57 else name in MARIADB_PROGRESS_STAGES)
         return (True, True) if progress else (False, False)
     if name.startswith(BUILTIN_MEMORY):
         return True, None
@@ -177,10 +214,13 @@ _MYSQL_CONSUMERS_ON = ("global_instrumentation", "thread_instrumentation", "stat
                        "events_statements_current", "events_statements_history",
                        "events_transactions_current", "events_transactions_history")
 _MARIADB_CONSUMERS_ON = ("global_instrumentation", "thread_instrumentation", "statements_digest")
+_MYSQL57_CONSUMERS_ON = ("global_instrumentation", "thread_instrumentation", "statements_digest",
+                         "events_statements_current", "events_statements_history")
 
 
 def default_consumer(engine, name):
-    return name in (_MYSQL_CONSUMERS_ON if engine == "mysql" else _MARIADB_CONSUMERS_ON)
+    return name in (_MYSQL_CONSUMERS_ON if engine == "mysql" else
+                    _MYSQL57_CONSUMERS_ON if engine == "mysql57" else _MARIADB_CONSUMERS_ON)
 
 
 def consumer_parent(name):
@@ -225,7 +265,7 @@ FEATURES = (
      # CPU time per digest (SUM_CPU_TIME, MySQL 8.0.28+) grows only while this
      # consumer is on; it is off by default and MariaDB has no such consumer.
      "optional": {"consumers": ("events_statements_cpu",)},
-     "consumer_engines": {"events_statements_cpu": "mysql"},
+     "consumer_engines": {"events_statements_cpu": ("mysql",)},
      "explain": "The heaviest normalized statements since startup, from statement digests."},
     {"key": "capture", "label": "Capture statistics", "view": "editor", "modules": ("live",),
      "tables": ("events_statements_history", "threads"),
@@ -265,8 +305,8 @@ FEATURES = (
      "modules": ("replication",), "tables": ("events_stages_summary_by_thread_by_event_name", "threads"),
      "needs": {"consumers": ("global_instrumentation", "thread_instrumentation"),
                "instruments": ("stage/sql/Checking source version", "stage/sql/Checking master version")},
-     "instrument_engines": {"stage/sql/Checking source version": "mysql",
-                            "stage/sql/Checking master version": "mariadb"},
+     "instrument_engines": {"stage/sql/Checking source version": ("mysql",),
+                            "stage/sql/Checking master version": ("mariadb", "mysql57")},
      "timed": False,
      # Optional guard: shown in Instruments, never counted as a view that is not ready.
      "advisory": True,
@@ -597,22 +637,27 @@ def _config(lines):
 
 def _preset_minimal(engine):
     mysql = engine == "mysql"
+    mysql57 = engine == "mysql57"
     runtime = ("%s(%s)\n   OR NAME IN ('wait/io/table/sql/handler', 'wait/lock/metadata/sql/mdl');\n"
                "%sNAME IN ('global_instrumentation', 'thread_instrumentation', 'statements_digest',\n"
                "      'events_statements_current', 'events_statements_history');"
                % (_SET_ON_ML, statements_where(engine), _CONSUMERS_ON_ML))
-    config = _config([] if mysql else [
+    config = _config([] if mysql else ["performance-schema-instrument = 'wait/lock/metadata/sql/mdl=ON'"] if mysql57
+                     else [
         "performance-schema-instrument = 'wait/lock/metadata/sql/mdl=ON'",
         "performance-schema-consumer-events-statements-current = ON",
         "performance-schema-consumer-events-statements-history = ON"])
-    if mysql:
-        config += "\n# The rest of this preset is on by default in MySQL; remove any my.cnf line that turns it off."
+    if mysql or mysql57:
+        config += ("\n# The rest of this preset is on by default in MySQL%s; remove any my.cnf line that turns it off."
+                   % (" 5.7" if mysql57 else ""))
     return {
         "key": "minimal", "label": "Minimal for myflames",
         "summary": "Exactly what Top statements, capture statistics, Locks and Indexes read.",
         "gain": ("Top statements, capture statistics, metadata locks and an idle blocker's last statement in Locks, "
                  "unused indexes and full scans in Indexes, and per-table I/O."),
         "cost": ("low", "MySQL ships with all of it on." if mysql else
+                 "Adds the metadata lock instrument (one record per lock taken), the one part MySQL 5.7 ships off."
+                 if mysql57 else
                  ("Adds the metadata lock instrument (one record per lock taken) and the statement current and "
                   "history consumers (a ring buffer of the last N statements per session) to MariaDB's defaults.")),
         "runtime": runtime, "config": config, "undo": None,
@@ -626,6 +671,7 @@ def _preset_minimal(engine):
 
 def _preset_locks(engine):
     mysql = engine == "mysql"
+    mysql57 = engine == "mysql57"
     runtime = ("%sNAME IN ('wait/lock/metadata/sql/mdl', 'wait/lock/table/sql/handler', 'transaction')\n"
                "   OR (%s);\n"
                "%sNAME IN ('global_instrumentation', 'thread_instrumentation',\n"
@@ -635,12 +681,17 @@ def _preset_locks(engine):
     config = _config([] if mysql else [
         "performance-schema-instrument = 'wait/lock/metadata/sql/mdl=ON'",
         "performance-schema-instrument = 'transaction=ON'",
+        "performance-schema-consumer-events-transactions-current = ON",
+        "performance-schema-consumer-events-transactions-history = ON"] if mysql57 else [
+        "performance-schema-instrument = 'wait/lock/metadata/sql/mdl=ON'",
+        "performance-schema-instrument = 'transaction=ON'",
         "performance-schema-consumer-events-statements-current = ON",
         "performance-schema-consumer-events-statements-history = ON",
         "performance-schema-consumer-events-transactions-current = ON",
         "performance-schema-consumer-events-transactions-history = ON"])
-    if mysql:
-        config += "\n# The rest of this preset is on by default in MySQL; remove any my.cnf line that turns it off."
+    if mysql or mysql57:
+        config += ("\n# The rest of this preset is on by default in MySQL%s; remove any my.cnf line that turns it off."
+                   % (" 5.7" if mysql57 else ""))
     return {
         "key": "locks", "label": "Lock troubleshooting",
         "summary": "Metadata and table locks, open transactions, and what blocking sessions ran.",
@@ -656,8 +707,8 @@ def _preset_locks(engine):
                                   "events_statements_history", "events_transactions_current",
                                   "events_transactions_history"]},
         "notes": ["InnoDB row locks need no instrument: MySQL reads them from performance_schema.data_locks "
-                  "(Performance Schema on), MariaDB from information_schema.INNODB_LOCKS (needs PROCESS, works with "
-                  "Performance Schema off)."],
+                  "(Performance Schema on), MariaDB and MySQL 5.7 from information_schema.INNODB_LOCKS (needs "
+                  "PROCESS, works with Performance Schema off)."],
     }
 
 
@@ -668,9 +719,9 @@ def _preset_waits(engine):
               + _config(["performance-schema-instrument = 'wait/%=ON'"]))
     notes = ["Run the undo statement when you are done: it turns the internal lock and socket instruments back off "
              "(their default on both engines) and leaves file, table and lock waits on."]
-    if engine == "mariadb":
-        notes.append("It also turns on the metadata lock instrument, which MariaDB ships off; the undo statement "
-                     "leaves it on.")
+    if engine in ("mariadb", "mysql57"):
+        notes.append("It also turns on the metadata lock instrument, which %s ships off; the undo statement "
+                     "leaves it on." % ("MariaDB" if engine == "mariadb" else "MySQL 5.7"))
     return {
         "key": "waits", "label": "Wait analysis",
         "summary": "Every wait instrument, internal locks included, for a short investigation.",
@@ -700,6 +751,17 @@ def _preset_defaults(engine):
                    "UPDATE performance_schema.setup_instruments SET ENABLED = 'YES' "
                    "WHERE NAME LIKE 'memory/%' OR NAME = 'error';\n")
         consumers = _MYSQL_CONSUMERS_ON
+    elif engine == "mysql57":
+        # No PROPERTIES column on 5.7: the progress stages are named.
+        stages = _quote_list(MYSQL57_PROGRESS_STAGES)
+        runtime = (_SET_OFF_ML + "NAME LIKE 'wait/synch/%' OR NAME LIKE 'wait/io/socket/%'\n"
+                   "   OR NAME IN ('wait/lock/metadata/sql/mdl', 'transaction');\n"
+                   + _SET_ON_ML + "NAME LIKE 'wait/io/file/%' OR NAME LIKE 'statement/%'\n"
+                   "   OR NAME IN ('wait/io/table/sql/handler', 'wait/lock/table/sql/handler', 'idle');\n"
+                   + _SET_OFF_ML + "NAME LIKE 'stage/%%' AND NAME NOT IN (%s);\n" % stages
+                   + _SET_ON_ML + "NAME IN (%s);\n" % stages
+                   + "UPDATE performance_schema.setup_instruments SET ENABLED = 'NO' WHERE NAME LIKE 'memory/%';\n")
+        consumers = _MYSQL57_CONSUMERS_ON
     else:
         stages = _quote_list(MARIADB_PROGRESS_STAGES)
         runtime = (_SET_OFF_ML + "NAME LIKE 'wait/synch/%' OR NAME LIKE 'wait/io/socket/%'\n"
@@ -716,9 +778,12 @@ def _preset_defaults(engine):
         "key": "defaults", "label": "Back to defaults",
         "summary": "The engine's compiled-in defaults for every instrument and consumer.",
         "gain": "Returns to the Default column below: what %s turns on when no my.cnf line changes it."
-                % ("MySQL" if engine == "mysql" else "MariaDB"),
+                % ("MySQL" if engine == "mysql" else "MySQL 5.7" if engine == "mysql57" else "MariaDB"),
         "cost": ("low", "MySQL's defaults are meant for production. MariaDB's collect less: no event tables, "
                         "metadata locks, transactions or memory." if engine == "mysql" else
+                 "MySQL 5.7's defaults collect statement summaries, digests and the statement event tables, file, "
+                 "table I/O, table lock and idle waits and progress stage summaries, with no metadata locks, "
+                 "transactions or memory." if engine == "mysql57" else
                  "MariaDB's defaults collect statement summaries and digests, file, table I/O, table lock and idle "
                  "waits and progress stage summaries, with no event tables, metadata locks, transactions or "
                  "memory."),
@@ -931,6 +996,14 @@ def _count_group(engine, group, instruments):
 
 def _default_label(engine, key):
     mysql = engine == "mysql"
+    if engine == "mysql57":
+        return {
+            "statement": "on", "stage": "progress stages only",
+            "wait/io/file": "on", "wait/io/table": "on", "wait/lock/table": "on", "wait/lock/metadata": "off",
+            "wait/synch": "off", "wait/io/socket": "off",
+            "memory": "off (Performance Schema's own memory always counted)",
+            "transaction": "off", "idle": "on", "error": "not in MySQL 5.7",
+        }.get(key, "unknown")
     return {
         "statement": "on (stored-program control instructions off)" if mysql else "on",
         "stage": "progress stages only",
@@ -945,19 +1018,20 @@ def _default_label(engine, key):
 
 def _groups(server, instruments):
     out = []
+    profile = defaults_profile(server)
     for group in GROUPS:
-        if group["key"] == "error" and server.engine == "mariadb":
+        if group["key"] == "error" and profile in ("mariadb", "mysql57"):
             continue
         entry = {"key": group["key"], "id": "group:" + group["key"], "label": group["label"],
                  "match": group["match"], "gain": group["gain"], "lose": group["lose"],
                  "cost": {"level": group["cost"][0], "text": group["cost"][1]},
-                 "default": _default_label(server.engine, group["key"]),
+                 "default": _default_label(profile, group["key"]),
                  "timed_applies": not _untimed(group), "sql": group_sql(group),
                  "features": _features_for_instrument(group["match"])}
         if instruments is None:
             entry.update({"enabled": None, "timed": None, "total": None, "state": "unknown", "changed": None})
         else:
-            entry.update(_count_group(server.engine, group, instruments))
+            entry.update(_count_group(profile, group, instruments))
         out.append(entry)
     if instruments:
         others = sorted(n for n in instruments if _group_of(n) == "other")
@@ -975,13 +1049,13 @@ def _consumers(server, rows):
     names = list(CONSUMER_ORDER)
     if current:
         names = [n for n in CONSUMER_ORDER if n in current] + sorted(n for n in current if n not in CONSUMER_ORDER)
-    elif server.engine == "mariadb":
+    elif defaults_profile(server) in ("mariadb", "mysql57"):
         names = [n for n in names if n != "events_statements_cpu"]
     out = []
     for name in names:
         info = CONSUMERS.get(name, _UNKNOWN_CONSUMER)
         chain = consumer_chain(name)
-        entry = {"name": name, "id": "consumer:" + name, "default": default_consumer(server.engine, name),
+        entry = {"name": name, "id": "consumer:" + name, "default": default_consumer(defaults_profile(server), name),
                  "requires": chain, "gain": info["gain"], "lose": info["lose"],
                  "cost": {"level": info["cost"][0], "text": info["cost"][1]}, "sql": consumer_sql(name),
                  "features": _features_for_consumer(name)}
@@ -1017,6 +1091,7 @@ def _instrument_check(engine, pattern, instruments, timed=True):
 
 def _features(server, instruments, consumers, actors, objects):
     current = {c["name"]: c for c in consumers}
+    profile = defaults_profile(server)
     out = []
     for f in FEATURES:
         engine = f.get("engine")
@@ -1024,7 +1099,7 @@ def _features(server, instruments, consumers, actors, objects):
                  "missing": [], "optional_missing": [], "rows": []}
         if f.get("advisory"):
             entry["advisory"] = True
-        if engine and engine != server.engine:
+        if engine and not _matches(engine, profile):
             entry["status"] = "not_needed"
             entry["missing"] = []
             out.append(entry)
@@ -1043,7 +1118,7 @@ def _features(server, instruments, consumers, actors, objects):
         for kind in ("needs", "optional"):
             spec = f.get(kind, {})
             for name in spec.get("consumers", ()):
-                if f.get("consumer_engines", {}).get(name, server.engine) != server.engine:
+                if not _matches(f.get("consumer_engines", {}).get(name, profile), profile):
                     continue
                 c = current.get(name)
                 if c is None or not c["effective"]:
@@ -1055,7 +1130,7 @@ def _features(server, instruments, consumers, actors, objects):
                     if kind == "needs":
                         worst = "off"
             for pattern in spec.get("instruments", ()):
-                if f.get("instrument_engines", {}).get(pattern, server.engine) != server.engine:
+                if not _matches(f.get("instrument_engines", {}).get(pattern, profile), profile):
                     continue
                 status, text = _instrument_check(server.engine, pattern, instruments, timed=f.get("timed", True))
                 if status == "ok":
@@ -1128,7 +1203,7 @@ def _status(server, raw, sizes):
     enable = None
     if not on:
         enable = {"config": "[mysqld]\nperformance_schema = ON", "persist": None, "persist_text": None}
-        if mysql:
+        if mysql and defaults_profile(server) == "mysql":
             enable["persist"] = "SET PERSIST_ONLY performance_schema = ON;"
             enable["persist_text"] = ("Or, on MySQL, persist it from SQL and restart: SET PERSIST_ONLY writes "
                                       "mysqld-auto.cnf, which wins over my.cnf. It needs the "
@@ -1164,10 +1239,11 @@ def compute_instruments(server, raw, notes=None):
     elif instruments is None or raw.get("consumers") is None:
         unavailable = "denied" if any("denied" in n or "ERROR 1142" in n for n in notes) else "no_data"
     preset_list = []
-    for preset in presets(server.engine):
+    profile = defaults_profile(server)
+    for preset in presets(profile):
         preset = dict(preset)
         preset["cost"] = {"level": preset["cost"][0], "text": preset["cost"][1]}
-        preset["applied"] = _applied(preset, server.engine, instruments, consumers) if server.ps_on else None
+        preset["applied"] = _applied(preset, profile, instruments, consumers) if server.ps_on else None
         if preset["key"] == "defaults":
             extra = []
             if actors and actors["restore"]:
@@ -1184,7 +1260,7 @@ def compute_instruments(server, raw, notes=None):
         "status": _status(server, raw, sizes),
         "features": _features(server, instruments, consumers, actors, objects),
         "groups": groups, "consumers": consumers, "actors": actors, "objects": objects,
-        "instruments": _instrument_list(server.engine, instruments) if server.ps_on else [],
+        "instruments": _instrument_list(profile, instruments) if server.ps_on else [],
         "presets": preset_list, "rules": list(RULES), "privileges": PRIVILEGES, "read_only_note": READ_ONLY_NOTE,
         "notes": notes,
     })
@@ -1202,6 +1278,10 @@ def _notes(server, report, notes):
         notes.append("MariaDB ships Performance Schema off. With it on, the metadata lock, transaction and memory "
                      "instruments are off, and of the consumers only global_instrumentation, "
                      "thread_instrumentation and statements_digest are on; it has no error instrument.")
+    elif defaults_profile(server) == "mysql57":
+        notes.append("These are MySQL 5.7's defaults: the metadata lock, transaction and memory instruments and the "
+                     "transaction consumers are off, every statement instrument is on, and it has no error "
+                     "instrument. MySQL 8.0.2 and later turn the first three on.")
     else:
         notes.append("MySQL 8.4 and 9.x share these defaults in source, and MySQL 26.7 matched them on a live "
                      "server; newer versions add instruments, not new defaults.")

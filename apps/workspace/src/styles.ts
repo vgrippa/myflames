@@ -21,6 +21,7 @@ import "./instruments.css";
 import "./locks.css";
 import "./accounts.css";
 import "./schema-diagram.css";
+import "./table-structure.css";
 import "./schema-versions.css";
 import "./errorlog.css";
 import "./report.css";

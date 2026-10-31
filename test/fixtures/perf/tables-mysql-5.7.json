@@ -1,0 +1,536 @@
+{
+ "server": "mysql-5.7",
+ "source": "live",
+ "args": {
+  "schemas": [
+   "testdb",
+   "review"
+  ],
+  "fresh": false
+ },
+ "calls": [
+  [
+   "/*myflames:tables*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('group_replication_group_name', 'information_schema_stats_expiry', 'innodb_defragment', 'innodb_file_per_table', 'innodb_force_primary_key', 'innodb_optimize_fulltext_only', 'lower_case_table_names', 'performance_schema', 'show_gipk_in_create_table_and_information_schema', 'sql_generate_invisible_primary_key', 'sql_require_primary_key', 'userstat', 'version', 'version_comment', 'wsrep_on')",
+   "innodb_file_per_table\tON\ninnodb_optimize_fulltext_only\tOFF\nlower_case_table_names\t0\nperformance_schema\tON\nversion\t5.7.44-log\nversion_comment\tMySQL Community Server (GPL)\n"
+  ],
+  [
+   "/*myflames:tables*/ SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime' OR Variable_name LIKE 'Performance\\_schema\\_%\\_lost'",
+   "Performance_schema_accounts_lost\t0\nPerformance_schema_cond_classes_lost\t0\nPerformance_schema_cond_instances_lost\t0\nPerformance_schema_digest_lost\t0\nPerformance_schema_file_classes_lost\t0\nPerformance_schema_file_handles_lost\t0\nPerformance_schema_file_instances_lost\t2\nPerformance_schema_hosts_lost\t0\nPerformance_schema_index_stat_lost\t0\nPerformance_schema_locker_lost\t0\nPerformance_schema_memory_classes_lost\t0\nPerformance_schema_metadata_lock_lost\t0\nPerformance_schema_mutex_classes_lost\t0\nPerformance_schema_mutex_instances_lost\t0\nPerformance_schema_nested_statement_lost\t0\nPerformance_schema_prepared_statements_lost\t0\nPerformance_schema_program_lost\t0\nPerformance_schema_rwlock_classes_lost\t0\nPerformance_schema_rwlock_instances_lost\t0\nPerformance_schema_session_connect_attrs_lost\t0\nPerformance_schema_socket_classes_lost\t0\nPerformance_schema_socket_instances_lost\t0\nPerformance_schema_stage_classes_lost\t0\nPerformance_schema_statement_classes_lost\t0\nPerformance_schema_table_handles_lost\t0\nPerformance_schema_table_instances_lost\t0\nPerformance_schema_table_lock_stat_lost\t0\nPerformance_schema_thread_classes_lost\t0\nPerformance_schema_thread_instances_lost\t0\nPerformance_schema_users_lost\t0\nUptime\t1934\n"
+  ],
+  [
+   "/*myflames:tables*/ SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_TYPE IN ('BASE TABLE', 'SYSTEM VERSIONED') AND TABLE_SCHEMA IN (CONVERT(X'746573746462' USING utf8mb4), CONVERT(X'726576696577' USING utf8mb4))",
+   "14\n"
+  ],
+  [
+   "/*myflames:tables*/ SELECT TABLE_SCHEMA, TABLE_NAME, ENGINE, TABLE_ROWS, DATA_LENGTH, INDEX_LENGTH, DATA_FREE, CREATE_OPTIONS FROM information_schema.TABLES WHERE TABLE_TYPE IN ('BASE TABLE', 'SYSTEM VERSIONED') AND TABLE_SCHEMA IN (CONVERT(X'746573746462' USING utf8mb4), CONVERT(X'726576696577' USING utf8mb4))",
+   "review\tchild_invoices\tInnoDB\t1000\t65536\t16384\t0\t\nreview\tchurn\tInnoDB\t1938\t3162112\t65536\t10485760\t\nreview\tlock_probe\tInnoDB\t2\t16384\t0\t0\t\nreview\tmdl_probe\tInnoDB\t1\t16384\t0\t0\t\nreview\tno_pk_events\tInnoDB\t3000\t196608\t0\t0\t\nreview\tparent_accounts\tInnoDB\t100\t16384\t0\t0\t\nreview\tredundant_idx\tInnoDB\t3000\t163840\t163840\t0\t\nreview\trepl_probe\tInnoDB\t1\t16384\t0\t0\t\ntestdb\tcategories\tInnoDB\t50\t16384\t16384\t0\t\ntestdb\torder_items\tInnoDB\t39306\t2637824\t3178496\t4194304\t\ntestdb\torders\tInnoDB\t11907\t524288\t1081344\t4194304\t\ntestdb\tproducts\tInnoDB\t1500\t114688\t196608\t0\t\ntestdb\treviews\tInnoDB\t9991\t409600\t786432\t4194304\t\ntestdb\tusers\tInnoDB\t3000\t212992\t294912\t0\t\n"
+  ],
+  [
+   "/*myflames:tables*/ SELECT TABLE_SCHEMA, TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME, SUB_PART, NULLABLE, INDEX_TYPE, EXPRESSION FROM information_schema.STATISTICS WHERE NON_UNIQUE = 0 AND TABLE_SCHEMA IN (CONVERT(X'746573746462' USING utf8mb4), CONVERT(X'726576696577' USING utf8mb4))",
+   null,
+   "mysql client exited 1: ERROR 1054 (42S22) at line 1: Unknown column 'EXPRESSION' in 'field list'"
+  ],
+  [
+   "/*myflames:tables*/ SELECT TABLE_SCHEMA, TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME, SUB_PART, NULLABLE, INDEX_TYPE, NULL FROM information_schema.STATISTICS WHERE NON_UNIQUE = 0 AND TABLE_SCHEMA IN (CONVERT(X'746573746462' USING utf8mb4), CONVERT(X'726576696577' USING utf8mb4))",
+   "review\tchild_invoices\tPRIMARY\t1\tid\tNULL\t\tBTREE\tNULL\nreview\tchurn\tPRIMARY\t1\tid\tNULL\t\tBTREE\tNULL\nreview\tlock_probe\tPRIMARY\t1\tid\tNULL\t\tBTREE\tNULL\nreview\tmdl_probe\tPRIMARY\t1\tid\tNULL\t\tBTREE\tNULL\nreview\tparent_accounts\tPRIMARY\t1\tid\tNULL\t\tBTREE\tNULL\nreview\tredundant_idx\tPRIMARY\t1\tid\tNULL\t\tBTREE\tNULL\nreview\trepl_probe\tPRIMARY\t1\tid\tNULL\t\tBTREE\tNULL\ntestdb\tcategories\tPRIMARY\t1\tid\tNULL\t\tBTREE\tNULL\ntestdb\torder_items\tPRIMARY\t1\tid\tNULL\t\tBTREE\tNULL\ntestdb\torders\tPRIMARY\t1\tid\tNULL\t\tBTREE\tNULL\ntestdb\tproducts\tPRIMARY\t1\tid\tNULL\t\tBTREE\tNULL\ntestdb\treviews\tPRIMARY\t1\tid\tNULL\t\tBTREE\tNULL\ntestdb\tusers\tPRIMARY\t1\tid\tNULL\t\tBTREE\tNULL\ntestdb\tusers\tuq_email\t1\temail\tNULL\t\tBTREE\tNULL\n"
+  ],
+  [
+   "/*myflames:tables*/ SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, EXTRA FROM information_schema.COLUMNS WHERE (COLUMN_NAME IN ('my_row_id', 'id', 'row_id', 'pk_id') OR EXTRA LIKE '%VIRTUAL GENERATED%') AND TABLE_SCHEMA IN (CONVERT(X'746573746462' USING utf8mb4), CONVERT(X'726576696577' USING utf8mb4))",
+   "review\tchild_invoices\tid\tauto_increment\nreview\tchurn\tid\tauto_increment\nreview\tlock_probe\tid\t\nreview\tmdl_probe\tid\t\nreview\tparent_accounts\tid\tauto_increment\nreview\tredundant_idx\tid\tauto_increment\nreview\trepl_probe\tid\t\ntestdb\tcategories\tid\tauto_increment\ntestdb\torder_items\tid\tauto_increment\ntestdb\torders\tid\tauto_increment\ntestdb\tproducts\tid\tauto_increment\ntestdb\treviews\tid\tauto_increment\ntestdb\tusers\tid\tauto_increment\n"
+  ],
+  [
+   "/*myflames:tables*/ SELECT NAME, SPACE_TYPE, AUTOEXTEND_SIZE FROM information_schema.INNODB_TABLESPACES WHERE SPACE_TYPE IN ('Single', 'General')",
+   null,
+   "mysql client exited 1: ERROR 1109 (42S02) at line 1: Unknown table 'INNODB_TABLESPACES' in information_schema"
+  ],
+  [
+   "/*myflames:tables*/ SELECT NAME, SPACE_TYPE, 0 FROM information_schema.INNODB_SYS_TABLESPACES WHERE SPACE_TYPE IN ('Single', 'General')",
+   "mysql/plugin\tSingle\t0\nmysql/servers\tSingle\t0\nmysql/help_topic\tSingle\t0\nmysql/help_category\tSingle\t0\nmysql/help_relation\tSingle\t0\nmysql/help_keyword\tSingle\t0\nmysql/time_zone_name\tSingle\t0\nmysql/time_zone\tSingle\t0\nmysql/time_zone_transition\tSingle\t0\nmysql/time_zone_transition_type\tSingle\t0\nmysql/time_zone_leap_second\tSingle\t0\nmysql/innodb_table_stats\tSingle\t0\nmysql/innodb_index_stats\tSingle\t0\nmysql/slave_relay_log_info\tSingle\t0\nmysql/slave_master_info\tSingle\t0\nmysql/slave_worker_info\tSingle\t0\nmysql/gtid_executed\tSingle\t0\nmysql/server_cost\tSingle\t0\nmysql/engine_cost\tSingle\t0\nsys/sys_config\tSingle\t0\ntestdb/categories\tSingle\t0\ntestdb/users\tSingle\t0\ntestdb/products\tSingle\t0\ntestdb/orders\tSingle\t0\ntestdb/order_items\tSingle\t0\ntestdb/reviews\tSingle\t0\nreview/no_pk_events\tSingle\t0\nreview/redundant_idx\tSingle\t0\nreview/parent_accounts\tSingle\t0\nreview/child_invoices\tSingle\t0\nreview/churn\tSingle\t0\nreview/lock_probe\tSingle\t0\nreview/repl_probe\tSingle\t0\nreview/mdl_probe\tSingle\t0\n"
+  ]
+ ],
+ "report": {
+  "schema_version": "schema-2.0",
+  "engine": "mysql",
+  "flavor": "mysql",
+  "server_product": "MySQL",
+  "server_version": "5.7.44-log",
+  "taken_at": "2026-10-31T13:03:50.314409+00:00",
+  "uptime_s": 1934,
+  "performance_schema": true,
+  "scope": {
+   "schemas": [
+    "testdb",
+    "review"
+   ],
+   "all_user_schemas": false,
+   "excluded": []
+  },
+  "statistics": {
+   "fresh_requested": false,
+   "fresh": true,
+   "cache_expiry_s": null,
+   "cached": false
+  },
+  "tablespaces_known": true,
+  "userstat": {
+   "enabled": false,
+   "read": false
+  },
+  "tablespace_collection": {
+   "show_create_limit": 50,
+   "deadline_s": 30.0,
+   "unresolved": 0
+  },
+  "summary": {
+   "tables": 14,
+   "innodb": 14,
+   "other_engines": 0,
+   "no_usable_key": 1,
+   "not_null_unique": 0,
+   "gipk": 0,
+   "free_problem": 0,
+   "free_watch": 0,
+   "free_info": 4,
+   "shared": 0,
+   "unknown_tablespace": 0,
+   "engines": [
+    {
+     "engine": "InnoDB",
+     "tables": 14,
+     "bytes": 13369344
+    }
+   ],
+   "status": "problem"
+  },
+  "thresholds": {},
+  "rules": {
+   "no_usable_key": "problem: no PRIMARY KEY and no UNIQUE key on NOT NULL columns",
+   "not_null_unique": "watch: no PRIMARY KEY, but a UNIQUE key on NOT NULL columns stands in for it",
+   "free": "Informational: DATA_FREE is reusable space inside the tablespace. Its amount or percentage alone does not establish a problem or a need to rebuild. File capacity and filesystem headroom are not measured by this report."
+  },
+  "why": [
+   {
+    "key": "replication",
+    "title": "Replicas find each changed row by its key",
+    "text": "With row-based replication (the default) each UPDATE or DELETE reaches the replica as the changed rows, and the replica has to find each one. With a primary key or a unique key on NOT NULL columns that is one index lookup per row. Without one, MySQL 5.7 with its default slave_rows_search_algorithms (INDEX_SCAN,TABLE_SCAN) looks each row up through another index if there is one, or else reads the table from the start for every changed row: deleting 10,000 rows can mean 10,000 table scans, and the replica falls behind."
+   },
+   {
+    "key": "clustering",
+    "title": "InnoDB stores rows in primary key order",
+    "text": "InnoDB keeps each table as a B-tree ordered by the primary key, and every secondary index stores the primary key to reach the row. Without a primary key it uses the first unique key on NOT NULL columns (whole columns, not a prefix, a virtual generated column). Without one it adds a hidden 6-byte row ID."
+   },
+   {
+    "key": "row_id",
+    "title": "The hidden row ID",
+    "text": "Queries and tools cannot see or use the hidden row ID to find, page through or deduplicate rows. It comes from one counter shared by every table that has no key, and each new ID takes InnoDB's global dictionary mutex, so inserts into all such tables contend for it."
+   },
+   {
+    "key": "clusters",
+    "title": "Group Replication needs a primary key",
+    "text": "Group Replication refuses writes to a table without a primary key or a unique key on NOT NULL columns: the client sees \"The table does not comply with the requirements by an external plugin.\""
+   },
+   {
+    "key": "tools",
+    "title": "Online schema change tools need a key",
+    "text": "pt-online-schema-change and gh-ost copy rows in chunks by a primary or unique key; per their documentation they refuse a table without one, so the server's own online ALTER is the only online option left."
+   }
+  ],
+  "tables": [
+   {
+    "schema": "review",
+    "table": "child_invoices",
+    "engine": "InnoDB",
+    "rows": 1000,
+    "data_bytes": 65536,
+    "index_bytes": 16384,
+    "size_bytes": 81920,
+    "partitioned": false
+   },
+   {
+    "schema": "review",
+    "table": "churn",
+    "engine": "InnoDB",
+    "rows": 1938,
+    "data_bytes": 3162112,
+    "index_bytes": 65536,
+    "size_bytes": 3227648,
+    "partitioned": false
+   },
+   {
+    "schema": "review",
+    "table": "lock_probe",
+    "engine": "InnoDB",
+    "rows": 2,
+    "data_bytes": 16384,
+    "index_bytes": 0,
+    "size_bytes": 16384,
+    "partitioned": false
+   },
+   {
+    "schema": "review",
+    "table": "mdl_probe",
+    "engine": "InnoDB",
+    "rows": 1,
+    "data_bytes": 16384,
+    "index_bytes": 0,
+    "size_bytes": 16384,
+    "partitioned": false
+   },
+   {
+    "schema": "review",
+    "table": "no_pk_events",
+    "engine": "InnoDB",
+    "rows": 3000,
+    "data_bytes": 196608,
+    "index_bytes": 0,
+    "size_bytes": 196608,
+    "partitioned": false
+   },
+   {
+    "schema": "review",
+    "table": "parent_accounts",
+    "engine": "InnoDB",
+    "rows": 100,
+    "data_bytes": 16384,
+    "index_bytes": 0,
+    "size_bytes": 16384,
+    "partitioned": false
+   },
+   {
+    "schema": "review",
+    "table": "redundant_idx",
+    "engine": "InnoDB",
+    "rows": 3000,
+    "data_bytes": 163840,
+    "index_bytes": 163840,
+    "size_bytes": 327680,
+    "partitioned": false
+   },
+   {
+    "schema": "review",
+    "table": "repl_probe",
+    "engine": "InnoDB",
+    "rows": 1,
+    "data_bytes": 16384,
+    "index_bytes": 0,
+    "size_bytes": 16384,
+    "partitioned": false
+   },
+   {
+    "schema": "testdb",
+    "table": "categories",
+    "engine": "InnoDB",
+    "rows": 50,
+    "data_bytes": 16384,
+    "index_bytes": 16384,
+    "size_bytes": 32768,
+    "partitioned": false
+   },
+   {
+    "schema": "testdb",
+    "table": "order_items",
+    "engine": "InnoDB",
+    "rows": 39306,
+    "data_bytes": 2637824,
+    "index_bytes": 3178496,
+    "size_bytes": 5816320,
+    "partitioned": false
+   },
+   {
+    "schema": "testdb",
+    "table": "orders",
+    "engine": "InnoDB",
+    "rows": 11907,
+    "data_bytes": 524288,
+    "index_bytes": 1081344,
+    "size_bytes": 1605632,
+    "partitioned": false
+   },
+   {
+    "schema": "testdb",
+    "table": "products",
+    "engine": "InnoDB",
+    "rows": 1500,
+    "data_bytes": 114688,
+    "index_bytes": 196608,
+    "size_bytes": 311296,
+    "partitioned": false
+   },
+   {
+    "schema": "testdb",
+    "table": "reviews",
+    "engine": "InnoDB",
+    "rows": 9991,
+    "data_bytes": 409600,
+    "index_bytes": 786432,
+    "size_bytes": 1196032,
+    "partitioned": false
+   },
+   {
+    "schema": "testdb",
+    "table": "users",
+    "engine": "InnoDB",
+    "rows": 3000,
+    "data_bytes": 212992,
+    "index_bytes": 294912,
+    "size_bytes": 507904,
+    "partitioned": false
+   }
+  ],
+  "missing_primary_keys": [
+   {
+    "schema": "review",
+    "table": "no_pk_events",
+    "engine": "InnoDB",
+    "rows": 3000,
+    "size_bytes": 196608,
+    "partitioned": false,
+    "kind": "no_usable_key",
+    "status": "problem",
+    "unique_keys": [],
+    "clustered_on": "hidden row ID",
+    "why": "InnoDB clusters the rows on a hidden 6-byte row ID (DB_ROW_ID) that queries and tools cannot use. It comes from one counter shared by every table that has no key, and each new ID takes InnoDB's global dictionary mutex, so inserts into all such tables contend for it. Without a key, a replica applying row-based changes has to search the table to find the changed rows (see Why a primary key matters).",
+    "checks": [
+     {
+      "label": "Template: must return no rows for the columns you choose",
+      "sql": "SELECT col1, col2, COUNT(*) FROM `review`.`no_pk_events` GROUP BY col1, col2 HAVING COUNT(*) > 1 LIMIT 10;",
+      "template": true
+     }
+    ],
+    "fixes": [
+     {
+      "label": "Template: a primary key on columns that identify a row",
+      "sql": "ALTER TABLE `review`.`no_pk_events` ADD PRIMARY KEY (col1, col2), ALGORITHM=INPLACE, LOCK=NONE;",
+      "template": true
+     },
+     {
+      "label": "Or add a surrogate key (this server has no invisible columns: SELECT * then returns it, and an INSERT without a column list must give it a value)",
+      "sql": "ALTER TABLE `review`.`no_pk_events` ADD COLUMN `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY FIRST, ALGORITHM=INPLACE, LOCK=SHARED;"
+     }
+    ],
+    "caveat": "Adding a primary key rebuilds the table: it takes time and free disk space for a new copy of the table, and replicas run the same ALTER after it finishes here, so they lag while they rebuild. ALGORITHM=INPLACE, LOCK=NONE makes the server refuse instead of blocking writes when it cannot do it online, for example with a FULLTEXT or SPATIAL index, or when columns must become NOT NULL outside strict SQL mode. Adding an AUTO_INCREMENT column always blocks writes (LOCK=SHARED). The ALTER waits for transactions that use the table, and queries on it queue behind that wait. Try it on a copy or a replica first."
+   }
+  ],
+  "generated_primary_keys": [],
+  "fragmentation": [
+   {
+    "schema": "review",
+    "table": "churn",
+    "rows": 1938,
+    "data_bytes": 3162112,
+    "index_bytes": 65536,
+    "free_bytes": 10485760,
+    "free_pct": 76.5,
+    "partitioned": false,
+    "tablespace": "file_per_table",
+    "tablespace_name": null,
+    "status": "info",
+    "why": "10.0 MiB reusable space, about 76% of reported data, index and free bytes. Informational: DATA_FREE is reusable space inside the tablespace. Its amount or percentage alone does not establish a problem or a need to rebuild. File capacity and filesystem headroom are not measured by this report.",
+    "fix_sql": "OPTIMIZE TABLE `review`.`churn`;",
+    "online_sql": "ALTER TABLE `review`.`churn` FORCE, ALGORITHM=INPLACE, LOCK=NONE;",
+    "caveat": "Optional maintenance; review and confirm before executing. For InnoDB, OPTIMIZE TABLE rebuilds the table (the same rebuild as ALTER TABLE ... FORCE or ALTER TABLE ... ENGINE=InnoDB) and then analyzes it. The rebuild lets writes continue, with exclusive metadata locks at the start and the end; those wait for transactions that use the table, and queries on it queue behind them. With a FULLTEXT or SPATIAL index the rebuild blocks writes. It writes a new copy of the table, so it needs free disk space for one, plus temporary sort files in innodb_tmpdir and an online log of up to innodb_online_alter_log_max_size (128 MiB by default) for the writes made meanwhile. It is written to the binary log, so replicas rebuild too; OPTIMIZE NO_WRITE_TO_BINLOG TABLE keeps it on this server (MySQL 8.4 and later then need the OPTIMIZE_LOCAL_TABLE privilege). If the table will grow back, the free space would be reused anyway and a rebuild gains little."
+   },
+   {
+    "schema": "testdb",
+    "table": "order_items",
+    "rows": 39306,
+    "data_bytes": 2637824,
+    "index_bytes": 3178496,
+    "free_bytes": 4194304,
+    "free_pct": 41.9,
+    "partitioned": false,
+    "tablespace": "file_per_table",
+    "tablespace_name": null,
+    "status": "info",
+    "why": "4.0 MiB reusable space, about 42% of reported data, index and free bytes. Informational: DATA_FREE is reusable space inside the tablespace. Its amount or percentage alone does not establish a problem or a need to rebuild. File capacity and filesystem headroom are not measured by this report.",
+    "fix_sql": "OPTIMIZE TABLE `testdb`.`order_items`;",
+    "online_sql": "ALTER TABLE `testdb`.`order_items` FORCE, ALGORITHM=INPLACE, LOCK=NONE;",
+    "caveat": "Optional maintenance; review and confirm before executing. For InnoDB, OPTIMIZE TABLE rebuilds the table (the same rebuild as ALTER TABLE ... FORCE or ALTER TABLE ... ENGINE=InnoDB) and then analyzes it. The rebuild lets writes continue, with exclusive metadata locks at the start and the end; those wait for transactions that use the table, and queries on it queue behind them. With a FULLTEXT or SPATIAL index the rebuild blocks writes. It writes a new copy of the table, so it needs free disk space for one, plus temporary sort files in innodb_tmpdir and an online log of up to innodb_online_alter_log_max_size (128 MiB by default) for the writes made meanwhile. It is written to the binary log, so replicas rebuild too; OPTIMIZE NO_WRITE_TO_BINLOG TABLE keeps it on this server (MySQL 8.4 and later then need the OPTIMIZE_LOCAL_TABLE privilege). If the table will grow back, the free space would be reused anyway and a rebuild gains little."
+   },
+   {
+    "schema": "testdb",
+    "table": "orders",
+    "rows": 11907,
+    "data_bytes": 524288,
+    "index_bytes": 1081344,
+    "free_bytes": 4194304,
+    "free_pct": 72.3,
+    "partitioned": false,
+    "tablespace": "file_per_table",
+    "tablespace_name": null,
+    "status": "info",
+    "why": "4.0 MiB reusable space, about 72% of reported data, index and free bytes. Informational: DATA_FREE is reusable space inside the tablespace. Its amount or percentage alone does not establish a problem or a need to rebuild. File capacity and filesystem headroom are not measured by this report.",
+    "fix_sql": "OPTIMIZE TABLE `testdb`.`orders`;",
+    "online_sql": "ALTER TABLE `testdb`.`orders` FORCE, ALGORITHM=INPLACE, LOCK=NONE;",
+    "caveat": "Optional maintenance; review and confirm before executing. For InnoDB, OPTIMIZE TABLE rebuilds the table (the same rebuild as ALTER TABLE ... FORCE or ALTER TABLE ... ENGINE=InnoDB) and then analyzes it. The rebuild lets writes continue, with exclusive metadata locks at the start and the end; those wait for transactions that use the table, and queries on it queue behind them. With a FULLTEXT or SPATIAL index the rebuild blocks writes. It writes a new copy of the table, so it needs free disk space for one, plus temporary sort files in innodb_tmpdir and an online log of up to innodb_online_alter_log_max_size (128 MiB by default) for the writes made meanwhile. It is written to the binary log, so replicas rebuild too; OPTIMIZE NO_WRITE_TO_BINLOG TABLE keeps it on this server (MySQL 8.4 and later then need the OPTIMIZE_LOCAL_TABLE privilege). If the table will grow back, the free space would be reused anyway and a rebuild gains little."
+   },
+   {
+    "schema": "testdb",
+    "table": "reviews",
+    "rows": 9991,
+    "data_bytes": 409600,
+    "index_bytes": 786432,
+    "free_bytes": 4194304,
+    "free_pct": 77.8,
+    "partitioned": false,
+    "tablespace": "file_per_table",
+    "tablespace_name": null,
+    "status": "info",
+    "why": "4.0 MiB reusable space, about 78% of reported data, index and free bytes. Informational: DATA_FREE is reusable space inside the tablespace. Its amount or percentage alone does not establish a problem or a need to rebuild. File capacity and filesystem headroom are not measured by this report.",
+    "fix_sql": "OPTIMIZE TABLE `testdb`.`reviews`;",
+    "online_sql": "ALTER TABLE `testdb`.`reviews` FORCE, ALGORITHM=INPLACE, LOCK=NONE;",
+    "caveat": "Optional maintenance; review and confirm before executing. For InnoDB, OPTIMIZE TABLE rebuilds the table (the same rebuild as ALTER TABLE ... FORCE or ALTER TABLE ... ENGINE=InnoDB) and then analyzes it. The rebuild lets writes continue, with exclusive metadata locks at the start and the end; those wait for transactions that use the table, and queries on it queue behind them. With a FULLTEXT or SPATIAL index the rebuild blocks writes. It writes a new copy of the table, so it needs free disk space for one, plus temporary sort files in innodb_tmpdir and an online log of up to innodb_online_alter_log_max_size (128 MiB by default) for the writes made meanwhile. It is written to the binary log, so replicas rebuild too; OPTIMIZE NO_WRITE_TO_BINLOG TABLE keeps it on this server (MySQL 8.4 and later then need the OPTIMIZE_LOCAL_TABLE privilege). If the table will grow back, the free space would be reused anyway and a rebuild gains little."
+   },
+   {
+    "schema": "review",
+    "table": "child_invoices",
+    "rows": 1000,
+    "data_bytes": 65536,
+    "index_bytes": 16384,
+    "free_bytes": 0,
+    "free_pct": 0,
+    "partitioned": false,
+    "tablespace": null,
+    "tablespace_name": null,
+    "status": "ok",
+    "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
+   },
+   {
+    "schema": "review",
+    "table": "lock_probe",
+    "rows": 2,
+    "data_bytes": 16384,
+    "index_bytes": 0,
+    "free_bytes": 0,
+    "free_pct": 0,
+    "partitioned": false,
+    "tablespace": null,
+    "tablespace_name": null,
+    "status": "ok",
+    "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
+   },
+   {
+    "schema": "review",
+    "table": "mdl_probe",
+    "rows": 1,
+    "data_bytes": 16384,
+    "index_bytes": 0,
+    "free_bytes": 0,
+    "free_pct": 0,
+    "partitioned": false,
+    "tablespace": null,
+    "tablespace_name": null,
+    "status": "ok",
+    "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
+   },
+   {
+    "schema": "review",
+    "table": "no_pk_events",
+    "rows": 3000,
+    "data_bytes": 196608,
+    "index_bytes": 0,
+    "free_bytes": 0,
+    "free_pct": 0,
+    "partitioned": false,
+    "tablespace": null,
+    "tablespace_name": null,
+    "status": "ok",
+    "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
+   },
+   {
+    "schema": "review",
+    "table": "parent_accounts",
+    "rows": 100,
+    "data_bytes": 16384,
+    "index_bytes": 0,
+    "free_bytes": 0,
+    "free_pct": 0,
+    "partitioned": false,
+    "tablespace": null,
+    "tablespace_name": null,
+    "status": "ok",
+    "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
+   },
+   {
+    "schema": "review",
+    "table": "redundant_idx",
+    "rows": 3000,
+    "data_bytes": 163840,
+    "index_bytes": 163840,
+    "free_bytes": 0,
+    "free_pct": 0,
+    "partitioned": false,
+    "tablespace": null,
+    "tablespace_name": null,
+    "status": "ok",
+    "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
+   },
+   {
+    "schema": "review",
+    "table": "repl_probe",
+    "rows": 1,
+    "data_bytes": 16384,
+    "index_bytes": 0,
+    "free_bytes": 0,
+    "free_pct": 0,
+    "partitioned": false,
+    "tablespace": null,
+    "tablespace_name": null,
+    "status": "ok",
+    "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
+   },
+   {
+    "schema": "testdb",
+    "table": "categories",
+    "rows": 50,
+    "data_bytes": 16384,
+    "index_bytes": 16384,
+    "free_bytes": 0,
+    "free_pct": 0,
+    "partitioned": false,
+    "tablespace": null,
+    "tablespace_name": null,
+    "status": "ok",
+    "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
+   },
+   {
+    "schema": "testdb",
+    "table": "products",
+    "rows": 1500,
+    "data_bytes": 114688,
+    "index_bytes": 196608,
+    "free_bytes": 0,
+    "free_pct": 0,
+    "partitioned": false,
+    "tablespace": null,
+    "tablespace_name": null,
+    "status": "ok",
+    "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
+   },
+   {
+    "schema": "testdb",
+    "table": "users",
+    "rows": 3000,
+    "data_bytes": 212992,
+    "index_bytes": 294912,
+    "free_bytes": 0,
+    "free_pct": 0,
+    "partitioned": false,
+    "tablespace": null,
+    "tablespace_name": null,
+    "status": "ok",
+    "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
+   }
+  ],
+  "shared_tablespaces": [],
+  "more": {
+   "tables": 0,
+   "missing_primary_keys": 0,
+   "generated_primary_keys": 0,
+   "fragmentation": 0
+  },
+  "notes": [
+   "TABLE_ROWS, DATA_LENGTH and INDEX_LENGTH are InnoDB estimates from its table statistics, recalculated in the background after about 10% of the rows change (persistent statistics, the default) or by ANALYZE TABLE. DATA_FREE is read from the tablespace every time. It counts whole free extents and the unused space at the end of the file (an extent is 1 MiB with 4 to 16 KiB pages, 2 MiB with 32 KiB, 4 MiB with 64 KiB), minus a reserve of 2 extents plus about 1%; free pages in partly used extents and half-empty pages after scattered deletes are not in it, so it understates."
+  ]
+ }
+}

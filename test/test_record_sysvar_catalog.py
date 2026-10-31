@@ -7,6 +7,7 @@ reading and the runtime JSON writer.
 """
 import importlib.util
 import json
+import re
 import os
 import shutil
 import struct
@@ -27,10 +28,16 @@ def _files(table):
 
 
 class TestScope(unittest.TestCase):
-    MYSQL_TAGS = ["mysql-5.7.44", "mysql-8.0.4", "mysql-8.0.11", "mysql-8.0.13", "mysql-8.0.37-fc40",
+    MYSQL_TAGS = ["mysql-5.6.51", "mysql-5.7.6", "mysql-5.7.8", "mysql-5.7.9", "mysql-5.7.10-2", "mysql-5.7.40-testing",
+                  "mysql-5.7.44", "mysql-8.0.4", "mysql-8.0.11", "mysql-8.0.13", "mysql-8.0.37-fc40",
                   "mysql-8.1.0-labs-mrs5-preview", "mysql-8.4.0", "mysql-9.5.2", "mysql-9.5.2-respin",
                   "mysql-9.0.0-release", "mysql-26.10.0"]
     MYSQL_FILES = {
+        ("mysql-5.6.51", "VERSION"): "MYSQL_VERSION_MAJOR=5\nMYSQL_VERSION_EXTRA=\n",
+        ("mysql-5.7.6", "VERSION"): "MYSQL_VERSION_MAJOR=5\nMYSQL_VERSION_PATCH=6\nMYSQL_VERSION_EXTRA=-m16\n",
+        ("mysql-5.7.8", "VERSION"): "MYSQL_VERSION_EXTRA=-rc\n",
+        ("mysql-5.7.9", "VERSION"): "MYSQL_VERSION_EXTRA=\n",
+        ("mysql-5.7.44", "VERSION"): "MYSQL_VERSION_EXTRA=\n",
         ("mysql-8.0.4", "VERSION"): "MYSQL_VERSION_MAJOR=8\nMYSQL_VERSION_MINOR=0\nMYSQL_VERSION_PATCH=4\n"
                                     "MYSQL_VERSION_EXTRA=-rc\n",
         ("mysql-8.0.11", "VERSION"): "MYSQL_VERSION_MAJOR=8\nMYSQL_VERSION_PATCH=11\nMYSQL_VERSION_EXTRA=\n",
@@ -45,12 +52,16 @@ class TestScope(unittest.TestCase):
     def test_mysql_scope(self):
         dates = {"mysql-8.0.11": "2018-04-08T08:17:02+02:00"}
         in_scope, excluded = rec.compute_scope("mysql", self.MYSQL_TAGS, _files(self.MYSQL_FILES), dates)
-        self.assertEqual([e["version"] for e in in_scope], ["8.0.11", "8.0.13", "8.4.0", "9.5.2", "26.10.0"])
-        self.assertEqual([e["maturity"] for e in in_scope], ["GA", "GA", "LTS", "INNOVATION", "INNOVATION"])
-        self.assertEqual(in_scope[0]["tag_date"], "2018-04-08T08:17:02+02:00")
+        # 5.7 GA releases (5.7.9 on) and 8.0.11 on; 5.6, milestones, RCs and odd tags are left out.
+        self.assertEqual([e["version"] for e in in_scope],
+                         ["5.7.9", "5.7.44", "8.0.11", "8.0.13", "8.4.0", "9.5.2", "26.10.0"])
+        self.assertEqual([e["maturity"] for e in in_scope], ["GA", "GA", "GA", "GA", "LTS", "INNOVATION", "INNOVATION"])
+        self.assertEqual(in_scope[2]["tag_date"], "2018-04-08T08:17:02+02:00")
         # The respin tag stands for its version.
-        self.assertEqual(in_scope[3]["tag"], "mysql-9.5.2-respin")
-        self.assertEqual([(e["version"], e["maturity"]) for e in excluded], [("8.0.4", "RC")])
+        self.assertEqual(in_scope[5]["tag"], "mysql-9.5.2-respin")
+        self.assertEqual([(e["version"], e["maturity"], e["reason"]) for e in excluded],
+                         [("5.7.6", "M16", "Maturity M16"), ("5.7.8", "RC", "Maturity RC"),
+                          ("8.0.4", "RC", "Before 8.0.11 and RC")])
 
     def test_mysql_maturity_words(self):
         self.assertEqual(rec.mysql_maturity(rec.parse_version_file("MYSQL_VERSION_EXTRA=-dmr")), "DMR")
@@ -116,6 +127,159 @@ class TestHelp(unittest.TestCase):
 
 def _bits(number):
     return str(struct.unpack("<Q", struct.pack("<d", number))[0])
+
+
+class TestMySQL57(unittest.TestCase):
+    """MySQL 5.7: no variables_info or variables_metadata; the --no-defaults start keeps option files out."""
+
+    GLOBAL = [{"VARIABLE_NAME": "max_connections", "VARIABLE_VALUE": "151"},
+              {"VARIABLE_NAME": "socket", "VARIABLE_VALUE": "/tmp/myflames.sock"},
+              {"VARIABLE_NAME": "query_cache_type", "VARIABLE_VALUE": "OFF"},
+              {"VARIABLE_NAME": "autocommit", "VARIABLE_VALUE": "ON"},
+              {"VARIABLE_NAME": "long_query_time", "VARIABLE_VALUE": "10.000000"},
+              {"VARIABLE_NAME": "table_open_cache_instances", "VARIABLE_VALUE": "16"},
+              {"VARIABLE_NAME": "validate_password_length", "VARIABLE_VALUE": "8"}]
+    THREAD = [{"VARIABLE_NAME": "autocommit", "VARIABLE_VALUE": "ON"},
+              {"VARIABLE_NAME": "long_query_time", "VARIABLE_VALUE": "10.000000"},
+              {"VARIABLE_NAME": "timestamp", "VARIABLE_VALUE": "1793224300.560536"}]
+    HELP = {"max_connections": "151", "socket": "/var/run/mysqld/mysqld.sock", "query_cache_type": "OFF",
+            "autocommit": "TRUE", "long_query_time": "10", "table_open_cache_instances": "1"}
+
+    def test_no_variables_info(self):
+        variables, notes = rec.mysql_variables(self.GLOBAL, self.THREAD, None, None, self.HELP,
+                                               plugin_of={"validate_password_length": "validate_password"})
+        mc = variables["max_connections"]
+        self.assertEqual((mc["scope"], mc["default"], mc["default_from"], mc["origin"]),
+                         ("global", "151", "runtime", None))
+        self.assertEqual((mc["min"], mc["max"], mc["type"]), (None, None, None))
+        # Set on the lab's command line: --help gives the default, not the running value.
+        self.assertEqual((variables["socket"]["default"], variables["socket"]["default_from"]),
+                         ("/var/run/mysqld/mysqld.sock", "help"))
+        self.assertIsNone(variables["socket"]["origin"])
+        self.assertEqual(variables["autocommit"]["type"], "boolean")
+        self.assertIsNone(variables["query_cache_type"]["type"])  # OFF but not a TRUE/FALSE option: never guessed
+        self.assertEqual(variables["long_query_time"]["scope"], "both")
+        self.assertIsNone(variables["long_query_time"]["max"])
+        self.assertEqual(variables["timestamp"]["scope"], "session")
+        self.assertEqual(variables["validate_password_length"]["plugin"], "validate_password")
+        self.assertIn(rec.NO_INFO_NOTE, notes)
+        # A value the server sized at startup is kept, and listed against --help.
+        self.assertEqual(variables["table_open_cache_instances"]["default"], "16")
+        differ = [n for n in notes if n.startswith("The running value differs from --help's")]
+        self.assertEqual(len(differ), 1)
+        self.assertIn("table_open_cache_instances", differ[0])
+        self.assertNotIn("socket", differ[0])
+        self.assertNotIn("long_query_time", differ[0])  # 10 and 10.000000 are the same value
+        # The guard has no VARIABLE_SOURCE to check on 5.7.
+        self.assertEqual(rec.origin_problems("mysql", variables), [])
+
+    def test_information_schema_fallback_names_and_scope(self):
+        # information_schema names are upper case, and SESSION_VARIABLES also lists global-only variables.
+        global_rows = [{"VARIABLE_NAME": "MAX_CONNECTIONS", "VARIABLE_VALUE": "151"},
+                       {"VARIABLE_NAME": "SQL_MODE", "VARIABLE_VALUE": "STRICT_TRANS_TABLES"}]
+        session_rows = global_rows + [{"VARIABLE_NAME": "TIMESTAMP", "VARIABLE_VALUE": "1.000000"}]
+        variables, notes = rec.mysql_variables(global_rows, session_rows, None, None, {})
+        rec.unclear_scopes(variables, notes)
+        self.assertEqual(sorted(variables), ["max_connections", "sql_mode", "timestamp"])
+        self.assertIsNone(variables["max_connections"]["scope"])
+        self.assertIsNone(variables["sql_mode"]["scope"])
+        self.assertEqual(variables["timestamp"]["scope"], "session")
+        self.assertTrue(any("scope of 2 variables" in n for n in notes))
+
+    def test_query_cache_size_not_probed(self):
+        variables, _ = rec.mysql_variables(
+            [{"VARIABLE_NAME": "query_cache_size", "VARIABLE_VALUE": "1048576"}], [], None, None, {})
+        sql, steps = rec.probe_plan("mysql", variables)
+        self.assertIn(("read", "query_cache_size"), steps)
+        self.assertNotIn(("set", "query_cache_size"), steps)
+        self.assertNotIn("SET GLOBAL query_cache_size", sql)
+
+    def test_validate_password_both_forms(self):
+        # The component (8.0+) and the plugin (5.7, still shipped later) are separate entries with their own labels.
+        labels = dict((p[0], p[1]) for p in rec.MYSQL_PLUGINS)
+        self.assertEqual(labels["component_validate_password"],
+                         ("INSTALL COMPONENT 'file://component_validate_password'",))
+        self.assertEqual(labels["validate_password"], ("INSTALL PLUGIN validate_password SONAME 'validate_password.so'",))
+
+
+class Fake57(object):
+    """Just enough of a MySQL 5.7 server for load_plugins: Group Replication refuses
+    to install while server_id is 0 or the replica repositories are FILE."""
+
+    engine = "mysql"
+
+    def __init__(self):
+        self.lab_set = set()
+        self.globals = {"server_id": "0", "master_info_repository": "FILE", "relay_log_info_repository": "FILE"}
+        self.names = {"server_id", "master_info_repository", "relay_log_info_repository", "max_connections"}
+        self.log = []
+
+    def sql(self, statement, timeout=300, check=True):
+        self.log.append(statement)
+        if statement.startswith("SELECT COUNT(*) FROM performance_schema.global_variables") or \
+                statement.startswith(rec.THREAD_SQL):
+            return 0, "", ""
+        match = re.match(r"SET GLOBAL (\w+) = '?([^']*)'?$", statement)
+        if match:
+            self.globals[match.group(1)] = match.group(2)
+            return 0, "", ""
+        if "group_replication" in statement:
+            if self.globals["server_id"] == "0" or self.globals["master_info_repository"] != "TABLE":
+                return 1, "", "ERROR 1123 (HY000) at line 1: Can't initialize function 'group_replication'"
+            self.names |= {"group_replication_group_name", "group_replication_start_on_boot"}
+            return 0, "", ""
+        return 1, "", "ERROR 1126 (HY000) at line 1: Can't open shared library"
+
+    def query_xml(self, sql, timeout=300):
+        match = re.match(r"SELECT @@GLOBAL\.(\w+) AS v", sql)
+        if match:
+            return [{"v": self.globals[match.group(1)]}]
+        if "global_variables" in sql:
+            return [{"VARIABLE_NAME": n, "VARIABLE_VALUE": "x"} for n in sorted(self.names)]
+        return []
+
+
+class TestPluginSets(unittest.TestCase):
+    def test_group_replication_on_57(self):
+        server = Fake57()
+        notes = []
+        plugins = [p for p in rec.MYSQL_PLUGINS if p[0] in ("group_replication", "clone")]
+        loaded, plugin_of = rec.load_plugins(server, plugins, notes)
+        self.assertEqual(loaded, ["group_replication"])
+        self.assertEqual(plugin_of, {"group_replication_group_name": "group_replication",
+                                     "group_replication_start_on_boot": "group_replication"})
+        # The three settings are put back, and their defaults will come from --help.
+        self.assertEqual(server.globals, {"server_id": "0", "master_info_repository": "FILE",
+                                          "relay_log_info_repository": "FILE"})
+        self.assertEqual(server.lab_set, {"server_id", "master_info_repository", "relay_log_info_repository"})
+        self.assertIn("SET GLOBAL master_info_repository = 'FILE'", server.log)
+        self.assertTrue(any("installs here only with" in n for n in notes))
+        self.assertTrue(any(n.startswith("Plugin not loaded (clone") for n in notes))
+
+    def test_lab_set_defaults_come_from_help(self):
+        variables, _ = rec.mysql_variables(
+            [{"VARIABLE_NAME": "server_id", "VARIABLE_VALUE": "1"},
+             {"VARIABLE_NAME": "master_info_repository", "VARIABLE_VALUE": "TABLE"}], [], None, None,
+            {"server_id": "0", "master_info_repository": "FILE"}, lab_set={"server_id", "master_info_repository"})
+        self.assertEqual(variables["server_id"]["default"], "0")
+        self.assertEqual(variables["master_info_repository"]["default"], "FILE")
+        self.assertEqual(variables["server_id"]["default_from"], "help")
+
+    def test_schema1_refusal(self):
+        self.assertTrue(rec.is_schema1_refusal('not implemented: media type '
+                                               '"application/vnd.docker.distribution.manifest.v1+prettyjws" is no '
+                                               'longer supported since containerd v2.1'))
+        self.assertFalse(rec.is_schema1_refusal("manifest unknown"))
+        unpack = ('failed to unpack image on snapshotter overlayfs: apply layer error for "docker.io/library/'
+                  'mysql:5.7.13": failed to extract layer sha256:4275: NotFound: failed to get reader from content store')
+        self.assertIn("could not unpack", rec.skopeo_reason(unpack))
+        self.assertIsNone(rec.skopeo_reason("pull access denied"))
+
+    def test_transient_pull_errors(self):
+        self.assertTrue(rec.is_transient_pull_error("unknown: failed to copy: httpReadSeeker: failed open: unexpected "
+                                                    "status from GET request to https://registry-1.docker.io/v2/"))
+        self.assertFalse(rec.is_transient_pull_error("toomanyrequests: You have reached your pull rate limit"))
+        self.assertFalse(rec.is_transient_pull_error("manifest unknown"))
 
 
 class TestMySQLRows(unittest.TestCase):

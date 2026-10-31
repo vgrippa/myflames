@@ -701,8 +701,10 @@ def _indexes_findings(rep, attribution):
         unused = [u for u in rep.get("unused") or [] if u.get("verdict") == "candidate"]
         count = (rep.get("summary") or {}).get("unused_candidates", len(unused))
         uptime = rep.get("uptime_s")
-        from .indexes import SHORT_UPTIME_S, UNUSED_CAVEAT
+        from .indexes import NO_INVISIBLE_CAVEAT, SHORT_UPTIME_S, UNUSED_CAVEAT
         young = uptime is not None and uptime < SHORT_UPTIME_S
+        # No visibility statement: the server has no invisible indexes (MySQL 5.7).
+        hideable = not unused or bool(unused[0].get("test_sql"))
         status = ("info" if young else "watch") if count else "ok"
         out.append(_finding(
             "indexes.unused", "indexes", status, "Unused indexes", "%d candidate%s" % (count, "" if count == 1 else "s"),
@@ -711,9 +713,11 @@ def _indexes_findings(rep, attribution):
                 "; too little uptime to judge" if young else "")) if count else "Every index was used.",
             "Each index slows writes and takes buffer pool memory; an index nothing reads only costs.",
             "watch when an index has no use since startup, after at least %s of uptime" % _duration_text(SHORT_UPTIME_S),
-            UNUSED_CAVEAT if count else None,
-            {"text": "Make a candidate invisible first, watch a full business cycle, then drop it.",
-             "sql": unused[0].get("test_sql")} if count and unused else None,
+            (UNUSED_CAVEAT if hideable else NO_INVISIBLE_CAVEAT) if count else None,
+            ({"text": "Make a candidate invisible first, watch a full business cycle, then drop it.",
+              "sql": unused[0].get("test_sql")} if hideable else
+             {"text": "This server has no invisible indexes: watch a full business cycle, then drop a candidate "
+                      "(Indexes has the statement)."}) if count and unused else None,
             [_num("%s.%s" % (u["schema"], u["table"]), u["index"]) for u in unused[:5]], (),
             [_view_link("indexes", "unused")], {"view": "indexes", "kind": "summary", "key": "unused"}, impact=count))
         tables = {(f["schema"], f["table"]): f for f in (attribution or {}).get("full_scans") or []}
@@ -756,7 +760,10 @@ def _indexes_findings(rep, attribution):
         redundant[0].get("why") if redundant else "Each extra index slows writes and uses buffer pool memory.",
         "watch when an index is a duplicate or a leftmost prefix of another index on the same table",
         redundant[0].get("caveat") if redundant else None,
-        {"text": "Make it invisible first, then drop it.", "sql": redundant[0].get("test_sql")} if redundant else None,
+        ({"text": "Make it invisible first, then drop it.", "sql": redundant[0].get("test_sql")}
+         if redundant[0].get("test_sql") or not redundant[0].get("drop_sql") else
+         {"text": "This server has no invisible indexes: drop it once you are sure (Indexes has the statement)."})
+        if redundant else None,
         [_num("%s.%s" % (r["schema"], r["table"]), "%s (%s) %s %s" % (r["index"], r.get("columns"), r.get("reason"),
                                                                      r.get("dominant"))) for r in redundant[:5]], (),
         [_view_link("indexes", "redundant")], {"view": "indexes", "kind": "summary", "key": "redundant"}, impact=count))

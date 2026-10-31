@@ -202,6 +202,19 @@ class TestRequalify(unittest.TestCase):
         text = 'select * from `db`.`t`'
         self.assertEqual(schema_ddl.requalify(text, 'db', 'db'), text)
 
+    def test_a_name_after_a_dot_is_never_the_database(self):
+        text = 'select `x`.`db`.`id` from `x`.`db`'
+        self.assertEqual(schema_ddl.requalify(text, 'db', 'new'), text)
+
+    def test_a_table_named_like_its_database_keeps_its_columns(self):
+        # `orders`.`id` is the column id of the table orders, not the database.
+        text = 'select `orders`.`id` AS `id`, `orders`.`f`(1) from `orders`.`orders` where `orders`.`orders`.`id` > 0'
+        self.assertEqual(schema_ddl.requalify(text, 'orders', 'copy', {'orders', 'f'}),
+                         'select `orders`.`id` AS `id`, `copy`.`f`(1) from `copy`.`orders` where `copy`.`orders`.`id` > 0')
+        # Without the clash the names do not matter.
+        self.assertEqual(schema_ddl.requalify('select `t`.`id` from `shop`.`t`', 'shop', 's2', {'t'}),
+                         'select `t`.`id` from `s2`.`t`')
+
 
 class TestTableOptions(unittest.TestCase):
     def test_default_charset_is_one_option(self):

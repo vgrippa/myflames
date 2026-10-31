@@ -308,3 +308,171 @@
   font-size: var(--text-sm);
   line-height: var(--leading-sm);
 }
+
+/* Source and time range (slow log sources and Performance Schema). */
+.qd-view .qd-source .select {
+  min-width: 0;
+}
+.qd-range-anchor {
+  min-width: 0;
+}
+.qd-range-button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  max-width: 340px;
+  min-width: 0;
+}
+.qd-range-button .qd-range-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.qd-range-button.is-active {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+.qd-range {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.qd-range .popover-title {
+  margin-bottom: 0;
+}
+.qd-range-quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+.qd-range-quick .button[aria-pressed="true"] {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+.qd-range-fields {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+.qd-range-fields label {
+  font-weight: 600;
+  font-size: var(--text-sm);
+}
+.qd-range-fields input {
+  min-width: 0;
+  width: 100%;
+  font-variant-numeric: tabular-nums;
+}
+.qd-range .hint,
+.qd-range .form-error {
+  margin: 0;
+}
+.qd-range-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+/* Performance Schema with a range: one sentence that the numbers are totals. */
+.qd-range-note {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0 var(--space-3) var(--space-1) var(--space-4);
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+/* Slow log file: the empty state with Choose file and the typed path. */
+.qd-file-empty {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-3);
+  padding: 0 var(--space-4) var(--space-4);
+  min-width: 0;
+}
+.qd-file-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  margin-top: var(--space-1);
+}
+.qd-path {
+  display: grid;
+  gap: var(--space-1);
+  width: min(560px, 100%);
+  min-width: 0;
+}
+.qd-path label {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+.qd-path-row {
+  display: flex;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.qd-path-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.qd-path p {
+  margin: 0;
+}
+.qd-file-line:not([data-phase="idle"]) {
+  padding: 0 var(--space-3) var(--space-1) var(--space-4);
+}
+.qd-file-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0 var(--space-4) var(--space-1);
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+.qd-file-progress progress {
+  appearance: none;
+  width: 160px;
+  max-width: 40%;
+  height: var(--space-1);
+  border: 0;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--line);
+  color: var(--accent);
+}
+.qd-file-progress progress::-webkit-progress-bar { background: var(--line); }
+.qd-file-progress progress::-webkit-progress-value { background: var(--accent); }
+.qd-file-progress progress::-moz-progress-bar { background: var(--accent); }
+.qd-sample-meta {
+  margin: 0 0 var(--space-1);
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+/* At the 720 px window the controls keep two rows: the labels before the
+   selects go (each select keeps its accessible name). */
+@container view (max-width: 760px) {
+  .qd-view .qd-field-word {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+  .qd-range-button {
+    max-width: 180px;
+  }
+}

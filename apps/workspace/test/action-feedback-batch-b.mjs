@@ -174,10 +174,42 @@ export function batchBScenarios({ goPlace, goView, visible, named, click, confir
       hang: async ({ page }) => { await elapsed(page, sessionStatus); await requireFocus(page, '[data-banner="ended"] button'); },
     },
     capture("explain"), capture("analyze"),
+    // Refresh of the diagram on screen: its progress and errors use the status line.
     viewRefresh("diagram", "diagram", "/api/schema-diagram/read", {
       name: "diagram-rebuild", label: "Rebuild database diagram", mocks: diagramMocks,
-      setup: async ({ page }) => { await goPlace(page, "diagram"); await page.select(`${diagram} [aria-label=Database]`, "mftab"); },
+      setup: async ({ page }) => {
+        await goPlace(page, "diagram"); await page.select(`${diagram} [aria-label=Database]`, "mftab");
+        await page.click(`${diagram} .diagram-load`); await visible(page, ".diagram-table");
+        await waitNotBusy(page, `${diagram} [data-action=refresh]`);
+        await page.waitForFunction((s) => document.querySelector(s)?.textContent.trim() === "Refresh", {}, `${diagram} [data-action=refresh]`);
+      },
     }),
+    // Load from the empty state: the primary action, its progress and its
+    // error under it (once), then focus on the diagram it drew.
+    {
+      name: "diagram-load", label: "Load the chosen database", paths: ["/api/schema-diagram/read"], mocks: diagramMocks,
+      setup: async ({ page }) => { await goPlace(page, "diagram"); await page.select(`${diagram} [aria-label=Database]`, "mftab"); await visible(page, ".diagram-load"); },
+      target: ".diagram-load",
+      afterClick: async ({ page }) => requireFocus(page, ".diagram-load"),
+      ok: async ({ page }) => {
+        await visible(page, ".diagram-table");
+        await page.waitForFunction(() => document.activeElement?.classList.contains("diagram-canvas"), { timeout: 3000 });
+        assert.equal(await page.$eval(`${diagram} [data-action=refresh]`, e => e.textContent.trim()), "Refresh");
+      },
+      error: async ({ page }) => {
+        await waitText(page, `${diagram} .diagram-load-status`, /Simulated failure/);
+        await named("Try again", `${diagram} .diagram-load-status`)(page);
+        assert.equal(await page.$(`${diagram} .view-status [role=alert]`), null, "the error shows once, under Load");
+        await requireFocus(page, ".diagram-load");
+      },
+      hang: async ({ page }) => {
+        await elapsed(page, `${diagram} .diagram-load-status`);
+        await waitText(page, `${diagram} .diagram-load-status`, /Still waiting for the server/);
+        await (await named("Stop", `${diagram} .diagram-load-status`)(page)).click();
+        await page.waitForFunction(() => document.activeElement?.classList.contains("diagram-load"), { timeout: 2000 });
+        await waitNotBusy(page, ".diagram-load");
+      },
+    },
     {
       name: "diagram-reload-list", label: "Reload database list", paths: ["/api/live/schemas"],
       setup: async ({ page }) => { await goPlace(page, "diagram"); await waitNotBusy(page, ".diagram-reload-list"); },

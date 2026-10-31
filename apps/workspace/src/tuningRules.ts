@@ -23,9 +23,10 @@
  *
  * Remediation statements are text to copy or open in the Query editor;
  * nothing on the Tuning page runs them. Global changes are SET PERSIST on
- * MySQL; on MariaDB (no SET PERSIST: its sql_yacc.yy has no PERSIST) they are
- * SET GLOBAL plus an option-file line to copy, because SET GLOBAL is lost on
- * restart. Per-session limits (tmp_table_size, sort_buffer_size) are SET
+ * MySQL 8.0 and later; on MariaDB (no SET PERSIST: its sql_yacc.yy has no
+ * PERSIST) and MySQL 5.7 (SET PERSIST arrived in 8.0; 5.7.44 sql_yacc.yy has
+ * no PERSIST_SYM) they are SET GLOBAL plus an option-file line to copy,
+ * because SET GLOBAL is lost on restart. Per-session limits (tmp_table_size, sort_buffer_size) are SET
  * SESSION on both, as health.py advises.
  *
  * Source citations: M/ = mysql-server 9.7 trunk (tags named where older),
@@ -437,6 +438,14 @@ class Ctx {
   get mariadb() {
     return this.engine === "mariadb";
   }
+  /** MySQL 5.7 (a known MySQL version below 8.0): no SET PERSIST, no TempTable. */
+  get mysql57() {
+    return !this.mariadb && this.atLeast([8, 0, 0]) === false;
+  }
+  /** How globalChange writes a global change on this server. */
+  get changeKind(): "mysql" | "mariadb" | "mysql57" {
+    return this.mariadb ? "mariadb" : this.mysql57 ? "mysql57" : "mysql";
+  }
   atLeast(want: number[]) {
     return atLeast(this.tuple, want);
   }
@@ -539,7 +548,7 @@ class Ctx {
  * restart (SET PERSIST_ONLY is not offered: the restart is the point).
  */
 export function globalChange(
-  engine: "mysql" | "mariadb",
+  engine: "mysql" | "mariadb" | "mysql57",
   name: string,
   value: string,
   dynamic = true,
@@ -547,6 +556,7 @@ export function globalChange(
   const line = `${name} = ${value}  # under [mysqld]`;
   if (!dynamic) return { optionFile: line };
   if (engine === "mysql") return { sql: `SET PERSIST ${name} = ${value};` };
+  // MariaDB and MySQL 5.7 have no SET PERSIST: SET GLOBAL now, the option file for restarts.
   return { sql: `SET GLOBAL ${name} = ${value};`, optionFile: line };
 }
 function joinChanges(changes: { sql?: string; optionFile?: string }[]): { sql?: string; optionFile?: string } {
@@ -686,7 +696,7 @@ function bufferPool(ctx: Ctx): TuningCheck {
         ? [{ label: "Hit ratio in the window", text: hit.value }, ...i.numbers]
         : i.numbers,
     fix: (i) => {
-      const change = globalChange(ctx.engine, "innodb_buffer_pool_size", "<bytes>");
+      const change = globalChange(ctx.changeKind, "innodb_buffer_pool_size", "<bytes>");
       const cap =
         ctx.mariadb && ctx.variable("innodb_buffer_pool_size_max") !== null
           ? " MariaDB grows it online only up to innodb_buffer_pool_size_max (0 means the startup size); beyond that it needs a restart."
@@ -742,7 +752,7 @@ function freePageWaits(ctx: Ctx): TuningCheck {
           `Sessions waited for a free page: the page cleaner did not keep enough free pages ahead of reads. A larger buffer pool helps ` +
           `when Buffer pool shows it is full; a deeper innodb_lru_scan_depth (now ${current ?? "unknown"}, default ` +
           `${depthDefault}) makes the page cleaner keep more free pages.`,
-        ...globalChange(ctx.engine, "innodb_lru_scan_depth", "<pages>"),
+        ...globalChange(ctx.changeKind, "innodb_lru_scan_depth", "<pages>"),
         caveat:
           "Raise it only when the storage has spare I/O capacity: a deeper scan makes the page cleaner read and write more.",
       };
@@ -874,7 +884,9 @@ function tempTables(ctx: Ctx): TuningCheck {
       // Ma/sql/sql_select.cc:22662-22668).
       const findFirst =
         "Find the statements with the temporary-table-on-disk flag in Top statements; an index that avoids the temporary table helps more than a bigger limit.";
-      const storage = ctx.mariadb ? null : ctx.variable("internal_tmp_mem_storage_engine");
+      // MySQL 5.7 has no internal_tmp_mem_storage_engine: its internal temporary tables use MEMORY
+      // (5.7.44 sql/sql_tmp_table.cc:1422-1428).
+      const storage = ctx.mariadb ? null : ctx.variable("internal_tmp_mem_storage_engine") ?? (ctx.mysql57 ? "MEMORY" : null);
       const temptable = !!storage && storage.toLowerCase() === "temptable";
       const shared =
         "Every TempTable table shares temptable_max_ram: it is one memory budget for the whole server, so raise it only with memory to spare.";
@@ -967,8 +979,8 @@ function slowLog(ctx: Ctx): TuningCheck {
       // connects (Ma/sql/sys_vars.cc:5693-5710), so SET GLOBAL reaches new connections only.
       // long_query_time is per session on both engines.
       const changes = joinChanges([
-        globalChange(ctx.engine, "slow_query_log", "ON"),
-        globalChange(ctx.engine, "long_query_time", "<seconds>"),
+        globalChange(ctx.changeKind, "slow_query_log", "ON"),
+        globalChange(ctx.changeKind, "long_query_time", "<seconds>"),
       ]);
       return {
         text:
@@ -1025,7 +1037,7 @@ function connections(ctx: Ctx): TuningCheck {
     },
     verdict: (_i, all) => all.filter((i) => i.status !== "unknown").map((i) => i.verdict).join(" ") || _i.verdict,
     fix: (_item, status, all) => {
-      const change = globalChange(ctx.engine, "max_connections", "<n>");
+      const change = globalChange(ctx.changeKind, "max_connections", "<n>");
       // Health rates connections_used a problem at 90% use with or without refusals (health.py:312,
       // 729-731); only Connection_errors_max_connections proves a refusal.
       const refusals = all.some(
@@ -1072,7 +1084,7 @@ function threadCache(ctx: Ctx): TuningCheck {
           `Raise thread_cache_size toward the number of connections that arrive in a burst (default ${
             ctx.mariadb ? "256, at most max_connections" : "8 + max_connections / 100, at most 100"
           }).`,
-        ...globalChange(ctx.engine, "thread_cache_size", "<n>"),
+        ...globalChange(ctx.changeKind, "thread_cache_size", "<n>"),
         caveat: item.caveat || "Creating a thread costs little, so the gain is modest.",
       };
     },
@@ -1113,7 +1125,7 @@ function tableOpenCache(ctx: Ctx): TuningCheck {
     // (M/sql/table_cache.h:381-391), not the table definition cache.
     fix: (item) => ({
       text: "Raise table_open_cache so the tables in use fit, and check that open_files_limit covers it.",
-      ...globalChange(ctx.engine, "table_open_cache", "<n>"),
+      ...globalChange(ctx.changeKind, "table_open_cache", "<n>"),
       caveat: item.caveat || "Each open table uses memory and may hold a file descriptor.",
     }),
   });
@@ -1132,7 +1144,7 @@ function tableDefinitionCache(ctx: Ctx): TuningCheck {
     // defaults: MySQL min(400 + table_open_cache / 2, 2000) (M/sql/mysqld.cc:10815-10825), MariaDB 400.
     fix: (item) => ({
       text: "Raise table_definition_cache to cover the tables in use.",
-      ...globalChange(ctx.engine, "table_definition_cache", "<n>"),
+      ...globalChange(ctx.changeKind, "table_definition_cache", "<n>"),
       caveat: item.caveat || "Each cached definition uses memory.",
     }),
   });
@@ -1388,7 +1400,7 @@ function secureTransport(ctx: Ctx): TuningCheck {
           ? "Set up TLS first (ssl_cert, ssl_key), then check that every application connects with TLS. "
           : "Check that every application connects with TLS first. ") +
         "Then require it.",
-      ...globalChange(ctx.engine, "require_secure_transport", "ON"),
+      ...globalChange(ctx.changeKind, "require_secure_transport", "ON"),
       caveat:
         "From then on TCP connections without TLS are refused at login; local socket connections still work. Except on Windows, the server accepts the change even when TLS is not set up.",
     }),

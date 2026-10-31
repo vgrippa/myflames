@@ -15,7 +15,11 @@ The password for ``--user`` (``mf_admin`` by default, ``root`` or
 ``mf_read``) comes from the matrix's credentials file (``CREDS_FILE``, else
 local/ga-matrix/credentials.env), goes to the client in a defaults file and is
 never printed; a recording whose answers contain it is not written. Your real
-home and ~/.myflames are refused as ``HOME``. Every view here only reads.
+home and ~/.myflames are refused as ``HOME``. Every view here only reads:
+indexes, tables, config, io, waits, health, locks, sessions, innodb,
+error-log, instruments, top, replication, watch, ddl-progress (``--ids``),
+cluster, checks, report (the Full analysis, one view at a time) and variable
+(``--name``, one system variable as Parameters reads it).
 """
 import argparse
 import datetime
@@ -30,7 +34,8 @@ except ImportError:  # pragma: no cover - Windows
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PASSWORD_KEYS = {"root": "ROOT_PASSWORD", "mf_admin": "MF_ADMIN_PASSWORD", "mf_read": "MF_READ_PASSWORD"}
-VIEWS = ("indexes", "tables", "config", "io", "waits", "health")
+VIEWS = ("indexes", "tables", "config", "io", "waits", "health", "locks", "sessions", "innodb", "error-log",
+         "instruments", "top", "replication", "watch", "ddl-progress", "cluster", "checks", "report", "variable")
 
 
 def die(message):
@@ -76,6 +81,8 @@ def main():
     ap.add_argument("--schema", action="append", help="limit indexes, tables or io to a schema (repeatable)")
     ap.add_argument("--interval", type=int, default=2, help="window in seconds for health, io and waits")
     ap.add_argument("--parameters", action="store_true", help="config: include the parameters-1.0 section")
+    ap.add_argument("--ids", type=int, action="append", help="ddl-progress: a connection id (repeatable)")
+    ap.add_argument("--name", default="max_connections", help="variable: the system variable to read")
     ap.add_argument("--out", help="output directory (default test/fixtures/perf, or test/fixtures/health)")
     args = ap.parse_args()
     refuse_real_home()
@@ -112,6 +119,45 @@ def main():
     elif args.view == "waits":
         from myflames.waits import waits_report as read
         view_args = {"interval": args.interval, "limit": 20}
+    elif args.view == "locks":
+        from myflames.locks import lock_report as read
+        view_args = {"limit": 500}
+    elif args.view == "sessions":
+        from myflames.sessions import sessions_report as read
+        view_args = {"active_only": False}
+    elif args.view == "innodb":
+        from myflames.innodb_status import innodb_report as read
+        view_args = {}
+    elif args.view == "error-log":
+        from myflames.error_log import error_log_report as read
+        view_args = {}
+    elif args.view == "instruments":
+        from myflames.ps_instruments import instruments_report as read
+        view_args = {}
+    elif args.view == "top":
+        from myflames.discover import top_report as read
+        view_args = {"limit": 20}
+    elif args.view == "replication":
+        from myflames.replication import read_status as read
+        view_args = {}
+    elif args.view == "watch":
+        from myflames.watch import watch_report as read
+        view_args = {}
+    elif args.view == "ddl-progress":
+        from myflames.ddl_progress import ddl_progress_report as read
+        view_args = {"connection_ids": args.ids or [1]}
+    elif args.view == "cluster":
+        from myflames.cluster import read_status as read
+        view_args = {}
+    elif args.view == "checks":
+        from myflames.server_checks import server_checks as read
+        view_args = {}
+    elif args.view == "variable":
+        from myflames.variables import read_variable as read
+        view_args = {"name": args.name}
+    elif args.view == "report":
+        from myflames.report import analysis_report as read
+        view_args = {"interval": args.interval, "schemas": schemas, "workers": 1}
     else:
         read, view_args = None, {}
 

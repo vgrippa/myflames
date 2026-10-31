@@ -1,0 +1,468 @@
+{
+ "description": "What mysql.slow_log recorded for the same statements as each log (log_output=FILE,TABLE, long_query_time=0, log_slow_admin_statements=ON), read with CAST(query_time AS CHAR) and HEX(sql_text) from throwaway lab containers: MySQL 5.7.44 (log_timestamps=UTC), MySQL 8.4.13 (log_slow_extra=ON, log_timestamps=SYSTEM, TZ=America/Sao_Paulo) and MariaDB 11.4.13 (log_slow_verbosity=query_plan,innodb,explain, TZ=Asia/Kolkata). statements: [db, sql_text, query time in microseconds] per row, in table order.",
+ "logs": {
+  "mariadb-11.4.13-slow.log": {
+   "entries": 22,
+   "first": "2026-10-31 18:24:11.381586",
+   "last": "2026-10-31 18:24:14.041888",
+   "lock_us": 720,
+   "query_us": 105486,
+   "rows_examined": 2052,
+   "rows_sent": 164,
+   "statements": [
+    [
+     "shop",
+     "SELECT id, status, total FROM orders WHERE id = 1",
+     358
+    ],
+    [
+     "shop",
+     "SELECT id, status, total FROM orders WHERE id = 22",
+     44
+    ],
+    [
+     "shop",
+     "SELECT id, status, total FROM orders WHERE id = 333",
+     22
+    ],
+    [
+     "shop",
+     "SELECT * FROM orders WHERE customer_id IN (1) ORDER BY created DESC LIMIT 10",
+     176
+    ],
+    [
+     "shop",
+     "SELECT * FROM orders WHERE customer_id IN (1, 2, 3) ORDER BY created DESC LIMIT 10",
+     73
+    ],
+    [
+     "shop",
+     "SELECT * FROM orders WHERE customer_id IN (4, 5, 6, 7, 8, 9, 10) ORDER BY created DESC LIMIT 10",
+     59
+    ],
+    [
+     "shop",
+     "INSERT INTO items (order_id, sku, qty) VALUES (901, 'FX-1', 1), (902, 'FX-2', 2), (903, 'FX-3', 3)",
+     536
+    ],
+    [
+     "shop",
+     "INSERT INTO items (order_id, sku, qty) VALUES (904, 'FX-4', 4)",
+     350
+    ],
+    [
+     "shop",
+     "UPDATE orders SET status = 'paid' WHERE id = 5",
+     407
+    ],
+    [
+     "shop",
+     "BEGIN",
+     5
+    ],
+    [
+     "shop",
+     "UPDATE orders SET total = total + 1 WHERE id = 6",
+     81
+    ],
+    [
+     "shop",
+     "COMMIT",
+     1259
+    ],
+    [
+     "shop",
+     "SELECT o.status,\n       COUNT(*) AS n,\n       SUM(o.total) AS revenue\n  FROM orders o\n  JOIN crm.customers c ON c.id = o.customer_id\n WHERE c.city = 'Recife'\n GROUP BY o.status",
+     387
+    ],
+    [
+     "shop",
+     "SELECT note FROM orders WHERE note = 'gift; wrap\nplease' LIMIT 1",
+     32
+    ],
+    [
+     "shop",
+     "SELECT SLEEP(0.1)",
+     100339
+    ],
+    [
+     "shop",
+     "DELETE FROM items WHERE order_id >= 901 AND order_id <= 904",
+     542
+    ],
+    [
+     "crm",
+     "SELECT city, COUNT(*) FROM customers GROUP BY city ORDER BY COUNT(*) DESC",
+     315
+    ],
+    [
+     "crm",
+     "SELECT city, COUNT(*) FROM customers GROUP BY city ORDER BY COUNT(*) DESC",
+     86
+    ],
+    [
+     "crm",
+     "SELECT name FROM customers WHERE name LIKE 'customer 1%'",
+     67
+    ],
+    [
+     "crm",
+     "SELECT COUNT(*) FROM shop.orders WHERE note IS NOT NULL AND total > 100",
+     285
+    ],
+    [
+     null,
+     "SELECT 1",
+     44
+    ],
+    [
+     null,
+     "SELECT NOW()",
+     19
+    ]
+   ],
+   "users": {
+    "app": 16,
+    "report": 4,
+    "root": 2
+   }
+  },
+  "mysql-5.7.44-slow.log": {
+   "entries": 31,
+   "first": "2026-10-31 12:54:03.483135",
+   "last": "2026-10-31 12:54:07.161660",
+   "lock_us": 2773,
+   "query_us": 120233,
+   "rows_examined": 3056,
+   "rows_sent": 170,
+   "statements": [
+    [
+     null,
+     "SET GLOBAL slow_query_log = ON",
+     682
+    ],
+    [
+     null,
+     "Quit",
+     12
+    ],
+    [
+     "shop",
+     "select @@version_comment limit 1",
+     89
+    ],
+    [
+     "shop",
+     "SELECT id, status, total FROM orders WHERE id = 1",
+     754
+    ],
+    [
+     "shop",
+     "SELECT id, status, total FROM orders WHERE id = 22",
+     88
+    ],
+    [
+     "shop",
+     "SELECT id, status, total FROM orders WHERE id = 333",
+     86
+    ],
+    [
+     "shop",
+     "SELECT * FROM orders WHERE customer_id IN (1) ORDER BY created DESC LIMIT 10",
+     705
+    ],
+    [
+     "shop",
+     "SELECT * FROM orders WHERE customer_id IN (1, 2, 3) ORDER BY created DESC LIMIT 10",
+     471
+    ],
+    [
+     "shop",
+     "SELECT * FROM orders WHERE customer_id IN (4, 5, 6, 7, 8, 9, 10) ORDER BY created DESC LIMIT 10",
+     300
+    ],
+    [
+     "shop",
+     "INSERT INTO items (order_id, sku, qty) VALUES (901, 'FX-1', 1), (902, 'FX-2', 2), (903, 'FX-3', 3)",
+     2116
+    ],
+    [
+     "shop",
+     "INSERT INTO items (order_id, sku, qty) VALUES (904, 'FX-4', 4)",
+     826
+    ],
+    [
+     "shop",
+     "UPDATE orders SET status = 'paid' WHERE id = 5",
+     1448
+    ],
+    [
+     "shop",
+     "BEGIN",
+     59
+    ],
+    [
+     "shop",
+     "UPDATE orders SET total = total + 1 WHERE id = 6",
+     707
+    ],
+    [
+     "shop",
+     "COMMIT",
+     2029
+    ],
+    [
+     "shop",
+     "SELECT o.status,\n       COUNT(*) AS n,\n       SUM(o.total) AS revenue\n  FROM orders o\n  JOIN crm.customers c ON c.id = o.customer_id\n WHERE c.city = 'Recife'\n GROUP BY o.status",
+     1265
+    ],
+    [
+     "shop",
+     "SELECT note FROM orders WHERE note = 'gift; wrap\nplease' LIMIT 1",
+     165
+    ],
+    [
+     "shop",
+     "SELECT SLEEP(0.1)",
+     101201
+    ],
+    [
+     "shop",
+     "DELETE FROM items WHERE order_id >= 901 AND order_id <= 904",
+     3904
+    ],
+    [
+     "shop",
+     "Quit",
+     5
+    ],
+    [
+     "crm",
+     "select @@version_comment limit 1",
+     106
+    ],
+    [
+     "crm",
+     "SELECT city, COUNT(*) FROM customers GROUP BY city ORDER BY COUNT(*) DESC",
+     854
+    ],
+    [
+     "crm",
+     "SELECT city, COUNT(*) FROM customers GROUP BY city ORDER BY COUNT(*) DESC",
+     312
+    ],
+    [
+     "crm",
+     "SELECT name FROM customers WHERE name LIKE 'customer 1%'",
+     203
+    ],
+    [
+     "crm",
+     "SELECT COUNT(*) FROM shop.orders WHERE note IS NOT NULL AND total > 100",
+     1528
+    ],
+    [
+     "crm",
+     "Quit",
+     7
+    ],
+    [
+     null,
+     "select @@version_comment limit 1",
+     105
+    ],
+    [
+     null,
+     "SELECT 1",
+     35
+    ],
+    [
+     null,
+     "SELECT NOW()",
+     49
+    ],
+    [
+     null,
+     "Quit",
+     6
+    ],
+    [
+     null,
+     "select @@version_comment limit 1",
+     116
+    ]
+   ],
+   "users": {
+    "app": 18,
+    "report": 6,
+    "root": 7
+   }
+  },
+  "mysql-8.4.13-slow.log": {
+   "entries": 30,
+   "first": "2026-10-31 09:54:07.654688",
+   "last": "2026-10-31 09:54:10.935556",
+   "lock_us": 61,
+   "query_us": 128171,
+   "rows_examined": 3041,
+   "rows_sent": 168,
+   "statements": [
+    [
+     null,
+     "SET GLOBAL slow_query_log = ON",
+     778
+    ],
+    [
+     null,
+     "Quit",
+     5
+    ],
+    [
+     "shop",
+     "select @@version_comment limit 1",
+     270
+    ],
+    [
+     "shop",
+     "SELECT id, status, total FROM orders WHERE id = 1",
+     466
+    ],
+    [
+     "shop",
+     "SELECT id, status, total FROM orders WHERE id = 22",
+     127
+    ],
+    [
+     "shop",
+     "SELECT id, status, total FROM orders WHERE id = 333",
+     103
+    ],
+    [
+     "shop",
+     "SELECT * FROM orders WHERE customer_id IN (1) ORDER BY created DESC LIMIT 10",
+     415
+    ],
+    [
+     "shop",
+     "SELECT * FROM orders WHERE customer_id IN (1, 2, 3) ORDER BY created DESC LIMIT 10",
+     257
+    ],
+    [
+     "shop",
+     "SELECT * FROM orders WHERE customer_id IN (4, 5, 6, 7, 8, 9, 10) ORDER BY created DESC LIMIT 10",
+     85
+    ],
+    [
+     "shop",
+     "INSERT INTO items (order_id, sku, qty) VALUES (901, 'FX-1', 1), (902, 'FX-2', 2), (903, 'FX-3', 3)",
+     12418
+    ],
+    [
+     "shop",
+     "INSERT INTO items (order_id, sku, qty) VALUES (904, 'FX-4', 4)",
+     7044
+    ],
+    [
+     "shop",
+     "UPDATE orders SET status = 'paid' WHERE id = 5",
+     1763
+    ],
+    [
+     "shop",
+     "BEGIN",
+     94
+    ],
+    [
+     "shop",
+     "UPDATE orders SET total = total + 1 WHERE id = 6",
+     173
+    ],
+    [
+     "shop",
+     "COMMIT",
+     509
+    ],
+    [
+     "shop",
+     "/* dashboard */ SELECT o.status,\n       COUNT(*) AS n,\n       SUM(o.total) AS revenue\n  FROM orders o\n  JOIN crm.customers c ON c.id = o.customer_id\n WHERE c.city = 'Recife'\n GROUP BY o.status",
+     685
+    ],
+    [
+     "shop",
+     "SELECT note FROM orders WHERE note = 'gift; wrap\nplease' LIMIT 1",
+     66
+    ],
+    [
+     "shop",
+     "SELECT SLEEP(0.1)",
+     100369
+    ],
+    [
+     "shop",
+     "DELETE FROM items WHERE order_id >= 901 AND order_id <= 904",
+     1540
+    ],
+    [
+     "shop",
+     "Quit",
+     4
+    ],
+    [
+     "crm",
+     "select @@version_comment limit 1",
+     60
+    ],
+    [
+     "crm",
+     "SELECT city, COUNT(*) FROM customers GROUP BY city ORDER BY COUNT(*) DESC",
+     346
+    ],
+    [
+     "crm",
+     "SELECT city, COUNT(*) FROM customers GROUP BY city ORDER BY COUNT(*) DESC",
+     70
+    ],
+    [
+     "crm",
+     "SELECT name FROM customers WHERE name LIKE 'customer 1%'",
+     81
+    ],
+    [
+     "crm",
+     "SELECT COUNT(*) FROM shop.orders WHERE note IS NOT NULL AND total > 100",
+     216
+    ],
+    [
+     "crm",
+     "Quit",
+     1
+    ],
+    [
+     null,
+     "select @@version_comment limit 1",
+     70
+    ],
+    [
+     null,
+     "SELECT 1",
+     26
+    ],
+    [
+     null,
+     "SELECT NOW()",
+     44
+    ],
+    [
+     null,
+     "select @@version_comment limit 1",
+     86
+    ]
+   ],
+   "users": {
+    "app": 18,
+    "report": 6,
+    "root": 6
+   }
+  }
+ }
+}

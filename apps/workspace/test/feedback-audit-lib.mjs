@@ -130,7 +130,6 @@ export const PASS = Symbol("pass");
 export const DEFAULTS = {
   ...Object.fromEntries(Object.entries(F).map(([p, v]) => [p, () => v])),
   "/api/live/top": (b) => TOP(b),
-  "/api/live/slow-queries": () => ({ schema_version: "slow-queries-1.0", engine: "mysql", statements: [], notes: [] }),
   "/api/live/privileges": () => ({ schema_version: "privileges-1.0", account: "root@localhost", actions: {} }),
   "/api/live/replication/skip-loop/status": () => ({ schema_version: "replication-skip-loop-1.0", loops: [] }),
   "/api/lifecycle/jobs": () => ({ schema_version: "lifecycle-jobs-1.0", jobs: [] }),

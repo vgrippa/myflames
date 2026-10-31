@@ -4,11 +4,14 @@
  "request": {
   "data_directory": null,
   "require_ssl": true,
+  "saved_donor_password": false,
   "donor_key": "[\"\",\"127.0.0.1\",3306,\"operator\",\"\",\"\"]",
   "donor_address": "127.0.0.1:3306"
  },
  "server": {
   "engine": "mysql",
+  "flavor": "mysql",
+  "product": "MySQL",
   "version": "8.4.3",
   "variables": {
    "version": "8.4.3",
@@ -53,6 +56,14 @@
    3
   ],
   "engine": "mysql",
+  "download_url": "https://dev.mysql.com/downloads/mysql/",
+  "update": {
+   "status": "not_checked",
+   "latest_version": null,
+   "checked_at": null,
+   "source_url": "https://dev.mysql.com/downloads/mysql/",
+   "message": "Update check not requested."
+  },
   "name": "mysql"
  },
  "target": "127.0.0.1:3306",
@@ -78,7 +89,7 @@
   {
    "check": "donor_privilege",
    "status": "passed",
-   "reason": "BACKUP_ADMIN required on the donor account; grants are a preflight hint."
+   "reason": "BACKUP_ADMIN required on the donor account; effective grants are a preflight hint."
   },
   {
    "check": "recipient_plugin",
@@ -88,7 +99,7 @@
   {
    "check": "recipient_privilege",
    "status": "passed",
-   "reason": "CLONE_ADMIN required on the recipient account; grants are a preflight hint."
+   "reason": "CLONE_ADMIN required on the recipient account; effective grants are a preflight hint."
   },
   {
    "check": "version_compile_os",
@@ -157,9 +168,11 @@
   "After it, the recipient has the donor's accounts and passwords (the mysql schema is cloned): connect to it with an account from the donor."
  ],
  "ready": false,
- "binding": "92501dae9646706f5140958f480bb7c14e68a0b8885a91411b5be39dae3b2dd0",
+ "binding": "61555a098c2b492351b2e114ce1f4b1026d78f70bbd0668dea74a7f7374a58bb",
  "donor": {
   "engine": "mysql",
+  "flavor": "mysql",
+  "product": "MySQL",
   "version": "8.4.3",
   "variables": {
    "version": "8.4.3",
@@ -191,5 +204,21 @@
    "datadir": "/server/data/",
    "socket": "/server/mysql.sock"
   }
+ },
+ "expect": {
+  "donor": {
+   "endpoint": "127.0.0.1:3306",
+   "connection_key": "[\"\",\"127.0.0.1\",3306,\"operator\",\"\",\"\"]",
+   "type": "production",
+   "read_only": false
+  },
+  "recipient": {
+   "endpoint": "127.0.0.1:3306",
+   "connection_key": "[\"\",\"127.0.0.1\",3306,\"operator\",\"\",\"\"]",
+   "type": "production",
+   "read_only": false
+  },
+  "donor_address": "127.0.0.1:3306",
+  "require_ssl": true
  }
 }

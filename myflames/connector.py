@@ -741,6 +741,11 @@ class MySQLConnection:
         """
         maria = self.is_mariadb()
         version = self.server_version()
+        from .live import analyze_unsupported
+        refused = analyze_unsupported(version, maria)
+        if refused:
+            # MySQL before 8.3 refuses EXPLAIN ANALYZE FORMAT=JSON: send nothing.
+            raise ConnectorError(refused)
         if maria:
             stmt = "ANALYZE FORMAT=JSON " + sql
             prefix = ""

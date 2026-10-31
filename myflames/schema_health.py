@@ -77,6 +77,18 @@ mariadb-server 13.0 "Ma/" with the 10.11, 11.4 and 11.8 tags):
   looks up each row: primary key, unique NOT NULL key, the most selective
   other key, else a scan until the first match
   (Ma/sql/log_event_server.cc:7977, 8413-8455, 8535, 8664).
+* MySQL 5.7 (5.7.44): information_schema.STATISTICS has no EXPRESSION
+  (functional key parts are 8.0.13+; sql/sql_show.cc:8640-8663), so it is
+  read again without it on Unknown column. Tablespaces are in
+  INNODB_SYS_TABLESPACES (read from SYS_TABLESPACES record by record,
+  storage/innobase/handler/i_s.cc:8640-8690; SPACE_TYPE System, General or
+  Single at :8526-8530), and there is no information_schema statistics cache
+  (no information_schema_stats_expiry): every read of TABLES asks the
+  storage engine (handler::info, sql/sql_show.cc:5139). A replica's default
+  slave_rows_search_algorithms is INDEX_SCAN,TABLE_SCAN (sql/sys_vars.cc:
+  3592-3605): without a primary or unique key it uses another index, or
+  else scans the table, for each changed row; HASH_SCAN only when someone
+  adds it (log_event.cc decide_row_lookup_algorithm_and_key).
 * Group Replication counts keys through the share's primary key, so a
   promoted unique key passes (M/plugin/group_replication/.../
   rpl_handler.cc:685-696, observer_trans.cc:146-150). Galera certifies rows
@@ -207,8 +219,12 @@ def _activity(rows):
     return {(r[0], r[1]): (_number(r[2]) or 0, _number(r[3]) or 0) for r in rows if len(r) >= 4 and r[0] and r[1]}
 
 
-def _keys_sql(server, schemas):
-    expression = "EXPRESSION" if server.engine == "mysql" else "NULL"
+#: STATISTICS columns some MySQL versions lack (EXPRESSION is 8.0.13+), with their stand-in.
+KEYS_OPTIONAL = {"EXPRESSION": "NULL"}
+
+
+def _keys_sql(server, schemas, columns=None):
+    expression = (columns or {}).get("EXPRESSION", "EXPRESSION") if server.engine == "mysql" else "NULL"
     return ("SELECT TABLE_SCHEMA, TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME, SUB_PART, NULLABLE, "
             "INDEX_TYPE, %s FROM information_schema.STATISTICS WHERE NON_UNIQUE = 0 AND %s"
             % (expression, scope_sql("TABLE_SCHEMA", schemas)))
@@ -237,6 +253,9 @@ _SPACES_SQL = {
              "WHERE SPACE_TYPE IN ('Single', 'General')",
     "mysql_brief": "SELECT NAME, SPACE_TYPE, 0 FROM information_schema.INNODB_TABLESPACES_BRIEF "
                    "WHERE SPACE_TYPE IN ('Single', 'General')",
+    # MySQL 5.7: no INNODB_TABLESPACES; SYS_TABLESPACES records, read one by one.
+    "mysql57": "SELECT NAME, SPACE_TYPE, 0 FROM information_schema.INNODB_SYS_TABLESPACES "
+               "WHERE SPACE_TYPE IN ('Single', 'General')",
     "mariadb": "SELECT NAME, IF(SPACE = 0, 'System', 'Single'), 0 FROM information_schema.INNODB_SYS_TABLES",
 }
 
@@ -278,7 +297,8 @@ def table_report(conn, schemas=None, fresh=False, limit=DEFAULT_LIMIT,
         if mysql and (server.var("show_gipk_in_create_table_and_information_schema") or "").upper() in ("OFF", "0"):
             prefix = "SET SESSION show_gipk_in_create_table_and_information_schema = ON; " + TABLES_TAG
             raw["gipk_session"] = True
-        raw["keys"] = reader.rows(prefix + _keys_sql(server, schemas))
+        raw["keys"], _ = reader.rows_with_columns(lambda chosen: prefix + _keys_sql(server, schemas, chosen),
+                                                  KEYS_OPTIONAL if mysql else {})
         tables = _table_rows(raw["tables"])
         primary = {(r[0], r[1]) for r in raw["keys"] if len(r) >= 3 and r[2] == "PRIMARY"}
         gipk_candidates = any(len(r) >= 5 and r[2] == "PRIMARY" and (r[4] or "").lower() == GIPK_COLUMN
@@ -289,7 +309,8 @@ def table_report(conn, schemas=None, fresh=False, limit=DEFAULT_LIMIT,
         with_free = [key for key in sorted(tables) if tables[key]["innodb"] and (tables[key]["free"] or 0) > 0]
         if with_free:
             raw["spaces"] = _optional_process(reader, _SPACES_SQL[server.engine], notes,
-                                              _SPACES_SQL["mysql_brief"] if mysql else None)
+                                              _SPACES_SQL["mysql_brief"] if mysql else None,
+                                              _SPACES_SQL["mysql57"] if mysql else None)
             if mysql and raw["spaces"] and any(len(r) >= 2 and r[1] == "General" for r in raw["spaces"]):
                 # Which general tablespace: only SHOW CREATE TABLE says, per table.
                 singles = _single_keys(raw["spaces"], server)
@@ -336,15 +357,18 @@ def _tablespace_clause(rows):
     return ""
 
 
-def _optional_process(reader, sql, notes, fallback=None):
+def _optional_process(reader, sql, notes, fallback=None, table_fallback=None):
     """InnoDB information_schema tables need PROCESS; without it the
     tablespace of each table is unknown, which is reported, not fatal.
-    *fallback* is tried when a column is missing (an older version)."""
+    *fallback* is tried when a column is missing (an older version),
+    *table_fallback* when the table is (MySQL 5.7's INNODB_SYS_TABLESPACES)."""
     try:
         return reader.rows(sql)
     except ConnectorError as exc:
         if fallback and "Unknown column" in str(exc):
             return _optional_process(reader, fallback, notes)
+        if table_fallback and "Unknown table" in str(exc):
+            return _optional_process(reader, table_fallback, notes)
         if not denied(exc) and "Unknown table" not in str(exc):
             raise
         notes.append("Could not read which tablespace each table is in (%s). It needs the PROCESS privilege; "
@@ -611,13 +635,15 @@ def compute_tables(server, raw, schemas=None, fresh=False, limit=DEFAULT_LIMIT, 
                          "are unknown for %s." % ("the partitioned table in scope" if unknown == 1 else
                                                           "the %s partitioned tables in scope" % _count_text(unknown)))
     expiry = _number(server.var("information_schema_stats_expiry"))
+    # MySQL 5.7 has no information_schema statistics cache (no such variable).
+    cache = server.engine == "mysql" and expiry is not None
     report.update({
         "scope": {"schemas": list(schemas) if schemas else None, "all_user_schemas": schemas is None,
                   "excluded": ["mysql", "sys", "performance_schema", "information_schema"] if schemas is None else []},
         "statistics": {
-            "fresh_requested": bool(fresh), "fresh": bool(raw.get("fresh_applied")) or server.engine == "mariadb"
-            or expiry == 0, "cache_expiry_s": expiry if server.engine == "mysql" else None,
-            "cached": server.engine == "mysql" and not raw.get("fresh_applied") and expiry != 0,
+            "fresh_requested": bool(fresh), "fresh": bool(raw.get("fresh_applied")) or not cache
+            or expiry == 0, "cache_expiry_s": expiry if cache else None,
+            "cached": cache and not raw.get("fresh_applied") and expiry != 0,
         },
         "tablespaces_known": raw.get("spaces") is not None,
         # userstat=ON: rows read and changed per table since userstat started.
@@ -761,11 +787,18 @@ def _missing_entry(server, t, indexes, columns):
                           "sql": "ALTER TABLE %s ADD PRIMARY KEY (col1, col2)%s;" % (target, online),
                           "template": True})
         name = next((n for n in SURROGATE_NAMES if n not in columns), "row_pk")
-        fixes.append({"label": "Or add an invisible surrogate key (SELECT * and INSERT without a column list "
-                               "keep working)",
-                      "sql": "ALTER TABLE %s ADD COLUMN %s BIGINT UNSIGNED NOT NULL AUTO_INCREMENT INVISIBLE "
-                             "PRIMARY KEY FIRST%s;" % (target, ident(name),
-                                                      ", ALGORITHM=INPLACE, LOCK=SHARED" if innodb else "")})
+        lock = ", ALGORITHM=INPLACE, LOCK=SHARED" if innodb else ""
+        if _invisible_columns(server):
+            fixes.append({"label": "Or add an invisible surrogate key (SELECT * and INSERT without a column list "
+                                   "keep working)",
+                          "sql": "ALTER TABLE %s ADD COLUMN %s BIGINT UNSIGNED NOT NULL AUTO_INCREMENT INVISIBLE "
+                                 "PRIMARY KEY FIRST%s;" % (target, ident(name), lock)})
+        else:
+            # Invisible columns arrived in MySQL 8.0.23 (sql_yacc.yy column_attribute: visibility).
+            fixes.append({"label": "Or add a surrogate key (this server has no invisible columns: SELECT * then "
+                                   "returns it, and an INSERT without a column list must give it a value)",
+                          "sql": "ALTER TABLE %s ADD COLUMN %s BIGINT UNSIGNED NOT NULL AUTO_INCREMENT "
+                                 "PRIMARY KEY FIRST%s;" % (target, ident(name), lock)})
     entry["checks"] = checks
     entry["fixes"] = fixes
     caveat = ("Adding a primary key rebuilds the table: it takes time and free disk space for a new copy of the "
@@ -917,6 +950,7 @@ OPTIMIZE_CAVEAT = (
 def why_texts(server):
     """Why a primary key matters, for this engine. Shown once per report."""
     mariadb = server.engine == "mariadb"
+    mysql57 = not mariadb and _before_80(server)
     return [
         {"key": "replication", "title": "Replicas find each changed row by its key",
          "text": ("With row-based replication each UPDATE or DELETE reaches the replica as the changed rows, and "
@@ -925,6 +959,13 @@ def why_texts(server):
                   "or else reads the table from the start until it finds the row, for every changed row: deleting "
                   "10,000 rows can mean 10,000 table scans, and the replica falls behind."
                   if mariadb else
+                  "With row-based replication (the default) each UPDATE or DELETE reaches the replica as the "
+                  "changed rows, and the replica has to find each one. With a primary key or a unique key on NOT "
+                  "NULL columns that is one index lookup per row. Without one, MySQL 5.7 with its default "
+                  "slave_rows_search_algorithms (INDEX_SCAN,TABLE_SCAN) looks each row up through another index "
+                  "if there is one, or else reads the table from the start for every changed row: deleting 10,000 "
+                  "rows can mean 10,000 table scans, and the replica falls behind."
+                  if mysql57 else
                   "With row-based replication (the default) each UPDATE or DELETE reaches the replica as the "
                   "changed rows, and the replica has to find each one. With a primary key or a unique key on NOT "
                   "NULL columns that is one index lookup per row. Without one, MySQL hashes the rows of each "
@@ -936,6 +977,7 @@ def why_texts(server):
                   "stores the primary key to reach the row. Without a primary key it uses the first unique key on "
                   "NOT NULL columns (whole columns, not a prefix, %s). Without one it adds a hidden 6-byte row ID."
                   % ("a generated column or a long hash key" if mariadb else
+                     "a virtual generated column" if mysql57 else
                      "a functional part or a virtual generated column"))},
         {"key": "row_id", "title": "The hidden row ID",
          "text": "Queries and tools cannot see or use the hidden row ID to find, page through or deduplicate "
@@ -957,9 +999,26 @@ def why_texts(server):
     ]
 
 
+def _invisible_columns(server):
+    """Whether ADD COLUMN ... INVISIBLE works: MariaDB, and MySQL 8.0.23 or
+    later (an unknown version counts as current)."""
+    version = tuple(server.version_tuple or ())[:3]
+    return server.engine != "mysql" or not any(version) or version >= (8, 0, 23)
+
+
+def _before_80(server):
+    """MySQL 5.7 (a known version below 8.0)."""
+    version = tuple(server.version_tuple or ())[:3]
+    return server.engine == "mysql" and any(version) and version < (8, 0, 0)
+
+
 def _notes(server, raw, report, schemas, fresh, notes):
     stats = report["statistics"]
-    if server.engine == "mysql":
+    if server.engine == "mysql" and stats["cache_expiry_s"] is None and not raw.get("fresh_applied"):
+        if fresh:
+            notes.append("This MySQL has no information_schema statistics cache: every read asks InnoDB, so Fresh "
+                         "numbers changes nothing here.")
+    elif server.engine == "mysql":
         expiry = stats["cache_expiry_s"]
         if raw.get("fresh_applied"):
             notes.append("Fresh numbers: information_schema_stats_expiry was set to 0 for myflames' own connection "
@@ -979,8 +1038,7 @@ def _notes(server, raw, report, schemas, fresh, notes):
                  "space at the end of the file (an extent is 1 MiB with 4 to 16 KiB pages, 2 MiB with 32 KiB, "
                  "4 MiB with 64 KiB), minus a reserve of 2 extents plus about 1%%; free pages in partly used "
                  "extents and half-empty pages after scattered deletes are not in it, so it understates."
-                 % ("read from the tablespace every time" if server.engine == "mariadb" or raw.get("fresh_applied")
-                    or stats.get("cache_expiry_s") == 0 else
+                 % ("read from the tablespace every time" if not stats.get("cached") else
                     "read with the other statistics, so it comes from the same cache unless Fresh numbers is on"))
     if raw.get("gipk_session"):
         notes.append("show_gipk_in_create_table_and_information_schema is OFF on this server; myflames turned it "

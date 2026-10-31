@@ -31,6 +31,7 @@ Examples:
 
     python3 scripts/lab-csv-import.py
     python3 scripts/lab-csv-import.py --servers mysql-8.4 --keep-images
+    python3 scripts/lab-csv-import.py --servers mysql-5.7   # linux/amd64 under emulation
     python3 scripts/lab-csv-import.py --out local/csv-import-2026-10-29/LAB.md
 """
 import argparse
@@ -49,11 +50,14 @@ import traceback
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ECR = "public.ecr.aws/docker/library/"
 SERVERS = {
+    "mysql-5.7": ("mysql", "5.7.44"),
     "mysql-8.4": ("mysql", "8.4.11"),
     "mysql-9.7": ("mysql", "9.7.2"),
     "mariadb-10.11": ("mariadb", "10.11.19"),
     "mariadb-11.4": ("mariadb", "11.4.13"),
 }
+#: Images published for linux/amd64 only: run them under emulation on arm64 hosts.
+AMD64_ONLY = {"mysql-5.7"}
 TOKEN = secrets.token_hex(3)
 PREFIX = "myflames-csvlab-%s-" % TOKEN
 DEFAULT_OUT = os.path.join(REPO, "local", "csv-import-2026-10-29", "LAB.md")
@@ -79,6 +83,11 @@ def run(cmd, timeout=600, check=True):
         raise LabError("%s exited %d: %s" % (" ".join(shlex.quote(c) for c in cmd[:5]), proc.returncode,
                                              (err or out).strip()[-400:]))
     return proc.returncode, out, err
+
+
+def platform(key):
+    """``--platform linux/amd64`` for an image without an arm64 build (MySQL 5.7)."""
+    return ["--platform", "linux/amd64"] if key in AMD64_ONLY else []
 
 
 def images():
@@ -107,8 +116,8 @@ class Server(object):
             handle.write("%s=%s\n" % (key, self.password))
         _ACTIVE.add(self.name)
         try:
-            run(["docker", "run", "-d", "--rm", "--name", self.name, "-p", "127.0.0.1::3306", "--env-file", env,
-                 self.image, "--local-infile=%d" % (1 if self.local_infile else 0)], 300)
+            run(["docker", "run", "-d", "--rm"] + platform(self.key) + ["--name", self.name, "-p", "127.0.0.1::3306",
+                 "--env-file", env, self.image, "--local-infile=%d" % (1 if self.local_infile else 0)], 300)
         finally:
             os.unlink(env)
         _, out, _ = run(["docker", "port", self.name, "3306/tcp"], 60)
@@ -800,7 +809,11 @@ def run_server(key, args, workdir, ws):
                 notes.append("explicit_defaults_for_timestamp OFF warned: %s" % warned)
             finally:
                 on.admin("SET GLOBAL explicit_defaults_for_timestamp = %s;" % ("ON" if saved in ("1", "ON") else "OFF"))
-            if on.engine == "mysql":
+            if on.engine == "mysql" and int(on.server_version.split(".")[0]) < 8:
+                # sql_require_primary_key is MySQL 8.0.13+, sql_generate_invisible_primary_key 8.0.30+.
+                notes.append("MySQL %s has neither sql_require_primary_key nor sql_generate_invisible_primary_key: "
+                             "not applicable" % on.server_version)
+            elif on.engine == "mysql":
                 on.admin("SET GLOBAL sql_require_primary_key = ON; SET GLOBAL sql_generate_invisible_primary_key = ON;")
                 try:
                     _, plan, result = import_file(ws, on, path, target)
@@ -911,9 +924,10 @@ INSERT and LOAD DATA copies of the typed table row by row.
 - A connection the server ends mid-import (KILL CONNECTION from the lab) makes the client print a lost-connection
   error: the outcome is unknown, never retried, and the table held no row afterwards (InnoDB rolled back the
   uncommitted transaction).
-- local_infile OFF answers MySQL 3948 ("Loading local data is disabled ...") and MariaDB 4166 ("... has disabled
-  the local infile capability"). myflames reads @@GLOBAL.local_infile at plan and at apply, never sends LOAD DATA
-  while it is OFF and never changes it. Defaults: MySQL OFF, MariaDB ON (sql/sys_vars.cc Sys_local_infile).
+- local_infile OFF answers MySQL 3948 ("Loading local data is disabled ..."), MySQL 5.7 1148 ("The used command
+  is not allowed with this MySQL version") and MariaDB 4166 ("... has disabled the local infile capability").
+  myflames reads @@GLOBAL.local_infile at plan and at apply, never sends LOAD DATA while it is OFF and never changes
+  it. Defaults: MySQL 8.0 and later OFF, MySQL 5.7 and MariaDB ON (sql/sys_vars.cc Sys_local_infile).
 - information_schema compares names case- and accent-insensitively against a utf8mb4 literal; with
   lower_case_table_names = 0 myflames compares with COLLATE utf8mb4_bin, so tables `CaseT` and `caset` stay
   apart.
@@ -994,7 +1008,7 @@ def main():
             ref = ECR + "%s:%s" % (engine, version)
             if ref not in before:
                 log("pulling %s" % ref)
-                run(["docker", "pull", "-q", ref], 1800)
+                run(["docker", "pull", "-q"] + platform(key) + [ref], 1800)
                 pulled.add(ref)
             reports.append(run_server(key, args, workdir, ws))
             write_report(args.out, reports, started, pulled)

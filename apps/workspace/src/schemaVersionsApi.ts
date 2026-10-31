@@ -188,6 +188,36 @@ export type LintReport = {
   not_judged: { rule: string; object: string | null; column: string | null; reason: string }[];
 };
 
+/** Export as SQL (schema_export.py through /api/schema-versions/export-sql):
+ * the script that recreates a schema version or a database read now. Python
+ * writes the script and every sentence; myflames never runs it. */
+export type ExportSql = {
+  database: string;
+  source_database: string;
+  options: ExportSqlOptions;
+  label: string;
+  taken_at: string;
+  generated_at: string;
+  kind: "version" | "live" | "file";
+  server: SnapshotServer;
+  /** Objects whose definition could not be read: not in the script. */
+  not_exported: { type: ObjectType; name: string; reason: string }[];
+  /** Every -- WARNING: sentence of the script, in order. */
+  warnings: string[];
+  /** The script's closing notes (definers, AUTO_INCREMENT, the database). */
+  notes: string[];
+  summary: { statements: number; objects: Partial<Record<ObjectType, number>>; not_exported: number; warnings: number };
+  filename: string;
+  script: string;
+  /** A database read now: the key of the kept read, so a changed option
+   * rebuilds the script without reading the server again (ten minutes). */
+  export_id?: string;
+};
+export type ExportSqlOptions = { database: string; create_database: boolean; keep_definers: boolean };
+export type ExportSqlSource = { id: string } | { live: { connection: Connection; database: string } } | { export_id: string };
+export const exportSql = (source: ExportSqlSource, options: ExportSqlOptions, signal?: AbortSignal) =>
+  api<ExportSql>("schema-versions/export-sql", { ...source, ...options }, signal);
+
 /** What one side of a comparison is: a saved version, or a database read now
  * through a connection (the connection in use, or a saved one whose password
  * is saved; the server fills it). */

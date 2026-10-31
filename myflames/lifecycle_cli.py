@@ -452,6 +452,8 @@ def cmd_dump(argv):
                         help='Dump only this table of the one --schema; repeat for more.')
     parser.add_argument('--threads', type=_bounded_integer(1, 64), default=4, metavar='N',
                         help='Use N threads with MySQL Shell, 1-64 (default: 4).')
+    parser.add_argument('--no-data', action='store_true',
+                        help='Dump table and object definitions only, no rows.')
     parser.add_argument('--no-shell', action='store_true',
                         help='Use mysqldump or mariadb-dump even when MySQL Shell is installed.')
     _write_args(parser, False)
@@ -460,7 +462,8 @@ def cmd_dump(argv):
     def prepare(options):
         with lc._connect(lc.LifecycleConnection, options) as conn:
             return lc.prepare_dump(conn, options, args.directory, schemas=args.schema or [],
-                                   tables=args.table or [], threads=args.threads, prefer_shell=not args.no_shell)
+                                   tables=args.table or [], threads=args.threads, prefer_shell=not args.no_shell,
+                                   options={'structure_only': True} if args.no_data else None)
 
     def make_job(options, plan, typed, audit, safety):
         return lc.dump_job(options, plan, confirmed=True, typed_target=typed, audit=audit, safety=safety,

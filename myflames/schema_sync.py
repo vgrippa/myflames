@@ -567,6 +567,7 @@ class _Plan(object):
         self.engine = target['server'].get('engine')
         self.old = {(o['type'], o['name']): o for o in target['objects']}
         self.new = {(o['type'], o['name']): o for o in source['objects']}
+        self.source_names = {o['name'].lower() for o in source['objects'] if o['type'] != 'database'}
         self.statements, self.skipped, self.warnings = [], [], []
         self.change_statements = []
         self.saves = False
@@ -624,7 +625,7 @@ class _Plan(object):
     def q(self, text):
         """Copied Source text (a column, key, partitioning) with Source's
         database name replaced by Target's, outside literals."""
-        return schema_ddl.requalify(text, self.source_db, self.db)
+        return schema_ddl.requalify(text, self.source_db, self.db, self.source_names)
 
     # -- tables -------------------------------------------------------------------------------
 
@@ -1076,7 +1077,7 @@ class _Plan(object):
         for table in sorted(self.fk_add):
             for key, (fk_name, text) in sorted(self.fk_add[table].items()):
                 self.add('add_foreign_keys', ('table', table), 'ALTER TABLE %s ADD %s'
-                         % (quote(table), schema_ddl.requalify(text, self.source_db, self.db)), ('checks_rows',),
+                         % (quote(table), self.q(text)), ('checks_rows',),
                          risk_details=change_risks({'part': 'foreign_key', 'name': fk_name,
                                                    'change': 'only_in_source', 'source': text}),
                          changes=self.foreign_key_changes(table, fk_name))

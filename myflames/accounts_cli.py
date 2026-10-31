@@ -522,8 +522,9 @@ def cmd_accounts(argv):
         source = parser.add_argument_group('Password input')
         source.add_argument('--password-stdin', action='store_true', help='Read the new password from the first line '
                                                                           'of stdin.')
-        source.add_argument('--random-password', action='store_true', help='Generate the password (MySQL: the server, '
-                                                                           'MariaDB: myflames) and print it once.')
+        source.add_argument('--random-password', action='store_true',
+                            help='Generate the password (MySQL 8.0.18 and later: the server; MariaDB and older MySQL: '
+                                 'myflames) and print it once.')
     if sub == 'create':
         parser.add_argument('--locked', action='store_true', help='Leave the new account locked.')
     if sub == 'password':

@@ -1117,6 +1117,26 @@ class PlanWarningsTest(Base):
         self.server.engine = 'mariadb'
         self.assertIn('READ ONLY ADMIN', ' '.join(self.plan()['warnings']))
 
+    def test_mysql57_local_infile_and_read_only_advice(self):
+        """MySQL 5.7 defaults local_infile to ON and has no SET PERSIST or
+        CONNECTION_ADMIN (mysql-5.7.44 sql/sys_vars.cc, sql/auth/auth_acls.h);
+        8.0 and later keep their own advice."""
+        self.server.local_infile = 'OFF'
+        why = self.plan(method='load_data')['method']['why']
+        self.assertIn("(MySQL's default)", why)
+        self.assertIn('SET PERSIST local_infile = ON', why)
+        self.server.version = '5.7.44-log'
+        why = self.plan(method='load_data')['method']['why']
+        self.assertIn('SET GLOBAL local_infile = ON', why)
+        self.assertIn('MySQL 5.7 has no SET PERSIST', why)
+        self.assertNotIn("MySQL's default", why)
+        self.assertNotIn('SET PERSIST local_infile', why)
+        self.server.local_infile = 'ON'
+        self.server.variables.update(super_read_only='OFF', read_only='ON')
+        warnings = ' '.join(self.plan()['warnings'])
+        self.assertIn('unless this account has SUPER.', warnings)
+        self.assertNotIn('CONNECTION_ADMIN', warnings)
+
     def test_mariadb_local_infile_advice(self):
         self.server.engine = 'mariadb'
         self.server.local_infile = 'OFF'

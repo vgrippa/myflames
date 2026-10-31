@@ -111,7 +111,7 @@ import uuid
 import weakref
 
 from .connector import ConnectorError, MySQLConnection
-from .server_info import identity_from_version, product_identity
+from .server_info import identity_from_version, parse_version_tuple, product_identity
 
 SCHEMA_VERSION = "editor-session-1.0"
 RUN_SCHEMA_VERSION = "editor-run-1.0"
@@ -1263,13 +1263,18 @@ class EditorSession(object):
     def refresh_state(self):
         """Read autocommit, the transaction state and sql_mode (tagged helpers)."""
         if self.engine == "mysql":
+            # PS_CURRENT_THREAD_ID() exists from MySQL 8.0.16 (sql/item_create.cc);
+            # before it (5.7) the session's thread is found by its connection id.
+            known = parse_version_tuple(self.server_version or "", leading=True, default=None)
+            thread = ("(SELECT THREAD_ID FROM performance_schema.threads WHERE PROCESSLIST_ID = CONNECTION_ID())"
+                      if known is not None and known < (8, 0, 16) else "PS_CURRENT_THREAD_ID()")
             probe = self._helper(TAG + "SELECT (SELECT ENABLED FROM performance_schema.setup_consumers WHERE "
                                        "NAME = 'events_transactions_current') AS consumer, (SELECT ENABLED FROM "
                                        "performance_schema.setup_instruments WHERE NAME = 'transaction') AS "
                                        "instrument, (SELECT INSTRUMENTED FROM performance_schema.threads WHERE "
-                                       "THREAD_ID = PS_CURRENT_THREAD_ID()) AS instrumented, (SELECT STATE FROM "
+                                       "THREAD_ID = " + thread + ") AS instrumented, (SELECT STATE FROM "
                                        "performance_schema.events_transactions_current WHERE THREAD_ID = "
-                                       "PS_CURRENT_THREAD_ID()) AS state")
+                                       + thread + ") AS state")
             row = self._helper_row(probe) if not probe.real_errors() else None
             with self.lock:
                 self.transaction_source = "performance_schema"

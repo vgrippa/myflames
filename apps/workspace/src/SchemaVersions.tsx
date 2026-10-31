@@ -12,6 +12,7 @@ import { AlterPredictionWhy, notPredictedReason } from "./AlterPrediction";
 // lays them out.
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Connection, Profile } from "./api";
+import { deletedConnectionLabel } from "./savedConnections";
 import { connectionKey, connectionLabel } from "./binding";
 import { Icon } from "./components";
 import { ComparisonBadge, ComparisonSetup } from "./compareShared";
@@ -29,6 +30,7 @@ import {
   versionTitle, type Change, type CompareEntry, type CompareReport, type CompareStatus, type DiffLine, type SideRequest,
   type LintReport, type Risks, type VersionItem, type VersionWithSnapshot,
 } from "./schemaVersionsApi";
+import { SchemaExportSheet, type ExportSource } from "./SchemaExport";
 import "./schema-versions.css";
 
 export type SchemaVersionsTab = "saved" | "compare";
@@ -239,6 +241,14 @@ function SchemaVersionsView({ connection, profiles, onOpenSql, tab, onTab, selec
   const [deleteSheet, setDeleteSheet] = useState<VersionItem | null>(null);
   const deleting = useAction();
   const exporting = useAction();
+  // Export as SQL: a saved version (its inspector) or a database read now
+  // through the connection in use (the toolbar).
+  const [exportSheet, setExportSheet] = useState<ExportSource | null>(null);
+  function exportLive() {
+    const preferred = database && databases.includes(database) ? database
+      : connection.database && !SYSTEM.has(connection.database) ? connection.database : databases[0] || "";
+    setExportSheet({ kind: "live", connection, database: preferred, databases });
+  }
   async function confirmRename() {
     if (!renameSheet) return;
     const result = await renaming.run(() => updateVersion(renameSheet.item.id, renameSheet.name.trim(), renameSheet.note),
@@ -441,6 +451,9 @@ function SchemaVersionsView({ connection, profiles, onOpenSql, tab, onTab, selec
     <input ref={fileInput} type="file" accept=".json,application/json" hidden onChange={(e) => void importFile(e.target.files?.[0])} />
     <ActionButton icon="import" busy={importing.pending} busyLabel="Importing…" title="Import a schema version file (JSON)"
       onClick={() => fileInput.current?.click()}>Import…</ActionButton>
+    <ActionButton data-action="schema-export-sql" icon="export" disabled={!connection.host} aria-haspopup="dialog"
+      title={connection.host ? `Read a database on ${connectionLabel(connection)} and export a script that recreates it` : "Choose a connection first"}
+      onClick={exportLive}>Export as SQL…</ActionButton>
     {(versions === null || shown.length > 0) && <ActionButton data-action="schema-save" primary icon="plus" disabled={!connection.host} aria-haspopup="dialog"
       title={connection.host ? `Save the schema of a database on ${connectionLabel(connection)}` : "Choose a connection first"}
       onClick={openSave}>Save version…</ActionButton>}
@@ -462,6 +475,7 @@ function SchemaVersionsView({ connection, profiles, onOpenSql, tab, onTab, selec
         nowReason: nowReason(selectedVersion),
         compare: () => compareFrom(selectedVersion),
         exportFile: () => exportItem(selectedVersion),
+        exportSql: () => setExportSheet({ kind: "version", item: selectedVersion }),
         rename: () => { renaming.reset(); setRenameSheet({ item: selectedVersion, name: selectedVersion.name, note: selectedVersion.note }); },
         remove: () => { deleting.reset(); setDeleteSheet(selectedVersion); },
       }, <VersionChecks key={`${selectedVersion.id}:${connectionKey(connection)}`} id={selectedVersion.id} connection={connection}
@@ -622,6 +636,8 @@ function SchemaVersionsView({ connection, profiles, onOpenSql, tab, onTab, selec
           {renaming.phase === "failed" && <p className="form-error" role="alert">{renaming.message}</p>}
         </ConfirmSheet>
       )}
+      {exportSheet && <SchemaExportSheet key={exportSheet.kind === "version" ? exportSheet.item.id : `live:${exportSheet.database}`}
+        source={exportSheet} onOpenSql={onOpenSql} onClose={() => setExportSheet(null)} />}
       {deleteSheet && (
         <ConfirmSheet eyebrow="Delete version" title={`Delete ${versionPhrase(deleteSheet)}?`}
           description="It is removed from this computer. The database is not changed, and other versions keep their numbers."
@@ -667,7 +683,8 @@ function versionColumns(previous: Map<string, VersionItem>): Column<VersionItem>
 }
 
 function versionInspector(item: VersionItem, detail: VersionWithSnapshot | null, error: string, previous: VersionItem | null, act: {
-  now: (() => void) | null; nowReason: string; compare: () => void; exportFile: () => void; rename: () => void; remove: () => void;
+  now: (() => void) | null; nowReason: string; compare: () => void; exportFile: () => void; exportSql: () => void;
+  rename: () => void; remove: () => void;
 }, checks: ReactNode): InspectorContent {
   const snapshot = detail && detail.id === item.id ? detail.snapshot : null;
   const incomplete = Object.entries(snapshot?.coverage || {}).filter(([, c]) => c.state !== "complete");
@@ -680,7 +697,9 @@ function versionInspector(item: VersionItem, detail: VersionWithSnapshot | null,
         title={act.now ? "Read the database now and compare it with this version: what changed since, and a sync script back to it"
           : act.nowReason}>Compare with the database now</ToolbarButton>
       <ToolbarButton icon="compare" onClick={act.compare}>Compare with…</ToolbarButton>
-      <ToolbarButton icon="export" onClick={act.exportFile}>Export</ToolbarButton>
+      <ToolbarButton icon="export" onClick={act.exportFile} title="Save this version as a schema version file (JSON)">Export</ToolbarButton>
+      <ToolbarButton icon="export" data-action="schema-export-sql" aria-haspopup="dialog" onClick={act.exportSql}
+        title="A SQL script that recreates this version's schema on another server">Export as SQL…</ToolbarButton>
       <ToolbarButton icon="edit" onClick={act.rename}>Rename…</ToolbarButton>
       <ToolbarButton icon="trash" onClick={act.remove}>Delete…</ToolbarButton>
     </div>,
@@ -1108,11 +1127,18 @@ function SidePicker({ label, hint, side, onChange, versions, connection, profile
   const databases = (catalog.catalog?.schemas || []).filter((s) => !s.system && !SYSTEM.has(s.name)).map((s) => s.name);
   const versionOptions: [string, string][] = [["", versions.length ? "Choose a saved version" : "No saved versions"],
     ...versions.map((v) => [v.id, `${v.database} · ${versionTitle(v)} · ${localTime(v.saved_at)}`] as [string, string])];
-  const connectionOptions: [string, string][] = [
+  // A chosen saved connection that was deleted, or whose password was
+  // forgotten, stays chosen and says so (savedConnections.ts).
+  // So does one that became the connection in use (it is no longer listed apart).
+  const unlisted = via && via !== "current" && !profile ? profiles.find((p) => p.id === via) : undefined;
+  const listed: [string, string][] = [
     ["current", connection.host ? `In use: ${connectionLabel(connection)}` : "In use: none chosen"],
     ...profiles.filter((p) => p.has_saved_password && !(p.id === connection.profile_id))
       .map((p) => [p.id, connectionLabel(p)] as [string, string]),
   ];
+  const connectionOptions: [string, string][] = via && via !== "current" && !listed.some(([v]) => v === via)
+    ? [...listed, [via, profile ? connectionLabel(profile)
+      : unlisted ? `${connectionLabel(unlisted)} · no saved password` : deletedConnectionLabel(via)]] : listed;
   // A database read now starts with the connection's default database, else
   // the first one on the server, so nothing has to be typed.
   useEffect(() => {

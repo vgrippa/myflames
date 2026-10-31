@@ -100,6 +100,7 @@ class TestCLIConsistency(unittest.TestCase):
         conn = mock.MagicMock()
         conn.__enter__.return_value = conn
         conn.is_mariadb.return_value = False
+        conn.server_version.return_value = '8.4.6'
         conn.run_stdin.return_value = Path(PLAN).read_text(encoding="utf-8")
         with mock.patch('myflames.connector.MySQLConnection', return_value=conn) as factory:
             code, _, err = self.call(['-u', 'reader', '-e', 'SELECT 1', self.path('missing.json'),
@@ -124,6 +125,7 @@ class TestCLIConsistency(unittest.TestCase):
         conn = mock.MagicMock()
         conn.__enter__.return_value = conn
         conn.is_mariadb.return_value = False
+        conn.server_version.return_value = '8.4.6'
         conn.run_stdin.return_value = Path(PLAN).read_text(encoding="utf-8")
         with mock.patch('myflames.connector.MySQLConnection', return_value=conn) as factory:
             code, _, err = self.call(['--profile', profile['id'], '-e', 'SELECT 1',

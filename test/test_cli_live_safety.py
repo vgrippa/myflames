@@ -30,6 +30,7 @@ class TestClassicLiveSafety(unittest.TestCase):
         conn = mock.MagicMock()
         conn.__enter__.return_value = conn
         conn.is_mariadb.return_value = maria
+        conn.server_version.return_value = '11.4.13-MariaDB' if maria else '8.4.6'
         conn.run_stdin.return_value = '{"query_plan": {}}\n'
         return conn
 
@@ -99,12 +100,33 @@ class TestClassicLiveSafety(unittest.TestCase):
                 self.assertNotIn('other-secret', err)
                 self.assertIn('[redacted]', err)
 
+    def test_live_analysis_follows_the_server_version(self):
+        # EXPLAIN ANALYZE FORMAT=JSON (and its format variable) is MySQL 8.3+;
+        # before it the server refuses, so nothing is sent there.
+        for version, prefixed in (('8.4.6', True), ('8.3.0', True)):
+            with self.subTest(version=version):
+                conn = self.connection()
+                conn.server_version.return_value = version
+                code, _, err, _ = self.invoke(self.args(), conn)
+                self.assertEqual(code, 0, err)
+                script = conn.run_stdin.call_args[0][0]
+                self.assertEqual('explain_json_format_version' in script, prefixed)
+                self.assertIn('EXPLAIN ANALYZE FORMAT=JSON', script)
+        for version in ('5.7.44-log', '8.0.36', '8.2.0'):
+            conn = self.connection()
+            conn.server_version.return_value = version
+            code, _, err, _ = self.invoke(self.args(), conn)
+            self.assertEqual(code, 2)
+            self.assertIn('EXPLAIN ANALYZE refused', err)
+            conn.run_stdin.assert_not_called()
+
     def test_live_script_client_stops_on_error_and_disables_reconnect(self):
         # Exercise the real connector's subprocess boundary: SQL stays on stdin,
         # no --force, no reconnect and no fallback after a failed READ ONLY.
         conn = MySQLConnection(host='localhost', binary='mysql', password='login-secret')
         proc = subprocess.CompletedProcess([], 1, b'', b'ERROR 1792: read-only guard failed')
         with mock.patch.object(conn, 'is_mariadb', return_value=False), \
+                mock.patch.object(conn, 'server_version', return_value='8.4.6'), \
                 mock.patch('myflames.connector._run_bounded', return_value=proc) as run:
             code, _, err, _ = self.invoke(self.args(), conn)
         self.assertEqual(code, 2, err)

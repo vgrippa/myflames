@@ -62,6 +62,10 @@ def _discover_response(path, payload):
         check_ids(payload.get("connection_ids"))
     if path == "/api/live/digest-tables":
         discover.check_digest_tables(payload.get("schema"), payload.get("text"))
+    if path == "/api/live/slow-log":
+        from .slow_queries import check_request
+        check_request(payload.get("from"), payload.get("to"), payload.get("order") or "total",
+                      payload.get("limit", 50), payload.get("user"), payload.get("database"))
     options = connection_options(payload.get("connection"))
     password = options.get("password")
     if path == "/api/live/ddl-progress":
@@ -73,7 +77,8 @@ def _discover_response(path, payload):
         # A server-wide information_schema.STATISTICS read is slow on MariaDB.
         options["query_timeout"] = 60
     elif path in ("/api/live/io", "/api/live/config", "/api/live/innodb", "/api/live/error-log", "/api/live/cluster",
-                  "/api/live/proxysql", "/api/live/proxysql/digests", "/api/live/watch/capture", "/api/live/digest-tables"):
+                  "/api/live/proxysql", "/api/live/proxysql/digests", "/api/live/watch/capture", "/api/live/digest-tables",
+                  "/api/live/slow-log"):
         options["query_timeout"] = 30
     if path in ("/api/live/indexes", "/api/live/tables", "/api/live/report"):
         # schemas: a list (the picker), or the older single schema; none means
@@ -93,9 +98,11 @@ def _discover_response(path, payload):
                 return discover.top_report(conn, payload.get("limit", 20), schema,
                                            payload.get("order", "total"), payload.get("table") or None,
                                            extra_metrics=bool(payload.get("extra_metrics")))
-            if path == "/api/live/slow-queries":
-                return discover.slow_queries_report(conn, payload.get("min_seconds", 1.0),
-                                                    payload.get("limit", 50), payload.get("source", "auto"))
+            if path == "/api/live/slow-log":
+                from .slow_queries import slow_log_table_report
+                return slow_log_table_report(conn, payload.get("from"), payload.get("to"), payload.get("user"),
+                                             payload.get("database"), payload.get("order") or "total",
+                                             payload.get("limit", 50))
             if path == "/api/live/digest-tables":
                 return discover.digest_tables(conn, payload.get("schema"), payload.get("text"))
             if path == "/api/live/digest-histogram":
@@ -1110,7 +1117,7 @@ def _replication_response(path, payload, workspace):
 # Endpoints that open a database connection. Each accepts connection.profile_id
 # so a remembered password is filled in on the server, for that request only.
 #: Read-only live server views answered by _discover_response.
-_SERVER_VIEW_PATHS = ("/api/live/top", "/api/live/slow-queries", "/api/live/running", "/api/live/sessions", "/api/live/ddl-progress", "/api/live/locks",
+_SERVER_VIEW_PATHS = ("/api/live/top", "/api/live/slow-log", "/api/live/running", "/api/live/sessions", "/api/live/ddl-progress", "/api/live/locks",
                       "/api/live/innodb", "/api/live/error-log", "/api/live/cluster", "/api/live/health",
                       "/api/live/watch", "/api/live/watch/capture",
                       "/api/live/waits", "/api/live/indexes", "/api/live/tables", "/api/live/schemas",
@@ -1157,9 +1164,10 @@ _REPLICATION_PATHS = _REPLICATION_READ_PATHS + _REPLICATION_WRITE_PATHS + (
 _WRITE_PATHS = _WRITE_PATHS + _REPLICATION_WRITE_PATHS
 _CONNECTION_PATHS = _CONNECTION_PATHS + _REPLICATION_READ_PATHS + _REPLICATION_WRITE_PATHS
 #: The Query editor's schema browser (schema_browser.py): the tables of one
-#: schema, the columns and indexes of one table. Read-only, with the saved
-#: password like the views; answered by _catalog_response.
-_CATALOG_PATHS = ("/api/live/catalog",)
+#: schema, the columns and indexes of one table; and Server > Tables' Table
+#: structure (table-structure-1.0). Read-only, with the saved password like
+#: the views; answered by _catalog_response.
+_CATALOG_PATHS = ("/api/live/catalog", "/api/live/table-structure")
 _TABLE_COLUMNS_PATHS = ("/api/live/table-columns",)
 _CONNECTION_PATHS = _CONNECTION_PATHS + _CATALOG_PATHS + _TABLE_COLUMNS_PATHS
 
@@ -1211,6 +1219,7 @@ _CONNECTION_PATHS = _CONNECTION_PATHS + _ACTION_PATHS
 #: whole plan, then the saved password is filled. The handler fills passwords
 #: itself, so none of these is in _CONNECTION_PATHS.
 from .csv_import_api import PATHS as _CSV_IMPORT_PATHS, WRITE_PATHS as _CSV_IMPORT_WRITE_PATHS  # noqa: E402
+from .slowlog_api import PATHS as _SLOW_LOG_PATHS  # noqa: E402
 _WRITE_PATHS = _WRITE_PATHS + _CSV_IMPORT_WRITE_PATHS
 #: The progress of a send the review sheet is waiting for
 #: (reviewed_writes.Progress by the action request's progress_id). No
@@ -1322,16 +1331,19 @@ def _accounts_response(path, payload, workspace):
             editor_session.invalidate_privileges(workspace)
 
 
-def _catalog_response(payload):
-    """catalog-1.0 for the schema browser; the password never reaches an error."""
+def _catalog_response(payload, path="/api/live/catalog"):
+    """catalog-1.0 for the schema browser, or table-structure-1.0 for Table
+    structure; the password never reaches an error."""
     from .live import connection_options
     from .connector import MySQLConnection
-    from .schema_browser import catalog_report, check_table
+    from .schema_browser import catalog_report, check_table, table_structure
     prefix, after = check_table(payload.get("prefix")), check_table(payload.get("after"))
     options = connection_options(payload.get("connection"))
     options["query_timeout"] = 30
     try:
         with MySQLConnection(**options) as conn:
+            if path == "/api/live/table-structure":
+                return table_structure(conn, payload.get("schema"), payload.get("table"))
             return catalog_report(conn, payload.get("schema"), payload.get("table"),
                                   prefix=prefix, after=after, stats=payload.get("stats") is True)
     except (ValueError, ConnectorError) as exc:
@@ -1625,6 +1637,12 @@ def api_response(path, payload, workspace=None):
         if workspace is None:
             raise ValueError("This operation requires a running workspace.")
         return _audit_response(path, payload, workspace.store)
+    if path in _SLOW_LOG_PATHS:
+        # Query digest's Slow log file source: files on this computer, no server.
+        if workspace is None:
+            raise ValueError("This operation requires a running workspace.")
+        from . import slowlog_api
+        return slowlog_api.response(path, payload, workspace)
     if path in _CSV_IMPORT_PATHS:
         if workspace is None:
             raise ValueError("This operation requires a running workspace.")
@@ -1750,7 +1768,7 @@ def api_response(path, payload, workspace=None):
         if path in _REPLICATION_PATHS:
             return _replication_response(path, payload, workspace)
         if path in _CATALOG_PATHS:
-            return _catalog_response(payload)
+            return _catalog_response(payload, path)
         if path in _VARIABLE_PATHS:
             return _variable_response(path, payload, workspace)
         if path in _ACTION_PATHS:
@@ -2324,7 +2342,7 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                              "/api/profiles/list", "/api/profiles/save", "/api/profiles/delete",
                              "/api/profiles/forget-password", "/api/ssh/hosts",
                              "/api/live/start", "/api/live/status", "/api/live/cancel", "/api/connection/test",
-                             "/api/live/top", "/api/live/slow-queries", "/api/live/digest-histogram", "/api/live/digest-tables",
+                             "/api/live/top", "/api/live/slow-log", "/api/live/digest-histogram", "/api/live/digest-tables",
                              "/api/live/running", "/api/live/sessions", "/api/live/ddl-progress",
                              "/api/live/locks", "/api/live/innodb", "/api/live/error-log", "/api/live/cluster", "/api/live/proxysql",
                              "/api/live/kill", "/api/live/kill/prepare",
@@ -2349,7 +2367,7 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                              "/api/editor/saved/move", "/api/editor/saved/delete",
                              "/api/analysis/prepare-query") + _LIFECYCLE_PATHS \
                 + _REPLICATION_PATHS + _CATALOG_PATHS + _VARIABLE_PATHS + _ACTION_PATHS + _ACCOUNT_PATHS + _DIAGRAM_PATHS + _SCHEMA_VERSION_PATHS + _COMPARE_PATHS + _APP_UPDATE_PATHS \
-                + _NEWS_PATHS + _PARAM_VERSION_PATHS + _CSV_IMPORT_PATHS \
+                + _NEWS_PATHS + _PARAM_VERSION_PATHS + _CSV_IMPORT_PATHS + _SLOW_LOG_PATHS \
                 + (_ACTION_PROGRESS_PATH, "/api/live/proxysql/digests"):
             self._send(404, {"error": "Not found."})
             return

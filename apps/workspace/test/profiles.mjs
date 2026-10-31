@@ -13,27 +13,44 @@ import { once } from "node:events";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import puppeteer from "puppeteer";
 
 // The request ordering contract runs without a browser, sockets or a workspace.
 // Execute the shell's real callback, with deferred API responses under test control.
 if (process.argv.includes("--unit")) {
-  const { transform } = await import("esbuild");
+  const { build, transform } = await import("esbuild");
   const source = await fs.readFile(new URL("../src/main.tsx", import.meta.url), "utf8");
-  const callback = source.slice(source.indexOf("  const refreshProfiles = useCallback("), source.indexOf("  // A connection's type"));
-  assert.ok(callback.includes("return pending"), "profile callback was located");
-  const code = (await transform(`${callback}\nreturn refreshProfiles;`, { loader: "ts", target: "es2020" })).code;
+  // The window's one list of saved connections (savedConnections.ts), with
+  // profiles/list answered by deferred promises under test control.
+  const workspace = fileURLToPath(new URL("../", import.meta.url));
+  const bundled = await build({
+    entryPoints: [path.join(workspace, "src/savedConnections.ts")], bundle: true, write: false, format: "esm", platform: "node",
+    plugins: [{ name: "api-stub", setup(b) {
+      b.onResolve({ filter: /^\.\/api$/ }, () => ({ path: "api-stub", namespace: "stub" }));
+      b.onLoad({ filter: /.*/, namespace: "stub" }, () => ({ contents: "export const api = (...args) => globalThis.__profilesApi(...args);", loader: "js" }));
+    } }],
+  });
+  const storeFile = path.join(await fs.mkdtemp(path.join(workspace, ".profiles-unit-")), "store.mjs");
+  await fs.writeFile(storeFile, bundled.outputFiles[0].text);
+  const store = await import(pathToFileURL(storeFile).href);
+  await fs.rm(path.dirname(storeFile), { recursive: true, force: true });
+  assert.ok(source.includes("refreshSavedConnections") && source.includes("useSavedConnections(false)"), "the shell reads the shared list");
   function scenario() {
+    store.resetSavedConnectionsForTests();
     const requests = [];
-    const state = { items: [], loaded: false, error: "", secret: null };
-    const read = new Function("useCallback", "profilesReadSequence", "latestProfilesRead", "api",
-      "setProfiles", "setProfilesLoaded", "setProfilesFailed", "setSecretStore", "message", code)(
-      fn => fn, { current: 0 }, { current: null }, () => new Promise((resolve, reject) => requests.push({ resolve, reject })),
-      items => { state.items = items; }, loaded => { state.loaded = loaded; }, error => { state.error = error; },
-      secret => { state.secret = secret; }, error => error.message);
+    globalThis.__profilesApi = (endpoint) => { assert.equal(endpoint, "profiles/list"); return new Promise((resolve, reject) => requests.push({ resolve, reject })); };
+    const read = () => store.refreshSavedConnections();
+    const state = {};
+    Object.defineProperties(state, {
+      items: { enumerable: true, get: () => store.savedConnectionsNow().items },
+      loaded: { enumerable: true, get: () => store.savedConnectionsNow().loaded },
+      error: { enumerable: true, get: () => store.savedConnectionsNow().error },
+      secret: { enumerable: true, get: () => store.savedConnectionsNow().secretStore },
+    });
     return { read, requests, state };
   }
+  const plain = (state) => JSON.parse(JSON.stringify(state));
   const oldItems = [{ id: "p", type: "development", read_only: false }];
   const currentItems = [{ id: "p", type: "production", read_only: true }];
   // Older success and failure both follow the newer success, including the
@@ -47,7 +64,7 @@ if (process.argv.includes("--unit")) {
     if (oldFails) requests[0].reject(new Error("stale failure"));
     else requests[0].resolve({ items: oldItems, secret_store: { label: "Old store" } });
     assert.deepEqual(await old, currentItems);
-    assert.deepEqual(state, { items: currentItems, loaded: true, error: "", secret: { label: "Current store" } });
+    assert.deepEqual(plain(state), { items: currentItems, loaded: true, error: "", secret: { label: "Current store" } });
   }
   // A latest failure must retain unknown policy even if an older success
   // arrives afterwards; all callers observe that failure.
@@ -79,6 +96,26 @@ if (process.argv.includes("--unit")) {
     requests[2].resolve({ items: currentItems });
     assert.deepEqual(await Promise.all([first, middle, latest]), [currentItems, currentItems, currentItems]);
   }
+  // An unchanged list keeps its identity (nothing that shows it re-renders),
+  // a changed one replaces it, and a deleted connection keeps its name.
+  {
+    const { read, requests } = scenario();
+    const first = read();
+    requests[0].resolve({ items: [{ id: "a", name: "Alpha" }, { id: "b", name: "Bravo" }] });
+    const before = await first;
+    const again = read();
+    requests[1].resolve({ items: [{ id: "a", name: "Alpha" }, { id: "b", name: "Bravo" }] });
+    assert.equal(await again, before, "an unchanged list keeps its identity");
+    const renamed = read();
+    requests[2].resolve({ items: [{ id: "a", name: "Alpha" }] });
+    assert.deepEqual(await renamed, [{ id: "a", name: "Alpha" }]);
+    assert.equal(store.savedConnectionDeleted(store.savedConnectionsNow(), "b"), true);
+    assert.equal(store.savedConnectionDeleted(store.savedConnectionsNow(), "a"), false);
+    assert.equal(store.deletedConnectionLabel("b"), "Bravo (deleted)");
+    assert.equal(store.deletedConnectionLabel("never-seen"), "A deleted saved connection");
+    store.resetSavedConnectionsForTests();
+    assert.equal(store.savedConnectionDeleted(store.savedConnectionsNow(), "b"), false, "nothing is deleted before the list is read");
+  }
   // The loop callback merges against the updater's current state, not the
   // render that produced the callback, preserving settings changed meanwhile.
   const loop = source.match(/onLoopActivity=\{\(active\) => \{([\s\S]*?)\n\s+\}\}/);
@@ -92,7 +129,7 @@ if (process.argv.includes("--unit")) {
   const unchanged = saved;
   notify(true, apply, value => value, (a, b) => JSON.stringify(a) === JSON.stringify(b));
   assert.equal(saved, unchanged);
-  console.log("Profiles unit checks passed: latest success/failure, awaiting the newest policy, and loop state merges.");
+  console.log("Profiles unit checks passed: the shared list (latest success/failure, newest policy awaited, unchanged identity, deleted names) and loop state merges.");
   process.exit(0);
 }
 

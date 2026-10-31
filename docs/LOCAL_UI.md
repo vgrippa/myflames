@@ -982,7 +982,11 @@ choose it (the Tool list names it). **Options for** the tool are one form in
 sections, with a line under the heading summarizing what differs from the
 tool's defaults: **Performance** (MySQL Shell: Threads, Chunking, Chunk size,
 Rate limit per thread), **Contents** (Include Triggers, Stored routines and
-Events; a MySQL Shell table dump has no routines or events), **SQL output** (SQL
+Events; a MySQL Shell table dump has no routines or events; **Structure only
+(no rows)** dumps the definitions without rows: MySQL Shell `ddlOnly`,
+`mysqldump` and `mariadb-dump` `--no-data`; the plan and the review sheet say
+"Structure only", and a restore of such a dump compares the objects but skips
+the row counts, saying so), **SQL output** (SQL
 dump tools: binary values as hexadecimal, DROP TABLE before each CREATE TABLE)
 and **Compression** (MySQL Shell: Method and Level, the level needing Shell 8.4
 or newer; SQL dump tools: compress the traffic from the server, which leaves
@@ -1208,6 +1212,31 @@ write safety:
   batches stay runnable unless every statement is definitively denied.
 - **Write safety precedence**: explicit connection safety rules (Read-only
   refusals and Production confirmations) always override privilege states.
+
+### MySQL 5.7
+
+MySQL 5.7 is end of life (Oracle Sustaining Support since 2023-10-25). myflames
+reads it (tested on 5.7.44) and says in one plain sentence where 5.7 lacks
+something, never as an error; a MySQL 5.6 or older server gets a note that results may be
+missing or wrong. Explain, plan files and every chart work on its `EXPLAIN
+FORMAT=JSON`, but **Run analysis** is disabled with "Run analysis needs EXPLAIN
+ANALYZE FORMAT=JSON, which MySQL has from 8.3 (8.4 LTS and later); use Explain
+for the estimated plan." (MySQL 8.0 and 8.2 get the same.) The Query editor, Table data, Kill and Import CSV work (its advice is
+SET GLOBAL with the option file, and SUPER); the transaction indicator says it
+cannot tell while 5.7's transaction instrument is off, and the ALTER review says
+5.7 is not predicted. Query digest's Statement digests have no sample text,
+quantiles or CPU time, and the Slow log table and Slow log file sources work.
+In Server, Locks reads InnoDB's lock tables, Indexes and Tables give no
+invisible-index SQL, Error log gives file guidance, Parameters show no source
+and no **Keep after restart**, with SET GLOBAL plus an option-file line instead
+of SET PERSIST, and take each parameter's apply type from the version catalog's
+row for that 5.7 release (Unknown, and not editable inline, for a release it
+does not have), and Replication reads `SHOW SLAVE STATUS`. Cluster reads Group
+Replication from 5.7.17 and offers no reviewed changes below 8.0.13. Users and
+roles needs 5.7.6 or later, lists users only and says "This MySQL version has no
+roles; MySQL added them in 8.0." Schema versions read, compare and export, and
+Checks leave reserved words Not judged before 8.0.11. Maintenance has the
+upgrade check, dump and restore (structure only included) and no CLONE.
 
 ## Connections
 
@@ -1656,7 +1685,7 @@ terminal and reload the page after a rebuild.
 
 Top statements opens a selected statement in a detail view using the available width. Back returns to the retained list with its sorting, filters and scroll position. Supported write statements offer a read-only SELECT projection for review before Explain or Run analysis. The original editor text remains in its own tab; the converted SELECT needs a second explicit action. This is a different plan and does not measure writes, UPDATE assignment expressions, triggers, constraints or locking. Batch analysis leaves these rows for individual review.
 
-Tables shows reusable InnoDB free space as information. **Optimize table** is an optional action with exact SQL and rebuild caveats to review. Instruments reads on open (one attempt per connection) and organizes its view into **Features**, **Instruments**, **Consumers**, and **Actors and objects** tabs: filter and select up to 2,000 instruments (with **Enable**, **Enable without timing**, **Disable**, and **Clear selection**) or consumers (enabling required parent consumers automatically), and run batched `UPDATE` statements (up to 500 names per statement) through the reviewed SQL runner, with copy-only option file lines under **Keep after restart**. Both require confirmation on Development and Production connections, refuse Read-only connections and remain disabled for stale data from another connection. Copying statements still works independently.
+**Table structure** is the first action in a Tables row's menu, its context menu and the inspector's action bar: a sheet with the table's columns (type, nullability, default, character set, collation, comment), indexes, foreign keys and the exact `SHOW CREATE TABLE`, read once when it opens through the connection the list was read with, with **Copy CREATE TABLE** and **Download .sql** (`<schema>.<table>.sql`). It is read-only; a refused `SHOW CREATE TABLE` keeps the other tabs with its reason, and columns a server lacks (MySQL 5.7 index visibility) read Unknown. It is disabled with the reason on a list read from another connection. Tables shows reusable InnoDB free space as information. **Optimize table** is an optional action with exact SQL and rebuild caveats to review. Instruments reads on open (one attempt per connection) and organizes its view into **Features**, **Instruments**, **Consumers**, and **Actors and objects** tabs: filter and select up to 2,000 instruments (with **Enable**, **Enable without timing**, **Disable**, and **Clear selection**) or consumers (enabling required parent consumers automatically), and run batched `UPDATE` statements (up to 500 names per statement) through the reviewed SQL runner, with copy-only option file lines under **Keep after restart**. Both require confirmation on Development and Production connections, refuse Read-only connections and remain disabled for stale data from another connection. Copying statements still works independently.
 
 ## Query digest
 
@@ -1675,19 +1704,53 @@ statement count, their total time and executions, and for Performance Schema
 rankings how long the counters cover ("12 statements · 567.66 s total ·
 1,465,072 executions · since 2 d 7 h ago"; the "since" part explains on hover
 that counting runs from the server's start or the last reset of the digest
-table). Slow-query reports show the numbers only, and "· N shown" follows while
-a filter hides rows. The ⓘ beside the title names the table the report on
+table). The slow log sources show the numbers and their range, and "· N shown" follows while
+a filter hides rows. For the slow log sources it reads "Slow log file: <name> · N statements · … total · … executions · <range>" (or "mysql.slow_log · …"). The ⓘ beside the title names the table the report on
 screen read and its counting window:
 
-- **Performance Schema statement digests** reads
+- **Performance Schema statement digests** (Source: **Statement digests**) reads
   `performance_schema.events_statements_summary_by_digest`. Counters accumulate
   since server start or the last digest-table reset; server uptime is shown
   when reported, without claiming the reset time is known.
-- **Slow queries over 1 s** first reads individual executions of at least 1 s
-  from the **Slow query log (mysql.slow_log table)**. When no rows are available,
-  it falls back to Performance Schema **statement digests** whose recorded
-  maximum execution time is at least 1 s, ordered by that maximum. These are
-  cumulative digest aggregates, not statement history or a sampled time window.
+- **Slow log table** and **Slow log file** (below) read the slow query log.
+  They replaced the "Slow queries over 1 s" ranking, retired in 3.3.1.
+
+**Source** chooses where the statements come from: **Statement digests**
+(Performance Schema, as above), **Slow log table** (`mysql.slow_log` of the
+connection in use) or **Slow log file**, which opens a MySQL 5.7 to 9.x, Percona
+Server or MariaDB slow query log on this computer and needs no server. A file
+source reads nothing until a file is chosen: the empty state **Open a slow query
+log** offers **Choose file…** (the system file chooser) and **Type a path
+instead** (a bad path is explained under the field); **Open another file…**
+sits at the end of the summary line. A read shows "Reading <name>…", a progress
+bar and **Stop**, which keeps the last report. Both slow log sources sum
+statements by fingerprint (myflames' own: literals as `?`, lists as `(...)`)
+and show count, total, average, P95 and maximum time, lock time and rows, with
+**Rank by** Total time, Calls, Average time, Slowest call, P95, Lock time, Rows
+examined or Rows sent, and a **User** filter that is part of the read. Changing
+Source starts the range and the user over (Rank by stays). The inspector shows
+Latency (Min, P95, P99, P99.9 and the histogram from the report, no read),
+**Who ran it** (users and hosts), **Fingerprint** (16 hex characters, with
+Copy) and **Sample (the slowest call)** with its time, user and host; it has no
+Tables section for a file, and Explain and Open in Query editor for a file row
+run on the connection in use (their tooltip says so). Counters a log does not
+record read Unknown, never zero. The text export adds Source, Logged by, Clock,
+Time range and User, and the CSV adds Last Seen, Min Time (ms), Users and
+Fingerprint ID. Nothing of this is saved in the session.
+
+**Time range** opens a calendar with a date and time for From and To and quick
+ranges (**Last hour**, **Last 24 hours**, **Today**; **Any time** clears it).
+Times are never moved to another zone: a log's entries are compared as the log
+wrote them, in its own clock (UTC, an offset or the server's local time, which
+the report names), and both ends are inclusive to the precision written (a To
+without seconds keeps that whole minute). The slow log sources count only the
+entries logged in the range, and leave out entries with no time, saying how
+many. Performance Schema statements keep their totals since counting began, so
+the range there keeps the statements seen in it (first seen before To, last
+seen after From), says "Numbers are totals since counting began, not only this
+range: the range keeps the statements seen in it." and reads nothing. Quick
+ranges end at the file's last entry, the server's current time or the newest
+last seen.
 
 **Share of total time** is each statement's share of the server's total
 statement time (every digest the server holds, not only the loaded ones; its
@@ -1760,17 +1823,18 @@ window's newer workspace, clears this place's search and selection.
 
 Open **Database diagram** in the sidebar's SQL workspace group (after Query
 digest; Home's Database diagram card and the command palette open it too) to inspect a database's tables,
-columns, keys, and foreign-key relationships. Choose a database from the connected server and select **Refresh** in the view toolbar to rebuild it from fresh metadata. Rebuilding retains positions for tables that remain and incorporates added or removed tables and relationships. Replacing an imported diagram asks for confirmation first; cancel leaves it intact. You can also import SQL (`.sql`), Mermaid (`.mmd` or `.mermaid`), or editable JSON
+columns, keys, and foreign-key relationships. Choose a database from the connected server, then select **Load <database>** (the empty state) or the toolbar's **Load**; choosing a database never reads it. The toolbar button reads **Refresh** once that database's diagram is shown, and choosing another database while a diagram is shown offers to load it (loading asks before replacing the diagram). A diagram from another connection says so and offers **Load <database>**. **Reload database list** is an icon button beside the Database list. Rebuilding retains positions for tables that remain and incorporates added or removed tables and relationships. Replacing an imported diagram asks for confirmation first; cancel leaves it intact. You can also import SQL (`.sql`), Mermaid (`.mmd` or `.mermaid`), or editable JSON
 without a database connection. Imports are parsed as data and never executed.
 Files and models are limited to 2 MiB; a model holds at most 200 tables,
 10,000 columns, 1,000 relationships, and 20,000 index key parts. Unsupported input and incomplete metadata produce
 warnings; inspect them before treating a diagram as a complete schema. SQL
 import supports CREATE TABLE and ALTER TABLE ADD keys and foreign keys. Mermaid
 uses an erDiagram subset and reads column names and nullability back on import. Other clauses or statements are reported rather than
-executed. Live metadata reads share a 30-second budget. **View Mermaid** opens an
-ER diagram from a pasted definition or file directly on the interactive canvas.
+executed. Live metadata reads share a 30-second budget. Mermaid ER
+files import through **Import a schema** (format Mermaid) and open on the
+interactive canvas.
 
-A **Diagram | Mermaid** switch toggles between the interactive ER canvas and the
+Once a diagram is shown, a **Diagram | Mermaid** switch toggles between the interactive ER canvas and the
 **Mermaid** view. The Mermaid view renders the diagram (`mermaid` 11.17.2, loaded
 on first use as separate chunks with `securityLevel: "strict"`, following light
 and dark appearances, with zoom in, zoom out, fit, and inline render errors)
@@ -1902,6 +1966,8 @@ through one SSH host is another server than through another SSH host or
 directly, and the reason says so. The Query editor runs each statement after
 its own confirmation.
 **Export** saves the comparison as Markdown, JSON or the sync script.
+
+**Export as SQL…** (a saved version's inspector, and the Saved versions toolbar for a database of the connection in use, read now) opens a sheet with a script that recreates the schema on another server. **Name in the script** defaults to the source's name, **Create the database** adds `CREATE DATABASE`, and **Keep definers** keeps the DEFINER of views, routines, triggers and events (left out by default, so the account that runs the script becomes the definer). Tables come in foreign key order (keys among tables that refer to each other are added afterwards with `ALTER TABLE`), views in dependency order, and routines, triggers and events in `DELIMITER` blocks under the sql_mode, character set and collation they were created with. **Review before running** lists what the script cannot recreate as captured (`-- WARNING:` lines). The script only creates objects. **Copy script**, **Download .sql** and **Open in Query editor** (a new tab; nothing runs) are the only ways it leaves; a changed option rebuilds it from the read already made. CLI: `myflames schema export VERSION --sql`.
 
 ## Import CSV
 

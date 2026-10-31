@@ -170,6 +170,25 @@ def format_compare(report, show_all=False):
     return text
 
 
+def _incomplete(report):
+    """Whether the comparison is incomplete (exit 2). A secret variable of the
+    explicit list (report_password exists on every MySQL), read on both sides,
+    is redacted on purpose and does not fail the run; any other Not compared
+    row does, values redacted for their shape included (two TLS cipher lists
+    are not known to be equal)."""
+    if report.get('complete') is False:
+        return True
+    for row in report.get('items', []):
+        if row.get('status') != 'not_compared':
+            continue
+        sides = [row.get('source'), row.get('target')]
+        if param_compare.sensitive(row.get('name') or '') and all(sides) \
+                and not any(s.get('truncated') for s in sides):
+            continue
+        return True
+    return False
+
+
 def command(area, action, argv):
     parser = _parser(area, action)
     args = parser.parse_args(argv)
@@ -229,7 +248,7 @@ def command(area, action, argv):
     except (ValueError, TypeError, OSError, ConnectorError, sqlite3.Error) as exc:
         _fail(sources.safe_error(exc))
     if report:
-        if report['source'].get('error') or report['target'].get('error') or report['counts']['not_compared']:
+        if report['source'].get('error') or report['target'].get('error') or _incomplete(report):
             raise SystemExit(2)
         different = any(report['counts'][s] for s in ('different', 'only_in_source', 'only_in_target'))
         if args.fail_on and different:

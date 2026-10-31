@@ -24,7 +24,8 @@ export function optionShown(option: DumpOption, value: Values) {
 }
 
 /** "4 threads · Gzip, level 6 · 2 more changes": the threads, the backup
- * compression, and how many other options differ from the tool's defaults. */
+ * compression, and how many other options differ from the tool's defaults.
+ * Structure only is named: it changes what the backup contains, not how. */
 export function optionsSummary(catalog: DumpCapabilities, value: Values, threads?: number) {
   const parts: string[] = [];
   if (threads !== undefined) parts.push(`${threads} ${threads === 1 ? "thread" : "threads"}`);
@@ -33,7 +34,8 @@ export function optionsSummary(catalog: DumpCapabilities, value: Values, threads
     if (!optionShown(option, value) || !(option.key in value) || option.key === "compression_level") continue;
     const current = value[option.key];
     if (current === option.default || current === "") continue;
-    if (option.key === "compression") {
+    if (option.key === "structure_only") parts.push("Structure only (no rows)");
+    else if (option.key === "compression") {
       const method = option.choices?.find(([v]) => v === current)?.[1] || String(current);
       parts.push(value.compression_level !== undefined ? `${method}, level ${value.compression_level}` : method);
     } else others++;

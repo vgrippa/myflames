@@ -3262,6 +3262,8 @@ export function ViewLayout({
   controls,
   onRefresh,
   refreshDisabled,
+  refreshLabel = "Refresh",
+  refreshBusyLabel = "Refreshing…",
   loading,
   onBack,
   inspector,
@@ -3281,6 +3283,10 @@ export function ViewLayout({
   controls?: ReactNode;
   onRefresh?: () => void;
   refreshDisabled?: boolean;
+  /** The Refresh button's words when it reads something not shown yet
+   * (Database diagram: "Load" until a diagram of the chosen database is shown). */
+  refreshLabel?: string;
+  refreshBusyLabel?: string;
   loading?: boolean;
   /** Narrow layouts: back to the list of views. */
   onBack?: () => void;
@@ -3297,7 +3303,9 @@ export function ViewLayout({
   otherConnection?: string | null;
   /** The read that loads this server, when it is not Refresh (Tuning's
    * scorecard runs the full analysis). Named in the note and its optional button. */
-  otherAction?: { label: string; onClick?: () => void; disabled?: boolean };
+  otherAction?: { label: string; onClick?: () => void; disabled?: boolean;
+    /** The note's sentence, when "From X. <label> to load this server." does not fit. */
+    text?: string };
 }) {
   const reportActivity = useContext(ViewActivityContext);
   const backLabel = useContext(ViewBackLabelContext);
@@ -3367,15 +3375,15 @@ export function ViewLayout({
             <ActionButton
               className="toolbar-refresh"
               labelClassName="toolbar-refresh-label"
-              aria-label="Refresh"
+              aria-label={refreshLabel}
               data-action="refresh"
               icon="refresh"
               busy={!!loading}
-              busyLabel="Refreshing…"
+              busyLabel={refreshBusyLabel}
               disabled={!loading && !!refreshDisabled}
               onClick={onRefresh}
             >
-              Refresh
+              {refreshLabel}
             </ActionButton>
           )}
           {shared && !shared.sheet && !detailBackLabel && (
@@ -3392,7 +3400,7 @@ export function ViewLayout({
       </header>
       {status}
       {detailOpen&&otherConnection&&(otherAction
-        ? <div className="gate other-connection" role="note"><Icon name="connection" size={18}/><p>From {otherConnection}. {otherAction.label} to load this server.</p>
+        ? <div className="gate other-connection" role="note"><Icon name="connection" size={18}/><p>{otherAction.text || `From ${otherConnection}. ${otherAction.label} to load this server.`}</p>
             {otherAction.onClick && <span className="gate-action"><button type="button" className="button" disabled={otherAction.disabled || loading} onClick={otherAction.onClick}>{otherAction.label}</button></span>}</div>
         : <div className="gate other-connection" role="note"><Icon name="connection" size={18}/><p>From {otherConnection}, refresh to load this server.</p></div>)}
       <div
@@ -3403,7 +3411,7 @@ export function ViewLayout({
           {otherConnection && otherAction ? (
             <div className="gate other-connection" role="note">
               <Icon name="connection" size={18} />
-              <p>From {otherConnection}. {otherAction.label} to load this server.</p>
+              <p>{otherAction.text || `From ${otherConnection}. ${otherAction.label} to load this server.`}</p>
               {otherAction.onClick && (
                 <span className="gate-action">
                   <button type="button" className="button" disabled={otherAction.disabled || loading} onClick={otherAction.onClick}>
@@ -3419,7 +3427,7 @@ export function ViewLayout({
               {onRefresh && (
                 <span className="gate-action">
                   <button type="button" className="button" disabled={refreshDisabled || loading} onClick={onRefresh}>
-                    Refresh
+                    {refreshLabel}
                   </button>
                 </span>
               )}

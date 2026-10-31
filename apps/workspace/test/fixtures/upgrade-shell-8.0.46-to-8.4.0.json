@@ -654,6 +654,14 @@
    0
   ],
   "engine": "mysql",
+  "download_url": "https://dev.mysql.com/downloads/shell/",
+  "update": {
+   "status": "not_checked",
+   "latest_version": null,
+   "checked_at": null,
+   "source_url": "https://dev.mysql.com/downloads/shell/",
+   "message": "Update check not requested."
+  },
   "name": "mysqlsh"
  },
  "limitations": [

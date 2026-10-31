@@ -227,6 +227,20 @@ _PS_WORKER_SQL = (
     "LAST_APPLIED_TRANSACTION_END_APPLY_TIMESTAMP) "
     "FROM performance_schema.replication_applier_status_by_worker")
 
+#: MySQL 5.7 (before 8.0.1): replication_connection_status has no
+#: LAST_QUEUED_TRANSACTION columns and replication_applier_status_by_worker no
+#: APPLYING_TRANSACTION or LAST_APPLIED_TRANSACTION columns (5.7.44
+#: storage/perfschema/table_replication_*.cc; they arrived in mysql-8.0.1).
+#: The same positions, with NULL where 5.7 has nothing.
+_PS_CONNECTION_SQL_57 = (
+    "SELECT CHANNEL_NAME, SERVICE_STATE, COUNT_RECEIVED_HEARTBEATS, LAST_HEARTBEAT_TIMESTAMP, "
+    "NULL, NULL, TIMESTAMPDIFF(MICROSECOND, LAST_HEARTBEAT_TIMESTAMP, NOW(6)), NULL "
+    "FROM performance_schema.replication_connection_status")
+_PS_WORKER_SQL_57 = (
+    "SELECT CHANNEL_NAME, WORKER_ID, LAST_ERROR_NUMBER, LAST_ERROR_MESSAGE, LAST_ERROR_TIMESTAMP, "
+    "NULL, NULL, NULL, NULL, NULL, NULL FROM performance_schema.replication_applier_status_by_worker")
+_PS_TIMESTAMPS_SINCE = (8, 0, 1)
+
 #: Relay log events read to see which transaction the applier restarts at.
 RELAY_PEEK_EVENTS = 100
 _RELAY_META = ("Format_desc", "Previous_gtids", "Rotate", "Stop", "Heartbeat", "Gtid_list", "Binlog_checkpoint",
@@ -537,7 +551,8 @@ def read_status(conn, source_versions=False, profiles=(), open_profile=None, rep
                                    "available.")
     for channel in report["channels"]:
         channel["failing_gtid"] = failing_gtid(channel) if channel["sql"]["error"]["errno"] else None
-        _judge(channel, server.engine)
+        _judge(channel, server.engine, "Seconds_Behind_Master" if server.engine == "mariadb"
+               or show_sql == "SHOW SLAVE STATUS" else "Seconds_Behind_Source")
         summary = report["summary"]
         if channel["judged"]:
             summary["judged"] += 1
@@ -737,7 +752,12 @@ def _read_ps(reader, report, server):
         report["capabilities"]["agat"] = True
         for channel in report["channels"]:
             channel["agat"] = "OFF"
-    for channel, row in rows_for(_PS_CONNECTION_SQL, "replication_connection_status") or ():
+    old = tuple(server.version_tuple or ())[:3] < _PS_TIMESTAMPS_SINCE
+    if old:
+        report["notes"].append("MySQL 5.7 records no queue or apply timestamps per transaction "
+                               "(they arrived in MySQL 8.0), so worker lag is not shown.")
+    for channel, row in rows_for(_PS_CONNECTION_SQL_57 if old else _PS_CONNECTION_SQL,
+                                 "replication_connection_status") or ():
         if channel is None:
             continue
         row = list(row) + [None] * (8 - len(row))
@@ -748,10 +768,10 @@ def _read_ps(reader, report, server):
         ages = [a for a in (signals["heartbeat_age_s"], signals["last_queued_age_s"]) if a is not None]
         signals["receiver_idle_s"] = min(ages) if ages else None
         channel["receiver"] = {"service_state": _text(row[1]), "last_queued_transaction": _text(row[4])}
-    workers = rows_for(_PS_WORKER_SQL, "replication_applier_status_by_worker")
+    workers = rows_for(_PS_WORKER_SQL_57 if old else _PS_WORKER_SQL, "replication_applier_status_by_worker")
     if workers is None:
         return
-    report["capabilities"]["worker_timestamps"] = True
+    report["capabilities"]["worker_timestamps"] = not old
     by_channel = {}
     for channel, row in workers:
         if channel is not None:
@@ -1571,7 +1591,7 @@ def _worse(status, new):
     return new if order[new] > order[status] else status
 
 
-def _judge(channel, engine):
+def _judge(channel, engine, lag_name=None):
     """status + reasons, and the Seconds_Behind_* caveats for this channel."""
     if channel["kind"] == "group_replication":
         channel["status"], channel["status_why"] = "unknown", [GR_NOTE]
@@ -1597,7 +1617,7 @@ def _judge(channel, engine):
         why.append("The receiver is connecting to the source.")
     lag = channel["lag_s"]
     delay = sql.get("delay_s") or 0
-    lag_name = "Seconds_Behind_Master" if engine == "mariadb" else "Seconds_Behind_Source"
+    lag_name = lag_name or ("Seconds_Behind_Master" if engine == "mariadb" else "Seconds_Behind_Source")
     if lag is not None and lag - delay > LAG_WATCH_S:
         status = _worse(status, "watch")
         why.append("%s is %d s%s." % (lag_name, lag, " (SQL_Delay is %d s)" % delay if delay else ""))
@@ -1606,7 +1626,7 @@ def _judge(channel, engine):
         why.append("%s is NULL although both threads run, so the lag cannot be told." % lag_name)
     signals = channel["lag_signals"]
     if engine == "mysql":
-        _mysql_lag_notes(channel)
+        _mysql_lag_notes(channel, lag_name)
         applying = signals.get("applying_lag_s")
         if applying is not None and applying > LAG_WATCH_S + delay:
             status = _worse(status, "watch")
@@ -1626,18 +1646,18 @@ def _judge(channel, engine):
     channel["status"], channel["status_why"] = status, why
 
 
-def _mysql_lag_notes(channel):
+def _mysql_lag_notes(channel, lag_name="Seconds_Behind_Source"):
     lag = channel["lag_s"]
     notes = channel["lag_notes"]
     if lag is None:
         if channel["sql"]["running"] != "Yes":
-            notes.append("Seconds_Behind_Source is NULL because the SQL thread is not running.")
+            notes.append("%s is NULL because the SQL thread is not running." % lag_name)
         elif channel["io"]["running"] != "Yes":
-            notes.append("Seconds_Behind_Source is NULL: with the receiver stopped, MySQL reports NULL once "
-                         "the applier has caught up with what was received (it still counts before that).")
+            notes.append("%s is NULL: with the receiver stopped, MySQL reports NULL once "
+                         "the applier has caught up with what was received (it still counts before that)." % lag_name)
     elif lag == 0:
-        notes.append("Seconds_Behind_Source is 0 because the applier has caught up with what the receiver "
-                     "has, which is also true when the receiver is far behind the source.")
+        notes.append("%s is 0 because the applier has caught up with what the receiver "
+                     "has, which is also true when the receiver is far behind the source." % lag_name)
     signals = channel["lag_signals"]
     if signals.get("applying_lag_s") is not None or signals.get("last_apply_lag_s") is not None:
         notes.append("Worker lag compares the source's commit timestamp with the replica's clock: the two "
@@ -1674,6 +1694,10 @@ _MYSQL_TAG_PRIVS = (" A tagged GTID (uuid:tag:n) also needs TRANSACTION_GTID_TAG
 _MYSQL_COUNTER_PRIVS = ("SET GLOBAL %(counter)s needs SYSTEM_VARIABLES_ADMIN or SUPER; %(start)s needs "
                         "REPLICATION_SLAVE_ADMIN or SUPER.")
 _MARIADB_PRIVS = ("SET GLOBAL sql_slave_skip_counter needs SUPER; START SLAVE needs REPLICATION SLAVE ADMIN.")
+#: MySQL 5.7 has no dynamic privileges: SET GTID_NEXT, SET GLOBAL and START SLAVE
+#: need SUPER (5.7.44 sql/sys_vars.cc:884 check_has_super, sql/rpl_slave.cc:10009).
+_MYSQL57_GTID_PRIVS = "SET GTID_NEXT needs SUPER; START SLAVE needs SUPER."
+_MYSQL57_COUNTER_PRIVS = "SET GLOBAL sql_slave_skip_counter needs SUPER; START SLAVE needs SUPER."
 
 _COUNTER_NOTE = ("The counter counts events, but when it reaches 1 inside an event group it keeps skipping "
                  "to the end of that group, so 1 skips the rest of the current transaction; myflames only "
@@ -1860,7 +1884,8 @@ def _mysql_plan(plan, report, channel):
         plan["method"] = "empty_gtid_transaction"
         plan["statements"] = ["SET GTID_NEXT = '%s'" % _qtext(gtid), "BEGIN", "COMMIT",
                               "SET GTID_NEXT = 'AUTOMATIC'", "%s SQL_THREAD FOR CHANNEL '%s'" % (start, name)]
-        plan["privileges"] = _MYSQL_GTID_PRIVS + (_MYSQL_TAG_PRIVS if _MYSQL_GTID.match(gtid).group(2) else "")
+        plan["privileges"] = (_MYSQL57_GTID_PRIVS if version < (8, 0, 0) else
+                              _MYSQL_GTID_PRIVS + (_MYSQL_TAG_PRIVS if _MYSQL_GTID.match(gtid).group(2) else ""))
         plan["notes"].append("The empty transaction takes the failing transaction's GTID, so the applier "
                              "treats it as already applied and continues with the next one.")
         if gtid_mode != "ON":
@@ -1868,13 +1893,17 @@ def _mysql_plan(plan, report, channel):
         return
     if gtid_mode == "ON" and not agat_on:
         plan["available"] = False
-        plan["message"] = ("gtid_mode is ON, so the skip counter would be dropped by START REPLICA and skip "
+        plan["message"] = (("gtid_mode is ON, so MySQL 5.7 refuses SET GLOBAL sql_slave_skip_counter (error "
+                            "1858), and the failing GTID could not be read from the error text or the relay log. "
+                            "Read the channel again.") if version < (8, 0, 0) else
+                           "gtid_mode is ON, so the skip counter would be dropped by START REPLICA and skip "
                            "nothing, and the failing GTID could not be read from the error text, the worker's "
                            "APPLYING_TRANSACTION or the relay log. Read the channel again.")
         return
     plan["method"] = "skip_counter"
     plan["statements"] = ["SET GLOBAL %s = 1" % counter, "%s SQL_THREAD FOR CHANNEL '%s'" % (start, name)]
-    plan["privileges"] = _MYSQL_COUNTER_PRIVS % {"counter": counter, "start": start}
+    plan["privileges"] = (_MYSQL57_COUNTER_PRIVS if version < (8, 0, 0) else
+                          _MYSQL_COUNTER_PRIVS % {"counter": counter, "start": start})
     plan["notes"].append(_COUNTER_NOTE)
     if agat_on:
         plan["notes"].append("This channel assigns GTIDs to anonymous transactions (AGAT %s), so START "
@@ -2419,12 +2448,23 @@ def read_receiver_identity(conn, report):
     return tuple(identity)
 
 
-def _receiver_details(engine, identity=None, problem=None):
+def receiver_stage(engine, version=None):
+    """The receiver's version-check stage: MySQL renamed it in 8.0.26
+    (sql/mysqld.cc, tags mysql-8.0.25 and mysql-8.0.26); MariaDB and MySQL
+    5.7 keep the master name. An unknown version counts as current."""
+    from .server_info import server_version_tuple
+    known = server_version_tuple(version or "") if isinstance(version, str) else tuple(version or ())
+    if engine == "mariadb" or (any(known[:3]) and tuple(known[:3]) < (8, 0, 26)):
+        return "stage/sql/Checking master version"
+    return "stage/sql/Checking source version"
+
+
+def _receiver_details(engine, identity=None, problem=None, version=None):
     """Public guard fields shared by the confirmation plan and loop status."""
     if engine not in ("mysql", "mariadb"):
         return {"receiver_guard": "off", "receiver_guard_reason": problem,
                 "receiver_guard_instrument": None, "receiver_guard_note": "Receiver coverage has not been checked yet."}
-    instrument = "stage/sql/Checking master version" if engine == "mariadb" else "stage/sql/Checking source version"
+    instrument = receiver_stage(engine, version)
     note = ("Receiver reconnects are detected; a changed receiver epoch stops the loop." if identity else
             "Receiver reconnects are not detected: enable %s, global_instrumentation and "
             "thread_instrumentation, and allow reads of the receiver stage counters. "
@@ -2444,9 +2484,10 @@ def receiver_guard_plan(conn, report):
     except (ConnectorError, ValueError) as exc:
         if isinstance(exc, ConnectorError) and _fatal(exc):
             raise
-        return _receiver_details(report.get("engine"), problem=str(exc))
+        return _receiver_details(report.get("engine"), problem=str(exc), version=report.get("server_version"))
     return _receiver_details(report.get("engine"), identity,
-                             None if identity else "Receiver stage counters are unavailable.")
+                             None if identity else "Receiver stage counters are unavailable.",
+                             version=report.get("server_version"))
 
 
 # ---- skip until stopped ----------------------------------------------------------
@@ -2795,7 +2836,8 @@ class SkipLoop(object):
                 return "connection_lost", str(exc)
             problem = str(exc)
         details = _receiver_details(report.get("engine"), identity,
-                                    problem or ("Receiver stage counters are unavailable." if not identity else None))
+                                    problem or ("Receiver stage counters are unavailable." if not identity else None),
+                                    version=report.get("server_version"))
         with self._lock:
             self._receiver_details = details
         if not identity:

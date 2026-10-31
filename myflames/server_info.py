@@ -174,13 +174,13 @@ def tool_version_tuple(text):
 
 
 #: Oldest releases myflames documents support for (README, AGENTS.md).
-SUPPORTED_MINIMUM = {"mysql": (8, 4), "mariadb": (10, 11)}
+SUPPORTED_MINIMUM = {"mysql": (5, 7), "mariadb": (10, 11)}
 
 
 def unsupported_version_note(version, version_comment=""):
     """One stderr line for a server below the documented floor, else None.
 
-    MySQL below 8.4 and MariaDB below 10.11 can still answer many reads, but
+    MySQL below 5.7 and MariaDB below 10.11 can still answer many reads, but
     plan formats, Performance Schema columns and variables differ, so results
     may be missing or wrong. An unreadable version returns None. A leading
     "5.5.5-" (the handshake version some MariaDB builds send for old

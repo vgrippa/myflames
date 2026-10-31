@@ -553,3 +553,49 @@
 .schema-versions-view.is-compare .summary-line > p:first-child { margin: 0; white-space: nowrap; }
 
 .schema-sides-changed { margin: 0; color: var(--ink-muted); font-size: var(--text-sm); }
+
+/* Export as SQL (SchemaExport.tsx, a text sheet from table-structure.css):
+   the options, one summary line, Review before running, then the script. */
+.schema-export-sheet .sheet-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.schema-export-sheet .sheet-lead {
+  margin: 0;
+}
+.schema-export-sheet .action-status[data-phase="idle"] {
+  display: none;
+}
+.schema-export-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  min-height: var(--control-h);
+  align-items: center;
+}
+.schema-export-result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.schema-export-summary,
+.schema-export-missing {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.schema-export-missing {
+  color: var(--ink-muted);
+}
+.schema-export-result .schema-script {
+  max-height: 50vh;
+}
+.schema-export-result.is-stale .schema-script {
+  color: var(--ink-faint);
+  background: var(--surface-subtle);
+}
+.schema-export-result.is-stale .schema-script .sql-comment {
+  color: var(--ink-faint);
+}

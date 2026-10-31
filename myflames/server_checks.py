@@ -144,7 +144,8 @@ PS_MEMORY_SQL = ("SELECT SUM(CURRENT_NUMBER_OF_BYTES_USED) "
 # Lifecycle data, never a wildcard saying every future major is supported.
 # These EXISTING end dates come from VENDOR POLICY / release pages, not
 # MYSQL_VERSION, VERSION or tag timestamps (which are not release/EOL dates).
-# Reviewed against https://www.mysql.com/support/eol-notice.html (8.0: April 21)
+# Reviewed against https://www.mysql.com/support/eol-notice.html (8.0: April 21;
+# 5.7: "as of October 25, 2023, MySQL 5.7 is covered under Oracle Sustaining Support")
 # and https://dev.mysql.com/doc/refman/8.4/en/mysql-releases.html (Innovation
 # ends at its successor; LTS 5+3 years). Successor GA dates: the respective
 # https://dev.mysql.com/doc/relnotes/mysql/9.1/en/news-9-1-0.html through
@@ -158,6 +159,7 @@ PS_MEMORY_SQL = ("SELECT SUM(CURRENT_NUMBER_OF_BYTES_USED) "
 VERSION_LAST_REVIEWED = "2026-10-15"
 VERSION_SUPPORT = {
     "mysql": {
+        (5, 7): ("maintenance", "2023-10-25"),
         (8, 0): ("maintenance", "2026-04-21"),
         (8, 4): ("LTS", "2032-05-01"),
         (9, 0): ("Innovation", "2024-10-15"),
@@ -480,6 +482,8 @@ def _replication(server, raw):
                         "stop replication when the source later changes the same rows.",
                 caveat=("Some setups write to a replica on purpose (a reporting schema, a multi-source "
                         "aggregator). %s" % (
+                            "read_only=ON still lets users with SUPER write; super_read_only=ON stops them too."
+                            if _mysql57(server) else
                             "read_only=ON still lets users with SUPER or CONNECTION_ADMIN write; "
                             "super_read_only=ON stops them too." if mysql else
                             "read_only=ON still lets users with READ ONLY ADMIN write; read_only=NO_LOCK_NO_ADMIN "
@@ -488,7 +492,8 @@ def _replication(server, raw):
                             "setting stops them, so do not grant it to applications.")),
                 action={"text": "Make the replica read-only unless writes are intended; the setting is global "
                                 "and needs the db-operations confirmation.",
-                        "sql": "SET PERSIST super_read_only = ON;" if mysql else "SET GLOBAL read_only = ON;",
+                        "sql": ("SET GLOBAL super_read_only = ON;" if _mysql57(server) else
+                                "SET PERSIST super_read_only = ON;" if mysql else "SET GLOBAL read_only = ON;"),
                         "config": "%s = ON  # under [mysqld]" % ("super_read_only" if mysql else "read_only")},
                 settings=settings, sources=["read_only"] + (["super_read_only"] if mysql else []), value="OFF"))
         else:
@@ -576,8 +581,11 @@ def _accounts(server, raw):
 
 
 def _query_cache(server, raw):
-    """MariaDB only (MySQL 8.0 and later have no query cache)."""
-    if server.engine != "mariadb":
+    """MariaDB and MySQL 5.7 (MySQL 8.0.3 removed the query cache; 5.7.44
+    sql/sys_vars.cc:3382-3439 marks query_cache_size and query_cache_type
+    deprecated, query_cache_type OFF by default)."""
+    mysql57 = _mysql57(server)
+    if server.engine != "mariadb" and not mysql57:
         return []
     settings = [_setting(server, n) for n in ("query_cache_type", "query_cache_size", "have_query_cache")]
     explain = ("The query cache keeps the result of a SELECT and returns it for the same statement text. Every "
@@ -616,8 +624,11 @@ def _query_cache(server, raw):
     return [_check(
         "query_cache", "query_cache", "Query cache", "watch", observation, "query_cache", explain=explain,
         caveat=("A read-mostly server with repeated identical SELECTs can gain from it; measure throughput with it "
-                "off before deciding. Set both lines in my.cnf too: a non-zero query_cache_size at startup turns "
-                "query_cache_type ON."),
+                "off before deciding. " + (
+                    "Set both lines in my.cnf too, so a restart keeps it off. MySQL 5.7 deprecates the query cache "
+                    "and MySQL 8.0 has none, so an upgrade removes it anyway." if mysql57 else
+                    "Set both lines in my.cnf too: a non-zero query_cache_size at startup turns "
+                    "query_cache_type ON.")),
         action={"text": "Turn it off unless measurements show it helps; it is a global setting and needs the "
                         "db-operations confirmation.",
                 "sql": "SET GLOBAL query_cache_type = OFF;\nSET GLOBAL query_cache_size = 0;",
@@ -625,8 +636,16 @@ def _query_cache(server, raw):
         numbers=numbers, settings=settings, sources=sources, value="on")]
 
 
+def _mysql57(server):
+    """MySQL 5.7: no SET PERSIST, expire_logs_days instead of binlog_expire_logs_seconds."""
+    from .config_review import before_mysql80
+    return before_mysql80(server.engine, server.version_tuple)
+
+
 def _binlog_expiry(server):
     mysql = server.engine == "mysql"
+    if _mysql57(server):
+        return _binlog_expiry_57(server)
     names = ["log_bin", "binlog_expire_logs_seconds", "expire_logs_days"] + (
         ["binlog_expire_logs_auto_purge"] if mysql else []) + [
         n for n in ("max_binlog_total_size", "binlog_space_limit") if n in server.variables]
@@ -676,6 +695,37 @@ def _binlog_expiry(server):
         text += ", or sooner when together they exceed %s" % _bytes(size)
     return _check("binlog_expiry", "redo", "Binary log expiry", "ok", text, "binlog_expiry", explain=explain,
                   settings=settings, sources=names, value=_duration_text(period))
+
+
+def _binlog_expiry_57(server):
+    """MySQL 5.7: expire_logs_days only (5.7.44 sql/sys_vars.cc:1650-1655, 0 to 99 days, default 0);
+    binlog_expire_logs_seconds and binlog_expire_logs_auto_purge are MySQL 8.0."""
+    names = ["log_bin", "expire_logs_days"]
+    settings = [_setting(server, n) for n in names]
+    explain = ("Binary logs are kept until they expire or someone purges them; expiry runs at startup and when the "
+               "server rotates to a new binary log.")
+    if not _on(server.variables.get("log_bin")):
+        return _check("binlog_expiry", "redo", "Binary log expiry", "info",
+                      "The binary log is off (log_bin=%s)" % (server.variables.get("log_bin") or "?"),
+                      explain=explain, settings=settings, sources=names, value="binary log off")
+    days = _number(server.variables.get("expire_logs_days")) or 0
+    caveat = ("Replicas and point-in-time recovery need the binary logs since their last position or backup: keep "
+              "them longer than a replica may be down and longer than your backup interval. A job that runs PURGE "
+              "BINARY LOGS also counts.")
+    if not days:
+        return _check(
+            "binlog_expiry", "redo", "Binary log expiry", "watch",
+            "The binary log is on and does not expire (expire_logs_days is 0), so it grows until the disk fills "
+            "unless something purges it", "binlog_expiry", explain=explain, caveat=caveat,
+            action={"text": "Set an expiry in whole days that covers your replicas and backups; the setting is "
+                            "global and needs the db-operations confirmation. MySQL 5.7 has no SET PERSIST, so "
+                            "also add the line to the option file.",
+                    "sql": "SET GLOBAL expire_logs_days = <days>;",
+                    "config": "expire_logs_days = <days>  # under [mysqld]"},
+            settings=settings, sources=names, value="never")
+    return _check("binlog_expiry", "redo", "Binary log expiry", "ok",
+                  "Binary logs expire after %s" % _duration_text(days * 86400), "binlog_expiry", explain=explain,
+                  settings=settings, sources=names, value=_duration_text(days * 86400))
 
 
 def _nonnegative(value):
@@ -729,6 +779,10 @@ def _memory_budget(server, raw):
     # Both engines allocate a network buffer AND a result buffer at connect.
     session_bytes += _nonnegative(variables.get("net_buffer_length")) or 0
     temp_engine = (variables.get("internal_tmp_mem_storage_engine") or "").upper()
+    if not temp_engine and _mysql57(server):
+        # MySQL 5.7 has no TempTable: MEMORY up to min(tmp_table_size, max_heap_table_size)
+        # (5.7.44 sql/sql_tmp_table.cc:1422-1428).
+        temp_engine = "MEMORY"
     if server.engine == "mariadb" or temp_engine == "MEMORY":
         tmp, heap = read("tmp_table_size"), read("max_heap_table_size")
         temp_bytes = min(tmp, heap) if all(_nonnegative(variables.get(n)) is not None

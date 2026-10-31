@@ -7,6 +7,9 @@ for that read only, so one request can compare two servers. A comparison
 side is ``{"version": ID}`` or ``{"live": {"connection": {...}, "database":
 NAME}}``. lint checks a saved/file capture and optionally live metadata;
 sync rebuilds from the bounded comparison cache without another server read.
+export-sql builds the script that recreates a saved version or a database
+read now (schema_export.py); a live read is cached like a comparison, so a
+changed option rebuilds the script without reading the server again.
 """
 import collections
 import threading
@@ -24,10 +27,12 @@ COMPARE_PATH = '/api/schema-versions/compare'
 IMPORT_PATH = '/api/schema-versions/import'
 SYNC_PATH = '/api/schema-versions/sync'
 LINT_PATH = '/api/schema-versions/lint'
+EXPORT_SQL_PATH = '/api/schema-versions/export-sql'
 PATHS = (LIST_PATH, '/api/schema-versions/get', SAVE_PATH, '/api/schema-versions/update',
-         '/api/schema-versions/delete', '/api/schema-versions/export', IMPORT_PATH, COMPARE_PATH, SYNC_PATH, LINT_PATH)
+         '/api/schema-versions/delete', '/api/schema-versions/export', IMPORT_PATH, COMPARE_PATH, SYNC_PATH, LINT_PATH,
+         EXPORT_SQL_PATH)
 #: These open connections to servers (read-only).
-LIVE_PATHS = (SAVE_PATH, COMPARE_PATH, LINT_PATH)
+LIVE_PATHS = (SAVE_PATH, COMPARE_PATH, LINT_PATH, EXPORT_SQL_PATH)
 #: A snapshot can be larger than the workspace's usual request limit.
 LARGE_PATHS = (IMPORT_PATH,)
 
@@ -71,6 +76,72 @@ def _cache_get(store, key):
             raise ValueError('This comparison is no longer cached; run Compare again.')
         # The same captured definitions live for a bounded time, even while used.
         return cached[2]
+
+
+# Live reads for Export as SQL, bounded like the comparison cache: the
+# browser holds only the opaque key.
+_EXPORTS = weakref.WeakKeyDictionary()
+
+
+def _export_put(store, snapshot, meta):
+    blob = schema_versions.encode_snapshot(snapshot)
+    if len(blob) > _CACHE_BYTES:
+        raise ValueError('This schema is too large to keep for Export as SQL.')
+    key = uuid.uuid4().hex
+    with _CACHE_LOCK:
+        entries = _EXPORTS.setdefault(store, collections.OrderedDict())
+        for old, (stamp, _, _) in list(entries.items()):
+            if time.monotonic() - stamp > _CACHE_SECONDS:
+                del entries[old]
+        while entries and (len(entries) >= _CACHE_ITEMS or sum(v[1] for v in entries.values()) + len(blob) > _CACHE_BYTES):
+            entries.popitem(last=False)
+        entries[key] = (time.monotonic(), len(blob), (blob, meta))
+    return key
+
+
+def _export_get(store, key):
+    if not isinstance(key, str) or len(key) != 32:
+        raise ValueError('Read the database again to export it.')
+    with _CACHE_LOCK:
+        entries = _EXPORTS.get(store, {})
+        cached = entries.get(key)
+        if cached is None or time.monotonic() - cached[0] > _CACHE_SECONDS:
+            entries.pop(key, None)
+            raise ValueError('This read is no longer kept; read the database again to export it.')
+        blob, meta = cached[2]
+    return schema_versions.decode_snapshot(blob), dict(meta)
+
+
+def _export_sql(payload, store, with_saved_password):
+    """The Export as SQL script of a saved version (``id``), a database read
+    now (``live``) or a read kept from before (``export_id``)."""
+    from . import schema_export
+    for name in ('create_database', 'keep_definers'):
+        if not isinstance(payload.get(name, False), bool):
+            raise ValueError('%s must be true or false.' % name)
+    key = None
+    if payload.get('export_id') is not None:
+        key = payload['export_id']
+        snapshot, meta = _export_get(store, key)
+    elif payload.get('live') is not None:
+        snapshot, meta = read_live(payload['live'], store, with_saved_password), {'kind': 'live'}
+        key = _export_put(store, snapshot, meta)
+    else:
+        item = store.schema_version_get(_item(store, payload.get('id'))['id'])
+        if item is None:
+            raise ValueError('That saved schema version no longer exists.')
+        snapshot, meta = item['snapshot'], {'kind': 'version', 'id': item['id'], 'number': item['number'],
+                                            'name': item['name'], 'saved_at': item['saved_at']}
+    result = schema_export.build(snapshot, database=payload.get('database'),
+                                 create_database=payload.get('create_database', False),
+                                 keep_definers=payload.get('keep_definers', False), meta=meta)
+    # The script carries every statement; the list would send them twice.
+    result.pop('statements')
+    result['kind'] = meta.get('kind', 'version')
+    result['server'] = dict(snapshot['server'])
+    if key is not None:
+        result['export_id'] = key
+    return result
 
 
 def _lint(snapshot, connection, with_saved_password):
@@ -211,6 +282,8 @@ def response(path, payload, store, with_saved_password=None):
                 raise ValueError('That saved schema version no longer exists.')
             snapshot = saved['snapshot']
         return _lint(snapshot, payload.get('connection'), with_saved_password)
+    if path == EXPORT_SQL_PATH:
+        return _export_sql(payload, store, with_saved_password)
     if path == SYNC_PATH:
         key = payload.get('comparison_id')
         source_blob, target_blob, source_meta, target_meta, ignore, compared_at = _cache_get(store, key)

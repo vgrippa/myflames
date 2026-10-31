@@ -7,10 +7,13 @@
   "allow_source_restore": false,
   "existing_objects": "refuse",
   "threads": 4,
-  "resume": false
+  "resume": false,
+  "staging_directory": "/Users/dba/maintenance"
  },
  "server": {
   "engine": "mysql",
+  "flavor": "mysql",
+  "product": "MySQL",
   "version": "8.4.3",
   "variables": {
    "version": "8.4.3",
@@ -55,13 +58,29 @@
    3
   ],
   "engine": "mysql",
+  "download_url": "https://dev.mysql.com/downloads/mysql/",
+  "update": {
+   "status": "not_checked",
+   "latest_version": null,
+   "checked_at": null,
+   "source_url": "https://dev.mysql.com/downloads/mysql/",
+   "message": "Update check not requested."
+  },
   "name": "mysql"
  },
  "target": "127.0.0.1:3306",
  "commands": [
-  "mysql --defaults-extra-file=<0600 file> --binary-mode --comments < /Users/dba/maintenance/backup/dump.sql"
+  "mysql --defaults-file=<0600 file> --binary-mode --comments < /Users/dba/maintenance/backup/dump.sql"
  ],
  "checks": [
+  {
+   "directory": "/Users/dba/maintenance",
+   "required_bytes": 1122,
+   "available_bytes": 462165499904,
+   "check": "staging_space",
+   "status": "passed",
+   "reason": "Private restore snapshot in /Users/dba/maintenance requires 1122 bytes; 462165499904 bytes available."
+  },
   {
    "check": "source_identity",
    "status": "passed",
@@ -71,7 +90,7 @@
    "objects": [],
    "check": "existing_objects",
    "status": "passed",
-   "reason": "Existing objects require an explicit Shell ignore/drop choice."
+   "reason": "Existing objects require an explicit drop choice (Shell also supports ignore)."
   },
   {
    "missing_any_of": [],
@@ -85,5 +104,154 @@
   "SQL dumps can address other schemas; selecting a default schema is not a sandbox."
  ],
  "ready": true,
- "binding": "81f737b8a9b16f85f7e3967a18b4957d085c727a660e23d597e8c3a768c00cf7"
+ "binding": "1fbe3622132a58e710d6c8efd83f7bfca5fa0910f49c56ef7867e27a154d71b1",
+ "manifest": {
+  "schema_version": "lifecycle-manifest-1.0",
+  "source": {
+   "engine": "mysql",
+   "flavor": "mysql",
+   "product": "MySQL",
+   "version": "8.4.3",
+   "variables": {
+    "version": "8.4.3",
+    "version_comment": "mysql",
+    "hostname": "donor",
+    "server_id": "1",
+    "server_uuid": "donor",
+    "port": "3306",
+    "datadir": "/server/data/",
+    "socket": "/server/mysql.sock",
+    "local_infile": "ON",
+    "version_compile_os": "Linux",
+    "version_compile_machine": "x86_64",
+    "character_set_server": "utf8mb4",
+    "character_set_filesystem": "binary",
+    "collation_server": "utf8mb4_0900_ai_ci",
+    "innodb_page_size": "16384",
+    "max_allowed_packet": "4194304",
+    "clone_valid_donor_list": "127.0.0.1:3306",
+    "sql_mode": "STRICT_TRANS_TABLES,NO_ZERO_DATE",
+    "gtid_executed": "a:1-2"
+   },
+   "identity": {
+    "server_uuid": "donor",
+    "server_id": "1",
+    "hostname": "donor",
+    "port": "3306",
+    "version": "8.4.3",
+    "datadir": "/server/data/",
+    "socket": "/server/mysql.sock"
+   }
+  },
+  "scope": {
+   "schemas": [
+    "app"
+   ],
+   "tables": []
+  },
+  "tool": {
+   "available": true,
+   "deprecated": false,
+   "path": "/Users/dba/maintenance/bin/mysqldump",
+   "version": "mysqldump Ver 8.4.3",
+   "version_tuple": [
+    8,
+    4,
+    3
+   ],
+   "engine": "mysql",
+   "download_url": "https://dev.mysql.com/downloads/mysql/",
+   "update": {
+    "status": "not_checked",
+    "latest_version": null,
+    "checked_at": null,
+    "source_url": "https://dev.mysql.com/downloads/mysql/",
+    "message": "Update check not requested."
+   },
+   "name": "mysqldump"
+  },
+  "options": {
+   "consistent": true,
+   "threads": 4,
+   "users": false,
+   "routines": true,
+   "events": true,
+   "triggers": true,
+   "structure_only": false,
+   "selected": {},
+   "tool_options": [
+    "--single-transaction",
+    "--quick",
+    "--routines",
+    "--events",
+    "--triggers",
+    "--hex-blob",
+    "--add-drop-table",
+    "--set-gtid-purged=OFF",
+    "--databases",
+    "app"
+   ]
+  },
+  "started_at": "2026-10-31T12:48:04.558511+00:00",
+  "finished_at": "2026-10-31T12:48:04.616467+00:00",
+  "files": [
+   {
+    "path": "dump.sql",
+    "size_bytes": 98,
+    "sha256": "c4989a2e1de3f73516916cc8c206484cb9598383a8b188de32bbd0982181d0bf"
+   }
+  ],
+  "samples": [
+   {
+    "schema": "app",
+    "table": "t",
+    "count": 2
+   }
+  ],
+  "object_catalog": [
+   [
+    "app",
+    "t",
+    "BASE TABLE",
+    "InnoDB",
+    "100",
+    "20"
+   ],
+   [
+    "app",
+    "v",
+    "VIEW",
+    null,
+    "0",
+    "0"
+   ]
+  ],
+  "verification": [
+   {
+    "check": "files",
+    "status": "passed",
+    "reason": "Non-empty output and Shell completion marker when applicable."
+   },
+   {
+    "samples": [
+     {
+      "schema": "app",
+      "table": "t",
+      "count": 2
+     }
+    ],
+    "check": "source_sample_stability",
+    "status": "passed",
+    "reason": "Exact counts before/after; concurrent changes may invalidate comparison."
+   },
+   {
+    "check": "dump_rows",
+    "status": "not_checked",
+    "reason": "Restore into an isolated target to compare row counts."
+   }
+  ],
+  "complete": true
+ },
+ "manifest_hash": "2c2773b1e116e5a98d6b4c907bd5a94997704b52ab6d3fc07f8b4326c0d44eb5",
+ "required_acknowledgement": null
 }

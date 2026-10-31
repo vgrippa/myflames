@@ -194,6 +194,26 @@ class CliTest(Isolated):
         self.assertEqual(code,2)
         self.assertEqual(len(json.loads(out)['notes']),2)
 
+    def test_a_redacted_secret_alone_does_not_fail_the_run(self):
+        # report_password exists on every MySQL and is redacted on purpose:
+        # an otherwise complete comparison exits 0, not 2.
+        a=self.store.parameter_snapshot_save(snapshot([item('x','1'),item('report_password','one')]))
+        b=self.store.parameter_snapshot_save(snapshot([item('x','1'),item('report_password','two')]))
+        code,out,err=self.run_cli(['config','compare','snapshot:'+a['id'],'snapshot:'+b['id'],'--json'])
+        report=json.loads(out)
+        self.assertEqual({r['name']:r['status'] for r in report['items']},{'report_password':'not_compared','x':'identical'})
+        self.assertEqual(code,0,(out,err))
+        self.assertNotIn('one',[r['source']['value'] for r in report['items'] if r['name']=='report_password'])
+
+    def test_a_value_redacted_for_its_shape_still_fails_the_run(self):
+        # Two different cipher lists look like credentials (a:b) and are
+        # redacted, so they are not known to be equal: incomplete, exit 2.
+        a=self.store.parameter_snapshot_save(snapshot([item('tls_ciphersuites','TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384')]))
+        b=self.store.parameter_snapshot_save(snapshot([item('tls_ciphersuites','TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256')]))
+        code,out,err=self.run_cli(['config','compare','snapshot:'+a['id'],'snapshot:'+b['id'],'--json','--fail-on','different'])
+        self.assertEqual(json.loads(out)['items'][0]['status'],'not_compared')
+        self.assertEqual(code,2,(out,err))
+
     def test_snapshot_save_list_show_delete(self):
         with mock.patch.object(CLI.Sources,'capture',return_value=snapshot([item('x','1')])):
             code,out,err=self.run_cli(['config','snapshot','save','--label','first','--json'])

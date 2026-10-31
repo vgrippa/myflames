@@ -44,7 +44,8 @@ def _parser():
         ('lint', 'Check a saved, file or live schema for risks.'),
         ('edit', 'Change a saved version name or note.'),
         ('delete', 'Delete a saved version locally.'),
-        ('export', 'Export a saved version as a schema snapshot file.'),
+        ('export', 'Export a saved version as a schema snapshot file, or a schema as a SQL script that recreates it '
+                   '(--sql).'),
         ('import', 'Import a schema snapshot file as a local version.'),
     )
     for action, description in descriptions:
@@ -53,11 +54,25 @@ def _parser():
                                  epilog=_READ_ONLY + '\n' + _EXIT_CODES,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
         sub.add_argument('--help', action='help', help='Show this help message and exit.')
-        if action in ('read', 'save', 'compare', 'lint'):
+        if action in ('read', 'save', 'compare', 'lint', 'export'):
             workspace._add_connection_args(sub, client_paths=True)
-        if action in ('show', 'edit', 'delete', 'export'):
+        if action in ('show', 'edit', 'delete'):
             sub.add_argument('version', metavar='VERSION',
                              help='Choose an ID, ID prefix (6+ characters), exact name or latest.')
+        if action == 'export':
+            sub.add_argument('version', metavar='VERSION',
+                             help='Choose an ID, ID prefix (6+ characters), exact name or latest; with --sql also live, '
+                                  'profile:NAME[/DATABASE] or file:PATH (.json also works).')
+            sub.add_argument('--sql', action='store_true',
+                             help='Emit a SQL script that recreates the schema on another server; never run it.')
+            sub.add_argument('--create-database', action='store_true',
+                             help='Start the SQL script with CREATE DATABASE (the source\'s character set and '
+                                  'collation); by default it only switches to the database.')
+            sub.add_argument('--keep-definers', action='store_true',
+                             help='Keep the DEFINER of views, routines, triggers and events in the SQL script; by '
+                                  'default they are left out.')
+            sub.add_argument('--target-database', metavar='NAME',
+                             help='Write the SQL script for a database with this name instead of the source\'s name.')
         if action in ('save', 'edit', 'import'):
             sub.add_argument('--name', metavar='NAME', help='Set the saved version name.')
             sub.add_argument('--note', metavar='TEXT', help='Set the saved version note.')
@@ -219,6 +234,20 @@ def _connection_requested(args):
     return any(getattr(args, name, None) is not None for name in fields)
 
 
+def _export_options(args):
+    """The first SQL-only export option given, or ''."""
+    for flag, value in (('--create-database', args.create_database), ('--keep-definers', args.keep_definers),
+                        ('--target-database', args.target_database is not None)):
+        if value:
+            return flag
+    return ''
+
+
+def _is_side(ref):
+    """A side that is not a saved version (live, a saved connection, a file)."""
+    return ref == 'live' or ref.startswith(('profile:', 'file:')) or ref.endswith('.json')
+
+
 def _read_file(path):
     with open(path, 'rb') as handle:
         data = handle.read(schemas.MAX_SNAPSHOT_BYTES + 1)
@@ -359,6 +388,18 @@ def cmd_schema(argv):
         elif args.action == 'lint':
             report = sources.lint(args.side, args, _connection_requested(args))
             text = _json(report) if args.json else _lint_text(report)
+        elif args.action == 'export' and args.sql:
+            from . import schema_export
+            snapshot, meta = sources.side(args.version, args)
+            result = schema_export.build(snapshot, database=args.target_database,
+                                         create_database=args.create_database, keep_definers=args.keep_definers,
+                                         meta=meta)
+            text = result['script']
+            notes = [schema_export.format_summary(result) + ' myflames never runs it.']
+        elif args.action == 'export' and (_export_options(args) or _connection_requested(args) or _is_side(args.version)):
+            raise ValueError('%s needs --sql: a schema version file is exported from a saved version only.'
+                             % (_export_options(args) or ('a live side' if _is_side(args.version) else
+                                                           'a connection option')))
         elif args.action == 'import':
             snapshot = _read_file(args.path)
             item = store.schema_version_save(snapshot, args.name if args.name is not None else snapshot.get('name', ''),

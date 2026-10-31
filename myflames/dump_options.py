@@ -18,7 +18,8 @@ ENCRYPTION_SUMMARY = 'Backup files are not encrypted.'
 #: names the row its checkbox sits in, so related checkboxes share one label.
 GROUPS = (('performance', 'Performance'), ('contents', 'Contents'), ('output', 'SQL output'),
           ('compression', 'Compression'))
-_BOOLS = ('triggers', 'routines', 'events', 'hex_blob', 'add_drop_table', 'network_compression', 'chunking')
+_BOOLS = ('triggers', 'routines', 'events', 'hex_blob', 'add_drop_table', 'network_compression', 'chunking',
+          'structure_only')
 _SHELL_NAMES = {'bytes_per_chunk': 'bytesPerChunk', 'max_rate': 'maxRate'}
 
 
@@ -44,6 +45,8 @@ def capability_catalog(tool_name, table_scope=False, tool_version=None):
     if tool_name != 'mysqlsh' or not table_scope:
         add('routines', 'Stored routines', 'contents', row='Include')
         add('events', 'Events', 'contents', row='Include')
+    add('structure_only', 'Structure only (no rows)', 'contents', default=False, row='Rows',
+        hint='Table and object definitions only. Triggers, routines and events follow the Include choices.')
     if tool_name != 'mysqlsh':
         add('hex_blob', 'Binary values as hexadecimal', 'output', row='Write')
         add('add_drop_table', 'DROP TABLE before each CREATE TABLE', 'output', row='Write')
@@ -124,6 +127,9 @@ def shell_options(options):
     for key, value in options.items():
         if key in ('triggers', 'routines', 'events', 'chunking'):
             result[key] = value
+        elif key == 'structure_only':
+            if value:
+                result['ddlOnly'] = True
         elif key in _SHELL_NAMES and value:
             result[_SHELL_NAMES[key]] = value
     method = options.get('compression', 'default')
@@ -139,6 +145,8 @@ def sql_flags(options):
     for key in ('routines', 'events', 'triggers', 'hex_blob', 'add_drop_table'):
         flag = key.replace('_', '-')
         result.append('--' + ('' if options.get(key, True) else 'skip-') + flag)
+    if options.get('structure_only', False):
+        result.append('--no-data')
     if options.get('network_compression', False):
         result.append('--compress')
     return result

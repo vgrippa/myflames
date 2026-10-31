@@ -245,6 +245,28 @@ def _version_at_least(version, minimum):
 ANALYZE_JSON_NEEDS_84 = 'EXPLAIN ANALYZE FORMAT=JSON needs MySQL 8.4 or later'
 
 
+def analyze_unsupported(version, maria=False):
+    """Why Run analysis cannot run on this server, in one sentence, or None.
+
+    Run analysis sends EXPLAIN ANALYZE FORMAT=JSON, which MySQL runs from
+    8.3.0 (explain_json_format_version=2, mysql-8.3.0 sys_vars.cc and
+    parse_tree_nodes.cc). Before that the server refuses after it is sent:
+    MySQL 5.7 has no EXPLAIN ANALYZE (mysql-5.7.44 sql/sql_yacc.yy
+    opt_extended_describe, 1064 seen live), 8.0.18 to 8.0.20 parse only a
+    bare ANALYZE (1064), and 8.0.21 to 8.2 answer 1235 for the JSON format
+    (opt_explain.cc). So the statement is never sent there. An unreadable
+    version and MariaDB (ANALYZE FORMAT=JSON) return None.
+    """
+    if maria:
+        return None
+    parsed = parse_version_tuple(version, leading=True, default=None)
+    if parsed is None or parsed >= (8, 3, 0):
+        return None
+    return ('Run analysis needs EXPLAIN ANALYZE FORMAT=JSON, which MySQL has from 8.3 (8.4 LTS and later), and this '
+            'server is MySQL %s; nothing was sent, so use Explain for the estimated plan.'
+            % (str(version).split('-')[0] or 'older'))
+
+
 def client_error_text(text, mode='explain', version='', maria=False):
     """Make mysql client diagnostics readable for a capture.
 
@@ -553,6 +575,10 @@ class LiveJob:
                 note = unsupported_version_note(
                     version, 'mariadb' if maria else (getattr(conn, '_version_comment_cache', None) or ''))
                 if note: warnings.append(note)
+                # Refuse before sending anything the server cannot parse.
+                refused = analyze_unsupported(version, maria) if self.mode == 'analyze' else None
+                if refused:
+                    raise ConnectorError(refused)
                 for index in range(self.repeat):
                     if self.cancelled.is_set(): raise ConnectorError('Capture cancelled.')
                     marker = '__myflames_' + uuid.uuid4().hex

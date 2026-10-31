@@ -808,7 +808,13 @@ function whenApplies(p: ConfigParameter) {
 }
 
 type StagedParameter = { parameter: ConfigParameter; value: string };
-type BatchRequest = { rows: StagedParameter[]; via: Via; engine: string | null };
+type BatchRequest = { rows: StagedParameter[]; via: Via; engine: string | null; serverVersion?: string | null };
+/** SET PERSIST exists: MySQL 8.0 and later (MySQL 5.7 and MariaDB have none). An unknown version counts as current. */
+function hasSetPersist(engine: string | null, version: string | null | undefined) {
+  if (engine !== "mysql") return false;
+  const major = Number(/^\s*(\d+)\./.exec(version || "")?.[1]);
+  return !(major > 0 && major < 8);
+}
 type BatchResult = { name: string; status: string; message: string; result?: VariableChange; type?: VariableInfo["type"] };
 type BatchPlans = { signature: string; plans: Record<string, VariablePlan>; errors: Record<string, string> };
 const BATCH_LIMIT = 25;
@@ -885,7 +891,8 @@ function ParameterBatchSheet({ request, activeKey, left, onLeave, onClose, onRem
   const cancelled = useRef(false);
   const latestKey = useRef(activeKey);
   latestKey.current = activeKey;
-  const modeOf = (p: ConfigParameter): VariableMode => p.modifiable === "restart" ? "persist_only" : request.engine === "mysql" && persist ? "persist" : "global";
+  const persistable = hasSetPersist(request.engine, request.serverVersion);
+  const modeOf = (p: ConfigParameter): VariableMode => p.modifiable === "restart" ? "persist_only" : persistable && persist ? "persist" : "global";
   const intents = rows.map(r => ({ name: r.parameter.name, value: r.value, mode: modeOf(r.parameter) }));
   const signature = JSON.stringify(intents);
   const current = answers.signature === signature;
@@ -956,9 +963,11 @@ function ParameterBatchSheet({ request, activeKey, left, onLeave, onClose, onRem
     confirmLabel={<PrivilegeConfirmLabel gate={gate} showStatus={false}>{`Apply ${rows.length} changes`}</PrivilegeConfirmLabel>}
     confirmDisabled={!ready || stale || !!blocked} confirmTone={policyPlan?.policy?.tone || "danger"} onCancel={cancel} onConfirm={() => void confirm()}>
     <Fields rows={[["Server", request.via.label]]} />
-    {request.engine === "mysql" && rows.some(r => r.parameter.modifiable === "now") && <label className="parameter-persist">
+    {persistable && rows.some(r => r.parameter.modifiable === "now") && <label className="parameter-persist">
       <input type="checkbox" checked={persist} disabled={busy} onChange={e => setPersist(e.target.checked)} /> Keep after restart
     </label>}
+    {request.engine === "mysql" && !persistable && rows.some(r => r.parameter.modifiable === "now") &&
+      <p className="hint">MySQL 5.7 has no SET PERSIST: SET GLOBAL lasts until the server restarts. Add the same values to the option file to keep them.</p>}
     {rows.length > BATCH_LIMIT && <p className="variable-problems" role="alert">Review at most {BATCH_LIMIT} changes at once. Remove changes to continue.</p>}
     {rows.map(({ parameter: p, value }) => {
       const plan = plans[p.name];
@@ -1226,7 +1235,7 @@ function ConfigListView({ connection, disabled, onBack, selection, report: bound
         <button type="button" className="button" onClick={cancelEditing}>Cancel</button>
         <button type="button" className="button" aria-expanded={preview} onClick={() => setPreview(v => !v)}>Preview changes ({pending.length})</button>
         <button type="button" className="button primary" disabled={editOff || pending.length === 0 || pending.length > BATCH_LIMIT} title={pending.length > BATCH_LIMIT ? `Review at most ${BATCH_LIMIT} changes at once.` : offTitle || undefined}
-          onClick={() => { if (!editOff && pending.length && pending.length <= BATCH_LIMIT) setBatch({ rows: pending, via: { connection, key: reads.key, label: connectionLabel(connection) }, engine: report.engine }); }}>Review and apply ({pending.length})</button>
+          onClick={() => { if (!editOff && pending.length && pending.length <= BATCH_LIMIT) setBatch({ rows: pending, via: { connection, key: reads.key, label: connectionLabel(connection) }, engine: report.engine, serverVersion: report.server_version }); }}>Review and apply ({pending.length})</button>
       </>}
     </>}</>}
     onRefresh={() => void load()} refreshDisabled={disabled} loading={loading} otherConnection={other}

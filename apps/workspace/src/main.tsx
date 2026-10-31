@@ -18,8 +18,6 @@ import {
   type Operator,
   type Plan,
   type PlanReportRequest,
-  type Profile,
-  type SecretStore,
   type TopStatement,
   type View,
 } from "./api";
@@ -31,6 +29,7 @@ import { Home } from "./Home";
 import { SERVER_VIEWS, WORKLOAD_VIEWS, WORKLOAD_KINDS } from "./serverViews";
 import { lazyComponent, preloadWhenIdle } from "./lazy";
 import { connectionKey, connectionLabel, type Bound } from "./binding";
+import { refreshSavedConnections, useSavedConnections } from "./savedConnections";
 import { NOT_A_REPLICA, replicationNav, type ReplicationReport, type SkipLoop } from "./opsApi";
 import { clusterNav, NOT_A_CLUSTER, type ClusterFailure, type ClusterReport } from "./clusterApi";
 import { NOT_A_PROXYSQL, proxySqlNav, type ProxySqlFailure, type ProxySqlReport } from "./proxysqlApi";
@@ -413,13 +412,16 @@ function App() {
   }, [columnLayouts]);
   // Saved connections and the connection in use. Its non-secret settings
   // live in the lab state (and so in the saved session); the password is
-  // typed for this page only.
-  const [profiles, setProfiles] = useState<Profile[]>([]);
+  // typed for this page only. The list is the window's one shared list
+  // (savedConnections.ts): every picker reads it, and it is read again after
+  // each change made here and when the window comes back.
+  const savedList = useSavedConnections(false);
+  const profiles = savedList.items;
   // The type of a saved connection is known once the list has loaded, and
   // not known again while the latest read of it failed.
-  const [profilesLoaded, setProfilesLoaded] = useState(false);
-  const [profilesFailed, setProfilesFailed] = useState("");
-  const [secretStore, setSecretStore] = useState<SecretStore | null>(null);
+  const profilesLoaded = savedList.loaded;
+  const profilesFailed = savedList.error;
+  const secretStore = savedList.secretStore;
   const [activePassword, setActivePassword] = useState("");
   const [connectionNote, setConnectionNote] = useState("");
   const [connectRevision, setConnectRevision] = useState(0);
@@ -440,52 +442,22 @@ function App() {
   }, []);
   const labStateRef = useRef(labState);
   labStateRef.current = labState;
-  const profilesReadSequence = useRef(0);
-  const latestProfilesRead = useRef<Promise<Profile[]> | null>(null);
-  const refreshProfiles = useCallback(() => {
-    const sequence = ++profilesReadSequence.current;
-    const pending: Promise<Profile[]> = (async () => {
-      try {
-        const r = await api<{ items: Profile[]; secret_store?: SecretStore }>("profiles/list", {});
-        // An older success or failure must not replace the latest policy.
-        // Its callers also await the latest read, so a write-policy check or
-        // restored-profile check cannot act on stale connection settings.
-        if (sequence !== profilesReadSequence.current) return latestProfilesRead.current!;
-        setProfiles(r.items);
-        setProfilesLoaded(true);
-        setProfilesFailed("");
-        if (r.secret_store) setSecretStore(r.secret_store);
-        return r.items;
-      } catch (e) {
-        if (sequence !== profilesReadSequence.current) return latestProfilesRead.current!;
-        setProfilesFailed(message(e));
-        throw e;
-      }
-    })();
-    latestProfilesRead.current = pending;
-    return pending;
-  }, []);
-  // A connection's type or read-only setting can change in another tab or
-  // through the CLI: read them again whenever this window comes back.
+  // One read at a time wins (savedConnections.ts); callers await the latest
+  // read, so a write-policy check or the restored-connection check below
+  // never acts on stale connection settings.
+  const refreshProfiles = refreshSavedConnections;
+  // The saved connection in use may be gone: the one a restored session names
+  // (checked after the first read), or one deleted later in another window or
+  // with the CLI (seen when the list is read again). Its settings stay as an
+  // unsaved connection, and the picker says what happened. A deletion made
+  // here, in Connections, clears the connection itself (onActiveDeleted).
+  const restoreChecked = useRef(false);
   useEffect(() => {
     if (!ready) return;
-    let last = 0;
-    const again = () => {
-      if (document.visibilityState === "hidden" || Date.now() - last < 1000) return;
-      last = Date.now();
-      refreshProfiles().catch(() => {});
-    };
-    window.addEventListener("focus", again);
-    document.addEventListener("visibilitychange", again);
-    return () => {
-      window.removeEventListener("focus", again);
-      document.removeEventListener("visibilitychange", again);
-    };
-  }, [ready, refreshProfiles]);
-  useEffect(() => {
-    if (!ready) return;
+    restoreChecked.current = false;
     refreshProfiles()
       .then((items) => {
+        restoreChecked.current = true;
         // A restored connection may have been deleted since the last session.
         const id = labStateRef.current.profile_id;
         if (id && !items.some((p) => p.id === id)) {
@@ -495,8 +467,22 @@ function App() {
           );
         }
       })
-      .catch((e) => setError(message(e)));
+      .catch((e) => {
+        // A later read that succeeds checks the connection in use instead.
+        restoreChecked.current = true;
+        setError(message(e));
+      });
   }, [ready, resetKey, refreshProfiles, patchLab]);
+  useEffect(() => {
+    if (!ready || !restoreChecked.current || !profilesLoaded || profilesFailed) return;
+    const id = labStateRef.current.profile_id;
+    if (!id || profiles.some((p) => p.id === id)) return;
+    const name = labStateRef.current.connection.name;
+    patchLab({ profile_id: "" });
+    setConnectionNote(
+      `${name ? `The saved connection “${name}”` : "The saved connection in use"} was deleted. Its settings are kept as an unsaved connection.`,
+    );
+  }, [ready, profiles, profilesLoaded, profilesFailed, patchLab]);
   function applyConnection(id: string, fields: SessionConnection, password: string) {
     recordConnectionUse(id);
     patchLab({ profile_id: id, connection: fields });

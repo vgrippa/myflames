@@ -1,0 +1,81 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "6.22"
+    },
+    "ordering_operation": {
+      "using_filesort": true,
+      "grouping_operation": {
+        "using_temporary_table": true,
+        "using_filesort": false,
+        "nested_loop": [
+          {
+            "table": {
+              "table_name": "c",
+              "access_type": "ref",
+              "possible_keys": [
+                "PRIMARY",
+                "idx_country"
+              ],
+              "key": "idx_country",
+              "used_key_parts": [
+                "country"
+              ],
+              "key_length": "9",
+              "ref": [
+                "const"
+              ],
+              "rows_examined_per_scan": 2,
+              "rows_produced_per_join": 2,
+              "filtered": "100.00",
+              "index_condition": "(`shop`.`c`.`country` <=> 'US')",
+              "cost_info": {
+                "read_cost": "2.00",
+                "eval_cost": "0.40",
+                "prefix_cost": "2.40",
+                "data_read_per_join": "1K"
+              },
+              "used_columns": [
+                "id",
+                "name",
+                "country"
+              ]
+            }
+          },
+          {
+            "table": {
+              "table_name": "o",
+              "access_type": "ref",
+              "possible_keys": [
+                "idx_customer"
+              ],
+              "key": "idx_customer",
+              "used_key_parts": [
+                "customer_id"
+              ],
+              "key_length": "4",
+              "ref": [
+                "shop.c.id"
+              ],
+              "rows_examined_per_scan": 1,
+              "rows_produced_per_join": 3,
+              "filtered": "100.00",
+              "cost_info": {
+                "read_cost": "3.19",
+                "eval_cost": "0.64",
+                "prefix_cost": "6.22",
+                "data_read_per_join": "280"
+              },
+              "used_columns": [
+                "id",
+                "customer_id",
+                "amount"
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

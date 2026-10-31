@@ -313,6 +313,14 @@ export function SchemaDiagramView({ connection, disabled = false, onBack, docume
   const [text, setText] = useState(""), [filename, setFilename] = useState("");
   const [exportFile, setExportFile] = useState<ExportFile | null>(null);
   const [replacement, setReplacement] = useState<{key: string; database: string} | null>(null);
+  // A database chosen in the pick list while a diagram of another one is shown:
+  // the view offers to load it (choosing never reads by itself).
+  const [pickedOther, setPickedOther] = useState(false);
+  // "Database list updated." only after Reload database list was pressed.
+  const [reloadAsked, setReloadAsked] = useState(false);
+  // A load started from the empty state moves focus to the diagram it drew
+  // (its button goes away with the empty state).
+  const focusDiagram = useRef(false);
   const [readAt, setReadAt] = useState<{key: string; database: string; at: Date} | null>(null);
   const [viewport, setViewport] = useState<Viewport>({ x: 30, y: 30, zoom: 1 });
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 600 });
@@ -331,11 +339,13 @@ export function SchemaDiagramView({ connection, disabled = false, onBack, docume
   const canRead = !!(connection.host || connection.user || connection.profile_id);
   const catalog = useSchemaCatalog(connection, canRead && !disabled);
   const catalogSince = useSince(catalog.loading);
+  const loadSince = useSince(!!reads.loading);
   const catalogReloading = useRef(false);
   if (!catalog.loading) catalogReloading.current = false;
   function reloadCatalog() {
     if (catalog.loading || catalogReloading.current || disabled) return;
     catalogReloading.current = true;
+    setReloadAsked(true);
     catalog.reload();
   }
   const databaseNames = catalog.catalog?.schemas.map(s => s.name) || [];
@@ -356,14 +366,19 @@ export function SchemaDiagramView({ connection, disabled = false, onBack, docume
     identitySeen.current = true;
     reads.clearError();
     const target = selectedDatabase ?? connection.database ?? "";
-    setDatabase(target); setReplacement(null);
+    setDatabase(target); setReplacement(null); setPickedOther(false); setReloadAsked(false); focusDiagram.current = false;
     onDatabaseChange?.(key, target);
   }, [key, connection.database]);
   useEffect(() => { mounted.current=true; return ()=>{ mounted.current=false; request.current?.abort(); fileRead.current++; }; }, []);
   const cancelRequest = () => { request.current?.abort(); revision.current++; };
+  // Choosing a database never reads it: a diagram read can be large, a keyboard
+  // walk through the list would start one read per step, and a diagram on
+  // screen is never replaced without asking. Load (or Refresh) reads it.
   function chooseDatabase(value: string) {
     cancelRequest(); nextGeneration("diagram"); reads.clearError(); setError("");
     setReplacement(null); setDatabase(value); onDatabaseChange?.(key, value);
+    focusDiagram.current = false;
+    setPickedOther(!!latestDoc.current);
   }
   function accept(diagram: SchemaDiagram, source: DiagramDocument["source"]) {
     const previous = latestDoc.current;
@@ -371,13 +386,15 @@ export function SchemaDiagramView({ connection, disabled = false, onBack, docume
       source.key === previous.source.key && source.database === previous.source.database;
     const validated = validateDiagram(diagram);
     const normalized = rebuildDiagramLayout(validated, sameSource ? previous?.diagram : undefined);
-    onDocument({diagram:normalized,source}); selection.select("",false); setSearch(""); setError("");
+    // A first diagram opens as a diagram (Mermaid is a view of one).
+    if (!previous) setView("diagram");
+    onDocument({diagram:normalized,source}); selection.select("",false); setSearch(""); setError(""); setPickedOther(false);
     fit(normalized.tables,diagramPositions(normalized));
   }
   async function load(target = database.trim()) {
     if (!target || disabled || !canRead || busy || reads.loading) return;
     cancelRequest(); const n=revision.current, controller=new AbortController(); request.current=controller; setError("");
-    await reads.run(`diagram:${JSON.stringify(target)}`,"Rebuilding database diagram…",
+    await reads.run(`diagram:${JSON.stringify(target)}`,`Reading ${target}…`,
       (c,signal)=>{
         // Selection changes also cancel this read, independently of the connection identity.
         const abort=()=>controller.abort(); signal.addEventListener("abort",abort,{once:true});
@@ -388,7 +405,13 @@ export function SchemaDiagramView({ connection, disabled = false, onBack, docume
         if(n!==revision.current) return;
         accept(bound.report,{kind:"server",key:bound.key,label:bound.label,database:target});
         setReadAt({key:bound.key,database:target,at:new Date()});
+        if(focusDiagram.current) window.requestAnimationFrame(()=>{
+          // Only when focus fell to the page with the empty state's button.
+          const active=document.activeElement;
+          if(mounted.current&&(!active||active===document.body))canvas.current?.focus({preventScroll:true});
+        });
       },{force:true});
+    focusDiagram.current=false;
   }
   function rebuild() {
     const target=database.trim() || (doc?.source.kind==="server" && doc.source.key===key ? doc.source.database || "" : "");
@@ -490,8 +513,29 @@ export function SchemaDiagramView({ connection, disabled = false, onBack, docume
       <button className="button" onClick={()=>moveTable(selected.id,autoLayout(d!)[selected.id])}>Reset table position</button></InspectorSection>
   </>}:null;
   const targetDb = database.trim() || (doc?.source.kind === "server" && doc.source.key === key ? doc.source.database || "" : "");
+  // Refresh reads the diagram on screen again; anything else is a Load: no
+  // diagram yet, an imported one, another database's or another connection's.
+  const showsChosen = !!targetDb && doc?.source.kind === "server" && doc.source.key === key && doc.source.database === targetDb;
+  const loadDisabled = disabled || !!busy || !canRead || !targetDb;
+  const openImport = () => { setImportOpen(true); setError(""); };
+  function loadFromEmpty() {
+    if (reads.loading) return;
+    focusDiagram.current = true;
+    rebuild();
+  }
+  // Before a diagram is shown, the empty state's Load button owns the read's
+  // progress and its error (beside the action); afterwards the status line does.
+  const readOnLine = d ? reads.loading : "";
+  const readErrorOnLine = d ? reads.error : "";
+  const emptyText = !canRead
+    ? "Choose a connection to load one of its databases, or import a schema. SQL in an imported file is never run."
+    : targetDb
+      ? `Reads the tables, columns, indexes and foreign keys of ${targetDb} through ${connectionLabel(connection)}. Nothing on the server changes.`
+      : catalog.error
+        ? "Type a database name in Database above, then load it. Or import a schema."
+        : "Choose one in Database above, then load it. Or import a schema.";
   return <ViewLayout id="diagram" title="Database diagram" className="diagram-view" onBack={onBack}
-    info="Read a database schema or import SQL, Mermaid or diagram JSON. Imported SQL is never executed. Drag tables to arrange them; arrow keys move a focused table."
+    info="Choose a database and load it, or import SQL, Mermaid or diagram JSON. Imported SQL is never run. Drag tables to arrange them; arrow keys move a focused table."
     controls={<>
       <div className="diagram-source">
         <label className="toolbar-field diagram-database">
@@ -519,28 +563,38 @@ export function SchemaDiagramView({ connection, disabled = false, onBack, docume
           )}
         </label>
         {canRead && (
-          <ActionButton icon="refresh" className="ghost diagram-reload-list"
+          // An icon beside the list it reloads (its words are its name and tooltip),
+          // so it never reads as the diagram's Load.
+          <ActionButton icon="refresh" className="ghost diagram-reload-list" labelClassName="visually-hidden"
             busy={catalog.loading} busyLabel="Reloading…" disabled={!catalog.loading && disabled}
             title="Reload the list of database names from the server" onClick={reloadCatalog}>
             Reload database list
           </ActionButton>
         )}
       </div>
-      <Segmented label="Diagram view" value={view} options={[{value:"diagram",label:"Diagram"},{value:"mermaid",label:"Mermaid"}]} onChange={setView}/>
-      <button className="button" onClick={()=>{setImportOpen(true);setError("");}} disabled={!!busy}>Import</button>
+      {/* Mermaid is another view of a diagram: offered once there is one. */}
+      {d && <Segmented label="Diagram view" value={view} options={[{value:"diagram",label:"Diagram"},{value:"mermaid",label:"Mermaid"}]} onChange={setView}/>}
+      <button className="button" onClick={openImport} disabled={!!busy}>Import</button>
       <Popover label="Export diagram" trigger={<><Icon name="export" size={15}/><span>Export</span></>} buttonClassName="button" disabled={!d||!!busy}>
         <div className="diagram-export-menu">{([["json","Editable JSON"],["svg","SVG image"],["sql","SQL schema"],["mermaid","Mermaid"]] as const).map(([value,label])=>
           <button className="button ghost" key={value} onClick={()=>void exportDiagram(value)}>{label}</button>)}</div>
       </Popover></>}
-    onRefresh={rebuild} refreshDisabled={disabled||!!busy||!!reads.loading||!canRead||!targetDb}
+    onRefresh={rebuild} refreshDisabled={loadDisabled||!!reads.loading}
+    refreshLabel={showsChosen ? "Refresh" : "Load"} refreshBusyLabel={showsChosen ? "Refreshing…" : "Loading…"}
     loading={!!busy||!!reads.loading} otherConnection={other} inspector={inspector} inspectorEmpty="Select a table to inspect its columns and relationships."
-    status={<ViewStatus loading={importOpen ? reads.loading : busy||reads.loading} error={importOpen?reads.error:error||reads.error}
-      onStop={reads.loading ? reads.stop : undefined} onRetry={reads.error && !error ? rebuild : undefined} doneAt={reads.doneAt}/> }>
+    otherAction={other ? { label: targetDb ? `Load ${targetDb}` : "Load", onClick: targetDb ? rebuild : undefined, disabled: loadDisabled,
+      text: `This diagram was read from ${other}.${targetDb ? "" : " Choose a database to load one from the connection in use."}` } : undefined}
+    status={<ViewStatus loading={importOpen ? readOnLine : busy||readOnLine} error={importOpen ? readErrorOnLine : error||readErrorOnLine}
+      onStop={readOnLine ? reads.stop : undefined} onRetry={readErrorOnLine && !error ? rebuild : undefined} doneAt={reads.doneAt}/> }>
     <ActionStatus className="diagram-source-note" state={{
-      phase: catalog.loading ? "pending" : catalog.error ? "failed" : catalog.catalog ? "done" : "idle",
-      message: catalog.loading ? "Loading database names…" : catalog.error ? `Database list unavailable: ${catalog.error} Enter a database name to refresh.` : "Database list updated.",
+      phase: catalog.loading ? "pending" : catalog.error ? "failed" : catalog.catalog && reloadAsked ? "done" : "idle",
+      message: catalog.loading ? "Loading database names…" : catalog.error ? `Database list unavailable: ${catalog.error} Enter a database name to load it.` : "Database list updated.",
       startedAt: catalogSince,
     }} onRetry={reloadCatalog} />
+    {d && !other && pickedOther && targetDb && !showsChosen && <div className="diagram-choice">
+      <p role="status">{targetDb} is chosen. The diagram shows {doc.source.kind === "server" ? doc.source.database : doc.source.label}.</p>
+      <ActionButton small busy={!!reads.loading} busyLabel="Loading…" disabled={!reads.loading && loadDisabled} onClick={rebuild}>{`Load ${targetDb}`}</ActionButton>
+    </div>}
     {d?<>
       <SummaryLine tone={d.incomplete||d.warnings.length?"watch":"ok"} notes={d.warnings}>
         {d.incomplete?"Partial schema":"Schema"} · {d.tables.length} {d.tables.length === 1 ? "table" : "tables"} · {d.relationships.length} {d.relationships.length === 1 ? "relationship" : "relationships"} · {doc.source.kind==="import"?doc.source.label:doc.source.database}
@@ -578,12 +632,19 @@ export function SchemaDiagramView({ connection, disabled = false, onBack, docume
       </div>
       <div className="diagram-caption"><span>Drag background to pan · Drag tables to arrange</span>{relationships.some(conceptualRelationship)&&<span>Dashed lines: conceptual relationships</span>}</div>
       </>}
-    </>:<EmptyState icon="table" title="See how your tables connect" action={<div className="diagram-empty-actions">
-      <button className="button primary" onClick={()=>setImportOpen(true)}>Import a schema</button>
-      <button className="button" onClick={()=>{setFormat("mermaid");setImportOpen(true);setError("");}}>View Mermaid</button>
-    </div>}>
-      Choose a live database, or import a schema. Mermaid ER diagrams open as an interactive canvas inside myflames.</EmptyState>}
-    {replacement&&<ConfirmSheet title="Replace this diagram?" confirmLabel="Rebuild diagram" confirmTone="primary"
+    </>:<EmptyState icon="table" title={canRead && targetDb ? `See how the tables of ${targetDb} connect` : canRead ? "Choose a database" : "See how your tables connect"}
+      action={<>
+        <div className="diagram-empty-actions">
+          {canRead && targetDb && <ActionButton primary className="diagram-load" busy={!!reads.loading} busyLabel="Loading…"
+            disabled={!reads.loading && (disabled || !!busy)} onClick={loadFromEmpty}>{`Load ${targetDb}`}</ActionButton>}
+          <button type="button" className={`button${canRead ? "" : " primary"}`} onClick={openImport} disabled={!!busy}>Import a schema</button>
+        </div>
+        {canRead && targetDb && <ActionStatus keepLine className="diagram-load-status"
+          state={{ phase: reads.loading ? "pending" : reads.error ? "failed" : "idle", message: reads.loading || reads.error, startedAt: loadSince }}
+          onStop={reads.stop} onRetry={loadFromEmpty} />}
+      </>}>
+      {emptyText}</EmptyState>}
+    {replacement&&<ConfirmSheet title="Replace this diagram?" confirmLabel={`Load ${replacement.database}`} confirmTone="primary"
       description={`Read ${replacement.database} from ${connectionLabel(connection)} and replace the diagram on this screen. No database changes will be made.`}
       onCancel={()=>setReplacement(null)} onConfirm={()=>{const target=replacement;setReplacement(null);if(target.key===reads.currentKey()&&target.database===(database.trim()||target.database))void load(target.database);}}>
       <p>Export the current diagram first if you want to keep it. Its layout is kept only when rebuilding the same database on the same connection.</p>

@@ -1,0 +1,66 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "20.00"
+    },
+    "table": {
+      "table_name": "t",
+      "access_type": "ALL",
+      "rows_examined_per_scan": 40,
+      "rows_produced_per_join": 13,
+      "filtered": "33.33",
+      "cost_info": {
+        "read_cost": "17.33",
+        "eval_cost": "2.67",
+        "prefix_cost": "20.00",
+        "data_read_per_join": "319"
+      },
+      "used_columns": [
+        "country",
+        "n"
+      ],
+      "attached_condition": "(`t`.`n` > 1)",
+      "materialized_from_subquery": {
+        "using_temporary_table": true,
+        "dependent": false,
+        "cacheable": true,
+        "query_block": {
+          "select_id": 2,
+          "cost_info": {
+            "query_cost": "9.00"
+          },
+          "grouping_operation": {
+            "using_filesort": false,
+            "table": {
+              "table_name": "customers",
+              "access_type": "index",
+              "possible_keys": [
+                "idx_country"
+              ],
+              "key": "idx_country",
+              "used_key_parts": [
+                "country"
+              ],
+              "key_length": "9",
+              "rows_examined_per_scan": 40,
+              "rows_produced_per_join": 40,
+              "filtered": "100.00",
+              "using_index": true,
+              "cost_info": {
+                "read_cost": "1.00",
+                "eval_cost": "8.00",
+                "prefix_cost": "9.00",
+                "data_read_per_join": "30K"
+              },
+              "used_columns": [
+                "id",
+                "country"
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}

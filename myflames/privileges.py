@@ -48,6 +48,26 @@ _TOKEN = dbops.GRANT_TOKEN
 strip_credentials = dbops.strip_credentials
 
 
+def _mysql_before_roles(version):
+    """True for a known MySQL version before 8.0 (5.7): no roles, no
+    dynamic privileges, no SET PERSIST. An unknown version is never "old"."""
+    v = version_tuple(version)
+    return (5, 0, 0) <= v < (8, 0, 0)
+
+
+#: What MySQL 5.7 lacks, in one sentence each (shown as the reason a
+#: control is not offered). Sources: mysql-5.7.44 sql/sql_yacc.yy has no
+#: ROLE_SYM, PERSIST_SYM or EXPLAIN ANALYZE (opt_extended_describe takes only
+#: EXTENDED, PARTITIONS and FORMAT=), scripts/mysql_system_tables.sql has no
+#: role_edges or default_roles; EXPLAIN ANALYZE FORMAT=JSON runs from
+#: mysql-8.3.0 (live.analyze_unsupported).
+NO_ROLES_NOTE = 'This MySQL version has no roles; MySQL added them in 8.0.'
+NO_PERSIST_NOTE = 'This MySQL version has no SET PERSIST; MySQL added it in 8.0. Change the option file instead.'
+NO_ANALYZE_NOTE = ('Run analysis needs EXPLAIN ANALYZE FORMAT=JSON, which MySQL has from 8.3 (8.4 LTS and later); '
+                   'use Explain for the estimated plan.')
+NO_BACKUP_LOCK_NOTE = 'LOCK INSTANCE FOR BACKUP needs MySQL 8.0 or later.'
+
+
 def static_privileges(engine, version, level):
     """The level's ALL expansion, excluding USAGE and GRANT OPTION.
 
@@ -58,6 +78,11 @@ def static_privileges(engine, version, level):
     names = {'global': STATIC, 'database': DATABASE_PRIVILEGES,
              'table': TABLE_PRIVILEGES, 'column': COLUMN_PRIVILEGES,
              'routine': ROUTINE_PRIVILEGES}.get(level, frozenset())
+    if engine != 'mariadb' and level == 'global' and _mysql_before_roles(version):
+        # MySQL 5.7 has no CREATE ROLE or DROP ROLE privilege: its
+        # GLOBAL_ACLS end at CREATE_TABLESPACE_ACL (mysql-5.7.44
+        # sql/auth/auth_acls.h); 8.0.0 added the two role bits.
+        names = names - {'CREATE ROLE', 'DROP ROLE'}
     if engine == 'mariadb':
         if level == 'global':
             names |= MARIADB_EXTRA
@@ -619,6 +644,19 @@ def requirements(action, engine='mysql', version='8.4.0', **target):
     available, note = True, ''
     if action not in _KIND:
         return {'available': True, 'alternatives': [], 'read': False, 'note': 'Unknown action; the server decides.'}
+    # MySQL before 8.0 (5.7) lacks whole features; say so instead of a privilege.
+    old_mysql = not maria and _mysql_before_roles(v)
+    missing_feature = ''
+    if old_mysql and action in ('create_role', 'drop_role', 'grant_role', 'revoke_role', 'default_roles'):
+        missing_feature = NO_ROLES_NOTE
+    elif old_mysql and action in ('set_persist', 'set_persist_only', 'reset_persist'):
+        missing_feature = NO_PERSIST_NOTE
+    elif old_mysql and action == 'backup_lock':
+        missing_feature = NO_BACKUP_LOCK_NOTE
+    elif action == 'run_analysis' and not maria and (5, 0, 0) <= v < (8, 3, 0):
+        missing_feature = NO_ANALYZE_NOTE
+    if missing_feature:
+        return {'available': False, 'alternatives': [], 'read': _KIND[action] == 'read', 'note': missing_feature}
     if action in ('privileges', 'health', 'config', 'sessions_own', 'table_lists', 'database_picker'):
         alternatives = g('')
         if action == 'table_lists':
@@ -638,6 +676,10 @@ def requirements(action, engine='mysql', version='8.4.0', **target):
         alternatives = g('') if maria else o('SELECT', database='performance_schema', table='error_log')
         if maria:
             note = 'Needs a verified local error log file readable by this process; no SQL privilege is needed.'
+        elif (5, 0, 0) <= v < (8, 0, 22):
+            # storage/perfschema/table_error_log.cc first exists at mysql-8.0.22.
+            available = False
+            note = 'performance_schema.error_log needs MySQL 8.0.22 or later.'
     elif action == 'locks_transactions':
         alternatives = g('PROCESS') if maria else [g('PROCESS')[0] + o('SELECT', level='database',
                                                                          database='performance_schema')[0]]
@@ -649,7 +691,7 @@ def requirements(action, engine='mysql', version='8.4.0', **target):
         else:
             # check_access(GLOBAL_ACLS & ~GRANT_ACL): every static global
             # privilege but GRANT OPTION (M/sql/opt_explain.cc:2456).
-            alternatives = g('+'.join(sorted(STATIC - {'USAGE', 'GRANT OPTION'})))
+            alternatives = g('+'.join(sorted(static_privileges('mysql', version, 'global'))))
     elif action in ('replication_status', 'binlog_status', 'relay_events'):
         if maria:
             alternatives = g('BINLOG MONITOR' if action == 'binlog_status' else 'SLAVE MONITOR')
@@ -690,6 +732,7 @@ def requirements(action, engine='mysql', version='8.4.0', **target):
             alternatives = g('BACKUP_ADMIN')
         if action in ('clone_donor', 'clone_recipient') and not maria and v < (8, 0, 17):
             available = False
+            note = 'CLONE needs MySQL 8.0.17 or later.'
     elif action in ('skip_gtid', 'skip_counter'):
         if maria:
             available = action != 'skip_gtid'
@@ -712,8 +755,11 @@ def requirements(action, engine='mysql', version='8.4.0', **target):
             available = action == 'dump_mariadb' if maria else action != 'dump_mariadb'
             alternatives = o('SELECT', level='database')
             if action == 'dump_shell':
-                alternatives = [a + b for a in alternatives for b in g('RELOAD+BACKUP_ADMIN+REPLICATION CLIENT',
-                                                                       'FLUSH_TABLES+BACKUP_ADMIN+REPLICATION CLIENT')]
+                # MySQL Shell checks BACKUP_ADMIN only on 8.0.0 and later
+                # (mysql-shell modules/util/dump/dumper.cc: Version(8, 0, 0)).
+                locks = (g('RELOAD+REPLICATION CLIENT') if old_mysql else
+                         g('RELOAD+BACKUP_ADMIN+REPLICATION CLIENT', 'FLUSH_TABLES+BACKUP_ADMIN+REPLICATION CLIENT'))
+                alternatives = [a + b for a in alternatives for b in locks]
             if not target.get('single_transaction'):
                 alternatives = [a + o('LOCK TABLES', level='database')[0] for a in alternatives]
             for key, p in (('triggers', 'TRIGGER'), ('events', 'EVENT'), ('views', 'SHOW VIEW')):
@@ -802,6 +848,9 @@ def requirements(action, engine='mysql', version='8.4.0', **target):
                     if v < (11, 3, 0):
                         mask -= {'SHOW CREATE ROUTINE'}
                 elif level == 'global':
+                    # ALL ON *.* is every global privilege of this version
+                    # (MySQL 5.7 has no CREATE ROLE or DROP ROLE).
+                    mask = set(static_privileges('mysql', version, 'global'))
                     if 'all_privileges' not in target:
                         return {'available': True, 'alternatives': [], 'read': False,
                                 'note': 'ALL needs the server-registered privilege list.'}
@@ -827,6 +876,20 @@ def requirements(action, engine='mysql', version='8.4.0', **target):
                 atoms.append(atom)
         if atoms not in unique:
             unique.append(atoms)
+    if not maria and (5, 0, 0) <= v < (8, 0, 16) and note:
+        # SYSTEM_USER arrived in MySQL 8.0.16: before it, no account has it.
+        note = note.replace('Ending a session of an account that has SYSTEM_USER also needs SYSTEM_USER.', '').strip()
+    if old_mysql:
+        # MySQL 5.7 has no dynamic privileges: an alternative that names one
+        # (CONNECTION_ADMIN, SYSTEM_VARIABLES_ADMIN, ...) cannot be held there,
+        # so only the SUPER (or other static) alternatives remain.
+        known = static_privileges('mysql', version, 'global') | {'GRANT OPTION', 'PROXY', 'USAGE'} | \
+            DATABASE_PRIVILEGES | ROUTINE_PRIVILEGES
+        kept = [a for a in unique if all(atom['privilege'] in known for atom in a)]
+        if unique and not kept:
+            available = False
+            note = note or 'This MySQL version does not have the privilege this needs.'
+        unique = kept
     return {'available': available, 'alternatives': unique, 'read': _KIND[action] == 'read', 'note': note}
 
 
@@ -895,8 +958,11 @@ def can(model, action, **target):
     if not model.get('checked', True) or not model.get('fresh_session', True) or model.get('unparsed'):
         allowed = None
     detail = ''
-    if engine != 'mariadb' and (action in ('kill', 'kill_own') or action in ACCOUNT_ACTIONS - {'create_user',
-                                                                                              'create_role'}):
+    # SYSTEM_USER exists from MySQL 8.0.16 (_MYSQL_DYNAMIC_SINCE); before it
+    # no target can hold it, so it never limits KILL or an account change.
+    system_user_exists = not (5, 0, 0) <= version_tuple(model.get('version', '')) < (8, 0, 16)
+    if engine != 'mariadb' and system_user_exists and (
+            action in ('kill', 'kill_own') or action in ACCOUNT_ACTIONS - {'create_user', 'create_role'}):
         # Account statements check a direct SYSTEM_USER grant of the target
         # (roles do not count; sql_security_ctx.cc:838); KILL checks the
         # target session, active roles included (auth_common.cc:171).
@@ -1098,6 +1164,16 @@ _VARIABLES = ('partial_revokes', 'activate_all_roles_on_login', 'activate_mandat
               'read_only', 'super_read_only', 'server_uuid', 'server_id', 'hostname', 'port')
 
 
+def _no_current_role(code, text):
+    """The error a server without CURRENT_ROLE() (MySQL 5.7) gives for it,
+    which it reads as a stored function: 1046 No database selected; with a
+    default database 1305 FUNCTION db.CURRENT_ROLE does not exist, or 1370
+    execute command denied ... for routine 'db.CURRENT_ROLE' when the account
+    lacks EXECUTE there (all three seen live on 5.7.44). Nothing else in the
+    read needs a database, so 1046 can only come from that call."""
+    return code == 1046 or (code in (1305, 1370) and 'CURRENT_ROLE' in text.upper())
+
+
 def read_privileges(conn):
     """The privileges-1.0 report of the connected account, from one tagged
     client call in a fresh session: USER(), CURRENT_USER(), CURRENT_ROLE(),
@@ -1108,17 +1184,29 @@ def read_privileges(conn):
     """
     reader = Reader(conn, TAG)
     warnings = []
-    sql = ("SELECT 'myflames_who', USER(), CURRENT_USER(), CURRENT_ROLE(), VERSION(); " + TAG + "SHOW GRANTS; " +
-           TAG + "SHOW GLOBAL VARIABLES WHERE Variable_name IN (%s)" % ', '.join("'%s'" % v for v in _VARIABLES))
-    try:
-        rows = reader.rows(sql)
-    except ConnectorError as exc:
-        if dbops.error_code(str(exc)) in (1820, 1862):
-            # An expired account may connect (sandbox mode) but run only SET
-            # PASSWORD (MariaDB) or ALTER USER USER() (MySQL).
-            raise ConnectorError('ERROR %d: The password of this account has expired, so it can only set a new '
-                                 'one: myflames accounts password ACCOUNT.' % dbops.error_code(str(exc))) from None
-        raise
+    rest = ("VERSION(); " + TAG + "SHOW GRANTS; " +
+            TAG + "SHOW GLOBAL VARIABLES WHERE Variable_name IN (%s)" % ', '.join("'%s'" % v for v in _VARIABLES))
+    sql = "SELECT 'myflames_who', USER(), CURRENT_USER(), CURRENT_ROLE(), " + rest
+    rows = None
+    for attempt in (0, 1):
+        try:
+            rows = reader.rows(sql)
+            break
+        except ConnectorError as exc:
+            code = dbops.error_code(str(exc))
+            if code in (1820, 1862):
+                # An expired account may connect (sandbox mode) but run only SET
+                # PASSWORD (MariaDB) or ALTER USER USER() (MySQL).
+                raise ConnectorError('ERROR %d: The password of this account has expired, so it can only set a '
+                                     'new one: myflames accounts password ACCOUNT.' % code) from None
+            if attempt == 0 and _no_current_role(code, str(exc)):
+                # MySQL 5.7 has no CURRENT_ROLE() (mysql-8.0.11 sql/item_create.cc
+                # added it): the name resolves as a stored function, which fails
+                # with 1046 without a default database and 1305 with one. Read
+                # again without it; such a server has no roles.
+                sql = "SELECT 'myflames_who', USER(), CURRENT_USER(), NULL, " + rest
+                continue
+            raise
     who = next((row for row in rows if len(row) == 5 and row[0] == 'myflames_who'), None)
     if who is None:
         raise ConnectorError('The server did not return the session identity.')

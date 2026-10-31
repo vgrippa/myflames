@@ -1,0 +1,67 @@
+{
+ "server": "mysql-5.7",
+ "source": "live",
+ "args": {},
+ "calls": [
+  [
+   "/*myflames:error-log*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('datadir', 'hostname', 'log_error', 'log_error_services', 'log_error_verbosity', 'log_warnings', 'performance_schema', 'port', 'userstat', 'version', 'version_comment')",
+   "datadir\t/var/lib/mysql/\nhostname\tea1f5236dd69\nlog_error\tstderr\nlog_error_verbosity\t3\nlog_warnings\t2\nperformance_schema\tON\nport\t3306\nversion\t5.7.44-log\nversion_comment\tMySQL Community Server (GPL)\n"
+  ],
+  [
+   "/*myflames:error-log*/ SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime' OR Variable_name LIKE 'Performance\\_schema\\_%\\_lost'",
+   "Performance_schema_accounts_lost\t0\nPerformance_schema_cond_classes_lost\t0\nPerformance_schema_cond_instances_lost\t0\nPerformance_schema_digest_lost\t0\nPerformance_schema_file_classes_lost\t0\nPerformance_schema_file_handles_lost\t0\nPerformance_schema_file_instances_lost\t2\nPerformance_schema_hosts_lost\t0\nPerformance_schema_index_stat_lost\t0\nPerformance_schema_locker_lost\t0\nPerformance_schema_memory_classes_lost\t0\nPerformance_schema_metadata_lock_lost\t0\nPerformance_schema_mutex_classes_lost\t0\nPerformance_schema_mutex_instances_lost\t0\nPerformance_schema_nested_statement_lost\t0\nPerformance_schema_prepared_statements_lost\t0\nPerformance_schema_program_lost\t0\nPerformance_schema_rwlock_classes_lost\t0\nPerformance_schema_rwlock_instances_lost\t0\nPerformance_schema_session_connect_attrs_lost\t0\nPerformance_schema_socket_classes_lost\t0\nPerformance_schema_socket_instances_lost\t0\nPerformance_schema_stage_classes_lost\t0\nPerformance_schema_statement_classes_lost\t0\nPerformance_schema_table_handles_lost\t0\nPerformance_schema_table_instances_lost\t0\nPerformance_schema_table_lock_stat_lost\t0\nPerformance_schema_thread_classes_lost\t0\nPerformance_schema_thread_instances_lost\t0\nPerformance_schema_users_lost\t0\nUptime\t1931\n"
+  ]
+ ],
+ "report": {
+  "schema_version": "error-log-1.0",
+  "engine": "mysql",
+  "flavor": "mysql",
+  "server_product": "MySQL",
+  "server_version": "5.7.44-log",
+  "taken_at": "2026-10-31T13:03:47.937581+00:00",
+  "uptime_s": 1931,
+  "performance_schema": true,
+  "available": false,
+  "reason": "unsupported_version",
+  "reason_text": "performance_schema.error_log needs MySQL 8.0.22 or later.",
+  "how_to_view": "Read the error log file on the server host, or the service manager's log (for example journalctl).",
+  "source": null,
+  "settings": {
+   "log_error": null,
+   "log_error_verbosity": null,
+   "log_error_services": null,
+   "log_warnings": null,
+   "datadir": null
+  },
+  "buffer": null,
+  "file": null,
+  "server_started": null,
+  "counts": {
+   "system": 0,
+   "error": 0,
+   "warning": 0,
+   "note": 0
+  },
+  "counts_current_run": {
+   "system": 0,
+   "error": 0,
+   "warning": 0,
+   "note": 0
+  },
+  "codes": [],
+  "entries": [],
+  "entries_total": 0,
+  "limit": 200,
+  "levels": [
+   "System",
+   "Error",
+   "Warning",
+   "Note"
+  ],
+  "summary": {
+   "status": "unknown",
+   "text": "performance_schema.error_log needs MySQL 8.0.22 or later."
+  },
+  "notes": []
+ }
+}

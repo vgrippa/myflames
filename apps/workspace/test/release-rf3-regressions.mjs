@@ -153,7 +153,7 @@ const load = find(digest, n => ts.isCallExpression(n) && n.expression.getText() 
 const footer = find(digest, n => ts.isCallExpression(n) && n.expression.getText() === 'useWindowStatus');
 const current = find(digest, n => ts.isVariableDeclaration(n) && n.name.getText() === 'current');
 const engineName = run(`(${named(source('../src/OpsShared.tsx'), 'engineName')})`, {});
-for (const filter of ['time', 'slow_queries']) for (const [engine, server_version, server_product, label] of [
+for (const filter of ['time']) for (const [engine, server_version, server_product, label] of [
   ['mysql', '8.4.11-11', 'Percona Server', 'Percona Server 8.4.11-11'],
   ['mysql', '8.4.11-11.1', 'Percona XtraDB Cluster', 'Percona XtraDB Cluster 8.4.11-11.1'],
   ['mysql', '8.4.11', undefined, 'MySQL 8.4.11'],
@@ -165,7 +165,7 @@ for (const filter of ['time', 'slow_queries']) for (const [engine, server_versio
     api: async (...args) => { calls.push(args); return { engine, server_version, server_product, statements: [] }; },
   });
   const report = await project({ host: 'original' }, signal);
-  assert.equal(calls[0][0], filter === 'time' ? 'live/top' : 'live/slow-queries');
+  assert.equal(calls[0][0], 'live/top');
   assert.equal(calls[0][2], signal);
   let status;
   const env = { engineName, bound: { key: 'original', report }, reads: { key: 'original' },

@@ -3395,6 +3395,12 @@ def _version(version):
 def _gate(engine, version):
     """None when this engine and version are covered; else the reason."""
     if engine == "mysql":
+        if (5, 0, 0) <= version < (8, 0, 0):
+            # mysql-5.7.44 sql/sql_alter.cc set_requested_algorithm accepts only
+            # INPLACE, COPY and DEFAULT; ALTER_TABLE_ALGORITHM_INSTANT first
+            # appears in mysql-8.0.12 sql/sql_alter.h.
+            return ("MySQL %d.%d.%d is not predicted: it has no ALGORITHM=INSTANT (MySQL 8.0.12 added it), and the "
+                    "rules were checked for MySQL 8.4 and 9.x" % version)
         if version < (8, 4, 0):
             return "older servers: not predicted (rules were checked for MySQL 8.4 and 9.x)"
         if version >= (10, 0, 0):

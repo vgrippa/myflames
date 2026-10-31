@@ -739,6 +739,14 @@ def _effective(obj, name):
     return None
 
 
+def _object_names(snapshot):
+    return {o['name'].lower() for o in snapshot.get('objects', []) if o.get('type') != 'database'}
+
+
+def _side_names(names, index):
+    return names[index] if len(names) > index else None
+
+
 def table_changes(target, source, names=('', '')):
     """Element changes between two table objects, in report order: columns
     (Source's order, then removed ones), indexes, foreign keys, checks,
@@ -746,8 +754,8 @@ def table_changes(target, source, names=('', '')):
     side's own database name in a backquoted qualifier (a column default
     calling `db`.`seq`) compares as the same name (*names*: Target's, Source's)."""
     old, new = schema_ddl.split_table(target['ddl']), schema_ddl.split_table(source['ddl'])
-    a = lambda text: schema_ddl.requalify(text, names[0], '') if names[0] else text
-    b = lambda text: schema_ddl.requalify(text, names[1], '') if names[1] else text
+    a = lambda text: schema_ddl.requalify(text, names[0], '', _side_names(names, 2)) if names[0] else text
+    b = lambda text: schema_ddl.requalify(text, names[1], '', _side_names(names, 3)) if names[1] else text
     if old is None or new is None:
         return [] if target['ddl'] == source['ddl'] else [_change('definition', None, 'different')]
     changes = []
@@ -813,8 +821,8 @@ def _definition_changes(target, source, names, ignore_definers):
     """Changes of a view, routine, package, trigger, event or sequence."""
     old_definer, old_body = schema_ddl.split_definer(target['ddl'])
     new_definer, new_body = schema_ddl.split_definer(source['ddl'])
-    old_body = schema_ddl.requalify(old_body, names[0], '')
-    new_body = schema_ddl.requalify(new_body, names[1], '')
+    old_body = schema_ddl.requalify(old_body, names[0], '', _side_names(names, 2))
+    new_body = schema_ddl.requalify(new_body, names[1], '', _side_names(names, 3))
     changes = []
     if old_body != new_body:
         changes.append(_change('definition', None, 'different'))
@@ -915,7 +923,9 @@ def _notes(target, source, ignore_definers, definer_only):
 def compare(source, target, source_meta=None, target_meta=None, ignore_definers=False, sync=True, chosen_keys=None):
     """Compare Source with Target; sync SQL changes Target to match Source.
     Both snapshots are validated ``schema-snapshot-1.0`` documents."""
-    names = (target['database'], source['database'])
+    # Each side's database name, then its object names (lowercased): a table
+    # named like its database keeps `db`.`column` apart from `db`.`table`.
+    names = (target['database'], source['database'], _object_names(target), _object_names(source))
     pairs = _pairs(target, source)
     entries = []
     for old, new in pairs:

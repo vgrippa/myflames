@@ -1,0 +1,461 @@
+{
+ "server": "mysql-5.7",
+ "source": "live",
+ "args": {
+  "active_only": false
+ },
+ "calls": [
+  [
+   "/*myflames:sessions*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('max_connections', 'performance_schema', 'version', 'version_comment')",
+   "max_connections\t151\nperformance_schema\tON\nversion\t5.7.44-log\nversion_comment\tMySQL Community Server (GPL)\n"
+  ],
+  [
+   "/*myflames:sessions*/ SHOW GLOBAL STATUS WHERE Variable_name IN ('Threads_connected', 'Threads_running', 'Max_used_connections', 'Uptime', 'Innodb_history_list_length')",
+   "Max_used_connections\t7\nThreads_connected\t6\nThreads_running\t4\nUptime\t1924\n"
+  ],
+  [
+   "/*myflames:sessions*/ SELECT ID, USER, HOST, DB, COMMAND, TIME, STATE, LEFT(INFO, 16384), LENGTH(INFO) FROM information_schema.PROCESSLIST WHERE ID <> CONNECTION_ID() ORDER BY TIME DESC LIMIT 10001",
+   "1068\trepl\tfda0:f59a:f4f:5::3:40568\tNULL\tBinlog Dump\t453\tMaster has sent all binlog to slave; waiting for more updates\tNULL\tNULL\n1074\troot\tlocalhost\tNULL\tSleep\t4\t\tNULL\tNULL\n1075\troot\tlocalhost\tNULL\tSleep\t4\t\tNULL\tNULL\n1076\troot\tlocalhost\tNULL\tQuery\t3\tupdating\tUPDATE review.lock_probe SET v=v+1 WHERE id=1\t45\n1077\troot\tlocalhost\tNULL\tQuery\t3\tWaiting for table metadata lock\tALTER TABLE review.mdl_probe ADD COLUMN probe_col INT\t53\n"
+  ],
+  [
+   "/*myflames:sessions*/ SET SESSION time_zone = 'SYSTEM'; /*myflames:sessions*/ SELECT trx_mysql_thread_id, trx_id, trx_state, trx_started, TIMESTAMPDIFF(SECOND, trx_started, NOW()), trx_wait_started, TIMESTAMPDIFF(SECOND, trx_wait_started, NOW()), trx_rows_locked, trx_rows_modified, trx_lock_structs, trx_tables_locked, trx_isolation_level, trx_is_read_only, trx_operation_state FROM information_schema.INNODB_TRX WHERE trx_mysql_thread_id <> CONNECTION_ID() ORDER BY trx_started, trx_id LIMIT 10001",
+   "1074\t2052\tRUNNING\t2026-10-31 13:03:36\t5\tNULL\tNULL\t1\t1\t2\t1\tREPEATABLE READ\t0\tNULL\n1075\t2053\tRUNNING\t2026-10-31 13:03:36\t5\tNULL\tNULL\t0\t0\t0\t0\tREPEATABLE READ\t0\tNULL\n1076\t2054\tLOCK WAIT\t2026-10-31 13:03:37\t4\t2026-10-31 13:03:37\t4\t1\t0\t2\t1\tREPEATABLE READ\t0\tstarting index read\n"
+  ],
+  [
+   "/*myflames:sessions*/ SELECT COUNT, STATUS FROM information_schema.INNODB_METRICS WHERE NAME = 'trx_rseg_history_len'",
+   "0\tenabled\n"
+  ],
+  [
+   "/*myflames:sessions*/ SELECT 'consumer', NULL, NAME, ENABLED, NULL, NULL, NULL, NULL, NULL FROM performance_schema.setup_consumers WHERE NAME IN ('global_instrumentation', 'thread_instrumentation', 'events_stages_current') UNION ALL SELECT 'instrument', NULL, NAME, ENABLED, TIMED, NULL, NULL, NULL, NULL FROM performance_schema.setup_instruments WHERE NAME IN ('stage/sql/copy to tmp table', 'stage/innodb/alter table (read PK and internal sort)', 'stage/innodb/alter table (merge sort)', 'stage/innodb/alter table (insert)', 'stage/innodb/alter table (log apply index)', 'stage/innodb/alter table (log apply table)', 'stage/innodb/alter table (flush)', 'stage/innodb/alter table (end)') UNION ALL SELECT 'stage', t.PROCESSLIST_ID, s.EVENT_NAME, s.WORK_COMPLETED, s.WORK_ESTIMATED, t.PROCESSLIST_TIME, LEFT(t.PROCESSLIST_INFO, 16384), NULL, NULL FROM performance_schema.events_stages_current s JOIN performance_schema.threads t ON t.THREAD_ID = s.THREAD_ID WHERE s.END_EVENT_ID IS NULL AND s.EVENT_NAME IN ('stage/sql/copy to tmp table', 'stage/innodb/alter table (read PK and internal sort)', 'stage/innodb/alter table (merge sort)', 'stage/innodb/alter table (insert)', 'stage/innodb/alter table (log apply index)', 'stage/innodb/alter table (log apply table)', 'stage/innodb/alter table (flush)', 'stage/innodb/alter table (end)') AND t.PROCESSLIST_ID IS NOT NULL AND t.PROCESSLIST_COMMAND <> 'Sleep' LIMIT 10011",
+   "consumer\tNULL\tevents_stages_current\tNO\tNULL\tNULL\tNULL\tNULL\tNULL\nconsumer\tNULL\tglobal_instrumentation\tYES\tNULL\tNULL\tNULL\tNULL\tNULL\nconsumer\tNULL\tthread_instrumentation\tYES\tNULL\tNULL\tNULL\tNULL\tNULL\ninstrument\tNULL\tstage/sql/copy to tmp table\tYES\tYES\tNULL\tNULL\tNULL\tNULL\ninstrument\tNULL\tstage/innodb/alter table (end)\tYES\tYES\tNULL\tNULL\tNULL\tNULL\ninstrument\tNULL\tstage/innodb/alter table (flush)\tYES\tYES\tNULL\tNULL\tNULL\tNULL\ninstrument\tNULL\tstage/innodb/alter table (insert)\tYES\tYES\tNULL\tNULL\tNULL\tNULL\ninstrument\tNULL\tstage/innodb/alter table (log apply index)\tYES\tYES\tNULL\tNULL\tNULL\tNULL\ninstrument\tNULL\tstage/innodb/alter table (log apply table)\tYES\tYES\tNULL\tNULL\tNULL\tNULL\ninstrument\tNULL\tstage/innodb/alter table (merge sort)\tYES\tYES\tNULL\tNULL\tNULL\tNULL\ninstrument\tNULL\tstage/innodb/alter table (read PK and internal sort)\tYES\tYES\tNULL\tNULL\tNULL\tNULL\n"
+  ],
+  [
+   "/*myflames:sessions*/ SELECT t.PROCESSLIST_ID, LEFT(s.SQL_TEXT, 16384) FROM performance_schema.events_statements_current s JOIN performance_schema.threads t ON t.THREAD_ID = s.THREAD_ID WHERE t.PROCESSLIST_ID IN (1074, 1075) AND (s.NESTING_EVENT_TYPE IS NULL OR s.NESTING_EVENT_TYPE = 'TRANSACTION') ORDER BY s.EVENT_ID",
+   "1074\tUPDATE review.lock_probe SET v=v+1 WHERE id=1\n1075\tSELECT COUNT(*) FROM review.mdl_probe\n"
+  ]
+ ],
+ "report": {
+  "schema_version": "sessions-1.0",
+  "engine": "mysql",
+  "flavor": "mysql",
+  "server_product": "MySQL",
+  "server_version": "5.7.44-log",
+  "taken_at": "2026-10-31T13:03:41.149813+00:00",
+  "uptime_s": 1924,
+  "performance_schema": true,
+  "server_identity": {},
+  "source": "information_schema.PROCESSLIST",
+  "source_mode": "auto",
+  "ps_show_processlist": null,
+  "processlist_source": "information_schema.PROCESSLIST",
+  "capabilities": {
+   "process_privilege": true,
+   "transactions": true,
+   "history_list_length": true
+  },
+  "filters": {
+   "active_only": false,
+   "user": null,
+   "host": null,
+   "db": null,
+   "min_seconds": 0
+  },
+  "limit": 1000,
+  "thresholds": {
+   "long_running_s": [
+    10,
+    60
+   ],
+   "trx_age_s": [
+    10,
+    60
+   ]
+  },
+  "rules": {
+   "long_running": "a statement running for 10 s or more is watched, 60 s or more is a problem (rules of thumb for OLTP; reports and batch jobs can run longer by design)",
+   "idle_in_trx": "a session idle (Sleep) inside an open InnoDB transaction keeps its row locks; under REPEATABLE READ it also keeps the read view from its first consistent read, which holds back purge; watched when the transaction is 10 s old, a problem at 60 s (rules of thumb)",
+   "lock_wait": "a session waiting for an InnoDB lock (INNODB_TRX trx_state LOCK WAIT: a row lock or an InnoDB table lock such as AUTO-INC), a metadata lock, or a table-level lock is watched; the long-running rule raises it to a problem",
+   "oldest_transaction": "the oldest open transaction is watched at 10 s and a problem at 60 s; under REPEATABLE READ (or while a statement runs) its read view also holds back purge, so the history list length grows behind it",
+   "connections": "watch at 75% of max_connections, problem at 90% (Threads_connected)"
+  },
+  "summary": {
+   "total": 5,
+   "active": 4,
+   "idle": 0,
+   "system": 1,
+   "running_statements": 2,
+   "long_running": {
+    "watch": 0,
+    "problem": 0
+   },
+   "idle_in_trx": 2,
+   "lock_wait": {
+    "innodb": 1,
+    "metadata": 1,
+    "table": 0,
+    "total": 2
+   },
+   "connections": {
+    "current": 6,
+    "max": 151,
+    "max_used": 7,
+    "running": 4,
+    "listed": 5,
+    "used_pct": 4,
+    "peak_pct": 4.6,
+    "status": "ok",
+    "rule": "watch at 75% of max_connections, problem at 90% (Threads_connected)"
+   },
+   "by_command": [
+    {
+     "key": "Query",
+     "count": 2
+    },
+    {
+     "key": "Sleep",
+     "count": 2
+    },
+    {
+     "key": "Binlog Dump",
+     "count": 1
+    }
+   ],
+   "by_state": [
+    {
+     "key": "Master has sent all binlog to slave; waiting for more updates",
+     "count": 1
+    },
+    {
+     "key": "Waiting for table metadata lock",
+     "count": 1
+    },
+    {
+     "key": "updating",
+     "count": 1
+    }
+   ],
+   "by_user": [
+    {
+     "key": "root",
+     "count": 4
+    },
+    {
+     "key": "repl",
+     "count": 1
+    }
+   ],
+   "by_host": [
+    {
+     "key": "localhost",
+     "count": 4
+    },
+    {
+     "key": "fda0:f59a:f4f:5::3",
+     "count": 1
+    }
+   ],
+   "by_db": [
+    {
+     "key": null,
+     "count": 5
+    }
+   ],
+   "oldest_transaction": {
+    "connection_id": 1074,
+    "trx_id": "2052",
+    "age_s": 5,
+    "state": "RUNNING",
+    "read_only": false,
+    "isolation_level": "REPEATABLE READ",
+    "rows_locked": 1,
+    "rows_modified": 1,
+    "session_command": "Sleep",
+    "user": "root",
+    "client_host": "localhost",
+    "idle": true,
+    "status": "ok",
+    "rule": "the oldest open transaction is watched at 10 s and a problem at 60 s; under REPEATABLE READ (or while a statement runs) its read view also holds back purge, so the history list length grows behind it"
+   },
+   "history_list_length": {
+    "value": 0,
+    "source": "information_schema.INNODB_METRICS trx_rseg_history_len",
+    "status": "ok",
+    "rule": "a rule of thumb without a trend: watch at 100,000 committed transactions whose undo logs purge has not processed yet, problem at 1,000,000. The size alone says little; a list that keeps growing across refreshes means purge is falling behind, most often because an old read view (a REPEATABLE READ transaction or a long statement) is still open"
+   },
+   "locked": 3,
+   "waiting_locks": 2,
+   "status": "watch",
+   "text": "6 connections of 151 · 4 active · 2 idle in transaction · 2 waiting for a lock · oldest transaction 5 s"
+  },
+  "attention": {
+   "long_running": [],
+   "idle_in_trx": [
+    {
+     "id": 1074,
+     "seconds": 5,
+     "status": "ok"
+    },
+    {
+     "id": 1075,
+     "seconds": 5,
+     "status": "ok"
+    }
+   ],
+   "lock_wait": [
+    {
+     "id": 1076,
+     "seconds": 4,
+     "status": "watch",
+     "kind": "innodb"
+    },
+    {
+     "id": 1077,
+     "seconds": 3,
+     "status": "watch",
+     "kind": "metadata"
+    }
+   ]
+  },
+  "matched": 5,
+  "truncated": false,
+  "sessions": [
+   {
+    "id": 1076,
+    "user": "root",
+    "host": "localhost",
+    "client_host": "localhost",
+    "client_port": null,
+    "db": null,
+    "command": "Query",
+    "time_s": 3,
+    "state": "updating",
+    "info": "UPDATE review.lock_probe SET v=v+1 WHERE id=1",
+    "info_short": "UPDATE review.lock_probe SET v=v+1 WHERE id=1",
+    "info_truncated": false,
+    "thread_kind": "client",
+    "trx": {
+     "id": "2054",
+     "state": "LOCK WAIT",
+     "started": "2026-10-31 13:03:37",
+     "age_s": 4,
+     "wait_started": "2026-10-31 13:03:37",
+     "wait_s": 4,
+     "rows_locked": 1,
+     "rows_modified": 0,
+     "lock_structs": 2,
+     "tables_locked": 1,
+     "isolation_level": "REPEATABLE READ",
+     "read_only": false,
+     "operation_state": "starting index read"
+    },
+    "lock_wait": {
+     "kind": "innodb",
+     "wait_s": 4,
+     "detail": "starting index read"
+    },
+    "last_statement": null,
+    "progress": null,
+    "memory_used": null,
+    "rows_examined": null,
+    "ddl": null,
+    "kill_blocked_reason": null,
+    "explainable": true,
+    "flags": [
+     "lock_wait"
+    ],
+    "status": "watch",
+    "why": "Waiting for an InnoDB lock (row or table) for 4 s.",
+    "active": true,
+    "is_locked": true,
+    "lock_status": "waiting",
+    "lock_detail": "Waiting for InnoDB lock (4s)"
+   },
+   {
+    "id": 1077,
+    "user": "root",
+    "host": "localhost",
+    "client_host": "localhost",
+    "client_port": null,
+    "db": null,
+    "command": "Query",
+    "time_s": 3,
+    "state": "Waiting for table metadata lock",
+    "info": "ALTER TABLE review.mdl_probe ADD COLUMN probe_col INT",
+    "info_short": "ALTER TABLE review.mdl_probe ADD COLUMN probe_col INT",
+    "info_truncated": false,
+    "thread_kind": "client",
+    "trx": null,
+    "lock_wait": {
+     "kind": "metadata",
+     "wait_s": 3,
+     "detail": "Waiting for table metadata lock"
+    },
+    "last_statement": null,
+    "progress": null,
+    "memory_used": null,
+    "rows_examined": null,
+    "ddl": null,
+    "kill_blocked_reason": null,
+    "explainable": true,
+    "flags": [
+     "lock_wait"
+    ],
+    "status": "watch",
+    "why": "Waiting for a metadata lock for 3 s.",
+    "active": true,
+    "is_locked": true,
+    "lock_status": "waiting",
+    "lock_detail": "Waiting for metadata lock (3s)"
+   },
+   {
+    "id": 1068,
+    "user": "repl",
+    "host": "fda0:f59a:f4f:5::3:40568",
+    "client_host": "fda0:f59a:f4f:5::3",
+    "client_port": 40568,
+    "db": null,
+    "command": "Binlog Dump",
+    "time_s": 453,
+    "state": "Master has sent all binlog to slave; waiting for more updates",
+    "info": null,
+    "info_short": null,
+    "info_truncated": false,
+    "thread_kind": "replication",
+    "trx": null,
+    "lock_wait": null,
+    "last_statement": null,
+    "progress": null,
+    "memory_used": null,
+    "rows_examined": null,
+    "ddl": null,
+    "kill_blocked_reason": null,
+    "explainable": false,
+    "flags": [
+     "system_thread"
+    ],
+    "status": "ok",
+    "why": null,
+    "active": false,
+    "is_locked": false,
+    "lock_status": null,
+    "lock_detail": null
+   },
+   {
+    "id": 1074,
+    "user": "root",
+    "host": "localhost",
+    "client_host": "localhost",
+    "client_port": null,
+    "db": null,
+    "command": "Sleep",
+    "time_s": 4,
+    "state": null,
+    "info": null,
+    "info_short": null,
+    "info_truncated": false,
+    "thread_kind": "client",
+    "trx": {
+     "id": "2052",
+     "state": "RUNNING",
+     "started": "2026-10-31 13:03:36",
+     "age_s": 5,
+     "wait_started": null,
+     "wait_s": null,
+     "rows_locked": 1,
+     "rows_modified": 1,
+     "lock_structs": 2,
+     "tables_locked": 1,
+     "isolation_level": "REPEATABLE READ",
+     "read_only": false,
+     "operation_state": null
+    },
+    "lock_wait": null,
+    "last_statement": "UPDATE review.lock_probe SET v=v+1 WHERE id=1",
+    "progress": null,
+    "memory_used": null,
+    "rows_examined": null,
+    "ddl": null,
+    "kill_blocked_reason": null,
+    "explainable": false,
+    "flags": [
+     "idle_in_trx"
+    ],
+    "status": "ok",
+    "why": "Idle for 4 s inside a transaction open for 5 s.",
+    "active": true,
+    "is_locked": true,
+    "lock_status": "holding",
+    "lock_detail": "1 row locked"
+   },
+   {
+    "id": 1075,
+    "user": "root",
+    "host": "localhost",
+    "client_host": "localhost",
+    "client_port": null,
+    "db": null,
+    "command": "Sleep",
+    "time_s": 4,
+    "state": null,
+    "info": null,
+    "info_short": null,
+    "info_truncated": false,
+    "thread_kind": "client",
+    "trx": {
+     "id": "2053",
+     "state": "RUNNING",
+     "started": "2026-10-31 13:03:36",
+     "age_s": 5,
+     "wait_started": null,
+     "wait_s": null,
+     "rows_locked": 0,
+     "rows_modified": 0,
+     "lock_structs": 0,
+     "tables_locked": 0,
+     "isolation_level": "REPEATABLE READ",
+     "read_only": false,
+     "operation_state": null
+    },
+    "lock_wait": null,
+    "last_statement": "SELECT COUNT(*) FROM review.mdl_probe",
+    "progress": null,
+    "memory_used": null,
+    "rows_examined": null,
+    "ddl": null,
+    "kill_blocked_reason": null,
+    "explainable": false,
+    "flags": [
+     "idle_in_trx"
+    ],
+    "status": "ok",
+    "why": "Idle for 4 s inside a transaction open for 5 s.",
+    "active": true,
+    "is_locked": false,
+    "lock_status": null,
+    "lock_detail": null
+   }
+  ],
+  "ddl": {
+   "available": false,
+   "reason": "Turn on events_stages_current for DDL stage tracking.",
+   "missing": [
+    "events_stages_current"
+   ],
+   "source": null,
+   "items": []
+  },
+  "notes": [
+   "Statuses are rules of thumb, not verdicts. The summary counts every session this account can see; the filters narrow only the list. This tool's own session is left out."
+  ],
+  "links": {
+   "locks": {
+    "view": "locks",
+    "label": "Open Locks"
+   },
+   "innodb": {
+    "view": "innodb",
+    "label": "Open InnoDB"
+   }
+  }
+ }
+}

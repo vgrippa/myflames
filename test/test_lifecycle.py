@@ -634,9 +634,9 @@ class LifecycleTests(unittest.TestCase):
         report = lc.upgrade_check(ReplayConnection(server_variables('mariadb', version='10.6.28-MariaDB')),
                                   '11.8.0', CONNECTION, self.tools)
         self.assertNotIn('supports MariaDB', ' '.join(report['limitations']))
-        conn = ReplayConnection(server_variables(version='8.0.36'))
+        conn = ReplayConnection(server_variables(version='5.6.51'))
         plan = lc.prepare_dump(conn, CONNECTION, self.output, schemas=['app'], tools=self.native_tools())
-        self.assertIn('supports MySQL 8.4 or later', plan['warnings'][0])
+        self.assertIn('supports MySQL 5.7 or later', plan['warnings'][0])
 
     def assert_secret_transport(self, call):
         self.assertEqual(call['cnf_mode'], 0o600)
@@ -685,6 +685,72 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn('--single-transaction', args)
         self.assertNotIn('--source-data', args)
         self.assertFalse(any('gtid-purged' in arg for arg in args))
+
+    def test_structure_only_dump_records_it_and_skips_sampling(self):
+        conn, tools = ReplayConnection(), self.native_tools()
+        with mock.patch.object(lc, 'detect_tools', return_value=tools):
+            plan = lc.prepare_dump(conn, CONNECTION, self.output, schemas=['app'], tools=tools,
+                                   options={'structure_only': True})
+            self.assertIn('--no-data', plan['commands'][0])
+            self.assertIn('Structure only', ' '.join(plan['warnings']))
+            job = lc.dump_job(CONNECTION, plan, confirmed=True, typed_target=plan['target'],
+                              audit=self.audit('dump'), factory=lambda **kw: conn, start=False)
+            with mock.patch.object(lc, '_samples', wraps=lc._samples) as samples:
+                result = job.run()
+        samples.assert_not_called()
+        self.assertEqual(result['state'], 'done', result)
+        self.assertIn('--no-data', self.calls()[0]['argv'])
+        manifest = result['result']['manifest']
+        self.assertTrue(manifest['options']['structure_only'])
+        self.assertEqual(manifest['samples'], [])
+        verification = {v['check']: v for v in result['result']['verification']}
+        self.assertIn('Structure-only', verification['dump_rows']['reason'])
+        self.assertIn('Structure-only', verification['source_sample_stability']['reason'])
+
+    def make_structure_only_dump(self):
+        conn, tools = ReplayConnection(), self.native_tools()
+        with mock.patch.object(lc, 'detect_tools', return_value=tools):
+            plan = lc.prepare_dump(conn, CONNECTION, self.output, schemas=['app'], tools=tools,
+                                   options={'structure_only': True})
+            lc.dump_job(CONNECTION, plan, confirmed=True, typed_target=plan['target'],
+                        audit=self.audit('dump'), factory=lambda **kw: conn, start=False).run()
+
+    def test_restore_structure_only_skips_row_counts(self):
+        self.make_structure_only_dump()
+        target, tools = self.target(), self.native_tools()
+        plan = lc.prepare_restore(target, CONNECTION, self.output, tools=tools)
+        self.assertIn('Structure only', ' '.join(plan['warnings']))
+        self.assertTrue(plan['ready'])
+        with mock.patch.object(lc, 'detect_tools', return_value=tools):
+            result = lc.restore_job(CONNECTION, plan, True, plan['target'], self.audit(),
+                                    factory=lambda **kw: target, start=False).run()
+        self.assertEqual(result['state'], 'done', result)
+        verification = result['result']['verification']
+        self.assertEqual(next(v for v in verification if v['check'] == 'object_presence')['status'], 'passed')
+        row_counts = [v for v in verification if v['check'] == 'row_count']
+        self.assertEqual(len(row_counts), 1)
+        self.assertEqual(row_counts[0]['status'], 'not_checked')
+        self.assertIn('Structure-only', row_counts[0]['reason'])
+        # No COUNT(*) comparison ran against the target at any point.
+        self.assertFalse(any('COUNT(*)' in sql for sql, unused in target.calls))
+        restores = [r for r in self.store.audit_records() if r['operation'] == 'restore']
+        self.assertEqual(restores[0]['status'], 'ok')
+
+    def test_restore_full_dump_still_verifies_row_counts(self):
+        # A manifest without structure_only keeps the row-count comparison.
+        self.make_dump()
+        manifest = lc.read_manifest(self.output)
+        self.assertFalse(manifest['options']['structure_only'])
+        target, tools = self.target(), self.native_tools()
+        plan = lc.prepare_restore(target, CONNECTION, self.output, tools=tools)
+        self.assertNotIn('Structure only', ' '.join(plan['warnings']))
+        with mock.patch.object(lc, 'detect_tools', return_value=tools):
+            result = lc.restore_job(CONNECTION, plan, True, plan['target'], self.audit(),
+                                    factory=lambda **kw: target, start=False).run()
+        self.assertEqual(result['result']['status'], 'completed')
+        self.assertEqual(next(v for v in result['result']['verification'] if v['check'] == 'row_count')['status'],
+                         'passed')
+        self.assertTrue(any('COUNT(*)' in sql for sql, unused in target.calls))
 
     def test_named_tables_must_exist_in_the_schema(self):
         tools = self.native_tools()

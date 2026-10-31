@@ -395,8 +395,10 @@ function AccountInspector({ detail, connection, report, blocked, pending, onPend
         ["Expired", yesNo(detail.attributes.expired)], ["Authentication plugin", detail.attributes.plugins?.join(", ") || detail.attributes.plugin || "Unknown"]]} /></InspectorSection>
 
     </>}
-    {tab === "roles" && <RolesEditor detail={detail} report={report} pending={pending} blocked={reason} grantReason={rolesGate.disabledReason}
-      revokeReason={revokeRoles.disabledReason} defaultReason={defaultsGate.disabledReason} onStage={stage} />}
+    {tab === "roles" && (report.roles_supported === false
+      ? <InspectorSection title="Roles"><p className="account-note" role="note">{report.roles_note || "This server has no roles."}</p></InspectorSection>
+      : <RolesEditor detail={detail} report={report} pending={pending} blocked={reason} grantReason={rolesGate.disabledReason}
+        revokeReason={revokeRoles.disabledReason} defaultReason={defaultsGate.disabledReason} onStage={stage} />)}
     {!!pending.length && <InspectorSection title="Pending changes"><div className="account-pending" aria-live="polite">
       <CountBadge count={pending.length} label={`${pending.length} pending changes`} /><ul>{pending.map(p => <li key={p.id}>{p.label}</li>)}</ul>
       <button type="button" className="button primary" disabled={!!reason}

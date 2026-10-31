@@ -1,0 +1,35 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "3.81"
+    },
+    "table": {
+      "table_name": "orders",
+      "access_type": "range",
+      "possible_keys": [
+        "idx_customer"
+      ],
+      "key": "idx_customer",
+      "used_key_parts": [
+        "customer_id"
+      ],
+      "key_length": "4",
+      "rows_examined_per_scan": 7,
+      "rows_produced_per_join": 7,
+      "filtered": "100.00",
+      "using_index": true,
+      "cost_info": {
+        "read_cost": "2.42",
+        "eval_cost": "1.40",
+        "prefix_cost": "3.82",
+        "data_read_per_join": "616"
+      },
+      "used_columns": [
+        "id",
+        "customer_id"
+      ],
+      "attached_condition": "(`shop`.`orders`.`customer_id` between 2 and 5)"
+    }
+  }
+}

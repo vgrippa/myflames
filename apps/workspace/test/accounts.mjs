@@ -779,6 +779,27 @@ try {
   await page.waitForFunction(() => !document.querySelector(".account-review"));
   await click("Dismiss password");
 
+  // MySQL 5.7 has no roles: New role is not offered, the summary names the
+  // reason and the Roles tab says it instead of listing role checkboxes.
+  engine = "mysql"; list.engine = engine; list.version = "5.7.44-log";
+  const noRoles = "This MySQL version has no roles; MySQL added them in 8.0.";
+  Object.assign(list, { roles_supported: false, roles_note: noRoles, warnings: [noRoles] });
+  const actions80 = actions;
+  actions = { ...actions, ...Object.fromEntries(["create_role", "drop_role", "grant_role", "revoke_role", "default_roles"].map(k => [k,
+    { state: "denied", allowed: false, available: false, missing: [], need: "unknown", note: noRoles, grey_out: false,
+      reason: "Not available on this engine or version. " + noRoles }])) };
+  nextWarnings = [];
+  await click("Fresh privileges"); await h.refresh(); await inspect();
+  assert.equal(await page.$('[data-privilege-action="create_role"]'), null);
+  assert.ok(await page.$('[data-privilege-action="create_user"]'));
+  await click("Roles");
+  assert.ok((await page.$$eval('.account-inspector [role="note"]', notes => notes.map(n => n.textContent))).includes(noRoles));
+  assert.equal(await page.$(".account-role-row"), null);
+  await click("Grants");
+  actions = actions80; delete list.roles_supported; delete list.roles_note;
+  Object.assign(list, { version: "8.4.0", warnings: [] });
+  await click("Fresh privileges"); await h.refresh(); await inspect();
+
   // Account names use measured, capped widths. Layout changes persist under
   // the stable table id even when the unreadable report swaps its columns.
   await backToAccounts();
@@ -805,7 +826,7 @@ try {
   await page.screenshot({ path: path.join(h.shots, "accounts-desktop.png"), fullPage: true });
   await h.narrow("accounts-phone.png");
   assert.deepEqual(h.errors, []);
-  console.log("accounts: gates, draft grants, review, audit, connection binding, passwords, roles, unknown outcome, refresh and 390px passed");
+  console.log("accounts: gates, draft grants, review, audit, connection binding, passwords, roles, MySQL 5.7 without roles, unknown outcome, refresh and 390px passed");
 } finally { if (h) await h.close(); }
 
 // Keep the new grant workflows in the ordinary accounts suite as well.

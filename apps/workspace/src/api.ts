@@ -629,15 +629,6 @@ export type TopReport = {
    * on (null: unread); null itself on MariaDB or without the column. */
   cpu?: { collected: boolean | null } | null;
 };
-export type SlowQueriesReport = {
-  schema_version: "slow-queries-1.0";
-  engine: string;
-  server_version: string;
-  server_product?: string | null;
-  source: string;
-  min_seconds?: number;
-  statements: TopStatement[];
-};
 export type RunningStatement = {
   id: number;
   user: string | null;

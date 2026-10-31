@@ -1461,6 +1461,8 @@ def prepare_dump(conn, connection, directory, schemas=None, tables=None, threads
                 'User accounts are not included in scoped Shell dumps.']
     if selected_options.get('network_compression'):
         warnings.append('Connection compression affects network traffic only; the backup file is not compressed.')
+    if selected_options.get('structure_only'):
+        warnings.append('Structure only: the dump has table and object definitions and no rows.')
     if tool['name'] != 'mysqlsh' and not schemas:
         warnings.append('SQL instance dumps include mysql system tables and account hashes. Restore is scoped to the entire server.')
     if nontransactional:
@@ -1870,6 +1872,7 @@ def _perform_dump(job, conn, plan, connection):
                             'routines': selected_options.get('routines', not (tool['name'] == 'mysqlsh' and request['tables'])),
                             'events': selected_options.get('events', not (tool['name'] == 'mysqlsh' and request['tables'])),
                             'triggers': selected_options.get('triggers', True),
+                            'structure_only': bool(selected_options.get('structure_only')),
                             'selected': selected_options,
                             'tool_options': _shell_dump_expression(request) if tool['name'] == 'mysqlsh' else _dump_args(request, tool)},
                 'started_at': started, 'finished_at': now(), 'files': records, 'samples': samples,
@@ -1877,7 +1880,11 @@ def _perform_dump(job, conn, plan, connection):
     try:
         catalog = _catalog(conn, request['schemas'], request['tables'],
                            include_system=tool['name'] != 'mysqlsh' and not request['schemas'])
-        samples = _samples(conn, catalog, job=job)
+        structure_only = bool(request.get('options', {}).get('structure_only'))
+        # Source row counts feed restore's row comparison; a structure-only
+        # dump carries no rows, so no counts are sampled or recorded.
+        if not structure_only:
+            samples = _samples(conn, catalog, job=job)
         if tool['name'] == 'mysqlsh':
             _invoke(job, tool, connection, ['--js'], _shell_script(job, _shell_dump_expression(request)))
         else:
@@ -1890,12 +1897,18 @@ def _perform_dump(job, conn, plan, connection):
             present = present and os.path.isfile(os.path.join(directory, '@.done.json'))
         verification.append(_verification('files', 'passed' if present else 'failed',
                                            'Non-empty output and Shell completion marker when applicable.'))
-        after = _samples(conn, catalog, job=job)
-        verification.append(_verification('source_sample_stability', 'passed' if samples and samples == after and
-                                           all('count' in sample for sample in samples) else 'not_checked',
-                                           'Exact counts before/after; concurrent changes may invalidate comparison.', samples=after))
-        verification.append(_verification('dump_rows', 'not_checked',
-                                           'Restore into an isolated target to compare row counts.'))
+        if structure_only:
+            verification.append(_verification('source_sample_stability', 'not_checked',
+                                               'Structure-only dump; no rows were sampled.'))
+            verification.append(_verification('dump_rows', 'not_checked',
+                                               'Structure-only dump (no rows): restore compares objects, not row counts.'))
+        else:
+            after = _samples(conn, catalog, job=job)
+            verification.append(_verification('source_sample_stability', 'passed' if samples and samples == after and
+                                               all('count' in sample for sample in samples) else 'not_checked',
+                                               'Exact counts before/after; concurrent changes may invalidate comparison.', samples=after))
+            verification.append(_verification('dump_rows', 'not_checked',
+                                               'Restore into an isolated target to compare row counts.'))
         complete = present
     finally:
         # An interrupted dump is unusable; do not spend hours hashing it on
@@ -2000,6 +2013,9 @@ def prepare_restore(conn, connection, directory, schema=None, tools=None, allow_
     checks = [_staging_check(manifest, staging_directory)]
     warnings = ['Restore executes DDL and DML and can overwrite data. It cannot be undone.',
                 'SQL dumps can address other schemas; selecting a default schema is not a sandbox.']
+    if manifest.get('options', {}).get('structure_only'):
+        warnings.append('Structure only: the dump has table and object definitions and no rows; '
+                        'restore creates the objects without their data, and no row counts are compared.')
     source, scope = manifest['source'], manifest['scope']
     same_source = _same_server(source, server)
     checks.append(_verification('source_identity', 'failed' if same_source and allow_source_restore is not True else 'passed',
@@ -2132,7 +2148,12 @@ def restore_job(connection, plan, confirmed=False, typed_target=None, audit=None
         actual = {(r[0], r[1], r[2]) for r in catalog}
         verification.append(_verification('object_presence', 'passed' if expected <= actual else 'failed',
                                            'Schema/table/view presence; routines/events/triggers/users not verified.'))
-        for sample in manifest.get('samples', []):
+        structure_only = bool(manifest.get('options', {}).get('structure_only'))
+        if structure_only:
+            # A structure-only dump carries no rows and recorded no counts.
+            verification.append(_verification('row_count', 'not_checked',
+                                               'Structure-only dump (no rows): row counts were not compared.'))
+        for sample in [] if structure_only else manifest.get('samples', []):
             job.check_cancel()
             if 'count' not in sample:
                 verification.append(_verification('row_count', 'not_checked', sample.get('reason', 'Source count unavailable.'),

@@ -41,6 +41,7 @@ import { ReviewedSqlAction, ReviewedSqlBridger, ReviewedSqlProvider, ReviewedSql
 import { AddColumnDialog, RemoveColumnDialog } from "./TableAlterDialog";
 import { useImportCsv, useImportCsvGate } from "./importCsvApi";
 import { PrivilegeGate } from "./privileges";
+import { TableStructureSheet } from "./TableStructure";
 
 export type TableFocus = { schema: string; table: string } | null;
 const STATUS_RANK: Record<string, number> = { problem: 0, watch: 1, info: 2, ok: 3, shared: 4, unknown: 5 };
@@ -88,6 +89,7 @@ type List = "all" | "missing" | "free";
 function TableRowActions({
   schema,
   table,
+  onStructure,
   onAddColumn,
   onRemoveColumn,
   onIndexes,
@@ -95,6 +97,7 @@ function TableRowActions({
 }: {
   schema: string;
   table: string;
+  onStructure: () => void;
   onAddColumn: () => void;
   onRemoveColumn: () => void;
   onIndexes: () => void;
@@ -103,6 +106,8 @@ function TableRowActions({
   const reviewedSql = useReviewedSql();
   const blocked = reviewedSql?.blocked;
   const items: RowMenuItem[] = [
+    { label: "Table structure", icon: "table", onSelect: onStructure },
+    "divider",
     { label: "Add column…", icon: "plus", disabled: blocked, onSelect: onAddColumn },
     { label: "Remove column…", icon: "minus", disabled: blocked, onSelect: onRemoveColumn },
     "divider",
@@ -202,6 +207,12 @@ export function TablesView({
   const [filter, setFilter] = useState("");
   const [list, setList] = useState<List>("all");
   const [tableAlter, setTableAlter] = useState<{ mode: "add" | "remove"; schema: string; table: string } | null>(null);
+  // Table structure reads with the connection the list was read with; a list
+  // from another connection offers it disabled (otherList).
+  const [structure, setStructure] = useState<{ schema: string; table: string; connection: Connection } | null>(null);
+  const openStructure = (schema: string, table: string) => {
+    if (!other) setStructure({ schema, table, connection });
+  };
   const reviewedSqlRef = useRef<ReturnType<typeof useReviewedSql>>(null);
   const currentList = list === "all" && !report?.tables ? "missing" : list;
   // Import CSV into a listed table: the wizard opens with it chosen. Off with
@@ -215,6 +226,14 @@ export function TablesView({
     const runner = reviewedSqlRef.current;
     const qTable = qualifiedTable(schema, table);
     return [
+      {
+        label: "Table structure",
+        icon: "table",
+        disabled: !!other,
+        hint: other ? otherList : undefined,
+        onClick: () => openStructure(schema, table),
+      },
+      { divider: true as const },
       ...(onOpenSql
         ? [
             {
@@ -452,6 +471,7 @@ export function TablesView({
       schema={r.schema}
       table={r.table}
       disabled={!!other}
+      onStructure={() => openStructure(r.schema, r.table)}
       onAddColumn={() => setTableAlter({ mode: "add", schema: r.schema, table: r.table })}
       onRemoveColumn={() => setTableAlter({ mode: "remove", schema: r.schema, table: r.table })}
       onIndexes={() => bound && onOpenIndexes(r.schema, r.table, bound.key)}
@@ -536,6 +556,16 @@ export function TablesView({
   const [type, name] = selection.key.split(/:(.*)/s);
   const tableInspectorActions = (r: { schema: string; table: string }) => (
     <div className="table-inspector-actions" style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap", alignItems: "center" }}>
+      <button
+        type="button"
+        className="button small"
+        data-action="table-structure"
+        disabled={!!other}
+        title={other ? otherList : "Columns, indexes, foreign keys and the CREATE TABLE of this table"}
+        onClick={() => openStructure(r.schema, r.table)}
+      >
+        Table structure
+      </button>
       <ReviewedSqlAction
         action="optimize_table"
         sql={tableMaintenanceSql("OPTIMIZE", r.schema, r.table)}
@@ -692,6 +722,8 @@ export function TablesView({
     <ReviewedSqlProvider connection={connection} disabled={disabled || !!other} onComplete={() => void load()}>
     <ReviewedSqlBridger bridgerRef={reviewedSqlRef} />
     <TableAlterRunner alter={tableAlter} connection={connection} onClose={() => setTableAlter(null)} />
+    {structure && <TableStructureSheet key={`${structure.schema}.${structure.table}`} connection={structure.connection}
+      schema={structure.schema} table={structure.table} onClose={() => setStructure(null)} />}
     <ViewLayout
       id="tables"
       title="Tables"

@@ -5,6 +5,7 @@
 // to the connection they ran on; the jobs themselves live in the myflames
 // process, which lists them again after a reload or a lost Start reply.
 import { useEffect, useRef, useState, type ComponentProps, type Dispatch, type ReactNode, type SetStateAction } from "react";
+import { deletedConnectionLabel } from "./savedConnections";
 import { privilegeResult, targetPrivilege, usePrivilege, usePrivileges } from "./privileges";
 import { download, recordDeclined, type Connection, type Profile } from "./api";
 import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "./binding";
@@ -257,6 +258,8 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   const savedDonors = profiles.filter((p) => p.host && p.id !== connection.profile_id && !p.ssh_host);
   const filledFrom = donorFill && donor.host === donorFill.host && donor.port === donorFill.port && donor.user === donorFill.user &&
     (donor.ssl_mode || "REQUIRED") === donorFill.ssl_mode && (donor.ssl_ca || "") === donorFill.ssl_ca ? donorFill : null;
+  // The saved connection the donor was filled from may be deleted later: say so.
+  const donorGone = !!filledFrom && !savedDonors.some((p) => p.id === filledFrom.id);
   function fillDonor(id: string) {
     const p = savedDonors.find((x) => x.id === id);
     if (!p) return;
@@ -680,11 +683,14 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
       </>)}
       {section === "clone" && tools && (!tools.offered.clone ? <PrerequisiteGate>{tools.server.engine === "mariadb" ? "MariaDB has no clone plugin: copy a server with mariadb-backup on its host instead." : "Clone is not offered for this server version."}</PrerequisiteGate> : form(<>
         <div className="ops-target"><span>Recipient (the connection in use)</span><strong>{connectionLabel(connection)}</strong></div>
-        {savedDonors.length > 0 && <label className="ops-field"><span>Fill from saved connection</span>
+        {(savedDonors.length > 0 || donorGone) && <label className="ops-field"><span>Fill from saved connection</span>
           <Select label="Fill from saved connection" value={filledFrom?.id || ""} onChange={fillDonor}
-            options={[["", "Choose a connection"], ...savedDonors.map((p): [string, string] => [p.id, `${p.name} · ${p.host}:${p.port}`])]} />
+            options={[["", "Choose a connection"], ...savedDonors.map((p): [string, string] => [p.id, `${p.name} · ${p.host}:${p.port}`]),
+              ...(donorGone && filledFrom ? [[filledFrom.id, deletedConnectionLabel(filledFrom.id)] as [string, string]] : [])]} />
           <span className="hint" aria-live="polite">{filledFrom
-            ? `Filled from ${filledFrom.name}${filledFrom.raised ? "; TLS set to Required, which clone needs" : ""}. Enter the password.`
+            ? donorGone
+              ? `Filled from ${filledFrom.name}, which was deleted; the copied fields stay. Enter the password.`
+              : `Filled from ${filledFrom.name}${filledFrom.raised ? "; TLS set to Required, which clone needs" : ""}. Enter the password.`
             : "Fills host, port, user and TLS, never a password."}</span>
         </label>}
         <FormField label="Donor host" value={donor.host} onChange={(v) => setDonor({ ...donor, host: v })} />
@@ -725,6 +731,8 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
         ["Server", engineName(sheet.report.server.engine, sheet.report.server.version, sheet.report.server.product)],
         !!sheet.report.server.identity?.hostname && ["Host name", String(sheet.report.server.identity.hostname)],
         ["Tool", toolName(sheet.report.tool)],
+        ...(sheet.report.operation === "dump" && (sheet.report.request?.options as DumpOptionValues | undefined)?.structure_only === true
+          ? [["Contents", "Structure only (no rows)"] as [string, string]] : []),
         ["Preflight", `${plural(sheet.report.checks.filter((c) => c.status === "passed").length, "check")} passed${sheet.report.checks.some((c) => c.status === "not_checked") ? `, ${sheet.report.checks.filter((c) => c.status === "not_checked").length.toLocaleString()} not checked` : ""}`],
       ]} />
       {sheet.report.policy?.text && <p>{sheet.report.policy.text}</p>}

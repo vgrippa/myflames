@@ -68,6 +68,8 @@ def replay(view, name, **kwargs):
             count = batch([[len(answers[0].splitlines())]])
             conn.answers.setdefault('/*myflames:report*/ SELECT COUNT(*) FROM information_schema.TABLES WHERE %s'
                                     % where, [count])
+        if sql.endswith(' LIMIT 2001'):
+            continue  # recorded after the bounded read existed (mysql-5.7): already exact
         if sql.startswith('/*myflames:io*/ SELECT ') and any(source in sql for source in (
                 ' FROM performance_schema.table_io_waits_summary_by_table ',
                 ' FROM performance_schema.file_summary_by_instance ',

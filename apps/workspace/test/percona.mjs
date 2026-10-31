@@ -40,6 +40,9 @@ let digestTablesResponse = { status: 200, body: await load("digest-tables.json")
 const statement = (digest, schema, total_ms, count) => ({ digest, digest_text: `SELECT * FROM t_${digest}`, schema, count, total_ms,
   avg_ms: total_ms / count, max_ms: total_ms, lock_time_ms: 0.25, rows_examined: 10, rows_sent: 5, tmp_tables: 0, tmp_disk_tables: 0,
   select_scan: 0, select_full_join: 0, sample_text: null, first_seen: null, last_seen: null, flags: [], capture_problem: null });
+// The Slow log table source's report, as read from a Percona Server.
+const slowTable = { ...(await load("slow-log-table.json")), flavor: "percona", server_product: "Percona Server",
+  server_version: "8.4.11-11" };
 const digestReport = { engine: "mysql", flavor: "percona", server_product: "Percona Server",
   server_version: "8.4.11-11", notes: [],
   statements: [statement("a1", "review", 1200, 2), statement("b2", "testdb", 59.04, 1), statement("c3", null, 0.5, 1)] };
@@ -78,7 +81,7 @@ const h = await open("/api/live/health", "percona", {
     return null;
   },
   "/api/live/digest-tables": () => digestTablesResponse,
-  "/api/live/slow-queries": { status: 200, body: { ...digestReport, schema_version: "slow-queries-1.0", source: "slow_log" } },
+  "/api/live/slow-log": { status: 200, body: slowTable },
 }, { fallback: { status: 200, body: health }, list: "docked" });
 const { page, errors, text } = h;
 const footer = () => page.$$eval('[data-status="engine"]', (els) => els.filter((e) => e.getClientRects().length).map((e) => e.textContent));
@@ -190,37 +193,53 @@ try {
     "A variable Percona Server adds to MySQL");
   assert.deepEqual(await footer(), ["Percona Server 8.4.11-11"]);
   await shoot("parameters-tag");
-  // Query digest projects both report shapes; neither may discard the product.
+  // Query digest projects both report shapes (Statement digests and the Slow
+  // log table); neither may discard the product.
   await page.click('.main-nav button[data-place="digest"]');
-  for (const slow of [false, true]) {
-    if (slow) {
-      const response = page.waitForResponse(r => new URL(r.url()).pathname === '/api/live/slow-queries');
-      await page.select('[data-view="query-digest"] select[aria-label="Rank by"]', 'slow_queries');
+  const qd = '[data-view="query-digest"]';
+  for (const table of [false, true]) {
+    if (table) {
+      const response = page.waitForResponse(r => new URL(r.url()).pathname === '/api/live/slow-log');
+      await page.select(`${qd} select[aria-label="Source"]`, 'table');
       await response;
     }
-    await page.waitForFunction(() => {
+    await page.waitForFunction((tableSource) => {
       const refresh = document.querySelector('[data-view="query-digest"] button[data-action="refresh"]');
       const label = [...document.querySelectorAll('[data-status="engine"]')].find(e => e.getClientRects().length)?.textContent;
-      return refresh && refresh.getAttribute('aria-busy') !== 'true' && document.querySelector('.qd-summary') && label === 'Percona Server 8.4.11-11';
-    });
+      const summary = document.querySelector('[data-view="query-digest"] .summary-line .summary-text')?.textContent || "";
+      return refresh && refresh.getAttribute('aria-busy') !== 'true' && document.querySelector('.qd-summary') &&
+        label === 'Percona Server 8.4.11-11' && /^mysql\.slow_log · /.test(summary) === tableSource;
+    }, {}, table);
     await page.click('button[aria-label="Export query digest"]');
     await page.click('.export-menu-items button[data-format="text"]');
     const preview = 'dialog[open] pre[aria-label="text report"]';
     await page.waitForSelector(preview);
     assert.match(await text(preview), /^# myflames query digest$/m);
     assert.match(await text(preview), /^# Server: Percona Server 8\.4\.11-11$/m);
-    assert.match(await text(preview), slow ? /^# Filter mode: slow_queries$/m : /^# Filter mode: time$/m);
+    assert.match(await text(preview), table ? /^# Rank by: Total time$/m : /^# Filter mode: time$/m);
     await page.keyboard.press('Escape');
     await page.waitForFunction(() => !document.querySelector('dialog[open] pre[aria-label="text report"]'));
   }
+  // The slow log's share is of every statement logged in the range, and the
+  // summary line is the numbers and the range, with no counting window.
+  assert.match(await page.$eval(`${qd} th[data-col="share"]`, (e) => e.title), /every statement in the range/);
+  assert.doesNotMatch(await text(`${qd} .summary-line .summary-text`), /since/);
+  assert.equal(await page.$(`${qd} select[aria-label="Rank by"] option[value="slow_queries"]`), null, "the 1 s ranking is retired");
+
+  // Back to Statement digests: Performance Schema digests ranked against the whole server.
+  const topRead = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/live/top");
+  await page.select(`${qd} select[aria-label="Source"]`, "pfs");
+  await topRead;
+  await page.waitForSelector(`${qd} .qd-others`);
+  assert.deepEqual(await page.$$eval(`${qd} select[aria-label="Rank by"] option`, (os) => os.map((o) => o.textContent)),
+    ["Total time", "Full scans", "Joins without an index", "Temp tables on disk", "Lock time"]);
   // The Schema choice lists the loaded statements' schemas and filters them on screen.
-  const qd = '[data-view="query-digest"]';
   const schemaChoice = `${qd} select[aria-label="Schema"]`;
   const qdRows = () => page.$$eval(`${qd} tbody tr[data-row-key]`, (rows) => rows.length);
   assert.deepEqual(await page.$$eval(`${schemaChoice} option`, (os) => os.map((o) => o.textContent)),
     ["All schemas", "review", "testdb", "No default schema"]);
   assert.equal(await qdRows(), 3);
-  const digestReads = h.state.other.filter((o) => /^\/api\/live\/(top|slow-queries)$/.test(o.path)).length;
+  const digestReads = h.state.other.filter((o) => o.path === "/api/live/top").length;
   await page.select(schemaChoice, "testdb");
   await page.waitForFunction((q) => document.querySelectorAll(`${q} tbody tr[data-row-key]`).length === 1, {}, qd);
   // Latencies read like Top statements: milliseconds, the exact value on hover.
@@ -236,18 +255,7 @@ try {
   assert.match(await text(`${qd} .summary-line`), /3 statements .* · 1 shown/);
   await page.select(schemaChoice, "");
   await page.waitForFunction((q) => document.querySelectorAll(`${q} tbody tr[data-row-key]`).length === 3, {}, qd);
-  assert.equal(h.state.other.filter((o) => /^\/api\/live\/(top|slow-queries)$/.test(o.path)).length, digestReads, "the Schema choice never reads");
-  // The slow query log ranks the loaded statements only: no server totals, no CPU column.
-  assert.equal(await page.$(`${qd} .qd-others`), null, "the slow log has no other-statements row");
-  assert.match(await page.$eval(`${qd} th[data-col="share"]`, (e) => e.title), /loaded statements/);
-  // The slow log has no counting window: the summary line is the numbers only.
-  assert.equal(await text(`${qd} .summary-line .summary-text`), "3 statements · 1.26 s total · 4 executions");
-
-  // Back to Total time: Performance Schema digests ranked against the whole server.
-  const topRead = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/live/top");
-  await page.select(`${qd} select[aria-label="Rank by"]`, "time");
-  await topRead;
-  await page.waitForSelector(`${qd} .qd-others`);
+  assert.equal(h.state.other.filter((o) => o.path === "/api/live/top").length, digestReads, "the Schema choice never reads");
   // Share of total time is of the server's 2,519.08 ms, not the loaded 1,259.54 ms.
   assert.match(await page.$eval(`${qd} th[data-col="share"]`, (e) => e.title), /server's total statement time/);
   const a1 = `${qd} tbody tr[data-row-key]:first-child`;

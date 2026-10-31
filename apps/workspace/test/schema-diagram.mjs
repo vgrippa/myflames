@@ -44,11 +44,13 @@ const model={schema_version:"schema-diagram-1.0",tables,relationships:[edge("ord
 let readDelay=0,readFailure=false,importDelay=0,importFailure=false,exportWarnings=true,lastImport;
 let mermaidText=null,exportDelay=0;
 let liveModel=structuredClone(model), catalogFailure=false;
+// The longest database name MySQL allows (64 characters): the Load button wraps it at 720 px.
+const longName="warehouse_inventory_reconciliation_archive_2026_q4_eu_west_shard7";
 const temp=await fs.mkdtemp(path.join(os.tmpdir(),"myflames-diagram-files-"));let h;
 try{
  h=await open("/api/unused-diagram","diagram",{
   "/":content("text/html",html),"/__diagram.js":content("text/javascript",js),"/__diagram.css":content("text/css",css),
-  "/api/live/schemas":()=>({status:catalogFailure?400:200,body:catalogFailure?{error:"Catalog permission denied"}:{schemas:[{name:"shop",tables:6,system:false},{name:"inventory",tables:2,system:false}]}}),
+  "/api/live/schemas":()=>({status:catalogFailure?400:200,body:catalogFailure?{error:"Catalog permission denied"}:{schemas:[{name:"shop",tables:6,system:false},{name:"inventory",tables:2,system:false},{name:longName,tables:1,system:false}]}}),
   "/api/schema-diagram/read":body=>({status:readFailure?400:200,delay:readDelay,body:readFailure?{error:"Schema read failed"}:{...structuredClone(liveModel),warnings:[`Read ${body.database}`]}}),
   "/api/schema-diagram/import":body=>{lastImport=body;return{status:importFailure?400:200,delay:importDelay,body:importFailure?{error:"Unsupported SQL statement. Nothing was executed."}:body.format==="json"?JSON.parse(body.text):structuredClone(model)};},
   "/api/schema-diagram/export":body=>({status:200,delay:exportDelay,body:{text:body.format==="mermaid"?mermaidText??`erDiagram\n${body.diagram.tables.map(t=>`  ${t.name} {\n${t.columns.map(c=>`    ${c.data_type.replaceAll(",","-").replaceAll(" ","_")} ${c.name}`).join("\n")}\n  }`).join("\n")}`:"CREATE TABLE customers (id bigint PRIMARY KEY);",warnings:exportWarnings?["Conceptual relationships have no SQL foreign keys."]:[]}})
@@ -60,12 +62,20 @@ try{
  const input=async(selector,value)=>{await page.$eval(selector,(el,value)=>{const proto=el.tagName==="TEXTAREA"?HTMLTextAreaElement.prototype:el.tagName==="SELECT"?HTMLSelectElement.prototype:HTMLInputElement.prototype;Object.getOwnPropertyDescriptor(proto,"value").set.call(el,value);el.dispatchEvent(new Event(el.tagName==="SELECT"?"change":"input",{bubbles:true}));},value);};
  const requests=path=>state.other.filter(r=>r.path===`/api/schema-diagram/${path}`);
  await page.evaluate(()=>{window.diagramDownloads=[];window.diagramClipboard="";Object.defineProperty(navigator,"clipboard",{configurable:true,value:{writeText:async text=>{window.diagramClipboard=text;}}});HTMLAnchorElement.prototype.click=function(){fetch(this.href).then(r=>r.text()).then(text=>window.diagramDownloads.push({name:this.download,text}));};});
+ const refreshLabel=()=>page.$eval('[data-action="refresh"]',e=>e.textContent.trim());
+ const visibleButtons=()=>page.$$eval("button",els=>els.filter(b=>b.getClientRects().length).map(b=>b.textContent.trim()));
+ // Inside the open confirmation sheet (a modal: the page behind it is inert).
+ const confirm=async()=>{await page.waitForSelector("dialog[open]");await page.click("dialog[open] .sheet-actions .button.primary, dialog[open] .dialog-actions .button.primary");};
  assert.equal(await page.$eval('[data-action="refresh"]',e=>e.disabled),true);
  assert.equal(await page.$('.diagram-source .primary'),null,"single Refresh in toolbar");
+ // Nothing to load without a connection: the toolbar's Refresh reads Load,
+ // Import a schema is the one action, and Mermaid waits for a diagram.
+ assert.equal(await refreshLabel(),"Load");
+ assert.equal(await page.$eval('[data-action="refresh"]',e=>e.getAttribute("aria-label")),"Load");
+ assert.equal(await page.$eval(".view-empty .button.primary",e=>e.textContent.trim()),"Import a schema");
+ assert.ok(!(await visibleButtons()).includes("View Mermaid"),"no View Mermaid without a diagram");
+ assert.equal(await page.$('[aria-label="Diagram view"]'),null,"Diagram | Mermaid waits for a diagram");
  await shot("diagram-empty-desktop.png");
- await click("View Mermaid");
- assert.equal(await page.$eval('[aria-label="Import format"]',e=>e.value),"mermaid");
- await click("Cancel");
  await click("Import a schema");await page.select('[aria-label="Import format"]',"sql");await input(".diagram-paste textarea","CREATE TABLE customers (id bigint PRIMARY KEY);");
  await click("Import diagram");await page.waitForSelector(".diagram-table");assert.equal(lastImport.format,"sql");assert.equal(requests("read").length,0);
  assert.equal(await page.$$(".diagram-table").then(x=>x.length),6);
@@ -172,10 +182,20 @@ try{
  assert.match(await page.$eval("dialog",e=>e.textContent),/No database changes will be made/);
  const beforeCancel=requests("read").length;await click("Cancel");assert.equal(requests("read").length,beforeCancel);
  // Connection switch invalidates late server responses but preserves imports.
- readDelay=150;await page.click('[data-action="refresh"]');await click("Rebuild diagram");await click("Switch connection");await pause(200);
+ // Another database chosen while a diagram is shown offers to load it, and
+ // choosing reads nothing by itself.
+ assert.match(await page.$eval(".diagram-choice",e=>e.textContent),/shop is chosen\. The diagram shows /);
+ assert.equal(await refreshLabel(),"Load");
+ assert.equal(requests("read").length,beforeCancel,"choosing a database never reads it");
+ readDelay=150;await page.click('[data-action="refresh"]');
+ assert.equal(await page.$eval("dialog[open] .button.primary",e=>e.textContent.trim()),"Load shop");
+ await confirm();await click("Switch connection");await pause(200);
  assert.equal(await page.evaluate(()=>window.diagramDocument.source.kind),"import");readDelay=0;
- await input('[aria-label="Database"]',"shop");await page.click('[data-action="refresh"]');await click("Rebuild diagram");
+ await input('[aria-label="Database"]',"shop");await page.click('[data-action="refresh"]');await confirm();
  await page.waitForFunction(()=>window.diagramDocument.source.kind==="server");
+ // The diagram of the chosen database is on screen: Refresh reads it again.
+ await page.waitForFunction(()=>document.querySelector('[data-action="refresh"]')?.textContent.trim()==="Refresh");
+ assert.equal(await page.$(".diagram-choice"),null);
  assert.ok(await page.$('time[datetime]'));assert.equal(requests("read").at(-1).body.connection.host,"127.0.0.2");
  assert.match(await page.$eval(".summary-line",e=>e.textContent),/Connection: 127\.0\.0\.2:3306/);
  // An explicit host works with the client's default OS user. Same-source rebuild keeps arrangement.
@@ -230,6 +250,64 @@ try{
  assert.equal(requests("read").at(-1).body.database,"shop");
  assert.equal(await page.evaluate(()=>window.diagramDocument.diagram.tables.length),7);
  await click("Switch connection");await page.waitForSelector('[data-other-connection="true"]');
+ // A diagram read from another connection names it and offers to load the
+ // chosen database from the connection in use.
+ assert.match(await page.$eval(".other-connection",e=>e.textContent),/This diagram was read from .*127\.0\.0\.\d:3306/);
+ assert.equal(await refreshLabel(),"Load");
+
+ // Loading the chosen database is one click from the empty state.
+ catalogFailure=false;await page.evaluate(()=>window.setDiagramDocument(null));
+ // The switch reads the database list again: wait for it before reloading it.
+ await page.waitForFunction(()=>{const b=document.querySelector(".diagram-reload-list");return b&&b.getAttribute("aria-busy")!=="true";});
+ await click("Reload database list");await page.waitForFunction(()=>!!document.querySelector('select[aria-label="Database"] option[value="shop"]'));
+ await input('[aria-label="Database"]',"");
+ assert.equal(await page.$eval(".view-empty h3",e=>e.textContent),"Choose a database");
+ assert.ok(!(await visibleButtons()).some(t=>t.startsWith("Load ")),"no Load before a database is chosen");
+ const emptyReads=requests("read").length;
+ await input('[aria-label="Database"]',"shop");
+ assert.equal(requests("read").length,emptyReads,"choosing a database never reads it");
+ assert.equal(await page.$eval(".view-empty h3",e=>e.textContent),"See how the tables of shop connect");
+ assert.equal(await page.$eval(".view-empty .button.primary",e=>e.textContent.trim()),"Load shop","Load is the primary action");
+ assert.equal(await page.$eval(".view-empty .diagram-empty-actions .button:not(.primary)",e=>e.textContent.trim()),"Import a schema","Import is secondary");
+ assert.equal(await refreshLabel(),"Load");
+ for(const theme of ["light","dark"]){await page.emulateMediaFeatures([{name:"prefers-color-scheme",value:theme}]);await shot(`diagram-load-${theme}-1440.png`);
+   await page.setViewport({width:720,height:900});await pause(150);
+   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth),0);
+   await shot(`diagram-load-${theme}-720.png`);await page.setViewport({width:1440,height:1000});}
+ await page.emulateMediaFeatures([{name:"prefers-color-scheme",value:"light"}]);
+ // A failed load shows its error once, under the Load button, with Try again.
+ readFailure=true;await page.click(".diagram-load");
+ await page.waitForFunction(()=>document.querySelector(".diagram-load-status")?.textContent.includes("Schema read failed"));
+ assert.equal(await page.$('.view-status [role="alert"]'),null,"the error is not repeated under the toolbar");
+ assert.ok((await page.$$eval(".diagram-load-status button",els=>els.map(b=>b.textContent))).includes("Try again"));
+ readFailure=false;
+ // While it reads: the button is busy, the line under it says what it reads,
+ // and a double click sends one read.
+ readDelay=400;const loadReads=requests("read").length;
+ await page.click(".diagram-load");await page.click(".diagram-load");
+ assert.equal(await page.$eval(".diagram-load",e=>e.getAttribute("aria-busy")),"true");
+ assert.match(await page.$eval(".diagram-load-status",e=>e.textContent),/Reading shop…/);
+ await page.waitForSelector(".diagram-table");readDelay=0;
+ assert.equal(requests("read").length,loadReads+1,"one read for a double click");
+ assert.equal(requests("read").at(-1).body.database,"shop");
+ await page.waitForFunction(()=>document.activeElement?.classList.contains("diagram-canvas"));
+ assert.equal(await refreshLabel(),"Refresh");
+ assert.ok(await page.$('[aria-label="Diagram view"]'),"Diagram | Mermaid once a diagram is shown");
+ // Choosing another database offers it; Load asks before replacing.
+ await input('[aria-label="Database"]',"inventory");
+ assert.match(await page.$eval(".diagram-choice",e=>e.textContent),/inventory is chosen\. The diagram shows shop\./);
+ assert.equal(await refreshLabel(),"Load");
+ await page.click(".diagram-choice .action-button");
+ assert.equal(await page.$eval("dialog[open] .button.primary",e=>e.textContent.trim()),"Load inventory");
+ await confirm();await page.waitForFunction(()=>window.diagramDocument?.source.database==="inventory");
+ assert.equal(requests("read").at(-1).body.database,"inventory");
+ assert.equal(await page.$(".diagram-choice"),null);assert.equal(await refreshLabel(),"Refresh");
+ // A 64-character database name wraps inside the Load button at 720 px.
+ await page.evaluate(()=>window.setDiagramDocument(null));await input('[aria-label="Database"]',longName);
+ await page.setViewport({width:720,height:900});await pause(150);
+ assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth),0);
+ assert.ok(await page.$eval(".diagram-load",e=>e.getBoundingClientRect().right<=document.documentElement.clientWidth));
+ await shot("diagram-load-long-name-720.png");await page.setViewport({width:1440,height:1000});
  // Escaping and malformed model checks exercise pure helpers with hostile text.
  const checks=await page.evaluate(model=>{const h=window.diagramHelpers,d=structuredClone(model);d.tables[0].name='<script>alert(1)</script>';d.tables[0].columns[0].name='x"><image href="https://invalid/">';
   const svg=h.diagramSvg(d),dom=new DOMParser().parseFromString(svg,"image/svg+xml");let invalid=false;

@@ -42,6 +42,8 @@ export type AccountRow = AccountName & {
 export type AccountsReport = {
   schema_version: "accounts-1.0"; engine: "mysql" | "mariadb"; version: string;
   accounts: AccountRow[]; complete: boolean; warnings: string[];
+  /** False on MySQL 5.7, which has no roles; roles_note says so in one sentence. */
+  roles_supported?: boolean; roles_note?: string;
   role_grants: { role: AccountName; grantee: AccountName; admin_option: boolean }[];
   default_roles: { account: AccountName; role: AccountName }[];
 };

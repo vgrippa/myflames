@@ -28,8 +28,23 @@ Verified against server source (mysql-server 9.7 trunk "M/", mariadb-server
   in p_s.cc at tags mysql-8.0.39, 8.3.0, 8.4.2, 9.0.1; 8.0.20 and earlier take
   the single lock_sys mutex). 8.0.40, 8.4.3 and 9.1.0 latch one shard at a
   time (Bug#36302624).
-* ``information_schema.INNODB_TRX``, and on MariaDB ``INNODB_LOCKS`` and
-  ``INNODB_LOCK_WAITS``, raise an error without PROCESS
+* MySQL 5.7 has no data_locks: it lists row locks in
+  ``information_schema.INNODB_LOCKS`` and the waits in ``INNODB_LOCK_WAITS``
+  (5.7.44 storage/innobase/handler/i_s.cc), with MariaDB's columns and lock
+  mode words (``lock_get_mode_str``, 5.7.44 lock/lock0lock.cc:6587-6626), and
+  only the waiting locks and the locks blocking them (trx/trx0i_s.cc:
+  1133-1150). MySQL 8.0.1 replaced both tables with data_locks and
+  data_lock_waits (tags mysql-8.0.0 and mysql-8.0.1). 5.7 ships the
+  ``wait/lock/metadata/sql/mdl`` instrument disabled (5.7.44
+  storage/perfschema/pfs_instr_class.cc:251-256); 8.0.2 and later enable it
+  (still off at mysql-8.0.1 pfs_instr_class.cc:276). 5.7 ends
+  another user's session only with SUPER (5.7.44 sql/sql_parse.cc:6472-6473):
+  CONNECTION_ADMIN arrived with 8.0's dynamic privileges (mysql-8.0.1
+  sql/sql_parse.cc:6545) and SYSTEM_USER with 8.0.16. Without PROCESS, 5.7's
+  INNODB_TRX, INNODB_LOCKS and INNODB_LOCK_WAITS raise an error too (5.7.44
+  storage/innobase/handler/i_s.cc:1290).
+* ``information_schema.INNODB_TRX``, and on MariaDB and MySQL 5.7
+  ``INNODB_LOCKS`` and ``INNODB_LOCK_WAITS``, raise an error without PROCESS
   (``check_global_access(thd, PROCESS_ACL)``: M/storage/innobase/handler/
   i_s.cc:797, Ma/storage/innobase/handler/i_s.cc:177,975,1213,1473).
   ``trx_query`` is cut at 1024 bytes and LOCK_DATA at 8192 bytes
@@ -147,6 +162,12 @@ KILL_NOTE = ("myflames ends a session only when you choose Kill blocker (or run 
 IMPLICIT_NOTE = ("Rows a transaction inserted, and index entries its updates wrote, are "
                  "protected by implicit locks, which InnoDB lists only after another session "
                  "conflicts with them. A transaction can hold more locks than the list shows.")
+#: MySQL 5.7 with Performance Schema off: row locks still come from information_schema.
+MYSQL57_PS_OFF_MDL_NOTE = (
+    "Performance Schema is off, so metadata locks, such as a table held open while ALTER TABLE waits, "
+    "are not visible. To see them, add performance_schema=ON and "
+    "performance-schema-instrument='wait/lock/metadata/sql/mdl=ON' under [mysqld] in my.cnf and "
+    "restart.")
 MARIADB_PS_OFF_MDL_NOTE = (
     "Performance Schema is off (the MariaDB default), so metadata locks, such as a table held open "
     "while ALTER TABLE waits, are not visible. To see them, add performance_schema=ON and "
@@ -216,7 +237,10 @@ def _mdl_rules(engine, object_type, lock_type):
 # ---- row lock modes in plain language --------------------------------------
 
 def explain_lock_mode(engine, lock_type, mode, lock_data=None):
-    """Return (short label, one-sentence plain-language explanation)."""
+    """Return (short label, one-sentence plain-language explanation).
+
+    *engine* is ``mysql`` for data_locks mode words, or ``mariadb`` or
+    ``mysql-5.7`` for the INNODB_LOCKS words those servers print."""
     mode = (mode or "").upper().replace(" ", "")
     flags = set(mode.split(",")[1:]) if mode else set()
     base = mode.split(",")[0] if mode else ""
@@ -240,15 +264,16 @@ def explain_lock_mode(engine, lock_type, mode, lock_data=None):
             "so it guards the open-ended gap at the end of the range.") if supremum else ""
     if "PREDICATE" in flags or "PRDT_PAGE" in flags:
         return "predicate", "A predicate lock on a spatial (R-tree) index."
-    if engine == "mariadb":
+    if engine in ("mariadb", "mysql-5.7"):
+        product = "MariaDB" if engine == "mariadb" else "MySQL 5.7"
         if "GAP" in flags:
-            return ("gap or insert intention", "MariaDB shows gap locks and insert-intention locks "
+            return ("gap or insert intention", "%s shows gap locks and insert-intention locks "
                     "both as %s,GAP. A gap lock stops other transactions from inserting before this "
                     "record without locking the record; an insert intention is an INSERT waiting to "
-                    "add a row in that gap.%s" % (base, tail))
-        return ("record or next-key", "MariaDB shows record-only and next-key locks both as %s. "
+                    "add a row in that gap.%s" % (product, base, tail))
+        return ("record or next-key", "%s shows record-only and next-key locks both as %s. "
                 "It locks this index record (%s) and, for a next-key lock, the gap before it.%s"
-                % (base, strength, tail))
+                % (product, base, strength, tail))
     if "INSERT_INTENTION" in flags:
         return ("insert intention", "An INSERT waiting to add a row in the gap before this record. "
                 "It waits only for gap or next-key locks other transactions hold there; inserts into "
@@ -313,9 +338,25 @@ def _cap(text, limit):
     return text, False
 
 
+def innodb_lock_tables(engine, ver):
+    """True when row locks come from information_schema.INNODB_LOCKS and
+    INNODB_LOCK_WAITS: on MariaDB, and on MySQL before 8.0.1 (MySQL 5.7),
+    which has no performance_schema.data_locks. An unknown version (an empty
+    or zero tuple) counts as a current MySQL."""
+    if engine == "mariadb":
+        return True
+    ver = tuple(ver or ())[:3]
+    return engine == "mysql" and any(ver) and ver < (8, 0, 1)
+
+
+def lock_product(engine, ver):
+    """The product name the INNODB_LOCKS notes use: MariaDB or MySQL 5.7."""
+    return "MariaDB" if engine == "mariadb" else "MySQL 5.7"
+
+
 def data_locks_latch_caution(engine, ver):
     """True when reading data_locks holds InnoDB's global lock-system latch."""
-    if engine != "mysql":
+    if engine != "mysql" or innodb_lock_tables(engine, ver):
         return False
     return (ver < (8, 0, 40) or (8, 1, 0) <= ver < (8, 4, 3) or (9, 0, 0) <= ver < (9, 1, 0))
 
@@ -368,6 +409,11 @@ class _Report(object):
         self.server_identity = {}
         self.limit, self.scope = limit, scope
         self.notes = []
+        #: Row locks from information_schema.INNODB_LOCKS (MariaDB, MySQL 5.7).
+        self.lock_tables = innodb_lock_tables(engine, ver)
+        #: The mode words of those rows (explain_lock_mode).
+        self.lock_words = ("mysql" if not self.lock_tables else "mariadb" if engine == "mariadb"
+                           else "mysql-5.7")
         self.caps = {
             "performance_schema": ps_on, "process_privilege": None,
             "transactions": False, "row_locks": "none", "lock_waits": False,
@@ -399,12 +445,11 @@ class _Report(object):
 
     def no_process(self, exc):
         self.caps["process_privilege"] = False
-        if self.engine == "mariadb":
-            self.note("Without the PROCESS privilege MariaDB hides information_schema.INNODB_TRX, "
+        if self.lock_tables:
+            self.note("Without the PROCESS privilege %s hides information_schema.INNODB_TRX, "
                       "INNODB_LOCKS and INNODB_LOCK_WAITS and SHOW ENGINE INNODB STATUS, so "
                       "transactions, row locks, row lock waits and the latest deadlock are missing. "
-                      "Grant it with: "
-                      "GRANT PROCESS ON *.* TO <user>;")
+                      "Grant it with: GRANT PROCESS ON *.* TO <user>;" % lock_product(self.engine, self.ver))
         else:
             self.note("Without the PROCESS privilege MySQL hides information_schema.INNODB_TRX and "
                       "SHOW ENGINE INNODB STATUS, so transaction ages, isolation levels and the "
@@ -567,7 +612,7 @@ def _read_transactions(conn, r):
 
 
 def _read_waits(conn, r):
-    if r.engine == "mysql":
+    if not r.lock_tables:
         if not r.ps_on:
             r.note("Performance Schema is off. MySQL lists row locks and lock waits only in "
                    "performance_schema.data_locks and data_lock_waits, and metadata locks in "
@@ -603,8 +648,8 @@ def _read_waits(conn, r):
                 "LEFT JOIN information_schema.INNODB_LOCKS r ON r.lock_id = w.requested_lock_id "
                 "LEFT JOIN information_schema.INNODB_LOCKS b ON b.lock_id = w.blocking_lock_id"
                 % (cols % {"a": "r", "n": LOCK_DATA_CAP + 1}, cols % {"a": "b", "n": LOCK_DATA_CAP + 1}))
-        # MariaDB has no lock status column: a blocking lock is waiting when it
-        # is some transaction's requested lock. Read those ids first and take
+        # MariaDB and MySQL 5.7 have no lock status column: a blocking lock is
+        # waiting when it is some transaction's requested lock. Read those ids first and take
         # the edges on granted locks in a first pass, the queue edges after.
         # (An unordered LIMIT turned 63 waiting sessions into "root blockers"
         # with 400 waiters on one row, live on 11.4.13; ORDER BY over the
@@ -647,7 +692,7 @@ def _read_waits(conn, r):
         rows = rows[:r.limit]
         r.truncated["waits"] = True
     for row in rows:
-        if r.engine == "mysql":
+        if not r.lock_tables:
             row = list(row) + [None] * (24 - len(row))
             req = _lock("mysql", row[2], row[0], row[6], row[7], row[8], row[9], row[10], row[11],
                         row[12] or "WAITING", row[13], row[14], _int(row[1]))
@@ -656,21 +701,21 @@ def _read_waits(conn, r):
         else:
             row = list(row) + [None] * (16 - len(row))
             schema, table, part = _split_table(row[4])
-            req = _lock("mariadb", row[1], row[0], schema, table, part, row[5], row[6], row[7],
+            req = _lock(r.lock_words, row[1], row[0], schema, table, part, row[5], row[6], row[7],
                         "WAITING", row[8], row[9])
             schema, table, part = _split_table(row[10])
-            # A blocking lock can itself be waiting (queued earlier); MariaDB has no status column.
-            blk = _lock("mariadb", row[3], row[2], schema, table, part, row[11], row[12], row[13],
+            # A blocking lock can itself be waiting (queued earlier); INNODB_LOCKS has no status column.
+            blk = _lock(r.lock_words, row[3], row[2], schema, table, part, row[11], row[12], row[13],
                         None, row[14], row[15])
         r.waits.append({"requesting": req, "blocking": blk})
-    if r.engine == "mariadb":
+    if r.lock_tables:
         waiting = set(waiting_ids) if waiting_ids is not None else {w["requesting"]["lock_id"] for w in r.waits}
         for w in r.waits:
             w["blocking"]["status"] = "WAITING" if w["blocking"]["lock_id"] in waiting else "GRANTED"
 
 
 def _read_locks(conn, r):
-    if r.engine == "mysql":
+    if not r.lock_tables:
         if not r.ps_on:
             return
         sql = ("SELECT ENGINE_LOCK_ID, ENGINE_TRANSACTION_ID, THREAD_ID, OBJECT_SCHEMA, OBJECT_NAME, "
@@ -693,13 +738,13 @@ def _read_locks(conn, r):
             r.note("This user cannot read the lock list: " + _reason(exc))
             return
         raise ValueError("Could not read the lock list: " + _reason(exc))
-    r.caps["row_locks"] = "all" if r.engine == "mysql" else "waits_only"
+    r.caps["row_locks"] = "waits_only" if r.lock_tables else "all"
     if len(rows) > r.limit:
         rows = rows[:r.limit]
         r.truncated["row_locks"] = True
     waiting = {w["requesting"]["lock_id"] for w in r.waits}
     for row in rows:
-        if r.engine == "mysql":
+        if not r.lock_tables:
             row = list(row) + [None] * (12 - len(row))
             r.locks.append(_lock("mysql", row[0], row[1], row[3], row[4], row[5], row[6], row[7],
                                  row[8], row[9], row[10], row[11], _int(row[2])))
@@ -707,7 +752,7 @@ def _read_locks(conn, r):
             row = list(row) + [None] * (9 - len(row))
             schema, table, part = _split_table(row[3])
             status = "WAITING" if row[0] in waiting else "GRANTED"
-            r.locks.append(_lock("mariadb", row[0], row[1], schema, table, part, row[4], row[5],
+            r.locks.append(_lock(r.lock_words, row[0], row[1], schema, table, part, row[4], row[5],
                                  row[6], status, row[7], row[8]))
 
 
@@ -715,6 +760,8 @@ def _read_mdl(conn, r, waits_only):
     if not r.ps_on:
         if r.engine == "mariadb":
             r.note(MARIADB_PS_OFF_MDL_NOTE)
+        elif r.lock_tables:
+            r.note(MYSQL57_PS_OFF_MDL_NOTE)
         return
     try:
         rows = _q(conn, "SELECT 'instrument', ENABLED FROM performance_schema.setup_instruments "
@@ -744,7 +791,8 @@ def _read_mdl(conn, r, waits_only):
                "performance_schema.setup_instruments SET ENABLED='YES', TIMED='YES' WHERE "
                "NAME='wait/lock/metadata/sql/mdl'; (locks taken before that stay invisible). "
                "myflames only reads, so it never changes this setting."
-               % (" (the MariaDB default)" if r.engine == "mariadb" else ""))
+               % (" (the MariaDB default)" if r.engine == "mariadb" else
+                  " (the MySQL 5.7 default)" if _mysql57(r) else ""))
         return
     cols = ("m.OBJECT_TYPE, m.OBJECT_SCHEMA, m.OBJECT_NAME, m.LOCK_TYPE, m.LOCK_DURATION, "
             "m.LOCK_STATUS, m.SOURCE, m.OWNER_THREAD_ID, t.PROCESSLIST_ID")
@@ -790,6 +838,11 @@ def _read_mdl(conn, r, waits_only):
         contested = {(w["waiting"]["object_type"], w["waiting"]["schema"], w["waiting"]["name"])
                      for w in r.mdl_waits}
         r.mdl_locks = [m for m in r.mdl_locks if (m["object_type"], m["schema"], m["name"]) in contested]
+
+
+def _mysql57(r):
+    """MySQL before 8.0 (5.7): metadata lock instrument off by default, SUPER for KILL."""
+    return r.engine == "mysql" and r.lock_tables
 
 
 def _lit(value):
@@ -1216,16 +1269,38 @@ def parse_kill_privilege(engine, ver, grants, user=None, account=None):
     from .dbops import MARIADB_SUPER_SPLIT_END, global_privileges
     privs = global_privileges(grants)
     every = bool(privs & {"ALL", "ALL PRIVILEGES"})
+    known = tuple(ver or ())[:3]
     if engine == "mariadb":
         order = ("CONNECTION ADMIN",) + (("SUPER",) if ver < MARIADB_SUPER_SPLIT_END else ())
         system_user = None
+    elif any(known) and known < (8, 0, 0):
+        # MySQL 5.7: SUPER only (sql_parse.cc kill_one_thread); no dynamic privileges.
+        order = ("SUPER",)
+        system_user = None
     else:
         order = ("CONNECTION_ADMIN", "SUPER")
-        system_user = True if "SYSTEM_USER" in privs else (None if every else False)
+        # SYSTEM_USER exists from MySQL 8.0.16.
+        system_user = (None if any(known) and known < (8, 0, 16) else
+                       True if "SYSTEM_USER" in privs else (None if every else False))
     via = next((p for p in order if p in privs), None) or ("ALL PRIVILEGES" if every else None)
     return {"checked": True, "user": user, "account": account, "can_kill_others": via is not None,
             "via": via, "system_user": system_user,
             "super_only": engine == "mariadb" and via is None and "SUPER" in privs}
+
+
+def _report_ver(report):
+    from .server_info import server_version_tuple
+    return server_version_tuple(report.get("server_version") or "")
+
+
+def kill_needs(engine, ver=None):
+    """The privilege that ends another user's session, in words."""
+    known = tuple(ver or ())[:3]
+    if engine == "mariadb":
+        return "CONNECTION ADMIN (SUPER also works before MariaDB 11.0)"
+    if any(known) and known < (8, 0, 0):
+        return "SUPER"
+    return "CONNECTION_ADMIN or SUPER"
 
 
 def read_kill_privilege(conn, engine, ver):
@@ -1253,7 +1328,7 @@ def kill_allowed(privilege, user):
     return False if user else None
 
 
-def _privilege_notes(engine, privilege):
+def _privilege_notes(engine, privilege, ver=None):
     p = privilege or {}
     notes = []
     if not p.get("checked"):
@@ -1267,8 +1342,7 @@ def _privilege_notes(engine, privilege):
                          "MySQL refuses to end a session of an account that has SYSTEM_USER (root has it)."
                          % p["via"])
         return notes
-    need = ("CONNECTION ADMIN (SUPER also works before MariaDB 11.0)" if engine == "mariadb"
-            else "CONNECTION_ADMIN or SUPER")
+    need = kill_needs(engine, ver)
     text = ("This account (%s) can end only sessions of its own user, %s. Ending another user's session "
             "needs %s. myflames read SHOW GRANTS, which includes the roles active at login."
             % (p.get("account") or "?", p.get("user") or "?", need))
@@ -1532,8 +1606,10 @@ def _ddl_likely_note(r):
                 "step. %s For exact blockers, %s, or install the METADATA_LOCK_INFO plugin (INSTALL SONAME "
                 "'metadata_lock_info'), which lists granted metadata locks. myflames changes neither."
                 % (NON_INNODB, how))
+    defaults = ("MySQL 5.7 disables the instrument by default" if _mysql57(r)
+                else "MySQL enables both by default")
     return ("Performance Schema is not recording metadata locks here (it is off, or the "
-            "wait/lock/metadata/sql/mdl instrument is disabled; MySQL enables both by default), so "
+            "wait/lock/metadata/sql/mdl instrument is disabled; " + defaults + "), so "
             "myflames cannot see exactly which session holds the table a DDL statement waits for. The "
             "likely blockers are open transactions, idle ones and ones that started before the DDL "
             "first: a transaction keeps the metadata locks of every table it used until it commits or "
@@ -2013,12 +2089,13 @@ def _assemble(r, deadlock, waits_only):
                         "9.1.0). Refresh by hand and avoid frequent automatic refresh; --waits-only "
                         "skips the full lock list, so it holds the latch for less time."
                      % r.version)
-    if r.engine == "mariadb" and r.caps["lock_waits"]:
-        notes.append("MariaDB lists only the row locks involved in a wait "
+    if r.lock_tables and r.caps["lock_waits"]:
+        product = lock_product(r.engine, r.ver)
+        notes.append("%s lists only the row locks involved in a wait "
                      "(information_schema.INNODB_LOCKS). Locks that block nobody are not visible "
                      "through SQL; rows locked and lock structs in the transactions table count them. "
-                     "MariaDB also shows record-only and next-key locks both as X, and gap and "
-                     "insert-intention locks both as X,GAP.")
+                     "%s also shows record-only and next-key locks both as X, and gap and "
+                     "insert-intention locks both as X,GAP." % (product, product))
     if r.caps["row_locks"] != "none" or r.caps["lock_waits"]:
         notes.append(IMPLICIT_NOTE)
     if r.mdl_waits:
@@ -2046,7 +2123,7 @@ def _assemble(r, deadlock, waits_only):
             b["xa_prepared"] or not b["connection_id"] for d in ddl_waits for b in d["blockers"])):
         notes.append(XA_NOTE)
     if roots or ddl_waits:
-        notes.extend(_privilege_notes(r.engine, r.kill_privilege))
+        notes.extend(_privilege_notes(r.engine, r.kill_privilege, r.ver))
     for section, name in (("transactions", "transactions"), ("row_locks", "row locks"),
                           ("waits", "lock waits"), ("metadata_locks", "metadata locks")):
         if r.truncated[section]:
@@ -2534,7 +2611,7 @@ def _kill_problem(target, own, cid, mode, expect):
     return None
 
 
-def _kill_error(engine, exc, cid):
+def _kill_error(engine, exc, cid, ver=None):
     """Map the server's KILL error to (status, message); unexpected errors raise."""
     text = str(exc)
     if "1094" in text or "Unknown thread id" in text:
@@ -2543,6 +2620,8 @@ def _kill_error(engine, exc, cid):
         if engine == "mariadb":
             need = ("CONNECTION ADMIN (or SUPER before MariaDB 11.0); on a Galera node, applier and "
                     "high-priority threads cannot be ended at all")
+        elif kill_needs(engine, ver) == "SUPER":
+            need = "SUPER"
         else:
             need = ("CONNECTION_ADMIN or SUPER, and ending a session of an account that has SYSTEM_USER "
                     "also needs SYSTEM_USER")
@@ -2744,7 +2823,7 @@ def kill_session(conn, connection_id, mode="connection", expect=None, settle_s=0
         raise
     except ConnectorError as exc:
         try:
-            result["status"], result["message"] = _kill_error(engine, exc, connection_id)
+            result["status"], result["message"] = _kill_error(engine, exc, connection_id, _ver)
         except ValueError as failure:
             unknown = may_have_run(exc)
             message = str(failure) + (". The KILL may have reached the server, so its outcome is unknown; check the "
@@ -2943,7 +3022,7 @@ def kill_cli(conn, connection_id, mode="connection", assume_yes=False, quiet=Fal
         result["status"], result["message"] = problem
         return unsent("refused", problem[0])
     if kill_allowed(report["kill_privilege"], target.get("user")) is False:
-        notes = _privilege_notes(engine, report["kill_privilege"])
+        notes = _privilege_notes(engine, report["kill_privilege"], _report_ver(report))
         result["status"] = "refused"
         result["message"] = ("Not sent: connection %d belongs to user %s. %s" % (
             connection_id, target.get("user"), notes[0] if notes else ""))

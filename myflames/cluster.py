@@ -159,6 +159,21 @@ test/fixtures/cluster):
   has lost its majority when members minus UNREACHABLE members are at most
   half of the members (member_info.cc:1450-1464). ``replication_group_member_stats``
   columns: M/storage/perfschema/table_replication_group_member_stats.cc:159-171.
+* MySQL 5.7 (Group Replication from 5.7.17, tags mysql-5.7.16 and 5.7.17):
+  replication_group_members has no MEMBER_ROLE or MEMBER_VERSION (5.7.44
+  storage/perfschema/table_replication_group_members.cc), and
+  replication_group_member_stats has this member's row only, without the
+  applier, remote-applied, local-proposed and local-rollback counts
+  (table_replication_group_member_stats.cc:240-246). The single primary is
+  the status variable ``group_replication_primary_member``, its UUID while
+  Group Replication runs in single-primary mode, else empty (5.7.44
+  rapid/plugin/group_replication/src/plugin.cc:2930-2955), or "UNDEFINED"
+  when no member is primary or this member is in ERROR (member_info.cc:
+  887-890), which names no member. Roles follow
+  8.0's rule from it: PRIMARY for that member, SECONDARY for the other
+  ONLINE, RECOVERING or UNREACHABLE members, PRIMARY for each of them in
+  multi-primary mode, none for OFFLINE and ERROR. Other members' versions
+  are unknown there.
 * Failures a group tolerates, over the current view by the same majority
   rule: (members - UNREACHABLE) - (members / 2 + 1), never below 0, and
   null without quorum. With no UNREACHABLE member it is MySQL Shell's
@@ -232,6 +247,14 @@ WSREP_MEMBERS_SQL = "SELECT node_uuid, node_name, node_incoming_address FROM mys
 PXC_VIEW_SQL = "SELECT HOST_NAME, UUID, STATUS, LOCAL_INDEX, SEGMENT FROM performance_schema.pxc_cluster_view"
 _GR_MEMBERS_COLUMNS = ("CHANNEL_NAME", "MEMBER_ID", "MEMBER_HOST", "MEMBER_PORT", "MEMBER_STATE", "MEMBER_ROLE",
                        "MEMBER_VERSION")
+#: MySQL 5.7: the same positions, with NULL where 5.7 has no column.
+_GR_STATS_SQL_57 = (
+    "SELECT MEMBER_ID, VIEW_ID, COUNT_TRANSACTIONS_IN_QUEUE, COUNT_TRANSACTIONS_CHECKED, "
+    "COUNT_CONFLICTS_DETECTED, COUNT_TRANSACTIONS_ROWS_VALIDATING, NULL, NULL, NULL, NULL "
+    "FROM performance_schema.replication_group_member_stats")
+_GR_PRIMARY_SQL = "SHOW GLOBAL STATUS WHERE Variable_name = 'group_replication_primary_member'"
+#: Group Replication shipped with MySQL 5.7.17.
+GR_MIN_VERSION = (5, 7, 17)
 _GR_STATS_SQL = (
     "SELECT MEMBER_ID, VIEW_ID, COUNT_TRANSACTIONS_IN_QUEUE, COUNT_TRANSACTIONS_CHECKED, "
     "COUNT_CONFLICTS_DETECTED, COUNT_TRANSACTIONS_ROWS_VALIDATING, COUNT_TRANSACTIONS_REMOTE_IN_APPLIER_QUEUE, "
@@ -1135,10 +1158,12 @@ def _read_group_replication(reader, server, report, wsrep_on=None):
     provider = (variables.get("wsrep_provider") or "").strip()
     no_galera = ("Galera is off (wsrep_on is OFF)" if wsrep_on is False else
                  "this server has no Galera provider" + (" (wsrep_provider is %s)" % provider if provider else ""))
-    if tuple(server.version_tuple) < (8, 0, 0):
-        report["message"] = ("Not part of a cluster: Group Replication status needs MySQL 8.0 or later, and %s."
+    if tuple(server.version_tuple) < GR_MIN_VERSION:
+        report["message"] = ("Not part of a cluster: Group Replication needs MySQL 5.7.17 or later, and %s."
                              % no_galera)
         return
+    # MySQL 5.7: no MEMBER_ROLE or MEMBER_VERSION (module docstring).
+    mysql57 = tuple(server.version_tuple) < (8, 0, 0)
     if not server.ps_on:
         if group_name:
             report["kind"] = "group_replication"
@@ -1153,8 +1178,9 @@ def _read_group_replication(reader, server, report, wsrep_on=None):
     columns = list(_GR_MEMBERS_COLUMNS)
     if tuple(server.version_tuple) >= (8, 0, 27):
         columns.append("MEMBER_COMMUNICATION_STACK")
+    selected = ["NULL" if mysql57 and c in ("MEMBER_ROLE", "MEMBER_VERSION") else c for c in columns]
     try:
-        rows = reader.rows("SELECT %s FROM performance_schema.replication_group_members" % ", ".join(columns))
+        rows = reader.rows("SELECT %s FROM performance_schema.replication_group_members" % ", ".join(selected))
     except ConnectorError as exc:
         if denied(exc):
             report["available"] = False
@@ -1179,6 +1205,8 @@ def _read_group_replication(reader, server, report, wsrep_on=None):
         if len(columns) > 7:
             member["communication_stack"] = _text(row[7])
         members.append(member)
+    if mysql57 and members:
+        _roles_57(reader, server, report, members)
     local = next((m for m in members if m["local"]), None)
     if not members or (len(members) == 1 and local is not None and local["state"] == "OFFLINE" and not group_name):
         if _read_read_replica(reader, report):
@@ -1198,7 +1226,8 @@ def _read_group_replication(reader, server, report, wsrep_on=None):
         "group_seeds": _text(variables.get("group_replication_group_seeds")),
         "view_id": None,
     }
-    stats = reader.optional(_GR_STATS_SQL, "performance_schema.replication_group_member_stats", report["notes"])
+    stats = reader.optional(_GR_STATS_SQL_57 if mysql57 else _GR_STATS_SQL,
+                            "performance_schema.replication_group_member_stats", report["notes"])
     if stats is not None:
         report["statements"].append("SELECT performance_schema.replication_group_member_stats")
         by_id = dict((m["uuid"], m) for m in members if m["uuid"])
@@ -1214,11 +1243,42 @@ def _read_group_replication(reader, server, report, wsrep_on=None):
                 "applier_queue": _number(row[6]), "remote_applied": _number(row[7]),
                 "local_proposed": _number(row[8]), "local_rollback": _number(row[9]),
             }
-        if stats:
+        if stats and mysql57:
+            report["notes"].append("Queue lengths and rows validating are current; the other counts are "
+                                   "cumulative. MySQL 5.7 reports them for this member only.")
+        elif stats:
             report["notes"].append("Queue lengths and rows validating are current; the other counts are "
                                    "cumulative. Another member's numbers are the ones it last sent to this member.")
     _read_metadata(reader, report, group_name, local)
     _judge_group(report, local)
+
+
+def _roles_57(reader, server, report, members):
+    """MySQL 5.7: each member's role from group_replication_primary_member
+    (module docstring), and the local member's version from @@version."""
+    single = _on(server.variables.get("group_replication_single_primary_mode"))
+    primary = None
+    try:
+        rows = reader.rows(_GR_PRIMARY_SQL)
+        report["statements"].append("SHOW GLOBAL STATUS group_replication_primary_member")
+        primary = _text(rows[0][1]) if rows and len(rows[0]) > 1 else None
+        if primary and not _UUID.match(primary):
+            primary = None  # "UNDEFINED": no member is primary, or this member is in ERROR
+    except ConnectorError as exc:
+        if not denied(exc):
+            raise
+    for member in members:
+        if member["local"]:
+            member["version"] = server.version.split("-")[0] or None
+        if member["state"] not in ("ONLINE", "RECOVERING", "UNREACHABLE"):
+            continue
+        if single is False:
+            member["role"] = "PRIMARY"
+        elif single and primary:
+            member["role"] = "PRIMARY" if member["uuid"] == primary else "SECONDARY"
+    report["notes"].append("MySQL 5.7 has no MEMBER_ROLE or MEMBER_VERSION: roles come from "
+                           "group_replication_primary_member (the primary's UUID in single-primary mode), and only "
+                           "this member's version is known.")
 
 
 def _version(text):

@@ -574,8 +574,8 @@ def _open_session(full, identity, safety, label, load_dir=None):
         # mysql-server client/mysql.cc) or a --load-data-local-dir folder; the
         # MariaDB client with --local-infile (its default comes from the build,
         # ENABLED_LOCAL_INFILE; libmariadb is not in the checkout to cite). The
-        # server refuses LOAD DATA LOCAL otherwise (MySQL 3948, MariaDB 4166,
-        # seen in the lab). Where the client can, only the private folder of
+        # server refuses LOAD DATA LOCAL otherwise (MySQL 3948, MySQL 5.7 1148,
+        # MariaDB 4166, seen in the lab). Where the client can, only the private folder of
         # checked copies may be sent. This session runs only the reviewed import.
         session.client_flags = load_flags(full, load_dir)[0]
     session.start(full)
@@ -863,6 +863,12 @@ def _exact_names(variables):
     return str(variables.get("lower_case_table_names", "0")).strip() in ("0", "")
 
 
+def _mysql_before_80(version):
+    """A known MySQL version before 8.0 (5.7)."""
+    match = re.match(r"^(\d+)\.(\d+)", version or "")
+    return bool(match) and (5, 0) <= (int(match.group(1)), int(match.group(2))) < (8, 0)
+
+
 def timestamp_max_year(engine, version):
     """2106 on MariaDB 11.5 and later (64-bit builds; the server has the last
     word), else 2038 (mariadb-server include/my_time.h TIMESTAMP_MAX_YEAR;
@@ -1029,6 +1035,13 @@ def _plan(payload, workspace, fill_password, imports, options, identity, safety,
                "DATA LOCAL. myflames never changes it. A DBA can run SET GLOBAL local_infile = ON (it takes effect at "
                "once) and add local_infile = ON under [mysqld] in the option file so it stays after a restart "
                "(MariaDB has no SET PERSIST). INSERT batches work either way.")
+    elif _mysql_before_80(version):
+        # MySQL 5.7 defaults local_infile to ON (mysql-5.7.44 sql/sys_vars.cc
+        # Sys_local_infile DEFAULT(TRUE); 8.0 changed it to OFF) and has no SET PERSIST.
+        why = ("The server has local_infile OFF, so it refuses LOAD DATA LOCAL. myflames never changes it. A DBA can "
+               "run SET GLOBAL local_infile = ON (it takes effect at once) and add local_infile = ON under [mysqld] "
+               "in the option file so it stays after a restart (MySQL 5.7 has no SET PERSIST). INSERT batches work "
+               "either way.")
     else:
         why = ("The server has local_infile OFF (MySQL's default), so it refuses LOAD DATA LOCAL. myflames never "
                "changes it; a DBA can turn it on with SET PERSIST local_infile = ON. INSERT batches work either way.")
@@ -1058,7 +1071,9 @@ def _plan(payload, workspace, fill_password, imports, options, identity, safety,
     elif _on(read_only) or read_only == "NO_LOCK":
         warnings.append("The server has read_only %s, so it refuses the import unless this account has %s." % (
             "ON" if _on(read_only) else "= NO_LOCK",
-            "READ ONLY ADMIN (or SUPER before MariaDB 10.11)" if engine == "mariadb" else "CONNECTION_ADMIN or SUPER"))
+            "READ ONLY ADMIN (or SUPER before MariaDB 10.11)" if engine == "mariadb" else
+            # MySQL 5.7 has no CONNECTION_ADMIN (a dynamic privilege from 8.0).
+            "SUPER" if _mysql_before_80(version) else "CONNECTION_ADMIN or SUPER"))
     triggers = None
     if target["mode"] == "existing":
         model = actor.get("model", actor)
