@@ -422,6 +422,10 @@ const FILE_IDLE: FileRead = { loading: "", error: "", progress: null };
 
 export function QueryDigestView({ connection, onOpenInEditor, onExplain, onOpenInstruments, onOpenIndexes }: QueryDigestProps) {
   const [source, setSource] = useState<DigestSource>("pfs");
+  // A reply that lands after the Source changed keeps its report but never
+  // touches the selection or filters of the Source on screen.
+  const sourceNow = useRef(source);
+  sourceNow.current = source;
   const [filter, setFilter] = useState<DigestFilterMode>("time");
   const [slowOrder, setSlowOrder] = useState<SlowLogOrder>("total");
   /** From and To in the report's own clock (Performance Schema: a filter on
@@ -526,8 +530,10 @@ export function QueryDigestView({ connection, onOpenInEditor, onExplain, onOpenI
         };
       }, (result) => {
         // Another connection's databases differ: its statements start with All schemas.
-        if (result.key !== boundKey.current) setSchemaFilter("");
-        setBound(result); setSelectedKey(""); setInspectorOpen(false);
+        const here = sourceNow.current === result.report.kind;
+        if (here && result.key !== boundKey.current) setSchemaFilter("");
+        setBound(result);
+        if (here) { setSelectedKey(""); setInspectorOpen(false); }
       });
   };
   const onScreen = useViewOnScreen();
@@ -561,7 +567,7 @@ export function QueryDigestView({ connection, onOpenInEditor, onExplain, onOpenI
       if (fileCtl.current?.id !== id) return;
       setFileReport(fromSlow(res, "file"));
       setFileRead({ loading: "", error: "", progress: null, doneAt: Date.now() });
-      setSelectedKey(""); setInspectorOpen(false);
+      if (sourceNow.current === "file") { setSelectedKey(""); setInspectorOpen(false); }
     } catch (e) {
       if (fileCtl.current?.id !== id || controller.signal.aborted) return;
       setFileRead({ loading: "", error: errorText(e), progress: null });

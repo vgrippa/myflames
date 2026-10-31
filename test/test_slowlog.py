@@ -575,6 +575,23 @@ class TestAggregation(unittest.TestCase):
         self.assertEqual(slowlog.bucket_of(10 ** 9), 449)
         self.assertIsNone(slowlog.bucket_high(449))
 
+    def test_a_counter_some_executions_lack_is_unknown(self):
+        # log_slow_extra was switched on while the log was written: the first
+        # call of each statement has no tmp table counters, so their sums are unknown.
+        def entry(second, extra, text):
+            return ('# Time: 2026-10-31T10:00:%02d.000000Z\n# User@Host: app[app] @ web [10.0.0.1]  Id:     7\n'
+                    '# Query_time: 0.100000  Lock_time: 0.000010 Rows_sent: 1  Rows_examined: 10%s\n'
+                    'SET timestamp=1793440800;\n%s;\n' % (second, extra, text))
+        extra = ' Created_tmp_disk_tables: 1 Created_tmp_tables: 2 Sort_merge_passes: 0'
+        text = (entry(1, '', 'SELECT * FROM a WHERE id = 1') + entry(2, extra, 'SELECT * FROM a WHERE id = 2')
+                + entry(3, '', 'SELECT * FROM b WHERE id = 1') + entry(4, extra, 'SELECT * FROM c WHERE id = 1'))
+        groups = {s['digest_text']: s for s in parse(text)['statements']}
+        mixed, absent, full = (groups['SELECT * FROM %s WHERE id = ?' % t] for t in 'abc')
+        self.assertEqual((mixed['tmp_tables'], mixed['tmp_disk_tables'], mixed['sort_merge_passes']), (None, None, None))
+        self.assertEqual((absent['tmp_tables'], absent['tmp_disk_tables']), (None, None))
+        self.assertEqual((full['tmp_tables'], full['tmp_disk_tables'], full['sort_merge_passes']), (2, 1, 0))
+        self.assertEqual((mixed['rows_sent'], mixed['rows_examined']), (2, 20))
+
     def test_own_statements_are_left_out_and_counted(self):
         text = self.log([('a', 's', '0.1', 'SELECT 1'), ('a', 's', '0.1', '/*myflames:discover*/ SELECT 2')])
         report = parse(text)

@@ -986,7 +986,7 @@ class Parser(object):
 
 class _Group(object):
     __slots__ = ("db", "text", "count", "total", "lock", "lock_count", "low", "high", "values", "flags", "errors",
-                 "killed", "first", "last", "hist", "sample", "sample_us", "users", "hosts", "admin")
+                 "killed", "first", "last", "hist", "sample", "sample_us", "users", "hosts", "admin", "measured")
 
     def __init__(self, db, text, admin):
         self.db = db
@@ -1009,6 +1009,8 @@ class _Group(object):
         self.users = collections.Counter()
         self.hosts = collections.Counter()
         self.admin = admin
+        #: Executions that recorded each counter: a sum is known only when all did.
+        self.measured = collections.Counter()
 
 
 class Aggregator(object):
@@ -1088,6 +1090,7 @@ class Aggregator(object):
         if entry.query_us > group.high:
             group.high = entry.query_us
         for name, value in entry.values.items():
+            group.measured[name] += 1
             if name == "errno":
                 if value:
                     group.errors += 1
@@ -1118,9 +1121,9 @@ class Aggregator(object):
         if entry.host is not None:
             group.hosts[entry.host] += 1
 
-    def statements(self, present):
+    def statements(self, present, zero_when_absent=frozenset()):
         """Every group as a report statement (unsorted, without analysis fields)."""
-        return [_statement(group, present) for group in self.groups.values()]
+        return [_statement(group, present, zero_when_absent) for group in self.groups.values()]
 
 
 def _ms(us):
@@ -1131,7 +1134,11 @@ def _names(counter, limit):
     return [{"name": name, "count": n} for name, n in sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))[:limit]]
 
 
-def _statement(group, present):
+#: MariaDB counters whose line is written only when nonzero (query_plan verbosity).
+_MARIADB_PLAN_VALUES = frozenset(("tmp_tables", "tmp_disk_tables", "merge_passes"))
+
+
+def _statement(group, present, zero_when_absent=frozenset()):
     count = group.count
     values = group.values
     hist = group.hist
@@ -1142,8 +1149,13 @@ def _statement(group, present):
             return max_ms
         return min(value, max_ms) if max_ms is not None else value
 
+    def covered(name):
+        # Every execution of this statement recorded it (log_slow_extra or
+        # the verbosity can change while a log is written).
+        return name in present and (name in zero_when_absent or group.measured.get(name, 0) == count)
+
     def summed(name):
-        return values.get(name, 0) if name in present else None
+        return values.get(name, 0) if covered(name) else None
 
     def flagged(name):
         return group.flags.get(name, 0) if name in present else None
@@ -1163,9 +1175,10 @@ def _statement(group, present):
         "p99_ms": capped(quantile(hist, count, 99, 100)),
         "p999_ms": capped(quantile(hist, count, 999, 1000)),
         "lock_time_ms": _ms(group.lock) if group.lock_count else None,
-        "rows_sent": rows_sent if "rows_sent" in present else None,
-        "rows_examined": rows_examined if "rows_examined" in present else None,
-        "examined_per_sent": round(rows_examined / float(rows_sent), 2) if rows_sent else None,
+        "rows_sent": rows_sent if covered("rows_sent") else None,
+        "rows_examined": rows_examined if covered("rows_examined") else None,
+        "examined_per_sent": round(rows_examined / float(rows_sent), 2)
+        if rows_sent and covered("rows_sent") and covered("rows_examined") else None,
         "rows_affected": summed("rows_affected"),
         "bytes_sent": summed("bytes_sent"),
         "no_index_used": None,
@@ -1178,8 +1191,8 @@ def _statement(group, present):
         "select_range_check": None,
         "filesort": flagged("filesort"),
         "filesort_on_disk": flagged("filesort_on_disk"),
-        "errors": group.errors if "errno" in present else None,
-        "killed": group.killed if "killed" in present else None,
+        "errors": group.errors if covered("errno") else None,
+        "killed": group.killed if covered("killed") else None,
         "sample_text": group.sample["text"] if group.sample else None,
         "sample_truncated": bool(group.sample and group.sample["truncated"]),
         "sample": dict(group.sample) if group.sample else None,
@@ -1218,7 +1231,11 @@ def build_report(aggregator, stats, source, order="total", limit=DEFAULT_LIMIT, 
     :class:`ParseStats`."""
     from .analysis_query import prepare
     present = stats.present | {"rows_sent", "rows_examined"} if stats.entries else stats.present
-    items = aggregator.statements(present)
+    # MariaDB writes its Tmp_tables and Merge_passes lines only for a statement
+    # that used them (log_slow_verbosity=query_plan, sql/log.cc): once a log
+    # has them, a statement without them counted zero.
+    zero_when_absent = _MARIADB_PLAN_VALUES if engine == "mariadb" or "mariadb" in stats.hints else frozenset()
+    items = aggregator.statements(present, zero_when_absent)
     key = ORDERS[order]
     items.sort(key=lambda s: (-_sort_value(s, key), -s["total_ms"], s["digest_text"]))
     shown = items[:limit]

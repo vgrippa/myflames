@@ -451,6 +451,12 @@ class TestDatabaseAndScript(unittest.TestCase):
         script = build(s)['script']
         self.assertLess(script.index('VIEW `shop`.`V_Zone`'), script.index('VIEW `shop`.`A_audit`'))
 
+    def test_an_alias_named_like_the_database_keeps_its_column_references(self):
+        s = snap([table('orders', ['`id` int NOT NULL']),
+                  view('v', 'select `shop`.`id` AS `id` from `shop`.`orders` `shop`')])
+        out = build(s, database='copy')
+        self.assertIn('VIEW `copy`.`v` AS select `shop`.`id` AS `id` from `copy`.`orders` `shop`', out['script'])
+
     def test_a_table_named_like_the_database_keeps_its_column_references(self):
         s = snap([table('orders', ['`id` int NOT NULL']),
                   view('v_orders', 'select `orders`.`id` AS `id` from `orders`.`orders`', database='orders')],

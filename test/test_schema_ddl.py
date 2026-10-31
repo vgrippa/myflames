@@ -206,6 +206,21 @@ class TestRequalify(unittest.TestCase):
         text = 'select `x`.`db`.`id` from `x`.`db`'
         self.assertEqual(schema_ddl.requalify(text, 'db', 'new'), text)
 
+    def test_an_alias_named_like_the_database_keeps_its_columns(self):
+        text = 'select `shop`.`id` AS `id` from `shop`.`orders` `shop`'
+        self.assertEqual(schema_ddl.requalify(text, 'shop', 'copy', {'orders'}),
+                         'select `shop`.`id` AS `id` from `copy`.`orders` `shop`')
+        # A derived table's alias counts too; a variable of that name does not.
+        self.assertEqual(schema_ddl.requalify('select `shop`.`id` from (select 1 AS `id`) `shop` join `shop`.`t` `o`',
+                                              'shop', 'copy', {'t'}),
+                         'select `shop`.`id` from (select 1 AS `id`) `shop` join `copy`.`t` `o`')
+        body = 'BEGIN DECLARE `shop` INT; INSERT INTO `shop`.`scratch` VALUES (`shop`); END'
+        self.assertEqual(schema_ddl.requalify(body, 'shop', 'copy', {'t'}),
+                         'BEGIN DECLARE `shop` INT; INSERT INTO `copy`.`scratch` VALUES (`shop`); END')
+        # A literal or a comment naming it is not an alias.
+        self.assertEqual(schema_ddl.requalify("select 'shop', `t`.`x` /* shop */ from `shop`.`t` `t`", 'shop', 'copy', {'t'}),
+                         "select 'shop', `t`.`x` /* shop */ from `copy`.`t` `t`")
+
     def test_a_table_named_like_its_database_keeps_its_columns(self):
         # `orders`.`id` is the column id of the table orders, not the database.
         text = 'select `orders`.`id` AS `id`, `orders`.`f`(1) from `orders`.`orders` where `orders`.`orders`.`id` > 0'

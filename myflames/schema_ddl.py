@@ -159,13 +159,14 @@ def requalify(text, old, new, names=None):
     """*text* with every backquoted `old`. qualifier replaced by `new`. (the
     form the server writes view and table references in). String literals
     and comments are kept as they are: a quoted '`old`.' is data. A name
-    after a dot is never a database (`db`.`old`.`column`). When *names* (the
-    database's object names, lowercased) holds `old` itself, `old`.`x` can
-    also be a column of the table `old`, so it is replaced only when `x` is
-    one of *names* or a third part follows."""
+    after a dot is never a database (`db`.`old`.`column`). When `old` is also
+    a table or alias here (one of *names*, the database's object names
+    lowercased, or written on its own, as in `db`.`t` `old`), `old`.`x` can be
+    a column of it, so it is replaced only when `x` is one of *names* or a
+    third part follows."""
     if not text or old == new or quote(old) + '.' not in text:
         return text
-    ambiguous = names is not None and old.lower() in names
+    ambiguous = (names is not None and old.lower() in names) or _used_apart(text, old)
     out, i, n = [], 0, len(text)
     while i < n:
         c = text[i]
@@ -189,7 +190,7 @@ def requalify(text, old, new, names=None):
                 out.append(text[i:])
                 break
             if (ident[0] == old and text.startswith('.', ident[1]) and not (i and text[i - 1] == '.')
-                    and (not ambiguous or _names_object(text, ident[1] + 1, names))):
+                    and (not ambiguous or _names_object(text, ident[1] + 1, names or ()))):
                 out.append(quote(new))
             else:
                 out.append(text[i:ident[1]])
@@ -198,6 +199,43 @@ def requalify(text, old, new, names=None):
             out.append(c)
             i += 1
     return ''.join(out)
+
+
+def _used_apart(text, old):
+    """Whether *old* is an alias here: written on its own (not `old`.x and
+    not x.`old`), outside literals and comments, right after a backquoted
+    table reference, a derived table's ")" or AS (`db`.`t` `old`, (...) `old`,
+    `t` AS `old`). A variable or
+    a column of that name elsewhere (DECLARE `old` INT) is not one."""
+    n, i = len(text), 0
+    previous = None  # the last token: ('ident', name) for a backquoted name, ('word', WORD) or ('other', '')
+    while i < n:
+        c = text[i]
+        if c in '\'"':
+            i = _literal_end(text, i)
+            previous = ('other', '')
+        elif text.startswith('/*', i):
+            end = text.find('*/', i + 2)
+            i = n if end < 0 else end + 2
+        elif text.startswith('--', i) and (i + 2 >= n or text[i + 2] in ' \t\r\n') or c == '#':
+            end = text.find('\n', i)
+            i = n if end < 0 else end
+        elif c == '`' or c.isalnum() or c in '_$':
+            ident = read_identifier(text, i)
+            if ident is None:
+                return False
+            alone = not (i and text[i - 1] == '.') and not text.startswith('.', ident[1])
+            if ident[0] == old and alone and previous is not None and (
+                    previous[0] == 'ident' or previous in (('word', 'AS'), ('other', ')'))):
+                return True
+            previous = ('ident', ident[0]) if c == '`' else ('word', ident[0].upper())
+            i = ident[1]
+        elif c.isspace():
+            i += 1
+        else:
+            previous = ('other', c) if c != '.' else previous
+            i += 1
+    return False
 
 
 def _names_object(text, pos, names):

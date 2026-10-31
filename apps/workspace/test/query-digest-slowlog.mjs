@@ -282,6 +282,22 @@ try {
   assert.equal(await rowCount(), fileReport.statements.length, "the view keeps what it showed before");
   holdRead = false;
   heldReads.splice(0).forEach((r) => json(r, fileReport));
+  await page.waitForFunction((q) => !document.querySelector(`${q} .spinner`), {}, qd);
+  // A Statement digests read that lands after the user went back to the file
+  // never clears the file's selection or its inspector.
+  const seenBefore = state.seen.length;
+  state.delay = 2500;
+  await page.select(`${qd} select[aria-label="Source"]`, "pfs");
+  for (let i = 0; i < 60 && state.seen.length === seenBefore; i++) await pause(50);
+  assert.equal(state.seen.length, seenBefore + 1, "Statement digests were read again");
+  state.delay = 0;
+  await page.select(`${qd} select[aria-label="Source"]`, "file");
+  await page.waitForFunction((q) => /^Slow log file: /.test(document.querySelector(`${q} .summary-line .summary-text`)?.textContent || ""), {}, qd);
+  await h.select(`${qd} tbody tr[data-row-key]:first-child`);
+  await h.inspector();
+  await pause(3000);
+  assert.ok(await page.$(".view-inspector"), "the late reply left the file's inspector open");
+  assert.ok(await page.$(`${qd} tbody tr[data-row-key][aria-current="true"]`), "and its row selected");
   assert.deepEqual(errors, []);
   console.log("query-digest-slowlog: ok");
 } finally {
