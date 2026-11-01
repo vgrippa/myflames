@@ -75,7 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Learn: the Nested loop join lesson's running total of matches now counts the orders found so far instead of always showing the final total.
 - The Tables view's **Add column…** and **Remove column…** could never run: they sent `SET SESSION lock_wait_timeout` before the ALTER, which the Query editor refuses ("Review ALTER separately"). They now send the ALTER alone, and the editor adds its own lock wait guard as for any ALTER.
 - `myflames config snapshot --help` and `myflames accounts export --help` no longer mention a `--fail-on` those commands do not have.
-- On Linux, a process group that holds only exited (zombie) processes now counts as stopped, so dump, restore, clone and SSH tunnel cleanup no longer waits on it.
+- On Linux, a process group that holds only exited (zombie) processes now counts as stopped, so dump, restore, clone and SSH tunnel cleanup no longer waits on it. A process whose main thread ended while its other threads still run is not counted as stopped: Linux already shows it as a zombie, so its thread count in `/proc/PID/stat` decides.
 - Plans' Export menu is the shared Export menu again, with **Hide literal values** as its option.
 - DDL progress says "The server has no estimate yet" while the server's estimate only follows the work done, and shows no time left before one second has passed.
 - The schema Checks' reserved-word check needs MySQL 8.0.11 or later (it asked for 8.0.13), where `information_schema.KEYWORDS` first appears. `QUALIFY` counts as reserved from MySQL 8.3.0 (it was listed from 8.4.0) in both the Checks and the upgrade check.

@@ -97,7 +97,9 @@ the same number as `lifecycle.ToolGroups.MAX_GROUPS`, which refuses a 17th tool
 or tunnel before spawning it; tunnels alone are capped at 8). A group that
 holds only zombies counts as gone (`lifecycle._group_alive`: macOS answers
 EPERM for it, and on Linux the group runs only while `/proc/PID/stat` shows a
-member in a state other than Z or X), so dump, restore, clone and tunnel
+member in a state other than Z or X, or a Z member whose num_threads is above
+1: the state is the main thread's, which shows Z while other threads still
+run and the process cannot be reaped), so dump, restore, clone and tunnel
 cleanup never waits on one. When the desktop dies and the backend's own
 shutdown hangs for 5 s, `backend-entry.py` SIGKILLs the groups the backend
 owns before its own group (see [SSH tunnels](#ssh-tunnels)).

@@ -11,11 +11,14 @@ import json
 import os
 import re
 from pathlib import Path
+import signal
 import socket
 import stat
+import subprocess
 import sys
 import tempfile
 import threading
+import time
 import types
 import unittest
 from unittest import mock
@@ -2121,6 +2124,56 @@ class LifecycleTests(unittest.TestCase):
             job._signal(15)
         with mock.patch.object(lc.os, 'killpg', side_effect=ProcessLookupError()):
             job._signal(15)
+
+    def test_linux_group_runs_counts_a_zombie_with_live_threads(self):
+        """/proc/PID/stat shows the main thread's state: Z once it ended while other threads still run, and
+        the process cannot be reaped yet. The group counted as stopped then (an SSH tunnel test failed under
+        CI load); num_threads, 17 fields after the state, keeps it running."""
+        proc = self.root / 'proc'
+
+        def process(pid, state, pgrp, threads, comm='python3 (x) Z 1'):
+            fields = [state, '1', str(pgrp), '100', '0', '-1'] + ['0'] * 9 + ['20', '0', str(threads), '0', '12345']
+            (proc / str(pid)).mkdir(parents=True)
+            (proc / str(pid) / 'stat').write_text('%d (%s) %s' % (pid, comm, ' '.join(fields)))
+
+        process(100, 'Z', 100, 3)
+        process(300, 'R', 200, 1)
+        (proc / 'self').mkdir()
+        self.assertTrue(lc._linux_group_runs(100, proc=str(proc)))
+        (proc / '100' / 'stat').unlink()
+        (proc / '100').rmdir()
+        process(100, 'Z', 100, 1)
+        self.assertFalse(lc._linux_group_runs(100, proc=str(proc)))
+        process(101, 'S', 100, 1)
+        self.assertTrue(lc._linux_group_runs(100, proc=str(proc)))
+        self.assertFalse(lc._linux_group_runs(400, proc=str(proc)))
+        # An unreadable /proc is never taken for a stopped group.
+        self.assertTrue(lc._linux_group_runs(100, proc=str(self.root / 'missing')))
+
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'reads /proc')
+    def test_group_alive_until_its_leader_can_be_reaped(self):
+        child = ('import threading, time\n'
+                 'def spin():\n'
+                 '    while True:\n'
+                 '        pass\n'
+                 'for _ in range(4):\n'
+                 '    threading.Thread(target=spin, daemon=True).start()\n'
+                 'print("up", flush=True)\n'
+                 'time.sleep(60)\n')
+        for _ in range(20):
+            proc = subprocess.Popen([sys.executable, '-c', child], stdout=subprocess.PIPE, start_new_session=True)
+            try:
+                proc.stdout.readline()
+                os.killpg(proc.pid, signal.SIGTERM)
+                deadline = time.monotonic() + 10
+                while lc._group_alive(proc.pid) and time.monotonic() < deadline:
+                    pass
+                self.assertIsNotNone(proc.poll())
+            finally:
+                if proc.poll() is None:
+                    lc._signal_group(proc.pid, signal.SIGKILL)
+                proc.wait()
+                proc.stdout.close()
 
     def test_shell_marker_ends_its_line_and_colors_are_stripped(self):
         """mysqlsh print() adds no line break: the marker ran into the next output, the session id was never

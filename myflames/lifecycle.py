@@ -478,7 +478,8 @@ def _group_alive(pgid):
 
     macOS answers EPERM when the group holds only an unreaped zombie; that
     group runs nothing, and a group of another user is not ours to stop.
-    Linux answers success for a zombie, so there /proc decides.
+    Linux answers success for a zombie, so there /proc decides, threads
+    included.
     """
     try:
         os.killpg(pgid, 0)
@@ -489,20 +490,31 @@ def _group_alive(pgid):
     return True
 
 
-def _linux_group_runs(pgid):
-    """True when a process of group *pgid* is not a zombie (/proc/PID/stat:
-    the state and the process group follow the parenthesised command)."""
+def _linux_group_runs(pgid, proc='/proc'):
+    """True when a process of group *pgid* can still run (/proc/PID/stat: the
+    state, the process group and, 17 fields after the state, num_threads
+    follow the parenthesised command).
+
+    The state is the main thread's: it shows Z as soon as that thread ends,
+    while the process's other threads may still run and the process cannot
+    be reaped yet. num_threads counts every thread until it is released, so
+    a zombie with more than one is still running (listing /proc/PID/task
+    instead races with the exiting threads)."""
     try:
-        pids = [name for name in os.listdir('/proc') if name.isdigit()]
+        pids = [name for name in os.listdir(proc) if name.isdigit()]
     except OSError:
         return True
     for pid in pids:
         try:
-            with open('/proc/%s/stat' % pid) as handle:
+            with open(os.path.join(proc, pid, 'stat')) as handle:
                 fields = handle.read().rsplit(')', 1)[1].split()
         except (OSError, IndexError):
             continue
-        if len(fields) > 2 and fields[2] == str(pgid) and fields[0] not in ('Z', 'X'):
+        if len(fields) <= 2 or fields[2] != str(pgid):
+            continue
+        if fields[0] not in ('Z', 'X'):
+            return True
+        if len(fields) > 17 and fields[17].isdigit() and int(fields[17]) > 1:
             return True
     return False
 
