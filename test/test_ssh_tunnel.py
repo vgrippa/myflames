@@ -933,11 +933,12 @@ class TestOwnerExit(ManagerCase):
         self.addCleanup(lambda: _alive(start['pid']) and os.kill(start['pid'], 9))
         return owner, start, mark
 
-    def gone_within(self, pid, seconds):
+    def gone_within(self, pid, seconds, alive=None):
+        alive = alive or _alive
         deadline = time.monotonic() + seconds
-        while _alive(pid) and time.monotonic() < deadline:
+        while alive(pid) and time.monotonic() < deadline:
             time.sleep(0.05)
-        return not _alive(pid)
+        return not alive(pid)
 
     def test_ssh_stops_when_its_owner_is_killed(self):
         # SIGKILL: no atexit, no cleanup of its own. The watchdog that leads
@@ -947,7 +948,9 @@ class TestOwnerExit(ManagerCase):
         owner.kill()
         owner.wait(5)
         self.assertTrue(self.gone_within(start['pid'], 6), 'ssh outlived the process that opened the tunnel')
-        self.assertFalse(_group_alive(start['pgid']))
+        # The watchdog reaps ssh before it ends its own group, and init reaps
+        # the watchdog after that, so the group can outlive ssh briefly.
+        self.assertTrue(self.gone_within(start['pgid'], 3, _group_alive), 'the tunnel group outlived ssh')
 
     def test_cli_closes_its_tunnels_on_sigterm_and_sighup(self):
         for sig in (signal.SIGTERM, signal.SIGHUP):
