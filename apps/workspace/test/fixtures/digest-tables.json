@@ -1,0 +1,23 @@
+{
+  "schema_version": "digest-tables-1.0",
+  "method": "statement text",
+  "tables": [
+    {
+      "schema": "review", "name": "t_a1", "found": true, "type": "table", "engine": "InnoDB",
+      "rows_estimate": 2500000, "data_bytes": 1073741824, "index_bytes": 268435456,
+      "indexes": [
+        { "name": "PRIMARY", "unique": true, "columns": ["id"], "visible": true },
+        { "name": "idx_customer", "unique": false, "columns": ["customer_id", "created_at"], "visible": false }
+      ]
+    },
+    {
+      "schema": "review", "name": "order_view", "found": true, "type": "view", "engine": null,
+      "rows_estimate": null, "data_bytes": null, "index_bytes": null, "indexes": []
+    },
+    {
+      "schema": "archive", "name": "missing", "found": false, "type": null, "engine": null,
+      "rows_estimate": null, "data_bytes": null, "index_bytes": null, "indexes": []
+    }
+  ],
+  "notes": ["archive.missing was not found or is not visible to this account."]
+}

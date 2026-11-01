@@ -1,0 +1,515 @@
+/* Import CSV (ImportCsv.tsx): one wizard sheet in five steps, its tables
+   and the view's line for an import whose sheet was closed. Tokens only, so
+   light and dark both follow style.css. The sheet keeps one size from step
+   to step; its body scrolls and tables scroll inside their own frames. */
+.import-csv-sheet {
+  width: min(920px, calc(100vw - 32px));
+  height: min(760px, calc(100dvh - 32px));
+}
+.import-csv-sheet .sheet-body {
+  flex: 1 1 auto;
+}
+.import-csv-sheet .dialog-heading h2 {
+  overflow-wrap: anywhere;
+}
+
+/* The steps: a number in a circle and a name; the current step filled. */
+.import-csv-steps {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0 0 var(--space-3);
+  padding: 0 0 var(--space-3);
+  border-bottom: 1px solid var(--line);
+  list-style: none;
+  overflow: hidden;
+}
+.import-csv-steps li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  min-width: 0;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+.import-csv-steps li + li::before {
+  content: "";
+  flex: none;
+  width: var(--space-4);
+  height: 1px;
+  margin-inline-end: var(--space-1);
+  background: var(--line-strong);
+}
+.import-csv-steps li:focus {
+  outline: none;
+}
+.import-csv-steps li:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+.import-csv-step-number {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--control-line);
+  border-radius: 50%;
+  font-size: var(--text-xs);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.import-csv-steps li[aria-current="step"] {
+  color: var(--ink);
+  font-weight: 600;
+}
+.import-csv-steps li[aria-current="step"] .import-csv-step-number {
+  border-color: var(--accent-fill);
+  background: var(--accent-fill);
+  color: var(--accent-ink);
+}
+.import-csv-steps li.is-done .import-csv-step-number {
+  border-color: transparent;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+/* Narrow sheets name only the current step. */
+@media (max-width: 860px) {
+  .import-csv-steps li:not([aria-current]) .import-csv-step-label {
+    display: none;
+  }
+}
+
+.import-csv-banner {
+  flex: none;
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--warn-soft);
+  color: var(--ink);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+
+/* A step's content. */
+.import-csv-step {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.import-csv-step h3 {
+  margin: 0;
+  font-size: var(--text-md);
+  line-height: var(--leading-md);
+  font-weight: 600;
+}
+.import-csv-step > .action-status[data-phase="idle"] {
+  display: none;
+}
+.import-csv-intro {
+  margin: 0;
+}
+.import-csv-file {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  min-width: 0;
+}
+.import-csv-file-name {
+  display: inline-flex;
+  flex-direction: column;
+  flex: 1 1 200px;
+  min-width: 0;
+  max-width: 100%;
+}
+.import-csv-file-name strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.import-csv-file-name span {
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.import-csv-path {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.import-csv-path label {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+.import-csv-path-row {
+  display: flex;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.import-csv-path-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.import-csv-path p {
+  margin: 0;
+}
+
+/* Fields: label above the control, the detected value beside the label. */
+.import-csv-grid-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  align-items: start;
+  gap: var(--space-3) var(--space-4);
+  min-width: 0;
+}
+.import-csv-field {
+  display: grid;
+  align-content: start;
+  justify-items: start;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.import-csv-field > :is(input, .select) {
+  width: 100%;
+  max-width: 320px;
+}
+.import-csv-field > .number-field {
+  width: 140px;
+}
+.import-csv-field > .hint,
+.import-csv-field > .form-error {
+  margin: 0;
+}
+.import-csv-wide {
+  grid-column: 1 / -1;
+}
+.import-csv-label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  font-weight: 600;
+  color: var(--ink);
+}
+.import-csv-detected {
+  font-weight: 400;
+  color: var(--ink-muted);
+}
+.import-csv-inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  max-width: 100%;
+}
+.import-csv-inline .number-field {
+  width: 140px;
+}
+.import-csv-field .segmented {
+  max-width: 100%;
+}
+.import-csv-char {
+  width: 48px;
+  text-align: center;
+  font-family: var(--font-mono);
+}
+
+/* Preview, mapping, problems: one-line cells in a frame that scrolls. */
+.import-csv-preview-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  min-width: 0;
+}
+.import-csv-counts {
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+.import-csv-table {
+  max-width: 100%;
+  max-height: 280px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.import-csv-table:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.import-csv-table table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.import-csv-table :is(th, td) {
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: middle;
+}
+.import-csv-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface-pane);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.import-csv-table thead small {
+  display: block;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  font-weight: 400;
+}
+.import-csv-table tbody th {
+  font-weight: 400;
+}
+.import-csv-table tbody tr:last-child :is(th, td) {
+  border-bottom: 0;
+}
+.import-csv-table.is-stale table {
+  opacity: 0.55;
+}
+.import-csv-table input {
+  width: 180px;
+}
+.import-csv-table .select {
+  min-width: 150px;
+}
+.import-csv-type input {
+  display: block;
+  margin-top: var(--space-1);
+}
+.import-csv-table tr.is-off :is(td, th) {
+  color: var(--ink-faint);
+}
+.import-csv-table-note {
+  margin: 0;
+  padding: var(--space-1) var(--space-2);
+}
+.import-csv-cell {
+  display: block;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.import-csv-line-col {
+  width: 1%;
+  color: var(--ink-muted);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.import-csv-table thead .import-csv-line-col {
+  text-align: right;
+}
+.import-csv-wrap {
+  min-width: 220px;
+  max-width: 460px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.import-csv-null,
+.import-csv-muted {
+  color: var(--ink-muted);
+}
+.import-csv-null {
+  font-style: italic;
+}
+.import-csv-columns,
+.import-csv-problems {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.import-csv-columns > .hint {
+  margin: 0;
+}
+.import-csv-after-table {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-3);
+  min-width: 0;
+}
+
+/* What blocks the import, what to read first, and a clean check. */
+.import-csv-warnings,
+.import-csv-blockers {
+  margin: 0;
+  padding: var(--space-2) var(--space-3) var(--space-2) var(--space-5);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+p.import-csv-blockers {
+  padding-left: var(--space-3);
+}
+.import-csv-warnings {
+  background: var(--warn-soft);
+}
+.import-csv-blockers {
+  background: var(--danger-soft);
+}
+.import-csv-watch,
+.import-csv-ok {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.import-csv-summary {
+  margin: 0;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Review: statements as they will be sent. */
+.import-csv-sql {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.import-csv-sql > p {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  overflow-wrap: anywhere;
+}
+.import-csv-sql pre {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-muted);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.import-csv-sql pre:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.import-csv-privileges {
+  display: grid;
+  gap: 2px;
+}
+.import-csv-policy {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.import-csv-mapping {
+  margin: 0;
+  padding-left: var(--space-5);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  overflow-wrap: anywhere;
+}
+
+/* Import: the phase, the rows meter, then the outcome. */
+.import-csv-phase {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  font-weight: 600;
+}
+.import-csv-meter {
+  display: grid;
+  gap: var(--space-1);
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  font-variant-numeric: tabular-nums;
+}
+.import-csv-meter progress {
+  appearance: none;
+  width: 100%;
+  height: 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+  accent-color: var(--accent);
+}
+.import-csv-meter progress::-webkit-progress-bar {
+  background: var(--surface-muted);
+  border-radius: var(--radius-sm);
+}
+.import-csv-meter progress::-webkit-progress-value {
+  background: var(--accent);
+  border-radius: var(--radius-sm);
+}
+.import-csv-meter progress::-moz-progress-bar {
+  background: var(--accent);
+  border-radius: var(--radius-sm);
+}
+.import-csv-outcome {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.import-csv-outcome > .hint {
+  margin: 0;
+}
+.import-csv-outcome-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* The footer: why Next is off at the leading edge (one line), the buttons
+   together at the trailing edge. A step that cannot go on looks disabled
+   while its button stays focusable with the reason. */
+.import-csv-sheet .import-csv-actions {
+  justify-content: flex-end;
+}
+.import-csv-sheet .import-csv-reason {
+  margin-inline-end: auto;
+  text-overflow: ellipsis;
+}
+.import-csv-actions .button[aria-disabled="true"]:not(.is-pending),
+.import-csv-actions .button.primary[aria-disabled="true"]:not(.is-pending):hover {
+  color: var(--ink-faint);
+  background: var(--surface-pane);
+  border-color: var(--line);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+/* The view's line for an import whose sheet is closed. */
+.import-csv-status {
+  flex: none;
+  min-width: 0;
+  padding: var(--space-1) var(--space-3);
+}
+.import-csv-status .action-status {
+  flex-wrap: wrap;
+}

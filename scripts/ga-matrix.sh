@@ -19,9 +19,10 @@
 #   scripts/ga-matrix.sh profiles            create the saved connections in $MYFLAMES_HOME
 #   scripts/ga-matrix.sh env                 print the matrix as JSON
 #
-# Names: mysql-8.0 mysql-8.4 mysql-9.7 mysql-26.7 percona-8.0 percona-8.4
+# Names: mysql-5.7 mysql-8.0 mysql-8.4 mysql-9.7 mysql-26.7 percona-8.0 percona-8.4
 #        mariadb-10.6 mariadb-10.11 mariadb-11.4 mariadb-11.8 mariadb-12.3
 #        mariadb-13.0 mysql-9.7-replica percona-8.4-replica mariadb-11.8-replica
+#        mysql-5.7-replica
 #
 # Percona Server for MySQL is a MySQL flavor: it uses the mysql client and
 # MySQL rules, from the official percona/percona-server images (arm64 and
@@ -30,9 +31,16 @@
 # userstat=ON (INFORMATION_SCHEMA.INDEX_STATISTICS, TABLE_STATISTICS) and
 # GTIDs, replicated to percona-8.4-replica.
 #
+# mysql-5.7 (5.7.44, the last 5.7 release) has only linux/amd64 images, so it
+# runs under emulation on arm64 hosts. MySQL 5.7 has no WITH RECURSIVE, so its
+# seed draws row numbers from a temporary mf_seq table instead. Its replica,
+# mysql-5.7-replica, replicates by binary log file and position (no GTIDs)
+# with CHANGE MASTER TO and SHOW SLAVE STATUS.
+#
 # Settings (environment):
 #   MYFLAMES_HOME   isolated HOME for myflames profiles (default local/ga-matrix/home)
 #   CREDS_FILE      default local/ga-matrix/credentials.env (gitignored, chmod 600)
+#   GA_PREFIX       container and network name prefix (default myflames-ga)
 #
 # All ports are bound to 127.0.0.1. Requirements: Docker, openssl, python3.
 
@@ -44,8 +52,10 @@ CREDS_FILE="${CREDS_FILE:-$LAB/credentials.env}"
 MYFLAMES_HOME="${MYFLAMES_HOME:-$LAB/home}"
 STATE="$LAB/state"
 LOGS="$LAB/logs"
-NET="myflames-ga-net"
-ALL="mysql-8.0 mysql-8.4 mysql-9.7 mysql-26.7 percona-8.0 percona-8.4 mariadb-10.6 mariadb-10.11 mariadb-11.4 mariadb-11.8 mariadb-12.3 mariadb-13.0 mysql-9.7-replica percona-8.4-replica mariadb-11.8-replica"
+GA_PREFIX="${GA_PREFIX:-myflames-ga}"
+case "$GA_PREFIX" in ''|*[!a-z0-9-]*|-*) echo "[ga-matrix] ERROR: GA_PREFIX must be lowercase letters, digits and dashes" >&2; exit 1 ;; esac
+NET="$GA_PREFIX-net"
+ALL="mysql-5.7 mysql-5.7-replica mysql-8.0 mysql-8.4 mysql-9.7 mysql-26.7 percona-8.0 percona-8.4 mariadb-10.6 mariadb-10.11 mariadb-11.4 mariadb-11.8 mariadb-12.3 mariadb-13.0 mysql-9.7-replica percona-8.4-replica mariadb-11.8-replica"
 
 log() { echo "[ga-matrix] $*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
@@ -53,6 +63,8 @@ die() { log "ERROR: $*"; exit 1; }
 # name -> "image engine port role server-id slow-log source"
 spec() {
   case "$1" in
+    mysql-5.7)          echo "mysql:5.7.44 mysql 33057 primary 116 on -" ;;
+    mysql-5.7-replica)  echo "mysql:5.7.44 mysql 33058 replica 117 off mysql-5.7" ;;
     mysql-8.0)          echo "mysql:8.0.46 mysql 33080 primary 101 on -" ;;
     mysql-8.4)          echo "mysql:8.4.11 mysql 33084 primary 102 off -" ;;
     mysql-9.7)          echo "mysql:9.7.2 mysql 33097 primary 103 on -" ;;
@@ -72,7 +84,12 @@ spec() {
   esac
 }
 valid() { spec "$1" > /dev/null 2>&1 || die "unknown server '$1' (known: $ALL)"; }
-cname() { echo "myflames-ga-${1//./-}"; }
+cname() { echo "$GA_PREFIX-${1//./-}"; }
+# Images published for linux/amd64 only run under emulation on arm64 hosts.
+platform() { case "$(f "$1" 1)" in mysql:5.7.*) echo linux/amd64 ;; esac; }
+platform_args() { local p; p="$(platform "$1")"; [ -z "$p" ] || echo "--platform $p"; }
+# MySQL before 8.0 (no WITH RECURSIVE, no cte_max_recursion_depth).
+is_57() { case "$(f "$1" 1)" in mysql:5.7.*) return 0 ;; esac; return 1; }
 # f NAME index (1=image 2=engine 3=port 4=role 5=server-id 6=slow-log 7=source)
 f() { local n="$1" i="$2" s; s="$(spec "$n")"; set -- $s; eval "echo \${$i}"; }
 # The product family for reports: percona (a MySQL flavor), mysql or mariadb.
@@ -151,7 +168,8 @@ start_container() {
   docker network inspect "$NET" > /dev/null 2>&1 || docker network create "$NET" > /dev/null 2>&1 || true
   # -e NAME without a value copies it from this process: no password in ps.
   ( export "$envname=$ROOT_PASSWORD"
-    docker run -d --name "$cn" --network "$NET" -p "127.0.0.1:$port:3306" -e "$envname" \
+    # shellcheck disable=SC2046
+    docker run -d $(platform_args "$n") --name "$cn" --network "$NET" -p "127.0.0.1:$port:3306" -e "$envname" \
       ${extra_env[@]+"${extra_env[@]}"} --label myflames-ga=1 "$image" "${args[@]}" > /dev/null )
 }
 
@@ -244,6 +262,35 @@ CREATE TABLE repl_probe (id INT PRIMARY KEY, note VARCHAR(30)) ENGINE=InnoDB;
 SQL
 }
 
+# MySQL 5.7 has no WITH RECURSIVE: rewrite each counting CTE of the seed,
+# "WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM c WHERE n < N)
+# SELECT ... FROM c", into a SELECT over the rows 1..N of mf_seq.n, and drop
+# the recursion limit settings 5.7 does not have.
+no_cte() {
+  python3 -c '
+import re, sys
+sql = sys.stdin.read()
+cte = re.compile(r"WITH RECURSIVE (\w+)\(n\) AS \(\s*SELECT 1 UNION ALL SELECT n\+1 FROM \1 WHERE n < (\d+)\s*\)"
+                 r"\s*(SELECT .*?)\bFROM \1\b", re.S)
+sql = cte.sub(lambda m: "%sFROM (SELECT n FROM mf_seq.n WHERE n <= %s) %s" % (m.group(3), m.group(2), m.group(1)), sql)
+sql = re.sub(r"(?im)^SET (SESSION )?cte_max_recursion_depth *= *\d+;[ \t]*$", "", sql)
+if "WITH RECURSIVE" in sql:
+    sys.exit("ga-matrix: a WITH RECURSIVE the MySQL 5.7 rewrite does not know")
+sys.stdout.write(sql)'
+}
+
+seq_sql() {
+  cat <<'SQL'
+CREATE DATABASE IF NOT EXISTS mf_seq;
+DROP TABLE IF EXISTS mf_seq.d, mf_seq.n;
+CREATE TABLE mf_seq.d (d INT PRIMARY KEY) ENGINE=InnoDB;
+INSERT INTO mf_seq.d VALUES (0), (1), (2), (3), (4), (5), (6), (7), (8), (9);
+CREATE TABLE mf_seq.n (n INT PRIMARY KEY) ENGINE=InnoDB
+  SELECT a.d + 10 * b.d + 100 * c.d + 1000 * e.d + 10000 * g.d + 1 AS n
+  FROM mf_seq.d a, mf_seq.d b, mf_seq.d c, mf_seq.d e, mf_seq.d g;
+SQL
+}
+
 seed_one() {
   local n="$1"
   [ "$(f "$n" 4)" = primary ] || die "$n is a replica; it receives its data through replication"
@@ -254,8 +301,16 @@ seed_one() {
   sql="$(awk "/^mysql_exec << 'SQL'/{f=1;next} /^SQL\$/{f=0} f" "$REPO/scripts/generate-fixtures.sh")"
   # MariaDB names the recursion limit max_recursive_iterations (default 1000).
   [ "$(f "$n" 2)" = mariadb ] && sql="$(printf '%s\n' "$sql" | sed 's/cte_max_recursion_depth *=/max_recursive_iterations =/')"
-  printf '%s\n' "$sql" | rootsql "$n" > /dev/null || die "$n: testdb seed failed"
-  review_sql "$n" | rootsql "$n" > /dev/null || die "$n: review schema failed"
+  if is_57 "$n"; then
+    seq_sql | rootsql "$n" > /dev/null || die "$n: row number table failed"
+    sql="$(printf '%s\n' "$sql" | no_cte)" || die "$n: testdb seed rewrite failed"
+    printf '%s\n' "$sql" | rootsql "$n" > /dev/null || die "$n: testdb seed failed"
+    review_sql "$n" | no_cte | rootsql "$n" > /dev/null || die "$n: review schema failed"
+    rootsql "$n" -e "DROP DATABASE mf_seq" > /dev/null || die "$n: could not drop mf_seq"
+  else
+    printf '%s\n' "$sql" | rootsql "$n" > /dev/null || die "$n: testdb seed failed"
+    review_sql "$n" | rootsql "$n" > /dev/null || die "$n: review schema failed"
+  fi
   # Let purge finish so DATA_FREE reflects the DELETE.
   sleep 3
   rootsql "$n" -e "ANALYZE TABLE review.churn, review.no_pk_events, review.redundant_idx" > /dev/null 2>&1 || true
@@ -329,7 +384,8 @@ workload_one() {
 
 replica_status() {   # prints key: value lines
   local n="$1"
-  if [ "$(f "$n" 2)" = mysql ]; then rootsql "$n" -E -e "SHOW REPLICA STATUS" 2> /dev/null
+  if is_57 "$n"; then rootsql "$n" -E -e "SHOW SLAVE STATUS" 2> /dev/null
+  elif [ "$(f "$n" 2)" = mysql ]; then rootsql "$n" -E -e "SHOW REPLICA STATUS" 2> /dev/null
   else rootsql "$n" -E -e "SHOW ALL SLAVES STATUS" 2> /dev/null; fi
 }
 rs() { replica_status "$1" | awk -F': ' -v k="$2" '{gsub(/^ +/, "", $1)} $1==k {print $2; exit}'; }
@@ -342,7 +398,18 @@ setup_replication() {
     sleep 2
   done
   if [ -n "$(replica_status "$n")" ]; then log "$n replication already configured"; return 0; fi
-  if [ "$(f "$n" 2)" = mysql ]; then
+  if is_57 "$n"; then
+    # No GTIDs: start at the first binary log the primary still has (its
+    # docker setup ran with sql_log_bin=0, so that is the seed onwards).
+    local first
+    first="$(rq "$src" "SHOW BINARY LOGS" | awk 'NR==1 {print $1}')"
+    [ -n "$first" ] || die "$src has no binary log to replicate from"
+    rootsql "$n" > /dev/null <<SQL
+CHANGE MASTER TO MASTER_HOST='$cn_src', MASTER_PORT=3306, MASTER_USER='repl',
+  MASTER_PASSWORD='$REPL_PASSWORD', MASTER_LOG_FILE='$first', MASTER_LOG_POS=4;
+START SLAVE;
+SQL
+  elif [ "$(f "$n" 2)" = mysql ]; then
     rootsql "$n" > /dev/null <<SQL
 CHANGE REPLICATION SOURCE TO SOURCE_HOST='$cn_src', SOURCE_PORT=3306, SOURCE_USER='repl',
   SOURCE_PASSWORD='$REPL_PASSWORD', SOURCE_AUTO_POSITION=1, GET_SOURCE_PUBLIC_KEY=1;
@@ -384,7 +451,8 @@ up_one() {
   image="$(f "$n" 1)"; role="$(f "$n" 4)"
   rm -f "$STATE/$n.fail"
   if ! is_up "$n" && ! docker ps -a --format '{{.Names}}' | grep -Fxq "$(cname "$n")"; then
-    docker image inspect "$image" > /dev/null 2>&1 || docker pull -q "$image" > /dev/null || { echo "pull failed for $image" > "$STATE/$n.fail"; return 1; }
+    # shellcheck disable=SC2046
+    docker image inspect "$image" > /dev/null 2>&1 || docker pull -q $(platform_args "$n") "$image" > /dev/null || { echo "pull failed for $image" > "$STATE/$n.fail"; return 1; }
   fi
   start_container "$n" || { echo "docker run failed" > "$STATE/$n.fail"; return 1; }
   wait_ready "$n" || { echo "did not become ready (see logs/$n.log)" > "$STATE/$n.fail"; docker logs --tail 40 "$(cname "$n")" > "$LOGS/$n.docker.log" 2>&1 || true; return 1; }
@@ -409,8 +477,11 @@ cmd_up() {
   local n image
   # Pull every distinct image in parallel first.
   for n in $names; do rm -f "$STATE/$n.ready"; done
+  local first
   for image in $(for n in $names; do f "$n" 1; done | sort -u); do
-    ( docker image inspect "$image" > /dev/null 2>&1 || { log "pulling $image"; docker pull -q "$image" > /dev/null 2>"$LOGS/pull-${image//[:\/]/_}.log" || log "pull failed: $image"; } ) &
+    first="$(for n in $names; do [ "$(f "$n" 1)" = "$image" ] && { echo "$n"; break; }; done)"
+    # shellcheck disable=SC2046
+    ( docker image inspect "$image" > /dev/null 2>&1 || { log "pulling $image"; docker pull -q $(platform_args "$first") "$image" > /dev/null 2>"$LOGS/pull-${image//[:\/]/_}.log" || log "pull failed: $image"; } ) &
   done
   wait
   local pids=""
@@ -625,7 +696,7 @@ main() {
     mdl) [ "$#" -eq 2 ] || die "usage: mdl NAME SECONDS"; cmd_mdl "$@" ;;
     profiles) cmd_profiles ;;
     env) cmd_env ;;
-    *) sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'; [ -z "$cmd" ] || exit 2 ;;
+    *) sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'; [ -z "$cmd" ] || exit 2 ;;
   esac
 }
 main "$@"

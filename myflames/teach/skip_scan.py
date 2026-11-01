@@ -5,13 +5,91 @@ on A) normally cannot use the index. Skip Scan scans for each distinct value
 of A, then does a range scan on B within each A-group — converting one full
 table scan into N range scans (N = NDV of the leading column).
 
-Real query: ``SELECT * FROM employees WHERE age BETWEEN 25 AND 30`` with a
-composite index on ``(gender, age)`` and no equality predicate on ``gender``.
+Real query: ``SELECT id, gender, age FROM employees WHERE age BETWEEN 25 AND
+30`` with a composite index ``idx_gender_age (gender, age)`` and no condition
+on ``gender``. MySQL plans a skip scan only when the index covers the query
+(``sql/range_optimizer/index_skip_scan_plan.cc``), so the query reads only
+indexed columns (InnoDB keeps the primary key id in every secondary index).
 """
 from . import _html
 
 
 _LESSON_JS_TEMPLATE = _html.load_lesson_js(__file__)
+
+# Guided steps (see _html.normalize_guide). skip_scan.js marks finding each
+# gender value, the seek to age 25, the range read and the end with
+# tl.beat(kind). Function names are on _html.VERIFIED_SERVER_FUNCTIONS
+# (checked in mysql-server 8.4.9 and 9.7.0).
+GUIDE = {
+    "code": {
+        "title": "Skip scan (MySQL)",
+        "lines": [
+            ("first", 0, "entry = first entry of the index: g = its gender",
+             "IndexSkipScanIterator::Read"),
+            ("loop", 0, "while there is a gender value g:"),
+            ("seek", 1, "seek to the first entry with gender = g and age >= 25"),
+            ("range", 1, "read entries while age <= 30, sending each one",
+             "IndexSkipScanIterator::Read"),
+            ("past", 1, "the entry after age 30 ends this range"),
+            ("next", 1, "seek past every g entry: g = the next entry's gender",
+             "index_next_different"),
+            ("end", 0, "no entry left: the skip scan is done"),
+        ],
+    },
+    "beats": {
+        "first-prefix": ["first"],
+        "seek": ["loop", "seek"],
+        "range": ["range", "past"],
+        "next-prefix": ["next"],
+        "end": ["next", "end"],
+    },
+    "quiz": [
+        {
+            "question": ("Why can't a plain range scan of idx_gender_age (gender, age) serve "
+                         "WHERE age BETWEEN 25 AND 30?"),
+            "choices": [
+                ("Entries are sorted by gender first, so ages 25 to 30 sit in one stretch per "
+                 "gender", True,
+                 "A range scan reads one stretch of entries; here the matches are split into "
+                 "one stretch per gender, which the skip scan visits one by one."),
+                ("The index does not store age", False,
+                 "Every entry holds both gender and age; the problem is their order, not what "
+                 "is stored."),
+                ("BETWEEN can never use an index", False,
+                 "BETWEEN is a range condition and can use an index whose first column is age."),
+            ],
+        },
+        {
+            "question": ("The first column has 1,000 distinct values instead of 2. What happens "
+                         "to the skip scan's cost?"),
+            "choices": [
+                ("It grows: the scan makes 2 seeks for every distinct value", True,
+                 "MySQL's cost model counts two repositionings per group, so with many distinct "
+                 "values a full scan can be cheaper and the optimizer picks that instead."),
+                ("It stays the same, because only ages 25 to 30 are read", False,
+                 "The range is read once per distinct value, so each new value adds its own "
+                 "seeks and its own range."),
+                ("It drops, because each group is smaller", False,
+                 "Smaller groups hold fewer entries, but the 2 seeks per value add up to more "
+                 "work."),
+            ],
+        },
+        {
+            "question": ("Can MySQL use a skip scan for SELECT * FROM employees WHERE age "
+                         "BETWEEN 25 AND 30?"),
+            "choices": [
+                ("No: the index must hold every column the query reads", True,
+                 "MySQL only plans a skip scan on an index that covers the query, and SELECT * "
+                 "reads columns idx_gender_age does not hold."),
+                ("Yes: it reads the other columns from the clustered index", False,
+                 "A skip scan is planned only for a covering index, so SELECT * gets another "
+                 "plan."),
+                ("Only on MariaDB", False,
+                 "MariaDB has no skip scan access method; it is a MySQL feature."),
+            ],
+        },
+    ],
+}
 
 
 def render():
@@ -45,25 +123,28 @@ def render():
 
     query_card_html = _html.query_card(
         sql=(
-            "-- Index on (gender, age) but no equality on gender\n"
-            "SELECT * FROM employees\n"
+            "-- idx_gender_age (gender, age), no condition on gender\n"
+            "SELECT id, gender, age FROM employees\n"
             "WHERE  age BETWEEN 25 AND 30;"
         ),
         note=(
-            "Skip Scan iterates over each distinct gender value, "
-            "doing a range scan on age within each group \u2014 "
-            "avoids reading the whole table."
+            "Skip scan visits each distinct gender value and reads the "
+            "25 to 30 range of age inside it, instead of reading the "
+            "whole index. MySQL plans it only when the index holds every "
+            "column the query reads (InnoDB adds the primary key id to every "
+            "index), so SELECT * would not qualify. EXPLAIN's Extra column "
+            "shows Using index for skip scan."
         ),
     )
 
     explainer_html = _html.explainer(
         "What you'll see in the animation",
         [
-            "A composite index on (gender, age) is shown as colored groups.",
-            "The cursor pill jumps to the first distinct gender value.",
-            "Within each group, a range scan checks age BETWEEN 25 AND 30.",
-            "Matching rows are highlighted green; non-matching rows are greyed out.",
-            "The cursor hops to the next group and repeats until all groups are scanned.",
+            "Each box is the run of idx_gender_age entries for one gender, in index order: all F entries, then all M entries, each sorted by age.",
+            "The orange bar is the scan's position. It first reads one entry to learn the gender value (orange), then seeks straight to age 25 inside that gender.",
+            "Entries with ages 25 to 30 turn green and are sent. The first entry past 30 (blue) ends that gender's range.",
+            "Dashed grey entries are never read: the seeks jump over them. Then the scan seeks past the whole gender to the next one.",
+            "Next step shows one seek or one range at a time, and the simplified code beside the drawing highlights the lines each step runs.",
         ],
     )
 
@@ -81,7 +162,7 @@ def render():
     ) % {
         "query_card": query_card_html,
         "explainer": explainer_html,
-        "toolbar": _html.stage_toolbar("Ready \u2014 press Play"),
+        "toolbar": _html.stage_toolbar("Ready: press Next step, or Play to run it all"),
         "phase_nav": _html.phase_nav(),
     }
 
@@ -132,8 +213,12 @@ def render():
     (number of distinct values) &mdash; e.g. gender, status, boolean flags.</p>
     <p>2. The trailing column has a <strong>selective range condition</strong>
     (e.g. <code>age BETWEEN 25 AND 30</code>).</p>
-    <p>3. The optimizer estimates that doing N sub-range-scans (one per distinct
-    leading value) is cheaper than a full table scan or a full index scan.</p>
+    <p>3. The query reads only columns in the index (here <code>id</code>,
+    <code>gender</code> and <code>age</code>; InnoDB keeps the primary key in
+    every index). <code>SELECT *</code> cannot use a skip scan.</p>
+    <p>4. The optimizer estimates that doing N sub-range-scans (one per distinct
+    leading value, each starting with two seeks) is cheaper than a full table
+    scan or a full index scan.</p>
     <p><strong>When it does NOT help:</strong></p>
     <p>1. The leading column has <strong>high NDV</strong> (thousands of distinct
     values) &mdash; too many sub-scans make it slower than a full scan.</p>
@@ -141,7 +226,7 @@ def render():
     (most rows match) &mdash; you end up reading almost everything anyway.</p>
     <p>3. A better single-column index on the trailing column exists.</p>
     <p><strong>Note:</strong> Skip Scan is a <strong>MySQL-only</strong>
-    optimization. MariaDB does not implement it as of 11.x. In EXPLAIN output
+    optimization; MariaDB has no skip scan access method. In EXPLAIN output
     you will see <code>Using index for skip scan</code> in the Extra column.</p>
     <p>Source: MySQL 8.4 Reference Manual &sect;10.2.1.2
     &ldquo;Range Optimization &mdash; Skip Scan Range Access Method&rdquo;.</p>
@@ -164,4 +249,5 @@ def render():
         readout_html=readout_html,
         learn_more_html=learn_more_html,
         lesson_js=lesson_js,
+        guide=GUIDE,
     )

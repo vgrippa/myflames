@@ -33,7 +33,7 @@ import { PrivilegeGate, PrivilegeConfirmLabel, targetPrivilege, useLoginUser, us
 import { InstrumentsLink } from "./Instruments";
 import { PriorityTable, CompactNumber, Duration } from "./PerfShared";
 import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "./binding";
-import { useWritePolicy, type WritePolicy } from "./Connections";
+import { ConnectionTypeBand, useWritePolicy, type WritePolicy } from "./Connections";
 import {
   ActionStatus,
   AutoRefresh,
@@ -405,6 +405,7 @@ export function KillDialog({
   return (
     <ConfirmSheet
       className="kill-dialog"
+      band={<ConnectionTypeBand connection={target.via?.connection} label={target.via?.label} />}
       eyebrow="KILL"
       title={`End connection ${id}?`}
       description="Check that this is the session you mean. Before sending anything, myflames reads it again and stops if it has changed or ended."
@@ -1089,6 +1090,10 @@ export function LocksView({
     if (node) {
       const running = node.command !== "Sleep" && !!node.query;
       const who = [node.user && `${node.user}@${node.host || "?"}`, node.db].filter(Boolean).join(" · ");
+      // One age per inspector, from one read: the transaction's own (Open
+      // for, from INNODB_TRX) when known; the session's idle time (the
+      // process list, read a moment apart) only when it is not.
+      const openFor = node.trx_id && node.trx_age_s !== null && node.trx_age_s !== undefined;
       inspector = {
         key,
         title: node.connection_id ? `Connection ${node.connection_id}` : `Transaction ${node.trx_id} (no session)`,
@@ -1096,7 +1101,9 @@ export function LocksView({
           <>
             {node.root && <Pill tone="danger">Root blocker</Pill>}
             {node.cycle && <Pill tone="danger">Wait cycle</Pill>}
-            {node.idle_in_transaction && <Pill tone="warn">Idle in transaction {seconds(node.time_s)}</Pill>}
+            {node.idle_in_transaction && (
+              <Pill tone="warn">{openFor ? "Idle in transaction" : `Idle in transaction ${seconds(node.time_s)}`}</Pill>
+            )}
             {who && <span>{who}</span>}
           </>
         ),
@@ -1144,7 +1151,7 @@ export function LocksView({
               <InspectorSection title="Transaction">
                 <Fields
                   rows={[
-                    ["Transaction", node.trx_id],
+                    ["ID", node.trx_id],
                     node.trx_state && ["State", node.trx_state],
                     node.trx_age_s !== null && ["Open for", seconds(node.trx_age_s)],
                     node.rows_locked !== null && ["Rows locked", number(node.rows_locked)],

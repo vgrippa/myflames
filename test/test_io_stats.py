@@ -395,7 +395,9 @@ class TestCollectionLimits(unittest.TestCase):
         def timeout(sql, extra_flags=None, timeout=None):
             if 'SELECT FILE_NAME' in sql:
                 self.assertGreater(timeout, 0)
-                self.assertLessEqual(timeout, io_stats.COLLECTION_BUDGET_S + 2)
+                # The deadline is time.monotonic() + 32; when that clock has not
+                # moved (Windows), (t + 32) - t can round to 32.00000000000003.
+                self.assertLessEqual(timeout, io_stats.COLLECTION_BUDGET_S + 2 + 1e-6)
                 raise ConnectorError('mysql query timed out')
             return run(sql, extra_flags, timeout)
         conn.run = timeout

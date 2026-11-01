@@ -49,7 +49,7 @@ def _match_nodes(nodes_before, nodes_after):
             for item in match_plan_nodes(nodes_before, nodes_after)]
 
 
-def render_compare(json_before, json_after, title="Query Plan Comparison"):
+def render_compare(json_before, json_after, title="Query Plan Comparison", hide_literals=False):
     """Produce a self-contained HTML comparison report."""
     root_b = parse_explain(json_before)
     root_a = parse_explain(json_after)
@@ -67,6 +67,11 @@ def render_compare(json_before, json_after, title="Query Plan Comparison"):
 
     # Matched operator rows
     matched = match_plan_nodes(nodes_b, nodes_a)
+    labels = {}
+    if hide_literals:
+        from .plan_privacy import hide_literals as hide_sql_literals, hide_prose_literals, plan_literal_labels
+        title = hide_sql_literals(title)
+        labels = plan_literal_labels(root_b, root_a)
     rows_html = []
     for match in matched:
         label, nb, na = match["label"], match["before"], match["after"]
@@ -94,9 +99,10 @@ def render_compare(json_before, json_after, title="Query Plan Comparison"):
             status = '<span class="badge uncertain">UNCERTAIN MATCH</span>'
         elif metadata["status"] == "changed":
             status = '<span class="badge changed">CHANGED</span>'
-        display_label = xml_escape(label)
+        display_label = xml_escape(labels.get(label, label))
         if nb and na and nb.get("short_label") != na.get("short_label"):
-            display_label += " → " + xml_escape(na.get("short_label", ""))
+            after_label = na.get("short_label", "")
+            display_label += " → " + xml_escape(labels.get(after_label, after_label))
 
         rows_html.append(
             '<tr class="%s" data-before-node-id="%s" data-after-node-id="%s" data-match-method="%s" data-match-confidence="%s">'
@@ -156,10 +162,10 @@ def render_compare(json_before, json_after, title="Query Plan Comparison"):
             summary_items.append('<span class="worse">\u2717 New full scan: %s</span>' % xml_escape(t))
     if resolved_warns:
         for w in sorted(resolved_warns):
-            summary_items.append('<span class="better">\u2713 Resolved: %s</span>' % xml_escape(w))
+            summary_items.append('<span class="better">\u2713 Resolved: %s</span>' % xml_escape(hide_prose_literals(w) if hide_literals else w))
     if new_warns:
         for w in sorted(new_warns):
-            summary_items.append('<span class="worse">\u2717 New warning: %s</span>' % xml_escape(w))
+            summary_items.append('<span class="worse">\u2717 New warning: %s</span>' % xml_escape(hide_prose_literals(w) if hide_literals else w))
 
     summary_html = "\n".join('<li>%s</li>' % s for s in summary_items)
 
@@ -173,6 +179,8 @@ def render_compare(json_before, json_after, title="Query Plan Comparison"):
     html = html.replace("{{OPS_AFTER}}", str(len(nodes_a)))
     html = html.replace("{{ROWS_HTML}}", "\n".join(rows_html))
     html = html.replace("{{SUMMARY_HTML}}", summary_html)
+    if hide_literals:
+        html = html.replace('<p class="subtitle">', '<p>Literal values hidden</p><p class="subtitle">', 1)
     return html
 
 

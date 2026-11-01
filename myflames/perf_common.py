@@ -230,6 +230,27 @@ class Reader(object):
         and marks NULL with xsi:nil."""
         return named_rows(self.conn.run(self.tag + sql, extra_flags=["--comments", "--xml"]))
 
+    def rows_with_columns(self, build, optional, timeout=None):
+        """``(rows, columns)`` for the SQL *build(columns)* makes.
+
+        *columns* maps each name in *optional* to the expression the SELECT
+        uses for it: the column itself, or *optional*'s stand-in after the
+        server answered Unknown column for it (an older version, for example
+        MySQL 5.7's information_schema.STATISTICS without IS_VISIBLE and
+        EXPRESSION). Each column is dropped at most once; any other error
+        raises. The returned *columns* tell the caller which ones the server
+        had (``columns[name] == name``).
+        """
+        columns = dict((name, name) for name in optional)
+        while True:
+            try:
+                return self.rows(build(columns), timeout=timeout), columns
+            except ConnectorError as exc:
+                missing = unknown_column(exc)
+                if missing is None or columns.get(missing) != missing:
+                    raise
+                columns[missing] = optional[missing]
+
     def optional(self, sql, what, notes, timeout=None):
         """Rows, or None with a note when the server refuses (privileges, a
         missing table on this version). Connection failures still raise."""
@@ -241,6 +262,13 @@ class Reader(object):
                 raise
             notes.append("Could not read %s: %s" % (what, reason(exc)))
             return None
+
+
+def unknown_column(exc):
+    """The column name in an ``Unknown column 'x'`` error (ER_BAD_FIELD_ERROR,
+    1054), upper case and without a table qualifier, or None."""
+    match = re.search(r"Unknown column '([^']+)'", str(exc))
+    return match.group(1).rsplit(".", 1)[-1].upper() if match else None
 
 
 _XML_NIL = "{http://www.w3.org/2001/XMLSchema-instance}nil"

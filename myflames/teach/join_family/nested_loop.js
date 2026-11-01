@@ -252,6 +252,9 @@ function buildTimeline() {
       var c = row.data;
       var orderIds = ORDERS_BY_CUSTOMER[c.id] || [];
 
+      // Guided steps: reading the outer row, then its probe of orders.
+      // Kinds map to the simplified-code lines (GUIDE in nested_loop.py).
+      tl.beat("outer-row");
       // Release any previously-driving row first (skip on i=0).
       if (idx > 0) releaseRow(tl, stage.outerRows[idx - 1]);
 
@@ -261,12 +264,23 @@ function buildTimeline() {
           stage.probeLanding.removeChild(stage.probeLanding.firstChild);
         }
         stage.verdict.textContent = "";
+        stage.statusLbl.textContent =
+          "Driver " + (idx + 1) + "/" + stage.outerRows.length + ": " + c.name +
+          " (customer_id=" + c.id + ")";
         phase.textContent =
-          "Phase 2/2 — probing orders for " + c.name + " (id=" + c.id + ")";
+          "Outer row " + (idx + 1) + " of " + stage.outerRows.length + ": " + c.name +
+          " (customer_id=" + c.id + ") becomes the driving row";
       });
 
       // Tween this row to the driver state.
       driveRow(tl, row);
+      tl.delay(300);
+
+      tl.beat("probe");
+      tl.call(function() {
+        phase.textContent =
+          "Probe for " + c.name + " (customer_id=" + c.id + "): find the orders with customer_id = " + c.id;
+      });
 
       // Stagger arc'd match pills outer→inner, ~80 ms apart.
       for (var j = 0; j < orderIds.length; j++) {
@@ -276,6 +290,8 @@ function buildTimeline() {
 
       compared += Math.max(1, orderIds.length);
       totalMatches += orderIds.length;
+      // The total so far for this driver (the loop variable keeps growing).
+      var runningTotal = compared;
 
       tl.call(function() {
         var n = orderIds.length;
@@ -284,7 +300,7 @@ function buildTimeline() {
         stage.verdict.textContent = c.name + " (id=" + c.id + ") " + verb;
         stage.statusLbl.textContent =
           "Driver " + (idx + 1) + "/" + stage.outerRows.length +
-          " — " + n + " inner matches (running total: " + compared + ")";
+          " — " + n + " inner matches (running total: " + runningTotal + ")";
       });
 
       // Deliberate pause between iterations so the eye can track the
@@ -294,6 +310,7 @@ function buildTimeline() {
   }
 
   tl.mark("Consequence");
+  tl.beat("done");
   tl.call(function() {
     phase.textContent =
       "Nested loop cost = outer_rows × inner_rows_per_probe";
@@ -311,7 +328,7 @@ function buildCurrentTimeline() {
 
 function resetAnim() {
   resetStage();
-  document.getElementById("phase-label").textContent = "Ready — press Play";
+  document.getElementById("phase-label").textContent = "Ready: press Next step, or Play to run it all";
 }
 
 function renderChart(innerProbeRows, currentOuterRows) {

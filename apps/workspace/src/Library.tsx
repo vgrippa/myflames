@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   api, download, getInvestigation, listInvestigations, safePreview,
-  type Bundle, type Comparison, type InvestigationCursor, type InvestigationSummary,
+  type Bundle, type Comparison, type InvestigationCursor, type InvestigationEvidence, type InvestigationSummary,
 } from "./api";
 import { Icon, ImportDialog } from "./components";
 import {
@@ -15,22 +15,42 @@ const PAGE = 25;
 /** Typing pauses this long before the server searches every saved investigation. */
 const SEARCH_DELAY_MS = 250;
 
+/** The Server view each kind of evidence comes from. */
+const EVIDENCE_KIND: Record<string, string> = { watch: "Capture when", sessions: "Sessions", innodb: "InnoDB", locks: "Locks" };
+
+function formatEvidenceTimestamp(value: string) {
+  if (!value) return "—";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  // Local time, like the capture's name; the <time> element keeps the ISO instant.
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())} ` +
+    `${pad(parsed.getHours())}:${pad(parsed.getMinutes())}:${pad(parsed.getSeconds())}`;
+}
+
 /** A saved collection stays in the list while its details and actions share one pane. */
 export function Library({
   onOpen,
   openPlanCount = 0,
   onSaveInvestigation,
   savedRevision = 0,
+  initialSelectedId = "",
 }: {
   onOpen: (bundle: Bundle) => Promise<void>;
   openPlanCount?: number;
   onSaveInvestigation?: () => void;
   savedRevision?: number;
+  initialSelectedId?: string;
 }) {
   // Summaries only; Open, Compare and Export read the complete bundle.
   const [items, setItems] = useState<InvestigationSummary[]>([]);
-  const [selectedId, setSelectedId] = useState("");
+  const [selectedId, setSelectedId] = useState(initialSelectedId);
   const [targetId, setTargetId] = useState("");
+  const [evidenceId, setEvidenceId] = useState("");
+  const [loadedBundle, setLoadedBundle] = useState<Bundle | null>(null);
+  const [loadingEvidence, setLoadingEvidence] = useState(false);
+  /** What Copy, Download or opening an item did, beside the evidence. */
+  const [evidenceNote, setEvidenceNote] = useState<{ error: boolean; text: string } | null>(null);
   const [search, setSearch] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -39,6 +59,7 @@ export function Library({
   /** Whether anything is saved at all (null until the unfiltered list says), so an empty search reads as no match. */
   const [anySaved, setAnySaved] = useState<boolean | null>(null);
   const listRead = useRef<AbortController | null>(null);
+  const evidenceRead = useRef<AbortController | null>(null);
   const moreRead = useRef(false);
   const firstRead = useRef(true);
   const latest = useRef({ items: [] as InvestigationSummary[], nextCursor: null as InvestigationCursor | null, search: "" });
@@ -63,6 +84,9 @@ export function Library({
   const comparisonRead = useRef<AbortController | null>(null);
   const deleteButton = useRef<HTMLButtonElement>(null);
   const rows = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (initialSelectedId) setSelectedId(initialSelectedId);
+  }, [initialSelectedId]);
   const filtered = items.filter((b) =>
     `${b.name} ${b.tags.join(" ")} ${b.notes}`.toLowerCase().includes(search.trim().toLowerCase()),
   );
@@ -71,6 +95,11 @@ export function Library({
   const baseline = selected?.plans.find((p) => p.id === selected.baseline_id);
   const candidates = selected?.plans.filter((p) => p.id !== baseline?.id) || [];
   const target = candidates.find((p) => p.id === targetId) || candidates[0];
+  const evidenceList = selected?.evidence || [];
+  const activeEvidence: InvestigationEvidence | undefined =
+    loadedBundle?.id === selected?.id
+      ? loadedBundle?.evidence?.find((ev) => ev.id === evidenceId)
+      : undefined;
   latest.current = { items, nextCursor, search };
 
   // The server searches every saved investigation; the rows already loaded
@@ -120,6 +149,49 @@ export function Library({
     comparisonRead.current?.abort();
     return () => comparisonRead.current?.abort();
   }, [selected?.id, target?.id]);
+  useEffect(() => {
+    setEvidenceId("");
+    setLoadedBundle(null);
+    setLoadingEvidence(false);
+    setEvidenceNote(null);
+    evidenceRead.current?.abort();
+    return () => evidenceRead.current?.abort();
+  }, [selected?.id]);
+
+  function openEvidenceItem(id: string) {
+    if (!selected) return;
+    setEvidenceId(id);
+    setEvidenceNote(null);
+    if (loadedBundle?.id === selected.id) return;
+    evidenceRead.current?.abort();
+    const controller = new AbortController();
+    evidenceRead.current = controller;
+    setLoadingEvidence(true);
+    getInvestigation(selected, controller.signal)
+      .then((b) => {
+        if (!controller.signal.aborted) setLoadedBundle(b);
+      })
+      .catch((e) => {
+        if (!controller.signal.aborted) setEvidenceNote({ error: true, text: `Could not open the evidence: ${errorText(e)}` });
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoadingEvidence(false);
+      });
+  }
+  async function copyEvidenceText(ev: InvestigationEvidence) {
+    try {
+      await navigator.clipboard.writeText(ev.text);
+      setEvidenceNote({ error: false, text: `Copied “${ev.title}”.` });
+    } catch (e) {
+      setEvidenceNote({ error: true, text: `Could not copy to the clipboard: ${errorText(e)}` });
+    }
+  }
+  function downloadEvidenceText(ev: InvestigationEvidence) {
+    const safeTitle = (ev.title || ev.kind || "evidence").replace(/[^a-z0-9_-]/gi, "-").toLowerCase();
+    const file = `${safeTitle}-${ev.id}.txt`;
+    download(ev.text, file, "text/plain;charset=utf-8");
+    setEvidenceNote({ error: false, text: `Downloaded ${file}.` });
+  }
 
   function changeSearch(value: string) {
     setSearch(value);
@@ -285,7 +357,9 @@ export function Library({
                   <span className="library-item-text">
                     <strong title={b.name}>{b.name}</strong>
                     <small title={`${b.tags.join(", ")}${b.updated_at ? ` · Updated ${new Date(b.updated_at).toLocaleString()}` : ""}`}>
-                      {b.plans.length} {b.plans.length === 1 ? "plan" : "plans"}
+                      {b.plans.length || !b.evidence?.length
+                        ? `${b.plans.length} ${b.plans.length === 1 ? "plan" : "plans"}`
+                        : `${b.evidence.length} evidence ${b.evidence.length === 1 ? "item" : "items"}`}
                       {b.updated_at && <> · <time dateTime={b.updated_at}>{relativeTime(b.updated_at)}</time></>}
                       {b.tags.length > 0 && ` · ${b.tags.join(", ")}`}
                     </small>
@@ -311,11 +385,14 @@ export function Library({
               {selected.updated_at && <p className="library-updated">Updated {relativeTime(selected.updated_at)}</p>}
               <div className="library-actions" role="group" aria-label="Investigation actions">
                 {/* Only the clicked action shows that it works; the others wait. */}
-                <ActionButton primary busy={busy && actKind === "open"} busyLabel="Opening…" disabled={busy && actKind !== "open"}
-                  onClick={() => void open(selected)}>Open all</ActionButton>
-                <ActionButton busy={comparing} busyLabel="Comparing…" disabled={!comparing && (busy || !baseline || !target)}
-                  title={!baseline ? "This investigation has no baseline." : !target ? "Add a second plan to compare." : `Compare ${target.name} to ${baseline.name}`}
-                  onClick={() => void compare()}>Compare to baseline</ActionButton>
+                {/* Plan actions; an investigation of evidence only (a capture) has no plans to open. */}
+                {(selected.plans.length > 0 || evidenceList.length === 0) && <>
+                  <ActionButton primary busy={busy && actKind === "open"} busyLabel="Opening…" disabled={(busy && actKind !== "open") || selected.plans.length === 0}
+                    onClick={() => void open(selected)}>Open all</ActionButton>
+                  <ActionButton busy={comparing} busyLabel="Comparing…" disabled={!comparing && (busy || !baseline || !target)}
+                    title={!baseline ? "This investigation has no baseline." : !target ? "Add a second plan to compare." : `Compare ${target.name} to ${baseline.name}`}
+                    onClick={() => void compare()}>Compare to baseline</ActionButton>
+                </>}
                 <ActionButton busy={busy && actKind === "export"} busyLabel="Exporting…" disabled={busy && actKind !== "export"}
                   onClick={() => void exportBundle(selected)}>Export</ActionButton>
                 <button className="text-button" ref={deleteButton} disabled={busy} onClick={() => { setError(""); setDeleting(selected); }}>Delete</button>
@@ -332,7 +409,8 @@ export function Library({
               <h3 className="section-label" id="investigation-tags-title">Tags</h3>
               <div>{selected.tags.length ? selected.tags.map((t) => <Pill key={t}>{t}</Pill>) : <span className="muted">No tags</span>}</div>
             </section>
-            <div className="library-plans" data-rows>
+            {/* An investigation of evidence only (a capture) has no empty Plans box. */}
+            {(selected.plans.length > 0 || evidenceList.length === 0) && <div className="library-plans" data-rows>
               <GroupedList id="investigation-plans-title" title="Plans" count={selected.plans.length}
                 footer={baseline && target ? "Select a plan to compare to the baseline." : undefined}>
                 {selected.plans.map((p) => <GroupedRow key={p.id} rowKey={p.id} label={p.name} attrs={{ title: p.name }}
@@ -340,7 +418,50 @@ export function Library({
                   value={selected.plans.length > 1 && baseline?.id === p.id ? <Pill>Baseline</Pill> : undefined}
                   selection={baseline?.id !== p.id && baseline && selected.plans.length > 1 ? { key: target?.id || "", select: setTargetId } : undefined} />)}
               </GroupedList>
-            </div>
+            </div>}
+            {evidenceList.length > 0 && (
+              <section className="library-evidence" aria-labelledby="investigation-evidence-title" data-rows>
+                <GroupedList id="investigation-evidence-title" title="Evidence" count={evidenceList.length}
+                  footer={activeEvidence ? undefined : "Select an evidence item to view its captured text."}>
+                  {evidenceList.map((ev) => (
+                    <GroupedRow
+                      key={ev.id}
+                      rowKey={ev.id}
+                      label={ev.title}
+                      detail={formatEvidenceTimestamp(ev.captured_at)}
+                      value={<Pill>{EVIDENCE_KIND[ev.kind] || ev.kind}</Pill>}
+                      selection={{ key: evidenceId, select: openEvidenceItem }}
+                      attrs={{ "data-evidence-id": ev.id, "data-evidence-kind": ev.kind }}
+                    />
+                  ))}
+                </GroupedList>
+                {loadingEvidence && <p className="empty-small" role="status">Loading evidence…</p>}
+                {evidenceNote?.error && !activeEvidence && <p className="error" role="alert">{evidenceNote.text}</p>}
+                {activeEvidence && (
+                  <div className="library-evidence-view" role="region" aria-label={`Evidence: ${activeEvidence.title}`}>
+                    <div className="library-evidence-head">
+                      <div>
+                        <strong>{activeEvidence.title}</strong>
+                        <span className="muted"> · <time dateTime={activeEvidence.captured_at}>{formatEvidenceTimestamp(activeEvidence.captured_at)}</time></span>
+                      </div>
+                      <div className="library-evidence-actions">
+                        <button type="button" className="button" onClick={() => void copyEvidenceText(activeEvidence)}>
+                          Copy
+                        </button>
+                        <button type="button" className="button" onClick={() => downloadEvidenceText(activeEvidence)}>
+                          Download
+                        </button>
+                      </div>
+                    </div>
+                    {evidenceNote && (evidenceNote.error
+                      ? <p className="error" role="alert">{evidenceNote.text}</p>
+                      : <p className="muted" role="status">{evidenceNote.text}</p>)}
+                    {activeEvidence.note && <p className="muted">{activeEvidence.note}</p>}
+                    <pre className="library-evidence-text" tabIndex={0} aria-label={`${activeEvidence.title} text`}>{activeEvidence.text}</pre>
+                  </div>
+                )}
+              </section>
+            )}
             <ActionStatus className="library-compare-status" state={{ phase: comparing ? "pending" : "idle",
               message: `Comparing ${target?.name || "the plan"} to the baseline…`, startedAt: comparingSince }}
               onStop={() => { comparisonRead.current?.abort(); setComparing(false); }} stopLabel="Stop" />

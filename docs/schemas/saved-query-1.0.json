@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://myflames.dev/schemas/saved-query-1.0.json",
+  "title": "myflames saved query 1.0",
+  "description": "One saved query of the Query editor (myflames/editor_session.py saved_query_entry), kept on this computer as a workspace store record of kind 'saved_query' and returned by the /api/editor/saved/* endpoints (list, save, rename, move) with its record 'id'. The SQL, name and note go through dbops.redact, the function that redacts the run history, before anything is stored, so credential clauses read [redacted]. At most 500 queries and 4 MiB of stored JSON are kept; a full store refuses a new query instead of dropping one. Additive optional fields keep 1.x; renamed or removed fields bump the major version.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "name",
+    "folder",
+    "sql",
+    "note",
+    "database",
+    "created",
+    "updated"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "saved-query-1.0"
+    },
+    "id": {
+      "type": "string",
+      "description": "The workspace store record id (32 hex characters); added on reads, not part of the stored payload.",
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "The name the user gave the query (one line, redacted)."
+    },
+    "folder": {
+      "type": "string",
+      "maxLength": 200,
+      "description": "The folder the query is kept in (one line); an empty string means no folder."
+    },
+    "sql": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 20000,
+      "description": "The SQL text, redacted before storing; at most the run history's SQL cap."
+    },
+    "note": {
+      "type": "string",
+      "maxLength": 2000,
+      "description": "An optional note (redacted); an empty string means none."
+    },
+    "database": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 255,
+      "description": "The database of the connection the query was saved from, or null. Opening a saved query never changes the connection in use."
+    },
+    "created": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the query was saved (UTC)."
+    },
+    "updated": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the query was saved, renamed or moved last (UTC)."
+    }
+  }
+}

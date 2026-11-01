@@ -1,5 +1,5 @@
 import { connectionAction, connectionRow } from "./connection-helpers.mjs";
-import { chooseView } from "./chrome-helpers.mjs";
+import { chooseView, openConnectionPicker } from "./chrome-helpers.mjs";
 // Remembered connection passwords, managed in Home's Connections section,
 // and each connection's write safety: Type (Production by default,
 // Development) and Read-only, the strip and the picker's type dot; an
@@ -13,27 +13,44 @@ import { once } from "node:events";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import puppeteer from "puppeteer";
 
 // The request ordering contract runs without a browser, sockets or a workspace.
 // Execute the shell's real callback, with deferred API responses under test control.
 if (process.argv.includes("--unit")) {
-  const { transform } = await import("esbuild");
+  const { build, transform } = await import("esbuild");
   const source = await fs.readFile(new URL("../src/main.tsx", import.meta.url), "utf8");
-  const callback = source.slice(source.indexOf("  const refreshProfiles = useCallback("), source.indexOf("  // A connection's type"));
-  assert.ok(callback.includes("return pending"), "profile callback was located");
-  const code = (await transform(`${callback}\nreturn refreshProfiles;`, { loader: "ts", target: "es2020" })).code;
+  // The window's one list of saved connections (savedConnections.ts), with
+  // profiles/list answered by deferred promises under test control.
+  const workspace = fileURLToPath(new URL("../", import.meta.url));
+  const bundled = await build({
+    entryPoints: [path.join(workspace, "src/savedConnections.ts")], bundle: true, write: false, format: "esm", platform: "node",
+    plugins: [{ name: "api-stub", setup(b) {
+      b.onResolve({ filter: /^\.\/api$/ }, () => ({ path: "api-stub", namespace: "stub" }));
+      b.onLoad({ filter: /.*/, namespace: "stub" }, () => ({ contents: "export const api = (...args) => globalThis.__profilesApi(...args);", loader: "js" }));
+    } }],
+  });
+  const storeFile = path.join(await fs.mkdtemp(path.join(workspace, ".profiles-unit-")), "store.mjs");
+  await fs.writeFile(storeFile, bundled.outputFiles[0].text);
+  const store = await import(pathToFileURL(storeFile).href);
+  await fs.rm(path.dirname(storeFile), { recursive: true, force: true });
+  assert.ok(source.includes("refreshSavedConnections") && source.includes("useSavedConnections(false)"), "the shell reads the shared list");
   function scenario() {
+    store.resetSavedConnectionsForTests();
     const requests = [];
-    const state = { items: [], loaded: false, error: "", secret: null };
-    const read = new Function("useCallback", "profilesReadSequence", "latestProfilesRead", "api",
-      "setProfiles", "setProfilesLoaded", "setProfilesFailed", "setSecretStore", "message", code)(
-      fn => fn, { current: 0 }, { current: null }, () => new Promise((resolve, reject) => requests.push({ resolve, reject })),
-      items => { state.items = items; }, loaded => { state.loaded = loaded; }, error => { state.error = error; },
-      secret => { state.secret = secret; }, error => error.message);
+    globalThis.__profilesApi = (endpoint) => { assert.equal(endpoint, "profiles/list"); return new Promise((resolve, reject) => requests.push({ resolve, reject })); };
+    const read = () => store.refreshSavedConnections();
+    const state = {};
+    Object.defineProperties(state, {
+      items: { enumerable: true, get: () => store.savedConnectionsNow().items },
+      loaded: { enumerable: true, get: () => store.savedConnectionsNow().loaded },
+      error: { enumerable: true, get: () => store.savedConnectionsNow().error },
+      secret: { enumerable: true, get: () => store.savedConnectionsNow().secretStore },
+    });
     return { read, requests, state };
   }
+  const plain = (state) => JSON.parse(JSON.stringify(state));
   const oldItems = [{ id: "p", type: "development", read_only: false }];
   const currentItems = [{ id: "p", type: "production", read_only: true }];
   // Older success and failure both follow the newer success, including the
@@ -47,7 +64,7 @@ if (process.argv.includes("--unit")) {
     if (oldFails) requests[0].reject(new Error("stale failure"));
     else requests[0].resolve({ items: oldItems, secret_store: { label: "Old store" } });
     assert.deepEqual(await old, currentItems);
-    assert.deepEqual(state, { items: currentItems, loaded: true, error: "", secret: { label: "Current store" } });
+    assert.deepEqual(plain(state), { items: currentItems, loaded: true, error: "", secret: { label: "Current store" } });
   }
   // A latest failure must retain unknown policy even if an older success
   // arrives afterwards; all callers observe that failure.
@@ -79,6 +96,26 @@ if (process.argv.includes("--unit")) {
     requests[2].resolve({ items: currentItems });
     assert.deepEqual(await Promise.all([first, middle, latest]), [currentItems, currentItems, currentItems]);
   }
+  // An unchanged list keeps its identity (nothing that shows it re-renders),
+  // a changed one replaces it, and a deleted connection keeps its name.
+  {
+    const { read, requests } = scenario();
+    const first = read();
+    requests[0].resolve({ items: [{ id: "a", name: "Alpha" }, { id: "b", name: "Bravo" }] });
+    const before = await first;
+    const again = read();
+    requests[1].resolve({ items: [{ id: "a", name: "Alpha" }, { id: "b", name: "Bravo" }] });
+    assert.equal(await again, before, "an unchanged list keeps its identity");
+    const renamed = read();
+    requests[2].resolve({ items: [{ id: "a", name: "Alpha" }] });
+    assert.deepEqual(await renamed, [{ id: "a", name: "Alpha" }]);
+    assert.equal(store.savedConnectionDeleted(store.savedConnectionsNow(), "b"), true);
+    assert.equal(store.savedConnectionDeleted(store.savedConnectionsNow(), "a"), false);
+    assert.equal(store.deletedConnectionLabel("b"), "Bravo (deleted)");
+    assert.equal(store.deletedConnectionLabel("never-seen"), "A deleted saved connection");
+    store.resetSavedConnectionsForTests();
+    assert.equal(store.savedConnectionDeleted(store.savedConnectionsNow(), "b"), false, "nothing is deleted before the list is read");
+  }
   // The loop callback merges against the updater's current state, not the
   // render that produced the callback, preserving settings changed meanwhile.
   const loop = source.match(/onLoopActivity=\{\(active\) => \{([\s\S]*?)\n\s+\}\}/);
@@ -92,7 +129,7 @@ if (process.argv.includes("--unit")) {
   const unchanged = saved;
   notify(true, apply, value => value, (a, b) => JSON.stringify(a) === JSON.stringify(b));
   assert.equal(saved, unchanged);
-  console.log("Profiles unit checks passed: latest success/failure, awaiting the newest policy, and loop state merges.");
+  console.log("Profiles unit checks passed: the shared list (latest success/failure, newest policy awaited, unchanged identity, deleted names) and loop state merges.");
   process.exit(0);
 }
 
@@ -362,21 +399,16 @@ try {
   assert.equal(last("/api/profiles/save").password, undefined);
   assert.equal(last("/api/profiles/save").id, undefined);
 
-  // A new connection with an existing name asks to replace it; Escape cancels.
+  // A new connection with an existing name shows an inline error and refuses Save; editing an existing connection may keep its own name.
   if (await page.$(".connections .detail-back")) await page.click(".connections .detail-back");
   await button("Add connection");
   await setName("prod");
-  await button("Save connection");
-  await page.waitForSelector(".save-prompt");
-  assert.match(await text("#save-prompt-title"), /“Prod” already exists/);
-  await page.keyboard.press("Escape");
-  await page.waitForFunction(() => !document.querySelector(".save-prompt"));
-  await button("Save connection");
-  await page.waitForSelector(".save-prompt");
-  await button("Replace", ".save-prompt ");
-  await notice("saved");
-  assert.equal(last("/api/profiles/save").id, "p1");
-  assert.equal(last("/api/profiles/save").remember_password, true); // keeps p1's saved password
+  assert.equal(await text("#connection-name-problem"), "A saved connection named Prod already exists.");
+  assert.equal(await page.$eval(".connection-panel .button.primary ::-p-text(Save connection)", (e) => e.closest("button").disabled), true);
+  await page.click(".connections .inspector-close");
+  await connectionAction(page, "Prod", "Edit");
+  await page.waitForSelector(".connection-panel");
+  assert.equal(await page.$("#connection-name-problem"), null);
 
   // Delete removes the connection (and, server side, its saved password).
   await button("Delete connection");
@@ -518,6 +550,59 @@ try {
     kind: "read-only",
     dot: "Development, read-only",
   });
+
+  // At 720 px the pill keeps a compact type word beside the dot (never a
+  // status color), and the Session password says how it applies, with Set
+  // doing what Enter and leaving the field do.
+  await place("Query editor");
+  await page.waitForSelector(".window-toolbar .connection-pill");
+  await page.setViewport({ width: 720, height: 600 });
+  const pill = await page.$eval(".window-toolbar .connection-pill", (e) => {
+    const tags = e.querySelector(".safety-tags");
+    const mark = e.querySelector(".connection-pill-type");
+    return {
+      tagsHidden: !!tags && getComputedStyle(tags).display === "none",
+      mark: mark?.textContent || "",
+      markVisible: !!mark && mark.getBoundingClientRect().width > 0,
+      markColor: mark ? getComputedStyle(mark).color : "",
+      markOutlined: !!mark && mark.classList.contains("is-read-only") && getComputedStyle(mark).borderTopStyle === "solid",
+      dot: e.querySelector(".type-dot")?.getAttribute("aria-label") || "",
+    };
+  });
+  assert.deepEqual(
+    [pill.tagsHidden, pill.mark, pill.markVisible, pill.dot],
+    [true, "Dev", true, "Development, read-only"],
+  );
+  assert.equal(pill.markOutlined, true, "read-only keeps its type word, outlined");
+  const statusColors = await page.evaluate(() =>
+    ["--danger", "--warn", "--ok"].map((token) => {
+      const p = document.createElement("div");
+      p.style.color = `var(${token})`;
+      document.body.append(p);
+      const c = getComputedStyle(p).color;
+      p.remove();
+      return c;
+    }),
+  );
+  assert.ok(!statusColors.includes(pill.markColor), "the type mark never uses a status color");
+  await openConnectionPicker(page);
+  await page.waitForSelector(".window-toolbar .picker-password");
+  const setButton = ".window-toolbar .picker-password-set";
+  assert.match(
+    await text(".window-toolbar .picker-panel .field .hint"),
+    /Set, Enter or leaving the field applies it for this window\. It is never saved\./,
+  );
+  assert.equal(await page.$eval(setButton, (e) => e.disabled), true, "Set waits for a change");
+  await page.locator(".window-toolbar .picker-password").fill("session-secret");
+  assert.equal(await page.$eval(setButton, (e) => e.disabled), false);
+  await page.click(setButton);
+  assert.equal(await page.$eval(setButton, (e) => e.disabled), true, "applied once Set");
+  await page.locator(".window-toolbar .picker-password").fill("");
+  await page.click(setButton);
+  assert.equal(await page.$eval(".window-toolbar .picker-password", (e) => e.value), "", "cleared again for the rest of the suite");
+  await page.keyboard.press("Escape");
+  await page.setViewport({ width: 1440, height: 1000 });
+  await place("Home");
 
   // The policy can change elsewhere (another tab, the CLI). While the saved
   // connections cannot be read, the strip assumes Production and Kill stays

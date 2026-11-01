@@ -20,7 +20,7 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { api, ApiError, recordDeclined, type Connection } from "./api";
 import { connectionKey, connectionLabel } from "./binding";
-import { TYPE_LABEL, useWritePolicy } from "./Connections";
+import { ConnectionTypeBand, TYPE_LABEL, useWritePolicy } from "./Connections";
 import { ActionStatus, ConfirmSheet, Fields, NumberField, StatusPill, type Tone } from "./kit";
 import { Commands } from "./OpsShared";
 import { useOpsScope } from "./opsApi";
@@ -300,7 +300,7 @@ export function useReviewedActions({ connection, operation, send, onSent, onNext
   const shown = run ? run.p : pending;
   const closeRun = () => setRun(null);
   const sheet: ReactNode = <>
-    {ask && <ValueSheet ask={ask} onCancel={() => setAsk(null)} onReview={(v) => { const go = ask.run; setAsk(null); go(v); }} />}
+    {ask && <ValueSheet connection={connection} ask={ask} onCancel={() => setAsk(null)} onReview={(v) => { const go = ask.run; setAsk(null); go(v); }} />}
     {left && run && !run.result && <ActionStatus className="reviewed-action-status" state={{ phase: "pending",
       message: `Waiting for the reviewed change on ${run.p.label}. Its outcome is not known yet; nothing will be sent again.`, startedAt: run.startedAt }} />}
     {shown && !left && <ReviewSheet p={shown} run={run} busy={busy} typed={typed} onTyped={setTyped}
@@ -419,7 +419,9 @@ function ReviewSheet({ p, run, busy, typed, onTyped, confirmDisabled, blocked, o
   const [tone, word] = r ? RESULT_TONE[r.status] || RESULT_TONE.unknown : ["unknown", ""];
   const checks = r?.checks?.length ? r.checks : plan.checks || [];
   return (
-    <ConfirmSheet className="ops-confirm action-review" eyebrow={plan.eyebrow} title={title}
+    <ConfirmSheet className="ops-confirm action-review"
+      band={<ConnectionTypeBand connection={p.connection} label={p.label} type={type} readOnly={readOnly} />}
+      eyebrow={plan.eyebrow} title={title}
       description={run ? undefined : plan.description}
       busy={busy} confirmTone={plan.policy?.tone || "danger"} confirmDisabled={confirmDisabled}
       busyLabel="Sending…" progress="Waiting for the server to run the statements" onLeave={onLeave}
@@ -484,13 +486,14 @@ function ReviewSheet({ p, run, busy, typed, onTyped, confirmDisabled, blocked, o
   );
 }
 
-function ValueSheet({ ask, onCancel, onReview }: { ask: Ask; onCancel: () => void; onReview: (value: number) => void }) {
+function ValueSheet({ connection, ask, onCancel, onReview }: { connection: Connection; ask: Ask; onCancel: () => void; onReview: (value: number) => void }) {
   const [text, setText] = useState(ask.current === null ? "" : String(ask.current));
   const id = useId();
   const value = /^\d+$/.test(text.trim()) ? Number(text.trim()) : NaN;
   const valid = Number.isSafeInteger(value) && value >= ask.min && value <= ask.max && value !== ask.current;
   return (
-    <ConfirmSheet className="ops-confirm action-value" title={ask.title} confirmTone="primary" confirmLabel="Review the change…"
+    <ConfirmSheet className="ops-confirm action-value" band={<ConnectionTypeBand connection={connection} />}
+      title={ask.title} confirmTone="primary" confirmLabel="Review the change…"
       confirmDisabled={!valid} onCancel={onCancel} onConfirm={() => { if (valid) onReview(value); }}>
       <label className="ops-field" htmlFor={id}>
         <span>{ask.label}</span>

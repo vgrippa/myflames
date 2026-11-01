@@ -49,6 +49,8 @@ try {
       columns: [{ key: 'n', label: 'Count', num: true, sort: r => r.n, render: r => r.n }] });
     assert.match(table, new RegExp(`data-density="${density}"`));
     assert.match(table, /aria-label="Columns of Numbers"/);
+    assert.match(table, /<\/table><\/div><div class="table-columns-cell">/, 'Columns lives outside the data scroller');
+    assert.doesNotMatch(table, /class="col-menu"/, 'no phantom row-action column without actions');
     assert.match(table, /<td[^>]+data-col="n"[^>]*>123<\/td>/);
   }
   const multi = render('DataTable', { label: 'Connections', rows: [{ id: 'a' }, { id: 'b' }, { id: 'c' }], rowKey: r => r.id,
@@ -97,13 +99,15 @@ try {
     secret_backend: 'keychain', secret_backend_label: 'macOS Keychain', type: 'development', read_only: true };
   const savedRows = renderConnections({ profiles: [profile] });
   assert.match(savedRows, /&lt;script&gt;name&lt;\/script&gt;/);
-  assert.match(savedRows, /Development · Read-only/);
+  assert.match(savedRows, /class="safety-tags"><span class="type-tag is-development">Development<\/span><span class="type-tag is-read-only">Read-only<\/span><\/span>/,
+    'type and Read-only are two compact pills, never one truncating string');
   assert.match(savedRows, /class="type-dot is-read-only" role="img" aria-label="Development, read-only"/);
-  assert.match(savedRows, /title="Development · Read-only"/);
+  assert.match(savedRows, /Default database/, 'the column uses the form and vocabulary word');
   assert.match(savedRows, /title="Password saved in macOS Keychain">Saved<\/span>/);
   assert.match(savedRows, /class="cell-truncate" title="127\.0\.0\.1:3306"/);
   assert.doesNotMatch(savedRows, /<script>/);
-  assert.match(savedRows, /Not recorded/, 'profile modification dates are never used as usage history');
+  assert.match(savedRows, />—<span class="visually-hidden">Not used in this window<\/span>/,
+    'a connection never used here shows —; profile modification dates are never used as usage history');
   assert.match(savedRows, /data-col="password"/);
   const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'window');
   Object.defineProperty(globalThis, 'window', { configurable: true, value: { innerWidth: 390 } });

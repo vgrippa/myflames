@@ -25,10 +25,10 @@ export function copyName(name: string, taken: string[]) {
 
 /**
  * The menu of one query tab (right-click, Shift+F10 or the context-menu key
- * on the tab): Rename…, Duplicate, Close, Close others. Arrow keys move,
+ * on the tab): Rename…, Duplicate, Save query…, Close, Close others. Arrow keys move,
  * Escape or a click elsewhere closes it and returns focus to the tab.
  */
-export function QueryTabMenu({ x, y, opener, name, single, onRename, onDuplicate, onClose, onCloseOthers, onDismiss }: {
+export function QueryTabMenu({ x, y, opener, name, single, onRename, onDuplicate, onSave, onClose, onCloseOthers, onDismiss }: {
   x: number;
   y: number;
   opener: HTMLElement;
@@ -37,6 +37,8 @@ export function QueryTabMenu({ x, y, opener, name, single, onRename, onDuplicate
   single: boolean;
   onRename: () => void;
   onDuplicate: () => void;
+  /** Save query…: keep the tab's SQL with the saved queries. */
+  onSave: () => void;
   onClose: () => void;
   onCloseOthers: () => void;
   onDismiss: () => void;
@@ -77,6 +79,10 @@ export function QueryTabMenu({ x, y, opener, name, single, onRename, onDuplicate
       <button type="button" role="menuitem" onClick={onDuplicate}>
         <span className="context-menu-icon"><Icon name="copy" /></span>
         <span>Duplicate</span>
+      </button>
+      <button type="button" role="menuitem" onClick={onSave}>
+        <span className="context-menu-icon"><Icon name="plus" /></span>
+        <span>Save query…</span>
       </button>
       <div className="context-menu-divider" role="separator" />
       <button type="button" role="menuitem" onClick={onClose}>

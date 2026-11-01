@@ -19,7 +19,7 @@ export type Bound<T> = {
 };
 
 type Identity = Pick<Connection, "host" | "port" | "user" | "ssl_mode"> &
-  Partial<Pick<Connection, "profile_id" | "ssl_ca" | "name">> & {
+  Partial<Pick<Connection, "profile_id" | "ssl_ca" | "name" | "ssh_host" | "ssh_user" | "ssh_port">> & {
     /** Write safety of a saved connection (dbops.py): "production" (the default) or "development". */
     type?: string;
     /** Refuses every write. */
@@ -27,20 +27,66 @@ type Identity = Pick<Connection, "host" | "port" | "user" | "ssl_mode"> &
   };
 
 /** The identity of a connection: saved connection id, host, port, user and
- * TLS settings, then its type and read-only flag when they are not the
- * defaults (production, read-write), so changing them rebinds every report
- * and confirmation. Never the password, and not the default schema (the same
- * server answers either way). Python twin: dbops.connection_identity. */
+ * TLS settings, the SSH target for a connection through SSH (sshKey), then
+ * its type and read-only flag when they are not the defaults (production,
+ * read-write), so changing them rebinds every report and confirmation. A
+ * connection without SSH keeps the key it had before SSH existed. Never the
+ * password, and not the default schema (the same server answers either
+ * way). Python twin: dbops.connection_identity. */
+/** White space and the invisible characters a paste brings along (zero-width
+ * spaces and joiners, word joiner, byte order mark), as live.py trims them. */
+const BLANK = "[\\s\\x1c-\\x1f\\u0085\\u200b\\u200c\\u200d\\u2060\\ufeff]";
+const AROUND = new RegExp(`^${BLANK}+|${BLANK}+$`, "g");
+const AFTER = new RegExp(`${BLANK}+$`);
+const INSIDE = new RegExp(BLANK);
+/** *text* without pasted spaces at both ends (host names, file paths). */
+export function trimPasted(text: string): string {
+  return text.replace(AROUND, "");
+}
+/** *text* without pasted spaces at its end: a database name cannot end with
+ * a space, but may start with one. */
+export function trimPastedEnd(text: string): string {
+  return text.replace(AFTER, "");
+}
+/** True when a host name still has a space inside it (the server refuses it). */
+export function hostHasSpace(host: string): boolean {
+  return INSIDE.test(trimPasted(host));
+}
+
+/** ["ssh", host, user, port] of a connection through SSH (user "" and port 0
+ * when not set), or null. Python twin: dbops.ssh_identity. */
+export function sshKey(c: Pick<Identity, "ssh_host" | "ssh_user" | "ssh_port">): (string | number)[] | null {
+  const host = trimPasted(c.ssh_host || "");
+  return host ? ["ssh", host, trimPasted(c.ssh_user || ""), Number(c.ssh_port) || 0] : null;
+}
+
 export function connectionKey(c: Identity): string {
-  const key: (string | number | boolean)[] = [c.profile_id || "", c.host || "", Number(c.port) || 0, c.user || "", c.ssl_mode || "", c.ssl_ca || ""];
+  const key: (string | number | boolean | (string | number)[])[] = [c.profile_id || "", trimPasted(c.host || ""), Number(c.port) || 0, c.user || "", c.ssl_mode || "", trimPasted(c.ssl_ca || "")];
+  const ssh = sshKey(c);
+  if (ssh) key.push(ssh);
   const type = c.type === "development" ? "development" : "production";
   if (type !== "production" || c.read_only === true) key.push(type, c.read_only === true);
   return JSON.stringify(key);
 }
 
-/** "Production (app@db1:3306)", or "app@db1:3306" without a name. */
+/** The endpoint part of a connectionKey (without the type and read-only
+ * flag): two keys with the same endpoint reach the same server through the
+ * same saved connection. Python twin: dbops.identity_endpoint. */
+export function endpointKey(key: string): string {
+  try {
+    const parts: unknown = JSON.parse(key);
+    if (!Array.isArray(parts)) return key;
+    return JSON.stringify(parts.slice(0, parts.length > 6 && Array.isArray(parts[6]) ? 7 : 6));
+  } catch {
+    return key;
+  }
+}
+
+/** "Production (app@db1:3306)", or "app@db1:3306" without a name; a
+ * connection through SSH adds "via bastion". */
 export function connectionLabel(c: Identity): string {
-  const target = `${c.user ? `${c.user}@` : ""}${c.host}:${c.port}`;
+  const via = trimPasted(c.ssh_host || "");
+  const target = `${c.user ? `${c.user}@` : ""}${c.host}:${c.port}${via ? ` via ${via}` : ""}`;
   return c.name && c.name !== target ? `${c.name} (${target})` : target;
 }
 

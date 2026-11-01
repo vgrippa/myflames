@@ -12,6 +12,8 @@
  },
  "server": {
   "engine": "mysql",
+  "flavor": "mysql",
+  "product": "MySQL",
   "version": "8.4.3",
   "variables": {
    "version": "8.4.3",
@@ -56,16 +58,24 @@
    3
   ],
   "engine": "mysql",
+  "download_url": "https://dev.mysql.com/downloads/mysql/",
+  "update": {
+   "status": "not_checked",
+   "latest_version": null,
+   "checked_at": null,
+   "source_url": "https://dev.mysql.com/downloads/mysql/",
+   "message": "Update check not requested."
+  },
   "name": "mysqldump"
  },
  "target": "/Users/dba/maintenance/backup",
  "commands": [
-  "mysqldump --defaults-extra-file=<0600 file> --single-transaction --quick --routines --events --triggers --hex-blob --add-drop-table --set-gtid-purged=OFF --databases app > /Users/dba/maintenance/backup/dump.sql"
+  "mysqldump --defaults-file=<0600 file> --single-transaction --quick --routines --events --triggers --hex-blob --add-drop-table --set-gtid-purged=OFF --databases app > /Users/dba/maintenance/backup/dump.sql"
  ],
  "checks": [
   {
    "estimated_bytes": 120,
-   "available_bytes": 147294572544,
+   "available_bytes": 462163881984,
    "check": "free_space",
    "status": "passed",
    "reason": "Uncompressed table/index estimate; dump size can differ."
@@ -85,8 +95,8 @@
  ],
  "warnings": [
   "A consistent snapshot protects InnoDB data only. Concurrent DDL must be avoided.",
-  "Routines, events and triggers are included by SQL dump tools; user accounts are not included in scoped Shell dumps."
+  "The reviewed tool options determine whether routines, events and triggers are included. User accounts are not included in scoped Shell dumps."
  ],
  "ready": true,
- "binding": "c87f667ef9483397caa37445c45a916f3b8cc6dbdf0a0db2dd6a85ef83b89aa1"
+ "binding": "3d3681b2097dc3894769fb21aa7ac1cf2412ca9573f0c39336c7a8ea1fecc7bd"
 }

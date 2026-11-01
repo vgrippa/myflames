@@ -75,11 +75,14 @@ class TestIdentity(unittest.TestCase):
         self.assertEqual(overlap, ["table_open_cache_triggers"])  # MySQL 9.x upstreamed it
 
     def test_supported_floor_note_names_percona(self):
-        note = server_info.unsupported_version_note("8.0.46-37", PERCONA_80)
-        self.assertIn("this server is Percona Server 8.0.46-37", note)
-        self.assertIn("MySQL 8.4 or later", note)
+        note = server_info.unsupported_version_note("5.6.51-91.0", "Percona Server (GPL), Release 91.0")
+        self.assertIn("this server is Percona Server 5.6.51-91.0", note)
+        self.assertIn("MySQL 5.7 or later", note)
+        # 5.7 and later are supported, Percona Server builds included.
+        self.assertIsNone(server_info.unsupported_version_note("8.0.46-37", PERCONA_80))
         self.assertIsNone(server_info.unsupported_version_note("8.4.11-11", PERCONA_84))
-        self.assertIn("this server is MySQL 8.0.46,", server_info.unsupported_version_note("8.0.46", ""))
+        self.assertIsNone(server_info.unsupported_version_note("5.7.44", ""))
+        self.assertIn("this server is MySQL 5.6.51,", server_info.unsupported_version_note("5.6.51", ""))
 
     def test_labels_fall_back_to_the_engine_for_older_reports(self):
         self.assertEqual(server_info.server_label({"engine": "mysql", "server_version": "8.4.11"}), "MySQL 8.4.11")

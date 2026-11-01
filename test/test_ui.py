@@ -846,8 +846,49 @@ class TestProfilePasswordAPI(unittest.TestCase):
                 self.assertEqual((result['engine'], result['flavor'], result['product']), identity)
                 self.assertEqual(result['version'], version)
                 self.assertEqual(result['schemas'], ['shop'])
+                self.assertEqual(result['databases'], ['shop'])
+                self.assertFalse(result['databases_truncated'])
+                self.assertNotIn('databases_error', result)
                 self.assertEqual(sum(call[0][0] == 'SELECT @@version_comment'
                                      for call in run.call_args_list), 1)
+
+    def test_connection_test_databases_bounded_and_error_path(self):
+        from unittest import mock
+        from myflames.connector import ConnectorError
+        # Bounded at 1,000 database names.
+        many = '\n'.join('db_%04d' % i for i in range(1, 1006)) + '\n'
+        answers = {
+            'SELECT @@version': '8.4.11\n',
+            'SELECT @@version_comment': 'MySQL Community Server - GPL\n',
+            'SHOW DATABASES': many,
+        }
+        with mock.patch('myflames.connector.MySQLConnection.run',
+                        side_effect=lambda sql, **kwargs: answers[sql]):
+            result = self.call('/api/connection/test', {'connection': self.settings})
+        self.assertEqual(len(result['databases']), 1000)
+        self.assertEqual(result['databases'][0], 'db_0001')
+        self.assertEqual(result['databases'][-1], 'db_1000')
+        self.assertEqual(result['schemas'], result['databases'])
+        self.assertTrue(result['databases_truncated'])
+        self.assertNotIn('databases_error', result)
+
+        # Error path: when SHOW DATABASES fails (e.g. privilege denied), the test
+        # still succeeds and returns databases_error with any password redacted.
+        profile_id = self.save()['id']
+        def run_with_show_error(sql, **kwargs):
+            if sql == 'SHOW DATABASES':
+                raise ConnectorError('ERROR 1227 (42000): Access denied for ' + self.PASSWORD)
+            return answers[sql]
+
+        with mock.patch('myflames.connector.MySQLConnection.run', side_effect=run_with_show_error):
+            result = self.call('/api/connection/test', {'connection': self.connect(profile_id)})
+        self.assertEqual(result['version'], '8.4.11')
+        self.assertEqual(result['databases'], [])
+        self.assertEqual(result['schemas'], [])
+        self.assertFalse(result['databases_truncated'])
+        self.assertIn('Access denied', result['databases_error'])
+        self.assertNotIn(self.PASSWORD, result['databases_error'])
+        self.assertIn('[redacted]', result['databases_error'])
 
     def test_connection_endpoints_fill_the_saved_password(self):
         from unittest import mock

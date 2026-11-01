@@ -162,6 +162,12 @@ assert.deepEqual([...charts.availableViews()].sort(), ['bargraph', 'diagram', 'f
 const compactCases = JSON.parse(await fs.readFile(path.join(directory, 'compact.json'), 'utf8'));
 for (const { name, legacy, compact } of compactCases) {
   const before = JSON.stringify(compact);
+  assert.deepEqual(compact.stats, legacy.stats, name + ': both schemas share Python statistics');
+  assert.deepEqual(compact.groups, legacy.groups, name + ': occurrence totals are unchanged');
+  for (const node of compact.nodes) {
+    assert.ok(node.group, name + ': Python gives every node its operation identity');
+    assert.ok(compact.groups[node.group].node_ids.includes(node.id));
+  }
   for (let i = 0; i < legacy.nodes.length; i++) {
     assert.equal(charts.internals.highlightText(compact, compact.nodes[i]), legacy.nodes[i].highlight,
       name + ': compact message resolves verbatim');
@@ -448,7 +454,17 @@ try {
   await page.click('#chart-panel [data-action="fit"]');
   const before = (await state())[0];
   const card = await page.$eval('#chart-panel', (panel) => {
-    const frame = panel.querySelector('.wb-viewport').getBoundingClientRect();
+    // The viewport's own box includes its oversized pan background, so take
+    // its frame in the outer SVG (and the window): the fit shows readable
+    // cards from the first input, not every card.
+    const viewport = panel.querySelector('.wb-viewport');
+    const m = viewport.ownerSVGElement.getScreenCTM();
+    const frame = {
+      left: Math.max(0, m.e + m.a * viewport.x.baseVal.value),
+      top: Math.max(0, m.f + m.d * viewport.y.baseVal.value),
+      right: Math.min(innerWidth, m.e + m.a * (viewport.x.baseVal.value + viewport.width.baseVal.value)),
+      bottom: Math.min(innerHeight, m.f + m.d * (viewport.y.baseVal.value + viewport.height.baseVal.value)),
+    };
     const inside = Array.from(panel.querySelectorAll('.wb-node')).map((el) => el.getBoundingClientRect())
       .find((r) => r.left >= frame.left && r.right <= frame.right && r.top >= frame.top && r.bottom <= frame.bottom);
     return { x: inside.left, y: inside.top, width: inside.width, height: inside.height };
@@ -816,13 +832,15 @@ async function viewSuite(browser, page, errors) {
       const handle = MyflamesCharts.mount(host, data, { view, width, options: { workspace: true } });
       const svg = host.querySelector('svg');
       const right = (el) => { const b = el.getBBox(); return b.x + b.width; };
-      const result = { view, width, drawn: Number(svg.getAttribute('width')), overlaps: 0, inside: true, titled: 0, shortened: 0 };
+      const result = { view, width, drawn: Number(svg.getAttribute('width')), overlaps: 0, inside: true, titled: 0, shortened: 0, untimed: 0 };
       if (view === 'tree') {
         for (const row of svg.querySelectorAll('.tree-row')) {
           const label = row.querySelector('.row-label');
           const numbers = Array.from(row.querySelectorAll('.row-time, .row-pct'), (t) => t.getBBox().x);
           if (Math.max(right(label), right(row.querySelector('.toggle, .leaf-indicator'))) > Math.min(...numbers) - 2) result.overlaps++;
           if (label.textContent.endsWith('…')) { result.shortened++; if (row.querySelector(':scope > title')) result.titled++; }
+          // Self and Total on every row, leaves included (output_tree.py).
+          if (Array.from(row.querySelectorAll('.row-time'), (t) => t.textContent).filter(Boolean).length !== 2) result.untimed++;
         }
       } else {
         for (const label of svg.querySelectorAll('.label')) {
@@ -843,6 +861,7 @@ async function viewSuite(browser, page, errors) {
     assert.equal(r.overlaps, 0, r.view + ' ' + r.width + ': labels end before the numbers');
     assert.ok(r.inside, r.view + ' ' + r.width + ': every text inside the chart');
     assert.equal(r.titled, r.shortened, r.view + ' ' + r.width + ': every shortened label has a tooltip');
+    assert.equal(r.untimed, 0, r.view + ' ' + r.width + ': every tree row prints Self and Total');
   }
   assert.ok(fit[0].shortened > 0, 'the narrowest tree shortens deep labels');
   const zoomed = await page.evaluate((data) => {

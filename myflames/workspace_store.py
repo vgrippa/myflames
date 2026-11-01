@@ -20,21 +20,31 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import sqlite3
 import uuid
+import zlib
 
-PROFILE_FIELDS = ('name', 'host', 'port', 'user', 'database', 'ssl_mode', 'ssl_ca')
+PROFILE_FIELDS = ('name', 'host', 'port', 'user', 'database', 'ssl_mode', 'ssl_ca', 'ssh_host', 'ssh_user',
+                  'ssh_port')
 # Write safety (dbops.py): Production confirms every write, Development only
 # risky ones, read-only refuses every write. New and existing profiles are
 # Production. Part of the connection identity reports are bound to.
 PROFILE_SAFETY_FIELDS = ('type', 'read_only')
 CONNECTION_TYPES = ('production', 'development')
 #: PRAGMA user_version of the workspace database. 1: profiles carry type and
-#: read_only (existing rows migrated to production, read-write).
+#: read_only (existing rows migrated to production, read-write). The audit
+#: table's ssh column (the SSH target) is added on demand, without a version.
 STORE_VERSION = 1
 # A saved password is released only to the endpoint and TLS settings it was
-# saved with, so a request can't redirect it or downgrade its transport.
-ENDPOINT_FIELDS = ('host', 'port', 'user', 'ssl_mode', 'ssl_ca')
+# saved with, so a request can't redirect it or downgrade its transport. The
+# SSH target is part of the endpoint: the same database host and port behind
+# another SSH host (or none) is another server.
+ENDPOINT_FIELDS = ('host', 'port', 'user', 'ssl_mode', 'ssl_ca', 'ssh_host', 'ssh_user', 'ssh_port')
+#: The fields of the saved password's fingerprint before SSH existed; the SSH
+#: target is appended only when set, so existing fingerprints stay valid.
+_BASE_ENDPOINT_FIELDS = ('host', 'port', 'user', 'ssl_mode', 'ssl_ca')
+_SSH_ENDPOINT_FIELDS = ('ssh_host', 'ssh_user', 'ssh_port')
 
 # Session restore: one autosaved workspace snapshot (see validate_session_state).
 SESSION_MAX_BYTES = 64 * 1024 * 1024
@@ -42,6 +52,9 @@ SESSION_MAX_DEPTH = 200
 SECRET_KEYS = ('password',)
 #: Records of the Query editor's run history (editor_session.py).
 HISTORY_KIND = 'editor_history'
+#: Records of the Query editor's saved queries (editor_session.py).
+SAVED_QUERY_KIND = 'saved_query'
+_RECORD_ID = re.compile(r'[0-9a-f]{32}')
 
 
 class SessionConflict(ValueError):
@@ -108,6 +121,101 @@ def validate_session_state(state):
     return clean
 
 
+BUNDLE_MAX_BYTES = 10 * 1024 * 1024
+EVIDENCE_MAX_ITEMS = 30
+EVIDENCE_KINDS = ('sessions', 'innodb', 'locks', 'watch')
+EVIDENCE_ITEM_MAX_BYTES = 2 * 1024 * 1024
+EVIDENCE_DATA_TRIMMED_NOTE = ('The report data was left out to keep the investigation within its size '
+                              'limits (2 MiB per item, 10 MiB in all); the text is kept.')
+EVIDENCE_TEXT_TRIMMED_NOTE = 'The text was cut to keep the investigation within 10 MiB.'
+
+
+def _mark_data_trimmed(item):
+    item['data'] = None
+    item['data_trimmed'] = True
+    item['note'] = EVIDENCE_DATA_TRIMMED_NOTE
+    suffix = '\n[%s]\n' % EVIDENCE_DATA_TRIMMED_NOTE
+    if suffix.strip() not in item['text']:
+        item['text'] = (item['text'].rstrip('\n') + suffix) if item['text'] else suffix.lstrip('\n')
+
+
+def _mark_text_trimmed(item, budget_bytes):
+    suffix = '\n[%s]\n' % EVIDENCE_TEXT_TRIMMED_NOTE
+    suffix_bytes = len(suffix.encode('utf-8'))
+    allowed = max(0, budget_bytes - suffix_bytes)
+    raw_bytes = item['text'].encode('utf-8')
+    clipped = raw_bytes[:allowed].decode('utf-8', errors='ignore')
+    item['text'] = (clipped.rstrip('\n') + suffix) if clipped else suffix.lstrip('\n')
+    item['text_trimmed'] = True
+    if item.get('data_trimmed'):
+        item['note'] = '%s %s' % (EVIDENCE_DATA_TRIMMED_NOTE, EVIDENCE_TEXT_TRIMMED_NOTE)
+    else:
+        item['note'] = EVIDENCE_TEXT_TRIMMED_NOTE
+
+
+def _validate_evidence(raw_evidence):
+    if not isinstance(raw_evidence, list) or len(raw_evidence) > EVIDENCE_MAX_ITEMS:
+        raise ValueError('An investigation can contain up to %d evidence items.' % EVIDENCE_MAX_ITEMS)
+    from .dbops import redact, redact_value
+    from .watch import format_evidence_text
+    seen_ids = set()
+    items = []
+    for raw in raw_evidence:
+        if not isinstance(raw, dict):
+            raise ValueError('Every evidence item must be an object.')
+        item_id = raw.get('id')
+        if not isinstance(item_id, str) or not item_id or len(item_id) > 200 or item_id in seen_ids:
+            raise ValueError('Every evidence item needs a unique string ID of 1–200 characters.')
+        seen_ids.add(item_id)
+        kind = raw.get('kind')
+        if not isinstance(kind, str) or kind not in EVIDENCE_KINDS:
+            raise ValueError("Evidence kind must be 'sessions', 'innodb', 'locks', or 'watch'.")
+        captured_at = raw.get('captured_at')
+        if not isinstance(captured_at, str) or not captured_at.strip() or len(captured_at) > 100:
+            raise ValueError('Every evidence item needs a captured_at timestamp of 1–100 characters.')
+        title = raw.get('title')
+        if title is not None and not isinstance(title, str):
+            raise ValueError('Evidence title must be a string.')
+        title = redact((title.strip() if isinstance(title, str) and title.strip() else kind.capitalize())[:200])
+        data = raw.get('data')
+        if data is not None:
+            if not isinstance(data, dict):
+                raise ValueError('Evidence data must be a JSON object or null.')
+            # Statements in a processlist, a lock report or InnoDB status can
+            # carry credentials (ALTER USER ... IDENTIFIED BY 'x'): every
+            # string is redacted before it is stored, whatever its key.
+            data = redact_value(validate_session_state(data))
+        text = raw.get('text')
+        if text is not None and not isinstance(text, str):
+            raise ValueError('Evidence text must be a string.')
+        if not text and isinstance(data, dict):
+            # Formatted from the redacted data, so no secret reaches the text.
+            text = format_evidence_text(kind, data)
+        else:
+            text = redact(text or '')
+        text = text or ''
+        entry = {
+            'id': item_id,
+            'kind': kind,
+            'captured_at': captured_at.strip(),
+            'title': title,
+            'text': text,
+            'data': data,
+        }
+        if raw.get('data_trimmed'):
+            entry['data_trimmed'] = True
+        if raw.get('text_trimmed'):
+            entry['text_trimmed'] = True
+        if isinstance(raw.get('note'), str) and raw['note']:
+            entry['note'] = redact(raw['note'][:500])
+        if entry['data'] is not None:
+            encoded_data = json.dumps(entry['data'], allow_nan=False).encode('utf-8')
+            if len(encoded_data) > EVIDENCE_ITEM_MAX_BYTES:
+                _mark_data_trimmed(entry)
+        items.append(entry)
+    return items
+
+
 def validate_bundle(value):
     if not isinstance(value, dict) or value.get('schema_version') != 'investigation-1.0':
         raise ValueError('Choose a myflames investigation-1.0 bundle.')
@@ -137,8 +245,36 @@ def validate_bundle(value):
     from .live import normalize_capture
     for item in clean['plans']:
         item['capture'] = normalize_capture(item['capture'])
-    encoded = json.dumps(clean, allow_nan=False)
-    if len(encoded.encode('utf-8')) > 10 * 1024 * 1024:
+    if 'evidence' in value and value.get('evidence') is not None:
+        evidence = _validate_evidence(value.get('evidence'))
+        if evidence:
+            clean['evidence'] = evidence
+    encoded = json.dumps(clean, allow_nan=False).encode('utf-8')
+    if len(encoded) > BUNDLE_MAX_BYTES and clean.get('evidence'):
+        # Trim evidence data first (largest data payload first) before trimming text.
+        with_data = [
+            (len(json.dumps(e['data'], allow_nan=False).encode('utf-8')), idx)
+            for idx, e in enumerate(clean['evidence'])
+            if e.get('data') is not None
+        ]
+        with_data.sort(reverse=True)
+        for _size, idx in with_data:
+            _mark_data_trimmed(clean['evidence'][idx])
+            encoded = json.dumps(clean, allow_nan=False).encode('utf-8')
+            if len(encoded) <= BUNDLE_MAX_BYTES:
+                break
+    if len(encoded) > BUNDLE_MAX_BYTES and clean.get('evidence'):
+        # Still over 10 MiB after removing all evidence JSON data: trim evidence text.
+        for item in reversed(clean['evidence']):
+            excess = len(encoded) - BUNDLE_MAX_BYTES
+            if excess <= 0:
+                break
+            current_bytes = len(item['text'].encode('utf-8'))
+            target_bytes = max(256, current_bytes - excess - 512)
+            if current_bytes > target_bytes:
+                _mark_text_trimmed(item, target_bytes)
+                encoded = json.dumps(clean, allow_nan=False).encode('utf-8')
+    if len(encoded) > BUNDLE_MAX_BYTES:
         raise ValueError('Investigation exceeds 10 MiB. Split it into smaller bundles.')
     return clean
 
@@ -164,10 +300,28 @@ def _investigation_summary(value):
             item['capture'] = {'mode': plan['capture'].get('mode')}
         plans.append(item)
     tags = [str(tag) for tag in value.get('tags') or []]
-    return {'schema_version': 'investigation-summary-1.0',
-            'name': str(value.get('name') or 'Untitled investigation'),
-            'notes': str(value.get('notes') or ''), 'tags': tags,
-            'baseline_id': str(value.get('baseline_id') or ''), 'plans': plans}
+    summary = {'schema_version': 'investigation-summary-1.0',
+               'name': str(value.get('name') or 'Untitled investigation'),
+               'notes': str(value.get('notes') or ''), 'tags': tags,
+               'baseline_id': str(value.get('baseline_id') or ''), 'plans': plans}
+    if value.get('evidence'):
+        evidence = []
+        for item in value['evidence']:
+            ev = {
+                'id': item['id'],
+                'kind': item['kind'],
+                'captured_at': str(item.get('captured_at') or ''),
+                'title': str(item.get('title') or item['kind']),
+            }
+            if item.get('data_trimmed'):
+                ev['data_trimmed'] = True
+            if item.get('text_trimmed'):
+                ev['text_trimmed'] = True
+            if item.get('note'):
+                ev['note'] = str(item['note'])
+            evidence.append(ev)
+        summary['evidence'] = evidence
+    return summary
 
 
 def _save_investigation_summary(conn, key, updated, value):
@@ -210,7 +364,7 @@ class WorkspaceStore:
                          'operation TEXT NOT NULL, profile_id TEXT, profile_name TEXT, connection_type TEXT, '
                          'read_only INTEGER, host TEXT, port INTEGER, db_user TEXT, engine TEXT, server_version TEXT, '
                          'statements TEXT NOT NULL, target TEXT, verified TEXT, policy TEXT, error_code INTEGER, '
-                         'message TEXT, rows_affected INTEGER, after TEXT, duration_ms REAL)')
+                         'message TEXT, rows_affected INTEGER, after TEXT, duration_ms REAL, ssh TEXT)')
             conn.execute('CREATE INDEX IF NOT EXISTS audit_attempted_at ON audit (attempted_at)')
             conn.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
             # A cache of investigation list metadata, derived from records and
@@ -220,14 +374,50 @@ class WorkspaceStore:
                          'updated TEXT NOT NULL, payload TEXT NOT NULL, search TEXT NOT NULL)')
             conn.execute('CREATE INDEX IF NOT EXISTS investigation_summaries_recent '
                          'ON investigation_summaries (updated, id)')
+            # Saved schema versions (schema_versions.py): the summary is what
+            # lists show; the snapshot is zlib-compressed JSON, decoded only
+            # when one version is opened. Created on demand like the summaries
+            # above, so older myflames sharing this file are unaffected.
+            conn.execute('CREATE TABLE IF NOT EXISTS schema_versions (id TEXT PRIMARY KEY, saved_at TEXT NOT NULL, '
+                         'source_key TEXT NOT NULL, database TEXT NOT NULL, number INTEGER NOT NULL, '
+                         'name TEXT NOT NULL, note TEXT NOT NULL, summary TEXT NOT NULL, payload BLOB NOT NULL)')
+            conn.execute('CREATE INDEX IF NOT EXISTS schema_versions_source '
+                         'ON schema_versions (source_key, number)')
+            conn.execute('CREATE INDEX IF NOT EXISTS schema_versions_recent ON schema_versions (saved_at)')
+            conn.execute('CREATE TABLE IF NOT EXISTS parameter_snapshots (id TEXT PRIMARY KEY, saved_at TEXT NOT NULL, '
+                         'source_key TEXT NOT NULL, number INTEGER NOT NULL, label TEXT NOT NULL, '
+                         'summary TEXT NOT NULL, payload BLOB NOT NULL, UNIQUE(source_key, number))')
+            conn.execute('CREATE INDEX IF NOT EXISTS parameter_snapshots_recent ON parameter_snapshots (saved_at)')
             conn.commit()
             if conn.execute('PRAGMA user_version').fetchone()[0] < STORE_VERSION:
                 self._migrate(conn)
+            if not getattr(self, '_audit_ssh_checked', False):
+                self._add_audit_ssh(conn)
+                self._audit_ssh_checked = True
             self._protect_sidecars()
         except BaseException:
             conn.close()
             raise
         return conn
+
+    def _add_audit_ssh(self, conn):
+        """Give an audit table made before SSH tunnels its ssh column (the SSH
+        target), once, under the write lock. Additive: an older myflames
+        names its columns, so it keeps reading and writing the table."""
+        if 'ssh' in [row[1] for row in conn.execute('PRAGMA table_info(audit)').fetchall()]:
+            return
+        conn.isolation_level = None
+        try:
+            conn.execute('BEGIN IMMEDIATE')
+            if 'ssh' not in [row[1] for row in conn.execute('PRAGMA table_info(audit)').fetchall()]:
+                conn.execute('ALTER TABLE audit ADD COLUMN ssh TEXT')
+            conn.execute('COMMIT')
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute('ROLLBACK')
+            raise
+        finally:
+            conn.isolation_level = ''
 
     def _protect_sidecars(self):
         for suffix in ('-wal', '-shm', '-journal'):
@@ -517,7 +707,10 @@ class WorkspaceStore:
         from . import secret_store
         from .live import connection_options
         options = connection_options(payload)
-        name = payload.get('name') or options['host']
+        name = payload.get('name')
+        if isinstance(name, str):
+            name = name.strip()
+        name = name or options['host']
         if not isinstance(name, str) or len(name) > 200:
             raise ValueError('Connection names must be text of at most 200 characters.')
         if password is not None and not isinstance(password, str):
@@ -564,11 +757,19 @@ class WorkspaceStore:
                 elif not _same_endpoint(value, existing):
                     # A saved password is tied to the endpoint and TLS settings it was saved for.
                     raise ValueError('The saved password belongs to the previous host, port, user, and TLS '
-                                     'settings. Enter the password again, or turn off Remember password.')
+                                     'settings (and SSH host). Enter the password again, or turn off Remember '
+                                     'password.')
                 else:
                     value.update(remember_password=True, secret_backend=existing.get('secret_backend') or '')
                     if existing.get('secret_ref'):
                         value['secret_ref'] = existing['secret_ref']
+                        # The kept secret's key is fingerprinted with the
+                        # endpoint as first saved: a host or CA path saved
+                        # with pasted spaces keeps that spelling (every
+                        # request trims it), or _ref_matches would refuse it.
+                        for field in ('host', 'ssl_ca'):
+                            if existing.get(field) and endpoint_value(existing, field) == endpoint_value(value, field):
+                                value[field] = existing[field]
                 # Type and read-only are kept unless this save sets them; a
                 # save that points the profile at another endpoint without
                 # choosing a type makes it production again.
@@ -680,6 +881,30 @@ class WorkspaceStore:
         finally:
             conn.close()
         return self.get('profile', key)
+
+    def set_profile_ssh(self, key, ssh, connection_type=None, read_only=None):
+        """Point a saved profile through SSH (*ssh*: ``ssh_host`` and optional
+        ``ssh_user`` and ``ssh_port``) or, with *ssh* None, directly again.
+        Returns ``(profile, forgot_password)``. The SSH target is part of the
+        endpoint: a saved password belongs to the endpoint it was saved for,
+        so a change of SSH target forgets it, and the type becomes production
+        unless *connection_type* is given (as for every save that points a
+        profile at another endpoint)."""
+        from .live import connection_options
+        existing = self._profile(key) if isinstance(key, str) else None
+        if existing is None:
+            raise ValueError('The connection profile no longer exists.')
+        payload = {f: existing[f] for f in PROFILE_FIELDS if f in existing and f not in _SSH_ENDPOINT_FIELDS}
+        payload.update({k: v for k, v in (ssh or {}).items() if k in _SSH_ENDPOINT_FIELDS and v not in (None, '')})
+        if connection_type is not None:
+            payload['type'] = connection_type
+        if read_only is not None:
+            payload['read_only'] = read_only
+        options = connection_options(payload)
+        moved = not _same_endpoint(options, existing)
+        forget = bool(moved and existing.get('remember_password'))
+        saved = self._save_profile(payload, key, None, False if forget else None)
+        return saved, forget
 
     def forget_password(self, key):
         """Delete a profile's saved password and record that none is saved."""
@@ -911,6 +1136,322 @@ class WorkspaceStore:
         with closing(self._connect()) as conn, conn:
             return conn.execute('DELETE FROM records WHERE kind = ?', (HISTORY_KIND,)).rowcount
 
+    # -- Query editor saved queries (records of kind 'saved_query') ------------
+
+    def saved_query_save(self, entry, max_entries, max_bytes):
+        """Add one saved query and return its ID. Unlike the history, a
+        full store refuses (ValueError) rather than drop a query the user
+        chose to keep: at most *max_entries* records and *max_bytes* of
+        stored JSON. The entry is built by editor_session.saved_query_entry
+        (redacted SQL, never credentials)."""
+        if not isinstance(entry, dict):
+            raise ValueError('A saved query must be an object.')
+        clean = {k: v for k, v in entry.items() if str(k).lower() not in SECRET_KEYS and k != 'id'}
+        payload = json.dumps(clean, allow_nan=False, ensure_ascii=False)
+        key = uuid.uuid4().hex
+        conn = self._transaction()
+        try:
+            count, size = conn.execute('SELECT COUNT(*), COALESCE(SUM(length(payload)), 0) FROM records '
+                                       'WHERE kind = ?', (SAVED_QUERY_KIND,)).fetchone()
+            if count >= max_entries:
+                raise ValueError('This computer keeps at most {:,} saved queries. Delete some, then save again.'
+                                 .format(max_entries))
+            if size + len(payload) > max_bytes:
+                raise ValueError('Saved queries are limited to {:,} MB on this computer. Delete some, then save '
+                                 'again.'.format(max_bytes // (1024 * 1024)))
+            conn.execute('INSERT INTO records VALUES (?, ?, ?, ?)', (key, SAVED_QUERY_KIND, _now(), payload))
+            conn.execute('COMMIT')
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute('ROLLBACK')
+            raise
+        finally:
+            conn.close()
+        return key
+
+    def saved_query_list(self, limit=500):
+        """Saved queries, the most recently saved, renamed or moved first."""
+        if not self.path.exists():
+            return []
+        with closing(self._connect()) as conn, conn:
+            rows = conn.execute('SELECT id, updated, payload FROM records WHERE kind = ? '
+                                'ORDER BY updated DESC, rowid DESC', (SAVED_QUERY_KIND,)).fetchall()
+        items = []
+        for key, updated, payload in rows:
+            try:
+                value = json.loads(payload)
+            except ValueError:
+                continue
+            value['id'] = key
+            items.append(value)
+            if len(items) >= limit:
+                break
+        return items
+
+    def saved_query_rename(self, record_id, name):
+        """Rename one saved query. Returns the updated item."""
+        return self._saved_query_update(record_id, 'name', name)
+
+    def saved_query_move(self, record_id, folder):
+        """Move one saved query to *folder*. Returns the updated item."""
+        return self._saved_query_update(record_id, 'folder', folder)
+
+    def _saved_query_update(self, record_id, field, value):
+        if not isinstance(record_id, str) or not _RECORD_ID.fullmatch(record_id):
+            raise ValueError('That saved query is no longer kept.')
+        conn = self._transaction()
+        try:
+            row = conn.execute('SELECT payload FROM records WHERE kind = ? AND id = ?',
+                               (SAVED_QUERY_KIND, record_id)).fetchone()
+            if row is None:
+                raise ValueError('That saved query is no longer kept.')
+            value_obj = json.loads(row[0])
+            if not isinstance(value_obj, dict):
+                raise ValueError('That saved query could not be read.')
+            value_obj[field] = value
+            # The same form as the record's created time (editor_session._now).
+            value_obj['updated'] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='milliseconds')
+            conn.execute('UPDATE records SET updated = ?, payload = ? WHERE kind = ? AND id = ?',
+                         (_now(), json.dumps(value_obj, allow_nan=False, ensure_ascii=False),
+                          SAVED_QUERY_KIND, record_id))
+            conn.execute('COMMIT')
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute('ROLLBACK')
+            raise
+        finally:
+            conn.close()
+        value_obj['id'] = record_id
+        return value_obj
+
+    def saved_query_delete(self, record_id):
+        """Delete one saved query. Returns the count (0 when it is gone)."""
+        if not isinstance(record_id, str) or not _RECORD_ID.fullmatch(record_id):
+            raise ValueError('That saved query is no longer kept.')
+        if not self.path.exists():
+            return 0
+        with closing(self._connect()) as conn, conn:
+            return conn.execute('DELETE FROM records WHERE kind = ? AND id = ?',
+                                (SAVED_QUERY_KIND, record_id)).rowcount
+
+    # -- Schema versions (schema_versions.py) ----------------------------------
+
+    def schema_version_save(self, snapshot, name='', note=''):
+        """Save a snapshot as the next version of its database (numbered per
+        host, port and database). Returns its summary with ``same_as``: the
+        latest earlier version of that database when it has the same
+        checksum (nothing changed since), else null."""
+        from .schema_versions import encode_snapshot, source_key, version_summary, validate_snapshot
+        snapshot = validate_snapshot(snapshot)
+        name, note = _version_label(name, note)
+        key, payload, source = uuid.uuid4().hex, encode_snapshot(snapshot), source_key(snapshot)
+        conn = self._transaction()
+        try:
+            latest = conn.execute('SELECT id, number, name, summary FROM schema_versions WHERE source_key = ? '
+                                  'ORDER BY number DESC LIMIT 1', (source,)).fetchone()
+            number = latest[1] + 1 if latest else 1
+            summary = version_summary(snapshot)
+            saved_at = _now()
+            conn.execute('INSERT INTO schema_versions (id, saved_at, source_key, database, number, name, note, '
+                         'summary, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                         (key, saved_at, source, snapshot['database'], number, name, note,
+                          json.dumps(summary, allow_nan=False), payload))
+            conn.execute('COMMIT')
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute('ROLLBACK')
+            raise
+        finally:
+            conn.close()
+        item = _version_item(key, saved_at, source, number, name, note, summary)
+        item['same_as'] = None
+        if latest and json.loads(latest[3]).get('checksum') == summary['checksum']:
+            item['same_as'] = {'id': latest[0], 'number': latest[1], 'name': latest[2]}
+        return item
+
+    def schema_version_list(self, source=None, database=None, limit=1000):
+        """``schema-version-list-1.0``: summaries, newest first; never decodes
+        a snapshot. *source* keeps one database's history (source_key)."""
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 5000:
+            raise ValueError('Ask for 1 to 5000 schema versions at a time.')
+        result = {'schema_version': 'schema-version-list-1.0', 'items': []}
+        if not self.path.exists():
+            return result
+        where, args = [], []
+        if source is not None:
+            where.append('source_key = ?')
+            args.append(str(source))
+        if database is not None:
+            where.append('database = ?')
+            args.append(str(database))
+        result['items'] = self._versions(where, args, 'ORDER BY saved_at DESC, number DESC LIMIT %d' % limit)
+        return result
+
+    def _versions(self, where, args, tail=''):
+        """Summaries of the versions matching *where* (SQL with ? args)."""
+        if not self.path.exists():
+            return []
+        sql = 'SELECT id, saved_at, source_key, number, name, note, summary FROM schema_versions'
+        if where:
+            sql += ' WHERE ' + ' AND '.join(where)
+        with closing(self._connect()) as conn, conn:
+            rows = conn.execute(sql + ' ' + tail, args).fetchall()
+        return [_version_item(*row[:6], summary=json.loads(row[6])) for row in rows]
+
+    def schema_version_get(self, key):
+        """One saved version: its summary plus ``snapshot``, or None."""
+        from .schema_versions import decode_snapshot
+        if not self.path.exists() or not isinstance(key, str):
+            return None
+        with closing(self._connect()) as conn, conn:
+            row = conn.execute('SELECT id, saved_at, source_key, number, name, note, summary, payload '
+                               'FROM schema_versions WHERE id = ?', (key,)).fetchone()
+        if row is None:
+            return None
+        item = _version_item(*row[:6], summary=json.loads(row[6]))
+        item['snapshot'] = decode_snapshot(row[7])
+        return item
+
+    def schema_version_update(self, key, name=None, note=None):
+        """Rename a version or change its note; returns the summary."""
+        current = self.schema_version_list_item(key)
+        if current is None:
+            raise ValueError('No saved schema version with that ID.')
+        name, note = _version_label(current['name'] if name is None else name,
+                                    current['note'] if note is None else note)
+        with closing(self._connect()) as conn, conn:
+            conn.execute('UPDATE schema_versions SET name = ?, note = ? WHERE id = ?', (name, note, key))
+        return self.schema_version_list_item(key)
+
+    def schema_version_list_item(self, key):
+        if not self.path.exists() or not isinstance(key, str):
+            return None
+        with closing(self._connect()) as conn, conn:
+            row = conn.execute('SELECT id, saved_at, source_key, number, name, note, summary FROM schema_versions '
+                               'WHERE id = ?', (key,)).fetchone()
+        return _version_item(*row[:6], summary=json.loads(row[6])) if row else None
+
+    def schema_version_delete(self, key):
+        if self.path.exists():
+            with closing(self._connect()) as conn, conn:
+                conn.execute('DELETE FROM schema_versions WHERE id = ?', (str(key),))
+        return {'deleted': True}
+
+    def schema_version_find(self, ref, source=None):
+        """Resolve a version by ID, an ID prefix of at least 6 characters,
+        its exact name, or ``latest`` (of *source* when given). Raises
+        ValueError when nothing or more than one version matches."""
+        ref = str(ref or '').strip()
+        if not ref:
+            raise ValueError('Name a saved schema version.')
+        if ref == 'latest':
+            where, args = (['source_key = ?'], [str(source)]) if source is not None else ([], [])
+            items = self._versions(where, args, 'ORDER BY number DESC, saved_at DESC LIMIT 1' if source is not None
+                                   else 'ORDER BY saved_at DESC, number DESC LIMIT 1')
+            if not items:
+                raise ValueError('No saved schema version of %s yet. Save one with: myflames schema save'
+                                 % (source or 'this database'))
+            return items[0]
+        exact = self._versions(['id = ?'], [ref])
+        if exact:
+            return exact[0]
+        # IDs are lowercase hex (uuid4().hex), so a prefix needs no LIKE escaping.
+        matches = []
+        if 6 <= len(ref) <= 32 and all(c in '0123456789abcdef' for c in ref):
+            matches = self._versions(['id LIKE ?'], [ref + '%'], 'LIMIT 2')
+        if not matches:
+            matches = self._versions(['name = ?'], [ref], 'LIMIT 2')
+        if len(matches) > 1:
+            raise ValueError('%d saved schema versions match %r; use the ID instead (myflames schema list).'
+                             % (len(matches), ref))
+        if not matches:
+            raise ValueError('No saved schema version matches %r. List them with: myflames schema list' % ref)
+        return matches[0]
+
+    # -- Parameter snapshots (param_compare.py) -------------------------------
+
+    def parameter_snapshot_save(self, snapshot, label=''):
+        from .param_compare import validate_snapshot, source_key
+        snapshot = dict(snapshot, label=label or snapshot.get('label', ''))
+        snapshot = validate_snapshot(snapshot)
+        key, source, saved_at = uuid.uuid4().hex, source_key(snapshot), _now()
+        summary = {'server': snapshot['server'], 'captured_at': snapshot['captured_at'],
+                   'complete': snapshot['complete'], 'count': len(snapshot['items'])}
+        payload = zlib.compress(json.dumps(snapshot, ensure_ascii=False, allow_nan=False).encode('utf-8'))
+        conn = self._transaction()
+        try:
+            latest = conn.execute('SELECT MAX(number) FROM parameter_snapshots WHERE source_key = ?',
+                                  (source,)).fetchone()[0]
+            number = (latest or 0) + 1
+            conn.execute('INSERT INTO parameter_snapshots VALUES (?, ?, ?, ?, ?, ?, ?)',
+                         (key, saved_at, source, number, snapshot['label'], json.dumps(summary), payload))
+            conn.execute('COMMIT')
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute('ROLLBACK')
+            raise
+        finally:
+            conn.close()
+        return dict(summary, id=key, saved_at=saved_at, source_key=source, number=number, label=snapshot['label'])
+
+    def parameter_snapshot_list(self, source=None, limit=1000):
+        if type(limit) is not int or not 1 <= limit <= 5000:
+            raise ValueError('Ask for 1 to 5000 parameter snapshots at a time.')
+        if source is not None and (not isinstance(source, str) or len(source) > 2000):
+            raise ValueError('Invalid source_key.')
+        result = {'schema_version': 'parameter-snapshot-list-1.0', 'items': []}
+        if not self.path.exists():
+            return result
+        where, args = (' WHERE source_key = ?', [source]) if source is not None else ('', [])
+        with closing(self._connect()) as conn, conn:
+            rows = conn.execute('SELECT id, saved_at, source_key, number, label, summary FROM parameter_snapshots' +
+                                where + ' ORDER BY saved_at DESC, number DESC LIMIT ?', args + [limit]).fetchall()
+        result['items'] = [dict(json.loads(r[5]), id=r[0], saved_at=r[1], source_key=r[2], number=r[3], label=r[4])
+                           for r in rows]
+        return result
+
+    def parameter_snapshot_get(self, key):
+        from .param_compare import validate_snapshot, MAX_FILE_BYTES
+        if not self.path.exists() or not isinstance(key, str):
+            return None
+        with closing(self._connect()) as conn, conn:
+            row = conn.execute('SELECT id, saved_at, source_key, number, label, summary, payload '
+                               'FROM parameter_snapshots WHERE id = ?', (key,)).fetchone()
+        if row is None:
+            return None
+        decoder = zlib.decompressobj()
+        raw = decoder.decompress(row[6], MAX_FILE_BYTES + 1)
+        if len(raw) > MAX_FILE_BYTES or not decoder.eof or decoder.unused_data:
+            raise ValueError('Invalid or excessive saved parameter snapshot.')
+        snapshot = validate_snapshot(json.loads(raw.decode('utf-8')))
+        return dict(json.loads(row[5]), id=row[0], saved_at=row[1], source_key=row[2], number=row[3], label=row[4],
+                    snapshot=snapshot)
+
+    def parameter_snapshot_find(self, ref, source=None):
+        ref = str(ref or '').strip()
+        if not ref:
+            raise ValueError('Choose a parameter snapshot ID or latest.')
+        if not self.path.exists():
+            raise ValueError('No saved parameter snapshots. Save one with: myflames config snapshot save')
+        # Match IDs in SQLite, without imposing the list endpoint's page limit.
+        with closing(self._connect()) as conn, conn:
+            if ref == 'latest':
+                where, args = (' WHERE source_key = ?', [source]) if source is not None else ('', [])
+                row = conn.execute('SELECT id FROM parameter_snapshots' + where +
+                                   ' ORDER BY saved_at DESC, number DESC LIMIT 1', args).fetchone()
+            else:
+                row = conn.execute('SELECT id FROM parameter_snapshots WHERE id = ?', (ref,)).fetchone()
+        if row is None:
+            raise ValueError('No saved parameter snapshot matches this ID; use myflames config snapshot list.')
+        return self.parameter_snapshot_get(row[0])
+
+    def parameter_snapshot_delete(self, key):
+        if self.parameter_snapshot_get(key) is None:
+            raise ValueError('That parameter snapshot no longer exists.')
+        with closing(self._connect()) as conn, conn:
+            conn.execute('DELETE FROM parameter_snapshots WHERE id = ?', (key,))
+        return {'deleted': True, 'id': key}
+
     def connection_with_saved_password(self, value):
         """Fill ``password`` from the profile named by ``value['profile_id']``.
 
@@ -951,11 +1492,11 @@ class WorkspaceStore:
         name = profile.get('name') or profile_id
         if not _same_endpoint(value, profile):
             raise ValueError('The saved password for %r is only sent to its own host, port, user, and '
-                             'TLS settings. Save the profile or enter the password.' % name)
+                             'TLS settings (and SSH host). Save the profile or enter the password.' % name)
         ref = profile.get('secret_ref')
         if ref is not None and not _ref_matches(ref, profile_id, profile):
             raise ValueError('The saved password for %r was saved for another host, port, user, or TLS '
-                             'settings. Enter the password and save the profile again.' % name)
+                             'settings (or SSH host). Enter the password and save the profile again.' % name)
         backend = profile.get('secret_backend') or None
         secret = secret_store.get_secret(ref or profile_id, backend)
         if secret is None:
@@ -970,10 +1511,26 @@ def _now():
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
+def _version_label(name, note):
+    name, note = '' if name is None else name, '' if note is None else note
+    if not isinstance(name, str) or len(name) > 200 or '\x00' in name or '\n' in name:
+        raise ValueError('A schema version name is one line of at most 200 characters.')
+    if not isinstance(note, str) or len(note) > 10000 or '\x00' in note:
+        raise ValueError('A schema version note holds at most 10,000 characters.')
+    return name.strip(), note
+
+
+def _version_item(key, saved_at, source, number, name, note, summary):
+    """One ``schema-version-list-1.0`` item."""
+    item = {'id': key, 'saved_at': saved_at, 'source_key': source, 'number': number, 'name': name, 'note': note}
+    item.update(summary)
+    return item
+
+
 AUDIT_COLUMNS = ('id', 'attempted_at', 'finished_at', 'status', 'outcome', 'surface', 'os_user', 'operation',
                  'profile_id', 'profile_name', 'connection_type', 'read_only', 'host', 'port', 'db_user', 'engine',
                  'server_version', 'statements', 'target', 'verified', 'policy', 'error_code', 'message',
-                 'rows_affected', 'after', 'duration_ms')
+                 'rows_affected', 'after', 'duration_ms', 'ssh')
 AUDIT_DEFAULT_RETENTION_DAYS = 90
 AUDIT_MAX_RETENTION_DAYS = 3650
 
@@ -1002,8 +1559,9 @@ def _loads(text):
 
 
 def _audit_record(row):
-    """One audit row in the audit-1.0 record shape."""
-    return {
+    """One audit row in the audit-1.0 record shape; ``connection.ssh`` (the
+    SSH target) only for a connection through SSH."""
+    record = {
         'id': row['id'], 'attempted_at': row['attempted_at'], 'finished_at': row['finished_at'],
         'status': row['status'], 'outcome': row['outcome'],
         # pending: myflames stopped before it could record the result; unknown:
@@ -1021,6 +1579,9 @@ def _audit_record(row):
         'error_code': row['error_code'], 'message': row['message'], 'rows_affected': row['rows_affected'],
         'after': _loads(row['after']), 'duration_ms': row['duration_ms'],
     }
+    if row.get('ssh'):
+        record['connection']['ssh'] = row['ssh']
+    return record
 
 
 def _check_safety(connection_type, read_only):
@@ -1051,13 +1612,33 @@ def _owner_only(path, mode):
     _protect_private_path(path, mode, directory=mode == 0o700)
 
 
+def endpoint_value(value, field):
+    """One of ENDPOINT_FIELDS as live.connection_options sends it now: a host
+    or CA path saved with pasted spaces around it still matches its requests.
+    An unset SSH port is 0, a set one an integer, however it was sent."""
+    item = value.get(field) or ''
+    if field in ('host', 'ssl_ca', 'ssh_host', 'ssh_user') and isinstance(item, str):
+        from .live import trim
+        item = trim(item)
+    if field == 'ssh_port':
+        try:
+            item = int(item or 0)
+        except (TypeError, ValueError):
+            item = -1  # Never equal to a valid port.
+    return item
+
+
 def _same_endpoint(a, b):
-    return all((a.get(f) or '') == (b.get(f) or '') for f in ENDPOINT_FIELDS)
+    return all(endpoint_value(a, f) == endpoint_value(b, f) for f in ENDPOINT_FIELDS)
 
 
 def _endpoint_fingerprint(value):
-    """Hash of the host, port, user and TLS settings (ENDPOINT_FIELDS)."""
-    text = '\x00'.join(str(value.get(f) or '') for f in ENDPOINT_FIELDS)
+    """Hash of the host, port, user and TLS settings, and of the SSH target
+    when there is one (ENDPOINT_FIELDS). Without SSH the text is the same as
+    before SSH existed, so passwords saved then still match."""
+    text = '\x00'.join(str(value.get(f) or '') for f in _BASE_ENDPOINT_FIELDS)
+    if endpoint_value(value, 'ssh_host'):
+        text += '\x00ssh\x00' + '\x00'.join(str(endpoint_value(value, f)) for f in _SSH_ENDPOINT_FIELDS)
     return hashlib.sha256(text.encode('utf-8')).hexdigest()[:24]
 
 

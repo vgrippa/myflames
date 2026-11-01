@@ -23,19 +23,89 @@ Structural template: ``nested_loop.py`` (the modern flagship pattern —
 ``_html.load_lesson_js`` sibling ``.js``, f-string HTML, ``anim.path``
 arc pills, phase-nav, tweened arrivals, interactive complexity chart).
 
-FirstMatch source note (route to mysql-correctness-reviewer):
-the strategy lives in ``sql/sql_executor.cc`` /
-``sql/iterators/composite_iterators`` as the ``FirstMatch`` semijoin
-strategy; enabled by ``optimizer_switch='firstmatch=on'`` (default on)
-in MySQL 8.4 and MariaDB 11.4. The claim animated here is behavioural
-("scanning of the inner table for the current outer row stops after the
-first match"), which should be checked against source before shipping
-any hard number.
+FirstMatch source note: MySQL turns the tables of a FirstMatch range into
+a semijoin (``FindSubstructure`` in ``sql/sql_executor.cc``) run by
+``NestedLoopIterator`` with ``JoinType::SEMI``, whose read loop stops the
+inner scan after the first row ("Semijoins should stop after the first
+row", ``sql/iterators/composite_iterators.cc``). MariaDB jumps back to the
+outer table after the first match (``do_firstmatch`` in
+``evaluate_join_record``, ``sql/sql_select.cc``). ``firstmatch=on`` is in
+both engines' default optimizer_switch.
 """
 from .. import _html
 
 
 _LESSON_JS = _html.load_lesson_js(__file__)
+
+# Guided steps (see _html.normalize_guide). semijoin_firstmatch.js marks each
+# customer of Act 1 (plain join) and Act 2 (FirstMatch) and the summary with
+# tl.beat(kind). The function name was checked in mysql-server (8.4.9 and
+# 9.7.0): a FirstMatch semijoin runs as NestedLoopIterator with JoinType::SEMI.
+GUIDE = {
+    "code": {
+        "title": "Semijoin FirstMatch",
+        "lines": [
+            ("outer", 0, "for each customer c (the outer input):", "NestedLoopIterator::Read"),
+            ("scan", 1, "for each order o of c with o.total > 1000:"),
+            ("join", 2, "plain join: return (c, o), then keep reading c's orders"),
+            ("first", 2, "FirstMatch: return c once and stop reading c's orders"),
+            ("none", 1, "no order found: c is not in the result"),
+            ("end", 0, "no customers left: the query is done"),
+        ],
+    },
+    "beats": {
+        "naive-row": ["outer", "scan", "join"],
+        "first-match": ["outer", "scan", "first"],
+        "no-match": ["outer", "scan", "none"],
+        "done": ["end"],
+    },
+    "quiz": [
+        {
+            "question": ("Carol has 4 orders over $1000. With FirstMatch, how many of them are "
+                         "read before the query moves on to the next customer?"),
+            "choices": [
+                ("1, the first one found", True,
+                 "IN only needs to know that a match exists, so the semijoin stops reading "
+                 "Carol's orders after the first one and goes to the next customer."),
+                ("All 4", False,
+                 "Reading every matching order is what a plain join does; a semijoin needs one "
+                 "match per customer."),
+                ("None, since the optimizer already knows she has orders", False,
+                 "Something has to find one qualifying order at run time to prove Carol belongs "
+                 "in the result."),
+            ],
+        },
+        {
+            "question": ("Why does the IN (subquery) return Carol only once, even though 4 of "
+                         "her orders match?"),
+            "choices": [
+                ("It is a semijoin: a customer is kept once if at least one order matches", True,
+                 "A semijoin keeps each outer row at most once, and FirstMatch gets that for free "
+                 "by stopping at the first match."),
+                ("The server adds DISTINCT to the query", False,
+                 "Nothing is de-duplicated afterwards here; FirstMatch never produces the repeats "
+                 "in the first place."),
+                ("Her orders are sorted, so the repeats are easy to drop", False,
+                 "Order does not matter: whichever qualifying order is found first ends the "
+                 "search for Carol."),
+            ],
+        },
+        {
+            "question": "When does FirstMatch save the most work?",
+            "choices": [
+                ("When each customer has many matching orders", True,
+                 "The saving is every match after the first, about outer_rows × (matches − 1) "
+                 "inner rows, so many matches per customer means a big saving."),
+                ("When most customers have no matching orders", False,
+                 "A customer without a match still has all its candidate orders checked, so "
+                 "FirstMatch saves nothing there."),
+                ("Only when orders has no index", False,
+                 "Stopping early helps with or without an index, because it skips the reads "
+                 "after the first match either way."),
+            ],
+        },
+    ],
+}
 
 
 def render() -> str:
@@ -96,6 +166,9 @@ def render() -> str:
             "Watch the phase label: it names the exact customer and order "
             "at every step ('Alice id=1 -> order #104 $1500 matches -> "
             "emit Alice, stop scanning her orders').",
+            "Next step checks one customer at a time, first with the plain "
+            "join, then with FirstMatch; the simplified code beside the "
+            "drawing highlights the lines each step runs.",
         ],
     )
 
@@ -103,7 +176,7 @@ def render() -> str:
 <section class="stage">
   {query_card_html}
   {explainer_html}
-  {_html.stage_toolbar("Ready — press Play")}
+  {_html.stage_toolbar("Ready: press Next step, or Play to run it all")}
   <div class="stage-with-phases">
     <svg id="fm-svg" viewBox="0 0 800 420" xmlns="http://www.w3.org/2000/svg"></svg>
     {_html.phase_nav()}
@@ -180,9 +253,12 @@ def render() -> str:
     <p>Sources: MySQL 8.4 Reference Manual §10.2.2.1 "Optimizing IN and
     EXISTS Subquery Predicates with Semijoin Transformations"; MariaDB
     Knowledge Base "Semijoin Subquery Optimizations" / "FirstMatch
-    Strategy". Behavioural claim (inner scan stops on first match) should
-    be verified against the FirstMatch semijoin strategy in
-    <code>sql/</code> before shipping any hard cost number.</p>
+    Strategy". In the MySQL source a FirstMatch semijoin runs as
+    <code>NestedLoopIterator</code> with the semijoin join type, which stops
+    reading the inner side after the first row
+    (<code>sql/iterators/composite_iterators.cc</code>); MariaDB jumps back to
+    the outer table after the first match (<code>do_firstmatch</code> in
+    <code>sql/sql_select.cc</code>).</p>
   </div>
 </details>
 """
@@ -201,4 +277,5 @@ def render() -> str:
         readout_html=readout_html,
         learn_more_html=learn_more_html,
         lesson_js=_LESSON_JS,
+        guide=GUIDE,
     )

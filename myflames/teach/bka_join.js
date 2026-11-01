@@ -19,189 +19,165 @@ function bkaCost(outerRows, innerRows, rowSize, jbs, keySize) {
   };
 }
 
-var W = 800, H = 440;
+var W = 800, H = 372;
 var stage = null;
 
 // ---- Sample data ----
+// orders (outer) carry a dept_no; departments (inner) has primary key id
+// (InnoDB's row id) and a secondary index on dept_no. The two orders differ
+// on purpose: sorting by id is not the same as sorting by dept_no.
 var OUTER_ROWS = [
-  {id: 1001, dept: 3, label: "order #1001 dept=3"},
-  {id: 1002, dept: 7, label: "order #1002 dept=7"},
-  {id: 1003, dept: 1, label: "order #1003 dept=1"},
-  {id: 1004, dept: 5, label: "order #1004 dept=5"},
-  {id: 1005, dept: 3, label: "order #1005 dept=3"},
-  {id: 1006, dept: 9, label: "order #1006 dept=9"}
+  {id: 1001, deptNo: 30},
+  {id: 1002, deptNo: 70},
+  {id: 1003, deptNo: 10},
+  {id: 1004, deptNo: 50},
+  {id: 1005, deptNo: 30},
+  {id: 1006, deptNo: 90}
 ];
+var DEPT_BY_NO = {
+  10: {id: 5, name: "Sales"},
+  30: {id: 2, name: "Eng"},
+  50: {id: 4, name: "Mktg"},
+  70: {id: 1, name: "Ops"},
+  90: {id: 3, name: "HR"}
+};
 
-var DEPT_NAMES = {1: "Sales", 3: "Eng", 5: "Mktg", 7: "Ops", 9: "HR"};
+var PILL_W = 110, PILL_H = 26, PILL_GAP = 8, PILL_X0 = 32;
+function slotX(i) { return PILL_X0 + i * (PILL_W + PILL_GAP); }
+
+// Lookups in buffer order, and the same entries sorted by primary key.
+function lookups() {
+  var out = [];
+  for (var i = 0; i < OUTER_ROWS.length; i++) {
+    var d = DEPT_BY_NO[OUTER_ROWS[i].deptNo];
+    out.push({order: OUTER_ROWS[i], dept: d, from: i});
+  }
+  return out;
+}
+function sortedLookups() {
+  var list = lookups();
+  list.sort(function(a, b) { return (a.dept.id - b.dept.id) || (a.from - b.from); });
+  return list;
+}
+
+function zone(svg, y, h, fill, stroke, title, ink) {
+  svg.appendChild(anim.svgEl("rect", {
+    x: 20, y: y, width: W - 40, height: h, rx: 10, ry: 10,
+    fill: fill, stroke: stroke, "stroke-width": 1.5
+  }));
+  var t = anim.svgEl("text", {
+    x: 32, y: y + 20, "font-size": 12, "font-weight": 700, fill: ink
+  });
+  t.textContent = title;
+  svg.appendChild(t);
+}
+
+function pillEl(svg, x, y, fill, stroke, ink) {
+  var g = anim.svgEl("g", {opacity: 0, transform: "translate(" + x + "," + y + ")"});
+  g.appendChild(anim.svgEl("rect", {
+    x: 0, y: 0, width: PILL_W, height: PILL_H, rx: 13, ry: 13,
+    fill: fill, stroke: stroke, "stroke-width": 1
+  }));
+  var t = anim.svgEl("text", {
+    x: PILL_W / 2, y: 17, "text-anchor": "middle",
+    "font-size": 9.5, "font-weight": 600, fill: ink
+  });
+  g.appendChild(t);
+  svg.appendChild(g);
+  return {g: g, rect: g.firstChild, txt: t};
+}
 
 function buildStage() {
   var svg = document.getElementById("bka-svg");
   while (svg.firstChild) svg.removeChild(svg.firstChild);
 
   // --- Zone 1: Join buffer (top, purple) ---
-  var bufY = 30, bufH = 90;
-  var bufBg = anim.svgEl("rect", {
-    x: 20, y: bufY, width: W - 40, height: bufH, rx: 10, ry: 10,
-    fill: "var(--svg-group-soft)", stroke: "var(--svg-group)", "stroke-width": 1.5
-  });
-  svg.appendChild(bufBg);
-
-  var bufTitle = anim.svgEl("text", {
-    x: 32, y: bufY + 20, "font-size": 12, "font-weight": 700, fill: "var(--svg-group)"
-  });
-  bufTitle.textContent = "Join buffer — collecting outer-row keys";
-  svg.appendChild(bufTitle);
-
+  var bufY = 30, bufH = 82;
+  zone(svg, bufY, bufH, "var(--svg-group-soft)", "var(--svg-group)",
+    "Join buffer: a batch of orders rows (the outer input)", "var(--svg-group)");
   var pills = [];
-  var pillW = 105, pillH = 26, pillGap = 8;
-  var pillStartX = 32;
-  var pillY = bufY + 36;
   for (var i = 0; i < OUTER_ROWS.length; i++) {
-    var px = pillStartX + i * (pillW + pillGap);
-    var pill = anim.svgEl("rect", {
-      x: px, y: pillY, width: pillW, height: pillH, rx: 13, ry: 13,
-      fill: "var(--svg-group-soft)", stroke: "var(--svg-group)", "stroke-width": 1, opacity: 0
-    });
-    svg.appendChild(pill);
-    var ptxt = anim.svgEl("text", {
-      x: px + pillW / 2, y: pillY + 16, "text-anchor": "middle",
-      "font-size": 9, "font-weight": 600, fill: "var(--svg-group)", opacity: 0
-    });
-    ptxt.textContent = "dept=" + OUTER_ROWS[i].dept + " (#" + OUTER_ROWS[i].id + ")";
-    svg.appendChild(ptxt);
-    pills.push({rect: pill, txt: ptxt, data: OUTER_ROWS[i]});
+    var p = pillEl(svg, slotX(i), bufY + 38, "var(--svg-group-soft)", "var(--svg-group)", "var(--svg-group)");
+    p.txt.textContent = "#" + OUTER_ROWS[i].id + " dept_no=" + OUTER_ROWS[i].deptNo;
+    pills.push(p);
   }
 
-  // --- Zone 2: Sort + MRR dispatch (middle, blue) ---
-  var sortY = bufY + bufH + 20, sortH = 80;
-  var sortBg = anim.svgEl("rect", {
-    x: 20, y: sortY, width: W - 40, height: sortH, rx: 10, ry: 10,
-    fill: "var(--svg-token-soft)", stroke: "var(--svg-token)", "stroke-width": 1.5
-  });
-  svg.appendChild(sortBg);
-
-  var sortTitle = anim.svgEl("text", {
-    x: 32, y: sortY + 20, "font-size": 12, "font-weight": 700, fill: "var(--svg-token-ink)"
-  });
-  sortTitle.textContent = "Sort by rowid \u2192 MRR batch sent to inner B+tree";
-  svg.appendChild(sortTitle);
-
-  var sortedPills = [];
-  var spY = sortY + 36;
+  // --- Zone 2: Multi-Range Read: index lookups, then sort (middle, blue) ---
+  var sortY = bufY + bufH + 16, sortH = 82;
+  zone(svg, sortY, sortH, "var(--svg-token-soft)", "var(--svg-token)",
+    "Multi-Range Read: the dept_no index gives each key's primary key (id), then sort by id",
+    "var(--svg-token-ink)");
+  var keyPills = [];
   for (var s = 0; s < OUTER_ROWS.length; s++) {
-    var spx = pillStartX + s * (pillW + pillGap);
-    var sp = anim.svgEl("rect", {
-      x: spx, y: spY, width: pillW, height: pillH, rx: 13, ry: 13,
-      fill: "var(--svg-token-soft)", stroke: "var(--svg-token)", "stroke-width": 1, opacity: 0
-    });
-    svg.appendChild(sp);
-    var stxt = anim.svgEl("text", {
-      x: spx + pillW / 2, y: spY + 16, "text-anchor": "middle",
-      "font-size": 9, "font-weight": 600, fill: "var(--svg-token-ink)", opacity: 0
-    });
-    stxt.textContent = "";
-    svg.appendChild(stxt);
-    sortedPills.push({rect: sp, txt: stxt});
+    var kp = pillEl(svg, slotX(s), sortY + 38, "var(--svg-token-soft)", "var(--svg-token)", "var(--svg-token-ink)");
+    keyPills.push(kp);
   }
 
-  // Arrow from sort zone to read zone
-  var arrowMid = anim.svgEl("line", {
-    x1: W / 2, y1: sortY + sortH, x2: W / 2, y2: sortY + sortH + 18,
-    stroke: "var(--svg-token)", "stroke-width": 2, "stroke-dasharray": "4,3",
-    "marker-end": "", opacity: 0
-  });
-  svg.appendChild(arrowMid);
-
-  // --- Zone 3: Sequential read (bottom, green) ---
-  var readY = sortY + sortH + 20, readH = 100;
-  var readBg = anim.svgEl("rect", {
-    x: 20, y: readY, width: W - 40, height: readH, rx: 10, ry: 10,
-    fill: "var(--svg-ok-soft)", stroke: "var(--svg-ok)", "stroke-width": 1.5
-  });
-  svg.appendChild(readBg);
-
-  var readTitle = anim.svgEl("text", {
-    x: 32, y: readY + 20, "font-size": 12, "font-weight": 700, fill: "var(--svg-ok)"
-  });
-  readTitle.textContent = "Sequential disk read — matching rows in rowid order";
-  svg.appendChild(readTitle);
-
+  // --- Zone 3: Read in primary key order (bottom, green) ---
+  var readY = sortY + sortH + 16, readH = 96;
+  zone(svg, readY, readH, "var(--svg-ok-soft)", "var(--svg-ok)",
+    "Read departments rows in primary key order, join each with its order", "var(--svg-ok)");
   var readSlots = [];
-  var slotW = 105, slotH = 36, slotGap = 8;
   var slotY = readY + 36;
   for (var r = 0; r < OUTER_ROWS.length; r++) {
-    var rx = pillStartX + r * (slotW + slotGap);
+    var rx = slotX(r);
     var slot = anim.svgEl("rect", {
-      x: rx, y: slotY, width: slotW, height: slotH, rx: 8, ry: 8,
-      fill: "var(--svg-ok-soft)", stroke: "var(--svg-ok-soft)", "stroke-width": 1, opacity: 0
+      x: rx, y: slotY, width: PILL_W, height: 40, rx: 8, ry: 8,
+      fill: "var(--svg-ok-soft)", stroke: "var(--svg-ok)", "stroke-width": 1, opacity: 0
     });
     svg.appendChild(slot);
     var rlbl = anim.svgEl("text", {
-      x: rx + slotW / 2, y: slotY + 14, "text-anchor": "middle",
-      "font-size": 9, "font-weight": 600, fill: "var(--svg-ok)", opacity: 0
+      x: rx + PILL_W / 2, y: slotY + 16, "text-anchor": "middle",
+      "font-size": 10, "font-weight": 700, fill: "var(--svg-ok)", opacity: 0
     });
-    rlbl.textContent = "";
     svg.appendChild(rlbl);
     var rlbl2 = anim.svgEl("text", {
-      x: rx + slotW / 2, y: slotY + 28, "text-anchor": "middle",
-      "font-size": 8, "font-weight": 600, fill: "var(--svg-ok)", opacity: 0
+      x: rx + PILL_W / 2, y: slotY + 31, "text-anchor": "middle",
+      "font-size": 9, "font-weight": 600, fill: "var(--svg-ok)", opacity: 0
     });
-    rlbl2.textContent = "";
     svg.appendChild(rlbl2);
     readSlots.push({rect: slot, lbl: rlbl, lbl2: rlbl2});
   }
 
-  // Sweep bar for sequential read
+  // Sweep bar: the read position, moving forward through the primary key.
   var sweep = anim.svgEl("rect", {
-    x: 20, y: readY, width: 4, height: readH,
+    x: 24, y: readY + 30, width: 4, height: 52,
     fill: "var(--svg-ok)", opacity: 0, rx: 2, ry: 2
   });
   svg.appendChild(sweep);
 
-  // Status label
   var statusLbl = anim.svgEl("text", {
-    x: W / 2, y: H - 10, "text-anchor": "middle",
-    "font-size": 12, "font-weight": 600, fill: "var(--svg-ink)"
+    x: W / 2, y: readY + readH + 34, "text-anchor": "middle",
+    "font-size": 12.5, "font-weight": 600, fill: "var(--svg-ink)"
   });
   statusLbl.textContent = "";
   svg.appendChild(statusLbl);
 
   stage = {
-    svg: svg,
-    pills: pills,
-    sortedPills: sortedPills,
-    readSlots: readSlots,
-    sweep: sweep,
-    arrowMid: arrowMid,
-    statusLbl: statusLbl,
-    bufBg: bufBg,
-    sortBg: sortBg,
-    readBg: readBg,
-    readY: readY,
-    readH: readH
+    svg: svg, pills: pills, keyPills: keyPills, readSlots: readSlots,
+    sweep: sweep, statusLbl: statusLbl, sortY: sortY, bufY: bufY
   };
 }
 
 function resetStage() {
   if (!stage) return;
-  for (var i = 0; i < stage.pills.length; i++) {
-    stage.pills[i].rect.setAttribute("opacity", 0);
-    stage.pills[i].txt.setAttribute("opacity", 0);
-  }
-  for (var j = 0; j < stage.sortedPills.length; j++) {
-    stage.sortedPills[j].rect.setAttribute("opacity", 0);
-    stage.sortedPills[j].txt.setAttribute("opacity", 0);
-    stage.sortedPills[j].txt.textContent = "";
+  for (var i = 0; i < stage.pills.length; i++) stage.pills[i].g.setAttribute("opacity", 0);
+  for (var j = 0; j < stage.keyPills.length; j++) {
+    var kp = stage.keyPills[j];
+    kp.g.setAttribute("opacity", 0);
+    kp.g.setAttribute("transform", "translate(" + slotX(j) + "," + (stage.sortY + 38) + ")");
+    kp.txt.textContent = "";
   }
   for (var k = 0; k < stage.readSlots.length; k++) {
-    stage.readSlots[k].rect.setAttribute("opacity", 0);
-    stage.readSlots[k].lbl.setAttribute("opacity", 0);
-    stage.readSlots[k].lbl.textContent = "";
-    stage.readSlots[k].lbl2.setAttribute("opacity", 0);
-    stage.readSlots[k].lbl2.textContent = "";
+    var rs = stage.readSlots[k];
+    rs.rect.setAttribute("opacity", 0);
+    rs.lbl.setAttribute("opacity", 0);
+    rs.lbl.textContent = "";
+    rs.lbl2.setAttribute("opacity", 0);
+    rs.lbl2.textContent = "";
   }
   stage.sweep.setAttribute("opacity", 0);
-  stage.arrowMid.setAttribute("opacity", 0);
+  stage.sweep.setAttribute("x", 24);
   stage.statusLbl.textContent = "";
 }
 
@@ -209,93 +185,137 @@ function buildTimeline() {
   resetStage();
   var tl = anim.timeline();
   var phase = document.getElementById("phase-label");
+  var found = lookups();
+  var sorted = sortedLookups();
+  var n = OUTER_ROWS.length;
+  var foundIds = found.map(function(f) { return f.dept.id; }).join(", ");
+  var sortedIds = sorted.map(function(f) { return f.dept.id; }).join(", ");
 
-  // --- Phase 1: Collect outer keys into join buffer ---
+  // --- Phase 1: fill the join buffer (one guided step) ---
   tl.mark("Collect outer keys");
+  // Guided steps: kinds map to the simplified code (GUIDE in bka_join.py).
+  tl.beat("fill");
   tl.call(function() {
-    phase.textContent = "Phase 1/4 \u2014 collecting outer-row keys into join buffer";
+    phase.textContent = "Phase 1 of 4: orders rows fill the join buffer, forming one batch";
   });
-
-  for (var i = 0; i < stage.pills.length; i++) {
+  for (var i = 0; i < n; i++) {
     (function(idx) {
+      var o = OUTER_ROWS[idx];
       tl.call(function() {
-        stage.pills[idx].rect.setAttribute("opacity", 1);
-        stage.pills[idx].txt.setAttribute("opacity", 1);
-        stage.statusLbl.textContent = "Buffered key " + (idx + 1) + "/" + stage.pills.length +
-          ": dept=" + OUTER_ROWS[idx].dept + " from order #" + OUTER_ROWS[idx].id;
+        stage.statusLbl.textContent = "Buffered order #" + o.id + " (dept_no=" + o.deptNo + "), " +
+          (idx + 1) + " of " + n;
       });
-      tl.delay(280);
+      tl.add({
+        from: 0, to: 1, duration: 160, ease: anim.easeOutCubic,
+        onUpdate: function(v) { stage.pills[idx].g.setAttribute("opacity", v.toFixed(2)); }
+      });
+      tl.delay(100);
     })(i);
   }
-
-  // --- Phase 2: Sort by rowid ---
-  tl.mark("Sort by rowid");
   tl.call(function() {
-    phase.textContent = "Phase 2/4 \u2014 sorting keys by rowid for disk-order access";
-    stage.statusLbl.textContent = "Sorting " + stage.pills.length + " keys by dept rowid\u2026";
-  });
-  tl.delay(300);
-
-  // Create a sorted copy by dept id
-  var sorted = [];
-  for (var si = 0; si < OUTER_ROWS.length; si++) sorted.push(OUTER_ROWS[si]);
-  sorted.sort(function(a, b) { return a.dept - b.dept; });
-
-  tl.call(function() {
-    for (var s = 0; s < sorted.length; s++) {
-      stage.sortedPills[s].rect.setAttribute("opacity", 1);
-      stage.sortedPills[s].txt.setAttribute("opacity", 1);
-      stage.sortedPills[s].txt.textContent = "dept=" + sorted[s].dept + " (#" + sorted[s].id + ")";
-    }
-    stage.statusLbl.textContent = "Keys sorted by dept rowid \u2192 ready for MRR";
-  });
-  tl.delay(500);
-
-  // --- Phase 3: MRR batch to inner B+tree ---
-  tl.mark("MRR batch lookup");
-  tl.call(function() {
-    phase.textContent = "Phase 3/4 \u2014 MRR sends sorted batch to inner B+tree index";
-    stage.arrowMid.setAttribute("opacity", 0.7);
-    stage.statusLbl.textContent = "Multi-Range Read: sending " + sorted.length + " keys in disk order to storage engine\u2026";
+    phase.textContent = "The batch holds " + n + " orders rows. Next, one Multi-Range Read for all their dept_no keys";
   });
   tl.delay(400);
 
-  // --- Phase 4: Sequential read of matching rows ---
-  tl.mark("Sequential read");
+  // --- Phase 2: one Multi-Range Read: index lookups (one guided step) ---
+  tl.mark("Index lookups (MRR)");
+  tl.beat("lookup");
   tl.call(function() {
-    phase.textContent = "Phase 4/4 \u2014 storage engine reads matching rows in disk order (sequential I/O)";
+    phase.textContent = "Phase 2 of 4: the " + n + " dept_no keys go to InnoDB as one Multi-Range Read; " +
+      "the dept_no index gives each department's primary key";
   });
-
-  // Show sweep + read slots appearing one by one
-  for (var ri = 0; ri < sorted.length; ri++) {
+  for (var j = 0; j < n; j++) {
     (function(idx) {
+      var f = found[idx];
+      var kp = stage.keyPills[idx];
       tl.call(function() {
-        var deptId = sorted[idx].dept;
-        var deptName = DEPT_NAMES[deptId] || ("dept " + deptId);
-        stage.readSlots[idx].rect.setAttribute("opacity", 1);
-        stage.readSlots[idx].lbl.setAttribute("opacity", 1);
-        stage.readSlots[idx].lbl.textContent = deptName + " (id=" + deptId + ")";
-        stage.readSlots[idx].lbl2.setAttribute("opacity", 1);
-        stage.readSlots[idx].lbl2.textContent = "\u2192 order #" + sorted[idx].id;
-
-        // Move sweep bar
-        var progress = (idx + 1) / sorted.length;
-        var sweepX = 20 + progress * (W - 44);
-        stage.sweep.setAttribute("x", sweepX);
-        stage.sweep.setAttribute("opacity", 0.8);
-
-        stage.statusLbl.textContent = "Sequential read " + (idx + 1) + "/" + sorted.length +
-          ": " + deptName + " \u2192 order #" + sorted[idx].id + " (disk-order access)";
+        kp.txt.textContent = "dept_no=" + f.order.deptNo + " → id=" + f.dept.id;
+        stage.statusLbl.textContent = "Index lookup " + (idx + 1) + " of " + n + ": dept_no=" +
+          f.order.deptNo + " → primary key id=" + f.dept.id;
       });
-      tl.delay(350);
-    })(ri);
+      // The found key drops in under its order.
+      tl.add({
+        from: 0, to: 1, duration: 200, ease: anim.easeOutCubic,
+        onUpdate: function(v) {
+          kp.g.setAttribute("opacity", v.toFixed(2));
+          kp.g.setAttribute("transform", "translate(" + slotX(idx) + "," +
+            (stage.sortY + 38 - 14 * (1 - v)).toFixed(1) + ")");
+        }
+      });
+      tl.delay(90);
+    })(j);
+  }
+  tl.call(function() {
+    phase.textContent = "Primary keys found, in buffer order: " + foundIds + ". Reading them now would jump around";
+  });
+  tl.delay(400);
+
+  // --- Phase 3: sort by primary key (one guided step) ---
+  tl.mark("Sort by rowid");
+  tl.beat("sort");
+  tl.call(function() {
+    phase.textContent = "Phase 3 of 4: sort the primary keys (InnoDB's row ids): " + foundIds + " → " + sortedIds;
+    stage.statusLbl.textContent = "Sorting " + n + " row ids so the reads move forward through departments";
+  });
+  // Each key pill slides to its sorted slot; alternate pills arc over and
+  // under so they never cover each other.
+  tl.add({
+    from: 0, to: 1, duration: 700, ease: anim.easeInOutCubic,
+    onUpdate: function(t) {
+      for (var k = 0; k < sorted.length; k++) {
+        var from = sorted[k].from;
+        var x = slotX(from) + (slotX(k) - slotX(from)) * t;
+        var lift = (k %% 2 ? 1 : -1) * 12 * Math.sin(Math.PI * t) * (from === k ? 0 : 1);
+        stage.keyPills[from].g.setAttribute("transform",
+          "translate(" + x.toFixed(1) + "," + (stage.sortY + 38 + lift).toFixed(1) + ")");
+      }
+    }
+  });
+  tl.call(function() {
+    stage.statusLbl.textContent = "Sorted: " + sortedIds + ". Ready to read in primary key order";
+  });
+  tl.delay(400);
+
+  // --- Phase 4: read rows in primary key order (one guided step per row) ---
+  tl.mark("Sequential read");
+  for (var r = 0; r < sorted.length; r++) {
+    (function(idx) {
+      var f = sorted[idx];
+      var again = idx > 0 && sorted[idx - 1].dept.id === f.dept.id;
+      var rs = stage.readSlots[idx];
+      tl.beat("read-row");
+      tl.call(function() {
+        phase.textContent = "Phase 4 of 4, read " + (idx + 1) + " of " + n + ": departments id=" + f.dept.id +
+          " (" + f.dept.name + ") → joined with order #" + f.order.id +
+          (again ? " (the same row again: its page was just read)" : "");
+        stage.statusLbl.textContent = "Reading id=" + f.dept.id + " " + f.dept.name +
+          " for order #" + f.order.id;
+      });
+      tl.add({
+        from: 0, to: 1, duration: 260, ease: anim.easeInOutCubic,
+        onUpdate: function(v) {
+          var x0 = idx === 0 ? 24 : slotX(idx - 1) + PILL_W + PILL_GAP / 2 - 2;
+          var x1 = slotX(idx) + PILL_W + PILL_GAP / 2 - 2;
+          stage.sweep.setAttribute("x", (x0 + (x1 - x0) * v).toFixed(1));
+          stage.sweep.setAttribute("opacity", 0.8);
+          rs.lbl.textContent = f.dept.name + " (id=" + f.dept.id + ")";
+          rs.lbl2.textContent = "\u2192 order #" + f.order.id;
+          rs.rect.setAttribute("opacity", v.toFixed(2));
+          rs.lbl.setAttribute("opacity", v.toFixed(2));
+          rs.lbl2.setAttribute("opacity", v.toFixed(2));
+        }
+      });
+      tl.delay(200);
+    })(r);
   }
 
   tl.mark("Done");
+  tl.beat("done");
   tl.call(function() {
     stage.sweep.setAttribute("opacity", 0);
-    phase.textContent = "\u2713 Batch complete \u2014 all " + sorted.length + " keys resolved via sequential I/O";
-    stage.statusLbl.textContent = "BKA converted " + sorted.length + " random lookups into 1 sequential MRR sweep.";
+    phase.textContent = "✓ Batch complete: " + n + " lookups, one sorted pass over departments. " +
+      "The next batch refills the buffer";
+    stage.statusLbl.textContent = "BKA turned " + n + " scattered lookups into one sorted Multi-Range Read.";
   });
   tl.delay(400);
   return tl;
@@ -307,7 +327,7 @@ function buildCurrentTimeline() {
 
 function resetAnim() {
   resetStage();
-  document.getElementById("phase-label").textContent = "Ready \u2014 press Play";
+  document.getElementById("phase-label").textContent = "Ready: press Next step, or Play to run it all";
 }
 
 function renderChart(outerRows, innerRows, keySize) {

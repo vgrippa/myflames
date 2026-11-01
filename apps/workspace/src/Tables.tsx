@@ -39,6 +39,9 @@ import "./tables.css";
 import { PaginatedReportTable } from "./PaginatedReportTable";
 import { ReviewedSqlAction, ReviewedSqlBridger, ReviewedSqlProvider, ReviewedSqlStatus, useReviewedSql } from "./ReviewedSqlAction";
 import { AddColumnDialog, RemoveColumnDialog } from "./TableAlterDialog";
+import { useImportCsv, useImportCsvGate } from "./importCsvApi";
+import { PrivilegeGate } from "./privileges";
+import { TableStructureSheet } from "./TableStructure";
 
 export type TableFocus = { schema: string; table: string } | null;
 const STATUS_RANK: Record<string, number> = { problem: 0, watch: 1, info: 2, ok: 3, shared: 4, unknown: 5 };
@@ -86,6 +89,7 @@ type List = "all" | "missing" | "free";
 function TableRowActions({
   schema,
   table,
+  onStructure,
   onAddColumn,
   onRemoveColumn,
   onIndexes,
@@ -93,6 +97,7 @@ function TableRowActions({
 }: {
   schema: string;
   table: string;
+  onStructure: () => void;
   onAddColumn: () => void;
   onRemoveColumn: () => void;
   onIndexes: () => void;
@@ -101,6 +106,8 @@ function TableRowActions({
   const reviewedSql = useReviewedSql();
   const blocked = reviewedSql?.blocked;
   const items: RowMenuItem[] = [
+    { label: "Table structure", icon: "table", onSelect: onStructure },
+    "divider",
     { label: "Add column…", icon: "plus", disabled: blocked, onSelect: onAddColumn },
     { label: "Remove column…", icon: "minus", disabled: blocked, onSelect: onRemoveColumn },
     "divider",
@@ -200,13 +207,33 @@ export function TablesView({
   const [filter, setFilter] = useState("");
   const [list, setList] = useState<List>("all");
   const [tableAlter, setTableAlter] = useState<{ mode: "add" | "remove"; schema: string; table: string } | null>(null);
+  // Table structure reads with the connection the list was read with; a list
+  // from another connection offers it disabled (otherList).
+  const [structure, setStructure] = useState<{ schema: string; table: string; connection: Connection } | null>(null);
+  const openStructure = (schema: string, table: string) => {
+    if (!other) setStructure({ schema, table, connection });
+  };
   const reviewedSqlRef = useRef<ReturnType<typeof useReviewedSql>>(null);
   const currentList = list === "all" && !report?.tables ? "missing" : list;
+  // Import CSV into a listed table: the wizard opens with it chosen. Off with
+  // the reason on a Read-only connection, an unknown write policy, a proven
+  // missing INSERT, or a list read from another connection.
+  const importCsv = useImportCsv(connection);
+  const importGate = useImportCsvGate("existing");
+  const otherList = "This list is from another connection. Refresh to use the connection in use.";
 
   const getTableRowContextMenu = (schema: string, table: string) => {
     const runner = reviewedSqlRef.current;
     const qTable = qualifiedTable(schema, table);
     return [
+      {
+        label: "Table structure",
+        icon: "table",
+        disabled: !!other,
+        hint: other ? otherList : undefined,
+        onClick: () => openStructure(schema, table),
+      },
+      { divider: true as const },
       ...(onOpenSql
         ? [
             {
@@ -281,6 +308,13 @@ export function TablesView({
         onClick: () => {
           if (bound) onOpenIndexes(schema, table, bound.key);
         },
+      },
+      {
+        label: "Import CSV…",
+        icon: "import",
+        disabled: !!(other || importGate),
+        hint: other ? otherList : importGate || undefined,
+        onClick: () => importCsv.start({ mode: "existing", schema, table }),
       },
       { divider: true as const },
       {
@@ -437,13 +471,14 @@ export function TablesView({
       schema={r.schema}
       table={r.table}
       disabled={!!other}
+      onStructure={() => openStructure(r.schema, r.table)}
       onAddColumn={() => setTableAlter({ mode: "add", schema: r.schema, table: r.table })}
       onRemoveColumn={() => setTableAlter({ mode: "remove", schema: r.schema, table: r.table })}
       onIndexes={() => bound && onOpenIndexes(r.schema, r.table, bound.key)}
     />
   );
   const inventoryColumns: Column<TableInventoryRow>[] = [
-    { key: "table", label: "Table", sort: r => `${r.schema}.${r.table}`, render: tableCell },
+    { key: "table", label: "Table", primary: true, flex: true, minWidth: 220, sort: r => `${r.schema}.${r.table}`, render: tableCell },
     { key: "engine", label: "Engine", sort: r => r.engine, render: r => r.engine || "Unknown" },
     { key: "rows", label: "Rows (est.)", num: true, sort: r => r.rows, render: r => <CompactNumber value={r.rows} /> },
     { key: "data", label: "Data", num: true, sort: r => r.data_bytes, render: r => bytes(r.data_bytes) },
@@ -458,7 +493,7 @@ export function TablesView({
       sort: (m) => STATUS_RANK[m.status] * 1e15 - (m.size_bytes || 0),
       render: (m) => <Status status={m.status} />,
     },
-    { key: "table", label: "Table", sort: (m) => `${m.schema}.${m.table}`.toLowerCase(), render: tableCell },
+    { key: "table", label: "Table", primary: true, flex: true, minWidth: 220, sort: (m) => `${m.schema}.${m.table}`.toLowerCase(), render: tableCell },
     {
       key: "engine",
       label: "Engine",
@@ -496,7 +531,7 @@ export function TablesView({
       sort: (f) => STATUS_RANK[f.status] * 1e15 - (f.free_bytes || 0),
       render: (f) => <Status status={f.status} />,
     },
-    { key: "table", label: "Table", sort: (f) => `${f.schema}.${f.table}`.toLowerCase(), render: tableCell },
+    { key: "table", label: "Table", primary: true, flex: true, minWidth: 220, sort: (f) => `${f.schema}.${f.table}`.toLowerCase(), render: tableCell },
     { key: "rows", label: "Rows (est.)", num: true, width: 112, sort: (f) => f.rows, render: (f) => <CompactNumber value={f.rows} /> },
     {
       key: "used",
@@ -521,6 +556,16 @@ export function TablesView({
   const [type, name] = selection.key.split(/:(.*)/s);
   const tableInspectorActions = (r: { schema: string; table: string }) => (
     <div className="table-inspector-actions" style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap", alignItems: "center" }}>
+      <button
+        type="button"
+        className="button small"
+        data-action="table-structure"
+        disabled={!!other}
+        title={other ? otherList : "Columns, indexes, foreign keys and the CREATE TABLE of this table"}
+        onClick={() => openStructure(r.schema, r.table)}
+      >
+        Table structure
+      </button>
       <ReviewedSqlAction
         action="optimize_table"
         sql={tableMaintenanceSql("OPTIMIZE", r.schema, r.table)}
@@ -560,6 +605,10 @@ export function TablesView({
       >
         Remove column
       </button>
+      <PrivilegeGate action="insert" className="small" data-action="import-csv" blocked={other ? otherList : ""}
+        onClick={() => importCsv.start({ mode: "existing", schema: r.schema, table: r.table })}>
+        Import CSV…
+      </PrivilegeGate>
     </div>
   );
   if (report && selection.key === "topic:why-pk") {
@@ -673,6 +722,8 @@ export function TablesView({
     <ReviewedSqlProvider connection={connection} disabled={disabled || !!other} onComplete={() => void load()}>
     <ReviewedSqlBridger bridgerRef={reviewedSqlRef} />
     <TableAlterRunner alter={tableAlter} connection={connection} onClose={() => setTableAlter(null)} />
+    {structure && <TableStructureSheet key={`${structure.schema}.${structure.table}`} connection={structure.connection}
+      schema={structure.schema} table={structure.table} onClose={() => setStructure(null)} />}
     <ViewLayout
       id="tables"
       title="Tables"
@@ -713,7 +764,6 @@ export function TablesView({
               </InfoPopover>
             </span>
           )}
-          {report && <SearchField label="Filter tables" value={filter} onChange={setFilter} placeholder="Filter tables" />}
         </>
       }
       onRefresh={() => void load()}
@@ -727,7 +777,7 @@ export function TablesView({
           {report && <p>{whyButton}</p>}
         </>
       }
-      status={<><ViewStatus loading={reads.loading} error={error} onStop={reads.stop} onRetry={reads.error ? () => void load() : undefined} doneAt={reads.doneAt} slowAfter={45_000} /><ReviewedSqlStatus /></>}
+      status={<><ViewStatus loading={reads.loading} error={error} onStop={reads.stop} onRetry={reads.error ? () => void load() : undefined} doneAt={reads.doneAt} slowAfter={45_000} /><ReviewedSqlStatus />{importCsv.element}</>}
     >
       {gated && (
         <PrerequisiteGate action={
@@ -803,6 +853,7 @@ export function TablesView({
                       { value: "free", label: "Free space", count: free.length },
                     ]}
                   />
+                  <SearchField label="Filter tables" value={filter} onChange={setFilter} placeholder="Filter tables" />
                   {currentList === "missing" ? (
                     <>
                       <ToolbarSelect

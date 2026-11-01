@@ -2119,6 +2119,38 @@ def _check_plan_numbers(data):
             stack.extend(v for v in item if isinstance(v, (dict, list)))
 
 
+def hide_parsed_plan_literals(root):
+    """Copy a canonical tree and rebuild labels from redacted expressions.
+
+    Rebuilding via the existing label helpers preserves identifiers and metric
+    annotations. Scanning the formatted labels themselves would confuse an
+    unquoted numeric identifier with a value. Preserve IDs and measurements so
+    focus, collapse and selection from the original plan still apply.
+    """
+    import copy
+    from .plan_privacy import hide_plan_literals
+    result = copy.deepcopy(root)
+    for node in flatten_nodes(result):
+        details = hide_plan_literals(node.get("details") or {})
+        node["details"] = details
+        operation = details.get("operation") or "unknown"
+        node["short_label"] = build_short_label(operation, details.get("table_name"),
+                                                 details.get("index_name"), details.get("condition"))
+        node["full_label"] = operation.replace("`", "")
+        node["folded_label"] = build_folded_label(details)
+    return result
+
+
+def hide_plan_json_literals(text):
+    """Read a raw plan through the single JSON loader and hide literal fields.
+
+    Preserve duplicate MariaDB join members using the canonical loader's hook.
+    Only sharing paths call this; original plans and live sessions stay intact.
+    """
+    from .plan_privacy import hide_plan_literals
+    return json.dumps(hide_plan_literals(load_explain_json(text)), ensure_ascii=False)
+
+
 def parse_explain(text):
     """Parse EXPLAIN JSON text into root tree node.
 

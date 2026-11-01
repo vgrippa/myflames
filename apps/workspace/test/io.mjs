@@ -8,7 +8,16 @@ import { load, open } from "./perf-harness.mjs";
 const mysql = await load("io-mysql-8.4.json");
 const off = await load("io-mariadb-13.0-default.json");
 
-const h = await open("/api/live/io", "io");
+// The schema field lists the server's databases (one /api/live/schemas read).
+const catalog = {
+  schema_version: "schemas-1.0", engine: "mysql", server_version: "8.4.11", taken_at: "", uptime_s: 802,
+  performance_schema: true, notes: [], user_tables: 6, all_limit: 2000, all_note: "",
+  system: ["mysql", "sys", "performance_schema", "information_schema"],
+  schemas: [{ name: "mfshop", tables: 4, system: false }, { name: "shop2", tables: 2, system: false },
+    { name: "mysql", tables: 38, system: true }],
+};
+let catalogReply = { status: 200, body: catalog };
+const h = await open("/api/live/io", "io", { "/api/live/schemas": () => catalogReply });
 const { page, state, button, text, texts } = h;
 state.fallback = { status: 200, body: mysql };
 const view = ".server-view[data-view=io]";
@@ -22,7 +31,13 @@ try {
   state.seen.length = 0;
   assert.equal(await page.$(`${view} .auto-refresh`), null, "no automatic refresh");
   assert.match(await text(`${view} .perf-schema`), /Schema/);
-  assert.equal(await page.$eval("#io-schema", (e) => e.placeholder), "All schemas");
+  // A choice of the server's databases, All schemas first; system ones apart.
+  await page.waitForFunction(() => document.querySelectorAll("#io-schema option").length === 4);
+  assert.equal(await page.$eval("#io-schema", (e) => e.tagName), "SELECT");
+  assert.deepEqual(await page.$$eval("#io-schema option", (os) => os.map((o) => [o.value, o.textContent])),
+    [["", "All schemas"], ["mfshop", "mfshop"], ["shop2", "shop2"], ["mysql", "mysql"]]);
+  assert.equal(await page.$eval('#io-schema optgroup', (e) => e.label), "System databases");
+  assert.equal(h.state.other.filter((o) => o.path === "/api/live/schemas").length, 1, "the list is read once");
 
   // Without a schema: no schema sent.
   state.delay = 300;
@@ -33,6 +48,15 @@ try {
   await h.idle(view);
   state.delay = 0;
   assert.deepEqual([state.seen[0].interval, state.seen[0].schema], [10, undefined]);
+  // A chosen database is sent as a typed name was; All schemas sends none again.
+  await page.select("#io-schema", "shop2");
+  await h.refresh();
+  await h.idle(view);
+  assert.equal(state.seen.at(-1).schema, "shop2");
+  await page.select("#io-schema", "");
+  await h.refresh();
+  await h.idle(view);
+  assert.equal(state.seen.at(-1).schema, undefined);
   assert.match(await text(`${view} .summary-line`), /s window · tables from Performance Schema/);
   assert.ok(await page.$(`${view} .view-toolbar [aria-label="Time range"]`), "range lives in the toolbar");
   assert.equal(await page.$eval(`${view} .io-global-rates`, (e) => e.open), false, "global rates are disclosed on demand");
@@ -152,6 +176,8 @@ try {
 
   // Session restore keeps the view, schema and window.
   const saved = await h.savedSlow((s) => s.kind === "io" && s.io_interval === 5 && s.schema === "mfshop");
+  // After the reload the list cannot be read: a text field, with the reason.
+  catalogReply = { status: 400, body: { error: "Access denied; you need the SHOW DATABASES privilege" } };
   assert.equal(JSON.stringify(saved.state).includes("io-1.0"), false, "reports are not saved");
   await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state === "saved");
   await page.reload({ waitUntil: "networkidle0" });
@@ -159,6 +185,17 @@ try {
   await h.onView("io");
   assert.equal(await page.$eval(`${view} .perf-window select`, (e) => e.value), "5");
   assert.equal(await page.$eval("#io-schema", (e) => e.value), "mfshop");
+  await page.waitForSelector("input#io-schema");
+  assert.equal(await page.$eval("#io-schema", (e) => e.placeholder), "All schemas");
+  assert.match(await page.$eval("#io-schema", (e) => document.getElementById(e.getAttribute("aria-describedby")).textContent),
+    /^Could not list databases \(Access denied; you need the SHOW DATABASES privilege\)\. Type a schema name/);
+  assert.match(await h.popover("Why the schema is typed"), /SHOW DATABASES privilege/);
+  await h.idle(view);
+  await page.$eval("#io-schema", (e) => { e.select(); });
+  await page.type("#io-schema", "shop2");
+  await h.refresh();
+  await h.idle(view);
+  assert.equal(state.seen.at(-1).schema, "shop2", "a typed name reads the same way");
 
   assert.deepEqual(h.errors, []);
   console.log("io view: ok");

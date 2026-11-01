@@ -95,10 +95,32 @@
 .audit-retention-form .number-field input {
   width: 88px;
 }
-.audit-view .inspector-sql + .inspector-sql {
+/* One label column across every section of the record inspector. The sheet
+   keeps the two columns (it is wide, unlike a narrow side pane). */
+.audit-view .inspector-fields {
+  grid-template-columns: minmax(9rem, 40%) minmax(0, 1fr);
+}
+@media (max-width: 900px) {
+  .audit-view .inspector-fields {
+    grid-template-columns: minmax(8rem, 40%) minmax(0, 1fr);
+    gap: 4px var(--space-3);
+  }
+  .audit-view .inspector-fields dt.is-long-label + dd,
+  .audit-view .inspector-fields dd {
+    padding-left: 0;
+    margin-bottom: 0;
+  }
+}
+.audit-view .audit-statement + .audit-statement {
   margin-top: var(--space-2);
 }
-.audit-view .inspector-sql + .hint {
+.audit-statement .text-button {
+  margin-top: var(--space-1);
+}
+.audit-statement .text-button + .hint {
+  margin-left: var(--space-2);
+}
+.audit-view .audit-statement + .hint {
   margin-top: var(--space-1);
 }
 .audit-json {

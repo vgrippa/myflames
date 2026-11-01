@@ -171,6 +171,12 @@ def _authorize(plan, safety, options, args, registry, audit, session=None, revie
             safety["type"], options.get("user") or "default user", confirmation["text"], "\n".join(statements))]
         lines.extend("myflames: " + warning for warning in confirmation.get("warnings") or [])
         if review is not None:
+            prediction = review.get("prediction") or {}
+            if prediction:
+                lines.append("myflames: ALTER predicted: " + (
+                    "%s. %s %s" % (prediction.get("summary"), prediction.get("text") or "",
+                                   prediction.get("reason") or "")
+                    if prediction.get("predicted") else prediction.get("reason") or "not predicted").strip())
             lines.append("myflames: ALTER preflight: " + json.dumps(review, ensure_ascii=False))
         expected = confirmation.get("typed_target")
         prompt = "Type the database name %s to drop it: " % expected if expected is not None else "Run these statements? [y/N] "
@@ -208,7 +214,7 @@ def _run(args, payload):
     options = connection_options(planned)
     safety = dbops.connection_safety(profile, planned)
     password = None if args.password == "__PROMPT__" else args.password
-    audit = dbops.AuditTrail(store, "sql", "cli", connection={k: options.get(k) for k in ("host", "port", "user")},
+    audit = dbops.AuditTrail(store, "sql", "cli", connection={k: options.get(k) for k in ("host", "port", "user", "ssh_host", "ssh_user", "ssh_port")},
                              safety=safety, password=password)
     registry = editor.EditorSessions(reap_every=0)
     session = None

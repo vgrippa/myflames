@@ -26,6 +26,8 @@ export type QueryTab = {
   fill?: string[];
   /** The notice shown until those parameters have values. */
   fill_note?: string;
+  /** Those of *fill* that stand for a collapsed list of values (IN (...)). */
+  fill_lists?: string[];
   /** Rows kept per result set when the tab runs SQL (default 1,000). */
   limit?: number;
   /** The caret or selection, restored with the tab. */
@@ -165,6 +167,8 @@ export const TABLE_IDS = [
   "proxysql.hostgroups",
   "proxysql.rules",
   "proxysql.digests",
+  "schema.versions",
+  "schema.differences",
   "waits.events",
   "waits.classes",
   "io.tables",
@@ -188,6 +192,7 @@ export const TABLE_IDS = [
   "instruments.consumers",
   "instruments.list",
   "parameters.all",
+  "parameters.versions",
 ] as const;
 /** Column widths a restore accepts (DataTable clamps again to each column's minimum). */
 export const COLUMN_WIDTH_MIN = 48;
@@ -243,6 +248,12 @@ export type SessionConnection = {
   /** Refuse every write. The one safety choice an unsaved connection has (it
    * is always Production); for a saved connection the profile decides. */
   read_only: boolean;
+  /** Through an SSH tunnel (myflames/ssh_tunnel.py): the SSH host or Host
+   * alias, and optionally its user and port (0: from ~/.ssh/config). Absent
+   * for a direct connection. Part of the connection's identity. */
+  ssh_host?: string;
+  ssh_user?: string;
+  ssh_port?: number;
 };
 export type LabState = {
   profile_id: string;
@@ -388,6 +399,16 @@ export function normalizeLab(raw: unknown): LabState {
     ssl_ca: text(c.ssl_ca, "", 4096),
     read_only: c.read_only === true,
   };
+  // A restored connection keeps its SSH tunnel: without it, requests would
+  // go straight to a database host that only the SSH host can reach.
+  const sshHost = text(c.ssh_host, "", 253).trim();
+  if (sshHost) {
+    connection.ssh_host = sshHost;
+    const sshUser = text(c.ssh_user, "", 128).trim();
+    const sshPort = int(c.ssh_port, 0, 0, 65535);
+    if (sshUser) connection.ssh_user = sshUser;
+    if (sshPort) connection.ssh_port = sshPort;
+  }
   const seen = new Set<string>();
   const tabs: QueryTab[] = [];
   for (const t of Array.isArray(raw.tabs) ? raw.tabs.slice(0, 100) : []) {
@@ -418,6 +439,10 @@ export function normalizeLab(raw: unknown): LabState {
       tab.fill = fill;
       const note = text(t.fill_note, "", 2000);
       if (note) tab.fill_note = note;
+      const lists = Array.isArray(t.fill_lists)
+        ? t.fill_lists.filter((n): n is string => typeof n === "string" && fill.includes(n))
+        : [];
+      if (lists.length) tab.fill_lists = [...new Set(lists)];
     }
     if (typeof t.limit === "number" && Number.isFinite(t.limit) && Math.round(t.limit) !== DEFAULT_ROW_LIMIT)
       tab.limit = int(t.limit, DEFAULT_ROW_LIMIT, 1, MAX_ROW_LIMIT);
@@ -481,6 +506,7 @@ const tabExtras = (t: QueryTab) =>
     t.target ?? null,
     t.fill ?? null,
     t.fill_note ?? null,
+    t.fill_lists ?? null,
     t.limit ?? null,
     t.selection ?? null,
     t.result_tab ?? null,

@@ -8,6 +8,7 @@ import {
   type TableColumnInfo,
 } from "./api";
 import { Icon } from "./components";
+import { ConnectionTypeBand } from "./Connections";
 import { Checkbox, useFocusScope } from "./kit";
 
 const COMMON_DATA_TYPES = [
@@ -51,6 +52,7 @@ function openerOf(): HTMLElement | null {
  * window has 492 px of content). Focus moves in and stays inside; Escape and
  * Cancel close it and return focus to the opener. */
 function AlterSheet({
+  connection,
   title,
   lead,
   tone,
@@ -61,6 +63,7 @@ function AlterSheet({
   onClose,
   children,
 }: {
+  connection: Connection;
   title: ReactNode;
   lead: ReactNode;
   tone: "primary" | "danger";
@@ -96,6 +99,7 @@ function AlterSheet({
         onClose();
       }}
     >
+      <ConnectionTypeBand connection={connection} />
       <div className="dialog-heading">
         <h2 id={titleId}>{title}</h2>
       </div>
@@ -162,7 +166,10 @@ export function AddColumnDialog({
 
   let generatedSql = "";
   if (validName && resolvedType) {
-    let sql = `SET SESSION lock_wait_timeout = 5;\nALTER TABLE ${bt(schema)}.${bt(table)} ADD COLUMN ${bt(validName)} ${resolvedType}`;
+    // The Query editor reviews an ALTER alone and adds its own
+    // SET SESSION lock_wait_timeout = 5 guard; a second statement here
+    // made the editor refuse the run ("Review ALTER separately").
+    let sql = `ALTER TABLE ${bt(schema)}.${bt(table)} ADD COLUMN ${bt(validName)} ${resolvedType}`;
     if (!nullable) sql += " NOT NULL";
     else sql += " NULL";
     if (defaultValue.trim()) {
@@ -193,6 +200,7 @@ export function AddColumnDialog({
 
   return (
     <AlterSheet
+      connection={connection}
       title={`Add column to ${schema}.${table}`}
       lead="Define the new column. The exact ALTER TABLE statement will be reviewed before execution."
       tone="primary"
@@ -338,7 +346,7 @@ export function RemoveColumnDialog({
   const isLastCol = columns.length === 1;
   const isPrimaryKey = targetCol?.key === "PRI";
   const generatedSql = selectedCol
-    ? `SET SESSION lock_wait_timeout = 5;\nALTER TABLE ${bt(schema)}.${bt(table)} DROP COLUMN ${bt(selectedCol)}`
+    ? `ALTER TABLE ${bt(schema)}.${bt(table)} DROP COLUMN ${bt(selectedCol)}`
     : "";
 
   function handleDrop() {
@@ -349,6 +357,7 @@ export function RemoveColumnDialog({
 
   return (
     <AlterSheet
+      connection={connection}
       title={`Remove column from ${schema}.${table}`}
       lead="Select the column to drop. Dropping a column permanently deletes its data."
       tone="danger"

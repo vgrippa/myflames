@@ -1,10 +1,13 @@
-// The Query editor's run history (/api/editor/history): what ran, where and
-// how it ended, newest first, kept on this computer with secrets redacted and
-// never a password. Click an entry to insert its SQL at the cursor.
+// The Query editor's side panel, with two tabs. History (/api/editor/history):
+// what ran, where and how it ended, newest first, kept on this computer with
+// secrets redacted and never a password; click an entry to insert its SQL at
+// the cursor. Saved (SavedQueries.tsx): the queries the user saved, in
+// folders. Each tab reads only while it is shown.
 import { useEffect, useState } from "react";
-import { api, type EditorHistoryItem } from "./api";
-import { ActionStatus, ConfirmSheet, IconButton, SearchField, StatusPill, useSince, type Tone } from "./kit";
+import { api, type EditorHistoryItem, type SavedQuery } from "./api";
+import { ActionStatus, ConfirmSheet, IconButton, SearchField, Segmented, StatusPill, useSince, type Tone } from "./kit";
 import { duration } from "./ResultsPane";
+import { SavedQueriesList } from "./SavedQueries";
 
 const TONE: Record<string, [Tone, string]> = {
   complete: ["ok", "Done"],
@@ -21,20 +24,87 @@ function when(iso: string) {
   return d.toDateString() === today.toDateString() ? d.toLocaleTimeString() : d.toLocaleString();
 }
 
+export type SidePanelTab = "history" | "saved";
+
 export function HistoryPanel({
   refresh,
+  savedRefresh,
+  tab,
+  onTab,
   onInsert,
+  onOpenSaved,
   onClose,
 }: {
   /** Changes after every run, so an open panel reads the history again. */
   refresh: number;
+  /** Changes after Save query…, so an open Saved tab reads again. */
+  savedRefresh: number;
+  tab: SidePanelTab;
+  onTab: (tab: SidePanelTab) => void;
   onInsert: (sql: string) => void;
+  /** Open a saved query in a new tab (it never runs). */
+  onOpenSaved: (query: SavedQuery) => void;
   onClose: () => void;
+}) {
+  const [clearing, setClearing] = useState(false);
+  const [hasHistory, setHasHistory] = useState(false);
+  // The tab on screen reports its first read, for the panel's aria-busy.
+  const [reading, setReading] = useState(false);
+  return (
+    <aside className="history-panel" aria-label="History and saved queries" aria-busy={reading || undefined}>
+      <div className="browser-head history-head">
+        <Segmented<SidePanelTab>
+          label="History and saved queries"
+          className="history-tabs"
+          tabs="editor-side"
+          value={tab}
+          onChange={onTab}
+          options={[
+            { value: "history", label: "History", title: "Past runs on this computer" },
+            { value: "saved", label: "Saved", title: "Queries you saved, in folders" },
+          ]}
+        />
+        <span className="history-head-gap" />
+        {tab === "history" && (
+          <button type="button" className="text-button" disabled={!hasHistory} onClick={() => setClearing(true)}>
+            Clear
+          </button>
+        )}
+        <IconButton icon="close" label="Hide the history" onClick={onClose} />
+      </div>
+      <div id="editor-side-panel-history" role="tabpanel" aria-labelledby="editor-side-tab-history" className="history-tab"
+        hidden={tab !== "history"}>
+        {tab === "history" && (
+          <RunHistory refresh={refresh} onInsert={onInsert} clearing={clearing} onClearing={setClearing} onHasItems={setHasHistory}
+            onReading={setReading} />
+        )}
+      </div>
+      <div id="editor-side-panel-saved" role="tabpanel" aria-labelledby="editor-side-tab-saved" className="history-tab"
+        hidden={tab !== "saved"}>
+        {tab === "saved" && <SavedQueriesList refresh={savedRefresh} onOpen={onOpenSaved} onInsert={onInsert} onReading={setReading} />}
+      </div>
+    </aside>
+  );
+}
+
+function RunHistory({
+  refresh,
+  onInsert,
+  clearing,
+  onClearing,
+  onHasItems,
+  onReading,
+}: {
+  refresh: number;
+  onInsert: (sql: string) => void;
+  clearing: boolean;
+  onClearing: (open: boolean) => void;
+  onHasItems: (has: boolean) => void;
+  onReading: (reading: boolean) => void;
 }) {
   const [items, setItems] = useState<EditorHistoryItem[] | null>(null);
   const [error, setError] = useState("");
   const [filter, setFilter] = useState("");
-  const [clearing, setClearing] = useState(false);
   const [busy, setBusy] = useState(false);
   // Try again reads the history once more after a failed read.
   const [attempt, setAttempt] = useState(0);
@@ -53,12 +123,17 @@ export function HistoryPanel({
     );
     return () => controller.abort();
   }, [refresh, attempt]);
+  useEffect(() => onHasItems(!!items?.length), [items, onHasItems]);
+  useEffect(() => {
+    onReading(reading);
+    return () => onReading(false);
+  }, [reading, onReading]);
   async function clear() {
     setBusy(true);
     try {
       await api("editor/history", { action: "clear" });
       setItems([]);
-      setClearing(false);
+      onClearing(false);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -70,14 +145,7 @@ export function HistoryPanel({
     (i) => !needle || i.sql.toLowerCase().includes(needle) || (i.connection.name || "").toLowerCase().includes(needle),
   );
   return (
-    <aside className="history-panel" aria-label="Run history" aria-busy={reading || undefined}>
-      <div className="browser-head">
-        <h2>History</h2>
-        <button type="button" className="text-button" disabled={!items?.length} onClick={() => setClearing(true)}>
-          Clear
-        </button>
-        <IconButton icon="close" label="Hide the history" onClick={onClose} />
-      </div>
+    <div className="run-history">
       <div className="browser-filter">
         <SearchField label="Search history" value={filter} onChange={setFilter} />
       </div>
@@ -121,14 +189,14 @@ export function HistoryPanel({
         <ConfirmSheet
           eyebrow="History"
           title="Clear the run history?"
-          description="This removes every entry on this computer. The Audit log keeps its records."
+          description="This removes every entry on this computer. The Audit log keeps its records, and saved queries stay."
           confirmLabel="Clear history"
           confirmTone="primary"
           busy={busy}
-          onCancel={() => setClearing(false)}
+          onCancel={() => onClearing(false)}
           onConfirm={() => void clear()}
         />
       )}
-    </aside>
+    </div>
   );
 }

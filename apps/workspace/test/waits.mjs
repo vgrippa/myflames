@@ -104,11 +104,11 @@ try {
   await page.click(`${view} .segmented button[data-value=events]`);
   const sinceTable = `${view} table[aria-label="Wait events since server start"]`;
   assert.match(await text(`${sinceTable} th[data-col=max]`), /Longest \(ms\)/, "full-width lists retain the longest wait column");
-  await page.click(`${sinceTable} .table-columns-button`);
+  await page.click(`${view} button[aria-label="Columns of Wait events since server start"]`);
   await page.click('.popover input[data-col=max]');
   await page.keyboard.press("Escape");
   assert.equal(await page.$(`${sinceTable} th[data-col=max]`), null, "Columns can hide the longest wait explicitly");
-  await page.click(`${sinceTable} .table-columns-button`);
+  await page.click(`${view} button[aria-label="Columns of Wait events since server start"]`);
   await page.click('.popover input[data-col=max]');
   await page.keyboard.press("Escape");
   assert.match(await text(`${sinceTable} th[data-col=max]`), /Longest \(ms\)/);

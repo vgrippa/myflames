@@ -396,7 +396,8 @@ def _write(args, operation, name, host, role, options, label):
         settings, conn = _connect(args)
         connection_password = settings.get('password')
         identity = {k: v for k, v in planned.items() if k != 'password'}
-        identity.update({k: settings.get(k) for k in ('host', 'port', 'user', 'ssl_mode', 'ssl_ca')})
+        identity.update({k: settings.get(k) for k in ('host', 'port', 'user', 'ssl_mode', 'ssl_ca', 'ssh_host',
+                                                       'ssh_user', 'ssh_port')})
         with conn:
             try:
                 plan = accounts.plan_change(conn, operation, name, host, role, connection=identity, profile=profile,
@@ -447,6 +448,8 @@ def _split_list(text):
 
 def cmd_accounts(argv):
     epilog = ('Subcommands:\n'
+              '  compare SOURCE TARGET        compare users and roles on live or profile:NAME sides\n'
+              '  export SIDE                  SQL text without credentials (--account USER@HOST, -o PATH)\n'
               '  list                         users and roles (no password hashes)\n'
               '  show ACCOUNT                 grants, roles, attributes, flags\n'
               '  create ACCOUNT               new user (--role: new role)\n'
@@ -519,8 +522,9 @@ def cmd_accounts(argv):
         source = parser.add_argument_group('Password input')
         source.add_argument('--password-stdin', action='store_true', help='Read the new password from the first line '
                                                                           'of stdin.')
-        source.add_argument('--random-password', action='store_true', help='Generate the password (MySQL: the server, '
-                                                                           'MariaDB: myflames) and print it once.')
+        source.add_argument('--random-password', action='store_true',
+                            help='Generate the password (MySQL 8.0.18 and later: the server; MariaDB and older MySQL: '
+                                 'myflames) and print it once.')
     if sub == 'create':
         parser.add_argument('--locked', action='store_true', help='Leave the new account locked.')
     if sub == 'password':

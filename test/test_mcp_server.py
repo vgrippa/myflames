@@ -323,6 +323,14 @@ def fixture_connection(tool, maria=False):
             conn = ReplayConn(data["calls"], clock=clock)
         else:
             conn, data = replay(view, server, clock=clock)
+        if view == "sessions" and not maria:
+            # Recordings predate the DDL progress read; answer it the way
+            # test_report does: no active stages, events_stages_current off.
+            from myflames import ddl_progress
+            from _perf_replay import batch as _perf_batch
+            conn.answers["/*myflames:sessions*/ " + ddl_progress.progress_sql("mysql")] = [_perf_batch(
+                [["consumer", None, n, "NO" if n == "events_stages_current" else "YES"] for n in ddl_progress.CONSUMERS] +
+                [["instrument", None, n, "YES", "YES"] for n in ddl_progress.STAGES])]
         if view == "report":
             patches.append(mock.patch.object(report, "analysis_report", partial(
                 report.analysis_report, workers=1, sleep=clock.sleep, clock=clock.monotonic)))

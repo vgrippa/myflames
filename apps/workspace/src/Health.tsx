@@ -3,25 +3,37 @@
 // the diagnostics as one-line rows sorted by severity, then compact metric
 // tiles by group. Every explanation (what it measures, the rule, the numbers,
 // the settings, the suggestion) opens in the inspector. The sample history for
-// the sparklines lives in memory only; the view and the sampling window are
-// restored with the workspace.
+// the sparklines and the live charts (the last 60 readings of the connection
+// in use) lives in memory only, like Capture when… (checks while Health is on
+// screen, then saves the processlist, InnoDB status and locks as an
+// investigation); the view and the sampling window are restored with the
+// workspace.
 import { useEffect, useRef, useState } from "react";
-import { useOpenRead } from "./viewOnScreen";
+import { useOpenRead, useViewOnScreen } from "./viewOnScreen";
 import {
   api,
+  type Bundle,
   type Connection,
+  type EvidenceKind,
   type HealthDiagnostic,
   type HealthMetric,
   type HealthReport,
   type HealthStatus,
+  type InnodbReport,
+  type InvestigationEvidence,
+  type LocksReport,
+  type SessionsReport,
   type TopOrder,
   type TopStatement,
+  type WatchReport,
 } from "./api";
 import { HEALTH_INTERVALS, type ServerKind } from "./session";
 import { useConnectionReads, type Bound } from "./binding";
 import { StatementsBehind, type DigestAction, type LabSettings, type OpenTop } from "./SlowQueries";
 import {
+  ActionStatus,
   AutoRefresh,
+  Checkbox,
   EmptyState,
   FactStrip,
   Fields,
@@ -29,6 +41,9 @@ import {
   GroupedRow,
   InspectorSection,
   MetricTile,
+  NumberField,
+  Popover,
+  Select,
   Sparkline,
   StatusPill,
   SummaryLine,
@@ -36,8 +51,11 @@ import {
   ToolbarSelect,
   ViewLayout,
   ViewStatus,
+  closePopovers,
+  errorText,
   isIdentifier,
   toneRank,
+  trendRange,
   type InspectorContent,
   type Selection,
   type TrendPoint,
@@ -46,36 +64,162 @@ import "./health.css";
 
 /** Automatic refresh choices (seconds); off by default. */
 const AUTO_INTERVALS = [10, 30, 60];
-/** Samples kept for the sparklines. */
-export const HISTORY_LIMIT = 20;
+/** Capture when…: check interval choices (seconds). */
+const WATCH_INTERVALS = [5, 10, 30, 60];
+/** Samples kept per connection in memory for live charts and sparklines. */
+export const HISTORY_LIMIT = 60;
 
 export type HealthSample = {
   at: string;
   values: Record<string, number | null>;
 };
+/** What a watch checks, fixed when it starts (null: that condition is off). */
+export type WatchRules = {
+  /** Threads running at or above. */
+  threads: number | null;
+  /** An InnoDB row lock waited for longer than this many seconds (trx_wait_started). */
+  lockWait: number | null;
+  /** A statement running longer than this many seconds. */
+  statement: number | null;
+  /** Seconds between checks. */
+  interval: number;
+  stopAfterFirst: boolean;
+};
+/** A capture's reads and save: pending, then what happened. */
+export type WatchCapture = {
+  phase: "pending" | "done" | "failed";
+  message: string;
+  startedAt: number | null;
+  /** The saved investigation. */
+  saved: { id: string; name: string } | null;
+  /** Reads that failed while the rest was saved. */
+  missing: string;
+};
+/** Capture when…: kept by Server while the workspace is open, never saved.
+ * It belongs to the connection it started on (key, label). */
+export type WatchState = {
+  /** A new number for every Start: answers of an earlier watch are dropped. */
+  run: number;
+  key: string;
+  label: string;
+  rules: WatchRules;
+  /** Checking (paused while Health is off screen). */
+  active: boolean;
+  checked: number;
+  /** read_at of the last check. */
+  lastAt: string;
+  /** After a capture, the next one waits until a check finds no condition met. */
+  armed: boolean;
+  /** What the last check could not judge, or why it failed. */
+  note: string;
+  capture: WatchCapture | null;
+};
 /** What Health keeps while the Server place is open (never saved): the last
- * sample and the history of the connection it was read from (binding.ts). */
+ * sample and the history of the connection it was read from (binding.ts),
+ * and Capture when…. */
 export type HealthMemory = {
   key: string;
   label: string;
   report: HealthReport | null;
   history: HealthSample[];
+  watch?: WatchState | null;
 };
-export const emptyHealth: HealthMemory = { key: "", label: "", report: null, history: [] };
+export const emptyHealth: HealthMemory = { key: "", label: "", report: null, history: [], watch: null };
 
 /** Keep a new sample (from Health's Refresh or from Refresh all): the
- * report, and its key rates appended to the history of its connection. The
- * same answer twice (one request shared by both) is kept once. */
+ * report, and its rates appended to the history of its connection. The
+ * same answer twice (one request shared by both) is kept once, and the same
+ * sample again (the same taken_at) replaces the report without adding a
+ * reading, so one reading never draws as two. */
 export function rememberHealth(previous: HealthMemory, { key, label, report }: Bound<HealthReport>): HealthMemory {
   if (previous.key === key && previous.report === report) return previous;
   const values: Record<string, number | null> = Object.fromEntries(
-    report.metrics.filter((m) => m.sparkline).map((m) => [m.key, m.value]),
+    report.metrics.map((m) => [m.key, m.value]),
   );
   for (const d of report.diagnostics ?? []) if (d.trend) values[d.trend.key] = d.trend.value;
   const sample: HealthSample = { at: report.taken_at, values };
-  const history = previous.key === key ? previous.history : [];
-  return { key, label, report, history: [...history, sample].slice(-HISTORY_LIMIT) };
+  const history = previous.key === key && !report.restarted ? previous.history : [];
+  const again = previous.key === key && !!report.taken_at && previous.report?.taken_at === report.taken_at;
+  return { key, label, report, history: again ? history : [...history, sample].slice(-HISTORY_LIMIT), watch: previous.watch ?? null };
 }
+
+/** The connection in use changed: the readings of the previous one are
+ * cleared, and a watch started on another connection stops checking. A
+ * capture already on its way finishes for the connection it started on and
+ * keeps its outcome (it names that connection). */
+export function switchHealthConnection(previous: HealthMemory, activeKey: string): HealthMemory {
+  const history = previous.key && previous.key !== activeKey && previous.history.length ? [] : previous.history;
+  const before = previous.watch ?? null;
+  let watch = before;
+  if (before && before.key !== activeKey && (before.active || !before.capture)) {
+    watch = before.capture ? { ...before, active: false, note: "" } : null;
+  }
+  if (history === previous.history && watch === before) return previous;
+  return { ...previous, history, watch };
+}
+
+/** The conditions of *rules* in words: "threads running at or above 32". */
+export function watchConditions(rules: WatchRules) {
+  const parts: string[] = [];
+  if (rules.threads !== null) parts.push(`threads running at or above ${rules.threads}`);
+  if (rules.lockWait !== null) parts.push(`a row lock wait older than ${rules.lockWait} s`);
+  if (rules.statement !== null) parts.push(`a statement running longer than ${rules.statement} s`);
+  return parts.join("; ");
+}
+
+/** One check against *rules*: the first condition met ("" for none), and
+ * the conditions this read could not judge (no value) or judged only in part
+ * (a value from the sources it could read, and the reason for the rest). A
+ * value that was not read is never taken as zero. The lock wait condition is
+ * InnoDB's own row lock wait time; a statement waiting for a metadata or
+ * table lock has no recorded wait start and is caught by the statement
+ * condition, by its running time. */
+export function judgeWatch(rules: WatchRules, snap: WatchReport): { tripped: string; note: string } {
+  const errors: Partial<WatchReport["errors"]> = snap.errors || {};
+  const none: string[] = [];
+  const part: string[] = [];
+  let tripped = "";
+  if (rules.threads !== null) {
+    if (typeof snap.threads_running !== "number") none.push(`threads running (${errors.threads_running || snap.reason || "not read"})`);
+    else if (snap.threads_running >= rules.threads) tripped = `threads running ${snap.threads_running}`;
+  }
+  if (rules.lockWait !== null) {
+    const wait = snap.longest_lock_wait;
+    if (!tripped && wait && wait.seconds >= rules.lockWait) tripped = `row lock wait ${Math.round(wait.seconds)} s`;
+    if (errors.longest_lock_wait) (wait ? part : none).push(`row lock waits (${errors.longest_lock_wait})`);
+  }
+  if (rules.statement !== null) {
+    const statement = snap.longest_statement;
+    if (!tripped && statement && statement.seconds >= rules.statement) tripped = `statement running ${Math.round(statement.seconds)} s`;
+    if (errors.longest_statement) (statement ? part : none).push(`statements (${errors.longest_statement})`);
+  }
+  const note = [
+    none.length ? `Not judged: ${none.join("; ")}.` : "",
+    part.length ? `Partly judged: ${part.join("; ")}.` : "",
+  ].filter(Boolean).join(" ");
+  return { tripped, note };
+}
+
+function pad2(n: number) {
+  return String(n).padStart(2, "0");
+}
+/** A time of day on this computer's clock, 24-hour: "14:02:31". */
+export function clockTime(iso: string) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+}
+/** A date and minute on this computer's clock: "2026-10-27 14:02". */
+export function localMinute(iso: string) {
+  const parsed = new Date(iso);
+  const d = Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+/** Captures on their way, by watch run: Stop reaches a capture started
+ * before Health was opened again. */
+const captureControllers = new Map<number, AbortController>();
+let watchRuns = 0;
 
 /** Numbers whose statements Performance Schema can name (workload
  * attribution): the metric or diagnostic key and the Top statements order. */
@@ -132,7 +276,10 @@ export function healthValue(metric: HealthMetric): [string, string] {
     return [n, `${u}/s`];
   }
   if (unit === "/s") return [count(value), "/s"];
-  return [count(value), unit];
+  const n = count(value);
+  // "1 connection", never "1 connections": a counted noun (connections,
+  // threads, pages, sessions) is singular after exactly one.
+  return [n, n === "1" && /^[a-z]{3,}s$/.test(unit) ? unit.slice(0, -1) : unit];
 }
 
 /** The value and unit as one string: "12/s", "99.2%", "3 ms". */
@@ -205,9 +352,145 @@ function Links({
   );
 }
 
-function Trend({ points, label, format }: { points: TrendPoint[]; label: string; format: (v: number) => string }) {
-  if (points.length < 2) return <p className="hint health-trend-empty">Trend appears after the next refresh.</p>;
-  return <Sparkline points={points} label={label} format={format} width={240} height={40} className="is-large health-spark" />;
+/** Until the next reading the chart waits: one line instead of a chart of
+ * one point (the Live charts heading says to turn on Auto-refresh). */
+export function pendingTrendText(auto: number) {
+  return auto ? `The chart starts with the next reading (every ${auto} s).` : "The chart starts with the next reading.";
+}
+
+/** The inspector's trend: the sparkline once there are two readings, with
+ * "Steady" when they all show the same value; before that the value alone
+ * and one muted line, never a chart of one point. */
+function Trend({ points, label, format, auto }: { points: TrendPoint[]; label: string; format: (v: number) => string; auto: number }) {
+  const range = trendRange(points, format);
+  if (!range || range.readings < 2) {
+    return (
+      <p className="health-trend-pending" data-trend="pending">
+        {range && <strong className="health-trend-value">{range.current}</strong>}
+        <span className="hint">{pendingTrendText(auto)}</span>
+      </p>
+    );
+  }
+  return (
+    <>
+      <Sparkline points={points} label={label} format={format} width={240} height={40} className="is-large health-spark" />
+      {range.steady && (
+        <p className="hint health-trend-steady" data-trend="steady">
+          Steady at {range.current} over the last {range.readings} readings.
+        </p>
+      )}
+    </>
+  );
+}
+
+/** The live charts above Diagnostics: health-1.0 metric keys, never a
+ * number computed here. Connections in use is the count of open connections
+ * (Threads_connected), not the share of max_connections. */
+export const LIVE_CHART_SPECS: { key: string; title: string }[] = [
+  { key: "queries", title: "Queries per second" },
+  { key: "threads_running", title: "Threads running" },
+  { key: "bp_disk_reads", title: "Buffer pool reads from disk per second" },
+  { key: "threads_connected", title: "Connections in use" },
+];
+
+/** One series over the kept readings: a 2 px line over a light wash, from a
+ * zero baseline so a small change never looks like a jump, the latest
+ * reading marked, and each reading's time and value on hover. With one
+ * reading the card holds only its title and value (no chart, no Min and
+ * Max); when every reading shows the same value it says Steady instead of a
+ * Min equal to its Max. */
+function LiveTrendChart({
+  chartKey,
+  title,
+  metric,
+  points,
+}: {
+  chartKey: string;
+  title: string;
+  metric: HealthMetric;
+  points: TrendPoint[];
+}) {
+  const text = (v: number) => healthText(metric, v);
+  const range = trendRange(points, text);
+  const titleId = `health-chart-${chartKey}`;
+  if (!range) return null;
+  const head = (
+    <div className="health-chart-head">
+      <span className="health-chart-title" id={titleId}>{title}</span>
+      <span className="health-chart-current" data-chart-current>{range.current}</span>
+    </div>
+  );
+  if (range.readings < 2) {
+    return (
+      <div className="health-live-chart is-pending" data-chart={chartKey} role="group" aria-labelledby={titleId}>
+        {head}
+        <span className="visually-hidden health-chart-summary">{`${title}: ${range.current}, one reading so far.`}</span>
+      </div>
+    );
+  }
+  const values = points.map((p) => p.value);
+  const n = values.length;
+  const current = values[n - 1];
+  const max = Math.max(...values);
+  const summary = range.steady
+    ? `${title}: steady at ${range.current} over the last ${n} readings.`
+    : `${title}: current ${range.current}, min ${range.low}, max ${range.high} over the last ${n} readings.`;
+  // Drawn stretched to the card's width (preserveAspectRatio none); strokes
+  // and the end dot keep their size (non-scaling stroke, round caps).
+  const width = 240;
+  const height = 40;
+  const inset = 6;
+  const ceiling = max > 0 ? max : 1;
+  const x = (i: number) => (n > 1 ? (i / (n - 1)) * width : width / 2);
+  const y = (v: number) => inset + (height - 2 * inset) * (1 - Math.max(0, v) / ceiling);
+  const line = values.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(2)} ${y(v).toFixed(2)}`).join(" ");
+  const base = height - inset;
+  const area = `${line} L${x(n - 1).toFixed(2)} ${base} L${x(0).toFixed(2)} ${base} Z`;
+  const end = `M${x(n - 1).toFixed(2)} ${y(current).toFixed(2)} l0 0`;
+  const step = n > 1 ? width / (n - 1) : width;
+  return (
+    <div className={`health-live-chart${range.steady ? " is-steady" : ""}`} data-chart={chartKey} role="group" aria-labelledby={titleId}>
+      {head}
+      <svg
+        className="health-chart-svg"
+        viewBox={`0 0 ${width} ${height}`}
+        preserveAspectRatio="none"
+        role="img"
+        aria-label={`${title}, last ${n} readings`}
+      >
+        <line className="health-chart-base" x1={0} x2={width} y1={base} y2={base} vectorEffect="non-scaling-stroke" />
+        <path className="health-chart-area" d={area} />
+        <path className="health-chart-line" d={line} vectorEffect="non-scaling-stroke" />
+        <path className="health-chart-ring" d={end} vectorEffect="non-scaling-stroke" />
+        <path className="health-chart-dot" d={end} vectorEffect="non-scaling-stroke" />
+        {points.map((p, i) => (
+          <rect key={i} className="health-chart-hit" x={x(i) - step / 2} y={0} width={step} height={height}>
+            <title>{`${clockTime(p.at)}: ${text(p.value)}`}</title>
+          </rect>
+        ))}
+      </svg>
+      <div className="health-chart-range" data-chart-range>
+        {range.steady ? (
+          <span>Steady over the last {n} readings</span>
+        ) : (
+          <>
+            <span>Min {range.low}</span>
+            <span>Max {range.high}</span>
+          </>
+        )}
+      </div>
+      <span className="visually-hidden health-chart-summary">{summary}</span>
+    </div>
+  );
+}
+
+/** "1 problem, 1 to watch" for the tiles of one group: the share of the
+ * summary line's count a group holds, so the numbers add up when the tiles
+ * form a strip that scrolls (900 px and below). Empty when all is well. */
+export function groupStatusText(statuses: HealthStatus[]) {
+  const problem = statuses.filter((v) => v === "problem").length;
+  const watch = statuses.filter((v) => v === "watch").length;
+  return [problem ? plural(problem, "problem", "problems") : "", watch ? `${watch} to watch` : ""].filter(Boolean).join(", ");
 }
 
 export function HealthView({
@@ -221,6 +504,7 @@ export function HealthView({
   onMemory,
   onOpenView,
   onOpenLesson,
+  onOpenInvestigation,
   performanceSchema = null,
   settings,
   onDigest,
@@ -243,14 +527,240 @@ export function HealthView({
   onMemory: (next: (previous: HealthMemory) => HealthMemory) => void;
   onOpenView: (view: ServerKind | string) => void;
   onOpenLesson?: (lesson: string) => void;
+  onOpenInvestigation?: (id: string) => void;
 }) {
   const [auto, setAuto] = useState(0);
+  const onScreen = useViewOnScreen();
   const reads = useConnectionReads(connection);
   const loading = !!reads.loading;
   const error = reads.error;
   const root = useRef<HTMLDivElement>(null);
   const report = memory.report;
   const key = reads.key;
+
+  // Capture when…: the watch lives in Server's memory (it outlives this view
+  // while the Server place is open); the form below is a draft until Start.
+  const watch = memory.watch ?? null;
+  const watchRef = useRef(watch);
+  watchRef.current = watch;
+  const latestConnection = useRef(connection);
+  latestConnection.current = connection;
+  const draft = watch?.rules;
+  const [condThreads, setCondThreads] = useState(draft ? draft.threads !== null : true);
+  const [threadsText, setThreadsText] = useState(String(draft?.threads ?? 32));
+  const [condLockWait, setCondLockWait] = useState(draft ? draft.lockWait !== null : false);
+  const [lockWaitText, setLockWaitText] = useState(String(draft?.lockWait ?? 10));
+  const [condStatement, setCondStatement] = useState(draft ? draft.statement !== null : false);
+  const [statementText, setStatementText] = useState(String(draft?.statement ?? 30));
+  const [watchInterval, setWatchInterval] = useState<number>(draft?.interval ?? 10);
+  const [stopAfterFirst, setStopAfterFirst] = useState(draft?.stopAfterFirst ?? true);
+  const [formError, setFormError] = useState("");
+  /** A form change clears the error Start showed. */
+  const edit = <T,>(set: (value: T) => void) => (value: T) => {
+    setFormError("");
+    set(value);
+  };
+  const tickAbort = useRef<AbortController | null>(null);
+  const tickBusy = useRef(false);
+  const watchHere = !!watch && watch.key === key;
+  const checking = watchHere && !!watch?.active;
+  const capturePending = watch?.capture?.phase === "pending";
+
+  /** Change the watch of *run* (an earlier watch's late answer changes nothing). */
+  function updateWatch(run: number, change: (w: WatchState) => WatchState | null) {
+    onMemory((previous) => {
+      const w = previous.watch;
+      if (!w || w.run !== run) return previous;
+      return { ...previous, watch: change(w) };
+    });
+  }
+
+  // A check on its way is dropped when the connection changes or Health closes.
+  useEffect(() => {
+    tickAbort.current?.abort();
+  }, [key]);
+  useEffect(() => () => tickAbort.current?.abort(), []);
+
+  /** After a condition was met: read the processlist, InnoDB status and locks of
+   * the connection the watch started on, then save them as a new investigation. It goes on
+   * when Health closes (the outcome stays in the status line); Stop ends it. */
+  async function capture(w: WatchState, snap: WatchReport, tripped: string, c: Connection) {
+    const run = w.run;
+    const controller = new AbortController();
+    captureControllers.set(run, controller);
+    const step = (message: string) =>
+      updateWatch(run, (x) => ({
+        ...x,
+        capture: { phase: "pending", message, startedAt: x.capture?.startedAt ?? Date.now(), saved: null, missing: "" },
+      }));
+    const evidence: InvestigationEvidence[] = [
+      { id: "watch-1", kind: "watch", captured_at: snap.read_at, title: "Watch trigger snapshot", text: "", data: snap as unknown as Record<string, unknown> },
+    ];
+    const missing: string[] = [];
+    const steps: [string, EvidenceKind, string, string, Record<string, unknown>][] = [
+      ["sessions-1", "sessions", "Processlist", "live/sessions", { active_only: false }],
+      ["innodb-1", "innodb", "InnoDB status", "live/innodb", { raw: false }],
+      ["locks-1", "locks", "Locks", "live/locks", {}],
+    ];
+    try {
+      for (const [index, [id, kind, title, path, params]] of steps.entries()) {
+        step(`Capturing ${title === "Processlist" ? "the processlist" : title} (${index + 1} of ${steps.length})…`);
+        try {
+          const data = await api<SessionsReport | InnodbReport | LocksReport>(path, { connection: c, ...params }, controller.signal);
+          evidence.push({ id, kind, captured_at: new Date().toISOString(), title, text: "", data: data as unknown as Record<string, unknown> });
+        } catch (e) {
+          if (controller.signal.aborted) throw e;
+          missing.push(`${title} (${errorText(e)})`);
+        }
+      }
+      if (controller.signal.aborted) throw new DOMException("Stopped", "AbortError");
+      step("Saving the investigation…");
+      const name = `Capture: ${tripped} on ${w.label}, ${localMinute(snap.read_at)}`;
+      // Not stopped once sent: the save is local and its answer is shown.
+      const saved = await api<Bundle>("investigations/save", {
+        value: {
+          schema_version: "investigation-1.0",
+          name,
+          notes: `Captured automatically on ${w.label} when ${tripped}. Conditions: ${watchConditions(w.rules)}.` +
+            (missing.length ? ` Not captured: ${missing.join("; ")}.` : ""),
+          tags: ["watch", "capture"],
+          baseline_id: "",
+          plans: [],
+          evidence,
+        },
+      });
+      updateWatch(run, (x) => ({
+        ...x,
+        capture: {
+          phase: "done",
+          message: "Saved capture.",
+          startedAt: null,
+          saved: { id: saved.id || "", name: saved.name },
+          missing: missing.length ? `Not captured: ${missing.join("; ")}.` : "",
+        },
+      }));
+    } catch (e) {
+      const stopped = controller.signal.aborted;
+      updateWatch(run, (x) => ({
+        ...x,
+        armed: true,
+        capture: {
+          phase: "failed",
+          message: stopped ? "Capture stopped. Nothing was saved." : `Could not save the capture: ${errorText(e)}`,
+          startedAt: null,
+          saved: null,
+          missing: "",
+        },
+      }));
+    } finally {
+      if (captureControllers.get(run) === controller) captureControllers.delete(run);
+    }
+  }
+
+  /** One check of the watch *w* (or the one in memory) on the connection in use. */
+  async function check(given?: WatchState) {
+    const w = given ?? watchRef.current;
+    if (!w || !w.active || tickBusy.current || w.capture?.phase === "pending" || reads.currentKey() !== w.key) return;
+    tickBusy.current = true;
+    const controller = new AbortController();
+    tickAbort.current = controller;
+    const c = latestConnection.current;
+    try {
+      const snap = await api<WatchReport>("live/watch", { connection: c }, controller.signal);
+      const now = watchRef.current;
+      if (controller.signal.aborted || !now || now.run !== w.run || !now.active || reads.currentKey() !== w.key) return;
+      const { tripped, note } = judgeWatch(w.rules, snap);
+      const fire = !!tripped && now.armed;
+      updateWatch(w.run, (x) => ({
+        ...x,
+        checked: x.checked + 1,
+        lastAt: snap.read_at,
+        note,
+        armed: tripped ? x.armed && !fire : true,
+        active: fire && x.rules.stopAfterFirst ? false : x.active,
+        capture: fire ? { phase: "pending", message: "Capturing…", startedAt: Date.now(), saved: null, missing: "" } : x.capture,
+      }));
+      if (fire) void capture(w, snap, tripped, c);
+    } catch (e) {
+      if (!controller.signal.aborted && reads.currentKey() === w.key) {
+        updateWatch(w.run, (x) => ({ ...x, note: `The check at ${clockTime(new Date().toISOString())} failed: ${errorText(e)}` }));
+      }
+    } finally {
+      tickBusy.current = false;
+      if (tickAbort.current === controller) tickAbort.current = null;
+    }
+  }
+  const checkRef = useRef(check);
+  checkRef.current = check;
+
+  function startWatch() {
+    const limit = (on: boolean, value: string, max: number, what: string): number | null | string => {
+      if (!on) return null;
+      const n = Number(value.trim());
+      return Number.isInteger(n) && n >= 1 && n <= max ? n : `Enter a whole number from 1 to ${max.toLocaleString()} for ${what}.`;
+    };
+    const threads = limit(condThreads, threadsText, 100000, "threads running");
+    const lockWait = limit(condLockWait, lockWaitText, 86400, "the row lock wait");
+    const statement = limit(condStatement, statementText, 86400, "the statement time");
+    const problem = [threads, lockWait, statement].find((v) => typeof v === "string");
+    if (typeof problem === "string") {
+      setFormError(problem);
+      return;
+    }
+    if (threads === null && lockWait === null && statement === null) {
+      setFormError("Choose at least one condition.");
+      return;
+    }
+    setFormError("");
+    closePopovers();
+    tickAbort.current?.abort();
+    tickBusy.current = false;
+    const previous = watchRef.current;
+    if (previous) captureControllers.get(previous.run)?.abort();
+    const next: WatchState = {
+      run: ++watchRuns,
+      key,
+      label: connection.name?.trim() || connection.host || "server",
+      rules: {
+        threads: threads as number | null,
+        lockWait: lockWait as number | null,
+        statement: statement as number | null,
+        interval: watchInterval,
+        stopAfterFirst,
+      },
+      active: true,
+      checked: 0,
+      lastAt: "",
+      armed: true,
+      note: "",
+      capture: null,
+    };
+    onMemory((prev) => ({ ...prev, watch: next }));
+    watchRef.current = next;
+    if (onScreen && !disabled && !document.hidden) void checkRef.current(next);
+  }
+
+  /** Stop checking, and stop a capture on its way (nothing is saved). */
+  function stopWatch() {
+    const w = watchRef.current;
+    if (!w) return;
+    tickAbort.current?.abort();
+    captureControllers.get(w.run)?.abort();
+    updateWatch(w.run, (x) => (x.capture && x.capture.phase !== "pending" ? { ...x, active: false, note: "" } : null));
+  }
+
+  // Checks run only while Health is on screen, the page is visible and the
+  // Query editor is not capturing; the first one runs at Start.
+  const watchEvery = (watch?.rules.interval ?? 10) * 1000;
+  const watchRun = watch?.run ?? 0;
+  useEffect(() => {
+    if (!checking || !onScreen || disabled) return;
+    const timer = window.setInterval(() => {
+      const view = root.current?.closest<HTMLElement>(".server-view");
+      if (!document.hidden && !!view && view.offsetParent !== null) void checkRef.current();
+    }, watchEvery);
+    return () => window.clearInterval(timer);
+  }, [checking, onScreen, disabled, watchEvery, watchRun]);
 
   async function load() {
     await reads.run(
@@ -267,14 +777,14 @@ export function HealthView({
   // Automatic refresh is opt-in and skips ticks while a sample is running,
   // the page is hidden, or the view is not on screen.
   useEffect(() => {
-    if (!auto) return;
+    if (!auto || !onScreen) return;
     const timer = window.setInterval(() => {
       const view = root.current?.closest<HTMLElement>(".server-view");
       const visible = !!view && view.offsetParent !== null;
-      if (!document.hidden && visible && !disabled && !reads.running()) loadRef.current();
+      if (!document.hidden && visible && onScreen && !disabled && !reads.running()) loadRef.current();
     }, auto * 1000);
     return () => window.clearInterval(timer);
-  }, [auto, disabled]);
+  }, [auto, disabled, onScreen]);
 
   useOpenRead({ key: reads.key, reportKey: memory.report ? memory.key : null, ready: !disabled, busy: !!loading || reads.running(), read: () => { void loadRef.current(); } });
 
@@ -353,6 +863,7 @@ export function HealthView({
                   points={series(history, trend.key)}
                   label={trend.label}
                   format={trend.unit === "B/s" ? bytesPerSecond : (v) => count(v)}
+                  auto={auto}
                 />
               </InspectorSection>
             )}
@@ -426,7 +937,7 @@ export function HealthView({
             {behind}
             {m.sparkline && (
               <InspectorSection title="Trend">
-                <Trend points={series(history, m.key)} label={m.label} format={(v) => healthText(m, v)} />
+                <Trend points={series(history, m.key)} label={m.label} format={(v) => healthText(m, v)} auto={auto} />
               </InspectorSection>
             )}
             <p className="hint health-sources">From {m.sources.join(", ")}</p>
@@ -462,6 +973,98 @@ export function HealthView({
             onChange={(v) => onIntervalChange(+v)}
           />
           <AutoRefresh value={auto} options={AUTO_INTERVALS} disabled={!report} onChange={setAuto} />
+          <Popover
+            label="Capture when conditions"
+            trigger="Capture when…"
+            buttonClassName="button"
+            className="health-capture-when"
+          >
+            <form
+              className="capture-when-form"
+              noValidate
+              onSubmit={(e) => {
+                e.preventDefault();
+                startWatch();
+              }}
+            >
+              <div className="capture-when-title">
+                <strong>Capture when…</strong>
+                <span className="hint">
+                  Checks only while Health is on screen, then saves the processlist, InnoDB status and locks as an
+                  investigation. It only reads.
+                </span>
+              </div>
+              <div className="capture-when-conditions">
+                <div className="capture-when-row">
+                  <Checkbox checked={condThreads} onChange={edit(setCondThreads)}>Threads running at or above</Checkbox>
+                  <NumberField
+                    label="Threads running threshold"
+                    value={threadsText}
+                    min={1}
+                    max={100000}
+                    disabled={!condThreads}
+                    onChange={edit(setThreadsText)}
+                  />
+                </div>
+                <div className="capture-when-row">
+                  <Checkbox checked={condLockWait} onChange={edit(setCondLockWait)}>A row lock wait older than</Checkbox>
+                  <NumberField
+                    label="Row lock wait threshold in seconds"
+                    unit="s"
+                    value={lockWaitText}
+                    min={1}
+                    max={86400}
+                    disabled={!condLockWait}
+                    onChange={edit(setLockWaitText)}
+                  />
+                </div>
+                <div className="capture-when-row">
+                  <Checkbox checked={condStatement} onChange={edit(setCondStatement)}>A statement running longer than</Checkbox>
+                  <NumberField
+                    label="Statement duration threshold in seconds"
+                    unit="s"
+                    value={statementText}
+                    min={1}
+                    max={86400}
+                    disabled={!condStatement}
+                    onChange={edit(setStatementText)}
+                  />
+                </div>
+              </div>
+              <div className="capture-when-row">
+                <span>Check interval</span>
+                <Select
+                  label="Check interval"
+                  value={watchInterval}
+                  options={WATCH_INTERVALS.map((v) => [v, `${v} s`])}
+                  onChange={(v) => setWatchInterval(Number(v))}
+                />
+              </div>
+              <Checkbox className="capture-when-stop-first" checked={stopAfterFirst} onChange={setStopAfterFirst}>
+                Stop after the first capture
+              </Checkbox>
+              {formError && (
+                <p className="error capture-when-error" role="alert">
+                  {formError}
+                </p>
+              )}
+              <div className="capture-when-actions">
+                {checking && (
+                  <button type="button" className="button" onClick={() => { stopWatch(); closePopovers(); }}>
+                    Stop
+                  </button>
+                )}
+                <button
+                  type="submit"
+                  className="button primary"
+                  disabled={disabled || capturePending || (!condThreads && !condLockWait && !condStatement)}
+                  title={capturePending ? "A capture is on its way." : disabled ? "The Query editor is capturing; wait." : undefined}
+                >
+                  {checking ? "Start again" : "Start"}
+                </button>
+              </div>
+            </form>
+          </Popover>
         </>
       }
       onRefresh={() => void load()}
@@ -470,8 +1073,63 @@ export function HealthView({
       otherConnection={stale ? memory.label : null}
       inspector={inspector}
       inspectorEmpty={<p>Select a diagnostic or a tile to see what it measures, its rule and its numbers.</p>}
-      status={<ViewStatus loading={reads.loading} error={error} onStop={reads.stop} onRetry={error ? () => void load() : undefined}
-        doneAt={reads.doneAt} slowAfter={(interval + 20) * 1000} />}
+      status={
+        <>
+          <ViewStatus
+            loading={reads.loading}
+            error={error}
+            onStop={reads.stop}
+            onRetry={error ? () => void load() : undefined}
+            doneAt={reads.doneAt}
+            slowAfter={(interval + 20) * 1000}
+          />
+          {watch && (checking || watch.capture) && (
+            <div className="health-watch-status">
+              {checking && (
+                <span className="health-watch-line" role="status" aria-live="polite">
+                  <span>
+                    {onScreen && !disabled ? "Watching" : disabled ? "Watching paused while the Query editor captures" : "Watching paused while Health is off screen"}
+                    : checked {watch.checked} {watch.checked === 1 ? "time" : "times"}
+                    {watch.lastAt ? `, last at ${clockTime(watch.lastAt)}` : ""}.
+                    {!watch.armed && " The next capture waits until the condition clears."}
+                  </span>{" "}
+                  <button type="button" className="text-button" onClick={stopWatch}>
+                    Stop
+                  </button>
+                </span>
+              )}
+              {checking && watch.note && <span className="health-watch-note">{watch.note}</span>}
+              {watch.capture && (
+                <ActionStatus
+                  className="health-capture-status"
+                  state={{
+                    phase: watch.capture.phase,
+                    message: watchHere || watch.capture.phase !== "done" ? watch.capture.message : `Saved capture of ${watch.label}.`,
+                    startedAt: watch.capture.startedAt,
+                  }}
+                  onStop={stopWatch}
+                  onDismiss={() => updateWatch(watch.run, (x) => (x.active ? { ...x, capture: null } : null))}
+                >
+                  {watch.capture.saved && onOpenInvestigation && (
+                    <button
+                      type="button"
+                      className="text-button"
+                      onClick={() => onOpenInvestigation(watch.capture?.saved?.id || "")}
+                    >
+                      Open investigation
+                    </button>
+                  )}
+                </ActionStatus>
+              )}
+              {watch.capture?.missing && (
+                <span className="health-watch-note" role="alert">
+                  {watch.capture.missing}
+                </span>
+              )}
+            </div>
+          )}
+        </>
+      }
     >
       <div ref={root}>
         {!report && !loading && !error && (
@@ -516,6 +1174,33 @@ export function HealthView({
                   : []),
               ]}
             />
+            {!stale && history.length >= 1 && (
+              <section className={`tile-section health-live-charts${history.length < 2 ? " is-pending" : ""}`} aria-labelledby="health-live-h">
+                <div className="tile-section-head">
+                  <h3 id="health-live-h">Live charts</h3>
+                  {history.length < 2 ? (
+                    <span className="health-live-charts-note">
+                      {auto === 0 ? "Charts start with the next reading. Turn on Auto-refresh." : `Charts start with the next reading (every ${auto} s).`}
+                    </span>
+                  ) : auto === 0 ? (
+                    <span className="health-live-charts-note">Turn on Auto-refresh to see the trend</span>
+                  ) : (
+                    <span className="health-live-charts-count">
+                      Last {history.length} readings, every {auto} s
+                    </span>
+                  )}
+                </div>
+                <div className="health-live-charts-grid">
+                  {LIVE_CHART_SPECS.map((spec) => {
+                    const m = report.metrics.find((v) => v.key === spec.key);
+                    if (!m) return null;
+                    const pts = series(history, spec.key);
+                    if (!pts.length) return null;
+                    return <LiveTrendChart key={spec.key} chartKey={spec.key} title={spec.title} metric={m} points={pts} />;
+                  })}
+                </div>
+              </section>
+            )}
             {diagnostics.length > 0 && (
               <GroupedList
                 id="health-diagnostics-h"
@@ -550,6 +1235,18 @@ export function HealthView({
               <section key={group.key} className="tile-section health-group" aria-labelledby={`health-${group.key}`}>
                 <div className="tile-section-head">
                   <h3 id={`health-${group.key}`}>{group.label}</h3>
+                  {(() => {
+                    // 900 px and below the tiles form a strip that scrolls:
+                    // the heading carries the group's share of the summary's
+                    // count, a dot plus words, so a tile out of view still adds up.
+                    const statuses = group.metrics.map((m) => m.status);
+                    const words = groupStatusText(statuses);
+                    return words ? (
+                      <span className="tile-section-status" data-group-status>
+                        <StatusPill tone={statuses.includes("problem") ? "problem" : "watch"} label={words} />
+                      </span>
+                    ) : null;
+                  })()}
                 </div>
                 <TileGrid label={group.label}>
                   {group.metrics.map((m) => {

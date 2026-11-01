@@ -1106,12 +1106,28 @@ def _number_item(key, label, value, unit, text=None, estimate=False):
     return item
 
 
+#: MySQL 5.7 values that differ from DIAGNOSTIC_DEFAULTS["mysql"]: the binary log is
+#: off unless configured (5.7.44 sql/mysqld.cc:7116 opt_bin_log= 0), and the buffer
+#: pool has 8 instances from 1 GiB, else 1, without CPU sizing
+#: (storage/innobase/srv/srv0start.cc:1664-1700).
+MYSQL57_DIAGNOSTIC_DEFAULTS = {"log_bin": "OFF",
+                               "innodb_buffer_pool_instances": "8 from 1 GiB of buffer pool, otherwise 1"}
+
+
+def _has_persist(w):
+    """SET PERSIST exists: MySQL 8.0 and later (not MySQL 5.7, not MariaDB)."""
+    from .config_review import before_mysql80
+    return w.engine == "mysql" and not before_mysql80(w.engine, _version_tuple(w.version))
+
+
 def _setting(w, name):
     """{name, value, display, default} for one variable, or None if absent."""
     if name not in w.vars:
         return None
-    from .config_review import DEFAULTS
-    default = DIAGNOSTIC_DEFAULTS[w.engine].get(name, DEFAULTS[w.engine].get(name))
+    from .config_review import before_mysql80, defaults_for
+    version = _version_tuple(w.version)
+    specific = MYSQL57_DIAGNOSTIC_DEFAULTS if before_mysql80(w.engine, version) else {}
+    default = specific.get(name, DIAGNOSTIC_DEFAULTS[w.engine].get(name, defaults_for(w.engine, version).get(name)))
     return {"name": name, "value": w.vars.get(name), "display": _setting_text(name, w.vars.get(name)),
             "default": _setting_text(name, default) if default is not None else None}
 
@@ -1391,6 +1407,12 @@ def _diag_redo(w):
                       "its age limit at about 73%, forces flushing from about 79% (innodb_flush_sync, on by "
                       "default), and makes user writes wait from about 84%. These points compare the age of the "
                       "oldest dirty page, which is at most the checkpoint age.")
+        if not lsn:
+            # Before 8.0.30 (MySQL 5.7 included) neither LSN counter is a status variable.
+            thresholds = ("This MySQL does not report the checkpoint age as a status counter (the "
+                          "Innodb_redo_log_current_lsn and Innodb_redo_log_checkpoint_lsn counters are MySQL 8.0.30 "
+                          "and later), so only the write rate is judged here; the LOG section of SHOW ENGINE INNODB "
+                          "STATUS shows Log sequence number and Last checkpoint at.")
     else:
         counters = ("MariaDB's Innodb_os_log_written is the growth of the log sequence number since startup (the "
                     "redo generated), not the bytes written to the file, so one counter serves both")
@@ -1588,7 +1610,7 @@ def _diag_table_cache(w):
         recommendation = {
             "text": "Raise table_open_cache so the tables in use fit (SET GLOBAL table_open_cache = <n>; it is "
                     "dynamic, and the configuration file%s keeps it after a restart), and check that "
-                    "open_files_limit covers it." % (" or SET PERSIST" if w.engine == "mysql" else ""),
+                    "open_files_limit covers it." % (" or SET PERSIST" if _has_persist(w) else ""),
             "caveat": "Each cached table uses memory, and %s tables also hold file descriptors. "
                       % ("MyISAM" if w.engine == "mysql" else "MyISAM and Aria")
                       + ("MySQL can lower table_open_cache at startup to fit open_files_limit." if w.engine == "mysql"
@@ -1899,9 +1921,15 @@ def _diag_tmp_tables(w, metrics):
     counting = ("MariaDB counts a table that starts in memory and moves to disk twice in Created_tmp_tables, so "
                 "the share understates moves to disk." if w.engine == "mariadb" else
                 "TempTable overflow into memory-mapped files (temptable_max_mmap) is not counted as disk.")
+    from .config_review import before_mysql80
+    mysql57 = before_mysql80(w.engine, _version_tuple(w.version))
+    if mysql57:
+        # 5.7.44 sql/sys_vars.cc:4411-4416: on-disk engine, InnoDB by default; no TempTable.
+        counting = "Tables with BLOB or TEXT columns go to disk from the start and count as on disk."
     why = ("Internal temporary tables (GROUP BY, DISTINCT, UNION, derived tables) start in memory and move to disk "
            "when they outgrow the limit. %s%s. %s" % (
-               limit, "; on disk they are InnoDB tables" if w.engine == "mysql" else "", counting))
+               limit, "; on disk they use internal_tmp_disk_storage_engine (InnoDB by default)" if mysql57 else
+               "; on disk they are InnoDB tables" if w.engine == "mysql" else "", counting))
     tmp = metric["inputs"].get("Created_tmp_tables")
     disk = metric["inputs"].get("Created_tmp_disk_tables")
     if metric["status"] == "unknown":

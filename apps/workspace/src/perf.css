@@ -29,11 +29,8 @@
 .innodb-section > summary > :is(svg, .status-pill) {
   flex: none;
 }
-/* A quiet OK draws nothing: take back one gap so the summary follows the
-   title at the usual distance. */
-.innodb-section > summary > .status-pill.is-quiet.is-ok {
-  margin-inline-start: calc(-1 * var(--space-2));
-}
+/* Every status (a quiet OK and No threshold included) draws its dot and
+   word, so title, status and summary keep the same gap in every section. */
 .innodb-section-title {
   flex: 0 1 auto;
   min-width: 0;

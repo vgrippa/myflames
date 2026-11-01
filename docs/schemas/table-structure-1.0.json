@@ -1,0 +1,296 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "table-structure-1.0.json",
+  "title": "Table structure",
+  "description": "One table's columns, indexes, foreign keys and exact SHOW CREATE TABLE, read from information_schema and SHOW CREATE TABLE (myflames/schema_browser.py table_structure, POST /api/live/table-structure). Read-only. A value a server does not report is null.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "schema",
+    "table",
+    "type",
+    "engine",
+    "collation",
+    "comment",
+    "columns",
+    "indexes",
+    "foreign_keys",
+    "create_table",
+    "create_error",
+    "filename"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "table-structure-1.0"
+    },
+    "schema": {
+      "type": "string"
+    },
+    "table": {
+      "type": "string"
+    },
+    "type": {
+      "enum": [
+        "table",
+        "view",
+        "system view",
+        "sequence"
+      ]
+    },
+    "engine": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "collation": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "information_schema.TABLES.TABLE_COLLATION."
+    },
+    "comment": {
+      "type": "string",
+      "description": "The table comment; empty for a view."
+    },
+    "columns": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "position",
+          "type",
+          "nullable",
+          "default",
+          "extra",
+          "comment",
+          "character_set",
+          "collation",
+          "key",
+          "generated"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "position": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "type": {
+            "type": "string",
+            "description": "COLUMN_TYPE as the server prints it."
+          },
+          "nullable": {
+            "type": "boolean"
+          },
+          "default": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "COLUMN_DEFAULT as the server shows it: MySQL gives the raw value or null; MariaDB quotes strings and writes NULL."
+          },
+          "extra": {
+            "type": "string"
+          },
+          "comment": {
+            "type": "string"
+          },
+          "character_set": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "collation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "key": {
+            "type": "string",
+            "description": "COLUMN_KEY: PRI, UNI, MUL or empty."
+          },
+          "generated": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "GENERATION_EXPRESSION of a generated column."
+          }
+        }
+      }
+    },
+    "indexes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "primary",
+          "unique",
+          "type",
+          "comment",
+          "visible",
+          "columns"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "primary": {
+            "type": "boolean"
+          },
+          "unique": {
+            "type": "boolean"
+          },
+          "type": {
+            "type": "string",
+            "description": "INDEX_TYPE: BTREE, HASH, FULLTEXT, SPATIAL."
+          },
+          "comment": {
+            "type": "string"
+          },
+          "visible": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "STATISTICS.IS_VISIBLE (MySQL 8.0+) or not IGNORED (MariaDB 10.6+); null when the server has neither column."
+          },
+          "columns": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "name",
+                "expression",
+                "sub_part",
+                "order"
+              ],
+              "properties": {
+                "name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Null for a functional key part."
+                },
+                "expression": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "STATISTICS.EXPRESSION (MySQL 8.0.13+)."
+                },
+                "sub_part": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "order": {
+                  "enum": [
+                    "asc",
+                    "desc",
+                    null
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "foreign_keys": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "columns",
+          "referenced_schema",
+          "referenced_table",
+          "referenced_columns",
+          "on_update",
+          "on_delete"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "columns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "referenced_schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "referenced_table": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "referenced_columns": {
+            "type": "array",
+            "items": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "on_update": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REFERENTIAL_CONSTRAINTS.UPDATE_RULE as the server reports it."
+          },
+          "on_delete": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REFERENTIAL_CONSTRAINTS.DELETE_RULE as the server reports it."
+          }
+        }
+      }
+    },
+    "create_table": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "The exact SHOW CREATE TABLE text (Create View for a view); null when it could not be read."
+    },
+    "create_error": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Why create_table is null."
+    },
+    "filename": {
+      "type": "string",
+      "description": "<schema>.<table>.sql for the Download .sql action."
+    }
+  }
+}

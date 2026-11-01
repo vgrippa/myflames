@@ -1,0 +1,175 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ddl-progress-1.0",
+  "description": "Read-only editor poll. The same object, without schema_version, is the additive sessions-1.0 ddl field; matching sessions carry an item as ddl. Native MariaDB progress combines its one-based stage and per-stage percent. InnoDB counters already cover the whole ALTER.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "available",
+    "reason",
+    "missing",
+    "source",
+    "items"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "ddl-progress-1.0"
+    },
+    "available": {
+      "type": "boolean",
+      "description": "Tracking is ready or at least one item can be read. Missing can still describe partial coverage."
+    },
+    "reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "missing": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "source": {
+      "enum": [
+        "performance_schema",
+        "processlist_progress",
+        null
+      ]
+    },
+    "items": {
+      "type": "array",
+      "maxItems": 10000,
+      "items": {
+        "$ref": "#/$defs/item"
+      }
+    },
+    "engine": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "flavor": {
+      "enum": [
+        "mysql",
+        "percona",
+        "mariadb",
+        null
+      ]
+    },
+    "server_product": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "server_version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "taken_at": {
+      "type": "string"
+    },
+    "uptime_s": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "performance_schema": {
+      "type": "boolean"
+    }
+  },
+  "$defs": {
+    "item": {
+      "type": "object",
+      "required": [
+        "id",
+        "stage",
+        "percent",
+        "completed",
+        "estimated",
+        "elapsed_s",
+        "left_s",
+        "statement_kind"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "stage": {
+          "type": "string"
+        },
+        "stage_label": {
+          "type": "string"
+        },
+        "percent": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 99
+        },
+        "completed": {
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ],
+          "description": "Exact count; integers above JavaScript's safe range are decimal strings. Unknown for native progress."
+        },
+        "estimated": {
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ]
+        },
+        "elapsed_s": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "left_s": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Estimate from processlist TIME and overall work fraction, only after at least 1 percent. Unknown on overrun."
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Why the percentage is unknown when the server's estimate does not lead the work done (InnoDB keeps max(estimate, completed); COPY estimates from table statistics)."
+        },
+        "statement_kind": {
+          "type": "string"
+        },
+        "source": {
+          "enum": [
+            "performance_schema",
+            "processlist_progress"
+          ]
+        },
+        "units": {
+          "enum": [
+            "rows",
+            "work_units",
+            null
+          ]
+        }
+      }
+    }
+  }
+}

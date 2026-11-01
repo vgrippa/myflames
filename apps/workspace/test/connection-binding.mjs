@@ -603,6 +603,9 @@ try {
   await page.click(`${view("top")} tbody tr[data-digest="${PARAMETERIZED}"]`);
   const rank = await page.$eval(`${view("top")} tbody tr[data-digest="${PARAMETERIZED}"]`, (e) => e.dataset.rank);
   await page.locator(`[aria-label="Run analysis on statement ${rank}"]`).click();
+  // The fill-in form opens first; Later keeps the Parameters JSON path.
+  await page.waitForSelector("dialog.fill-sheet[open]");
+  await page.locator("dialog.fill-sheet button ::-p-text(Later)").click();
   await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Query parameters");
   await use("p2");
   const startsBefore = calls("/api/live/start").length;

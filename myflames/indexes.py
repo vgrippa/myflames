@@ -88,6 +88,12 @@ Verified against server source (mysql-server 9.7 "M/", mariadb-server 13.0
 * An index backs a foreign key when its leading key parts are the foreign
   key's columns in order with no prefix length, never FULLTEXT or SPATIAL
   (M/storage/innobase/dict/dict0dict.cc:3371-3372, 4777-4806).
+* MySQL 5.7's information_schema.STATISTICS has neither IS_VISIBLE nor
+  EXPRESSION (5.7.44 sql/sql_show.cc:8640-8663): invisible indexes came with
+  MySQL 8.0.0 and functional key parts with 8.0.13. A server that answers
+  Unknown column for either is read again without it
+  (perf_common.Reader.rows_with_columns): every index is visible there, no
+  key part is an expression, and no visibility statement is offered.
 """
 from .server_info import product_name
 from .advisor import _index_text, find_redundant_indexes
@@ -110,6 +116,13 @@ UNUSED_CAVEAT = ("Make it invisible first and run a full business cycle (month-e
                  "replicas) before dropping it: an invisible index is still maintained on writes, but "
                  "the optimizer stops using it, and making it visible again is instant. Queries with "
                  "an index hint that names it fail while it is invisible.")
+#: Servers without invisible indexes (MySQL 5.7).
+NO_INVISIBLE_CAVEAT = ("This server has no invisible indexes, so dropping is the only test. Wait a full "
+                       "business cycle (month-end jobs, reports, replicas) first, and keep its definition: "
+                       "adding it back means building it again. Queries with an index hint that names it "
+                       "fail once it is dropped.")
+#: STATISTICS columns some servers lack, with the value that stands in for them.
+STATISTICS_OPTIONAL = {"mysql": {"IS_VISIBLE": "'YES'", "EXPRESSION": "NULL"}, "mariadb": {"IGNORED": "'NO'"}}
 
 
 def _schemas(schema):
@@ -123,8 +136,12 @@ def _scope_sql(column, schema):
     return scope_sql(column, _schemas(schema))
 
 
-def _statistics_sql(server, schema):
-    extra = "IS_VISIBLE, EXPRESSION" if server.engine == "mysql" else "IGNORED"
+def _statistics_sql(server, schema, columns=None):
+    """*columns* maps the optional columns to what the SELECT reads for them
+    (perf_common.Reader.rows_with_columns); None reads every one."""
+    optional = STATISTICS_OPTIONAL["mysql" if server.engine == "mysql" else "mariadb"]
+    columns = columns or {name: name for name in optional}
+    extra = ", ".join(columns[name] for name in optional)
     return ("SELECT TABLE_SCHEMA, TABLE_NAME, INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX, COLUMN_NAME, SUB_PART, "
             "COLLATION, INDEX_TYPE, %s FROM information_schema.STATISTICS WHERE %s"
             % (extra, _scope_sql("TABLE_SCHEMA", schema)))
@@ -191,7 +208,11 @@ def index_report(conn, schema=None, limit=DEFAULT_LIMIT, schemas=None, require_c
             raw["table_stats"] = reader.optional(
                 "SELECT TABLE_SCHEMA, TABLE_NAME, ROWS_READ FROM information_schema.TABLE_STATISTICS WHERE " + where,
                 "information_schema.TABLE_STATISTICS", notes)
-        raw["statistics"] = reader.rows(_statistics_sql(server, schema))
+        optional = STATISTICS_OPTIONAL["mysql" if server.engine == "mysql" else "mariadb"]
+        raw["statistics"], columns = reader.rows_with_columns(
+            lambda chosen: _statistics_sql(server, schema, chosen), optional)
+        # No IS_VISIBLE (MySQL 5.7) or IGNORED: the server cannot hide an index.
+        raw["visibility"] = columns.get("IS_VISIBLE", columns.get("IGNORED")) in ("IS_VISIBLE", "IGNORED")
         raw["foreign_keys"] = reader.optional(_fk_sql(schema), "information_schema.KEY_COLUMN_USAGE", notes) or []
         # Reuse the partition metadata read for every engine, after usage and
         # definitions. On MariaDB CREATE_OPTIONS opens tables, so restrict it
@@ -357,10 +378,11 @@ def _actors_note(actors):
             "(HOST, USER, ROLE, ENABLED, HISTORY) VALUES ('%', '%', '%', 'YES', 'YES');")
 
 
-def _sql(server, schema, table, index):
+def _sql(server, schema, table, index, visibility=True):
+    """(visibility test, drop): the test is "" on a server without invisible indexes."""
     target = "%s.%s" % (ident(schema), ident(table))
     word = "IGNORED" if server.engine == "mariadb" else "INVISIBLE"
-    return ("ALTER TABLE %s ALTER INDEX %s %s;" % (target, ident(index), word),
+    return ("ALTER TABLE %s ALTER INDEX %s %s;" % (target, ident(index), word) if visibility else "",
             "ALTER TABLE %s DROP INDEX %s;" % (target, ident(index)))
 
 
@@ -418,6 +440,8 @@ def compute_indexes(server, raw, schema=None, limit=DEFAULT_LIMIT, notes=None):
     notes = list(notes or [])
     schema = _schemas(schema)
     report = base_report(SCHEMA_VERSION, server)
+    visibility = raw.get("visibility", True)
+    caveat = UNUSED_CAVEAT if visibility else NO_INVISIBLE_CAVEAT
     tables = _tables(raw.get("statistics") or [], server.engine)
     fks = _foreign_keys(raw.get("foreign_keys"))
     backing = _fk_backing(tables, fks, server.engine)
@@ -435,13 +459,14 @@ def compute_indexes(server, raw, schema=None, limit=DEFAULT_LIMIT, notes=None):
         "unused": [], "redundant": [], "full_scans": [], "no_data": [],
         "foreign_keys": len(fks), "notes": notes,
     })
-    unused, full_scans, no_data = _usage(server, raw, tables, backing, source, report["available"])
+    unused, full_scans, no_data = _usage(server, raw, tables, backing, source, report["available"],
+                                         visibility=visibility)
     blocked = {(n["schema"], n["table"]): n["reason_text"] for n in no_data
                if n["reason"] in ("partitioned", "partitioning_unknown")}
     redundant = []
     for (s, t) in sorted(tables):
         for index, other, why in find_redundant_indexes(_ordered(tables[(s, t)])):
-            test, drop = _sql(server, s, t, index["name"])
+            test, drop = _sql(server, s, t, index["name"], visibility)
             fk = backing.get((s, t, index["name"]), [])
             text = ("%s %s %s, so %s serves every lookup %s serves. Each extra index slows writes and uses "
                     "buffer pool memory." % (_index_text(index), why, _index_text(other), other["name"],
@@ -454,7 +479,7 @@ def compute_indexes(server, raw, schema=None, limit=DEFAULT_LIMIT, notes=None):
                 "unique": index["unique"], "visible": index["visible"], "dominant": other["name"],
                 "dominant_columns": _columns_text(other), "reason": why, "foreign_keys": fk,
                 "why": text, "test_sql": test, "drop_sql": drop,
-                "caveat": ("Check for FORCE INDEX or USE INDEX hints that name it. " + UNUSED_CAVEAT),
+                "caveat": ("Check for FORCE INDEX or USE INDEX hints that name it. " + caveat),
             })
             if (s, t) in blocked:
                 redundant[-1].update(test_sql="", drop_sql="", caveat="",
@@ -499,7 +524,7 @@ def _userstat_reads(raw):
     return {(r[0], r[1], r[2]): _number(r[3]) or 0 for r in raw["index_stats"] if len(r) >= 4 and r[0] and r[1]}
 
 
-def _usage(server, raw, tables, backing, source, available, check_partitioning=True):
+def _usage(server, raw, tables, backing, source, available, check_partitioning=True, visibility=True):
     unused, full_scans, no_data = [], [], []
     if not available:
         return unused, full_scans, no_data
@@ -558,7 +583,7 @@ def _usage(server, raw, tables, backing, source, available, check_partitioning=T
             continue
         for index in candidates:
             fk = backing.get((s, t, index["name"]), [])
-            test, drop = _sql(server, s, t, index["name"])
+            test, drop = _sql(server, s, t, index["name"], visibility)
             # Absent from INDEX_STATISTICS: no row read through it in its window,
             # unknown for a table user statistics do not count.
             read = None
@@ -588,7 +613,7 @@ def _usage(server, raw, tables, backing, source, available, check_partitioning=T
                     entry["why"] += (" It is already %s, so the optimizer ignores it; drop it when your test "
                                      "period is over." % ("ignored" if server.engine == "mariadb" else "invisible"))
                 entry["test_sql"], entry["drop_sql"] = test, drop
-                entry["caveat"] = UNUSED_CAVEAT
+                entry["caveat"] = UNUSED_CAVEAT if visibility else NO_INVISIBLE_CAVEAT
             unused.append(entry)
         if source == "performance_schema":
             no_index = rows.get(None)
@@ -765,6 +790,9 @@ def format_text(report):
             lines.append("    " + r["action_blocked_reason"])
         elif r["test_sql"]:
             lines.append("    test: %s" % r["test_sql"])
+        elif r["drop_sql"]:
+            # No invisible indexes on this server (MySQL 5.7): dropping is the only test.
+            lines.append("    drop: %s" % r["drop_sql"])
     lines.append("")
     lines.append("TABLES READ WITHOUT AN INDEX")
     if not report["available"]:

@@ -305,6 +305,14 @@ try {
   // Restore: the typed target gates Start.
   await section("Restore");
   await field("Dump folder", dumpPlan.target);
+  // Default database: the server's user databases, or a new name typed.
+  await page.$eval(`${view} .ops-form details > summary`, (e) => { e.closest("details").open = true; });
+  const databaseChoice = `${view} select[aria-label="Default database"]`;
+  await page.waitForFunction((s) => document.querySelectorAll(`${s} option`).length > 2, {}, databaseChoice);
+  assert.deepEqual(await page.$$eval(`${databaseChoice} option`, (os) => os.map((o) => o.textContent)),
+    ["As in the dump", ...schemas.schemas.filter((s) => !s.system).map((s) => s.name), "New database…"]);
+  await page.select(databaseChoice, await page.$eval(`${databaseChoice} option:last-child`, (o) => o.value));
+  await field("New database name", "restored_copy");
   next.prepare.push({ status: 200, body: restorePlan });
   await preflight();
   await page.waitForSelector(sheet);
@@ -314,6 +322,7 @@ try {
   assert.equal(await page.$eval(confirmButton, (e) => e.disabled), true, "the target must be typed exactly");
   await page.type(`${sheet} input[type=text]`, "6");
   assert.equal(await page.$eval(confirmButton, (e) => e.disabled), false);
+  assert.equal(calls(PREPARE).at(-1).body.schema, "restored_copy", "a database the server does not have yet can be typed");
   next.start.push({ status: 200, body: { schema_version: "lifecycle-job-1.0", id: null, operation: "restore", state: "refused", progress: null, detail: null, events: [], error: "Read-only: myflames refuses every change on Archive.", result: { status: "refused", verification: [], audit_id: "a1" } } });
   await page.click(confirmButton);
   await settle(START, 3);
@@ -322,8 +331,21 @@ try {
   await page.waitForSelector(`${view} .view-status [role=alert]`);
   assert.match(await text(`${view} .view-status [role=alert]`), /Read-only: myflames refuses every change/);
 
-  // Clone: a preflight with failures explains each one and offers no Start.
+  // Clone: the donor fields fill from a saved connection (never the one in
+  // use, never a password), and stay editable.
   await section("Clone");
+  const fillChoice = `${view} select[aria-label="Fill from saved connection"]`;
+  assert.deepEqual(await page.$$eval(`${fillChoice} option`, (os) => os.map((o) => o.textContent)),
+    ["Choose a connection", "Archive · archive.test:3307"]);
+  await field("Donor password", "typed-before");
+  await page.select(fillChoice, await page.$eval(`${fillChoice} option:last-child`, (o) => o.value));
+  const donorValue = (label) => page.$eval(`${view} label.ops-field ::-p-text(${label})`, (span) => span.closest("label").querySelector("input, select").value);
+  assert.deepEqual([await donorValue("Donor host"), await donorValue("Donor port"), await donorValue("Donor user"), await donorValue("Donor password"),
+    await page.$eval(`${view} select[aria-label="TLS mode"]`, (e) => e.value)], ["archive.test", "3307", "dba", "", "REQUIRED"]);
+  assert.match(await page.$eval(fillChoice, (e) => e.closest("label").textContent), /Filled from Archive; TLS set to Required, which clone needs\. Enter the password\./);
+  await field("Donor port", "3306");
+  assert.equal(await page.$eval(fillChoice, (e) => e.value), "", "edited fields no longer claim the saved connection");
+  // Clone: a preflight with failures explains each one and offers no Start.
   await field("Donor host", "donor.test");
   await field("Donor user", "clone");
   await field("Donor password", "donor-secret-1");
@@ -433,12 +455,16 @@ try {
     await page.keyboard.press("Escape"); await closedSheet();
   }
   await section("Restore"); await field("Dump folder", "/tmp/gating-restore");
+  // A database chosen from the list is sent by name, as a typed one was.
+  await page.$eval(`${view} .ops-form details > summary`, (e) => { e.closest("details").open = true; });
+  await page.select(`${view} select[aria-label="Default database"]`, "mftab");
   await h.setPrivileges({ restore: privilegeAnswer("denied", "READ_ONLY ADMIN") });
   await assertPrivilege(page, prepareButton, "denied", "READ_ONLY ADMIN");
   await h.setPrivileges({ restore: privilegeAnswer("allowed") });
   await assertPrivilege(page, prepareButton, "allowed");
   next.prepare.push({ status: 200, body: restorePlan });
   await preflight(); await page.waitForSelector(sheet);
+  assert.equal(calls(PREPARE).at(-1).body.schema, "mftab");
   await page.type(`${sheet} input[type=text]`, restorePlan.target);
   await assertPrivilege(page, confirmButton, "allowed");
   await h.setPrivileges({ restore: privilegeAnswer("denied", "READ_ONLY ADMIN") });

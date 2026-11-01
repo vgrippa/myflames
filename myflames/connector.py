@@ -171,6 +171,9 @@ def _run_bounded(argv, timeout, input=None, env=None):
             if pipe is not None:
                 pipe.close()
 
+#: A statement error the client prints in batch mode: "ERROR 1146 (42S02) at line 3: ...".
+_STATEMENT_ERROR = re.compile(r"^ERROR \d+(?: \([^)]*\))? at line \d+", re.M)
+
 # C0 controls except tab and newline, DEL, and C1 controls (U+0080-U+009F).
 _TERMINAL_CONTROLS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 
@@ -224,6 +227,9 @@ class MySQLConnection:
         binary=None,
         connect_timeout=10,
         query_timeout=30,
+        ssh_host=None,
+        ssh_user=None,
+        ssh_port=None,
     ):
         self.host = host
         self.port = int(port) if port is not None else 3306
@@ -237,6 +243,14 @@ class MySQLConnection:
         self.ssl_cipher = ssl_cipher
         self.connect_timeout = connect_timeout
         self.query_timeout = query_timeout
+        # Through SSH (ssh_tunnel.py): every client invocation connects to the
+        # local end of the shared tunnel instead of host and port, which are
+        # then what the SSH host connects to.
+        self.ssh_host = ssh_host or None
+        self.ssh_user = ssh_user or None
+        self.ssh_port = ssh_port or None
+        self._legacy_lease = None
+        self._held_lease = None
         # Binary autodetection happens lazily in _resolve_binary so the
         # constructor can be unit-tested without the binary installed.
         self._binary_override = binary
@@ -274,26 +288,35 @@ class MySQLConnection:
             "binary or pass --mysql-binary /path/to/mysql."
         )
 
-    def _build_defaults_file_content(self):
+    def _build_defaults_file_content(self, endpoint=None):
         """Build the text that goes into the defaults-file.
 
         Only the ``[client]`` section is used so both ``mysql`` and
         ``mariadb`` read it. Values with a ``#`` or ``=`` inside are rare
         but we quote defensively to avoid the CLI parser tripping.
+        *endpoint* is ``(host, port)`` of an SSH tunnel's local end, which
+        replaces this connection's host and port (always over TCP).
         """
         # A port in an option file does not prevent localhost from selecting
         # the client's default Unix socket. Pin the reviewed transport instead.
         # LifecycleConnection also accepts an explicit socket; keep it usable
         # by inherited write methods as well as its control-query path.
         socket = getattr(self, "socket", None)
+        if endpoint is not None and socket:
+            raise ConnectorError("A connection through SSH uses TCP, not a socket.")
+        if endpoint is None and getattr(self, "ssh_host", None):
+            # Never connect directly to a server that is reached through SSH.
+            raise ConnectorError("This connection goes through SSH host %s, but no tunnel was opened; "
+                                 "nothing was sent." % getattr(self, "ssh_host", None))
         lines = ["[client]", "protocol=" + ("SOCKET" if socket else "TCP")]
-        host = "localhost" if socket else self.host
+        host, port = endpoint if endpoint is not None else (self.host, self.port)
+        host = "localhost" if socket else host
         if host:
             lines.append("host=" + _option_value(host))
         if socket:
             lines.append("socket=" + _option_value(socket))
-        if self.port:
-            lines.append("port=" + str(self.port))
+        if port:
+            lines.append("port=" + str(port))
         if self.user:
             lines.append("user=" + _option_value(self.user))
         if self.password is not None:
@@ -316,12 +339,30 @@ class MySQLConnection:
         Client invocations use :meth:`_invocation_defaults` instead, so
         close() cannot remove a file being used by another invocation.
         """
+        lease = getattr(self, "_legacy_lease", None)
+        if lease is not None and not lease.alive():
+            # Its ssh ended, so the port in the file may now be another
+            # program's: never connect there again. A new tunnel, a new file.
+            self._legacy_lease = None
+            lease.release()
+            if self._defaults_file_path:
+                try:
+                    os.unlink(self._defaults_file_path)
+                except OSError:
+                    pass
+                self._defaults_file_path = None
         if self._defaults_file_path and os.path.exists(self._defaults_file_path):
             return self._defaults_file_path
-        self._defaults_file_path = self._create_defaults_file()
+        if getattr(self, "ssh_host", None):
+            # The tunnel stays held until close(), like the file.
+            if getattr(self, "_legacy_lease", None) is None:
+                self._legacy_lease = self._acquire_tunnel()
+            self._defaults_file_path = self._create_defaults_file(("127.0.0.1", self._legacy_lease.port))
+        else:
+            self._defaults_file_path = self._create_defaults_file()
         return self._defaults_file_path
 
-    def _create_defaults_file(self):
+    def _create_defaults_file(self, endpoint=None):
         """Write a fresh, private option file without storing shared state."""
         # mkstemp creates the file with mode 0600 on POSIX. Windows has no
         # os.fchmod and ignores the mode; the file sits in the user's own
@@ -331,7 +372,9 @@ class MySQLConnection:
             with os.fdopen(fd, "wb") as handle:
                 if hasattr(os, "fchmod"):
                     os.fchmod(handle.fileno(), 0o600)
-                handle.write(self._build_defaults_file_content().encode("utf-8"))
+                content = (self._build_defaults_file_content() if endpoint is None
+                           else self._build_defaults_file_content(endpoint))
+                handle.write(content.encode("utf-8"))
         except BaseException:
             # Never leave a file that may hold the password behind.
             try:
@@ -341,26 +384,64 @@ class MySQLConnection:
             raise
         return path
 
+    def _acquire_tunnel(self):
+        """A lease on this connection's SSH tunnel (ssh_tunnel.TUNNELS)."""
+        from .ssh_tunnel import TUNNELS, spec_of
+        try:
+            spec = spec_of(self)
+        except ValueError as exc:
+            raise ConnectorError(str(exc)) from None
+        return TUNNELS.acquire(spec)
+
     @contextmanager
     def _invocation_defaults(self):
-        """Keep credentials local to one invocation, including spawn failures."""
-        path = self._create_defaults_file()
+        """Keep credentials local to one invocation, including spawn failures.
+
+        Through SSH the option file names the tunnel's local end, and the
+        invocation holds the tunnel until it ends."""
+        lease = self._acquire_tunnel() if getattr(self, "ssh_host", None) else None
         try:
-            yield path
-        finally:
+            path = (self._create_defaults_file() if lease is None
+                    else self._create_defaults_file(("127.0.0.1", lease.port)))
             try:
-                os.unlink(path)
-            except FileNotFoundError:
-                pass
+                yield path
+            finally:
+                try:
+                    os.unlink(path)
+                except FileNotFoundError:
+                    pass
+        finally:
+            if lease is not None:
+                lease.release()
+
+    def hold_transport(self):
+        """Keep this connection's SSH tunnel open until close(), for a client
+        that outlives one invocation (a Query editor session). No-op without SSH."""
+        if getattr(self, "ssh_host", None) and getattr(self, "_held_lease", None) is None:
+            self._held_lease = self._acquire_tunnel()
+
+    def _tunnel_note(self, since):
+        """What ssh logged about a forward that could not reach the database
+        during an invocation that started at *since*, as a sentence, or ''."""
+        if not getattr(self, "ssh_host", None):
+            return ""
+        from .ssh_tunnel import channel_note
+        return channel_note(self, since)
 
     def close(self):
-        """Delete only the legacy helper's file. Idempotent; calls own theirs."""
+        """Delete only the legacy helper's file. Idempotent; calls own theirs.
+        Releases the SSH tunnel this object held (legacy file, editor session)."""
         if self._defaults_file_path and os.path.exists(self._defaults_file_path):
             try:
                 os.unlink(self._defaults_file_path)
             except OSError:
                 pass
         self._defaults_file_path = None
+        for name in ("_legacy_lease", "_held_lease"):
+            lease = getattr(self, name, None)
+            if lease is not None:
+                setattr(self, name, None)
+                lease.release()
 
     def __enter__(self):
         return self
@@ -453,6 +534,7 @@ class MySQLConnection:
 
         Raises :class:`ConnectorError` with stderr attached on failure.
         """
+        started = time.monotonic()
         try:
             with self._invocation_defaults() as defaults_path, client_environment() as env:
                 argv = self._build_argv(sql, extra_flags=extra_flags, defaults_path=defaults_path)
@@ -472,8 +554,44 @@ class MySQLConnection:
             stderr = (proc.stderr or b"").decode("utf-8", errors="replace").strip()
             raise ConnectorError(
                 "mysql client exited {}: {}".format(proc.returncode, stderr or "no stderr")
+                + self._tunnel_note(started)
             )
         return _client_text(proc.stdout)
+
+    def run_script(self, sql, extra_flags=None, timeout=None):
+        """Run read-only *sql* sent on standard input with ``--force`` and
+        return ``(stdout, stderr)`` as text.
+
+        Unlike :meth:`run`, a failing statement neither stops the client nor
+        raises: its ``ERROR n (state) at line N: ...`` line stays in stderr
+        for the caller, so one client process can read many definitions and
+        still tell which ones failed (schema_versions.py). The client exits 0
+        after statement errors under ``--force``; a non-zero exit without
+        such a line (a refused login) raises. ``--skip-reconnect`` keeps the
+        session settings made at the start of the script from vanishing.
+        """
+        try:
+            with self._invocation_defaults() as defaults_path:
+                argv = [self._resolve_binary(), "--defaults-file=" + defaults_path,
+                        "--batch", "--skip-column-names", "--silent", "--skip-reconnect", "--force",
+                        "--comments", "--binary-mode"]
+                argv.extend(CLIENT_CHARSET_FLAGS)
+                if self.database:
+                    argv += ["-D", self.database]
+                if extra_flags:
+                    argv += list(extra_flags)
+                with client_environment() as env:
+                    proc = _run_bounded(argv, input=(sql or "").encode("utf-8"),
+                                        timeout=timeout or self.query_timeout, env=env)
+        except subprocess.TimeoutExpired:
+            raise ConnectorError("Query timed out after {}s.".format(timeout or self.query_timeout)) from None
+        except FileNotFoundError as e:
+            raise ConnectorError("Cannot execute MySQL client binary: {}".format(e)) from e
+        stderr = (proc.stderr or b"").decode("utf-8", errors="replace")
+        if proc.returncode != 0 and not _STATEMENT_ERROR.search(stderr):
+            raise ConnectorError(
+                "mysql client exited {}: {}".format(proc.returncode, stderr.strip() or "no stderr"))
+        return _client_text(proc.stdout), stderr
 
     # Compatibility for callers that inspect the write environment allowlist.
     _STDIN_ENV = _CLIENT_ENV
@@ -623,6 +741,11 @@ class MySQLConnection:
         """
         maria = self.is_mariadb()
         version = self.server_version()
+        from .live import analyze_unsupported
+        refused = analyze_unsupported(version, maria)
+        if refused:
+            # MySQL before 8.3 refuses EXPLAIN ANALYZE FORMAT=JSON: send nothing.
+            raise ConnectorError(refused)
         if maria:
             stmt = "ANALYZE FORMAT=JSON " + sql
             prefix = ""

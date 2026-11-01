@@ -259,17 +259,32 @@ function resetStage() {
   stage.statusLbl.textContent = "";
 }
 
+// Whole numbers with thousands separators for captions.
+function fmtFull(n) {
+  return Math.round(n).toLocaleString("en-US");
+}
+
 function buildTimeline() {
   resetStage();
   var tl = anim.timeline();
   var phase = document.getElementById("phase-label");
-  var leftFetches = 0;
-  var rightFetches = 0;
   var total = INDEX_ENTRIES.length;
+  var totalMatches = 0;
+  for (var m = 0; m < total; m++) if (INDEX_ENTRIES[m].match) totalMatches++;
+  // Row reads after entry idx, counted from the data so a jump to any
+  // step shows the same numbers as playing up to it.
+  function matchesThrough(idx) {
+    var n = 0;
+    for (var j = 0; j <= idx; j++) if (INDEX_ENTRIES[j].match) n++;
+    return n;
+  }
 
   tl.mark("Range scan on last_name");
+  tl.beat("start");
   tl.call(function() {
-    phase.textContent = "Range scan: last_name LIKE 'S%' \u2014 found " + total + " entries in the secondary index";
+    phase.textContent = "Range scan of the (last_name, first_name) index for last_name LIKE 'S%': " +
+      total + " entries drawn, read one at a time in key order";
+    stage.statusLbl.textContent = "Each entry holds last_name, first_name and the primary key id, not the rest of the row.";
   });
   tl.delay(600);
 
@@ -278,11 +293,15 @@ function buildTimeline() {
       var entry = INDEX_ENTRIES[idx];
       var name = entry.last + ", " + entry.first;
       var startsWithJ = entry.first.charAt(0) === "J";
+      var leftReads = idx + 1;
+      var rightReads = matchesThrough(idx);
 
       // Add a phase mark every 3 entries
       if (idx % 3 === 0) {
         tl.mark("Check " + entry.last + ", " + entry.first);
       }
+      // One guided step per index entry: both sides handle the same entry.
+      tl.beat(startsWithJ ? "entry-match" : "entry-skip");
 
       // ---- Left panel: fetch first, check later ----
       tl.call(function() {
@@ -290,11 +309,10 @@ function buildTimeline() {
         // Step 1: always fetch the full row from clustered index
         le.bg.setAttribute("fill", "var(--svg-danger-soft)");
         le.bg.setAttribute("stroke", "var(--svg-danger)");
-        le.icon.textContent = "\u2192 fetching row\u2026";
+        le.icon.textContent = "→ fetching row…";
         le.icon.setAttribute("fill", "var(--svg-danger)");
-        leftFetches++;
-        stage.leftCounter.textContent = "Row fetches: " + leftFetches + " of " + total;
-        phase.textContent = "Without ICP: " + name + " \u2192 fetch full row from clustered index (always, regardless of first_name)";
+        stage.leftCounter.textContent = "Row fetches: " + leftReads + " of " + total;
+        phase.textContent = "Without ICP: " + name + " → fetch full row from clustered index (always, regardless of first_name)";
       });
       tl.delay(250);
       tl.call(function() {
@@ -303,13 +321,13 @@ function buildTimeline() {
           // Step 2: server checks first_name — match!
           le.bg.setAttribute("fill", "var(--svg-ok-soft)");
           le.bg.setAttribute("stroke", "var(--svg-ok)");
-          le.icon.textContent = entry.first + " starts with J \u2714";
+          le.icon.textContent = entry.first + " starts with J ✔";
           le.icon.setAttribute("fill", "var(--svg-ok)");
         } else {
           // Step 2: server checks first_name — fail! Wasted I/O.
           le.bg.setAttribute("fill", "var(--svg-danger-soft)");
           le.bg.setAttribute("stroke", "var(--svg-danger-soft)");
-          le.icon.textContent = entry.first + " \u2260 J% \u2718 wasted!";
+          le.icon.textContent = entry.first + " ≠ J% ✘ wasted!";
           le.icon.setAttribute("fill", "var(--svg-danger)");
         }
       });
@@ -322,40 +340,48 @@ function buildTimeline() {
         re.bg.setAttribute("stroke", "var(--svg-build)");
         re.icon.textContent = entry.first + " starts with J?";
         re.icon.setAttribute("fill", "var(--svg-build)");
-        phase.textContent = "With ICP: " + name + " \u2014 InnoDB checks: does \"" + entry.first + "\" start with J?";
+        phase.textContent = "With ICP: " + name + " — InnoDB checks: does \"" + entry.first + "\" start with J?";
       });
       tl.delay(350);
       tl.call(function() {
         var re = stage.rightEntries[idx];
         if (startsWithJ) {
-          // Yes \u2192 fetch the row
+          // Yes → fetch the row
           re.bg.setAttribute("fill", "var(--svg-ok-soft)");
           re.bg.setAttribute("stroke", "var(--svg-ok)");
-          re.icon.textContent = entry.first + " = J\u2026 \u2192 fetch \u2714";
+          re.icon.textContent = entry.first + " = J… → fetch ✔";
           re.icon.setAttribute("fill", "var(--svg-ok)");
-          rightFetches++;
-          stage.rightCounter.textContent = "Row fetches: " + rightFetches + " of " + total;
         } else {
-          // No \u2192 skip entirely, no row fetch
+          // No → skip entirely, no row fetch
           re.bg.setAttribute("fill", "var(--svg-ok-soft)");
           re.bg.setAttribute("stroke", "var(--svg-ok-soft)");
-          re.icon.textContent = entry.first + " \u2260 J\u2026 \u2192 SKIP";
+          re.icon.textContent = entry.first + " ≠ J… → SKIP";
           re.icon.setAttribute("fill", "var(--svg-ok)");
         }
+        stage.rightCounter.textContent = "Row fetches: " + rightReads + " of " + total;
+        // The held step ends on a summary of both sides for this entry.
+        phase.textContent = name + ": " + (startsWithJ
+          ? "first_name starts with J. Without ICP the row is read, then kept; with ICP InnoDB tests the entry first, then reads the row."
+          : "first_name does not start with J. Without ICP the row is read, then thrown away; with ICP InnoDB rejects the entry and reads no row.") +
+          " Row reads so far: " + leftReads + " without ICP, " + rightReads + " with ICP.";
       });
       tl.delay(280);
     })(i);
   }
 
   tl.delay(400);
+  tl.beat("done");
   tl.mark("Summary");
   tl.call(function() {
-    var matches = 0;
-    for (var j = 0; j < INDEX_ENTRIES.length; j++) if (INDEX_ENTRIES[j].match) matches++;
-    var saved = total - matches;
-    phase.textContent = "\u2713 Done \u2014 Without ICP: " + total + " row fetches. With ICP: " + matches + ". Saved " + saved + " wasted fetches!";
-    stage.leftSummary.textContent = "Fetched ALL " + total + " rows, then filtered \u2014 " + saved + " were wasted";
-    stage.rightSummary.textContent = "Only fetched " + matches + " rows where first_name starts with J";
+    var saved = total - totalMatches;
+    var c = teachRuntime.readControls();
+    var cost = icpCost(c.index_rows, c.selectivity / 100);
+    phase.textContent = "✓ The next entry starts with T, past 'S%', so the range ends. Row reads: " + total +
+      " without ICP, " + totalMatches + " with ICP. At " + fmtFull(cost.without) + " matching entries and " +
+      c.selectivity + "% J names: " + fmtFull(cost.without) + " row reads without ICP, " +
+      fmtFull(cost.withIcp) + " with it.";
+    stage.leftSummary.textContent = "Fetched ALL " + total + " rows, then filtered — " + saved + " were wasted";
+    stage.rightSummary.textContent = "Only fetched " + totalMatches + " rows where first_name starts with J";
     stage.statusLbl.textContent = "ICP saved " + saved + " unnecessary clustered-index lookups by checking the index first.";
   });
 
@@ -367,7 +393,7 @@ function buildCurrentTimeline() {
 }
 function resetAnim() {
   resetStage();
-  document.getElementById("phase-label").textContent = "Ready \u2014 press Play";
+  document.getElementById("phase-label").textContent = "Ready: press Next step, or Play to run it all";
 }
 
 function renderChart(currentRows) {

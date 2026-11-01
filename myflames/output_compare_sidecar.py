@@ -105,13 +105,16 @@ def _classify_delta(change_pct):
     return "unchanged"
 
 
-def build_compare_sidecar(json_before, json_after):
+def build_compare_sidecar(json_before, json_after, hide_literals=False):
     """Produce the ``compare-1.0`` sidecar dict.
 
     Parameters
     ----------
     json_before, json_after : str
         Raw EXPLAIN ANALYZE FORMAT=JSON text for the two plans.
+    hide_literals : bool
+        Hide SQL values in the completed presentation copy. Matching and
+        measurements always use the original plans.
 
     Returns
     -------
@@ -183,7 +186,7 @@ def build_compare_sidecar(json_before, json_after):
             "classification": classification,
         })
 
-    return {
+    payload = {
         "$schema":         COMPARE_SCHEMA_URL,
         "schema_version":  COMPARE_SCHEMA_VERSION,
         "generated_at":    _utc_now_iso(),
@@ -215,6 +218,13 @@ def build_compare_sidecar(json_before, json_after):
         },
         "deltas": deltas,
     }
+    if hide_literals:
+        from .plan_privacy import hide_analysis_literals, plan_literal_labels
+        # Identity and timing verdicts depend on original predicates. Only the
+        # completed presentation copy may hide their literal values.
+        labels = plan_literal_labels(root_b, root_a)
+        payload = hide_analysis_literals(payload, labels)
+    return payload
 
 
 def write_compare_sidecar(path, json_before, json_after):

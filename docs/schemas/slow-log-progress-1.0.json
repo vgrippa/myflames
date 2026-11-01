@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/vgrippa/myflames/docs/schemas/slow-log-progress-1.0.json",
+  "title": "myflames slow log read progress (slow-log-progress-1.0)",
+  "description": "How far one /api/slow-log/read with a progress_id is (myflames/slowlog_api.py). Bytes only: no statement text, no path. phase unknown means no read with that id is known.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "phase",
+    "bytes_read",
+    "bytes_total",
+    "percent",
+    "elapsed_s",
+    "stop_requested"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "slow-log-progress-1.0"
+    },
+    "phase": {
+      "enum": [
+        "reading",
+        "done",
+        "stopped",
+        "failed",
+        "unknown"
+      ]
+    },
+    "bytes_read": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "bytes_total": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "percent": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 100
+    },
+    "elapsed_s": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "stop_requested": {
+      "type": "boolean"
+    }
+  }
+}

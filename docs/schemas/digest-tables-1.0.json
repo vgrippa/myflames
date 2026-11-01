@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "digest-tables-1.0.json",
+  "title": "Tables named in statement text",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "method",
+    "tables",
+    "notes"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "digest-tables-1.0"
+    },
+    "method": {
+      "const": "statement text",
+      "description": "A text match, not proof of access. Views and routines are not expanded."
+    },
+    "tables": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "name",
+          "found",
+          "type",
+          "engine",
+          "rows_estimate",
+          "data_bytes",
+          "index_bytes",
+          "indexes"
+        ],
+        "properties": {
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "found": {
+            "type": "boolean",
+            "description": "Visible in information_schema.TABLES. False also covers unavailable default schema or insufficient metadata privileges."
+          },
+          "type": {
+            "enum": [
+              "table",
+              "view",
+              "system view",
+              "sequence",
+              null
+            ]
+          },
+          "engine": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rows_estimate": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "TABLE_ROWS, an estimate, not a row-data count."
+          },
+          "data_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "DATA_LENGTH bytes reported by the engine."
+          },
+          "index_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "INDEX_LENGTH bytes reported by the engine."
+          },
+          "indexes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "name",
+                "unique",
+                "columns",
+                "visible"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "unique": {
+                  "type": "boolean"
+                },
+                "columns": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Key parts in SEQ_IN_INDEX order. Functional parts use EXPRESSION when present."
+                },
+                "visible": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ],
+                  "description": "IS_VISIBLE on MySQL; null when the metadata has no visibility field, including MariaDB."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

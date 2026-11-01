@@ -1,0 +1,899 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/vgrippa/myflames/docs/schemas/slow-log-1.0.json",
+  "title": "myflames slow query log digest (slow-log-1.0)",
+  "description": "A slow query log summed by statement fingerprint (myflames/slowlog.py, slow_queries.py; /api/slow-log/read for a file, /api/live/slow-log for mysql.slow_log, myflames slow-log). Entries inside the range (inclusive, compared in the log's own clock, never moved to another zone) and the user and schema filters are summed by (schema, fingerprint). Read-only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "source",
+    "engine",
+    "flavor",
+    "server_product",
+    "server_version",
+    "clock",
+    "time_meaning",
+    "range",
+    "filters",
+    "order",
+    "limit",
+    "span",
+    "anchor",
+    "totals",
+    "others",
+    "users",
+    "databases",
+    "parse",
+    "notes",
+    "statements"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "slow-log-1.0"
+    },
+    "source": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "name",
+            "size_bytes",
+            "modified"
+          ],
+          "properties": {
+            "kind": {
+              "const": "file"
+            },
+            "name": {
+              "type": "string",
+              "description": "The file name (never the folder)."
+            },
+            "size_bytes": {
+              "type": "integer"
+            },
+            "modified": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Last modification, UTC ISO 8601, or null for standard input."
+            },
+            "file_id": {
+              "type": "string",
+              "description": "The workspace's id for the chosen file (workspace replies only)."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "table",
+            "rows",
+            "rows_read",
+            "capped"
+          ],
+          "properties": {
+            "kind": {
+              "const": "table"
+            },
+            "table": {
+              "const": "mysql.slow_log"
+            },
+            "rows": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "description": "Rows in the table when read, or null."
+            },
+            "rows_read": {
+              "type": "integer",
+              "description": "Rows read inside the range (the newest first, at most 20,000)."
+            },
+            "capped": {
+              "type": "boolean",
+              "description": "More rows were in the range than were read."
+            }
+          }
+        }
+      ]
+    },
+    "engine": {
+      "enum": [
+        "mysql",
+        "mariadb",
+        null
+      ],
+      "description": "From the log's server lines, else its format; null when unknown."
+    },
+    "flavor": {
+      "enum": [
+        "mysql",
+        "percona",
+        "mariadb",
+        null
+      ]
+    },
+    "server_product": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "server_version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "clock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "label",
+        "offsets",
+        "text"
+      ],
+      "description": "What the times mean.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "utc",
+            "offset",
+            "local",
+            "mixed",
+            "none",
+            "server"
+          ]
+        },
+        "label": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "offsets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[+-]\\d{2}:\\d{2}$"
+          }
+        },
+        "text": {
+          "type": "string"
+        }
+      }
+    },
+    "time_meaning": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event",
+        "text"
+      ],
+      "properties": {
+        "event": {
+          "enum": [
+            "end",
+            "start",
+            null
+          ]
+        },
+        "text": {
+          "type": "string"
+        }
+      }
+    },
+    "range": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "to",
+        "applied"
+      ],
+      "properties": {
+        "from": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Inclusive lower bound, YYYY-MM-DD HH:MM:SS.ffffff, or null."
+        },
+        "to": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Inclusive upper bound (padded to the end of the precision given), or null."
+        },
+        "applied": {
+          "type": "boolean"
+        }
+      }
+    },
+    "filters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "user",
+        "database"
+      ],
+      "properties": {
+        "user": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "database": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "order": {
+      "enum": [
+        "total",
+        "count",
+        "avg",
+        "max",
+        "p95",
+        "lock",
+        "examined",
+        "sent"
+      ]
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+    },
+    "span": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "first",
+        "last"
+      ],
+      "description": "The earliest and latest time in the whole source, whatever the range.",
+      "properties": {
+        "first": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "anchor": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "The newest time known in the source's clock (the file's last entry, the server's NOW() for the table): quick ranges end here."
+    },
+    "totals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "statements",
+        "executions",
+        "total_ms",
+        "in_range",
+        "out_of_range"
+      ],
+      "properties": {
+        "statements": {
+          "type": "integer"
+        },
+        "executions": {
+          "type": "integer"
+        },
+        "total_ms": {
+          "type": "number"
+        },
+        "in_range": {
+          "type": "integer",
+          "description": "Entries inside the range, before the user and schema filters."
+        },
+        "out_of_range": {
+          "type": "integer"
+        }
+      }
+    },
+    "others": {
+      "description": "The statements the list does not hold, or null.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "statements",
+        "executions",
+        "total_ms"
+      ],
+      "properties": {
+        "statements": {
+          "type": "integer"
+        },
+        "executions": {
+          "type": "integer"
+        },
+        "total_ms": {
+          "type": "number"
+        }
+      }
+    },
+    "users": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "count"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      },
+      "description": "Users with entries in the range (all of them, whatever the user filter), the busiest first, at most 1,000; '' is an entry without a user."
+    },
+    "databases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "count"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      },
+      "description": "Default databases with entries in the range; '' is none."
+    },
+    "parse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bytes",
+        "lines",
+        "entries",
+        "malformed",
+        "problems",
+        "long_lines",
+        "truncated_statements",
+        "admin_commands",
+        "excluded_own",
+        "no_time",
+        "inferred_times"
+      ],
+      "properties": {
+        "bytes": {
+          "type": "integer"
+        },
+        "lines": {
+          "type": "integer"
+        },
+        "entries": {
+          "type": "integer"
+        },
+        "malformed": {
+          "type": "integer",
+          "description": "Entries or runs of lines that could not be read (all counted)."
+        },
+        "problems": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "line",
+              "reason"
+            ],
+            "properties": {
+              "line": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "reason": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "long_lines": {
+          "type": "integer"
+        },
+        "truncated_statements": {
+          "type": "integer"
+        },
+        "admin_commands": {
+          "type": "integer"
+        },
+        "excluded_own": {
+          "type": "integer",
+          "description": "Statements myflames sent (tagged /*myflames:), left out."
+        },
+        "no_time": {
+          "type": "integer"
+        },
+        "inferred_times": {
+          "type": "integer",
+          "description": "Entries before a local-time log's first # Time line, timed from SET timestamp."
+        }
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "statements": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/statement"
+      }
+    }
+  },
+  "$defs": {
+    "statement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "digest",
+        "fingerprint_id",
+        "digest_text",
+        "schema",
+        "count",
+        "total_ms",
+        "avg_ms",
+        "min_ms",
+        "max_ms",
+        "p95_ms",
+        "p99_ms",
+        "p999_ms",
+        "lock_time_ms",
+        "rows_sent",
+        "rows_examined",
+        "examined_per_sent",
+        "rows_affected",
+        "bytes_sent",
+        "no_index_used",
+        "no_good_index_used",
+        "tmp_tables",
+        "tmp_disk_tables",
+        "sort_merge_passes",
+        "select_scan",
+        "select_full_join",
+        "select_range_check",
+        "filesort",
+        "filesort_on_disk",
+        "errors",
+        "killed",
+        "sample_text",
+        "sample_truncated",
+        "sample",
+        "first_seen",
+        "last_seen",
+        "users",
+        "hosts",
+        "histogram",
+        "admin",
+        "flags",
+        "cpu_ms",
+        "new",
+        "capture_problem",
+        "analysis_sql",
+        "analysis_warning",
+        "source"
+      ],
+      "properties": {
+        "digest": {
+          "type": "null",
+          "description": "Always null: slow logs have no server digest (see fingerprint_id)."
+        },
+        "fingerprint_id": {
+          "type": "string",
+          "description": "The first 16 hex characters of the SHA-256 of digest_text; myflames' own id, not a Performance Schema digest.",
+          "pattern": "^[0-9a-f]{16}$"
+        },
+        "digest_text": {
+          "type": "string",
+          "description": "The fingerprint: comments dropped, literals and numbers as ?, lists of values as (...), white space collapsed, keywords in upper case, names as written. Administrator commands read 'administrator command: NAME'."
+        },
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The default database the statements ran in (Schema: on MariaDB and Percona, else the last use db; line), or null."
+        },
+        "count": {
+          "type": "integer",
+          "description": "Executions in the range.",
+          "minimum": 1
+        },
+        "total_ms": {
+          "type": "number",
+          "description": "Sum of Query_time.",
+          "minimum": 0
+        },
+        "avg_ms": {
+          "type": "number"
+        },
+        "min_ms": {
+          "type": "number"
+        },
+        "max_ms": {
+          "type": "number"
+        },
+        "p95_ms": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Upper bound of the histogram bucket that holds the 95th percentile (Performance Schema's buckets), at most max_ms."
+        },
+        "p99_ms": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "p999_ms": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "lock_time_ms": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Sum of Lock_time, or null when no entry had one."
+        },
+        "rows_sent": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "rows_examined": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "examined_per_sent": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "rows_affected": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Sum of Rows_affected (MariaDB, Percona), or null when the log has none."
+        },
+        "bytes_sent": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "no_index_used": {
+          "type": "null",
+          "description": "Always null: slow logs do not record it."
+        },
+        "no_good_index_used": {
+          "type": "null"
+        },
+        "tmp_tables": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Created_tmp_tables (log_slow_extra) or Tmp_tables (MariaDB, Percona), summed; null when the log has none."
+        },
+        "tmp_disk_tables": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "sort_merge_passes": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "select_scan": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Executions with Full_scan: Yes (MariaDB log_slow_verbosity=query_plan, Percona); null when the log has none."
+        },
+        "select_full_join": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Executions with Full_join: Yes; null when the log has none."
+        },
+        "select_range_check": {
+          "type": "null"
+        },
+        "filesort": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "filesort_on_disk": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "errors": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Executions with a nonzero Errno (log_slow_extra) or Last_errno (Percona); null when the log has none."
+        },
+        "killed": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "sample_text": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The text of the slowest execution (at most 65,536 characters)."
+        },
+        "sample_truncated": {
+          "type": "boolean"
+        },
+        "sample": {
+          "description": "Where the sample came from.",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "required": [
+            "text",
+            "truncated",
+            "db",
+            "user",
+            "host",
+            "time",
+            "thread_id",
+            "query_time_ms",
+            "line"
+          ],
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "truncated": {
+              "type": "boolean"
+            },
+            "db": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "user": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "host": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "time": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "thread_id": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "query_time_ms": {
+              "type": "number"
+            },
+            "line": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "description": "Line of its entry in the file; null for the table."
+            }
+          }
+        },
+        "first_seen": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The earliest logged time, as the log writes it (see clock), or null."
+        },
+        "last_seen": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "users": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "count"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          },
+          "description": "Up to 10 users that ran it, the busiest first."
+        },
+        "hosts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "count"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          },
+          "description": "Up to 10 client hosts, the busiest first."
+        },
+        "histogram": {
+          "description": "Executions per Performance Schema histogram bucket (only buckets with calls).",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "bucket",
+              "low_ms",
+              "high_ms",
+              "count"
+            ],
+            "properties": {
+              "bucket": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 449
+              },
+              "low_ms": {
+                "type": "number"
+              },
+              "high_ms": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        },
+        "admin": {
+          "type": "boolean",
+          "description": "An administrator command (# administrator command:)."
+        },
+        "flags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "cpu_ms": {
+          "type": "null"
+        },
+        "new": {
+          "type": "boolean"
+        },
+        "capture_problem": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Why Explain and Run analysis refuse it, or null."
+        },
+        "analysis_sql": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "analysis_warning": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string",
+          "description": "slow_log_file or mysql.slow_log.",
+          "enum": [
+            "slow_log_file",
+            "mysql.slow_log"
+          ]
+        }
+      }
+    }
+  }
+}

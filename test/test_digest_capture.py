@@ -332,6 +332,7 @@ class TestCaptureDigestCLI(unittest.TestCase):
         self.assertIn("-D shop -e 'SELECT * FROM `orders` WHERE `customer_id` IN (:p1) AND `created_at` > :p2'", err)
         self.assertIn('--parameters \'{"p1": null, "p2": null}\'', err)
         self.assertIn('p1 replaces a collapsed list', err)
+        self.assertIn('give it a JSON list, such as [1, 2], or write the list into the SQL', err)
         self.assertNotIn(PASSWORD, err)
 
     def test_truncated_sample_exits_2(self):

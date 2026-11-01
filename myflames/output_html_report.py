@@ -1131,6 +1131,35 @@ with open(_os.path.join(_DIR, "output_html_report.js"), encoding="utf-8") as _f:
     _JS = _f.read()
 
 
+def render_plan_stats(root):
+    """The report uses exactly the aggregates shipped to the workspace."""
+    from .chart_data import build_chart_data
+    stats = build_chart_data(root)["stats"]
+    sections = ['<details class="raw-sidecar plan-statistics"><summary>Stats</summary>',
+                '<p>' + xml_escape(stats["note"]) + '</p>']
+    for key, title in (("tables", "Time per table"), ("operators", "Time per operator type")):
+        sections.append('<h3>' + title + '</h3><div class="plan-stats-scroll"><table><thead><tr>'
+                        '<th scope="col">Name</th><th scope="col">Count</th>'
+                        '<th scope="col">Self time</th><th scope="col">Plan share</th>'
+                        '<th scope="col">Rows produced</th><th scope="col">Estimated rows / loop</th>'
+                        '<th scope="col">Loops</th>'
+                        + ('<th scope="col">Operators</th>' if key == "tables" else '')
+                        + '</tr></thead><tbody>')
+        for row in stats[key]:
+            cells = [xml_escape(row["label"]), str(row["count"]),
+                     _format_time(row["self_ms"]) if row["self_ms"] is not None else "Not measured",
+                     '{:.1f}%'.format(row["share"] * 100) if row["share"] is not None else "Unknown",
+                     _format_rows(row["actual_rows"]) if row["actual_rows"] is not None else "Unknown",
+                     _format_rows(row["estimated_rows"]) if row["estimated_rows"] is not None else "Unknown",
+                     _format_rows(row["loops"]) if row["loops"] is not None else "Unknown"]
+            if key == "tables":
+                cells.append(xml_escape(', '.join(row["operators"])))
+            sections.append('<tr>' + ''.join('<td>' + cell + '</td>' for cell in cells) + '</tr>')
+        sections.append('</tbody></table></div>')
+    sections.append('</details>')
+    return ''.join(sections)
+
+
 def render_html_report(json_text, view_type="flamegraph", width=1200,
                        title="MySQL Query Plan", query_text="",
                        live_artifacts=None, alternate_json_href=None,
@@ -1164,6 +1193,13 @@ def render_html_report(json_text, view_type="flamegraph", width=1200,
     ``Export Analysis JSON``, ``Print``, ``Warnings``, ``Suggestions``.
     All of those are preserved here.
     """
+    hidden = kwargs.pop("hide_literals", False)
+    if hidden:
+        from .parser import hide_plan_json_literals
+        from .plan_privacy import hide_literals
+        json_text = hide_plan_json_literals(json_text)
+        query_text = hide_literals(query_text)
+        title = hide_literals(title)
     root = parse_explain(json_text)
     max_time = root["total_time"]
     use_microseconds = max_time > 0 and max_time < 1
@@ -1248,12 +1284,18 @@ def render_html_report(json_text, view_type="flamegraph", width=1200,
         query_beautified=beautified or None,
         teach_hooks=teach_hooks,
     )
+    if hidden:
+        from .plan_privacy import hide_analysis_literals, plan_literal_labels
+        # Collected evidence and advisor/teach prose are now complete. Redact
+        # the copy consumed by every HTML and embedded JSON channel.
+        sidecar = hide_analysis_literals(sidecar, plan_literal_labels(root))
 
     sections = [
         _render_exec_summary(sidecar),
         _render_primary_action(sidecar),
         _render_query_card(sidecar),
         _render_viz_card(svg_embed, view_type),
+        render_plan_stats(root),
         _render_warnings(sidecar),
         _render_suggestions(sidecar),
         _render_token_savings(sidecar, json_text),
@@ -1312,7 +1354,7 @@ def render_html_report(json_text, view_type="flamegraph", width=1200,
     # templated strings per structured-output's Round 2 critique).
     _src = sidecar.get("source") or {}
     _ps = sidecar.get("plan_summary") or {}
-    meta_items = []
+    meta_items = ["Literal values hidden"] if hidden else []
     if _src.get("engine") and _src.get("engine_version"):
         meta_items.append("{} {}".format(
             _src["engine"].capitalize(), _src["engine_version"]))

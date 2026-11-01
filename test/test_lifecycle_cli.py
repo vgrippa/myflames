@@ -191,6 +191,35 @@ class WriteCommandsCli(Isolated):
         self.assertFalse(os.path.exists(self.out_dir))
         self.assertEqual(self.audit(), [])
 
+    def test_dump_no_data_maps_to_structure_only_and_says_so(self):
+        seen = []
+        real = lc.prepare_dump
+        def capture(*args, **kwargs):
+            seen.append(kwargs.get('options'))
+            return real(*args, **kwargs)
+        with mock.patch.object(lc, 'prepare_dump', side_effect=capture), \
+                mock.patch.object(lc, 'dump_job', return_value=finished_job('dump')):
+            code, out, err, unused = self.run_cli(
+                ['dump', self.out_dir, '--schema', 'app', '--no-shell', '--no-data', '--yes'], ReplayConnection())
+        self.assertEqual(code, 0, err)
+        self.assertEqual(seen, [{'structure_only': True}])
+        self.assertIn('Structure only', out + err)
+        with mock.patch.object(lc, 'prepare_dump', side_effect=capture), \
+                mock.patch.object(lc, 'dump_job', return_value=finished_job('dump')):
+            code, out, err, unused = self.run_cli(['dump', self.out_dir + '2', '--yes'], ReplayConnection())
+        self.assertEqual(code, 0, err)
+        self.assertEqual(seen[-1], None)
+        code, out, err, unused = self.run_cli(['dump', '--help'], ReplayConnection())
+        self.assertEqual(code, 0)
+        self.assertIn('--no-data', out)
+        self.assertIn('Dump table and object definitions only, no rows.', out)
+        code, out, err, unused = self.run_cli(
+            ['dump', self.out_dir, '--schema', 'app', '--no-shell', '--no-data', '--preflight'], ReplayConnection())
+        self.assertEqual(code, 0, err)
+        self.assertIn('Structure only', out)
+        self.assertFalse(os.path.exists(self.out_dir))
+        self.assertEqual(self.audit(), [])
+
     def test_dump_interactive_yes_runs_the_job(self):
         with mock.patch.object(lc, 'dump_job', return_value=finished_job('dump')) as make:
             code, out, err, unused = self.run_cli(['dump', self.out_dir, '--schema', 'app'], ReplayConnection(),

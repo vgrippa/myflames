@@ -80,7 +80,10 @@ export type IconName =
   | "clean"
   | "undo"
   // Query editor: Format SQL.
-  | "format";
+  | "format"
+  // Learn: show a lesson's animation full screen, and leave it.
+  | "fullscreen"
+  | "exit-fullscreen";
 // Glyphs are Hugeicons (free Stroke Rounded set, MIT) vendored into
 // icons.generated.ts by scripts/vendor-hugeicons.mjs, drawn on a 24 px grid and
 // scaled to 16 px (rows, navigation) or 12 px (disclosures, inline status).

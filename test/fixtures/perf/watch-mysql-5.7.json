@@ -1,0 +1,58 @@
+{
+ "server": "mysql-5.7",
+ "source": "live",
+ "args": {},
+ "calls": [
+  [
+   "/*myflames:watch*/ SELECT @@version, @@performance_schema",
+   "5.7.44-log\t1\n"
+  ],
+  [
+   "SELECT @@version_comment",
+   "MySQL Community Server (GPL)\n"
+  ],
+  [
+   "/*myflames:watch*/ SHOW GLOBAL STATUS LIKE 'Threads_running'",
+   "Threads_running\t4\n"
+  ],
+  [
+   "/*myflames:watch*/ SELECT ID, USER, HOST, DB, COMMAND, TIME, STATE, LEFT(INFO, 16384), LENGTH(INFO) FROM information_schema.PROCESSLIST WHERE ID <> CONNECTION_ID() ORDER BY TIME DESC LIMIT 10001",
+   "1068\trepl\tfda0:f59a:f4f:5::3:40568\tNULL\tBinlog Dump\t454\tMaster has sent all binlog to slave; waiting for more updates\tNULL\tNULL\n1074\troot\tlocalhost\tNULL\tSleep\t5\t\tNULL\tNULL\n1075\troot\tlocalhost\tNULL\tSleep\t5\t\tNULL\tNULL\n1076\troot\tlocalhost\tNULL\tQuery\t4\tupdating\tUPDATE review.lock_probe SET v=v+1 WHERE id=1\t45\n1077\troot\tlocalhost\tNULL\tQuery\t4\tWaiting for table metadata lock\tALTER TABLE review.mdl_probe ADD COLUMN probe_col INT\t53\n"
+  ],
+  [
+   "/*myflames:locks*/ SET SESSION time_zone = 'SYSTEM'; /*myflames:locks*/ SELECT trx_id, trx_state, trx_started, TIMESTAMPDIFF(SECOND, trx_started, NOW()), trx_requested_lock_id, trx_wait_started, TIMESTAMPDIFF(SECOND, trx_wait_started, NOW()), trx_mysql_thread_id, LEFT(trx_query, 4096), trx_operation_state, trx_tables_in_use, trx_tables_locked, trx_lock_structs, trx_rows_locked, trx_rows_modified, trx_isolation_level, trx_is_read_only FROM information_schema.INNODB_TRX WHERE trx_mysql_thread_id <> CONNECTION_ID() ORDER BY trx_started, trx_id LIMIT 501",
+   "2052\tRUNNING\t2026-10-31 13:03:36\t5\tNULL\tNULL\tNULL\t1074\tNULL\tNULL\t0\t1\t2\t1\t1\tREPEATABLE READ\t0\n2053\tRUNNING\t2026-10-31 13:03:36\t5\tNULL\tNULL\tNULL\t1075\tNULL\tNULL\t0\t0\t0\t0\t0\tREPEATABLE READ\t0\n2054\tLOCK WAIT\t2026-10-31 13:03:37\t4\t2054:37:3:2\t2026-10-31 13:03:37\t4\t1076\tUPDATE review.lock_probe SET v=v+1 WHERE id=1\tstarting index read\t1\t1\t2\t1\t0\tREPEATABLE READ\t0\n"
+  ]
+ ],
+ "report": {
+  "schema_version": "watch-1.0",
+  "engine": "mysql",
+  "server_version": "5.7.44-log",
+  "server_product": "MySQL",
+  "threads_running": 4,
+  "longest_statement": {
+   "id": 1076,
+   "seconds": 4,
+   "user": "root",
+   "db": null
+  },
+  "longest_lock_wait": {
+   "id": 1076,
+   "seconds": 4
+  },
+  "longest_waiting_statement": {
+   "id": 1077,
+   "seconds": 4,
+   "state": "Waiting for table metadata lock"
+  },
+  "read_at": "2026-10-31T13:03:41.245975+00:00",
+  "reason": null,
+  "errors": {
+   "threads_running": null,
+   "longest_statement": null,
+   "longest_lock_wait": null,
+   "longest_waiting_statement": null
+  },
+  "notes": []
+ }
+}

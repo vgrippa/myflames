@@ -1,0 +1,64 @@
+// Deterministic lifecycle checks, with no browser, server, timers or sockets.
+import assert from "node:assert/strict";
+import { createRequire } from "node:module";
+import { build } from "esbuild";
+const result = await build({ entryPoints: [new URL("../src/ddlProgressPoll.ts", import.meta.url).pathname],
+  bundle: true, write: false, platform: "node", format: "cjs", logLevel: "silent" });
+const out = { exports: {} };
+new Function("require", "module", "exports", result.outputFiles[0].text)(createRequire(import.meta.url), out, out.exports);
+const { followDdlProgress } = out.exports;
+const doc = new EventTarget();
+doc.hidden = false;
+globalThis.document = doc;
+const timers = new Map();
+let timerId = 0;
+globalThis.window = {
+  setTimeout: (fn, ms) => { assert.equal(ms, 2000); timers.set(++timerId, fn); return timerId; },
+  clearTimeout: id => timers.delete(id),
+};
+const replies = [], reads = [], shown = [];
+const read = signal => new Promise((resolve, reject) => { reads.push(signal); replies.push({ resolve, reject }); });
+const flush = async () => { await Promise.resolve(); await Promise.resolve(); };
+const tick = async () => { assert.equal(timers.size, 1); const [id, fn] = [...timers][0]; timers.delete(id); fn(); await flush(); };
+const visibility = hidden => { doc.hidden = hidden; doc.dispatchEvent(new Event("visibilitychange")); };
+const progress = { available: true, reason: null, missing: [], source: "performance_schema", items: [{ id: 42 }] };
+let stop = followDdlProgress(read, x => shown.push(x));
+assert.equal(reads.length, 1);
+assert.equal(timers.size, 0, "no next read until the current read settles");
+replies.shift().resolve(progress);
+await flush();
+assert.deepEqual(shown, [progress]);
+await tick();
+assert.equal(reads.length, 2);
+visibility(true);
+assert.equal(reads[1].aborted, true);
+replies.shift().resolve({ ...progress, items: [{ id: 43 }] });
+await flush();
+assert.equal(shown.length, 1, "a late hidden reply is discarded");
+assert.equal(timers.size, 0);
+visibility(false);
+assert.equal(reads.length, 3);
+stop();
+assert.equal(reads[2].aborted, true);
+replies.shift().resolve(progress);
+await flush();
+assert.equal(shown.length, 1, "a disposed run cannot restore old progress");
+assert.equal(timers.size, 0);
+visibility(true);
+stop = followDdlProgress(read, x => shown.push(x));
+assert.equal(reads.length, 3, "hidden mount does not read");
+visibility(false);
+assert.equal(reads.length, 4);
+replies.shift().reject(new Error("Read denied"));
+await flush();
+assert.equal(shown.at(-1).available, false);
+assert.match(shown.at(-1).reason, /Read denied/);
+assert.equal(timers.size, 1, "a failed read stays bounded and can see tracking enabled later");
+stop();
+assert.equal(timers.size, 0);
+visibility(true);
+visibility(false);
+assert.equal(reads.length, 4, "cleanup removed visibility listeners");
+delete globalThis.window;
+delete globalThis.document;
+console.log("DDL polling: single flight, 2 s cadence, visibility, cancellation, late replies and recovery passed.");

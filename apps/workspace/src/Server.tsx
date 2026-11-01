@@ -35,6 +35,7 @@ import type {
   IoReport,
   LocksReport,
   Plan,
+  Profile,
   SessionsReport,
   TablesReport,
   TopOrder,
@@ -88,7 +89,7 @@ import {
   useConnectionReads,
   type Bound,
 } from "./binding";
-import { HealthView, emptyHealth, rememberHealth, type HealthMemory } from "./Health";
+import { HealthView, emptyHealth, rememberHealth, switchHealthConnection, type HealthMemory } from "./Health";
 import { ErrorLogView, ERROR_LOG_READ, errorLogBody } from "./ErrorLog";
 import { analysisSource as reportSource } from "./Report";
 import {
@@ -137,10 +138,19 @@ const AccountsView = lazyComponent(() => import("./Accounts").then((m) => m.Acco
 const LAZY_VIEWS = [InnodbView, TuningView, SessionsView, WaitsView, IoView, IndexesView, TablesView, ConfigView, SchemaDiagramView, AccountsView];
 /** Focuses the element with *id* after this task, or once it appears: a view
  * whose chunk is still loading mounts its heading a moment later (up to 2 s). */
+/** A view's title, for focus. A view with tabs keeps every tab mounted
+ * (Parameters and Users and roles with Compare): the title of the tab on screen. */
+function viewTitle(id: string): HTMLElement | null {
+  const element = document.getElementById(id);
+  if (!element || !element.closest("[hidden]")) return element;
+  const panels = element.closest('[role="tabpanel"]')?.parentElement;
+  return panels?.querySelector<HTMLElement>(':scope > [role="tabpanel"]:not([hidden]) .view-toolbar h2[tabindex="-1"]') || element;
+}
+
 function focusWhenMounted(id: string) {
   let tries = 0;
   const attempt = () => {
-    const element = document.getElementById(id);
+    const element = viewTitle(id);
     if (element) element.focus();
     else if (tries++ < 40) window.setTimeout(attempt, 50);
   };
@@ -277,6 +287,7 @@ export function Server({
   onBatchChange,
   onOpenLesson,
   onOpenSql,
+  onOpenInvestigation,
   link,
   instrumentsLink,
   navigation,
@@ -291,6 +302,7 @@ export function Server({
   onClusterFailed: propOnClusterFailed,
   columns: propColumns,
   onColumns: propOnColumns,
+  profiles = [],
 }: {
   /** The place on screen (or shown last, while another place is): Server and
    * Workload list their views; Tuning and Database diagram show their one
@@ -324,6 +336,8 @@ export function Server({
   onOpenLesson?: (lesson: string) => void;
   /** Open a statement in the Query editor without running it (new tab, or current tab when append is set). */
   onOpenSql?: (sql: string, options?: { append?: boolean }) => void;
+  /** Open a saved investigation in Investigations (e.g. from Health's Capture when…). */
+  onOpenInvestigation?: (id: string) => void;
   /** A link from the Query editor's schema browser: open Indexes or Tables
    * on one table (n changes per click; from is the key it was read with). */
   link?: { view: "indexes" | "tables" | "health"; schema: string; table: string; from: string; n: number } | null;
@@ -348,6 +362,8 @@ export function Server({
    * otherwise kept here, restored from *initial*. */
   columns?: Record<string, ColumnPrefs>;
   onColumns?: (update: (all: Record<string, ColumnPrefs>) => Record<string, ColumnPrefs>) => void;
+  /** Saved connections (no passwords): Maintenance's Clone fills its donor from one. */
+  profiles?: Profile[];
 }) {
   // Tuning (with its Full analysis tab) is a place of its own, never a view
   // chosen inside Server: an earlier session that saved either as the Server
@@ -442,6 +458,11 @@ export function Server({
   // the key of the connection it was read from (binding.ts): a report from
   // another connection stays on screen, greyed, with its actions off.
   const [health, setHealth] = useState<HealthMemory>(emptyHealth);
+  // A connection switch clears Health's readings and stops Capture when…
+  // (a capture on its way finishes for the connection it started on).
+  useEffect(() => {
+    setHealth((prev) => switchHealthConnection(prev, activeKey));
+  }, [activeKey]);
   const [innodb, setInnodb] = useState<Bound<InnodbReport> | null>(null);
   const [errorlog, setErrorlog] = useState<Bound<ErrorLogReport> | null>(null);
   const [sessions, setSessions] = useState<Bound<SessionsReport> | null>(null);
@@ -620,7 +641,7 @@ export function Server({
     const focused = document.activeElement;
     if (focused && focused !== document.body && focused.isConnected) return;
     const toggle = placeRef.current?.querySelector<HTMLElement>(".server-sidebar-toggle");
-    const target = toggle ?? document.getElementById(`${kind}-title`);
+    const target = toggle ?? viewTitle(`${kind}-title`);
     target?.focus({ preventScroll: true });
   }, [floating, kind]);
   const sheet = width > 0 && width < SHEET_WIDTH;
@@ -714,11 +735,11 @@ export function Server({
   // shell, so Refresh all and the loop banner below still cover it.
   const [keptViews, setKeptViews] = useState<ServerKind[]>(() => {
     const list: ServerKind[] = [];
-    if (initial?.kind && ["maintenance", "tables", "instruments", "accounts"].includes(initial.kind)) list.push(initial.kind);
+    if (initial?.kind && ["maintenance", "tables", "instruments", "accounts", "config"].includes(initial.kind)) list.push(initial.kind);
     return list;
   });
   function keepMounted(view: ServerKind) {
-    if (["maintenance", "tables", "instruments", "accounts"].includes(view))
+    if (["maintenance", "tables", "instruments", "accounts", "config"].includes(view))
       setKeptViews((list) => (list.includes(view) ? list : [...list, view]));
   }
   /** A link from a report may read with that report's schema or table only
@@ -1395,6 +1416,7 @@ export function Server({
             settings={settings}
             onDigest={onDigest}
             onOpenTop={openTop}
+            onOpenInvestigation={onOpenInvestigation}
           />
         );
       case "innodb":
@@ -1544,8 +1566,6 @@ export function Server({
         );
       case "diagram":
         return <SchemaDiagramView {...common} selection={selection("diagram")} document={diagram} onDocument={setDiagram} selectedDatabase={diagramDatabase} onDatabaseChange={chooseDiagramDatabase} />;
-      case "config":
-        return <ConfigView {...common} selection={selection("config")} report={config} onReport={setConfig} onOpenSql={onOpenSql} />;
       // Operations views mount once and stay mounted, hidden, in
       // .server-keep below: an open preflight or a running job survives
       // switching views and keeps its polls and control paths. Replication
@@ -1556,6 +1576,7 @@ export function Server({
       case "tables":
       case "instruments":
       case "accounts":
+      case "config":
         return null;
     }
   })();
@@ -1816,6 +1837,19 @@ export function Server({
                   </ViewSwitcherContext.Provider>
                 </div>
               )}
+              {/* Parameters: staged edits, change outcomes, a snapshot being
+                  saved and a comparison survive a switch to another view. */}
+              {(keptViews.includes("config") || kind === "config") && (
+                <div className="server-keep" hidden={kind !== "config"}>
+                  <ViewSwitcherContext.Provider value={switcherFor("config")}>
+                  <ViewOnScreenContext.Provider value={onScreen && kind === "config" && !(compact && showList)}>
+                  <InspectorContext.Provider value={{...inspector, open: inspector.open && kind === "config"}}>
+                    <ConfigView {...common} selection={selection("config")} report={config} onReport={setConfig} onOpenSql={onOpenSql} />
+                  </InspectorContext.Provider>
+                  </ViewOnScreenContext.Provider>
+                  </ViewSwitcherContext.Provider>
+                </div>
+              )}
               {/* Account writes and one-time passwords must survive navigation
                   until acknowledged, without saving secrets in the session. */}
               {keptViews.includes("accounts") && (
@@ -1840,6 +1874,7 @@ export function Server({
                     onSection={setMaintenanceSection}
                     memory={maintenance}
                     onMemory={setMaintenance}
+                    profiles={profiles}
                   />
                   </ViewOnScreenContext.Provider>
                   </ViewSwitcherContext.Provider>

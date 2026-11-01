@@ -16,7 +16,7 @@ import {
 } from "./api";
 import { killStatusWord, killVia, Sql, type KillNote } from "./Locks";
 import { connectionKey } from "./binding";
-import { useWritePolicy } from "./Connections";
+import { ConnectionTypeBand, useWritePolicy } from "./Connections";
 import { Icon } from "./components";
 import { Duration } from "./PerfShared";
 import { ActionButton, ActionStatus, ConfirmSheet, NumberField, Segmented, errorText, useFocusScope, writeFailure } from "./kit";
@@ -76,7 +76,9 @@ export function MassKillDialog({
   const [timeType, setTimeType] = useState<"busy" | "idle" | "any">("busy");
   const [minSeconds, setMinSeconds] = useState<number>(30);
   const [selectedUser, setSelectedUser] = useState<string>("all");
-  const [ignoreUser, setIgnoreUser] = useState<string>("");
+  // Users picked from the loaded sessions, plus typed names not in the list.
+  const [ignoredUsers, setIgnoredUsers] = useState<string[]>([]);
+  const [ignoreExtra, setIgnoreExtra] = useState<string>("");
   const [selectedCommand, setSelectedCommand] = useState<string>("all");
   const [selectedDb, setSelectedDb] = useState<string>("all");
   const [matchHost, setMatchHost] = useState<string>("");
@@ -152,7 +154,7 @@ export function MassKillDialog({
   const [checkedIds, setCheckedIds] = useState<Set<number>>(new Set());
   const [userOverridden, setUserOverridden] = useState<boolean>(false);
   // The reviewed KILL statements, shown in a confirmation sheet before anything is sent.
-  const [pending, setPending] = useState<{ review: BulkKillReview; targets: BulkKillTarget[]; label: string; key: string } | null>(null);
+  const [pending, setPending] = useState<{ review: BulkKillReview; targets: BulkKillTarget[]; label: string; key: string; connection: Connection } | null>(null);
   const [previewScrollTop, setPreviewScrollTop] = useState(0);
   const previewWrap = useRef<HTMLDivElement>(null);
   const previewRaf = useRef<number | null>(null);
@@ -189,6 +191,24 @@ export function MassKillDialog({
     });
     return Array.from(set).sort();
   }, [clientSessions]);
+
+  const distinctHosts = useMemo(() => {
+    const set = new Set<string>();
+    clientSessions.forEach((s) => {
+      const host = s.client_host || s.host;
+      if (host) set.add(host);
+    });
+    return Array.from(set).sort();
+  }, [clientSessions]);
+
+  // The names the matcher ignores: the ticked users exactly as the sessions
+  // name them (a user name may hold a space or a comma), then the typed extras
+  // split on commas and white space. Compared without letter case, as before.
+  const ignoreNames = useMemo(
+    () => [...ignoredUsers, ...ignoreExtra.split(/[\s,]+/).filter(Boolean)],
+    [ignoredUsers, ignoreExtra],
+  );
+  const ignored = useMemo(() => new Set(ignoreNames.map((name) => name.toLowerCase())), [ignoreNames]);
 
   function applyPreset(preset: "runaway" | "sleep" | "locks" | "custom") {
     setActivePreset(preset);
@@ -233,10 +253,7 @@ export function MassKillDialog({
       if (selectedUser !== "all" && s.user !== selectedUser) return false;
 
       // Ignore user (pt-kill --ignore-user)
-      if (ignoreUser.trim()) {
-        const ignored = ignoreUser.toLowerCase().split(/[\s,]+/).filter(Boolean);
-        if (s.user && ignored.includes(s.user.toLowerCase())) return false;
-      }
+      if (s.user && ignored.has(s.user.toLowerCase())) return false;
 
       // Host match (pt-kill --match-host)
       if (matchHost.trim()) {
@@ -282,7 +299,7 @@ export function MassKillDialog({
   }, [
     clientSessions,
     selectedUser,
-    ignoreUser,
+    ignored,
     matchHost,
     selectedDb,
     selectedCommand,
@@ -366,7 +383,7 @@ export function MassKillDialog({
 
       const review = await prepareBulkKill(connection, targets, controller.signal);
       if (controller.signal.aborted) return;
-      setPending({ review, targets, label: via.label, key: via.key });
+      setPending({ review, targets, label: via.label, key: via.key, connection: via.connection });
     } catch (e) {
       if (!controller.signal.aborted) setError(`Could not prepare the review: ${errorText(e)} Nothing was sent.`);
     } finally {
@@ -485,6 +502,7 @@ export function MassKillDialog({
         if (e.target === dialog.current && !busy && !pending) close();
       }}
     >
+      <ConnectionTypeBand connection={pending?.connection || connection} label={pending?.label} />
       <div className="mass-kill-header">
         <div className="mass-kill-title-wrap">
           <h2 id="mass-kill-title">
@@ -629,18 +647,41 @@ export function MassKillDialog({
           </div>
 
           <div className="mass-kill-field">
-            <label htmlFor="mk-ignore-user" className="field-label">Ignore users (comma-separated)</label>
+            <span className="field-label" id="mk-ignore-label">Ignore users</span>
+            <div className="mass-kill-user-picks" role="group" aria-labelledby="mk-ignore-label">
+              {distinctUsers.length === 0 ? (
+                <span className="hint">No client sessions loaded.</span>
+              ) : (
+                distinctUsers.map((u) => (
+                  <label key={u} className="mass-kill-checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={ignoredUsers.includes(u)}
+                      onChange={(e) => {
+                        setActivePreset("custom");
+                        setUserOverridden(false);
+                        setIgnoredUsers((old) => (e.target.checked ? [...old, u] : old.filter((name) => name !== u)));
+                      }}
+                    />
+                    <span>{u}</span>
+                  </label>
+                ))
+              )}
+            </div>
+            <label htmlFor="mk-ignore-extra" className="field-label">Also ignore (comma-separated)</label>
             <input
-              id="mk-ignore-user"
+              id="mk-ignore-extra"
               type="text"
-              placeholder="e.g. repl, root, proxysql"
-              value={ignoreUser}
+              placeholder="A user not listed above"
+              value={ignoreExtra}
               onChange={(e) => {
                 setActivePreset("custom");
                 setUserOverridden(false);
-                setIgnoreUser(e.target.value);
+                setIgnoreExtra(e.target.value);
               }}
             />
+            {ignoreNames.length > 0 && <p className="hint mass-kill-ignore-summary">Ignoring: {ignoreNames
+              .map((name) => (/[\s,]/.test(name) ? `“${name}”` : name)).join(", ")}</p>}
           </div>
         </div>
 
@@ -689,6 +730,7 @@ export function MassKillDialog({
             <input
               id="mk-host"
               type="text"
+              list="mk-hosts"
               placeholder="e.g. 10.0.0.%, app-server"
               value={matchHost}
               onChange={(e) => {
@@ -697,6 +739,11 @@ export function MassKillDialog({
                 setMatchHost(e.target.value);
               }}
             />
+            <datalist id="mk-hosts">
+              {distinctHosts.map((host) => (
+                <option key={host} value={host} />
+              ))}
+            </datalist>
           </div>
         </div>
 
@@ -873,6 +920,7 @@ export function MassKillDialog({
       {pending && (
         <ConfirmSheet
           className="kill-dialog mass-kill-confirm"
+          band={<ConnectionTypeBand connection={pending.connection} label={pending.label} />}
           eyebrow="KILL"
           title={`${pending.review.mode === "query" ? "End the running query of" : "End"} ${pending.targets.length} ${pending.targets.length === 1 ? "connection" : "connections"}?`}
           description="Check these statements and the server. Before sending anything, myflames reads each session again and stops for any that changed or ended. Cancel sends nothing."

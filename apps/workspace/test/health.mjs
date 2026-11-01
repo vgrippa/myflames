@@ -11,16 +11,27 @@ import { load, open, pause, SERVER_GROUPS, SLOW_DEFAULTS } from "./perf-harness.
 
 const mysql = await load("health-mysql-8.4.json");
 const mariadb = await load("health-mariadb-13.0.json");
+const sessionsFixture = await load("sessions-mysql-8.4.json");
+const innodbFixture = await load("innodb-mysql-8.4.json");
+const locksFixture = await load("locks-mysql-8.4.json");
 // A live capture with a 64 MiB buffer pool and random reads of a larger table.
 const full = await load("health-mysql-8.4-full.json");
 // A second MySQL sample with a different rate, so the sparklines have two points.
 const later = structuredClone(mysql);
 later.taken_at = "2026-10-13T16:29:40+00:00";
-for (const m of later.metrics) if (m.key === "questions") m.value = m.rate = 120.5;
+for (const m of later.metrics) {
+  if (m.key === "questions") m.value = m.rate = 120.5;
+  if (m.key === "queries") m.value = m.rate = 145.2;
+  if (m.key === "threads_running") m.value = m.rate = 6;
+  if (m.key === "bp_disk_reads") m.value = m.rate = 18.4;
+  if (m.key === "threads_connected") m.value = m.rate = 24;
+}
 const trendOf = (report, key) => report.diagnostics.find((d) => d.key === key).trend;
 trendOf(later, "buffer_pool").value = 1048576;
 trendOf(later, "redo").value = 2 * 1048576;
-const failure = { status: 400, body: { error: "Could not read the server status: ERROR 2003 (HY000): Can't connect to MySQL server on '127.0.0.1:3306'" } };
+// What ui.py answers when the connection fails (request_error_text): plain
+// words and what to check, then the client's line, under no second prefix.
+const failure = { status: 400, body: { error: "Could not connect to the server. Check that it is running and that the host and port are right. ERROR 2003 (HY000): Can't connect to MySQL server on '127.0.0.1:3306' (61)" } };
 const rank = { problem: 0, watch: 1, off: 2, unknown: 3, info: 4, ok: 5 };
 
 // The statements behind a number: top-1.0 for an attribution order (scan answers Performance Schema off).
@@ -41,10 +52,27 @@ const topFor = (body) => body.order === "scan"
 // holdTop: Show statements requests wait in heldTop until answered by the test.
 let holdTop = false;
 const heldTop = [];
+const watchQueue = [];
+let watchFallback = {
+  schema_version: "watch-1.0",
+  engine: "mysql",
+  server_version: "8.4.11",
+  read_at: "2026-10-27T14:02:31Z",
+  threads_running: 4,
+  longest_statement: { id: 42, seconds: 2, user: "app", db: "shop" },
+  longest_lock_wait: null,
+  errors: {},
+  notes: [],
+  reason: null,
+};
 // The list of views docked, as a person who docked it: this suite asserts
 // the list's markers and keys (server-nav covers the floating default).
 const h = await open("/api/live/health", "health", {
   "/api/live/top": (body, request) => (holdTop ? (heldTop.push({ body, request }), null) : topFor(body)),
+  "/api/live/watch": () => ({ status: 200, body: watchQueue.shift() || watchFallback }),
+  "/api/live/sessions": { status: 200, body: sessionsFixture },
+  "/api/live/innodb": { status: 200, body: innodbFixture },
+  "/api/live/locks": { status: 200, body: locksFixture },
 }, { list: "docked" });
 const { page, state, button, text, texts } = h;
 state.fallback = { status: 200, body: mysql };
@@ -68,6 +96,33 @@ try {
   await h.idle(view);
   state.delay = 0;
   assert.equal(state.seen.length, 1, "one read on open");
+  // One reading: Live charts holds each value and one muted line, never a
+  // chart of one point or a Min equal to its Max.
+  assert.equal(await text(`${view} #health-live-h`), "Live charts");
+  assert.ok(await page.$(`${view} .health-live-charts.is-pending`), "live charts wait for a second reading");
+  assert.equal(await text(`${view} .health-live-charts-note`), "Charts start with the next reading. Turn on Auto-refresh.");
+  assert.deepEqual(await page.$$eval(`${view} .health-live-chart`, (els) => els.map((e) => [e.dataset.chart,
+    e.querySelector(".health-chart-current")?.textContent, !!e.querySelector("svg"), !!e.querySelector(".health-chart-range"),
+    Math.round(e.getBoundingClientRect().height) <= 84])),
+  [["queries", "283/s", false, false, true], ["threads_running", "2 threads", false, false, true],
+    ["bp_disk_reads", "0.30 pages/s", false, false, true], ["threads_connected", "1 connection", false, false, true]]);
+  assert.match(await text(`${view} .health-live-chart[data-chart="queries"] .health-chart-summary`), /^Queries per second: 283\/s, one reading so far\.$/);
+  // 900 px and below the tiles form strips that scroll sideways: each group's
+  // heading carries its share of the summary's count (a dot plus words), so
+  // Diagnostics plus the groups add up to the summary line at a glance.
+  await page.setViewport({ width: 720, height: 600 });
+  await page.waitForFunction((v) => getComputedStyle(document.querySelector(`${v} .tile-section-status`)).display !== "none", {}, view);
+  const shares = await page.$$eval(`${view} .health-group`, (els) => els.map((g) => [g.querySelector("h3").textContent,
+    g.querySelector(".tile-section-status")?.textContent || "", g.querySelector(".tile-section-status .status-dot") ? g.querySelector(".tile-section-status .status-pill").className : ""]).filter((x) => x[1]));
+  assert.deepEqual(shares, [["Row locks", "1 problem, 1 to watch", "status-pill is-problem"], ["Temporary tables and sorts", "2 problems", "status-pill is-problem"]]);
+  const tally = (re, texts) => texts.reduce((n, t) => n + Number((t.match(re) || [0, 0])[1]), 0);
+  const parts = [await text(`${view} .health-diag-count`), ...shares.map((x) => x[1])];
+  const line = await text(`${view} .summary-text`);
+  assert.equal(tally(/(\d+) problems?/, parts), tally(/(\d+) problems?/, [line]), `problems add up (${parts.join(" | ")} vs ${line})`);
+  assert.equal(tally(/(\d+) to watch/, parts), tally(/(\d+) to watch/, [line]), "to watch adds up");
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth), 0, "no sideways page scroll at 720 px");
+  await page.setViewport({ width: 1440, height: 1000 });
+  await page.waitForFunction((v) => getComputedStyle(document.querySelector(`${v} .tile-section-status`)).display === "none", {}, view);
   assert.equal(state.seen[0].interval, 5);
   assert.equal(state.seen[0].connection.host, "127.0.0.1");
   assert.equal(state.seen[0].connection.password || "", "", "no password was typed");
@@ -98,7 +153,7 @@ try {
   assert.match(await h.notes(), /Notes about this read/);
   assert.equal(await page.$$eval(`${view} .view-main p`, (els) => els.filter((e) => !e.closest(".summary-line") && e.textContent.length > 80).length), 0);
   assert.deepEqual(await texts(`${view} .view-main h3`),
-    ["Diagnostics", "Throughput", "Connections", "InnoDB buffer pool", "Row locks", "Temporary tables and sorts", "Table cache", "Redo and I/O"]);
+    ["Live charts", "Diagnostics", "Throughput", "Connections", "InnoDB buffer pool", "Row locks", "Temporary tables and sorts", "Table cache", "Redo and I/O"]);
   // Diagnostics: one row each, problems first, with the headline number.
   const order = await page.$$eval(`${view} li[data-diagnostic]`, (els) => els.map((e) => e.dataset.diagnostic));
   const expected = [...mysql.diagnostics].sort((a, b) => rank[a.status] - rank[b.status]).map((d) => d.key);
@@ -127,7 +182,9 @@ try {
   assert.match(bpWhy, /Reads from disk are expected while it warms/);
   assert.match(bpWhy, /full when free pages are at or below/);
   assert.doesNotMatch(bpWhy, /What to do/, "no suggestion while warming");
-  assert.match(bpWhy, /Trend appears after the next refresh/);
+  // One reading: the trend is the value and one muted line, no chart of one point.
+  assert.match(bpWhy, /Read from disk\s*[\d.]+ (B|KiB)\/sThe chart starts with the next reading\./);
+  assert.equal(await page.$(".view-inspector svg.sparkline"), null);
   assert.match(bpWhy, /page cleaner evicts the least recently used pages/);
   assert.match(bpWhy, /Time to full at this ratee?stimate/);
   assert.match(bpWhy, /innodb_lru_scan_depth1024 · default 1024/);
@@ -245,7 +302,7 @@ try {
   await h.view("health");
   await page.waitForSelector(`${view} .summary-line`);
   await h.select(tile("questions"));
-  await page.waitForFunction(() => /Trend appears after the next refresh/.test(document.querySelector(".view-inspector")?.textContent || ""));
+  await page.waitForFunction(() => /The chart starts with the next reading\./.test(document.querySelector(".view-inspector [data-trend=pending]")?.textContent || ""));
   await (await page.$(".server-place")).screenshot({ path: path.join(h.shots, "health.png") });
 
   // Links: a flagged row lock tile opens Locks; the view keeps the report.
@@ -285,6 +342,47 @@ try {
   assert.equal(spark[0], `Statements from clients, last 2 samples: low 121/s, high ${qps}/s, latest 121/s`);
   assert.equal(spark[1], 2, "each sample has a hover target");
   for (const key of ["threads_running", "row_lock_waits", "bp_disk_reads"]) assert.ok(await page.$(`${tile(key)} svg.sparkline`), key);
+  // Live charts appear above Diagnostics once there are two readings.
+  assert.ok(await page.$(`${view} .health-live-charts:not(.is-pending) .health-live-chart svg`), "live charts draw after two readings");
+  const chartsBeforeDiag = await page.$eval(`${view} .view-main`, (main) => {
+    const charts = main.querySelector(".health-live-charts");
+    const diags = main.querySelector(".health-diagnostics");
+    return charts.getBoundingClientRect().bottom <= diags.getBoundingClientRect().top + 1;
+  });
+  assert.equal(chartsBeforeDiag, true, "live charts sit above existing diagnostics");
+  assert.equal(await text(`${view} .health-live-charts-note`), "Turn on Auto-refresh to see the trend");
+  // Connections in use is the count of open connections (Threads_connected),
+  // never the share of max_connections; each chart shows its latest reading.
+  assert.deepEqual(
+    await page.$$eval(`${view} .health-live-chart`, (els) => els.map((e) => [e.dataset.chart, e.querySelector(".health-chart-current").textContent,
+      [...e.querySelectorAll(".health-chart-range span")].map((x) => x.textContent)])),
+    [
+      ["queries", "145/s", ["Min 145/s", "Max 283/s"]],
+      ["threads_running", "6 threads", ["Min 2 threads", "Max 6 threads"]],
+      ["bp_disk_reads", "18.4 pages/s", ["Min 0.30 pages/s", "Max 18.4 pages/s"]],
+      ["threads_connected", "24 connections", ["Min 1 connection", "Max 24 connections"]],
+    ],
+  );
+  assert.match(await text(`${view} .health-live-chart[data-chart="queries"] .health-chart-summary`),
+    /^Queries per second: current 145\/s, min 145\/s, max 283\/s over the last 2 readings\.$/);
+  assert.match(await page.$eval(`${view} .health-live-chart[data-chart="queries"] .health-chart-hit title`, (e) => e.textContent), /^\d\d:\d\d:\d\d: 283\/s$/,
+    "each reading has its time and value on hover");
+  assert.deepEqual(
+    await page.$$eval(`${view} .health-live-chart`, (els) => els.map((e) => [
+      e.dataset.chart,
+      e.querySelector(".health-chart-title")?.textContent,
+      !!e.querySelector(".health-chart-current")?.textContent,
+      e.querySelectorAll(".health-chart-range span").length,
+      !!e.querySelector(".health-chart-summary")?.textContent,
+      !!e.querySelector('svg[role="img"]')?.getAttribute("aria-label"),
+    ])),
+    [
+      ["queries", "Queries per second", true, 2, true, true],
+      ["threads_running", "Threads running", true, 2, true, true],
+      ["bp_disk_reads", "Buffer pool reads from disk per second", true, 2, true, true],
+      ["threads_connected", "Connections in use", true, 2, true, true],
+    ],
+  );
   // Diagnostics trend bytes read from disk and redo bytes per second (in the inspector).
   await h.select(diag("buffer_pool"));
   await page.waitForSelector(".view-inspector svg.sparkline");
@@ -308,26 +406,178 @@ try {
   });
   const before = state.seen.length;
   await page.select(`${view} .auto-refresh select`, "30");
+  assert.equal(await page.$(`${view} .health-live-charts-note`), null, "auto-refresh note hides when Auto-refresh is on");
   await pause(700);
   assert.ok(state.seen.length > before, "auto-refresh sampled again");
   await page.select(`${view} .auto-refresh select`, "0");
+  assert.equal(await text(`${view} .health-live-charts-note`), "Turn on Auto-refresh to see the trend");
   await h.idle(view);
   const stopped = state.seen.length;
   await pause(500);
   assert.equal(state.seen.length, stopped, "Off stops automatic refresh");
-  // History is capped at 20 samples.
-  for (let i = 0; i < 22; i++) {
+  // History is capped at 60 samples. Each refresh is a new sample (its own
+  // taken_at); the same sample again is one reading, never two.
+  for (let i = 0; i < 62; i++) {
+    state.queue.push({ status: 200, body: { ...mysql, taken_at: new Date(Date.UTC(2026, 9, 13, 17, 0, i)).toISOString() } });
     await h.refresh();
     await h.idle(view);
   }
-  assert.equal(await page.$eval(`${tile("questions")} svg.sparkline`, (e) => e.querySelectorAll("rect").length), 20);
+  assert.equal(await page.$eval(`${tile("questions")} svg.sparkline`, (e) => e.querySelectorAll("rect").length), 60);
+  assert.match(await text(`${view} .health-live-chart[data-chart="queries"] .health-chart-summary`), /last 60 readings/);
+  // Sixty equal readings: Steady, never a Min equal to its Max.
+  assert.equal(await text(`${view} .health-live-chart[data-chart="queries"] .health-chart-range`), "Steady over the last 60 readings");
+  assert.match(await text(`${view} .health-live-chart[data-chart="queries"] .health-chart-summary`), /^Queries per second: steady at 283\/s over the last 60 readings\.$/);
+  assert.equal(await page.$(`${view} .health-live-chart[data-chart="queries"].is-steady`) !== null, true);
+  assert.match(await page.$eval(`${tile("questions")} svg.sparkline`, (e) => e.getAttribute("aria-label")), /^Statements from clients, last 60 samples: steady at \d+\/s$/);
+  await h.select(diag("buffer_pool"));
+  await page.waitForSelector(".view-inspector [data-trend=steady]");
+  assert.match(await text(".view-inspector [data-trend=steady]"), /^Steady at [\d.]+ (B|KiB)\/s over the last 60 readings\.$/);
+  await page.click(".detail-back");
+  await page.waitForFunction(() => !document.querySelector(".view-inspector"));
+
+  // Capture when… watches a condition while Health is on screen, shows the status line + Stop,
+  // and on a tripped condition captures sessions, innodb and locks into a new investigation with evidence.
+  // Times are this computer's clock: São Paulo is UTC-3, so 14:02:31Z reads 11:02:31.
+  await page.emulateTimezone("America/Sao_Paulo");
+  await page.locator(`${view} button ::-p-text(Capture when…)`).click();
+  await page.waitForSelector(`${view} .capture-when-form`);
+  assert.deepEqual(
+    await page.$$eval(`${view} .capture-when-form select[aria-label="Check interval"] option`, (els) => els.map((e) => e.value)),
+    ["5", "10", "30", "60"],
+  );
+  assert.equal(await page.$eval(`${view} .capture-when-stop-first input`, (e) => e.checked), true, "Stop after the first capture is on by default");
+  await page.select(`${view} .capture-when-form select[aria-label="Check interval"]`, "30");
+  watchQueue.push(
+    { ...watchFallback, threads_running: 4, read_at: "2026-10-27T14:02:21Z" },
+    { ...watchFallback, threads_running: 5, read_at: "2026-10-27T14:02:31Z" },
+  );
+  await page.locator(`${view} .capture-when-form button ::-p-text(Start)`).click();
+  await page.waitForFunction(
+    (sel) => /Watching: checked [2-9]\d* times, last at 11:02:31\.\s*Stop/.test(document.querySelector(sel)?.textContent || ""),
+    {},
+    `${view} .health-watch-status`,
+  );
+  await page.locator(`${view} .health-watch-status button ::-p-text(Stop)`).click();
+  await page.waitForFunction((sel) => !document.querySelector(sel), {}, `${view} .health-watch-line`);
+  const watchReads = () => h.state.other.filter((o) => o.path === "/api/live/watch").length;
+  const afterStop = watchReads();
+  await pause(500);
+  assert.equal(watchReads(), afterStop, "Stop ends the checks");
+
+  // Checks run only while Health is on screen: another place pauses them.
+  await page.locator(`${view} button ::-p-text(Capture when…)`).click();
+  await page.waitForSelector(`${view} .capture-when-form`);
+  await page.locator(`${view} .capture-when-form button ::-p-text(Start)`).click();
+  await page.waitForFunction((sel) => /Watching: checked [1-9]/.test(document.querySelector(sel)?.textContent || ""), {}, `${view} .health-watch-status`);
+  await h.button("Investigations", ".main-nav ");
+  await page.waitForSelector(".library");
+  const away = watchReads();
+  await pause(600);
+  assert.equal(watchReads(), away, "no check while Health is off screen");
+  await h.server();
+  for (let i = 0; i < 40 && watchReads() === away; i++) await pause(50);
+  assert.ok(watchReads() > away, "checks resume on screen");
+  await page.locator(`${view} .health-watch-status button ::-p-text(Stop)`).click();
+  await page.waitForFunction((sel) => !document.querySelector(sel), {}, `${view} .health-watch-line`);
+
+  // A condition the read could not judge is named with the server's reason, never taken as zero.
+  await page.locator(`${view} button ::-p-text(Capture when…)`).click();
+  await page.waitForSelector(`${view} .capture-when-form`);
+  await page.click(`${view} .capture-when-conditions .capture-when-row:nth-child(1) input[type=checkbox]`);
+  await page.click(`${view} .capture-when-conditions .capture-when-row:nth-child(2) input[type=checkbox]`);
+  watchFallback = { ...watchFallback, longest_lock_wait: null, errors: { longest_lock_wait: "This user cannot read information_schema.INNODB_TRX." } };
+  await page.locator(`${view} .capture-when-form button ::-p-text(Start)`).click();
+  await page.waitForFunction((sel) => /Not judged: row lock waits \(This user cannot read information_schema\.INNODB_TRX\.\)/.test(document.querySelector(sel)?.textContent || ""),
+    {}, `${view} .health-watch-status`);
+  await page.locator(`${view} .health-watch-status button ::-p-text(Stop)`).click();
+  await page.waitForFunction((sel) => !document.querySelector(sel), {}, `${view} .health-watch-line`);
+  watchFallback = { ...watchFallback, errors: {} };
+  // Back to the threads condition for the capture below.
+  await page.locator(`${view} button ::-p-text(Capture when…)`).click();
+  await page.waitForSelector(`${view} .capture-when-form`);
+  await page.click(`${view} .capture-when-conditions .capture-when-row:nth-child(1) input[type=checkbox]`);
+  await page.click(`${view} .capture-when-conditions .capture-when-row:nth-child(2) input[type=checkbox]`);
+  // A threshold that is not a whole number is refused beside Start; nothing starts.
+  await page.$eval(`${view} input[aria-label="Threads running threshold"]`, (e) => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(e, "");
+    e.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const beforeInvalid = watchReads();
+  await page.locator(`${view} .capture-when-form button ::-p-text(Start)`).click();
+  await page.waitForSelector(`${view} .capture-when-error`);
+  assert.equal(await text(`${view} .capture-when-error`), "Enter a whole number from 1 to 100,000 for threads running.");
+  assert.equal(watchReads(), beforeInvalid);
+  await page.$eval(`${view} input[aria-label="Threads running threshold"]`, (e) => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(e, "32");
+    e.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.keyboard.press("Escape");
+
+  // Tripped condition saves a new investigation with sessions, innodb, locks and watch evidence.
+  const otherBefore = h.state.other.length;
+  watchQueue.push({
+    ...watchFallback,
+    threads_running: 57,
+    read_at: "2026-10-27T14:02:31Z",
+  });
+  await page.locator(`${view} button ::-p-text(Capture when…)`).click();
+  await page.waitForSelector(`${view} .capture-when-form`);
+  await page.locator(`${view} .capture-when-form button ::-p-text(Start)`).click();
+  await page.waitForFunction(
+    (sel) => /Saved capture\.\s*Open investigation/.test(document.querySelector(sel)?.textContent || ""),
+    {},
+    `${view} .health-watch-status`,
+  );
+  // Only the capture's reads, on the connection the watch started on (the Locks view read earlier).
+  const watchCalls = h.state.other.slice(otherBefore).filter((o) => ["/api/live/sessions", "/api/live/innodb", "/api/live/locks"].includes(o.path));
+  assert.deepEqual(watchCalls.map((o) => o.path), ["/api/live/sessions", "/api/live/innodb", "/api/live/locks"]);
+  assert.ok(watchCalls.every((o) => o.body.connection.host === "127.0.0.1" && !o.body.connection.password));
+  assert.equal(watchCalls[0].body.active_only, false, "the processlist capture includes idle sessions");
+  await page.locator(`${view} .health-watch-status button ::-p-text(Open investigation)`).click();
+  await page.waitForSelector(".library-detail h2");
+  assert.equal(await text(".library-detail h2"), "Capture: threads running 57 on Local MySQL, 2026-10-27 11:02");
+  await page.waitForSelector(".library-evidence [data-evidence-id]");
+  const evidenceTitles = await page.$$eval(".library-evidence [data-evidence-id] .row-title", (els) => els.map((e) => e.textContent));
+  assert.deepEqual(evidenceTitles, ["Watch trigger snapshot", "Processlist", "InnoDB status", "Locks"]);
+  await page.click('.library-evidence [data-evidence-kind="sessions"]');
+  await page.waitForSelector(".library-evidence-view .library-evidence-text");
+  assert.match(await text(".library-evidence-view .library-evidence-text"), /Sessions|MySQL/i);
+  assert.ok(await page.$(".library-evidence-actions button ::-p-text(Copy)"));
+  assert.ok(await page.$(".library-evidence-actions button ::-p-text(Download)"));
+  await h.server();
+  await page.waitForSelector(`${view} .summary-line`);
+
+  // Without Stop after the first capture, a condition that stays met is captured
+  // once; the next capture waits until a check finds it cleared.
+  const captures = () => h.state.other.filter((o) => o.path === "/api/live/sessions").length;
+  const capturesBefore = captures();
+  await page.locator(`${view} button ::-p-text(Capture when…)`).click();
+  await page.waitForSelector(`${view} .capture-when-form`);
+  await page.click(`${view} .capture-when-stop-first input`);
+  watchQueue.push(
+    { ...watchFallback, threads_running: 57 },
+    { ...watchFallback, threads_running: 60 },
+    { ...watchFallback, threads_running: 61 },
+    { ...watchFallback, threads_running: 4 },
+    { ...watchFallback, threads_running: 58 },
+  );
+  await page.locator(`${view} .capture-when-form button ::-p-text(Start)`).click();
+  for (let i = 0; i < 200 && (watchQueue.length || captures() < capturesBefore + 2); i++) await pause(50);
+  await page.waitForFunction((sel) => /Saved capture\./.test(document.querySelector(sel)?.textContent || ""), {}, `${view} .health-watch-status`);
+  await pause(600);
+  assert.equal(captures(), capturesBefore + 2, "one capture per time the condition is met");
+  assert.ok(await page.$(`${view} .health-watch-line`), "watching goes on after a capture");
+  await page.locator(`${view} .health-watch-line button ::-p-text(Stop)`).click();
+  await page.waitForFunction((sel) => !document.querySelector(sel), {}, `${view} .health-watch-line`);
+  await page.emulateTimezone();
 
   // Error: shown in an alert, the last report stays, auto-refresh turns off.
   await page.select(`${view} .auto-refresh select`, "30");
   state.queue.push(failure);
   await h.refresh();
   await page.waitForSelector(`${view} .error`);
-  assert.match(await text(`${view} [role=alert]`), /ERROR 2003/);
+  assert.match(await text(`${view} [role=alert]`), /^Could not connect to the server\. Check that it is running and that the host and port are right\. ERROR 2003 \(HY000\): Can't connect to MySQL server on '127\.0\.0\.1:3306' \(61\)/);
+  assert.equal((await text(`${view} [role=alert]`)).match(/Could not/g).length, 1, "one lead, no stacked prefixes");
   assert.equal(await page.$eval(`${view} .auto-refresh select`, (e) => e.value), "0");
   assert.ok(await page.$(`${view} .summary-line`));
 
@@ -393,6 +643,34 @@ try {
   const rights = await page.$$eval(`${view} li[data-diagnostic]`, (els) => els.map((e) => e.getBoundingClientRect().right));
   assert.ok(rights.every((r) => r <= 390), "diagnostic rows fit the viewport");
   await page.screenshot({ path: path.join(h.shots, "health-390.png"), fullPage: true });
+  // Check light and dark at 1440 and 720 px: no horizontal overflow and live charts stay readable.
+  assert.ok(await page.$(`${view} .health-live-charts`) && await page.$(`${view} .health-watch-status`));
+  for (const width of [720, 1440]) {
+    for (const theme of ["light", "dark"]) {
+      await page.setViewport({ width, height: 900 });
+      await page.evaluate((t) => {
+        document.documentElement.dataset.theme = t;
+      }, theme);
+      await pause(100);
+      const horiz = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      assert.ok(horiz <= 0, `horizontal overflow of ${horiz}px at ${width}px (${theme})`);
+      // The charts and the status line stay inside the view.
+      const inside = await page.$$eval(`${view} :is(.health-live-chart, .health-watch-status)`, (els) => els.every((e) => {
+        const r = e.getBoundingClientRect();
+        const main = e.closest(".server-view").getBoundingClientRect();
+        return r.left >= main.left - 1 && r.right <= main.right + 1;
+      }));
+      assert.ok(inside, `charts fit the view at ${width}px (${theme})`);
+      await page.$eval(`${view} .health-live-charts`, (e) => {
+        for (let x = e.parentElement; x; x = x.parentElement) x.scrollTop = 0;
+        window.scrollTo(0, 0);
+      });
+      await page.screenshot({ path: path.join(h.shots, `health-watch-${width}-${theme}.png`) });
+    }
+  }
+  await page.evaluate(() => {
+    delete document.documentElement.dataset.theme;
+  });
   await page.setViewport({ width: 1440, height: 1000 });
 
   // Session restore keeps the view, the interval and the inspector, never the report.

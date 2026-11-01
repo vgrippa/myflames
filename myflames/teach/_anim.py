@@ -113,6 +113,12 @@ var anim = (function() {
   function setSpeed(s) { _speed = Math.max(0.1, s); }
   function getSpeed() { return _speed; }
 
+  // --- Instant application -----------------------------------------------
+  // Above zero while a timeline applies steps at once (a seek or a jump to a
+  // guided step): decorative pulses are skipped, so every page visited so
+  // far does not flash together.
+  var _instant = 0;
+
   // --- Global pause flag --------------------------------------------------
   // When paused, every running tween suspends at its current progress and
   // resumes from the same progress when unpaused.
@@ -225,10 +231,31 @@ var anim = (function() {
     var playing = false;
     var onDoneCb = null;
     var marks = [];  // phase markers: [{name, ms}]
+    // Guided steps ("beats"): [{kind, ms, step}]. A beat starts at step
+    // index `step`; the lesson's guide maps its kind to simplified code.
+    var beats = [];
+    // Steps begun so far (applied, running or finished). The current beat
+    // is the last one whose first step has begun.
+    var cursor = 0;
+    // Held at a beat boundary: heldNext runs the next step when continued.
+    var held = false;
+    var heldNext = null;
+    var holdAt = -1;
+    var onHoldCb = null;
 
     // Tweens and delays share the same pause/speed-aware virtual clock.
     var virtualElapsed = 0;
     var stepVirtualStart = 0;
+
+    // Final state of one step, without animating it.
+    function applyStep(s) {
+      if (s._type === "tween") {
+        if (s.onUpdate) s.onUpdate(s.to);
+        if (s.onComplete) s.onComplete();
+      } else if (s._type === "call") {
+        s._fn();
+      }
+    }
 
     function runDelay(step, elapsed, next) {
       current = tween({
@@ -261,10 +288,20 @@ var anim = (function() {
       return tl;
     };
     tl.mark = function(name) {
-      marks.push({ name: name, ms: totalDuration });
+      marks.push({ name: name, ms: totalDuration, step: steps.length });
       return tl;
     };
     tl.getMarks = function() { return marks; };
+    // One guided step starts here; `kind` names the simplified-code lines it
+    // runs (the lesson's guide content maps kinds to lines).
+    tl.beat = function(kind) {
+      beats.push({ kind: String(kind), ms: totalDuration, step: steps.length });
+      return tl;
+    };
+    tl.getBeats = function() { return beats; };
+    tl.getStepCount = function() { return steps.length; };
+    tl.getCursor = function() { return cursor; };
+    tl.isHeld = function() { return held; };
     tl.getTotalDuration = function() { return totalDuration; };
     tl.getCurrentTime = function() {
       // If a tween is mid-flight, add its local elapsed to the step start.
@@ -282,37 +319,130 @@ var anim = (function() {
       tl.stop();
       virtualElapsed = 0;
       stepVirtualStart = 0;
-      for (var i = 0; i < steps.length; i++) {
-        var s = steps[i];
-        var stepEnd = s._start + s._duration;
-        if (stepEnd <= targetMs) {
-          // Fully elapsed — fire final state
-          if (s._type === "tween") {
-            if (s.onUpdate) s.onUpdate(s.to);
-            if (s.onComplete) s.onComplete();
-          } else if (s._type === "call") {
-            s._fn();
+      cursor = 0;
+      _instant++;
+      try {
+        for (var i = 0; i < steps.length; i++) {
+          var s = steps[i];
+          var stepEnd = s._start + s._duration;
+          if (stepEnd <= targetMs) {
+            // Fully elapsed — fire final state
+            applyStep(s);
+            virtualElapsed = stepEnd;
+            cursor = i + 1;
+          } else if (s._start < targetMs) {
+            // Step is currently running at targetMs
+            if (s._type === "tween") {
+              var progress = (targetMs - s._start) / s._duration;
+              var eased = (s.ease || easeOutCubic)(progress);
+              if (s.onUpdate) s.onUpdate(_interpolateValue(s.from, s.to, eased));
+            } else if (s._type === "call") {
+              s._fn();
+            }
+            virtualElapsed = targetMs;
+            stepVirtualStart = s._start;
+            cursor = i + 1;
+            return;
+          } else {
+            virtualElapsed = Math.min(targetMs, s._start);
+            return;
           }
-          virtualElapsed = stepEnd;
-        } else if (s._start < targetMs) {
-          // Step is currently running at targetMs
-          if (s._type === "tween") {
-            var progress = (targetMs - s._start) / s._duration;
-            var eased = (s.ease || easeOutCubic)(progress);
-            if (s.onUpdate) s.onUpdate(_interpolateValue(s.from, s.to, eased));
-          } else if (s._type === "call") {
-            s._fn();
-          }
-          virtualElapsed = targetMs;
-          stepVirtualStart = s._start;
-          return;
-        } else {
-          virtualElapsed = Math.min(targetMs, s._start);
+        }
+        virtualElapsed = targetMs;
+      } finally {
+        _instant--;
+      }
+    };
+
+    // Apply steps [0, n) at once and hold before step n, ready to continue
+    // live with continueTo(). Used to show the end of a guided step.
+    tl.fastForwardToStep = function(n) {
+      tl.stop();
+      n = Math.max(0, Math.min(steps.length, Math.floor(n) || 0));
+      _instant++;
+      try {
+        for (var k = 0; k < n; k++) applyStep(steps[k]);
+      } finally {
+        _instant--;
+      }
+      cursor = n;
+      virtualElapsed = n < steps.length ? steps[n]._start : totalDuration;
+      stepVirtualStart = virtualElapsed;
+      held = true;
+      heldNext = runner(n);
+      return tl;
+    };
+
+    // Continue live from a hold. Stops again before step `hold` (the next
+    // beat boundary; -1 runs to the end) and calls onHold, or calls onDone
+    // at the end. Returns false when the timeline is not held.
+    tl.continueTo = function(hold, onHold, onDone) {
+      if (!held || !heldNext) return false;
+      var go = heldNext;
+      held = false;
+      heldNext = null;
+      holdAt = (typeof hold === "number" && hold >= 0) ? hold : -1;
+      onHoldCb = onHold || null;
+      onDoneCb = onDone || null;
+      playing = true;
+      go();
+      return true;
+    };
+
+    // Plays steps live from index `start`, holding before `holdAt`.
+    function runner(start) {
+      var i = start;
+      function next() {
+        if (!playing) return;
+        if (i === holdAt && i < steps.length) {
+          playing = false;
+          held = true;
+          heldNext = next;
+          holdAt = -1;
+          virtualElapsed = steps[i]._start;
+          stepVirtualStart = virtualElapsed;
+          var cb = onHoldCb;
+          onHoldCb = null;
+          if (cb) cb();
           return;
         }
+        if (i >= steps.length) {
+          playing = false;
+          virtualElapsed = totalDuration;
+          cursor = steps.length;
+          if (onDoneCb) onDoneCb();
+          return;
+        }
+        var step = steps[i++];
+        cursor = i;
+        stepVirtualStart = step._start;
+        if (step._type === "delay") {
+          if (reducedMotion()) {
+            virtualElapsed = step._start + step._duration;
+            next();
+            return;
+          }
+          runDelay(step, 0, next);
+          return;
+        }
+        if (step._type === "call") {
+          step._fn();
+          virtualElapsed = step._start;
+          next();
+          return;
+        }
+        var origComplete = step.onComplete || function() {};
+        current = tween(Object.assign({}, step, {
+          onComplete: function() {
+            origComplete();
+            current = null;
+            virtualElapsed = step._start + step._duration;
+            next();
+          }
+        }));
       }
-      virtualElapsed = targetMs;
-    };
+      return next;
+    }
 
     tl.play = function(onDone) {
       tl.stop();
@@ -320,6 +450,7 @@ var anim = (function() {
       onDoneCb = onDone || null;
       virtualElapsed = 0;
       stepVirtualStart = 0;
+      cursor = 0;
       var i = 0;
 
       function next() {
@@ -327,10 +458,12 @@ var anim = (function() {
         if (i >= steps.length) {
           playing = false;
           virtualElapsed = totalDuration;
+          cursor = steps.length;
           if (onDoneCb) onDoneCb();
           return;
         }
         var step = steps[i++];
+        cursor = i;
         stepVirtualStart = step._start;
         if (step._type === "delay") {
           if (reducedMotion()) {
@@ -369,20 +502,22 @@ var anim = (function() {
       // Apply all steps up to fromMs synchronously
       virtualElapsed = 0;
       stepVirtualStart = 0;
-      for (var k = 0; k < steps.length; k++) {
-        var s = steps[k];
-        var stepEnd = s._start + s._duration;
-        if (stepEnd <= fromMs) {
-          if (s._type === "tween") {
-            if (s.onUpdate) s.onUpdate(s.to);
-            if (s.onComplete) s.onComplete();
-          } else if (s._type === "call") {
-            s._fn();
+      cursor = 0;
+      _instant++;
+      try {
+        for (var k = 0; k < steps.length; k++) {
+          var s = steps[k];
+          var stepEnd = s._start + s._duration;
+          if (stepEnd <= fromMs) {
+            applyStep(s);
+            virtualElapsed = stepEnd;
+            cursor = k + 1;
+          } else {
+            break;
           }
-          virtualElapsed = stepEnd;
-        } else {
-          break;
         }
+      } finally {
+        _instant--;
       }
       // Continue with the first unfinished step, preserving its elapsed
       // time so resuming a tween uses the original easing curve.
@@ -406,10 +541,12 @@ var anim = (function() {
         if (ri >= steps.length) {
           playing = false;
           virtualElapsed = totalDuration;
+          cursor = steps.length;
           if (onDoneCb) onDoneCb();
           return;
         }
         var step = steps[ri++];
+        cursor = Math.max(cursor, ri);
         stepVirtualStart = step._start;
         if (step._type === "delay") {
           if (reducedMotion()) { virtualElapsed = step._start + step._duration; next2(); return; }
@@ -451,6 +588,10 @@ var anim = (function() {
 
     tl.stop = function() {
       playing = false;
+      held = false;
+      heldNext = null;
+      holdAt = -1;
+      onHoldCb = null;
       if (current) {
         if (typeof current === "function") current();
         current = null;
@@ -472,7 +613,7 @@ var anim = (function() {
 
   // --- pulse: briefly grow an SVG element's stroke width ---------------
   function pulse(el, peakWidth, baseWidth, durationMs) {
-    if (!el) return;
+    if (!el || _instant > 0) return;
     var dur = (durationMs || 400) / 2;
     tween({
       from: baseWidth || 1,

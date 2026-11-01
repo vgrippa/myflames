@@ -143,6 +143,37 @@ DEFAULTS = {
                 "slow_query_log": "OFF", "log_slow_query": "OFF", "long_query_time": "10",
                 "log_slow_query_time": "10", "thread_handling": "one-thread-per-connection"},
 }
+#: MySQL 5.7 defaults that differ from the MySQL ones above (5.7.44 sql/sql_const.h:125
+#: TABLE_OPEN_CACHE_DEFAULT; storage/innobase/handler/ha_innodb.cc:19454-19457 io_capacity,
+#: 19589-19591 flush_method NULL, which is fsync on Unix, srv0start.cc:1591-1594, and
+#: SHOW VARIABLES prints it as an empty value). Its other defaults in
+#: DEFAULTS["mysql"] are the same on 5.7.44.
+MYSQL57_DEFAULTS = {"table_open_cache": "2000", "innodb_io_capacity": "200",
+                    "innodb_flush_method": "not set (fsync on Unix)"}
+
+
+def before_mysql80(engine, version_tuple):
+    """MySQL 5.7 (a known MySQL version below 8.0); an unknown version is not."""
+    if engine != "mysql" or not isinstance(version_tuple, (tuple, list)):
+        return False
+    version = tuple(version_tuple)[:3]
+    return any(version) and version < (8, 0, 0)
+
+
+def defaults_for(engine, version_tuple=None):
+    """DEFAULTS for this engine and version (MySQL 5.7 differs in a few)."""
+    if before_mysql80(engine, version_tuple):
+        return dict(DEFAULTS["mysql"], **MYSQL57_DEFAULTS)
+    return DEFAULTS[engine]
+
+
+#: What MySQL 5.7 lacks for Parameters, said once (variables_info and SET
+#: PERSIST are MySQL 8.0: no such table or statement in 5.7.44).
+MYSQL57_SOURCE_NOTE = ("MySQL 5.7 does not record where a value was set or when: performance_schema.variables_info "
+                       "and SET PERSIST arrived in MySQL 8.0. Sources are unknown here, and a change made with SET "
+                       "GLOBAL lasts until the server restarts unless you also add it to the option file.")
+
+
 BYTE_VARIABLES = ("innodb_buffer_pool_size", "innodb_redo_log_capacity", "innodb_log_file_size", "tmp_table_size",
                   "tmp_memory_table_size", "max_heap_table_size", "tmp_disk_table_size", "temptable_max_ram",
                   "temptable_max_mmap", "sort_buffer_size", "join_buffer_size")
@@ -188,7 +219,13 @@ def config_report(conn, parameters=False):
             server.variables.update(show_variables(reader, PERCONA_SLOW_VARIABLES))
         status = reader.pairs("SHOW GLOBAL STATUS WHERE Variable_name IN (%s)" % ", ".join("'%s'" % n for n in STATUS))
         names = sorted(set(VARIABLES + ("performance_schema",)))
-        if server.engine == "mysql":
+        if before_mysql80(server.engine, server.version_tuple):
+            # No variables_info; the same tablespace rows are in INNODB_SYS_TABLESPACES.
+            notes.append(MYSQL57_SOURCE_NOTE)
+            tablespaces = ("SELECT COALESCE(SUM(ALLOCATED_SIZE), 0), COUNT(*) FROM "
+                           "information_schema.INNODB_SYS_TABLESPACES WHERE SPACE_TYPE IN ('Single', 'General')")
+            raw["tablespaces_table"] = "INNODB_SYS_TABLESPACES"
+        elif server.engine == "mysql":
             raw["sources"] = reader.optional(
                 "SELECT VARIABLE_NAME, VARIABLE_SOURCE, NULL FROM performance_schema.variables_info "
                 "WHERE VARIABLE_NAME IN (%s)" % ", ".join("'%s'" % n for n in names),
@@ -262,7 +299,7 @@ class _Config(object):
         """{name, value, display, default, set_by} for one variable (None if absent)."""
         if name not in self.v:
             return None
-        default = DEFAULTS[self.engine].get(name)
+        default = defaults_for(self.engine, self.server.version_tuple).get(name)
         source, live_default = self.sources.get(name, (None, None))
         if live_default is not None and self.engine == "mariadb":
             default = live_default
@@ -271,7 +308,7 @@ class _Config(object):
                "set_by": _set_by(source),
                # Whether it can change while the server runs (variables.py: source-verified
                # map, None when unknown). The Change sheet reads the server before acting.
-               "dynamic": static_dynamic(self.engine, name)}
+               "dynamic": static_dynamic(self.engine, name, self.server.version_tuple)}
         if alias:
             out["alias"] = alias
         return out
@@ -314,7 +351,7 @@ def _buffer_pool(c):
                "Compared here with the size of the InnoDB tablespace files on disk (free space inside them "
                "included), because a pool much smaller than the data cannot hold much of it.")
     sources = ["innodb_buffer_pool_size", "information_schema.%s" % (
-        "INNODB_TABLESPACES" if c.engine == "mysql" else "INNODB_SYS_TABLESPACES")]
+        c.raw.get("tablespaces_table") or ("INNODB_TABLESPACES" if c.engine == "mysql" else "INNODB_SYS_TABLESPACES"))]
     if bp is None:
         return _check("buffer_pool", "memory", "Buffer pool size", explain, "unknown",
                       "This server does not report innodb_buffer_pool_size.", settings=settings, sources=sources)
@@ -357,7 +394,7 @@ def _session_buffer(c, name, label, what):
     if value is None:
         return _check(name, "memory", label, explain, "unknown", "This server does not report %s." % name,
                       settings=[setting], sources=[name])
-    default = DEFAULTS[c.engine].get(name)
+    default = defaults_for(c.engine, c.server.version_tuple).get(name)
     large = value >= LARGE_SESSION_BUFFER
     observation = "%s (engine default %s)" % (_bytes_text(value), _bytes_text(default) if default else "?")
     action = None
@@ -379,7 +416,12 @@ def tmp_table_limit(engine, variables):
     def num(name):
         return _number(variables.get(name))
     if engine == "mysql":
-        storage = variables.get("internal_tmp_mem_storage_engine") or "TempTable"
+        storage = variables.get("internal_tmp_mem_storage_engine")
+        if storage is None and before_mysql80(engine, _version_tuple(variables.get("version") or "")):
+            # MySQL 5.7 has no TempTable: internal temporary tables use MEMORY up to
+            # min(tmp_table_size, max_heap_table_size) (5.7.44 sql/sql_tmp_table.cc:1422-1428).
+            storage = "MEMORY"
+        storage = storage or "TempTable"
         if storage.lower() == "temptable":
             if _version_tuple(variables.get("version") or "") < (8, 0, 28):
                 limit = ("Before MySQL 8.0.28 TempTable has no per-table limit; temptable_max_ram (global) decides "
@@ -531,12 +573,20 @@ def _flush_method(c):
                    "innodb_data_file_buffering, innodb_log_file_buffering and the *_write_through settings; do "
                    "not change it on this version.")
     else:
+        mysql57 = before_mysql80(c.engine, c.server.version_tuple)
         explain = ("How InnoDB opens and syncs its data files. O_DIRECT bypasses the OS file cache, so data is "
-                   "not cached twice." + (" MySQL uses O_DIRECT by default when the file system supports it."
+                   "not cached twice." + (" Unset, MySQL 5.7 shows an empty value and uses fsync on Linux and other Unix systems."
+                                          if mysql57 else
+                                          " MySQL uses O_DIRECT by default when the file system supports it."
                                           if c.engine == "mysql" else ""))
+    value = c.v.get("innodb_flush_method")
+    if value == "" and before_mysql80(c.engine, c.server.version_tuple):
+        # 5.7.44 ha_innodb.cc:19589-19591: default NULL, fsync on Unix (srv0start.cc:1591-1594).
+        observation = "innodb_flush_method is not set, so InnoDB uses its default (fsync on Linux and other Unix systems)"
+    else:
+        observation = "innodb_flush_method=%s" % (value or "?")
     return _check("flush_method", "durability", "File flush method", explain, "info",
-                  "innodb_flush_method=%s" % (c.v.get("innodb_flush_method") or "?"), settings=settings,
-                  sources=names, value=c.v.get("innodb_flush_method"))
+                  observation, settings=settings, sources=names, value=value)
 
 
 def _redo(c):
@@ -687,7 +737,8 @@ def _performance_schema(c):
 
 def _ps_setting(c):
     return {"name": "performance_schema", "value": c.v.get("performance_schema"),
-            "display": c.v.get("performance_schema"), "default": DEFAULTS[c.engine]["performance_schema"],
+            "display": c.v.get("performance_schema"),
+            "default": defaults_for(c.engine, c.server.version_tuple)["performance_schema"],
             "set_by": _set_by(c.sources.get("performance_schema", (None, None))[0]), "dynamic": False}
 
 

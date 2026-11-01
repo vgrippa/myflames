@@ -77,6 +77,21 @@
   --env-dev: #1594a8;
   --env-dev-text: #0b7489;
   --env-dev-soft: rgba(48, 176, 199, 0.13);
+  /* Connection type strip and write-review band: the type's own hue
+     (Production purple, Development teal), never a status color, so
+     Production never reads as a problem; Read-only a neutral role. */
+  --conn-prod-strip: var(--env-prod);
+  --conn-prod-band-bg: var(--env-prod-soft);
+  --conn-prod-band-text: var(--env-prod-text);
+  --conn-prod-band-line: rgba(175, 82, 222, 0.28);
+  --conn-dev-strip: var(--env-dev);
+  --conn-dev-band-bg: var(--env-dev-soft);
+  --conn-dev-band-text: var(--env-dev-text);
+  --conn-dev-band-line: rgba(21, 148, 168, 0.28);
+  --conn-readonly-strip: var(--ink-muted);
+  --conn-readonly-band-bg: var(--surface-muted);
+  --conn-readonly-band-text: var(--ink-secondary);
+  --conn-readonly-band-line: var(--line-strong);
   --danger-line: rgba(255, 59, 48, 0.25);
   --danger-ink: #ffffff;
   --info: #0071e3;
@@ -145,6 +160,8 @@
      --topbar-height. */
   --topbar-row: 38px;
   --topbar-height: var(--topbar-row);
+  /* The connection type strip along the window's top edge (decoration only). */
+  --conn-strip-h: 3px;
   /* Query editor: SQL syntax colors (a reading aid, never status; each at
      least 4.5:1 on white), the selection over colored text, the statement
      at the cursor, and a bracket pair. */
@@ -220,6 +237,21 @@
   --env-dev: #1594a8;
   --env-dev-text: #0b7489;
   --env-dev-soft: rgba(48, 176, 199, 0.13);
+  /* Connection type strip and write-review band: the type's own hue
+     (Production purple, Development teal), never a status color, so
+     Production never reads as a problem; Read-only a neutral role. */
+  --conn-prod-strip: var(--env-prod);
+  --conn-prod-band-bg: var(--env-prod-soft);
+  --conn-prod-band-text: var(--env-prod-text);
+  --conn-prod-band-line: rgba(175, 82, 222, 0.28);
+  --conn-dev-strip: var(--env-dev);
+  --conn-dev-band-bg: var(--env-dev-soft);
+  --conn-dev-band-text: var(--env-dev-text);
+  --conn-dev-band-line: rgba(21, 148, 168, 0.28);
+  --conn-readonly-strip: var(--ink-muted);
+  --conn-readonly-band-bg: var(--surface-muted);
+  --conn-readonly-band-text: var(--ink-secondary);
+  --conn-readonly-band-line: var(--line-strong);
   --danger-line: rgba(255, 59, 48, 0.25);
   --danger-ink: #ffffff;
   --info: #0071e3;
@@ -284,6 +316,18 @@
     --env-dev: #40c8e0;
     --env-dev-text: #6fd6e8;
     --env-dev-soft: rgba(64, 200, 224, 0.16);
+    --conn-prod-strip: var(--env-prod);
+    --conn-prod-band-bg: var(--env-prod-soft);
+    --conn-prod-band-text: var(--env-prod-text);
+    --conn-prod-band-line: rgba(191, 90, 242, 0.4);
+    --conn-dev-strip: var(--env-dev);
+    --conn-dev-band-bg: var(--env-dev-soft);
+    --conn-dev-band-text: var(--env-dev-text);
+    --conn-dev-band-line: rgba(64, 200, 224, 0.35);
+    --conn-readonly-strip: var(--ink-muted);
+    --conn-readonly-band-bg: var(--surface-muted);
+    --conn-readonly-band-text: var(--ink-secondary);
+    --conn-readonly-band-line: var(--line-strong);
     --danger-line: rgba(255, 107, 94, 0.4);
     --danger-ink: #ffffff;
     --info: #63b3ff;
@@ -355,6 +399,18 @@
   --env-dev: #40c8e0;
   --env-dev-text: #6fd6e8;
   --env-dev-soft: rgba(64, 200, 224, 0.16);
+  --conn-prod-strip: var(--env-prod);
+  --conn-prod-band-bg: var(--env-prod-soft);
+  --conn-prod-band-text: var(--env-prod-text);
+  --conn-prod-band-line: rgba(191, 90, 242, 0.4);
+  --conn-dev-strip: var(--env-dev);
+  --conn-dev-band-bg: var(--env-dev-soft);
+  --conn-dev-band-text: var(--env-dev-text);
+  --conn-dev-band-line: rgba(64, 200, 224, 0.35);
+  --conn-readonly-strip: var(--ink-muted);
+  --conn-readonly-band-bg: var(--surface-muted);
+  --conn-readonly-band-text: var(--ink-secondary);
+  --conn-readonly-band-line: var(--line-strong);
   --danger-line: rgba(255, 107, 94, 0.4);
   --danger-ink: #ffffff;
   --info: #63b3ff;
@@ -1744,6 +1800,38 @@ details[open] > summary > .strip-text {
   background: var(--surface-pane);
   color: var(--ink);
 }
+.inspector-selection-hint { display: none; }
+@media (max-width: 900px) {
+  /* A chart fills the window while its inspector is a hint line; Stats is a
+     page of tables and keeps scrolling with the page. */
+  .plan-screen:has(.plan-inspector[data-empty="true"]):not(:has(.plan-statistics)) {
+    height: calc(100dvh - var(--topbar-height) - var(--statusbar-h));
+    min-height: 0;
+  }
+  .plan-screen:has(.plan-inspector[data-empty="true"]):not(:has(.plan-statistics)) .plan-fold,
+  .plan-screen:has(.plan-inspector[data-empty="true"]):not(:has(.plan-statistics)) .plan-fold > .plan-canvas,
+  .plan-screen:has(.plan-inspector[data-empty="true"]):not(:has(.plan-statistics)) .plan-fold .plan-chart {
+    flex: 1 1 0;
+    height: auto;
+    min-height: 0;
+    max-height: none;
+  }
+  .plan-screen:has(.plan-inspector[data-empty="true"]):not(:has(.plan-statistics)) .plan-fold .chart-scroll { flex: 1 1 auto; }
+  /* Keep the runtime's metric target mounted, but give an unselected chart
+     the space otherwise used by the inspector's tabs and empty sections. */
+  /* The section tabs stay (Findings, Lessons and Operators need no
+     selection); the empty title and Measurements body give way to one line. */
+  .plan-inspector[data-empty="true"] > :is(.inspector-title, .plan-inspector-body) { display: none; }
+  .plan-inspector[data-empty="true"] > .inspector-selection-hint {
+    display: block;
+    margin: 0;
+    padding: var(--space-2) var(--space-3);
+    color: var(--ink-muted);
+    font-size: var(--text-sm);
+    line-height: var(--leading-sm);
+  }
+  .plan-inspector[data-empty="true"] { flex: none; }
+}
 .plan-inspector .inspector-title {
   display: flex;
   align-items: flex-start;
@@ -1774,6 +1862,29 @@ details[open] > summary > .strip-text {
 .plan-inspector .inspector-actions { display: flex; flex-wrap: wrap; gap: var(--space-1); margin-bottom: var(--space-3); }
 .plan-inspector .inspector-actions .button { font-size: var(--text-sm); }
 .plan-inspector .raw-fields pre { max-height: 320px; overflow: auto; font-size: var(--text-sm); }
+/* Occurrences use two-line rows inside the 280–340 px inspector. */
+.occurrence-list { display: flex; flex-direction: column; min-width: 0; margin-top: var(--space-3); }
+.occurrence-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-2);
+  text-align: left;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--ink);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.occurrence-row:hover { background: var(--surface-raised); }
+.occurrence-row[aria-selected="true"] { background: var(--accent-soft); }
+.occurrence-row:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.occurrence-path { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.occurrence-metrics { color: var(--ink-muted); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .inspector-finding { padding-block: var(--space-2); border-bottom: 1px solid var(--line); }
 .inspector-finding p { margin-block: var(--space-1); line-height: var(--leading-md); }
 .inspector-metrics .metric-panel { padding: var(--space-2) 0; }
@@ -2271,6 +2382,15 @@ main:has(> .library) { padding: 0; max-width: none; }
 .library-tags .pill { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 .library-plans { padding: var(--space-4) var(--space-5); }
 .library-plans .grouped { border-radius: 0; }
+.library-evidence { padding: var(--space-4) var(--space-5); display: flex; flex-direction: column; gap: var(--space-3); }
+.library-plans + .library-evidence { padding-top: 0; }
+.library-evidence-head > div:first-child { font-size: var(--text-md); line-height: var(--leading-md); min-width: 0; overflow-wrap: anywhere; }
+.library-evidence .grouped { border-radius: 0; }
+.library-evidence-view { border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-raised); overflow: hidden; }
+.library-evidence-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--line); }
+.library-evidence-actions { display: inline-flex; align-items: center; gap: var(--space-2); }
+.library-evidence-view > p { padding: var(--space-2) var(--space-3) 0; margin: 0; font-size: var(--text-sm); }
+.library-evidence-text { margin: 0; padding: var(--space-3); border: 0; border-radius: 0; max-height: 50dvh; overflow: auto; font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-sm); white-space: pre; tab-size: 4; }
 .library-comparison { border-top: 1px solid var(--line); }
 .library-comparison-head { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-3) var(--space-5); }
 .library-comparison-head h3 { font-size: var(--text-md); overflow-wrap: anywhere; flex: 1; }
@@ -2283,7 +2403,8 @@ main:has(> .library) { padding: 0; max-width: none; }
 }
 @media (max-width: 650px) {
   .library-detail-head, .library-notes, .library-tags, .library-comparison-head { padding-inline: var(--space-4); }
-  .library-plans { padding: var(--space-4); }
+  .library-plans, .library-evidence { padding: var(--space-4); }
+  .library-plans + .library-evidence { padding-top: 0; }
 }
 .tags {
   display: flex;
@@ -2479,6 +2600,12 @@ main:has(> .library) { padding: 0; max-width: none; }
   padding: var(--space-2) var(--space-5);
   background: var(--surface);
 }
+/* An open lesson's bar is one control high: the room goes to the lesson. */
+.teach-toolbar.is-lesson {
+  min-height: 0;
+  padding-top: var(--space-1);
+  padding-bottom: var(--space-1);
+}
 .teach-toolbar .view-toolbar-left,
 .teach-toolbar .view-toolbar-right {
   display: flex;
@@ -2535,14 +2662,79 @@ main:has(> .library) { padding: 0; max-width: none; }
 .teach-loading {
   flex: 1 1 auto;
 }
+/* An open lesson fills exactly the window under the top bar, so the lesson's
+   own fit rule (a stage drawing no taller than its frame) holds on screen. */
+.teach-workspace.is-lesson-open {
+  height: calc(100dvh - var(--topbar-height));
+  min-height: 0;
+}
+.lesson-host {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 240px;
+  background: var(--bg);
+}
+.lesson-host:focus {
+  outline: none;
+}
 .lesson-frame {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   width: 100%;
-  min-height: calc(100dvh - var(--topbar-height) - var(--toolbar-h));
+  min-height: 0;
   border: 0;
   border-radius: 0;
   display: block;
   background: var(--bg);
+}
+/* Full screen: the browser's (the host is the full-screen element) or, when
+   that is refused, an overlay covering the window above the sidebar, the
+   toolbars and popovers. */
+.lesson-host.is-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  min-height: 0;
+}
+.lesson-host:fullscreen {
+  width: 100%;
+  height: 100%;
+}
+.lesson-focus-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: var(--toolbar-h);
+  padding: var(--space-1) var(--space-3) var(--space-1) var(--space-4);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+.lesson-focus-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-md);
+  line-height: var(--leading-md);
+  font-weight: 600;
+  color: var(--ink);
+}
+.lesson-focus-bar .button {
+  flex: none;
+}
+.lesson-focus-wrap {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+@media (max-width: 860px) {
+  .teach-toolbar .teach-wide-label {
+    display: none;
+  }
 }
 @media (min-width: 1700px) {
   .exploration-layout {
@@ -3093,6 +3285,13 @@ main:has(> .library) { padding: 0; max-width: none; }
   background: var(--env-dev-soft);
   color: var(--env-dev-text);
 }
+/* Read-only is an outline, never a status color, and never replaces the
+   type's own pill. */
+.type-tag.is-read-only {
+  background: transparent;
+  color: var(--ink-muted);
+  box-shadow: inset 0 0 0 1px var(--control-line);
+}
 .connection-safety {
   display: flex;
   flex-wrap: wrap;
@@ -3195,7 +3394,7 @@ main:has(> .library) { padding: 0; max-width: none; }
   /* Recent work is a list of names: it needs less room than the
      connections table beside it. Both panes run down to the version
      footer, so the divider between them is full height. */
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 320px);
   align-items: stretch;
   flex: 1 1 auto;
 }
@@ -3899,6 +4098,11 @@ kbd {
 .window-toolbar .topbar-title > span {
   min-width: 0;
 }
+/* A place's ⓘ sits beside its title; its own auto margin pushes the actions
+   to the end (two auto margins would leave it alone mid-bar). */
+.window-toolbar .topbar-title:has(+ .topbar-info) {
+  margin-right: 0;
+}
 .window-toolbar .topbar-actions {
   flex: none;
 }
@@ -3931,7 +4135,8 @@ kbd {
   height: calc(var(--topbar-row) - 1px);
   min-height: 0;
   border: 0;
-  background: var(--surface);
+  /* Clear over the connection type strip, so the strip runs unbroken. */
+  background: linear-gradient(transparent var(--conn-strip-h), var(--surface) var(--conn-strip-h));
   gap: var(--space-1);
 }
 .workspace:is([data-place="server"], [data-place="workload"]) .place-toolbar .refresh-all {
@@ -4052,6 +4257,43 @@ kbd {
   padding: 0 var(--space-1);
   text-transform: uppercase;
 }
+/* A short type word stays in the pill where the full pills yield to width
+   (the popover's accessible name keeps the full type). Never a status color. */
+.connection-pill-type {
+  display: none;
+  flex: none;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.connection-pill-type.is-production {
+  color: var(--env-prod-text);
+}
+.connection-pill-type.is-development {
+  color: var(--env-dev-text);
+}
+/* Read-only keeps its type word and adds the outline Read-only uses
+   elsewhere (never a status color). */
+.connection-pill-type.is-read-only {
+  padding: 0 var(--space-1);
+  border: 1px solid currentColor;
+  border-radius: var(--radius-sm);
+}
+.picker-password-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.picker-password-row .picker-password {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+}
+.picker-password-set {
+  flex: none;
+}
 .picker-panel {
   display: grid;
   gap: var(--space-2);
@@ -4069,7 +4311,8 @@ kbd {
   font-size: var(--text-sm);
   overflow-wrap: anywhere;
 }
-/* The picker's menu items: Account and privileges, Manage connections. */
+/* The picker's menu items: New connection, Manage connections, Account and
+   privileges. */
 .picker-actions {
   display: flex;
   flex-wrap: wrap;
@@ -4265,11 +4508,14 @@ kbd {
     clip-path: inset(50%);
     white-space: nowrap;
   }
-  /* The pill keeps the connection's name and its type dot; the type in
-     words is the first item of the window footer on these places. */
+  /* The pill keeps the connection's name, its type dot and a short type word;
+     the type in a sentence is the first item of the window footer. */
   .connection-pill .picker-target,
   .window-toolbar .connection-pill .safety-tags {
     display: none;
+  }
+  .window-toolbar .connection-pill .connection-pill-type {
+    display: inline;
   }
   .window-toolbar .connection-pill-name {
     min-width: 6ch;
@@ -4279,8 +4525,9 @@ kbd {
   }
 }
 /* The 720 px window: Server and Workload draw their own actions into the top
-   bar, so the connection pill keeps its name (the type stays on its dot, in
-   its accessible name and first in the window footer). */
+   bar, so the connection pill keeps its name and its short type word (the
+   pills go; the type is also on its dot, in its accessible name and first in
+   the window footer). */
 @media (max-width: 800px) {
   .workspace:is([data-place="server"], [data-place="workload"]) .window-toolbar .connection-pill .safety-tags {
     display: none;
@@ -4336,6 +4583,9 @@ kbd {
   }
   .connection-pill .safety-tags {
     display: none;
+  }
+  .connection-pill .connection-pill-type {
+    display: inline;
   }
   .place-actions-slot {
     display: none;
@@ -4556,14 +4806,25 @@ kbd {
 .home .connections .toolbar-end { display: none; }
 .home .connections .view-main { padding: var(--space-3) var(--space-4) var(--space-4); }
 .home .connections .view-inspector:not(.is-sheet) { max-height: calc(100dvh - var(--topbar-height) - var(--statusbar-h)); }
+/* The add and edit form scrolls inside that height: a long form (TLS or SSH
+   open) never runs over the version footer or, in one column, Recent work. */
+.home .connections .view-inspector.is-detail:not(.is-sheet) .inspector-scroll { overflow: auto; }
 .connections-table-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); margin-bottom: var(--space-2); min-height: var(--control-h); }
 .connections-table-toolbar .toolbar-search { min-width: 0; flex: 1; }
 .connections-count { color: var(--ink-muted); font-size: var(--text-sm); margin-left: auto; white-space: nowrap; }
 #connections-table { min-width: 0; }
 #connections-table:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .connections .data-table-wrap { max-height: var(--home-table-max-h); }
-.connections .data-table .type-tag { display: block; width: fit-content; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+/* Type and Read-only stay two compact pills, never one truncating string. */
+.connections .data-table .safety-tags { flex-wrap: nowrap; }
+.connections .data-table .type-tag { flex: none; }
 .connections .connection-type-short { display: none; }
+/* Read-only keeps its type word, outlined, as in the connection picker. */
+.connections .connection-type-short.is-read-only {
+  padding: 0 var(--space-1);
+  border: 1px solid currentColor;
+  border-radius: var(--radius-sm);
+}
 /* The compact table hides the Type column (narrow windows, or while a
    connection is edited): the short type label keeps the type in words, so
    it never rests on the dot's color alone. */
@@ -4574,7 +4835,8 @@ kbd {
 .connection-menu button { min-height: var(--control-h); border: 0; border-radius: var(--radius-sm); padding: var(--space-1) var(--space-2); background: transparent; color: var(--ink); font-size: var(--text-md); text-align: left; }
 .connection-menu button:hover:not(:disabled), .connection-menu button:focus-visible { background: var(--accent-soft); }
 .connection-menu button:disabled { color: var(--ink-faint); }
-.connections .connection-panel { margin: 0; padding: var(--space-4); border: 0; border-radius: 0; background: transparent; }
+/* The form caps at a readable measure instead of stretching with the pane. */
+.connections .connection-panel { margin: 0; padding: var(--space-4); border: 0; border-radius: 0; background: transparent; max-width: 560px; }
 .connections .connection-fields { grid-template-columns: minmax(0, 1fr); }
 .connections .connection-safety { flex-wrap: wrap; }
 .connections .connections-status { margin: var(--space-3) 0 0; }
@@ -4799,4 +5061,24 @@ kbd {
   color: var(--ok-text);
   border-radius: var(--radius-sm);
   font-size: var(--text-sm);
+}
+
+/* Stats uses the same full-width toolbar and inspector gutter as charts. */
+.plan-statistics .chart-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  min-height: var(--toolbar-h);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-pane);
+}
+.plan-statistics-body { min-width: 0; padding: var(--space-3); }
+.plan-statistics-body section { min-width: 0; margin-top: var(--space-3); }
+.plan-fold .plan-statistics-body { margin-right: var(--plan-inspector-width); }
+.plan-chart [data-stats-match] { outline: 2px solid var(--accent); outline-offset: 2px; }
+.plan-chart [data-stats-match] rect { stroke: var(--accent); stroke-width: 2; }
+@media (max-width: 1000px) {
+  .plan-fold .plan-statistics-body { margin-right: 0; }
+  .plan-fold .plan-chart[data-view="stats"] { max-height: none; }
 }

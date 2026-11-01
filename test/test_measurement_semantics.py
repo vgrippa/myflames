@@ -1000,6 +1000,54 @@ class TestReviewGateRegressions(unittest.TestCase):
         self.assertTrue(warning)
         self.assertNotIn("up to", warning[0])
 
+class TestTreeTotalColumn(unittest.TestCase):
+    """The execution tree prints every row's inclusive time in Total, leaves
+    included: a leaf's total equals its self time and used to be left blank,
+    a gap on the operator a DBA is usually looking for. An unmeasured
+    operator reads the dash in both Self and Total, never a blank or 0 ms
+    (charts/tree.ts prints the same; parity.mjs compares them)."""
+
+    @staticmethod
+    def _rows(svg):
+        """(is_leaf, {column: text}) per row, columns told apart by the header x."""
+        doc = ET.fromstring(svg)
+        headers = {n.text: float(n.get('x')) for n in doc.iter() if n.get('class') == 'col-hdr'}
+        rows = []
+        for group in doc.iter():
+            if group.get('class') != 'tree-row':
+                continue
+            cells = {}
+            for text in group:
+                if text.get('class') == 'row-time':
+                    column = 'Self' if float(text.get('x')) == headers['Self'] else (
+                        'Total' if float(text.get('x')) == headers['Total'] else None)
+                    cells[column] = text.text
+            rows.append((group.get('data-has-children') == '0', cells))
+        return rows
+
+    def test_every_measured_row_has_a_total_and_leaves_repeat_self(self):
+        from myflames.output_tree import _format_time, render_tree
+        root = parse_explain(NESTED_LOOP)
+        rows = self._rows(render_tree(root))
+        nodes = list(flatten_nodes(root))
+        self.assertEqual(len(rows), len(nodes))
+        for (leaf, cells), node in zip(rows, nodes):
+            self.assertEqual(set(cells), {'Self', 'Total'}, node['short_label'])
+            self.assertEqual(cells['Total'], _format_time(node['total_time']), node['short_label'])
+            if leaf:
+                self.assertEqual(cells['Total'], cells['Self'], node['short_label'])
+        leaves = [cells['Total'] for leaf, cells in rows if leaf]
+        self.assertEqual(leaves, ['10.00 ms', '30.00 ms'])
+
+    def test_unmeasured_operator_reads_the_dash_in_total(self):
+        from myflames.output_tree import render_tree
+        for text in (ESTIMATED_SCAN, _text(_fixture('mariadb-13.0-explain-join-3t.json'))):
+            rows = self._rows(render_tree(parse_explain(text)))
+            self.assertTrue(rows)
+            for _leaf, cells in rows:
+                self.assertEqual(cells, {'Self': '—', 'Total': '—'})
+
+
 class TestBarChartReadsLikeTheTree(unittest.TestCase):
     """The bar chart prints times like the execution tree, colors a bar by its
     share of the plan's time (not its rank), uses sentence-case headers, and

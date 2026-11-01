@@ -301,6 +301,9 @@ try {
     document.querySelector(".editor-panel .fill-notice")?.textContent.includes("Fill in p1 under Parameters"),
   );
   assert.equal(await page.$eval('[aria-label="SQL editor"]', (e) => e.value), "SELECT * FROM `customers` WHERE `id` = :p1");
+  // The fill-in form opens first; Later keeps the Parameters JSON path.
+  await page.waitForSelector("dialog.fill-sheet[open]");
+  await page.locator("dialog.fill-sheet button ::-p-text(Later)").click();
   await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Query parameters");
 
   // Sessions (the old Running queries): Show plan only for statements that can be explained.

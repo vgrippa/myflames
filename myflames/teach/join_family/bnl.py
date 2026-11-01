@@ -15,6 +15,74 @@ from .._cost_model import JOIN_BUFFER_SIZE_DEFAULT, MYSQL_BNL_REMOVED_IN
 
 _LESSON_JS_TEMPLATE = _html.load_lesson_js(__file__)
 
+# Guided steps (see _html.normalize_guide). bnl.js marks filling the join
+# buffer with a block, the scan of orders for that block, and the summary
+# with tl.beat(kind). Block nested loop is MariaDB's executor (MySQL 8.0.20
+# and later have none), so no line carries a MySQL function note.
+GUIDE = {
+    "code": {
+        "title": "Block nested loop (MariaDB)",
+        "lines": [
+            ("block", 0, "while customers has rows left:"),
+            ("fill", 1, "fill the join buffer with the next customers rows that fit"),
+            ("scan", 1, "for each row o in orders (one full scan per block):"),
+            ("each", 2, "for each customer c in the join buffer:"),
+            ("test", 3, "if c.signup_month = o.signup_month: return (c, o)"),
+            ("end", 0, "no customers left: the join is done"),
+        ],
+    },
+    "beats": {
+        "fill": ["block", "fill"],
+        "scan": ["scan", "each", "test"],
+        "done": ["end"],
+    },
+    "quiz": [
+        {
+            "question": ("customers fills 3 blocks of the join buffer. How many full scans of "
+                         "orders does the block nested loop make?"),
+            "choices": [
+                ("3, one per block", True,
+                 "Each time the join buffer is full, MariaDB reads orders from start to end and "
+                 "compares every order with every customer in the buffer."),
+                ("1, however many blocks there are", False,
+                 "One read of orders is what a hash join needs; a block nested loop reads orders "
+                 "again for every block."),
+                ("One per customer", False,
+                 "That is a plain nested loop without an index; packing customers into blocks "
+                 "cuts the scans to one per block."),
+            ],
+        },
+        {
+            "question": "You double join_buffer_size from 256 KiB to 512 KiB. What changes?",
+            "choices": [
+                ("About half as many blocks, so orders is scanned about half as often", True,
+                 "Twice the buffer holds about twice the customers rows, so customers splits into "
+                 "about half as many blocks, and each block costs one scan of orders."),
+                ("MariaDB switches to a hash join", False,
+                 "The algorithm comes from join_cache_level, not from the buffer size; a bigger "
+                 "buffer only packs more customers into each block."),
+                ("Nothing, since orders is the table being scanned", False,
+                 "orders is scanned once per block, so fewer and larger blocks mean fewer scans."),
+            ],
+        },
+        {
+            "question": "Which engine runs this join as a block nested loop by default?",
+            "choices": [
+                ("MariaDB; MySQL 8.4 runs it as a hash join", True,
+                 "MariaDB's default join_cache_level=2 uses block nested loop buffers for joins "
+                 "without a usable index, and MySQL replaced block nested loop with hash join "
+                 "in 8.0.20."),
+                ("Both engines", False,
+                 "Since 8.0.20 MySQL runs the joins it used to buffer this way as a hash join "
+                 "instead."),
+                ("Only MySQL", False,
+                 "It is the other way round: MySQL replaced block nested loop in 8.0.20, while "
+                 "MariaDB still uses it at the default join_cache_level=2."),
+            ],
+        },
+    ],
+}
+
 
 def render() -> str:
     banner_html = f"""
@@ -76,9 +144,10 @@ def render() -> str:
         [
             "Yellow blocks on top = chunks of customers rows packed into the join buffer (one block holds as many rows as join_buffer_size allows).",
             "Blue table below = the orders table. It is a full table — every row lives here.",
-            "Small yellow circles flow from the active block along a curved path down to the orders table. They represent the outer rows being compared against the inner.",
+            "Labelled pills ('Acme Corp (Jan)') flow from the active block down above the orders table: the customers rows now in the join buffer, each one compared with every order.",
             "A yellow sweep bar moves left-to-right across the orders table. That sweep is one full scan of orders.",
             "Each block triggers exactly one full scan of orders. 10 blocks = 10 full scans. That is why bigger join_buffer_size → fewer blocks → less work.",
+            "Next step fills the buffer with one block, then scans orders once for it; the simplified code beside the drawing highlights the lines each step runs.",
         ],
     )
 
@@ -86,7 +155,7 @@ def render() -> str:
 <section class="stage">
   {query_card_html}
   {explainer_html}
-  {_html.stage_toolbar("Ready — press Play")}
+  {_html.stage_toolbar("Ready: press Next step, or Play to run it all")}
   <div class="stage-with-phases">
     <svg id="bnl-svg" viewBox="0 0 800 360" xmlns="http://www.w3.org/2000/svg"></svg>
     {_html.phase_nav()}
@@ -117,21 +186,35 @@ def render() -> str:
 <details class="learn-more">
   <summary>Learn more — why does MariaDB still use BNL?</summary>
   <div class="body">
-    <p>MariaDB controls block-based join algorithms with
-    <code>join_cache_level</code> (0–8), not <code>optimizer_switch</code>.
-    The default is <strong>2</strong> — "BNL without hashing". Levels 3
-    and 4 enable <em>incremental</em> and <em>hashed</em> BNL respectively.</p>
+    <p>MariaDB controls block-based join algorithms mainly with
+    <code>join_cache_level</code> (0–8); the <code>optimizer_switch</code>
+    flags <code>join_cache_incremental</code>, <code>join_cache_hashed</code>
+    and <code>join_cache_bka</code> (on by default) can turn individual
+    algorithms off. The <code>join_cache_level</code> default is
+    <strong>2</strong>: block nested loop with incremental (linked) buffers
+    and no hashing. Levels 3 and 4 add <em>hashed</em>
+    buffers (BNLH; 3 is flat, 4 incremental), and levels 5 to 8 add batched
+    key access for joins that have an index.</p>
 
-    <p>MariaDB's "hashed BNL" (level 4) is <strong>not</strong> the same
+    <p>MariaDB's "hashed BNL" (levels 3 and 4) is <strong>not</strong> the same
     algorithm as MySQL 8.4's hash join. It's still BNL structurally — each
     outer block builds a tiny hash table, then the inner is scanned once
     per block and probed into that hash table. It's faster than plain BNL
     but still O(outer_blocks × inner_rows), not O(outer + inner). See the
     <a href="join.html">BNL vs hash</a> lesson for the visual.</p>
 
-    <p>MySQL 8.0.20 removed BNL entirely — <code>optimizer_switch=block_nested_loop</code>
-    is a no-op in 8.4. For non-indexed equi-joins MySQL now always uses a
-    two-phase hash join.</p>
+    <p>MySQL 8.0.20 removed the block nested loop executor: a join the
+    optimizer plans with a join buffer now runs as a two-phase hash join.
+    In MySQL 8.4 the <code>block_nested_loop</code> switch (and the
+    <code>BNL</code> and <code>NO_BNL</code> hints) still decide whether that
+    hash join may be used; the <code>hash_join</code> switch no longer has
+    any effect.</p>
+
+    <p>One more MariaDB limit: while <code>optimize_join_buffer_size</code>
+    is on (the default), all the join buffers of one query share
+    <code>join_buffer_space_limit</code> (2 MiB by default), so raising
+    <code>join_buffer_size</code> past that changes nothing unless you raise
+    the limit too. The model above leaves that cap out.</p>
 
     <p>Sources: MariaDB Knowledge Base "Block-based Join Algorithms";
     "What's New in MySQL 8.0.20" release notes.</p>
@@ -155,4 +238,5 @@ def render() -> str:
         readout_html=readout_html,
         learn_more_html=learn_more_html,
         lesson_js=lesson_js,
+        guide=GUIDE,
     )

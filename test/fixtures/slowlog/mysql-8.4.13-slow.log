@@ -1,0 +1,162 @@
+/usr/sbin/mysqld, Version: 8.4.13 (MySQL Community Server - GPL). started with:
+Tcp port: 3306  Unix socket: /var/run/mysqld/mysqld.sock
+Time                 Id Command    Argument
+# Time: 2026-10-31T09:54:07.654688-03:00
+# User@Host: root[root] @  [127.0.0.1]  Id:    37
+# Query_time: 0.000778  Lock_time: 0.000006 Rows_sent: 0  Rows_examined: 0 Thread_id: 37 Errno: 0 Killed: 0 Bytes_received: 37 Bytes_sent: 11 Read_first: 0 Read_last: 0 Read_key: 0 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Start: 2026-10-31T09:54:07.653910-03:00 End: 2026-10-31T09:54:07.654688-03:00
+SET timestamp=1793451247;
+SET GLOBAL slow_query_log = ON;
+# Time: 2026-10-31T09:54:07.655144-03:00
+# User@Host: root[root] @  [127.0.0.1]  Id:    37
+# Query_time: 0.000005  Lock_time: 0.000000 Rows_sent: 0  Rows_examined: 0 Thread_id: 37 Errno: 0 Killed: 0 Bytes_received: 5 Bytes_sent: 0 Read_first: 0 Read_last: 0 Read_key: 0 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Start: 2026-10-31T09:54:07.655139-03:00 End: 2026-10-31T09:54:07.655144-03:00
+SET timestamp=1793451247;
+# administrator command: Quit;
+# Time: 2026-10-31T09:54:07.718907-03:00
+# User@Host: app[app] @  [127.0.0.1]  Id:    38
+# Query_time: 0.000270  Lock_time: 0.000000 Rows_sent: 1  Rows_examined: 1 Thread_id: 38 Errno: 0 Killed: 0 Bytes_received: 39 Bytes_sent: 92 Read_first: 0 Read_last: 0 Read_key: 0 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Start: 2026-10-31T09:54:07.718637-03:00 End: 2026-10-31T09:54:07.718907-03:00
+use shop;
+SET timestamp=1793451247;
+select @@version_comment limit 1;
+# Time: 2026-10-31T09:54:07.720793-03:00
+# User@Host: app[app] @  [127.0.0.1]  Id:    38
+# Query_time: 0.000466  Lock_time: 0.000019 Rows_sent: 1  Rows_examined: 1 Thread_id: 38 Errno: 0 Killed: 0 Bytes_received: 56 Bytes_sent: 185 Read_first: 0 Read_last: 0 Read_key: 1 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Start: 2026-10-31T09:54:07.720327-03:00 End: 2026-10-31T09:54:07.720793-03:00
+SET timestamp=1793451247;
+SELECT id, status, total FROM orders WHERE id = 1;
+# Time: 2026-10-31T09:54:07.722514-03:00
+# User@Host: app[app] @  [127.0.0.1]  Id:    38
+# Query_time: 0.000127  Lock_time: 0.000001 Rows_sent: 1  Rows_examined: 1 Thread_id: 38 Errno: 0 Killed: 0 Bytes_received: 57 Bytes_sent: 185 Read_first: 0 Read_last: 0 Read_key: 1 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Start: 2026-10-31T09:54:07.722387-03:00 End: 2026-10-31T09:54:07.722514-03:00
+SET timestamp=1793451247;
+SELECT id, status, total FROM orders WHERE id = 22;
+# Time: 2026-10-31T09:54:07.723144-03:00
+# User@Host: app[app] @  [127.0.0.1]  Id:    38
+# Query_time: 0.000103  Lock_time: 0.000001 Rows_sent: 1  Rows_examined: 1 Thread_id: 38 Errno: 0 Killed: 0 Bytes_received: 58 Bytes_sent: 186 Read_first: 0 Read_last: 0 Read_key: 1 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Start: 2026-10-31T09:54:07.723041-03:00 End: 2026-10-31T09:54:07.723144-03:00
+SET timestamp=1793451247;
+SELECT id, status, total FROM orders WHERE id = 333;
+# Time: 2026-10-31T09:54:07.723606-03:00
+# User@Host: app[app] @  [127.0.0.1]  Id:    38
+# Query_time: 0.000415  Lock_time: 0.000001 Rows_sent: 6  Rows_examined: 12 Thread_id: 38 Errno: 0 Killed: 0 Bytes_received: 83 Bytes_sent: 606 Read_first: 0 Read_last: 0 Read_key: 1 Read_next: 6 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 6 Sort_scan_count: 1 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Start: 2026-10-31T09:54:07.723191-03:00 End: 2026-10-31T09:54:07.723606-03:00
+SET timestamp=1793451247;
+SELECT * FROM orders WHERE customer_id IN (1) ORDER BY created DESC LIMIT 10;
+# Time: 2026-10-31T09:54:07.724843-03:00
+# User@Host: app[app] @  [127.0.0.1]  Id:    38
+# Query_time: 0.000257  Lock_time: 0.000001 Rows_sent: 10  Rows_examined: 23 Thread_id: 38 Errno: 0 Killed: 0 Bytes_received: 89 Bytes_sent: 798 Read_first: 0 Read_last: 0 Read_key: 3 Read_next: 13 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 10 Sort_scan_count: 1 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Start: 2026-10-31T09:54:07.724586-03:00 End: 2026-10-31T09:54:07.724843-03:00
+SET timestamp=1793451247;
+SELECT * FROM orders WHERE customer_id IN (1, 2, 3) ORDER BY created DESC LIMIT 10;
+# Time: 2026-10-31T09:54:07.724992-03:00
+# User@Host: app[app] @  [127.0.0.1]  Id:    38
+# Query_time: 0.000085  Lock_time: 0.000001 Rows_sent: 10  Rows_examined: 49 Thread_id: 38 Errno: 0 Killed: 0 Bytes_received: 102 Bytes_sent: 841 Read_first: 0 Read_last: 0 Read_key: 7 Read_next: 39 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 10 Sort_scan_count: 1 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Start: 2026-10-31T09:54:07.724907-03:00 End: 2026-10-31T09:54:07.724992-03:00
+SET timestamp=1793451247;
+SELECT * FROM orders WHERE customer_id IN (4, 5, 6, 7, 8, 9, 10) ORDER BY created DESC LIMIT 10;
+# Time: 2026-10-31T09:54:07.737423-03:00
+# User@Host: app[app] @  [127.0.0.1]  Id:    38
+# Query_time: 0.012418  Lock_time: 0.000001 Rows_sent: 0  Rows_examined: 0 Thread_id: 38 Errno: 0 Killed: 0 Bytes_received: 105 Bytes_sent: 50 Read_first: 0 Read_last: 0 Read_key: 0 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Start: 2026-10-31T09:54:07.725005-03:00 End: 2026-10-31T09:54:07.737423-03:00
+SET timestamp=1793451247;
+INSERT INTO items (order_id, sku, qty) VALUES (901, 'FX-1', 1), (902, 'FX-2', 2), (903, 'FX-3', 3);
+# Time: 2026-10-31T09:54:07.744607-03:00
+# User@Host: app[app] @  [127.0.0.1]  Id:    38
+# Query_time: 0.007044  Lock_time: 0.000014 Rows_sent: 0  Rows_examined: 0 Thread_id: 38 Errno: 0 Killed: 0 Bytes_received: 69 Bytes_sent: 11 Read_first: 0 Read_last: 0 Read_key: 0 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Start: 2026-10-31T09:54:07.737563-03:00 End: 2026-10-31T09:54:07.744607-03:00
+SET timestamp=1793451247;
+INSERT INTO items (order_id, sku, qty) VALUES (904, 'FX-4', 4);
+# Time: 2026-10-31T09:54:07.746549-03:00
+# User@Host: app[app] @  [127.0.0.1]  Id:    38
+# Query_time: 0.001763  Lock_time: 0.000009 Rows_sent: 0  Rows_examined: 1 Thread_id: 38 Errno: 0 Killed: 0 Bytes_received: 53 Bytes_sent: 52 Read_first: 0 Read_last: 0 Read_key: 1 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Start: 2026-10-31T09:54:07.744786-03:00 End: 2026-10-31T09:54:07.746549-03:00
+SET timestamp=1793451247;
+UPDATE orders SET status = 'paid' WHERE id = 5;
+# Time: 2026-10-31T09:54:07.746718-03:00
+# User@Host: app[app] @  [127.0.0.1]  Id:    38
+# Query_time: 0.000094  Lock_time: 0.000000 Rows_sent: 0  Rows_examined: 0 Thread_id: 38 Errno: 0 Killed: 0 Bytes_received: 12 Bytes_sent: 24 Read_first: 0 Read_last: 0 Read_key: 0 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Start: 2026-10-31T09:54:07.746624-03:00 End: 2026-10-31T09:54:07.746718-03:00
+SET timestamp=1793451247;
+BEGIN;
+# Time: 2026-10-31T09:54:07.747013-03:00
+# User@Host: app[app] @  [127.0.0.1]  Id:    38
+# Query_time: 0.000173  Lock_time: 0.000000 Rows_sent: 0  Rows_examined: 1 Thread_id: 38 Errno: 0 Killed: 0 Bytes_received: 55 Bytes_sent: 52 Read_first: 0 Read_last: 0 Read_key: 1 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Start: 2026-10-31T09:54:07.746840-03:00 End: 2026-10-31T09:54:07.747013-03:00
+SET timestamp=1793451247;
+UPDATE orders SET total = total + 1 WHERE id = 6;
+# Time: 2026-10-31T09:54:07.747557-03:00
+# User@Host: app[app] @  [127.0.0.1]  Id:    38
+# Query_time: 0.000509  Lock_time: 0.000000 Rows_sent: 0  Rows_examined: 0 Thread_id: 38 Errno: 0 Killed: 0 Bytes_received: 13 Bytes_sent: 24 Read_first: 0 Read_last: 0 Read_key: 0 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Start: 2026-10-31T09:54:07.747048-03:00 End: 2026-10-31T09:54:07.747557-03:00
+SET timestamp=1793451247;
+COMMIT;
+# Time: 2026-10-31T09:54:07.748296-03:00
+# User@Host: app[app] @  [127.0.0.1]  Id:    38
+# Query_time: 0.000685  Lock_time: 0.000001 Rows_sent: 3  Rows_examined: 320 Thread_id: 38 Errno: 0 Killed: 0 Bytes_received: 199 Bytes_sent: 188 Read_first: 1 Read_last: 0 Read_key: 145 Read_next: 120 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 205 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 1 Start: 2026-10-31T09:54:07.747611-03:00 End: 2026-10-31T09:54:07.748296-03:00
+SET timestamp=1793451247;
+/* dashboard */ SELECT o.status,
+       COUNT(*) AS n,
+       SUM(o.total) AS revenue
+  FROM orders o
+  JOIN crm.customers c ON c.id = o.customer_id
+ WHERE c.city = 'Recife'
+ GROUP BY o.status;
+# Time: 2026-10-31T09:54:07.748388-03:00
+# User@Host: app[app] @  [127.0.0.1]  Id:    38
+# Query_time: 0.000066  Lock_time: 0.000001 Rows_sent: 1  Rows_examined: 1 Thread_id: 38 Errno: 0 Killed: 0 Bytes_received: 71 Bytes_sent: 88 Read_first: 1 Read_last: 0 Read_key: 1 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 1 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Start: 2026-10-31T09:54:07.748322-03:00 End: 2026-10-31T09:54:07.748388-03:00
+SET timestamp=1793451247;
+SELECT note FROM orders WHERE note = 'gift; wrap
+please' LIMIT 1;
+# Time: 2026-10-31T09:54:07.848778-03:00
+# User@Host: app[app] @  [127.0.0.1]  Id:    38
+# Query_time: 0.100369  Lock_time: 0.000000 Rows_sent: 1  Rows_examined: 1 Thread_id: 38 Errno: 0 Killed: 0 Bytes_received: 24 Bytes_sent: 58 Read_first: 0 Read_last: 0 Read_key: 0 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Start: 2026-10-31T09:54:07.748409-03:00 End: 2026-10-31T09:54:07.848778-03:00
+SET timestamp=1793451247;
+SELECT SLEEP(0.1);
+# Time: 2026-10-31T09:54:07.850427-03:00
+# User@Host: app[app] @  [127.0.0.1]  Id:    38
+# Query_time: 0.001540  Lock_time: 0.000004 Rows_sent: 0  Rows_examined: 4 Thread_id: 38 Errno: 0 Killed: 0 Bytes_received: 66 Bytes_sent: 11 Read_first: 0 Read_last: 0 Read_key: 1 Read_next: 4 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Start: 2026-10-31T09:54:07.848887-03:00 End: 2026-10-31T09:54:07.850427-03:00
+SET timestamp=1793451247;
+DELETE FROM items WHERE order_id >= 901 AND order_id <= 904;
+# Time: 2026-10-31T09:54:07.850616-03:00
+# User@Host: app[app] @  [127.0.0.1]  Id:    38
+# Query_time: 0.000004  Lock_time: 0.000000 Rows_sent: 0  Rows_examined: 4 Thread_id: 38 Errno: 0 Killed: 0 Bytes_received: 5 Bytes_sent: 0 Read_first: 0 Read_last: 0 Read_key: 0 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Start: 2026-10-31T09:54:07.850612-03:00 End: 2026-10-31T09:54:07.850616-03:00
+SET timestamp=1793451247;
+# administrator command: Quit;
+# Time: 2026-10-31T09:54:09.123505-03:00
+# User@Host: report[report] @  [127.0.0.1]  Id:    39
+# Query_time: 0.000060  Lock_time: 0.000000 Rows_sent: 1  Rows_examined: 1 Thread_id: 39 Errno: 0 Killed: 0 Bytes_received: 39 Bytes_sent: 92 Read_first: 0 Read_last: 0 Read_key: 0 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Start: 2026-10-31T09:54:09.123445-03:00 End: 2026-10-31T09:54:09.123505-03:00
+use crm;
+SET timestamp=1793451249;
+select @@version_comment limit 1;
+# Time: 2026-10-31T09:54:09.124076-03:00
+# User@Host: report[report] @  [127.0.0.1]  Id:    39
+# Query_time: 0.000346  Lock_time: 0.000001 Rows_sent: 8  Rows_examined: 208 Thread_id: 39 Errno: 0 Killed: 0 Bytes_received: 80 Bytes_sent: 209 Read_first: 1 Read_last: 0 Read_key: 201 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 210 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 8 Sort_scan_count: 1 Created_tmp_disk_tables: 0 Created_tmp_tables: 1 Start: 2026-10-31T09:54:09.123730-03:00 End: 2026-10-31T09:54:09.124076-03:00
+SET timestamp=1793451249;
+SELECT city, COUNT(*) FROM customers GROUP BY city ORDER BY COUNT(*) DESC;
+# Time: 2026-10-31T09:54:09.124197-03:00
+# User@Host: report[report] @  [127.0.0.1]  Id:    39
+# Query_time: 0.000070  Lock_time: 0.000000 Rows_sent: 8  Rows_examined: 208 Thread_id: 39 Errno: 0 Killed: 0 Bytes_received: 80 Bytes_sent: 209 Read_first: 1 Read_last: 0 Read_key: 201 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 210 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 8 Sort_scan_count: 1 Created_tmp_disk_tables: 0 Created_tmp_tables: 1 Start: 2026-10-31T09:54:09.124127-03:00 End: 2026-10-31T09:54:09.124197-03:00
+SET timestamp=1793451249;
+SELECT city, COUNT(*) FROM customers GROUP BY city ORDER BY COUNT(*) DESC;
+# Time: 2026-10-31T09:54:09.124320-03:00
+# User@Host: report[report] @  [127.0.0.1]  Id:    39
+# Query_time: 0.000081  Lock_time: 0.000000 Rows_sent: 111  Rows_examined: 200 Thread_id: 39 Errno: 0 Killed: 0 Bytes_received: 63 Bytes_sent: 1946 Read_first: 1 Read_last: 0 Read_key: 1 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 201 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Start: 2026-10-31T09:54:09.124239-03:00 End: 2026-10-31T09:54:09.124320-03:00
+SET timestamp=1793451249;
+SELECT name FROM customers WHERE name LIKE 'customer 1%';
+# Time: 2026-10-31T09:54:09.124585-03:00
+# User@Host: report[report] @  [127.0.0.1]  Id:    39
+# Query_time: 0.000216  Lock_time: 0.000000 Rows_sent: 1  Rows_examined: 1000 Thread_id: 39 Errno: 0 Killed: 0 Bytes_received: 78 Bytes_sent: 58 Read_first: 1 Read_last: 0 Read_key: 1 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 1001 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Start: 2026-10-31T09:54:09.124369-03:00 End: 2026-10-31T09:54:09.124585-03:00
+SET timestamp=1793451249;
+SELECT COUNT(*) FROM shop.orders WHERE note IS NOT NULL AND total > 100;
+# Time: 2026-10-31T09:54:09.124676-03:00
+# User@Host: report[report] @  [127.0.0.1]  Id:    39
+# Query_time: 0.000001  Lock_time: 0.000000 Rows_sent: 0  Rows_examined: 1000 Thread_id: 39 Errno: 0 Killed: 0 Bytes_received: 5 Bytes_sent: 0 Read_first: 0 Read_last: 0 Read_key: 0 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Start: 2026-10-31T09:54:09.124675-03:00 End: 2026-10-31T09:54:09.124676-03:00
+SET timestamp=1793451249;
+# administrator command: Quit;
+# Time: 2026-10-31T09:54:10.375135-03:00
+# User@Host: root[root] @  [127.0.0.1]  Id:    40
+# Query_time: 0.000070  Lock_time: 0.000000 Rows_sent: 1  Rows_examined: 1 Thread_id: 40 Errno: 0 Killed: 0 Bytes_received: 39 Bytes_sent: 92 Read_first: 0 Read_last: 0 Read_key: 0 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Start: 2026-10-31T09:54:10.375065-03:00 End: 2026-10-31T09:54:10.375135-03:00
+SET timestamp=1793451250;
+select @@version_comment limit 1;
+# Time: 2026-10-31T09:54:10.375402-03:00
+# User@Host: root[root] @  [127.0.0.1]  Id:    40
+# Query_time: 0.000026  Lock_time: 0.000000 Rows_sent: 1  Rows_examined: 1 Thread_id: 40 Errno: 0 Killed: 0 Bytes_received: 15 Bytes_sent: 49 Read_first: 0 Read_last: 0 Read_key: 0 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Start: 2026-10-31T09:54:10.375376-03:00 End: 2026-10-31T09:54:10.375402-03:00
+SET timestamp=1793451250;
+SELECT 1;
+# Time: 2026-10-31T09:54:10.375477-03:00
+# User@Host: root[root] @  [127.0.0.1]  Id:    40
+# Query_time: 0.000044  Lock_time: 0.000000 Rows_sent: 1  Rows_examined: 1 Thread_id: 40 Errno: 0 Killed: 0 Bytes_received: 19 Bytes_sent: 71 Read_first: 0 Read_last: 0 Read_key: 0 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Start: 2026-10-31T09:54:10.375433-03:00 End: 2026-10-31T09:54:10.375477-03:00
+SET timestamp=1793451250;
+SELECT NOW();
+# Time: 2026-10-31T09:54:10.935556-03:00
+# User@Host: root[root] @  [127.0.0.1]  Id:    41
+# Query_time: 0.000086  Lock_time: 0.000000 Rows_sent: 1  Rows_examined: 1 Thread_id: 41 Errno: 0 Killed: 0 Bytes_received: 39 Bytes_sent: 92 Read_first: 0 Read_last: 0 Read_key: 0 Read_next: 0 Read_prev: 0 Read_rnd: 0 Read_rnd_next: 0 Sort_merge_passes: 0 Sort_range_count: 0 Sort_rows: 0 Sort_scan_count: 0 Created_tmp_disk_tables: 0 Created_tmp_tables: 0 Start: 2026-10-31T09:54:10.935470-03:00 End: 2026-10-31T09:54:10.935556-03:00
+SET timestamp=1793451250;
+select @@version_comment limit 1;

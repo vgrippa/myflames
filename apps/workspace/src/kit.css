@@ -1097,10 +1097,13 @@
 }
 
 /* ---- Data table ---------------------------------------------------------- */
-/* A frame (hairline, 6 px) around a scrolling region; the Columns button sits
-   in the frame's top right corner, over the sticky header. */
+/* The Columns gutter is outside the scrolling viewport. A sticky table
+   cell overlays values whenever a wide table scrolls behind it. Reserving
+   the gutter here protects headers, values and units at every scroll offset. */
 .data-table-frame {
+  --table-menu-width: calc(var(--space-6) + var(--space-1));
   position: relative;
+  padding-right: var(--table-menu-width);
   min-width: 0;
   max-width: 100%;
   border: 1px solid var(--line);
@@ -1112,7 +1115,7 @@
   position: relative;
   max-width: 100%;
   max-height: min(70vh, 760px);
-  scroll-padding: var(--space-6) 36px var(--space-2) var(--space-2);
+  scroll-padding: var(--space-6) var(--space-2) var(--space-2) var(--space-2);
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
@@ -1169,35 +1172,27 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* The Columns menu's column: narrow, at the right end, and its header stays
-   in view while the table scrolls sideways. */
-.data-table th.col-menu {
+/* Row actions scroll with their row. The Columns control occupies its own
+   header gutter, outside the horizontal scroll and the row hit targets. */
+.data-table th.col-menu,
+.data-table.is-sized tbody tr > td.col-menu {
+  padding: 0 var(--space-1);
+  text-align: center;
+}
+.data-table th.col-menu { overflow: visible; }
+.table-columns-cell {
+  position: absolute;
+  top: 0;
   right: 0;
   z-index: 3;
-  padding: 0 4px;
-  text-align: center;
-  overflow: visible;
-  box-shadow: -1px 0 0 var(--line);
-}
-.data-table.is-sized tbody tr > td.col-menu {
-  position: sticky;
-  right: 0;
-  z-index: 2;
-  padding: 0;
-  background: var(--surface);
-  box-shadow: -1px 0 0 var(--line);
-}
-/* A row menu open in this column draws above the sticky cells of the rows
-   below it and above the header's Columns button. */
-.data-table.is-sized tbody tr > td.col-menu:has([aria-expanded="true"]) {
-  z-index: 4;
-}
-/* Sticky cells must stay opaque in hover/selection states as well. The
-   separate colgroup slot lets the last value scroll completely into view. */
-.data-table tbody tr[tabindex]:hover td.col-menu,
-.data-table tbody tr.is-selected td.col-menu,
-.data-table tbody tr.is-selected:hover td.col-menu {
-  background: var(--surface-pane);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--table-menu-width);
+  height: var(--space-6);
+  border-bottom: 1px solid var(--line);
+  border-left: 1px solid var(--line);
+  background: var(--surface-subtle);
 }
 /* A row's ⋯ menu (rowAction) shows on the row being pointed at, the focused
    or selected row and the row whose menu is open, like the Query editor's
@@ -1216,14 +1211,8 @@
 /* Columns scrolled out of view sideways (overlay scroll bars stay hidden
    until the pointer scrolls): the content fades out toward each edge with
    more beyond it, so a column cut at the edge reads as scrolled, not covered.
-   On the right the edge is the Columns menu column, which also casts a
-   shadow over the column continuing beneath it. DataTable marks its frame;
-   other sideways scrollers (the Locks blocking tree) sit in .scroll-edges
-   (useScrollEdges in kit.tsx). */
-.data-table-frame[data-more-right] .data-table th.col-menu,
-.data-table-frame[data-more-right] .data-table.is-sized tbody tr > td.col-menu {
-  box-shadow: -1px 0 0 var(--line), -6px 0 8px -4px var(--table-edge-shadow);
-}
+   The right edge stops before the separate Columns gutter. Other sideways
+   scrollers (the Locks blocking tree) use .scroll-edges (useScrollEdges). */
 .scroll-edges {
   position: relative;
   min-width: 0;
@@ -1256,9 +1245,9 @@
     linear-gradient(to left, var(--surface-subtle), transparent) top / 100% 32px no-repeat,
     linear-gradient(to left, var(--surface), transparent) 0 32px / 100% calc(100% - 32px) no-repeat;
 }
-/* Beside the Columns menu column (36 px, MENU_COLUMN in kit.tsx). */
+/* The data viewport ends beside the Columns gutter. */
 .data-table-frame[data-more-right]::after {
-  right: calc(36px + 1px);
+  right: calc(var(--table-menu-width) + 1px);
 }
 .data-table tbody tr:last-child td {
   border-bottom: 0;
@@ -1584,6 +1573,19 @@ button.grouped-row.is-selected:hover {
   color: var(--section-ink);
   font-weight: var(--section-weight);
 }
+/* A group's share of the summary's count (Health: "1 problem, 1 to watch"),
+   shown only where the tiles form a strip that scrolls sideways (900 px and
+   below), so a flagged tile out of view still adds up at a glance. */
+.tile-section-status {
+  display: none;
+}
+@media (max-width: 900px) {
+  .tile-section-status {
+    display: inline-flex;
+    min-width: 0;
+    margin-left: auto;
+  }
+}
 /* Every tile in a grid has the same width. The column count follows the tile
    count (one row up to six, rows of four for seven or eight) and the room the
    frame has: a row that does not fit becomes balanced rows (six as 3 + 3,
@@ -1812,6 +1814,89 @@ details[open]:not([class]) > summary:not([class]):not(:has(> svg))::before {
 }
 .disclosure-body {
   margin-top: var(--space-2);
+}
+
+/* ---- Connection type strip and write-review band ----------------------------- */
+.connection-type-strip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--conn-strip-h);
+  z-index: 7;
+  pointer-events: none;
+  background: var(--conn-prod-strip);
+}
+.connection-type-strip.is-production {
+  background: var(--conn-prod-strip);
+}
+.connection-type-strip.is-development {
+  background: var(--conn-dev-strip);
+}
+.connection-type-strip.is-read-only {
+  background: var(--conn-readonly-strip);
+}
+.connection-type-band {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  min-width: 0;
+  max-width: 100%;
+  margin-bottom: var(--space-3);
+  padding: var(--space-1-5) var(--space-2);
+  border: 1px solid var(--conn-prod-band-line);
+  border-left-width: 3px;
+  border-left-color: var(--conn-prod-strip);
+  border-radius: var(--radius-sm);
+  background: var(--conn-prod-band-bg);
+  color: var(--conn-prod-band-text);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  flex: none;
+}
+.connection-type-band.is-production {
+  border-color: var(--conn-prod-band-line);
+  border-left-color: var(--conn-prod-strip);
+  background: var(--conn-prod-band-bg);
+  color: var(--conn-prod-band-text);
+}
+.connection-type-band.is-development {
+  border-color: var(--conn-dev-band-line);
+  border-left-color: var(--conn-dev-strip);
+  background: var(--conn-dev-band-bg);
+  color: var(--conn-dev-band-text);
+}
+.connection-type-band.is-read-only {
+  border-color: var(--conn-readonly-band-line);
+  border-left-color: var(--conn-readonly-strip);
+  background: var(--conn-readonly-band-bg);
+  color: var(--conn-readonly-band-text);
+}
+.connection-type-band-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--conn-prod-strip);
+  flex: none;
+}
+.connection-type-band.is-development .connection-type-band-dot {
+  background: var(--conn-dev-strip);
+}
+.connection-type-band.is-read-only .connection-type-band-dot {
+  background: var(--conn-readonly-strip);
+}
+.connection-type-band strong {
+  font-weight: 600;
+  flex: none;
+}
+.connection-type-band-sep {
+  flex: none;
+}
+.connection-type-band-target {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---- Confirmation sheet ------------------------------------------------------ */
@@ -2453,6 +2538,58 @@ details[open]:not([class]) > summary:not([class]):not(:has(> svg))::before {
 .button.export-button > svg { flex: none; color: var(--ink-muted); }
 .popover:has(> .export-menu-items) { padding: var(--space-1); }
 .export-menu-items { display: grid; }
+.export-menu-options { display: grid; padding-bottom: var(--space-1); margin-bottom: var(--space-1); border-bottom: 1px solid var(--line); }
+/* A choice inside the menu (role menuitemcheckbox): the drawn checkbox of
+   style.css, then its label; it highlights like the formats below it. */
+.export-menu-options [role="menuitemcheckbox"] {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: var(--control-h);
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--text-sm);
+  text-align: left;
+  white-space: nowrap;
+  cursor: default;
+}
+.export-menu-options [role="menuitemcheckbox"]:is(:hover:not([aria-disabled="true"]), :focus-visible) {
+  background: var(--accent-fill);
+  color: var(--accent-ink);
+  outline: none;
+}
+.export-menu-options [role="menuitemcheckbox"][aria-disabled="true"] { color: var(--ink-faint); }
+.export-menu-check {
+  flex: none;
+  display: inline-grid;
+  place-content: center;
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--control-line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+.export-menu-check::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+  background: var(--accent-ink);
+  transform: scale(0);
+}
+[role="menuitemcheckbox"][aria-checked="true"] > .export-menu-check {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+[role="menuitemcheckbox"][aria-checked="true"] > .export-menu-check::before { transform: scale(1); }
+/* Highlighted, the box keeps a light edge on the accent fill. */
+[role="menuitemcheckbox"]:is(:hover:not([aria-disabled="true"]), :focus-visible) > .export-menu-check { border-color: var(--accent-ink); }
+[role="menuitemcheckbox"][aria-disabled="true"] > .export-menu-check { opacity: 0.5; }
 .export-menu-items [role="menuitem"] {
   display: flex;
   align-items: center;
@@ -2475,6 +2612,10 @@ details[open]:not([class]) > summary:not([class]):not(:has(> svg))::before {
   outline: none;
 }
 .export-menu-items [role="menuitem"]:disabled { color: var(--ink-faint); }
+/* A format with a busy label (ActionButton) starts its words where the
+   others do; its reserved room trails instead of centering the label. */
+.export-menu-items [role="menuitem"].action-button { justify-content: flex-start; }
+.export-menu-items [role="menuitem"] .action-button-label { justify-items: start; }
 
 /* ---- Action feedback (ActionButton, ActionStatus, ConfirmSheet busy) ----
    A click changes the button in the same frame: pressed, then a spinner and

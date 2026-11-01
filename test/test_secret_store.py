@@ -642,6 +642,35 @@ class TestProfilePasswords(IsolatedHome):
         with self.assertRaisesRegex(ValueError, 'missing from the encrypted file'):
             self.store.connection_with_saved_password(request)
 
+    def test_pasted_host_spaces_keep_the_saved_password(self):
+        # Save trims a pasted host; a request that still carries the spaces
+        # gets the password too, and so does a connection saved with them
+        # before myflames trimmed (its secret is keyed to the spaced host).
+        saved = self.store.save('profile', dict(self.settings, host=' db.internal '), password=SECRET, remember=True)
+        self.assertEqual(saved['host'], 'db.internal')
+        for host in ('db.internal', 'db.internal ', '\tdb.internal'):
+            request = {'profile_id': saved['id'], 'host': host, 'port': 3307, 'user': 'app'}
+            with self.subTest(host=host):
+                filled = self.store.connection_with_saved_password(request)
+                self.assertEqual((filled['host'], filled['password']), ('db.internal', SECRET))
+        with mock.patch('myflames.live.clean_host', side_effect=lambda text: text):
+            old = self.store.save('profile', dict(self.settings, name='old', host='db.internal '), password=SECRET,
+                                  remember=True)
+        self.assertEqual(old['host'], 'db.internal ')
+        for host in ('db.internal', 'db.internal '):
+            request = {'profile_id': old['id'], 'host': host, 'port': 3307, 'user': 'app'}
+            with self.subTest(old=host):
+                self.assertEqual(self.store.connection_with_saved_password(request)['password'], SECRET)
+        # Saving it again without a password (a rename, the trimmed host on
+        # screen) keeps the password usable.
+        resaved = self.store.save('profile', dict(self.settings, name='old renamed', host='db.internal'), old['id'])
+        self.assertTrue(resaved['has_saved_password'])
+        request = {'profile_id': old['id'], 'host': 'db.internal', 'port': 3307, 'user': 'app'}
+        self.assertEqual(self.store.connection_with_saved_password(request)['password'], SECRET)
+        with self.assertRaisesRegex(ValueError, 'own host, port, user, and TLS'):
+            self.store.connection_with_saved_password({'profile_id': old['id'], 'host': 'db.internal2', 'port': 3307,
+                                                       'user': 'app'})
+
     def test_security_connection_options_are_checked_before_secret_lookup(self):
         saved = self.save(password=SECRET, remember=True)
         request = dict(self.settings, profile_id=saved['id'])

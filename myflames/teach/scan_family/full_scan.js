@@ -241,7 +241,10 @@ function buildTimeline() {
   var scanned = 0;
   var matched = 0;
 
+  // Guided steps: opening the scan, one per row read, then the summary.
+  // Kinds map to the simplified-code lines (GUIDE in full_scan.py).
   tl.mark("Scan every row");
+  tl.beat("start");
   tl.call(function() {
     phase.textContent = "Phase 1/2 — no usable index, so the engine reads each row one by one";
     // Fade in the live cost ticker
@@ -265,6 +268,7 @@ function buildTimeline() {
   var totalSample = stage.rows.length;
   for (var i = 0; i < totalSample; i++) {
     (function(idx) {
+      tl.beat(stage.rows[idx].data.match ? "row-match" : "row-skip");
       tl.call(function() {
         var y = 50 + idx * 28;
         stage.scanner.setAttribute("y", y);
@@ -306,6 +310,7 @@ function buildTimeline() {
   }
 
   tl.mark("Summary");
+  tl.beat("done");
   tl.call(function() {
     var c = teachRuntime.readControls();
     var cost = fullScanCost(c.rows, c.row_size, c.selectivity);
@@ -329,7 +334,7 @@ function buildCurrentTimeline() {
 
 function resetAnim() {
   resetStage();
-  document.getElementById("phase-label").textContent = "Ready — press Play";
+  document.getElementById("phase-label").textContent = "Ready: press Next step, or Play to run it all";
 }
 
 function renderChart(rowSize, selectivityPct, currentRows) {

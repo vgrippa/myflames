@@ -1,0 +1,122 @@
+/* Text sheets (TableStructure.tsx TextSheet): Table structure and Export as
+   SQL. A confirm sheet (kit.css) widened for tables and scripts; the body
+   scrolls, the title and the actions stay in view, and wide content scrolls
+   sideways inside its own frame, never the window (720 px minimum). */
+.confirm-sheet.text-sheet {
+  width: min(960px, calc(100vw - 32px));
+}
+.text-sheet .dialog-heading h2 {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.text-sheet-actions {
+  justify-content: flex-end;
+}
+.text-sheet-status {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-inline-end: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.text-sheet-status:empty {
+  margin: 0;
+}
+
+.table-structure-sheet .sheet-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.table-structure-sheet .action-status[data-phase="idle"] {
+  display: none;
+}
+.table-structure-comment {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+}
+.table-structure-panel {
+  min-width: 0;
+}
+.table-structure-frame {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+.table-structure-frame:focus-visible,
+.table-structure-ddl:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.table-structure-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.table-structure-table :is(th, td) {
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+}
+.table-structure-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--surface-raised);
+  color: var(--ink-muted);
+  font-weight: 600;
+}
+.table-structure-table tbody tr:last-child :is(th, td) {
+  border-bottom: none;
+}
+.table-structure-table tbody th {
+  font-weight: 400;
+}
+.table-structure-table code {
+  font-family: var(--font-mono);
+}
+.table-structure-table .table-structure-text {
+  min-width: 160px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.table-structure-key {
+  margin-inline-start: var(--space-1);
+  padding: 0 var(--space-1);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  color: var(--ink-muted);
+}
+.table-structure-generated {
+  color: var(--ink-muted);
+  font-family: var(--font-mono);
+}
+.table-structure-ddl {
+  margin: 0;
+  max-height: 50vh;
+  overflow: auto;
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  white-space: pre;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  tab-size: 2;
+}
+.table-structure-sheet .sheet-lead {
+  margin: 0;
+}
+.table-structure-sheet .segmented {
+  align-self: flex-start;
+  max-width: 100%;
+  overflow-x: auto;
+}

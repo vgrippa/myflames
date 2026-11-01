@@ -295,5 +295,111 @@ class TestWorkspaceCommand(unittest.TestCase):
             self.assertEqual(result.stdout, '')
 
 
+class HideLiteralContractTests(unittest.TestCase):
+    def test_collected_ddl_redacted_after_cli_sidecar_is_complete(self):
+        from types import SimpleNamespace
+        from myflames.cli import _maybe_write_sidecar
+        from myflames.parser import analyze_plan
+        from myflames.collectors import parse_show_create_table
+        raw = json.dumps({'operation': 'Table scan on `42`', 'table_name': '42',
+                          'actual_last_row_ms': 12.5, 'actual_rows': 7, 'actual_loops': 1})
+        root = parse_explain(raw)
+        analysis = analyze_plan(root)
+        schema = parse_show_create_table("CREATE TABLE `42` (\n `123` varchar(20) DEFAULT 'CLI_DDL_SECRET'\n) ENGINE=InnoDB")
+        analysis['collected_schema'] = {'42': schema}
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, 'shared.json')
+            args = SimpleNamespace(no_sidecar=False, sidecar=path, input='plan.json',
+                                   output=None, hide_literals=True, quiet=True)
+            _maybe_write_sidecar(args, root, analysis, raw, None, '')
+            with open(path) as handle:
+                payload = json.load(handle)
+            self.assertNotIn('CLI_DDL_SECRET', json.dumps(payload))
+            table = payload['collected']['schema']['42']
+            self.assertEqual(table['table_name'], '42')
+            self.assertEqual(table['columns'][0]['name'], '123')
+            self.assertEqual(table['columns'][0]['type'], 'varchar(20)')
+            self.assertEqual(payload['plan_summary']['total_time_ms'], 12.5)
+            self.assertIn('CLI_DDL_SECRET', schema['ddl'])
+
+    def test_hidden_compare_keeps_predicate_matches_for_json_digest_and_html(self):
+        # Siblings need their original predicates for matching, even on export.
+        before = {'operation': 'Union all', 'actual_last_row_ms': 40,
+                  'actual_loops': 1, 'inputs': [
+                      {'operation': 'Filter: (id=12345)', 'condition': 'id=12345',
+                       'actual_last_row_ms': 10, 'actual_loops': 1},
+                      {'operation': 'Filter: (id=67890)', 'condition': 'id=67890',
+                       'actual_last_row_ms': 10, 'actual_loops': 1}]}
+        after = json.loads(json.dumps(before))
+        after['actual_last_row_ms'] = 50
+        after['inputs'][0]['actual_last_row_ms'] = 20
+        with tempfile.TemporaryDirectory() as directory:
+            paths = [os.path.join(directory, name) for name in ('before.json', 'after.json')]
+            for path, plan in zip(paths, (before, after)):
+                with open(path, 'w') as handle:
+                    json.dump(plan, handle)
+            plain = run_cli('compare', *paths, '--json')
+            self.assertEqual(plain.returncode, 0, plain.stderr)
+            expected = json.loads(plain.stdout)
+            self.assertEqual(expected['summary']['regressions'], 1)
+            for mode in ('--json', '--digest', '--title'):
+                args = [mode] if mode != '--title' else [mode, "SELECT 'CLI_TITLE_SECRET'"]
+                result = run_cli('compare', *paths, '--hide-literals', *args)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                for secret in ('12345', '67890', 'CLI_TITLE_SECRET'):
+                    self.assertNotIn(secret, result.stdout)
+                if mode == '--json':
+                    hidden = json.loads(result.stdout)
+                    self.assertEqual(hidden['summary'], expected['summary'])
+                    for old, new in zip(expected['deltas'], hidden['deltas']):
+                        self.assertEqual(new['matching'], old['matching'])
+                        self.assertEqual(new['self_time_ms'], old['self_time_ms'])
+                else:
+                    self.assertNotIn('Uncertain match', result.stdout)
+
+    def test_help_names_the_shared_modifier(self):
+        for command in ((), ('explore',), ('compare',)):
+            result = run_cli(*(command + ('--help',)))
+            self.assertEqual(result.returncode, 0)
+            self.assertIn('--hide-literals', result.stdout)
+            self.assertIn('Replace literal values with ?', result.stdout)
+
+    def test_html_sidecar_explore_and_compare_hide_literals(self):
+        plan = {"operation": "Index lookup on orders using idx (name='private-token')",
+                "table_name": "orders", "index_name": "idx", "access_type": "index",
+                "condition": "name='private-token'", "actual_last_row_ms": 2,
+                "actual_rows": 1, "actual_loops": 1,
+                "query": "SELECT * FROM orders WHERE name='private-token'"}
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, 'plan.json')
+            output = os.path.join(directory, 'shared.html')
+            with open(path, 'w') as handle:
+                json.dump(plan, handle)
+            result = run_cli(path, '--hide-literals', '--no-teach-bundle', '-q', '-o', output)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, '')
+            self.assertEqual(result.stderr, '')
+            with open(output) as handle:
+                html = handle.read()
+            self.assertIn('Literal values hidden', html)
+            self.assertNotIn('private-token', html)
+            with open(os.path.join(directory, 'plan.json')) as handle:
+                # Auto-sidecars use <output>.json, not the input path.
+                self.assertIn('private-token', handle.read())
+            with open(os.path.join(directory, 'shared.json')) as handle:
+                sidecar = handle.read()
+            self.assertNotIn('private-token', sidecar)
+            json.loads(sidecar)
+            for args in (('explore', path, '--hide-literals'), ('compare', path, path, '--hide-literals'),
+                         ('compare', path, path, '--hide-literals', '--json')):
+                result = run_cli(*args)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn('private-token', result.stdout)
+                if '--json' in args:
+                    json.loads(result.stdout)
+                else:
+                    self.assertIn('Literal values hidden', result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

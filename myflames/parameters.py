@@ -139,13 +139,18 @@ def compute_parameters(engine, version_tuple, rows=None, info_rows=None, persist
     item has ``vendor: None``.
     """
     mysql = engine == "mysql"
-    required = [rows, info_rows, persisted_rows] if mysql else [catalog_rows]
+    # MySQL 5.7 has neither performance_schema.variables_info nor
+    # persisted_variables (both MySQL 8.0): its inventory is complete without them.
+    mysql57 = mysql and _before_80(version_tuple)
+    required = ([rows] if mysql57 else [rows, info_rows, persisted_rows]) if mysql else [catalog_rows]
     if mysql and version_tuple >= (9, 0, 0):
         required.append(metadata_rows)
     catalog = _index(catalog_rows, _CATALOG_KEYS) if not mysql else {}
     details = _index(info_rows, _INFO_KEYS) if mysql else {}
     metadata = _index(metadata_rows, _METADATA_KEYS) if mysql else {}
     persisted = set(_index(persisted_rows, ("name",))) if mysql and persisted_rows is not None else None
+    if mysql57:
+        persisted = set()  # nothing is persisted: 5.7 has no SET PERSIST
     globals_ = ({row[0].lower(): row[1] for row in rows or [] if len(row) >= 2 and row[0]} if mysql else
                 {name: row.get("global_value") for name, row in catalog.items()})
     associations = _check_names(checks)
@@ -173,7 +178,8 @@ def compute_parameters(engine, version_tuple, rows=None, info_rows=None, persist
             if variables.startup_option(info) is False:
                 modifiable = "none"
             else:
-                modifiable = "option_file" if not mysql or "np" in flags else "restart"
+                # MySQL 5.7 has no SET PERSIST_ONLY: only the option file changes it.
+                modifiable = "option_file" if not mysql or mysql57 or "np" in flags else "restart"
         description = cat.get("comment") if not mysql else meta.get("documentation") or source_help(version_tuple, name)
         items.append({
             "name": name, "value": value[:variables.MAX_VALUE_LENGTH] if value is not None else None,
@@ -195,6 +201,11 @@ def compute_parameters(engine, version_tuple, rows=None, info_rows=None, persist
             "items": items}
 
 
+def _before_80(version_tuple):
+    version = tuple(version_tuple or ())[:3]
+    return any(version) and version < (8, 0, 0)
+
+
 def read_parameters(reader, server, notes, checks):
     """Read each catalog independently so denied details do not hide values.
 
@@ -204,7 +215,11 @@ def read_parameters(reader, server, notes, checks):
     """
     local_notes = []
     data = {}
-    if server.engine == "mysql":
+    if server.engine == "mysql" and _before_80(server.version_tuple):
+        from .config_review import MYSQL57_SOURCE_NOTE
+        data["rows"] = reader.optional("SHOW GLOBAL VARIABLES", "global parameters", local_notes)
+        local_notes.append(MYSQL57_SOURCE_NOTE)
+    elif server.engine == "mysql":
         data["rows"] = reader.optional("SHOW GLOBAL VARIABLES", "global parameters", local_notes)
         data["info_rows"] = reader.optional(MYSQL_INFO_SQL, "performance_schema.variables_info", local_notes)
         data["persisted_rows"] = reader.optional(MYSQL_PERSISTED_SQL, "performance_schema.persisted_variables", local_notes)
@@ -215,7 +230,8 @@ def read_parameters(reader, server, notes, checks):
     # Batch output prints SQL NULL and the text NULL alike: read those values again exactly.
     value_rows = data.get("rows") if server.engine == "mysql" else data.get("catalog_rows")
     resolved = _resolve_nulls(reader, server.engine, value_rows, local_notes)
-    notes.extend(local_notes)
+    # The enclosing report may already say the same thing (config_review's 5.7 note).
+    notes.extend(n for n in local_notes if n not in notes)
     report = compute_parameters(server.engine, server.version_tuple, checks=checks, notes=local_notes,
                                 flavor=getattr(server, "flavor", None), **data)
     if not resolved:

@@ -290,7 +290,8 @@ try {
   await page.waitForFunction(() => document.querySelector(".view-inspector h3")?.textContent === "innodb_dedicated_server");
 
   // The selected object owns the full work area, with an explicit way back.
-  assert.equal(await page.$eval(".view-main", element => element.hidden), true);
+  // Scoped to Parameters: views kept mounted after a visit (Tables, Instruments…) keep their own panes, hidden.
+  assert.equal(await page.$eval('.server-view[data-view="config"] .view-main', element => element.hidden), true);
   assert.ok(await page.$(".view-inspector.is-detail .detail-back"));
   assert.equal(await page.$(".view-inspector [role=separator]"), null);
   const geometry = await page.$eval(".view-inspector", element => {
@@ -481,7 +482,7 @@ try {
   await phone.click('.server-view tr[data-row-key="slow_query_log"] td');
   await phone.waitForSelector(".view-inspector.is-detail");
   assert.equal(await phone.$(".view-inspector.is-sheet"), null);
-  assert.equal(await phone.$eval(".view-main", element => element.hidden), true);
+  assert.equal(await phone.$eval('.server-view[data-view="config"] .view-main', element => element.hidden), true);
   await phone.waitForFunction(() => document.activeElement?.classList.contains("detail-back"));
   assert.equal(await phone.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   await phone.screenshot({ path: path.join(h.shots, "server-detail-390.png") });

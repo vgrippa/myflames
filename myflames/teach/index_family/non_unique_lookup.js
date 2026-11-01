@@ -21,14 +21,33 @@ function lookupCost(rows, selectivityPct, covering) {
 var W = 860, H = 470;
 var stage = null;
 
+// The query the stage runs, for each choice of the Covering input.
+var QUERY_SQL = {
+  noncovering: "SELECT id, name, country\nFROM users\nWHERE country = 'US';",
+  covering: "SELECT id, country\nFROM users\nWHERE country = 'US';"
+};
+
+// A deck of idx_users_country leaf entries: the 'US' entries in (country, id)
+// order, then the first entry of the next country, where the lookup stops.
+// The entry holds only country and id; name and city live in the row.
 var INDEX_KEYS = [
-  {key: "US", rid: 102, name: "Ben", city: "Austin"},
-  {key: "US", rid: 118, name: "Diego", city: "Miami"},
-  {key: "US", rid: 131, name: "Farah", city: "Seattle"},
-  {key: "US", rid: 165, name: "Ivan", city: "Boston"},
-  {key: "US", rid: 188, name: "Noah", city: "Dallas"},
-  {key: "US", rid: 204, name: "Zara", city: "Denver"}
+  {key: "US", id: 102, name: "Ben", city: "Austin"},
+  {key: "US", id: 118, name: "Diego", city: "Miami"},
+  {key: "US", id: 131, name: "Farah", city: "Seattle"},
+  {key: "US", id: 165, name: "Ivan", city: "Boston"},
+  {key: "US", id: 188, name: "Noah", city: "Dallas"},
+  {key: "US", id: 204, name: "Zara", city: "Denver"}
 ];
+var NEXT_KEY = {key: "UY", id: 15};
+
+// Whole numbers with thousands separators, so a caption never shows "20.0K".
+function fmtFull(n) {
+  return Math.round(n).toLocaleString("en-US");
+}
+
+function isCovering() {
+  return String(teachRuntime.readControls().covering) === "true";
+}
 
 function buildStage() {
   var svg = document.getElementById("lookup-svg");
@@ -40,19 +59,18 @@ function buildStage() {
   var idxLbl = anim.svgEl("text", {
     x: idxX, y: 24, "font-size": 13, "font-weight": 700, fill: "var(--svg-token-ink)"
   });
-  idxLbl.textContent = "secondary B+tree: idx_users_country(country, user_id)";
+  idxLbl.textContent = "secondary B+tree: idx_users_country (country, id)";
   svg.appendChild(idxLbl);
 
-  var idxRect = anim.svgEl("rect", {
+  svg.appendChild(anim.svgEl("rect", {
     x: idxX, y: idxY, width: idxW, height: idxH, rx: 8, ry: 8,
     fill: "var(--svg-token-soft)", stroke: "var(--svg-token)", "stroke-width": 1.5
-  });
-  svg.appendChild(idxRect);
+  }));
 
   var tableLbl = anim.svgEl("text", {
     x: tblX, y: 24, "font-size": 13, "font-weight": 700, fill: "var(--svg-build-ink)"
   });
-  tableLbl.textContent = "clustered table (PRIMARY) rows fetched by row-id";
+  tableLbl.textContent = "clustered index (PRIMARY): rows found by id";
   svg.appendChild(tableLbl);
 
   var tableRect = anim.svgEl("rect", {
@@ -61,7 +79,6 @@ function buildStage() {
   });
   svg.appendChild(tableRect);
 
-  var splitX = 420;
   var scanArrow = anim.svgEl("path", {
     d: "M400,220 C412,220 416,220 430,220 M423,214 L430,220 L423,226",
     stroke: "var(--svg-node-stroke)", "stroke-width": 2, fill: "none"
@@ -70,50 +87,48 @@ function buildStage() {
 
   var root = anim.svgEl("rect", {
     x: idxX + 145, y: idxY + 16, width: 100, height: 36, rx: 7, ry: 7,
-    fill: "var(--svg-token-soft)", stroke: "var(--svg-token-soft)", "stroke-width": 1.5
+    fill: "var(--svg-node-bg)", stroke: "var(--svg-node-stroke)", "stroke-width": 1.5
   });
   svg.appendChild(root);
   var rootTxt = anim.svgEl("text", {
     x: idxX + 195, y: idxY + 38, "text-anchor": "middle",
     "font-size": 10.5, "font-weight": 700, fill: "var(--svg-token-ink)"
   });
-  rootTxt.textContent = "ROOT";
+  rootTxt.textContent = "root page";
   svg.appendChild(rootTxt);
 
   var internal = anim.svgEl("rect", {
-    x: idxX + 130, y: idxY + 86, width: 130, height: 38, rx: 7, ry: 7,
-    fill: "var(--svg-token-soft)", stroke: "var(--svg-token-soft)", "stroke-width": 1.5
+    x: idxX + 115, y: idxY + 86, width: 160, height: 38, rx: 7, ry: 7,
+    fill: "var(--svg-node-bg)", stroke: "var(--svg-node-stroke)", "stroke-width": 1.5
   });
   svg.appendChild(internal);
   var internalTxt = anim.svgEl("text", {
     x: idxX + 195, y: idxY + 110, "text-anchor": "middle",
     "font-size": 10.5, "font-weight": 700, fill: "var(--svg-token-ink)"
   });
-  internalTxt.textContent = "INTERNAL: country ranges";
+  internalTxt.textContent = "internal page: country ranges";
   svg.appendChild(internalTxt);
 
-  var edge1 = anim.svgEl("line", {
+  svg.appendChild(anim.svgEl("line", {
     x1: idxX + 195, y1: idxY + 52, x2: idxX + 195, y2: idxY + 86,
     stroke: "var(--svg-node-stroke)", "stroke-width": 2
-  });
-  svg.appendChild(edge1);
+  }));
 
   var leafRect = anim.svgEl("rect", {
-    x: idxX + 24, y: idxY + 150, width: idxW - 48, height: 178, rx: 7, ry: 7,
-    fill: "var(--svg-token-soft)", stroke: "var(--svg-token-soft)", "stroke-width": 1.5
+    x: idxX + 24, y: idxY + 150, width: idxW - 48, height: 192, rx: 7, ry: 7,
+    fill: "var(--svg-node-bg)", stroke: "var(--svg-node-stroke)", "stroke-width": 1.5
   });
   svg.appendChild(leafRect);
   var leafLbl = anim.svgEl("text", {
-    x: idxX + 30, y: idxY + 172, "font-size": 11, "font-weight": 700, fill: "var(--svg-token-ink)"
+    x: idxX + 30, y: idxY + 170, "font-size": 11, "font-weight": 700, fill: "var(--svg-token-ink)"
   });
-  leafLbl.textContent = "LEAF RANGE: country='US' entries -> row-id pointers";
+  leafLbl.textContent = "leaf pages: entries (country, id) in key order";
   svg.appendChild(leafLbl);
 
-  var edge2 = anim.svgEl("line", {
+  svg.appendChild(anim.svgEl("line", {
     x1: idxX + 195, y1: idxY + 124, x2: idxX + 195, y2: idxY + 150,
     stroke: "var(--svg-node-stroke)", "stroke-width": 2
-  });
-  svg.appendChild(edge2);
+  }));
 
   var token = anim.svgEl("rect", {
     x: idxX + 34, y: idxY + 16, width: 72, height: 24, rx: 12, ry: 12,
@@ -129,36 +144,49 @@ function buildStage() {
 
   var rows = [];
   var fetched = [];
-  for (var i = 0; i < INDEX_KEYS.length; i++) {
-    var y = idxY + 184 + i * 26;
+  var entryStep = 22;
+  for (var i = 0; i <= INDEX_KEYS.length; i++) {
+    var isNext = (i === INDEX_KEYS.length);
+    var data = isNext ? NEXT_KEY : INDEX_KEYS[i];
+    var y = idxY + 180 + i * entryStep;
     var r = anim.svgEl("rect", {
-      x: idxX + 34, y: y, width: idxW - 72, height: 20, rx: 5, ry: 5,
+      x: idxX + 34, y: y, width: idxW - 72, height: 18, rx: 5, ry: 5,
       fill: "var(--svg-token-soft)", stroke: "var(--svg-token-soft)", "stroke-width": 1
     });
     svg.appendChild(r);
     var t = anim.svgEl("text", {
-      x: idxX + 42, y: y + 14, "font-size": 10, "font-weight": 600, fill: "var(--svg-token-ink)"
+      x: idxX + 42, y: y + 13, "font-size": 10, "font-weight": 600,
+      fill: isNext ? "var(--svg-ink-muted)" : "var(--svg-token-ink)"
     });
-    t.textContent = "country=US -> row_id=" + INDEX_KEYS[i].rid + " (" + INDEX_KEYS[i].name + ")";
+    t.textContent = "country=" + data.key + ", id=" + data.id +
+      (isNext ? "   (the next country)" : "");
     svg.appendChild(t);
-    rows.push({bg: r, txt: t, data: INDEX_KEYS[i], y: y});
-
-    var out = anim.svgEl("text", {
-      x: tblX + 14, y: tblY + 70 + i * 34, "font-size": 11, "font-weight": 600, fill: "var(--svg-build-ink)"
+    var mark = anim.svgEl("text", {
+      x: idxX + idxW - 46, y: y + 13, "text-anchor": "end",
+      "font-size": 10, "font-weight": 700, fill: "var(--svg-ok)"
     });
-    out.textContent = "";
-    svg.appendChild(out);
-    fetched.push(out);
+    mark.textContent = "";
+    svg.appendChild(mark);
+    rows.push({bg: r, txt: t, mark: mark, data: data, y: y, isNext: isNext});
+
+    if (!isNext) {
+      var out = anim.svgEl("text", {
+        x: tblX + 14, y: tblY + 70 + i * 34, "font-size": 11, "font-weight": 600, fill: "var(--svg-build-ink)"
+      });
+      out.textContent = "";
+      svg.appendChild(out);
+      fetched.push(out);
+    }
   }
 
   var tableHdr = anim.svgEl("text", {
     x: tblX + 14, y: tblY + 36, "font-size": 11, "font-weight": 700, fill: "var(--svg-build-ink)"
   });
-  tableHdr.textContent = "Fetched base rows:";
+  tableHdr.textContent = "Each id is a lookup from the root page to a leaf page:";
   svg.appendChild(tableHdr);
 
   var probeDot = anim.svgEl("circle", {
-    cx: splitX, cy: idxY + 220, r: 5.5, fill: "var(--svg-build)", stroke: "var(--svg-build)",
+    cx: 420, cy: idxY + 220, r: 5.5, fill: "var(--svg-build)", stroke: "var(--svg-build)",
     "stroke-width": 1.5, opacity: 0
   });
   svg.appendChild(probeDot);
@@ -174,6 +202,7 @@ function buildStage() {
     svg: svg,
     rows: rows,
     fetched: fetched,
+    tableHdr: tableHdr,
     status: status,
     token: token,
     tokenTxt: tokenTxt,
@@ -193,11 +222,17 @@ function resetStage() {
   for (var i = 0; i < stage.rows.length; i++) {
     stage.rows[i].bg.setAttribute("fill", "var(--svg-token-soft)");
     stage.rows[i].bg.setAttribute("stroke", "var(--svg-token-soft)");
-    stage.fetched[i].textContent = "";
+    stage.rows[i].mark.textContent = "";
   }
-  stage.nodes.root.setAttribute("fill", "var(--svg-token-soft)");
-  stage.nodes.internal.setAttribute("fill", "var(--svg-token-soft)");
-  stage.nodes.leaf.setAttribute("fill", "var(--svg-token-soft)");
+  for (var j = 0; j < stage.fetched.length; j++) stage.fetched[j].textContent = "";
+  var nodes = [stage.nodes.root, stage.nodes.internal, stage.nodes.leaf];
+  for (var k = 0; k < nodes.length; k++) {
+    nodes[k].setAttribute("fill", "var(--svg-node-bg)");
+    nodes[k].setAttribute("stroke", "var(--svg-node-stroke)");
+  }
+  stage.tableHdr.textContent = isCovering()
+    ? "Covering: id and country come from the index, no lookups here"
+    : "Each id is a lookup from the root page to a leaf page:";
   stage.token.setAttribute("x", stage.idxX + 34);
   stage.token.setAttribute("y", 58);
   stage.token.setAttribute("opacity", 0.96);
@@ -209,18 +244,35 @@ function resetStage() {
   stage.status.textContent = "";
 }
 
+// The page the token just reached turns yellow; the one it left keeps the
+// visited orange, as in the btree lesson.
+function arrive(node, prevNode) {
+  if (prevNode) {
+    prevNode.setAttribute("fill", "var(--svg-token-soft)");
+    prevNode.setAttribute("stroke", "var(--svg-token)");
+  }
+  node.setAttribute("fill", "var(--svg-highlight)");
+  node.setAttribute("stroke", "var(--svg-highlight-stroke)");
+  anim.pulse(node, 3, 1.5, 360);
+}
+
 function buildTimeline() {
   resetStage();
   var tl = anim.timeline();
   var phase = document.getElementById("phase-label");
   var c = teachRuntime.readControls();
-  var covering = !!c.covering;
-  var n = Math.max(1, Math.min(stage.rows.length, Math.floor((c.selectivity / 100) * stage.rows.length)));
+  var covering = isCovering();
+  var cost = lookupCost(c.rows, c.selectivity, covering);
+  var drawn = INDEX_KEYS.length;
+  var scale = fmtFull(cost.matches) + " of " + fmtFull(cost.rows) +
+    " users match at " + c.selectivity + "%";
 
+  // ---------- Descend idx_users_country: one step per page read ----------
   tl.mark("Descend B+tree");
+  tl.beat("root");
   tl.call(function() {
-    phase.textContent = "Phase 1/3 — descend B+tree: root -> internal -> matching leaf range";
-    stage.status.textContent = "Lookup token starts at the root page.";
+    phase.textContent = "idx_users_country, page read 1: root page, picks the child whose key range holds 'US'";
+    stage.status.textContent = "Looking for country = 'US' in idx_users_country.";
   });
   tl.add({
     from: stage.idxX + 34, to: stage.idxX + 158, duration: 360, ease: anim.easeInOutCubic,
@@ -228,10 +280,13 @@ function buildTimeline() {
       stage.token.setAttribute("x", x);
       stage.tokenTxt.setAttribute("x", x + 36);
     },
-    onComplete: function() {
-      stage.nodes.root.setAttribute("fill", "var(--svg-token-soft)");
-      stage.status.textContent = "Root page chooses child pointer for country='US'.";
-    }
+    onComplete: function() { arrive(stage.nodes.root, null); }
+  });
+  tl.delay(160);
+
+  tl.beat("internal");
+  tl.call(function() {
+    phase.textContent = "idx_users_country, page read 2: internal page, narrows to the key range that holds 'US'";
   });
   tl.add({
     from: 58, to: 126, duration: 360, ease: anim.easeInOutCubic,
@@ -239,97 +294,112 @@ function buildTimeline() {
       stage.token.setAttribute("y", y);
       stage.tokenTxt.setAttribute("y", y + 16);
     },
-    onComplete: function() {
-      stage.nodes.internal.setAttribute("fill", "var(--svg-token-soft)");
-      stage.status.textContent = "Internal page narrows to the US key range.";
-    }
+    onComplete: function() { arrive(stage.nodes.internal, stage.nodes.root); }
+  });
+  tl.delay(160);
+
+  tl.beat("leaf");
+  tl.call(function() {
+    phase.textContent = "idx_users_country, page read 3: leaf page, first entry with country = 'US' is (US, id 102)";
   });
   tl.add({
-    from: 126, to: 206, duration: 380, ease: anim.easeInOutCubic,
+    from: 126, to: 170, duration: 380, ease: anim.easeInOutCubic,
     onUpdate: function(y) {
       stage.token.setAttribute("y", y);
       stage.tokenTxt.setAttribute("y", y + 16);
     },
     onComplete: function() {
-      stage.nodes.leaf.setAttribute("fill", "var(--svg-group-soft)");
-      stage.status.textContent = "Reached leaf level: now scan contiguous US entries.";
+      arrive(stage.nodes.leaf, stage.nodes.internal);
+      stage.status.textContent = "The 'US' entries sit next to each other, ordered by id.";
     }
   });
+  tl.delay(200);
 
-  tl.mark("Scan leaf range");
-  tl.call(function() {
-    phase.textContent = "Phase 2/3 — scan matching leaf entries and collect row-id pointers";
-  });
-  for (var i = 0; i < n; i++) {
+  // ---------- Read each 'US' entry; non-covering looks the row up ----------
+  tl.mark("Read matching entries");
+  for (var i = 0; i < drawn; i++) {
     (function(idx) {
+      var row = stage.rows[idx];
+      var d = row.data;
+      tl.beat(covering ? "row-covered" : "row");
       tl.call(function() {
-        stage.rows[idx].bg.setAttribute("fill", "var(--svg-token-soft)");
-        stage.rows[idx].bg.setAttribute("stroke", "var(--svg-token)");
-        stage.status.textContent = "Leaf hit " + (idx + 1) + "/" + n + ": row_id=" + stage.rows[idx].data.rid + " collected";
+        if (idx === 0) {
+          stage.nodes.leaf.setAttribute("fill", "var(--svg-token-soft)");
+          stage.nodes.leaf.setAttribute("stroke", "var(--svg-token)");
+        } else {
+          var before = stage.rows[idx - 1];
+          before.bg.setAttribute("fill", "var(--svg-ok-soft)");
+          before.bg.setAttribute("stroke", "var(--svg-ok)");
+        }
+        row.bg.setAttribute("fill", "var(--svg-highlight)");
+        row.bg.setAttribute("stroke", "var(--svg-token)");
+        phase.textContent = covering
+          ? "Entry " + (idx + 1) + " of " + drawn + " drawn: (US, id " + d.id +
+            ") already holds id and country, so the row is sent from the index"
+          : "Entry " + (idx + 1) + " of " + drawn + " drawn: (US, id " + d.id +
+            ") lacks name, so InnoDB looks id " + d.id + " up in the clustered index";
       });
-      tl.delay(260);
-    })(i);
-  }
-
-  tl.mark("Follow row-id to table");
-  tl.call(function() {
-    phase.textContent = covering
-      ? "Phase 3/3 — covering index: skip clustered table fetches"
-      : "Phase 3/3 — follow each row-id to clustered table rows";
-  });
-
-  if (!covering) {
-    for (var j = 0; j < n; j++) {
-      (function(ix) {
-        var rowY = stage.rows[ix].y + 10;
-        var outY = stage.tblY + 64 + ix * 34;
+      if (!covering) {
+        var rowY = row.y + 9;
+        var outY = stage.tblY + 64 + idx * 34;
         tl.call(function() {
           stage.probeDot.setAttribute("opacity", 0.95);
           stage.probeDot.setAttribute("cx", 402);
           stage.probeDot.setAttribute("cy", rowY);
         });
         tl.add({
-          from: 402, to: 446, duration: 180, ease: anim.easeInOutCubic,
-          onUpdate: function(x) {
-            stage.probeDot.setAttribute("cx", x);
-          }
+          from: 402, to: 446, duration: 200, ease: anim.easeInOutCubic,
+          onUpdate: function(x) { stage.probeDot.setAttribute("cx", x); }
         });
         tl.add({
-          from: rowY, to: outY, duration: 220, ease: anim.easeInOutCubic,
-          onUpdate: function(y) {
-            stage.probeDot.setAttribute("cy", y);
-          },
+          from: rowY, to: outY, duration: 260, ease: anim.easeInOutCubic,
+          onUpdate: function(y) { stage.probeDot.setAttribute("cy", y); },
           onComplete: function() {
-            var d = stage.rows[ix].data;
-            stage.fetched[ix].textContent = "row_id=" + d.rid + " -> " + d.name + " (" + d.city + ")";
-            stage.status.textContent = "Fetched row_id=" + d.rid + " from clustered table";
+            stage.fetched[idx].textContent = "id " + d.id + " → " + d.name + ", " + d.city;
             stage.probeDot.setAttribute("opacity", 0);
           }
         });
-        tl.delay(120);
-      })(j);
-    }
-  } else {
-    tl.call(function() {
-      stage.status.textContent = "Covering lookup: all needed columns are in leaf entries, so row-id fetches are skipped.";
-    });
-    tl.delay(520);
+      } else {
+        tl.delay(260);
+      }
+      tl.call(function() {
+        row.mark.textContent = "sent ✓";
+        stage.status.textContent = covering
+          ? (idx + 1) + " of " + drawn + " drawn entries sent from the index, 0 clustered index lookups"
+          : (idx + 1) + " of " + drawn + " drawn entries read, " + (idx + 1) + " clustered index lookups";
+      });
+      tl.delay(200);
+    })(i);
   }
 
-  tl.mark("Done");
+  // ---------- The next entry has another key: stop ----------
+  tl.beat("stop");
+  tl.mark("Stop at the next key");
   tl.call(function() {
-    phase.textContent = "Done — one key value can map to many row-id pointers";
+    var last = stage.rows[drawn - 1];
+    last.bg.setAttribute("fill", "var(--svg-ok-soft)");
+    last.bg.setAttribute("stroke", "var(--svg-ok)");
+    var next = stage.rows[drawn];
+    next.bg.setAttribute("fill", "var(--svg-node-muted)");
+    next.bg.setAttribute("stroke", "var(--svg-node-stroke)");
+    next.mark.textContent = "stop";
+    next.mark.setAttribute("fill", "var(--svg-ink-muted)");
+    phase.textContent = "✓ The next entry is (UY, id 15): country is no longer 'US', so the lookup ends. " +
+      "At this table's size " + scale + ": " +
+      (covering ? "0 clustered index lookups."
+                : fmtFull(cost.matches) + " clustered index lookups, one per entry.");
     stage.status.textContent = covering
-      ? "Final: B+tree descent + leaf scan only (covering path)."
-      : "Final: B+tree descent + leaf scan + clustered row fetches.";
+      ? "Done: descent + leaf entries only (covering)."
+      : "Done: descent + leaf entries + one clustered index lookup per entry.";
   });
+  tl.delay(300);
   return tl;
 }
 
 function buildCurrentTimeline() { return buildTimeline(); }
 function resetAnim() {
   resetStage();
-  document.getElementById("phase-label").textContent = "Ready — press Play";
+  document.getElementById("phase-label").textContent = "Ready: press Next step, or Play to run it all";
 }
 
 function renderChart(selectivityPct, currentRows) {
@@ -355,17 +425,24 @@ function renderChart(selectivityPct, currentRows) {
 
 function recompute() {
   var c = teachRuntime.readControls();
-  var cost = lookupCost(c.rows, c.selectivity, !!c.covering);
-  document.getElementById("out-height").textContent = String(cost.treeHeight);
-  document.getElementById("out-descent").textContent = teachRuntime.formatInt(cost.descentReads);
-  document.getElementById("out-match").textContent = teachRuntime.formatInt(cost.matches);
+  // The select's value is the text "true" or "false"; "false" is a
+  // non-empty string, so it must be compared, not cast to a boolean.
+  var covering = isCovering();
+  var cost = lookupCost(c.rows, c.selectivity, covering);
+  document.getElementById("out-height").textContent = cost.treeHeight + " levels";
+  document.getElementById("out-descent").textContent = teachRuntime.formatInt(cost.descentReads) + " pages";
+  document.getElementById("out-match").textContent = teachRuntime.formatInt(cost.matches) + " entries";
   document.getElementById("out-index").textContent = teachRuntime.formatInt(cost.indexReads);
   document.getElementById("out-fetch").textContent = teachRuntime.formatInt(cost.rowFetches);
   document.getElementById("out-total").textContent = teachRuntime.formatInt(cost.totalReads);
   document.getElementById("out-explanation").textContent = cost.covering
-    ? "Covering non-unique lookup: the engine descends the B+tree and scans matching leaf entries, then returns rows directly from index payload."
-    : "Non-unique lookup descends the B+tree, scans " + teachRuntime.formatInt(cost.matches) +
-      " matching leaf entries, then follows each row-id pointer to fetch clustered rows (double-touch path).";
+    ? "Covering non-unique lookup: InnoDB descends idx_users_country, reads the " +
+      teachRuntime.formatInt(cost.matches) + " matching entries and returns id and country straight from them."
+    : "Non-unique lookup: InnoDB descends idx_users_country, reads the " + teachRuntime.formatInt(cost.matches) +
+      " matching entries and, for each one, looks its id up in the clustered index to get name: " +
+      teachRuntime.formatInt(cost.matches) + " lookups, each one from the root page to a leaf page.";
+  var sql = document.querySelector(".query-sql");
+  if (sql) sql.textContent = covering ? QUERY_SQL.covering : QUERY_SQL.noncovering;
   buildStage();
   resetStage();
   renderChart(c.selectivity, c.rows);

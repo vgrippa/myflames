@@ -5,7 +5,7 @@ var INNODB_PAGE_SIZE_DEFAULT = %d;
 // Log-scale row counts aligned with the btree lesson's ROW_SCALE.
 var ROW_SCALE = [1000, 10000, 100000, 1000000, 10000000, 100000000, 1000000000];
 
-// ---- cost model (mirrors btree.py, specialised to single-row lookup) ----
+// ---- cost model (mirrors btree.js, specialised to a single-row lookup) ----
 function innodbFanout(keySize, pageSize) {
   var usable = pageSize - INNODB_PAGE_OVERHEAD_BYTES;
   var entry = keySize + INNODB_CHILD_POINTER_BYTES;
@@ -17,55 +17,73 @@ function innodbTreeHeight(rows, fanOut) {
   return Math.max(2, Math.ceil(Math.log(rows) / Math.log(fanOut)));
 }
 function uniqueLookupCost(rows, covering) {
-  // Key size fixed at 8 B (BIGINT PK / UNIQUE INT) — this lesson is about
-  // the unique-lookup flow, not the fan-out knob that btree.py already
-  // teaches. Page size is InnoDB default 16 KiB.
+  // Key size fixed at 8 B, page size at the InnoDB default 16 KiB: this
+  // lesson is about the unique lookup, not the fan-out knob btree teaches.
+  // Both trees get the same height here, as in the btree lesson.
   var fanOut = innodbFanout(8, INNODB_PAGE_SIZE_DEFAULT);
   var height = innodbTreeHeight(rows, fanOut);
   var indexReads = height;
-  var rowFetches = covering ? 0 : 1;
-  var total = indexReads + rowFetches;
+  // A non-covering lookup walks the clustered index again from its root
+  // page with the primary key the unique record holds.
+  var clusteredReads = covering ? 0 : height;
+  var total = indexReads + clusteredReads;
   var explanation = covering
-    ? "Covering unique lookup: one descent of " + height + " levels. Every column the query asked for is already in the unique-index leaf — no clustered-tree visit."
-    : "Non-covering unique lookup: " + height + " levels on the unique index, then one clustered-row fetch using the PK stored in the unique leaf. " + (height + 1) + " pages total.";
+    ? "Covering unique lookup: " + height + " page reads in uq_users_email, root page to leaf page. " +
+      "The leaf record holds email and id, every column SELECT id, email asks for, so the clustered index is never read."
+    : "Non-covering unique lookup: " + height + " page reads in uq_users_email to find the one record, then " +
+      height + " more in the clustered index, from its root page to the leaf page with id 42, to get first_name. " +
+      total + " page reads in total.";
   return {
     fanOut: fanOut,
     height: height,
     indexReads: indexReads,
-    rowFetches: rowFetches,
+    clusteredReads: clusteredReads,
     total: total,
     explanation: explanation
   };
 }
 
+// The query the stage runs, for each choice of the Covering input.
+var QUERY_SQL = {
+  noncovering:
+    "-- Single-row lookup on a UNIQUE secondary index\n" +
+    "SELECT id, email, first_name\n" +
+    "FROM   users\n" +
+    "WHERE  email = 'alice@example.com';   -- uq_users_email: UNIQUE (email)",
+  covering:
+    "-- Single-row lookup on a UNIQUE secondary index\n" +
+    "SELECT id, email\n" +
+    "FROM   users\n" +
+    "WHERE  email = 'alice@example.com';   -- uq_users_email holds (email, id)"
+};
+
 // ---- concrete labels on the lookup path ----
-// The unique index for this lesson is uq_users_id; the token is looking
-// for id=42, which matches at most ONE leaf entry.
+// uq_users_email is UNIQUE (email); its leaf records hold (email, id). The
+// token looks for alice@example.com, which at most ONE record can hold.
 var PATH_LABELS_UNIQ = [
-  "keys 1..1M",
-  "keys 1..100K",
-  "keys 30..50",
-  "id = 42"
+  "keys a..z",
+  "keys a..f",
+  "keys al..an",
+  "PK = 42"
 ];
 var PATH_LABELS_CLUS = [
-  "keys 1..1M",
+  "keys 1..500K",
   "keys 1..100K",
   "keys 30..50",
   "#42 alice@ex"
 ];
 
-function getUniqLabel(levelIdx, levelsShown) {
+function getPathLabel(treeIdx, levelIdx, levelsShown, covering) {
   var isLeaf = (levelIdx === levelsShown - 1);
-  if (isLeaf) return "id = 42";
-  return PATH_LABELS_UNIQ[Math.min(levelIdx, PATH_LABELS_UNIQ.length - 1)];
-}
-function getClusLabel(levelIdx, levelsShown) {
-  var isLeaf = (levelIdx === levelsShown - 1);
+  if (treeIdx === 0) {
+    if (isLeaf) return covering ? "alice@ex #42" : "PK = 42";
+    return PATH_LABELS_UNIQ[Math.min(levelIdx, PATH_LABELS_UNIQ.length - 1)];
+  }
   if (isLeaf) return "#42 alice@ex";
   return PATH_LABELS_CLUS[Math.min(levelIdx, PATH_LABELS_CLUS.length - 1)];
 }
 
-// ---- tree rendering (adapted from btree.py) -------------------------------
+// ---- tree rendering (same geometry as btree.js) -------------------------
 var W = 800, H = 400;
 var treeState = {
   height: 3, traversals: 1, nodes: [[],[]], token: null,
@@ -111,8 +129,8 @@ function buildTrees(height, traversals) {
   svg.appendChild(globalDefs);
 
   var treeNames = (traversals === 2)
-    ? ["Unique B+tree — uq_users_id", "Clustered B+tree — users (PK)"]
-    : ["Unique B+tree — uq_users_id (covering)"];
+    ? ["Unique B+tree — uq_users_email", "Clustered B+tree — users (PK)"]
+    : ["Unique B+tree — uq_users_email (covering)"];
 
   for (var t = 0; t < traversals; t++) {
     var ox = t * treeWidth;
@@ -167,7 +185,7 @@ function buildTrees(height, traversals) {
     }
     treeState.edges[t] = treeEdges;
 
-    // Pass 3: node rectangles and labels on top.
+    // Pass 3: page rectangles and labels on top.
     for (var lv3 = 0; lv3 < levels; lv3++) {
       for (var n3 = 0; n3 < treeNodes[lv3].length; n3++) {
         var nd = treeNodes[lv3][n3];
@@ -180,7 +198,7 @@ function buildTrees(height, traversals) {
           x: nd.cx, y: nd.cy - 2, "text-anchor": "middle",
           "font-size": 9, "font-weight": 600, fill: "var(--svg-ink-muted)"
         });
-        lvLbl.textContent = (lv3 === 0) ? "root" : (lv3 === levels - 1 ? "leaf" : "L" + lv3);
+        lvLbl.textContent = (lv3 === 0) ? "root" : (lv3 === levels - 1 ? "leaf" : "internal");
         svg.appendChild(lvLbl);
         var dataLbl = anim.svgEl("text", {
           x: nd.cx, y: nd.cy + 10, "text-anchor": "middle",
@@ -204,7 +222,7 @@ function buildTrees(height, traversals) {
     }
   }
 
-  // ---- PK-hop dashed arrow (non-covering only) ----
+  // ---- PK link: dashed arrow from the unique leaf to the clustered leaf ----
   treeState.pkLink = null;
   treeState.pkLinkLabel = null;
   if (traversals === 2) {
@@ -246,29 +264,28 @@ function buildTrees(height, traversals) {
         "font-size": 11, "font-weight": 700, fill: "var(--svg-hop)",
         opacity: 0
       });
-      pkLabel.textContent = "PK=42 → clustered row";
+      pkLabel.textContent = "PK=42 → clustered leaf";
       svg.appendChild(pkLabel);
       treeState.pkLinkLabel = pkLabel;
     }
   }
 
-  // ---- UNIQUE chip near the unique-index leaf ----
+  // ---- UNIQUE chip under the unique-index leaf ----
   var uniqLeaf = treeState.nodes[0][levels - 1].find(function(n) { return n.onPath; });
   if (uniqLeaf) {
-    var chipX = uniqLeaf.x - 6;
-    var chipY = uniqLeaf.y + NODE_H + 8;
     var chipW = 150, chipH = 22;
-    // Keep the chip on-screen: if it would overflow the left edge, shift right.
-    if (chipX < 6) chipX = 6;
-    // If it would overflow the right edge of this tree's column, shift left.
+    var chipX = uniqLeaf.cx - chipW / 2;
+    var chipY = uniqLeaf.y + NODE_H + 10;
+    // Keep the chip inside this tree's column.
+    var treeLeft = 6;
     var treeRight = (traversals === 2) ? (W / 2) - 6 : W - 6;
-    if (chipX + chipW > treeRight) chipX = Math.max(6, treeRight - chipW);
+    if (chipX < treeLeft) chipX = treeLeft;
+    if (chipX + chipW > treeRight) chipX = Math.max(treeLeft, treeRight - chipW);
     var chipGroup = anim.svgEl("g", {opacity: 0});
-    var chipRect = anim.svgEl("rect", {
+    chipGroup.appendChild(anim.svgEl("rect", {
       x: chipX, y: chipY, width: chipW, height: chipH, rx: 11, ry: 11,
       fill: "var(--svg-probe-soft)", stroke: "var(--svg-probe)", "stroke-width": 1.2
-    });
-    chipGroup.appendChild(chipRect);
+    }));
     var chipText = anim.svgEl("text", {
       x: chipX + chipW / 2, y: chipY + 15, "text-anchor": "middle",
       "font-size": 10, "font-weight": 700, fill: "var(--svg-probe)"
@@ -279,17 +296,17 @@ function buildTrees(height, traversals) {
     treeState.uniqueChip = chipGroup;
   }
 
-  // ---- Covering badge on the unique-index leaf (only when traversals===1) ----
+  // ---- Index-only badge above the unique leaf (covering only) ----
   if (traversals === 1 && uniqLeaf) {
-    var badgeX = uniqLeaf.x + 6;
-    var badgeY = uniqLeaf.y - 22;
     var badgeW = 78, badgeH = 16;
+    // Beside the leaf, clear of the edge that comes down into it.
+    var badgeX = uniqLeaf.x + NODE_W + 8;
+    var badgeY = uniqLeaf.cy - badgeH / 2;
     var badgeGroup = anim.svgEl("g", {opacity: 0});
-    var badgeRect = anim.svgEl("rect", {
+    badgeGroup.appendChild(anim.svgEl("rect", {
       x: badgeX, y: badgeY, width: badgeW, height: badgeH, rx: 8, ry: 8,
       fill: "var(--svg-ok-soft)", stroke: "var(--svg-ok)", "stroke-width": 1.2
-    });
-    badgeGroup.appendChild(badgeRect);
+    }));
     var badgeText = anim.svgEl("text", {
       x: badgeX + badgeW / 2, y: badgeY + 11, "text-anchor": "middle",
       "font-size": 9, "font-weight": 700, fill: "var(--svg-ok)"
@@ -300,7 +317,7 @@ function buildTrees(height, traversals) {
     treeState.coveringBadge = badgeGroup;
   }
 
-  // ---- Query token (red diamond) ----
+  // ---- Query token (red diamond) with its trailing label ----
   var token = anim.svgEl("polygon", {
     points: "0,-9 9,0 0,9 -9,0",
     fill: "var(--svg-danger)", stroke: "var(--svg-danger)", "stroke-width": 1.5,
@@ -314,7 +331,7 @@ function buildTrees(height, traversals) {
     "font-size": 8, "font-weight": 700, fill: "var(--svg-ink)",
     opacity: 0
   });
-  tokenLabel.textContent = "looking for id=42";
+  tokenLabel.textContent = "looking for email=alice@…";
   svg.appendChild(tokenLabel);
   treeState.tokenLabel = tokenLabel;
 }
@@ -327,7 +344,7 @@ function resetTreeColors() {
         lvlNodes[n].rect.setAttribute("fill", "var(--svg-node-bg)");
         lvlNodes[n].rect.setAttribute("stroke", "var(--svg-node-stroke)");
         lvlNodes[n].rect.setAttribute("stroke-width", 1);
-        var orig = (lv === 0) ? "root" : (lv === treeState.nodes[t].length - 1 ? "leaf" : "L" + lv);
+        var orig = (lv === 0) ? "root" : (lv === treeState.nodes[t].length - 1 ? "leaf" : "internal");
         lvlNodes[n].label.textContent = orig;
         lvlNodes[n].label.setAttribute("fill", "var(--svg-ink-muted)");
         lvlNodes[n].label.setAttribute("font-weight", 600);
@@ -373,20 +390,37 @@ function buildDescentTimeline() {
   var levelsShown = Math.min(treeState.height, 4);
   var phaseLabel = document.getElementById("phase-label");
   var covering = (treeState.traversals === 1);
+  var totalReads = levelsShown * treeState.traversals;
 
-  function addTreeDescent(treeIdx, fadeInFromAbove) {
+  // Guided steps: one per page read, plus the UNIQUE stop, the PK hop and
+  // the end. Kinds name the simplified-code lines (GUIDE in unique_lookup.py).
+  var BEAT_KINDS = {
+    unique: ["root", "internal", "leaf"],
+    clustered: ["clus-root", "clus-internal", "clus-leaf"]
+  };
+  function beatKind(treeIdx, levelIdx, isLeaf) {
+    var kinds = treeIdx === 0 ? BEAT_KINDS.unique : BEAT_KINDS.clustered;
+    return kinds[levelIdx === 0 ? 0 : (isLeaf ? 2 : 1)];
+  }
+  function treeName(treeIdx) {
+    if (treeIdx === 0) return covering ? "uq_users_email (unique, covering)" : "uq_users_email (unique)";
+    return "users PK (clustered)";
+  }
+
+  // Walk one tree root page -> leaf page, pulsing each page on arrival.
+  // The clustered walk starts its first step before the token moves there.
+  function addTreeDescent(treeIdx, fadeInFromAbove, rootStepStarted) {
+    if (!rootStepStarted) tl.beat(beatKind(treeIdx, 0, false));
     tl.call(function() {
       var rootNode = treeState.nodes[treeIdx][0].find(function(n) { return n.onPath; });
       if (fadeInFromAbove && rootNode) {
         token.setAttribute("transform", "translate(" + rootNode.cx + "," + (rootNode.cy - 40) + ")");
         token.setAttribute("opacity", 0);
       }
-      tokenLabel.textContent = (treeIdx === 0) ? "looking for id=42" : "fetching row for id=42";
-      if (treeIdx === 0) {
-        phaseLabel.textContent = "Phase 1/2 — descending uq_users_id for WHERE id = 42 (UNIQUE — at most 1 row)";
-      } else {
-        phaseLabel.textContent = "Phase 2/2 — fetching clustered row #42 by PK";
-      }
+      tokenLabel.textContent = (treeIdx === 0) ? "looking for email=alice@…" : "looking for id=42";
+      phaseLabel.textContent = (treeIdx === 0)
+        ? "Walking uq_users_email (unique) for WHERE email = 'alice@example.com'"
+        : "Walking users PK (clustered) using PK=42 from the unique leaf";
     });
     if (fadeInFromAbove) {
       tl.add({
@@ -403,24 +437,30 @@ function buildDescentTimeline() {
         var activeNode = treeState.nodes[treeIdx][levelIdx].find(function(n) { return n.onPath; });
         if (!activeNode) return;
         var isLeaf = (levelIdx === levelsShown - 1);
-        var labelFn = (treeIdx === 0) ? getUniqLabel : getClusLabel;
-        var nodeDataLabel = labelFn(levelIdx, levelsShown);
+        var nodeDataLabel = getPathLabel(treeIdx, levelIdx, levelsShown, covering);
+        var captionData = (treeIdx === 0 && isLeaf)
+          ? "the record (alice@example.com, id 42)"
+          : nodeDataLabel;
+        if (levelIdx > 0) tl.beat(beatKind(treeIdx, levelIdx, isLeaf));
         tl.call(function() {
-          var which = covering
-            ? "uq_users_id (covering)"
-            : (treeIdx === 0 ? "uq_users_id" : "users PK (clustered)");
-          phaseLabel.textContent = which + " — " +
-            (levelIdx === 0 ? "root" : (isLeaf ? "leaf" : "level " + levelIdx)) +
-            " — " + nodeDataLabel;
+          // Number each page read while the whole tree is drawn.
+          var pageName = levelIdx === 0 ? "root page" : (isLeaf ? "leaf page" : "internal page");
+          var read = treeState.height <= levelsShown
+            ? "page read " + (treeIdx * levelsShown + levelIdx + 1) + " of " + totalReads + ": "
+            : "";
+          phaseLabel.textContent = treeName(treeIdx) + ", " + read + pageName + ", " + captionData;
         });
 
         var currentPos;
+        var prev = null;
         if (levelIdx === 0) {
           currentPos = { x: activeNode.cx, y: activeNode.cy - 40 };
         } else {
-          var prev = treeState.nodes[treeIdx][levelIdx - 1].find(function(n) { return n.onPath; });
+          prev = treeState.nodes[treeIdx][levelIdx - 1].find(function(n) { return n.onPath; });
           currentPos = { x: prev.cx, y: prev.cy };
         }
+        // Entering the clustered root over the PK link: the token is
+        // already there, so skip the jump from above.
         var skipStart = (levelIdx === 0 && !fadeInFromAbove);
         tl.add({
           from: skipStart ? { x: activeNode.cx, y: activeNode.cy } : currentPos,
@@ -428,6 +468,10 @@ function buildDescentTimeline() {
           duration: skipStart ? 160 : 480,
           ease: anim.easeInOutCubic,
           onUpdate: function(p) {
+            if (prev) {
+              prev.rect.setAttribute("fill", "var(--svg-token-soft)");
+              prev.rect.setAttribute("stroke", "var(--svg-token)");
+            }
             token.setAttribute("transform", "translate(" + p.x + "," + p.y + ")");
             tokenLabel.setAttribute("x", p.x);
             tokenLabel.setAttribute("y", p.y + 16);
@@ -455,37 +499,39 @@ function buildDescentTimeline() {
     }
   }
 
-  // ---------- Phase 1: traverse index ----------
-  tl.mark("Traverse index");
+  // ---------- Walk the unique index ----------
+  tl.mark("Descend uq_users_email");
   addTreeDescent(0, true);
 
-  // Reveal the UNIQUE chip on arrival at the unique leaf.
+  // ---------- UNIQUE: one record, no next-record check ----------
+  tl.beat("unique");
+  tl.mark("UNIQUE: stop at one record");
+  tl.call(function() {
+    phaseLabel.textContent = "UNIQUE: no other record can hold alice@example.com, so the lookup stops at this one (no range scan, no next-record check)";
+  });
   tl.add({
     from: 0, to: 1, duration: 280, ease: anim.easeOutCubic,
     onUpdate: function(v) {
       if (treeState.uniqueChip) treeState.uniqueChip.setAttribute("opacity", v);
     }
   });
-  tl.call(function() {
-    phaseLabel.textContent = "Unique leaf reached — at most 1 row can match id=42 (no range scan)";
-  });
   tl.delay(260);
 
   if (covering) {
-    // ---------- Phase 2 (covering): Index-only stop ----------
-    tl.mark("Covering — stop at leaf");
+    // ---------- Covering: the record has every column ----------
+    tl.beat("covered");
+    tl.mark("Covering: stop at the leaf");
     tl.call(function() {
-      phaseLabel.textContent = "Phase 2/2 — covering index holds every column the query needs — NO clustered fetch";
+      phaseLabel.textContent = "uq_users_email holds (email, id), every column SELECT id, email asks for, so the clustered index is never read";
     });
-    // Reveal the Index-only badge with a gentle overshoot so it feels
-    // like a piece of evidence arriving.
+    // The Index-only badge arrives with a gentle overshoot: the one
+    // follow-through moment of this lesson.
     tl.add({
       from: 0, to: 1, duration: 420, ease: anim.easeOutBack,
       onUpdate: function(v) {
-        if (treeState.coveringBadge) treeState.coveringBadge.setAttribute("opacity", v);
+        if (treeState.coveringBadge) treeState.coveringBadge.setAttribute("opacity", Math.min(1, v));
       }
     });
-    // Token fades gracefully (follow-through): lookup is done at the leaf.
     tl.add({
       from: 1, to: 0, duration: 280, ease: anim.easeInCubic,
       onUpdate: function(v) {
@@ -493,64 +539,114 @@ function buildDescentTimeline() {
         tokenLabel.setAttribute("opacity", v);
       }
     });
-    tl.delay(200);
     tl.mark("Lookup complete");
     tl.call(function() {
-      phaseLabel.textContent = "✓ Lookup complete — 1 row returned from the unique index (no table fetch)";
+      var uqLeaf = treeState.nodes[0][levelsShown - 1].find(function(n) { return n.onPath; });
+      if (uqLeaf) {
+        uqLeaf.rect.setAttribute("fill", "var(--svg-ok-soft)");
+        uqLeaf.rect.setAttribute("stroke", "var(--svg-ok)");
+      }
+      phaseLabel.textContent = "✓ The record (alice@example.com, id 42) has every column SELECT id, email asks for: 1 row in " +
+        totalReads + " page reads, no clustered index read";
     });
-  } else {
-    // ---------- Phase 2 (non-covering): PK hop + clustered fetch ----------
-    tl.mark("Fetch row");
-    var uqLeaf = treeState.nodes[0][levelsShown - 1].find(function(n) { return n.onPath; });
-    var clusLeaf = treeState.nodes[1][levelsShown - 1].find(function(n) { return n.onPath; });
-    if (uqLeaf && clusLeaf) {
-      tl.call(function() {
-        phaseLabel.textContent = "Phase 2/2 — the unique leaf stored PK=42; follow the pointer to the clustered row";
-      });
-      tl.add({
-        from: 0, to: 1, duration: 300, ease: anim.easeOutCubic,
-        onUpdate: function(v) {
-          if (treeState.pkLink) treeState.pkLink.setAttribute("opacity", v);
-          if (treeState.pkLinkLabel) treeState.pkLinkLabel.setAttribute("opacity", v);
-        }
-      });
-      var sx = uqLeaf.cx + 22;
-      var sy = uqLeaf.cy;
-      var ex = clusLeaf.cx;
-      var ey = clusLeaf.cy;
-      var cx = (sx + ex) / 2;
-      var cy = Math.min(sy, ey) - 50;
-      var pathFn = anim.path(sx, sy, cx, cy, ex, ey);
-      tl.add({
-        from: 0, to: 1, duration: 820, ease: anim.easeInOutCubic,
-        onUpdate: function(t) {
-          var p = pathFn(t);
-          token.setAttribute("transform", "translate(" + p.x + "," + p.y + ")");
-          tokenLabel.setAttribute("x", p.x);
-          tokenLabel.setAttribute("y", p.y + 16);
-        },
-        onComplete: function() {
-          clusLeaf.rect.setAttribute("fill", "var(--svg-highlight)");
-          clusLeaf.rect.setAttribute("stroke", "var(--svg-highlight-stroke)");
-          anim.pulse(clusLeaf.rect, 3, 1, 360);
-          showNodeData(clusLeaf, "#42 alice@ex");
-        }
-      });
-      tl.delay(240);
-    }
-    tl.mark("Lookup complete");
-    tl.call(function() {
-      phaseLabel.textContent = "✓ Lookup complete — 1 row fetched from the clustered tree (index + row-fetch)";
-      if (tokenLabel) tokenLabel.setAttribute("opacity", 0);
-    });
+    return tl;
   }
 
+  // ---------- Non-covering: follow the primary key ----------
+  var uqLeaf = treeState.nodes[0][levelsShown - 1].find(function(n) { return n.onPath; });
+  var clusLeaf = treeState.nodes[1][levelsShown - 1].find(function(n) { return n.onPath; });
+  if (uqLeaf && clusLeaf) {
+    tl.beat("pk-hop");
+    tl.mark("Follow PK to clustered index");
+    tl.call(function() {
+      uqLeaf.rect.setAttribute("fill", "var(--svg-hop-soft)");
+      uqLeaf.rect.setAttribute("stroke", "var(--svg-hop)");
+      phaseLabel.textContent = "first_name is not in uq_users_email: the record holds PK=42, the key that finds the row in the clustered tree";
+    });
+    tl.add({
+      from: 0, to: 1, duration: 300, ease: anim.easeOutCubic,
+      onUpdate: function(v) {
+        if (treeState.pkLink) treeState.pkLink.setAttribute("opacity", v);
+        if (treeState.pkLinkLabel) treeState.pkLinkLabel.setAttribute("opacity", v);
+      }
+    });
+    // The token rides the same curve as the PK link, as in btree.
+    var sx = uqLeaf.cx + 22;
+    var sy = uqLeaf.cy;
+    var ex = clusLeaf.cx;
+    var ey = clusLeaf.cy;
+    var pathFn = anim.path(sx, sy, (sx + ex) / 2, Math.min(sy, ey) - 50, ex, ey);
+    tl.add({
+      from: 0, to: 1, duration: 820, ease: anim.easeInOutCubic,
+      onUpdate: function(t) {
+        var p = pathFn(t);
+        token.setAttribute("transform", "translate(" + p.x + "," + p.y + ")");
+        tokenLabel.setAttribute("x", p.x);
+        tokenLabel.setAttribute("y", p.y + 16);
+      },
+      onComplete: function() {
+        clusLeaf.rect.setAttribute("fill", "var(--svg-highlight)");
+        clusLeaf.rect.setAttribute("stroke", "var(--svg-highlight-stroke)");
+        anim.pulse(clusLeaf.rect, 3, 1, 360);
+        showNodeData(clusLeaf, "#42 alice@ex");
+      }
+    });
+    tl.delay(220);
+  }
+
+  // The key, not a page address, is the link: walk the clustered tree
+  // from its root page.
+  tl.beat("clus-root");
+  tl.mark("Descend clustered B+tree");
+  tl.call(function() {
+    phaseLabel.textContent = "InnoDB walks the clustered B+tree top-down using PK=42";
+    tokenLabel.textContent = "looking for id=42";
+  });
+  var clusRoot = treeState.nodes[1][0].find(function(n) { return n.onPath; });
+  if (clusRoot) {
+    tl.add({
+      from: 1, to: 0, duration: 200, ease: anim.easeInCubic,
+      onUpdate: function(v) {
+        token.setAttribute("opacity", v);
+        tokenLabel.setAttribute("opacity", v);
+      }
+    });
+    tl.call(function() {
+      token.setAttribute("transform", "translate(" + clusRoot.cx + "," + (clusRoot.cy - 40) + ")");
+      tokenLabel.setAttribute("x", clusRoot.cx);
+      tokenLabel.setAttribute("y", clusRoot.cy - 40 + 16);
+    });
+    tl.add({
+      from: 0, to: 1, duration: 200, ease: anim.easeOutCubic,
+      onUpdate: function(v) {
+        token.setAttribute("opacity", v);
+        tokenLabel.setAttribute("opacity", v);
+      }
+    });
+  }
+  addTreeDescent(1, false, true);
+
+  tl.beat("done");
+  tl.mark("Lookup complete");
+  tl.call(function() {
+    tokenLabel.setAttribute("opacity", 0);
+    if (clusLeaf) {
+      clusLeaf.rect.setAttribute("fill", "var(--svg-ok-soft)");
+      clusLeaf.rect.setAttribute("stroke", "var(--svg-ok)");
+    }
+    phaseLabel.textContent = "✓ Lookup complete — 1 row (id 42, alice@example.com, first_name) in " +
+      totalReads + " page reads: " + levelsShown + " in uq_users_email, " + levelsShown + " in the clustered index";
+  });
+  tl.add({
+    from: 1, to: 0, duration: 240, ease: anim.easeInCubic,
+    onUpdate: function(v) { token.setAttribute("opacity", v); }
+  });
   return tl;
 }
 
 function resetAnim() {
   resetTreeColors();
-  document.getElementById("phase-label").textContent = "Ready — press Play";
+  document.getElementById("phase-label").textContent = "Ready: press Next step, or Play to run it all";
 }
 
 // ---- complexity chart ---------------------------------------------------
@@ -565,9 +661,9 @@ function renderChart(covering, currentRows) {
       { label: "Covering unique lookup: O(log n)",
         color: "var(--svg-ok)",
         fn: function(n) { return innodbTreeHeight(n, fanOut); } },
-      { label: "Non-covering unique lookup: O(log n + 1)",
+      { label: "Non-covering unique lookup: O(2 log n)",
         color: "var(--svg-token)",
-        fn: function(n) { return innodbTreeHeight(n, fanOut) + 1; } },
+        fn: function(n) { return 2 * innodbTreeHeight(n, fanOut); } },
       { label: "Full table scan: O(n)",
         color: "var(--svg-danger)",
         fn: function(n) { return Math.max(1, n / fanOut); } }
@@ -593,13 +689,14 @@ function recompute() {
   var cost = uniqueLookupCost(rows, covering);
 
   document.getElementById("out-height").textContent = cost.height + " levels";
-  document.getElementById("out-index").textContent = String(cost.indexReads);
-  document.getElementById("out-fetch").textContent = String(cost.rowFetches);
-  document.getElementById("out-total").textContent = String(cost.total);
+  document.getElementById("out-index").textContent = cost.indexReads + " pages";
+  document.getElementById("out-fetch").textContent = cost.clusteredReads + " pages";
+  document.getElementById("out-total").textContent = cost.total + " pages";
   document.getElementById("out-exp").textContent = cost.explanation;
+  var sql = document.querySelector(".query-sql");
+  if (sql) sql.textContent = covering ? QUERY_SQL.covering : QUERY_SQL.noncovering;
 
-  var traversals = covering ? 1 : 2;
-  buildTrees(cost.height, traversals);
+  buildTrees(cost.height, covering ? 1 : 2);
   resetTreeColors();
   renderChart(covering, rows);
 }

@@ -11,13 +11,13 @@ import {
   exportedAnalysis,
   number,
   time,
+  type Analysis,
   type Bundle,
   type Capture,
   type Comparison,
   type Operator,
   type Plan,
-  type Profile,
-  type SecretStore,
+  type PlanReportRequest,
   type TopStatement,
   type View,
 } from "./api";
@@ -29,6 +29,7 @@ import { Home } from "./Home";
 import { SERVER_VIEWS, WORKLOAD_VIEWS, WORKLOAD_KINDS } from "./serverViews";
 import { lazyComponent, preloadWhenIdle } from "./lazy";
 import { connectionKey, connectionLabel, type Bound } from "./binding";
+import { refreshSavedConnections, useSavedConnections } from "./savedConnections";
 import { NOT_A_REPLICA, replicationNav, type ReplicationReport, type SkipLoop } from "./opsApi";
 import { clusterNav, NOT_A_CLUSTER, type ClusterFailure, type ClusterReport } from "./clusterApi";
 import { NOT_A_PROXYSQL, proxySqlNav, type ProxySqlFailure, type ProxySqlReport } from "./proxysqlApi";
@@ -39,6 +40,7 @@ import { PLACES, Sidebar, type Place } from "./Sidebar";
 import {
   AccountPrivilegesSheet,
   ConnectionPicker,
+  ConnectionTypeStrip,
   Connections,
   SafetyStatus,
   WritePolicyContext,
@@ -50,7 +52,7 @@ import {
   type ActiveConnection,
 } from "./Connections";
 import type { DigestAction } from "./SlowQueries";
-import { ActionButton, ActionStatus, useAction, closePopovers, ColumnStoreContext, Disclosure, ExportMenu, NotesButton, Popover, Segmented, Select, useColumnStore, useFocusScope, type ColumnPrefs } from "./kit";
+import { Checkbox, ActionButton, ExportMenu, ActionStatus, useAction, closePopovers, ColumnStoreContext, Disclosure, NotesButton, Popover, Segmented, Select, useColumnStore, useFocusScope, type ColumnPrefs } from "./kit";
 import { changeExact, changeText, matchText, pairTitle, severityText, statusText } from "./compareText";
 import {
   defaultLab,
@@ -88,6 +90,8 @@ const ProxySqlPlace = lazyComponent(() => import("./ProxySqlPlace").then((m) => 
 // Query digest (in the style of pt-query-digest) is a place of its own in the
 // SQL workspace group, after the Query editor; its row actions open the editor.
 const QueryDigestView = lazyComponent(() => import("./QueryDigest").then((m) => m.QueryDigestView));
+// Schema versions: saved schemas of a database and comparisons, after Database diagram.
+const SchemaVersionsPlace = lazyComponent(() => import("./SchemaVersions").then((m) => m.SchemaVersionsPlace));
 const Library = lazyComponent(() => import("./Library").then((m) => m.Library));
 const AuditLog = lazyComponent(() => import("./Audit").then((m) => m.AuditLog));
 const PlanChart = lazyComponent(() => import("./PlanChart").then((m) => m.PlanChart));
@@ -98,7 +102,11 @@ const views: [View, string][] = [
   ["flamegraph", "Flame graph"],
   ["tree", "Execution tree"],
   ["bargraph", "Bar chart"],
+  ["stats", "Stats"],
 ];
+type PlanExportSnapshot =
+  | ({ kind: "plan"; name: string } & PlanReportRequest)
+  | { kind: "compare"; before: string; after: string; hide_literals: boolean; name: string };
 const metrics: [string, string][] = [
   ["self_time", "Self time"],
   ["total_time", "Total time"],
@@ -110,8 +118,8 @@ const metrics: [string, string][] = [
 // in either direction; home and server are new. Each maps to one place, except
 // audit: the Audit log is local to this computer and opens from Settings, so
 // no place is "you are here" while it is on screen.
-type Mode = "home" | "inspect" | "compare" | "query" | "digest" | "diagram" | "server" | "workload" | "replication" | "cluster" | "proxysql" | "tuning" | "library" | "teach" | "audit";
-const modes: Mode[] = ["home", "inspect", "compare", "query", "digest", "diagram", "server", "workload", "replication", "cluster", "proxysql", "tuning", "library", "teach", "audit"];
+type Mode = "home" | "inspect" | "compare" | "query" | "digest" | "diagram" | "schema" | "server" | "workload" | "replication" | "cluster" | "proxysql" | "tuning" | "library" | "teach" | "audit";
+const modes: Mode[] = ["home", "inspect", "compare", "query", "digest", "diagram", "schema", "server", "workload", "replication", "cluster", "proxysql", "tuning", "library", "teach", "audit"];
 function placeOf(mode: Mode): Place | null {
   switch (mode) {
     case "audit":
@@ -132,6 +140,7 @@ const PLACE_MODE: Record<Exclude<Place, "plans">, Mode> = {
   query: "query",
   digest: "digest",
   diagram: "diagram",
+  schema: "schema",
   server: "server",
   workload: "workload",
   replication: "replication",
@@ -219,6 +228,8 @@ function App() {
   const [placeActionsWidth, setPlaceActionsWidth] = useState(0);
   const [replicationLoops, setReplicationLoops] = useState<Bound<SkipLoop[]> | null>(null);
   const [plans, setPlans] = useState<(Plan & { origin?: "sample" })[]>([]);
+  const plansInUse = useRef(plans);
+  plansInUse.current = plans;
   const [activeId, setActiveId] = useState("");
   const active = plans.find((p) => p.id === activeId);
   const activeSource = digestSource(active?.capture);
@@ -226,6 +237,7 @@ function App() {
   /** The investigation notebook sheet, opened by Save investigation. */
   const [notebookOpen, setNotebookOpen] = useState(false);
   const [savedRevision, setSavedRevision] = useState(0);
+  const [selectedInvestigationId, setSelectedInvestigationId] = useState("");
   // Plans remembers whether it was exploring or comparing.
   const [plansView, setPlansView] = useState<"inspect" | "compare">("inspect");
   useEffect(() => {
@@ -235,6 +247,8 @@ function App() {
   const [view, setView] = useState<View>("workbench");
   const [metric, setMetric] = useState("self_time");
   const [selectedId, setSelectedId] = useState("");
+  const [statsIds, setStatsIds] = useState<string[]>([]);
+  const [hideLiterals, setHideLiterals] = useState(true);
   const selected = active?.operators.find((n) => n.node_id === selectedId);
   const [metricsTarget, setMetricsTarget] = useState<HTMLDivElement | null>(null);
   const [focusId, setFocusId] = useState("");
@@ -398,13 +412,16 @@ function App() {
   }, [columnLayouts]);
   // Saved connections and the connection in use. Its non-secret settings
   // live in the lab state (and so in the saved session); the password is
-  // typed for this page only.
-  const [profiles, setProfiles] = useState<Profile[]>([]);
+  // typed for this page only. The list is the window's one shared list
+  // (savedConnections.ts): every picker reads it, and it is read again after
+  // each change made here and when the window comes back.
+  const savedList = useSavedConnections(false);
+  const profiles = savedList.items;
   // The type of a saved connection is known once the list has loaded, and
   // not known again while the latest read of it failed.
-  const [profilesLoaded, setProfilesLoaded] = useState(false);
-  const [profilesFailed, setProfilesFailed] = useState("");
-  const [secretStore, setSecretStore] = useState<SecretStore | null>(null);
+  const profilesLoaded = savedList.loaded;
+  const profilesFailed = savedList.error;
+  const secretStore = savedList.secretStore;
   const [activePassword, setActivePassword] = useState("");
   const [connectionNote, setConnectionNote] = useState("");
   const [connectRevision, setConnectRevision] = useState(0);
@@ -425,52 +442,22 @@ function App() {
   }, []);
   const labStateRef = useRef(labState);
   labStateRef.current = labState;
-  const profilesReadSequence = useRef(0);
-  const latestProfilesRead = useRef<Promise<Profile[]> | null>(null);
-  const refreshProfiles = useCallback(() => {
-    const sequence = ++profilesReadSequence.current;
-    const pending: Promise<Profile[]> = (async () => {
-      try {
-        const r = await api<{ items: Profile[]; secret_store?: SecretStore }>("profiles/list", {});
-        // An older success or failure must not replace the latest policy.
-        // Its callers also await the latest read, so a write-policy check or
-        // restored-profile check cannot act on stale connection settings.
-        if (sequence !== profilesReadSequence.current) return latestProfilesRead.current!;
-        setProfiles(r.items);
-        setProfilesLoaded(true);
-        setProfilesFailed("");
-        if (r.secret_store) setSecretStore(r.secret_store);
-        return r.items;
-      } catch (e) {
-        if (sequence !== profilesReadSequence.current) return latestProfilesRead.current!;
-        setProfilesFailed(message(e));
-        throw e;
-      }
-    })();
-    latestProfilesRead.current = pending;
-    return pending;
-  }, []);
-  // A connection's type or read-only setting can change in another tab or
-  // through the CLI: read them again whenever this window comes back.
+  // One read at a time wins (savedConnections.ts); callers await the latest
+  // read, so a write-policy check or the restored-connection check below
+  // never acts on stale connection settings.
+  const refreshProfiles = refreshSavedConnections;
+  // The saved connection in use may be gone: the one a restored session names
+  // (checked after the first read), or one deleted later in another window or
+  // with the CLI (seen when the list is read again). Its settings stay as an
+  // unsaved connection, and the picker says what happened. A deletion made
+  // here, in Connections, clears the connection itself (onActiveDeleted).
+  const restoreChecked = useRef(false);
   useEffect(() => {
     if (!ready) return;
-    let last = 0;
-    const again = () => {
-      if (document.visibilityState === "hidden" || Date.now() - last < 1000) return;
-      last = Date.now();
-      refreshProfiles().catch(() => {});
-    };
-    window.addEventListener("focus", again);
-    document.addEventListener("visibilitychange", again);
-    return () => {
-      window.removeEventListener("focus", again);
-      document.removeEventListener("visibilitychange", again);
-    };
-  }, [ready, refreshProfiles]);
-  useEffect(() => {
-    if (!ready) return;
+    restoreChecked.current = false;
     refreshProfiles()
       .then((items) => {
+        restoreChecked.current = true;
         // A restored connection may have been deleted since the last session.
         const id = labStateRef.current.profile_id;
         if (id && !items.some((p) => p.id === id)) {
@@ -480,8 +467,22 @@ function App() {
           );
         }
       })
-      .catch((e) => setError(message(e)));
+      .catch((e) => {
+        // A later read that succeeds checks the connection in use instead.
+        restoreChecked.current = true;
+        setError(message(e));
+      });
   }, [ready, resetKey, refreshProfiles, patchLab]);
+  useEffect(() => {
+    if (!ready || !restoreChecked.current || !profilesLoaded || profilesFailed) return;
+    const id = labStateRef.current.profile_id;
+    if (!id || profiles.some((p) => p.id === id)) return;
+    const name = labStateRef.current.connection.name;
+    patchLab({ profile_id: "" });
+    setConnectionNote(
+      `${name ? `The saved connection “${name}”` : "The saved connection in use"} was deleted. Its settings are kept as an unsaved connection.`,
+    );
+  }, [ready, profiles, profilesLoaded, profilesFailed, patchLab]);
   function applyConnection(id: string, fields: SessionConnection, password: string) {
     recordConnectionUse(id);
     patchLab({ profile_id: id, connection: fields });
@@ -496,6 +497,7 @@ function App() {
     if (p) applyConnection(p.id, connectionFields(p), "");
   }
   function selectOperator(id: string) {
+    setStatsIds([]);
     const ancestors = new Set<string>();
     let node = active?.operators.find((op) => op.node_id === id);
     while (node) {
@@ -515,6 +517,7 @@ function App() {
     const restoredView = pendingView.current;
     pendingView.current = null;
     const keep = restoredView?.planId === activeId;
+    setStatsIds([]);
     setSelectedId(keep ? restoredView.selected : "");
     setFocusId(keep ? restoredView.focus : "");
     setCollapsed(keep ? restoredView.collapsed : []);
@@ -553,6 +556,7 @@ function App() {
   // A chart selection becomes the page selection (inspect) or the matched
   // before/after pair (compare); both charts then follow the pair.
   function chartSelect(id: string) {
+    setStatsIds([]);
     if (active?.operators.some((n) => n.node_id === id)) {
       setSelectedId(id);
       setSearch("");
@@ -744,9 +748,11 @@ function App() {
         origin: options.origin,
         capture: result.capture || undefined,
       };
+      const hasOtherPlan = plansInUse.current.length > 0;
       setPlans((ps) => [...ps, plan]);
       setBeforeId((id) => id || plan.id);
-      setAfterId(plan.id);
+      // A queued import may have started before another plan finished opening.
+      setAfterId(hasOtherPlan ? plan.id : "");
       setBaseline((id) => id || plan.id);
       if (open) {
         setActiveId(plan.id);
@@ -791,8 +797,9 @@ function App() {
     setPlans(parsed);
     setActiveId(parsed[0]?.id || "");
     setBaseline(bundle.baseline_id);
-    setBeforeId(bundle.baseline_id || parsed[0]?.id || "");
-    setAfterId(parsed.find((p) => p.id !== bundle.baseline_id)?.id || "");
+    const beforePlanId = bundle.baseline_id || parsed[0]?.id || "";
+    setBeforeId(beforePlanId);
+    setAfterId(parsed.find((p) => p.id !== beforePlanId)?.id || "");
     setName(bundle.name);
     setNotes(bundle.notes);
     setTags(bundle.tags.join(", "));
@@ -1056,7 +1063,7 @@ function App() {
       notes.push("The selected operator is no longer in the plan.");
     const inv = isRecord(state.investigation) ? state.investigation : {};
     const beforeValue = has(state.before_id) ? (state.before_id as string) : "";
-    const afterValue = has(state.after_id) ? (state.after_id as string) : "";
+    const afterValue = restoredPlans.length > 1 && has(state.after_id) ? (state.after_id as string) : "";
     const baselineValue = has(inv.baseline_id)
       ? (inv.baseline_id as string)
       : restoredPlans[0]?.id || "";
@@ -1246,24 +1253,30 @@ function App() {
   }
   function exportHtml() {
     if (exporting || (mode === "compare" ? !comparison || loading : !active)) return;
-    // Retrying uses the plan and view that failed, even after another is selected.
-    const snapshot: { html: string; name: string } | { raw: string; view: View; name: string } = mode === "compare" ? { html: comparison!.html, name: "myflames-comparison.html" }
-      : { raw: active!.raw, view, name: `${active!.name.replace(/\.json$/i, "")}-report.html` };
+    // A retry keeps the original plans, view and privacy choice.
+    const snapshot: PlanExportSnapshot = mode === "compare"
+      ? { kind: "compare" as const, before: before!.raw, after: after!.raw, hide_literals: hideLiterals, name: "myflames-comparison.html" }
+      : { kind: "plan" as const, plan: active!.raw, query: active!.query, view: view === "stats" ? "workbench" : view, hide_literals: hideLiterals, name: `${active!.name.replace(/\.json$/i, "")}-report.html` };
     const run = () => { void exportAction.run(async (signal) => {
-      const html = "html" in snapshot ? snapshot.html : (await api<{ html: string }>("report", { plan: snapshot.raw, view: snapshot.view }, signal)).html;
-      if (!signal.aborted) download(html, snapshot.name, "text/html");
+      const result = snapshot.kind === "compare"
+        ? await api<{ html: string }>("compare", snapshot, signal)
+        : await api<{ html: string }>("report", snapshot, signal);
+      if (!signal.aborted) download(result.html, snapshot.name, "text/html");
     }, { pending: "Building the HTML report…", done: `Saved ${snapshot.name}.` }); };
     exportRetry.current = run;
     run();
   }
   function exportJson() {
-    if (exporting) return;
-    const data = mode === "compare" ? loading ? undefined : comparison?.analysis : active && exportedAnalysis(active.analysis);
-    if (!data) return;
-    const filename = mode === "compare" ? "comparison.json" : `${active!.name.replace(/\.json$/i, "")}-analysis.json`;
-    const run = () => { void exportAction.run(async () => {
-      download(JSON.stringify(data, null, 2), filename, "application/json");
-    }, { pending: "Exporting JSON…", done: `Saved ${filename}.` }); };
+    if (exporting || (mode === "compare" ? !comparison || loading : !active)) return;
+    const snapshot: PlanExportSnapshot = mode === "compare"
+      ? { kind: "compare" as const, before: before!.raw, after: after!.raw, hide_literals: hideLiterals, name: "comparison.json" }
+      : { kind: "plan" as const, plan: active!.raw, query: active!.query, analysis: exportedAnalysis(active!.analysis), hide_literals: hideLiterals, format: "json", name: `${active!.name.replace(/\.json$/i, "")}-analysis.json` };
+    const run = () => { void exportAction.run(async (signal) => {
+      const result = snapshot.kind === "compare"
+        ? await api<{ analysis: Analysis }>("compare", snapshot, signal)
+        : await api<{ analysis: Analysis }>("report", snapshot, signal);
+      if (!signal.aborted) download(JSON.stringify(result.analysis, null, 2), snapshot.name, "application/json");
+    }, { pending: "Exporting JSON…", done: `Saved ${snapshot.name}.` }); };
     exportRetry.current = run;
     run();
   }
@@ -1416,7 +1429,7 @@ function App() {
       : <NavMarker compact tone={replicationState.tone} text={replicationState.text} />;
   // The places that send to the connection in use (the footer names its
   // write safety there, and only there).
-  const connectionPlace = mode === "query" || mode === "digest" || mode === "diagram" || mode === "server" || mode === "workload" || mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "tuning";
+  const connectionPlace = mode === "query" || mode === "digest" || mode === "diagram" || mode === "schema" || mode === "server" || mode === "workload" || mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "tuning";
   // Server renders Server, Workload, Tuning and Database diagram. While
   // another place is on screen it keeps the one shown last, so leaving it
   // never swaps (and mounts) a different view in the hidden place.
@@ -1429,14 +1442,16 @@ function App() {
   // (views read on open only while on screen, viewOnScreen.ts). A restored
   // skip loop mounts both at once so its status is found again (that status
   // reads no database). Start fresh and reopening a snapshot start over.
-  const visited = useRef({ key: resetKey, server: false, replication: false, cluster: false, proxysql: false, digest: false });
-  if (visited.current.key !== resetKey) visited.current = { key: resetKey, server: false, replication: false, cluster: false, proxysql: false, digest: false };
+  const visited = useRef({ key: resetKey, server: false, replication: false, cluster: false, proxysql: false, digest: false, schema: false });
+  if (visited.current.key !== resetKey) visited.current = { key: resetKey, server: false, replication: false, cluster: false, proxysql: false, digest: false, schema: false };
   if (serverOnScreen) visited.current.server = true;
   if (ready && mode === "replication") visited.current.replication = true;
   if (ready && mode === "cluster") visited.current.cluster = true;
   if (ready && mode === "proxysql") visited.current.proxysql = true;
   if (ready && mode === "digest") visited.current.digest = true;
+  if (ready && mode === "schema") visited.current.schema = true;
   const mountDigest = visited.current.digest;
+  const mountSchema = visited.current.schema;
   const mountCluster = visited.current.cluster;
   const mountProxySql = visited.current.proxysql;
   const restoredLoop = labInitial?.slow?.replication_loop_active === true;
@@ -1446,9 +1461,9 @@ function App() {
   // (Server, Workload and Tuning, Replication, the Plans chart) in idle time,
   // so their first visit does not wait. Nothing mounts or reads a server.
   useEffect(() => {
-    if (ready) preloadWhenIdle([Server, ReplicationPlace, ClusterPlace, ProxySqlPlace, QueryDigestView, PlanChart, ContextPanel]);
+    if (ready) preloadWhenIdle([Server, ReplicationPlace, ClusterPlace, ProxySqlPlace, QueryDigestView, SchemaVersionsPlace, PlanChart, ContextPanel]);
   }, [ready]);
-  // Replication's "How to turn it on" opens Server > Instruments at that row.
+  // Replication's and Query digest's "How to turn it on" open Server > Instruments at that row.
   const [instrumentsLink, setInstrumentsLink] = useState<{ row: string; n: number } | null>(null);
   const openInstrumentsRow = useCallback((row: string) => {
     setInstrumentsLink((l) => ({ row, n: (l?.n || 0) + 1 }));
@@ -1506,6 +1521,13 @@ function App() {
       table?.focus({ preventScroll: true });
     });
   }
+  // New connection… (picker and palette): Home's Connections opens its Add
+  // connection form once for each request, then clears it.
+  const [addConnection, setAddConnection] = useState(0);
+  function newConnection() {
+    go("home");
+    setAddConnection((n) => n + 1);
+  }
   // The Query editor's schema browser opens Indexes or Tables on one table.
   const [serverLink, setServerLink] = useState<{
     view: "indexes" | "tables" | "health";
@@ -1558,6 +1580,7 @@ function App() {
       onPassword={setActivePassword}
       onPasswordCommit={() => setPasswordRevision(value => value + 1)}
       onManage={manageConnections}
+      onAdd={newConnection}
       onAccount={() => setAccountOpen(true)}
       note={connectionNote}
     />
@@ -1587,7 +1610,7 @@ function App() {
     return () => { appear.disconnect(); observer?.disconnect(); };
   }, [ready, mode, resetKey]);
   const statusScope = mode === "query" ? `query:${connectionKey(request)}:${labState.tab_id}`
-    : (mode === "digest" || mode === "diagram" || mode === "server" || mode === "workload" || mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "tuning") ? `${mode}:${connectionKey(request)}` : mode === "compare" ? `compare:${beforeId}:${afterId}` : `plans:${activeId}`;
+    : (mode === "digest" || mode === "diagram" || mode === "schema" || mode === "server" || mode === "workload" || mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "tuning") ? `${mode}:${connectionKey(request)}` : mode === "compare" ? `compare:${beforeId}:${afterId}` : `plans:${activeId}`;
   const plansStatus = mode === "inspect" || mode === "compare";
   const connectedRequest = useRef(request);
   connectedRequest.current = request;
@@ -1649,6 +1672,7 @@ function App() {
     { id: "place-query", label: "Query editor", group: "Places", icon: "query", keywords: "sql run query editor", run: () => go("query") },
     { id: "place-digest", label: "Query digest", group: "Places", icon: "analysis", keywords: "pt-query-digest digest profile statements workload slow queries", run: () => go("digest") },
     { id: "place-diagram", label: "Database diagram", group: "Places", icon: "diagram", keywords: "schema diagram er erd mermaid tables relationships foreign keys", run: () => go("diagram") },
+    { id: "place-schema", label: "Schema versions", group: "Places", icon: "branches", keywords: "schema version versions snapshot compare diff migration drift ddl alter", run: () => go("schema") },
     { id: "place-plans", label: "Plans", group: "Places", icon: "plan", keywords: "explain analyze flame graph visual explain", run: () => go("plans") },
     { id: "place-investigations", label: "Investigations", group: "Places", icon: "investigation", keywords: "saved library notes", run: () => go("investigations") },
     { id: "place-learn", label: "Learn", group: "Places", icon: "learn", keywords: "lessons teach algorithms", run: () => go("learn") },
@@ -1675,9 +1699,11 @@ function App() {
     { id: "action-import", label: "Import plan", group: "Actions", icon: "import", keywords: "open json explain analyze", run: openImport },
     { id: "action-audit", label: "Audit log", group: "Actions", icon: "audit", keywords: "writes changes kill declined refused log", run: openAuditLog },
     { id: "action-account", label: "Account and privileges", group: "Actions", icon: "key", keywords: "privileges grants roles user account connected as permissions show grants", run: () => setAccountOpen(true) },
+    { id: "action-new-connection", label: "New connection", group: "Actions", icon: "plus", keywords: "add connection server host profile new", run: newConnection },
     // Query editor actions on the current tab (QueryLabHandle).
     { id: "query-rename-tab", label: "Rename query tab", group: "Query editor", icon: "edit", keywords: "rename tab name title query editor", run: () => { go("query"); withLab((lab) => lab.renameTab()); } },
     { id: "query-format-sql", label: "Format SQL", group: "Query editor", icon: "format", keywords: "format indent beautify pretty sql query editor", run: () => { go("query"); withLab((lab) => lab.formatSql()); } },
+    { id: "query-save", label: "Save query…", group: "Query editor", icon: "plus", keywords: "save saved query favorite bookmark snippet folder keep query editor", run: () => { go("query"); withLab((lab) => lab.saveQuery()); } },
   ];
 
   return (
@@ -1713,6 +1739,7 @@ function App() {
       />
       <div ref={chrome} data-place={place || "audit"} className="workspace" style={{ "--place-actions-width": `${placeActionsWidth}px` } as CSSProperties}>
         <div className="topbar-stack">
+        {ready && connectionPlace && <ConnectionTypeStrip safety={safety} />}
         <header className="topbar window-toolbar" aria-label={`${placeLabel} toolbar`}>
           <button id="window-sidebar-toggle" className="icon-button" aria-label={sidebarOpen ? "Hide sidebar" : "Show sidebar"} title={sidebarOpen ? "Hide sidebar" : "Show sidebar"} aria-expanded={sidebarOpen} aria-controls="workspace-sidebar" onClick={() => setSidebar((current) => ({ ...current, open: !current.open }))}><Icon name="browser" /></button>
           <div className="topbar-title">
@@ -1722,7 +1749,7 @@ function App() {
                 document in the plan header. Replication and Tuning are one
                 view whose header already says the place name, so it stays
                 here for assistive technology only. */}
-            <strong className={mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "tuning" || mode === "digest" || mode === "diagram" ? "visually-hidden" : undefined}>{placeLabel}</strong>
+            <strong className={mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "tuning" || mode === "digest" || mode === "diagram" || mode === "schema" ? "visually-hidden" : undefined}>{placeLabel}</strong>
           </div>
           {ready && mode === "library" && (
             <Popover label="About Investigations" className="topbar-info">
@@ -1811,6 +1838,7 @@ function App() {
             mode === "query" ||
             mode === "digest" ||
             mode === "diagram" ||
+            mode === "schema" ||
             mode === "audit" ||
             mode === "home" ||
             mode === "teach"
@@ -1955,6 +1983,8 @@ function App() {
                   loading={!profilesLoaded && !profilesFailed}
                   loadError={profilesFailed}
                   onActiveDeleted={() => applyConnection("", { ...defaultLab().connection, name: "", host: "", user: "", database: "", ssl_ca: "" }, "")}
+                  addRequest={addConnection}
+                  onAddHandled={() => setAddConnection(0)}
                 />
               }
               onDropFile={importFile}
@@ -1990,6 +2020,8 @@ function App() {
                 onConnected={(via) => { if (connectionKey(via) === connectionKey(connectedRequest.current)) setConnectRevision(n => n + 1); }}
                 onCapture={capture}
                 onOpenTable={openServerTable}
+                onScreen={mode === "query"}
+                onOpenInstruments={openInstrumentsRow}
               />
               </WritePolicyContext.Provider>
             </div>
@@ -2008,7 +2040,23 @@ function App() {
                   connection={request}
                   onOpenInEditor={(row, rank, from) => openDigest(row, rank, "open", from)}
                   onExplain={(row, rank, from) => openDigest(row, rank, "explain", from)}
+                  onOpenInstruments={openInstrumentsRow}
+                  onOpenIndexes={(schema, table, from) => openServerTable("indexes", schema, table, from)}
                 />
+              </ViewOnScreenContext.Provider>
+            </div>
+          )}
+          {ready && mountSchema && (
+            // Mounted on its first visit and kept, hidden, after it. It reads
+            // the saved versions on open; a database is read only when asked
+            // (Save version, Compare). Its sync script opens in the Query
+            // editor, which runs it.
+            <div className="schema-place" hidden={mode !== "schema"}>
+              <ViewOnScreenContext.Provider value={mode === "schema"}>
+              <ColumnStoreContext.Provider value={columnStore}>
+                <SchemaVersionsPlace key={resetKey} connection={request} profiles={profiles}
+                  onOpenSql={(sql) => { withLab((lab) => lab.openSql(sql)); go("query"); }} />
+              </ColumnStoreContext.Provider>
               </ViewOnScreenContext.Provider>
             </div>
           )}
@@ -2040,6 +2088,7 @@ function App() {
                 onStateChange={reportSlow}
                 columns={columnLayouts}
                 onColumns={setColumnLayouts}
+                profiles={profiles}
                 replicationLoops={replicationLoops}
                 onReplicationLoops={setReplicationLoops}
                 replication={replicationReport}
@@ -2061,6 +2110,11 @@ function App() {
                 onOpenSql={(sql, options) => {
                   withLab((lab) => lab.openSql(sql, options));
                   go("query");
+                }}
+                onOpenInvestigation={(id) => {
+                  setSavedRevision((n) => n + 1);
+                  if (id) setSelectedInvestigationId(id);
+                  go("investigations");
                 }}
               />
               </ViewOnScreenContext.Provider>
@@ -2122,7 +2176,7 @@ function App() {
             </div>
           )}
           {ready && mode === "library" && <Library onOpen={openBundle} openPlanCount={plans.length}
-            onSaveInvestigation={() => { setError(""); saveAction.reset(); setNotebookOpen(true); }} savedRevision={savedRevision} />}
+            onSaveInvestigation={() => { setError(""); saveAction.reset(); setNotebookOpen(true); }} savedRevision={savedRevision} initialSelectedId={selectedInvestigationId} />}
           {ready && mode === "audit" && <AuditLog key={auditFocus} profiles={profiles} focusId={auditFocus} />}
           <Teach
             key={resetKey}
@@ -2151,6 +2205,7 @@ function App() {
                     <button className="text-button" onClick={() => { openImport(); closePopovers(); }}>Import plan</button>
                     <button className="text-button" onClick={() => { setMode("compare"); closePopovers(); }}>Compare plans</button>
                     <button className="text-button" onClick={() => { exportJson(); closePopovers(); }}>Export JSON</button>
+                    <Checkbox checked={hideLiterals} onChange={setHideLiterals}>Hide literal values</Checkbox>
                     <ActionButton busy={exporting} busyLabel="Exporting…" onClick={exportHtml}>Export HTML</ActionButton>
                     <dl className="plan-menu-facts" aria-label="Plan measurements">
                       <Stat hint="Total plan iterator time" label="Execution time" value={!measured ? "Not executed" : time(summary!.total_time_ms)} />
@@ -2276,7 +2331,7 @@ function App() {
                     </div>
                   )}
                 </div>
-                <PlanExports label="Export plan" onJson={exportJson} onHtml={exportHtml} exporting={exporting} />
+                <PlanExports label="Export plan" onJson={exportJson} onHtml={exportHtml} exporting={exporting} hideLiterals={hideLiterals} onHideLiterals={setHideLiterals} />
               </header>
               <div className="exploration-layout plan-fold">
                 <section className="plan-canvas" aria-label="Execution plan">
@@ -2290,6 +2345,12 @@ function App() {
                     collapsed={collapsed}
                     selectedId={selectedId}
                     onSelect={chartSelect}
+                    statsIds={statsIds}
+                    onSelectStats={(ids) => {
+                      setFocusId("");
+                      setCollapsed([]);
+                      setStatsIds(ids);
+                    }}
                     metricsTarget={metricsTarget}
                     visibleOperatorIds={visibleOps.map((op) => op.node_id)}
                     toolbar={<>
@@ -2499,7 +2560,7 @@ function App() {
                 </label>
                 </div>
                 {comparison && !loading && (
-                  <PlanExports label="Export comparison" onJson={exportJson} onHtml={exportHtml} exporting={exporting} />
+                  <PlanExports label="Export comparison" onJson={exportJson} onHtml={exportHtml} exporting={exporting} hideLiterals={hideLiterals} onHideLiterals={setHideLiterals} />
                 )}
               </header>
               {!before || !after || before.id === after.id ? (
@@ -2511,6 +2572,9 @@ function App() {
                       ? "Import or capture a second plan to compare it with your baseline."
                       : "Pick a before and an after plan above."}
                   </p>
+                  {plans.length < 2 && <button className="button" onClick={openImport}>
+                    <Icon name="import" /> Import plan…
+                  </button>}
                 </div>
               ) : loading ? (
                 <div className="preview-state">Matching operators…</div>
@@ -2689,11 +2753,16 @@ function NotebookSheet({ open, busy, error, action, onClose, onSave, onExport, c
   );
 }
 /** A single export home for both Plans modes (the shared Export pull-down). */
-function PlanExports({ label, onJson, onHtml, exporting = false }: { label: string; onJson: () => void; onHtml: () => void; exporting?: boolean }) {
-  return <ExportMenu label={label} className="plan-exports" busy={exporting} busyLabel="Exporting…" formats={[
-    { key: "json", label: "JSON", onSelect: onJson },
-    { key: "html", label: "HTML report", onSelect: onHtml, busy: exporting, busyLabel: "Exporting…" },
-  ]} />;
+function PlanExports({ label, onJson, onHtml, exporting = false, hideLiterals, onHideLiterals }: {
+  label: string; onJson: () => void; onHtml: () => void; exporting?: boolean;
+  hideLiterals: boolean; onHideLiterals: (value: boolean) => void;
+}) {
+  return <ExportMenu label={label} className="plan-exports" busy={exporting} busyLabel="Exporting…"
+    toggles={[{ key: "hide-literals", label: "Hide literal values", checked: hideLiterals, onChange: onHideLiterals }]}
+    formats={[
+      { key: "json", label: "JSON", onSelect: onJson },
+      { key: "html", label: "HTML report", onSelect: onHtml, busy: exporting, busyLabel: "Exporting…" },
+    ]} />;
 }
 
 /** A comparison keeps each chart's controls and metric rows instance-scoped. */

@@ -56,6 +56,33 @@ class DumpOptionsTests(unittest.TestCase):
             self.assertIn('--compress', args)
             self.assertEqual('--set-gtid-purged=OFF' in args, engine == 'mysql')
 
+    def test_structure_only_flags_and_shell_ddl_only(self):
+        for name, engine in [('mysqldump', 'mysql'), ('mariadb-dump', 'mariadb')]:
+            tool = dict(self.sql, name=name, engine=engine)
+            self.request.pop('options', None)
+            self.assertNotIn('--no-data', lifecycle._dump_args(self.request, tool))
+            self.request['options'] = options.normalize({'structure_only': True}, tool)
+            args = lifecycle._dump_args(self.request, tool)
+            self.assertIn('--no-data', args)
+            # Triggers, routines and events still follow the Include options.
+            self.assertIn('--routines', args)
+            self.assertIn('--events', args)
+            self.assertIn('--triggers', args)
+        with self.assertRaises(ValueError):
+            options.normalize({'structure_only': 1}, self.sql)
+        plain = {'schemas': ['app'], 'tables': [], 'directory': '/tmp/d', 'threads': 4}
+        expression = lifecycle._shell_dump_expression(plain)
+        args = json.loads('[' + expression[len('util.dumpSchemas('):-1] + ']')
+        self.assertNotIn('ddlOnly', args[-1])
+        plain['options'] = options.normalize({'structure_only': True}, self.shell)
+        expression = lifecycle._shell_dump_expression(plain)
+        args = json.loads('[' + expression[len('util.dumpSchemas('):-1] + ']')
+        self.assertIs(args[-1].get('ddlOnly'), True)
+        # ddlOnly is valid for every Shell scope, including dumpInstance.
+        instance = {'schemas': [], 'tables': [], 'directory': '/tmp/d', 'threads': 4,
+                    'options': {'structure_only': True}}
+        self.assertIn('"ddlOnly": true', lifecycle._shell_dump_expression(instance))
+
     def test_unknown_keys_and_wrong_types_refuse(self):
         for values in ({'raw_flags': '--exec evil'}, {'threads': 3}, {'triggers': 1},
                        {'routines': 'false'}, [], {'compression': []},
@@ -117,6 +144,14 @@ class DumpOptionsTests(unittest.TestCase):
         self.assertEqual(sql['network_compression']['group'], 'compression')
         self.assertEqual({sql[k]['group'] for k in ('hex_blob', 'add_drop_table')}, {'output'})
 
+    def test_structure_only_in_every_tool_catalog(self):
+        for name, scope in (('mysqlsh', False), ('mysqlsh', True), ('mysqldump', False), ('mariadb-dump', True)):
+            catalog = options.capability_catalog(name, scope, tool_version='9.6.0')
+            item = {d['key']: d for d in catalog['options']}['structure_only']
+            self.assertEqual((item['type'], item['group'], item['row'], item['default']),
+                             ('boolean', 'contents', 'Rows', False), (name, scope))
+            self.assertIn('no rows', item['label'])
+
     def test_prepare_binds_options_and_default_request_stays_compatible(self):
         destination = os.path.join(self.temp.name, 'dump')
         tools = {'tools': {'mysqldump': self.sql}}
@@ -149,8 +184,34 @@ class DumpOptionsTests(unittest.TestCase):
         self.assertTrue(manifest['complete'])
         self.assertFalse(manifest['options']['events'])
         self.assertFalse(manifest['options']['triggers'])
+        self.assertFalse(manifest['options']['structure_only'])
         self.assertEqual(manifest['options']['selected'], plan['request']['options'])
         self.assertIn('--compress', manifest['options']['tool_options'])
+
+    def test_structure_only_manifest_and_no_sampling(self):
+        destination = os.path.join(self.temp.name, 'dump')
+        plan = lifecycle.prepare_dump(ReplayConnection(), CONNECTION, destination,
+            schemas=['app'], tools={'tools': {'mysqldump': dict(self.sql)}}, prefer_shell=False,
+            options={'structure_only': True})
+        self.assertIn('--no-data', plan['commands'][0])
+        self.assertIn('Structure only', ' '.join(plan['warnings']))
+        job = lifecycle.LifecycleJob('dump', lambda job: None, CONNECTION)
+
+        def invoke(job, tool, connection, args, **kwargs):
+            kwargs['output_file'].write(b'CREATE TABLE t(id INT);\n')
+        with mock.patch.object(lifecycle, '_invoke', side_effect=invoke), \
+                mock.patch.object(lifecycle, '_samples', wraps=lifecycle._samples) as samples:
+            result = lifecycle._perform_dump(job, ReplayConnection(), plan, CONNECTION)
+        # A structure-only dump records no row counts: restore has nothing to compare.
+        samples.assert_not_called()
+        manifest = result['manifest']
+        self.assertTrue(manifest['complete'])
+        self.assertTrue(manifest['options']['structure_only'])
+        self.assertEqual(manifest['samples'], [])
+        reasons = {v['check']: v['reason'] for v in manifest['verification']}
+        self.assertIn('Structure-only', reasons['dump_rows'])
+        self.assertIn('Structure-only', reasons['source_sample_stability'])
+        self.assertNotIn('COUNT(*)', json.dumps(manifest))
 
     def test_privilege_hints_follow_selected_objects(self):
         for shell, tables, selected, expected in [

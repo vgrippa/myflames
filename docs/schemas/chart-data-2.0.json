@@ -36,7 +36,7 @@
       "type": "string",
       "enum": [
         "ms",
-        "\u00b5s"
+        "µs"
       ],
       "description": "Display hint only. Every *_ms value stays in milliseconds."
     },
@@ -165,6 +165,39 @@
         "type": "string"
       },
       "description": "Distinct analysis messages, in the order nodes (pre-order) first reference them; every entry is referenced by at least one node. Node highlight_id indexes this array. Text is verbatim, never shortened or paraphrased."
+    },
+    "stats": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tables",
+        "operators",
+        "note"
+      ],
+      "properties": {
+        "tables": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/stats_row"
+          }
+        },
+        "operators": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/stats_row"
+          }
+        },
+        "note": {
+          "type": "string"
+        }
+      }
+    },
+    "groups": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/stats_row"
+      },
+      "description": "All-occurrence totals indexed by node.group, computed on the entire plan, independent of focus/collapse."
     }
   },
   "$defs": {
@@ -482,6 +515,91 @@
           ],
           "minimum": 0,
           "description": "Zero-based index into highlight_messages, or null when no analysis highlight applies. Must be less than the table length."
+        },
+        "group": {
+          "type": "string",
+          "description": "Normalized operation type, schema, table and index identity; predicates and occurrence counters excluded. Children remain in reported order."
+        }
+      }
+    },
+    "stats_row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "count",
+        "node_ids",
+        "self_ms",
+        "share",
+        "actual_rows",
+        "estimated_rows",
+        "loops"
+      ],
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "node_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/node_id"
+          }
+        },
+        "self_ms": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Sum of canonical self times across loops, milliseconds; null if any member is unmeasured."
+        },
+        "share": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Self time divided by root total; null without a positive measured root. May exceed 1 for separate execution branches."
+        },
+        "actual_rows": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Rows produced across loops and repeated accesses, not distinct rows; MariaDB rows_returned when reported. Null if any member lacks counters."
+        },
+        "estimated_rows": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Sum of estimated rows per loop, not multiplied by actual loops."
+        },
+        "loops": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Sum of reported actual loops; null for estimated plans or missing counters."
+        },
+        "table": {
+          "type": "string"
+        },
+        "schema": {
+          "type": "string"
+        },
+        "operators": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       }
     }

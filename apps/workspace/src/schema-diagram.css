@@ -73,3 +73,16 @@
   .diagram-mermaid-code { height: 280px; min-height: 0; }
   .diagram-mermaid-preview { height: 55vh; }
 }
+
+/* Loading the chosen database: the empty state's primary action, its progress
+   and error under it; a long database name wraps inside the button. */
+.diagram-empty-actions .action-button,
+.diagram-choice .action-button { max-width: 100%; min-width: 0; height: auto; min-height: var(--control-h); }
+.diagram-empty-actions .action-button-label,
+.diagram-choice .action-button-label { min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.diagram-load-status { justify-content: center; max-width: 56ch; }
+/* Reload database list: an icon beside the list it reloads. */
+.diagram-reload-list.has-icon { padding-inline: var(--space-2); }
+/* Another database chosen while a diagram is shown: one line and its Load. */
+.diagram-choice { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-block: 0 var(--space-2); font-size: var(--text-sm); color: var(--ink-muted); min-width: 0; }
+.diagram-choice p { margin: 0; min-width: 0; overflow-wrap: anywhere; }

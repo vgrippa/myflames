@@ -11,7 +11,15 @@
     6,
     0
    ],
-   "engine": "mysql"
+   "engine": "mysql",
+   "download_url": "https://dev.mysql.com/downloads/shell/",
+   "update": {
+    "status": "not_checked",
+    "latest_version": null,
+    "checked_at": null,
+    "source_url": "https://dev.mysql.com/downloads/shell/",
+    "message": "Update check not requested."
+   }
   },
   "mysqldump": {
    "available": true,
@@ -23,7 +31,15 @@
     4,
     3
    ],
-   "engine": "mysql"
+   "engine": "mysql",
+   "download_url": "https://dev.mysql.com/downloads/mysql/",
+   "update": {
+    "status": "not_checked",
+    "latest_version": null,
+    "checked_at": null,
+    "source_url": "https://dev.mysql.com/downloads/mysql/",
+    "message": "Update check not requested."
+   }
   },
   "mysqlpump": {
    "available": true,
@@ -35,7 +51,15 @@
     0,
     36
    ],
-   "engine": "mysql"
+   "engine": "mysql",
+   "download_url": "https://dev.mysql.com/doc/refman/8.0/en/mysqlpump.html",
+   "update": {
+    "status": "deprecated",
+    "latest_version": null,
+    "checked_at": null,
+    "source_url": "https://dev.mysql.com/doc/refman/8.0/en/mysqlpump.html",
+    "message": "Deprecated tool. Use MySQL Shell or mysqldump."
+   }
   },
   "mariadb-dump": {
    "available": true,
@@ -47,7 +71,15 @@
     4,
     5
    ],
-   "engine": "mariadb"
+   "engine": "mariadb",
+   "download_url": "https://mariadb.org/download/",
+   "update": {
+    "status": "not_checked",
+    "latest_version": null,
+    "checked_at": null,
+    "source_url": "https://mariadb.org/download/",
+    "message": "Update check not requested."
+   }
   },
   "mariadb-backup": {
    "available": true,
@@ -59,7 +91,15 @@
     4,
     5
    ],
-   "engine": "mariadb"
+   "engine": "mariadb",
+   "download_url": "https://mariadb.org/download/",
+   "update": {
+    "status": "not_checked",
+    "latest_version": null,
+    "checked_at": null,
+    "source_url": "https://mariadb.org/download/",
+    "message": "Update check not requested."
+   }
   },
   "mysql": {
    "available": true,
@@ -71,7 +111,15 @@
     4,
     3
    ],
-   "engine": "mysql"
+   "engine": "mysql",
+   "download_url": "https://dev.mysql.com/downloads/mysql/",
+   "update": {
+    "status": "not_checked",
+    "latest_version": null,
+    "checked_at": null,
+    "source_url": "https://dev.mysql.com/downloads/mysql/",
+    "message": "Update check not requested."
+   }
   },
   "mariadb": {
    "available": true,
@@ -83,7 +131,15 @@
     4,
     5
    ],
-   "engine": "mariadb"
+   "engine": "mariadb",
+   "download_url": "https://mariadb.org/download/",
+   "update": {
+    "status": "not_checked",
+    "latest_version": null,
+    "checked_at": null,
+    "source_url": "https://mariadb.org/download/",
+    "message": "Update check not requested."
+   }
   },
   "mariadb-upgrade": {
    "available": true,
@@ -95,7 +151,15 @@
     4,
     5
    ],
-   "engine": "mariadb"
+   "engine": "mariadb",
+   "download_url": "https://mariadb.org/download/",
+   "update": {
+    "status": "not_checked",
+    "latest_version": null,
+    "checked_at": null,
+    "source_url": "https://mariadb.org/download/",
+    "message": "Update check not requested."
+   }
   }
  },
  "server": {

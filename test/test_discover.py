@@ -624,7 +624,8 @@ class TestDiscoverAPI(unittest.TestCase):
 
     def test_routes_are_in_the_post_allowlist(self):
         source = inspect.getsource(ui.WorkspaceHandler.do_POST)
-        for path in ('/api/live/top', '/api/live/running', '/api/live/explain-connection'):
+        for path in ('/api/live/top', '/api/live/running', '/api/live/explain-connection',
+                     '/api/live/digest-histogram'):
             self.assertIn('"%s"' % path, source)
 
 
@@ -966,13 +967,13 @@ class TestWorkloadAttribution(unittest.TestCase):
                          extra=[status, overflow])
         report = discover.top_report(conn, order='full_join')
         self.assertEqual(report['coverage'], {'uptime_s': 7200, 'first_seen': '2026-10-01 10:00:00.000000',
-                                              'digest_lost': 12,
+                                              'digest_lost': 12, 'counting_since': None,
                                               'overflow': {'executions': 1234, 'total_ms': 5000.0}})
         self.assertTrue(any('digest table is full' in n for n in report['notes']))
         # Best effort: an unreadable status leaves the fields empty.
         bare = discover.top_report(mysql_top('8.4.3', []))
         self.assertEqual(bare['coverage'], {'uptime_s': None, 'first_seen': None, 'digest_lost': None,
-                                            'overflow': None})
+                                            'counting_since': None, 'overflow': None})
 
     def test_explain_and_desc_digests_never_count_as_workload(self):
         """EXPLAIN sets SUM_NO_INDEX_USED (measured on MySQL 8.0 and MariaDB
@@ -1063,171 +1064,311 @@ class TestWorkloadAttribution(unittest.TestCase):
                     self.assertIn(condition, sql)
 
 
-class TestSlowQueries(unittest.TestCase):
-    def slow_log(self, version='8.4.3', response=None):
-        if response is None:
-            response = batch([['2026-10-21 12:00:00', 'app[app] @ localhost',
-                               '00:00:05.125000', '00:00:00.025000', 1, 10000,
-                               'shop', 'SELECT * FROM orders WHERE id > 0']])
-        return FakeConn(version, [server(version), ('FROM mysql.slow_log', response)])
+def context(digests, total_ps, calls, first='2026-10-01 10:00:00.000000', age_s=None, cpu=None):
+    """The one aggregate read behind server_context (discover._CONTEXT_SQL)."""
+    return ('COUNT(*), SUM(SUM_TIMER_WAIT)', batch([[digests, total_ps, calls, first, age_s, cpu]]))
 
-    def test_product_identity_survives_slow_log_pfs_and_auto_fallback(self):
-        cases = (
-            ('8.4.11', 'MySQL Community Server - GPL', 'mysql', 'mysql', 'MySQL'),
-            ('11.4.13-MariaDB', '', 'mariadb', 'mariadb', 'MariaDB'),
-            ('8.4.11-11', 'Percona Server (GPL), Release 11', 'mysql', 'percona', 'Percona Server'),
-            ('8.4.11-11.1', 'Percona XtraDB Cluster (GPL)', 'mysql', 'percona', 'Percona XtraDB Cluster'),
+
+def uptime(seconds, lost=0):
+    return ('Performance_schema_digest_lost', batch([['Uptime', seconds], ['Performance_schema_digest_lost', lost]]))
+
+
+def detail_row(text, cpu_ps=0, p95_ps=0, p99_ps=0, p999_ps=0, new=0, **kwargs):
+    """A MySQL digest row read with server_context: the optional CPU and
+    quantile columns and the server's New flag after the attribution counters."""
+    return attribution_row(text, **kwargs) + [cpu_ps, p95_ps, p99_ps, p999_ps, new]
+
+
+class TestServerContext(unittest.TestCase):
+    """top_report ranks against the whole server: totals, the closing other
+    statements, the counting window, the New badge, CPU time and quantiles."""
+
+    def test_totals_rank_against_the_server_and_close_with_other_statements(self):
+        rows = [detail_row('SELECT * FROM `a`', count=10, total_ps=2 * 10 ** 12, sample='SELECT * FROM a'),
+                detail_row('SELECT * FROM `b`', count=30, total_ps=3 * 10 ** 12, sample='SELECT * FROM b')]
+        conn = mysql_top('8.4.3', rows, extra=[context(9, 20 * 10 ** 12, 100)])
+        report = discover.top_report(conn, limit=2)
+        self.assertEqual(report['totals'], {'digests': 9, 'total_ms': 20000.0, 'executions': 100})
+        self.assertEqual(report['others'], {'digests': 7, 'total_ms': 15000.0, 'executions': 60})
+        # One more read, and only one, for the whole server.
+        reads = conn.sql('COUNT(*), SUM(SUM_TIMER_WAIT)')
+        self.assertEqual(len(reads), 1)
+        self.assertEqual(reads[0], discover.DISCOVER_TAG + discover._CONTEXT_SQL)
+        self.assertIn('TIMESTAMPDIFF(SECOND, MIN(FIRST_SEEN), NOW())', reads[0])
+        self.assertIn("NAME = 'events_statements_cpu'", reads[0])
+        self.assertNotIn(discover.DISCOVER_TAG + discover._CONTEXT_SQL, discover.SHARED_METADATA_SQL)
+        json.dumps(report, allow_nan=False)
+
+    def test_a_list_holding_every_digest_has_no_others_row(self):
+        rows = [detail_row('SELECT 1', count=4, total_ps=10 ** 12, sample='SELECT 1')]
+        report = discover.top_report(mysql_top('8.4.3', rows, extra=[context(1, 10 ** 12, 4)]))
+        self.assertEqual(report['totals']['digests'], 1)
+        self.assertIsNone(report['others'])
+
+    def test_totals_never_go_negative_when_the_list_was_read_later(self):
+        rows = [detail_row('SELECT 1', count=50, total_ps=9 * 10 ** 12, sample='SELECT 1')]
+        report = discover.top_report(mysql_top('8.4.3', rows, extra=[context(3, 10 ** 12, 40)]))
+        self.assertEqual(report['others'], {'digests': 2, 'total_ms': 0.0, 'executions': 0})
+
+    def test_an_unread_or_unexpected_context_is_best_effort(self):
+        rows = [detail_row('SELECT 1', new=1, sample='SELECT 1')]
+        denied = ConnectorError('ERROR 1142 (42000): SELECT command denied')
+        shapes = (
+            [],                                                        # answered by another pattern
+            [('COUNT(*), SUM(SUM_TIMER_WAIT)', denied)],               # refused
+            [('COUNT(*), SUM(SUM_TIMER_WAIT)', batch([[1, 2, 3]]))],   # an older reply shape
+            [('COUNT(*), SUM(SUM_TIMER_WAIT)', batch([['x', 2, 3, None, None, None]]))],
         )
-        for version, comment, engine, flavor, product in cases:
-            for source in ('slow_log', 'pfs', 'auto'):
-                with self.subTest(product=product, source=source):
-                    if source == 'slow_log':
-                        conn = self.slow_log(version)
-                    else:
-                        conn = mysql_top(version, [], extra=[
-                            ('FROM mysql.slow_log', ConnectorError('ERROR 1142: SELECT denied'))])
-                    conn.server_version_comment = lambda: comment
-                    report = discover.slow_queries_report(conn, source=source)
-                    wire = json.loads(json.dumps(report, allow_nan=False))
-                    self.assertEqual(wire['engine'], engine)
-                    self.assertEqual(wire['flavor'], flavor)
-                    self.assertEqual(wire['server_product'], product)
-                    self.assertEqual(wire['server_version'], version)
-                    self.assertEqual(wire['schema_version'], 'slow-queries-1.0')
-                    self.assertEqual(wire['source'], 'mysql.slow_log' if source == 'slow_log'
-                                     else 'performance_schema')
-                    if source == 'auto':
-                        self.assertTrue(any('ERROR 1142' in note for note in wire['notes']))
-
-    def test_slow_log_filters_and_orders_by_duration_before_limit_on_both_engines(self):
-        for version in ('8.4.3', '11.4.3-MariaDB'):
-            with self.subTest(version=version):
-                conn = self.slow_log(version)
-                report = discover.slow_queries_report(conn, min_seconds=1.25, limit=7, source='slow_log')
-                sql = conn.sql('FROM mysql.slow_log')[0]
-                self.assertIn('WHERE query_time >= SEC_TO_TIME(1.25) ORDER BY query_time DESC LIMIT 7', sql)
-                self.assertNotIn('ORDER BY start_time', sql)
-                self.assertEqual(report['schema_version'], 'slow-queries-1.0')
-                self.assertEqual(report['source'], 'mysql.slow_log')
+        for extra in shapes:
+            with self.subTest(extra=extra):
+                report = discover.top_report(mysql_top('8.4.3', rows, extra=list(extra) + [uptime(200000)]))
                 self.assertEqual(len(report['statements']), 1)
-                item = report['statements'][0]
-                self.assertEqual((item['total_ms'], item['avg_ms'], item['max_ms'], item['lock_time_ms']),
-                                 (5125.0, 5125.0, 5125.0, 25.0))
-                self.assertEqual((item['rows_examined'], item['rows_sent'], item['examined_per_sent']),
-                                 (10000, 1, 10000.0))
-                self.assertEqual(item['sample_text'], 'SELECT * FROM orders WHERE id > 0')
-                self.assertEqual(item['schema'], 'shop')
-                for counter in ('no_index_used', 'no_good_index_used', 'tmp_disk_tables', 'tmp_tables',
-                                'sort_merge_passes', 'select_full_join', 'select_range_check', 'select_scan'):
-                    self.assertIsNone(item[counter], counter)
-                self.assertEqual(item['flags'], ['slow_query'])
-                self.assertIsNone(item['capture_problem'])
-                self.assertIn('notes', json.loads(json.dumps(report, allow_nan=False)))
+                self.assertIsNone(report['totals'])
+                self.assertIsNone(report['others'])
+                self.assertIsNone(report['coverage']['counting_since'])
+                # The consumer was not read: unknown, never "off".
+                self.assertEqual(report['cpu'], {'collected': None})
+                # Without the window the uptime alone gates the badge.
+                self.assertTrue(report['statements'][0]['new'])
 
-    def test_slow_log_keeps_sql_matches_at_fractional_second_boundary(self):
-        for version in ('8.4.3', '11.4.3-MariaDB'):
-            with self.subTest(version=version):
-                response = batch([['2026-10-21 12:00:00', 'app[app] @ localhost',
-                                   '00:00:01.000002', '00:00:00', 1, 1, 'shop', 'SELECT 1']])
-                conn = self.slow_log(version, response=response)
-                report = discover.slow_queries_report(conn, min_seconds=1.000002, source='slow_log')
-                self.assertIn('WHERE query_time >= SEC_TO_TIME(1.000002)', conn.sql('FROM mysql.slow_log')[0])
-                # The server matched the exact TIME value. Display rounding and
-                # binary floating-point arithmetic must not discard that row.
-                self.assertEqual(len(report['statements']), 1)
-                self.assertEqual(report['statements'][0]['total_ms'], 1000.002)
+    def test_counting_since_note_when_the_oldest_digest_began_after_startup(self):
+        row = detail_row('SELECT 1', sample='SELECT 1')
+        first = '2026-10-27 08:00:00.123456'
+        report = discover.top_report(mysql_top('8.4.3', [row], extra=[
+            uptime(10000), context(1, 10 ** 12, 1, first=first, age_s=6000)]))
+        self.assertEqual(report['coverage']['counting_since'], first)
+        self.assertIn('Counting since 2026-10-27 08:00:00: the digest table was reset or statements began '
+                      'after the server started.', report['notes'])
+        # Within the hour after startup there is no caveat.
+        report = discover.top_report(mysql_top('8.4.3', [row], extra=[
+            uptime(6500), context(1, 10 ** 12, 1, first=first, age_s=6000)]))
+        self.assertIsNone(report['coverage']['counting_since'])
+        self.assertFalse([n for n in report['notes'] if 'Counting since' in n])
+        # Without the uptime the two cannot be compared.
+        report = discover.top_report(mysql_top('8.4.3', [row], extra=[
+            context(1, 10 ** 12, 1, first=first, age_s=6000)]))
+        self.assertIsNone(report['coverage']['counting_since'])
+        # An empty digest table has no FIRST_SEEN at all.
+        report = discover.top_report(mysql_top('8.4.3', [], extra=[
+            uptime(100000), context(0, None, None, first=None, age_s=None)]))
+        self.assertIsNone(report['coverage']['counting_since'])
+        self.assertEqual(report['totals'], {'digests': 0, 'total_ms': 0.0, 'executions': 0})
+        self.assertIsNone(report['others'])
 
-    def test_bad_arguments_are_refused_before_connecting(self):
-        conn = FakeConn('8.4.3')
-        for key, values in (
-                ('min_seconds', (-1, 31536001, float('nan'), float('inf'), True, '1', None)),
-                ('limit', (0, 201, True, '5', 1.5, None)),
-                ('source', ('unknown', None))):
-            for value in values:
-                with self.subTest(key=key, value=value):
-                    with self.assertRaises(ValueError):
-                        discover.slow_queries_report(conn, **{key: value})
-        self.assertEqual(conn.calls, [])
+    def test_new_badge_is_decided_on_the_server_and_gated_by_the_window(self):
+        conn = mysql_top('8.4.3', [])
+        discover.top_report(conn)
+        self.assertIn(', FIRST_SEEN > NOW() - INTERVAL 24 HOUR FROM ', conn.sql('DIGEST_TEXT IS NOT NULL')[0])
 
-    def test_zero_threshold_and_maximum_limit_are_supported(self):
-        conn = self.slow_log(response='')
-        report = discover.slow_queries_report(conn, min_seconds=0, limit=200, source='slow_log')
-        self.assertEqual(report['statements'], [])
-        self.assertIn('WHERE query_time >= SEC_TO_TIME(0.0) ORDER BY query_time DESC LIMIT 200',
-                      conn.sql('FROM mysql.slow_log')[0])
-        self.assertEqual(report['notes'], [])
+        def new(flag, up, age_s):
+            extra = ([uptime(up)] if up is not None else []) + [context(5, 10 ** 12, 5, age_s=age_s)]
+            item = discover.top_report(mysql_top('8.4.3', [detail_row('SELECT 1', new=flag, sample='SELECT 1')],
+                                                 extra=extra))['statements'][0]
+            self.assertNotIn('new_24h', item)
+            return item['new']
 
-    def test_pfs_duration_and_report_keep_measured_counters(self):
-        for version in ('8.4.3', '11.4.3-MariaDB'):
-            with self.subTest(version=version):
-                has_sample = 'MariaDB' not in version
-                row = digest_row('SELECT * FROM `orders`', sample='SELECT * FROM orders',
-                                 no_index=2, max_ps=5000000000000, with_sample=has_sample) + [3, 4, 5]
-                conn = mysql_top(version, [row])
-                report = discover.slow_queries_report(conn, min_seconds=1.25, limit=7, source='pfs')
-                sql = conn.sql('events_statements_summary_by_digest')[0]
-                self.assertIn('MAX_TIMER_WAIT >= 1250000000000', sql)
-                self.assertIn('ORDER BY MAX_TIMER_WAIT DESC LIMIT 7', sql)
-                self.assertEqual(report['source'], 'performance_schema')
-                self.assertEqual(len(report['statements']), 1)
-                item = report['statements'][0]
-                self.assertEqual((item['no_index_used'], item['select_scan']), (2, 5))
-                self.assertTrue(any('accumulate' in n for n in report['notes']))
-                if not has_sample:
-                    self.assertTrue(any('no sample statement text' in n for n in report['notes']))
-                self.assertEqual(conn.sql('FROM mysql.slow_log'), [])
+        self.assertTrue(new(1, 200000, 150000))
+        self.assertFalse(new(0, 200000, 150000), 'first seen more than a day ago')
+        self.assertFalse(new(1, 7200, 7000), 'a server up less than a day: everything is new')
+        self.assertFalse(new(1, None, 150000), 'unknown uptime')
+        self.assertFalse(new(1, 200000, 3600), 'the digest table was reset an hour ago')
+        self.assertTrue(new(1, 200000, None), 'an unknown window leaves the uptime gate')
 
-    def test_slow_log_errors_are_reported_and_auto_falls_back(self):
-        denied = ConnectorError('ERROR 1142 (42000): SELECT command denied for mysql.slow_log')
-        for source in ('slow_log', 'auto'):
-            with self.subTest(source=source):
-                conn = mysql_top('8.4.3', [digest_row('SELECT * FROM orders', sample='SELECT * FROM orders')],
-                                 extra=[('FROM mysql.slow_log', denied)])
-                report = discover.slow_queries_report(conn, source=source)
-                notes = '\n'.join(report['notes'])
-                self.assertIn('ERROR 1142', notes)
-                self.assertIn('GRANT SELECT ON mysql.slow_log', notes)
-                self.assertEqual(len(report['statements']), 1 if source == 'auto' else 0)
-                self.assertEqual(report['source'], 'performance_schema' if source == 'auto' else 'mysql.slow_log')
+    def test_cpu_time_and_quantiles_are_read_when_the_columns_exist(self):
+        row = detail_row('SELECT 1', cpu_ps=4 * 10 ** 11, p95_ps=3 * 10 ** 8, p99_ps=9 * 10 ** 8,
+                         p999_ps=2 * 10 ** 9, sample='SELECT 1')
+        conn = mysql_top('8.4.3', [row], extra=[context(1, 10 ** 12, 1, cpu='YES')])
+        report = discover.top_report(conn)
+        sql = conn.sql('DIGEST_TEXT IS NOT NULL')[0]
+        self.assertIn('SUM_SELECT_SCAN, SUM_CPU_TIME, QUANTILE_95, QUANTILE_99, QUANTILE_999, FIRST_SEEN > NOW()',
+                      sql)
+        self.assertEqual(report['cpu'], {'collected': True})
+        item = report['statements'][0]
+        self.assertEqual(item['cpu_ms'], 400.0)
+        self.assertEqual((item['p95_ms'], item['p99_ms'], item['p999_ms']), (0.3, 0.9, 2.0))
+        # The consumer off: SUM_CPU_TIME does not grow ("Not collected").
+        report = discover.top_report(mysql_top('8.4.3', [row], extra=[context(1, 10 ** 12, 1, cpu='NO')]))
+        self.assertEqual(report['cpu'], {'collected': False})
+        # No such consumer row: unknown.
+        report = discover.top_report(mysql_top('8.4.3', [row], extra=[context(1, 10 ** 12, 1, cpu=None)]))
+        self.assertEqual(report['cpu'], {'collected': None})
 
-    def test_auto_preserves_both_source_errors(self):
-        conn = mysql_top('8.4.3', [], extra=[
-            ('FROM mysql.slow_log', ConnectorError('ERROR 1146: mysql.slow_log is absent')),
-            ('events_statements_summary_by_digest', ConnectorError('ERROR 2013: Lost connection to server'))])
-        report = discover.slow_queries_report(conn)
-        self.assertEqual(report['statements'], [])
-        notes = '\n'.join(report['notes'])
-        self.assertIn('ERROR 1146', notes)
-        self.assertIn('ERROR 2013', notes)
+    def test_extra_metrics_keep_their_positions_before_the_optional_columns(self):
+        row = attribution_row('SELECT 1', sample='SELECT 1') + [7 * 10 ** 9, 3, 5 * 10 ** 11, 0, 0, 0, 1]
+        conn = mysql_top('8.4.3', [row], extra=[uptime(200000), context(1, 10 ** 12, 1, age_s=90000)])
+        item = discover.top_report(conn, extra_metrics=True)['statements'][0]
+        self.assertEqual((item['lock_time_ms'], item['tmp_tables'], item['cpu_ms']), (7.0, 3, 500.0))
+        self.assertTrue(item['new'])
 
-    def test_pfs_off_disabled_consumer_and_missing_grant_have_actionable_notes(self):
-        cases = [
-            (FakeConn('8.4.3', [server('8.4.3', ps_on=False)]), 'performance_schema=OFF'),
-            (FakeConn('11.4.3-MariaDB', [server('11.4.3-MariaDB', ps_on=False)]),
-             'MariaDB disables it by default'),
-            (mysql_top('8.4.3', [], extra=[('setup_consumers', batch([['statements_digest', 'NO']]))]),
-             "SET ENABLED='YES'"),
-            (mysql_top('8.4.3', [], extra=[('events_statements_summary_by_digest',
-                                          ConnectorError('ERROR 1142: SELECT command denied'))]),
-             'GRANT SELECT ON performance_schema.*'),
-        ]
-        for conn, expected in cases:
-            with self.subTest(expected=expected):
-                report = discover.slow_queries_report(conn, source='performance_schema')
-                self.assertEqual(report['statements'], [])
-                self.assertIn(expected, '\n'.join(report['notes']))
+    def test_an_unknown_optional_column_is_dropped_and_the_read_sent_again(self):
+        def older_server(missing):
+            def answer(sql):
+                for name in missing:
+                    if re.search(r'\b%s\b' % name, sql):
+                        raise ConnectorError("mysql client exited 1: ERROR 1054 (42S22) at line 1: "
+                                             "Unknown column '%s' in 'field list'" % name)
+                present = [name for name in discover._OPTIONAL_COLUMNS if name not in missing]
+                return batch([attribution_row('SELECT 1', sample='SELECT 1') + [3 * 10 ** 8] * len(present) + [0]])
+            return answer
 
-    def test_value_errors_become_notes_but_programming_errors_propagate(self):
-        conn = self.slow_log(response=ValueError('invalid slow-log response'))
-        report = discover.slow_queries_report(conn, source='slow_log')
-        self.assertIn('invalid slow-log response', '\n'.join(report['notes']))
-        for source in ('slow_log', 'pfs'):
-            conn = self.slow_log(response=AssertionError('unexpected slow-log SQL')) if source == 'slow_log' else \
-                mysql_top('8.4.3', [], extra=[('events_statements_summary_by_digest',
-                                             AssertionError('unexpected digest SQL'))])
-            with self.subTest(source=source):
-                with self.assertRaisesRegex(AssertionError, 'unexpected'):
-                    discover.slow_queries_report(conn, source=source)
+        conn = mysql_top('8.0.26', [], extra=[('DIGEST_TEXT IS NOT NULL', older_server(['SUM_CPU_TIME']))])
+        report = discover.top_report(conn)
+        reads = conn.sql('DIGEST_TEXT IS NOT NULL')
+        self.assertEqual(len(reads), 2)
+        self.assertIn('SUM_CPU_TIME', reads[0])
+        self.assertNotIn('SUM_CPU_TIME', reads[1])
+        item = report['statements'][0]
+        self.assertIsNone(item['cpu_ms'])
+        self.assertEqual((item['p95_ms'], item['p99_ms'], item['p999_ms']), (0.3, 0.3, 0.3))
+        # Without the column there is no CPU fact at all.
+        self.assertIsNone(report['cpu'])
+        # A server without any of them: one read per missing column, then the list.
+        conn = mysql_top('8.0.18', [], extra=[('DIGEST_TEXT IS NOT NULL', older_server(discover._OPTIONAL_COLUMNS))])
+        item = discover.top_report(conn)['statements'][0]
+        self.assertEqual(len(conn.sql('DIGEST_TEXT IS NOT NULL')), 5)
+        self.assertEqual([item[k] for k in ('cpu_ms', 'p95_ms', 'p99_ms', 'p999_ms')], [None] * 4)
+        # Any other error still fails the list.
+        broken = ConnectorError("mysql client exited 1: ERROR 1054 (42S22): Unknown column 'NOPE' in 'field list'")
+        with self.assertRaisesRegex(ValueError, 'Could not read statement digests'):
+            discover.top_report(mysql_top('8.4.3', [], extra=[('DIGEST_TEXT IS NOT NULL', broken)]))
+
+    def test_mariadb_omits_cpu_and_quantiles(self):
+        conn = FakeConn('11.4.3-MariaDB', [server('11.4.3-MariaDB'), uptime(200000),
+                                           context(2, 10 ** 12, 4, age_s=100000), CONSUMERS_ON, (
+            'events_statements_summary_by_digest',
+            batch([attribution_row('SELECT * FROM `t`', with_sample=False) + [1]]))])
+        report = discover.top_report(conn)
+        sql = conn.sql('DIGEST_TEXT IS NOT NULL')[0]
+        for name in discover._OPTIONAL_COLUMNS:
+            self.assertNotIn(name, sql)
+        self.assertIn('FIRST_SEEN > NOW() - INTERVAL 24 HOUR', sql)
+        item = report['statements'][0]
+        self.assertEqual([item[k] for k in ('cpu_ms', 'p95_ms', 'p99_ms', 'p999_ms')], [None] * 4)
+        self.assertTrue(item['new'])
+        self.assertIsNone(report['cpu'])
+        self.assertEqual(report['totals']['digests'], 2)
+        self.assertEqual(report['others']['digests'], 1)
+
+    def test_without_server_context_the_statements_are_unchanged(self):
+        """The Full analysis attribution replays recorded SQL: its lists keep
+        the old statements and read nothing more."""
+        conn = mysql_top('8.4.3', [attribution_row('SELECT 1', sample='SELECT 1')])
+        report = discover.top_report(conn, 5, None, 'full_join', server_context=False)
+        sql = conn.sql('DIGEST_TEXT IS NOT NULL')[0]
+        self.assertIn('SUM_SELECT_SCAN FROM performance_schema.events_statements_summary_by_digest WHERE', sql)
+        self.assertNotIn('NOW()', sql)
+        self.assertEqual(conn.sql('COUNT(*)'), [])
+        self.assertEqual({sql for sql, _ in conn.calls if 'DIGEST_TEXT IS NOT NULL' not in sql},
+                         set(discover.SHARED_METADATA_SQL) & {sql for sql, _ in conn.calls})
+        self.assertEqual((report['totals'], report['others'], report['cpu']), (None, None, None))
+        for key in ('new', 'cpu_ms', 'p95_ms', 'new_24h'):
+            self.assertNotIn(key, report['statements'][0])
+
+    def test_a_cut_sample_is_flagged_and_noted_once(self):
+        cut = 'SELECT ' + 'x' * 1014 + '...'
+        self.assertEqual(len(cut), 1024)
+        self.assertTrue(discover._sample_cut(cut, 1024))
+        # Trimmed to whole characters before the "...": a few bytes short.
+        self.assertTrue(discover._sample_cut('SELECT ' + 'é' * 505 + '...', 1024))
+        self.assertTrue(discover._sample_cut('SELECT ' + 'x' * 1017, 1024))
+        self.assertFalse(discover._sample_cut("SELECT 'wait...'", 1024))
+        self.assertFalse(discover._sample_cut('SELECT ' + 'x' * 900 + '...', 1024))
+        self.assertFalse(discover._sample_cut(cut, 0))
+        report = discover.top_report(mysql_top('8.4.3', [detail_row('SELECT 1', sample=cut),
+                                                         detail_row('SELECT 2', sample=cut)]))
+        self.assertTrue(all(s['sample_truncated'] for s in report['statements']))
+        self.assertEqual([n for n in report['notes'] if 'Sample text' in n],
+                         ['Sample text was cut at 1024 bytes (performance_schema_max_sql_text_length).'])
+
+
+class TestDigestHistogram(unittest.TestCase):
+    """performance_schema.events_statements_histogram_by_digest (MySQL only)."""
+
+    DIGEST = 'ab' * 32
+
+    def histogram_conn(self, rows, version='8.4.3'):
+        return FakeConn(version, [server(version), ('events_statements_histogram_by_digest', batch(rows))])
+
+    def test_buckets_are_read_in_order_and_shaped_to_ms(self):
+        conn = self.histogram_conn([
+            [0, 0, 10000000, 5],
+            [51, 1000000000, 1047128548, 40],
+            [449, 9120108393559, 18446744073709551615, 2],
+        ])
+        result = discover.digest_histogram(conn, 'shop', self.DIGEST.upper())
+        self.assertEqual(result['schema_version'], 'digest-histogram-1.0')
+        self.assertTrue(result['available'])
+        self.assertIsNone(result['reason'])
+        self.assertEqual((result['schema'], result['digest']), ('shop', self.DIGEST))
+        self.assertEqual(result['buckets'], [
+            {'bucket': 0, 'low_ms': 0.0, 'high_ms': 0.01, 'count': 5},
+            {'bucket': 51, 'low_ms': 1.0, 'high_ms': 1.047129, 'count': 40},
+            # The last bucket has no upper bound (UINT64_MAX picoseconds).
+            {'bucket': 449, 'low_ms': 9120.108394, 'high_ms': None, 'count': 2}])
+        sql = conn.sql('events_statements_histogram_by_digest')[0]
+        self.assertEqual(sql, discover.DISCOVER_TAG + discover._HISTOGRAM_SQL % (
+            "SCHEMA_NAME = CONVERT(X'%s' USING utf8mb4)" % b'shop'.hex(), self.DIGEST))
+        self.assertIn('COUNT_BUCKET > 0', sql)
+        self.assertIn('ORDER BY BUCKET_NUMBER', sql)
+        json.dumps(result, allow_nan=False)
+        # The documented contract lists exactly these fields.
+        path = os.path.join(os.path.dirname(__file__), '..', 'docs', 'schemas', 'digest-histogram-1.0.json')
+        with open(path) as handle:
+            contract = json.load(handle)
+        self.assertEqual(set(result), set(contract['required']))
+        self.assertEqual(set(result['buckets'][0]), set(contract['properties']['buckets']['items']['required']))
+
+    def test_a_digest_without_a_default_schema_matches_null(self):
+        conn = self.histogram_conn([])
+        result = discover.digest_histogram(conn, None, self.DIGEST)
+        self.assertTrue(result['available'])
+        self.assertEqual(result['buckets'], [])
+        self.assertIn('SCHEMA_NAME IS NULL', conn.sql('events_statements_histogram_by_digest')[0])
+
+    def test_mariadb_and_a_server_without_the_table_have_no_histogram(self):
+        conn = FakeConn('11.4.3-MariaDB', [server('11.4.3-MariaDB')])
+        result = discover.digest_histogram(conn, 'shop', 'ab' * 16)
+        self.assertFalse(result['available'])
+        self.assertIn('MariaDB', result['reason'])
+        self.assertEqual(conn.sql('histogram'), [])
+        missing = ConnectorError("mysql client exited 1: ERROR 1146 (42S02): "
+                                 "Table 'performance_schema.events_statements_histogram_by_digest' doesn't exist")
+        conn = FakeConn('8.0.18', [server('8.0.18'), ('histogram', missing)])
+        result = discover.digest_histogram(conn, 'shop', self.DIGEST)
+        self.assertFalse(result['available'])
+        self.assertEqual(result['reason'], 'This server keeps no statement latency histogram.')
+        conn = FakeConn('8.4.3', [server('8.4.3', ps_on=False)])
+        with self.assertRaisesRegex(ValueError, 'performance_schema=OFF'):
+            discover.digest_histogram(conn, 'shop', self.DIGEST)
+
+    def test_denied_and_bad_arguments(self):
+        denied = ConnectorError("mysql client exited 1: ERROR 1142 (42000): SELECT command denied "
+                                "to user 'a'@'%' for table 'events_statements_histogram_by_digest'")
+        conn = FakeConn('8.4.3', [server('8.4.3'), ('histogram', denied)])
+        with self.assertRaisesRegex(ValueError, r'GRANT SELECT ON performance_schema\.\*'):
+            discover.digest_histogram(conn, 'shop', self.DIGEST)
+        for bad in ('xyz', 'ab' * 8, None, 42, 'g' * 64, "ab' OR '1" + 'a' * 30):
+            with self.subTest(bad=bad):
+                conn = FakeConn('8.4.3')
+                with self.assertRaises(ValueError):
+                    discover.digest_histogram(conn, 'shop', bad)
+                self.assertEqual(conn.calls, [])
+        for schema in ('', 'x' * 65, 'a\x00b', 7):
+            with self.subTest(schema=schema):
+                with self.assertRaises(ValueError):
+                    discover.digest_histogram(FakeConn('8.4.3'), schema, self.DIGEST)
+
+    def test_endpoint(self):
+        api = TestDiscoverAPI('test_top_and_running_routes')
+        result, _ = api.call('/api/live/digest-histogram', self.histogram_conn([[51, 1000000000, 2000000000, 40]]),
+                             {'connection': api.connection(), 'schema': 'shop', 'digest': self.DIGEST})
+        self.assertEqual(result['schema_version'], 'digest-histogram-1.0')
+        self.assertEqual(result['buckets'][0], {'bucket': 51, 'low_ms': 1.0, 'high_ms': 2.0, 'count': 40})
+        conn = self.histogram_conn([])
+        result, _ = api.call('/api/live/digest-histogram', conn,
+                             {'connection': api.connection(), 'schema': '', 'digest': self.DIGEST})
+        self.assertTrue(result['available'])
+        self.assertIn('SCHEMA_NAME IS NULL', conn.sql('histogram')[0])
 
 
 if __name__ == '__main__':

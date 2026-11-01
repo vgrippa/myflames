@@ -552,8 +552,7 @@ class TestRunAndQueries(unittest.TestCase):
 
     def test_explain_analyze_gates_json_format_variable_by_server_version(self):
         for version, maria, has_setting in (
-                ('5.7.44', False, False), ('8.0.46', False, False),
-                ('8.2.0', False, False), ('8.3.0', False, True),
+                ('8.3.0', False, True),
                 ('8.4.11', False, True), ('9.7.2', False, True),
                 ('26.7.0', False, True), ('11.4.13-MariaDB', True, False)):
             with self.subTest(version=version), \
@@ -567,14 +566,27 @@ class TestRunAndQueries(unittest.TestCase):
                 self.assertIn('SELECT 1 -- trailing\n;\nROLLBACK', sql)
                 self.assertNotIn('--force', run.call_args[1]['extra_flags'])
 
+    def test_explain_analyze_refuses_before_sending_on_mysql_without_explain_analyze(self):
+        # MySQL 5.7 (and 8.0 before 8.0.18) has no EXPLAIN ANALYZE: one plain
+        # sentence, and the client never runs the statement or its wrapper.
+        for version in ('5.7.44-log', '8.0.17', '8.0.46', '8.2.0'):
+            with self.subTest(version=version), \
+                    mock.patch.object(self.conn, 'server_version', return_value=version), \
+                    mock.patch.object(self.conn, 'is_mariadb', return_value=False), \
+                    mock.patch.object(self.conn, 'run') as run:
+                with self.assertRaisesRegex(ConnectorError, 'needs EXPLAIN ANALYZE FORMAT=JSON, which MySQL has from 8.3.*'
+                                            'nothing was sent'):
+                    self.conn.explain_analyze('SELECT 1')
+                run.assert_not_called()
+
     def test_explain_analyze_uses_capture_error_mapping_for_old_mysql(self):
         raw = "ERROR 1235 (42000) at line 3: This version does not yet support EXPLAIN ANALYZE with JSON format"
-        with mock.patch.object(self.conn, 'server_version', return_value='8.0.46'), \
+        with mock.patch.object(self.conn, 'server_version', return_value='8.3.0'), \
                 mock.patch.object(self.conn, 'is_mariadb', return_value=False), \
                 mock.patch.object(self.conn, 'run', side_effect=ConnectorError(raw)):
             with self.assertRaisesRegex(ConnectorError, 'needs MySQL 8.4 or later') as caught:
                 self.conn.explain_analyze('SELECT 1')
-        self.assertIn('this server is 8.0.46', str(caught.exception))
+        self.assertIn('this server is 8.3.0', str(caught.exception))
         self.assertNotIn('at line 3', str(caught.exception))
 
 

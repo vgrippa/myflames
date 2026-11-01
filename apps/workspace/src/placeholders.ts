@@ -168,7 +168,7 @@ export function fillNotice(q: Pick<DigestQuery, "names" | "lists" | "reason">) {
         ? `${q.names[0]} and ${q.names[1]}`
         : `${q.names[0]} to ${q.names[q.names.length - 1]}`;
   const lists = q.lists.length
-    ? ` ${q.lists.join(", ")} ${q.lists.length === 1 ? "replaces" : "replace"} a collapsed list of values (such as IN (...)); bind one value or write the list into the SQL.`
+    ? ` ${q.lists.join(", ")} ${q.lists.length === 1 ? "replaces" : "replace"} a collapsed list of values (such as IN (...)); give it a JSON list, such as [1, 2].`
     : "";
   return `${why} Fill in ${range} under Parameters with real values, then run Explain.${lists}`;
 }

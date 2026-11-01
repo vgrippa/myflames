@@ -1,0 +1,89 @@
+{
+ "server": "mysql-5.7-max-connections",
+ "source": "live",
+ "args": {
+  "name": "max_connections"
+ },
+ "calls": [
+  [
+   "/*myflames:variable*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('hostname', 'max_connections', 'persisted_globals_load', 'server_id', 'server_uuid', 'version', 'version_comment', 'version_compile_os'); /*myflames:variable*/ SELECT 'myflames:session'; /*myflames:variable*/ SHOW SESSION VARIABLES WHERE Variable_name = 'max_connections'",
+   "hostname\tea1f5236dd69\nmax_connections\t151\nserver_id\t116\nserver_uuid\tfef9a618-d526-11f1-ad2d-ca1ecc2ba104\nversion\t5.7.44-log\nversion_comment\tMySQL Community Server (GPL)\nversion_compile_os\tLinux\nmyflames:session\nmax_connections\t151\n"
+  ]
+ ],
+ "report": {
+  "schema_version": "variable-1.0",
+  "engine": "mysql",
+  "flavor": "mysql",
+  "server_product": "MySQL",
+  "server_version": "5.7.44-log",
+  "vendor": null,
+  "server_identity": {
+   "server_uuid": "fef9a618-d526-11f1-ad2d-ca1ecc2ba104"
+  },
+  "platform": "Linux",
+  "read_at": "2026-10-31T13:11:59.920669+00:00",
+  "nullable": false,
+  "name": "max_connections",
+  "exists": true,
+  "scope": "global",
+  "scope_source": "myflames map (sys_vars.cc)",
+  "dynamic": true,
+  "type": "integer",
+  "values": null,
+  "min": null,
+  "max": null,
+  "block_size": null,
+  "global_value": "151",
+  "session_value": null,
+  "default": "151",
+  "set_by": null,
+  "source": null,
+  "source_path": null,
+  "set_time": null,
+  "set_user": null,
+  "set_host": null,
+  "persisted": {
+   "state": "unsupported",
+   "read": false,
+   "present": null,
+   "value": null,
+   "supported": false,
+   "load": null
+  },
+  "non_persistent": false,
+  "persist_as_read_only": false,
+  "session_read_only": false,
+  "startup_option": null,
+  "description": null,
+  "notes": [
+   "MySQL 5.7 does not record where a value was set or when: performance_schema.variables_info and SET PERSIST arrived in MySQL 8.0. Sources are unknown here, and a change made with SET GLOBAL lasts until the server restarts unless you also add it to the option file."
+  ],
+  "modes": {
+   "global": {
+    "available": true,
+    "reason": null,
+    "recommended": false
+   },
+   "persist": {
+    "available": false,
+    "reason": "MySQL 5.7 has no SET PERSIST.",
+    "recommended": false
+   },
+   "persist_only": {
+    "available": false,
+    "reason": "MySQL 5.7 has no SET PERSIST_ONLY.",
+    "recommended": false
+   },
+   "reset_persist": {
+    "available": false,
+    "reason": "MySQL 5.7 has no RESET PERSIST.",
+    "recommended": false
+   },
+   "session": {
+    "available": false,
+    "reason": "max_connections has only a global value.",
+    "recommended": false
+   }
+  }
+ }
+}

@@ -741,7 +741,8 @@ class TestLessonHTMLContent(unittest.TestCase):
         """The lesson must not claim MySQL always uses the smaller of the two
         sizes: TempTable (the 8.4 default) uses tmp_table_size alone."""
         html = render_lesson("tmp")
-        self.assertIn('<select id="engine" name="engine">', html)
+        # The engine's hint is the select's description (its (?) help tip).
+        self.assertIn('<select id="engine" name="engine" aria-describedby="hint-engine">', html)
         self.assertIn('<option value="temptable" selected>', html)
         for needle in ("internal_tmp_mem_storage_engine", "temptable_max_ram",
                        "temptable_max_mmap", "Aria", "max_heap_table_size does not apply"):
@@ -940,8 +941,9 @@ class TestTeachCLI(unittest.TestCase):
                 )
 
     def test_all_lessons_have_query_card(self):
-        """Every lesson must show a real SQL query above the animation so
-        users see meaningful table names instead of 'outer table'."""
+        """Every lesson must show a real SQL query (in About this example,
+        right under the animation) so users see meaningful table names
+        instead of 'outer table'."""
         for name in LESSONS:
             html = render_lesson(name)
             self.assertIn(
@@ -954,8 +956,9 @@ class TestTeachCLI(unittest.TestCase):
             )
 
     def test_all_lessons_have_explainer(self):
-        """Every lesson must start with a 'what you'll see' explainer so
-        first-time viewers understand the animation before pressing Play."""
+        """Every lesson must have a 'what you'll see' explainer (in About
+        this example, linked from the parameters) so first-time viewers
+        understand the animation."""
         for name in LESSONS:
             html = render_lesson(name)
             self.assertIn(
@@ -999,7 +1002,7 @@ class TestTeachCLI(unittest.TestCase):
             "semijoin_firstmatch": ["customers", "orders"],
             "lru": ["events"],
             "filesort": ["orders"],
-            "tmp": ["employees"],
+            "tmp": ["orders"],
             "icp": ["employees"],
             "index_merge": ["products"],
             "full_scan": ["users"],
@@ -1259,6 +1262,799 @@ class TestLessonTitlesSentenceCase(unittest.TestCase):
             self.assertSentenceCase(html_lib.unescape(title.group(1)), f"page title of {key}")
             for chip in re.findall(r'<span class="family-chip">.*?</span>([^<]*)</span>', page):
                 self.assertSentenceCase(chip, f"family chip of {key}")
+
+
+class TestLessonFitAndFullScreen(unittest.TestCase):
+    """Every lesson's stage drawing fits the window or frame showing it, and
+    the shared chrome carries the full-screen focus layout: the workspace
+    switches it by message, a standalone page uses its own button. Browser
+    behavior is covered by apps/workspace/test/learn-fullscreen.mjs."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.pages = {key: render_lesson(key) for key in LESSONS}
+
+    def test_fit_rule_caps_the_stage_drawing_at_the_viewport(self):
+        for key, page in self.pages.items():
+            rule = re.search(
+                r"\.stage-with-phases svg, section\.stage > svg, \.stage-wrap > svg \{(.*?)\}",
+                page, re.S)
+            self.assertIsNotNone(rule, f"{key}: no fit rule for stage drawings")
+            self.assertIn("max-height: max(160px, calc(100vh - var(--stage-chrome, 96px)))",
+                          rule.group(1), key)
+            # The room above the drawing is measured, never guessed per lesson.
+            self.assertIn('setProperty("--stage-chrome"', page, key)
+            # Every stage drawing sits where the fit rule and the focus layout find it.
+            stage = re.search(r'<section class="stage".*?</section>', page, re.S)
+            self.assertIsNotNone(stage, key)
+            self.assertIn('class="stage-with-phases"', stage.group(0), key)
+
+    def test_focus_layout_hook_and_controls(self):
+        for key, page in self.pages.items():
+            self.assertIn('html[data-focus="true"]', page, key)
+            self.assertIn('<main id="lesson-main">', page, key)
+            self.assertIn('id="btn-fullscreen" type="button" '
+                          'aria-label="Show the lesson animation full screen"', page, key)
+            self.assertIn('id="btn-details" type="button" class="focus-only" '
+                          'aria-expanded="false" aria-controls="lesson-main"', page, key)
+            # Embedded in the workspace, the workspace's own button is the one shown.
+            self.assertIn('html[data-embedded="true"] #btn-fullscreen', page, key)
+            # A standalone page asks the browser and falls back to the layout alone.
+            self.assertIn("root.requestFullscreen()", page, key)
+            self.assertIn('addEventListener("fullscreenchange"', page, key)
+
+    def test_focus_message_accepts_only_the_parent_and_a_fixed_type(self):
+        for key, page in self.pages.items():
+            listener = re.search(
+                r'window\.addEventListener\("message", function\(event\) \{(.*?)\n  \}\);',
+                page[page.index("var teachFocus"):], re.S)
+            self.assertIsNotNone(listener, f"{key}: no focus message listener")
+            body = listener.group(1)
+            self.assertIn("event.source !== window.parent", body, key)
+            self.assertIn("data.type !== MESSAGE", body, key)
+            self.assertIn('typeof data.focus !== "boolean"', body, key)
+            self.assertIn('var MESSAGE = "myflames-lesson-focus";', page, key)
+
+    def test_escape_leaves_full_screen(self):
+        page = self.pages["full_scan"]
+        self.assertIn('event.key !== "Escape" || !state.on', page)
+        # Asking the workspace to leave carries no lesson data.
+        self.assertIn("window.parent.postMessage({ type: MESSAGE, focus: false }", page)
+
+
+class TestLessonPageOrder(unittest.TestCase):
+    """The stage comes first: every lesson opens with its parameters in one
+    compact row, then the stage, then About this example (the query card and
+    the explainer), then the numbers and Learn more. render_page decides the
+    order once for all lessons, so the DOM order is the visual order.
+    Measured in the workspace by apps/workspace/test/learn-guide.mjs."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.pages = {key: render_lesson(key) for key in LESSONS}
+
+    @staticmethod
+    def main_of(page):
+        return page[page.index('<main id="lesson-main">'):page.index("</main>")]
+
+    @staticmethod
+    def section(main, cls_name):
+        found = re.search(r'<section class="%s".*?</section>' % cls_name, main, re.S)
+        return found.group(0) if found else ""
+
+    def test_sections_follow_the_stage_first_order(self):
+        for key, page in self.pages.items():
+            with self.subTest(lesson=key):
+                main = self.main_of(page)
+                order = [main.find(marker) for marker in (
+                    '<section class="controls"', '<section class="stage"',
+                    '<section class="about-example"')]
+                self.assertTrue(all(at >= 0 for at in order), (key, order))
+                self.assertEqual(order, sorted(order), key)
+                for later in ('<section class="readout"', '<details class="learn-more"'):
+                    if later in main:
+                        self.assertGreater(main.index(later), order[2], (key, later))
+
+    def test_about_this_example_holds_the_query_and_the_explainer(self):
+        for key, page in self.pages.items():
+            with self.subTest(lesson=key):
+                main = self.main_of(page)
+                about = self.section(main, "about-example")
+                self.assertIn('id="about-example"', about)
+                self.assertIn('<h2 id="about-example-h">About this example</h2>', about)
+                self.assertEqual(about.count('class="query-card"'), 1, key)
+                self.assertEqual(about.count('class="explainer-card"'), 1, key)
+                # The query comes before the explainer, and nothing else
+                # on the page carries either card.
+                self.assertLess(about.index("query-card"), about.index("explainer-card"))
+                self.assertEqual(main.count('class="query-card"'), 1, key)
+                self.assertEqual(main.count('class="explainer-card"'), 1, key)
+                stage = self.section(main, "stage")
+                self.assertNotIn("query-card", stage, key)
+                self.assertNotIn("explainer-card", stage, key)
+                # The parameters link to it.
+                controls = self.section(main, "controls")
+                self.assertIn('<a class="about-link" href="#about-example">About this example', controls)
+
+    def test_parameter_hints_become_help_tips_described_by_their_control(self):
+        for key, page in self.pages.items():
+            with self.subTest(lesson=key):
+                controls = self.section(self.main_of(page), "controls")
+                self.assertNotIn('<div class="hint"', controls, key)
+                ids = re.findall(r'\bid="([^"]*)"', page[:page.index("<script>")])
+                self.assertEqual(len(ids), len(set(ids)), f"{key}: duplicate ids")
+                tips = re.findall(r'<span class="help-tip" aria-hidden="true">\?'
+                                  r'<span class="tip-text" id="([^"]+)">', controls)
+                for tip in tips:
+                    described = re.findall(
+                        r'<(?:input|select)\b[^>]*\baria-describedby="(?:[^"]* )?%s(?: [^"]*)?"'
+                        % re.escape(tip), controls)
+                    self.assertEqual(len(described), 1, f"{key}: {tip} describes one control")
+                # The (?) sits in the control's head beside its label, never
+                # inside the label (a click must not toggle a checkbox).
+                for head in re.findall(r'<div class="control-head">(.*?)</div>', controls, re.S):
+                    label = re.search(r"<label\b.*?</label>", head, re.S).group(0)
+                    self.assertNotIn("help-tip", label, key)
+        # Every hint the lessons wrote survives as a tip, lesson ids included.
+        self.assertIn('<span class="tip-text" id="max-heap-hint">', self.pages["tmp"])
+        self.assertIn('id="max_heap" name="max_heap" min="65536" max="134217728" step="65536" '
+                      'value="16777216" aria-describedby="max-heap-hint">', self.pages["tmp"])
+        self.assertIn('<input type="range" id="rows" name="rows" min="1" max="9" step="1" value="6" '
+                      'aria-describedby="hint-rows">', self.pages["btree"])
+        # A control without a hint keeps its label alone (join's row counts).
+        self.assertIn('<label for="outer_rows"><code>customers</code> rows: '
+                      '<span class="value-pill" data-pill-for="outer_rows">50000</span></label>\n'
+                      '      <input type="range" id="outer_rows" name="outer_rows"', self.pages["join"])
+
+    def test_arrange_lesson_moves_cards_and_hints(self):
+        from myflames.teach._html import arrange_lesson, explainer, query_card
+        controls = (
+            '<section class="controls">\n  <h2>Parameters</h2>\n  <div class="control-grid">\n'
+            '    <div class="control">\n      <label for="a">A <span class="value-pill">1</span></label>\n'
+            '      <input type="range" id="a" name="a" aria-describedby="note">\n'
+            '      <div class="hint">Use <code>a</code>.</div>\n    </div>\n'
+            '    <div class="control">\n      <label for="b">B</label>\n'
+            '      <input type="checkbox" id="b" name="b">\n'
+            '      <div class="hint" id="b-hint">Kept id.</div>\n    </div>\n'
+            '    <div class="control">\n      <label for="c">C</label>\n'
+            '      <input type="range" id="c" name="c">\n    </div>\n'
+            '  </div>\n</section>')
+        stage = ('<section class="stage">' + query_card("SELECT 1", "note")
+                 + explainer("What you'll see", ["x"]) + '<div class="stage-toolbar"></div></section>')
+        out_controls, out_stage, about = arrange_lesson(controls, stage)
+        self.assertEqual(re.sub(r"\s+", "", out_stage),
+                         '<sectionclass="stage"><divclass="stage-toolbar"></div></section>')
+        self.assertIn('<div class="query-card">', about)
+        self.assertLess(about.index("query-card"), about.index("explainer-card"))
+        self.assertIn('<div class="controls-head"><h2>Parameters</h2><a class="about-link" '
+                      'href="#about-example">', out_controls)
+        # Hint markup is kept; an existing description is extended, not replaced.
+        self.assertIn('<span class="tip-text" id="hint-a">Use <code>a</code>.</span>', out_controls)
+        self.assertIn('<input type="range" id="a" name="a" aria-describedby="note hint-a">', out_controls)
+        # A lesson's own hint id stays (its script may rewrite the text).
+        self.assertIn('<span class="tip-text" id="b-hint">Kept id.</span>', out_controls)
+        self.assertIn('<input type="checkbox" id="b" name="b" aria-describedby="b-hint">', out_controls)
+        # No hint, no tip.
+        self.assertIn('<label for="c">C</label>\n      <input type="range" id="c" name="c">', out_controls)
+        self.assertNotIn('class="hint"', out_controls)
+        # Without cards there is no About section and no link to it.
+        bare_controls, _, bare_about = arrange_lesson(controls, "<section class=\"stage\"></section>")
+        self.assertEqual(bare_about, "")
+        self.assertNotIn("about-link", bare_controls)
+        # A generated id never collides with an id already on the page.
+        clash = ('<div class="control"><label for="x">X</label><input id="x">'
+                 '<div class="hint">h</div></div><p id="hint-x"></p>')
+        self.assertIn('id="hint-x-2"', arrange_lesson(clash, "")[0])
+
+    def test_fit_counts_the_parameters_only_while_cheap(self):
+        page = self.pages["btree"]
+        fit = page[page.index("  function fit() {"):page.index("  var fitFrame = 0;")]
+        # What sits above the toolbar counts while it takes at most a quarter
+        # of the window and costs the drawing at most 15% of its scale.
+        self.assertIn("above <= window.innerHeight / 4", fit)
+        self.assertIn(">= 0.85 * kept", fit)
+        self.assertIn('root.style.setProperty("--stage-chrome"', fit)
+
+    def test_in_page_links_never_navigate_the_frame(self):
+        # In the workspace a lesson is an srcdoc frame whose base address is
+        # the workspace's own; "#about-example" must scroll, not navigate.
+        for key, page in self.pages.items():
+            with self.subTest(lesson=key):
+                self.assertIn("closest('a[href^=\"#\"]')", page)
+                self.assertIn("event.preventDefault();\n    var heading", page)
+
+    def test_committed_lesson_pages_match_the_renderer(self):
+        # docs/teach holds every lesson as rendered; regenerate with
+        #   python3 -c "from myflames.teach import LESSONS, FAMILY_DIRS; [print(k, FAMILY_DIRS[v['family']]) for k, v in sorted(LESSONS.items())]" |
+        #     while read lesson dir; do python3 -m myflames teach "$lesson" -q -o "docs/teach/$dir/$lesson.html"; done
+        from myflames.teach import FAMILY_DIRS
+        for key, page in self.pages.items():
+            with self.subTest(lesson=key):
+                path = os.path.join(REPO_DIR, "docs", "teach",
+                                    FAMILY_DIRS[LESSONS[key]["family"]], key + ".html")
+                with open(path, encoding="utf-8") as handle:
+                    self.assertTrue(handle.read() == page, f"{path} is stale; regenerate it")
+
+
+class TestLessonGuides(unittest.TestCase):
+    """Guided lessons: simplified code that follows the step, Check yourself
+    and Explore. Content is declarative (GUIDE in the lesson module) and the
+    lesson's timeline marks each step with tl.beat(kind). Browser behavior is
+    covered by apps/workspace/test/learn-guide.mjs."""
+
+    FLAGSHIPS = ("btree", "nested_loop", "full_scan")
+    GUIDE_RE = re.compile(r'<script type="application/json" id="lesson-guide">(.*?)</script>', re.S)
+
+    @classmethod
+    def setUpClass(cls):
+        import json as _json
+        cls.pages = {key: render_lesson(key) for key in LESSONS}
+        cls.guides = {}
+        for key, page in cls.pages.items():
+            found = cls.GUIDE_RE.search(page)
+            if found:
+                cls.guides[key] = _json.loads(found.group(1))
+
+    def lesson_js(self, key):
+        from myflames.teach import _html
+        page = self.pages[key]
+        start = page.index("<script>") + len("<script>")
+        script = page[start:page.index("</script>", start)]
+        # The lesson's own code sits between the shared runtime and the guide UI.
+        return script[script.index(_html._FOCUS_JS) + len(_html._FOCUS_JS):script.index(_html._GUIDE_JS)]
+
+    def test_flagship_lessons_declare_a_guide(self):
+        for key in self.FLAGSHIPS:
+            self.assertIn(key, self.guides, f"{key} has no guide content")
+
+    INDEX_FAMILY = ("unique_lookup", "non_unique_lookup", "icp", "index_merge",
+                    "skip_scan", "rowid_filter")
+
+    def test_index_family_lessons_declare_a_guide(self):
+        for key in self.INDEX_FAMILY:
+            self.assertIn(key, self.guides, f"{key} has no guide content")
+            self.assertIn("Ready: press Next step, or Play to run it all", self.pages[key], key)
+            # The explainer names Next step and the simplified code.
+            self.assertIn("simplified code beside the drawing", self.pages[key], key)
+
+    # Scan family lessons that follow the full_scan flagship.
+    SCAN_FAMILY = ("covering_index", "derived_table", "filesort", "filter", "tmp")
+
+    def test_scan_family_lessons_declare_a_guide(self):
+        for key in self.SCAN_FAMILY:
+            with self.subTest(lesson=key):
+                self.assertIn(key, self.guides, f"{key} has no guide content")
+                page = self.pages[key]
+                self.assertIn("Ready: press Next step, or Play to run it all", page)
+                self.assertIn("simplified code beside the drawing", page)
+
+    def test_scan_family_text_matches_the_server_source(self):
+        # MySQL has no radix sort in filesort; MariaDB's applies to keys of
+        # at most 20 bytes (radixsort_is_applicable in mysys/mf_radix.c).
+        filesort = self.pages["filesort"]
+        self.assertNotIn("16 B triggers radix", filesort)
+        self.assertIn("MariaDB radix sorts", filesort)
+        self.assertNotIn('id="radix-svg"', filesort)
+        # max_length_for_sort_data has no effect in MySQL 8.4 and 9.x.
+        self.assertNotIn("(default 4096 in MySQL 8.4)", filesort)
+        # A GROUP BY temp table holds one row per group, not per input row.
+        self.assertIn("GROUP BY customer_id", self.pages["tmp"])
+        # The derived table's key is in place before rows are written.
+        self.assertNotIn("creating auto-index on temp table", self.pages["derived_table"])
+        # One drawing for the covering index lesson (labels share one scale).
+        covering = self.pages["covering_index"]
+        self.assertIn('id="ci-svg"', covering)
+        self.assertNotIn('id="svg-index"', covering)
+        self.assertEqual(
+            self.pages["derived_table"],
+            __import__("myflames.teach.scan_family.derived_table", fromlist=["render"]).render())
+
+    # The join family follows its flagship (nested_loop).
+    JOIN_FAMILY = ("bka_join", "bnl", "hash", "join", "semijoin_firstmatch", "semijoin_weedout")
+
+    def test_join_family_lessons_declare_a_guide(self):
+        for key in self.JOIN_FAMILY:
+            self.assertIn(key, self.guides, f"{key} has no guide content")
+            page = self.pages[key]
+            # Each page names itself, so the workspace can find it (bka_join used "bka").
+            self.assertIn(f'<body data-lesson="{key}">', page)
+            self.assertIn("Ready: press Next step, or Play to run it all", page)
+
+    # The cache family (lru is its flagship) and the planner family.
+    CACHE_AND_PLANNER = ("lru", "buffer_pool_warmup", "join_order")
+
+    def test_cache_and_planner_lessons_declare_a_guide(self):
+        for key in self.CACHE_AND_PLANNER:
+            self.assertIn(key, self.guides, f"{key} has no guide content")
+
+    def test_guided_lessons_keep_the_toolbar_out_of_the_inputs(self):
+        # Explore moves section.controls into the step bar, so the toolbar
+        # (and the step bar after it) must not live inside that section.
+        controls_re = re.compile(r'<section class="controls".*?</section>', re.S)
+        for key in self.guides:
+            with self.subTest(lesson=key):
+                for block in controls_re.findall(self.pages[key]):
+                    self.assertNotIn('id="btn-play"', block)
+                    self.assertNotIn('id="scrubber"', block)
+
+    def test_every_declared_guide_is_valid(self):
+        from myflames.teach._html import normalize_guide, VERIFIED_SERVER_FUNCTIONS
+        for key, guide in self.guides.items():
+            with self.subTest(lesson=key):
+                # The embedded JSON is already the normalized form.
+                self.assertEqual(normalize_guide(guide), guide)
+                ids = [line["id"] for line in guide["code"]["lines"]]
+                self.assertEqual(len(ids), len(set(ids)))
+                for kind, lines in guide["beats"].items():
+                    self.assertTrue(set(lines) <= set(ids), kind)
+                # Every line is reached by some step.
+                used = {line for lines in guide["beats"].values() for line in lines}
+                self.assertEqual(used, set(ids), f"{key}: lines no step highlights")
+                self.assertTrue(2 <= len(guide["quiz"]) <= 4)
+                for question in guide["quiz"]:
+                    self.assertTrue(2 <= len(question["choices"]) <= 4)
+                    self.assertEqual(sum(c["correct"] for c in question["choices"]), 1)
+                    for choice in question["choices"]:
+                        self.assertRegex(choice["why"], r"^[^.!?]*(\.\d[^.!?]*)*[.!?]$")
+                for line in guide["code"]["lines"]:
+                    if line["fn"]:
+                        self.assertIn(line["fn"], VERIFIED_SERVER_FUNCTIONS)
+
+    def test_every_step_kind_in_the_timeline_has_lines(self):
+        for key, guide in self.guides.items():
+            with self.subTest(lesson=key):
+                js = self.lesson_js(key)
+                self.assertIn("tl.beat(", js)
+                literal = set(re.findall(r'tl\.beat\(\s*"([a-z0-9-]+)"', js))
+                strings = set(re.findall(r'"([a-z][a-z0-9-]*)"', js))
+                self.assertTrue(literal <= set(guide["beats"]), literal - set(guide["beats"]))
+                # Kinds built at run time still appear as literals in the source.
+                self.assertTrue(set(guide["beats"]) <= strings,
+                                f"{key}: guide kinds the timeline never names: "
+                                f"{set(guide['beats']) - strings}")
+
+    def test_lessons_without_a_guide_still_render(self):
+        # Every shipped lesson has a guide now; a lesson rendered without one
+        # (guide=None) must still work, with the guide UI stopping at once.
+        from unittest import mock
+        from myflames.teach import _html
+        real = _html.render_page
+        with mock.patch.object(_html, "render_page", lambda **kw: real(**dict(kw, guide=None))):
+            from myflames.teach.scan_family import full_scan
+            pages = {"full_scan": full_scan.render()}
+        for key, page in pages.items():
+            self.assertNotIn('id="lesson-guide"', page, key)
+            self.assertIn("<!DOCTYPE html>", page)
+            self.assertIn('id="btn-play"', page, key)
+            # The guide UI is shared but stops at once without content.
+            self.assertIn('if (!source || typeof teachRuntime === "undefined"', page, key)
+
+    def test_guide_ui_uses_text_only_and_needs_no_network(self):
+        from myflames.teach import _html
+        self.assertNotIn("innerHTML", _html._GUIDE_JS)
+        self.assertNotIn("insertAdjacentHTML", _html._GUIDE_JS)
+        for key in self.guides:
+            page = self.pages[key]
+            self.assertNotIn("<script src=", page)
+            # The quiz is page-only: no storage, no requests.
+            for api in ("localStorage", "sessionStorage", "fetch(", "XMLHttpRequest", "sendBeacon"):
+                self.assertNotIn(api, _html._GUIDE_JS, api)
+
+    def test_guide_json_cannot_end_its_script_element(self):
+        from myflames.teach._html import guide_json_html
+        guide = {
+            "code": {"title": "t</script><b>", "lines": [
+                ("a", 0, "x < y && y > z </script>"), ("b", 1, "b"), ("c", 0, "c")]},
+            "beats": {"go": ["a", "b", "c"]},
+            "quiz": [{"question": "q?", "choices": [("a", True, "Yes."), ("b", False, "No.")]},
+                     {"question": "r?", "choices": [("a", False, "No."), ("b", True, "Yes.")]}],
+        }
+        html_text = guide_json_html(guide)
+        body = html_text[len('<script type="application/json" id="lesson-guide">'):-len("</script>")]
+        self.assertNotIn("<", body)
+        self.assertNotIn(">", body)
+        self.assertNotIn("&", body)
+        import json as _json
+        self.assertEqual(_json.loads(body)["code"]["lines"][0]["text"], "x < y && y > z </script>")
+
+    def test_normalize_guide_refuses_bad_content(self):
+        from myflames.teach._html import normalize_guide
+        good = {
+            "code": {"title": "Scan", "lines": [("open", 0, "open"), ("read", 1, "read"),
+                                                ("end", 0, "end")]},
+            "beats": {"start": ["open"], "row": ["read"], "done": ["end"]},
+            "quiz": [{"question": "One?", "choices": [("a", True, "Right."), ("b", False, "No.")]},
+                     {"question": "Two?", "choices": [("a", False, "No."), ("b", True, "Yes.")]}],
+        }
+        normalize_guide(good)
+
+        def broken(change):
+            import copy
+            guide = copy.deepcopy(good)
+            change(guide)
+            with self.assertRaises(ValueError):
+                normalize_guide(guide)
+
+        broken(lambda g: g["beats"].update(row=["missing"]))
+        broken(lambda g: g["code"]["lines"].append(("open", 0, "again")))
+        broken(lambda g: g["code"]["lines"].__setitem__(0, ("Open", 0, "bad id")))
+        broken(lambda g: g["code"]["lines"].__setitem__(0, ("open", 0, "open", "made_up_function")))
+        broken(lambda g: g.__setitem__("quiz", g["quiz"][:1]))
+        broken(lambda g: g["quiz"][0]["choices"].__setitem__(1, ("b", True, "Also right.")))
+        broken(lambda g: g["quiz"][0]["choices"].__setitem__(1, ("b", False, "Two. Sentences.")))
+        broken(lambda g: g["quiz"][0]["choices"].__setitem__(1, ("b", False, "No ending")))
+        broken(lambda g: g.__setitem__("extra", 1))
+
+    def test_fit_rule_holds_with_the_code_panel_open(self):
+        for key in self.guides:
+            page = self.pages[key]
+            side = re.search(r"\n\.stage-side \{(.*?)\}", page, re.S)
+            self.assertIsNotNone(side, key)
+            # Beside the drawing, the code column is never taller than the
+            # drawing may be, so it cannot push the drawing off screen.
+            self.assertIn("max-height: max(160px, calc(100vh - var(--stage-chrome, 96px)))", side.group(1))
+            self.assertIn("overflow: auto", side.group(1))
+            # In full screen the column is not mistaken for a drawing.
+            self.assertIn(".stage-with-phases > :not(.phase-nav):not(.stage-side) {", page)
+            # A narrow window puts it under the drawing.
+            narrow = re.search(r"@media \(max-width: 900px\) \{\s*html\[data-guided=\"true\"\] "
+                               r"\.stage-with-phases \{\s*flex-wrap: wrap;", page)
+            self.assertIsNotNone(narrow, key)
+            # Full screen moves the step bar with the toolbar and scrubber.
+            self.assertIn('move(document.querySelector(".guide-bar"), top);', page)
+            # Escape in the quiz closes the quiz, not the lesson's full screen.
+            self.assertIn('event.key !== "Escape" || !state.on || event.defaultPrevented', page)
+
+
+class TestIndexFamilyLessonFacts(unittest.TestCase):
+    """What the index-family lessons draw and say, checked against the
+    mysql-server and mariadb-server sources (docs/_lane_notes/LEARN-INDEX.md
+    names the file and function for each claim). Browser behavior is covered
+    by apps/workspace/test/learn-guide.mjs."""
+
+    def lesson_parts(self, key):
+        from myflames.teach import _html
+        page = render_lesson(key)
+        start = page.index("<script>") + len("<script>")
+        script = page[start:page.index("</script>", start)]
+        js = script[script.index(_html._FOCUS_JS) + len(_html._FOCUS_JS):script.index(_html._GUIDE_JS)]
+        return page[:page.index("<script>")], js
+
+    def test_btree_covering_lookup_draws_the_covering_secondary_index(self):
+        _, js = self.lesson_parts("btree")
+        # The covering option draws the secondary index it walks, not the
+        # clustered tree with id=42.
+        self.assertIn('keyType === "secondary_covering"', js)
+        self.assertIn("Covering secondary B+tree", js)
+        self.assertIn('tl.beat(covering ? "covered" : "done")', js)
+
+    def test_unique_lookup_walks_the_clustered_index_from_its_root(self):
+        html_text, js = self.lesson_parts("unique_lookup")
+        # A secondary record holds the primary key, not a page address, so the
+        # non-covering lookup walks the clustered index again (row0sel.cc,
+        # Row_sel_get_clust_rec_for_mysql): one page per level, not one fetch.
+        for kind in ("clus-root", "clus-internal", "clus-leaf"):
+            self.assertIn('"%s"' % kind, js)
+        self.assertIn("O(2 log n)", html_text + js)
+        self.assertNotIn("O(log n + 1)", html_text + js)
+        # A real UNIQUE secondary index, not a second index on the primary key.
+        self.assertIn("uq_users_email", html_text)
+        self.assertNotIn("uq_users_id", html_text + js)
+        # A const table is read while the plan is made (sql_optimizer.cc).
+        self.assertIn("Rows fetched before execution", html_text)
+
+    def test_non_unique_lookup_reads_the_covering_choice_as_text(self):
+        _, js = self.lesson_parts("non_unique_lookup")
+        # "false" is a non-empty string: !!c.covering made every run covering.
+        self.assertNotIn("!!c.covering", js)
+        self.assertIn('String(teachRuntime.readControls().covering) === "true"', js)
+        # The run ends at the first entry with another key (row0sel.cc,
+        # ROW_SEL_EXACT), drawn as the next country's entry.
+        self.assertIn('var NEXT_KEY = {key: "UY"', js)
+
+    def test_skip_scan_query_is_covered_by_its_index(self):
+        html_text, js = self.lesson_parts("skip_scan")
+        # MySQL plans a skip scan only on a covering index
+        # (index_skip_scan_plan.cc, cause "query_references_nonkey_column").
+        self.assertIn("SELECT id, gender, age FROM employees", html_text)
+        self.assertNotIn("SELECT * FROM employees\nWHERE", html_text)
+        # Entries below 25 and above the first one past 30 are never read.
+        self.assertIn('"never read"', js)
+        self.assertIn('"next-prefix"', js)
+
+    def test_rowid_filter_is_a_sorted_array_of_primary_keys(self):
+        html_text, js = self.lesson_parts("rowid_filter")
+        # Rowid_filter_sorted_array in sql/rowid_filter.h; checked by binary
+        # search; EXPLAIN shows range|filter and Using rowid filter.
+        self.assertNotIn("bitmap", (html_text + js).lower())
+        self.assertIn("sorted array", html_text)
+        self.assertIn("Using rowid filter", html_text)
+        self.assertIn("range|filter", html_text)
+        self.assertNotIn("<strong>Rowid-ordered scan</strong> or", html_text)
+
+    def test_index_merge_query_follows_the_variant(self):
+        html_text, js = self.lesson_parts("index_merge")
+        # Intersection is for AND, sort-union for OR of ranges.
+        self.assertIn("  AND  supplier_id = 12;", js)
+        self.assertIn("category_id < 5", js)
+        self.assertNotIn("A composite index is almost always better", html_text)
+
+
+class TestLessonSourceCorrections(unittest.TestCase):
+    """Corrections from a source-checked review of the Learn lessons. Each
+    claim names the server file that decides it; docs/_lane_notes/LESSONFIX.md
+    gives the lines."""
+
+    @classmethod
+    def setUpClass(cls):
+        import json as _json
+        keys = ("filesort", "lru", "icp", "bnl", "join_order", "index_merge", "bka_join",
+                "skip_scan", "rowid_filter", "semijoin_firstmatch", "semijoin_weedout",
+                "unique_lookup", "non_unique_lookup", "covering_index", "tmp", "derived_table",
+                "hash", "buffer_pool_warmup")
+        cls.pages = {key: render_lesson(key) for key in keys}
+        cls.guides = {}
+        for key, page in cls.pages.items():
+            found = TestLessonGuides.GUIDE_RE.search(page)
+            if found:
+                cls.guides[key] = _json.loads(found.group(1))
+
+    def line(self, key, line_id):
+        for line in self.guides[key]["code"]["lines"]:
+            if line["id"] == line_id:
+                return line
+        self.fail("%s has no line %r" % (key, line_id))
+
+    def filesort_cost_js(self):
+        from myflames.teach.scan_family import filesort
+        js_path = os.path.join(REPO_DIR, "myflames", "teach", "scan_family", "filesort.js")
+        with open(js_path, encoding="utf-8") as f:
+            src = f.read() % (filesort.SORT_BUFFER_SIZE_DEFAULT,
+                              filesort.MARIADB_SORT_BUFFER_SIZE_DEFAULT)
+        end = src.index("\n}\n", src.index("function filesortCost(")) + 3
+        return src[src.index("var SORT_BUFFER_SIZE_DEFAULT"):end]
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is needed to execute lesson JavaScript")
+    def test_filesort_radix_follows_the_sort_key_not_the_row(self):
+        # MariaDB: radixsort_is_applicable(count, param->sort_length) in
+        # sql/filesort_utils.cc and mysys/mf_radix.c. The key is order_date, a
+        # DATE (3 bytes, never packed: sql/filesort.cc try_to_pack_sortkeys),
+        # so the row size cannot decide the radix path. MySQL has no radix sort.
+        import json as _json
+        from myflames.teach.scan_family import filesort
+        self.assertEqual(filesort.MARIADB_SORT_BUFFER_SIZE_DEFAULT, 2 * 1024 * 1024)
+        mysql_default = filesort.SORT_BUFFER_SIZE_DEFAULT
+        maria_default = filesort.MARIADB_SORT_BUFFER_SIZE_DEFAULT
+        cases = []
+        for size in (4, 20, 21, 100, 200):
+            # The lesson's default 10,000 rows with each server's default buffer.
+            cases.append([10000, size, maria_default, 0, "mariadb"])
+            cases.append([10000, size, mysql_default, 0, "mysql"])
+            cases.append([10000, size, maria_default, 0, "mysql"])
+        cases.append([10000, 200, mysql_default, 0, "mariadb"])  # spills: 1,310 rows per run
+        cases.append([500, 200, maria_default, 0, "mariadb"])    # under 1,000 rows
+        cases.append([10000, 4096, maria_default, 0, "mariadb"])  # 512 rows per run
+        script = self.filesort_cost_js() + (
+            "\nvar cases = " + _json.dumps(cases) + ";\n"
+            "console.log(JSON.stringify(cases.map(function(a) {"
+            " return filesortCost(a[0], a[1], a[2], a[3], a[4]); })));\n"
+        )
+        result = subprocess.run(
+            [shutil.which("node"), "-e", script],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            universal_newlines=True, encoding="utf-8", timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        costs = _json.loads(result.stdout)
+        got = {tuple(args): cost for args, cost in zip(cases, costs)}
+        for size in (4, 20, 21, 100, 200):
+            with self.subTest(row_size=size):
+                maria = got[(10000, size, maria_default, 0, "mariadb")]
+                # The MariaDB default case: all 10,000 rows in one 2 MiB buffer, radix sorted.
+                self.assertEqual(maria["sortAlg"], "radix")
+                self.assertFalse(maria["spill"])
+                self.assertNotEqual(got[(10000, size, mysql_default, 0, "mysql")]["sortAlg"], "radix")
+                self.assertEqual(got[(10000, size, maria_default, 0, "mysql")]["sortAlg"], "comparison")
+        spilled = got[(10000, 200, mysql_default, 0, "mariadb")]
+        self.assertTrue(spilled["spill"])
+        self.assertEqual(spilled["rpr"], 1310)
+        self.assertEqual(spilled["sortAlg"], "radix", "each full run of 1,310 rows is radix sorted")
+        self.assertEqual(got[(500, 200, maria_default, 0, "mariadb")]["sortAlg"], "comparison")
+        self.assertEqual(got[(10000, 4096, maria_default, 0, "mariadb")]["sortAlg"], "comparison")
+
+    def test_filesort_text_names_the_sort_key_and_both_defaults(self):
+        page = self.pages["filesort"]
+        self.assertIn("MariaDB radix sort (sort key of 20 B or less, 1,000 to 99,999 rows in "
+                      "the buffer, keys not packed)", page)
+        self.assertNotIn("row size 20 B or less", page)
+        self.assertNotIn("Sort key + payload", page)
+        # sort_buffer_size: 256 KiB in MySQL; DEFAULT(MAX_SORT_MEMORY) = 2 MiB
+        # in MariaDB (sql/sys_vars.cc, sql/sql_const.h).
+        self.assertIn("Default: 256 KiB on MySQL, 2 MiB on MariaDB.", page)
+        self.assertRegex(page, r'<select id="server" name="server" aria-describedby="hint-server">\s*'
+                               r'<option value="mysql" selected>')
+        self.assertIn("var MARIADB_SORT_BUFFER_SIZE_DEFAULT = 2097152;", page)
+
+    def test_lru_takes_a_free_page_before_it_evicts(self):
+        # buf_LRU_get_free_block takes a free page and scans the LRU tail only
+        # when none is left (storage/innobase/buf/buf0lru.cc, both servers).
+        self.assertEqual(self.line("lru", "full")["text"], "if no free page is left:")
+        page = self.pages["lru"]
+        self.assertNotIn("old sublist is full", page)
+        self.assertIn("buf_LRU_get_free_block", page)
+        # A new page goes just behind the first old page (LRU_old).
+        self.assertRegex(page, r"just\s+behind the first page of the old sublist")
+        self.assertNotIn("(head of old)", page)
+        self.assertNotIn("old head (the midpoint)", page)
+
+    def test_icp_names_every_engine_that_supports_it(self):
+        # HA_DO_INDEX_COND_PUSHDOWN: InnoDB and MyISAM in MySQL; also Aria and
+        # MyRocks in MariaDB.
+        page = self.pages["icp"]
+        self.assertIn("InnoDB or MyISAM in MySQL; also Aria and\n    MyRocks in MariaDB", page)
+        self.assertNotIn("The table is InnoDB or MyISAM", page)
+
+    def test_bnl_names_the_join_cache_switches(self):
+        # MariaDB sql/sql_select.cc check_join_cache_usage and the default
+        # optimizer_switch in sql/sql_priv.h.
+        page = self.pages["bnl"]
+        for flag in ("join_cache_incremental", "join_cache_hashed", "join_cache_bka"):
+            self.assertIn("<code>%s</code>" % flag, page)
+        self.assertNotIn("(0–8), not <code>optimizer_switch</code>", page)
+
+    def test_join_order_counts_eq_ref_groups_and_both_prune_levels(self):
+        # N = non-eq_ref tables + eq_ref groups (sql_planner.cc), and MySQL's
+        # prune level 1 already groups eq_ref chains.
+        page = self.pages["join_order"]
+        self.assertIn("N=4 (three\n    tables plus one eq_ref group)", page)
+        self.assertNotIn("N=3", page)
+        self.assertIn("debug builds by default", page)
+        quiz = self.guides["join_order"]["quiz"][1]
+        right = [c for c in quiz["choices"] if c["correct"]][0]
+        self.assertIn("MySQL's level 1 also adds a chain of eq_ref joins as one group", right["why"])
+
+    def test_index_merge_drops_the_repeated_id_before_its_row_is_read(self):
+        quiz = self.guides["index_merge"]["quiz"][0]
+        right = [c for c in quiz["choices"] if c["correct"]][0]
+        self.assertIn("drops the repeated id before its row is read", right["why"])
+        self.assertNotIn("before any row is read", self.pages["index_merge"])
+
+    def test_bka_join_needs_an_index_that_does_not_cover_the_query(self):
+        # Both choose_mrr_impl refuse DS-MRR for HA_MRR_INDEX_ONLY (MySQL
+        # sql/handler.cc, MariaDB sql/multi_range_read.cc).
+        self.assertIn("an index-only\n    read), MySQL and MariaDB both refuse the batched "
+                      "Multi-Range Read", self.pages["bka_join"])
+
+    def test_code_lines_name_the_verified_functions(self):
+        expected = {
+            ("skip_scan", "first"): "IndexSkipScanIterator::Read",
+            ("skip_scan", "range"): "IndexSkipScanIterator::Read",
+            ("skip_scan", "next"): "index_next_different",
+            ("index_merge", "union"): "RowIDUnionIterator::Read",
+            ("index_merge", "inter"): "RowIDIntersectionIterator::Read",
+            ("index_merge", "sort"): "IndexMergeIterator::Init",
+            ("icp", "icp"): "row_search_idx_cond_check",
+            # A single-table lookup on a unique key is a const table: read_const,
+            # not EQRefIterator (eq_ref in a join).
+            ("unique_lookup", "unique"): "read_const",
+            ("non_unique_lookup", "next"): "ha_innobase::index_next_same",
+            ("covering_index", "stop"): "row_search_mvcc",
+            ("hash", "build"): "HashJoinIterator::BuildHashTable",
+            ("hash", "probe"): "HashJoinIterator::Read",
+            ("bka_join", "fill"): "BKAIterator::ReadOuterRows",
+            ("bka_join", "sort"): "DsMrr_impl::dsmrr_fill_buffer",
+            ("bka_join", "read"): "DsMrr_impl::dsmrr_next",
+            ("semijoin_weedout", "loop"): "WeedoutIterator::Read",
+            ("semijoin_weedout", "insert"): "do_sj_dups_weedout",
+            ("tmp", "group"): "TemptableAggregateIterator::Init",
+            ("tmp", "convert"): "create_ondisk_from_heap",
+            ("derived_table", "create"): "Table_ref::generate_keys",
+            ("derived_table", "write"): "MaterializeIterator::Init",
+            ("derived_table", "spill"): "create_ondisk_from_heap",
+            ("filesort", "pq"): "check_if_pq_applicable",
+            ("filesort", "sort"): "Filesort_buffer::sort_buffer",
+            # The final merge; merge_many_buff only adds passes above 15 runs.
+            ("filesort", "merge"): "merge_buffers",
+            ("lru", "access"): "buf_page_get_gen",
+            ("lru", "old-time"): "buf_page_peek_if_too_old",
+            ("lru", "promote"): "buf_LRU_make_block_young",
+            ("lru", "evict"): "buf_LRU_free_from_common_LRU_list",
+            ("lru", "insert"): "buf_LRU_add_block",
+            ("buffer_pool_warmup", "check"): "buf_page_get_gen",
+            ("buffer_pool_warmup", "read"): "buf_read_page",
+            ("buffer_pool_warmup", "dump"): "buf_dump",
+            ("buffer_pool_warmup", "load"): "buf_load",
+            ("join_order", "loop"): "Optimize_table_order::greedy_search",
+            ("join_order", "each"): "Optimize_table_order::best_extension_by_limited_search",
+            ("join_order", "cost"): "Optimize_table_order::best_access_path",
+        }
+        for (key, line_id), fn in expected.items():
+            with self.subTest(lesson=key, line=line_id):
+                self.assertEqual(self.line(key, line_id)["fn"], fn)
+
+    def test_every_lesson_in_a_family_shows_its_chip(self):
+        for key, label in (("skip_scan", "Index access"), ("rowid_filter", "Index access"),
+                           ("bka_join", "Join operator"), ("semijoin_firstmatch", "Join operator"),
+                           ("semijoin_weedout", "Join operator")):
+            with self.subTest(lesson=key):
+                self.assertRegex(self.pages[key],
+                                 r'<span class="family-chip">.*?</span>%s</span>' % re.escape(label))
+
+
+class TestTimelineSteps(unittest.TestCase):
+    """The shared timeline's guided-step API, run in node: tl.beat marks a
+    step, fastForwardToStep shows its end without animating or pulsing, and
+    continueTo plays live up to the next step's start and holds there."""
+
+    def run_node(self, body, reduced):
+        from myflames.teach._anim import ANIM_JS
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is not installed")
+        prelude = (
+            "var raf = 0; var window = { matchMedia: function() { return { matches: %s }; } };\n"
+            "function requestAnimationFrame(fn) { raf++; return setTimeout(function() { fn(Date.now()); }, 1); }\n"
+            % ("true" if reduced else "false")
+        )
+        result = subprocess.run(
+            [node, "-e", prelude + ANIM_JS + "\n" + body],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            universal_newlines=True, encoding="utf-8", timeout=20,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        import json as _json
+        return _json.loads(result.stdout.strip().splitlines()[-1])
+
+    def test_steps_hold_at_boundaries_and_continue(self):
+        out = self.run_node(r"""
+var log = [];
+var tl = anim.timeline();
+tl.beat("one");
+tl.call(function() { log.push("a"); });
+tl.add({ from: 0, to: 1, duration: 30, onUpdate: function(v) {}, onComplete: function() { log.push("tween"); } });
+tl.delay(20);
+tl.beat("two");
+tl.call(function() { log.push("b"); });
+tl.delay(20);
+tl.beat("three");
+tl.call(function() { log.push("c"); });
+var beats = tl.getBeats().map(function(b) { return [b.kind, b.step]; });
+tl.fastForwardToStep(tl.getBeats()[1].step);
+var held = { log: log.slice(), cursor: tl.getCursor(), isHeld: tl.isHeld() };
+tl.continueTo(tl.getBeats()[2].step, function() {
+  var second = { log: log.slice(), cursor: tl.getCursor(), isHeld: tl.isHeld() };
+  tl.continueTo(-1, null, function() {
+    console.log(JSON.stringify({ beats: beats, held: held, second: second, end: log, cursor: tl.getCursor(), steps: tl.getStepCount() }));
+  });
+});
+""", reduced=True)
+        self.assertEqual(out["beats"], [["one", 0], ["two", 3], ["three", 5]])
+        self.assertEqual(out["held"], {"log": ["a", "tween"], "cursor": 3, "isHeld": True})
+        self.assertEqual(out["second"], {"log": ["a", "tween", "b"], "cursor": 5, "isHeld": True})
+        self.assertEqual(out["end"], ["a", "tween", "b", "c"])
+        self.assertEqual(out["cursor"], out["steps"])
+
+    def test_jumping_to_a_step_skips_pulses(self):
+        out = self.run_node(r"""
+var el = { attrs: {}, setAttribute: function(k, v) { this.attrs[k] = v; } };
+var tl = anim.timeline();
+tl.beat("one");
+tl.add({ from: 0, to: 1, duration: 10, onComplete: function() { anim.pulse(el, 3, 1, 100); } });
+tl.beat("two");
+tl.call(function() {});
+var before = raf;
+tl.fastForwardToStep(1);
+var jumped = raf - before;
+tl.fastForwardTo(5);
+var seeked = raf - before;
+anim.pulse(el, 3, 1, 100);
+console.log(JSON.stringify({ jumped: jumped, seeked: seeked, live: raf - before }));
+process.exit(0);
+""", reduced=False)
+        self.assertEqual(out["jumped"], 0)
+        self.assertEqual(out["seeked"], 0)
+        self.assertGreater(out["live"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

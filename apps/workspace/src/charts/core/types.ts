@@ -11,6 +11,8 @@ export type WorkbenchKind =
 
 export interface ChartNode {
   id: string;
+  /** Normalized Python-owned operation/table/index identity. */
+  group?: string;
   parent_id: string | null;
   children: string[];
   depth: number;
@@ -61,10 +63,26 @@ export interface ChartProjection {
   metric: MetricName;
 }
 
+export interface PlanStatsRow {
+  label: string;
+  count: number;
+  node_ids: string[];
+  self_ms: number | null;
+  share: number | null;
+  actual_rows: number | null;
+  estimated_rows: number | null;
+  loops: number | null;
+  table?: string;
+  schema?: string;
+  operators?: string[];
+}
+
 export interface ChartData {
   schema_version: "chart-data-1.0" | "chart-data-2.0";
   /** Version 2 interns full messages here rather than in every node. */
   highlight_messages?: string[];
+  stats?: { tables: PlanStatsRow[]; operators: PlanStatsRow[]; note: string };
+  groups?: Record<string, PlanStatsRow>;
   title: string;
   engine: string;
   display_unit: string;

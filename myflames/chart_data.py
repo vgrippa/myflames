@@ -12,6 +12,8 @@ stores each analysis message once). The bundle accepts both. This payload is
 deliberately separate from the slim sidecar ``plan_tree``.
 """
 import math
+import json
+import re
 
 from .exploration import METRICS, metric_value
 from .output_workbench import (
@@ -90,6 +92,77 @@ def _projection(nodes, projection):
             "selected_id": _text(selected), "metric": metric}
 
 
+def _operator_type(details):
+    """A stable type label, without table/index names or occurrence values."""
+    operation = details.get("operation") or "Unknown"
+    prefix = re.split(r"\s+on\s+|:|\s+\(", operation, maxsplit=1, flags=re.I)[0].strip()
+    from .plan_privacy import hide_literals
+    return hide_literals(prefix) or "Unknown"
+
+
+def _operator_group(details):
+    # Do not merge different schemas, tables or indexes, even when the chart
+    # shortens their labels. Predicates and counters are occurrence details.
+    return json.dumps([_operator_type(details).casefold(),
+                       details.get("schema_name") or "", details.get("table_name") or "",
+                       details.get("index_name") or ""], ensure_ascii=True, separators=(",", ":"))
+
+
+def _aggregate_stats(rows, canonical, total):
+    """Sum canonical self time only. Inclusive times must never be added.
+
+    Rows produced count repeated accesses (not distinct table rows). MariaDB
+    rows_returned applies its reported filter; MySQL actual_rows is per loop.
+    A missing counter makes that aggregate unknown, rather than a partial sum.
+    """
+    def summed(values):
+        values = list(values)
+        return sum(values) if all(value is not None for value in values) else None
+
+    def aggregate(label, members):
+        self_ms = summed(row["self_ms"] for row in members)
+        return {
+            "label": label, "count": len(members),
+            "node_ids": [row["id"] for row in members],
+            "self_ms": self_ms,
+            "share": self_ms / total if self_ms is not None and total is not None and total > 0 else None,
+            "actual_rows": summed(
+                (canonical[row["id"]]["details"].get("rows_returned")
+                 if canonical[row["id"]]["details"].get("rows_returned") is not None
+                 else row["actual_rows"]) * row["loops"]
+                if row["actual_rows"] is not None and row["loops"] is not None else None
+                for row in members),
+            "estimated_rows": summed(row["estimated_rows"] for row in members),
+            "loops": summed(row["loops"] if row["measured"] or row["actual_rows"] is not None else None
+                            for row in members),
+        }
+
+    tables, operators, groups = {}, {}, {}
+    for row in rows:
+        details = canonical[row["id"]]["details"]
+        label = _operator_type(details)
+        operators.setdefault(label, []).append(row)
+        groups.setdefault(row["group"], []).append(row)
+        if row["table"]:
+            tables.setdefault((row["schema"], row["table"]), []).append(row)
+    table_rows = []
+    for (schema, table), members in tables.items():
+        item = aggregate((schema + "." if schema else "") + table, members)
+        item.update({"table": table, "schema": schema,
+                     "operators": list(dict.fromkeys(_operator_type(canonical[row["id"]]["details"])
+                                                     for row in members))})
+        table_rows.append(item)
+    return ({"tables": table_rows,
+             "operators": [aggregate(label, members) for label, members in operators.items()],
+             "note": ("Self time includes all loops. Rows produced count repeated accesses, not distinct rows. "
+                      "Estimates sum rows per loop. Unknown counters remain unknown. Separate execution "
+                      "branches can make self-time shares add to more than 100%.")
+                     if total is not None else "Not measured. Counts and estimated rows per loop only."},
+            {key: aggregate(_operator_type(canonical[members[0]["id"]]["details"])
+                            + (" on " + members[0]["table"] if members[0]["table"] else ""), members)
+             for key, members in groups.items()})
+
+
 def build_chart_data(root, title="Query plan", engine=None,
                      teach_index_by_folded=None, analysis=None, projection=None,
                      compact=False):
@@ -135,6 +208,7 @@ def build_chart_data(root, title="Query plan", engine=None,
         highlight_key, highlight_value = highlight_field(node)
         rows.append({
             "id": node["node_id"],
+            "group": _operator_group(d),
             "parent_id": parent["node_id"] if parent is not None else None,
             "children": [child["node_id"] for child in children],
             "depth": depth,
@@ -178,7 +252,10 @@ def build_chart_data(root, title="Query plan", engine=None,
 
     visit(root, None, 0, 0)
     total = _number(root.get("total_time"))
+    stats, groups = _aggregate_stats(rows, by_id, total if timing_available(root) else None)
     payload = {
+        "stats": stats,
+        "groups": groups,
         "schema_version": COMPACT_SCHEMA_VERSION if compact else SCHEMA_VERSION,
         "title": _text(title),
         "engine": engine or root.get("engine") or "mysql",

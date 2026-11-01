@@ -52,7 +52,11 @@ async function component(file, mocks) {
   vm.runInNewContext(code, context);
   return (name, props) => {
     cursor = 0;
-    const result = context.module.exports[name](props);
+    let result = context.module.exports[name](props);
+    // AccountsView wraps the list in the Compare host (ServerCompare.tsx):
+    // render the list it hands over so its hooks run as before.
+    if (result?.props?.renderList) result = result.props.renderList(null);
+    if (typeof result?.type === "function" && result.type.name === "AccountsListView") result = result.type(result.props);
     while (effects.length) effects.shift()();
     return result;
   };
@@ -124,10 +128,10 @@ async function accountHarness() {
   const target = { name: "app", host: "%" };
   const groups = [{ target, edit: { operation: "password", random_password: true }, plan: {} }];
   const renderComponent = await component("Accounts.tsx", {
-    ...Object.fromEntries(["ViewLayout", "ViewStatus", "SearchField", "EmptyState", "ActionButton", "ActionStatus", "SummaryLine", "DataTable"].map(n => [n, n])),
+    ...Object.fromEntries(["ViewLayout", "ViewStatus", "SearchField", "EmptyState", "ActionButton", "ActionStatus", "SummaryLine", "DataTable", "ServerCompareHost"].map(n => [n, n])),
     useWritePolicy: () => ({ blocked: "", check: async () => ({ ...connection }) }),
     usePrivileges: () => ({ accountChanged: async () => { refreshes.push(["privileges", connection.host]); if (changed) await changed.promise; } }),
-    usePrivilege: () => ({ available: true }), useSince: () => 0, useOpenRead: () => {},
+    usePrivilege: () => ({ available: true }), useSince: () => 0, useOpenRead: () => {}, useViewOnScreen: () => true,
     useConnectionReads: () => ({ key: connection.host, currentKey: () => connection.host, loading: "", running: () => false,
       run: async params => { refreshes.push([params, connection.host]); } }),
     accountKey: a => `${a.name}@${a.host}`, accountLabel: a => `${a.name}@${a.host}`,

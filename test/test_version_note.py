@@ -23,14 +23,16 @@ class TestVersionNote(unittest.TestCase):
         self.assertEqual(self._note(_Conn("10.6.21-MariaDB-ubu2204")),
                          "note: myflames supports MariaDB 10.11 or later; this server is MariaDB 10.6.21, "
                          "so some results may be missing or wrong.\n")
-        self.assertIn("MySQL 8.4 or later; this server is MySQL 8.0.46", self._note(_Conn("8.0.46")))
+        self.assertIn("MySQL 5.7 or later; this server is MySQL 5.6.51", self._note(_Conn("5.6.51")))
 
     def test_supported_unknown_and_quiet_print_nothing(self):
         self.assertEqual(self._note(_Conn("8.4.11")), "")
+        self.assertEqual(self._note(_Conn("8.0.46")), "")
+        self.assertEqual(self._note(_Conn("5.7.44-log")), "")
         self.assertEqual(self._note(_Conn("11.8.3-MariaDB")), "")
         self.assertEqual(self._note(_Conn(None)), "")
         self.assertEqual(self._note(object()), "")
-        self.assertEqual(self._note(_Conn("8.0.46"), quiet=True), "")
+        self.assertEqual(self._note(_Conn("5.6.51"), quiet=True), "")
 
 
 if __name__ == "__main__":

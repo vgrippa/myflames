@@ -1,10 +1,10 @@
 // Users and roles keeps all drafts, reports and secrets out of session.ts.
 // Only the selected view and column layout are eligible for restore.
-import { useCallback, useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type PropsWithChildren } from "react";
-import type { Connection } from "./api";
+import { useCallback, useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type PropsWithChildren, type ReactNode } from "react";
+import { fetchTableColumns, type Connection, type TableColumnInfo } from "./api";
 import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "./binding";
-import { useWritePolicy } from "./Connections";
-import { useOpenRead } from "./viewOnScreen";
+import { ConnectionTypeBand, useWritePolicy } from "./Connections";
+import { useOpenRead, useViewOnScreen } from "./viewOnScreen";
 import { CopySql, engineLabel } from "./PerfShared";
 import { VisiblePrivilegeGate } from "./Locks";
 import { ActionButton, ActionStatus, Checkbox, ConfirmSheet, CountBadge, DataTable, Disclosure, EmptyState, Fields, InspectorSection, useSince,
@@ -15,6 +15,7 @@ import { accountKey, accountLabel, roleLabel, applyAccountGroups, declineAccount
   type AccountChange, type AccountGroup, type AccountGroupResult, type AccountDetail, type AccountEdit, type AccountName, type AccountPlan, type AccountRow,
   type ScopeObjects, type AccountsReport, type GrantLevel, type GrantScope, type PrivilegeDefinition } from "./accountsApi";
 import "./accounts.css";
+import { ServerCompareHost } from "./ServerCompare";
 
 function AccountGate({ action, gate: targetGate, blocked = "", write = true, children, onClick, ...props }: PropsWithChildren<{
   action?: string; gate?: PrivilegeGateResult; blocked?: string; write?: boolean;
@@ -71,10 +72,16 @@ function isRole(row: AccountRow, report: AccountsReport) {
 }
 function yesNo(value: boolean | null | undefined) { return value == null ? "Unknown" : value ? "Yes" : "No"; }
 
-export function AccountsView({ connection, disabled = false, onBack, selection, report: bound, onReport }: {
+export function AccountsView(props: Parameters<typeof AccountsListView>[0]) {
+  return <ServerCompareHost kind="accounts" connection={props.connection} disabled={props.disabled} onBack={props.onBack}
+    renderList={controls => <AccountsListView {...props} compareControls={controls} />} />;
+}
+
+function AccountsListView({ connection, disabled = false, onBack, selection, report: bound, onReport, compareControls }: {
   connection: Connection; disabled?: boolean; onBack?: () => void; selection: Selection;
-  report: Bound<AccountsReport> | null; onReport: (report: Bound<AccountsReport>) => void;
+  compareControls?: ReactNode; report: Bound<AccountsReport> | null; onReport: (report: Bound<AccountsReport>) => void;
 }) {
+  const onScreen = useViewOnScreen();
   const reads = useConnectionReads(connection);
   const details = useConnectionReads(connection);
   const policy = useWritePolicy();
@@ -150,10 +157,10 @@ export function AccountsView({ connection, disabled = false, onBack, selection, 
     selection.select(key, open);
   }
   useEffect(() => {
-    if (!selected || other || !bound) return;
+    if (!onScreen || !selected || other || !bound) return;
     const target = { ...selected, role: isRole(selected, bound.report) };
     void details.run(`account-detail:${accountKey(target)}`, "Reading account grants…", (c, signal) => readAccount(c, target, signal), setDetail, { force: true });
-  }, [selection.key, bound, other, details.run]);
+  }, [selection.key, bound, other, details.run, onScreen]);
 
   async function prepare(target: AccountName, edits: AccountEdit[], password?: string) {
     if (operation.current || blocked || review) return;
@@ -274,7 +281,7 @@ export function AccountsView({ connection, disabled = false, onBack, selection, 
   return <ViewLayout id="accounts" title="Users and roles" className="accounts-view" onBack={onBack} otherConnection={other}
     info="Review users, roles and grants. Pending changes run only after you review the server's exact statements and confirm."
     onRefresh={() => void load()} refreshDisabled={disabled || !!busy || !!reads.loading || !!review} loading={!!reads.loading}
-    controls={<><SearchField value={search} onChange={setSearch} label="Find an account" />
+    controls={<>{compareControls}<SearchField value={search} onChange={setSearch} label="Find an account" />
       <AccountGate action="create_user" blocked={createBlocked}
         onClick={() => setForm({ operation: "create", target: { name: "", host: "%", role: false } })}>New user</AccountGate>
       <AccountGate action="create_role" blocked={createBlocked}
@@ -298,12 +305,14 @@ export function AccountsView({ connection, disabled = false, onBack, selection, 
       <ActionStatus keepLine state={{ phase: reads.loading ? "pending" : "idle", message: reads.loading, startedAt: loadingSince }}
         onStop={reads.stop} />
     </>}>Read accounts from the connection in use.</EmptyState> : <>
-      <SummaryLine tone={metadataUnreadable ? "unknown" : report.complete ? "info" : "watch"} toneLabel={metadataUnreadable ? "Not judged" : undefined} notes={report.warnings}>
+      <SummaryLine tone={metadataUnreadable ? "unknown" : report.complete ? undefined : "watch"} toneLabel={metadataUnreadable ? "Not judged" : undefined} notes={report.warnings}>
         {metadataUnreadable ? report.warnings[0] || "Account metadata could not be read." : `${report.complete ? "Accounts read" : "Partial list"} · ${(report.accounts.length - roles).toLocaleString()} ${report.accounts.length - roles === 1 ? "user" : "users"} · ${roles.toLocaleString()} ${roles === 1 ? "role" : "roles"}`}
       </SummaryLine>
       <DataTable id="accounts.list" label="Users and roles" columns={shownColumns} rows={rows} rowKey={accountKey} selection={{ key: selection.key, select: selectAccount }} empty="No matching accounts." />
     </>}
-    {nextSelection && <ConfirmSheet className="account-selection-review" title="Keep pending account changes?"
+    {nextSelection && <ConfirmSheet className="account-selection-review"
+      band={<ConnectionTypeBand connection={connection} />}
+      title="Keep pending account changes?"
       description={`There are pending changes for ${selected ? accountLabel(selected) : "the selected account"}. Review them before choosing another account, or discard them.`}
       confirmLabel="Review changes" confirmTone="primary" confirmDisabled={!currentDetail || !!blocked || !!review}
       busy={!!busy} onCancel={() => {
@@ -319,7 +328,7 @@ export function AccountsView({ connection, disabled = false, onBack, selection, 
         setPending([]); setNextSelection(null);
         selection.select(nextSelection.key, nextSelection.open);
       } }} />}
-    {form && <AccountForm key={`${reads.key}:${form.operation}:${accountKey(form.target)}`} form={form} engine={engine}
+    {form && <AccountForm key={`${reads.key}:${form.operation}:${accountKey(form.target)}`} connection={connection} form={form} engine={engine}
       randomAvailable={engine === "mariadb" || engine === "mysql"} blocked={blocked} busy={!!busy} error={error}
       onCancel={() => setForm(null)} onPrepare={prepare} />}
     {review && !reviewLeft && <ReviewSheet review={review} busy={!!busy} blocked={reads.key !== review.via.key ? "The connection changed. Cancel and review again on the connection in use." : blocked}
@@ -380,14 +389,16 @@ function AccountInspector({ detail, connection, report, blocked, pending, onPend
     <Segmented label="Account details" value={tab} onChange={setTab} options={[{ value: "grants", label: "Grants" }, { value: "account", label: "Account" }, { value: "roles", label: "Roles" }]} />
     {reason && <p className="account-note" role="status">{reason}</p>}
     {!reason && unverified && <p className="account-note">Unverified privileges. The server checks the selected changes during review.</p>}
-    {tab === "grants" && <GrantMatrix detail={detail} connection={connection} draft={draft} setDraft={setDraft} pending={pending} blocked={reason} grantReason={grant.disabledReason} revokeReason={revoke.disabledReason} onStage={stage} />}
+    {tab === "grants" && <GrantMatrix detail={detail} connection={connection} accounts={report.accounts} draft={draft} setDraft={setDraft} pending={pending} blocked={reason} grantReason={grant.disabledReason} revokeReason={revoke.disabledReason} onStage={stage} />}
     {tab === "account" && <>
       <InspectorSection title="Account"><Fields rows={[["Type", detail.role ? "Role" : "User"], ["Host", detail.host || "None"], ["Locked", yesNo(detail.attributes.locked)],
         ["Expired", yesNo(detail.attributes.expired)], ["Authentication plugin", detail.attributes.plugins?.join(", ") || detail.attributes.plugin || "Unknown"]]} /></InspectorSection>
 
     </>}
-    {tab === "roles" && <RolesEditor detail={detail} report={report} pending={pending} blocked={reason} grantReason={rolesGate.disabledReason}
-      revokeReason={revokeRoles.disabledReason} defaultReason={defaultsGate.disabledReason} onStage={stage} />}
+    {tab === "roles" && (report.roles_supported === false
+      ? <InspectorSection title="Roles"><p className="account-note" role="note">{report.roles_note || "This server has no roles."}</p></InspectorSection>
+      : <RolesEditor detail={detail} report={report} pending={pending} blocked={reason} grantReason={rolesGate.disabledReason}
+        revokeReason={revokeRoles.disabledReason} defaultReason={defaultsGate.disabledReason} onStage={stage} />)}
     {!!pending.length && <InspectorSection title="Pending changes"><div className="account-pending" aria-live="polite">
       <CountBadge count={pending.length} label={`${pending.length} pending changes`} /><ul>{pending.map(p => <li key={p.id}>{p.label}</li>)}</ul>
       <button type="button" className="button primary" disabled={!!reason}
@@ -455,8 +466,9 @@ function routineKinds(engine: string, version: string): [string, string][] {
   return kinds;
 }
 type GrantDraft = { level: GrantLevel; added: GrantScope[]; chosen: string; newScope: boolean };
-function GrantMatrix({ detail, connection, draft, setDraft, pending, blocked, grantReason, revokeReason, onStage }: {
-  detail: AccountDetail; connection: Connection; draft: GrantDraft; setDraft: React.Dispatch<React.SetStateAction<GrantDraft>>;
+function GrantMatrix({ detail, connection, accounts, draft, setDraft, pending, blocked, grantReason, revokeReason, onStage }: {
+  detail: AccountDetail; connection: Connection; accounts: AccountRow[];
+  draft: GrantDraft; setDraft: React.Dispatch<React.SetStateAction<GrantDraft>>;
   pending: Pending[]; blocked: string; grantReason: string; revokeReason: string; onStage: Stage;
 }) {
   const { level, added, chosen, newScope } = draft;
@@ -488,7 +500,7 @@ function GrantMatrix({ detail, connection, draft, setDraft, pending, blocked, gr
         aria-expanded={newScope} onClick={() => { if (!addScopeReason) update({ newScope: !newScope }); }}>Add scope</button>
       {addScopeReason && <p id={addScopeReasonId} className="account-note">{addScopeReason}</p>}
     </>}
-    {newScope && <ScopeForm key={level} level={level} connection={connection} engine={detail.engine} version={detail.version} scopes={all} blocked={blocked}
+    {newScope && <ScopeForm key={level} level={level} connection={connection} engine={detail.engine} version={detail.version} scopes={all} accounts={accounts} blocked={blocked}
       onCancel={() => update({ newScope: false })} onAdd={s => {
         const existing = all.find(o => grantScopeKey(o) === grantScopeKey(s));
         update({ added: existing ? added : [...added, s], chosen: existing?.id || s.id, newScope: false });
@@ -534,8 +546,8 @@ function GrantMatrix({ detail, connection, draft, setDraft, pending, blocked, gr
   </InspectorSection>;
 }
 
-function ScopeForm({ level, connection, engine, version, scopes, blocked, onAdd, onCancel }: {
-  level: GrantLevel; connection: Connection; engine: string; version: string; scopes: GrantScope[]; blocked: string;
+function ScopeForm({ level, connection, engine, version, scopes, accounts, blocked, onAdd, onCancel }: {
+  level: GrantLevel; connection: Connection; engine: string; version: string; scopes: GrantScope[]; accounts: AccountRow[]; blocked: string;
   onAdd: (scope: GrantScope) => void; onCancel: () => void;
 }) {
   const [database, setDatabase] = useState(""); const [object, setObject] = useState("");
@@ -545,9 +557,16 @@ function ScopeForm({ level, connection, engine, version, scopes, blocked, onAdd,
   const [catalog, setCatalog] = useState<ScopeObjects | null>(null), [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [lookup, setLookup] = useState("");
+  const [columns, setColumns] = useState<TableColumnInfo[]>([]), [columnsError, setColumnsError] = useState("");
+  const [columnsLoading, setColumnsLoading] = useState(false), [manualColumn, setManualColumn] = useState(false);
+  const proxyUserListId = useId(); const proxyHostListId = useId();
   const key = connectionKey(connection);
   const objectLevel = level === "table" || level === "column" || level === "routine";
   const databases = [...new Map(scopes.filter(s => s.database && !s.pattern).map(s => [s.database!, s])).values()];
+  // The proxy pick lists come from the accounts already listed; free text
+  // stays for an anonymous user and wildcard hosts.
+  const proxyUsers = [...new Set(accounts.filter(a => !a.role).map(a => a.name))].sort();
+  const proxyHosts = [...new Set(accounts.map(a => a.host).filter(Boolean))].sort();
   useEffect(() => {
     setCatalog(null); setError(""); setObject(""); setManualObject(false);
     if (!objectLevel || !database || ((manualDatabase || !databases.length) && lookup !== database)) { setLoading(false); return; }
@@ -559,10 +578,38 @@ function ScopeForm({ level, connection, engine, version, scopes, blocked, onAdd,
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
   }, [key, database, objectLevel, manualDatabase, lookup]);
+  // Column grants pick from the chosen table's columns, read like the table
+  // alteration dialogs do; a failed read falls back to an exact name. A new
+  // table (or connection identity) clears the choice; a new connection object
+  // for the same identity (a typed password) does not. Read only on screen,
+  // once per table.
+  const onScreen = useViewOnScreen();
+  const connectionNow = useRef(connection);
+  connectionNow.current = connection;
+  const columnsTarget = level === "column" && database && object ? JSON.stringify([key, database, object]) : "";
+  const columnsRead = useRef("");
+  useEffect(() => {
+    setColumns([]); setColumnsError(""); setManualColumn(false); setColumn("");
+    columnsRead.current = "";
+  }, [columnsTarget]);
+  useEffect(() => {
+    if (!columnsTarget) { setColumnsLoading(false); return; }
+    if (!onScreen || columnsRead.current === columnsTarget) return;
+    let active = true;
+    setColumnsLoading(true);
+    fetchTableColumns(connectionNow.current, database, object)
+      .then(result => { if (active) { columnsRead.current = columnsTarget; setColumns(result.columns); } })
+      .catch(e => { if (active) setColumnsError((e as Error).message); })
+      .finally(() => { if (active) setColumnsLoading(false); });
+    return () => { active = false; };
+  }, [columnsTarget, onScreen]);
   const names = catalog ? (level === "routine" ? kind === "PROCEDURE" ? catalog.procedures : kind === "FUNCTION" ? catalog.functions : [] : catalog.tables) : [];
   const valid = level === "proxy" ? !!object : !!database && (level === "database" || !!object) && (level !== "column" || !!column);
   return <div className="account-form account-scope-form" aria-label="Add grant scope">
-    {level === "proxy" ? <label>Proxied user<input value={database} onChange={e => setDatabase(e.target.value)} /></label> : <>
+    {level === "proxy" ? <>
+      <label>Proxied user<input value={database} list={proxyUserListId} onChange={e => setDatabase(e.target.value)} /></label>
+      <datalist id={proxyUserListId}>{proxyUsers.map(u => <option key={u} value={u} />)}</datalist>
+    </> : <>
       {pattern || manualDatabase || !databases.length ? <label>{pattern ? "Database pattern" : "Database name"}<input autoFocus value={database} onChange={e => setDatabase(e.target.value)} /></label> :
         <Select label="Database" value={database} options={[["", "Choose a database"], ...databases.map(s => [s.database!, `${s.database}${s.system ? " (system)" : ""}`] as [string, string])]}
           onChange={setDatabase} />}
@@ -575,7 +622,10 @@ function ScopeForm({ level, connection, engine, version, scopes, blocked, onAdd,
       onChange={value => { setKind(value); setObject(""); }} />}
     {level === "routine" && !["PROCEDURE", "FUNCTION"].includes(kind) && <p className="account-note">Enter the exact name. {kind === "LIBRARY" ? "The server must provide the MLE component and library." : "The review includes a temporary Oracle SQL mode for package syntax, then restores the session mode."}</p>}
     {level === "proxy" && <p className="account-note">Leave the user empty for an anonymous account.</p>}
-    {level === "proxy" && <label>Proxied host<input value={object} onChange={e => setObject(e.target.value)} /></label>}
+    {level === "proxy" && <>
+      <label>Proxied host<input value={object} list={proxyHostListId} onChange={e => setObject(e.target.value)} /></label>
+      <datalist id={proxyHostListId}>{proxyHosts.map(h => <option key={h} value={h} />)}</datalist>
+    </>}
     {objectLevel && <>
       {loading && <p className="account-note" role="status">Reading objects…</p>}
       {database && (manualObject || !!error || (!loading && !names.length) ?
@@ -586,7 +636,15 @@ function ScopeForm({ level, connection, engine, version, scopes, blocked, onAdd,
       {catalog?.truncated && <p className="account-note">Showing the first 500 objects. Enter an exact name if yours is missing.</p>}
       {!!catalog?.warnings.length && <Disclosure title="Object list notes"><ul>{catalog.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul></Disclosure>}
     </>}
-    {level === "column" && <label>Column name<input value={column} onChange={e => setColumn(e.target.value)} /></label>}
+    {level === "column" && !(database && object) && <label>Column name<input value={column} onChange={e => setColumn(e.target.value)} /></label>}
+    {level === "column" && !!database && !!object && <>
+      {columnsLoading && <p className="account-note" role="status">Reading columns…</p>}
+      {manualColumn || !!columnsError || (!columnsLoading && !columns.length) ?
+        <label>Column name<input value={column} onChange={e => setColumn(e.target.value)} /></label> :
+        <Select label="Column" value={column} options={[["", "Choose a column"], ...columns.map(c => [c.name, c.name] as [string, string])]} onChange={setColumn} />}
+      {!columnsError && !!columns.length && <button className="button ghost" type="button" onClick={() => { setManualColumn(!manualColumn); setColumn(""); }}>{manualColumn ? "Choose from columns" : "Enter an exact name"}</button>}
+      {columnsError && <p className="account-note" role="alert">{columnsError} Enter the exact name to continue.</p>}
+    </>}
     <div className="account-scope-actions"><button className="button primary" disabled={!valid || !!blocked} onClick={() => {
       const scope = { level, database: level !== "proxy" ? database : undefined, pattern: level === "database" ? pattern : undefined,
         table: level === "table" || level === "column" ? object : undefined, columns: level === "column" ? [column] : undefined,
@@ -632,8 +690,8 @@ function RolesEditor({ detail, report, pending, blocked, grantReason, revokeReas
   </InspectorSection>;
 }
 
-function AccountForm({ form, engine, randomAvailable, blocked, busy, error, onCancel, onPrepare }: {
-  form: Form; engine?: string; randomAvailable: boolean; blocked: string; busy: boolean; error: string; onCancel: () => void;
+function AccountForm({ connection, form, engine, randomAvailable, blocked, busy, error, onCancel, onPrepare }: {
+  connection: Connection; form: Form; engine?: string; randomAvailable: boolean; blocked: string; busy: boolean; error: string; onCancel: () => void;
   onPrepare: Prepare;
 }) {
   const [name, setName] = useState(form.target.name); const [host, setHost] = useState(form.target.host);
@@ -642,7 +700,8 @@ function AccountForm({ form, engine, randomAvailable, blocked, busy, error, onCa
   const needsPassword = !form.target.role && form.operation !== "rename";
   const valid = (form.operation === "password" || !!name) && (form.target.role && engine === "mariadb" || !!host) && (!needsPassword || random || hasPassword);
   function clear() { if (password.current) password.current.value = ""; setHasPassword(false); }
-  return <ConfirmSheet eyebrow={form.target.role ? "Role" : "User"} title={form.operation === "create" ? `New ${form.target.role ? "role" : "user"}` : `${OP_LABEL[form.operation]} for ${accountLabel(form.target)}`}
+  return <ConfirmSheet band={<ConnectionTypeBand connection={connection} />}
+    eyebrow={form.target.role ? "Role" : "User"} title={form.operation === "create" ? `New ${form.target.role ? "role" : "user"}` : `${OP_LABEL[form.operation]} for ${accountLabel(form.target)}`}
     busy={busy} busyLabel="Preparing review…" progress="Nothing is sent yet"
     confirmLabel="Review statements" confirmTone="primary" confirmDisabled={!!blocked || !valid}
     onCancel={() => { clear(); onCancel(); }} onConfirm={() => {
@@ -680,7 +739,9 @@ function ReviewSheet({ review: { groups, via }, busy, blocked, error, onCancel, 
   const statements = plans.reduce((n, p) => n + p.statements.length, 0);
   const title = groups.length === 1 && groups[0].plan ? reviewTitle(groups[0].plan.operation, accountLabel(groups[0].plan))
     : `Apply ${groups.length} changes to ${accountLabel(groups[0].target)}?`;
-  return <ConfirmSheet className="account-review" eyebrow="Review changes" title={title}
+  return <ConfirmSheet className="account-review"
+    band={<ConnectionTypeBand connection={via.connection} label={via.label} />}
+    eyebrow="Review changes" title={title}
     description={groups.length > 1 ? "Groups run in the order shown. Each is checked again before sending. The batch stops at the first refusal or failure; earlier changes remain applied." : plans[0]?.policy.text}
     busy={busy} busyLabel="Applying…" progress="Re-reading each account, then sending"
     onLeave={onLeave} leaveText="The changes may still be applying. Close does not stop them; the result shows in Users and roles."

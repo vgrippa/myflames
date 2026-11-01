@@ -16,6 +16,8 @@
 // argument that is quoted or ends at a space. They change the delimiter and
 // are never part of a statement.
 
+import type { EditorRows, EditorRun } from "./api";
+
 /** One statement in the editor. Offsets index into the source text. */
 export type Statement = {
   /** First character of the statement, leading comments included. */
@@ -439,4 +441,138 @@ export function sqlRun(sql: string, selectionStart: number, selectionEnd: number
   const k = statementAt(statements, selectionEnd);
   const s = statements[k];
   return { ...none, scope: "statement", cursor: hi, start: s.start, end: s.end, index: k + 1, total: statements.length };
+}
+
+// ---- The table a result was read from (SQL INSERT export defaults) ----------
+
+/** Keywords that end a single table reference in a read. */
+const READ_STOP = new Set(["WHERE", "GROUP", "HAVING", "WINDOW", "ORDER", "LIMIT", "FOR", "LOCK", "INTO", "PROCEDURE"]);
+/** Index hints may follow the table (USE/FORCE/IGNORE INDEX (...)). */
+const INDEX_HINT = new Set(["USE", "FORCE", "IGNORE"]);
+
+/**
+ * The statement's words, backtick identifiers and punctuation, with comments
+ * and strings left out (a string becomes the token "''"), or null when an
+ * executable comment (which runs as SQL) is present.
+ */
+function readTokens(sql: string, backslash: boolean): string[] | null {
+  let skeleton = "";
+  for (let i = 0; i < sql.length; ) {
+    const token = tokenAt(sql, i, backslash);
+    if (!token) {
+      skeleton += sql[i++];
+      continue;
+    }
+    const text = sql.slice(i, token.end);
+    if (token.comment && VERSIONED_OPEN.test(text)) return null;
+    skeleton += token.comment ? " " : text[0] === "`" ? text : " '' ";
+    i = token.end;
+  }
+  return skeleton.match(/`(?:[^`]|``)*`?|''|[A-Za-z0-9_$\u0080-￿]+|\S/g) || [];
+}
+/** A keyword (upper case), or "" for an identifier in backticks, a string or punctuation. */
+const keyword = (t: string | undefined) => (t && /^[A-Za-z_]/.test(t) ? t.toUpperCase() : "");
+/** The name a token gives, unquoted, or null when it is not an identifier. */
+function identifier(t: string | undefined): string | null {
+  if (!t) return null;
+  if (t[0] === "`") return t.length > 2 && t.endsWith("`") ? t.slice(1, -1).replace(/``/g, "`") : null;
+  return /^[A-Za-z0-9_$\u0080-￿]+$/.test(t) && !/^\d+$/.test(t) ? t : null;
+}
+
+/**
+ * The one table a read names: `SELECT … FROM [schema.]table [[AS] alias]`
+ * (index hints allowed) or `TABLE [schema.]table`, with no join, comma join,
+ * subquery or set operation, and no executable comment. A FROM inside
+ * parentheses (EXTRACT(YEAR FROM d)) is not the table list. Anything else is
+ * null: the SQL INSERT export leaves its fields empty rather than guess.
+ * `schema` is "" when the statement does not name one.
+ */
+export function singleTableRead(sql: string, backslash = true): { schema: string; table: string } | null {
+  const tokens = readTokens(sql, backslash);
+  if (!tokens?.length) return null;
+  let i: number;
+  const first = keyword(tokens[0]);
+  if (first === "TABLE") i = 1;
+  else if (first === "SELECT") {
+    let depth = 0;
+    const from: number[] = [];
+    for (let k = 0; k < tokens.length; k++) {
+      const t = tokens[k];
+      const w = keyword(t);
+      if (t === "(") {
+        // A subquery reads other tables.
+        if (["SELECT", "WITH", "TABLE", "VALUES"].includes(keyword(tokens[k + 1]))) return null;
+        depth++;
+      } else if (t === ")") depth--;
+      else if (["JOIN", "STRAIGHT_JOIN", "UNION", "INTERSECT", "EXCEPT"].includes(w)) return null;
+      else if (w === "FROM" && depth === 0) from.push(k);
+    }
+    if (from.length !== 1) return null;
+    i = from[0] + 1;
+  } else return null;
+  const name = identifier(tokens[i]);
+  if (!name || keyword(tokens[i]) === "DUAL") return null;
+  let schema = "";
+  let table = name;
+  i++;
+  if (tokens[i] === ".") {
+    const second = identifier(tokens[i + 1]);
+    if (!second) return null;
+    schema = name;
+    table = second;
+    i += 2;
+  }
+  const w = keyword(tokens[i]);
+  if (w === "AS") {
+    if (!identifier(tokens[i + 1])) return null;
+    i += 2;
+  } else if (identifier(tokens[i]) && !READ_STOP.has(w) && !INDEX_HINT.has(w) && w !== "PARTITION") i++;
+  while (INDEX_HINT.has(keyword(tokens[i]))) {
+    if (!["INDEX", "KEY"].includes(keyword(tokens[i + 1]))) return null;
+    i += 2;
+    if (keyword(tokens[i]) === "FOR") {
+      if (keyword(tokens[i + 1]) === "JOIN") i += 2;
+      else if (["ORDER", "GROUP"].includes(keyword(tokens[i + 1])) && keyword(tokens[i + 2]) === "BY") i += 3;
+      else return null;
+    }
+    if (tokens[i] !== "(") return null;
+    const close = tokens.indexOf(")", i);
+    if (close < 0) return null;
+    i = close + 1;
+  }
+  // Nothing but the rest of a single-table read may follow (no comma join, no PARTITION list).
+  if (i < tokens.length && tokens[i] !== ";" && !READ_STOP.has(keyword(tokens[i]))) return null;
+  return { schema, table };
+}
+
+/** The database a `USE name` statement selects, or null for any other statement. */
+export function usedDatabase(sql: string, backslash = true): string | null {
+  const tokens = readTokens(sql, backslash);
+  if (!tokens || keyword(tokens[0]) !== "USE") return null;
+  const rest = tokens.slice(2).filter((t) => t !== ";");
+  return rest.length ? null : identifier(tokens[1]);
+}
+
+/**
+ * The SQL INSERT export's defaults for *result* of *run*: the table its
+ * statement reads when it reads exactly one (singleTableRead),
+ * and that statement's schema, else the database a `USE` earlier in the run
+ * selected. Otherwise the schema stays empty: a USE in an earlier run of the
+ * same session may have changed the database, and the session does not report
+ * it, so the tab's default database would be a guess. Empty when the
+ * statement reads no single table: the export never guesses a target.
+ */
+export function insertDefaults(run: EditorRun | null, result: EditorRows, backslash = true) {
+  const statement = run?.statements[result.statement];
+  // A read long enough to be slow to scan is not a plain single-table SELECT.
+  const read = statement && statement.text.length <= 65_536 ? singleTableRead(statement.text, backslash) : null;
+  if (!read) return { table: "", schema: "" };
+  if (read.schema) return read;
+  let current = "";
+  for (const s of run?.statements || []) {
+    if (s.index >= result.statement) break;
+    const used = s.status === "ok" && s.text.length <= 1024 ? usedDatabase(s.text, backslash) : null;
+    if (used) current = used;
+  }
+  return { table: read.table, schema: current };
 }

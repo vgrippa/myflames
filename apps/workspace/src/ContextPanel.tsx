@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { number, time, type Operator, type Plan } from "./api";
 import { Disclosure, Fields, InspectorSection, Segmented, StatusPill } from "./kit";
+import { AllOccurrences } from "./PlanStats";
 import { severityText } from "./compareText";
 
 /** The inspector owns operator detail and the linked list, leaving the canvas
@@ -28,6 +29,8 @@ export function ContextPanel({
   const picked = useRef(false);
   const setTab = (value: string) => { picked.current = true; setTabState(value); };
   const selectedId = selected?.node_id;
+  const group = plan.chart_data?.nodes.find(node => node.id === selectedId)?.group;
+
   useEffect(() => { if (selectedId && !picked.current) setTabState("measurements"); }, [selectedId]);
   const findings = plan.analysis.warnings.filter((w) => !selected ||
     w.node_ids?.includes(selected.node_id) || w.node_labels?.includes(selected.label));
@@ -35,8 +38,9 @@ export function ContextPanel({
   const hook = plan.teach_hooks?.find((h) => h.match.short_label === selected?.label);
   const value = (v: unknown) => typeof v === "number" ? number(v) : "—";
   return (
-    <aside className="inspector plan-inspector" aria-label="Operator inspector">
+    <aside className="inspector plan-inspector" data-empty={!selected && tab === "measurements"} aria-label="Operator inspector">
       <h2 className="visually-hidden">Operator inspector</h2>
+      <p className="inspector-selection-hint">Select an operator to see its details</p>
       <header className={`inspector-title${selected ? " operator-detail" : ""}`}>
         <h3>{selected?.label || "Select an operator"}</h3>
         {selected && <StatusPill tone={findings.length ? "watch" : "info"}
@@ -50,7 +54,8 @@ export function ContextPanel({
       ]} />
       <div className="plan-inspector-body" hidden={tab !== "measurements"}>
         {selected ? <>
-          {(onFocus || onCollapse) && <div className="inspector-actions">
+          {(onFocus || onCollapse || group) && <div className="inspector-actions">
+            {group && <button className="button" onClick={() => setTab("occurrences")}>All occurrences</button>}
             {onFocus && <button className="button" onClick={onFocus}>Focus branch</button>}
             {onCollapse && !!selected.children?.length && <button className="button" onClick={onCollapse}>
               {collapsed ? "Expand branch" : "Collapse branch"}
@@ -74,6 +79,10 @@ export function ContextPanel({
           </Disclosure>
         </> : <p className="inspector-empty">Choose an operator in the chart or the Operators list.</p>}
       </div>
+      {tab === "occurrences" && group && plan.chart_data && <div className="plan-inspector-body">
+        <AllOccurrences data={plan.chart_data} group={group} selectedId={selectedId || ""}
+          onSelect={onSelect} onClose={() => setTab("measurements")} />
+      </div>}
       <div className="plan-inspector-body" hidden={tab !== "findings"}>
         <InspectorSection title={selected ? "Related findings" : "Plan findings"}>
           {findings.length ? findings.map((w, i) => <div className="inspector-finding" key={i}>

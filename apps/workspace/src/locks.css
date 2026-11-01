@@ -81,6 +81,50 @@
 .lock-tree .num {
   font-variant-numeric: tabular-nums;
 }
+/* A narrow frame (the 720 px window, or the inspector beside it) cannot hold
+   the four columns on one line: the lock a session waits for wraps instead of
+   being cut before its table, a session's pills wrap under its name, and
+   Statement (in the inspector) steps aside, so Session, Waits for and Wait
+   all stay in view without scrolling sideways. */
+.lock-tree-frame {
+  container: lock-tree / inline-size;
+}
+@container lock-tree (max-width: 959px) {
+  .lock-col-session {
+    width: 44%;
+  }
+  .lock-col-target {
+    width: auto;
+  }
+  .lock-col-wait {
+    width: calc(var(--space-6) * 3);
+  }
+  .lock-col-statement,
+  .lock-tree-table .tree-statement {
+    display: none;
+  }
+  .lock-tree-table td:first-child {
+    min-width: 0;
+  }
+  .lock-tree-table td {
+    padding-block: var(--space-1);
+  }
+  .lock-tree-table td.cell-flex {
+    white-space: normal;
+  }
+  .lock-tree .tree-cell {
+    flex-wrap: wrap;
+    row-gap: var(--space-1);
+    min-width: 0;
+    white-space: normal;
+  }
+  .lock-tree-table .cell-flex .cell-truncate {
+    max-width: none;
+    overflow: visible;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
 .tree-toggle,
 .tree-spacer {
   display: inline-flex;

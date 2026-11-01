@@ -26,187 +26,8 @@ function derivedCost(subqueryRows, rowSize, outerRows, hasIndex) {
 }
 
 var W = 800, H = 440;
+var TMP_LIMIT = 16 * 1024 * 1024;  // tmp_table_size default
 var stage = null;
-
-function buildStage() {
-  var svg = document.getElementById("derived-svg");
-  while (svg.firstChild) svg.removeChild(svg.firstChild);
-
-  // Subquery source (top)
-  var srcLbl = anim.svgEl("text", {
-    x: 20, y: 28, "font-size": 13, "font-weight": 700, fill: "var(--svg-token-ink)"
-  });
-  srcLbl.textContent = "Subquery: SELECT dept_id, AVG(salary) FROM employees GROUP BY dept_id";
-  svg.appendChild(srcLbl);
-
-  var srcRect = anim.svgEl("rect", {
-    x: 20, y: 40, width: W - 40, height: 50, rx: 8, ry: 8,
-    fill: "var(--svg-token-soft)", stroke: "var(--svg-token)", "stroke-width": 1.5
-  });
-  svg.appendChild(srcRect);
-
-  // Temp table (middle)
-  var tmpY = 130;
-  var tmpLbl = anim.svgEl("text", {
-    x: 20, y: tmpY, "font-size": 13, "font-weight": 700, fill: "var(--svg-build-ink)"
-  });
-  tmpLbl.textContent = "Materialized temp table (stats)";
-  svg.appendChild(tmpLbl);
-
-  var tmpRect = anim.svgEl("rect", {
-    x: 20, y: tmpY + 12, width: W - 40, height: 70, rx: 8, ry: 8,
-    fill: "var(--svg-build-soft)", stroke: "var(--svg-build)", "stroke-width": 1.5
-  });
-  svg.appendChild(tmpRect);
-
-  var tmpContent = anim.svgEl("text", {
-    x: W / 2, y: tmpY + 52, "text-anchor": "middle",
-    "font-size": 11, "font-weight": 600, fill: "var(--svg-build-ink)"
-  });
-  tmpContent.textContent = "(subquery rows materialize here)";
-  svg.appendChild(tmpContent);
-
-  // Capacity bar inside temp table
-  var barX = 30, barY = tmpY + 22, barW = W - 60, barH = 14;
-  var barBg = anim.svgEl("rect", {
-    x: barX, y: barY, width: barW, height: barH, rx: 3, ry: 3,
-    fill: "var(--svg-build-soft)", stroke: "var(--svg-highlight)", "stroke-width": 1
-  });
-  svg.appendChild(barBg);
-  var barFill = anim.svgEl("rect", {
-    x: barX, y: barY, width: 0, height: barH, rx: 3, ry: 3,
-    fill: "var(--svg-highlight)"
-  });
-  svg.appendChild(barFill);
-  var barPct = anim.svgEl("text", {
-    x: barX + barW / 2, y: barY + 11, "text-anchor": "middle",
-    "font-size": 9, "font-weight": 700, fill: "var(--svg-build-ink)"
-  });
-  barPct.textContent = "0%";
-  svg.appendChild(barPct);
-
-  // Spill indicator
-  var spillLbl = anim.svgEl("text", {
-    x: W - 30, y: tmpY + 70, "text-anchor": "end",
-    "font-size": 10, "font-weight": 700, fill: "var(--svg-danger)", opacity: 0
-  });
-  spillLbl.textContent = "\u26a0 spills to disk";
-  svg.appendChild(spillLbl);
-
-  // Index badge on temp table
-  var indexBadge = anim.svgEl("rect", {
-    x: W - 180, y: tmpY + 12, width: 140, height: 20, rx: 10, ry: 10,
-    fill: "var(--svg-token-soft)", stroke: "var(--svg-token)", "stroke-width": 1.5, opacity: 0
-  });
-  svg.appendChild(indexBadge);
-  var indexLbl = anim.svgEl("text", {
-    x: W - 110, y: tmpY + 26, "text-anchor": "middle",
-    "font-size": 9, "font-weight": 700, fill: "var(--svg-token-ink)", opacity: 0
-  });
-  indexLbl.textContent = "auto-index (dept_id)";
-  svg.appendChild(indexLbl);
-
-  // Outer query area (bottom-left)
-  var outerY = 260;
-  var outerLbl = anim.svgEl("text", {
-    x: 20, y: outerY, "font-size": 13, "font-weight": 700, fill: "var(--svg-group)"
-  });
-  outerLbl.textContent = "Outer query: departments d JOIN stats ON d.id = stats.dept_id";
-  svg.appendChild(outerLbl);
-
-  var outerRect = anim.svgEl("rect", {
-    x: 20, y: outerY + 12, width: 340, height: 50, rx: 8, ry: 8,
-    fill: "var(--svg-group-soft)", stroke: "var(--svg-group)", "stroke-width": 1.5
-  });
-  svg.appendChild(outerRect);
-
-  // Result area (bottom-right)
-  var resultRect = anim.svgEl("rect", {
-    x: 440, y: outerY + 12, width: 340, height: 50, rx: 8, ry: 8,
-    fill: "var(--svg-ok-soft)", stroke: "var(--svg-ok)", "stroke-width": 1.5
-  });
-  svg.appendChild(resultRect);
-  var resultLbl = anim.svgEl("text", {
-    x: 610, y: outerY + 42, "text-anchor": "middle",
-    "font-size": 11, "font-weight": 600, fill: "var(--svg-ok)"
-  });
-  resultLbl.textContent = "Result rows";
-  svg.appendChild(resultLbl);
-
-  // Arrow from outer to temp table
-  var probeArrow = anim.svgEl("line", {
-    x1: 190, y1: outerY + 12, x2: 190, y2: tmpY + 82,
-    stroke: "var(--svg-group)", "stroke-width": 1.5,
-    "stroke-dasharray": "4,3", "marker-end": "", opacity: 0
-  });
-  svg.appendChild(probeArrow);
-
-  // Arrow from temp table to result
-  var resultArrow = anim.svgEl("line", {
-    x1: 610, y1: tmpY + 82, x2: 610, y2: outerY + 12,
-    stroke: "var(--svg-ok)", "stroke-width": 1.5,
-    "stroke-dasharray": "4,3", "marker-end": "", opacity: 0
-  });
-  svg.appendChild(resultArrow);
-
-  var statusLbl = anim.svgEl("text", {
-    x: W / 2, y: H - 20, "text-anchor": "middle",
-    "font-size": 13, "font-weight": 600, fill: "var(--svg-ink)"
-  });
-  statusLbl.textContent = "";
-  svg.appendChild(statusLbl);
-
-  stage = {
-    svg: svg, srcRect: srcRect,
-    tmpRect: tmpRect, tmpContent: tmpContent, tmpLbl: tmpLbl,
-    barFill: barFill, barBg: barBg, barPct: barPct,
-    barX: barX, barW: barW,
-    spillLbl: spillLbl,
-    indexBadge: indexBadge, indexLbl: indexLbl,
-    outerRect: outerRect, outerLbl: outerLbl,
-    resultRect: resultRect, resultLbl: resultLbl,
-    probeArrow: probeArrow, resultArrow: resultArrow,
-    statusLbl: statusLbl, tuples: []
-  };
-}
-
-function resetStage() {
-  if (!stage) return;
-  stage.tmpRect.setAttribute("fill", "var(--svg-build-soft)");
-  stage.tmpRect.setAttribute("stroke", "var(--svg-build)");
-  stage.tmpContent.textContent = "(subquery rows materialize here)";
-  stage.barFill.setAttribute("width", 0);
-  stage.barFill.setAttribute("fill", "var(--svg-highlight)");
-  stage.barPct.textContent = "0%";
-  stage.spillLbl.setAttribute("opacity", 0);
-  stage.indexBadge.setAttribute("opacity", 0);
-  stage.indexLbl.setAttribute("opacity", 0);
-  stage.probeArrow.setAttribute("opacity", 0);
-  stage.resultArrow.setAttribute("opacity", 0);
-  stage.resultLbl.textContent = "Result rows";
-  stage.statusLbl.textContent = "";
-  stage.tuples.forEach(function(t) { if (t.parentNode) t.parentNode.removeChild(t); });
-  stage.tuples = [];
-}
-
-function spawnTuple(text, color, cx, cy) {
-  var g = anim.svgEl("g", { opacity: 0, transform: "translate(" + cx + "," + cy + ")" });
-  var tw = Math.max(70, text.length * 5.5 + 14);
-  var bg = anim.svgEl("rect", {
-    x: -tw / 2, y: -9, width: tw, height: 18, rx: 9, ry: 9,
-    fill: color, stroke: "var(--svg-ink)", "stroke-width": 1
-  });
-  g.appendChild(bg);
-  var lbl = anim.svgEl("text", {
-    x: 0, y: 4, "text-anchor": "middle",
-    "font-size": 8, "font-weight": 700, fill: "var(--svg-on-solid)"
-  });
-  lbl.textContent = text;
-  g.appendChild(lbl);
-  stage.svg.appendChild(g);
-  stage.tuples.push(g);
-  return g;
-}
 
 var SUBQUERY_ROWS = [
   {dept: 1, avg: 62000},
@@ -228,178 +49,334 @@ var OUTER_ROWS = [
   {id: 4, name: "Finance"}
 ];
 
-function buildTimeline(spillsToDisk, hasIndex) {
+// Stage geometry: stats (the temp table) across the top, departments on
+// the lower left, result rows on the lower right. A probe pill carries
+// "Eng id=3" up to its stats row; a result pill carries the joined row down.
+var CELL_W = 182, CELL_H = 26, CELL_GAP = 10, CELL_Y0 = 36;
+var BAR_X = 20, BAR_Y = 104, BAR_W = W - 40, BAR_H = 12;
+var DEPT_X = 20, DEPT_W = 250, RES_X = 530, RES_W = 250;
+var LIST_Y0 = 186, LIST_STEP = 30, LIST_H = 24;
+
+function money(v) { return "$" + (v / 1000).toFixed(0) + "K"; }
+function cellX(i) { return 20 + (i % 4) * (CELL_W + CELL_GAP); }
+function cellY(i) { return CELL_Y0 + Math.floor(i / 4) * (CELL_H + 6); }
+function listY(i) { return LIST_Y0 + i * LIST_STEP; }
+function statsIndexOf(dept) {
+  for (var i = 0; i < SUBQUERY_ROWS.length; i++) if (SUBQUERY_ROWS[i].dept === dept) return i;
+  return -1;
+}
+
+function label(svg, attrs, value) {
+  var t = anim.svgEl("text", attrs);
+  t.textContent = value;
+  svg.appendChild(t);
+  return t;
+}
+
+function makePill(svg, width, fill) {
+  var g = anim.svgEl("g", {opacity: 0});
+  g.appendChild(anim.svgEl("rect", {
+    x: -width / 2, y: -10, width: width, height: 20, rx: 10, ry: 10,
+    fill: fill, stroke: "var(--svg-ink)", "stroke-width": 1
+  }));
+  var t = label(g, {x: 0, y: 4, "text-anchor": "middle", "font-size": 10, "font-weight": 700,
+    fill: "var(--svg-on-solid)"}, "");
+  svg.appendChild(g);
+  return {g: g, text: t};
+}
+
+function buildStage() {
+  var svg = document.getElementById("derived-svg");
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+
+  label(svg, {x: 20, y: 24, "font-size": 13, "font-weight": 700, fill: "var(--svg-build-ink)"},
+    "① Temp table stats: the subquery's result rows");
+  var keyBadge = label(svg, {x: W - 20, y: 24, "text-anchor": "end", "font-size": 11,
+    "font-weight": 700, fill: "var(--svg-token-ink)", opacity: 0}, "");
+
+  var cells = [];
+  for (var i = 0; i < SUBQUERY_ROWS.length; i++) {
+    var r = SUBQUERY_ROWS[i];
+    var bg = anim.svgEl("rect", {
+      x: cellX(i), y: cellY(i), width: CELL_W, height: CELL_H, rx: 5, ry: 5,
+      fill: "none", stroke: "var(--svg-node-stroke)", "stroke-width": 1, "stroke-dasharray": "4,3"
+    });
+    svg.appendChild(bg);
+    var t = label(svg, {x: cellX(i) + 12, y: cellY(i) + 17, "font-size": 11, "font-weight": 600,
+      fill: "var(--svg-build-ink)", opacity: 0}, "dept_id=" + r.dept + "   avg_salary=" + money(r.avg));
+    cells.push({bg: bg, text: t, row: r});
+  }
+
+  svg.appendChild(anim.svgEl("rect", {
+    x: BAR_X, y: BAR_Y, width: BAR_W, height: BAR_H, rx: 3, ry: 3,
+    fill: "var(--svg-build-soft)", stroke: "var(--svg-node-stroke)", "stroke-width": 1
+  }));
+  var barFill = anim.svgEl("rect", {
+    x: BAR_X, y: BAR_Y, width: 0, height: BAR_H, rx: 3, ry: 3, fill: "var(--svg-highlight)"
+  });
+  svg.appendChild(barFill);
+  var barText = label(svg, {x: BAR_X, y: BAR_Y + 30, "font-size": 11, "font-weight": 600,
+    fill: "var(--svg-build-ink)"}, "");
+  var spillLbl = label(svg, {x: W - 20, y: BAR_Y + 30, "text-anchor": "end", "font-size": 11,
+    "font-weight": 700, fill: "var(--svg-danger)", opacity: 0}, "⚠ over tmp_table_size: moved to an on-disk table");
+
+  label(svg, {x: DEPT_X, y: 170, "font-size": 13, "font-weight": 700, fill: "var(--svg-group)"},
+    "② departments: each row finds its stats row");
+  label(svg, {x: RES_X, y: 170, "font-size": 13, "font-weight": 700, fill: "var(--svg-ok)"},
+    "③ Result rows");
+
+  var depts = [];
+  var results = [];
+  for (var j = 0; j < OUTER_ROWS.length; j++) {
+    var d = OUTER_ROWS[j];
+    var dbg = anim.svgEl("rect", {
+      x: DEPT_X, y: listY(j), width: DEPT_W, height: LIST_H, rx: 5, ry: 5,
+      fill: "var(--svg-group-soft)", stroke: "var(--svg-group)", "stroke-width": 1
+    });
+    svg.appendChild(dbg);
+    label(svg, {x: DEPT_X + 12, y: listY(j) + 16, "font-size": 11, "font-weight": 600,
+      fill: "var(--svg-group)"}, "id=" + d.id + "   dept_name=" + d.name);
+    depts.push({bg: dbg, row: d});
+    var rbg = anim.svgEl("rect", {
+      x: RES_X, y: listY(j), width: RES_W, height: LIST_H, rx: 5, ry: 5,
+      fill: "var(--svg-ok-soft)", stroke: "var(--svg-ok-soft)", "stroke-width": 1
+    });
+    svg.appendChild(rbg);
+    var rt = label(svg, {x: RES_X + 12, y: listY(j) + 16, "font-size": 11, "font-weight": 600,
+      fill: "var(--svg-ok)"}, "");
+    results.push({bg: rbg, text: rt});
+  }
+
+  var probe = makePill(svg, 110, "var(--svg-group)");
+  var result = makePill(svg, 150, "var(--svg-ok)");
+
+  var statusLbl = label(svg, {x: W / 2, y: H - 16, "text-anchor": "middle", "font-size": 12.5,
+    "font-weight": 600, fill: "var(--svg-ink)"}, "");
+
+  stage = {svg: svg, keyBadge: keyBadge, cells: cells, barFill: barFill, barText: barText,
+           spillLbl: spillLbl, depts: depts, results: results, probe: probe, result: result,
+           statusLbl: statusLbl};
+}
+
+function setBar(frac, spilled) {
+  var f = Math.max(0, Math.min(1, frac));
+  stage.barFill.setAttribute("width", (BAR_W * f).toFixed(1));
+  stage.barFill.setAttribute("fill", spilled ? "var(--svg-danger)" : "var(--svg-highlight)");
+}
+
+function resetStage() {
+  if (!stage) return;
+  stage.keyBadge.setAttribute("opacity", 0);
+  for (var i = 0; i < stage.cells.length; i++) {
+    var c = stage.cells[i];
+    c.bg.setAttribute("fill", "none");
+    c.bg.setAttribute("stroke", "var(--svg-node-stroke)");
+    c.bg.setAttribute("stroke-dasharray", "4,3");
+    c.bg.setAttribute("stroke-width", 1);
+    c.text.setAttribute("opacity", 0);
+    c.text.setAttribute("transform", "");
+  }
+  setBar(0, false);
+  stage.barText.textContent = "stats is empty";
+  stage.spillLbl.setAttribute("opacity", 0);
+  for (var j = 0; j < stage.depts.length; j++) {
+    stage.depts[j].bg.setAttribute("fill", "var(--svg-group-soft)");
+    stage.results[j].text.textContent = "";
+    stage.results[j].bg.setAttribute("stroke", "var(--svg-ok-soft)");
+  }
+  stage.probe.g.setAttribute("opacity", 0);
+  stage.result.g.setAttribute("opacity", 0);
+  stage.statusLbl.textContent = "";
+}
+
+function placePill(pill, p, opacity) {
+  pill.g.setAttribute("transform", "translate(" + p.x.toFixed(1) + "," + p.y.toFixed(1) + ")");
+  pill.g.setAttribute("opacity", String(opacity));
+}
+
+function buildTimeline(cost, c) {
   resetStage();
   var tl = anim.timeline();
   var phase = document.getElementById("phase-label");
+  var hasIndex = cost.hasIndex;
   var total = SUBQUERY_ROWS.length;
+  var perSample = cost.tmpSize / total;     // bytes each sample row stands for
+  var spillAt = -1;                         // sample row whose write crosses the limit
+  if (cost.spillsToDisk) {
+    for (var s = 0; s < total; s++) {
+      if (perSample * (s + 1) > TMP_LIMIT) { spillAt = s; break; }
+    }
+  }
 
-  // Phase 1: Materialize subquery
-  tl.mark("Materialize subquery");
+  // Guided steps: creating stats, one per subquery row written, the spill
+  // (when it happens), the scan of stats without a key, one per departments
+  // row, then the summary. Kinds map to the simplified-code lines (GUIDE in
+  // derived_table.py).
+  tl.mark("Create the temp table");
+  tl.beat("create");
   tl.call(function() {
-    phase.textContent = "Phase 1 \u2014 executing subquery, materializing into temp table";
+    stage.keyBadge.textContent = hasIndex ? "key on dept_id (<auto_key0> in MySQL, key0 in MariaDB)"
+                                          : "no key on stats";
+    phase.textContent = hasIndex
+      ? "The subquery cannot be merged (GROUP BY, AVG), so it is materialized. The optimizer already " +
+        "planned a key on stats.dept_id, so stats is created with that index before any row is written"
+      : "The subquery cannot be merged (GROUP BY, AVG), so it is materialized into stats, " +
+        "created here without an index (MariaDB: optimizer_switch derived_with_keys=off)";
+    stage.statusLbl.textContent = "stats will hold one row per dept_id: " + teachRuntime.formatInt(c.subquery_rows) +
+      " rows at your settings, 8 in this drawing.";
   });
+  tl.add({from: 0, to: 1, duration: 320, ease: anim.easeOutCubic,
+    onUpdate: function(v) { stage.keyBadge.setAttribute("opacity", v.toFixed(2)); }});
+  tl.delay(200);
 
+  tl.mark("Materialize subquery");
   for (var i = 0; i < total; i++) {
     (function(idx) {
-      var row = SUBQUERY_ROWS[idx];
-      var label = "dept=" + row.dept + " avg=$" + (row.avg / 1000).toFixed(0) + "K";
-
+      var r = SUBQUERY_ROWS[idx];
+      var cell = stage.cells[idx];
+      var spilledNow = spillAt >= 0 && idx >= spillAt;
+      var fracBefore = Math.min(1, perSample * idx / TMP_LIMIT);
+      var fracAfter = Math.min(1, perSample * (idx + 1) / TMP_LIMIT);
+      tl.beat("write");
       tl.call(function() {
-        var pct = Math.round(((idx + 1) / total) * 100);
-        var fillW = stage.barW * (idx + 1) / total;
-        stage.barFill.setAttribute("width", fillW);
-        stage.barPct.textContent = pct + "%";
-        stage.tmpContent.textContent = (idx + 1) + " / " + total + " rows materialized";
-
-        var cx = 60 + (idx % 4) * 190;
-        var cy = 175;
-        var tuple = spawnTuple(label, "var(--svg-build)", cx, cy);
-        anim.tween({from: 0, to: 1, duration: 200, ease: anim.easeOutCubic,
-          onUpdate: function(v) { tuple.setAttribute("opacity", v); }});
+        cell.bg.setAttribute("stroke-dasharray", "");
+        cell.bg.setAttribute("stroke", "var(--svg-build)");
+        phase.textContent = "Subquery row " + (idx + 1) + " of " + total + ": dept_id=" + r.dept +
+          ", AVG(salary)=" + money(r.avg) + " is written into stats" +
+          (hasIndex ? " and indexed by dept_id as it goes" : "");
       });
-
-      tl.delay(250);
+      tl.add({from: 0, to: 1, duration: 300, ease: anim.easeOutBack,
+        onUpdate: function(v) {
+          cell.text.setAttribute("opacity", Math.min(1, v * 1.4).toFixed(2));
+          cell.text.setAttribute("transform", "translate(0," + ((1 - v) * -10).toFixed(1) + ")");
+          setBar(fracBefore + (fracAfter - fracBefore) * Math.min(1, v), spilledNow);
+        },
+        onComplete: function() {
+          cell.text.setAttribute("transform", "");
+          cell.bg.setAttribute("fill", "var(--svg-build-soft)");
+          anim.arrival(cell.bg);
+          var bytes = perSample * (idx + 1);
+          stage.barText.textContent = "stats: " + (idx + 1) + " of " + total + " rows written (" +
+            teachRuntime.formatBytes(Math.round(bytes)) +
+            (spillAt >= 0 && idx > spillAt
+              ? ", in the on-disk table now)"
+              : " of the " + teachRuntime.formatBytes(TMP_LIMIT) + " tmp_table_size at your settings)");
+          stage.statusLbl.textContent = "Written: dept_id=" + r.dept + " avg_salary=" + money(r.avg);
+        }});
+      tl.delay(140);
+      if (idx === spillAt) {
+        tl.beat("spill");
+        tl.call(function() {
+          stage.spillLbl.setAttribute("opacity", 1);
+          setBar(1, true);
+          phase.textContent = "stats just passed tmp_table_size (" + teachRuntime.formatBytes(TMP_LIMIT) +
+            "), so it is converted to an on-disk table (InnoDB in MySQL, Aria in MariaDB) and filling continues there";
+          stage.statusLbl.textContent = "Every row written so far is copied to disk; later rows go straight there.";
+        });
+        tl.delay(500);
+      }
     })(i);
   }
 
-  // Show spill indicator if applicable
-  if (spillsToDisk) {
-    tl.delay(200);
+  if (!hasIndex) {
+    tl.mark("Read stats (no key)");
+    tl.beat("scan");
     tl.call(function() {
-      stage.spillLbl.setAttribute("opacity", 1);
-      stage.tmpRect.setAttribute("stroke", "var(--svg-danger)");
-      stage.barFill.setAttribute("fill", "var(--svg-danger-soft)");
-      phase.textContent = "Phase 1 \u2014 temp table exceeds 16 MiB, spills to disk!";
+      phase.textContent = "No key on stats, so there is nothing to look dept_id up in: the join reads all " +
+        total + " stats rows once (a hash join in MySQL, a join buffer in MariaDB)";
     });
-    tl.delay(400);
+    for (var k = 0; k < total; k++) {
+      (function(idx) {
+        tl.add({from: 0, to: 1, duration: 90, ease: anim.easeOutCubic, onUpdate: function() {},
+          onComplete: function() {
+            stage.cells[idx].bg.setAttribute("stroke", "var(--svg-group)");
+            stage.cells[idx].bg.setAttribute("stroke-width", 2);
+            stage.statusLbl.textContent = "Read stats row " + (idx + 1) + " of " + total;
+          }});
+      })(k);
+    }
+    tl.delay(250);
   }
 
-  // Fade out materialized tuples
-  tl.call(function() {
-    stage.tuples.forEach(function(t) {
-      anim.tween({from: 1, to: 0.15, duration: 200, ease: anim.easeInCubic,
-        onUpdate: function(v) { t.setAttribute("opacity", v); }});
-    });
-  });
-  tl.delay(300);
-
-  // Phase 2: Auto-index creation
-  if (hasIndex) {
-    tl.mark("Auto-index creation");
-    tl.call(function() {
-      phase.textContent = "Phase 2 \u2014 creating auto-index on temp table (dept_id)";
-      // Blue flash on temp table
-      stage.tmpRect.setAttribute("fill", "var(--svg-token-soft)");
-      stage.tmpRect.setAttribute("stroke", "var(--svg-token)");
-    });
-    tl.delay(200);
-    tl.call(function() {
-      stage.indexBadge.setAttribute("opacity", 1);
-      stage.indexLbl.setAttribute("opacity", 1);
-    });
-    tl.delay(150);
-    // Flash effect
-    tl.call(function() {
-      anim.tween({from: 0, to: 1, duration: 300, ease: anim.easeOutCubic,
-        onUpdate: function(v) {
-          var c = anim.lerpColor("var(--svg-token-soft)", "var(--svg-token-soft)", v);
-          stage.tmpRect.setAttribute("fill", c);
-        }});
-    });
-    tl.delay(400);
-    tl.call(function() {
-      stage.tmpRect.setAttribute("fill", "var(--svg-build-soft)");
-      stage.tmpRect.setAttribute("stroke", "var(--svg-build)");
-    });
-    tl.delay(200);
-  }
-
-  // Phase 3: Outer query probing
   tl.mark("Outer query probing");
-  tl.call(function() {
-    phase.textContent = "Phase 3 \u2014 outer query probes temp table" + (hasIndex ? " via auto-index" : " (full scan)");
-    stage.probeArrow.setAttribute("opacity", 0.6);
-    stage.resultArrow.setAttribute("opacity", 0.6);
-  });
-  tl.delay(200);
-
   for (var j = 0; j < OUTER_ROWS.length; j++) {
     (function(idx) {
-      var outer = OUTER_ROWS[idx];
-      var probeLabel = outer.name + " (id=" + outer.id + ")";
-
+      var d = OUTER_ROWS[idx];
+      var si = statsIndexOf(d.id);
+      var sr = SUBQUERY_ROWS[si];
+      var cell = stage.cells[si];
+      var from = {x: DEPT_X + DEPT_W + 60, y: listY(idx) + LIST_H / 2};
+      var cellMid = {x: cellX(si) + CELL_W / 2, y: cellY(si) + CELL_H / 2};
+      var resMid = {x: RES_X + 80, y: listY(idx) + LIST_H / 2};
+      var up = anim.path(from.x, from.y, (from.x + cellMid.x) / 2, Math.min(from.y, cellMid.y) - 10, cellMid.x, cellMid.y + 18);
+      var down = anim.path(cellMid.x, cellMid.y + 18, (cellMid.x + resMid.x) / 2, cellMid.y + 60, resMid.x, resMid.y);
+      var joined = d.name + ": avg_salary " + money(sr.avg);
+      tl.beat("probe");
       tl.call(function() {
-        // Probe tuple from outer
-        var probeTuple = spawnTuple(probeLabel, "var(--svg-group)", 190, 278);
-        anim.tween({from: 0, to: 1, duration: 150, ease: anim.easeOutCubic,
-          onUpdate: function(v) { probeTuple.setAttribute("opacity", v); }});
+        stage.depts[idx].bg.setAttribute("fill", "var(--svg-highlight)");
+        stage.probe.text.textContent = d.name + " id=" + d.id;
+        placePill(stage.probe, from, 1);
+        phase.textContent = hasIndex
+          ? "departments row " + (idx + 1) + " of " + OUTER_ROWS.length + ": " + d.name + " (id=" + d.id +
+            ") looks up dept_id=" + d.id + " in stats through the key: one index lookup"
+          : "departments row " + (idx + 1) + " of " + OUTER_ROWS.length + ": " + d.name + " (id=" + d.id +
+            ") is matched with dept_id=" + d.id + " among the stats rows already read";
+        stage.statusLbl.textContent = "Probe: " + d.name + " (id=" + d.id + ")";
       });
-      tl.delay(180);
-
+      tl.add({from: 0, to: 1, duration: 420, ease: anim.easeInOutCubic,
+        onUpdate: function(t) { placePill(stage.probe, up(t), 1); },
+        onComplete: function() {
+          stage.probe.g.setAttribute("opacity", 0);
+          cell.bg.setAttribute("stroke", "var(--svg-group)");
+          cell.bg.setAttribute("stroke-width", 3);
+          anim.arrival(cell.bg);
+          stage.result.text.textContent = joined;
+        }});
+      tl.add({from: 0, to: 1, duration: 380, ease: anim.easeInOutCubic,
+        onUpdate: function(t) { placePill(stage.result, down(t), 1); },
+        onComplete: function() {
+          stage.result.g.setAttribute("opacity", 0);
+          stage.results[idx].text.textContent = joined;
+          stage.results[idx].bg.setAttribute("stroke", "var(--svg-ok)");
+          anim.arrival(stage.results[idx].bg);
+          phase.textContent = d.name + " (id=" + d.id + ") matched stats row dept_id=" + d.id +
+            ": avg_salary " + money(sr.avg) + " → result row " + (idx + 1) + " of " + OUTER_ROWS.length;
+          stage.statusLbl.textContent = "Result: " + joined;
+        }});
+      tl.delay(160);
       tl.call(function() {
-        // Lookup flash on temp table
-        anim.tween({from: 0, to: 1, duration: 200, ease: anim.easeOutCubic,
-          onUpdate: function(v) {
-            var c = anim.lerpColor("var(--svg-build-soft)", hasIndex ? "var(--svg-token-soft)" : "var(--svg-build-soft)", v);
-            stage.tmpRect.setAttribute("fill", c);
-          }});
+        stage.depts[idx].bg.setAttribute("fill", "var(--svg-ok-soft)");
+        cell.bg.setAttribute("stroke", hasIndex ? "var(--svg-build)" : "var(--svg-group)");
+        cell.bg.setAttribute("stroke-width", hasIndex ? 1 : 2);
       });
-      tl.delay(200);
-
-      // Check if match exists
-      var matched = false;
-      for (var m = 0; m < SUBQUERY_ROWS.length; m++) {
-        if (SUBQUERY_ROWS[m].dept === outer.id) { matched = true; break; }
-      }
-
-      if (matched) {
-        tl.call(function() {
-          var resultTuple = spawnTuple(probeLabel + " \u2713", "var(--svg-ok)", 610, 278);
-          anim.tween({from: 0, to: 1, duration: 150, ease: anim.easeOutCubic,
-            onUpdate: function(v) { resultTuple.setAttribute("opacity", v); }});
-        });
-      }
-      tl.delay(180);
-
-      // Reset temp table color
-      tl.call(function() {
-        stage.tmpRect.setAttribute("fill", "var(--svg-build-soft)");
-        // Fade probe tuples
-        stage.tuples.forEach(function(t) {
-          if (parseFloat(t.getAttribute("opacity") || 1) > 0.3) {
-            anim.tween({from: 1, to: 0, duration: 120, ease: anim.easeInCubic,
-              onUpdate: function(v) { t.setAttribute("opacity", v); }});
-          }
-        });
-      });
-      tl.delay(150);
     })(j);
   }
 
-  tl.delay(300);
+  tl.delay(250);
   tl.mark("Done");
+  tl.beat("done");
   tl.call(function() {
-    var msg = hasIndex
-      ? "\u2713 Done \u2014 auto-index made each probe O(log n) via B+tree lookup"
-      : "\u2713 Done \u2014 no auto-index, temp table was fully scanned";
-    phase.textContent = msg;
+    phase.textContent = hasIndex
+      ? "Done: stats was filled once (" + teachRuntime.formatInt(cost.materializeWrites) + " rows at your settings) and probed " +
+        teachRuntime.formatInt(c.outer_rows) + " times through its key, about " + cost.readsPerProbe + " page reads each"
+      : "Done: stats was filled once (" + teachRuntime.formatInt(cost.materializeWrites) + " rows at your settings) and read " +
+        "in full once to match every departments row, with no key to look up";
     stage.statusLbl.textContent = hasIndex
-      ? "Auto-index on the materialized temp table keeps probe cost logarithmic."
-      : "Without an auto-index, the optimizer scans the entire temp table.";
+      ? "The key turns each probe into one lookup instead of a read of all of stats."
+      : "Without a key, the join reads every stats row; with a key, each probe reads only its own row.";
   });
-
+  tl.delay(300);
   return tl;
 }
 
 function buildCurrentTimeline() {
   var c = teachRuntime.readControls();
   var cost = derivedCost(c.subquery_rows, c.row_size, c.outer_rows, c.has_index);
-  return buildTimeline(cost.spillsToDisk, cost.hasIndex);
+  return buildTimeline(cost, c);
 }
 function resetAnim() {
   resetStage();
-  document.getElementById("phase-label").textContent = "Ready \u2014 press Play";
+  document.getElementById("phase-label").textContent = "Ready: press Next step, or Play to run it all";
 }
 
 function renderChart(currentSubqueryRows, hasIndex) {
@@ -431,9 +408,9 @@ function recompute() {
   document.getElementById("out-subquery-rows").textContent = teachRuntime.formatInt(cost.materializeWrites);
   document.getElementById("out-mat-writes").textContent = teachRuntime.formatInt(cost.materializeWrites);
   document.getElementById("out-tmp-size").textContent = teachRuntime.formatBytes(cost.tmpSize);
-  document.getElementById("out-spills").textContent = cost.spillsToDisk ? "Yes \u2014 exceeds 16 MiB" : "No \u2014 fits in memory";
+  document.getElementById("out-spills").textContent = cost.spillsToDisk ? "Yes — exceeds 16 MiB" : "No — fits in memory";
   document.getElementById("out-spills").className = "value " + (cost.spillsToDisk ? "hot" : "ok");
-  document.getElementById("out-auto-index").textContent = cost.hasIndex ? "Yes \u2014 B+tree on join key" : "No \u2014 full scan";
+  document.getElementById("out-auto-index").textContent = cost.hasIndex ? "Yes: key on dept_id" : "No: full read";
   document.getElementById("out-auto-index").className = "value " + (cost.hasIndex ? "ok" : "hot");
   document.getElementById("out-probe-reads").textContent = teachRuntime.formatInt(cost.totalReads);
   document.getElementById("out-total-io").textContent = teachRuntime.formatInt(cost.totalIO);
@@ -452,7 +429,7 @@ function recompute() {
       " rows to answer outer query.";
   }
   if (cost.spillsToDisk) {
-    explanation += " Temp table exceeds 16 MiB \u2014 spills to disk, adding I/O latency.";
+    explanation += " Temp table exceeds 16 MiB — spills to disk, adding I/O latency.";
   }
   document.getElementById("out-explanation").textContent = explanation;
 

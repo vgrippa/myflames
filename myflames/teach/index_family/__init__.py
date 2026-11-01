@@ -35,8 +35,8 @@ LESSONS = {
         "render": skip_scan.render,
     },
     "rowid_filter": {
-        "title": "Rowid filter: bitmap pre-filter before table access",
-        "summary": "MariaDB scans a filtering index to build a rowid bitmap, skipping table fetches for non-matching rows.",
+        "title": "Rowid filter: a sorted key pre-filter before table access",
+        "summary": "MariaDB scans a filtering index into a sorted array of primary keys, skipping table reads for entries not in it.",
         "render": rowid_filter.render,
     },
 }

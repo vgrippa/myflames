@@ -76,6 +76,45 @@ def integer(value, label):
         raise ValueError(label + ' must be an integer.')
 
 
+#: Characters a copy and paste brings along that are invisible on screen:
+#: zero-width spaces and joiners, the word joiner and the byte order mark.
+#: White space (str.isspace, so also the no-break space) is trimmed as well.
+INVISIBLE = '​‌‍⁠﻿'
+
+
+def _blank(c):
+    return c.isspace() or c in INVISIBLE
+
+
+def trim(text, start=True):
+    """*text* without white space or invisible characters at its end (and at
+    its start unless *start* is false)."""
+    begin, end = 0, len(text)
+    while start and begin < end and _blank(text[begin]):
+        begin += 1
+    while end > begin and _blank(text[end - 1]):
+        end -= 1
+    return text[begin:end]
+
+
+def clean_host(text):
+    """A host name or IP address as the client needs it: a pasted value often
+    brings a space or an invisible character along, and the client then fails
+    with "Unknown MySQL server host '10.0.0.5 '". No host name or address
+    contains white space, so it is trimmed from both ends and refused inside."""
+    host = trim(text)
+    if any(_blank(c) for c in host):
+        raise ValueError('The host %r has a space in it. Enter a host name or IP address without spaces.' % host)
+    if '/' in host:
+        raise ValueError('Enter only the host name or IP address in Host, not a URL or path: %r.' % host)
+    # The client takes an IPv6 address without the brackets a URL puts around it.
+    if re.match(r'^\[[0-9A-Fa-f:.]+(%[\w.-]+)?\]$', host):
+        host = host[1:-1]
+    elif re.match(r'^[^:\[\]]+:\d+$', host) or re.match(r'^\[[^\]]*\]:\d+$', host):
+        raise ValueError('Enter the port in the Port field, not after the host: %r.' % host)
+    return host
+
+
 def connection_options(value):
     if not isinstance(value, dict):
         raise ValueError('Enter connection settings.')
@@ -86,6 +125,19 @@ def connection_options(value):
             continue
         if not isinstance(v, str) or len(v) > 4096 or (name != 'password' and any(c in v for c in '\n\r\x00')):
             raise ValueError('Invalid connection field: ' + name)
+        # Pasted values bring spaces along. Host names and file paths never
+        # end or start with them, and a database name cannot end with a space
+        # (check_table_name in sql/table.cc of MySQL and MariaDB refuses it; a
+        # leading one is legal, so it stays). User names and passwords are
+        # sent exactly as typed.
+        if name == 'host':
+            v = clean_host(v)
+        elif name == 'ssl_ca':
+            v = trim(v)
+        elif name == 'database':
+            v = trim(v, start=False)
+        if v == '':
+            continue
         out[name] = v
     out.setdefault('host', '127.0.0.1')
     if out.get('ssl_mode') not in (None, 'DISABLED', 'PREFERRED', 'REQUIRED', 'VERIFY_CA', 'VERIFY_IDENTITY'):
@@ -94,27 +146,43 @@ def connection_options(value):
     if not 1 <= port <= 65535:
         raise ValueError('Port must be between 1 and 65535.')
     out['port'] = port
+    # Through SSH (ssh_tunnel.py): the SSH host, user and port, validated
+    # strictly; every client then connects to the tunnel's local end.
+    from .ssh_tunnel import check_connection, ssh_fields
+    out.update(ssh_fields(value))
+    check_connection(out)
     out['connect_timeout'] = 8
     out['query_timeout'] = 12
     return out
 
 
 def bind_query(query, parameters=None):
+    """Fill ``:name`` placeholders with literals. A value may be a finite
+    number, string, boolean or null; a JSON list of those expands to a
+    comma-separated list for ``IN (:name)``."""
     if not isinstance(query, str) or not query.strip() or len(query) > 200000:
         raise ValueError('Enter a SELECT statement of at most 200,000 characters.')
     params = {} if parameters is None else parameters
     if not isinstance(params, dict):
         raise ValueError('Parameters must be a JSON object.')
-    def literal(match):
-        key = match.group(1)
-        if key not in params:
-            raise ValueError('Missing parameter: ' + key)
-        value = params[key]
+    def scalar(key, value):
         if value is None: return 'NULL'
         if isinstance(value, bool): return '1' if value else '0'
         if finite_number(value): return str(value)
         if isinstance(value, str): return "CONVERT(X'%s' USING utf8mb4)" % value.encode('utf-8').hex()
         raise ValueError('Parameter %s must be a finite number, string, boolean or null.' % key)
+    def literal(match):
+        key = match.group(1)
+        if key not in params:
+            raise ValueError('Missing parameter: ' + key)
+        value = params[key]
+        if isinstance(value, list):
+            if not value:
+                raise ValueError('Parameter %s is an empty list; IN () matches nothing.' % key)
+            if len(value) > 1000:
+                raise ValueError('Parameter %s has more than 1000 values.' % key)
+            return ', '.join(scalar(key, item) for item in value)
+        return scalar(key, value)
     parts, at = [], 0
     for token in TOKEN.finditer(query):
         parts.extend([re.sub(r'(?<!:):([A-Za-z_][A-Za-z0-9_]*)', literal, query[at:token.start()]), token.group()])
@@ -175,6 +243,28 @@ def _version_at_least(version, minimum):
 
 
 ANALYZE_JSON_NEEDS_84 = 'EXPLAIN ANALYZE FORMAT=JSON needs MySQL 8.4 or later'
+
+
+def analyze_unsupported(version, maria=False):
+    """Why Run analysis cannot run on this server, in one sentence, or None.
+
+    Run analysis sends EXPLAIN ANALYZE FORMAT=JSON, which MySQL runs from
+    8.3.0 (explain_json_format_version=2, mysql-8.3.0 sys_vars.cc and
+    parse_tree_nodes.cc). Before that the server refuses after it is sent:
+    MySQL 5.7 has no EXPLAIN ANALYZE (mysql-5.7.44 sql/sql_yacc.yy
+    opt_extended_describe, 1064 seen live), 8.0.18 to 8.0.20 parse only a
+    bare ANALYZE (1064), and 8.0.21 to 8.2 answer 1235 for the JSON format
+    (opt_explain.cc). So the statement is never sent there. An unreadable
+    version and MariaDB (ANALYZE FORMAT=JSON) return None.
+    """
+    if maria:
+        return None
+    parsed = parse_version_tuple(version, leading=True, default=None)
+    if parsed is None or parsed >= (8, 3, 0):
+        return None
+    return ('Run analysis needs EXPLAIN ANALYZE FORMAT=JSON, which MySQL has from 8.3 (8.4 LTS and later), and this '
+            'server is MySQL %s; nothing was sent, so use Explain for the estimated plan.'
+            % (str(version).split('-')[0] or 'older'))
 
 
 def client_error_text(text, mode='explain', version='', maria=False):
@@ -485,6 +575,10 @@ class LiveJob:
                 note = unsupported_version_note(
                     version, 'mariadb' if maria else (getattr(conn, '_version_comment_cache', None) or ''))
                 if note: warnings.append(note)
+                # Refuse before sending anything the server cannot parse.
+                refused = analyze_unsupported(version, maria) if self.mode == 'analyze' else None
+                if refused:
+                    raise ConnectorError(refused)
                 for index in range(self.repeat):
                     if self.cancelled.is_set(): raise ConnectorError('Capture cancelled.')
                     marker = '__myflames_' + uuid.uuid4().hex

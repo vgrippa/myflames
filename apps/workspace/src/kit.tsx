@@ -36,6 +36,9 @@ import "./kit.css";
 // contain Settings, and a popover may be opened from a confirmation sheet.
 const focusScopes: HTMLElement[] = [];
 const FOCUSABLE = 'button, [href], input, select, textarea, summary, [tabindex]';
+/** The items a menu's arrow keys move between: actions and the choices
+ * that apply to them (an Export menu's "Hide literal values"). */
+const MENU_ITEMS = '[role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]';
 
 /** Shared lifecycle for dialogs, popovers, drawers and context menus. Callers
  * provide a focusable container (tabIndex=-1) for empty or disabled content.
@@ -60,7 +63,7 @@ export function useFocusScope<T extends HTMLElement>(ref: RefObject<T>, options:
     const visible = (el: HTMLElement) => !el.matches(':disabled') &&
       !el.closest('[hidden], [inert], [aria-hidden="true"]') && !!el.getClientRects().length &&
       getComputedStyle(el).visibility !== 'hidden';
-    const items = () => Array.from(root.querySelectorAll<HTMLElement>(latest.current.menu ? '[role="menuitem"]' : FOCUSABLE))
+    const items = () => Array.from(root.querySelectorAll<HTMLElement>(latest.current.menu ? MENU_ITEMS : FOCUSABLE))
       .filter((el) => (latest.current.menu || el.tabIndex >= 0) && visible(el));
     const focusFirst = () => {
       const preferred = latest.current.initialFocus?.();
@@ -234,6 +237,7 @@ export function Popover({
   busy = false,
   menu = false,
   width: panelWidth,
+  initialFocus,
   children,
 }: {
   /** Accessible name of the button and the popover. */
@@ -254,6 +258,8 @@ export function Popover({
   menu?: boolean;
   /** Panel width in px for a compact menu (default 320, or 400 when wide). */
   width?: number;
+  /** A selector inside the panel for the item focused on open (default: the first item). */
+  initialFocus?: string;
   children: ReactNode;
 }) {
   const id = useId();
@@ -261,7 +267,10 @@ export function Popover({
   const [style, setStyle] = useState<CSSProperties>({ visibility: "hidden" });
   const button = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLDivElement>(null);
-  useFocusScope(panel, { open, onClose: () => setOpen(false), returnFocus: () => button.current, menu });
+  useFocusScope(panel, {
+    open, onClose: () => setOpen(false), returnFocus: () => button.current, menu,
+    initialFocus: initialFocus ? () => panel.current?.querySelector<HTMLElement>(initialFocus) : undefined,
+  });
   useEffect(() => {
     if (!open) return;
     window.dispatchEvent(new CustomEvent(POPOVER_EVENT, { detail: id }));
@@ -341,14 +350,20 @@ export function Popover({
 
 /** One format in an Export menu. */
 export type ExportFormat = { key: string; label: string; onSelect: () => void; disabled?: boolean; busy?: boolean; busyLabel?: string };
+/** A choice that applies to every format of an Export menu ("Hide literal
+ * values"): a menu checkbox item, reached with the arrow keys like the
+ * formats and toggled with Space or Return; the menu stays open. */
+export type ExportToggle = { key: string; label: string; checked: boolean; onChange: (checked: boolean) => void; busy?: boolean; title?: string };
 
 /** The one Export control: export icon, "Export" and a chevron-down pull-down
  * menu of formats (a macOS pull-down button). With a single format it is a
  * plain button without the chevron. Every place that exports uses this. */
-export function ExportMenu({ label, formats, disabled = false, className = "", title, busy = false, busyLabel }: {
+export function ExportMenu({ label, formats, disabled = false, className = "", title, busy = false, busyLabel, toggles = [] }: {
   /** Accessible name, e.g. "Export plan". */
   label: string;
   formats: ExportFormat[];
+  /** Choices that apply to every format, shown above them as menu checkbox items. */
+  toggles?: ExportToggle[];
   disabled?: boolean;
   className?: string;
   busy?: boolean;
@@ -358,14 +373,28 @@ export function ExportMenu({ label, formats, disabled = false, className = "", t
 }) {
   const face = <>{busy ? <span className="spinner" aria-hidden="true" /> : <Icon name="export" size={14} />}
     {busyLabel ? <span className="action-button-label" data-reserve={busy ? "Export" : busyLabel}><span>{busy ? busyLabel : "Export"}</span></span> : <span>Export</span>}</>;
-  if (formats.length === 1) {
+  if (formats.length === 1 && !toggles.length) {
     const only = formats[0];
     return <button type="button" className={`button export-button ${className}`} aria-label={label} title={title || label}
       disabled={!busy && (disabled || only.disabled)} aria-busy={busy || undefined} aria-disabled={busy || undefined} onClick={() => { if (!busy) only.onSelect(); }}>{face}</button>;
   }
+  // Opening focuses the first format (the usual next step); the choices sit
+  // above it, one arrow key away.
   return <Popover menu width={200} label={label} buttonTitle={title || label} disabled={!busy && disabled} busy={busy}
     className={`export-menu ${className}`} buttonClassName="button export-button"
+    initialFocus='.export-menu-items [role="menuitem"]:not(:disabled)'
     trigger={<>{face}<Icon name="chevron-down" size={12} /></>}>
+    {toggles.length > 0 && <div className="export-menu-options" role="group" aria-label="Export options">
+      {toggles.map((toggle) => {
+        // Busy (an export on its way): still focusable, but it does not change.
+        const unavailable = busy || !!toggle.busy;
+        return <button key={toggle.key} type="button" role="menuitemcheckbox" aria-checked={toggle.checked} data-option={toggle.key}
+          aria-disabled={unavailable || undefined} title={toggle.title}
+          onClick={() => { if (!unavailable) toggle.onChange(!toggle.checked); }}>
+          <span className="export-menu-check" aria-hidden="true" />{toggle.label}
+        </button>;
+      })}
+    </div>}
     <div className="export-menu-items">
       {formats.map((format) => format.busyLabel ? <ActionButton key={format.key} role="menuitem" data-format={format.key}
         busy={format.busy} busyLabel={format.busyLabel} disabled={!format.busy && format.disabled}
@@ -1504,7 +1533,8 @@ const SHRINK_FLOOR = 140;
 /** The name column keeps this much (plus its flags) when the frame is narrow,
  * for example when the inspector opens. */
 const NAME_FLOOR = 220;
-/** The narrow column at the right end that holds the Columns menu. */
+/** Width of a trailing row-action column. Columns itself has a separate
+ * 36 px gutter outside the horizontal scroller (kit.css). */
 const MENU_COLUMN = 36;
 /** Cell padding (left + right) and room for the sort mark. */
 const CELL_PAD = 26;
@@ -1696,6 +1726,7 @@ export function DataTable<T>({
   onActivate,
   rowContextMenu,
   nativeRowMenu = true,
+  onVisibleColumns,
 }: {
   /** Stable id of the table ("indexes.unused"), for the stored column layout. */
   id?: string;
@@ -1739,6 +1770,10 @@ export function DataTable<T>({
    * the table then opens no "Row actions" menu on right click, Shift+F10 or
    * the ContextMenu key, so only one menu ever opens. */
   nativeRowMenu?: boolean;
+  /** The keys of the columns on screen, in order, whenever they change (the
+   * Columns menu hides some): a caller that selects or copies cells itself
+   * (the Query editor's result grid) leaves hidden columns out. */
+  onVisibleColumns?: (keys: string[]) => void;
 }) {
   const rangeAnchor = useRef<string>("");
   const inspector = useInspector();
@@ -1770,6 +1805,12 @@ export function DataTable<T>({
     if (first) hidden.delete(first);
   }
   const visible = columns.filter((c) => !hidden.has(c.key));
+  const visibleSignature = visible.map((c) => c.key).join("\u0000");
+  const reportVisible = useRef(onVisibleColumns);
+  reportVisible.current = onVisibleColumns;
+  useLayoutEffect(() => {
+    reportVisible.current?.(visibleSignature ? visibleSignature.split("\u0000") : []);
+  }, [visibleSignature]);
 
   // Sorting: the accessor is looked up among all columns (hidden ones too),
   // so hiding, showing or resizing never changes the order.
@@ -1851,13 +1892,16 @@ export function DataTable<T>({
   // A drag shows its width live and is stored when the pointer is released.
   const [dragging, setDragging] = useState<{ key: string; width: number } | null>(null);
   let base = visible.map((c) => (dragging?.key === c.key ? clamp(dragging.width, minOf(c), COLUMN_MAX) : baseOf(c)));
+  // The frame is the data viewport, already excluding the fixed Columns
+  // gutter. Only rows with actions need a trailing column inside that viewport.
+  const actionWidth = rowAction ? MENU_COLUMN : 0;
   // Too wide for the frame: only long text columns the user has not sized
   // give up room, and never below SHRINK_FLOOR or their measured minimum
   // (label, flags); past that the table scrolls sideways inside its frame
   // instead of crushing short columns. The name column gives up room last,
   // and keeps NAME_FLOOR px of text beside its flags (or its whole width
   // when that is less).
-  const needed = base.reduce((a, b) => a + b, 0) + MENU_COLUMN;
+  const needed = base.reduce((a, b) => a + b, 0) + actionWidth;
   if (frame > 0 && needed > frame) {
     const primary = visible.findIndex((c) => c.primary);
     const flex = visible.findIndex((c) => c.flex);
@@ -1897,14 +1941,14 @@ export function DataTable<T>({
   // total scrolled the table by a pixel).
   base = base.map((w) => Math.floor(w));
   // One column takes the room the others leave: the flexible one, else the
-  // last text column, else the last one. The Columns menu has its own narrow
-  // column at the right end, which stays in view.
+  // last text column, else the last one. The row actions, when present,
+  // occupy their own column; the Columns control never covers this viewport.
   let fill = visible.findIndex((c) => c.flex);
   if (fill < 0) fill = visible.map((c) => !c.num).lastIndexOf(true);
   if (fill < 0) fill = visible.length - 1;
-  const others = base.reduce((sum, w, i) => (i === fill ? sum : sum + w), 0) + MENU_COLUMN;
+  const others = base.reduce((sum, w, i) => (i === fill ? sum : sum + w), 0) + actionWidth;
   const widths = base.map((w, i) => (i === fill && frame > 0 ? Math.max(w, frame - others) : w));
-  const tableWidth = widths.reduce((a, b) => a + b, 0) + MENU_COLUMN;
+  const tableWidth = widths.reduce((a, b) => a + b, 0) + actionWidth;
 
   useLayoutEffect(() => {
     const el = wrap.current;
@@ -1922,9 +1966,8 @@ export function DataTable<T>({
     return () => observer.disconnect();
   }, [rows.length > 0]);
 
-  // Columns scrolled out of view sideways: the frame marks each edge with
-  // more columns beyond it, so the column under the Columns menu reads as
-  // scrolled (a shadow on that edge) rather than covered.
+  // Mark columns beyond the data viewport. The Columns gutter is outside
+  // that viewport, so even a partly scrolled value cannot pass beneath it.
   const frameEl = useRef<HTMLDivElement>(null);
   useScrollEdges(wrap, frameEl);
 
@@ -2241,7 +2284,7 @@ export function DataTable<T>({
             {visible.map((c, i) => (
               <col key={c.key} data-col={c.key} style={{ width: widths[i] }} />
             ))}
-            <col className="col-menu" style={{ width: MENU_COLUMN }} />
+            {rowAction && <col className="col-menu" style={{ width: actionWidth }} />}
           </colgroup>
           <thead>
             <tr aria-rowindex={windowed ? 1 : undefined}>
@@ -2320,52 +2363,13 @@ export function DataTable<T>({
                   </th>
                 );
               })}
-              <th className="col-menu" scope="col">
-                <Popover
-                  label={`Columns of ${label}`}
-                  className="table-columns"
-                  buttonClassName="icon-button table-columns-button"
-                  buttonTitle="Columns"
-                  trigger={
-                    <>
-                      <Icon name="columns" size={15} />
-                      <span className="visually-hidden">Columns</span>
-                    </>
-                  }
-                >
-                  <h3 className="popover-title">Columns</h3>
-                  <ul className="columns-list">
-                    {columns.map((c) => {
-                      const shownNow = !hidden.has(c.key);
-                      const lastOne = shownNow && visible.length === 1;
-                      return (
-                        <li key={c.key}>
-                          <label className="checkbox" title={lastOne ? "At least one column stays visible" : undefined}>
-                            <input
-                              type="checkbox"
-                              data-col={c.key}
-                              checked={shownNow}
-                              disabled={lastOne}
-                              onChange={() => toggleColumn(c.key)}
-                            />
-                            <span>{columnName(c)}</span>
-                          </label>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                  <p className="hint columns-hint">Drag a header edge to resize; double-click it to fit.</p>
-                  <button type="button" className="button small columns-reset" disabled={!customized} onClick={() => savePrefs(null)}>
-                    Reset columns
-                  </button>
-                </Popover>
-              </th>
+              {rowAction && <th className="col-menu" scope="col"><span className="visually-hidden">Row actions</span></th>}
             </tr>
           </thead>
           <tbody onPointerOver={onHover}>
             {windowed && first > 0 && (
               <tr className="row-spacer" aria-hidden="true">
-                <td colSpan={visible.length + 1} style={{ height: first * rowHeight }} />
+                <td colSpan={visible.length + (rowAction ? 1 : 0)} style={{ height: first * rowHeight }} />
               </tr>
             )}
             {shown.map((row, i) => {
@@ -2422,17 +2426,57 @@ export function DataTable<T>({
                       {c.render(row)}
                     </td>
                   ))}
-                  <td className="col-menu" aria-hidden={rowAction ? undefined : true}>{rowAction?.(row)}</td>
+                  {rowAction && <td className="col-menu">{rowAction(row)}</td>}
                 </tr>
               );
             })}
             {windowed && last < sorted.length && (
               <tr className="row-spacer" aria-hidden="true">
-                <td colSpan={visible.length + 1} style={{ height: (sorted.length - last) * rowHeight }} />
+                <td colSpan={visible.length + (rowAction ? 1 : 0)} style={{ height: (sorted.length - last) * rowHeight }} />
               </tr>
             )}
           </tbody>
         </table>
+      </div>
+      <div className="table-columns-cell">
+        <Popover
+          label={`Columns of ${label}`}
+          className="table-columns"
+          buttonClassName="icon-button table-columns-button"
+          buttonTitle="Columns"
+          trigger={
+            <>
+              <Icon name="columns" size={15} />
+              <span className="visually-hidden">Columns</span>
+            </>
+          }
+        >
+          <h3 className="popover-title">Columns</h3>
+          <ul className="columns-list">
+            {columns.map((c) => {
+              const shownNow = !hidden.has(c.key);
+              const lastOne = shownNow && visible.length === 1;
+              return (
+                <li key={c.key}>
+                  <label className="checkbox" title={lastOne ? "At least one column stays visible" : undefined}>
+                    <input
+                      type="checkbox"
+                      data-col={c.key}
+                      checked={shownNow}
+                      disabled={lastOne}
+                      onChange={() => toggleColumn(c.key)}
+                    />
+                    <span>{columnName(c)}</span>
+                  </label>
+                </li>
+              );
+            })}
+          </ul>
+          <p className="hint columns-hint">Drag a header edge to resize; double-click it to fit.</p>
+          <button type="button" className="button small columns-reset" disabled={!customized} onClick={() => savePrefs(null)}>
+            Reset columns
+          </button>
+        </Popover>
       </div>
       {contextMenu && <ContextMenu x={contextMenu.x} y={contextMenu.y} label="Row actions"
         opener={contextMenu.opener} onClose={() => setContextMenu(null)} actions={[
@@ -2648,6 +2692,18 @@ export function TileGrid({ label, children }: { label: string; children: ReactNo
 // ---- Sparkline ----------------------------------------------------------------
 
 export type TrendPoint = { at: string; value: number };
+/** How a series of readings reads on screen: how many there are, the latest,
+ * the lowest and highest as *format* writes them, and steady when two or more
+ * readings all show the same text (a Min equal to its Max says nothing). Only
+ * the server's values are formatted; nothing is computed from them. */
+export type TrendRange = { readings: number; current: string; low: string; high: string; steady: boolean };
+export function trendRange(points: TrendPoint[], format: (value: number) => string): TrendRange | null {
+  if (!points.length) return null;
+  const values = points.map((p) => p.value);
+  const low = format(Math.min(...values));
+  const high = format(Math.max(...values));
+  return { readings: points.length, current: format(values[values.length - 1]), low, high, steady: points.length > 1 && low === high };
+}
 /** A small single-series trend: muted line, the latest point in the accent,
  * each sample's value on hover, and a text summary for screen readers. */
 export function Sparkline({
@@ -2676,7 +2732,10 @@ export function Sparkline({
   const y = (v: number) => height - pad - ((v - min) / span) * (height - 2 * pad);
   const path = points.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)} ${y(p.value).toFixed(1)}`).join(" ");
   const last = points[points.length - 1];
-  const summary = `${label}, last ${points.length} samples: low ${format(min)}, high ${format(max)}, latest ${format(last.value)}`;
+  const range = trendRange(points, format) as TrendRange;
+  const summary = range.steady
+    ? `${label}, last ${points.length} samples: steady at ${range.current}`
+    : `${label}, last ${points.length} samples: low ${range.low}, high ${range.high}, latest ${range.current}`;
   return (
     <svg className={`sparkline ${className}`} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="img" aria-label={summary}>
       <title>{summary}</title>
@@ -2849,6 +2908,7 @@ export function ConfirmSheet({
   onConfirm,
   secondary,
   doneLabel,
+  band,
   children,
   className = "",
 }: {
@@ -2876,6 +2936,8 @@ export function ConfirmSheet({
   /** The request was answered: one button (this label) closes the sheet
    * through onCancel, after the optional secondary; there is no Cancel. */
   doneLabel?: ReactNode;
+  /** Connection type band rendered at the top of a server-write review sheet. */
+  band?: ReactNode;
   children?: ReactNode;
   className?: string;
 }) {
@@ -2915,6 +2977,7 @@ export function ConfirmSheet({
       }}
       aria-busy={busy || undefined}
     >
+      {band}
       <div className="dialog-heading">
         <div>
           {eyebrow && <div className="eyebrow">{eyebrow}</div>}
@@ -3199,6 +3262,8 @@ export function ViewLayout({
   controls,
   onRefresh,
   refreshDisabled,
+  refreshLabel = "Refresh",
+  refreshBusyLabel = "Refreshing…",
   loading,
   onBack,
   inspector,
@@ -3218,6 +3283,10 @@ export function ViewLayout({
   controls?: ReactNode;
   onRefresh?: () => void;
   refreshDisabled?: boolean;
+  /** The Refresh button's words when it reads something not shown yet
+   * (Database diagram: "Load" until a diagram of the chosen database is shown). */
+  refreshLabel?: string;
+  refreshBusyLabel?: string;
   loading?: boolean;
   /** Narrow layouts: back to the list of views. */
   onBack?: () => void;
@@ -3234,7 +3303,9 @@ export function ViewLayout({
   otherConnection?: string | null;
   /** The read that loads this server, when it is not Refresh (Tuning's
    * scorecard runs the full analysis). Named in the note and its optional button. */
-  otherAction?: { label: string; onClick?: () => void; disabled?: boolean };
+  otherAction?: { label: string; onClick?: () => void; disabled?: boolean;
+    /** The note's sentence, when "From X. <label> to load this server." does not fit. */
+    text?: string };
 }) {
   const reportActivity = useContext(ViewActivityContext);
   const backLabel = useContext(ViewBackLabelContext);
@@ -3304,15 +3375,15 @@ export function ViewLayout({
             <ActionButton
               className="toolbar-refresh"
               labelClassName="toolbar-refresh-label"
-              aria-label="Refresh"
+              aria-label={refreshLabel}
               data-action="refresh"
               icon="refresh"
               busy={!!loading}
-              busyLabel="Refreshing…"
+              busyLabel={refreshBusyLabel}
               disabled={!loading && !!refreshDisabled}
               onClick={onRefresh}
             >
-              Refresh
+              {refreshLabel}
             </ActionButton>
           )}
           {shared && !shared.sheet && !detailBackLabel && (
@@ -3329,7 +3400,7 @@ export function ViewLayout({
       </header>
       {status}
       {detailOpen&&otherConnection&&(otherAction
-        ? <div className="gate other-connection" role="note"><Icon name="connection" size={18}/><p>From {otherConnection}. {otherAction.label} to load this server.</p>
+        ? <div className="gate other-connection" role="note"><Icon name="connection" size={18}/><p>{otherAction.text || `From ${otherConnection}. ${otherAction.label} to load this server.`}</p>
             {otherAction.onClick && <span className="gate-action"><button type="button" className="button" disabled={otherAction.disabled || loading} onClick={otherAction.onClick}>{otherAction.label}</button></span>}</div>
         : <div className="gate other-connection" role="note"><Icon name="connection" size={18}/><p>From {otherConnection}, refresh to load this server.</p></div>)}
       <div
@@ -3340,7 +3411,7 @@ export function ViewLayout({
           {otherConnection && otherAction ? (
             <div className="gate other-connection" role="note">
               <Icon name="connection" size={18} />
-              <p>From {otherConnection}. {otherAction.label} to load this server.</p>
+              <p>{otherAction.text || `From ${otherConnection}. ${otherAction.label} to load this server.`}</p>
               {otherAction.onClick && (
                 <span className="gate-action">
                   <button type="button" className="button" disabled={otherAction.disabled || loading} onClick={otherAction.onClick}>
@@ -3356,7 +3427,7 @@ export function ViewLayout({
               {onRefresh && (
                 <span className="gate-action">
                   <button type="button" className="button" disabled={refreshDisabled || loading} onClick={onRefresh}>
-                    Refresh
+                    {refreshLabel}
                   </button>
                 </span>
               )}

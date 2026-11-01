@@ -174,8 +174,8 @@ def _digest_capture(args, connection, password):
                      ' -D ' + shlex.quote(schema) if schema else '',
                      shlex.quote(' '.join(query['sql'].split())), shlex.quote(params))]
         for name in query['lists']:
-            lines.append('note: %s replaces a collapsed list of values; bind one value or write '
-                         'the list into the SQL.' % name)
+            lines.append('note: %s replaces a collapsed list of values; give it a JSON list, such as '
+                         '[1, 2], or write the list into the SQL.' % name)
         text = '\n'.join(lines)
         if password:
             text = text.replace(password, '[redacted]')
@@ -271,6 +271,7 @@ def cmd_explore(argv):
     parser.add_argument('--metric', choices=tuple(METRICS), default='self_time', help='Choose the metric list; native chart encodings stay unchanged.')
     parser.add_argument('--focus', default='', metavar='NODE_ID', help='Show only this operator and its descendants.')
     parser.add_argument('--collapse', action='append', default=[], metavar='NODE_ID', help='Hide descendants of this operator; repeat for multiple branches.')
+    parser.add_argument('--hide-literals', action='store_true', help='Replace literal values with ? in shared plan HTML and JSON.')
     parser.add_argument('--selected', default='', metavar='NODE_ID', help='Select this canonical operator ID when the report opens.')
     parser.add_argument('-o', '--output', metavar='PATH', help='Write interactive HTML to this file instead of stdout.')
     _add_quiet_flag(parser)
@@ -284,7 +285,7 @@ def cmd_explore(argv):
             raise ValueError('Unknown selected operator. Use a node_id from the plan sidecar.')
         output = render_exploration(root, args.type, selected_id=args.selected,
                                     focus_id=args.focus, collapsed_ids=args.collapse,
-                                    metric=args.metric)
+                                    metric=args.metric, hide_literals=args.hide_literals)
         _write_output(output, args.output, quiet=args.quiet)
     except (ValueError, TypeError, OSError) as exc:
         _fail(exc)
@@ -695,8 +696,9 @@ def _saved_profile(args):
 
 
 def _endpoint(settings):
-    """Host, port and user for the audit trail; never the password."""
-    return {k: settings.get(k) for k in ('host', 'port', 'user') if settings.get(k) not in (None, '')}
+    """Host, port, user and SSH target for the audit trail; never the password."""
+    return {k: settings.get(k) for k in ('host', 'port', 'user', 'ssh_host', 'ssh_user', 'ssh_port')
+            if settings.get(k) not in (None, '')}
 
 
 def _kill_command(args, kill_cli):
@@ -966,6 +968,8 @@ def cmd_config(argv):
         'information_schema.SYSTEM_VARIABLES (MariaDB), and the InnoDB tablespace sizes (needs PROCESS). '
         'The review never changes a setting: each suggestion comes with why and a caveat. To change one, '
         'use myflames config set NAME VALUE (or reset-persist NAME); see myflames config set --help. '
+        'Save global parameters locally with myflames config snapshot save (also list, show and delete). '
+        'Compare servers or snapshots with myflames config compare SOURCE TARGET; see its --help for sides. '
         '--fail-on turns the report into a gate for CI or cron. '
         'Exit codes: 0 success (no check at the --fail-on level), 1 a check reached the --fail-on level, '
         '2 bad input or connection failure.')
@@ -1098,7 +1102,8 @@ def cmd_profiles(argv):
                'kept in the OS credential store, or in an encrypted file when none is available. '
                'Each profile has a type (production asks before every write, development only before risky '
                'ones) and can be read-only (every write refused); set them with: myflames profiles set NAME '
-               '--type development --read-only. '
+               '--type development --read-only. A profile can reach its server through an SSH tunnel with your '
+               'own SSH keys or agent: myflames profiles set NAME --ssh HOST. '
                'Use a profile with: myflames capture --profile NAME -e "SELECT ...". '
                'Exit codes: 0 success, 2 bad input or unknown profile.')
     actions = parser.add_subparsers(dest='action', metavar='ACTION')
@@ -1112,11 +1117,16 @@ def cmd_profiles(argv):
         action.add_argument('profile', metavar='NAME_OR_ID', help='Choose the profile by name or ID.')
         action.add_argument('-q', '--quiet', action='store_true', help='Suppress notes on stderr; rely on the exit code.')
     setting = actions.add_parser(
-        'set', help='Set the connection type (production or development) and read-only mode.',
+        'set', help='Set the connection type, read-only mode, or SSH tunnel of a profile.',
         description='Set how myflames guards writes on this connection. Production asks before every write; '
                     'development asks only before risky writes (DDL, DML without a key in WHERE, KILL, '
                     'SET GLOBAL or PERSIST, replication, CLONE). Read-only refuses every write, whatever the type. '
-                    'New and existing connections are production and read-write until you change them.')
+                    'New and existing connections are production and read-write until you change them. '
+                    'With --ssh, every client connects to the database through an SSH tunnel: the system ssh '
+                    'signs in to HOST with your own ~/.ssh/config, keys and agent (password sign-in to SSH is not '
+                    'supported), and the profile\'s host and port are then the database as HOST reaches it. '
+                    'Changing the SSH tunnel points the profile at another endpoint: its saved password is '
+                    'forgotten and it becomes production unless --type is given.')
     setting.add_argument('profile', metavar='NAME_OR_ID', help='Choose the profile by name or ID.')
     setting.add_argument('--type', choices=('production', 'development'), dest='connection_type',
                          help='Set the connection type.')
@@ -1125,10 +1135,26 @@ def cmd_profiles(argv):
                         help='Refuse every write on this connection.')
     access.add_argument('--read-write', dest='read_only', action='store_const', const=False,
                         help='Allow writes again (each still follows the connection type).')
+    tunnel = setting.add_mutually_exclusive_group()
+    tunnel.add_argument('--ssh', metavar='HOST', dest='ssh_host',
+                        help='Connect through an SSH tunnel to HOST: a host name, an IP address or a Host alias '
+                             'from ~/.ssh/config. Uses your SSH keys or agent; password sign-in to SSH is not '
+                             'supported.')
+    tunnel.add_argument('--no-ssh', action='store_true', help='Connect directly again, without an SSH tunnel.')
+    setting.add_argument('--ssh-user', metavar='USER',
+                         help='Sign in to the SSH host as USER (default: User in ~/.ssh/config, else your local '
+                              'user name). Needs --ssh.')
+    setting.add_argument('--ssh-port', type=_bounded_integer(1, 65535), metavar='PORT',
+                         help='Connect to the SSH host on PORT (default: Port in ~/.ssh/config, else 22). '
+                              'Needs --ssh.')
     setting.add_argument('-q', '--quiet', action='store_true', help='Suppress notes on stderr; rely on the exit code.')
     args = parser.parse_args(argv)
-    if args.action == 'set' and args.connection_type is None and args.read_only is None:
-        setting.error('choose --type, --read-only or --read-write')
+    if args.action == 'set':
+        if (args.ssh_user is not None or args.ssh_port is not None) and args.ssh_host is None:
+            setting.error('--ssh-user and --ssh-port need --ssh HOST')
+        if (args.connection_type is None and args.read_only is None and args.ssh_host is None
+                and not args.no_ssh):
+            setting.error('choose --type, --read-only, --read-write, --ssh or --no-ssh')
     store = WorkspaceStore()
     try:
         if args.action == 'list':
@@ -1140,7 +1166,7 @@ def cmd_profiles(argv):
                 return
             if not profiles:
                 _notes(['No saved connection profiles. Save one in the workspace: myflames ui'], args.quiet)
-            rows = [[p['name'], p.get('user') or '—', '%s:%s' % (p['host'], p['port']), p.get('database') or '—',
+            rows = [[p['name'], p.get('user') or '—', _profile_endpoint(p), p.get('database') or '—',
                      p['type'], 'read-only' if p['read_only'] else 'read-write',
                      ('saved (%s)' % p['secret_backend_label']) if p['has_saved_password'] else 'not saved', p['id']]
                     for p in profiles]
@@ -1149,10 +1175,25 @@ def cmd_profiles(argv):
             return
         profile = store.find_profile(args.profile)
         if args.action == 'set':
-            changed = store.set_profile_safety(profile['id'], args.connection_type, args.read_only)
-            _notes(['Profile %r is now %s and %s.' % (changed['name'], changed['type'].capitalize(),
-                                                      'read-only' if changed['read_only'] else 'read-write')],
-                   args.quiet)
+            notes = []
+            if args.ssh_host is not None or args.no_ssh:
+                ssh = None if args.no_ssh else {'ssh_host': args.ssh_host, 'ssh_user': args.ssh_user,
+                                                'ssh_port': args.ssh_port}
+                changed, forgot = store.set_profile_ssh(profile['id'], ssh, args.connection_type, args.read_only)
+                from .ssh_tunnel import target_text
+                target = target_text(changed)
+                notes.append('Profile %r now connects to %s:%s through SSH host %s.' % (
+                    changed['name'], changed['host'], changed['port'], target) if target else
+                    'Profile %r now connects directly to %s:%s, without SSH.' % (
+                        changed['name'], changed['host'], changed['port']))
+                if forgot:
+                    notes.append('Its saved password was forgotten: it belonged to the previous endpoint. Enter it '
+                                 'when you connect, or save it again in the workspace.')
+            else:
+                changed = store.set_profile_safety(profile['id'], args.connection_type, args.read_only)
+            notes.append('Profile %r is now %s and %s.' % (changed['name'], changed['type'].capitalize(),
+                                                          'read-only' if changed['read_only'] else 'read-write'))
+            _notes(notes, args.quiet)
         elif args.action == 'forget':
             had = profile['has_saved_password']
             store.forget_password(profile['id'])
@@ -1166,6 +1207,14 @@ def cmd_profiles(argv):
         _fail('Cannot read the workspace profiles in %s: %s' % (store.path, exc))
     except (ValueError, OSError) as exc:
         _fail(exc)
+
+
+def _profile_endpoint(profile):
+    """'db1:3306', or 'db1:3306 via deploy@bastion' for a profile through SSH."""
+    from .ssh_tunnel import target_text
+    text = '%s:%s' % (profile.get('host'), profile.get('port'))
+    target = target_text(profile)
+    return text + ' via ' + target if target else text
 
 
 def _days_arg(lower, upper):
@@ -1412,7 +1461,7 @@ def cmd_replication(argv):
     """Replication status per channel; skip one failed transaction; skip until stopped."""
     if argv and argv[0] in ('skip', 'skip-loop'):
         return (_replication_skip if argv[0] == 'skip' else _replication_skip_loop)(argv[1:])
-    from .replication import format_text, profile_opener, read_status, saved_profiles
+    from .replication import format_text, profile_opener, reached_host, read_status, saved_profiles
     from .workspace_store import WorkspaceStore
     parser = _discover_parser(
         'replication', 'Show every replication channel (MySQL) or connection (MariaDB): receiver and applier '
@@ -1436,7 +1485,7 @@ def cmd_replication(argv):
     def work(conn):
         store = WorkspaceStore()
         report = read_status(conn, source_versions=True, profiles=saved_profiles(store),
-                             open_profile=profile_opener(store), replica_host=getattr(conn, 'host', None))
+                             open_profile=profile_opener(store), replica_host=reached_host(conn))
         if args.channel is not None:
             channel = _replication_channel(report, args.channel)
             report = dict(report, channels=[channel])

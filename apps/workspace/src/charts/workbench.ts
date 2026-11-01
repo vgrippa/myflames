@@ -28,6 +28,10 @@ export const H_GAP = 76;
 export const V_GAP = 90;
 export const VIEWPORT_Y = 136;
 export const VIEWPORT_H = 660;
+/** Smallest font size drawn inside the viewport (.wb-caption and
+ * .wb-edge-label in WORKBENCH_CSS; keep in step, test_workbench checks it).
+ * Fit keeps it at 11 px or more on screen (core/zoom.ts MIN_TEXT_PX). */
+export const SMALLEST_TEXT_PX = 11;
 
 /** Operator palette; must match output_workbench.COLORS (parity-tested). */
 export const COLORS: Record<WorkbenchKind | "result", string> = {
@@ -276,11 +280,14 @@ export function renderWorkbench(context: ViewContext): ViewInstance {
   const zoom = createZoom({
     root, viewport, width, height: VIEWPORT_H, graphWidth, graphHeight,
     buttons: { fit: fitButton, zoomIn: inButton, zoomOut: outButton, reset: resetButton },
-    fitWidth: workspace,
+    fitWidth: workspace, smallestTextPx: SMALLEST_TEXT_PX,
   });
   // Match both SVG coordinate systems to the actual flex canvas. Otherwise
   // preserveAspectRatio letterboxes a 1200-wide drawing inside phone panes
   // and silently scales it a second time after the zoom controller's fit.
+  // A report keeps its 1200-unit drawing and the page scales it with its
+  // column: while still fitted, a new screen scale refits so the text stays
+  // at 11 px (a deliberate zoom or pan is kept).
   const resize = workspace ? new ResizeObserver(([entry]) => {
     const { width: w, height: h } = entry.contentRect;
     if (w <= 0 || h <= 0) return;
@@ -290,7 +297,7 @@ export function renderWorkbench(context: ViewContext): ViewInstance {
     viewport.setAttribute("width", String(w));
     viewport.setAttribute("height", String(h));
     zoom.resize(w, h);
-  }) : null;
+  }) : typeof ResizeObserver === "function" ? new ResizeObserver(() => zoom.rescale()) : null;
   resize?.observe(root);
   const unbindSearch = bindSearch(search, status, items.map(({ element, node }) => ({ element, text: node.details_text })));
 

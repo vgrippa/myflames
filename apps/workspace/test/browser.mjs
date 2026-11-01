@@ -22,22 +22,38 @@ class ZoomElement extends EventTarget {
   setAttribute(key, value) { this.attributes.set(key, value); }
   getAttribute(key) { return this.attributes.get(key); }
 }
-function checkZoom(width, height, graphWidth, graphHeight, fitWidth) {
+function checkZoom(width, height, graphWidth, graphHeight, fitWidth, screen = 1) {
   const viewport = new ZoomElement();
   const buttons = Object.fromEntries(["fit", "zoomIn", "zoomOut", "reset"].map((key) => [key, new ZoomElement()]));
   const root = new ZoomElement();
   root.ownerDocument = { defaultView: { setTimeout, clearTimeout, cancelAnimationFrame() {} } };
-  const zoom = createZoom({ root, viewport, width, height, graphWidth, graphHeight, buttons, fitWidth });
+  // A report page can shrink the SVG to its column (screen < 1); the
+  // workspace canvas is kept at one CSS pixel per unit and ignores it.
+  if (screen !== 1) root.getScreenCTM = () => ({ a: screen, b: 0, c: 0, d: screen, e: 0, f: 0 });
+  if (fitWidth) screen = 1;
+  // Visual Explain's smallest text is 11 px (SMALLEST_TEXT_PX in workbench.ts).
+  const zoom = createZoom({ root, viewport, width, height, graphWidth, graphHeight, buttons, fitWidth, smallestTextPx: 11 });
   const box = () => viewport.getAttribute("viewBox").split(" ").map(Number);
   const close = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-8, `${actual} != ${expected}`);
   zoom.fit();
   const initial = box();
-  const ratio = fitWidth ? Math.max(1, Math.min(1 / 0.75, (graphWidth + 56) / width))
+  const wanted = fitWidth ? Math.max(1, (graphWidth + 56) / width)
     : Math.max((graphWidth + 56) / width, (graphHeight + 56) / height);
+  const ratio = Math.min(wanted, screen * 11 / 11);
   close(initial[2], Math.max(width / 5, width * ratio));
+  // Fit never renders the smallest (11 px) text below 11 px on screen.
+  assert.ok(11 * screen * width / initial[2] >= 11 - 1e-9, "fit keeps text at 11 px or more");
   if (fitWidth) {
     assert.equal(initial[1], -28, "first inputs start at the top, without a centered band");
-    assert.ok(width / initial[2] >= 0.75 && width / initial[2] <= 1);
+    assert.ok(width / initial[2] <= 1 / screen + 1e-9, "the workspace never fits past what readable text needs");
+  }
+  if (wanted > ratio) {
+    // Too large to fit readably: start at the first input (top left), not a centered slice.
+    if (graphWidth + 56 > initial[2] + 0.5) assert.equal(initial[0], -28, "starts at the left edge");
+    if (graphHeight + 56 > initial[3] + 0.5) assert.equal(initial[1], -28, "starts at the top");
+  } else if (!fitWidth) {
+    close(initial[0], (graphWidth - initial[2]) / 2);
+    close(initial[1], (graphHeight - initial[3]) / 2);
   }
   assert.equal(buttons.reset.textContent, Math.round(width / initial[2] * 100) + "%");
   zoom.zoom(0.8, 0.5, 0.5);
@@ -54,7 +70,7 @@ function checkZoom(width, height, graphWidth, graphHeight, fitWidth) {
   zoom.fit();
   assert.deepEqual(box(), initial, "fit returns to the same viewport after resizing");
   zoom.resize(width / 2, height);
-  if (fitWidth) assert.ok((width / 2) / box()[2] >= 0.75, "a fitted canvas refits on resize");
+  assert.ok(11 * screen * (width / 2) / box()[2] >= 11 - 1e-9, "a fitted canvas refits on resize, text still readable");
   zoom.resize(width, height);
   zoom.zoom(1e-6, 0.5, 0.5);
   assert.equal(buttons.zoomIn.disabled, true);
@@ -72,11 +88,63 @@ function checkZoom(width, height, graphWidth, graphHeight, fitWidth) {
   assert.deepEqual(box(), initial);
   zoom.destroy();
 }
-for (const dimensions of [[904, 620, 920, 1416], [390, 420, 920, 1416], [320, 360, 6400, 220], [612, 460, 256, 216]]) {
+for (const dimensions of [[904, 620, 920, 1416], [390, 420, 920, 1416], [320, 360, 6400, 220], [612, 460, 256, 216], [1200, 660, 920, 1416]]) {
   checkZoom(...dimensions, true);
   checkZoom(...dimensions, false);
 }
-console.log("Zoom controller checks passed (8 canvas and graph combinations).");
+// A report column that shrinks the 1200-unit SVG to 60%: fit zooms in so
+// the text still renders at 11 px.
+checkZoom(1200, 660, 920, 1416, false, 0.6);
+checkZoom(1200, 660, 256, 216, false, 0.6);
+checkZoom(904, 620, 920, 1416, true, 0.6);
+// A report whose page changes the SVG's screen scale: while still fitted,
+// rescale() refits at the new scale; a deliberate zoom or pan is kept. A
+// tiny embedding (15%) fits past the 500% zoom cap so text stays at 11 px;
+// manual zoom never jumps back across the cap and zoom in stays disabled.
+function checkScreenScale() {
+  const width = 1200, height = 660;
+  let screen = 1;
+  const viewport = new ZoomElement();
+  const buttons = Object.fromEntries(["fit", "zoomIn", "zoomOut", "reset"].map((key) => [key, new ZoomElement()]));
+  const root = new ZoomElement();
+  root.ownerDocument = { defaultView: { setTimeout, clearTimeout, cancelAnimationFrame() {} } };
+  root.getScreenCTM = () => ({ a: screen, b: 0, c: 0, d: screen, e: 0, f: 0 });
+  const zoom = createZoom({ root, viewport, width, height, graphWidth: 920, graphHeight: 1416, buttons, smallestTextPx: 11 });
+  const box = () => viewport.getAttribute("viewBox").split(" ").map(Number);
+  const rendered = () => 11 * screen * width / box()[2];
+  zoom.fit();
+  assert.equal(box()[2], 1200);
+  screen = 0.5;
+  zoom.rescale();
+  assert.equal(box()[2], 600, "a fitted chart refits when its screen scale changes");
+  assert.ok(rendered() >= 11 - 1e-9);
+  zoom.zoom(0.8, 0.5, 0.5);
+  const deliberate = box();
+  screen = 1;
+  zoom.rescale();
+  assert.deepEqual(box(), deliberate, "a deliberate zoom is kept");
+  zoom.fit();
+  zoom.zoom(1, 0.5, 0.5);
+  screen = 0.5;
+  zoom.rescale();
+  assert.equal(box()[2], 1200, "a deliberate pan or zoom, even by 1, ends the fitted state");
+  screen = 0.15;
+  zoom.fit();
+  assert.ok(Math.abs(box()[2] - 180) < 1e-9, "the readable bound wins over the 500% cap: " + box()[2]);
+  assert.ok(rendered() >= 11 - 1e-9, "text stays at 11 px in a tiny embedding: " + rendered());
+  assert.equal(buttons.zoomIn.disabled, true, "zoom in stays at its limit");
+  const tiny = box();
+  zoom.zoom(0.8, 0.5, 0.5);
+  assert.deepEqual(box(), tiny, "zoom in past the cap does not jump back out");
+  zoom.zoom(1.25, 0.5, 0.5);
+  assert.ok(Math.abs(box()[2] - 225) < 1e-9, "zoom out still moves: " + box()[2]);
+  zoom.zoom(1e6, 0.5, 0.5);
+  zoom.zoom(1e-6, 0.5, 0.5);
+  assert.equal(box()[2], width / 5, "manual zoom keeps its 500% limit");
+  zoom.destroy();
+}
+checkScreenScale();
+console.log("Zoom controller checks passed (13 canvas and graph combinations, screen scale changes, tiny embedding).");
 if (process.argv.includes("--zoom-only")) process.exit(0);
 
 const directory = await fs.mkdtemp(path.join(os.tmpdir(), "myflames-browser-"));
@@ -167,12 +235,16 @@ try {
       const box = viewport.viewBox.baseVal;
       const scale = svg.getScreenCTM().a;
       const zoom = svg.getBoundingClientRect().width / box.width;
-      return { scale, zoom, top: box.y, y: viewport.y.baseVal.value,
+      // Rendered size of the smallest operator and edge text.
+      const smallest = Math.min(...Array.from(viewport.querySelectorAll("text"),
+        (t) => parseFloat(getComputedStyle(t).fontSize) * t.getScreenCTM().a));
+      return { scale, zoom, smallest, top: box.y, y: viewport.y.baseVal.value,
         percent: svg.parentElement.querySelector('[data-action="reset"]').textContent,
         reportDetails: !!svg.querySelector(".wb-details") };
     });
     assert.ok(Math.abs(fit.scale - 1) < 0.01, "no second scaling of the chart inside a fixed SVG");
-    assert.ok(fit.zoom >= 0.75 && fit.zoom <= 1, JSON.stringify(fit));
+    // Fit never shrinks text below the 11 px floor (pan instead) and never zooms past 100%.
+    assert.ok(fit.smallest >= 10.99 && fit.zoom <= 1.01, JSON.stringify(fit));
     assert.equal(fit.percent, Math.round(fit.zoom * 100) + "%");
     assert.equal(fit.top, -28);
     assert.equal(fit.y, 0);
@@ -188,9 +260,18 @@ try {
     if (name) await page.locator("dialog .field input").fill(name);
     await button("Analyze plan");
   }
-  async function exportPlan(format) {
+  async function exportPlan(format, hideLiterals) {
     // The shared Export pull-down: its items name the format.
     await page.click(".plan-exports button.export-button");
+    if (hideLiterals !== undefined) {
+      // A menu checkbox item above the formats; choosing it keeps the menu open.
+      const option = '.plan-exports [role="menuitemcheckbox"][data-option="hide-literals"]';
+      await page.waitForSelector(option);
+      if (await page.$eval(option, (el) => el.getAttribute("aria-checked")) !== String(hideLiterals)) {
+        await page.click(option);
+      }
+      assert.equal(await page.$eval(option, (el) => el.getAttribute("aria-checked")), String(hideLiterals));
+    }
     await page.click(`.plan-exports [role=menuitem][data-format="${format.toLowerCase()}"]`);
   }
   async function inspectorSection(section) {
@@ -619,24 +700,103 @@ try {
     path: path.join(directory, "plan.png"),
     fullPage: true,
   });
-  await exportPlan("JSON");
+  await exportPlan("JSON", false);
   const analysis = JSON.parse(await downloaded("sample-plan-analysis.json"));
   assert.ok(analysis.schema_version);
   assert.ok(analysis.plan_summary.operator_count > 0);
   // /api/analyze leaves the SQL out of each teach hook; Export JSON restores
   // it, so the file is the sidecar the CLI writes (teach hooks with query_sql).
-  const sidecar = JSON.parse(execFileSync(process.env.PYTHON || "python3", ["-c", `
+  const buildSidecar = (plan) => JSON.parse(execFileSync(process.env.PYTHON || "python3", ["-c", `
 import json, sys
 from myflames.output_sidecar import build_sidecar
 from myflames.parser import analyze_plan
 from myflames.plan_input import _plan
 text, root, query, engine = _plan({"plan": sys.stdin.read()})
 print(json.dumps(build_sidecar(root, analyze_plan(root), source_type="file", engine=engine, query_raw=query)))
-`], { cwd: root, input: JSON.stringify(JSON.parse(await fs.readFile(path.join(root, "apps/workspace/src/example.json"), "utf8"))) }));
+`], { cwd: root, input: JSON.stringify(plan) }));
+  const sidecar = buildSidecar(JSON.parse(await fs.readFile(path.join(root, "apps/workspace/src/example.json"), "utf8")));
   assert.ok(sidecar.teach_hooks.length > 0 && sidecar.teach_hooks.every((h) => h.query_sql === sidecar.query.raw));
   for (const value of [analysis, sidecar]) delete value.generated_at;
   assert.deepEqual(analysis, sidecar, "Export JSON writes the same sidecar as before");
   assert.deepEqual(analysis.teach_hooks.map(Object.keys), sidecar.teach_hooks.map(Object.keys), "hook keys keep their order");
+
+  // The sample predicates compare identifiers, so use explicit private values
+  // to verify redaction as well as unchanged generated prose and measurements.
+  const privacyPlan = {
+    operation: "Filter: (status = 'private-paid' and o.total > 987654321)",
+    condition: "status = 'private-paid' and o.total > 987654321",
+    query: "SELECT * FROM orders o WHERE status = 'private-paid' and o.total > 987654321",
+    actual_rows: 20, actual_loops: 1, actual_last_row_ms: 12.5,
+    inputs: [{ operation: "Table scan on orders", table_name: "orders", access_type: "table",
+      actual_rows: 1234, actual_loops: 1, actual_last_row_ms: 10 }],
+  };
+  const privacySidecar = buildSidecar(privacyPlan);
+  await button("Import plan", ".plans-bar ");
+  await page.waitForSelector("dialog[open]");
+  await paste(JSON.stringify(privacyPlan), "privacy-plan.json");
+  await page.waitForFunction(() => !document.querySelector("dialog"));
+  await preview();
+  // Hide literal values works from the keyboard: Export opens on the first
+  // format, and the option above it is a menu checkbox item that ArrowUp and
+  // Shift+Tab reach and Space or Return toggles, keeping the menu open.
+  const literalOption = '.plan-exports [role="menuitemcheckbox"][data-option="hide-literals"]';
+  const focusedItem = () => page.evaluate(() => {
+    const e = document.activeElement;
+    return e?.dataset.option || e?.dataset.format || e?.className || "";
+  });
+  const literalChecked = () => page.$eval(literalOption, (e) => e.getAttribute("aria-checked"));
+  await page.focus(".plan-exports button.export-button");
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(literalOption);
+  await page.waitForFunction(() => document.activeElement?.matches('.plan-exports [role=menuitem][data-format="json"]'));
+  assert.equal(await literalChecked(), "false", "the export before turned it off");
+  assert.equal(await page.$eval('.plan-exports [role="menu"]', (menu) => menu.contains(document.querySelector('[data-option="hide-literals"]'))), true,
+    "the option is inside the menu");
+  await page.keyboard.press("ArrowUp");
+  assert.equal(await focusedItem(), "hide-literals", "ArrowUp from the first format reaches the option");
+  // Screenshots, light and dark at 1440 and 720 px (then back as it was).
+  {
+    const theme = await page.evaluate(() => document.documentElement.dataset.theme ?? null);
+    const viewport = page.viewport();
+    for (const [width, height] of [[1440, 900], [720, 520]]) {
+      await page.setViewport({ width, height });
+      for (const scheme of ["light", "dark"]) {
+        await page.evaluate((t) => { document.documentElement.dataset.theme = t; }, scheme);
+        await new Promise((r) => setTimeout(r, 150));
+        await page.screenshot({ path: path.join(directory, `export-menu-option-${width}-${scheme}.png`) });
+      }
+    }
+    await page.evaluate((t) => { if (t === null) delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t; }, theme);
+    if (viewport) await page.setViewport(viewport);
+  }
+  await page.keyboard.press("Space");
+  assert.equal(await literalChecked(), "true", "Space checks it");
+  assert.ok(await page.$('.plan-exports [role="menu"]'), "the menu stays open");
+  await page.keyboard.press("ArrowDown");
+  assert.equal(await focusedItem(), "json");
+  await page.keyboard.down("Shift");
+  await page.keyboard.press("Tab");
+  await page.keyboard.up("Shift");
+  assert.equal(await focusedItem(), "hide-literals", "Shift+Tab reaches the option");
+  await page.keyboard.press("Enter");
+  assert.equal(await literalChecked(), "false", "Return toggles it too");
+  await page.keyboard.press("Enter");
+  assert.equal(await literalChecked(), "true");
+  await page.keyboard.press("End");
+  assert.equal(await focusedItem(), "html");
+  await page.keyboard.press("ArrowDown");
+  assert.equal(await focusedItem(), "hide-literals", "arrow navigation wraps through the option");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  const hidden = JSON.parse(await downloaded("privacy-plan-analysis.json"));
+  assert.doesNotMatch(JSON.stringify(hidden), /private-paid|987654321/);
+  assert.match(hidden.plan_tree.short_label, /status = \? and o\.total > \?/,
+    "plan condition literals are hidden");
+  assert.equal(hidden.executive_summary, privacySidecar.executive_summary,
+    "literal hiding preserves every count, row total and timing in the summary");
+  assert.deepEqual(hidden.plan_summary, privacySidecar.plan_summary, "all numeric measurements are unchanged");
+  await page.locator('button[aria-label="Remove privacy-plan.json"]').click();
+  await preview();
   await exportPlan("HTML");
   assert.match(
     await downloaded("sample-plan-report.html"),

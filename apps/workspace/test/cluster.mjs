@@ -160,7 +160,7 @@ try {
   const membersMenu = '[role=dialog][aria-label="Columns of Cluster members"]';
   await tab("Members");
   await page.waitForSelector(`${membersTable} thead th[data-col="version"]`);
-  await page.click(`${membersTable} .table-columns-button`);
+  await page.click(`${view} button[aria-label="Columns of Cluster members"]`);
   await page.waitForSelector(membersMenu);
   await page.click(`${membersMenu} input[data-col="version"]`);
   await page.keyboard.press("Escape");
@@ -181,7 +181,7 @@ try {
   await tab("Members");
   await page.waitForSelector(`${membersTable} thead th[data-col]`);
   assert.ok(!(await columnKeys(membersTable)).includes("version"), "the Members layout is restored after a reload");
-  await page.click(`${membersTable} .table-columns-button`);
+  await page.click(`${view} button[aria-label="Columns of Cluster members"]`);
   await page.waitForSelector(membersMenu);
   await page.click(`${membersMenu} .columns-reset`);
   await page.keyboard.press("Escape");

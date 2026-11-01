@@ -12,6 +12,7 @@ import { api, safePreview, type Plan } from "./api";
 import { availableViews, mount, type ChartHandle } from "./charts";
 import type { MetricName } from "./charts/core/types";
 import { bindFrameAppearance, themeFrame } from "./charts/core/appearance";
+import { PlanStats } from "./PlanStats";
 import { MIN_WORKSPACE_WIDTH as BAR_MIN_WIDTH } from "./charts/bargraph";
 import { MIN_WORKSPACE_WIDTH as TREE_MIN_WIDTH } from "./charts/tree";
 
@@ -34,6 +35,8 @@ export type PlanChartProps = {
   /** Dock the runtime's linked metric list in the operator inspector. */
   metricsTarget?: HTMLElement | null;
   visibleOperatorIds?: string[];
+  statsIds?: string[];
+  onSelectStats?: (ids: string[]) => void;
 };
 
 /** True when the runtime draws *view* and the plan carries chart data. */
@@ -42,6 +45,7 @@ export function isNativeView(plan: Plan | undefined, view: string) {
 }
 
 export function PlanChart(props: PlanChartProps) {
+  if (props.view === "stats") return <PlanStats {...props} />;
   return isNativeView(props.plan, props.view) ? (
     <NativeChart {...props} />
   ) : (
@@ -148,6 +152,7 @@ function NativeChart({
   toolbar,
   metricsTarget,
   visibleOperatorIds,
+  statsIds = [],
 }: PlanChartProps) {
   const host = useRef<HTMLDivElement>(null);
   const handle = useRef<ChartHandle | null>(null);
@@ -333,6 +338,12 @@ function NativeChart({
     }
     if (restore) restoreFocus(restore, host.current, panel);
   }, [metricsTarget, visibleOperatorIds, data, view, metric, focusId, collapsedKey, layoutTick]);
+  useLayoutEffect(() => {
+    const ids = new Set(statsIds);
+    host.current?.querySelectorAll<Element>("[data-node-id]").forEach(node => {
+      node.toggleAttribute("data-stats-match", ids.has(node.getAttribute("data-node-id") || ""));
+    });
+  }, [statsIds, data, view, metric, focusId, collapsedKey, layoutTick]);
   // Redraw for a new width at most once per frame. The observer only reads
   // layout; the redraw itself happens in the layout effect above.
   useEffect(() => {

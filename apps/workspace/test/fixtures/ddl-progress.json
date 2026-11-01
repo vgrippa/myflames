@@ -1,0 +1,22 @@
+{
+  "schema_version": "ddl-progress-1.0",
+  "available": true,
+  "reason": null,
+  "missing": [],
+  "source": "performance_schema",
+  "items": [
+    {
+      "id": 42,
+      "stage": "stage/sql/copy to tmp table",
+      "stage_label": "Copying rows",
+      "percent": 42,
+      "completed": 42000,
+      "estimated": 100000,
+      "elapsed_s": 126,
+      "left_s": 174,
+      "statement_kind": "ALTER",
+      "source": "performance_schema",
+      "units": "rows"
+    }
+  ]
+}

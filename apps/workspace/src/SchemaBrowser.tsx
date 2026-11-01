@@ -8,6 +8,7 @@ import { api, type CatalogTable, type CatalogTables, type Connection } from "./a
 import { connectionKey, connectionLabel } from "./binding";
 import { Icon, type IconName } from "./components";
 import { ActionStatus, IconButton, SearchField, useFocusScope, useSince } from "./kit";
+import { useImportCsvGate, type ImportCsvTarget } from "./importCsvApi";
 import { useSchemaCatalog } from "./PerfShared";
 import { quoteName } from "./sqlHighlight";
 
@@ -27,6 +28,8 @@ type TreeNode = {
   insert?: string;
   /** A status line (loading, error, empty) instead of an object. */
   tone?: "error" | "muted";
+  /** A system database (mysql, sys, information_schema, performance_schema). */
+  system?: boolean;
   title?: string;
 };
 type Menu = { x: number; y: number; node: TreeNode; opener: HTMLElement } | null;
@@ -43,6 +46,7 @@ export function SchemaBrowser({
   onQuery,
   onOpenTable,
   onOpenData,
+  onImportCsv,
 }: {
   connection: Connection;
   width: number;
@@ -55,6 +59,8 @@ export function SchemaBrowser({
   /** Open a Server view on one table (from: the connection key the name was read from). */
   onOpenData?: (schema: string, table: string, from: string) => void;
   onOpenTable?: (view: "indexes" | "tables", schema: string, table: string, from: string) => void;
+  /** Open Import CSV with the target filled in (from: the connection key the name was read from). */
+  onImportCsv?: (target: ImportCsvTarget, from: string) => void;
 }) {
   const key = connectionKey(connection);
   const label = connectionLabel(connection);
@@ -192,6 +198,7 @@ export function SchemaBrowser({
         expanded,
         schema: s.name,
         insert: quoteName(s.name),
+        system: s.system,
       });
       if (!expanded) continue;
       if (loaded?.loading && !loaded.data) out.push(status(`${sid}/loading`, 2, "Loading tables…", "muted"));
@@ -347,13 +354,24 @@ export function SchemaBrowser({
   const qualified = menuNode?.schema && menuNode.table ? `${quoteName(menuNode.schema)}.${quoteName(menuNode.table)}` : "";
   const reading = enabled && catalog.loading;
   const readingSince = useSince(reading);
+  // Import CSV: off with its reason on a Read-only connection, while the
+  // write policy is unknown, or when SHOW GRANTS proves a privilege missing.
+  const importExisting = useImportCsvGate("existing");
+  const importNew = useImportCsvGate("new");
+  const importItem = (text: string, blocked: string, target: ImportCsvTarget) => (
+    <button type="button" role="menuitem" className={blocked ? "has-hint" : undefined} aria-disabled={blocked ? true : undefined}
+      title={blocked || undefined} data-action="import-csv"
+      onClick={() => { if (!blocked && onImportCsv) act(() => onImportCsv(target, key)); }}>
+      {blocked ? <span className="context-menu-text"><span>{text}</span><small className="context-menu-hint">{blocked}</small></span> : text}
+    </button>
+  );
   return (
     <aside className="schema-browser" aria-label="Schema browser" style={width ? { width } : undefined} ref={browser}>
       <div className="browser-head">
         <h2>Schemas</h2>
-        <IconButton icon="refresh" label={reading ? "Reading schemas…" : "Reload schemas"} disabled={!enabled}
+        {enabled && <IconButton icon="refresh" label={reading ? "Reading schemas…" : "Reload schemas"} disabled={!enabled}
           className={reading ? "is-busy" : undefined} aria-busy={reading || undefined} aria-disabled={reading || undefined}
-          onClick={() => { if (!reading) refresh(); }} />
+          onClick={() => { if (!reading) refresh(); }} />}
         <IconButton icon="close" label="Hide the schema browser" onClick={onClose} />
       </div>
       {/* Always mounted (above the gate and the tree), so reading and its
@@ -475,6 +493,8 @@ export function SchemaBrowser({
           <button type="button" role="menuitem" onClick={() => act(() => onInsert(menuNode.insert || ""))}>
             Insert name
           </button>
+          {onImportCsv && menuNode.kind === "schema" && !menuNode.system &&
+            importItem("Import CSV into a new table…", importNew, { mode: "new", schema: menuNode.schema! })}
           {(menuNode.kind === "table" || menuNode.kind === "view") && (
             <>
               <button type="button" role="menuitem" onClick={() => act(() => onQuery(`SELECT * FROM ${qualified} LIMIT 100`))}>
@@ -489,6 +509,8 @@ export function SchemaBrowser({
               </button>
               {onOpenData && menuNode.kind === "table" && <button type="button" role="menuitem"
                 onClick={() => act(() => onOpenData(menuNode.schema!, menuNode.table!, key))}>Edit table data…</button>}
+              {onImportCsv && menuNode.kind === "table" &&
+                importItem("Import CSV…", importExisting, { mode: "existing", schema: menuNode.schema!, table: menuNode.table! })}
               {onOpenTable && menuNode.kind === "table" && (
                 <>
                   <button type="button" role="menuitem" onClick={() => act(() => onOpenTable("indexes", menuNode.schema!, menuNode.table!, key))}>

@@ -50,7 +50,7 @@ const visibleKeys = (t = unused) => page.$$eval(`${t} thead th[data-col]`, (els)
 const order = (t = unused) => page.$$eval(`${t} tbody tr[data-row-key]`, (els) => els.map((e) => e.dataset.rowKey));
 const dialog = '[role=dialog][aria-label="Columns of Unused indexes"]';
 const menu = async () => {
-  await page.click(`${unused} .table-columns-button`);
+  await page.click(`button[aria-label="Columns of Unused indexes"]`);
   await page.waitForSelector(dialog);
 };
 const closeMenu = async () => {

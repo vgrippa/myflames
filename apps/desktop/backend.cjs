@@ -134,18 +134,33 @@ function backendEnvironment(dataDirectory, inherited = process.env, platform = p
   }
   env.HOME = path.join(dataDirectory, 'backend-home');
   env.USERPROFILE = env.HOME;
+  // SSH tunnels (myflames/ssh_tunnel.py) run the system ssh with the user's
+  // own ~/.ssh/config, keys and agent, never the isolated HOME: the backend
+  // passes these to ssh alone; database clients keep their isolated
+  // environment. On Windows the agent is a named pipe and needs no variable.
+  const paths = platform === 'win32' ? path.win32 : path.posix;
+  const realHome = platform === 'win32' ? (inherited.USERPROFILE || inherited.HOME) : (inherited.HOME || inherited.USERPROFILE);
+  if (realHome && paths.isAbsolute(realHome)) env.MYFLAMES_SSH_HOME = realHome;
+  if (platform !== 'win32' && inherited.SSH_AUTH_SOCK && paths.isAbsolute(inherited.SSH_AUTH_SOCK)) {
+    env.MYFLAMES_SSH_AUTH_SOCK = inherited.SSH_AUTH_SOCK;
+  }
   env.MYFLAMES_SECRET_BACKEND = 'vault';
   env.PYTHONUNBUFFERED = '1';
   env.PYTHONNOUSERSITE = '1';
   return env;
 }
 
-// Dump, restore and clone tools run in their own process groups, which a
-// signal to the backend's group never reaches. The backend lists the groups it
-// owns in a fresh file in this private directory (tool-groups-1.0, written by
-// myflames.lifecycle.ToolGroups) so stop() can end them if the backend must be
-// killed. Files from earlier launches are removed, never trusted.
+// Dump, restore and clone tools, and SSH tunnels, run in their own process
+// groups, which a signal to the backend's group never reaches. The backend
+// lists the groups it owns in a fresh file in this private directory
+// (tool-groups-1.0, written by myflames.lifecycle.ToolGroups) so stop() can
+// end them if the backend must be killed. Files from earlier launches are
+// removed, never trusted.
 const TOOL_GROUPS_NAME = /^\.?tool-groups-[A-Za-z0-9_-]*(\.json)?$/;
+// The most groups the backend lists at once (myflames.lifecycle.ToolGroups
+// MAX_GROUPS refuses another tool or tunnel beyond it). A longer list is
+// unreadable here, so keep the two equal (test_ssh_tunnel checks it).
+const MAX_TOOL_GROUPS = 16;
 function toolGroupsFile(dataDirectory, id = crypto.randomUUID()) {
   const directory = path.join(dataDirectory, 'runtime');
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -176,7 +191,7 @@ function readToolGroups(file, exclude = [], required = false) {
     const buffer = Buffer.alloc(4097), length = fs.readSync(fd, buffer, 0, buffer.length, 0);
     if (length > 4096) return unreadable;
     const value = JSON.parse(buffer.toString('utf8', 0, length));
-    if (!value || value.schema_version !== 'tool-groups-1.0' || !Array.isArray(value.groups) || value.groups.length > 16) return unreadable;
+    if (!value || value.schema_version !== 'tool-groups-1.0' || !Array.isArray(value.groups) || value.groups.length > MAX_TOOL_GROUPS) return unreadable;
     const groups = [];
     for (const id of value.groups) {
       if (!Number.isSafeInteger(id) || id <= 1 || id > 0x7fffffff || exclude.includes(id)) return unreadable;
@@ -311,4 +326,4 @@ function startBackend({ command, args, cwd, env, timeout = 20000, grace = 5000, 
   return ready;
 }
 module.exports = { parseLaunchLine, sameOrigin, externalLink, backendEnvironment, dataPath, isolatedBackendHome,
-  toolGroupsFile, readToolGroups, startBackend };
+  toolGroupsFile, readToolGroups, startBackend, MAX_TOOL_GROUPS };

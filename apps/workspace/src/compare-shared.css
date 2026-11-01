@@ -1,0 +1,44 @@
+/* Opaque neutral surfaces keep text legible on selected rows too.
+   Relationship badges do not consume health color roles. Faint
+   means a quieter surface, never low-contrast text or reduced opacity. */
+.comparison-status { border: 1px solid transparent; }
+.comparison-status--accent { background: var(--accent-soft); color: var(--accent-text); }
+.comparison-status--outline { background: var(--surface); border-color: var(--line-strong); color: var(--ink-muted); }
+.comparison-status--muted { background: var(--surface-muted); color: var(--ink-muted); }
+.comparison-status--faint { background: var(--surface-subtle); color: var(--ink-muted); }
+.comparison-setup { min-width: 0; }
+.comparison-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-1) var(--space-2);
+  align-items: center;
+  min-width: 0;
+}
+.comparison-names {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  min-width: 0;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+/* Source → Target read as one phrase; each side shrinks only when the bar
+   runs out of room. */
+.comparison-names > span:not(.comparison-arrow) {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.comparison-names b { font-weight: 600; }
+.comparison-arrow { color: var(--ink-muted); }
+.comparison-actions { display: flex; gap: var(--space-2); align-items: center; }
+.comparison-actions .button { flex: none; }
+.comparison-actions :is(.schema-compare-run, .server-compare-run) { padding: 0; }
+.comparison-header + div:not([hidden]) { margin-top: var(--space-2); }
+@container view (max-width: 760px) {
+  .comparison-actions { gap: var(--space-1); }
+  .comparison-actions .button { min-height: var(--space-6); padding-inline: var(--space-2); }
+  .comparison-actions .button > svg { display: none; }
+}

@@ -82,6 +82,10 @@ for i, (name, text) in enumerate(sources):
         projected = project_tree(root, focus, collapsed)
         data = build_chart_data(root, projection={'focus_id': focus, 'collapsed_ids': collapsed,
                                                   'selected_id': '', 'metric': 'self_time'})
+        assert data['stats']['operators'], 'Python supplies operator statistics'
+        assert sum(row['count'] for row in data['stats']['operators']) == len(nodes)
+        assert sum(row['count'] for row in data['groups'].values()) == len(nodes)
+        assert [node['id'] for node in data['nodes']] == [node['node_id'] for node in nodes]
         views = [('tree', {}), ('bargraph', {}), ('flamegraph', {})]
         if j == 0:
             views.append(('flamegraph', {'inverted': True, 'frame_height': 20}))

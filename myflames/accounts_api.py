@@ -400,7 +400,7 @@ def _apply(payload, workspace, with_saved_password, request_profile):
     decision = dbops.decide({'kind': 'risky', 'category': 'account', 'statements': reviewed or []}, safety['type'],
                             safety['read_only'], safety.get('profile_name'))
     blocked = dbops.gate(decision, confirmed)
-    plain = {k: connection.get(k) for k in ('host', 'port', 'user')}
+    plain = {k: connection.get(k) for k in ('host', 'port', 'user', 'ssh_host', 'ssh_user', 'ssh_port')}
     if blocked:
         audit = dbops.AuditTrail(store, 'accounts.' + request['operation'], 'ui', connection=plain, safety=safety,
                                  policy=dbops.policy_summary(decision))

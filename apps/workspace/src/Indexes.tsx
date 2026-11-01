@@ -1,3 +1,4 @@
+import "./indexes.css";
 import { bt, dropIndexSql, indexVisibilitySql, showIndexSql, tableMaintenanceSql } from "./sqlIdent";
 // Server > Indexes: unused and redundant indexes and tables read mostly by
 // full scans (indexes-1.0 from myflames/indexes.py). One read per click: the
@@ -181,7 +182,7 @@ function IndexInspectorActions({
   const dropSql = dropIndexSql(schema, table, index);
 
   return (
-    <div className="index-inspector-actions" style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap", alignItems: "center" }}>
+    <div className="index-inspector-actions">
       {onTableHealth && (
         <button type="button" className="button small" disabled={disabled} onClick={onTableHealth}>
           Table health
@@ -214,19 +215,13 @@ function FixStatements({ item }: { item: UnusedIndex | RedundantIndex }) {
       {item.test_sql && (
         <>
           <p className="hint">Test first: the optimizer stops using it, writes still maintain it.</p>
-          <div style={{ display: "flex", gap: "var(--space-2)", alignItems: "center", flexWrap: "wrap", marginBlock: "var(--space-1)" }}>
-            <ReviewedSqlAction action="alter_table" sql={item.test_sql} label={`Set invisible (${item.index})`} warning={item.caveat} />
-            <CopySql sql={item.test_sql} label={`Test without ${item.index}`} />
-          </div>
+          <CopySql sql={item.test_sql} label={`Test without ${item.index}`} />
         </>
       )}
       {item.drop_sql && (
         <>
           <p className="hint">Then, when nothing slowed down:</p>
-          <div style={{ display: "flex", gap: "var(--space-2)", alignItems: "center", flexWrap: "wrap", marginBlock: "var(--space-1)" }}>
-            <ReviewedSqlAction action="alter_table" sql={item.drop_sql} label={`Drop ${item.index}`} warning={item.caveat} />
-            <CopySql sql={item.drop_sql} label={`Drop ${item.index}`} />
-          </div>
+          <CopySql sql={item.drop_sql} label={`Drop ${item.index}`} />
         </>
       )}
       {item.caveat && <p className="hint perf-caveat">{item.caveat}</p>}

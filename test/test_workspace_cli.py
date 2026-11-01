@@ -112,8 +112,9 @@ class TestCaptureCLI(unittest.TestCase):
 class TestVersionNote(unittest.TestCase):
     def test_discover_uses_report_version_without_extra_queries(self):
         from types import SimpleNamespace
-        cases = [('mysql', '8.0.46', False, 1), ('mysql', '8.4.11', False, 0),
-                 ('mysql', '8.0.46', True, 0), ('mariadb', '10.6.25', False, 1),
+        cases = [('mysql', '5.6.51', False, 1), ('mysql', '8.4.11', False, 0),
+                 ('mysql', '8.0.46', False, 0), ('mysql', '5.7.44', False, 0),
+                 ('mysql', '5.6.51', True, 0), ('mariadb', '10.6.25', False, 1),
                  ('mariadb', '10.11.16-MariaDB', False, 0)]
         for engine, version, quiet, count in cases:
             with self.subTest(engine=engine, version=version, quiet=quiet):
@@ -134,11 +135,11 @@ class TestVersionNote(unittest.TestCase):
 
     def test_cached_version_prints_once_and_privileges_version_is_used(self):
         from types import SimpleNamespace
-        for cached in (None, '8.0.46'):
+        for cached in (None, '5.6.51'):
             conn = SimpleNamespace(_version_cache=cached)
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
-                workspace_cli._version_note(conn, False, {'engine': 'mysql', 'version': '8.0.46'})
+                workspace_cli._version_note(conn, False, {'engine': 'mysql', 'version': '5.6.51'})
             self.assertEqual(err.getvalue().count('note: myflames supports'), 1)
 
 

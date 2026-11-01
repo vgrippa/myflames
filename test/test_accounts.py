@@ -386,9 +386,16 @@ class AccountsTest(unittest.TestCase):
         plan = self.plan('create', random_password=True)
         self.assertIn('IDENTIFIED BY RANDOM PASSWORD', plan['statements'][0])
         self.assertTrue(plan['generates_password'])
+        # Before 8.0.18 (RANDOM PASSWORD) myflames generates the password,
+        # as on MariaDB, and the plan says so.
         self.conn.version = '8.0.17'
-        with self.assertRaisesRegex(ValueError, '8.0.18'):
-            self.plan('create', random_password=True)
+        plan = self.plan('create', random_password=True)
+        self.assertNotIn('RANDOM PASSWORD', plan['statements'][0])
+        self.assertIn("IDENTIFIED BY '[redacted]'", plan['statements'][0])
+        self.assertTrue(plan['generates_password'])
+        self.assertTrue(plan._generated and plan._generated in plan._statements[0])
+        self.assertNotIn(plan._generated, json.dumps(plan))
+        self.assertTrue(any(w.startswith('myflames generates the password') for w in plan['warnings']))
         self.conn = FakeConn(name='admin', host='localhost')
         plan = self.plan('password', password='new!', current_password='old!')
         self.assertIn("REPLACE '[redacted]'", plan['statements'][0])
@@ -442,6 +449,15 @@ class AccountsTest(unittest.TestCase):
                                ('app@10.0.%', ('app', '10.0.%'))]:
             with self.subTest(text=text):
                 self.assertEqual(a.parse_account(text), expected)
+
+    def test_the_4006_bypass_privilege_follows_the_version(self):
+        self.conn = FakeConn('mysql')
+        for version, expected in (('8.0.30', 'unless you hold SET_USER_ID;'),
+                                  ('8.2.0', 'unless you hold SET_USER_ID or ALLOW_NONEXISTENT_DEFINER;'),
+                                  ('8.4.6', 'unless you hold ALLOW_NONEXISTENT_DEFINER;')):
+            with self.subTest(version=version):
+                effects = a._effects(self.conn, 'mysql', 'app', '%', version)
+                self.assertIn(expected, ' '.join(effects['warnings']))
 
     def test_each_operation_per_engine(self):
         for engine in ('mysql', 'mariadb'):

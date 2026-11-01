@@ -361,10 +361,15 @@ def _flags(name):
     return set(entry[2].split()) if entry and entry[2] is not None else set()
 
 
-def static_dynamic(engine, name):
+def static_dynamic(engine, name, version_tuple=None):
     """True, False or None (unknown) without reading the server: whether
     *name* can change at runtime. For the Parameters view's labels; the
-    sheet reads the server before offering anything."""
+    sheet reads the server before offering anything. MySQL before 8.0 is
+    answered from that release's row of the parameter version catalog (read
+    from a running server of the release), never from the 8.x catalog."""
+    if engine == "mysql" and isinstance(version_tuple, (tuple, list)) and len(version_tuple) >= 3 \
+            and (0, 0, 0) < tuple(version_tuple)[:3] < (8, 0, 0):
+        return _release_dynamic(name, tuple(version_tuple)[:3])
     if engine == "mariadb":
         if name in MARIADB_READ_ONLY:
             return False
@@ -504,6 +509,10 @@ def _read(conn, name):
                 keys = ("name", "session_value", "global_value", "origin", "default", "scope", "type", "min", "max",
                         "block", "values", "read_only", "path", "comment", "command_line_argument")
                 info["catalog"] = dict(zip(keys, rows[0]))
+        elif _mysql57(info):
+            # MySQL 5.7 has no variables_info, persisted_variables or SET PERSIST.
+            from .config_review import MYSQL57_SOURCE_NOTE
+            info["notes"].append(MYSQL57_SOURCE_NOTE)
         else:
             statements = ["SELECT '%sinfo'" % _MARK,
                           "SELECT VARIABLE_SOURCE, VARIABLE_PATH, MIN_VALUE, MAX_VALUE, SET_TIME, SET_USER, SET_HOST "
@@ -532,6 +541,18 @@ def _read(conn, name):
             raise
         info["notes"].append("Could not read the variable's details: %s" % reason(exc))
     return info
+
+
+def _mysql57(v):
+    """MySQL 5.7 (a known MySQL version below 8.0): no SET PERSIST, no variables_info."""
+    from .config_review import before_mysql80
+    version = v.get("version_tuple") or _version_tuple(v.get("server_version") or "")
+    return before_mysql80(v.get("engine"), version)
+
+
+def _persist_supported(v):
+    """SET PERSIST, SET PERSIST_ONLY and RESET PERSIST exist: MySQL 8.0 and later."""
+    return v.get("engine") == "mysql" and not _mysql57(v)
 
 
 def _scope(info):
@@ -620,12 +641,24 @@ def _range(info, kind):
     return _number(source.get("min")), _number(source.get("max")), None
 
 
+def _release_dynamic(name, version):
+    """Whether *name* is dynamic in exactly this MySQL release, from the
+    parameter version catalog; None when the release or the name is not in it."""
+    from . import param_versions
+    try:
+        catalog = param_versions.load("mysql")
+    except Exception:  # noqa: BLE001 - a missing catalog leaves it unknown
+        return None
+    facts = catalog.facts(name.lower(), catalog.index("%d.%d.%d" % version))
+    return facts.get("dynamic") if facts else None
+
+
 def _dynamic(info):
     catalog = info.get("catalog")
     if catalog and catalog.get("read_only"):
         return catalog["read_only"].upper() != "YES"
     if info["engine"] == "mysql":
-        return static_dynamic("mysql", info["name"])
+        return static_dynamic("mysql", info["name"], info.get("version_tuple"))
     return None
 
 
@@ -696,8 +729,9 @@ def startup_option(info):
 def _default(info):
     if info.get("catalog"):
         return info["catalog"].get("default")
-    from .config_review import DEFAULTS
-    value = DEFAULTS.get(info["engine"], {}).get(info["name"])
+    from .config_review import DEFAULTS, defaults_for
+    defaults = defaults_for(info["engine"], info.get("version_tuple")) if info["engine"] in DEFAULTS else {}
+    value = defaults.get(info["name"])
     return str(value) if value is not None else None
 
 
@@ -732,8 +766,8 @@ def describe(info):
         "source_path": (info.get("info") or {}).get("path") or (info.get("catalog") or {}).get("path") or None,
         "set_time": (info.get("info") or {}).get("set_time"), "set_user": (info.get("info") or {}).get("set_user"),
         "set_host": (info.get("info") or {}).get("set_host"),
-        "persisted": dict(_persisted_state(persisted, info["engine"] == "mysql"),
-                          supported=info["engine"] == "mysql",
+        "persisted": dict(_persisted_state(persisted, _persist_supported(info)),
+                          supported=_persist_supported(info),
                           load=None if load is None else load.upper() in ("ON", "1")),
         "non_persistent": "np" in flags, "persist_as_read_only": "pro" in flags,
         "session_read_only": "sro" in flags, "startup_option": startup_option(info),
@@ -772,10 +806,11 @@ def _modes(v):
     mode("global", not read_only and not session_only,
          "%s is read-only while the server runs." % name if read_only else
          "%s has only a session value." % name)
-    if not mysql:
-        mode("persist", False, "MariaDB has no SET PERSIST.")
-        mode("persist_only", False, "MariaDB has no SET PERSIST_ONLY.")
-        mode("reset_persist", False, "MariaDB has no RESET PERSIST.")
+    if not mysql or _mysql57(v):
+        product = "MariaDB" if not mysql else "MySQL 5.7"
+        mode("persist", False, "%s has no SET PERSIST." % product)
+        mode("persist_only", False, "%s has no SET PERSIST_ONLY." % product)
+        mode("reset_persist", False, "%s has no RESET PERSIST." % product)
     else:
         if v["non_persistent"]:
             why = "%s cannot be persisted (NON_PERSIST)." % name
@@ -1175,14 +1210,18 @@ def _alternative(v, mode, line):
         return {"mode": None, "config_line": None,
                 "text": "The server sets %s; no option or statement changes it." % name}
     cnf = ("add %s under [mysqld] (or [mariadb]) in an option file" % line) if line else "set it in an option file"
-    if v["engine"] == "mariadb" and v["dynamic"] is False:
+    # MariaDB and MySQL 5.7 have no SET PERSIST: the option file keeps a value.
+    no_persist = v["engine"] == "mariadb" or _mysql57(v)
+    product = "MariaDB" if v["engine"] == "mariadb" else "MySQL 5.7"
+    if no_persist and v["dynamic"] is False:
         return {"mode": None, "config_line": line,
                 "text": "%s and restart the server; myflames never edits option files." % (cnf[0].upper() + cnf[1:])}
-    if v["engine"] == "mariadb" and mode in ("persist", "persist_only"):
+    if no_persist and mode in ("persist", "persist_only"):
         now = v["modes"]["global"]["available"]
         return {"mode": "global" if now else None, "config_line": line,
                 "text": "%sTo keep it after a restart, %s; myflames never edits option files." % (
-                    "MariaDB has no SET PERSIST; use SET GLOBAL to change it now. " if now else "MariaDB has no SET PERSIST. ", cnf)}
+                    "%s has no SET PERSIST; use SET GLOBAL to change it now. " % product if now
+                    else "%s has no SET PERSIST. " % product, cnf)}
     if v["engine"] == "mysql" and v["dynamic"] is False and v["modes"]["persist_only"]["available"]:
         return {"mode": "persist_only", "config_line": line,
                 "text": "Use SET PERSIST_ONLY, then restart the server."}
@@ -1221,9 +1260,10 @@ def build_plan(v, value, mode, grants=None):
     if not v.get("server_identity"):
         problems.append(_problem("identity_unavailable", "Could not read the server identity. Nothing can be "
                                  "changed until the target server can be identified."))
-    if mode == "persist_only" and not _can_validate_persist_only(v):
+    if mode == "persist_only" and not _can_validate_persist_only(v) and not _mysql57(v):
         problems.append(_problem("validation_unavailable", "Cannot fully validate this value for SET PERSIST_ONLY."))
-    if mode in ("persist", "persist_only", "reset_persist") and v["engine"] == "mysql" \
+    # MySQL 5.7 has no SET PERSIST at all: mode_unavailable already says so.
+    if mode in ("persist", "persist_only", "reset_persist") and _persist_supported(v) \
             and not v["persisted"].get("read"):
         problems.append(_problem("persisted_unreadable", "The persisted state must be readable before changing it."))
     if mode == "persist_only" and normalized.get("flags", {}).get("hypergraph_optimizer") in ("on", "default"):

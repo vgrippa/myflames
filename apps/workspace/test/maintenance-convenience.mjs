@@ -82,8 +82,10 @@ try {
  assert.deepEqual(await h.texts(`${view} .dump-group > legend`),['Performance','Contents','Compression']);
  assert.equal(await page.$eval(`${view} .dump-group[data-group=performance] .form-row:first-child > label`,e=>e.textContent),'Threads');
  assert.equal(await page.$eval(`${view} .dump-group[data-group=performance] .number-unit`,e=>e.textContent),'threads');
- assert.deepEqual(await page.$$eval(`${view} .dump-group[data-group=contents] .checkbox`,es=>es.map(e=>e.textContent)),['Triggers','Stored routines','Events']);
+ assert.deepEqual(await page.$$eval(`${view} .dump-group[data-group=contents] .checkbox`,es=>es.map(e=>e.textContent)),['Triggers','Stored routines','Events','Structure only (no rows)']);
  assert.equal(await page.$eval(`${view} .dump-group[data-group=contents] [role=group]`,e=>document.getElementById(e.getAttribute('aria-labelledby')).textContent),'Include');
+ // Structure only is a Contents choice of its own; its row is labelled Rows.
+ assert.deepEqual(await page.$$eval(`${view} .dump-group[data-group=contents] [role=group] .form-row-label`,es=>es.map(e=>e.textContent)),['Include','Rows']);
  // Every label sits left of its control, and each checkbox on the line of its own label.
  const geometry=await page.$$eval(`${view} .dump-options .form-row`,rows=>rows.map(r=>{
   const label=r.firstElementChild.getBoundingClientRect(),control=r.lastElementChild.getBoundingClientRect();
@@ -98,10 +100,13 @@ try {
  const level=await page.$(`${view} .dump-group[data-group=compression] input[type=number]`);await level.type('7');
  assert.equal(await level.evaluate(e=>e.max),'9');
  assert.match(await h.text(`${view} .ops-dump-options > summary`),/4 threads · Gzip, level 7/);
+ // The Contents choice Structure only is named in the summary and sent in the plan request.
+ await page.locator(`${view} .dump-group[data-group=contents] .checkbox ::-p-text(Structure only)`).click();
+ assert.match(await h.text(`${view} .ops-dump-options > summary`),/4 threads · Structure only \(no rows\) · Gzip, level 7/);
  await page.locator(`${view} .ops-actions button ::-p-text(Run preflight)`).click();
  await page.waitForFunction(()=>document.querySelector('.ops-actions')?.textContent.includes('Unverified'));
  for(let i=0;i<100&&!state.other.some(r=>r.path==='/api/lifecycle/prepare');i++)await new Promise(r=>setTimeout(r,25));
- assert.deepEqual(state.other.find(r=>r.path==='/api/lifecycle/prepare').body.options,{compression:'gzip',compression_level:7});
+ assert.deepEqual(state.other.find(r=>r.path==='/api/lifecycle/prepare').body.options,{compression:'gzip',compression_level:7,structure_only:true});
  if(await page.$('.detail-back'))await page.click('.detail-back');
  // Wait for the preflight to finish before changing its disabled form.
  await page.waitForFunction(()=>!document.querySelector('select[aria-label="Tool"]')?.disabled);
@@ -152,7 +157,7 @@ try {
  assert.equal(await page.$('.dump-table-panel'),null);
  assert.ok(await focused(tablesButton),'Done returns focus to the Tables button');
  // A table scope offers the table options of the tool: mysqlsh dumps no routines or events with dumpTables.
- await page.waitForFunction(v=>[...document.querySelectorAll(`${v} .dump-group[data-group=contents] .checkbox`)].map(e=>e.textContent).join()==='Triggers',{},view);
+ await page.waitForFunction(v=>[...document.querySelectorAll(`${v} .dump-group[data-group=contents] .checkbox`)].map(e=>e.textContent).join()==='Triggers,Structure only (no rows)',{},view);
  const before=state.other.filter(r=>r.path==='/api/lifecycle/prepare').length;
  await page.locator(`${view} .ops-actions button ::-p-text(Run preflight)`).click();
  for(let i=0;i<100&&state.other.filter(r=>r.path==='/api/lifecycle/prepare').length===before;i++)await new Promise(r=>setTimeout(r,25));

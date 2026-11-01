@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { type Connection } from './api';
 import { connectionKey } from './binding';
+import { ConnectionTypeBand } from './Connections';
 import { ActionButton, ActionStatus, ConfirmSheet, ContextMenu, copyToClipboard, writeFailure, type TableContextAction } from './kit';
 import { csvCell } from './reportTableExport';
 import { tsv } from './ResultsPane';
@@ -349,7 +350,9 @@ export function TableData({ connection, currentConnectionKey, schema, table, onC
     <footer><button className="button" disabled={!page || page.offset === 0 || !!changed || busy || running || mismatch || unknown} onClick={() => void load(Math.max(0, (page?.offset || 0) - 50))}>Previous</button>
       <span>{step === 'load' ? 'Loading rows…' : `Rows ${(page?.offset || 0) + (page?.rows.length ? 1 : 0)} to ${(page?.offset || 0) + (page?.rows.length || 0)}`}</span>
       <button className="button" disabled={!page?.has_more || !!changed || busy || running || mismatch || unknown} onClick={() => void load((page?.offset || 0) + 50)}>Next</button></footer>
-    {review && !reviewLeft && <ConfirmSheet title="Apply table changes?" description="Review the exact SQL. A changed row or table definition refuses the whole batch." confirmLabel="Apply changes"
+    {review && !reviewLeft && <ConfirmSheet
+      band={<ConnectionTypeBand connection={owner.current} type={review.connection_type} />}
+      title="Apply table changes?" description="Review the exact SQL. A changed row or table definition refuses the whole batch." confirmLabel="Apply changes"
       busy={step === 'apply'} busyLabel="Applying…"
       onLeave={() => setReviewLeft(true)}
       leaveText="The changes may still be applying. Close does not stop them; the outcome shows above the table."
@@ -360,7 +363,9 @@ export function TableData({ connection, currentConnectionKey, schema, table, onC
       {review.privileges.filter(answer => answer.state !== 'allowed').map((answer, index) => <p className="hint" key={index}>{answer.reason}</p>)}
       <pre className="sql-preview table-data-sql">{review.statements.map(sql => sql + ';').join('\n\n')}</pre>
     </ConfirmSheet>}
-    {discard && <ConfirmSheet title={unknown ? "Close with an unknown outcome?" : "Discard staged changes?"} description={unknown ? "Changes may have committed. Closing discards only the local draft. Open the table afresh and inspect its rows before making new changes. Do not resend this batch." : "These changes have not been applied."} confirmLabel={unknown ? "Close and inspect separately" : "Discard and close"} onConfirm={() => { resetDrafts(); onClose(); }} onCancel={() => setDiscard(false)} />}
+    {discard && <ConfirmSheet
+      band={<ConnectionTypeBand connection={owner.current} />}
+      title={unknown ? "Close with an unknown outcome?" : "Discard staged changes?"} description={unknown ? "Changes may have committed. Closing discards only the local draft. Open the table afresh and inspect its rows before making new changes. Do not resend this batch." : "These changes have not been applied."} confirmLabel={unknown ? "Close and inspect separately" : "Discard and close"} onConfirm={() => { resetDrafts(); onClose(); }} onCancel={() => setDiscard(false)} />}
     {toast && <div className="table-copy-toast" role="status">{toast}</div>}
     {contextMenu && activeCol && <ContextMenu x={contextMenu.x} y={contextMenu.y} label="Cell actions"
       header={activeCol.name} opener={contextMenu.opener} actions={cellActions} onClose={() => setContextMenu(null)} />}

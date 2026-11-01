@@ -190,9 +190,9 @@ export function renderTree(context: ViewContext): ViewInstance {
     svg(doc, "text", { class: warn ? "row-label warn" : "row-label", x: indentX + TOGGLE_W, y: textY, "pointer-events": "none" },
       group, (warn ? "⚠ " : "") + label);
     svg(doc, "text", { class: "row-time", x: selfX + SELF_W - 4, y: textY, "text-anchor": "end", "pointer-events": "none" }, group, treeTime(self));
-    if (Math.abs(total - self) > 0.001) {
-      svg(doc, "text", { class: "row-time", x: totalX + TOTAL_W - 4, y: textY, "text-anchor": "end", "pointer-events": "none" }, group, treeTime(total));
-    }
+    // Every row prints its inclusive time, leaves included (a leaf's total
+    // equals its self time); an unmeasured operator reads "—" as in Self.
+    svg(doc, "text", { class: "row-time", x: totalX + TOTAL_W - 4, y: textY, "text-anchor": "end", "pointer-events": "none" }, group, treeTime(total));
     svg(doc, "text", { class: "row-pct", x: pctX + PCT_W - 4, y: textY, "text-anchor": "end", "pointer-events": "none" },
       group, (pct >= 1 ? pyFixed(pct, 0) : pyFixed(pct, 1)) + "%");
     const selfBar = Math.max(0, (self / rootTotal) * barMax);

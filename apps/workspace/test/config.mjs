@@ -402,6 +402,21 @@ try {
   assert.ok(mysql.parameters.items.length >= 40);
   assert.equal(await page.$$eval(`${view} table[aria-label="Parameters"] tbody tr[data-row-key]`, es => es.length), mysql.parameters.items.length);
   assert.equal(variableReads.length, 0, "catalog rows do not read metadata individually");
+  // Narrow windows prioritize the value, timing and source. Allowed values
+  // remain available through Columns and in the selected parameter's facts.
+  await page.setViewport({width:720,height:600});
+  await page.waitForFunction(v => !document.querySelector(`${v} th[data-col="allowed"]`), {}, view);
+  assert.deepEqual(await page.$$eval(`${view} th[data-col]`, heads=>heads.map(head=>head.dataset.col)), ['name','value','apply_type','source']);
+  await page.click(`${view} button[aria-label="Columns of Parameters"]`);
+  await page.click('[role=dialog][aria-label="Columns of Parameters"] input[data-col="allowed"]');
+  await page.keyboard.press('Escape');
+  await page.waitForSelector(`${view} th[data-col="allowed"]`);
+  await page.click(`${view} button[aria-label="Columns of Parameters"]`);
+  await page.click('[role=dialog][aria-label="Columns of Parameters"] .columns-reset');
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(v => !document.querySelector(`${v} th[data-col="allowed"]`), {}, view);
+  await page.setViewport({width:1440,height:1000});
+  await page.waitForSelector(`${view} th[data-col="allowed"]`);
   assert.match(await h.popover("About Parameters"), /stages local drafts.*every exact statement/s);
   assert.match(await text(row("innodb_buffer_pool_size")), /MiB|GiB/);
   assert.match(await text(row("unknown_parameter")), /SQL NULL.*Unknown/);
@@ -488,6 +503,8 @@ try {
   assert.match(await text(`${view} .parameter-preview`), /Current valueNew valueApply typeWhen it applies/);
   assert.match(await text(`${view} .parameter-preview`), /max_connections151300/);
   await review(2);
+  assert.equal(await page.$eval(`${batch} .connection-type-band`, e => e.dataset.connectionType), "production");
+  assert.match(await text(`${batch} .connection-type-band`), /^Production\s*·\s*Local MySQL \(127\.0\.0\.1:3306\)$/);
   const expectedOrder = mysql.parameters.items.filter(p => ["max_connections", "slow_query_log"].includes(p.name)).map(p => p.name);
   assert.deepEqual(planned.slice(plansBefore).map(p => p.name), expectedOrder);
   assert.ok(planned.slice(plansBefore).every(p => p.mode === "persist"), "Keep after restart defaults on");
@@ -510,6 +527,45 @@ try {
   assert.ok(applied.every(p => p.confirmed && p.expect.statement.startsWith("SET PERSIST")));
   assert.equal(await page.$(`${view} [data-action="edit-parameters"]`) !== null, true, "all changed drafts leave Edit mode");
   await h.idle(view);
+
+  // A set-typed parameter (sql_mode) stages from a pick list of the catalog's
+  // members, joined in the catalog's order; Edit as text keeps the raw field.
+  await edit();
+  await search("sql_mode");
+  await page.waitForSelector(input("sql_mode"));
+  const memberBox = async (name) => {
+    const handle = await page.evaluateHandle((n) => [...document.querySelectorAll(".popover .set-value-member")]
+      .find((e) => e.textContent.trim() === n)?.querySelector("input"), name);
+    const el = handle.asElement();
+    assert.ok(el, `set member ${name}`);
+    return el;
+  };
+  await page.click(`${input("sql_mode")} .set-value-button`);
+  await page.waitForSelector(".popover .set-value-members");
+  assert.deepEqual(await page.$$eval(".popover .set-value-member", (es) => es.map((e) => e.textContent.trim())),
+    parameter("sql_mode").values, "the pick list offers the catalog's members");
+  assert.equal(await (await memberBox("STRICT_TRANS_TABLES")).evaluate((e) => e.checked), true, "current members start ticked");
+  await (await memberBox("NO_ENGINE_SUBSTITUTION")).click();
+  await (await memberBox("STRICT_TRANS_TABLES")).click();
+  assert.equal(await page.$eval(`${input("sql_mode")} .set-value-summary`, (e) => e.textContent),
+    "ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION", "the staged value keeps the catalog order");
+  await page.keyboard.press("Escape");
+  await review(1);
+  assert.deepEqual([planned.at(-1).name, planned.at(-1).value], ["sql_mode", "ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION"],
+    "picking stages the same value as typing it");
+  await closeReview();
+  // Edit as text stages the typed text unchanged.
+  await search("sql_mode");
+  await page.click(`${input("sql_mode")} .set-value-as-text`);
+  await page.waitForSelector(`${input("sql_mode")}.variable-input`);
+  await page.click(`${input("sql_mode")}.variable-input`, { clickCount: 3 });
+  await page.keyboard.press("Backspace");
+  await page.type(`${input("sql_mode")}.variable-input`, "NO_ZERO_DATE");
+  await review(1);
+  assert.equal(planned.at(-1).value, "NO_ZERO_DATE");
+  await closeReview();
+  await page.click(`${view} [aria-label="Discard sql_mode"]`);
+  await h.button("Cancel", `${view} .toolbar-controls `);
 
   // Three writes, partial success: send one at a time and stop at refusal.
   await page.select(filter, "all"); await edit();
@@ -599,7 +655,7 @@ try {
 
   // The inspector's edit action returns to the table and focuses its control.
   await search(""); await h.select(row("max_connections"));
-  await h.button("Edit value", ".view-inspector ");
+  await h.button("Stage value for review", ".view-inspector ");
   await page.waitForFunction(id => document.activeElement?.id === id, {}, "parameter-value-max_connections");
   await h.button("Cancel", `${view} .toolbar-controls `); await search("");
   await h.select(row("max_connections")); await h.button("Reset to default", ".view-inspector ");
@@ -697,10 +753,12 @@ try {
     await refresh(mysql); await search("");
     const writesAtStart = applied.length, auditsAtStart = (await audit()).length;
     await h.select(row("max_connections"));
-    assert.equal(await text('.view-inspector button[data-change="max_connections"]'), "Change…");
+    assert.equal(await text('.view-inspector button[data-change="max_connections"]'), "Change this parameter…");
     assert.equal(await page.$('.view-inspector .config-actions .privilege-unverified'), null);
     assert.equal(await page.$('.view-inspector button[data-reset="max_connections"]'), null, "nothing persisted, no reset");
     await openChange("max_connections");
+    assert.equal(await page.$eval(`${single} .connection-type-band`, e => e.dataset.connectionType), "production");
+    assert.match(await text(`${single} .connection-type-band`), /^Production\s*·\s*Local MySQL \(127\.0\.0\.1:3306\)$/);
     assert.equal(await page.evaluate(() => document.activeElement?.textContent), "Cancel", "Cancel has focus");
     assert.equal(await text(`${single} .eyebrow`), "SET GLOBAL");
     assert.equal(await text(`${single} h2`), "Change max_connections?");
@@ -863,7 +921,7 @@ try {
 
     // A read-only MySQL variable: Change at next restart, SET PERSIST_ONLY only.
     await h.select(row("innodb_log_file_size"));
-    assert.equal(await text('.view-inspector button[data-change="innodb_log_file_size"]'), "Change…");
+    assert.equal(await text('.view-inspector button[data-change="innodb_log_file_size"]'), "Change this parameter…");
     await openChange("innodb_log_file_size");
     assert.deepEqual(await texts(`${single} .variable-modes label strong`), ["After restart only"]);
     assert.equal(await text(`${single} .eyebrow`), "SET PERSIST_ONLY");
@@ -893,7 +951,7 @@ try {
     await page.waitForFunction(() => !document.querySelector("dialog.variable-sheet"));
     // A read-only MariaDB variable: no runtime change, the option file line and a restart.
     await h.select(row("performance_schema"));
-    assert.equal(await text('.view-inspector button[data-change="performance_schema"]'), "Change…");
+    assert.equal(await text('.view-inspector button[data-change="performance_schema"]'), "Change this parameter…");
     await openChange("performance_schema");
     assert.equal(await page.$(`${single} .variable-modes`), null, "no mode can change it now");
     assert.match(await text(`${single} .variable-note`), /read-only while the server runs\. It changes only at a restart\./);

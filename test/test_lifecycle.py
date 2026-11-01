@@ -11,11 +11,14 @@ import json
 import os
 import re
 from pathlib import Path
+import signal
 import socket
 import stat
+import subprocess
 import sys
 import tempfile
 import threading
+import time
 import types
 import unittest
 from unittest import mock
@@ -452,6 +455,15 @@ class LifecycleTests(unittest.TestCase):
         for key in ('host', 'user', 'ssl_ca', 'socket'):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 lc._options(dict(CONNECTION, **{key: 'a\npassword=evil'}))
+        # Pasted spaces: trimmed around the host and paths (and after the
+        # database), never in the user name or password.
+        options = lc._options(dict(CONNECTION, host=' db.internal ', ssl_ca='/ca.pem ', socket=' /tmp/mysql.sock',
+                                   database='shop ', user=' app ', password=' pw '))
+        self.assertEqual((options['host'], options['ssl_ca'], options['socket'], options['database']),
+                         ('db.internal', '/ca.pem', '/tmp/mysql.sock', 'shop'))
+        self.assertEqual((options['user'], options['password']), (' app ', ' pw '))
+        with self.assertRaisesRegex(ValueError, 'space'):
+            lc._options(dict(CONNECTION, host='db internal'))
 
     def test_shell_json_exit_zero_with_errors_and_configuration_failure(self):
         conn = ReplayConnection(server_variables(version='8.0.36'))
@@ -625,9 +637,9 @@ class LifecycleTests(unittest.TestCase):
         report = lc.upgrade_check(ReplayConnection(server_variables('mariadb', version='10.6.28-MariaDB')),
                                   '11.8.0', CONNECTION, self.tools)
         self.assertNotIn('supports MariaDB', ' '.join(report['limitations']))
-        conn = ReplayConnection(server_variables(version='8.0.36'))
+        conn = ReplayConnection(server_variables(version='5.6.51'))
         plan = lc.prepare_dump(conn, CONNECTION, self.output, schemas=['app'], tools=self.native_tools())
-        self.assertIn('supports MySQL 8.4 or later', plan['warnings'][0])
+        self.assertIn('supports MySQL 5.7 or later', plan['warnings'][0])
 
     def assert_secret_transport(self, call):
         self.assertEqual(call['cnf_mode'], 0o600)
@@ -676,6 +688,72 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn('--single-transaction', args)
         self.assertNotIn('--source-data', args)
         self.assertFalse(any('gtid-purged' in arg for arg in args))
+
+    def test_structure_only_dump_records_it_and_skips_sampling(self):
+        conn, tools = ReplayConnection(), self.native_tools()
+        with mock.patch.object(lc, 'detect_tools', return_value=tools):
+            plan = lc.prepare_dump(conn, CONNECTION, self.output, schemas=['app'], tools=tools,
+                                   options={'structure_only': True})
+            self.assertIn('--no-data', plan['commands'][0])
+            self.assertIn('Structure only', ' '.join(plan['warnings']))
+            job = lc.dump_job(CONNECTION, plan, confirmed=True, typed_target=plan['target'],
+                              audit=self.audit('dump'), factory=lambda **kw: conn, start=False)
+            with mock.patch.object(lc, '_samples', wraps=lc._samples) as samples:
+                result = job.run()
+        samples.assert_not_called()
+        self.assertEqual(result['state'], 'done', result)
+        self.assertIn('--no-data', self.calls()[0]['argv'])
+        manifest = result['result']['manifest']
+        self.assertTrue(manifest['options']['structure_only'])
+        self.assertEqual(manifest['samples'], [])
+        verification = {v['check']: v for v in result['result']['verification']}
+        self.assertIn('Structure-only', verification['dump_rows']['reason'])
+        self.assertIn('Structure-only', verification['source_sample_stability']['reason'])
+
+    def make_structure_only_dump(self):
+        conn, tools = ReplayConnection(), self.native_tools()
+        with mock.patch.object(lc, 'detect_tools', return_value=tools):
+            plan = lc.prepare_dump(conn, CONNECTION, self.output, schemas=['app'], tools=tools,
+                                   options={'structure_only': True})
+            lc.dump_job(CONNECTION, plan, confirmed=True, typed_target=plan['target'],
+                        audit=self.audit('dump'), factory=lambda **kw: conn, start=False).run()
+
+    def test_restore_structure_only_skips_row_counts(self):
+        self.make_structure_only_dump()
+        target, tools = self.target(), self.native_tools()
+        plan = lc.prepare_restore(target, CONNECTION, self.output, tools=tools)
+        self.assertIn('Structure only', ' '.join(plan['warnings']))
+        self.assertTrue(plan['ready'])
+        with mock.patch.object(lc, 'detect_tools', return_value=tools):
+            result = lc.restore_job(CONNECTION, plan, True, plan['target'], self.audit(),
+                                    factory=lambda **kw: target, start=False).run()
+        self.assertEqual(result['state'], 'done', result)
+        verification = result['result']['verification']
+        self.assertEqual(next(v for v in verification if v['check'] == 'object_presence')['status'], 'passed')
+        row_counts = [v for v in verification if v['check'] == 'row_count']
+        self.assertEqual(len(row_counts), 1)
+        self.assertEqual(row_counts[0]['status'], 'not_checked')
+        self.assertIn('Structure-only', row_counts[0]['reason'])
+        # No COUNT(*) comparison ran against the target at any point.
+        self.assertFalse(any('COUNT(*)' in sql for sql, unused in target.calls))
+        restores = [r for r in self.store.audit_records() if r['operation'] == 'restore']
+        self.assertEqual(restores[0]['status'], 'ok')
+
+    def test_restore_full_dump_still_verifies_row_counts(self):
+        # A manifest without structure_only keeps the row-count comparison.
+        self.make_dump()
+        manifest = lc.read_manifest(self.output)
+        self.assertFalse(manifest['options']['structure_only'])
+        target, tools = self.target(), self.native_tools()
+        plan = lc.prepare_restore(target, CONNECTION, self.output, tools=tools)
+        self.assertNotIn('Structure only', ' '.join(plan['warnings']))
+        with mock.patch.object(lc, 'detect_tools', return_value=tools):
+            result = lc.restore_job(CONNECTION, plan, True, plan['target'], self.audit(),
+                                    factory=lambda **kw: target, start=False).run()
+        self.assertEqual(result['result']['status'], 'completed')
+        self.assertEqual(next(v for v in result['result']['verification'] if v['check'] == 'row_count')['status'],
+                         'passed')
+        self.assertTrue(any('COUNT(*)' in sql for sql, unused in target.calls))
 
     def test_named_tables_must_exist_in_the_schema(self):
         tools = self.native_tools()
@@ -2046,6 +2124,56 @@ class LifecycleTests(unittest.TestCase):
             job._signal(15)
         with mock.patch.object(lc.os, 'killpg', side_effect=ProcessLookupError()):
             job._signal(15)
+
+    def test_linux_group_runs_counts_a_zombie_with_live_threads(self):
+        """/proc/PID/stat shows the main thread's state: Z once it ended while other threads still run, and
+        the process cannot be reaped yet. The group counted as stopped then (an SSH tunnel test failed under
+        CI load); num_threads, 17 fields after the state, keeps it running."""
+        proc = self.root / 'proc'
+
+        def process(pid, state, pgrp, threads, comm='python3 (x) Z 1'):
+            fields = [state, '1', str(pgrp), '100', '0', '-1'] + ['0'] * 9 + ['20', '0', str(threads), '0', '12345']
+            (proc / str(pid)).mkdir(parents=True)
+            (proc / str(pid) / 'stat').write_text('%d (%s) %s' % (pid, comm, ' '.join(fields)))
+
+        process(100, 'Z', 100, 3)
+        process(300, 'R', 200, 1)
+        (proc / 'self').mkdir()
+        self.assertTrue(lc._linux_group_runs(100, proc=str(proc)))
+        (proc / '100' / 'stat').unlink()
+        (proc / '100').rmdir()
+        process(100, 'Z', 100, 1)
+        self.assertFalse(lc._linux_group_runs(100, proc=str(proc)))
+        process(101, 'S', 100, 1)
+        self.assertTrue(lc._linux_group_runs(100, proc=str(proc)))
+        self.assertFalse(lc._linux_group_runs(400, proc=str(proc)))
+        # An unreadable /proc is never taken for a stopped group.
+        self.assertTrue(lc._linux_group_runs(100, proc=str(self.root / 'missing')))
+
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'reads /proc')
+    def test_group_alive_until_its_leader_can_be_reaped(self):
+        child = ('import threading, time\n'
+                 'def spin():\n'
+                 '    while True:\n'
+                 '        pass\n'
+                 'for _ in range(4):\n'
+                 '    threading.Thread(target=spin, daemon=True).start()\n'
+                 'print("up", flush=True)\n'
+                 'time.sleep(60)\n')
+        for _ in range(20):
+            proc = subprocess.Popen([sys.executable, '-c', child], stdout=subprocess.PIPE, start_new_session=True)
+            try:
+                proc.stdout.readline()
+                os.killpg(proc.pid, signal.SIGTERM)
+                deadline = time.monotonic() + 10
+                while lc._group_alive(proc.pid) and time.monotonic() < deadline:
+                    pass
+                self.assertIsNotNone(proc.poll())
+            finally:
+                if proc.poll() is None:
+                    lc._signal_group(proc.pid, signal.SIGKILL)
+                proc.wait()
+                proc.stdout.close()
 
     def test_shell_marker_ends_its_line_and_colors_are_stripped(self):
         """mysqlsh print() adds no line break: the marker ran into the next output, the session id was never

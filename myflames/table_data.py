@@ -419,7 +419,7 @@ def _facts(payload, workspace):
 def _audit(snapshot, workspace, options):
     decision = dbops.decide('write', snapshot.safety['type'], snapshot.safety['read_only'])
     password = snapshot.session._conn.password if snapshot.session._conn is not None else None
-    trail = dbops.AuditTrail(workspace.store, 'table_data', 'ui', connection={k: options.get(k) for k in ('host', 'port', 'user')},
+    trail = dbops.AuditTrail(workspace.store, 'table_data', 'ui', connection={k: options.get(k) for k in ('host', 'port', 'user', 'ssh_host', 'ssh_user', 'ssh_port')},
                             safety=snapshot.safety, password=password, policy=dbops.policy_summary(decision))
     trail.server(snapshot.session.engine, snapshot.session.server_version)
     return trail

@@ -14,6 +14,79 @@ from .._cost_model import INNODB_PAGE_SIZE_DEFAULT
 
 _LESSON_JS_TEMPLATE = _html.load_lesson_js(__file__)
 
+# Guided steps (see _html.normalize_guide). icp.js marks the start of the
+# range scan, one step per index entry (both sides handle the same entry)
+# and the summary with tl.beat(kind). Function names are on
+# _html.VERIFIED_SERVER_FUNCTIONS (checked in mysql-server 8.4.9 and 9.7.0).
+GUIDE = {
+    "code": {
+        "title": "Index condition pushdown",
+        "lines": [
+            ("open", 0, "range scan (last_name, first_name) for last_name LIKE 'S%'"),
+            ("each", 0, "for each index entry in the range:"),
+            ("off", 1, "without ICP: read the row, then the server tests first_name"),
+            ("icp", 1, "with ICP: InnoDB tests first_name LIKE 'J%' on the entry",
+             "row_search_idx_cond_check"),
+            ("skip", 2, "no match: skip the entry, no row read"),
+            ("fetch", 2, "match: read the row from the clustered index by id",
+             "Row_sel_get_clust_rec_for_mysql"),
+            ("send", 1, "send the row if first_name LIKE 'J%'"),
+            ("end", 0, "the next entry is past 'S%': the range scan ends"),
+        ],
+    },
+    "beats": {
+        "start": ["open"],
+        "entry-match": ["each", "off", "icp", "fetch", "send"],
+        "entry-skip": ["each", "off", "icp", "skip"],
+        "done": ["end"],
+    },
+    "quiz": [
+        {
+            "question": ("10 entries match last_name LIKE 'S%' and 5 of those first names start "
+                         "with J. With ICP on, how many rows does InnoDB read from the clustered "
+                         "index for SELECT *?"),
+            "choices": [
+                ("5, one per entry that passes first_name LIKE 'J%'", True,
+                 "InnoDB tests the pushed condition on each index entry and reads the row only "
+                 "for entries that pass."),
+                ("10, one per entry in the range", False,
+                 "That is the count without ICP, when every entry's row is read before the "
+                 "server tests first_name."),
+                ("0, because the index holds both names", False,
+                 "SELECT * asks for columns the index does not hold, so each passing entry "
+                 "still needs its row."),
+            ],
+        },
+        {
+            "question": "With ICP on, where is first_name LIKE 'J%' tested?",
+            "choices": [
+                ("Inside InnoDB, on the index entry, before the row is read", True,
+                 "The server hands the condition to the storage engine, which checks it on the "
+                 "entry's first_name before it looks the row up by id."),
+                ("In the server, after InnoDB returns the full row", False,
+                 "That is how the condition is tested without ICP, which is why every row in "
+                 "the range is read."),
+                ("In the clustered index, while the row is read", False,
+                 "The test happens before the clustered index is touched; skipping that read "
+                 "is the whole point."),
+            ],
+        },
+        {
+            "question": "Which text in EXPLAIN's Extra column shows that ICP is used?",
+            "choices": [
+                ("Using index condition", True,
+                 "MySQL and MariaDB both print Using index condition when a condition is "
+                 "pushed down to the storage engine."),
+                ("Using index", False,
+                 "Using index means a covering index: every column comes from the index and no "
+                 "row is read at all."),
+                ("Using where", False,
+                 "Using where means the server tests a condition on rows it has already read."),
+            ],
+        },
+    ],
+}
+
 
 def render() -> str:
     controls_html = """
@@ -54,11 +127,11 @@ def render() -> str:
     explainer_html = _html.explainer(
         "What you'll see in the animation",
         [
-            "Range scan first finds entries by last_name LIKE 'S%' in the secondary index.",
-            "Without ICP, every entry triggers clustered-row fetch, then first_name predicate is tested.",
-            "With ICP, first_name predicate is tested on index payload before fetch.",
-            "Only entries that pass predicate trigger clustered-row reads in ICP path.",
-            "Watch fetch counters diverge to see saved random I/O.",
+            "Each row of the two panels is one entry of the (last_name, first_name) index that matches last_name LIKE 'S%'. The entry holds both names and the primary key id, not the rest of the row.",
+            "Left, without ICP: every entry's row is read from the clustered index (red), then the server tests first_name LIKE 'J%' and throws away the rows that fail.",
+            "Right, with ICP: InnoDB tests first_name on the entry itself (blue) and reads the row only when it starts with J (green), so the other entries cost no row read.",
+            "The counters under each panel show the row reads so far; watch them diverge.",
+            "Next step handles one entry on both sides, and the simplified code beside the drawing highlights the lines each step runs.",
         ],
     )
 
@@ -66,7 +139,7 @@ def render() -> str:
 <section class="stage">
   {query_card_html}
   {explainer_html}
-  {_html.stage_toolbar("Ready — press Play")}
+  {_html.stage_toolbar("Ready: press Next step, or Play to run it all")}
   <div class="stage-with-phases">
     <svg id="icp-svg" viewBox="0 0 800 480" xmlns="http://www.w3.org/2000/svg"></svg>
     {_html.phase_nav()}
@@ -99,18 +172,23 @@ def render() -> str:
     <p>Index Condition Pushdown was introduced in MySQL 5.6 and is enabled by
     default (<code>optimizer_switch='index_condition_pushdown=on'</code>).</p>
     <p>ICP applies when:</p>
-    <p>1. The query uses a <strong>range</strong>, <strong>ref</strong>, or
-    <strong>eq_ref</strong> access type on a composite index.</p>
+    <p>1. The query reads through a <strong>secondary index</strong> with a
+    range scan or a lookup (<strong>range</strong>, <strong>ref</strong>,
+    <strong>eq_ref</strong> or <strong>ref_or_null</strong>). It is not used for
+    a const lookup, and InnoDB does not use it on the clustered primary key,
+    where the whole row is already in hand.</p>
     <p>2. There are additional WHERE conditions that reference columns
     <strong>present in the index</strong> but not used by the access method
     (e.g. trailing columns of a composite index, or conditions that can't
     form a range but can be checked against the index entry).</p>
-    <p>3. The table is InnoDB or MyISAM (InnoDB benefits most because
-    avoiding a clustered-index lookup is expensive — it's a random I/O
-    for non-covering indexes).</p>
+    <p>3. The engine supports it: InnoDB or MyISAM in MySQL; also Aria and
+    MyRocks in MariaDB. InnoDB benefits most because avoiding a
+    clustered-index lookup is expensive: it's a random I/O for
+    non-covering indexes.</p>
     <p>You can see ICP in action in <code>EXPLAIN</code> output: the
-    <code>Extra</code> column will show <strong>Using index condition</strong>
-    instead of the usual <strong>Using where</strong>.</p>
+    <code>Extra</code> column shows <strong>Using index condition</strong>
+    (with <strong>Using where</strong> next to it when part of the condition
+    still runs in the server).</p>
     <p>ICP does <strong>not</strong> help covering indexes (the row fetch
     is already avoided) or full table scans (there's no index to push to).</p>
     <p>Sources: MySQL 8.4 reference manual §10.2.1.6 "Index Condition Pushdown
@@ -134,4 +212,5 @@ def render() -> str:
         readout_html=readout_html,
         learn_more_html=learn_more_html,
         lesson_js=lesson_js,
+        guide=GUIDE,
     )

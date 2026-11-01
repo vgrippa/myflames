@@ -72,6 +72,21 @@ test('backend environment isolates HOME and strips injected paths and credential
   assert.equal(env.MYFLAMES_SECRET_BACKEND, 'vault'); assert.equal(env.PATH.split(path.delimiter)[0], '/tools');
   for (const key of ['PYTHONPATH', 'MYSQL_PWD', 'MYFLAMES_VAULT_PASSPHRASE']) assert.equal(env[key], undefined);
 });
+test('ssh gets the real home and agent socket, kept apart from the isolated HOME', () => {
+  const env = backendEnvironment('/desktop', { HOME: '/Users/jane', PATH: '/usr/bin', SSH_AUTH_SOCK: '/private/tmp/com.apple.launchd.x/Listeners' }, 'darwin');
+  assert.equal(env.HOME, path.join('/desktop', 'backend-home'));
+  assert.equal(env.MYFLAMES_SSH_HOME, '/Users/jane');
+  assert.equal(env.MYFLAMES_SSH_AUTH_SOCK, '/private/tmp/com.apple.launchd.x/Listeners');
+  // The backend passes these to ssh only; the variable ssh reads is never set for the backend itself.
+  assert.equal(env.SSH_AUTH_SOCK, undefined);
+  const relative = backendEnvironment('/desktop', { HOME: 'relative', SSH_AUTH_SOCK: 'agent.sock' }, 'linux');
+  assert.equal(relative.MYFLAMES_SSH_HOME, undefined);
+  assert.equal(relative.MYFLAMES_SSH_AUTH_SOCK, undefined);
+  // Windows: the profile folder; the agent is a named pipe and needs no variable.
+  const windows = backendEnvironment('C:\\desktop', { USERPROFILE: 'C:\\Users\\jane', SSH_AUTH_SOCK: 'C:\\x' }, 'win32', { readdirSync: () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); } });
+  assert.equal(windows.MYFLAMES_SSH_HOME, 'C:\\Users\\jane');
+  assert.equal(windows.MYFLAMES_SSH_AUTH_SOCK, undefined);
+});
 test('Finder client discovery appends fixed locations without shell execution or duplicate entries', () => {
   const env = backendEnvironment('/desktop', { PATH: '/usr/bin:/opt/homebrew/bin' }, 'darwin');
   assert.equal(env.PATH.split(':')[0], '/usr/bin');
@@ -270,6 +285,21 @@ test('stop is bounded and refuses to claim success while a tool group survives',
     await assert.rejects(backend.stop(), /Could not confirm that every owned dump, restore or clone tool stopped/);
     assert.ok(Date.now() - started < 2000);
     assert.ok(f.signals.some(([pid, signal]) => pid === 12345 && signal === 'SIGKILL'));
+  } finally { r.cleanup(); }
+});
+// The backend lists at most MAX_TOOL_GROUPS groups (myflames.lifecycle
+// ToolGroups.MAX_GROUPS refuses another tool or tunnel), and a full list is
+// read: tunnels and tools together never make a forced quit kill nothing.
+test('a full list of tool groups is read, one more is not', { skip: process.platform === 'win32' }, () => {
+  const { readToolGroups, MAX_TOOL_GROUPS } = require('../backend.cjs');
+  assert.equal(MAX_TOOL_GROUPS, 16);
+  const r = runtimeFile();
+  try {
+    const full = Array.from({ length: MAX_TOOL_GROUPS }, (_, i) => 70000 + i);
+    writeGroups(r.file, full);
+    assert.deepEqual(readToolGroups(r.file, [process.pid]), { groups: full, readable: true });
+    writeGroups(r.file, [...full, 70000 + MAX_TOOL_GROUPS]);
+    assert.equal(readToolGroups(r.file, [process.pid]).readable, false);
   } finally { r.cleanup(); }
 });
 // Tool group records are POSIX only: Windows launches never pass one (below).

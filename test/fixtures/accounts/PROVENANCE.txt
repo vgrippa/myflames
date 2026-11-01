@@ -43,3 +43,31 @@ Scenario (same on every server where the engine allows it):
 Passwords and hashes in these files belong to throwaway accounts on
 containers that no longer exist. They are kept on purpose: the tests assert
 that no hash, USING string or AS 0x... form ever leaves the parser.
+
+mysql-5.7.json, recorded live on 2026-10-31 (lane MY57B)
+
+Server: mysql:5.7.44 (linux/amd64 under emulation), throwaway container
+removed after recording; client: mysql 8.0.45 from Homebrew. It is not in
+_accounts_replay.SERVERS (5.7 has no roles, so the role tests do not apply);
+test/test_mysql57.py replays it.
+
+  sessions   privileges.read_privileges as acct_admin (ALL ON *.* WITH GRANT
+             OPTION), acct_ops (CREATE USER, PROCESS, RELOAD, SUPER, SELECT on
+             mysql.*), acct_app (column grants on shop.orders, UPDATE on
+             shop.items, EXECUTE on PROCEDURE shop.p_two, EXECUTE and ALTER
+             ROUTINE on FUNCTION shop.f_double, SELECT on `db\_x`, INSERT on
+             `db_x`, DELETE on `shop%`) and acct_proxy (PROXY on acct_app@%,
+             MAX_USER_CONNECTIONS 3, PASSWORD EXPIRE INTERVAL 30 DAY); the
+             "@shop" sessions connect with default database shop. The first
+             call of each fails because 5.7 has no CURRENT_ROLE(): 1046
+             without a default database, 1305 for acct_admin@shop, 1370 for
+             acct_app@shop (no EXECUTE on shop.*); the second is the same read
+             with NULL in its place.
+  reads      accounts.list_accounts and accounts.read_account as root@% (no
+             mysql.role_edges or mysql.default_roles read on 5.7), including
+             acct_sha (sha256_password), locked, root@localhost and a missing
+             account (1141).
+  plans      accounts.plan_change as root@% (reads only, nothing applied):
+             create with a generated password, create with a typed password
+             and ACCOUNT LOCK, GRANT ALL ON *.*, lock, drop of dfn2 (DEFINER of
+             view lab_definer.v2) and a refused PASSWORD HISTORY option.

@@ -71,7 +71,7 @@ const generated = JSON.parse(
         "scenario-mysql-8.4-table-cache",
       ].join(","),
       "mysql-9.7,mariadb-11.4",
-      "mysql-8.4-replica,mariadb-11.4",
+      "mysql-8.4-replica,mariadb-11.4,mysql-5.7",
     ],
     // A throwaway HOME and the vault backend: never ~/.myflames or the OS keychain.
     { cwd: root, env: { ...process.env, HOME: home, USERPROFILE: home, MYFLAMES_SECRET_BACKEND: "vault" }, maxBuffer: 64 << 20 },
@@ -466,6 +466,26 @@ test("MariaDB 11.4 Full analysis: every remediation is SET GLOBAL with an option
   assert.ok(fixes.length > 8);
   for (const fx of fixes) {
     assert.ok(!/SET PERSIST/.test(fx.sql || ""), fx.sql);
+    if (/SET GLOBAL (\w+)/.test(fx.sql || "")) assert.ok(fx.optionFile, `option file line for ${fx.sql}`);
+  }
+});
+
+test("MySQL 5.7 Full analysis: no SET PERSIST (5.7 has none), SET GLOBAL with an option-file line, MEMORY temp tables", () => {
+  const report = R("mysql-5.7");
+  for (const f of report.findings) if (f.id.startsWith("health.") || f.id.startsWith("config.")) f.status = "watch";
+  for (const m of report.health_metrics) if (["bp_dirty", "bp_wait_free", "aborted_clients", "select_full_join", "connections_used", "tmp_disk_ratio"].includes(m.key)) m.status = "watch";
+  const r = evaluateTuning({ report });
+  assert.equal(r.server.engine, "mysql");
+  assert.match(r.server.version, /^5\.7\./);
+  assert.deepEqual(globalChange("mysql57", "max_connections", "<n>"), {
+    sql: "SET GLOBAL max_connections = <n>;",
+    optionFile: "max_connections = <n>  # under [mysqld]",
+  });
+  const fixes = r.recommendations.map((c) => c.fix).filter(Boolean);
+  assert.ok(fixes.length > 5, `${fixes.length} fixes`);
+  for (const fx of fixes) {
+    assert.ok(!/SET PERSIST/.test(fx.sql || ""), fx.sql);
+    assert.ok(!/temptable_max_ram|internal_tmp_mem_storage_engine first/.test((fx.sql || "") + (fx.text || "")), fx.text);
     if (/SET GLOBAL (\w+)/.test(fx.sql || "")) assert.ok(fx.optionFile, `option file line for ${fx.sql}`);
   }
 });
