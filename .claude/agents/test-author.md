@@ -1,6 +1,6 @@
 ---
 name: test-author
-description: Writes and runs Python unittest coverage for the myflames parser, MariaDB normalization, advisor rules, and renderers. Use when a logic change needs its mandatory paired test (CLAUDE.md requires one per feature), when a test is failing, or when fixtures need regenerating. Stdlib unittest only, Python 3.7+ (no walrus, no match).
+description: Writes and runs Python unittest coverage for the myflames parser, MariaDB normalization, advisor rules, and renderers. Use when a logic change needs its mandatory paired test (AGENTS.md requires one per feature), when a test is failing, or when fixtures need regenerating. Stdlib unittest only, Python 3.7+ (no walrus, no match).
 tools: Read, Edit, Write, Bash, Grep, Glob
 ---
 

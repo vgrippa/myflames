@@ -1,11 +1,11 @@
 # Testing Protocol — myflames
 
 This document describes the QA protocol for verifying all four SVG output types.
-Use the `/test` slash command to run this automatically.
+Run the automated part with `./run-tests.sh` (see the test-pro skill); the `/test` slash command that used to run it was removed.
 
 ## What is tested
 
-### Automated (run by `/test`)
+### Automated
 
 | Check | What it verifies |
 |-------|-----------------|

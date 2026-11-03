@@ -5,7 +5,8 @@ import { createContext, useContext, useEffect, useRef } from "react";
 export const ViewOnScreenContext = createContext(true);
 export const useViewOnScreen = () => useContext(ViewOnScreenContext);
 
-/** A view's automatic first read (AGENTS.md: a view reads when it is opened on
+/** A view's automatic first read (docs/DEVELOPER_REFERENCE.md, Workspace
+ * navigation and configuration controls: a view reads when it is opened on
  * screen, once per connection; Refresh retries). It reads when the view comes on
  * screen without a report of the connection in use (none, or one from another
  * connection), and when it is on screen with no report at all and this

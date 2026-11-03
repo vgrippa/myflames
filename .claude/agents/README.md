@@ -12,6 +12,9 @@ Each worker runs in its own isolated context with least-privilege tools, and is 
 | `test-author` | Writes + runs the mandatory paired tests for any logic change. | Read, Edit, Write, Bash, Grep, Glob | `test-pro` |
 | `renderer-builder` | Implements SVG/HTML renderer changes (`output_*.py`, `docs/demos/`). | Read, Edit, Write, Bash, Grep, Glob | `viz-specialist`, `web-design` |
 | `teach-lesson-author` | Authors/revises the animated `teach/*` lessons. | Read, Edit, Write, Bash, Grep, Glob | `teaching`, `animation-expert` |
+| `codex-worker` | Relay (Haiku) to Codex through the delegate wrapper: review gate, implementation in an isolated copy, council. Local only (`.git/info/exclude`). | Bash, Read | `delegate` |
+| `gemini-worker` | Relay (Haiku) to Gemini (agy) through the delegate wrapper: long-context reading, screenshots, analysis, council. Local only. | Bash, Read | `delegate` |
+| `kimi-worker` | Relay (Haiku) to Kimi Code through the delegate wrapper: implementation subtasks, bulk and repetitive work, drafts, council. Local only. | Bash, Read | `delegate` |
 
 ## When to delegate (coordinator guidance)
 

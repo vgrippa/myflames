@@ -42,7 +42,8 @@ python3 -m unittest discover -s test -p "test_*.py" -v
 ## Test a current MySQL release
 
 Pull the desired image explicitly, generate a separate corpus, and run the
-opt-in checks. The default generator still uses `mysql:8.4` and `test/fixtures/`.
+opt-in checks. Keep fresh version corpora separate from the committed fixture
+directory unless you are intentionally updating it. The default generator still uses `mysql:8.4` and `test/fixtures/`.
 
 ```bash
 docker pull mysql:latest
