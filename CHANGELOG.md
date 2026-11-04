@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Branding
+
+- Adopted the simple flame logo, website wordmarks, and companion mascot for repository branding, with the message "See what your database is doing." Added reusable assets and a matching social preview.
+
 ## [3.3.1] - 2026-10-31
 
 ### Added

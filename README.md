@@ -1,10 +1,20 @@
 <p align="center">
-  <img src="docs/brand/myflames-icon-v3.png" alt="myflames" width="160">
+  <img src="docs/brand/myflames-logo.svg" alt="myflames flame logo" width="72" height="81">
 </p>
 
-# myflames
+<h1 align="center">myflames</h1>
 
-**myflames** is a macOS performance workspace for MySQL, MariaDB and Percona Server, plus a Python CLI with no third-party dependencies. It visualizes `EXPLAIN ANALYZE FORMAT=JSON` plans as Visual Explain diagrams, flame graphs, execution trees and bar charts, compares before and after plans, runs SQL in a multi-tab Query editor, inspects schemas and server health, and checks queries in CI or through an MCP server.
+<p align="center"><strong>See what your database is doing.</strong></p>
+
+<p align="center">
+  <a href="https://github.com/vgrippa/myflames/releases/latest">Download</a> ·
+  <a href="#documentation">Documentation</a> ·
+  <a href="docs/brand/README.md">Logo &amp; mascot</a>
+</p>
+
+**myflames** is an open-source performance workspace for MySQL, MariaDB, and Percona Server for MySQL. Follow a question from the query plan to the SQL, schema, and server behind it. Inspect operator timings, compare before and after plans, and share the evidence with your team.
+
+Use the desktop app on macOS or the Windows x64 preview, or take the same engine into your terminal with a Python CLI that uses only the standard library. Visual Explain diagrams, flame graphs, execution trees, and bar charts make plans easier to read; server diagnostics, CI checks, and read-only MCP tools carry the investigation further.
 
 Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGraph) and [Tanel Poder's SQL Plan FlameGraphs](https://tanelpoder.com/posts/visualizing-sql-plan-execution-time-with-flamegraphs/).
 
