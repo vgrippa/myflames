@@ -961,7 +961,7 @@ export function QueryDigestView({ connection, onOpenInEditor, onExplain, onOpenI
           <p>{slow ? "Share of total time compares each statement with every statement in the range; the totals cover the loaded statements."
             : "Share of total time compares each statement with every digest the server keeps; the totals cover the loaded statements."}</p>
         </>}
-        controls={<>
+        controls={<div className="qd-filter-bar" role="group" aria-label="Query digest filters">
           <label className="toolbar-field qd-source"><span className="qd-field-word">Source</span> <Select label="Source" value={source} options={SOURCES} onChange={(v) => changeSource(v as DigestSource)} /></label>
           {source === "pfs"
             ? <label className="toolbar-field">Rank by <Select label="Rank by" value={filter} options={MODES} onChange={(v) => setFilter(v as DigestFilterMode)} /></label>
@@ -977,7 +977,7 @@ export function QueryDigestView({ connection, onOpenInEditor, onExplain, onOpenI
             { key: "text", label: "Text report", onSelect: () => { setPreview({ text: textReport(), filename: filename("txt") }); setExportOpen(true); } },
             { key: "csv", label: "CSV", onSelect: () => { const name = filename("csv"); downloadFile(name, csvReport(), "text/csv"); setExportNote(`Saved ${name}.`); } },
           ]} />
-        </>}
+        </div>}
         status={<>{summary && <div className="qd-summary">{summary}</div>}
           {pfsRange && <p className="qd-range-note">
             Numbers are totals since counting began, not only this range: the range keeps the statements seen in it.

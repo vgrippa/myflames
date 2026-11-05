@@ -4,6 +4,7 @@
 import { api, type Connection } from "./api";
 import type { Bound } from "./binding";
 import type { ReviewedPlan, ReviewedResult } from "./ActionReview";
+import type { DatabaseTopologyTiers } from "./readysetApi";
 
 export type ClusterStatus = "ok" | "watch" | "problem" | "unknown";
 export type ClusterKind = "galera" | "pxc" | "innodb_cluster" | "group_replication" | "none";
@@ -125,6 +126,8 @@ export type ClusterReport = {
   summary: { members: number; ok: number; watch: number; problem: number; unknown: number };
   statements: string[];
   notes: string[];
+  readyset_hint?: boolean;
+  topology_tiers?: DatabaseTopologyTiers | null;
 };
 
 /** A read of the connection *key* that failed, and the report on screen

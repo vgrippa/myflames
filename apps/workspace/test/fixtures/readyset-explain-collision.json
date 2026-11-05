@@ -1,0 +1,32 @@
+{
+ "schema_version": "readyset-explain-1.0",
+ "version": "stable-250605",
+ "input_kind": "query_id",
+ "target": "q_1111aaaa",
+ "shallow": {
+  "cache_type": "shallow",
+  "supported": "yes",
+  "raw_support": "yes",
+  "reason": null,
+  "query_id": "q_1111aaaa",
+  "query": "SELECT COUNT(*) FROM orders WHERE status = $1",
+  "statement": "EXPLAIN CREATE SHALLOW CACHE FROM q_1111aaaa"
+ },
+ "deep": {
+  "cache_type": "deep",
+  "supported": "yes",
+  "raw_support": "yes",
+  "reason": null,
+  "query_id": "q_1111aaaa",
+  "query": "SELECT COUNT(*) FROM orders WHERE status = $1",
+  "statement": "EXPLAIN CREATE DEEP CACHE FROM q_1111aaaa"
+ },
+ "collisions": [
+  {
+   "query_id": "q_1111aaaa",
+   "name": "c_orders_deep",
+   "properties": "deep"
+  }
+ ],
+ "notes": []
+}

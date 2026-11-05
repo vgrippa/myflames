@@ -1,0 +1,48 @@
+{
+ "schema_version": "readyset-action-1.0",
+ "action": "shutdown",
+ "target": null,
+ "value": null,
+ "eyebrow": "SHUTDOWN",
+ "title": "Shut down Readyset?",
+ "confirm_label": "Shut down Readyset",
+ "description": "Stops the Readyset process cleanly.",
+ "target_text": "Readyset (stable-250605)",
+ "statements": [
+  "ALTER READYSET SHUTDOWN;"
+ ],
+ "facts": [
+  [
+   "Readyset",
+   "stable-250605 (admin port)"
+  ]
+ ],
+ "warnings": [
+  "myflames cannot start Readyset again once the process exits."
+ ],
+ "changes": null,
+ "typed_guard": "SHUTDOWN",
+ "undo": "Start the Readyset service externally through your supervisor, container runtime or orchestrator.",
+ "next": null,
+ "verified": [
+  "Readyset identity (@@version_comment, SHOW READYSET VERSION)"
+ ],
+ "timeout_s": 30,
+ "checks": [
+  "Refresh the Readyset place to inspect the current caches, tables and status.",
+  "The Audit log keeps this attempt as Outcome unknown; nothing is sent again."
+ ],
+ "expect": {
+  "readyset_version": "stable-250605",
+  "port_role": "admin"
+ },
+ "policy": {
+  "action": "confirm",
+  "tone": "danger",
+  "title": "Risky write",
+  "text": "Connection Readyset Admin is a Development connection. myflames asks only before risky writes, and this statement is one.",
+  "connection_type": "development",
+  "read_only": false
+ },
+ "review_token": "fixture-token-shutdown"
+}

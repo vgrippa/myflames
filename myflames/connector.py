@@ -484,6 +484,9 @@ class MySQLConnection:
         argv = [
             binary,
             "--defaults-file=" + defaults_path,
+            # Refuse LOCAL file requests from a hostile server; the CSV
+            # import session alone overrides this later in argv.
+            "--local-infile=0",
             "--batch", "--skip-column-names", "--silent",
         ]
         argv.extend(CLIENT_CHARSET_FLAGS)
@@ -573,6 +576,7 @@ class MySQLConnection:
         try:
             with self._invocation_defaults() as defaults_path:
                 argv = [self._resolve_binary(), "--defaults-file=" + defaults_path,
+                        "--local-infile=0",
                         "--batch", "--skip-column-names", "--silent", "--skip-reconnect", "--force",
                         "--comments", "--binary-mode"]
                 argv.extend(CLIENT_CHARSET_FLAGS)
@@ -630,6 +634,7 @@ class MySQLConnection:
     def _run_write_with_defaults(self, sql, extra_flags, timeout, defaults_path):
         from .dbops import WRITE_CLIENT_FLAGS
         argv = [self._resolve_binary(), "--defaults-file=" + defaults_path,
+                "--local-infile=0",
                 "--batch", "--skip-column-names", "--silent", "--skip-reconnect"]
         argv.extend(CLIENT_CHARSET_FLAGS)
         if self.database:

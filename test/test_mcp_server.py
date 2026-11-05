@@ -275,7 +275,7 @@ class TestServerWrapper(unittest.TestCase):
 
 
 NEW_TOOLS = ("server_report", "top_statements", "sessions", "locks_report", "health_sample",
-             "innodb_status", "my_privileges", "replication_status", "cluster_status")
+             "innodb_status", "my_privileges", "replication_status", "cluster_status", "readyset_status")
 
 
 class FakeMCP(object):
@@ -338,6 +338,74 @@ def fixture_connection(tool, maria=False):
         # Live recordings: MariaDB Galera and MySQL InnoDB Cluster.
         from _cluster_fixtures import recorded
         conn = recorded("galera-11.8-healthy" if maria else "ic-8.4-healthy")[0]
+    elif tool == "readyset_status":
+        from xml.sax.saxutils import escape as xml_escape
+
+        def _xml(rows):
+            body = []
+            for row in rows:
+                fields = []
+                for k, v in row.items():
+                    if v is None:
+                        fields.append('<field name="%s" xsi:nil="true" />' % xml_escape(str(k)))
+                    else:
+                        fields.append('<field name="%s">%s</field>' % (xml_escape(str(k)), xml_escape(str(v))))
+                body.append("<row>%s</row>" % "".join(fields))
+            return '<?xml version="1.0"?><resultset xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">%s</resultset>' % "".join(body)
+
+        class ReadysetFakeConn(object):
+            port = 3307
+            database = None
+            def __init__(self):
+                self.calls = []
+            def __enter__(self):
+                return self
+            def __exit__(self, *exc):
+                return False
+            def run(self, sql, extra_flags=None, timeout=None):
+                self.calls.append((sql, list(extra_flags or ())))
+                s = sql.strip()
+                if s == "SELECT @@version_comment":
+                    return _xml([{"@@version_comment": "Readyset"}])
+                if s == "SHOW READYSET VERSION":
+                    return _xml([{"version": "stable-250605"}])
+                if s == "SHOW READYSET STATUS":
+                    return _xml([
+                        {"name": "Status", "value": "Online"},
+                        {"name": "Replication Status", "value": "Online"},
+                        {"name": "CDC Server", "value": "mysql-primary:3306"},
+                        {"name": "Connection Count", "value": "4"},
+                    ])
+                if s == "SHOW CACHES":
+                    return _xml([{
+                        "query_id": "q_1111aaaa",
+                        "name": "c_orders",
+                        "query string": "SELECT * FROM orders WHERE customer_id = $1",
+                        "fallback behavior": "fallback allowed",
+                        "count": "120",
+                        "properties": "deep",
+                    }])
+                if "replication_status LIMIT 0" in s:
+                    from myflames.connector import ConnectorError
+                    raise ConnectorError("ERROR 1146 (42S02): Table 'replication_status' doesn't exist")
+                if "upstream_servers" in s:
+                    return _xml([{
+                        "host": "mysql-primary", "port": "3306", "database": "shop", "user": "readyset",
+                        "weight": "100", "purpose": "cdc, query", "active_cdc": "true",
+                        "health": "healthy", "down_since": None, "last_ok": "2026-10-20T00:00:00Z", "connections": "2",
+                    }])
+                if "replication_status" in s:
+                    return _xml([{
+                        "replication_mode": "mysql_gtid",
+                        "upstream_offset": "aaaa:1-50",
+                        "replicator_offset": "aaaa:1-50",
+                        "persisted_offset": "aaaa:1-50",
+                        "consume_lag": "0",
+                        "persist_lag": "0",
+                        "heartbeat_staleness_seconds": "1",
+                    }])
+                return _xml([])
+        conn = ReadysetFakeConn()
     elif tool == "health_sample":
         from test_health import conn_for
         conn = conn_for(version, clock=clock)
@@ -415,7 +483,7 @@ class TestServerReadTools(unittest.TestCase):
         schemas = {"server_report": "report-1.0", "top_statements": "top-1.0", "sessions": "sessions-1.0",
                    "locks_report": "locks-1.1", "health_sample": "health-1.0", "innodb_status": "innodb-1.0",
                    "my_privileges": "privileges-1.0", "replication_status": "replication-1.0",
-                   "cluster_status": "cluster-1.0"}
+                   "cluster_status": "cluster-1.0", "readyset_status": "readyset-1.0"}
         for tool in NEW_TOOLS:
             for maria in (False, True):
                 with self.subTest(tool=tool, maria=maria):
@@ -467,7 +535,8 @@ class TestServerReadTools(unittest.TestCase):
             expected = {"server_report": "analysis_report", "top_statements": "top_report",
                         "sessions": "sessions_report", "locks_report": "lock_report", "health_sample": "health_report",
                         "innodb_status": "innodb_report", "my_privileges": "read_privileges",
-                        "replication_status": "read_status", "cluster_status": "read_status"}
+                        "replication_status": "read_status", "cluster_status": "read_status",
+                        "readyset_status": "read_status"}
             forbidden = {"kill_session", "kill_cli", "skip_one", "plan_skip", "SkipLoop", "run", "execute",
                          "apply", "dump", "restore", "clone", "set_variable"}
             for name in NEW_TOOLS:

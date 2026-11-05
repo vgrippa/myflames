@@ -601,7 +601,7 @@ class EditorSession(object):
             env = _clean_env(self._client_home.name)
             from .connector import CLIENT_CHARSET_FLAGS
             # Exclude system option files as well as the private HOME's files.
-            argv = [binary, "--defaults-file=" + defaults, "--xml", "--binary-as-hex", "--binary-mode",
+            argv = [binary, "--defaults-file=" + defaults, "--local-infile=0", "--xml", "--binary-as-hex", "--binary-mode",
                     "--comments", "--force", "--quick", "--unbuffered", "-vv", "--skip-reconnect"]
             argv.extend(CLIENT_CHARSET_FLAGS)
             argv.extend(self.client_flags)
@@ -1346,6 +1346,140 @@ class EditorSession(object):
             }
 
     # -- running --------------------------------------------------------------------------
+
+    def run_plan(self, sql, mode="explain", timeout=None):
+        """Return JSON from this tab's client, preserving its temporary tables.
+
+        Plans participate in Stop/KILL QUERY like editor runs. MySQL needs a
+        private read-only transaction: refuse an open or unknown transaction
+        rather than implicitly commit it. Executing writes that need review
+        must use the normal editor run/token path, never a plan-only shortcut.
+        """
+        from . import dbops
+        from .live import analyze_unsupported, client_error_text
+        if not self.run_lock.acquire(False):
+            raise EditorError("A statement is already running in this tab. Wait for it or press Stop.", "busy")
+        previous, run, timer = None, None, None
+        saved_version, rollback, problem = None, False, None
+        password = self._conn.password if self._conn is not None else None
+
+        def checked(statement, results=0):
+            step = self._helper(TAG + statement, results=results)
+            if self.ended or not step.marker or step.real_errors():
+                raise EditorError(self._helper_problem(step) or SESSION_ENDED_TEXT, "plan_failed")
+            return step
+
+        try:
+            if self.ended:
+                raise EditorError(self.end_message or SESSION_ENDED_TEXT, "session_ended")
+            if mode not in ("explain", "analyze"):
+                raise EditorError("Mode must be explain or analyze.")
+            plan = _plan_run({"sql": sql}, self)
+            if len(plan["units"]) != 1 or not plan["units"][0].get("single"):
+                raise EditorError("A plan requires exactly one SQL statement.", "invalid_statement")
+            inner = plan["units"][0]["send"]
+            # A custom DELIMITER can hide several semicolon-separated SQL
+            # statements inside one client unit. Recheck the actual inner SQL.
+            if len(plan_statements(inner, self.backslash_escapes, self.engine)) != 1:
+                raise EditorError("A plan requires exactly one SQL statement.", "invalid_statement")
+            prefix = ("ANALYZE FORMAT=JSON " if self.engine == "mariadb" else
+                      "EXPLAIN ANALYZE FORMAT=JSON ") if mode == "analyze" else "EXPLAIN FORMAT=JSON "
+            statement = prefix + inner
+            # EXPLAIN does not execute its inner statement. ANALYZE does, so
+            # use the editor's existing classifier and policy on the inner SQL.
+            gated = plan if mode == "analyze" else _plan_run({"sql": statement}, self)
+            decision = _decision(gated, {"type": self.connection_type, "read_only": self.read_only})
+            if decision["action"] != "allow":
+                raise EditorError(decision["text"] + " Use the editor Run action to review executing writes.",
+                                  "refused" if decision["action"] == "refuse" else "needs_confirmation")
+            if mode == "analyze":
+                unsupported = analyze_unsupported(self.server_version, self.engine == "mariadb")
+                if unsupported:
+                    raise EditorError(unsupported, "unsupported")
+            if not self.refresh_state():
+                raise EditorError(self.end_message or "Could not read the session state.", "session_ended")
+            if self.engine == "mysql" and (self.in_transaction is not False or self.autocommit is not True):
+                raise EditorError("Commit or roll back the tab's transaction and enable autocommit before "
+                                  "planning. The transaction must be known to be closed; nothing was sent.",
+                                  "transaction_open")
+            units = plan_statements(statement, self.backslash_escapes, self.engine)
+            options = {key: getattr(self._conn, key) for key in (
+                "host", "port", "user", "password", "database", "ssl_mode", "ssl_ca", "ssl_cert", "ssl_key",
+                "ssl_cipher", "connect_timeout", "query_timeout", "ssh_host", "ssh_user", "ssh_port")}
+            options["binary"] = self._conn._binary_override
+            run = Run(units, 1, options, statement, Offsets(statement), "statement", kind="plan")
+            with self.lock:
+                previous, self.run = self.run, run
+                self.last_used = time.monotonic()
+            if self.engine == "mysql":
+                version = parse_version_tuple(self.server_version or "", leading=True, default=None)
+                if version is not None and version >= (8, 3, 0):
+                    row = self._helper_row(checked("SELECT @@SESSION.explain_json_format_version AS plan_version", 1))
+                    value = row.get("plan_version") if row else None
+                    if value not in ("1", "2"):
+                        raise EditorError("Could not save explain_json_format_version.", "plan_failed")
+                    saved_version = value
+                    checked("SET SESSION explain_json_format_version=2")
+                # Set the flag before sending so an uncertain acknowledgement
+                # still attempts ROLLBACK. Never change the session's defaults.
+                rollback = True
+                checked("START TRANSACTION READ ONLY")
+            if run.stop_requested:
+                raise EditorError("Plan cancelled before it started.", "stopped")
+            if timeout:
+                # The live credential belongs to the session, not the request.
+                # KILL uses a separate client, with the session's transport.
+                timer = threading.Timer(timeout, self.stop, kwargs={"options": options, "by": "timeout"})
+                timer.daemon = True
+                timer.start()
+            units[0]["status"] = "running"
+            step = self._send("user", statement, unit=0, limit=1, results=1)
+            self._wait_step(step)
+            self._wait(lambda: step.closed or bool(step.real_errors()), HELPER_TIMEOUT)
+            if self.ended or not step.marker or step.real_errors():
+                raise EditorError(self._helper_problem(step) or SESSION_ENDED_TEXT, "plan_failed")
+            rows = [e for e in step.entries if e["type"] == "rows"]
+            if (not step.closed or len(rows) != 1 or len(rows[0]["rows"]) != 1 or
+                    len(rows[0]["columns"]) != 1 or rows[0].get("truncated") or
+                    rows[0]["columns"][0]["name"].upper() not in ("EXPLAIN", "ANALYZE")):
+                raise EditorError("The server did not return a single JSON plan.", "plan_failed")
+            raw = rows[0]["rows"][0][0]
+            try:
+                json.loads(raw)
+            except (ValueError, TypeError):
+                raise EditorError(self._helper_problem(step) or "The server did not return valid JSON.", "plan_failed")
+            units[0]["status"] = "ok"
+        except (EditorError, ConnectorError) as exc:
+            problem = exc
+        finally:
+            if timer is not None:
+                timer.cancel()
+                timer.join()
+            cleanup_problem = None
+            for statement in (["ROLLBACK"] if rollback else []) + (
+                    ["SET SESSION explain_json_format_version=" + saved_version] if saved_version is not None else []):
+                if self.ended:
+                    break
+                try:
+                    checked(statement)
+                except (EditorError, ConnectorError) as exc:
+                    cleanup_problem = exc
+            if cleanup_problem is not None:
+                # Do not leave a live session with an unverified setting or
+                # transaction. Disconnect restores both on the server.
+                self.end("plan_cleanup_failed", SESSION_ENDED_TEXT)
+                problem = problem or cleanup_problem
+            if run is not None:
+                with self.lock:
+                    run.options = None
+                    run.done.set()
+                    self.run = previous
+                    self.last_used = time.monotonic()
+            self.run_lock.release()
+        if problem is not None:
+            text = client_error_text(str(problem), mode, self.server_version, self.engine == "mariadb")
+            raise EditorError(dbops.redact(text, password), getattr(problem, "code", "plan_failed"))
+        return raw
 
     def busy(self):
         with self.lock:

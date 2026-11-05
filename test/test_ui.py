@@ -1143,3 +1143,110 @@ class TestLiveBulkKillAndTableColumns(unittest.TestCase):
                 'extra': 'auto_increment'
             })
             self.assertEqual(res['columns'][1]['nullable'], True)
+
+
+class TestSftpEndpoints(unittest.TestCase):
+    """The Files view's /api/live/sftp/* wrappers (ui.py -> sftp_api.py)."""
+
+    CONNECTION = {'host': 'db.internal', 'ssh_host': 'bastion', 'ssh_user': 'deploy'}
+
+    def call(self, path, payload):
+        return api_response(path, payload, workspace=object())
+
+    def test_workspace_is_required(self):
+        for path in ('/api/live/sftp/list', '/api/live/sftp/jobs', '/api/live/sftp/ssh-auth/status'):
+            with self.subTest(path=path):
+                with self.assertRaisesRegex(ValueError, 'running workspace'):
+                    api_response(path, {}, workspace=None)
+
+    def test_list_echoes_path_and_wraps_entries(self):
+        entries = [{'name': 'error.log', 'size': 10, 'mtime': 1, 'is_dir': False}]
+        with mock.patch('myflames.sftp_api.api_listdir', return_value=entries) as listing:
+            result = self.call('/api/live/sftp/list', {'connection': self.CONNECTION, 'path': '/var/log'})
+        self.assertEqual(result, {'path': '/var/log', 'entries': entries})
+        self.assertEqual(listing.call_args[0], (self.CONNECTION, '/var/log'))
+
+    def test_local_list_is_answered_without_a_connection(self):
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, 'slow.log').write_text('x', encoding='utf-8')
+            os.mkdir(os.path.join(folder, 'archive'))
+            result = self.call('/api/live/sftp/local-list', {'path': folder})
+        self.assertEqual(result['path'], os.path.realpath(folder))
+        by_name = {entry['name']: entry for entry in result['entries']}
+        self.assertEqual(set(by_name), {'slow.log', 'archive'})
+        self.assertFalse(by_name['slow.log']['is_dir'])
+        self.assertTrue(by_name['archive']['is_dir'])
+        self.assertEqual(by_name['slow.log']['size'], 1)
+
+    def test_local_list_rejects_bad_paths_before_touching_disk(self):
+        for value in (None, '', '  ', 'a\x00b', 42, ['/tmp']):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, 'Path'):
+                    self.call('/api/live/sftp/local-list', {'path': value})
+        with self.assertRaisesRegex(ValueError, 'no local folder'):
+            self.call('/api/live/sftp/local-list', {'path': '/definitely/not/a/folder/myflames'})
+
+    def test_local_list_skips_broken_entries(self):
+        from myflames import sftp_api
+        broken = mock.MagicMock()
+        broken.name = 'gone'
+        broken.stat.side_effect = FileNotFoundError()
+        kept = mock.MagicMock()
+        kept.name = 'kept'
+        kept.stat.return_value = os.stat_result((0o100644, 0, 0, 1, 0, 0, 5, 0, 0, 0))
+        kept.is_dir.return_value = False
+        scan = mock.MagicMock()
+        scan.__enter__.return_value = iter([broken, kept])
+        with tempfile.TemporaryDirectory() as folder:
+            with mock.patch('os.scandir', return_value=scan):
+                result = sftp_api.api_local_list(folder)
+        self.assertEqual([entry['name'] for entry in result['entries']], ['kept'])
+        self.assertEqual(result['entries'][0]['mode'], 0o644)
+
+    def test_transfer_wrappers_return_job_objects(self):
+        job = {'id': 'a' * 32, 'state': 'queued'}
+        for path, target in (('/api/live/sftp/upload', 'myflames.sftp_api.api_start_upload'),
+                             ('/api/live/sftp/download', 'myflames.sftp_api.api_start_download')):
+            with self.subTest(path=path), mock.patch(target, return_value=job) as start:
+                payload = {'connection': self.CONNECTION, 'overwrite': False,
+                           'local_paths': ['/tmp/a.log'], 'remote_dir': '/var/log'}
+                result = self.call(path, payload)
+            self.assertEqual(result, {'job': job})
+            self.assertEqual(start.call_args[0][0], payload)
+
+    def test_jobs_cancel_and_mkdir_remove_shapes(self):
+        with mock.patch('myflames.sftp_api.api_jobs', return_value=[{'id': 'b' * 32}]):
+            self.assertEqual(self.call('/api/live/sftp/jobs', {}), {'jobs': [{'id': 'b' * 32}]})
+        with mock.patch('myflames.sftp_api.api_cancel') as cancel:
+            self.assertEqual(self.call('/api/live/sftp/cancel', {'job_id': 'b' * 32}), {'cancelled': True})
+            self.assertEqual(cancel.call_args[0][0], 'b' * 32)
+        with mock.patch('myflames.sftp_api.api_mkdir', return_value={'created': True}):
+            result = self.call('/api/live/sftp/mkdir', {'connection': self.CONNECTION, 'path': '/var/log/new'})
+            self.assertEqual(result, {'created': True, 'path': '/var/log/new'})
+        with mock.patch('myflames.sftp_api.api_remove') as remove:
+            result = self.call('/api/live/sftp/remove', {'connection': self.CONNECTION, 'path': '/var/log/old',
+                                                         'is_dir': True})
+            self.assertEqual(result, {'removed': '/var/log/old'})
+            self.assertEqual(remove.call_args[0], (self.CONNECTION, '/var/log/old'))
+
+    def test_ssh_auth_wrappers(self):
+        with mock.patch('myflames.sftp_api.api_ssh_auth_status', return_value={'has_password': True}) as status:
+            self.assertEqual(self.call('/api/live/sftp/ssh-auth/status', {'connection': self.CONNECTION}),
+                             {'has_password': True})
+            self.assertEqual(status.call_args[0][0], self.CONNECTION)
+        with mock.patch('myflames.sftp_api.api_ssh_auth_save', return_value={'saved': True}) as save:
+            self.assertEqual(self.call('/api/live/sftp/ssh-auth/save',
+                                       {'connection': self.CONNECTION, 'password': 's3cret'}), {'saved': True})
+            self.assertEqual(save.call_args[0], (self.CONNECTION, 's3cret'))
+        with mock.patch('myflames.sftp_api.api_ssh_auth_clear', return_value={'cleared': True}):
+            self.assertEqual(self.call('/api/live/sftp/ssh-auth/clear', {'connection': self.CONNECTION}),
+                             {'cleared': True})
+
+    def test_sftp_paths_are_in_the_post_allowlist(self):
+        import inspect
+        from myflames import ui
+        source = inspect.getsource(ui.WorkspaceHandler.do_POST)
+        self.assertIn('_SFTP_PATHS', source)
+        for path in ui._SFTP_PATHS:
+            with self.subTest(path=path):
+                self.assertIn(path, ui._SFTP_PATHS)

@@ -2750,6 +2750,51 @@ export function Sparkline({
   );
 }
 
+// ---- Dismissible notice -------------------------------------------------------
+
+/** An error or note line the reader can dismiss: a small × (aria-label
+ * "Dismiss") at the end of the row. Dismissal is client-side only and keyed
+ * on the message: it hides the current content, and content with a different
+ * identity (a new error of the same view) shows again. The markup contract of
+ * the places it replaces is kept: a <p> whose class and role come from
+ * *variant* ("error" → role alert / .error, "note" → role status / .notice),
+ * overridable with *role* and *className*; the × sits inside that element. */
+export function Notice({ variant, role, className, children, noticeKey, onDismiss }: {
+  variant: "error" | "note";
+  /** Overrides the variant's role (a note that must interrupt: role="alert"). */
+  role?: "alert" | "status";
+  /** Replaces the variant's class when the placement has its own (the
+   * Parameters sheet's .variable-problems). */
+  className?: string;
+  children: ReactNode;
+  /** The content identity when children are not a plain string (a message
+   * with an inline action): a dismissal holds until this key changes. */
+  noticeKey?: string;
+  onDismiss?: () => void;
+}) {
+  const [dismissed, setDismissed] = useState<string | null>(null);
+  const identity = noticeKey ?? (typeof children === "string" ? children : "");
+  // Content that went away resets the dismissal, so a message that clears and
+  // returns identical counts as new content.
+  if (!identity && dismissed !== null) setDismissed(null);
+  if (!identity || dismissed === identity) return null;
+  return (
+    <p role={role || (variant === "error" ? "alert" : "status")} className={className || (variant === "error" ? "error" : "notice")}>
+      <span className="notice-body">{children}</span>
+      <IconButton
+        icon="close"
+        size={12}
+        className="notice-dismiss"
+        label="Dismiss"
+        onClick={() => {
+          setDismissed(identity);
+          onDismiss?.();
+        }}
+      />
+    </p>
+  );
+}
+
 // ---- Gates, empty states, summary ------------------------------------------------
 
 /** A view that cannot run: one sentence and one action (Workbench). */
@@ -3497,6 +3542,11 @@ export function ViewStatus({
   const [announce, setAnnounce] = useState("");
   const previous = useRef({ loading, doneAt });
   const stopped = useRef(false);
+  // The reader can dismiss the current error (×); it stays hidden until the
+  // message changes or clears (a fresh failed read of the same view shows again).
+  const [dismissedError, setDismissedError] = useState("");
+  if (!error && dismissedError) setDismissedError("");
+  const showError = !!error && error !== dismissedError;
   useEffect(() => {
     const was = previous.current;
     previous.current = { loading, doneAt };
@@ -3507,7 +3557,7 @@ export function ViewStatus({
     else if (!loading && was.loading && !stopped.current) setAnnounce("");
   }, [loading, doneAt]);
   return (
-    <div ref={root} tabIndex={-1} className={`view-status${!loading && !error ? " is-idle" : ""}`}>
+    <div ref={root} tabIndex={-1} className={`view-status${!loading && !showError ? " is-idle" : ""}`}>
       <span className="visually-hidden" role="status" aria-live="polite">{announce}</span>
       {loading && (
         <p className="capture-status">
@@ -3532,7 +3582,7 @@ export function ViewStatus({
           )}
         </p>
       )}
-      {error && (
+      {showError && (
         // The alert holds the error alone; Try again sits beside it in the same box.
         <div className={`error view-status-error${onRetry ? " has-retry" : ""}`}>
           <p role="alert">
@@ -3544,6 +3594,16 @@ export function ViewStatus({
               Try again
             </button>
           )}
+          <IconButton
+            icon="close"
+            size={12}
+            className="notice-dismiss"
+            label="Dismiss"
+            onClick={() => {
+              setDismissedError(error || "");
+              refocus();
+            }}
+          />
         </div>
       )}
     </div>

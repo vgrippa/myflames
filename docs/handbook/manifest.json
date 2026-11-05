@@ -1,0 +1,86 @@
+[
+  {
+    "id": "quickstart",
+    "title": "Installation & first steps",
+    "group": "Start here",
+    "file": "quickstart.md",
+    "public_reference": "README.md"
+  },
+  {
+    "id": "motivation",
+    "title": "Why myflames",
+    "group": "Start here",
+    "file": "motivation.md",
+    "public_reference": "README.md"
+  },
+  {
+    "id": "plans",
+    "title": "Execution plans & comparison",
+    "group": "Workflows",
+    "file": "plans.md",
+    "public_reference": "README.md"
+  },
+  {
+    "id": "queries",
+    "title": "Query editor & slow queries",
+    "group": "Workflows",
+    "file": "queries.md",
+    "public_reference": "README.md"
+  },
+  {
+    "id": "server",
+    "title": "Server diagnostics & operations",
+    "group": "Workflows",
+    "file": "server.md",
+    "public_reference": "README.md"
+  },
+  {
+    "id": "schemas",
+    "title": "Schemas & version comparison",
+    "group": "Workflows",
+    "file": "schemas.md",
+    "public_reference": "README.md"
+  },
+  {
+    "id": "learn",
+    "title": "Learn the algorithms",
+    "group": "Workflows",
+    "file": "learn.md",
+    "public_reference": "README.md"
+  },
+  {
+    "id": "safety",
+    "title": "Connection policies & write safety",
+    "group": "Reference",
+    "file": "safety.md",
+    "public_reference": "docs/DEVELOPER_REFERENCE.md"
+  },
+  {
+    "id": "cli",
+    "title": "Command-line reference",
+    "group": "Reference",
+    "file": "cli.md",
+    "public_reference": "README.md"
+  },
+  {
+    "id": "compatibility",
+    "title": "Engine & platform compatibility",
+    "group": "Reference",
+    "file": "compatibility.md",
+    "public_reference": "README.md"
+  },
+  {
+    "id": "agents",
+    "title": "CI & agents",
+    "group": "Reference",
+    "file": "agents.md",
+    "public_reference": "README.md"
+  },
+  {
+    "id": "contributing",
+    "title": "Contribute to myflames",
+    "group": "Community",
+    "file": "contributing.md",
+    "public_reference": "CONTRIBUTING.md"
+  }
+]

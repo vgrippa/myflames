@@ -33,6 +33,7 @@ import { refreshSavedConnections, useSavedConnections } from "./savedConnections
 import { NOT_A_REPLICA, replicationNav, type ReplicationReport, type SkipLoop } from "./opsApi";
 import { clusterNav, NOT_A_CLUSTER, type ClusterFailure, type ClusterReport } from "./clusterApi";
 import { NOT_A_PROXYSQL, proxySqlNav, type ProxySqlFailure, type ProxySqlReport } from "./proxysqlApi";
+import { NOT_A_READYSET, readysetNav, type ReadysetFailure, type ReadysetReport } from "./readysetApi";
 import { NavMarker, WindowStatusBar, WindowStatusProvider } from "./kit";
 import { MAC, shortcut } from "./platform";
 import { ViewOnScreenContext } from "./viewOnScreen";
@@ -56,10 +57,8 @@ import { Checkbox, ActionButton, ExportMenu, ActionStatus, useAction, closePopov
 import { changeExact, changeText, matchText, pairTitle, severityText, statusText } from "./compareText";
 import {
   defaultLab,
-  hasContent,
   loadSession,
   normalizeLab,
-  relativeTime,
   sameLab,
   serializePlans,
   serializeSession,
@@ -74,7 +73,7 @@ import {
   type SlowState,
 } from "./session";
 import example from "./example.json";
-import logo from "../../../docs/brand/myflames-icon-v3-128.png";
+import logo from "../../../docs/brand/myflames-app-logo.png";
 // Places and views that are not on the first screen load their chunk when
 // they first mount (lazy.tsx); Home, the sidebar and the shell stay here.
 // The Query editor mounts at startup, hidden; its chunk loads beside the
@@ -87,6 +86,7 @@ const Server = lazyComponent(() => import("./Server").then((m) => m.Server));
 const ReplicationPlace = lazyComponent(() => import("./ReplicationPlace").then((m) => m.ReplicationPlace));
 const ClusterPlace = lazyComponent(() => import("./ClusterPlace").then((m) => m.ClusterPlace));
 const ProxySqlPlace = lazyComponent(() => import("./ProxySqlPlace").then((m) => m.ProxySqlPlace));
+const ReadysetPlace = lazyComponent(() => import("./ReadysetPlace").then((m) => m.ReadysetPlace));
 // Query digest (in the style of pt-query-digest) is a place of its own in the
 // SQL workspace group, after the Query editor; its row actions open the editor.
 const QueryDigestView = lazyComponent(() => import("./QueryDigest").then((m) => m.QueryDigestView));
@@ -118,8 +118,8 @@ const metrics: [string, string][] = [
 // in either direction; home and server are new. Each maps to one place, except
 // audit: the Audit log is local to this computer and opens from Settings, so
 // no place is "you are here" while it is on screen.
-type Mode = "home" | "inspect" | "compare" | "query" | "digest" | "diagram" | "schema" | "server" | "workload" | "replication" | "cluster" | "proxysql" | "tuning" | "library" | "teach" | "audit";
-const modes: Mode[] = ["home", "inspect", "compare", "query", "digest", "diagram", "schema", "server", "workload", "replication", "cluster", "proxysql", "tuning", "library", "teach", "audit"];
+type Mode = "home" | "inspect" | "compare" | "query" | "digest" | "diagram" | "schema" | "server" | "workload" | "replication" | "cluster" | "proxysql" | "readyset" | "tuning" | "library" | "teach" | "audit";
+const modes: Mode[] = ["home", "inspect", "compare", "query", "digest", "diagram", "schema", "server", "workload", "replication", "cluster", "proxysql", "readyset", "tuning", "library", "teach", "audit"];
 function placeOf(mode: Mode): Place | null {
   switch (mode) {
     case "audit":
@@ -146,6 +146,7 @@ const PLACE_MODE: Record<Exclude<Place, "plans">, Mode> = {
   replication: "replication",
   cluster: "cluster",
   proxysql: "proxysql",
+  readyset: "readyset",
   tuning: "tuning",
   investigations: "library",
   learn: "teach",
@@ -342,6 +343,20 @@ function App() {
   );
   const failProxySql = useCallback(
     (key: string, message: string) => setProxyShared((s) => {
+      const report = s.reset === resetKeyRef.current ? s.report : null;
+      return { reset: resetKeyRef.current, report, failure: { key, message, over: report } };
+    }),
+    [],
+  );
+  const [readysetShared, setReadysetShared] = useState<{ reset: number; report: Bound<ReadysetReport> | null; failure?: ReadysetFailure }>({ reset: 0, report: null });
+  const readysetReport = readysetShared.reset === resetKey ? readysetShared.report : null;
+  const readysetFailure = readysetShared.reset === resetKey ? readysetShared.failure || null : null;
+  const shareReadyset = useCallback(
+    (report: Bound<ReadysetReport>) => setReadysetShared({ reset: resetKeyRef.current, report }),
+    [],
+  );
+  const failReadyset = useCallback(
+    (key: string, message: string) => setReadysetShared((s) => {
       const report = s.reset === resetKeyRef.current ? s.report : null;
       return { reset: resetKeyRef.current, report, failure: { key, message, over: report } };
     }),
@@ -933,7 +948,7 @@ function App() {
    */
   async function applySession(
     raw: unknown,
-    savedAt: string,
+    _savedAt: string,
     reason: "startup" | "conflict",
   ) {
     const state = isRecord(raw) ? raw : {};
@@ -1135,7 +1150,6 @@ function App() {
       },
       serializePlans([...restoredPlans, ...kept]),
     );
-    const restoredState = JSON.parse(snapshotText);
     if (reason === "conflict")
       setRestored({
         text: [
@@ -1144,14 +1158,9 @@ function App() {
         ].join(" "),
         fresh: false,
       });
-    else if (hasContent(restoredState) || notes.length)
-      setRestored({
-        text: [
-          `Restored your workspace from ${relativeTime(savedAt)}.`,
-          ...notes,
-        ].join(" "),
-        fresh: true,
-      });
+    else if (notes.length)
+      setRestored({ text: notes.join(" "), fresh: false });
+    else setRestored(null);
     return snapshotText;
   }
   async function startFresh(backup: boolean) {
@@ -1401,17 +1410,26 @@ function App() {
   // focusable; the place explains), otherwise the cluster's status. Before
   // the first read it looks like any other place.
   const isProxyHere = proxyReport?.key === connectionKey(request) && proxyReport.report.is_proxysql;
-  const shownClusterReport = isProxyHere && clusterReport?.key !== connectionKey(request) ? null : clusterReport;
+  const isReadysetHere = readysetReport?.key === connectionKey(request) && readysetReport.report.is_readyset;
+  const shownClusterReport = (isProxyHere || isReadysetHere) && clusterReport?.key !== connectionKey(request) ? null : clusterReport;
   const clusterState = clusterNav(shownClusterReport, connectionKey(request));
-  const clusterMuted = clusterState.state === "none" || isProxyHere;
+  const clusterMuted = clusterState.state === "none" || isProxyHere || isReadysetHere;
   const proxyNav = proxySqlNav(proxyReport, connectionKey(request));
-  const proxyMuted = proxyNav === "none";
+  const proxyMuted = proxyNav === "none" || isReadysetHere;
   const proxyNow = proxyNav === "proxysql" && proxyReport && proxyReport.key === connectionKey(request) ? proxyReport.report : null;
   const proxyIssues = proxyNow && (proxyNow.status === "problem" || proxyNow.status === "watch") ? proxyNow.status_why.length : 0;
   const proxyBadge = !proxyNow ? null
     : proxyIssues > 0
       ? <NavMarker compact tone={proxyNow.status} count={proxyIssues} countTone={proxyNow.status === "problem" ? "danger" : "warn"} text={`ProxySQL ${proxyNow.status === "problem" ? "problem" : "to watch"}, ${proxyIssues} ${proxyIssues === 1 ? "issue" : "issues"}`} />
       : <NavMarker compact tone={proxyNow.status === "unknown" ? "unknown" : proxyNow.status} text={proxyNow.status === "ok" ? "ProxySQL OK" : proxyNow.status === "unknown" ? "ProxySQL not judged" : `ProxySQL ${proxyNow.status === "problem" ? "problem" : "to watch"}`} />;
+  const readysetNavState = readysetNav(readysetReport, connectionKey(request));
+  const readysetMuted = readysetNavState === "none" || isProxyHere;
+  const readysetNow = (readysetNavState === "ok" || readysetNavState === "watch" || readysetNavState === "problem" || readysetNavState === "unknown") && readysetReport && readysetReport.key === connectionKey(request) ? readysetReport.report : null;
+  const readysetIssues = readysetNow && (readysetNow.status === "problem" || readysetNow.status === "watch") ? readysetNow.status_why.length : 0;
+  const readysetBadge = !readysetNow ? null
+    : readysetIssues > 0
+      ? <NavMarker compact tone={readysetNow.status} count={readysetIssues} countTone={readysetNow.status === "problem" ? "danger" : "warn"} text={`Readyset ${readysetNow.status === "problem" ? "problem" : "to watch"}, ${readysetIssues} ${readysetIssues === 1 ? "issue" : "issues"}`} />
+      : <NavMarker compact tone={readysetNow.status === "unknown" ? "unknown" : readysetNow.status} text={readysetNow.status === "ok" ? "Readyset OK" : readysetNow.status === "unknown" ? "Readyset not judged" : `Readyset ${readysetNow.status === "problem" ? "problem" : "to watch"}`} />;
   const clusterBadge = clusterState.state !== "cluster" ? null
     : clusterState.status === "problem" && clusterState.problems > 0
       ? <NavMarker compact tone="problem" count={clusterState.problems} countTone="danger" text={clusterState.text} />
@@ -1422,14 +1440,14 @@ function App() {
   // replica (a neutral state; Group Replication's own channels do not count),
   // Unknown only when the status could not be read.
   const replicationState = replicationNav(replicationReport, connectionKey(request));
-  const replicationMuted = replicationState.state === "none";
+  const replicationMuted = replicationState.state === "none" || isReadysetHere;
   const replicationBadge = replicationState.state !== "replica" ? null
     : replicationState.failed > 0
       ? <NavMarker compact tone="problem" count={replicationState.failed} countTone="danger" text={replicationState.text} />
       : <NavMarker compact tone={replicationState.tone} text={replicationState.text} />;
   // The places that send to the connection in use (the footer names its
   // write safety there, and only there).
-  const connectionPlace = mode === "query" || mode === "digest" || mode === "diagram" || mode === "schema" || mode === "server" || mode === "workload" || mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "tuning";
+  const connectionPlace = mode === "query" || mode === "digest" || mode === "diagram" || mode === "schema" || mode === "server" || mode === "workload" || mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "readyset" || mode === "tuning";
   // Server renders Server, Workload, Tuning and Database diagram. While
   // another place is on screen it keeps the one shown last, so leaving it
   // never swaps (and mounts) a different view in the hidden place.
@@ -1442,18 +1460,20 @@ function App() {
   // (views read on open only while on screen, viewOnScreen.ts). A restored
   // skip loop mounts both at once so its status is found again (that status
   // reads no database). Start fresh and reopening a snapshot start over.
-  const visited = useRef({ key: resetKey, server: false, replication: false, cluster: false, proxysql: false, digest: false, schema: false });
-  if (visited.current.key !== resetKey) visited.current = { key: resetKey, server: false, replication: false, cluster: false, proxysql: false, digest: false, schema: false };
+  const visited = useRef({ key: resetKey, server: false, replication: false, cluster: false, proxysql: false, readyset: false, digest: false, schema: false });
+  if (visited.current.key !== resetKey) visited.current = { key: resetKey, server: false, replication: false, cluster: false, proxysql: false, readyset: false, digest: false, schema: false };
   if (serverOnScreen) visited.current.server = true;
   if (ready && mode === "replication") visited.current.replication = true;
   if (ready && mode === "cluster") visited.current.cluster = true;
   if (ready && mode === "proxysql") visited.current.proxysql = true;
+  if (ready && mode === "readyset") visited.current.readyset = true;
   if (ready && mode === "digest") visited.current.digest = true;
   if (ready && mode === "schema") visited.current.schema = true;
   const mountDigest = visited.current.digest;
   const mountSchema = visited.current.schema;
   const mountCluster = visited.current.cluster;
   const mountProxySql = visited.current.proxysql;
+  const mountReadyset = visited.current.readyset;
   const restoredLoop = labInitial?.slow?.replication_loop_active === true;
   const mountServer = visited.current.server || restoredLoop;
   const mountReplication = visited.current.replication || restoredLoop;
@@ -1461,7 +1481,7 @@ function App() {
   // (Server, Workload and Tuning, Replication, the Plans chart) in idle time,
   // so their first visit does not wait. Nothing mounts or reads a server.
   useEffect(() => {
-    if (ready) preloadWhenIdle([Server, ReplicationPlace, ClusterPlace, ProxySqlPlace, QueryDigestView, SchemaVersionsPlace, PlanChart, ContextPanel]);
+    if (ready) preloadWhenIdle([Server, ReplicationPlace, ClusterPlace, ProxySqlPlace, ReadysetPlace, QueryDigestView, SchemaVersionsPlace, PlanChart, ContextPanel]);
   }, [ready]);
   // Replication's and Query digest's "How to turn it on" open Server > Instruments at that row.
   const [instrumentsLink, setInstrumentsLink] = useState<{ row: string; n: number } | null>(null);
@@ -1610,7 +1630,7 @@ function App() {
     return () => { appear.disconnect(); observer?.disconnect(); };
   }, [ready, mode, resetKey]);
   const statusScope = mode === "query" ? `query:${connectionKey(request)}:${labState.tab_id}`
-    : (mode === "digest" || mode === "diagram" || mode === "schema" || mode === "server" || mode === "workload" || mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "tuning") ? `${mode}:${connectionKey(request)}` : mode === "compare" ? `compare:${beforeId}:${afterId}` : `plans:${activeId}`;
+    : (mode === "digest" || mode === "diagram" || mode === "schema" || mode === "server" || mode === "workload" || mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "readyset" || mode === "tuning") ? `${mode}:${connectionKey(request)}` : mode === "compare" ? `compare:${beforeId}:${afterId}` : `plans:${activeId}`;
   const plansStatus = mode === "inspect" || mode === "compare";
   const connectedRequest = useRef(request);
   connectedRequest.current = request;
@@ -1668,6 +1688,7 @@ function App() {
     { id: "place-replication", label: "Replication", group: "Places", icon: "replication", keywords: "slave replica topology channels lag gtid", run: () => go("replication") },
     { id: "place-cluster", label: "Cluster", group: "Places", icon: "cluster", keywords: "galera percona xtradb pxc innodb cluster group replication wsrep members quorum router", run: () => go("cluster") },
     { id: "place-proxysql", label: "ProxySQL", group: "Places", icon: "proxy", keywords: "proxysql proxy hostgroups mysql_servers query rules digest connection pool admin", run: () => go("proxysql") },
+    { id: "place-readyset", label: "Readyset", group: "Places", icon: "readyset", keywords: "readyset cache shallow deep querypilot resnapshot cdc replication", run: () => go("readyset") },
     { id: "place-tuning", label: "Tuning", group: "Places", icon: "tuning", keywords: "mysql tuning mariadb tuning advisor health score optimization", run: () => go("tuning") },
     { id: "place-query", label: "Query editor", group: "Places", icon: "query", keywords: "sql run query editor", run: () => go("query") },
     { id: "place-digest", label: "Query digest", group: "Places", icon: "analysis", keywords: "pt-query-digest digest profile statements workload slow queries", run: () => go("digest") },
@@ -1730,11 +1751,13 @@ function App() {
         onRemovePlan={removePlan}
         onToggleRestore={toggleRestore}
         onAuditLog={openAuditLog}
-        placeBadges={{ replication: replicationBadge, cluster: clusterBadge, proxysql: proxyBadge }}
-        placeMuted={clusterMuted || proxyMuted || replicationMuted ? {
+        onStartFresh={() => setConfirmFresh(true)}
+        placeBadges={{ replication: replicationBadge, cluster: clusterBadge, proxysql: proxyBadge, readyset: readysetBadge }}
+        placeMuted={clusterMuted || proxyMuted || readysetMuted || replicationMuted ? {
           ...(replicationMuted ? { replication: NOT_A_REPLICA } : {}),
           ...(clusterMuted ? { cluster: NOT_A_CLUSTER } : {}),
           ...(proxyMuted ? { proxysql: NOT_A_PROXYSQL } : {}),
+          ...(readysetMuted ? { readyset: NOT_A_READYSET } : {}),
         } : undefined}
       />
       <div ref={chrome} data-place={place || "audit"} className="workspace" style={{ "--place-actions-width": `${placeActionsWidth}px` } as CSSProperties}>
@@ -1749,7 +1772,7 @@ function App() {
                 document in the plan header. Replication and Tuning are one
                 view whose header already says the place name, so it stays
                 here for assistive technology only. */}
-            <strong className={mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "tuning" || mode === "digest" || mode === "diagram" || mode === "schema" ? "visually-hidden" : undefined}>{placeLabel}</strong>
+            <strong className={mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "readyset" || mode === "tuning" || mode === "digest" || mode === "diagram" || mode === "schema" ? "visually-hidden" : undefined}>{placeLabel}</strong>
           </div>
           {ready && mode === "library" && (
             <Popover label="About Investigations" className="topbar-info">
@@ -1834,6 +1857,7 @@ function App() {
             mode === "replication" ||
             mode === "cluster" ||
             mode === "proxysql" ||
+            mode === "readyset" ||
             mode === "tuning" ||
             mode === "query" ||
             mode === "digest" ||
@@ -1868,60 +1892,8 @@ function App() {
           )}
           {restored && (
             <div className="notice session-notice" role="status">
-              {confirmFresh ? (
-                <>
-                  <span>
-                    {plans.length === 1
-                      ? "One plan is not in a saved investigation."
-                      : `${plans.length} plans are not in a saved investigation.`}{" "}
-                    Download a backup before starting fresh?
-                  </span>
-                  <span className="button-row">
-                    <button
-                      className="text-button"
-                      onClick={() => startFresh(true)}
-                    >
-                      Download backup and start fresh
-                    </button>
-                    <button
-                      className="text-button"
-                      onClick={() => startFresh(false)}
-                    >
-                      Start fresh without a backup
-                    </button>
-                    <button
-                      className="text-button"
-                      onClick={() => setConfirmFresh(false)}
-                    >
-                      Cancel
-                    </button>
-                  </span>
-                </>
-              ) : (
-                <>
-                  <span>{restored.text}</span>
-                  <span className="button-row">
-                    {restored.fresh && (
-                      <button
-                        className="text-button"
-                        onClick={() =>
-                          plans.length && (!savedId || dirty)
-                            ? setConfirmFresh(true)
-                            : startFresh(false)
-                        }
-                      >
-                        Start fresh
-                      </button>
-                    )}
-                    <button
-                      className="text-button"
-                      onClick={() => setRestored(null)}
-                    >
-                      Dismiss
-                    </button>
-                  </span>
-                </>
-              )}
+              <span>{restored.text}</span>
+              <button className="text-button" onClick={() => setRestored(null)}>Dismiss</button>
             </div>
           )}
           {held.length > 0 && (
@@ -2131,6 +2103,9 @@ function App() {
                   disabled={labBusy}
                   clusterKind={clusterReport?.key === connectionKey(request) && clusterReport.report.available && clusterReport.report.kind !== "none" ? clusterReport.report.kind : null}
                   onOpenCluster={() => go("cluster")}
+                  onOpenReadyset={() => go("readyset")}
+                  onOpenProxySql={() => go("proxysql")}
+                  onSwitchConnection={switchConnection}
                   onOpenInstruments={openInstrumentsRow}
                   loops={replicationLoops}
                   onLoops={setReplicationLoops}
@@ -2157,7 +2132,8 @@ function App() {
               <ColumnStoreContext.Provider value={columnStore}>
                 <ClusterPlace connection={request} disabled={labBusy} report={shownClusterReport} onReport={shareCluster}
                   failure={clusterFailure} onFailure={failCluster}
-                  onOpenProxySql={() => go("proxysql")} profiles={profiles} onSwitchConnection={switchConnection} />
+                  onOpenProxySql={() => go("proxysql")} onOpenReadyset={() => go("readyset")}
+                  profiles={profiles} onSwitchConnection={switchConnection} />
               </ColumnStoreContext.Provider>
               </ViewOnScreenContext.Provider>
               </WritePolicyContext.Provider>
@@ -2169,7 +2145,24 @@ function App() {
               <ViewOnScreenContext.Provider value={mode === "proxysql"}>
               <ColumnStoreContext.Provider value={columnStore}>
                 <ProxySqlPlace connection={request} disabled={labBusy} report={proxyReport} onReport={shareProxySql}
-                  failure={proxyFailure} onFailure={failProxySql} />
+                  failure={proxyFailure} onFailure={failProxySql}
+                  onSwitchConnection={switchConnection} onOpenReadyset={() => go("readyset")}
+                  onOpenCluster={() => go("cluster")} onOpenReplication={() => go("replication")} />
+              </ColumnStoreContext.Provider>
+              </ViewOnScreenContext.Provider>
+              </WritePolicyContext.Provider>
+            </div>
+          )}
+          {ready && mountReadyset && (
+            <div hidden={mode !== "readyset"}>
+              <WritePolicyContext.Provider value={writePolicy}>
+              <ViewOnScreenContext.Provider value={mode === "readyset"}>
+              <ColumnStoreContext.Provider value={columnStore}>
+                <ReadysetPlace connection={request} disabled={labBusy} report={readysetReport} onReport={shareReadyset}
+                  failure={readysetFailure} onFailure={failReadyset}
+                  onOpenProxySql={() => go("proxysql")} onOpenCluster={() => go("cluster")}
+                  onOpenReplication={() => go("replication")} onOpenServer={() => go("server")}
+                  onSwitchConnection={switchConnection} />
               </ColumnStoreContext.Provider>
               </ViewOnScreenContext.Provider>
               </WritePolicyContext.Provider>
@@ -2702,6 +2695,11 @@ function App() {
           }}
         />
       )}
+      {confirmFresh && <FreshWorkspaceSheet
+        backupAvailable={!!plans.length && (!savedId || dirty)}
+        onClose={() => setConfirmFresh(false)}
+        onStart={(backup) => { void startFresh(backup); }}
+      />}
       {accountOpen && (
         <AccountPrivilegesSheet
           name={activeConnection.fields.name || connectionTarget(activeConnection.fields)}
@@ -2831,3 +2829,22 @@ function openWorkspace() {
 }
 window.addEventListener("hashchange", openWorkspace);
 openWorkspace();
+
+/** A deliberate workspace action, available even when nothing was restored. */
+function FreshWorkspaceSheet({ backupAvailable, onClose, onStart }: {
+  backupAvailable: boolean; onClose: () => void; onStart: (backup: boolean) => void;
+}) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  useFocusScope(dialog, { open: true, onClose });
+  return <dialog ref={dialog} className="fresh-workspace-sheet notebook-sheet" tabIndex={-1}
+    aria-labelledby="fresh-workspace-title" onCancel={(event) => { event.preventDefault(); onClose(); }}>
+    <div className="dialog-heading"><h2 id="fresh-workspace-title">Start fresh</h2></div>
+    <p>Close the open plans and query tabs and clear this workspace. Saved investigations and connections remain available.</p>
+    {backupAvailable && <p>Download a backup of your unsaved plans before starting fresh? Query tab text is not included in this backup.</p>}
+    <div className="dialog-actions sheet-actions">
+      <button type="button" className="button" onClick={onClose}>Cancel</button>
+      <button type="button" className="button" onClick={() => onStart(false)}>{backupAvailable ? "Start fresh without a backup" : "Start fresh"}</button>
+      {backupAvailable && <button type="button" className="button primary" onClick={() => onStart(true)}>Download backup and start fresh</button>}
+    </div>
+  </dialog>;
+}

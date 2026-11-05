@@ -211,9 +211,12 @@ def render_bargraph(
 
     y = top_margin
     for op in all_nodes:
-        pct = (op["self_time"] / total_time) * 100
-        bar_width = max(3, (op["self_time"] / total_time) * bar_area_width) if op["self_time"] > 0 else 0
-        color = bar_color(op["self_time"] / total_time)
+        # A node's self time can exceed the plan total (loop double counting);
+        # clamp so the bar never escapes the bar area.
+        ratio = min(1.0, op["self_time"] / total_time) if total_time > 0 else 0
+        pct = ratio * 100
+        bar_width = max(3, ratio * bar_area_width) if op["self_time"] > 0 else 0
+        color = bar_color(ratio)
         # Pixel-budget fit via the shared helper (V5). The label column
         # is `label_width` px wide at 11 px Arial (font-width ratio ≈ 0.55);
         # subtract a small gutter so the text never touches the column edge.

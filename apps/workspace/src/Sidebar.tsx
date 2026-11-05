@@ -11,7 +11,7 @@ import { Checkbox, CountBadge, Popover, closePopovers, useFocusScope } from "./k
 import { NewsSetting } from "./HomeNews";
 import type { SaveStatus } from "./session";
 
-export type Place = "home" | "server" | "workload" | "replication" | "cluster" | "proxysql" | "tuning" | "query" | "digest" | "diagram" | "schema" | "plans" | "investigations" | "learn";
+export type Place = "home" | "server" | "workload" | "replication" | "cluster" | "proxysql" | "readyset" | "tuning" | "query" | "digest" | "diagram" | "schema" | "plans" | "investigations" | "learn";
 export const PLACES: { key: Place; label: string; icon: IconName }[] = [
   { key: "home", label: "Home", icon: "home" },
   { key: "server", label: "Server", icon: "server" },
@@ -19,6 +19,7 @@ export const PLACES: { key: Place; label: string; icon: IconName }[] = [
   { key: "replication", label: "Replication", icon: "replication" },
   { key: "cluster", label: "Cluster", icon: "cluster" },
   { key: "proxysql", label: "ProxySQL", icon: "proxy" },
+  { key: "readyset", label: "Readyset", icon: "readyset" },
   { key: "tuning", label: "Tuning", icon: "tuning" },
   { key: "query", label: "Query editor", icon: "query" },
   { key: "digest", label: "Query digest", icon: "analysis" },
@@ -60,6 +61,7 @@ export function Sidebar({
   onRemovePlan,
   onToggleRestore,
   onAuditLog,
+  onStartFresh,
   expanded,
   narrow,
   onExpandedChange,
@@ -88,6 +90,7 @@ export function Sidebar({
   onToggleRestore: (on: boolean) => void;
   /** Open the Audit log (writes sent through myflames, kept on this computer). */
   onAuditLog: () => void;
+  onStartFresh?: () => void;
   placeBadges?: Partial<Record<Place, ReactNode>>;
   /** Places that have nothing for the connection in use (Cluster on a server
    * that is not part of one), with the sentence that says so: the item looks
@@ -439,6 +442,10 @@ export function Sidebar({
             </p>
             <NewsSetting />
             <div className="settings-menu">
+              {onStartFresh && <button type="button" className="settings-item" disabled={!ready}
+                aria-haspopup="dialog" onClick={() => { setSettingsOpen(false); setDrawerOpen(false); onStartFresh(); }}>
+                <Icon name="plus" size={16} />Start fresh
+              </button>}
               <button
                 type="button"
                 className="settings-item"

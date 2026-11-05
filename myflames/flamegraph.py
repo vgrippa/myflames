@@ -13,6 +13,10 @@ tables below must stay identical to the ones in that file
 (``test/test_flamegraph.py`` compares them, ``apps/workspace/test/charts.mjs``
 compares the computed colors).
 
+Default hot colors encode own count / graph count on a square-root warm
+scale (#fff1cd to #e87942), excluding descendant counts. Zoom preserves
+that scale; separators and unmeasured frames stay neutral.
+
 Layout rules:
 
 * Stacks sharing a prefix are merged. A frame's width is its own value plus
@@ -60,7 +64,7 @@ DETAILS_RESERVE = 150   # px kept free on the details line for "Matched: …"
 BACKGROUND = "#fafafa"
 
 EMPTY_MESSAGE = "No valid stack counts found."
-HINT = ("Hover a frame for details. Click to zoom, double-click the "
+HINT = ("Color: self time, pale to hot. Hover a frame for details. Click to zoom, double-click the "
         "background to reset, Ctrl+F to search.")
 
 # ---------------------------------------------------------------------------
@@ -145,6 +149,23 @@ def frame_color(label, family=None, colors="hot"):
         byte = (h >> (8 * i)) & 0xFF
         channels.append(low + (byte * (high - low)) // 255)
     return "#%02x%02x%02x" % tuple(channels)
+
+
+def heat_color(label, own, total, measured=True):
+    """Warm intensity for own count, never inclusive descendant time.
+
+    Square-root scaling exposes small contributors without making inherited
+    time look like work performed by an ancestor. Black text stays readable.
+    """
+    if label in SEPARATOR_COLORS:
+        return SEPARATOR_COLORS[label]
+    if not measured:
+        return SEPARATOR_COLORS["-"]
+    share = min(1.0, max(0.0, own / total)) if total > 0 else 0.0
+    intensity = math.sqrt(share)
+    return "#%02x%02x%02x" % tuple(
+        int(math.floor(cold + (hot - cold) * intensity + 0.5))
+        for cold, hot in ((255, 232), (241, 121), (205, 66)))
 
 
 def fit_frame_label(label, px):
@@ -702,7 +723,10 @@ def folded_to_svg(folded_text, title="Flame Graph", width=1200, height=16,
         if teach is not None:
             attrs.append('data-teach-index="%s"' % _esc(teach))
         attrs.append('data-label="%s"' % _esc(label))
-        fill = frame_color(label, _lookup(family_by_folded, label), colors)
+        own = node.value - sum(child.value for child in node.children.values())
+        fill = (heat_color(label, own, total, countname != NO_TIME)
+                if _palette_name(colors) == "hot" else
+                frame_color(label, _lookup(family_by_folded, label), colors))
         out.append("<g %s>" % " ".join(attrs))
         out.append("<title>%s</title>" % tip)
         out.append('<rect x="%s" y="%d" width="%s" height="%d" rx="2" ry="2" fill="%s"/>'

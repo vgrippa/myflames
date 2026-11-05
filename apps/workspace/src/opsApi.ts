@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { api, type Connection, type ConnectionType } from "./api";
 import { connectionKey } from "./binding";
+import type { DatabaseTopologyTiers } from "./readysetApi";
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export type Facts = { [key: string]: Json };
@@ -73,6 +74,8 @@ export type ReplicationReport = Partial<ReceiverGuard> & {
    * (a Galera provider loaded, or Group Replication configured), never a
    * verdict on the cluster. */
   cluster_hint?: "galera" | "group_replication" | null;
+  readyset_hint?: boolean;
+  topology_tiers?: DatabaseTopologyTiers | null;
   capabilities: Facts; notes: string[];
   summary: { channels: number; judged: number; ok: number; watch: number; problem: number; unknown: number; failed: number; lag_max_s: number | null };
 };

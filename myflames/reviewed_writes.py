@@ -218,7 +218,8 @@ def check_reviewed(plan):
         raise ValueError("Send the reviewed plan with the action.")
     statements = plan.get("statements")
     if not isinstance(plan.get("action"), str) or not isinstance(statements, list) or not statements \
-            or not all(isinstance(s, str) and s and "\n" not in s for s in statements) or len(statements) > 10:
+            or not all(isinstance(s, str) and s and "\n" not in s and "\r" not in s for s in statements) \
+            or len(statements) > 10:
         raise ValueError("The reviewed plan is not valid. Review the action again; nothing was sent.")
     return plan
 
@@ -245,7 +246,7 @@ def refused(out, message, outcome, audit=None, target=None, progress=None):
 
 
 def execute(conn, reviewed, plan_fresh, schema_version, audit=None, typed=None, before_send=None, read_after=None,
-            timeout=None, partial_text=None, done_text=None, progress=None, effect=None):
+            timeout=None, partial_text=None, done_text=None, progress=None, effect=None, verify_on_error=False):
     """Send a reviewed plan after re-planning it from a fresh read.
 
     *plan_fresh* returns the plan for the same inputs from a read made now
@@ -293,8 +294,10 @@ def execute(conn, reviewed, plan_fresh, schema_version, audit=None, typed=None, 
             audit.fail(exc, statements)
         raise
     except ConnectorError as exc:
-        text = str(exc)
-        out["error"] = server_message(text)
+        from .dbops import redact
+        pw = getattr(conn, "password", None) or (getattr(audit, "password", None) if audit is not None else None)
+        text = redact(str(exc), pw)
+        out["error"] = redact(server_message(text), pw)
         code, line = error_number(text), failed_line(text)
         definite = code is not None and (line is None or (not client_error(code) and 1 <= line <= len(statements)))
         if may_have_run(exc) or not definite:
@@ -327,8 +330,40 @@ def execute(conn, reviewed, plan_fresh, schema_version, audit=None, typed=None, 
                                  failed, out["error"]))
             outcome = "partial"
         else:
-            out["status"] = "failed"
             out["not_sent"] = statements[1:]
+            if verify_on_error and read_after is not None:
+                _set(progress, "reading")
+                try:
+                    after = read_after()
+                except (ConnectorError, ValueError):
+                    out["status"] = "unknown"
+                    out["states"] = ["unknown"] + ["not_run"] * (len(statements) - 1)
+                    out["message"] = ("The server reported an error on %s (%s), and the state after it could not be "
+                                      "read, so whether anything changed is unknown." % (statements[0], out["error"]))
+                    _set(progress, "finished", out["states"], "unknown")
+                    if audit is not None:
+                        audit.complete("unknown", outcome="no_reply", error=text, message=out["message"])
+                    return out
+                out["after"] = after
+                changes = None
+                if effect is not None and after is not None:
+                    try:
+                        changes = effect(fresh, after)
+                    except (KeyError, TypeError, ValueError):
+                        changes = None
+                if changes:
+                    out["effect"] = changes
+                    out["status"] = "partial"
+                    out["sent"] = [statements[0]]
+                    out["states"] = ["failed"] + ["not_run"] * (len(statements) - 1)
+                    out["message"] = (partial_text(out["sent"], statements[0], out["error"]) if partial_text else
+                                      "%s failed (%s), after part of the change took effect."
+                                      % (statements[0], out["error"]))
+                    _set(progress, "finished", out["states"], "partial")
+                    if audit is not None:
+                        audit.complete("error", outcome="partial", error=text, message=out["message"], after=after)
+                    return out
+            out["status"] = "failed"
             out["message"] = "The server refused %s: %s. Nothing changed." % (statements[0], out["error"])
             outcome = "refused_by_server"
         out["states"] = (["done"] * (line - 1) + ["failed"] + ["not_run"] * (len(statements) - line))

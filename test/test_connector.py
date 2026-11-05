@@ -375,6 +375,20 @@ class TestArgvConstruction(unittest.TestCase):
         finally:
             c.close()
 
+    def test_local_infile_disabled_right_after_defaults_file(self):
+        """A hostile server can request a readable local file in reply to any
+        statement when the client's LOCAL capability stays at its build
+        default (MariaDB's is AUTO/ON). Every invocation pins it off; only the
+        CSV LOAD DATA session overrides it later in argv (csv_import_api).
+        """
+        for method in ("run", "run_write", "run_script"):
+            with self.subTest(method=method), self._conn(binary="/bin/mariadb") as conn, \
+                    mock.patch.object(connector, "_run_bounded", return_value=_fake_completed()) as run:
+                getattr(conn, method)("SELECT 1")
+                argv = run.call_args[0][0]
+                self.assertTrue(argv[1].startswith("--defaults-file="))
+                self.assertEqual(argv[2], "--local-infile=0", argv)
+
     def test_utf8mb4_for_reads_and_writes_before_and_after_engine_detection(self):
         # A MySQL (or unknown) client talking to MariaDB 10.11 needs SET
         # NAMES too: its utf8mb4 handshake collation can be unrecognized.

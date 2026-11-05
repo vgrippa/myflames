@@ -2020,8 +2020,18 @@ class TestSQLAndIndexFeatures(unittest.TestCase):
         self.assertGreater(len(suggestions), 0, "Expected at least one index suggestion")
         ddl = suggestions[0]["ddl"]
         self.assertTrue(ddl.startswith("CREATE INDEX"), "DDL must start with CREATE INDEX")
+        # Simple identifiers keep the historic unquoted form; only names that
+        # need quoting are backtick-quoted (2026-11-05).
         self.assertIn("ON users", ddl)
-        self.assertIn("name", ddl)
+        self.assertIn("(name)", ddl)
+
+    def test_qident_quotes_only_names_that_need_it(self):
+        from myflames.parser import _qident
+        self.assertEqual(_qident("users"), "users")
+        self.assertEqual(_qident("order"), "order")
+        self.assertEqual(_qident("my table"), "`my table`")
+        self.assertEqual(_qident("we`ird"), "`we``ird`")
+        self.assertEqual(_qident("x; DROP TABLE t--"), "`x; DROP TABLE t--`")
 
     @unittest.skipUnless(os.path.exists(os.path.join(TEST_DIR, "fixtures", "explain-022-filter-with-like.json")), "fixture missing")
     def test_suggest_indexes_no_duplicates(self):
@@ -3039,3 +3049,29 @@ class TestTreemapRemoved(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestPlanFileHardening(unittest.TestCase):
+    """A shared plan file is attacker-controlled text (review 2026-11-05)."""
+
+    def test_non_string_operation_raises_value_error(self):
+        import json as _json
+        plan = _json.dumps({"query_block": {"cost_info": {"query_cost": "1.0"},
+                                          "operation": {"unexpected": "object"}}})
+        with self.assertRaises(ValueError):
+            parse_explain(plan)
+
+    def test_index_suggestion_quotes_hostile_names(self):
+        from myflames.parser import _suggest_indexes
+        scan = {"operation": "Table scan", "details": {"access_type": "table",
+                                                       "table_name": "weird`table"},
+                "children": []}
+        root = {"operation": "Filter",
+                "details": {"access_type": "filter",
+                            "condition": "weird`table.status = 'x'"},
+                "children": [scan]}
+        suggestions = _suggest_indexes(root)
+        self.assertTrue(suggestions, "expected an index suggestion for the scan")
+        ddl = suggestions[0]["ddl"]
+        self.assertIn("`weird``table`", ddl)
+        self.assertNotIn(" weird`table ", ddl)

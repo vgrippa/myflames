@@ -1,6 +1,7 @@
-/* Replication topology: a static map. One row per channel, source on the left,
+/* Replication topology: an interactive map. One row per channel, source on the left,
    connector in the middle, replica on the right. State is drawn by line style,
-   color and a text label; nothing moves. Tokens only (style.css). */
+   color and a text label. Optional depth and state motion live in
+   topology-presentation.css. Tokens only (style.css). */
 
 .replication-topology-container {
   container-type: inline-size;

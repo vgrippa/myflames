@@ -70,6 +70,18 @@ catalogs in the upgrade check (parameters set on a server that the target
 release removes), and restore the Versions tab, its mode and its choices
 across sessions.
 
+**Shipped: Readyset and multi-tier topology.** The Readyset place (after
+ProxySQL), `myflames readyset` CLI and read-only `readyset_status` MCP tool
+inspect Readyset SQL adapter (`3307`) and Admin SQL (`6036`) instances:
+shallow and deep caches, proxied queries with `EXPLAIN CREATE CACHE` dry-run
+prechecks and collision warnings, `EXPLAIN ALL CACHES` / `EXPLAIN CACHES` DDL
+export, base-table snapshotting and replication lag, dynamic `ALTER READYSET`
+settings and shallow cache allowlists, and cached-versus-upstream latency and
+hit-rate telemetry, with reviewed and audited operational changes. Topology
+views in Readyset, ProxySQL, Replication and Cluster cross-link saved
+connections across ProxySQL + Readyset + MySQL/MariaDB standalone servers,
+replicas and clusters (`scripts/readyset-matrix.sh`).
+
 **Shipped: Import CSV.** The workspace loads a .csv, .tsv or .txt file into
 an existing table or a new one created from the file, from the Query
 editor's Schemas panel (a table's **Import CSV…**, a database's **Import CSV
@@ -381,3 +393,7 @@ completion refreshes status without committing a password still being typed.
 Completed workspace feedback: Plans sample opening, HTML/JSON export and investigation Save, Maintenance reads and jobs, and Cluster/ProxySQL confirmed sends share progress and outcome feedback. A slow sent request can close its sheet while remaining single flight. Browser cases live in `test/action-feedback-batch-c.mjs`; the socket-free reviewed-action unit cases also cover late replies after Close and connection changes.
 
 **Shipped in 3.3.1: MySQL 5.7, slow logs, SQL export and structure-only dumps.** MySQL 5.7 (tested on 5.7.44) is the support floor and is read with what it lacks said in plain sentences (Server views, privileges, Users and roles from 5.7.6, Run analysis refused before 8.0.18, Import CSV, the parameter version catalog from 5.7.9). Query digest has a Source choice (Statement digests, Slow log table, Slow log file) and a Time range, and `myflames slow-log` gives the same report in the terminal. Schema versions can **Export as SQL** (`myflames schema export VERSION --sql`), Server > Tables has **Table structure**, and dumps can be structure only (`myflames dump --no-data`). One shared list of saved connections refreshes everywhere, and the Database diagram has an explicit **Load <database>**.
+
+### November workspace refinement
+
+The app adopts the simple flame brand. Flame graph intensity now follows own measured time while frame width retains inclusive time. Workspace reset lives in Settings, digest filters have a dedicated row, and topology views share depth and motion controls. Motion represents reported state rather than traffic; reduced-motion preferences take priority.

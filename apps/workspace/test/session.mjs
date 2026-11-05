@@ -280,12 +280,8 @@ try {
 
   // 2. Reload: everything comes back, without a leave-page prompt.
   async function assertRestored(p) {
-    await p.waitForSelector(".session-notice");
-    assert.match(
-      await p.$eval(".session-notice", (e) => e.textContent),
-      /Restored your workspace from/,
-    );
     await chart(p);
+    assert.equal(await p.$(".session-notice"), null, "startup restores quietly");
     assert.equal((await p.$$(".plan-item")).length, 1);
     assert.equal(
       await p.$eval(".chart-views button[aria-pressed=true]", (e) => e.textContent),
@@ -385,15 +381,16 @@ try {
 
   // 5. Start fresh offers a backup of unsaved plans, then clears the session.
   await page.reload({ waitUntil: "networkidle0" });
-  await page.waitForSelector(".session-notice");
-  await (await page.$(".session-notice")).screenshot({ path: path.join(directory, "notice.png") });
-  await button(page, "Start fresh", ".session-notice ");
-  await page.waitForSelector(".session-notice .text-button ::-p-text(Cancel)");
-  await (await page.$(".session-notice")).screenshot({ path: path.join(directory, "notice-backup.png") });
-  await page.waitForFunction(() =>
-    document.querySelector(".session-notice")?.textContent.includes("Download a backup"),
-  );
-  await button(page, "Download backup and start fresh", ".session-notice ");
+  await chart(page);
+  await page.click('[aria-label="Settings"]');
+  await button(page, "Start fresh", ".settings-menu ");
+  await page.waitForSelector(".fresh-workspace-sheet[open]");
+  await (await page.$(".fresh-workspace-sheet")).screenshot({ path: path.join(directory, "fresh-workspace.png") });
+  await button(page, "Cancel", ".fresh-workspace-sheet ");
+  assert.equal((await page.$$(".plan-item")).length, 1, "cancel preserves plans");
+  await page.click('[aria-label="Settings"]');
+  await button(page, "Start fresh", ".settings-menu ");
+  await button(page, "Download backup and start fresh", ".fresh-workspace-sheet ");
   await page.waitForFunction(() => !document.querySelector(".plan-item"));
   const backupPath = path.join(directory, "unsaved-investigation.json");
   for (let i = 0; i < 100; i++) {
@@ -519,8 +516,8 @@ try {
   url = await start();
   await open(page, url);
   assert.deepEqual(dialogs, ["beforeunload"], "no autosave this launch: prompt");
-  await page.waitForSelector(".session-notice");
   await chart(page);
+  assert.equal(await page.$(".session-notice"), null);
   assert.equal((await page.$$(".plan-item")).length, 1, "stored session kept");
 
   assert.deepEqual(errors, []);

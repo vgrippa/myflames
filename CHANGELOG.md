@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Readyset support and multi-tier ProxySQL + Readyset + MySQL/MariaDB topologies**: the new **Readyset** place (right after ProxySQL), `myflames readyset` and the read-only `readyset_status` MCP tool inspect Readyset SQL (default port 3307) and admin SQL (default port 6036) instances (`readyset-1.0`, `readyset-action-1.0`, `readyset-explain-1.0`, `readyset-export-1.0`). Readyset reads shallow and deep caches, observed cached versus upstream query counts and P50/P90/P95/P99/P99.9 latency percentiles, shallow cache hit rates, background refreshes, wasted/dropped refreshes and coalesce time saved, proxied queries with shallow and deep support verdicts, replicated base tables, shallow cache allowlists, client sessions and upstream servers, and mode-aware replication lag (`transactions` in `mysql_gtid`, `bytes` in `mysql_file`). Cache and runtime changes run through exact SQL review, policy gates and the Audit log: dry-run `EXPLAIN CREATE [SHALLOW|DEEP] CACHE` with collision detection, `CREATE [SHALLOW|DEEP] CACHE` (`POLICY TTL … REFRESH EVERY …`, `COALESCE`, `ADAPTIVE`, `ALWAYS`, `UNTIL WRITE`, `CONCURRENTLY`), `DROP CACHE`, `DROP ALL [SHALLOW|DEEP] CACHES`, `FLUSH CACHE`, `FLUSH ALL SHALLOW CACHES`, `DROP ALL PROXIED QUERIES`, cache DDL export (`EXPLAIN ALL CACHES` / `EXPLAIN CACHES`), `ALTER READYSET` dynamic parameters (`SET LOG LEVEL`, `SET EVICTION MEMORY LIMIT`, `SET EVICTION PERIOD`, `ENTER` / `EXIT MAINTENANCE MODE`, `{ADD|DROP} SHALLOW CACHE ALLOWED {FUNCTION|VARIABLE|SCHEMA}`, `FLUSH PRIVILEGES`), base-table recovery (`RESNAPSHOT TABLE`, `ADD TABLES`, `STOP` / `START REPLICATION`, `SET REPLICATION POSITION`), and admin-port-only `SHUTDOWN` / `SHUTDOWN RESET`. Topology views across Readyset, ProxySQL, Replication and Cluster link saved ProxySQL, Readyset and MySQL or MariaDB standalone servers, replicas and clusters (Galera, PXC, InnoDB Cluster and Group Replication), parse ProxySQL QueryPilot `readyset-meta:` routing and mirror rules, switch between saved sibling connections (`Use <connection>`) and navigate directly across places.
+- **Files: SSH/SFTP file transfer.** The Server place gains a **Files** view that moves files between this computer and the database host over SSH/SFTP: browse both sides side by side, drag files onto a pane to upload them into the current remote folder, download remote files (slow logs, error logs, dumps) to this computer, create folders and remove files. Transfers run in the background with per-file and total progress, transfer rate and estimated time left, and can be cancelled; downloads are staged as `.myflames-part` files so a cancelled or failed download never leaves a half-written file under its final name. Files uses the connection's SSH details (the same SSH host, user and port as an SSH tunnel) and speaks SFTP through the system `ssh` with your own `~/.ssh/config`; unlike tunnels, password sign-in is also supported: **Save password** keeps the SSH password in the platform credential store under a separate namespace bound to the exact SSH host, user and port, and never next to the database password (on Windows, where no secure password handoff exists, password sign-in fails closed with a plain message). Files is not a SQL feature: the connection's write policy and the Audit log do not cover it, and the Transfers panel is the record of what moved.
+- **Query editor: plans in the tab's own session.** When a plan fails because the query needs the tab's session — a temporary table, a user variable, a prepared statement — the error offers **Run in this tab's session**, which captures the plan on the session the tab already has open instead of a fresh connection (`/api/live/start` with `session_tab`). The capture lands in Plans like any other, marked "Captured in the tab's session"; statement counters, schema metadata and optimizer trace are not collected for it.
+
+### Workspace polish
+
+- Restore workspaces quietly and move Start fresh into Settings with confirmation.
+- Group Query digest filters separately from actions and center button labels, including busy states.
+- Add dimensional replication and cluster topologies with selectable nodes, depth and motion controls, and reduced-motion support.
+- Error and note banners (query errors, session notes, configuration notices) can be dismissed with a close button; they no longer stay on screen forever.
+
+### Fixed
+
+- Capturing a plan of a query that uses a temporary table no longer fails with ERROR 1146 (table doesn't exist): the capture opened a fresh connection, where the temporary table does not exist. Such plans can now run in the Query editor tab's own session (see Added).
+- A `SHOW` statement with a subquery in its `WHERE` clause (for example `SHOW TABLES WHERE GET_LOCK(...)`) and `HANDLER ... READ` were classified as unconditional reads, bypassing the write policy's function and subquery checks; they now go through the same checks as `SELECT`. `GET DIAGNOSTICS` is no longer treated as a read-only statement.
+- The bundled MySQL client invocations (query editor, SQL CLI, restore, clone) now pass `--local-infile=0` immediately after `--defaults-file`, so a hostile or compromised server cannot make the client read and send a local file (`LOAD DATA LOCAL INFILE` abuse).
+- `EXPLAIN` trees whose operation is not a string no longer crash plan parsing with an unhandled error; the bar chart no longer lets a rounded ratio draw past the frame; the Digest vitals no longer show a missing value when a plan's total time is exactly 0 ms; plan-complexity attribution no longer counts subquery children as join inputs; CREATE INDEX suggestions quote schema and table names that need it.
+
+### Branding
+
+- Adopted the simple flame logo, website wordmarks, and companion mascot Ember for repository branding, with the message "See what your database is doing." Added reusable assets and a matching social preview.
+
+### Documentation
+
+- Added a project-owned user handbook in `docs/handbook`, shared with the separate project website. Chapters and navigation are maintained in this repository.
+
 ## [3.3.1] - 2026-10-31
 
 ### Added

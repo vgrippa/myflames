@@ -298,7 +298,10 @@ class FileTest(Base):
     def test_choose_uses_the_native_chooser(self):
         path = self.csv('a\n1\n')
         with mock.patch('myflames.file_picker.choose_file', return_value={'path': path, 'cancelled': False}):
-            self.assertEqual(self.call('/api/import/csv/choose', {})['name'], 'data.csv')
+            answer = self.call('/api/import/csv/choose', {})
+            self.assertEqual(answer['name'], 'data.csv')
+            # The Files view starts an upload straight from the picker reply.
+            self.assertEqual(answer['path'], path)
         with mock.patch('myflames.file_picker.choose_file', return_value={'path': None, 'cancelled': True}):
             self.assertEqual(self.call('/api/import/csv/choose', {}), {'cancelled': True})
 

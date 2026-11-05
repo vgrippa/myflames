@@ -668,6 +668,23 @@ def read_status(conn):
                 ]
                 _finish(report)
                 return report
+            try:
+                from . import readyset
+                is_rs, rs_version = readyset.identify(conn)
+            except Exception:
+                is_rs, rs_version = False, None
+            if is_rs:
+                report = _base(Server({"version": rs_version or ""}, {}))
+                report["server_product"] = "Readyset"
+                report["server_version"] = rs_version
+                report["readyset_hint"] = True
+                report["message"] = (
+                    "Not part of a cluster: this connection is a Readyset instance (open Readyset to inspect caches "
+                    "and upstream topology)."
+                )
+                report["statements"] = ["SELECT @@version_comment", "SHOW READYSET VERSION"]
+                _finish(report)
+                return report
         raise
     report = _base(server)
     report["statements"].append("SHOW GLOBAL VARIABLES")
@@ -1985,6 +2002,32 @@ def with_actions(report):
     reads it this way; the CLI and MCP report has no actions)."""
     for member in report.get("members") or ():
         member["actions"] = available_actions(report, member.get("key"))
+    return report
+
+
+def attach_topology_tiers(conn, report, profiles=(), open_profile=None, reached_host=None, current_profile_id=None):
+    """Attach verified upstream Readyset and ProxySQL tiers from saved connections."""
+    if not report or not report.get("available") or not profiles or open_profile is None:
+        return report
+    from .topology_links import discover_database_tiers
+    srv = report.get("server") or {}
+    obs_host = reached_host if reached_host is not None else getattr(conn, "host", None)
+    local_ident = {
+        "hostname": srv.get("hostname"),
+        "port": srv.get("port") or getattr(conn, "port", None) or 3306,
+        "report_host": srv.get("report_host"),
+        "server_uuid": srv.get("server_uuid"),
+        "profile_host": obs_host,
+        "profile_port": getattr(conn, "port", None) or srv.get("port") or 3306,
+    }
+    peers = [
+        {"host": m.get("host"), "port": m.get("port") or 3306, "server_uuid": m.get("uuid")}
+        for m in (report.get("members") or ())
+        if m.get("host") or m.get("uuid")
+    ]
+    report["topology_tiers"] = discover_database_tiers(
+        conn, local_ident, peer_endpoints=peers, profiles=profiles, open_profile=open_profile,
+        observer_host=obs_host, current_profile_id=current_profile_id, check_footprint=False)
     return report
 
 

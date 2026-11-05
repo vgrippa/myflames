@@ -1,0 +1,11 @@
+{
+ "schema_version": "action-progress-1.0",
+ "phase": "finished",
+ "states": [
+  "unknown"
+ ],
+ "status": "unknown",
+ "elapsed_s": 1.1,
+ "waiting_s": null,
+ "timeout_s": 30
+}

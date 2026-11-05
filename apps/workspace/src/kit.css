@@ -608,6 +608,40 @@
 .view-status .capture-status + .error {
   margin-top: var(--space-2);
 }
+/* The dismiss × of a Notice or a view's error line: at the end of the flex
+   row (.notice/.error are flex, space-between), quiet until hovered. The body
+   text keeps the room and wraps. */
+.notice-body {
+  min-width: 0;
+}
+.notice-dismiss {
+  flex: none;
+  align-self: flex-start;
+  margin: -3px -6px 0 0;
+  color: inherit;
+  opacity: 0.6;
+}
+.notice-dismiss:hover,
+.notice-dismiss:focus-visible {
+  opacity: 1;
+}
+/* An inline action inside a notice ("Run in this tab's session"): text
+   styling, one step stronger than the surrounding message. */
+.notice-action {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  color: var(--accent-text);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.notice-action:hover,
+.notice-action:focus-visible {
+  color: var(--accent-hover);
+}
 .view-split {
   display: flex;
   flex: 1 1 auto;
@@ -2656,9 +2690,9 @@ details[open]:not([class]) > summary:not([class]):not(:has(> svg))::before {
   align-items: center;
   gap: var(--space-1-5);
 }
-/* Beside an icon the label starts at the icon; the reserved room trails. */
+/* Center the visible label within the width reserved for its busy state. */
 .action-button.has-icon .action-button-label {
-  justify-items: start;
+  justify-items: center;
 }
 /* The label the button is not showing, kept for its width only. */
 .action-button-label::after {

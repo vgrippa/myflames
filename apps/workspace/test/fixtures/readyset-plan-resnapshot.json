@@ -1,0 +1,61 @@
+{
+ "schema_version": "readyset-action-1.0",
+ "action": "resnapshot_table",
+ "target": {
+  "kind": "table",
+  "table": "`shop`.`orders`"
+ },
+ "value": null,
+ "eyebrow": "RESNAPSHOT",
+ "title": "Re-snapshot table `shop`.`orders`?",
+ "confirm_label": "Re-snapshot `shop`.`orders`",
+ "description": "Drops Readyset's local copy of `shop`.`orders` and reads a fresh snapshot from the upstream CDC server. Dependent deep caches on `shop`.`orders` are dropped and must be re-created once Status returns to Online.",
+ "target_text": "Base table `shop`.`orders`",
+ "statements": [
+  "ALTER READYSET RESNAPSHOT TABLE `shop`.`orders`;"
+ ],
+ "facts": [
+  [
+   "Readyset",
+   "stable-250605 (adapter port)"
+  ],
+  [
+   "Table",
+   "`shop`.`orders`"
+  ],
+  [
+   "Current status",
+   "Snapshotted"
+  ]
+ ],
+ "warnings": [
+  "Reads a full table scan of `shop`.`orders` on the upstream CDC database and pauses deep cache DDL until snapshotting finishes.",
+  "Dependent deep caches on `shop`.`orders` are dropped when the base table resets; use Export cache DDL beforehand so you can re-create them once `shop`.`orders` is Online."
+ ],
+ "changes": null,
+ "typed_guard": "`shop`.`orders`",
+ "undo": "Cannot be cancelled once started; wait for Status to return to Online, then re-create any dropped deep caches.",
+ "next": null,
+ "verified": [
+  "Readyset identity (@@version_comment, SHOW READYSET VERSION)"
+ ],
+ "timeout_s": 30,
+ "checks": [
+  "Refresh the Readyset place to inspect the current caches, tables and status.",
+  "The Audit log keeps this attempt as Outcome unknown; nothing is sent again."
+ ],
+ "expect": {
+  "readyset_version": "stable-250605",
+  "table": "`shop`.`orders`",
+  "table_status": "Snapshotted"
+ },
+ "policy": {
+  "action": "confirm",
+  "tone": "danger",
+  "title": "Risky write",
+  "text": "Connection Readyset lab is a Development connection. myflames asks only before risky writes, and this statement is one.",
+  "connection_type": "development",
+  "read_only": false
+ },
+ "review_token": "fixture-token-resnapshot_table"
+}

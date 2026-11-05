@@ -1,8 +1,8 @@
-// ReplicationTopology: a static map of the replication topology.
+// ReplicationTopology: an interactive map of the replication topology.
 //
 // One row per channel (MySQL) or connection (MariaDB): the source it reads
 // from on the left, a connector in the middle, the replica on the right.
-// Nothing here moves. Every state is drawn by line style, color and a text
+// Motion illustrates running thread state, never measured throughput. Every state uses a text
 // label, from fields the report already measured:
 //   - IO and SQL threads running: solid line, "Running"
 //   - a thread stopped, no error: dashed line, which thread is stopped
@@ -23,14 +23,22 @@ import { Duration } from "./PerfShared";
 import { channelCell, engineName } from "./OpsShared";
 import type { ReplicationChannel, ReplicationReport, SourceVersion } from "./opsApi";
 import type { Selection } from "./kit";
+import "./cluster.css";
+import "./readyset.css";
 import "./replication-topology.css";
+import { TopologyControls, ServerGlyph } from "./TopologyPresentation";
+import { UpstreamTopologyTiers } from "./UpstreamTopologyTiers";
 
 export interface ReplicationTopologyProps {
   report: ReplicationReport;
   connection: Connection;
   selection?: Selection;
   onSelectChannel?: (channelName: string) => void;
+  onSwitchConnection?: (profileId: string) => void;
+  onOpenReadyset?: () => void;
+  onOpenProxySql?: () => void;
   compact?: boolean;
+  current?: boolean;
 }
 
 type Tone = "ok" | "watch" | "problem" | "unknown";
@@ -94,7 +102,19 @@ function worstTone(channels: ReplicationChannel[], failed: number): Tone {
   return channels.length ? "ok" : "unknown";
 }
 
-export function ReplicationTopology({ report, connection, selection, onSelectChannel, compact = false }: ReplicationTopologyProps) {
+export function ReplicationTopology({
+  report,
+  connection,
+  selection,
+  onSelectChannel,
+  onSwitchConnection,
+  onOpenReadyset,
+  onOpenProxySql,
+  compact = false,
+  current = true,
+}: ReplicationTopologyProps) {
+  const [motion, setMotion] = useState(true);
+  const [depth, setDepth] = useState(true);
   const [filterText, setFilterText] = useState("");
   const detailPrefix = useId();
   const [hovered, setHovered] = useState<string | null>(null);
@@ -134,7 +154,7 @@ export function ReplicationTopology({ report, connection, selection, onSelectCha
   };
 
   return (
-    <div className={`replication-topology-container${compact ? " is-compact" : ""}`}>
+    <div data-motion={motion && current ? "on" : "off"} data-depth={depth ? "on" : "off"} className={`replication-topology-container${compact ? " is-compact" : ""}`}>
       <div className="topology-toolbar">
         <span className="topology-count">
           {running} of {report.channels.length} {report.channels.length === 1 ? "channel" : "channels"} running
@@ -155,7 +175,15 @@ export function ReplicationTopology({ report, connection, selection, onSelectCha
             </button>
           )}
         </label>
+        <TopologyControls motion={motion} depth={depth} onMotion={() => setMotion(!motion)} onDepth={() => setDepth(!depth)} />
       </div>
+
+      <UpstreamTopologyTiers
+        tiers={report.topology_tiers}
+        onSwitchConnection={current ? onSwitchConnection : undefined}
+        onOpenReadyset={current ? onOpenReadyset : undefined}
+        onOpenProxySql={current ? onOpenProxySql : undefined}
+      />
 
       <div className="topology-scroll">
         {channels.length === 0 ? (
@@ -172,7 +200,7 @@ export function ReplicationTopology({ report, connection, selection, onSelectCha
               return (
                 <div className="topology-row" key={key}>
                   <div className="topology-node topology-source">
-                    <span className="topology-eyebrow">Source</span>
+                    <span className="topology-eyebrow"><ServerGlyph />Source</span>
                     <strong className="topology-host">{c.source.host || "Unknown source"}</strong>
                     <span className="topology-meta">
                       {c.source.port ? `Port ${c.source.port}` : "Port unknown"}
@@ -224,7 +252,7 @@ export function ReplicationTopology({ report, connection, selection, onSelectCha
             </div>
 
             <div className="topology-node topology-replica">
-              <span className="topology-eyebrow">Replica</span>
+              <span className="topology-eyebrow"><ServerGlyph />Replica</span>
               <strong className="topology-host">{connection.host || "This server"}</strong>
               <span className="topology-meta">
                 Port {connection.port || 3306} · {engineName(report.engine, report.server_version || "", report.server_product)}

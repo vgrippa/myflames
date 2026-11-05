@@ -768,6 +768,7 @@ class Endpoints(Home):
         self.assertIn('"/api/live/proxysql"', source)
         self.assertIn('_ACTION_PATHS', source)
         self.assertEqual(set(ui._ACTION_PATHS), {'/api/live/proxysql/plan', '/api/live/proxysql/action',
+                                                 '/api/live/readyset/plan', '/api/live/readyset/action',
                                                  '/api/live/cluster/plan', '/api/live/cluster/action'})
         self.assertIn('/api/live/proxysql', ui._SERVER_VIEW_PATHS)
         self.assertIn('/api/live/proxysql/action', ui._WRITE_PATHS)

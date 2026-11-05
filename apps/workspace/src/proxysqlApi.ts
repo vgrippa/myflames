@@ -140,6 +140,74 @@ export type ProxySqlDigest = {
   routing: ProxySqlRouting;
 };
 export type ProxySqlPending = { runtime: string[] | null; disk: string[] | null };
+export type ProxySqlReadysetNode = {
+  key: string;
+  server_key: string;
+  kind: "readyset";
+  host: string;
+  port: number;
+  address: string;
+  hostgroup_id: number | null;
+  status: string;
+  weight: number | null;
+  routing_mode: "cached_and_mirrored" | "shadow_mirror" | "cached_reads" | "hostgroup_member" | string;
+  queries: number | null;
+  conn_used: number | null;
+  conn_free: number | null;
+  latency_us: number | null;
+  version: string | null;
+  readyset_status: string | null;
+  replication_status: string | null;
+  cache_count: number | null;
+  profile_id: string | null;
+  profile_name: string | null;
+  verified: boolean;
+  evidence: string | null;
+  upstreams: Array<{
+    host: string;
+    port: number;
+    address: string;
+    purpose: string;
+    active_cdc: boolean;
+    health: string | null;
+    profile_id: string | null;
+    profile_name: string | null;
+  }>;
+};
+export type ProxySqlTopologyBackendNode = {
+  key: string;
+  server_key: string;
+  kind: "database";
+  host: string;
+  port: number;
+  address: string;
+  hostgroup_id: number | null;
+  hostgroup_roles: string[];
+  status: string;
+  weight: number | null;
+  comment: string | null;
+  queries: number | null;
+  conn_used: number | null;
+  conn_free: number | null;
+  latency_us: number | null;
+  product: string | null;
+  version: string | null;
+  read_only: boolean | null;
+  cluster_kind: string | null;
+  cluster_name: string | null;
+  profile_id: string | null;
+  profile_name: string | null;
+  verified: boolean;
+  evidence: string | null;
+};
+export type ProxySqlTopology = {
+  has_readyset: boolean;
+  querypilot_rule_count: number;
+  querypilot_rule_ids: number[];
+  readyset_nodes: ProxySqlReadysetNode[];
+  database_nodes: ProxySqlTopologyBackendNode[];
+  notes: string[];
+};
 export type ProxySqlReport = {
   schema_version: "proxysql-1.0";
   captured_at: string;
@@ -163,6 +231,8 @@ export type ProxySqlReport = {
   notes: string[];
   statements: string[];
   routing?: ProxySqlRoutingContext | null;
+  readyset_hint?: boolean;
+  topology?: ProxySqlTopology | null;
 };
 export type DigestOrder = "slowest" | "time" | "frequent" | "rate" | "rows";
 export type DigestFilters = {

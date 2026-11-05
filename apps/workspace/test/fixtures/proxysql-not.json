@@ -39,5 +39,6 @@
  "actions": [],
  "notes": [],
  "statements": [],
- "routing": null
+ "routing": null,
+ "topology": null
 }

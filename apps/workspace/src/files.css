@@ -1,0 +1,272 @@
+/* The Files view (Files.tsx): two directory panes side by side (stacked in a
+   narrow window), then the transfer queue. Design tokens and control classes
+   come from style.css/kit.css; this file holds only the view's own layout. */
+.files-view .view-main {
+  padding: 0 var(--space-5) var(--space-4);
+  overflow-y: auto;
+}
+.files-panes {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-3);
+  align-items: start;
+}
+.files-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.files-pane.is-drop {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.files-pane-head {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--line);
+}
+.files-pane-head h3,
+.files-jobs-head h3 {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-sm);
+}
+.files-path-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+.files-path-row .files-local-field {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.files-path-row .files-local-field .ops-field {
+  display: block;
+}
+.files-path-row .files-local-field > label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.files-path-row input,
+.files-path-row .ops-folder-input input {
+  width: 100%;
+  min-width: 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--text-sm);
+}
+.files-pane-head .hint {
+  display: block;
+}
+.files-up svg {
+  transform: rotate(-90deg);
+}
+.files-list {
+  list-style: none;
+  margin: 0;
+  padding: var(--space-1) 0;
+  flex: 1 1 auto;
+  min-height: 160px;
+  max-height: 40dvh;
+  overflow-y: auto;
+}
+.files-empty-row {
+  padding: var(--space-3);
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+}
+.files-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 2px var(--space-3);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.files-row.is-selected {
+  background: var(--selection-fill);
+}
+.files-row:hover {
+  background: var(--surface-hover);
+}
+.files-row.is-selected:hover {
+  background: var(--selection-fill);
+}
+.files-row input[type="checkbox"] {
+  margin: 0;
+}
+.files-name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: default;
+}
+.files-name-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.files-glyph {
+  flex: none;
+  color: var(--ink-muted);
+}
+.files-glyph.is-dir {
+  color: var(--accent-text);
+}
+.files-size,
+.files-mtime {
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.files-pane-foot {
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--line);
+}
+.files-pane-foot .button {
+  white-space: nowrap;
+}
+.files-jobs {
+  margin-top: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  padding: var(--space-2) var(--space-3) var(--space-3);
+}
+.files-jobs-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.files-jobs > .hint {
+  margin: var(--space-1) 0 0;
+}
+.files-job {
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--line-subtle);
+}
+.files-job-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+.files-job-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.files-job-stats {
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.files-job-state {
+  margin-left: auto;
+  color: var(--ink-muted);
+  text-transform: capitalize;
+  white-space: nowrap;
+}
+.files-job-state.is-failed {
+  color: var(--danger-text);
+}
+.files-job-state.is-done {
+  color: var(--ok-text);
+}
+.files-progress {
+  height: 4px;
+  margin-top: 4px;
+  border-radius: 2px;
+  background: var(--surface-muted);
+  overflow: hidden;
+}
+.files-progress > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width var(--duration-normal) var(--ease-out);
+}
+.files-progress > span.is-indeterminate {
+  animation: files-indeterminate 1.2s var(--ease-out) infinite alternate;
+}
+@keyframes files-indeterminate {
+  from { margin-left: 0; }
+  to { margin-left: 85%; }
+}
+.files-job-items {
+  margin-top: var(--space-1);
+  font-size: var(--text-sm);
+}
+.files-job-items summary {
+  cursor: pointer;
+  color: var(--ink-muted);
+}
+.files-job-items ul {
+  list-style: none;
+  margin: var(--space-1) 0 0;
+  padding: 0;
+}
+.files-job-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(120px, 220px) auto;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 2px 0;
+}
+.files-item-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.files-item-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.files-item-progress .files-progress {
+  flex: 1 1 auto;
+  margin-top: 0;
+}
+.files-item-bytes {
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.files-item-state {
+  color: var(--ink-muted);
+  text-transform: capitalize;
+}
+.files-job-item.is-failed .files-item-state {
+  color: var(--danger-text);
+  text-transform: none;
+}
+.files-ssh-chip {
+  gap: var(--space-1);
+}
+/* Narrow window (the 720 px minimum): the panes stack and each list keeps
+   its own scroll region, as the other split layouts do. */
+@media (max-width: 900px) {
+  .files-panes {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .files-list {
+    max-height: 30dvh;
+  }
+}

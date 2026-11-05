@@ -169,14 +169,14 @@ try {
   const last = (pathname) => (seen[pathname] || []).at(-1);
   const overflow = () => page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
 
-  // 1. Places: fourteen, in order (Cluster right after Replication, then
-  // ProxySQL; Query digest, Database diagram and Schema versions right below
-  // the Query editor in the SQL workspace group), each with its own icon.
-  const places = ["Home", "Server", "Workload", "Replication", "Cluster", "ProxySQL", "Tuning", "Query editor", "Query digest", "Database diagram", "Schema versions", "Plans", "Investigations", "Learn"];
+  // 1. Places: fifteen, in order (Cluster right after Replication, then
+  // ProxySQL and Readyset; Query digest, Database diagram and Schema versions
+  // right below the Query editor in the SQL workspace group), each with its own icon.
+  const places = ["Home", "Server", "Workload", "Replication", "Cluster", "ProxySQL", "Readyset", "Tuning", "Query editor", "Query digest", "Database diagram", "Schema versions", "Plans", "Investigations", "Learn"];
   assert.deepEqual(await texts(".main-nav button"), places);
   const icons = await page.$$eval(".main-nav button svg", (els) => els.map((e) => e.innerHTML));
-  assert.equal(icons.length, 14);
-  assert.equal(new Set(icons).size, 14, "every place has a distinct icon");
+  assert.equal(icons.length, 15);
+  assert.equal(new Set(icons).size, 15, "every place has a distinct icon");
   // The SQL workspace group: Query editor, Query digest, Database diagram, Schema versions, Plans.
   assert.deepEqual(await page.$$eval(".main-nav > *", (els) => {
     const start = els.findIndex((e) => e.textContent === "SQL workspace");
@@ -215,6 +215,7 @@ try {
     Replication: ".replication-place",
     Cluster: ".cluster-place",
     ProxySQL: ".proxysql-place",
+    Readyset: ".readyset-place",
     Tuning: ".server-place.is-tuning-place .server-view[data-view=tuning]",
     Investigations: ".library .library-split.is-empty .view-empty",
     Learn: ".teach-workspace",
@@ -417,6 +418,8 @@ try {
     "Show MySQL and MariaDB news on Home");
 
   await page.keyboard.press("Tab");
+  assert.equal(await focused(), "Start fresh");
+  await page.keyboard.press("Tab");
   assert.equal(await focused(), "Audit log");
   await page.keyboard.press("Tab");
   assert.equal(await focused(), "About myflames");
@@ -523,7 +526,7 @@ try {
   assert.equal(await page.$('[data-status="safety"]'), null, "no safety state on Home");
   assert.equal(await page.$(".safety-strip"), null, "no strip under the top bar");
   const safety = '.window-statusbar[aria-label="Workspace status"] > [data-status="safety"]:first-child';
-  for (const label of ["Query editor", "Query digest", "Database diagram", "Server", "Workload", "Replication", "Cluster", "ProxySQL", "Tuning"]) {
+  for (const label of ["Query editor", "Query digest", "Database diagram", "Server", "Workload", "Replication", "Cluster", "ProxySQL", "Readyset", "Tuning"]) {
     await go(label);
     await page.waitForSelector(`${safety}.is-production`);
     assert.equal(await page.$eval(".connection-type-strip", (e) => [e.dataset.connectionStrip, e.getAttribute("aria-hidden")].join(" ")), "production true");
@@ -1007,8 +1010,8 @@ try {
   await page.keyboard.press("ArrowUp");
   assert.equal(await page.evaluate(() => document.activeElement.textContent), "Plans");
   await page.keyboard.press("Home");
-  // Query editor is the eighth place (after Replication, Cluster, ProxySQL and Tuning).
-  for (let i = 0; i < 7; i++) await page.keyboard.press("ArrowDown");
+  // Query editor is the ninth place (after Replication, Cluster, ProxySQL, Readyset and Tuning).
+  for (let i = 0; i < 8; i++) await page.keyboard.press("ArrowDown");
   assert.equal(await page.evaluate(() => document.activeElement.textContent), "Query editor");
   await page.keyboard.press("Enter");
   await page.waitForFunction(() => document.querySelector(".main-nav button.active")?.textContent === "Query editor");

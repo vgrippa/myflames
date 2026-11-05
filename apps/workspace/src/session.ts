@@ -96,6 +96,7 @@ export const SERVER_KINDS = [
   "config",
   "instruments",
   "maintenance",
+  "files",
   "accounts",
 ] as const;
 export type ServerKind = (typeof SERVER_KINDS)[number];
@@ -167,6 +168,11 @@ export const TABLE_IDS = [
   "proxysql.hostgroups",
   "proxysql.rules",
   "proxysql.digests",
+  "readyset.caches",
+  "readyset.proxied",
+  "readyset.tables",
+  "readyset.upstreams",
+  "readyset.connections",
   "schema.versions",
   "schema.differences",
   "waits.events",

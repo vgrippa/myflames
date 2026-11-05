@@ -62,6 +62,7 @@
     "test:replication-source-version": "npm run build && node test/replication-source-version.mjs",
     "test:cluster": "npm run build && node test/cluster.mjs",
     "test:proxysql": "npm run build && node test/proxysql.mjs",
+    "test:readyset": "npm run build && node test/readyset.mjs",
     "test:reviewed-actions-unit": "node test/reviewed-actions-unit.mjs",
     "test:release-rf3": "node test/release-rf3-regressions.mjs",
     "test:startup-reads": "npm run build && node test/startup-reads.mjs",

@@ -37,6 +37,52 @@ from myflames.workspace_store import WorkspaceStore
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "editor"
 FAKE = Path(__file__).resolve().parent / "_fake_mysql_client.py"
 
+# Extend only this module's disposable fake binary. The shared client fixture
+# remains unchanged, and all commands still cross the real framed XML pipes.
+PLAN_FAKE = r'''
+        if upper == "SELECT @@SESSION.EXPLAIN_JSON_FORMAT_VERSION AS PLAN_VERSION":
+            self.result(statement, ["plan_version"], [[str(getattr(self, "plan_version", 1))]])
+            return
+        version_set = re.match(r"SET SESSION explain_json_format_version=(\d+)$", text)
+        if version_set:
+            if version_set.group(1) == "1" and os.environ.get("FAKE_PLAN_RESTORE_FAIL"):
+                self.error(line, 1231, "42000", "restore failed")
+                return
+            self.plan_version = int(version_set.group(1))
+            self.ok()
+            return
+        if upper == "START TRANSACTION READ ONLY":
+            self.plan_read_only_before = self.read_only
+            self.read_only = True
+            self.begin()
+            self.ok()
+            return
+        if upper == "ROLLBACK" and hasattr(self, "plan_read_only_before"):
+            self.read_only = self.plan_read_only_before
+            del self.plan_read_only_before
+        plan = re.match(r"(?:EXPLAIN(?: ANALYZE)?|ANALYZE) FORMAT=JSON (.*)$", text, re.S)
+        if plan:
+            inner = plan.group(1)
+            if "PLAN_DIE()" in inner:
+                self.error(line, 2013, "HY000", "Lost connection during plan")
+                self.flush()
+                sys.exit(1)
+            if "PLAN_ERROR()" in inner:
+                self.error(line, 1146, "42S02", "Table 's3cret-pw.missing' doesn't exist")
+                return
+            if "FROM tt" in inner and "tt" not in self.tables:
+                self.error(line, 1146, "42S02", "Table 'test.tt' doesn't exist")
+                return
+            if "PLAN_INVALID()" in inner:
+                raw = "this is not JSON"
+            elif ENGINE == "mariadb":
+                raw = '{"query_block":{"select_id":1,"table":{"table_name":"tt","access_type":"ALL","rows":1}}}'
+            else:
+                raw = '{"query_plan":{"operation":"Table scan on tt","estimated_rows":1,"inputs":[]}}'
+            self.result(statement, ["ANALYZE" if upper.startswith("ANALYZE ") else "EXPLAIN"], [[raw]])
+            return
+'''
+
 
 class _Stdin(object):
     def __init__(self):
@@ -605,6 +651,7 @@ class ProcessTests(unittest.TestCase):
             '"connection_id": str(self.conn_id), "hostname": "fake-db", "port": "3306", "server_id": "1",')
         client = client.replace('arg.startswith("--defaults-extra-file=")',
                                 'arg.startswith(("--defaults-file=", "--defaults-extra-file="))')
+        client = client.replace('        upper = text.upper()\n', '        upper = text.upper()\n' + PLAN_FAKE)
         script.write_text("#!%s\n%s" % (sys.executable, client), encoding="utf-8")
         script.chmod(script.stat().st_mode | stat.S_IEXEC)
         env = {"HOME": self.temp.name, "USERPROFILE": self.temp.name, "MYFLAMES_SECRET_BACKEND": "vault",
@@ -647,6 +694,290 @@ class ProcessTests(unittest.TestCase):
             result = self.call("/api/editor/run", tab=tab, sql=sql, confirmed=True,
                                confirm_token=result["confirmation"]["token"], **payload)
         return result
+
+    def test_plan_json_uses_the_tab_and_restores_settings_in_order(self):
+        self.call("/api/editor/open")
+        session = self.registry.get("tab1")
+        before = (session.autocommit, session.in_transaction, session.sql_mode, session.safe_updates)
+        offset = len(self.session_log())
+        raw = session.run_plan("SELECT 1;", "explain")
+        self.assertIsInstance(json.loads(raw), dict)
+        from myflames.plan_input import _plan
+        _plan({"plan": raw})
+        log = self.session_log()[offset:]
+        if self.engine == "mysql":
+            expected = [ed.TAG + "SELECT @@SESSION.explain_json_format_version AS plan_version",
+                        ed.TAG + "SET SESSION explain_json_format_version=2",
+                        ed.TAG + "START TRANSACTION READ ONLY", "EXPLAIN FORMAT=JSON SELECT 1",
+                        ed.TAG + "ROLLBACK", ed.TAG + "SET SESSION explain_json_format_version=1"]
+            self.assertEqual(log[-6:], expected)
+            self.assertEqual(session._helper_row(session._helper(
+                ed.TAG + "SELECT @@SESSION.explain_json_format_version AS plan_version"))["plan_version"], "1")
+        else:
+            self.assertEqual(log[-1], "EXPLAIN FORMAT=JSON SELECT 1")
+            self.assertFalse(any("explain_json_format_version" in line or "START TRANSACTION" in line for line in log))
+        self.assertTrue(session.refresh_state())
+        self.assertEqual((session.autocommit, session.in_transaction, session.sql_mode, session.safe_updates), before)
+        self.assertFalse(session.busy())
+        self.assertFalse(session.run_lock.locked())
+        self.assertEqual(self.rows(self.run_sql("SELECT 2")), [["2"]])
+
+    def test_plan_temporary_table_endpoint_returns_an_importable_capture(self):
+        from myflames import live, ui
+        self.workspace.jobs = live.LiveJobs()
+        self.addCleanup(self.workspace.jobs.close)
+        self.run_sql("CREATE TEMPORARY TABLE tt (id INT, v TEXT)")
+        self.run_sql("INSERT INTO tt VALUES (1, 'kept')")
+        self.call("/api/editor/open", tab="fresh")
+        with self.assertRaisesRegex(ed.EditorError, "1146"):
+            self.registry.get("fresh").run_plan("SELECT * FROM tt", "explain")
+        # Request passwords do not authenticate an existing session. No new
+        # connection or saved-password lookup may hide the session-affinity bug.
+        payload = {"connection": dict(self.connection, password="wrong"), "session_tab": "tab1",
+                   "query": "SELECT * FROM tt", "mode": "explain"}
+        with mock.patch.object(ui, "_with_saved_password", side_effect=AssertionError("fresh lookup")):
+            started = ui.api_response("/api/live/start", payload, self.workspace)
+        self.assertEqual(set(started), {"id", "state"})
+        result = ui.api_response("/api/live/status", dict(connection=self.connection, id=started["id"]), self.workspace)
+        self.assertEqual(result["state"], "complete")
+        self.assertEqual(result["progress"], 1)
+        capture = result["result"]
+        self.assertEqual(capture["query"], "SELECT * FROM tt")
+        self.assertIsNone(capture["runs"][0]["statistics"])
+        imported = ui.api_response("/api/analyze", {"plan": capture["raw"], "capture": capture}, self.workspace)
+        self.assertEqual(imported["query"], "SELECT * FROM tt")
+        self.assertTrue(imported["chart_data"]["nodes"])
+        self.assertEqual(self.rows(self.run_sql("SELECT * FROM tt")), [["1", "kept"]])
+        self.assertEqual(len(list(self.state.glob("session-*.log"))), 2)
+        with self.assertRaises(ValueError):
+            ui.api_response("/api/live/status", dict(connection=dict(self.connection, user="other"),
+                                                   id=started["id"]), self.workspace)
+
+    def test_plan_read_only_analyze_refuses_delete_but_explain_allows_it(self):
+        self.connection["read_only"] = True
+        self.call("/api/editor/open")
+        session = self.registry.get("tab1")
+        before = self.session_log()
+        with self.assertRaises(ed.EditorError) as caught:
+            session.run_plan("DELETE FROM t", "analyze")
+        self.assertEqual(caught.exception.code, "refused")
+        self.assertEqual(self.session_log(), before)
+        self.assertIsInstance(json.loads(session.run_plan("DELETE FROM t", "explain")), dict)
+        self.assertTrue(self.logged("tab1", "EXPLAIN FORMAT=JSON DELETE FROM t"))
+
+    def test_plan_analyze_cannot_bypass_review_on_a_writable_connection(self):
+        self.call("/api/editor/open")
+        session = self.registry.get("tab1")
+        before = self.session_log()
+        with self.assertRaises(ed.EditorError) as caught:
+            session.run_plan("DELETE FROM t", "analyze")
+        self.assertEqual(caught.exception.code, "needs_confirmation")
+        self.assertEqual(self.session_log(), before)
+
+    def test_plan_rejects_multiple_statements_and_client_commands(self):
+        self.call("/api/editor/open")
+        session = self.registry.get("tab1")
+        for sql in ("SELECT 1; SELECT 2", "SELECT 1\\g SELECT 2", "DELIMITER $$\nSELECT 1; SELECT 2$$",
+                    "SELECT 1\\! touch /tmp/should-never-exist", "SELECT 'unclosed"):
+            with self.subTest(sql=sql):
+                before = self.session_log()
+                with self.assertRaises(ed.EditorError):
+                    session.run_plan(sql, "explain")
+                self.assertEqual(self.session_log(), before)
+
+    def test_plan_server_error_rolls_back_restores_and_redacts_the_session_password(self):
+        self.call("/api/editor/open")
+        session = self.registry.get("tab1")
+        with self.assertRaises(ed.EditorError) as caught:
+            session.run_plan("SELECT PLAN_ERROR()", "explain")
+        self.assertIn("1146", str(caught.exception))
+        self.assertIn("[redacted]", str(caught.exception))
+        self.assertNotIn(self.connection["password"], str(caught.exception))
+        if self.engine == "mysql":
+            self.assertEqual(self.session_log()[-2:], [ed.TAG + "ROLLBACK",
+                                                      ed.TAG + "SET SESSION explain_json_format_version=1"])
+        self.assertFalse(session.ended)
+        self.assertFalse(session.run_lock.locked())
+        self.assertEqual(self.rows(self.run_sql("SELECT 3")), [["3"]])
+
+    def test_plan_client_death_ends_cleanly_and_releases_tab(self):
+        self.call("/api/editor/open")
+        session = self.registry.get("tab1")
+        with self.assertRaises(ed.EditorError):
+            session.run_plan("SELECT PLAN_DIE()", "explain")
+        self.assertTrue(session.ended)
+        self.assertFalse(session.run_lock.locked())
+        self.assertIsNotNone(session.proc.poll())
+
+    def test_plan_invalid_json_also_restores_state(self):
+        self.call("/api/editor/open")
+        session = self.registry.get("tab1")
+        with self.assertRaisesRegex(ed.EditorError, "valid JSON"):
+            session.run_plan("SELECT PLAN_INVALID()", "explain")
+        if self.engine == "mysql":
+            self.assertEqual(self.session_log()[-2:], [ed.TAG + "ROLLBACK",
+                                                      ed.TAG + "SET SESSION explain_json_format_version=1"])
+        self.assertFalse(session.ended)
+
+    def test_plan_timeout_kills_the_statement_and_restores_state(self):
+        self.call("/api/editor/open")
+        session = self.registry.get("tab1")
+        with self.assertRaisesRegex(ed.EditorError, "1317"):
+            session.run_plan("SELECT 1 /*gate*/", "analyze", timeout=0.1)
+        self.assertFalse(session.ended)
+        self.assertFalse(session.busy())
+        self.assertFalse(session.run_lock.locked())
+        self.assertTrue((self.state / "kills.log").exists())
+        self.assertEqual(self.rows(self.run_sql("SELECT 4")), [["4"]])
+
+    def test_plan_version_gate_original_value_and_failed_restore(self):
+        self.call("/api/editor/open")
+        session = self.registry.get("tab1")
+        if self.engine == "mariadb":
+            # MariaDB never reads or writes this MySQL-only system variable.
+            session.run_plan("SELECT 1", "analyze")
+            self.assertFalse(any("plan_version" in line or "explain_json_format_version" in line
+                                 for line in self.session_log()))
+            return
+        session._helper(ed.TAG + "SET SESSION explain_json_format_version=2", results=0)
+        session.run_plan("SELECT 1", "explain")
+        self.assertEqual(self.session_log()[-1], ed.TAG + "SET SESSION explain_json_format_version=2")
+        # The fake version is startup metadata. Changing the cached version
+        # exercises feature selection, not an assertion about a live 8.0 server.
+        session.server_version = "8.0.36"
+        start = len(self.session_log())
+        session.run_plan("SELECT 1", "explain")
+        self.assertFalse(any("explain_json_format_version" in line for line in self.session_log()[start:]))
+        before = self.session_log()
+        with self.assertRaises(ed.EditorError):
+            session.run_plan("SELECT 1", "analyze")
+        self.assertEqual(self.session_log(), before)
+        os.environ["FAKE_PLAN_RESTORE_FAIL"] = "1"
+        self.call("/api/editor/open", tab="restore-fails")
+        failed = self.registry.get("restore-fails")
+        with self.assertRaisesRegex(ed.EditorError, "restore failed"):
+            failed.run_plan("SELECT 1", "explain")
+        self.assertTrue(failed.ended)
+        self.assertEqual(failed.ended_reason, "plan_cleanup_failed")
+        self.assertFalse(failed.run_lock.locked())
+        self.assertIsNotNone(failed.proc.poll())
+
+    def test_plan_endpoint_refuses_another_connections_tab_or_a_missing_tab(self):
+        from myflames import live, ui
+        self.workspace.jobs = live.LiveJobs()
+        self.addCleanup(self.workspace.jobs.close)
+        self.call("/api/editor/open")
+        before = self.session_log()
+        for connection, tab in ((dict(self.connection, user="other"), "tab1"), (self.connection, "missing"),
+                                (dict(self.connection, read_only=True), "tab1")):
+            with self.subTest(connection=connection, tab=tab):
+                with self.assertRaises(ed.EditorError):
+                    ui.api_response("/api/live/start", {"connection": connection, "session_tab": tab,
+                                                       "query": "SELECT 1"}, self.workspace)
+        self.assertEqual(self.session_log(), before)
+        self.assertFalse(self.workspace.jobs.jobs)
+
+    def test_plan_endpoint_keeps_legacy_captures_and_refuses_unsupported_options(self):
+        from myflames import live, ui
+        self.workspace.jobs = live.LiveJobs()
+        self.addCleanup(self.workspace.jobs.close)
+        with mock.patch.object(self.workspace.jobs, "start", return_value={"id": "legacy"}) as start:
+            result = ui.api_response("/api/live/start", {"connection": self.connection, "query": "SELECT 1"},
+                                     self.workspace)
+            self.assertEqual(result, {"id": "legacy"})
+            start.assert_called_once()
+        self.call("/api/editor/open")
+        before = self.session_log()
+        for extra in ({"mode": "analyze", "repeat": 2}, {"trace": True}, {"session_tab": None}):
+            payload = dict(connection=self.connection, session_tab="tab1", query="SELECT 1")
+            payload.update(extra)
+            with self.assertRaises(ValueError):
+                ui.api_response("/api/live/start", payload, self.workspace)
+        self.assertEqual(self.session_log(), before)
+        self.assertFalse(self.workspace.jobs.jobs)
+
+    def test_plan_analyze_uses_the_engine_specific_syntax(self):
+        self.call("/api/editor/open")
+        session = self.registry.get("tab1")
+        self.assertIsInstance(json.loads(session.run_plan("SELECT 1", "analyze")), dict)
+        expected = "ANALYZE FORMAT=JSON SELECT 1" if self.engine == "mariadb" else "EXPLAIN ANALYZE FORMAT=JSON SELECT 1"
+        self.assertIn(expected, self.session_log())
+        if self.engine == "mariadb":
+            self.assertFalse(any("explain_json_format_version" in line for line in self.session_log()))
+
+    def test_plan_busy_ended_and_invalid_mode_refusals(self):
+        self.call("/api/editor/open")
+        session = self.registry.get("tab1")
+        with self.assertRaises(ed.EditorError):
+            session.run_plan("SELECT 1", "other")
+        session.run_lock.acquire()
+        try:
+            with self.assertRaises(ed.EditorError) as caught:
+                session.run_plan("SELECT 1", "explain")
+            self.assertEqual(caught.exception.code, "busy")
+        finally:
+            session.run_lock.release()
+        session.end()
+        with self.assertRaises(ed.EditorError) as caught:
+            session.run_plan("SELECT 1", "explain")
+        self.assertEqual(caught.exception.code, "session_ended")
+
+    def test_plan_stop_uses_the_existing_kill_path_and_cleans_up(self):
+        self.call("/api/editor/open")
+        session = self.registry.get("tab1")
+        errors = []
+
+        def plan():
+            try:
+                session.run_plan("SELECT 1 /*gate*/", "analyze")
+            except Exception as exc:
+                errors.append(exc)
+        worker = threading.Thread(target=plan)
+        worker.start()
+        try:
+            self.until(lambda: self.logged("tab1", "FORMAT=JSON SELECT 1 /*gate*/"), "plan running")
+            with self.assertRaises(ed.EditorError) as caught:
+                session.run_plan("SELECT 2", "explain")
+            self.assertEqual(caught.exception.code, "busy")
+            stopped = self.call("/api/editor/stop")
+            self.assertTrue(stopped["stopped"])
+            worker.join(10)
+        finally:
+            if worker.is_alive():
+                self.release()
+                worker.join(10)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], ed.EditorError)
+        self.assertIn("1317", str(errors[0]))
+        self.assertFalse(session.ended)
+        self.assertFalse(session.busy())
+        if self.engine == "mysql":
+            self.assertEqual(self.session_log()[-2:], [ed.TAG + "ROLLBACK",
+                                                      ed.TAG + "SET SESSION explain_json_format_version=1"])
+
+    def test_plan_mysql_refuses_to_commit_an_open_or_unknown_transaction(self):
+        # MariaDB does not start the private transaction and can safely explain
+        # within the user's transaction. MySQL must never commit it implicitly.
+        self.run_sql("START TRANSACTION")
+        session = self.registry.get("tab1")
+        if self.engine == "mysql":
+            with self.assertRaises(ed.EditorError) as caught:
+                session.run_plan("SELECT 1", "explain")
+            self.assertEqual(caught.exception.code, "transaction_open")
+            self.assertTrue(session.in_transaction)
+            self.assertNotIn(ed.TAG + "START TRANSACTION READ ONLY", self.session_log())
+            self.assertNotIn(ed.TAG + "ROLLBACK", self.session_log())
+            self.call("/api/editor/rollback")
+            os.environ["FAKE_PS"] = "off"
+            self.call("/api/editor/open", tab="unknown")
+            with self.assertRaises(ed.EditorError) as caught:
+                self.registry.get("unknown").run_plan("SELECT 1", "explain")
+            self.assertEqual(caught.exception.code, "transaction_open")
+        else:
+            session.run_plan("SELECT 1", "explain")
+            self.assertTrue(session.in_transaction)
+            self.assertNotIn(ed.TAG + "ROLLBACK", self.session_log())
 
     def rows(self, result, index=0):
         return [r for r in result["run"]["results"] if r["type"] == "rows"][index]["rows"]
@@ -965,12 +1296,15 @@ class ProcessTests(unittest.TestCase):
         argv = (self.state / "argv.log").read_text(encoding="utf-8")
         for flag in ("--xml", "--binary-as-hex", "--binary-mode", "--comments", "--force", "--quick", "--unbuffered",
                      "-vv", "--skip-reconnect", "--default-character-set=utf8mb4",
-                     "--init-command=SET NAMES utf8mb4"):
+                     "--init-command=SET NAMES utf8mb4", "--local-infile=0"):
             self.assertIn(repr(flag), argv)
         self.assertNotIn("s3cret-pw", argv)
         self.assertIn("defaults-exists=True", argv)
         child_argv = next(call[0][0] for call in self.processes.call_args_list if "--xml" in call[0][0])
         self.assertTrue(child_argv[1].startswith("--defaults-file="), child_argv)
+        # --local-infile=0 must come right after the defaults file so a
+        # hostile server cannot make the editor client send it a local file.
+        self.assertEqual(child_argv[2], "--local-infile=0", child_argv)
         self.assertNotIn("--defaults-extra-file=", argv)
         session = self.registry.get("tab1")
         self.assertIsNone(session._conn._defaults_file_path)      # removed once the client connected

@@ -20,6 +20,7 @@ import {
   Disclosure,
   DataTable,
   Fields,
+  Notice,
   StatusDot,
   ToolbarSelect,
   type Column,
@@ -603,9 +604,9 @@ function VariableSheet({
             </p>
           )}
           {planError && (
-            <p className="variable-problems" role="alert">
+            <Notice variant="error" className="variable-problems">
               {planError}
-            </p>
+            </Notice>
           )}
           {current && plan && <PlanDetails plan={plan} onUseMode={(m) => setMode(m)} canUse={(m) => modes.includes(m)} />}
           {lock && (

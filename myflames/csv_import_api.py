@@ -2125,7 +2125,12 @@ def response(path, payload, workspace, fill_password):
         chosen = choose_file()
         if chosen["cancelled"]:
             return {"cancelled": True}
-        return imports.add_file(chosen["path"])
+        answer = imports.add_file(chosen["path"])
+        # The Files view's "Choose files..." reuses this picker and needs the
+        # absolute path to start an upload; the user just chose this file in
+        # the native dialog, so handing it back is no new disclosure.
+        answer["path"] = chosen["path"]
+        return answer
     if path == "/api/import/csv/open-path":
         from .file_picker import check_file
         return imports.add_file(check_file(payload.get("path")))

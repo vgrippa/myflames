@@ -135,7 +135,8 @@ const TablesView = lazyComponent(() => import("./Tables").then((m) => m.TablesVi
 const ConfigView = lazyComponent(() => import("./Config").then((m) => m.ConfigView));
 const SchemaDiagramView = lazyComponent(() => import("./SchemaDiagram").then((m) => m.SchemaDiagramView));
 const AccountsView = lazyComponent(() => import("./Accounts").then((m) => m.AccountsView));
-const LAZY_VIEWS = [InnodbView, TuningView, SessionsView, WaitsView, IoView, IndexesView, TablesView, ConfigView, SchemaDiagramView, AccountsView];
+const FilesView = lazyComponent(() => import("./Files").then((m) => m.FilesView));
+const LAZY_VIEWS = [InnodbView, TuningView, SessionsView, WaitsView, IoView, IndexesView, TablesView, ConfigView, SchemaDiagramView, AccountsView, FilesView];
 /** Focuses the element with *id* after this task, or once it appears: a view
  * whose chunk is still loading mounts its heading a moment later (up to 2 s). */
 /** A view's title, for focus. A view with tabs keeps every tab mounted
@@ -311,7 +312,7 @@ export function Server({
   /** The place is on screen (not hidden behind another place). Views read on
    * open only while it is (viewOnScreen.ts). */
   onScreen?: boolean;
-  onNavigatePlace?: (place: "server" | "workload" | "tuning" | "diagram" | "replication" | "cluster", view: ServerKind) => void;
+  onNavigatePlace?: (place: "server" | "workload" | "tuning" | "diagram" | "replication" | "cluster" | "home", view: ServerKind) => void;
   /** Command palette navigation: changes the visible view without reading it. */
   navigation?: { view: ServerKind; n: number };
   /** The list of views floats (opened from the view's title) instead of
@@ -589,6 +590,7 @@ export function Server({
     config: config?.key || "",
     instruments: instruments?.key || "",
     accounts: accounts?.key || "",
+    files: "",
     maintenance:
       (maintenanceSection === "upgrade" ? maintenance.upgrade?.key : maintenance.tools?.key) || "",
   };
@@ -735,11 +737,11 @@ export function Server({
   // shell, so Refresh all and the loop banner below still cover it.
   const [keptViews, setKeptViews] = useState<ServerKind[]>(() => {
     const list: ServerKind[] = [];
-    if (initial?.kind && ["maintenance", "tables", "instruments", "accounts", "config"].includes(initial.kind)) list.push(initial.kind);
+    if (initial?.kind && ["maintenance", "tables", "instruments", "accounts", "config", "files"].includes(initial.kind)) list.push(initial.kind);
     return list;
   });
   function keepMounted(view: ServerKind) {
-    if (["maintenance", "tables", "instruments", "accounts", "config"].includes(view))
+    if (["maintenance", "tables", "instruments", "accounts", "config", "files"].includes(view))
       setKeptViews((list) => (list.includes(view) ? list : [...list, view]));
   }
   /** A link from a report may read with that report's schema or table only
@@ -901,6 +903,7 @@ export function Server({
       config: config?.report,
       instruments: instruments?.report,
       accounts: accounts?.report,
+      files: null,
       maintenance: maintenanceSection === "upgrade" ? maintenance.upgrade?.report : maintenance.tools?.report,
     })[view] ?? null;
   const reportOfRef = useRef(reportOf);
@@ -1291,8 +1294,9 @@ export function Server({
     }),
   }));
   // Counting does not allocate request closures or inspect in-flight reads on
-  // every render; build the actual tasks only when Refresh all starts.
-  const refreshableCount = ALL_SERVER_VIEWS.length + EXTRA_REFRESH_SECTIONS.length +
+  // every render; build the actual tasks only when Refresh all starts. Files is
+  // not counted: it has no report read (its panes list on demand in the view).
+  const refreshableCount = ALL_SERVER_VIEWS.filter((v) => v.id !== "files").length + EXTRA_REFRESH_SECTIONS.length +
     (refreshDiagramDatabase(diagram, diagramDatabase, activeKey) ? 1 : 0);
   const refreshDone = refreshHere ? refreshHere.views.filter((v) => outcome(v) === "ok").length : 0;
   const refreshFailed = refreshHere ? refreshHere.views.filter((v) => v.state === "failed") : [];
@@ -1577,6 +1581,7 @@ export function Server({
       case "instruments":
       case "accounts":
       case "config":
+      case "files":
         return null;
     }
   })();
@@ -1876,6 +1881,21 @@ export function Server({
                     onMemory={setMaintenance}
                     profiles={profiles}
                   />
+                  </ViewOnScreenContext.Provider>
+                  </ViewSwitcherContext.Provider>
+                </div>
+              )}
+              {/* Files: running uploads and downloads (and their polls) survive
+                  switching views. Its prerequisite action opens Home, where
+                  Connections live ("home" reaches onNavigatePlace's go()). */}
+              {keptViews.includes("files") && (
+                <div className="server-keep" hidden={kind !== "files"}>
+                  <ViewSwitcherContext.Provider value={switcherFor("files")}>
+                  <ViewOnScreenContext.Provider value={onScreen && kind === "files" && !(compact && showList)}>
+                    <FilesView
+                      {...common}
+                      onOpenConnections={() => onNavigatePlace?.("home", "files")}
+                    />
                   </ViewOnScreenContext.Provider>
                   </ViewSwitcherContext.Provider>
                 </div>

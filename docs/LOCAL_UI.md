@@ -70,11 +70,12 @@ The sidebar separates where you go from what you have open:
 | **Query digest** | Right below the Query editor: statement rankings with a named source, totals, a sortable table and a shared inspector. **Open in Query editor** and **Explain** are in the inspector and row menu; **Export** offers Text report and CSV. See [Query digest](#query-digest) |
 | **Database diagram** | After Query digest: the tables, columns and relationships of a database, read from the connection in use or imported without executing SQL, with a Diagram \| Mermaid view. See [Database diagram](#database-diagram) |
 | **Schema versions** | After Database diagram: versions of a database's schema saved on this computer, and comparisons of any two schemas (saved versions, or databases read now through any connection): what differs between a source and a target, and the sync script that would change the target to match the source. See [Schema versions](#schema-versions) |
-| **Server** | Views of the connection in use that only read (the exceptions are **Kill** in Locks or Sessions, which ends one session after you confirm and needs the privilege, parameter changes in **Parameters**, runtime instrument or consumer updates in **Instruments**, a dump, restore or clone in **Maintenance**, and account changes in **Users and roles**, each after its own confirmation), in a grouped sub-navigation: **Overview** (Health, which opens first, InnoDB, Error log), **Contention** (Locks), **Schema** (Indexes, Tables), **Setup** (Parameters, Instruments, Maintenance), and **Security** (Users and roles). See [The Server place](#the-server-place) |
+| **Server** | Views of the connection in use that only read (the exceptions are **Kill** in Locks or Sessions, which ends one session after you confirm and needs the privilege, parameter changes in **Parameters**, runtime instrument or consumer updates in **Instruments**, a dump, restore or clone in **Maintenance**, and account changes in **Users and roles**, each after its own confirmation; file transfers in **Files** are host-level SSH/SFTP actions outside the SQL write policy, with SSH credentials in their own credential-store namespace), in a grouped sub-navigation: **Overview** (Health, which opens first, InnoDB, Error log), **Contention** (Locks), **Schema** (Indexes, Tables), **Setup** (Parameters, Instruments, Maintenance, Files), and **Security** (Users and roles). See [The Server place](#the-server-place) |
 | **Workload** | The same kind of views for the statements and resources: **Queries** (Top statements, Processlist) and **Resources** (Waits, I/O) |
 | **Replication** | Replication channels or connections of the connection in use, with a skip after its own confirmation. A server with no asynchronous channel reads **Not a replica** (never Unknown), and the item is greyed in the sidebar once a read says so |
 | **Cluster** | The MariaDB Galera Cluster, Galera Cluster for MySQL, Percona XtraDB Cluster or MySQL InnoDB Cluster (or Group Replication) the connection in use belongs to: members, roles, state, quorum, failures tolerated and routers, with a member's changes (Make primary, Stop or Start Group Replication, Desync, Resync, Bootstrap a Primary component) in its inspector, each after its own confirmation. Greyed in the sidebar once the connection is known not to be part of a cluster |
 | **ProxySQL** | The ProxySQL Admin interface the connection in use reaches: backends as ProxySQL runs them with their connection pool, hostgroups, query rules and query digests, with a server's or rule's changes in its inspector and Load and Save to disk on the Configuration line, each after its own confirmation. Greyed in the sidebar once the connection is known not to be a ProxySQL Admin interface |
+| **Readyset** | The Readyset SQL adapter or Admin SQL listener the connection in use reaches: multi-tier topology across ProxySQL, Readyset and upstream MySQL or MariaDB servers, shallow and deep caches, proxied queries with live `EXPLAIN CREATE CACHE` prechecks, replicated base tables, dynamic parameters and allowlists, and cached-versus-upstream telemetry, with reviewed operational changes. Greyed in the sidebar once the connection is known not to be a Readyset instance |
 | **Tuning** | A place of its own (for MySQL and MariaDB; the command palette also finds "mysql tuning"): the tuning scorecard full width, without Server's list of views, and the **Full analysis** as its second tab. Links to the Full analysis open it there |
 | **Investigations** | Saved investigations: search, open, delete; an investigation saved by Health's **Capture when…** lists its **Evidence** (processlist, InnoDB status, locks) with Copy and Download. With none saved, the empty list is hidden. If plans are open, **Save N open plans as an investigation…** opens the notebook sheet; with no plans open, the empty state offers **Import plan** |
 | **Learn** | The lesson catalog and player (`myflames teach` on the command line) |
@@ -120,7 +121,7 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
   Nothing is read just for a badge. A view reads when it is opened on screen,
   once per connection (Refresh retries), Top statements and Error log
   included; Tables and Indexes keep their schema-size consent, and nothing
-  reads off screen (Server, Replication, Cluster, ProxySQL and Query digest
+  reads off screen (Server, Replication, Cluster, ProxySQL, Readyset and Query digest
   mount on their first visit, and a hidden view never reads on its own). The arrow keys move between items.
 - **The list of views floats** by default in a wide window, so the view gets
   the full width: the view's title is a pop-up button ("Health ▾") that opens
@@ -943,7 +944,41 @@ the [Audit log](#audit-log). Another connection's report is greyed and offers no
 change. Once a read says the connection is not a ProxySQL Admin interface, the
 sidebar item looks disabled for that connection only.
 
-**Maintenance** (Setup, last) has five tasks in a segmented control. **Tools**
+**Readyset** (a place of its own, right after ProxySQL) reads the Readyset SQL
+adapter (port 3307 by default) or Admin SQL listener (port 6036) the connection
+in use reaches. It reads when opened on screen, once per connection; **Refresh**
+reads again. Tabs cover **Topology** (linking ProxySQL frontends, Readyset and
+upstream MySQL or MariaDB standalone servers, replicas and clusters when saved
+connections match), **Caches** (shallow and deep caches with **Create cache…**,
+**Export cache DDL**, **Flush cache…** and **Drop cache…**), **Proxied queries**
+(observed queries with one-click **Create cache…** prefill and **Drop all
+proxied queries…**), **Tables** (base-table snapshot status, **Re-snapshot
+table…**, **Add tables…** and replication controls), **Dynamic parameters**
+(log level, eviction memory limit, eviction period, shallow cache allowlists,
+maintenance mode, **Flush privileges…** and Admin-port **Shutdown…**), and
+**Performance** (cached versus upstream share, latency percentiles and shallow
+hit rate). **Create cache…** runs a read-only `EXPLAIN CREATE CACHE` precheck
+and warns when a query ID or cache name already exists. Every change follows the
+same reviewed write sheet, connection-type policy and [Audit log](#audit-log)
+rules as Cluster and ProxySQL; once a read says the connection is not a
+Readyset instance, the sidebar item looks disabled for that connection only.
+
+**Files** (Setup, last) moves files between this computer and the database
+host over SSH/SFTP: two panes (this computer and the remote host) with folder
+navigation, **Upload** and **Download** with per-file and total progress,
+transfer rate and estimated time left in the **Transfers** panel, **Cancel**,
+**New folder** and **Remove**. Dropping files on a pane uploads them into the
+current remote folder; **Choose files…** uses the native file dialog. Files
+uses the connection's SSH details and needs them filled in; unlike SSH
+tunnels, password sign-in is supported, and a saved SSH password lives in the
+platform credential store under its own namespace, bound to the exact SSH
+host, user and port (on Windows password sign-in fails closed). Downloads are
+staged as `.myflames-part` files, so a stopped download never leaves a
+half-written file under its final name. Files is not a SQL feature: the
+connection's write policy does not apply and transfers are not in the Audit
+log.
+
+**Maintenance** (Setup) has five tasks in a segmented control. **Tools**
 (**Detect tools**) lists the MySQL and MariaDB tools on this computer
 (mysqlsh, mysqldump, mariadb-dump, and the rest) with their versions and what
 they offer for the connection in use. Each tool links to its official download page. CLI tool discovery stays offline; in the workspace, Detect tools and Refresh also check vendor release metadata, and newer versions appear beside the installed version. Client tools are compared within their installed series, while MySQL Shell uses its latest GA release. Checks can be cached for an hour; failed checks are cached for a minute and remain unknown. No installer runs automatically. **Upgrade check** runs MySQL Shell's
@@ -1353,7 +1388,7 @@ Thread pool row (threads and idle threads) in place of the Thread cache under
 Parameters tags the variables Percona adds with **Percona**.
 
 The window footer of the Query editor, Query digest, Database diagram, Schema
-versions, Server, Workload, Replication, Cluster, ProxySQL and Tuning starts with the write safety
+versions, Server, Workload, Replication, Cluster, ProxySQL, Readyset and Tuning starts with the write safety
 of the connection in use: a purple dot and
 "Production · changes ask first" (the full sentence, "Production: every change
 on NAME asks first", is its tooltip and accessible name), an outlined dot and

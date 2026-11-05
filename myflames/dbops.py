@@ -138,6 +138,8 @@ REASON_DASH_CONTROL = ("'--' before a control character is code to the client an
                        "statement boundaries are uncertain.")
 REASON_DELIMITER = ("A DELIMITER line without a usable delimiter (none, or one with a backslash) leaves the "
                     "statement boundaries uncertain.")
+REASON_READYSET_HINT = "A /*rs+ ... create ... */ hint creates a Readyset cache when run on Readyset."
+_READYSET_CREATE_HINT = re.compile(r"^/\*rs\+.*\bcreate\b", re.I | re.S)
 
 
 def _delimiter_argument(sql, at):
@@ -267,6 +269,8 @@ def split_statements(sql, backslash_escapes=True, delimiter=";"):
             at = token.index("\\")
             issue(REASON_CLIENT_COMMAND % (token[at + 1:at + 2] or ""))
         if token.startswith("/*"):
+            if _READYSET_CREATE_HINT.match(token):
+                issue(REASON_READYSET_HINT)
             opener = _VERSIONED_OPEN.match(token)
             if opener and not versioned:
                 # The body of an executable comment is code: scan it (a
@@ -335,9 +339,9 @@ def _name(token, idents):
     return token
 
 
-_OBJECT_WORDS = ("TABLE", "TABLES", "INDEX", "VIEW", "DATABASE", "SCHEMA", "USER", "ROLE", "PROCEDURE",
+_OBJECT_WORDS = ("READYSET", "TABLE", "TABLES", "INDEX", "VIEW", "DATABASE", "SCHEMA", "USER", "ROLE", "PROCEDURE",
                  "FUNCTION", "TRIGGER", "EVENT", "SERVER", "TABLESPACE", "LOGFILE", "SEQUENCE", "INSTANCE",
-                 "PACKAGE", "RESOURCE", "UNDO", "SPATIAL")
+                 "PACKAGE", "RESOURCE", "UNDO", "SPATIAL", "CACHE", "CACHES", "QUERIES")
 
 
 def _verb(upper):
@@ -792,8 +796,19 @@ def _classify_code(upper, idents, key_columns):
         if re.match(r"\s*%s(?:\s*\.\s*%s)?\s*OPEN\b" % (name, name), after):
             return _verdict("risky", "lock", "HANDLER OPEN holds a metadata lock on the table until "
                                             "HANDLER CLOSE or the session ends")
-        return _verdict("read", "read")
-    if word in ("SHOW", "HELP", "USE", "CHECKSUM", "SIGNAL", "RESIGNAL", "GET", "DEALLOCATE"):
+        # HANDLER READ evaluates its WHERE expression on the server; apply
+        # the SELECT expression checks (functions, :=, named locks) to it.
+        return _select_checks(upper, idents)
+    if word == "SHOW":
+        # SHOW's WHERE and expression parts are evaluated by the server
+        # (sql/sql_show.cc evaluates the condition like a SELECT WHERE), so
+        # SHOW TABLES WHERE GET_LOCK('x', 0) would take a named lock. Apply
+        # the SELECT expression checks instead of trusting the verb.
+        return _select_checks(upper, idents)
+    if word == "GET":
+        # GET DIAGNOSTICS only assigns variables (session state).
+        return _verdict("write", "session", "GET DIAGNOSTICS assigns condition information to variables.")
+    if word in ("HELP", "USE", "CHECKSUM", "SIGNAL", "RESIGNAL", "DEALLOCATE"):
         return _verdict("read", "session" if word in ("USE", "DEALLOCATE") else "read")
     if word == "PREPARE":
         return _verdict("read", "session", "PREPARE only prepares a statement; EXECUTE runs it.")
@@ -879,6 +894,14 @@ def _classify_code(upper, idents, key_columns):
                 r"\s*(?:OR\s+REPLACE\s+)?(USER|ROLE)", after).group(1)))
         if word in ("CREATE", "DROP") and re.match(r"\s*(?:OR\s+REPLACE\s+)?TEMPORARY\s+TABLES?\b", after):
             return _verdict("write", "ddl_temporary", "A temporary table exists only in this session.")
+        if word == "ALTER" and second == "READYSET":
+            return _verdict("risky", "server", "ALTER READYSET changes the Readyset server's replication, tables, "
+                                               "memory or mode.")
+        if word == "CREATE" and re.match(r"\s*(?:(?:DEEP|SHALLOW)\s+)?CACHE\b", after):
+            return _verdict("risky", "server", "CREATE CACHE adds or replaces a Readyset query cache.")
+        if word == "DROP" and re.match(
+                r"\s*(?:CACHE\b|ALL\s+(?:(?:DEEP|SHALLOW)\s+)?CACHES\b|ALL\s+PROXIED\s+QUERIES\b)", after):
+            return _verdict("risky", "server", "DROP CACHE removes Readyset query caches or recorded proxied queries.")
         if word == "ALTER" and second == "INSTANCE":
             return _verdict("risky", "server", "ALTER INSTANCE changes the whole server.")
         if re.match(r"\s*(?:OR\s+REPLACE\s+)?SERVER\b", after):
@@ -909,6 +932,9 @@ def _classify_code(upper, idents, key_columns):
     if word == "UNLOCK":
         return _verdict("read", "lock")
     if word == "FLUSH":
+        if re.match(r"\s*(?:CACHE\b|ALL\s+SHALLOW\s+CACHES\b)", after):
+            return _verdict("risky", "server", "FLUSH CACHE discards cached Readyset entries so later reads refresh "
+                                               "from upstream.")
         if re.search(r"\bTABLES?\b", _flat(text)):
             return _verdict("risky", "server", "FLUSH TABLES waits for running statements and makes new ones "
                                                "wait; WITH READ LOCK blocks every write.")
@@ -943,7 +969,8 @@ def _classify_statement(stmt, key_columns):
         reasons = list(stmt.get("issues") or [])
         if stmt["unclosed"] and REASON_DELIMITER not in reasons:
             reasons.append("An unclosed quote, comment or DELIMITER line makes the statement boundaries uncertain.")
-        return {"kind": "risky", "category": "unknown", "reasons": reasons}
+        category = "server" if not stmt["unclosed"] and reasons == [REASON_READYSET_HINT] else "unknown"
+        return {"kind": "risky", "category": category, "reasons": reasons}
     parts = [p for p in stmt["code"].upper().split(";") if p.strip()]
     verdicts = [_classify_code(p, stmt["idents"], key_columns) for p in parts]
     verdict = _worst(verdicts)
@@ -1542,6 +1569,8 @@ _SECRET_PATTERNS = tuple(re.compile(p + "(" + _STRING + ")", re.I | re.S) for p 
 #: MySQL SHOW CREATE USER prints a hash with non-printable bytes as a hex
 #: literal when print_identified_with_as_hex is ON: ``AS 0x2441...``.
 _HEX_SECRET = re.compile(r"(\b(?:AS|BY|USING)\s+(?:PASSWORD\s+)?)0x[0-9A-F]+\b", re.I)
+#: Database URLs with user:secret@host (including Readyset N*mysql://... pool prefixes).
+_URL_SECRET = re.compile(r"(\b(?:\d+\*)?(?:mysql|mariadb|postgres|postgresql)://[^:/@\s'\"`]+:)([^@\s'\"`]+)(@)", re.I)
 
 
 def _redact_literal(match):
@@ -1553,9 +1582,9 @@ def _redact_literal(match):
 def redact(text, password=None):
     """*text* with secrets replaced by ``[redacted]``: the literals after
     IDENTIFIED BY / AS / USING, PASSWORD('...'), SET PASSWORD, SOURCE_PASSWORD,
-    MASTER_PASSWORD and other ``*PASSWORD = '...'`` options, and the
-    connection's own *password* anywhere (also as written in SQL with a
-    doubled or backslash-escaped quote)."""
+    MASTER_PASSWORD and other ``*PASSWORD = '...'`` options, database URL
+    credentials, and the connection's own *password* anywhere (also as written
+    in SQL with a doubled or backslash-escaped quote)."""
     if text is None:
         return None
     text = str(text)
@@ -1567,6 +1596,7 @@ def redact(text, password=None):
                 text = text.replace(variant, REDACTED)
     for pattern in _SECRET_PATTERNS:
         text = pattern.sub(_redact_literal, text)
+    text = _URL_SECRET.sub(lambda m: m.group(1) + REDACTED + m.group(3), text)
     return _HEX_SECRET.sub(lambda m: m.group(1) + "'" + REDACTED + "'", text)
 
 

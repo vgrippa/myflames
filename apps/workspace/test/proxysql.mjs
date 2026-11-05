@@ -149,7 +149,7 @@ try {
   assert.equal(state.seen.at(-1).connection.port, 6032);
   assert.equal(state.seen.at(-1).connection.type, "development");
   assert.match((await visible(`${view} .summary-line`))[0], /ProxySQL 3\.0\.11-797-g7c91137 · up 2 d 4 h · 10 backends in 5 hostgroups · 8 ONLINE, 2 SHUNNED/);
-  assert.deepEqual(await visible(`${view} .segmented button`), ["Servers10", "Hostgroups8", "Query rules3", "Query digests"]);
+  assert.deepEqual(await visible(`${view} .segmented button`), ["Topology", "Servers10", "Hostgroups8", "Query rules3", "Query digests"]);
   const tiles = await page.$$eval(`${view} .metric-tile`, (els) => els.map((e) => ({
     label: e.querySelector(".tile-label")?.textContent?.trim() || "",
     value: e.querySelector(".tile-value")?.textContent?.trim() || "",
@@ -695,6 +695,122 @@ try {
   await tab("Servers");
   await page.setViewport({ width: 1440, height: 1000 });
   await pause(200);
+
+  // Multi-tier Topology tab: ProxySQL -> Readyset cache tier -> MySQL Primary & Replica.
+  const multiTierProxy = structuredClone(R.lab);
+  multiTierProxy.topology = {
+    has_readyset: true,
+    querypilot_rule_count: 2,
+    querypilot_rule_ids: [10, 11],
+    readyset_nodes: [
+      {
+        key: "readyset:rt|40|readyset-cache|3307",
+        server_key: "rt|40|readyset-cache|3307",
+        kind: "readyset",
+        host: "readyset-cache",
+        port: 3307,
+        address: "readyset-cache:3307",
+        hostgroup_id: 40,
+        status: "ONLINE",
+        weight: 1000,
+        routing_mode: "cached_and_mirrored",
+        queries: 4820,
+        conn_used: 2,
+        conn_free: 14,
+        latency_us: 140,
+        version: "stable-250605",
+        readyset_status: "Online",
+        replication_status: "Completed",
+        cache_count: 6,
+        profile_id: null,
+        profile_name: "Readyset Cache",
+        verified: true,
+        evidence: "endpoint",
+        upstreams: [
+          {
+            host: "mf-ic-1",
+            port: 3306,
+            address: "mf-ic-1:3306",
+            purpose: "replication, queries",
+            active_cdc: true,
+            health: "Healthy",
+            profile_id: null,
+            profile_name: "Primary",
+          },
+        ],
+      },
+    ],
+    database_nodes: [
+      {
+        key: "db:rt|30|mf-ic-1|3306",
+        server_key: "rt|30|mf-ic-1|3306",
+        kind: "database",
+        host: "mf-ic-1",
+        port: 3306,
+        address: "mf-ic-1:3306",
+        hostgroup_id: 30,
+        hostgroup_roles: ["writer"],
+        status: "ONLINE",
+        weight: 1000,
+        comment: null,
+        queries: 1940,
+        conn_used: 1,
+        conn_free: 7,
+        latency_us: 410,
+        product: "MySQL",
+        version: "8.4.11",
+        read_only: false,
+        cluster_kind: "innodb_cluster",
+        cluster_name: "mfcluster",
+        profile_id: null,
+        profile_name: "Primary",
+        verified: true,
+        evidence: "endpoint",
+      },
+      {
+        key: "db:rt|32|mf-ic-2|3306",
+        server_key: "rt|32|mf-ic-2|3306",
+        kind: "database",
+        host: "mf-ic-2",
+        port: 3306,
+        address: "mf-ic-2:3306",
+        hostgroup_id: 32,
+        hostgroup_roles: ["reader"],
+        status: "ONLINE",
+        weight: 1000,
+        comment: null,
+        queries: 3110,
+        conn_used: 2,
+        conn_free: 6,
+        latency_us: 390,
+        product: "MySQL",
+        version: "8.4.11",
+        read_only: true,
+        cluster_kind: "innodb_cluster",
+        cluster_name: "mfcluster",
+        profile_id: null,
+        profile_name: "Replica",
+        verified: true,
+        evidence: "endpoint",
+      },
+    ],
+    notes: [],
+  };
+  await refreshTo(multiTierProxy);
+  await tab("Topology");
+  await page.waitForSelector(`${view} .proxysql-topology`, { visible: true });
+  const proxyTopoText = await h.text(`${view} .proxysql-topology`);
+  assert.match(proxyTopoText, /readyset-cache:3307/);
+  assert.match(proxyTopoText, /QueryPilot routing \(2 rules\)/);
+  assert.match(proxyTopoText, /6 caches/);
+  assert.match(proxyTopoText, /mf-ic-1/);
+  assert.match(proxyTopoText, /mf-ic-2/);
+  assert.match(proxyTopoText, /InnoDB Cluster \(mfcluster\)/);
+  await page.click(`${view} .proxysql-topology .topology-motion-toggle`);
+  assert.equal(await page.$eval(`${view} .proxysql-topology`, (e) => e.dataset.motion), "off");
+  await page.click(`${view} .proxysql-topology .topology-motion-toggle`);
+  assert.equal(await page.$eval(`${view} .proxysql-topology`, (e) => e.dataset.motion), "on");
+  await shot("proxysql-topology-multitier-1440.png");
 
   assert.deepEqual(h.errors, []);
   console.log("proxysql: ok");

@@ -1,6 +1,6 @@
 # MyFlames Project Rules
 
-The canonical rules file for every coding agent; `CLAUDE.md` and `GEMINI.md` are loading adapters. Feature contracts (flags, schemas, endpoints, safety rules, tests) live in [docs/DEVELOPER_REFERENCE.md](docs/DEVELOPER_REFERENCE.md): read the matching section (index at the end) before changing a feature.
+The canonical rules file for every coding agent: `GEMINI.md` is a symlink to it, and `CLAUDE.md` imports it and adds only Claude Code specifics, so every model reads the same rules. Feature contracts (flags, schemas, endpoints, safety rules, tests) live in [docs/DEVELOPER_REFERENCE.md](docs/DEVELOPER_REFERENCE.md): read the matching section (index at the end) before changing a feature.
 
 ## Project Overview
 
@@ -12,20 +12,21 @@ Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangregg/FlameGr
 
 Read the matching `SKILL.md` before working in an area. Skills are local to maintainer machines (gitignored): `.claude/skills/` is the real folder (Claude Code, Kimi) and `.agents/skills` a symlink to it (Codex, Antigravity). If a skill is missing, follow this file and DEVELOPER_REFERENCE. `.claude/skills/README.md` has the ownership map.
 
-Skills: accounts, animation-expert, brutal-review, cli-ux, db-operations, delegate, full-review, mysql-expert, progressive-ux, query-editor, release, replication, server-analysis, server-lifecycle, steve-jobs-persona, structured-output, sysvar-catalog, teaching, test-pro, ui-architecture, ui-review, viz-specialist, web-design, web-dev.
+Skills: accounts, animation-expert, brutal-review, cli-ux, db-operations, debugging, delegate, full-review, mysql-expert, progressive-ux, query-editor, release, replication, security, server-analysis, server-lifecycle, steve-jobs-persona, structured-output, sysvar-catalog, teaching, test-pro, ui-architecture, ui-review, ui-stress, viz-specialist, web-design, web-dev.
 
 ## Worker roles
 
-Any tool can play the roles in `.claude/agents/README.md` (mysql-correctness-reviewer, test-author, renderer-builder, teach-lesson-author). For a logic change, implement, run the MySQL correctness review and test author work in parallel, apply corrections, confirm tests pass, then ship.
+Any tool can play the roles in `.claude/agents/README.md` (mysql-correctness-reviewer, test-author, renderer-builder, teach-lesson-author); the security-reviewer is always a Claude reviewer. For a logic change, implement, run the MySQL correctness review and test author work in parallel, apply corrections, confirm tests pass, then ship. A change that crosses a trust boundary (local server, Electron shell, secrets, client subprocesses and the SQL they read, SQL the app builds, rendered server text, file paths, MCP tools, dependencies, third-party skills) also gets the security-reviewer.
 
 ## Development Workflow & Testing
 
 - **Mandatory Tests**: Every new feature or logic change in the Python package MUST include a corresponding test case.
 - **Verification**: Use the test-pro skill to check coverage and that MySQL explain data parses correctly before completing a task.
+- **Done check**: Before calling a task done, map each requested item to evidence observed after the last edit (the command and its result, a test, a screenshot) or mark it unverified; a green suite does not prove an item nothing exercised. When the change reaches the area, also pass: write safety (no unreviewed write or review-token bypass), engine correctness (statements and names match the engine source or manual), a live smoke test (endpoints return 200 with parsed data from running servers), the layout check (scrolling, sticky headers and navigation at 1440 and 720 px), and security (for a change that crosses a trust boundary: the security-reviewer verdict and an abuse-case test per fix). Re-run a check when anything it covered changed after it ran.
 - **Full suite**: `./run-tests.sh` (a throwaway `HOME` and `MYFLAMES_SECRET_BACKEND=vault`). Tests use a temporary HOME and USERPROFILE with the vault backend; never run tests against the real `~/.myflames`.
 - **Direct**: `python3 -m unittest discover -s test -p "test_myflames.py" -v`.
 - **Live validation**: A feature that touches MySQL, MariaDB, ProxySQL, replication, clusters or network endpoints is validated against real servers (`scripts/ga-matrix.sh`, `scripts/cluster-matrix.sh`), never by mocks alone; never infer a passed live gate from a fixture test, and never mock out `dbops.py` classification, review tokens or policy checks.
-- **Engine ground truth**: Never guess variable names, function arguments, column names or command syntax; check `../mysql-server`, `../mariadb-server` or the official manual first.
+- **Engine ground truth**: Never guess variable names, function arguments, column names or command syntax; check `../mysql-server`, `../mariadb-server` or the official manual first. The same holds for React, Vite, Puppeteer and Electron behavior: check the version the project resolves and its official documentation or installed source.
 - **UI verification**: light and dark at 1440 px and at the 720 px minimum window width, especially charts, Compare and Audit (`.claude/skills/ui-review/scripts/screenshot.mjs`). A release gate builds and smoke-tests the packaged app.
 
 ## Visualization & UI Standards
@@ -56,9 +57,9 @@ Any tool can play the roles in `.claude/agents/README.md` (mysql-correctness-rev
 
 `python3 -m myflames <command>`; README "CLI reference" has each command's purpose and flags. The default command renders a plan with `--type`.
 
-ui (deprecated), sql, capture, explore, top, slow-log, sessions, running (deprecated), locks, innodb, error-log, health, waits, indexes, tables, schema, io, config, instruments, replication, cluster, report, upgrade-check, dump, restore, clone, profiles, privileges, accounts, audit, compare, diff (alias), digest, tokens (deprecated), check, advise, findings (deprecated), import-shell, guide, teach.
+ui (deprecated), sql, capture, explore, top, slow-log, sessions, running (deprecated), locks, innodb, error-log, health, waits, indexes, tables, schema, io, config, instruments, replication, cluster, readyset, report, upgrade-check, dump, restore, clone, profiles, privileges, accounts, audit, compare, diff (alias), digest, tokens (deprecated), check, advise, findings (deprecated), import-shell, guide, teach.
 
-The optional `myflames-mcp` entry point exposes agent tools, including read-only `server_report`, `top_statements`, `sessions`, `locks_report`, `health_sample`, `innodb_status`, `my_privileges`, `replication_status` and `cluster_status` (saved `profile` required; compact text by default, `detail="full"` for module JSON; no password or write arguments).
+The optional `myflames-mcp` entry point exposes agent tools, including read-only `server_report`, `top_statements`, `sessions`, `locks_report`, `health_sample`, `innodb_status`, `my_privileges`, `replication_status`, `cluster_status` and `readyset_status` (saved `profile` required; compact text by default, `detail="full"` for module JSON; no password or write arguments).
 
 ## Where feature contracts live (DEVELOPER_REFERENCE.md headings; subsections not listed)
 
@@ -69,5 +70,5 @@ The optional `myflames-mcp` entry point exposes agent tools, including read-only
 - Plans: Run, Plan Stats and shared-plan literal hiding, Digest, Plan diff, CI gate, Advise, Rule controls, Advisor evidence rules, Visual Explain (merged Diagram / Workbench), Investigation engine.
 - Workload: Find slow queries, Query digest sources and Time range, Locks, Sessions.
 - Server views: InnoDB, Error log, Server identity: Percona Server, Server health, Waits, Indexes, Tables, I/O, Config, Tables and indexes: browse and export, Server variables: config set, reset-persist, Instruments, Full analysis report, Database Tuning Advisor, Parameter version catalogs, Compare servers: parameters and accounts, MySQL 5.7 support.
-- Operations: Server lifecycle: upgrade-check, dump, restore, clone, Structure-only dumps, MySQL Shell, Replication: status, skip, skip-loop, Cluster: Galera, Percona XtraDB Cluster, InnoDB Cluster, ProxySQL, Users and roles: privileges, accounts, Privilege catalogs and adding scopes.
+- Operations: Server lifecycle: upgrade-check, dump, restore, clone, Structure-only dumps, MySQL Shell, Replication: status, skip, skip-loop, Cluster: Galera, Percona XtraDB Cluster, InnoDB Cluster, ProxySQL, Readyset, Users and roles: privileges, accounts, Privilege catalogs and adding scopes.
 - Learn and output: Learn guided lessons, JSON and expected failures, `--quiet` / `-q`, MCP server, Playground, MySQL Fixtures, MariaDB Fixtures.

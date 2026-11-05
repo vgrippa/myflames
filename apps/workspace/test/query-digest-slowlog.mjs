@@ -78,7 +78,7 @@ const shoot = async (name) => {
   await pause(200);
 };
 /** The rows the toolbar's controls take (centers 36 px or more apart). */
-const toolbarRows = () => page.$eval(`${qd} .toolbar-controls`, (bar) => {
+const toolbarRows = () => page.$eval(`${qd} .qd-filter-bar`, (bar) => {
   const centers = [];
   for (const el of bar.children) {
     if (!el.getClientRects().length || el.classList.contains("qd-toolbar-break")) continue;

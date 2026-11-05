@@ -322,3 +322,24 @@ class TestCompareDigestRounding(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestVitalsZero(unittest.TestCase):
+    """A measured total_time_ms of exactly 0.0 is a measurement, not a
+    missing one (review 2026-11-05)."""
+
+    def test_zero_total_time_is_shown(self):
+        from myflames.digest import build_digest
+        payload = {"executive_summary": "s", "warnings": [], "plan_summary": {
+            "operator_count": 3, "max_depth": 2, "total_time_ms": 0.0,
+            "rows_sent": None, "rows_examined_estimate": None}}
+        digest = build_digest(payload)
+        self.assertIn("0.0 ms", digest)
+
+    def test_missing_total_time_stays_hidden(self):
+        from myflames.digest import build_digest
+        payload = {"executive_summary": "s", "warnings": [], "plan_summary": {
+            "operator_count": 3, "max_depth": 2,
+            "rows_sent": None, "rows_examined_estimate": None}}
+        digest = build_digest(payload)
+        self.assertNotIn(" ms", digest)

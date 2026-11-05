@@ -50,9 +50,9 @@ def _operators(root):
     return result
 
 
-def _discover_response(path, payload):
+def _discover_response(path, payload, workspace=None):
     """Read-only server views over the saved connection (see discover.py,
-    sessions.py, innodb_status.py, error_log.py, cluster.py, locks.py, health.py, waits.py, indexes.py, schema_health.py, io_stats.py,
+    sessions.py, innodb_status.py, error_log.py, cluster.py, proxysql.py, readyset.py, locks.py, health.py, waits.py, indexes.py, schema_health.py, io_stats.py,
     config_review.py; the schema picker's list is perf_common.schema_catalog)."""
     from .live import connection_options
     from .connector import MySQLConnection
@@ -77,8 +77,9 @@ def _discover_response(path, payload):
         # A server-wide information_schema.STATISTICS read is slow on MariaDB.
         options["query_timeout"] = 60
     elif path in ("/api/live/io", "/api/live/config", "/api/live/innodb", "/api/live/error-log", "/api/live/cluster",
-                  "/api/live/proxysql", "/api/live/proxysql/digests", "/api/live/watch/capture", "/api/live/digest-tables",
-                  "/api/live/slow-log"):
+                  "/api/live/proxysql", "/api/live/proxysql/digests", "/api/live/readyset",
+                  "/api/live/readyset/explain-cache", "/api/live/readyset/export-caches",
+                  "/api/live/watch/capture", "/api/live/digest-tables", "/api/live/slow-log"):
         options["query_timeout"] = 30
     if path in ("/api/live/indexes", "/api/live/tables", "/api/live/report"):
         # schemas: a list (the picker), or the older single schema; none means
@@ -127,12 +128,42 @@ def _discover_response(path, payload):
             if path == "/api/live/error-log":
                 from .error_log import DEFAULT_LIMIT, error_log_report
                 return error_log_report(conn, limit=payload.get("limit", DEFAULT_LIMIT), levels=payload.get("levels"))
+            def _topo_args():
+                if workspace is None or getattr(workspace, "store", None) is None:
+                    return {}
+                from . import replication as rp
+                conn_in = payload.get("connection") if isinstance(payload.get("connection"), dict) else {}
+                return {
+                    "profiles": rp.saved_profiles(workspace.store),
+                    "open_profile": rp.profile_opener(workspace.store),
+                    "reached_host": rp.reached_host(options),
+                    "current_profile_id": conn_in.get("profile_id"),
+                }
+
             if path == "/api/live/cluster":
-                from .cluster import read_status, with_actions
-                return with_actions(read_status(conn))
+                from .cluster import attach_topology_tiers, read_status, with_actions
+                report = read_status(conn)
+                t_args = _topo_args()
+                if t_args:
+                    attach_topology_tiers(conn, report, **t_args)
+                return with_actions(report)
             if path == "/api/live/proxysql":
                 from .proxysql import read_status as proxysql_status
-                return proxysql_status(conn)
+                t_args = _topo_args()
+                return proxysql_status(conn, **t_args) if t_args else proxysql_status(conn)
+            if path == "/api/live/readyset":
+                from .readyset import read_status as readyset_status
+                return readyset_status(conn, schema=payload.get("schema") or "readyset", **_topo_args())
+            if path == "/api/live/readyset/explain-cache":
+                from .readyset import explain_cache
+                q = payload.get("query_or_id")
+                if q is None:
+                    q = payload.get("query")
+                return explain_cache(conn, q, cache_type=payload.get("cache_type"),
+                                     schema=payload.get("schema") or "readyset")
+            if path == "/api/live/readyset/export-caches":
+                from .readyset import export_caches
+                return export_caches(conn)
             if path == "/api/live/proxysql/digests":
                 from .proxysql_digests import read_digests
                 return read_digests(conn, order=payload.get("order"), limit=payload.get("limit"),
@@ -230,8 +261,11 @@ def _export_response(payload):
 
 
 def _reraise_redacted(exc, password):
-    if password and password in str(exc):
-        raise type(exc)(str(exc).replace(password, "[redacted]"))
+    from .dbops import redact
+    text = str(exc)
+    scrubbed = redact(text, password)
+    if scrubbed != text:
+        raise type(exc)(scrubbed)
     raise exc
 
 
@@ -1079,9 +1113,12 @@ def _replication_response(path, payload, workspace):
             with MySQLConnection(**options) as conn:
                 # Source versions: the relay log, else a matching saved connection
                 # (opened at most once per process for the same settings and password).
+                conn_in = payload.get("connection") if isinstance(payload.get("connection"), dict) else {}
                 report = rp.read_status(conn, source_versions=True, profiles=rp.saved_profiles(workspace.store),
                                         open_profile=rp.profile_opener(workspace.store),
-                                        replica_host=rp.reached_host(options))
+                                        replica_host=rp.reached_host(options),
+                                        current_profile_id=conn_in.get("profile_id"),
+                                        topology_tiers=True)
                 if report.get("available") and report.get("replica"):
                     guard = rp.receiver_guard_plan(conn, report)
                     report.update(guard)
@@ -1123,7 +1160,8 @@ _SERVER_VIEW_PATHS = ("/api/live/top", "/api/live/slow-log", "/api/live/running"
                       "/api/live/waits", "/api/live/indexes", "/api/live/tables", "/api/live/schemas",
                       "/api/live/io", "/api/live/config", "/api/live/instruments",
                       "/api/live/report", "/api/live/explain-connection", "/api/live/proxysql",
-                      "/api/live/proxysql/digests", "/api/live/digest-histogram", "/api/live/digest-tables")
+                      "/api/live/proxysql/digests", "/api/live/readyset", "/api/live/readyset/explain-cache",
+                      "/api/live/readyset/export-caches", "/api/live/digest-histogram", "/api/live/digest-tables")
 #: /api/live/kill is the one write: a confirmed KILL of one session (locks.kill_session).
 #: It fills the saved password itself, after the connection's write policy.
 #: The Query editor's run and commit (editor_session.py) are writes too: the
@@ -1207,8 +1245,9 @@ _CONNECTION_PATHS = _CONNECTION_PATHS + _ACCOUNT_PATHS
 #: token must match the plan as reviewed, then the saved password is filled,
 #: the target is read and planned again, and every attempt is audited.
 _ACTION_KINDS = {"/api/live/cluster/plan": "cluster", "/api/live/cluster/action": "cluster",
-                 "/api/live/proxysql/plan": "proxysql", "/api/live/proxysql/action": "proxysql"}
-_ACTION_WRITE_PATHS = ("/api/live/cluster/action", "/api/live/proxysql/action")
+                 "/api/live/proxysql/plan": "proxysql", "/api/live/proxysql/action": "proxysql",
+                 "/api/live/readyset/plan": "readyset", "/api/live/readyset/action": "readyset"}
+_ACTION_WRITE_PATHS = ("/api/live/cluster/action", "/api/live/proxysql/action", "/api/live/readyset/action")
 _ACTION_PATHS = tuple(_ACTION_KINDS)
 _WRITE_PATHS = _WRITE_PATHS + _ACTION_WRITE_PATHS
 _CONNECTION_PATHS = _CONNECTION_PATHS + _ACTION_PATHS
@@ -1221,6 +1260,17 @@ _CONNECTION_PATHS = _CONNECTION_PATHS + _ACTION_PATHS
 from .csv_import_api import PATHS as _CSV_IMPORT_PATHS, WRITE_PATHS as _CSV_IMPORT_WRITE_PATHS  # noqa: E402
 from .slowlog_api import PATHS as _SLOW_LOG_PATHS  # noqa: E402
 _WRITE_PATHS = _WRITE_PATHS + _CSV_IMPORT_WRITE_PATHS
+#: SSH/SFTP file transfer of the Files view (sftp_api.py, answered by
+#: _sftp_response). The database's saved password is never filled for these:
+#: SSH credentials live in their own secret-store namespace (sshpw.*) managed
+#: by sftp_api. list, local-list, jobs and status only read. mkdir, remove,
+#: upload, download, cancel, save and clear change the remote host, the local
+#: disk or the credential store — host-level actions, not SQL writes, so the
+#: connection's database write policy does not gate them.
+_SFTP_PATHS = ("/api/live/sftp/list", "/api/live/sftp/local-list", "/api/live/sftp/mkdir",
+               "/api/live/sftp/remove", "/api/live/sftp/upload", "/api/live/sftp/download",
+               "/api/live/sftp/jobs", "/api/live/sftp/cancel", "/api/live/sftp/ssh-auth/status",
+               "/api/live/sftp/ssh-auth/save", "/api/live/sftp/ssh-auth/clear")
 #: The progress of a send the review sheet is waiting for
 #: (reviewed_writes.Progress by the action request's progress_id). No
 #: connection, no SQL, no credentials: phases and statement states only.
@@ -1240,8 +1290,25 @@ def _test_connection_response(payload):
     password = options.get("password")
     try:
         with MySQLConnection(**options) as conn:
-            version = conn.server_version()
-            comment = conn.server_version_comment()
+            from .server_info import is_readyset_comment
+            try:
+                comment = conn.server_version_comment()
+            except ConnectorError as exc:
+                from .reviewed_writes import client_error, error_number
+                code = error_number(str(exc))
+                if code is None or client_error(code) or "Access denied" in str(exc):
+                    raise
+                comment = ""
+            if is_readyset_comment(comment):
+                from . import readyset
+                from .topology_links import parse_readyset_version
+                try:
+                    rs_rows = readyset.select(conn, "SHOW READYSET VERSION")
+                    version = parse_readyset_version(rs_rows) or "Readyset"
+                except ConnectorError:
+                    version = "Readyset"
+            else:
+                version = conn.server_version()
             identity = product_identity(version, comment)
             databases = []
             databases_truncated = False
@@ -1451,12 +1518,14 @@ def _variable_apply(payload, workspace):
         _reraise_redacted(exc, password)
 
 
-_ACTION_OPERATION = {"cluster": "cluster_action", "proxysql": "proxysql_action"}
+_ACTION_OPERATION = {"cluster": "cluster_action", "proxysql": "proxysql_action", "readyset": "readyset_action"}
 
 
 def _action_module(kind):
     if kind == "cluster":
         from . import cluster as module
+    elif kind == "readyset":
+        from . import readyset as module
     else:
         from . import proxysql as module
     return module
@@ -1468,6 +1537,9 @@ def _action_plan(kind, module, conn, payload):
         report = module.read_status(conn)
         action = payload.get("action")
         return module.plan_action(report, action, payload.get("member_key"), module.action_checks(conn, report, action))
+    if kind == "readyset":
+        report = module.read_status(conn, schema=payload.get("schema") or "readyset")
+        return module.plan_action(report, payload.get("action"), payload.get("target"), payload.get("value"), conn=conn)
     report = module.read_status(conn)
     return module.plan_action(report, payload.get("action"), payload.get("target"), payload.get("value"))
 
@@ -1623,6 +1695,84 @@ def _session_response(path, payload, workspace):
     raise ValueError("Unknown workspace operation.")
 
 
+def _sftp_response(path, payload):
+    """The Files view's SSH/SFTP calls (sftp_api.py). Answer shapes match sftpApi.ts."""
+    from . import sftp_api
+    if path == "/api/live/sftp/list":
+        return {"path": payload.get("path"),
+                "entries": sftp_api.api_listdir(payload.get("connection"), payload.get("path"))}
+    if path == "/api/live/sftp/local-list":
+        return sftp_api.api_local_list(payload.get("path"))
+    if path == "/api/live/sftp/mkdir":
+        result = sftp_api.api_mkdir(payload.get("connection"), payload.get("path"))
+        return dict(result, path=payload.get("path"))
+    if path == "/api/live/sftp/remove":
+        sftp_api.api_remove(payload.get("connection"), payload.get("path"))
+        return {"removed": payload.get("path")}
+    if path == "/api/live/sftp/upload":
+        return {"job": sftp_api.api_start_upload(payload)}
+    if path == "/api/live/sftp/download":
+        return {"job": sftp_api.api_start_download(payload)}
+    if path == "/api/live/sftp/jobs":
+        return {"jobs": sftp_api.api_jobs()}
+    if path == "/api/live/sftp/cancel":
+        sftp_api.api_cancel(payload.get("job_id"))
+        return {"cancelled": True}
+    if path == "/api/live/sftp/ssh-auth/status":
+        return sftp_api.api_ssh_auth_status(payload.get("connection"))
+    if path == "/api/live/sftp/ssh-auth/save":
+        return sftp_api.api_ssh_auth_save(payload.get("connection"), payload.get("password"))
+    if path == "/api/live/sftp/ssh-auth/clear":
+        return sftp_api.api_ssh_auth_clear(payload.get("connection"))
+    raise ValueError("Unknown file transfer operation.")
+
+
+def _session_capture_response(payload, workspace):
+    """A synchronous tab plan registered as a normal completed capture job.
+
+    live/start's id -> live/status -> /api/analyze ingestion stays unchanged.
+    While start is pending, editor/stop targets the in-session statement.
+    No fresh connection is opened and no request password is resolved.
+    """
+    from . import editor_session as editor
+    from .live import LiveJob, normalize_capture
+    tab = editor._tab_id({"tab_id": payload.get("session_tab")})
+    _, identity, _, _ = editor._connection_facts(payload, workspace.store)
+    session = editor._session_for(editor._registry(workspace), tab, identity)
+    if session is None:
+        raise editor.EditorError("This tab has no live session. Run SQL in the tab first.", "session_ended")
+    job = LiveJob(payload)
+    if job.repeat != 1 or job.trace:
+        raise ValueError("In-session plans support one run without optimizer trace.")
+    raw = session.run_plan(job.query, job.mode, timeout=job.timeout)
+    _, root, _, _ = _plan({"plan": raw})
+    details = root.get("details") or {}
+    total = root["total_time"] if job.mode == "analyze" and details.get("actual_last_row_ms") is not None else None
+    job.result = normalize_capture({
+        "schema_version": "capture-1.0", "raw": raw, "query": job.query, "mode": job.mode,
+        "engine": session.engine, "server_version": session.server_version, "captured_at": editor._now(),
+        "runs": [{"total_time_ms": total, "statistics": None, "session_status_delta": {}, "plan": raw}],
+        "conditions": job.conditions, "source": job.source,
+        "warnings": ["Captured in the tab's session. Statement counters, schema metadata and optimizer trace "
+                     "were not collected."],
+    })
+    job.state, job.progress = "complete", 1
+    job.options.pop("password", None)
+    # Keep the same ownership lookup and bounded cache as ordinary captures.
+    with workspace.jobs.lock:
+        jobs = workspace.jobs.jobs
+        for key, old in list(jobs.items()):
+            if old.state not in ("queued", "running") and time.monotonic() - old.created >= 3600:
+                del jobs[key]
+        if len(jobs) >= 50:
+            completed = [old for old in jobs.values() if old.state not in ("queued", "running")]
+            if not completed:
+                raise ValueError("Wait for a running capture to finish first.")
+            del jobs[min(completed, key=lambda old: old.created).id]
+        jobs[job.id] = job
+    return {"id": job.id, "state": job.state}
+
+
 def api_response(path, payload, workspace=None):
     if not isinstance(payload, dict):
         raise ValueError("Expected a JSON request object.")
@@ -1720,6 +1870,12 @@ def api_response(path, payload, workspace=None):
         if workspace is None:
             raise ValueError("This operation requires a running workspace.")
         return _accounts_response(path, payload, workspace)
+    if path in _SFTP_PATHS:
+        # The database password is never filled here; sftp_api manages SSH
+        # credentials in its own secret-store namespace.
+        if workspace is None:
+            raise ValueError("This operation requires a running workspace.")
+        return _sftp_response(path, payload)
     if path.startswith(("/api/investigations/", "/api/profiles/", "/api/live/", "/api/connection/")):
         if workspace is None:
             raise ValueError("This operation requires a running workspace.")
@@ -1741,6 +1897,8 @@ def api_response(path, payload, workspace=None):
                 return bundle
             if operation == "save": return workspace.store.save(kind, payload.get("value"), payload.get("id"))
             if operation == "delete": return workspace.store.delete(kind, payload.get("id"))
+        if path == "/api/live/start" and "session_tab" in payload:
+            return _session_capture_response(payload, workspace)
         if path in _CONNECTION_PATHS and path not in _WRITE_PATHS:
             payload = _with_saved_password(payload, workspace)
         if path == "/api/live/start": return workspace.jobs.start(payload)
@@ -1775,6 +1933,9 @@ def api_response(path, payload, workspace=None):
             return _action_response(path, payload, workspace)
         if path == _ACTION_PROGRESS_PATH:
             return _action_progress(workspace).get(payload.get("progress_id"))
+        if path in ("/api/live/readyset", "/api/live/readyset/explain-cache", "/api/live/readyset/export-caches",
+                    "/api/live/proxysql", "/api/live/cluster"):
+            return _discover_response(path, payload, workspace=workspace)
         if path in _SERVER_VIEW_PATHS:
             return _discover_response(path, payload)
         raise ValueError("Unknown workspace operation.")
@@ -2368,7 +2529,9 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                              "/api/analysis/prepare-query") + _LIFECYCLE_PATHS \
                 + _REPLICATION_PATHS + _CATALOG_PATHS + _VARIABLE_PATHS + _ACTION_PATHS + _ACCOUNT_PATHS + _DIAGRAM_PATHS + _SCHEMA_VERSION_PATHS + _COMPARE_PATHS + _APP_UPDATE_PATHS \
                 + _NEWS_PATHS + _PARAM_VERSION_PATHS + _CSV_IMPORT_PATHS + _SLOW_LOG_PATHS \
-                + (_ACTION_PROGRESS_PATH, "/api/live/proxysql/digests"):
+                + _SFTP_PATHS \
+                + (_ACTION_PROGRESS_PATH, "/api/live/proxysql/digests", "/api/live/readyset",
+                   "/api/live/readyset/explain-cache", "/api/live/readyset/export-caches"):
             self._send(404, {"error": "Not found."})
             return
         if self.headers.get_content_type() != "application/json":

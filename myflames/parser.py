@@ -108,6 +108,16 @@ def format_sql(sql):
 # Index suggestion heuristics
 # ---------------------------------------------------------------------------
 
+def _qident(name):
+    """Backtick-quote an identifier from a plan file (possibly shared) when it
+    needs quoting, so a suggested DDL stays one statement. Simple names keep
+    the historic unquoted form."""
+    name = str(name)
+    if re.fullmatch(r"[A-Za-z0-9_$]+", name):
+        return name
+    return "`" + name.replace("`", "``") + "`"
+
+
 def _col_refs_for_table(condition, table_name):
     """Extract column names referenced for *table_name* in a condition string.
 
@@ -159,8 +169,8 @@ def _suggest_indexes(root):
             cols = _col_refs_for_table(effective_cond, table_name)
             if cols:
                 idx_name = "idx_{}_{}".format(table_name, "_".join(cols[:3]))
-                cols_ddl = ", ".join(cols[:3])
-                ddl = "CREATE INDEX {} ON {} ({});".format(idx_name, table_name, cols_ddl)
+                cols_ddl = ", ".join(_qident(c) for c in cols[:3])
+                ddl = "CREATE INDEX {} ON {} ({});".format(_qident(idx_name), _qident(table_name), cols_ddl)
                 if ddl not in seen_ddl:
                     seen_ddl.add(ddl)
                     suggestions.append({
@@ -307,10 +317,10 @@ def _suggest_sort_indexes(root, seen_ddl):
         # Build "col" / "col DESC" segments preserving order + direction.
         col_segments = []
         for col, is_desc in parsed:
-            col_segments.append(col + " DESC" if is_desc else col)
+            col_segments.append(_qident(col) + (" DESC" if is_desc else ""))
         cols_ddl = ", ".join(col_segments)
         idx_name = "idx_{}_{}".format(base_table, "_".join(cols))
-        ddl = "CREATE INDEX {} ON {} ({});".format(idx_name, base_table, cols_ddl)
+        ddl = "CREATE INDEX {} ON {} ({});".format(_qident(idx_name), _qident(base_table), cols_ddl)
         if ddl in seen_ddl:
             return
         seen_ddl.add(ddl)
@@ -553,7 +563,10 @@ def build_folded_label(node):
 def parse_node(node):
     if not isinstance(node, dict):
         return None
-    op = (node.get("operation") or "unknown").replace("`", "")
+    operation = node.get("operation")
+    if operation is not None and not isinstance(operation, str):
+        raise ValueError("Plan node operation must be a string, got %s." % type(operation).__name__)
+    op = (operation or "unknown").replace("`", "")
     op = re.sub(r"DATE'(\d{4}-\d{2}-\d{2})'", r"\1", op)
     loops = node.get("actual_loops", 1) or 1
     total_time = (node.get("actual_last_row_ms") or 0) * loops

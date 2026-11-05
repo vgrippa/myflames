@@ -191,7 +191,7 @@ class TestTextAndAttributes(unittest.TestCase):
         self.assertEqual([f["label"] for f in frames], ["NESTED LOOP INNER", "TABLE SCAN [t]", "TABLE SCAN [t]"],
                          "equal display labels stay separate frames")
         self.assertEqual([f["attrs"].get("data-teach-index") for f in frames], [None, "4", "4"])
-        self.assertEqual([f["fill"] for f in frames], ["#c998b3", "#db9292", "#db9292"])
+        self.assertEqual([f["fill"] for f in frames], ["#fff1cd", "#ed9461", "#f0a575"])
         self.assertNotIn("O(n)", svg, "complexity is accepted and ignored")
 
     def test_frame_without_mapping_shows_its_token(self):
@@ -205,6 +205,21 @@ class TestTextAndAttributes(unittest.TestCase):
 
 
 class TestColors(unittest.TestCase):
+    def test_default_heat_measures_own_time_not_descendant_time(self):
+        # The root includes all 100 units but performs none itself.
+        _, frames = _frames(folded_to_svg("root;cold 25\nroot;hot 75"))
+        self.assertEqual(frames[0]["fill"], "#fff1cd")
+        self.assertEqual(frames[1]["fill"], "#f4b588")
+        self.assertLess(_luminance(_hex_rgb(frames[2]["fill"])),
+                        _luminance(_hex_rgb(frames[1]["fill"])))
+        self.assertGreaterEqual((_luminance(_hex_rgb(frames[2]["fill"])) + .05) / .05, 4.5)
+
+    def test_default_heat_ignores_family_and_unmeasured_is_neutral(self):
+        _, frames = _frames(folded_to_svg("a 1\nb 1", family_by_folded={"a": "table_scan", "b": "index_lookup"}))
+        self.assertEqual(frames[0]["fill"], frames[1]["fill"])
+        _, frames = _frames(folded_to_svg("root 1", countname=flamegraph.NO_TIME))
+        self.assertEqual(frames[0]["fill"], "#c4c8cc")
+
     def test_families_reuse_visual_explain_colors(self):
         from myflames.output_workbench import COLORS
         pairs = {"table_scan": "table", "index_scan": "index", "index_lookup": "lookup",

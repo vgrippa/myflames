@@ -55,7 +55,7 @@ import {
 } from "./session";
 import { connectionKey, connectionLabel } from "./binding";
 import { Icon } from "./components";
-import { ActionButton, ActionStatus, IDLE_ACTION, writeFailure, type ActionState, Checkbox, ConfirmSheet, EmptyState, IconButton, InfoPopover, NumberField, StatusPill, useFocusScope, useWindowStatus, type Tone } from "./kit";
+import { ActionButton, ActionStatus, IDLE_ACTION, writeFailure, type ActionState, Checkbox, ConfirmSheet, EmptyState, IconButton, InfoPopover, Notice, NumberField, StatusPill, useFocusScope, useWindowStatus, type Tone } from "./kit";
 import { ConnectionTypeBand, useWritePolicy, TYPE_LABEL } from "./Connections";
 import { SqlEditor, type Range } from "./SqlEditor";
 import { ResultsPane, rowResults } from "./ResultsPane";
@@ -527,6 +527,16 @@ export const QueryLab = forwardRef<
   const [status, setStatus] = useState("");
   const [analysisWarning, setAnalysisWarning] = useState<{ tab: string; text: string } | null>(null);
   const [error, setError] = useState("");
+  // When a fresh-connection capture fails because the query names a table
+  // the server does not have (a TEMPORARY table lives only in the tab's
+  // session), the error notice offers one retry inside that session.
+  const [sessionFallback, setSessionFallback] = useState<{
+    tabId: string;
+    label: string;
+    sql: string;
+    parameters: unknown;
+    mode: string;
+  } | null>(null);
   // A staged table draft remains bound to the connection it was opened from.
   const [tableData, setTableData] = useState<{ connection: Connection; schema: string; table: string } | null>(null);
   // Import CSV from the Schemas panel: one import at a time, bound to the
@@ -654,6 +664,15 @@ export const QueryLab = forwardRef<
     tabId: string;
     label: string;
     sql: string;
+  } | null>(null);
+  // Everything a session retry needs, in a ref the poll effect can read.
+  const lastRunInfo = useRef<{
+    tabId: string;
+    label: string;
+    sql: string;
+    parameters: unknown;
+    mode: string;
+    inSession: boolean;
   } | null>(null);
   const [runtime, setRuntime] = useState<Record<string, Runtime>>({});
   // The latest runtime, updated in the same task as every change (a
@@ -955,7 +974,7 @@ export const QueryLab = forwardRef<
           setStatus("Capture complete. The plan is open in Plans.");
           await onCapture(next.result, captureName.current);
         }
-        if (next.error) { setError(next.error); denied(next.error, jobConnection.current); }
+        if (next.error) { offerSessionFallback(next.error); setError(next.error); denied(next.error, jobConnection.current); }
       } catch (e) {
         if (!controller.signal.aborted) {
           setError((e as Error).message);
@@ -1185,6 +1204,7 @@ export const QueryLab = forwardRef<
     parameters: unknown,
     mode: string,
     label: string,
+    inSession = false,
   ) {
     // Every capture path (buttons, shortcuts, a row's Explain) passes here.
     if (busy || pendingStart.current) return;
@@ -1221,6 +1241,8 @@ export const QueryLab = forwardRef<
       sql = prepared.sql;
       captureName.current = t.name;
       setLastRun({ tabId: t.id, label, sql });
+      lastRunInfo.current = { tabId: t.id, label, sql, parameters, mode, inSession };
+      setSessionFallback(null);
       const via = connectionFor(t);
       jobConnection.current = via;
       const result = await api<{ id: string }>("live/start", {
@@ -1229,9 +1251,12 @@ export const QueryLab = forwardRef<
         parameters,
         mode,
         timeout,
-        repeat,
-        trace,
+        // In-session runs keep the tab's temporary tables; the backend
+        // refuses repeat/trace there.
+        repeat: inSession ? 1 : repeat,
+        trace: inSession ? false : trace,
         conditions,
+        ...(inSession ? { session_tab: t.id } : {}),
         ...(t.source ? { source: t.source } : {}),
       });
       if (pending.cancelled) {
@@ -1256,12 +1281,24 @@ export const QueryLab = forwardRef<
         result: null,
       });
     } catch (e) {
+      offerSessionFallback((e as Error).message);
       denied(e, jobConnection.current);
       setError((e as Error).message);
     } finally {
       if (pendingStart.current === pending) pendingStart.current = null;
       setStarting(false);
     }
+  }
+  /** ERROR 1146 from a fresh capture connection usually means the query
+   * names a TEMPORARY table that lives only in the tab's session: offer one
+   * retry inside that session. Never after an in-session run already failed. */
+  function offerSessionFallback(message: string) {
+    const run = lastRunInfo.current;
+    if (!run || run.inSession) return;
+    if (!/1146|doesn't exist|does not exist/i.test(message)) return;
+    const now = runtimeRef.current[run.tabId];
+    if (!now?.session || now.session.ended) return;
+    setSessionFallback({ tabId: run.tabId, label: run.label, sql: run.sql, parameters: run.parameters, mode: run.mode });
   }
   /** Cancel capture: the one starting, or the one running. */
   async function cancelCapture() {
@@ -2604,17 +2641,32 @@ export const QueryLab = forwardRef<
               </p>
             )}
             {analysisWarning?.tab === tab.id && (
-              <p role="alert" className="notice">{analysisWarning.text}</p>
+              <Notice variant="note" role="alert">{analysisWarning.text}</Notice>
             )}
             {status && (
-              <p role="status" className="notice">
-                {status}
-              </p>
+              <Notice variant="note">{status}</Notice>
             )}
             {error && (
-              <p role="alert" className="error">
+              <Notice variant="error" noticeKey={error}>
                 {error}
-              </p>
+                {sessionFallback && sessionFallback.tabId === tab.id && (
+                  <>
+                    {" "}
+                    <button
+                      type="button"
+                      className="notice-action"
+                      onClick={() => {
+                        const fb = sessionFallback;
+                        setSessionFallback(null);
+                        void startCapture(tab, fb.sql, fb.parameters, fb.mode, fb.label, true);
+                      }}
+                    >
+                      Run in this tab's session
+                    </button>
+                    {" — its temporary tables are visible there."}
+                  </>
+                )}
+              </Notice>
             )}
             <SqlEditor
               ref={editor}

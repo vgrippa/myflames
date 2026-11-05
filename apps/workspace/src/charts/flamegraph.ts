@@ -14,6 +14,10 @@
 // their reported order, packed from the parent's left edge. The unit sets
 // widths only; headers print each time in a readable unit (flameValueText).
 //
+// Default hot colors encode own count / graph count on a square-root warm
+// scale (#fff1cd to #e87942), excluding descendant counts. Zoom preserves
+// that scale; separators and unmeasured frames stay neutral.
+//
 // Click (or Enter/Space) selects a frame and zooms to it: its subtree fills
 // the width, ancestors stay dimmed at full width (click one to zoom out),
 // everything else hides, and labels are refitted. The zoomed frame's id is
@@ -47,7 +51,7 @@ export const DEFAULT_ROW_H = 32;
 const DETAILS_RESERVE = 150;
 const BACKGROUND = "#fafafa";
 const SEP = "  ·  ";
-const HINT = "Hover a frame for details. Click to zoom, double-click the background to reset, Ctrl+F to search.";
+const HINT = "Color: self time, pale to hot. Hover a frame for details. Click to zoom, double-click the background to reset, Ctrl+F to search.";
 const EMPTY = "No positive time is available at this chart's resolution. Inspect the operator metrics or use Visual Explain.";
 
 // Colors: identical tables live in myflames/flamegraph.py
@@ -109,6 +113,15 @@ export function frameColor(label: string, family?: string | null, palette = "hot
   const ranges = Object.prototype.hasOwnProperty.call(PALETTES, name) ? PALETTES[name] : PALETTES.hot;
   const h = labelHash(label);
   return "#" + ranges.map(([low, high], i) => hex(low + Math.floor((((h >>> (8 * i)) & 0xff) * (high - low)) / 255))).join("");
+}
+
+/** Own-count intensity, mirrored by Python heat_color; never inclusive time. */
+export function heatColor(label: string, own: number, total: number, measured = true): string {
+  if (Object.prototype.hasOwnProperty.call(SEPARATOR_COLORS, label)) return SEPARATOR_COLORS[label];
+  if (!measured) return SEPARATOR_COLORS["-"];
+  const intensity = Math.sqrt(total > 0 ? Math.min(1, Math.max(0, own / total)) : 0);
+  return "#" + [[255, 232], [241, 121], [205, 66]]
+    .map(([cold, hot]) => hex(Math.floor(cold + (hot - cold) * intensity + 0.5))).join("");
 }
 
 /** Label that fits *px* at 12 px (flamegraph.fit_frame_label). */
@@ -246,7 +259,8 @@ export function renderFlamegraph(context: ViewContext): ViewInstance {
   const requested = Math.trunc(Number(options.frame_height));
   const rowH = Number.isFinite(requested) && requested >= 1 ? requested : DEFAULT_ROW_H;
   const inverted = options.inverted === true;
-  const palette = typeof options.colors === "string" ? options.colors : "hot";
+  const requestedPalette = typeof options.colors === "string" ? options.colors.toLowerCase() : "hot";
+  const palette = Object.prototype.hasOwnProperty.call(PALETTES, requestedPalette) ? requestedPalette : "hot";
   // Same choice as Python over the drawn (projected) operators.
   const { unit, multiplier } = flameScale(projection.visible.map((node) => node.self_ms), projection.root.total_ms);
   const { total, frames } = layoutFrames(projection.root, projection.children, multiplier, span);
@@ -264,6 +278,7 @@ export function renderFlamegraph(context: ViewContext): ViewInstance {
 
   const toolbar = createToolbar(doc, container, undefined, true);
   if (toolbar.ignoreCase) toolbar.ignoreCase.checked = true;
+  if (palette === "hot") html(doc, "span", { class: "mfc-flame-legend" }, toolbar.element, "Color: self time · pale → hot");
   const root = svg(doc, "svg", {
     width, height, viewBox: "0 0 " + width + " " + height, class: "mfc-flame",
     role: "group", "aria-label": "Flame graph of time per operator",
@@ -288,7 +303,9 @@ export function renderFlamegraph(context: ViewContext): ViewInstance {
     const y = headerH + (inverted ? depth : rows - 1 - depth) * pitch;
     const header = flameHeader(label, value, total, unit);
     const details = node.flame_details || "";
-    const fill = frameColor(label, node.family, palette);
+    const fill = palette === "hot"
+      ? heatColor(label, flameUnits(node.self_ms, multiplier), total, unit !== NO_TIME)
+      : frameColor(label, node.family, palette);
     const shown = fitFrameLabel(label, w);
     const g = svg(doc, "g", {
       role: "button", tabindex: 0, "aria-label": header,

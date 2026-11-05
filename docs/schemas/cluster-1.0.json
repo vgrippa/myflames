@@ -573,6 +573,17 @@
       "items": {
         "type": "string"
       }
+    },
+    "readyset_hint": {
+      "type": "boolean",
+      "description": "True when the connected endpoint is a Readyset instance rather than a MySQL or MariaDB cluster member."
+    },
+    "topology_tiers": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Verified upstream Readyset and ProxySQL tiers sitting in front of this cluster or server."
     }
   },
   "$defs": {

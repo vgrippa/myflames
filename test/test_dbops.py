@@ -326,6 +326,42 @@ class TestClassify(unittest.TestCase):
         self.assertEqual(dbops.classify('HANDLER t OPEN; HANDLER t READ FIRST; HANDLER t CLOSE')['kind'],
                          'risky')
 
+    def test_show_and_handler_where_expressions_are_evaluated(self):
+        """SHOW and HANDLER READ evaluate their WHERE on the server, so the
+        SELECT expression checks (functions, :=, named locks) apply: a
+        side-effect call must never classify read (review 2026-11-05)."""
+        for sql in ("SHOW TABLES WHERE GET_LOCK('mf', 0)",
+                    "SHOW TABLE STATUS WHERE Name = 't' OR RELEASE_LOCK('mf')",
+                    "SHOW COLUMNS FROM t WHERE @x := SLEEP(0)",
+                    "SHOW TABLES WHERE densify(t) > 1",
+                    "HANDLER t READ FIRST WHERE GET_LOCK('mf', 0)",
+                    "HANDLER t READ idx = (1) WHERE myfunc(v)"):
+            with self.subTest(sql=sql):
+                verdict = dbops.classify(sql)
+                self.assertNotEqual(verdict['kind'], 'read', verdict)
+                self.assertEqual(dbops.decide(verdict, read_only=True)['action'], 'refuse')
+        for sql in ("SHOW TABLES", "SHOW FULL PROCESSLIST", "SHOW TABLES LIKE 'a%'",
+                    "SHOW TABLES WHERE Tables_in_db LIKE 't%'",
+                    "SHOW TABLE STATUS WHERE Name = 't'",
+                    "SHOW GRANTS FOR CURRENT_USER()", "SHOW COUNT(*) WARNINGS",
+                    "SHOW VARIABLES WHERE Variable_name = 'x' AND Value IN ('ON', 'OFF')",
+                    "HANDLER t READ FIRST", "HANDLER t READ idx = (1, 2)",
+                    "HANDLER t READ FIRST WHERE v > 3 LIMIT 5"):
+            with self.subTest(sql=sql):
+                verdict = dbops.classify(sql)
+                self.assertEqual(verdict['kind'], 'read', verdict)
+                self.assertEqual(dbops.decide(verdict, read_only=True)['action'], 'allow')
+
+    def test_get_diagnostics_assigns_variables(self):
+        """GET DIAGNOSTICS only assigns variables; it is a session write."""
+        for sql in ('GET DIAGNOSTICS CONDITION 1 @p = MESSAGE_TEXT',
+                    'GET DIAGNOSTICS @c = NUMBER',
+                    'GET CURRENT DIAGNOSTICS CONDITION 1 @s = RETURNED_SQLSTATE'):
+            with self.subTest(sql=sql):
+                verdict = dbops.classify(sql)
+                self.assertEqual((verdict['kind'], verdict['category']), ('write', 'session'))
+                self.assertEqual(dbops.decide(verdict, read_only=True)['action'], 'refuse')
+
     def test_table(self):
         for sql, kind, category, verbs in CASES:
             with self.subTest(sql=sql):
@@ -1630,3 +1666,55 @@ class TestCLIConfirmation(unittest.TestCase):
         self.assertNotIn('secret', text)
         self.assertNotIn('\x1b', text)
         self.assertIn('[redacted]', text)
+
+
+class TestReadysetClassificationAndRedaction(unittest.TestCase):
+    """Readyset SQL verbs, inline cache hints, and upstream URL credential redaction."""
+
+    def test_readyset_ddl_and_commands_are_risky_server_operations(self):
+        for sql in (
+            "ALTER READYSET SET LOG LEVEL 'info'",
+            "ALTER READYSET SET EVICTION MEMORY LIMIT 1073741824",
+            "ALTER READYSET ENTER MAINTENANCE MODE",
+            "ALTER READYSET RESNAPSHOT TABLE `shop`.`orders`",
+            "ALTER READYSET SHUTDOWN RESET",
+            "CREATE SHALLOW CACHE `c_orders` WITH (ttl = 30s) FROM q_1234abcd",
+            "CREATE DEEP CACHE FROM SELECT * FROM orders WHERE customer_id = 1",
+            "DROP CACHE `c_orders`",
+            "DROP ALL SHALLOW CACHES",
+            "DROP ALL PROXIED QUERIES",
+            "FLUSH CACHE `c_orders`",
+            "FLUSH ALL SHALLOW CACHES",
+        ):
+            with self.subTest(sql=sql):
+                c = dbops.classify(sql)
+                self.assertEqual(c['kind'], 'risky')
+                self.assertEqual(c['statements'][0]['category'], 'server')
+                self.assertEqual(dbops.decide(c, 'production', read_only=True)['action'], 'refuse')
+
+    def test_readyset_explain_and_show_stay_read_only(self):
+        for sql in (
+            "SHOW READYSET STATUS",
+            "SHOW READYSET VERSION",
+            "SHOW CACHES",
+            "SHOW PROXIED QUERIES",
+            "SHOW SHALLOW CACHE ALLOWED FUNCTIONS",
+            "EXPLAIN ALL CACHES",
+            "EXPLAIN CREATE SHALLOW CACHE FROM SELECT * FROM orders WHERE id = 1",
+        ):
+            with self.subTest(sql=sql):
+                self.assertEqual(dbops.classify(sql)['kind'], 'read')
+
+    def test_readyset_inline_create_hint_is_classified_as_risky(self):
+        hinted = "SELECT /*rs+ create shallow(ttl=30s) */ * FROM orders WHERE id = 1"
+        c = dbops.classify(hinted)
+        self.assertEqual(c['kind'], 'risky')
+        self.assertEqual(c['statements'][0]['category'], 'server')
+        plain_hint = "SELECT /*rs+ nocache */ * FROM orders WHERE id = 1"
+        self.assertEqual(dbops.classify(plain_hint)['kind'], 'read')
+
+    def test_url_passwords_are_redacted(self):
+        raw = "Upstream failed: mysql://readyset_user:s3cr3t!pw@db-primary.internal:3306/shop?ssl-mode=DISABLED"
+        clean = dbops.redact(raw)
+        self.assertNotIn("s3cr3t!pw", clean)
+        self.assertIn("mysql://readyset_user:[redacted]@db-primary.internal:3306/shop", clean)

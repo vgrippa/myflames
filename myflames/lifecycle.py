@@ -2138,7 +2138,7 @@ def restore_job(connection, plan, confirmed=False, typed_target=None, audit=None
                 staged_request = dict(request, directory=staged)
                 _invoke(job, tool, connection, ['--js'], _shell_script(job, _load_expression(staged_request)))
         else:
-            args = ['--batch', '--skip-column-names', '--unbuffered'] + list(dbops.WRITE_CLIENT_FLAGS)
+            args = ['--local-infile=0', '--batch', '--skip-column-names', '--unbuffered'] + list(dbops.WRITE_CLIENT_FLAGS)
             if request.get('schema'):
                 args += ['--database=' + request['schema']]
             # An stdin prefix prints the actual executing session id before
@@ -2555,7 +2555,7 @@ def clone_job(donor_connection, recipient_connection, plan, confirmed=False, typ
             sql += clone_statement(donor_connection, request.get('data_directory'), request.get('require_ssl', True),
                                    redact=False, donor_address=donor_address) + ';\n'
             try:
-                _invoke(job, tool, recipient_connection, ['--batch', '--skip-column-names', '--unbuffered'] + list(dbops.WRITE_CLIENT_FLAGS), sql)
+                _invoke(job, tool, recipient_connection, ['--local-infile=0', '--batch', '--skip-column-names', '--unbuffered'] + list(dbops.WRITE_CLIENT_FLAGS), sql)
             except LifecycleError as exc:
                 if request.get('data_directory') or job.cancelled.is_set() or not _restart_expected(exc):
                     raise

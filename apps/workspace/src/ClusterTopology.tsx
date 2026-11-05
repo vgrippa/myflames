@@ -1,16 +1,17 @@
-// ClusterTopology: a static picture of the cluster the connection in use
+// ClusterTopology: an interactive picture of the cluster the connection in use
 // belongs to. Every group member is a card joined to one line, the group
 // (Galera's component, Group Replication's group); a configured Galera node
 // that is not in the component stands on that line as a dashed placeholder;
 // InnoDB Cluster read replicas hang below it apart from the group, on dashed
-// neutral links, and routers under them. Nothing moves. Each state is drawn
+// neutral links, and routers under them. Motion marks observed healthy group
+// membership, not transaction rate. Each state is drawn
 // three ways, never by color alone: the state word beside its shape (a check
 // for OK, a dot for Watch, a triangle for Problem, a ring for not judged), the
 // card's edge, and the member's link to the group (solid while it takes part,
 // dashed and broken when it does not). Queues and flow control are plain text
 // on the card. Selecting a card selects the member (or router) in the
 // inspector; arrow keys move between cards.
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import type { Profile } from "./api";
 import { moveRowFocus, type Selection, type Tone } from "./kit";
 import { engineName } from "./OpsShared";
@@ -19,6 +20,9 @@ import {
   type ClusterMember, type ClusterReport, type ClusterRouter,
 } from "./clusterApi";
 import "./cluster.css";
+import "./readyset.css";
+import { TopologyControls, ServerGlyph } from "./TopologyPresentation";
+import { UpstreamTopologyTiers } from "./UpstreamTopologyTiers";
 
 const ROLE_WORD: Record<string, string> = { PRIMARY: "Primary", SECONDARY: "Secondary", READ_REPLICA: "Read replica" };
 const TONE_WORD: Record<Tone, string> = { ok: "OK", watch: "Watch", problem: "Problem", unknown: "Not judged", info: "No threshold", off: "Off" };
@@ -186,6 +190,7 @@ function MemberCard({ report, m, selection, marker, hasUse = false }: {
       label={memberLabel(m, marker.word)}
     >
       <span className="cluster-card-head">
+        <ServerGlyph />
         {role && role !== word ? <span className={`cluster-role is-${(m.role || "").toLowerCase()}`}>{role}</span>
           : <span className="cluster-role is-node">{replica ? "Read replica" : memberNoun(report)}</span>}
       </span>
@@ -199,18 +204,29 @@ function MemberCard({ report, m, selection, marker, hasUse = false }: {
   );
 }
 
-export function ClusterTopology({ report, selection, marker = { word: "This connection" }, profiles, onSwitchConnection }: {
+export function ClusterTopology({ report, selection, marker = { word: "This connection" }, profiles, onSwitchConnection, onOpenReadyset, onOpenProxySql }: {
   report: ClusterReport; selection?: Selection; marker?: LocalMarker;
   profiles?: Profile[]; onSwitchConnection?: (id: string) => void;
+  onOpenReadyset?: () => void; onOpenProxySql?: () => void;
 }) {
+  const [motion, setMotion] = useState(true);
+  const [depth, setDepth] = useState(true);
   const line = groupLine(report);
   const routers = report.kind === "innodb_cluster" ? report.routers : [];
   const group = report.members.filter((m) => !isReadReplica(m));
   const replicas = report.members.filter(isReadReplica);
   const missing = isGalera(report) ? report.galera?.missing || [] : [];
   const noun = memberNoun(report);
+  const current = marker.word === "This connection";
   return (
-    <figure className="cluster-topology" aria-label={`${kindLabel(report)} topology`}>
+    <figure data-motion={motion && current ? "on" : "off"} data-depth={depth ? "on" : "off"} className="cluster-topology" aria-label={`${kindLabel(report)} topology`}>
+      <div className="topology-presentation-bar"><TopologyControls motion={motion} depth={depth} onMotion={() => setMotion(!motion)} onDepth={() => setDepth(!depth)} /></div>
+      <UpstreamTopologyTiers
+        tiers={report.topology_tiers}
+        onSwitchConnection={current ? onSwitchConnection : undefined}
+        onOpenReadyset={current ? onOpenReadyset : undefined}
+        onOpenProxySql={current ? onOpenProxySql : undefined}
+      />
       <div className="cluster-map" data-rows="">
         <div className="cluster-group">
           <ul className="cluster-members" aria-label={`${noun}s`}>
@@ -228,7 +244,7 @@ export function ClusterTopology({ report, selection, marker = { word: "This conn
                       Use {match.name}
                     </button>
                   )}
-                  <span className={`cluster-stem${memberDetached(m) ? " is-broken" : ""}`} aria-hidden="true" />
+                  <span className={`cluster-stem${memberDetached(m) ? " is-broken" : !line.broken && m.status === "ok" ? " is-active" : ""}`} aria-hidden="true" />
                 </li>
               );
             })}
