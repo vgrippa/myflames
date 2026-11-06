@@ -2373,11 +2373,6 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
             return
         # Only flat bundled assets are exposed, never arbitrary local files.
         name = path[len("/assets/"):] if path.startswith("/assets/") else ""
-        # Earlier UI bundles referenced content-hashed logos. Keep those image
-        # requests working for tabs open across the switch to a stable address.
-        if name in ("myflames-BpuTIrWf.jpeg", "logo-BpuTIrWf.jpeg",
-                    "myflames-icon-v2-CFba5YPm.png"):
-            name = "myflames-logo.png"
         if name and "/" not in name and "\\" not in name and name not in (".", ".."):
             asset = ASSET_DIR / "assets" / name
             types = {".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".jpeg": "image/jpeg", ".png": "image/png", ".svg": "image/svg+xml"}

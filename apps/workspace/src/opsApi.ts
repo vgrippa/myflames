@@ -189,6 +189,8 @@ export type LifecycleJob = {
   schema_version: "lifecycle-job-1.0"; id: string | null; operation: LifecycleOperation;
   state: "queued" | "running" | "done" | "failed" | "refused" | "cancelled";
   progress: number | null; detail: CloneProgress | null;
+  phase?: string | null; elapsed_s?: number | null;
+  output?: { written_bytes: number; estimated_bytes: number | null } | null;
   events: { at: string; stream: string; text: string }[];
   result: LifecycleResult | null; error: string; policy?: OpsPolicy;
 };

@@ -16,25 +16,11 @@ Estimated plans contain cost and cardinality estimates, not measured operator ti
 
 ## Capture, then investigate
 
-This example assumes a saved `prod` CLI profile and an `orders` table. `-p` prompts for the password. Capture defaults to an estimated plan:
-
-```bash
-myflames capture -p --profile prod \
-  -e "SELECT * FROM orders WHERE customer_id = 42" \
-  -o before.json
-myflames explore before.json --hide-literals -o before.html
-```
-
-Timed capture is an explicit choice: `--mode analyze`. It executes the SELECT in a rolled-back read-only transaction. The query still consumes server resources. Check the [engine compatibility guide](compatibility.md) before choosing it.
+Write the statement in the Query editor and choose **Explain** for the server's own plan, then **Explore** to open it in Plans as an estimated plan (see [Query editor](queries.md#explain-a-statement)). **Run analysis** is the timed choice: it executes the SELECT, so the query still consumes server resources. Check the [engine compatibility guide](compatibility.md) before choosing it.
 
 ## Compare before and after
 
-Capture both plans around a change, keep the SQL and relevant execution conditions comparable, and use Compare in the app or the CLI:
-
-```bash
-myflames compare before.json after.json -o comparison.html
-myflames compare before.json after.json --digest
-```
+Capture both plans around a change, keep the SQL and relevant execution conditions comparable, and open them side by side in **Plans › Compare**.
 
 Plan changes are evidence to investigate. Cache warmth, data distribution, concurrent load and capture mode affect how timing comparisons should be read.
 

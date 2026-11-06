@@ -32,72 +32,30 @@
   <nav class="top">
     <span class="brand">myflames docs</span>
     <a href="index.html">Home</a>
-    <a href="guide/getting-started.html">Getting Started</a>
-    <a href="guide/views.html">View Types</a>
-    <a href="guide/cli.html">CLI Reference</a>
-    <a href="guide/architecture.html">Architecture</a>
+    <a href="https://github.com/vgrippa/myflames/tree/master/docs/handbook">Handbook</a>
     <a href="teach/index.html">Teach Lessons</a>
   </nav>
   <div class="content">
   <h1>myflames — MySQL Query Plan Visualizer</h1>
   <p>
-    Visualize <code>EXPLAIN ANALYZE FORMAT=JSON</code> output as interactive SVG charts &mdash;
-    and project the same analysis for AI agents and CI. One parser, many outputs, zero external dependencies.
+    Demos of the plan views in the myflames desktop app: flame graph, bar chart, Visual Explain and
+    execution tree, drawn from real <code>EXPLAIN ANALYZE FORMAT=JSON</code> plans.
     <a href="https://github.com/vgrippa/myflames">View on GitHub &rarr;</a>
   </p>
 
   <section>
     <h2>Documentation</h2>
     <div class="doc-cards">
-      <a class="doc-card" href="guide/getting-started.html"><strong>Getting Started</strong><span>Install, first flame graph, live connection mode</span></a>
-      <a class="doc-card" href="guide/views.html"><strong>View Types</strong><span>When to use each of the 5 visualization types</span></a>
-      <a class="doc-card" href="guide/cli.html"><strong>CLI Reference</strong><span>Every command, flag, and option</span></a>
-      <a class="doc-card" href="guide/architecture.html"><strong>Architecture</strong><span>How the parser, renderers, and advisor work</span></a>
+      <a class="doc-card" href="https://github.com/vgrippa/myflames/tree/master/docs/handbook"><strong>Handbook</strong><span>Install the desktop app, read plans, investigate queries and servers</span></a>
       <a class="doc-card" href="teach/index.html"><strong>Teach Lessons (9)</strong><span>Animated algorithm walkthroughs with cost models</span></a>
     </div>
   </section>
 
   <section>
-    <h2>For AI agents &amp; CI — one analysis, many projections</h2>
-    <p>Raw <code>EXPLAIN ANALYZE FORMAT=JSON</code> is verbose: an LLM burns tokens
-       parsing it before it can reason, and an SVG is invisible to an agent.
-       myflames parses and analyzes a plan once, then projects it into a compact,
-       source-grounded form an agent or pipeline can consume directly.</p>
-    <div class="demo-grid">
-      <div>
-        <strong>Token-cheap digest</strong>
-        <ul>
-          <li><code>myflames digest explain.json</code> — a compact, LLM-ready digest (summary, warnings, fixes, plan skeleton) to paste into a model instead of the raw plan.</li>
-          <li><code>myflames digest explain.json --cost</code> — measures the token + $ saving vs pasting the raw plan (typically ~4&times; fewer tokens). Exact counts via <code>--tokenizer claude</code> (your key) or <code>--tokenizer gpt</code> (keyless tiktoken).</li>
-        </ul>
-        <strong>Ranked advice &amp; CI gate</strong>
-        <ul>
-          <li><code>myflames advise explain.json --json</code> — ranked warnings + suggestions, each with a confidence.</li>
-          <li><code>myflames check explain.json --fail-on full_scan,filesort</code> — exits 1 if a trigger matches; a CI / pre-commit / agent-loop gate (<code>0</code> clean, <code>1</code> tripped, <code>2</code> bad input).</li>
-        </ul>
-      </div>
-      <div>
-        <strong>MCP server</strong>
-        <p><em>Let an agent (Claude Code, Cursor, …) call myflames directly.</em></p>
-        <pre><code>pip install 'myflames[mcp]'
-claude mcp add myflames -- myflames-mcp</code></pre>
-        <p style="font-size:0.9rem;color:#6b7280;margin:0">Tools: <code>analyze_plan</code>, <code>digest_plan</code>, <code>compare_plans</code>, <code>explain_optimizer_switch</code>, <code>explain_query</code>.</p>
-        <strong>Machine-readable everywhere</strong>
-        <ul>
-          <li>Every <code>--output</code> writes a JSON sidecar (schema v1.3) beside the HTML/SVG, so tools and agents never parse the picture.</li>
-          <li><code>myflames diff before.json after.json --json</code> emits a structured <code>compare-1.0</code> delta.</li>
-        </ul>
-      </div>
-    </div>
-    <p style="margin:0.5rem 0 0;font-size:0.9rem"><a href="guide/cli.html#agent-ci">Agent &amp; CI subcommands reference &rarr;</a></p>
-  </section>
-
-  <section>
-    <h2>Learn the algorithms — <code>myflames teach</code></h2>
+    <h2>Learn the algorithms</h2>
     <p>Interactive, offline-first HTML lessons that animate MySQL 8.4 and
        MariaDB 11.x internals with correct cost models. Every lesson has
-       in-page sliders — no CLI flags, no re-running. Generated with
-       <code>myflames teach &lt;lesson&gt; -o &lt;file&gt;.html</code>.</p>
+       in-page sliders. The same lessons are in the desktop app's Learn place.</p>
     <div class="demo-grid">
       <div>
         <strong>Storage internals</strong>
@@ -272,14 +230,10 @@ claude mcp add myflames -- myflames-mcp</code></pre>
   </section>
 
   <section>
-    <h2>Live connection mode — connect + explain + advise</h2>
-    <p>These demos came from running myflames with real connection flags
-       (<code>-h host -P port -u user -p -e "SELECT …"</code>) against
-       MySQL 8.4 and MariaDB 11.4. Each one embeds the collected schema,
-       stats, and session variables, plus environment-specific tuning
-       suggestions generated by the advisor. All 3 outputs (<code>.svg</code>,
-       <code>.html</code>, <code>.json</code>) are produced by a single CLI
-       invocation.</p>
+    <h2>Live plans from real servers</h2>
+    <p>Plans captured live from MySQL 8.4 and MariaDB 11.4. Each one embeds the
+       collected schema, statistics and session variables, plus tuning
+       suggestions from the advisor.</p>
     <div class="demo-grid">
       <div>
         <strong>MySQL 8.4</strong>
@@ -300,20 +254,18 @@ claude mcp add myflames -- myflames-mcp</code></pre>
 
   <section>
     <h2>HTML report — self-contained shareable report</h2>
-    <p>Generate with <code>myflames --output report.html explain.json</code>. Includes embedded chart, analysis sidebar, and export buttons.</p>
+    <p>A standalone report with the chart, the analysis sidebar and export buttons.</p>
     <a class="view-full" href="demos/mysql-basic/mysql-query-report.html" target="_blank" rel="noopener">Open HTML report demo →</a>
   </section>
 
   <section>
     <h2>Before vs After comparison</h2>
-    <p>Generate with <code>myflames compare before.json after.json</code>. Shows time deltas, operator changes, and a "what got better / worse" summary.</p>
+    <p>Time deltas, operator changes and a "what got better / worse" summary.</p>
     <a class="view-full" href="demos/mysql-basic/mysql-query-compare.html" target="_blank" rel="noopener">Open comparison demo →</a>
   </section>
 
   <p><a href="https://github.com/vgrippa/myflames">Repository and README</a> &bull;
-     <a href="guide/getting-started.html">Getting Started</a> &bull;
-     <a href="guide/cli.html">CLI Reference</a> &bull;
-     <a href="guide/architecture.html">Architecture</a>
+     <a href="https://github.com/vgrippa/myflames/tree/master/docs/handbook">Handbook</a>
   </p>
   </div>
 </body>

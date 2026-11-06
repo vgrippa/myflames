@@ -8,8 +8,6 @@ myflames gives those questions a shared workspace. Visual plans make a hierarchy
 
 The workspace should help a developer reading an unfamiliar plan and a DBA following a difficult one. Operator details, supporting evidence and guided lessons let you move between a quick view and a deeper explanation.
 
-The CLI remains useful in its own right: exporting a report, summarizing a plan for an agent, checking rules in CI and automating a repeatable investigation.
-
 ## Open to inspection
 
 The project is open source under Apache-2.0. You can inspect how a measurement or finding is derived, reproduce an issue, build the application and contribute a correction.

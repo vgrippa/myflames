@@ -9,6 +9,7 @@ wrapper imports the optional ``mcp`` dependency lazily; we assert that
 import os
 import ast
 import contextlib
+import io
 import inspect
 import subprocess
 import json
@@ -203,7 +204,8 @@ class TestServerWrapper(unittest.TestCase):
             for name, content in files.items():
                 with open(os.path.join(package, name), 'w', encoding='utf-8') as handle:
                     handle.write(content)
-            env = dict(os.environ, PYTHONPATH=directory + os.pathsep + os.path.dirname(TEST_DIR))
+            env = dict(os.environ, PYTHONPATH=directory + os.pathsep + os.path.dirname(TEST_DIR),
+                       MYFLAMES_NO_DEPRECATION_WARNING='1')
             result = subprocess.run([sys.executable, '-m', 'myflames.mcp_server'],
                                     env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     universal_newlines=True, encoding="utf-8", timeout=30)
@@ -218,9 +220,42 @@ class TestServerWrapper(unittest.TestCase):
 
     def test_main_runs_successful_transport(self):
         server = mock.Mock()
-        with mock.patch.object(mcp, 'build_server', return_value=server):
+        with mock.patch.object(mcp, 'build_server', return_value=server), \
+                contextlib.redirect_stderr(io.StringIO()):
             mcp.main()
         server.run.assert_called_once_with()
+
+    def test_main_prints_the_deprecation_on_stderr_only(self):
+        # Deprecated with the command line: one stderr line, never on stdout
+        # (the MCP protocol), and every tool still registered and served.
+        for opt_out, shown in (('', True), ('1', False)):
+            with self.subTest(opt_out=opt_out):
+                server, out, err = mock.Mock(), io.StringIO(), io.StringIO()
+                environ = {k: v for k, v in os.environ.items() if k != 'MYFLAMES_NO_DEPRECATION_WARNING'}
+                if opt_out:
+                    environ['MYFLAMES_NO_DEPRECATION_WARNING'] = opt_out
+                with mock.patch.dict(os.environ, environ, clear=True), \
+                        mock.patch.object(mcp, 'build_server', return_value=server), \
+                        contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    mcp.main()
+                server.run.assert_called_once_with()
+                self.assertEqual(out.getvalue(), '')
+                self.assertEqual(err.getvalue(), mcp.MCP_DEPRECATION if shown else '')
+        self.assertIn('desktop app', mcp.MCP_DEPRECATION)
+
+    def test_deprecation_is_shown_before_a_missing_sdk_error(self):
+        env = {k: v for k, v in os.environ.items() if k != 'MYFLAMES_NO_DEPRECATION_WARNING'}
+        env['PYTHONPATH'] = os.path.dirname(TEST_DIR)
+        code = ("import sys, myflames.mcp_server as m\n"
+                "def fail():\n    raise ImportError('MCP transport import failed (mcp version: not installed): x.')\n"
+                "m.build_server = fail\nm.main()\n")
+        result = subprocess.run([sys.executable, '-c', code], env=env, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, universal_newlines=True, encoding='utf-8', timeout=30)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(result.stdout, '')
+        lines = result.stderr.splitlines()
+        self.assertEqual(lines[0] + '\n', mcp.MCP_DEPRECATION)
+        self.assertTrue(lines[1].startswith('myflames-mcp: MCP transport import failed'), lines)
 
     def test_missing_or_incompatible_transport_reports_version_and_cause(self):
         for version, cause in ((None, "No module named 'mcp'"),

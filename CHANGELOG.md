@@ -10,6 +10,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Refreshed the myflames dual-blade flame logo, wordmarks, social preview, the workspace logo and favicon, and the charcoal-slate desktop app icon (`myflames-app-icon.icns` on macOS, the 1024 px PNG master on Windows).
+- **Maintenance shows a running dump, restore or clone as it goes.** The job card has a progress bar: MySQL Shell's own percent, or for an SQL dump (`mysqldump`, `mariadb-dump`, which report nothing) an estimated percent from the bytes written to `dump.sql` beside the server's table-size estimate, read fresh on MySQL 8.0 and later. Under it: the step the job is on (repeating the preflight, counting rows, dumping, checksumming, writing the manifest; for restore, staging, loading and verifying), the bytes written and the rate, and the elapsed time. The same summary sits next to the disabled Start button with **Show progress**, and starting a job brings its card into view. A completed dump has **Open in Finder** (**Open in File Explorer** on Windows), and on macOS a dump you started opens its folder by itself when it completes. `lifecycle-job-1.0` adds `phase`, `elapsed_s` and `output`.
+
+### Deprecated
+
+- **The Python command line.** myflames now focuses on the desktop app: new features, subcommands and flags go there only. `myflames <command>` and `python3 -m myflames` keep every command, flag, output format and exit code and get fixes only, until a future major release removes them. Each command prints one deprecation line on standard error (not `ui`, which the desktop app runs as its backend); `-q` / `--quiet` or `MYFLAMES_NO_DEPRECATION_WARNING=1` hides it.
+- **User documentation is about the desktop app only.** The README's CLI examples and CLI reference, and the handbook's Command-line reference and CI & agents chapters, were removed; CLI and MCP contracts remain in `docs/DEVELOPER_REFERENCE.md` for fixes.
+- **`myflames-mcp`, the agent tools.** Deprecated with the command line: every tool keeps working and none are added. The server prints one deprecation line on standard error when it starts (standard output carries the MCP protocol); `MYFLAMES_NO_DEPRECATION_WARNING=1` hides it.
+
+### Removed
+
+- **Legacy logos and documentation** (the workspace is not GA, so nothing older is kept for compatibility): the original `myflames.jpeg` and the segmented `myflames-icon-v2`/`v3` marks; the old GitHub Pages guide pages (`docs/guide/`) and the CLI material on the Pages demo index; the CLI token-savings walkthrough (`docs/examples/`), the browser playground (`docs/playground/`), the synthetic desktop design preview (`docs/design/`), the September 2026 review note (`docs/reviews/`), unused screenshots and old implementation prompts (`.claude/prompts/`). The workspace no longer answers the content-hashed logo URLs of earlier bundles.
+
+### Fixed
+
+- **Maintenance > Dump no longer looks frozen.** With `mysqldump` or `mariadb-dump` the job showed only "Running" and an empty output log until the end, and its card sat at the top of the view while Start dump… was at the bottom of the form, so in most windows nothing visible moved.
 
 ## [3.3.2] - 2026-11-05
 
@@ -860,7 +875,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rewrite the README around installation and common workflows, correct MySQL's
   JSON-format setup in the quick start, and add opt-in current-MySQL corpus tests.
 
-Validation details and remaining limitations: [September review](docs/reviews/2026-09-15.md).
+Validation details and remaining limitations were recorded in the September review (removed with the legacy docs on 2026-11-06).
 
 ## [2.2.0] (2026-06-30)
 
@@ -1025,7 +1040,7 @@ the digest or JSON for tools, an exit code for CI.
   plus a "Made with myflames" footer (carrying the Brendan Gregg / Tanel Poder
   inspiration credit).
 - **`ROADMAP.md`**: contributor-facing vision, shipped/next, and non-goals.
-- **Browser playground scaffold** ([docs/playground/](docs/playground/)),
+- **Browser playground scaffold** (`docs/playground/`, since removed),
   client-side Pyodide page (pending a published wheel).
 - **Live, reproducible token-savings walkthrough**
   ([docs/examples/](docs/examples/)) backed by a real MySQL 8.4 Docker script.

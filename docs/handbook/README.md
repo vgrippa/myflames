@@ -21,9 +21,7 @@ Markdown chapters here; do not maintain a second prose copy in the website.
 ## Reference
 
 - [Connection policies & write safety](safety.md)
-- [Command-line reference](cli.md)
 - [Engine & platform compatibility](compatibility.md)
-- [CI & agents](agents.md)
 
 ## Community
 

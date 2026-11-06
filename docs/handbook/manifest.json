@@ -56,24 +56,10 @@
     "public_reference": "docs/DEVELOPER_REFERENCE.md"
   },
   {
-    "id": "cli",
-    "title": "Command-line reference",
-    "group": "Reference",
-    "file": "cli.md",
-    "public_reference": "README.md"
-  },
-  {
     "id": "compatibility",
     "title": "Engine & platform compatibility",
     "group": "Reference",
     "file": "compatibility.md",
-    "public_reference": "README.md"
-  },
-  {
-    "id": "agents",
-    "title": "CI & agents",
-    "group": "Reference",
-    "file": "agents.md",
     "public_reference": "README.md"
   },
   {

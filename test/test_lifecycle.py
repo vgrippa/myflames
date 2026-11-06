@@ -108,6 +108,11 @@ class ReplayConnection(object):
             return _tsv([[g] for g in getattr(self, 'expanded_grants', self.grants)])
         if body == 'SHOW GRANTS':
             return _tsv([[g] for g in self.grants])
+        if body.startswith('SET SESSION information_schema_stats_expiry=0;\n' + lc.TAG + 'SELECT TABLE_SCHEMA,TABLE_NAME,'):
+            self.fresh_sizes = getattr(self, 'fresh_sizes', 0) + 1
+            if getattr(self, 'deny_fresh_sizes', False):
+                raise ConnectorError('ERROR 1193 (HY000): Unknown system variable')
+            return _tsv([row[:4] + [getattr(self, 'fresh_size', row[4])] for row in self.catalog])
         if body.startswith('SELECT TABLE_SCHEMA,TABLE_NAME,TABLE_TYPE,ENGINE,COALESCE'):
             if self.restored_marker and os.path.exists(self.restored_marker):
                 return _tsv(CATALOG)
@@ -723,6 +728,105 @@ class LifecycleTests(unittest.TestCase):
         self.assert_secret_transport(self.calls()[0])
         self.assertNotIn(PASSWORD, json.dumps(result) + json.dumps(self.store.audit_records()))
         self.assertIn('--set-gtid-purged=OFF', self.calls()[0]['argv'])
+
+    def run_dump(self, conn, engine='mysql', shell=False):
+        tools = self.tools if shell else self.native_tools(engine)
+        with mock.patch.object(lc, 'detect_tools', return_value=tools):
+            plan = lc.prepare_dump(conn, CONNECTION, self.output, schemas=['app'], tools=tools)
+            job = lc.dump_job(CONNECTION, plan, confirmed=True, typed_target=plan['target'],
+                              audit=self.audit('dump'), factory=lambda **kw: conn, start=False)
+            return job.run()
+
+    def test_sql_dump_reports_steps_bytes_written_and_a_fresh_size_estimate(self):
+        conn = ReplayConnection(server_variables('mysql'))
+        conn.fresh_size = '4096'
+        result = self.run_dump(conn)
+        self.assertEqual(result['state'], 'done', result)
+        statuses = [e['text'] for e in result['events'] if e['stream'] == 'status']
+        self.assertEqual(statuses[:6], ['Repeating the preflight before anything starts.', 'Reading the list of tables.',
+                                        'Counting rows of small tables to verify the dump.',
+                                        'Dumping with mysqldump into dump.sql.', 'Checksumming the dump files.',
+                                        'Counting rows again to compare.'])
+        self.assertEqual(result['phase'], 'Writing the manifest.')
+        self.assertNotIn('%', ''.join(statuses))
+        # The sizes are read fresh (MySQL 8.0+ caches them for a day): the base
+        # table's 4096 bytes, never the view's.
+        self.assertEqual(conn.fresh_sizes, 1)
+        self.assertEqual(result['output'], {'written_bytes': os.path.getsize(os.path.join(self.output, 'dump.sql')),
+                                            'estimated_bytes': 4096})
+        self.assertIsInstance(result['elapsed_s'], float)
+        self.assertGreaterEqual(result['elapsed_s'], 0)
+
+    def test_sql_dump_estimate_falls_back_to_cached_sizes(self):
+        for engine, deny in (('mysql', True), ('mariadb', False)):
+            with self.subTest(engine=engine):
+                self.output = str(self.root / ('estimate-' + engine))
+                conn = ReplayConnection(server_variables(engine))
+                conn.deny_fresh_sizes = deny
+                result = self.run_dump(conn, engine)
+                self.assertEqual(result['state'], 'done', result)
+                self.assertEqual(result['output']['estimated_bytes'], 100)
+                # Both statements carry the tag that keeps them out of myflames' own views.
+                sent = [sql for sql, unused in conn.calls if 'information_schema_stats_expiry' in sql]
+                self.assertTrue(all(sql.count(lc.TAG) == 2 for sql in sent), sent)
+                # MariaDB has no information_schema_stats_expiry: never sent there.
+                self.assertEqual(getattr(conn, 'fresh_sizes', 0), 1 if engine == 'mysql' else 0)
+
+    def test_mariadb_system_versioned_tables_count_toward_the_estimate(self):
+        catalog = CATALOG + [['app', 'history', 'SYSTEM VERSIONED', 'InnoDB', '300', '0']]
+        result = self.run_dump(ReplayConnection(server_variables('mariadb'), catalog=catalog), 'mariadb')
+        self.assertEqual(result['state'], 'done', result)
+        self.assertEqual(result['output']['estimated_bytes'], 400)
+
+    def test_old_mysql_and_shell_dumps_report_no_byte_estimate(self):
+        conn = ReplayConnection(server_variables('mysql', version='5.7.44'))
+        result = self.run_dump(conn)
+        self.assertEqual(result['state'], 'done', result)
+        self.assertEqual(getattr(conn, 'fresh_sizes', 0), 0, 'MySQL 5.7 reads sizes live; nothing to refresh')
+        self.assertEqual(result['output']['estimated_bytes'], 100)
+        self.output = str(self.root / 'shell')
+        result = self.run_dump(ReplayConnection(server_variables('mysql')), shell=True)
+        self.assertEqual(result['state'], 'done', result)
+        self.assertIsNone(result['output'], 'MySQL Shell reports its own percent')
+        self.assertIn('Dumping with MySQL Shell.', [e['text'] for e in result['events']])
+
+    def test_cancel_during_the_size_estimate_creates_no_dump_file(self):
+        conn = ReplayConnection(server_variables('mysql'))
+        tools = self.native_tools()
+        with mock.patch.object(lc, 'detect_tools', return_value=tools):
+            plan = lc.prepare_dump(conn, CONNECTION, self.output, schemas=['app'], tools=tools)
+            job = lc.dump_job(CONNECTION, plan, confirmed=True, typed_target=plan['target'],
+                              audit=self.audit('dump'), factory=lambda **kw: conn, start=False)
+            with mock.patch.object(lc, '_dump_size_estimate', side_effect=lambda *a: (job.cancelled.set(), 5)[1]):
+                result = job.run()
+        self.assertEqual(result['state'], 'cancelled', result)
+        self.assertFalse(os.path.exists(os.path.join(self.output, 'dump.sql')))
+        self.assertEqual(self.calls(), [], 'the tool never started')
+
+    def test_phase_is_cleaned_like_the_log(self):
+        job = lc.LifecycleJob('dump', lambda job: None, {'password': 'pw-xyz'})
+        job.step('Dumping \x1b[36mwith pw-xyz\x07.')
+        snapshot = job.snapshot()
+        self.assertNotIn('pw-xyz', snapshot['phase'])
+        self.assertNotIn('\x1b', snapshot['phase'])
+        self.assertEqual(snapshot['phase'], snapshot['events'][-1]['text'])
+
+    def test_tool_output_size_is_measured_while_it_runs(self):
+        job = lc.LifecycleJob('dump', lambda job: None)
+        job.output = {'written_bytes': 0, 'estimated_bytes': None}
+        seen = []
+        script = 'import sys, time\nsys.stdout.write("x" * 3000); sys.stdout.flush(); time.sleep(1.5)\nsys.stdout.write("y" * 1000)\n'
+        def watch():
+            for unused in range(60):
+                seen.append(job.snapshot()['output']['written_bytes'])
+                time.sleep(0.05)
+        watcher = threading.Thread(target=watch)
+        watcher.start()
+        with open(self.root / 'out.sql', 'wb') as handle:
+            job.process_tool([sys.executable, '-c', script], dict(os.environ), output_file=handle)
+        watcher.join()
+        self.assertIn(3000, seen, 'a partial size was reported before the tool ended')
+        self.assertEqual(job.snapshot()['output']['written_bytes'], 4000)
 
     def test_regression_successful_dump_hashes_files_once(self):
         for engine, shell in (('mysql', False), ('mariadb', False), ('mysql', True)):

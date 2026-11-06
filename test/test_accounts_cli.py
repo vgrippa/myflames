@@ -10,6 +10,10 @@ import tempfile
 import unittest
 from unittest import mock
 
+# These tests check each command's own stderr; the CLI deprecation notice has
+# its own tests (test_cli_contract.CliDeprecationTests), which clear this.
+os.environ.setdefault("MYFLAMES_NO_DEPRECATION_WARNING", "1")
+
 sys.path.insert(0, str(Path(__file__).parent))
 import _accounts_replay as replay  # noqa: E402
 from test_accounts import FakeConn, actor  # noqa: E402

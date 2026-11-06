@@ -24,7 +24,7 @@ Use estimated plans first when that is sufficient. Schedule expensive analysis a
 
 ## Local evidence and credentials
 
-Saved investigations and audit events live on your computer. Desktop and CLI storage are separate. Saved passwords use a local vault in the desktop backend's `.myflames` directory; server data is rendered locally.
+Saved investigations and audit events live on your computer. Saved passwords use a local vault in the desktop backend's `.myflames` directory; server data is rendered locally.
 
 The app can fetch MySQL and MariaDB news headlines while Home is open. That optional setting can be turned off. SSH connections use your own SSH config, keys and agent.
 

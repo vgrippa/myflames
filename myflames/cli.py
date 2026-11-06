@@ -1012,9 +1012,40 @@ def _close_on_termination_signals():
             pass
 
 
+CLI_DEPRECATION = (
+    "warning: the myflames command line is deprecated and gets no new features; "
+    "use the myflames desktop app (https://github.com/vgrippa/myflames/releases). "
+    "Set MYFLAMES_NO_DEPRECATION_WARNING=1 to hide this notice.\n")
+
+
+def _quiet_in(argv):
+    """-q, -qq, --quiet or an abbreviation of it (--qui, --quie) before ``--``."""
+    for arg in argv:
+        if arg == "--":
+            return False
+        if (len(arg) > 1 and arg[0] == "-" and set(arg[1:]) == {"q"}) or (len(arg) >= 5 and "--quiet".startswith(arg)):
+            return True
+    return False
+
+
+def _cli_deprecation_notice(argv):
+    """One line on standard error for every command but ``ui``, which the
+    desktop app runs as its own backend and which has its own notice. Like
+    other deprecation warnings, --quiet hides it. Output, exit codes and flags
+    stay as they were."""
+    if (argv[1:2] == ["ui"] or os.environ.get("MYFLAMES_NO_DEPRECATION_WARNING") == "1"
+            or _quiet_in(argv[1:])):
+        return
+    try:
+        sys.stderr.write(CLI_DEPRECATION)
+    except (OSError, ValueError):
+        pass
+
+
 def main():
     _close_on_termination_signals()
     _utf8_standard_streams()
+    _cli_deprecation_notice(sys.argv)
     # Handle subcommands before argparse to avoid conflicts with positional args
     if len(sys.argv) > 1:
         if (len(sys.argv) > 2 and
@@ -1090,7 +1121,8 @@ def main():
 
     parser = argparse.ArgumentParser(
         prog="myflames",
-        description="MySQL EXPLAIN ANALYZE visualizer: flame graphs, bar charts, diagrams, execution trees, and Workbench-style plans.",
+        description="MySQL EXPLAIN ANALYZE visualizer: flame graphs, bar charts, diagrams, execution trees, and Workbench-style plans. "
+                    "Deprecated: the command line gets no new features; use the myflames desktop app.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         # add_help=False so the short flag ``-h`` is free for ``--host`` — we
         # add our own ``--help`` below. ``mysql -h host`` users expect this.

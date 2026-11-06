@@ -73,6 +73,64 @@ try {
   assert.equal(sent.body.plan, plan, 'reviewed plan is forwarded without alteration');
   assert.equal(sent.body.typed_target, 'target');
   assert.equal(sent.body.confirmed, true);
+  // Compile only the exported pure helpers and the real byte formatter. This
+  // avoids mounting the view or replacing the calculations with test doubles.
+  const declarations = async (name, names) => {
+    const text = await fs.readFile(new URL(`../src/${name}`, import.meta.url), 'utf8');
+    const ast = ts.createSourceFile(name, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const found = ast.statements.filter(node => ts.isFunctionDeclaration(node) && names.includes(node.name?.text));
+    assert.equal(found.length, names.length);
+    return found.map(node => node.getText(ast)).join('\n');
+  };
+  const helpers = await declarations('Maintenance.tsx', ['lifecycleProgress', 'lifecycleRate', 'lifecycleElapsed', 'autoRevealDump']);
+  const formatter = await declarations('PerfShared.tsx', ['bytes']);
+  const { lifecycleProgress, lifecycleRate, lifecycleElapsed, autoRevealDump } = await import(moduleUrl(ts.transpileModule(
+    formatter + '\n' + helpers, { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ES2020 } }).outputText));
+  const { joinPath } = await import(filesUrl);
+  assert.equal(joinPath('/backup/', 'myflames-manifest.json'), '/backup/myflames-manifest.json');
+  assert.equal(joinPath('C:\\backup', 'myflames-manifest.json'), 'C:\\backup\\myflames-manifest.json');
+  const mib = 2 ** 20;
+  const sql = { progress: null, output: { written_bytes: 120 * mib, estimated_bytes: 262 * mib } };
+  assert.equal(lifecycleProgress(sql).percent, '≈46%');
+  assert.equal(lifecycleProgress(sql).output, '120.0 MiB written of about 262.0 MiB');
+  assert.equal(lifecycleProgress({ ...sql, progress: 45 }).percent, '45%', 'tool percent wins over table-size estimate');
+  assert.equal(lifecycleProgress({ ...sql, progress: 0 }).value, 0, 'reported zero stays determinate');
+  assert.equal(lifecycleProgress({ ...sql, progress: 100 }).percent, '100%');
+  assert.equal(lifecycleProgress({ progress: null }).value, null, 'older snapshots are indeterminate');
+  assert.equal(lifecycleProgress({ progress: null }).output, '');
+  for (const estimated_bytes of [null, 0, -1, NaN, Infinity]) {
+    const result = lifecycleProgress({ progress: null, output: { written_bytes: mib, estimated_bytes } });
+    assert.equal(result.value, null);
+    assert.equal(result.output, '1.0 MiB written');
+  }
+  const over = lifecycleProgress({ progress: null, output: { written_bytes: 1.2 * 2 ** 30, estimated_bytes: 2 ** 30 } });
+  assert.equal(over.value, null, 'exceeding an estimate never implies completion');
+  assert.equal(over.percent, '');
+  assert.equal(over.output, '1.2 GiB written, more than the 1.0 GiB estimate');
+  assert.equal(lifecycleProgress({ progress: null, output: { written_bytes: mib, estimated_bytes: mib } }).value, null, 'exact estimate is also indeterminate');
+  assert.equal(lifecycleProgress({ progress: null, output: { written_bytes: 9999, estimated_bytes: 10000 } }).percent, '≈99%', 'rounding cannot claim estimated completion');
+  assert.equal(lifecycleProgress({ progress: NaN }).value, null);
+  assert.equal(lifecycleRate(null, { written: mib, at: 1000 }), null, 'no rate from a single snapshot');
+  assert.equal(lifecycleRate({ written: mib, at: 1000 }, { written: 25 * mib, at: 3000 }), 12 * mib);
+  assert.equal(lifecycleRate({ written: mib, at: 1000 }, { written: mib, at: 2000 }), 0, 'stalled output shows zero rate');
+  assert.equal(lifecycleRate({ written: mib, at: 1000 }, { written: 0, at: 2000 }), null, 'counter reset discards a rate');
+  assert.equal(lifecycleRate({ written: 0, at: 1000 }, { written: mib, at: 1000 }), null, 'same-time samples cannot divide by zero');
+  assert.equal(lifecycleElapsed(83.9), '1:23');
+  assert.equal(lifecycleElapsed(3600), '1:00:00');
+  assert.equal(lifecycleElapsed(0), '0:00');
+  assert.equal(lifecycleElapsed(-1), '0:00');
+  for (const unknown of [null, undefined, NaN, Infinity]) assert.equal(lifecycleElapsed(unknown), '');
+  // Abuse case (open lead 17): a schema named "a,calc.exe,b" gives a dump
+  // folder with commas, which File Explorer's /select, splits. Windows never
+  // opens a folder without a click; macOS opens one this view started, once.
+  const comma = { id: 'j1', directory: 'C:\\Users\\John Smith\\a,calc.exe,b-2026-11-06' };
+  assert.equal(autoRevealDump(comma, true, new Set(), true), false, 'Windows never auto-reveals');
+  assert.equal(autoRevealDump({ id: 'j1', directory: '/Users/dba/app-2026-11-06' }, true, new Set(), false), true);
+  assert.equal(autoRevealDump({ id: 'j1', directory: '/Users/dba/app-2026-11-06' }, false, new Set(), false), false, 'adopted jobs never auto-reveal');
+  assert.equal(autoRevealDump({ id: 'j1', directory: '/Users/dba/app-2026-11-06' }, true, new Set(['j1']), false), false, 'once per job');
+  assert.equal(autoRevealDump({ id: null, directory: '/Users/dba/x' }, true, new Set(), false), false);
+  assert.equal(autoRevealDump({ id: 'j2' }, true, new Set(), false), false, 'no folder for failed dumps, restore or clone');
+  console.log('PASS maintenance reported and estimated progress, over-estimate and unknown output, snapshot rates and elapsed clocks');
   console.log('PASS maintenance folder names, local date, collisions, reserved paths, Windows roots and read-only suggestions');
   console.log('PASS maintenance acknowledgement request omission and exact reviewed-plan round trip');
 } finally {

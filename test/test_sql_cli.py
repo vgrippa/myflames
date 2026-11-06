@@ -15,6 +15,10 @@ from unittest import mock
 from myflames import cli, editor_session as editor, sql_cli
 from myflames.workspace_store import WorkspaceStore
 
+# These tests check each command's own stderr; the CLI deprecation notice has
+# its own tests (test_cli_contract.CliDeprecationTests), which clear this.
+os.environ.setdefault("MYFLAMES_NO_DEPRECATION_WARNING", "1")
+
 
 class Terminal(io.StringIO):
     def isatty(self):
@@ -196,9 +200,6 @@ class SQLTests(unittest.TestCase):
         text = ' '.join(out.split())
         self.assertIn('results carry no column types', text)
         self.assertIn('json keeps numbers as strings, table quotes them, and insert writes numbers', text)
-        readme = Path(__file__).resolve().parents[1].joinpath('README.md').read_text(encoding='utf-8')
-        row = next(line for line in readme.splitlines() if line.startswith('| `sql` |'))
-        self.assertIn('Results carry no column types', row)
 
     def test_formats_and_null(self):
         for fmt in ('table', 'csv', 'tsv', 'markdown', 'json'):

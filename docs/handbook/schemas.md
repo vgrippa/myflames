@@ -8,14 +8,7 @@ The **source** is the schema to match. The **target** is the schema that would c
 
 Generated sync SQL changes the target to match the source. myflames does not run the generated script. Objects found only in the target are left out until you explicitly choose them. Changes within a selected object can still drop columns or replace objects, and carry warnings.
 
-```bash
-myflames schema save -p --profile prod -D shop --name "before release"
-myflames schema compare latest live -p --profile prod -D shop
-myflames schema compare profile:prod/shop profile:staging/shop \
-  --sql -o sync-staging.sql
-```
-
-These examples assume saved `prod` and `staging` profiles and the `shop` database.
+In **Schema versions**, choose **Save version…** to keep a database's schema on this computer, then **Compare** two schemas: saved versions, exported files, or databases read now, on the same server or on different ones. The sync script can be copied (**Copy script**) or opened in the Query editor (**Open in Query editor**) to review; myflames never runs it.
 
 ## Inspect the proposed change
 
@@ -25,8 +18,6 @@ Checks can flag definitions such as FLOAT money columns, utf8mb3 and missing for
 
 ## Export a schema as SQL
 
-```bash
-myflames schema export latest --sql --create-database -o shop.sql
-```
+Choose **Export as SQL…** for a saved version, or a database read now, to get a script that recreates the schema on another server.
 
 The export orders tables by foreign-key dependencies and omits definers by default. It is a script to review and run through your chosen process. Exporting it does not apply it to a server.

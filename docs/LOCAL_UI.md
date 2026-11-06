@@ -1004,10 +1004,17 @@ the system folder dialog on macOS or Windows (Linux uses Zenity when
 available). Cancelling leaves the path unchanged, and choosing a folder
 starts no backup. The folder must not exist yet or be empty (a folder with files in it is refused at the preflight); restore and clone also ask you to
 type the target. The confirmation goes stale after a minute (run the preflight
-again), and myflames repeats the preflight right before starting. A running
-job shows its progress, the last output line, and **Cancel**; finished jobs
-show the verification (passed, failed, or not checked, with the reason) and
-the dump manifest. Jobs belong to the myflames process and to the connection
+again), and myflames repeats the preflight right before starting. Starting
+brings the job's card into view. A running job shows a progress bar, the step
+it is on, the elapsed time, the last output line and **Cancel**. MySQL Shell
+reports its own percent; `mysqldump` and `mariadb-dump` print nothing, so for
+them the bar is an estimate ("≈46%") from the bytes written to `dump.sql`
+beside the server's table sizes, with the size written and the rate. The same
+summary sits next to the disabled Start button, with **Show progress** to jump
+to the card. Finished jobs show the verification (passed, failed, or not
+checked, with the reason) and the dump manifest; a completed dump has **Open
+in Finder** (**Open in File Explorer** on Windows), and on macOS a dump you
+started opens its folder by itself when it completes. Jobs belong to the myflames process and to the connection
 they ran on: after a switch they stay greyed until you switch back, a reloaded
 page finds them again, and a Start whose reply was lost is found in the job
 list instead of being sent twice. A running job is also named above any other

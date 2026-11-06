@@ -12,6 +12,10 @@ from unittest import mock
 from myflames import workspace_cli
 from myflames.parser import parse_explain
 
+# These tests check each command's own stderr; the CLI deprecation notice has
+# its own tests (test_cli_contract.CliDeprecationTests), which clear this.
+os.environ.setdefault("MYFLAMES_NO_DEPRECATION_WARNING", "1")
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIXTURE = os.path.join(ROOT, 'test', 'fixtures', 'explain-044-join-3t-products-category-reviews.json')
 

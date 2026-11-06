@@ -84,6 +84,32 @@
 .ops-loop .count-badge { margin-inline-start: var(--space-2); }
 .ops-progress { display: flex; align-items: center; gap: var(--space-2); margin-block: var(--space-2); font-variant-numeric: tabular-nums; }
 .ops-progress progress { flex: 1; min-width: 0; accent-color: var(--accent); }
+.ops-job { scroll-margin-block-start: calc(var(--toolbar-h) + var(--space-3)); }
+.ops-job:focus { outline: 2px solid var(--focus); outline-offset: -2px; }
+.ops-job-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  margin-block: var(--space-2);
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+.ops-job-facts > span { min-width: 0; overflow-wrap: anywhere; }
+.ops-job-folder { margin-block: var(--space-2); }
+.ops-job-summary {
+  display: flex;
+  flex: 1 1 18rem;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+.ops-job-summary progress { width: var(--space-7); min-width: 0; accent-color: var(--accent); }
+.ops-job-summary > span { min-width: 0; overflow-wrap: anywhere; }
+.ops-job-summary .text-button { flex: none; }
 .ops-log-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: var(--text-sm); }
 .ops-pre {
   max-width: 100%;

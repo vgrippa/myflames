@@ -10,15 +10,17 @@ import { privilegeResult, targetPrivilege, usePrivilege, usePrivileges } from ".
 import { download, recordDeclined, type Connection, type Profile } from "./api";
 import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "./binding";
 import { ConnectionTypeBand, TYPE_LABEL, useWritePolicy } from "./Connections";
-import { SchemaPicker, useSchemaCatalog } from "./PerfShared";
+import { bytes, SchemaPicker, useSchemaCatalog } from "./PerfShared";
 import {
-  ActionButton, ActionStatus, useSince, writeFailure, Checkbox, ConfirmSheet, DataTable, Fields, FormGrid, FormRow, InspectorSection,
+  ActionButton, ActionStatus, useAction, useSince, writeFailure, Checkbox, ConfirmSheet, DataTable, Fields, FormGrid, FormRow, InspectorSection,
   NumberField, PrerequisiteGate, Segmented, Select, StatusPill, SummaryLine,
   ToolbarButton, ViewLayout, ViewStatus,
   type Column, type InspectorContent, type Selection, type Tone,
 } from "./kit";
 import { Commands, DumpFolderField, dumpFolderStem, engineName, plural, suggestDumpFolder } from "./OpsShared";
-import { parentPath } from "./filesApi";
+import { joinPath, localReveal, parentPath } from "./filesApi";
+import { MAC, WINDOWS } from "./platform";
+import { durationText } from "./duration";
 import {
   cancelLifecycleJob, checkUpgrade, documentationUrl, jobActive, listLifecycleJobs,
   prepareLifecycle, readLifecycleJob, readLifecycleTools, startLifecycle, useOpsScope,
@@ -157,11 +159,59 @@ function ReadAction({ busy, busyLabel, children, disabled, blocked, ...props }: 
   </VisiblePrivilegeGate>;
 }
 
+/** Tool percentages take precedence. Table sizes estimate output, never completion. */
+export function lifecycleProgress(job: LifecycleJob) {
+  const written = job.output && Number.isFinite(job.output.written_bytes) && job.output.written_bytes >= 0 ? job.output.written_bytes : null;
+  const estimate = job.output?.estimated_bytes;
+  const estimated = typeof estimate === "number" && Number.isFinite(estimate) && estimate > 0 ? estimate : null;
+  const reported = typeof job.progress === "number" && Number.isFinite(job.progress) ? Math.max(0, Math.min(100, job.progress)) : null;
+  const value = reported ?? (written !== null && estimated !== null && written < estimated ? written / estimated * 100 : null);
+  const approximate = reported === null && value !== null;
+  // Rounding an estimate up to 100% would imply completion before verification.
+  const percent = value === null ? "" : `${approximate ? "≈" : ""}${approximate ? Math.min(99, Math.round(value)) : Math.round(value)}%`;
+  const output = written === null ? "" : estimated === null ? `${bytes(written)} written`
+    : written > estimated ? `${bytes(written)} written, more than the ${bytes(estimated)} estimate`
+      : `${bytes(written)} written of about ${bytes(estimated)}`;
+  return { value, percent, approximate, written, output };
+}
+export type OutputSample = { written: number; at: number };
+/** A rate needs two snapshots of this job, with increasing sample times. */
+export function lifecycleRate(previous: OutputSample | null, next: OutputSample): number | null {
+  if (!previous || next.at <= previous.at || next.written < previous.written) return null;
+  return (next.written - previous.written) / ((next.at - previous.at) / 1000);
+}
+/** Clock form for the facts line; durationText supplies its accessible wording. */
+export function lifecycleElapsed(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "";
+  const seconds = Math.max(0, Math.floor(value));
+  const tail = String(seconds % 60).padStart(2, "0");
+  const minutes = Math.floor(seconds / 60);
+  return minutes < 60 ? `${minutes}:${tail}` : `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, "0")}:${tail}`;
+}
+/** Open the folder of a completed dump by itself only for one this view
+ * started, once. Not on Windows: File Explorer's /select, argument splits a
+ * path at commas (security open lead 17), so there it opens only on a click. */
+export function autoRevealDump(job: { id: string | null; directory?: string }, started: boolean, revealed: Set<string>, windows: boolean) {
+  return !!job.directory && !!job.id && started && !revealed.has(job.id) && !windows;
+}
+const ESTIMATE_HINT = "Estimated from the server's table sizes; the SQL dump can be smaller or larger.";
+const OPEN_FOLDER_LABEL = MAC ? "Open in Finder" : WINDOWS ? "Open in File Explorer" : "Open folder";
+const OPEN_FOLDER_PENDING = MAC ? "Opening in Finder…" : WINDOWS ? "Opening in File Explorer…" : "Opening folder…";
+const OPEN_FOLDER_DONE = MAC ? "Opened the dump folder in Finder." : WINDOWS ? "Opened the dump folder in File Explorer." : "Opened the dump folder.";
+function showJob(id: string) {
+  // Match the attribute as data, without interpolating a job id into a selector.
+  const card = Array.from(document.querySelectorAll<HTMLElement>("[data-job]")).find(e => e.dataset.job === id);
+  if (!card) return;
+  card.scrollIntoView({ block: "start", behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  card.focus({ preventScroll: true });
+}
+
 /** Job status is an outcome, not proof of verification: a tool that exited 0
  * can still leave checks not checked. */
-function JobProgress({ bound, currentKey, cancelling, onCancel }: {
+function JobProgress({ bound, currentKey, cancelling, onCancel, shown, started, revealed }: {
   bound: Bound<LifecycleJob>; currentKey: string; cancelling: string;
   onCancel: (bound: Bound<LifecycleJob>) => void;
+  shown: boolean; started: boolean; revealed: Set<string>;
 }) {
   const job = bound.report;
   const other = bound.key !== currentKey;
@@ -169,12 +219,44 @@ function JobProgress({ bound, currentKey, cancelling, onCancel }: {
   const [tone, word] = jobWord(job);
   const cancelSince = useSince(cancelling === job.id);
   const last = job.events.length ? job.events[job.events.length - 1].text : "";
-  return <section className={`ops-job${other ? " is-other-connection" : ""}`} aria-label={`${SECTION_LABEL[job.operation]} on ${bound.label}`} data-job={job.id || undefined} data-state={job.state} data-other-connection={other || undefined}>
+  const progress = lifecycleProgress(job);
+  const sample = useRef<OutputSample | null>(null);
+  const [rate, setRate] = useState<number | null>(null);
+  useEffect(() => {
+    if (progress.written === null) { sample.current = null; setRate(null); return; }
+    // The job's own clock, so a late poll does not skew the rate.
+    const next = { written: progress.written, at: job.elapsed_s != null ? job.elapsed_s * 1000 : performance.now() };
+    if (sample.current && next.at === sample.current.at) return;
+    setRate(lifecycleRate(sample.current, next));
+    sample.current = next;
+  }, [job]);
+  const reveal = useAction(job.id || "");
+  const completed = job.state === "done" && job.result?.status === "completed";
+  const directory = job.operation === "dump" && completed ? job.result?.directory : undefined;
+  const openFolder = () => reveal.run(() => localReveal(joinPath(directory!, "myflames-manifest.json")), {
+    pending: OPEN_FOLDER_PENDING, done: OPEN_FOLDER_DONE,
+  });
+  useEffect(() => {
+    if (!job.id || !autoRevealDump({ id: job.id, directory }, started, revealed, WINDOWS)) return;
+    // Claim before sending, including failures: polling never retries a reveal.
+    revealed.add(job.id);
+    void openFolder();
+  }, [directory, job.id, started, revealed]);
+  const elapsed = lifecycleElapsed(job.elapsed_s);
+  // A finished dump wrote what it wrote; the estimate only mattered while it ran.
+  const output = active ? progress.output : progress.written !== null ? `${bytes(progress.written)} written` : "";
+  const facts = [active ? job.phase : "", output, active && rate !== null ? `${bytes(rate)}/s` : ""].filter(Boolean);
+  // Keep following jobs from this mounted view across Maintenance sections.
+  if (!shown) return null;
+  return <section className={`ops-job${other ? " is-other-connection" : ""}`} aria-label={`${SECTION_LABEL[job.operation]} on ${bound.label}`} data-job={job.id || undefined} data-state={job.state} data-other-connection={other || undefined} tabIndex={-1}>
     <div className="ops-job-head"><strong>{SECTION_LABEL[job.operation]} · {bound.label}</strong><StatusPill tone={tone} label={word} />{active && <ActionButton busy={cancelling === job.id} busyLabel="Cancelling…" disabled={other || !job.id} title={other ? "Switch back to this connection to cancel it." : undefined} onClick={() => onCancel(bound)}>Cancel</ActionButton>}</div>
     <ActionStatus state={{ phase: cancelling === job.id ? "pending" : "idle", message: "Waiting for the cancellation reply. The job may still be running.", startedAt: cancelSince }} />
     {other && <p className="hint">From {bound.label}. Switch back to that connection to manage this job.</p>}
-    {active && <div className="ops-progress" role="status"><progress aria-label={`${SECTION_LABEL[job.operation]} progress`} max={100} value={job.progress ?? undefined} /><span>{job.progress === null ? word : `${job.progress.toFixed(0)}%`}</span></div>}
-    {last && <p className="ops-log-line" title={last}>{last}</p>}
+    {active && <div className="ops-progress" role="status" title={progress.approximate ? ESTIMATE_HINT : undefined}><progress aria-label={`${SECTION_LABEL[job.operation]} progress`} max={100} value={progress.value ?? undefined} />{progress.percent && <span>{progress.percent}</span>}</div>}
+    {(facts.length > 0 || elapsed) && <p className="ops-job-facts">{facts.map((fact, i) => <span key={i}>{fact}</span>)}{elapsed && <span>{completed ? "Completed in" : "Elapsed"} <abbr title={durationText(job.elapsed_s)}>{elapsed}</abbr></span>}</p>}
+    {directory && <div className="ops-job-folder"><ActionButton busy={reveal.pending} busyLabel={OPEN_FOLDER_PENDING} onClick={() => { void openFolder(); }}>{OPEN_FOLDER_LABEL}</ActionButton></div>}
+    <ActionStatus state={reveal} />
+    {last && last !== job.phase && <p className="ops-log-line" title={last}>{last}</p>}
     {job.policy?.text && <p>{job.policy.text}</p>}
     {job.error && !job.result?.verification?.some((check) => check.reason === job.error) && <p role="alert" className="error">{job.error}</p>}
     {job.result?.partial_state && <p className="ops-warning">{job.result.partial_state}</p>}
@@ -184,6 +266,15 @@ function JobProgress({ bound, currentKey, cancelling, onCancel }: {
     {job.detail && <details><summary>Clone progress and status</summary><pre className="ops-pre">{JSON.stringify(job.detail, null, 2)}</pre></details>}
     <details><summary>Output ({job.events.length.toLocaleString()} lines)</summary><pre className="ops-pre" tabIndex={0}>{job.events.map((event) => `${event.at} ${event.stream}: ${event.text}`).join("\n") || "No output yet."}</pre></details>
   </section>;
+}
+
+function JobSummary({ job, onShow }: { job: LifecycleJob; onShow: () => void }) {
+  const progress = lifecycleProgress(job);
+  return <div className="ops-job-summary">
+    <progress aria-label={`${SECTION_LABEL[job.operation]} progress summary`} max={100} value={progress.value ?? undefined} title={progress.approximate ? ESTIMATE_HINT : undefined} />
+    <span>{[`${SECTION_LABEL[job.operation]} ${job.state === "queued" ? "waiting" : "running"}`, progress.percent, progress.written !== null ? bytes(progress.written) : ""].filter(Boolean).join(" · ")}</span>
+    <button className="text-button" type="button" onClick={onShow}>Show progress</button>
+  </div>;
 }
 
 export function MaintenanceView({ connection, disabled, onBack, selection, section, onSection, memory, onMemory, targetVersions = [], missingPrivileges = {}, profiles = [] }: {
@@ -264,6 +355,21 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   const sending = useRef(false);
   const [cancelling, setCancelling] = useState("");
   const cancelPending = useRef(new Set<string>());
+  const startedJobs = useRef(new Set<string>());
+  const revealedJobs = useRef(new Set<string>());
+  const [focusJob, setFocusJob] = useState("");
+  useEffect(() => {
+    if (!focusJob || sheet) return;
+    // Wait for the card to render and the sheet's focus restoration to finish.
+    const frame = requestAnimationFrame(() => { showJob(focusJob); setFocusJob(""); });
+    return () => cancelAnimationFrame(frame);
+  }, [focusJob, sheet, memory.jobs]);
+  function rememberStart(job: LifecycleJob) {
+    if (!job.id || job.state === "refused") return;
+    startedJobs.current.add(job.id);
+    onSection(job.operation);
+    setFocusJob(job.id);
+  }
   const [failure, setFailure] = useState<{ key: string; text: string; poll?: boolean } | null>(null);
   const [notice, setNotice] = useState("");
   const [pollRetry, setPollRetry] = useState(0);
@@ -333,7 +439,8 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   const oldData = shownPlan || shownUpgrade || memory.tools;
   const other = oldData && oldData.key !== key ? oldData.label : null;
   const blocked = policy?.blocked || (connection.read_only ? "Read-only: myflames refuses every change on this connection." : "");
-  const activeHere = memory.jobs.some((b) => b.key === key && jobActive(b.report));
+  const activeJob = memory.jobs.find((b) => b.key === key && jobActive(b.report));
+  const activeHere = !!activeJob;
   const dumpStem = dumpFolderStem(oneSchema || connection.name || connection.host);
   const finishedDumps = memory.jobs.filter(b => b.key === key && b.report.operation === "dump" && !jobActive(b.report)).map(b => b.report.id).join(",");
   useEffect(() => {
@@ -564,6 +671,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
       // switched while start was in flight; keep its id for Cancel.
       denied(job.error, checked);
       rememberOwners([job], checked);
+      rememberStart(job);
       publish.current((previous) => adoptJobs(previous, p.key, p.label, [job]));
       setSheet(null); sheetConnection.current = null;
       if (live()) {
@@ -593,6 +701,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
             setDirectoryTouched(false);
           }
           rememberOwners([found], from);
+          rememberStart(found);
           publish.current((m) => adoptJobs(m, p.key, p.label, [found as LifecycleJob]));
         }
       } catch {
@@ -688,7 +797,6 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
     <Segmented label="Maintenance task" value={section} options={(Object.keys(SECTION_LABEL) as MaintenanceSection[]).filter(value => value !== "clone" || !tools || tools.offered.clone).map((value) => ({ value, label: SECTION_LABEL[value], disabled: busy || (!!reads.loading && readKind !== "tools") }))} onChange={(next) => { selection.select("", false); setNotice(""); onSection(next); }} />
   </>;
   const form = (children: ReactNode) => <div className="ops-form"><fieldset disabled={formDisabled}>{children}</fieldset></div>;
-  const hereJobs = memory.jobs.filter((b) => b.report.operation === section);
   const statusError = failure?.key === key ? failure.text : readKind === "preflight" ? "" : reads.error;
   const retryRead = () => { void (readKind === "upgrade" ? runUpgrade() : readKind === "preflight" ? prepare() : loadTools(checkingUpdates)); };
   const readStatus = (kind: typeof readKind) => <ActionStatus keepLine state={{ phase: reads.loading && readKind === kind ? "pending" : "idle", message: reads.loading, startedAt: readSince }}
@@ -718,7 +826,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
           <strong>{SECTION_LABEL[sheet.report.operation]} · {sheet.label}</strong>
           <ActionStatus state={{ phase: "pending", message: "Waiting for the Start reply. Whether it started is unknown; do not start it again.", startedAt: startSince }} />
         </section>}
-        {hereJobs.map((bound, i) => <JobProgress key={`${bound.key}:${bound.report.id || i}`} bound={bound} currentKey={key} cancelling={cancelling} onCancel={(b) => { void cancel(b); }} />)}</>}>
+        {memory.jobs.map((bound, i) => <JobProgress key={bound.report.id || `${bound.key}:${i}`} bound={bound} shown={bound.report.operation === section} started={startedJobs.current.has(bound.report.id || "")} revealed={revealedJobs.current} currentKey={key} cancelling={cancelling} onCancel={(b) => { void cancel(b); }} />)}</>}>
       {summary && (
         <SummaryLine tone={section === "upgrade" ? upgradeTone : undefined} toneLabel={section === "upgrade" ? upgradeToneLabel : undefined} notes={upgradeNotes}
           extra={section === "upgrade" && upgrade ? <ToolbarButton onClick={() => download(JSON.stringify(upgrade, null, 2), "myflames-upgrade-check.json", "application/json")}>Export JSON</ToolbarButton> : undefined}>
@@ -830,7 +938,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
         <details><summary>Donor TLS</summary><label className="ops-field"><span>TLS mode</span><Select label="TLS mode" value={donor.ssl_mode || "REQUIRED"} options={[["REQUIRED", "Required"], ["VERIFY_CA", "Verify CA"], ["VERIFY_IDENTITY", "Verify identity"]]} onChange={(v) => setDonor({ ...donor, ssl_mode: v })} /></label><FormField label="CA file" value={donor.ssl_ca || ""} onChange={(v) => setDonor({ ...donor, ssl_ca: v })} /></details>
       </>))}
       </div>
-      {operation && tools && (operation !== "clone" || tools.offered.clone) && <div className="ops-actions"><ReadAction busy={preparing} busyLabel="Checking…" action={operation === "clone" ? "clone_recipient" : operation === "restore" ? "restore" : undefined} gate={operationGate} className="primary" disabled={formDisabled || detecting || !canPrepare} blocked={blocked || privilegeBlock} onClick={() => { void prepare(); }}>{`Start ${operation}…`}</ReadAction>{readStatus("preflight")}{!blocked && !privilegeBlock && <span className="hint">{activeHere ? "A job is running on this connection." : "Checks first (reads only), then shows the exact commands for you to confirm."}</span>}</div>}
+      {operation && tools && (operation !== "clone" || tools.offered.clone) && <div className="ops-actions"><ReadAction busy={preparing} busyLabel="Checking…" action={operation === "clone" ? "clone_recipient" : operation === "restore" ? "restore" : undefined} gate={operationGate} className="primary" disabled={formDisabled || detecting || !canPrepare} blocked={blocked || privilegeBlock} onClick={() => { void prepare(); }}>{`Start ${operation}…`}</ReadAction>{readStatus("preflight")}{activeJob ? <JobSummary job={activeJob.report} onShow={() => { onSection(activeJob.report.operation); setFocusJob(activeJob.report.id || ""); }} /> : !blocked && !privilegeBlock && <span className="hint">Checks first (reads only), then shows the exact commands for you to confirm.</span>}</div>}
       {notice && <p className="ops-note" role="status">{notice}</p>}
       <section ref={resultRef} className={`ops-preflight-result${preflightError || failedChecks.length ? " has-result" : ""}`} role="alert" tabIndex={-1}>
         {preflightError && <><p>Start {operation} is blocked: {preflightError} Fix the fields, then click Start {operation}… again.</p><button type="button" className="text-button" onClick={() => focusFix({ check: "input", status: "failed", reason: preflightError })}>Review fields</button></>}

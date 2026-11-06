@@ -268,6 +268,81 @@ class TestDeprecatedAliases(unittest.TestCase):
         json.loads(proc.stdout)  # stdout stays pure JSON
 
 
+class CliDeprecationTests(unittest.TestCase):
+    """The command line is deprecated: one stderr line per command, never on
+    stdout, never for `ui` (the desktop app's backend), hidden by --quiet or
+    MYFLAMES_NO_DEPRECATION_WARNING=1; output and exit codes unchanged."""
+
+    def run_without_opt_out(self, *args, **env):
+        environ = {k: v for k, v in os.environ.items() if k != "MYFLAMES_NO_DEPRECATION_WARNING"}
+        environ.update(env)
+        return subprocess.run([sys.executable, "-m", "myflames"] + list(args), cwd=REPO_ROOT, env=environ,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, encoding="utf-8")
+
+    def test_every_command_prints_one_notice_on_stderr_only(self):
+        from myflames.cli import CLI_DEPRECATION
+        for args in (("advise", FULL_SCAN, "--json"), ("digest", FULL_SCAN), (FULL_SCAN,)):
+            with self.subTest(args=args[0]):
+                proc = self.run_without_opt_out(*args)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(proc.stderr.count(CLI_DEPRECATION), 1)
+                self.assertTrue(proc.stderr.startswith(CLI_DEPRECATION))
+                self.assertNotIn("deprecated", proc.stdout)
+        self.assertIn("desktop app", CLI_DEPRECATION)
+        json.loads(self.run_without_opt_out("advise", FULL_SCAN, "--json").stdout)
+
+    def test_exit_codes_are_unchanged(self):
+        proc = self.run_without_opt_out("check", FULL_SCAN, "--fail-on", "full_scan")
+        self.assertEqual(proc.returncode, 1)
+        proc = self.run_without_opt_out("check", "/nonexistent/plan.json", "--fail-on", "full_scan")
+        self.assertEqual(proc.returncode, 2)
+
+    def test_quiet_and_the_opt_out_hide_it(self):
+        for args, env in ((("digest", FULL_SCAN, "-q"), {}), (("digest", FULL_SCAN, "--quiet"), {}),
+                          (("digest", FULL_SCAN, "--qui"), {}),
+                          (("digest", FULL_SCAN), {"MYFLAMES_NO_DEPRECATION_WARNING": "1"})):
+            with self.subTest(args=args, env=env):
+                proc = self.run_without_opt_out(*args, **env)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertNotIn("deprecated", proc.stderr)
+                self.assertIn("myflames digest", proc.stdout)
+
+    def test_ui_never_prints_it(self):
+        proc = self.run_without_opt_out("ui", "--help")
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(proc.stderr, "")
+        from myflames.cli import _quiet_in
+        self.assertFalse(_quiet_in(["sql", "--", "-q"]), "a -q after -- is an argument, not the flag")
+        self.assertFalse(_quiet_in(["--qu"]), "--qu is ambiguous, so it is not --quiet")
+
+
+class UserDocsCarryNoCliTests(unittest.TestCase):
+    """The CLI and myflames-mcp are deprecated and documented only in
+    docs/DEVELOPER_REFERENCE.md: the README and the handbook the website
+    renders describe the desktop app only."""
+
+    def test_readme_and_handbook_have_no_cli_material(self):
+        import re
+        with open(os.path.join(REPO_ROOT, "README.md"), encoding="utf-8") as f:
+            readme = f.read()
+        handbook = os.path.join(REPO_ROOT, "docs", "handbook")
+        with open(os.path.join(handbook, "manifest.json"), encoding="utf-8") as f:
+            chapters = [c["file"] for c in json.load(f)]
+        self.assertNotIn("cli.md", chapters)
+        self.assertNotIn("agents.md", chapters)
+        texts = {"README.md": readme}
+        for name in chapters + ["README.md"]:
+            with open(os.path.join(handbook, name), encoding="utf-8") as f:
+                texts["docs/handbook/" + name] = f.read()
+        command = re.compile(r"(?m)^\s*(?:\$ )?(?:myflames|myflames-mcp|pipx|pip)\b")
+        for name, text in texts.items():
+            blocks = re.findall(r"(?s)```[a-z]*\n(.*?)```", text)
+            self.assertEqual([b for b in blocks if command.search(b)], [], name + ": CLI command block")
+            self.assertEqual(re.findall(r"`myflames [a-z-]+", text), [], name + ": inline CLI command")
+            self.assertEqual(re.findall(r"(?m)^#{1,4} .*\bCLI\b", text), [], name + ": CLI heading")
+        self.assertIn("deprecated", readme, "the README keeps its one deprecation sentence")
+
+
 class TestWorkspaceCommand(unittest.TestCase):
     def test_ui_is_discoverable_and_has_own_help(self):
         self.assertIn('myflames ui', run_cli('--help').stdout)

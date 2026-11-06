@@ -23,9 +23,7 @@ the first time. App data lives
 under `~/Library/Application Support/myflames-desktop`, separate from the CLI's
 `~/.myflames`. The minimum window size is 720 by 520 pixels.
 
-`apps/desktop` is the development foundation. It opens the real workspace;
-`docs/design/desktop-workspace.html` is a separate interactive design preview
-with synthetic data. The preview does not connect to a database or execute SQL.
+`apps/desktop` is the development foundation. It opens the real workspace.
 The working workspace now uses this design direction: compact neutral
 navigation, links to open queries, a command palette and full-width Server
 details. The preview remains a synthetic reference, not live application data.

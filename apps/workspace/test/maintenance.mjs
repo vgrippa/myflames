@@ -64,8 +64,9 @@ const STATUS = "/api/lifecycle/status";
 const CANCEL = "/api/lifecycle/cancel";
 const JOBS = "/api/lifecycle/jobs";
 const DECLINED = "/api/audit/declined";
+const REVEAL = "/api/files/local/reveal";
 /** What the mocked server answers next, per path. */
-const next = { upgrade: native, prepare: [], start: [] };
+const next = { upgrade: native, prepare: [], start: [], reveal: [] };
 /** The jobs myflames holds, by id, as the status endpoint would return them,
  * and the endpoint each belongs to (the jobs list answers by endpoint). */
 const held = new Map();
@@ -77,6 +78,7 @@ const job = (base, id, extra = {}) => ({ ...structuredClone(base), id, ...extra 
 // the list's markers and keys (server-nav covers the floating default).
 const h = await open("/api/lifecycle/tools", "maintenance", {
   "/api/files/local/list": body => ({ status: 200, body: { path: body.path || "/Users/dba", home: "/Users/dba", entries: [], transfers: false } }),
+  [REVEAL]: body => next.reveal.shift() || { status: 200, body: { revealed: body.path }, delay: 100 },
   [UPGRADE]: () => ({ status: 200, body: next.upgrade, delay: 50 }),
   [PREPARE]: () => next.prepare.shift() || { status: 200, body: dumpPlan },
   [START]: (body) => {
@@ -308,7 +310,35 @@ try {
   await page.waitForSelector(`${view} .ops-job[data-job=job-1][data-state=running]`);
   assert.match(await text(`${view} .ops-job`), /Dump · .*Running.*Cancel/);
   assert.match(await text(`${view} .ops-job .ops-progress`), /25%/);
-  await settle(STATUS, 2, "a running job is polled");
+  await page.waitForFunction(() => document.activeElement?.dataset.job === 'job-1');
+  assert.equal(await page.$eval(`${view} .ops-job[data-job=job-1]`, e => e.tabIndex), -1, 'Start focuses its job card after closing the sheet');
+  // mysqldump is silent: table sizes supply an explicitly approximate percent.
+  const mib = 2 ** 20;
+  const phase = 'Dumping with mysqldump into dump.sql.';
+  held.set('job-1', job(running, 'job-1', { progress: null, phase, elapsed_s: 83,
+    output: { written_bytes: 120 * mib, estimated_bytes: 262 * mib },
+    events: [{ at: 'now', stream: 'stderr', text: phase }] }));
+  const firstCard = `${view} .ops-job[data-job=job-1]`;
+  await page.waitForFunction(s => document.querySelector(`${s} .ops-progress`)?.textContent.includes('≈46%'), {}, firstCard);
+  assert.match(await text(`${firstCard} .ops-job-facts`), /Dumping with mysqldump.*120.0 MiB written of about 262.0 MiB.*Elapsed 1:23/);
+  assert.equal(await page.$(`${firstCard} .ops-log-line`), null, 'phase is not repeated as tool output');
+  assert.equal(await page.$eval(`${firstCard} progress`, e => e.hasAttribute('value')), true);
+  assert.match(await page.$eval(`${firstCard} .ops-progress`, e => e.title), /Estimated from the server's table sizes/);
+  assert.match(await text(`${view} .ops-actions .ops-job-summary`), /Dump running · ≈46% · 120.0 MiB.*Show progress/);
+  // Show progress has the same focus behavior, including reduced motion.
+  await page.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'reduce' }]);
+  await page.locator(`${view} .ops-job-summary button ::-p-text(Show progress)`).click();
+  await page.waitForFunction(() => document.activeElement?.dataset.job === 'job-1');
+  await page.emulateMediaFeatures([]);
+  held.set('job-1', job(running, 'job-1', { progress: null, phase, elapsed_s: 85,
+    output: { written_bytes: 314 * mib, estimated_bytes: 262 * mib } }));
+  await page.waitForFunction(s => { const text = document.querySelector(`${s} .ops-job-facts`)?.textContent || ''; return text.includes('more than') && /MiB\/s/.test(text); }, {}, firstCard);
+  assert.match(await text(`${firstCard} .ops-job-facts`), /314.0 MiB written, more than the 262.0 MiB estimate/);
+  assert.match(await text(`${firstCard} .ops-job-facts`), /MiB\/s/, 'rate appears after two output snapshots');
+  assert.equal(await page.$eval(`${firstCard} progress`, e => e.hasAttribute('value')), false, 'exceeding the estimate is indeterminate');
+  assert.doesNotMatch(await text(`${firstCard} .ops-progress`), /Running|%/, 'no duplicate Running label or invented completion');
+  await captureSheet('dump-progress');
+  assert.ok(calls(STATUS).length >= 2, "a running job is polled through successive snapshots");
   assert.equal(await page.$eval(`${view} .ops-actions button`, (e) => e.disabled), true, "no second operation while one runs");
   await page.locator(`${view} .ops-job button ::-p-text(Cancel)`).click();
   await settle(CANCEL, 1);
@@ -318,6 +348,7 @@ try {
   await page.waitForSelector(`${view} .ops-job[data-state=cancelled]`);
   assert.match(await text(`${view} .ops-job`), /Cancelled/);
   assert.match(await text(`${view} .ops-job .ops-warning`), /An incomplete dump may remain/);
+  assert.equal(calls(REVEAL).length, 0, "cancelled dumps never open a folder");
   const polls = calls(STATUS).length;
   await pause(2000);
   assert.equal(calls(STATUS).length, polls, "a finished job is not polled");
@@ -334,10 +365,28 @@ try {
   assert.match(await text(`${view} .ops-note`), /The Start reply was lost, but the dump is in myflames' job list.*It was not started again\./);
   await pause(500);
   assert.equal(calls(START).length, 2, "Start is sent once");
-  // A completed dump shows its verification and manifest.
-  held.set("job-2", job(done, "job-2"));
+  // Completion is followed even after leaving Dump for another section.
+  await section("Restore");
+  held.set("job-2", job(done, "job-2", { elapsed_s: 91 }));
+  await settle(REVEAL, 1, "completion opens the folder while another section is visible");
+  await section("Dump");
   await page.waitForSelector(`${view} .ops-job[data-job=job-2][data-state=done]`);
   assert.match(await text(`${view} .ops-job[data-job=job-2]`), /Completed/);
+  await settle(REVEAL, 1, 'a dump recovered after a lost Start reply auto-opens once');
+  assert.deepEqual(calls(REVEAL)[0].body, { path: `${done.result.directory}/myflames-manifest.json` });
+  const completedCard = `${view} .ops-job[data-job=job-2]`;
+  assert.match(await text(`${completedCard} .ops-job-facts`), /Completed in 1:31/);
+  await page.waitForFunction(s => document.querySelector(s)?.textContent.includes('Opened the dump folder'), {}, completedCard);
+  const openLabel = await page.evaluate(() => /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent)
+    ? 'Open in Finder' : /Win/.test(navigator.platform || navigator.userAgent) ? 'Open in File Explorer' : 'Open folder');
+  assert.equal(await text(`${completedCard} .ops-job-folder button .action-button-label > span`), openLabel);
+  await section('Tools'); await section('Dump');
+  await pause(1700);
+  assert.equal(calls(REVEAL).length, 1, 'rerenders and section changes never auto-open twice');
+  await page.click(`${completedCard} .ops-job-folder button`);
+  await settle(REVEAL, 2, 'the Open folder button can reveal again');
+  assert.deepEqual(calls(REVEAL)[1].body, calls(REVEAL)[0].body);
+  await page.waitForFunction(s => document.querySelector(s)?.textContent.includes('Opened the dump folder') && !document.querySelector(`${s} .ops-job-folder button[aria-busy=true]`), {}, completedCard);
   assert.deepEqual(await texts(`${view} .ops-job[data-job=job-2] .ops-verification strong`), ["files", "source_sample_stability", "dump_rows"]);
   assert.ok(await page.$(`${view} .ops-job[data-job=job-2] details summary ::-p-text(Manifest)`));
   await page.waitForFunction((v, old) => {
@@ -462,6 +511,7 @@ try {
   assert.deepEqual(calls(START).at(-1).body.plan, reviewedClone);
   assert.equal(calls(START).at(-1).body.donor.password, "donor-secret-1");
   await closedSheet();
+  assert.equal(calls(REVEAL).length, 2, "a completed clone never opens the dump folder");
 
   // A running job and the tools report greyed after a connection switch; polling waits.
   await section("Dump");
@@ -490,11 +540,15 @@ try {
   assert.equal(await page.$eval(`${view} .segmented [aria-pressed=true]`, (e) => e.textContent), "Dump");
   // The page is on Archive now: its job list is empty.
   assert.equal(await page.$(`${view} .ops-job`), null);
+  const revealsBeforeAdoption = calls(REVEAL).length;
   // Back on Primary the running job is found again and followed.
   const before = calls(STATUS).length;
   await connect("Primary");
   await page.waitForSelector(`${view} .ops-job[data-job=job-3][data-state=running]`);
   await settle(STATUS, before + 1, "the found job is polled");
+  await page.waitForSelector(`${view} .ops-job[data-job=job-2][data-state=done] .ops-job-folder button`);
+  await pause(1700);
+  assert.equal(calls(REVEAL).length, revealsBeforeAdoption, 'a completed dump adopted on mount never auto-reveals');
   await page.locator(`${view} .ops-job[data-job=job-3] button ::-p-text(Cancel)`).click();
   await page.waitForSelector(`${view} .ops-job[data-job=job-3][data-state=cancelled]`);
   assert.equal(calls(START).length, starts, "a restored workspace never starts a job");
@@ -502,6 +556,31 @@ try {
   for (const call of [...calls(STATUS), ...calls(CANCEL)])
     assert.equal(endpoint(call.body.connection), owners.get(call.body.id), "status/cancel always use the owner endpoint");
   for (const call of [...calls(UPGRADE), ...calls(PREPARE)]) assert.equal("config_path" in call.body, false);
+
+  // A completed Start reply opens its folder even when reveal fails. The
+  // error stays in the card; only an explicit click retries the reveal.
+  next.start.push({ job: job(done, 'immediate-dump', { elapsed_s: 2 }) });
+  next.reveal.push({ status: 400, body: { error: 'Could not reveal the dump folder.' }, delay: 300 });
+  await preflight(); await page.waitForSelector(sheet);
+  await page.click(confirmButton); await closedSheet();
+  const immediate = `${view} .ops-job[data-job=immediate-dump]`;
+  await page.waitForFunction(() => document.activeElement?.dataset.job === 'immediate-dump');
+  await settle(REVEAL, revealsBeforeAdoption + 1);
+  await page.waitForFunction(s => document.querySelector(s)?.textContent.includes('Could not reveal the dump folder.'), {}, immediate);
+  await section('Restore'); await section('Dump');
+  assert.match(await text(immediate), /Could not reveal the dump folder\./, 'reveal feedback survives a section switch');
+  assert.equal(calls(REVEAL).length, revealsBeforeAdoption + 1, 'failed automatic reveal is not retried by rendering');
+  await page.click(`${immediate} .ops-job-folder button`);
+  await settle(REVEAL, revealsBeforeAdoption + 2);
+  await page.waitForFunction(s => document.querySelector(s)?.textContent.includes('Opened the dump folder'), {}, immediate);
+  assert.deepEqual(calls(REVEAL).at(-1).body, { path: `${done.result.directory}/myflames-manifest.json` });
+
+  next.start.push({ job: job(done, 'failed-dump', { state: 'failed', result: { ...done.result, status: 'verification_failed' } }) });
+  await preflight(); await page.waitForSelector(sheet);
+  await page.click(confirmButton); await closedSheet();
+  await page.waitForFunction(() => document.activeElement?.dataset.job === 'failed-dump');
+  assert.equal(await page.$(`${view} .ops-job[data-job=failed-dump] .ops-job-folder button`), null);
+  assert.equal(calls(REVEAL).length, revealsBeforeAdoption + 2, 'failed dumps do not reveal, even when a directory is present');
 
   // The tool is chosen by preflight, not guessed from the user's preference.
   await section("Tools");

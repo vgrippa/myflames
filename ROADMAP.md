@@ -4,11 +4,11 @@
 
 ## Vision
 
-**myflames is the token-efficient, source-grounded interface between a query plan and an AI agent; and a clear set of pictures for a human.** Raw `EXPLAIN ANALYZE FORMAT=JSON` is verbose and noisy; an LLM burns tokens parsing it before it can reason, and SVGs are invisible to agents. myflames parses and analyzes a plan once, then projects it many ways: flame graph / bar chart / tree / Visual Explain (for humans), a compact source-verified digest and JSON sidecar (for agents), and an exit code (for CI). One analysis, many projections.
+**myflames is a desktop workspace that shows what MySQL and MariaDB are doing, starting from the query plan.** Raw `EXPLAIN ANALYZE FORMAT=JSON` is verbose and hard to read. myflames parses and analyzes a plan once, then shows it many ways (Visual Explain, flame graph, bar chart, execution tree) with source-verified findings. One analysis, many projections. Since 2026-11-06 the product is the desktop app: the command line and the `myflames-mcp` agent tools are deprecated (they keep working and get fixes only), and new work goes into the app. The compact digest and JSON sidecar stay in the engine and the reports.
 
-**Scope: a MySQL and MariaDB performance workspace.** Query plans are where myflames started and remain its center, but a slow query is usually explained by its surroundings: what else runs on the server, what it waits on, which locks block it, and whether statistics and indexes match the data. myflames covers that path in one place: find the expensive work (top statements, sessions), explain it (plans, captures, advisor), see what blocks it (locks, deadlocks), and compare the fix. Every new view follows the same rules as the plan tools: read-only by default, source-verified claims, one analysis shared by the UI, CLI, and agent tools, and honest notes where MySQL and MariaDB differ.
+**Scope: a MySQL and MariaDB performance workspace.** Query plans are where myflames started and remain its center, but a slow query is usually explained by its surroundings: what else runs on the server, what it waits on, which locks block it, and whether statistics and indexes match the data. myflames covers that path in one place: find the expensive work (top statements, sessions), explain it (plans, captures, advisor), see what blocks it (locks, deadlocks), and compare the fix. Every new view follows the same rules as the plan tools: read-only by default, source-verified claims, one analysis behind every view, and honest notes where MySQL and MariaDB differ.
 
-It stays a single project: pure-Python stdlib core, with heavy integrations behind optional extras (`myflames[mcp]`, `myflames[tokens]`). The optional local workspace in `apps/workspace/` uses React and TypeScript; its built assets ship in the Python package. The Python engine remains shared by the CLI, UI, and agent tools.
+It stays a single project: pure-Python stdlib core, with heavy integrations behind optional extras (`myflames[mcp]`, `myflames[tokens]`). The optional local workspace in `apps/workspace/` uses React and TypeScript; its built assets ship in the Python package. The Python engine is the desktop app's backend; the deprecated CLI and `myflames-mcp` still run on it.
 
 ## Current workstation capabilities
 
@@ -17,8 +17,12 @@ The workspace ships as the macOS desktop app (3.3.0): an Apple Silicon
 Developer ID, notarized by Apple and attached to the GitHub release as
 `myflames-3.3.0-macos-arm64.dmg`. A Windows x64 installer
 (`myflames-3.3.0-windows-x64-setup.exe`) ships beside it as an unsigned preview.
-The browser launch (`myflames ui`) is deprecated and the Python CLI remains for
-command-line use. Windows code signing and the rest of Windows crash
+The browser launch (`myflames ui`) is deprecated, and so is the Python command
+line (2026-11-06): myflames focuses on the desktop app and new features land
+there only. The CLI keeps its commands, flags, output and exit codes, prints one
+deprecation line on standard error, and gets fixes only, until a future major
+release removes it. The `myflames-mcp` agent tools are deprecated the same
+way: every tool keeps working and none are added. Windows code signing and the rest of Windows crash
 supervision (SSH tunnels now end with the backend however it ends, but dump,
 restore and clone tools still outlive a backend that crashed), automatic
 updates and Linux remain release work.
@@ -38,9 +42,7 @@ and that myflames never runs. You choose the objects the script includes
 by a kept object says what it needs), each change says whether it drops data,
 may fail on existing rows or rebuilds the table (each ALTER TABLE carries its
 predicted INSTANT, INPLACE or COPY algorithm), and Checks
-(`myflames schema lint`) flag risky definitions. Next steps there: an MCP tool
-for agents (compare a saved version
-with a live database), `ALTER SEQUENCE` and system versioning in the sync
+(`myflames schema lint`) flag risky definitions. Next steps there: `ALTER SEQUENCE` and system versioning in the sync
 script, rename hints that offer RENAME COLUMN or RENAME TABLE instead of drop
 and add, and saved versions taken on a schedule.
 
@@ -124,7 +126,7 @@ are skipped and reported. Every import is a reviewed and audited write, the
 Audit log never stores row data, and a lost reply reads Outcome unknown and
 is never sent again. Validated live on MySQL 8.4 and 9.7 and MariaDB 10.11
 and 11.4 by `scripts/lab-csv-import.py` (29 scenarios per server through the
-real API). Follow-ups: a CLI, Truncate and Recreate options for an existing
+real API). Follow-ups: Truncate and Recreate options for an existing
 table, a matching export, the Audit log's own "Import CSV" operation label,
 live checks through SSH tunnels and on Windows, and lab runs on Percona
 Server, MySQL 8.0 and MariaDB 11.5+ (whose TIMESTAMP reaches 2106).
@@ -204,7 +206,7 @@ for limits and [the verification checklist](docs/UI_TESTING.md) for release gate
   rows the server reloaded from its previous run. MariaDB has no SQL access to
   its error log, so the file is read only when the server runs on this computer
   and its identity is verified; otherwise the view explains where to read it.
-  Next: error log findings in Full analysis and an MCP tool.
+  Next: error log findings in Full analysis.
 - **Locks**: `myflames locks` and the workspace Locks tab, a server-wide
   blocking tree over row and metadata lock waits with root blockers and
   idle-in-transaction blockers, who blocks a waiting DDL statement (exact, or
@@ -229,7 +231,7 @@ for limits and [the verification checklist](docs/UI_TESTING.md) for release gate
 - **JSON sidecar + JSON-LD**: every report has a machine-readable sibling; agents never OCR an SVG.
 - **Token-cheap digest + savings report**: `myflames digest` (with `--cost`, `--tokenizer {heuristic,claude,gpt}`, `--show-prompts`); an "Agent-ready" panel in every HTML report.
 - **Agent/CI subcommands**: `diff` (plan comparison), `check` (CI gate with a `0/1/2` exit contract), `advise` (ranked warnings + suggestions with confidence).
-- **MCP server**: `myflames-mcp` (`pip install myflames[mcp]`) exposing `analyze_plan`, `digest_plan`, `compare_plans`, `explain_optimizer_switch`, `explain_query`.
+- **MCP server** (deprecated 2026-11-06 with the CLI): `myflames-mcp` (`pip install myflames[mcp]`) exposing `analyze_plan`, `digest_plan`, `compare_plans`, `explain_optimizer_switch`, `explain_query`.
 - **Published to PyPI**: `pip install myflames` (and `myflames[mcp]` / `myflames[tokens]` / `myflames[gpt]`) resolves; a GitHub Release auto-publishes via a Trusted Publisher workflow.
 - **Honest agent default (the token thesis, kept)**: the MCP `analyze_plan` tool returns the token-cheap decision-grade sidecar by default (`detail="core"`: summary, warnings, suggestions, switches, plan tree), dropping the heavy `collected`/`query`/`teach_hooks` blocks; `detail="full"` restores the complete record. The `detail` gate lives on `build_sidecar` (single source of truth); the CLI `--sidecar` path and the `digest` path stay `full`. Removes the one place the agent surface contradicted the vision, prerequisite to broadcasting it.
 - **One ranker, every projection**: the "fix first" decision is computed once, by `findings.build_findings` / `findings.primary_suggestion_index`. The HTML "Fix first" card and the sidecar `primary_action` both dereference it, so the human card and the ranked `advise` list can no longer disagree (medium correctly outranks low everywhere). A genuinely clean plan shows an explicit "No blocking issues found" card instead of a blank.
@@ -250,10 +252,9 @@ for limits and [the verification checklist](docs/UI_TESTING.md) for release gate
 
 Distribution multiplies whatever is inside, and the inside is now honest (decision-grade agent default) and consistent (one ranker). So the remaining work is reach and depth.
 
-1. **Wider distribution**: the "made with myflames" footer now ships on the reports (main + compare); what remains is external reach: MCP registries and awesome-lists, so agents and humans discover the tool.
-2. **Browser playground**: linked from the README and installs the published wheel via micropip; still needs an end-to-end pass in a real browser and confirmation the GitHub Pages deploy serves [docs/playground/](docs/playground/).
-3. **CLI consistency**: shared server-write confirmation and the unsent exit-2 contract are implemented. Preserve them as commands grow. (owned by `cli-ux`)
-4. **Finish the semijoin cluster**: `semijoin_firstmatch` shipped as the flagship; `loosescan`, `materialization`, and a real `duplicate_weedout` (today a stub) remain, each taught as a contrast against the FirstMatch early-out. See [.claude/ALGORITHM_ROADMAP.md](.claude/ALGORITHM_ROADMAP.md). (owned by `teaching`)
+1. **Wider distribution**: the "made with myflames" footer now ships on the reports (main + compare); what remains is external reach for the desktop app (awesome-lists and release announcements).
+2. **CLI consistency**: shared server-write confirmation and the unsent exit-2 contract are implemented. The CLI is deprecated: keep them intact while it gets fixes only. (owned by `cli-ux`)
+3. **Finish the semijoin cluster**: `semijoin_firstmatch` shipped as the flagship; `loosescan`, `materialization`, and a real `duplicate_weedout` (today a stub) remain, each taught as a contrast against the FirstMatch early-out. See [.claude/ALGORITHM_ROADMAP.md](.claude/ALGORITHM_ROADMAP.md). (owned by `teaching`)
 
 ## Ideas from open source database tools (October 2026)
 
@@ -346,7 +347,7 @@ refreshes automatically, and Schema compare already swaps its sides.
 
 Shipped: readable durations across Replication lag tables, signals, summary, tile and topology, and the Query editor ALTER review transaction age. Processlist inspector and Locks summary facts retain exact seconds on hover; duration tables keep numeric sorting. Settings and progress counters retain their units.
 
-Candidates for the workspace's **Server** place, in suggested order. Each is read-only, works on MySQL 8.4+/9.x and MariaDB 10.11+ (with engine notes), has a CLI equivalent with `--json`, and links back to plans where it can.
+Candidates for the workspace's **Server** place, in suggested order. Each is read-only, works on MySQL 8.4+/9.x and MariaDB 10.11+ (with engine notes), lives in the desktop app only (the CLI is deprecated, so new views get no CLI equivalent), and links back to plans where it can.
 
 **Shipped: Percona Server for MySQL.** Percona Server 8.0 and 8.4 and Percona XtraDB Cluster are named by their product everywhere while MySQL rules apply, and the views read what Percona adds when the server reports it: user statistics in Indexes and Tables, the thread pool in Health, slow log sampling, and Percona variables marked in Parameters. Checked live on the GA matrix's Percona Server 8.0.46-37 and 8.4.11-11 (with a replica) and on PXC 8.4.11-11.1. Next: Percona's own lifecycle dates for version support, its audit log (`audit_log` plugin on 8.0, `audit_log_filter` on 8.4) in Security basics once installed in the matrix, and Group Replication peers' product.
 
@@ -385,7 +386,7 @@ ProxySQL correctness fixes: unread routing variables leave affected digests Not 
 
 ## September 2026 review
 
-The [project review](docs/reviews/2026-09-15.md) adds current-MySQL corpus checks
+The September 2026 project review adds current-MySQL corpus checks
 and fixes connection escaping, advisor evidence, renderer output, comparison
 matching, and teaching controls. Follow-up work remains for broader SQL metadata recognition and
 complexity models for ordered/multidimensional aggregates.
@@ -405,6 +406,8 @@ Implemented complete scoped Tables and Indexes inventories, pagination and CSV/H
 Parameters uses **Review and apply** for batch edits (up to 25 changes), **Stage value for review** in the inspector to stage one value for that review, and **Change this parameter…** in the inspector for single-parameter modes. Permission details appear inside the review dialog; the buttons do not show an Unverified badge. Existing confirmation and privilege checks still apply.
 
 **Shipped: Parameters documentation links and a calmer Dump form.** The Parameters inspector is one compact section with a Documentation link per variable (MySQL Reference Manual by server version, MariaDB documentation, Percona manuals for Percona-only variables), generated from saved official pages into `sysvar_docs.py`, and a single Recommendation only when a check flags it. Maintenance > Dump reads the tables of the one chosen database into a searchable list and groups the tool's options as a two-column form. MySQL 8.0 and 8.4 variables are described by the help text they are declared with in the server source (MySQL 9.0+ and MariaDB describe their own). Next: the variables declared outside the generator's source folders (the `admin_ssl_*` family), and refreshing the saved pages when a new MySQL manual ships.
+
+**Shipped (unreleased): dump progress you can see.** A running dump, restore or clone shows the step it is on, the elapsed time and a progress bar: MySQL Shell's own percent, or for `mysqldump` and `mariadb-dump`, which print nothing, the bytes written to `dump.sql` beside the server's table-size estimate (read fresh on MySQL 8.0+). The summary also sits next to the disabled Start button, Start brings the job card into view, and a completed dump opens its folder in Finder (a click opens it in File Explorer). Next: a byte or statement count for an SQL restore, which streams `dump.sql` into the `mysql` client.
 
 Home shows MySQL and MariaDB news under Recent work: up to six headlines from Planet MySQL (the MySQL team's posts) and the MariaDB Foundation, read by the backend while Home is open and cached for six hours, with a Settings switch that stops every read. More official sources can join `news.SOURCES` once their feeds answer a neutral client; the Oracle MySQL blog feed and mariadb.com's feed refused one in October 2026.
 

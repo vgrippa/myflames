@@ -1374,7 +1374,7 @@ necessarily the selected plan. See [MySQL optimizer tracing](https://dev.mysql.c
 
 ## CLI equivalents
 
-Capture uses the same execution engine as the UI. Bare `-p` prompts for a
+The command line is deprecated (it keeps working and gets no new features; see the README's Python CLI section). Capture uses the same execution engine as the UI. Bare `-p` prompts for a
 password. The default mode produces an estimated plan; `--mode analyze` runs the
 SELECT. Output is a versioned `capture-1.0` document that the UI can import.
 The root command also accepts `-e` or `--execute` to connect to a server and render a live plan directly.

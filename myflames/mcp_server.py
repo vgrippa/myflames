@@ -513,9 +513,25 @@ def build_server():
     return server
 
 
+MCP_DEPRECATION = (
+    "warning: myflames-mcp is deprecated and gets no new tools; myflames now focuses on the "
+    "desktop app (https://github.com/vgrippa/myflames/releases). "
+    "Set MYFLAMES_NO_DEPRECATION_WARNING=1 to hide this notice.\n")
+
+
 def main():
-    """Console entry point (``myflames-mcp``). Runs the server over stdio."""
+    """Console entry point (``myflames-mcp``). Runs the server over stdio.
+
+    Deprecated with the command line: one notice on stderr (stdout carries
+    the protocol), before the SDK is even imported; every tool still works."""
+    import os
     import sys
+    if os.environ.get("MYFLAMES_NO_DEPRECATION_WARNING") != "1":
+        try:
+            sys.stderr.write(MCP_DEPRECATION)
+            sys.stderr.flush()
+        except (OSError, ValueError):
+            pass
     try:
         server = build_server()
     except ImportError as exc:
