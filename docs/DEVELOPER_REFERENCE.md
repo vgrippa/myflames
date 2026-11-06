@@ -70,7 +70,7 @@ This is the detailed contract per feature; [AGENTS.md](../AGENTS.md) has the rul
 
 ### Local UI
 
-The workspace and favicon use `docs/brand/myflames-app-logo.png`, derived from the simple flame SVG. The stable built URL remains `/assets/myflames-logo.png`. Desktop packaging uses the 1024-pixel charcoal-backed `myflames-app-icon.png`.
+The workspace and favicon use `docs/brand/myflames-app-logo.png`, derived from the primary flame SVG (`myflames-logo.svg`). The stable built URL remains `/assets/myflames-logo.png`. Desktop packaging uses the charcoal-slate icon in `docs/brand/`: `myflames-app-icon.icns` on macOS and the 1024 px PNG master on Windows.
 
 The optional Electron development host is in `apps/desktop`. It starts its own
 Python server and loads the one-use launch URL into a sandboxed window. It uses
@@ -425,9 +425,8 @@ the window-open handler always denies a new app window. Tests:
   `.claude/skills/ui-architecture/references/vocabulary.md`; styles use the
   tokens on `:root` in `style.css` (web-design skill). Browser test for the
   shell: `apps/workspace/test/navigation.mjs`; `apps/workspace/test/server-nav.mjs`
-  covers the Server place. The app mark is
-  `docs/brand/myflames-app-icon.png` (the desktop icon; the workspace sidebar, Home, About and favicon use the 128 px `myflames-app-logo.png`, both derived from `myflames-logo.svg`; earlier segmented assets remain preserved). Vite emits the stable
-  `/assets/myflames-logo.png` URL; retain earlier logo URL aliases in `ui.py`. `npm ci && npm run build` there regenerates committed
+  covers the Server place. The workspace sidebar, Home, About and favicon use the 128 px `myflames-app-logo.png`, derived from `myflames-logo.svg`. Vite emits the stable
+  `/assets/myflames-logo.png` URL. `npm ci && npm run build` there regenerates committed
   `myflames/ui_assets/` files shipped in the wheel. Python users need no Node.js.
   The UI API reuses the parser, sidecars, and renderers. Investigations are
   saved only on request. Investigations and saved connections (profiles) use

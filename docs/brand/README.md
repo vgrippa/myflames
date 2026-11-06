@@ -11,11 +11,14 @@ myflames is an open-source performance workspace for MySQL, MariaDB, and Percona
 
 ## Logo and wordmark
 
-The primary mark is a simple orange flame with a pale inner glow. Use the lowercase `myflames` wordmark alongside it when space allows. Keep Ember, the mascot, as a companion illustration, rather than substituting it for the logo.
+The primary mark is a dual-blade woven flame: a tall tangerine spire overlapped by a warm golden-amber ribbon fold. Use the lowercase `myflames` wordmark alongside it when space allows. Keep Ember, the mascot, as a companion illustration rather than substituting it for the logo.
 
 | Asset | Use |
 | :--- | :--- |
-| [myflames-logo.svg](myflames-logo.svg) | Primary flame mark, transparent background. |
+| [myflames-app-icon.icns](myflames-app-icon.icns) | macOS desktop app icon bundle (16–512 pt at 1× and 2× on an anodized charcoal-slate squircle). |
+| [myflames-app-icon.png](myflames-app-icon.png) | Desktop icon master, 1024 × 1024 with transparent margins, used for Windows packaging and previews. |
+| [myflames-app-icon.svg](myflames-app-icon.svg) | Editable desktop icon master (`1024 × 1024` Apple continuous superellipse squircle). |
+| [myflames-logo.svg](myflames-logo.svg) | Primary flame mark (`64 × 72`), transparent background. |
 | [myflames-wordmark-on-light.svg](myflames-wordmark-on-light.svg) | Flame and dark wordmark for light backgrounds. |
 | [myflames-wordmark-on-dark.svg](myflames-wordmark-on-dark.svg) | Flame and warm white wordmark for dark backgrounds. |
 | [myflames-mascot.png](myflames-mascot.png) | Ember, the friendly flame mascot for welcomes, learning, and community material. |
@@ -34,8 +37,8 @@ Ember brings warmth to learning and community material. Preserve Ember's round b
 
 ## Earlier app assets
 
-The segmented marks `myflames-icon-v2.png` and `myflames-icon-v3.png`, the small `myflames-icon-v3-128.png`, and the original root `myflames.jpeg` remain for historical references and existing app builds. Use the new simple flame for new repository and website material. Existing released installers retain their original artwork. New local builds use the simple flame in the workspace and a charcoal-backed version for the desktop icon.
+Existing released installers retain their original artwork; the earlier segmented marks and the original `myflames.jpeg` were removed from the repository. The workspace uses the primary flame; desktop packages use the charcoal-slate app icon.
 
-The workspace build emits `myflames-app-logo.png`, rasterized from the primary SVG, at `/assets/myflames-logo.png`, shared by the sidebar, welcome image, and favicon. The stable address preserves compatibility with open tabs. `myflames-app-icon.png` is the 1024-pixel desktop packaging asset.
+The workspace build emits `myflames-app-logo.png`, rasterized from the primary SVG, at `/assets/myflames-logo.png`, shared by the sidebar, welcome image, and favicon. The desktop icon uses the same flame geometry as the website and workspace; its editable master is `myflames-app-icon.svg`. Windows packages use the PNG master. On macOS, standard 16, 32, 128, 256, and 512 point representations at 1× and 2× are assembled with `iconutil -c icns` into `myflames-app-icon.icns`.
 
-The SVG logo and wordmarks are original editable paths under the repository's Apache-2.0 license. The mascot was generated and refined with Krea GPT Image 2, with the original image preserved by the separate website project. Earlier segmented PNGs were generated from the original project artwork and remain unchanged.
+The SVG logo and wordmarks are original editable paths under the repository's Apache-2.0 license. The mascot was generated and refined with Krea GPT Image 2, with the original image preserved by the separate website project.

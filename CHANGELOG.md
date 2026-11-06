@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Refreshed the myflames dual-blade flame logo, wordmarks, social preview, the workspace logo and favicon, and the charcoal-slate desktop app icon (`myflames-app-icon.icns` on macOS, the 1024 px PNG master on Windows).
+
 ## [3.3.2] - 2026-11-05
 
 ### Added

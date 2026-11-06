@@ -19,7 +19,7 @@
   ],
   "mac": {
     "target": ["dir"], "category": "public.app-category.developer-tools",
-    "icon": "../../docs/brand/myflames-app-icon.png",
+    "icon": "../../docs/brand/myflames-app-icon.icns",
     "identity": null, "notarize": false,
     "hardenedRuntime": true, "entitlements": "entitlements.mac.plist", "entitlementsInherit": "entitlements.mac.plist"
   },
