@@ -11,7 +11,7 @@ import { Checkbox, CountBadge, Popover, closePopovers, useFocusScope } from "./k
 import { NewsSetting } from "./HomeNews";
 import type { SaveStatus } from "./session";
 
-export type Place = "home" | "server" | "workload" | "replication" | "cluster" | "proxysql" | "readyset" | "tuning" | "query" | "digest" | "diagram" | "schema" | "plans" | "investigations" | "learn";
+export type Place = "home" | "server" | "workload" | "replication" | "cluster" | "proxysql" | "readyset" | "tuning" | "files" | "query" | "digest" | "diagram" | "schema" | "plans" | "investigations" | "learn";
 export const PLACES: { key: Place; label: string; icon: IconName }[] = [
   { key: "home", label: "Home", icon: "home" },
   { key: "server", label: "Server", icon: "server" },
@@ -21,6 +21,7 @@ export const PLACES: { key: Place; label: string; icon: IconName }[] = [
   { key: "proxysql", label: "ProxySQL", icon: "proxy" },
   { key: "readyset", label: "Readyset", icon: "readyset" },
   { key: "tuning", label: "Tuning", icon: "tuning" },
+  { key: "files", label: "Files", icon: "files" },
   { key: "query", label: "Query editor", icon: "query" },
   { key: "digest", label: "Query digest", icon: "analysis" },
   { key: "diagram", label: "Database diagram", icon: "diagram" },

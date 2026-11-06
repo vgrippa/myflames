@@ -70,13 +70,14 @@ The sidebar separates where you go from what you have open:
 | **Query digest** | Right below the Query editor: statement rankings with a named source, totals, a sortable table and a shared inspector. **Open in Query editor** and **Explain** are in the inspector and row menu; **Export** offers Text report and CSV. See [Query digest](#query-digest) |
 | **Database diagram** | After Query digest: the tables, columns and relationships of a database, read from the connection in use or imported without executing SQL, with a Diagram \| Mermaid view. See [Database diagram](#database-diagram) |
 | **Schema versions** | After Database diagram: versions of a database's schema saved on this computer, and comparisons of any two schemas (saved versions, or databases read now through any connection): what differs between a source and a target, and the sync script that would change the target to match the source. See [Schema versions](#schema-versions) |
-| **Server** | Views of the connection in use that only read (the exceptions are **Kill** in Locks or Sessions, which ends one session after you confirm and needs the privilege, parameter changes in **Parameters**, runtime instrument or consumer updates in **Instruments**, a dump, restore or clone in **Maintenance**, and account changes in **Users and roles**, each after its own confirmation; file transfers in **Files** are host-level SSH/SFTP actions outside the SQL write policy, with SSH credentials in their own credential-store namespace), in a grouped sub-navigation: **Overview** (Health, which opens first, InnoDB, Error log), **Contention** (Locks), **Schema** (Indexes, Tables), **Setup** (Parameters, Instruments, Maintenance, Files), and **Security** (Users and roles). See [The Server place](#the-server-place) |
+| **Server** | Views of the connection in use that only read (the exceptions are **Kill** in Locks or Sessions, which ends one session after you confirm and needs the privilege, parameter changes in **Parameters**, runtime instrument or consumer updates in **Instruments**, a dump, restore or clone in **Maintenance**, and account changes in **Users and roles**, each after its own confirmation), in a grouped sub-navigation: **Overview** (Health, which opens first, InnoDB, Error log), **Contention** (Locks), **Schema** (Indexes, Tables), **Setup** (Parameters, Instruments, Maintenance), and **Security** (Users and roles). See [The Server place](#the-server-place) |
 | **Workload** | The same kind of views for the statements and resources: **Queries** (Top statements, Processlist) and **Resources** (Waits, I/O) |
 | **Replication** | Replication channels or connections of the connection in use, with a skip after its own confirmation. A server with no asynchronous channel reads **Not a replica** (never Unknown), and the item is greyed in the sidebar once a read says so |
 | **Cluster** | The MariaDB Galera Cluster, Galera Cluster for MySQL, Percona XtraDB Cluster or MySQL InnoDB Cluster (or Group Replication) the connection in use belongs to: members, roles, state, quorum, failures tolerated and routers, with a member's changes (Make primary, Stop or Start Group Replication, Desync, Resync, Bootstrap a Primary component) in its inspector, each after its own confirmation. Greyed in the sidebar once the connection is known not to be part of a cluster |
 | **ProxySQL** | The ProxySQL Admin interface the connection in use reaches: backends as ProxySQL runs them with their connection pool, hostgroups, query rules and query digests, with a server's or rule's changes in its inspector and Load and Save to disk on the Configuration line, each after its own confirmation. Greyed in the sidebar once the connection is known not to be a ProxySQL Admin interface |
 | **Readyset** | The Readyset SQL adapter or Admin SQL listener the connection in use reaches: multi-tier topology across ProxySQL, Readyset and upstream MySQL or MariaDB servers, shallow and deep caches, proxied queries with live `EXPLAIN CREATE CACHE` prechecks, replicated base tables, dynamic parameters and allowlists, and cached-versus-upstream telemetry, with reviewed operational changes. Greyed in the sidebar once the connection is known not to be a Readyset instance |
 | **Tuning** | A place of its own (for MySQL and MariaDB; the command palette also finds "mysql tuning"): the tuning scorecard full width, without Server's list of views, and the **Full analysis** as its second tab. Links to the Full analysis open it there |
+| **Files** | A place of its own, after Tuning: saved **SSH connections** on the left and, for the one chosen, two panes side by side (**This computer** and the server) with the **Transfers** panel below, to move files over SSH/SFTP like FileZilla. It does not use the database connection in use. See [The Files place](#the-files-place) |
 | **Investigations** | Saved investigations: search, open, delete; an investigation saved by Health's **Capture when…** lists its **Evidence** (processlist, InnoDB status, locks) with Copy and Download. With none saved, the empty list is hidden. If plans are open, **Save N open plans as an investigation…** opens the notebook sheet; with no plans open, the empty state offers **Import plan** |
 | **Learn** | The lesson catalog and player (`myflames teach` on the command line) |
 
@@ -963,21 +964,6 @@ same reviewed write sheet, connection-type policy and [Audit log](#audit-log)
 rules as Cluster and ProxySQL; once a read says the connection is not a
 Readyset instance, the sidebar item looks disabled for that connection only.
 
-**Files** (Setup, last) moves files between this computer and the database
-host over SSH/SFTP: two panes (this computer and the remote host) with folder
-navigation, **Upload** and **Download** with per-file and total progress,
-transfer rate and estimated time left in the **Transfers** panel, **Cancel**,
-**New folder** and **Remove**. Dropping files on a pane uploads them into the
-current remote folder; **Choose files…** uses the native file dialog. Files
-uses the connection's SSH details and needs them filled in; unlike SSH
-tunnels, password sign-in is supported, and a saved SSH password lives in the
-platform credential store under its own namespace, bound to the exact SSH
-host, user and port (on Windows password sign-in fails closed). Downloads are
-staged as `.myflames-part` files, so a stopped download never leaves a
-half-written file under its final name. Files is not a SQL feature: the
-connection's write policy does not apply and transfers are not in the Audit
-log.
-
 **Maintenance** (Setup) has five tasks in a segmented control. **Tools**
 (**Detect tools**) lists the MySQL and MariaDB tools on this computer
 (mysqlsh, mysqldump, mariadb-dump, and the rest) with their versions and what
@@ -1116,6 +1102,73 @@ Escape closes it and returns focus to the toggle. An **Open plans (N)** rail
 button opens a list of the open plans. At 650 px and below the sidebar becomes a compact bar with
 the status, Settings, and a **Menu** button that opens the places and open plans
 in a drawer; Escape closes it.
+
+### The Files place
+
+**Files** moves files between this computer and your servers over SSH/SFTP,
+in the spirit of FileZilla. It is a place of its own in the sidebar (after
+Tuning) and does not use the database connection in use: it works with
+**SSH connections**, saved objects of their own.
+
+**SSH connections** are listed on the left; **New** opens **New SSH
+connection** (the empty list offers it too). **Start from** fills Host, Port
+and User from a saved database connection (its SSH tunnel, or else its own
+host) or a `~/.ssh/config` alias; pasting `user@host:port` or
+`sftp://user@host:port/path` into Host fills User, Port and the default
+remote folder as well, and Name follows `user@host` until you type one.
+**Authentication** is **SSH agent or keys** (your agent and `~/.ssh/config`),
+**Key file** (a pick list of the keys in `~/.ssh`, `.pem` files included,
+or a typed path, with an optional passphrase) or **Password**. A password or
+passphrase you save shows **Saved securely** with **Replace** and **Forget**;
+it is kept in the platform credential store, bound to the host, user, port,
+sign-in method and key file, and changing any of those asks for it again.
+**Default remote folder** and **Default local folder** set where the panes
+open. **Test connection** signs in without saving and says how long it took
+and the server's home folder. On Windows, password and passphrase sign-in are
+not available yet.
+
+The first connection to a server shows **Trust <host>?** with the server's
+host key fingerprints (type, size, SHA-256, with **Copy**) to compare with
+the ones your administrator gives you; **Trust and connect** keeps the key in
+myflames' own `ssh_known_hosts` file (never `~/.ssh/known_hosts`) and signs in
+again. A server whose key differs from the one already trusted, in myflames'
+file or in your own known_hosts, is refused with the file and line of the
+trusted key; nothing offers to trust it.
+
+The browser shows **This computer** on the left and the server on the right.
+Each pane has Back and Forward, Up, Home, Refresh and New folder, a path bar of
+breadcrumbs (click a folder; **Edit path** or ⌘L / Ctrl+L to type one;
+**Browse…** on This computer opens the system folder dialog), a **Filter**,
+and sortable columns (Name, Size, Modified, and Permissions on the server).
+Folders come first; **Show hidden files** reveals names that start with a
+dot; symbolic links carry a link badge and open when they point to a folder.
+Select like the Finder: click, ⌘ or Ctrl to add, Shift for a range, ⌘A or
+Ctrl+A for all; arrows move, Enter or a double-click opens a folder or
+transfers a file to the other pane, Backspace goes up, F2 renames and Delete
+removes on the server. Each row's **⋯** button and a right-click open the
+same menu: Upload or Download, Open, Rename…, New folder…, Delete…, Copy
+path and Refresh. The footer says how many items there are and what is
+selected, with **Upload →** or **← Download**. Drag rows to the other pane,
+or files and folders from the Finder or Explorer onto the server pane, to
+transfer them. A slow listing counts its seconds and offers **Stop**; an
+error stays in its pane with **Try again**.
+
+Transfers handle folders as well as files. When names already exist at the
+destination, the sheet lists them with both sizes and dates and offers
+**Skip existing** or **Overwrite** (existing folders are merged; the choice
+applies to the files inside); overwriting a server file removes the old copy
+first and cannot bring it back if the upload stops. Symbolic links and special
+files inside folders are skipped, never followed, and a transfer stops before
+writing anything if it has more than 10000 files or 64 folder levels. The
+**Transfers** panel lists each job for **This connection** or **All
+connections** with progress, files, rate and time left, **Cancel** while it
+runs and **Retry** for failed or cancelled files; a job that could not sign
+in offers **Edit connection** or **Trust host…**. **Clear finished** keeps
+failed and cancelled jobs. Downloads are written as `.myflames-part` files
+and renamed only when complete. Files is not a SQL feature: the connection
+type and read-only switch do not apply and transfers are not in the
+[Audit log](#audit-log). On Windows, uploads and downloads are not available
+yet.
 
 ### Window status bar
 

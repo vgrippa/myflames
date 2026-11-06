@@ -36,3 +36,6 @@ build/
 
 # Local database labs and credentials (never distribute)
 /local/
+
+# Screenshots written by the Files browser suites (files-browser.mjs, files-connections.mjs).
+apps/workspace/test/shots-*/

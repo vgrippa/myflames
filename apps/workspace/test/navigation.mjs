@@ -169,14 +169,15 @@ try {
   const last = (pathname) => (seen[pathname] || []).at(-1);
   const overflow = () => page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
 
-  // 1. Places: fifteen, in order (Cluster right after Replication, then
-  // ProxySQL and Readyset; Query digest, Database diagram and Schema versions
-  // right below the Query editor in the SQL workspace group), each with its own icon.
-  const places = ["Home", "Server", "Workload", "Replication", "Cluster", "ProxySQL", "Readyset", "Tuning", "Query editor", "Query digest", "Database diagram", "Schema versions", "Plans", "Investigations", "Learn"];
+  // 1. Places: sixteen, in order (Cluster right after Replication, then
+  // ProxySQL and Readyset; Files after Tuning; Query digest, Database diagram
+  // and Schema versions right below the Query editor in the SQL workspace
+  // group), each with its own icon.
+  const places = ["Home", "Server", "Workload", "Replication", "Cluster", "ProxySQL", "Readyset", "Tuning", "Files", "Query editor", "Query digest", "Database diagram", "Schema versions", "Plans", "Investigations", "Learn"];
   assert.deepEqual(await texts(".main-nav button"), places);
   const icons = await page.$$eval(".main-nav button svg", (els) => els.map((e) => e.innerHTML));
-  assert.equal(icons.length, 15);
-  assert.equal(new Set(icons).size, 15, "every place has a distinct icon");
+  assert.equal(icons.length, 16);
+  assert.equal(new Set(icons).size, 16, "every place has a distinct icon");
   // The SQL workspace group: Query editor, Query digest, Database diagram, Schema versions, Plans.
   assert.deepEqual(await page.$$eval(".main-nav > *", (els) => {
     const start = els.findIndex((e) => e.textContent === "SQL workspace");
@@ -217,6 +218,7 @@ try {
     ProxySQL: ".proxysql-place",
     Readyset: ".readyset-place",
     Tuning: ".server-place.is-tuning-place .server-view[data-view=tuning]",
+    Files: ".files-place .ssh-connections",
     Investigations: ".library .library-split.is-empty .view-empty",
     Learn: ".teach-workspace",
     Home: ".home",
@@ -1010,8 +1012,8 @@ try {
   await page.keyboard.press("ArrowUp");
   assert.equal(await page.evaluate(() => document.activeElement.textContent), "Plans");
   await page.keyboard.press("Home");
-  // Query editor is the ninth place (after Replication, Cluster, ProxySQL, Readyset and Tuning).
-  for (let i = 0; i < 8; i++) await page.keyboard.press("ArrowDown");
+  // Query editor is the tenth place (after Replication, Cluster, ProxySQL, Readyset, Tuning and Files).
+  for (let i = 0; i < 9; i++) await page.keyboard.press("ArrowDown");
   assert.equal(await page.evaluate(() => document.activeElement.textContent), "Query editor");
   await page.keyboard.press("Enter");
   await page.waitForFunction(() => document.querySelector(".main-nav button.active")?.textContent === "Query editor");

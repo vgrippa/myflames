@@ -82,6 +82,21 @@ views in Readyset, ProxySQL, Replication and Cluster cross-link saved
 connections across ProxySQL + Readyset + MySQL/MariaDB standalone servers,
 replicas and clusters (`scripts/readyset-matrix.sh`).
 
+**Shipped in 3.3.2: Files.** A place of its own (after Tuning) moves files
+between this computer and servers over SSH/SFTP, FileZilla style: saved SSH
+connections of their own (agent, key file with an optional passphrase, or
+password, kept in the credential store), host-key trust with fingerprints in
+myflames' own known_hosts file (a different key for a trusted host is
+refused), two panes with breadcrumbs, filter, sorting, Finder-style selection
+and a row menu, folder transfers with conflicts, progress, Cancel and Retry,
+and drag and drop from the Finder through a one-function desktop preload.
+Validated live against OpenSSH 10 in Docker (`scripts/ssh-lab.sh`: Python and
+browser suites). Next: resuming an interrupted transfer from its last byte,
+a Forget trusted key action, uploads and downloads on Windows (local file
+handling with Windows handles), a bastion container in the lab for a live
+ProxyJump check, local Delete (to the Trash), and a Files badge in the
+sidebar for active and failed transfers.
+
 **Shipped: Import CSV.** The workspace loads a .csv, .tsv or .txt file into
 an existing table or a new one created from the file, from the Query
 editor's Schemas panel (a table's **Import CSV…**, a database's **Import CSV

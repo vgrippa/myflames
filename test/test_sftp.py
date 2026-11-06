@@ -20,7 +20,8 @@ import threading
 import unittest
 from unittest import mock
 
-from myflames import sftp, sftp_api as api, sftp_jobs as jobs
+from myflames import sftp, sftp_api as api, sftp_jobs as jobs, ssh_connections as ssh
+from myflames.workspace_store import WorkspaceStore
 
 SPEC = {'ssh_host': 'example.test', 'ssh_user': 'reader', 'ssh_port': 2222}
 
@@ -52,7 +53,7 @@ class PipeServer(object):
     """Independent SFTP v3 peer with actual pipes and an in-memory filesystem."""
 
     def __init__(self, files=None, names=None, short_read=None, reorder=False,
-                 stall=False, failure=None, status_error=None, raw_version=None):
+                 stall=False, failure=None, status_error=None, raw_version=None, limits=None):
         request_read, request_write = os.pipe()
         reply_read, reply_write = os.pipe()
         error_read, error_write = os.pipe()
@@ -71,6 +72,11 @@ class PipeServer(object):
         self.short_read, self.reorder = short_read, reorder
         self.stall, self.failure, self.status_error = stall, failure, status_error
         self.raw_version = raw_version
+        self.pid = 2 ** 22 + 7  # Popen's pid, which the askpass helper is bound to.
+        # (read, write) data limits advertised like OpenSSH's limits@openssh.com,
+        # or None for a server without the extension.
+        self.limits = limits
+        self.largest_write = 0
         self.held = []
         self.max_held = 0
         self.returncode = None
@@ -122,12 +128,18 @@ class PipeServer(object):
                     if self.raw_version is not None:
                         self.replies.write(self.raw_version)
                     elif not self.stall:
-                        self.packet(bytes([2]) + number(3))
+                        extension = string('limits@openssh.com') + string('1') if self.limits else b''
+                        self.packet(bytes([2]) + number(3) + extension)
                     continue
                 rid = packet.uint()
                 self.calls.append((kind, rid))
                 if self.status_error is not None:
                     self.status(rid, *self.status_error)
+                    continue
+                if kind == 200:
+                    assert packet.string() == b'limits@openssh.com'
+                    read, write = self.limits
+                    self.packet(bytes([201]) + number(rid) + struct.pack('>QQQQ', 256 * 1024, read, write, 0))
                     continue
                 if kind in (3, 11):
                     path = packet.string().decode('utf-8')
@@ -186,6 +198,7 @@ class PipeServer(object):
                     if offset + len(data) > len(content):
                         content.extend(b'\x00' * (offset + len(data) - len(content)))
                     content[offset:offset + len(data)] = data
+                    self.largest_write = max(self.largest_write, len(data))
                     self.status(rid)
                 elif kind in (7, 17):
                     path = packet.string().decode('utf-8')
@@ -215,6 +228,11 @@ class PipeServer(object):
                     self.status(rid)
                 elif kind == 9:
                     path = packet.string().decode('utf-8')
+                    assert packet.uint() == 4
+                    self.modes[path] = 0o100000 | packet.uint()
+                    self.status(rid)
+                elif kind == 10:
+                    path = self.handles[packet.string()]
                     assert packet.uint() == 4
                     self.modes[path] = 0o100000 | packet.uint()
                     self.status(rid)
@@ -252,7 +270,7 @@ class Isolated(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = os.path.realpath(self.temp.name)
         self.env = mock.patch.dict(os.environ, {'HOME': self.root, 'USERPROFILE': self.root,
-                                               'MYFLAMES_SECRET_BACKEND': 'vault'})
+                                               'MYFLAMES_SECRET_BACKEND': 'vault', 'MYFLAMES_SSH_HOME': self.root})
         self.env.start()
         self.addCleanup(self.env.stop)
         os.environ.pop('MYFLAMES_VAULT_PASSPHRASE', None)
@@ -266,7 +284,7 @@ class Isolated(unittest.TestCase):
         password = kwargs.pop('password', None)
         server = PipeServer(**kwargs)
         self.addCleanup(self.check_server, server)
-        session = sftp.SftpSession(SPEC, password=password, _process=server, packet_timeout=1)
+        session = sftp.SftpSession(SPEC, auth='password' if password else 'agent', secret=password, _process=server, packet_timeout=1)
         self.addCleanup(session.close)
         return session, server
 
@@ -294,10 +312,11 @@ class TestProtocol(Isolated):
         self.assertTrue(result[1]['is_dir'])
         self.assertEqual(server.handles, {})
 
-    def test_hostile_readdir_parent_refused_and_handle_closed(self):
-        session, server = self.session(names=['..'])
-        with self.assertRaisesRegex(sftp.SftpError, 'unsafe directory entry'):
-            session.listdir('.')
+    def test_readdir_dot_entries_skipped_and_handle_closed(self):
+        # OpenSSH's sftp-server lists "." and ".." in every folder (found live:
+        # refusing ".." made every real listing fail).
+        session, server = self.session(names=['.', '..', 'log.txt'])
+        self.assertEqual([entry['name'] for entry in session.listdir('.')], ['log.txt'])
         self.assertEqual(server.handles, {})
 
     def test_hostile_readdir_separator_refused(self):
@@ -308,7 +327,7 @@ class TestProtocol(Isolated):
 
     def test_get_pipelines_eight_reordered_packets_with_byte_integrity(self):
         data = bytes(range(256)) * (sftp.CHUNK_SIZE * 9 // 256) + b'end'
-        session, server = self.session(files={'/log': data}, reorder=True)
+        session, server = self.session(files={'/log': data}, reorder=True, limits=(sftp.CHUNK_SIZE, sftp.CHUNK_SIZE))
         output, progress = io.BytesIO(), []
         self.assertEqual(session.get('/log', output, len(data), progress.append, threading.Event()), len(data))
         self.assertEqual(output.getvalue(), data)
@@ -327,9 +346,34 @@ class TestProtocol(Isolated):
             session.get('/log', io.BytesIO(), len(data) + 1, lambda n: None, threading.Event())
         self.assertEqual(server.handles, {})
 
+    def test_upload_mode_is_set_on_the_handle_before_close_never_by_path(self):
+        # Security review: SETSTAT by path after CLOSE follows a link another
+        # remote user swaps in, so the mode goes on the open handle instead.
+        session, server = self.session()
+        session.put(io.BytesIO(b'data'), '/up', 4, lambda n: None, threading.Event(), mode=0o640)
+        kinds = [kind for kind, _ in server.calls]
+        self.assertNotIn(9, kinds, 'no SETSTAT by path')
+        self.assertLess(kinds.index(10), len(kinds) - 1 - kinds[::-1].index(4), 'FSETSTAT before the last CLOSE')
+        self.assertEqual(kinds[kinds.index(10) + 1], 4, 'CLOSE follows the FSETSTAT')
+        self.assertEqual(server.modes['/up'], 0o100640)
+        with self.assertRaises(ValueError):
+            session.put(io.BytesIO(b'x'), '/bad', 1, lambda n: None, threading.Event(), mode=0o4755)
+
+    def test_chunks_follow_stated_limits_else_the_safe_32_kib(self):
+        data = os.urandom(300 * 1024)
+        for limits, expected in ((None, sftp.SAFE_CHUNK), ((261120, 261120), 261120), ((8192, 4096), 4096)):
+            with self.subTest(limits=limits):
+                session, server = self.session(files={'/up': b''}, limits=limits)
+                self.assertEqual(session.write_chunk, expected)
+                local = self.local('payload', data)
+                with open(local, 'rb') as stream:
+                    session.put(stream, '/new', len(data), lambda done: None, threading.Event())
+                self.assertEqual(bytes(server.files['/new']), data)
+                self.assertEqual(server.largest_write, expected)
+
     def test_put_integrity_progress_and_exclusive_open(self):
         data = b'\x00\xff\n' * 800000
-        session, server = self.session()
+        session, server = self.session(limits=(sftp.CHUNK_SIZE, sftp.CHUNK_SIZE))
         progress = []
         session.put(io.BytesIO(data), '/new', len(data), progress.append, threading.Event())
         self.assertEqual(bytes(server.files['/new']), data)
@@ -363,7 +407,7 @@ class TestProtocol(Isolated):
 
     def test_cancel_get_drains_pipeline_and_reuses_session(self):
         data = b'x' * (sftp.CHUNK_SIZE * 10)
-        session, server = self.session(files={'/log': data})
+        session, server = self.session(files={'/log': data}, limits=(sftp.CHUNK_SIZE, sftp.CHUNK_SIZE))
         stop, output, progress = threading.Event(), io.BytesIO(), []
 
         def report(count):
@@ -450,10 +494,14 @@ class TestProtocol(Isolated):
 
     def test_shrinking_upload_removes_file_and_does_not_report_success(self):
         session, server = self.session()
-        with self.assertRaisesRegex(sftp.SftpError, 'became shorter'):
+        with self.assertRaisesRegex(sftp.SftpLocalError, 'became shorter') as caught:
             session.put(io.BytesIO(b'abc'), '/short', 100, lambda n: None, threading.Event())
+        # A local problem, not a transport failure: the session goes on.
+        self.assertEqual(caught.exception.code, 0)
         self.assertNotIn('/short', server.files)
         self.assertEqual(server.handles, {})
+        session.put(io.BytesIO(b'next'), '/next', 4, lambda n: None, threading.Event())
+        self.assertEqual(bytes(server.files['/next']), b'next')
 
     def test_listing_count_includes_discarded_dot_entries(self):
         session, server = self.session(names=['.', '.', '.'])
@@ -468,81 +516,6 @@ class TestProtocol(Isolated):
 
 
 class TestAuthentication(Isolated):
-    def setUp(self):
-        super().setUp()
-        patch = mock.patch.dict(api._AUTH_REFS, {}, clear=True)
-        patch.start()
-        self.addCleanup(patch.stop)
-        self.secrets = {}
-        self.reads = []
-        self.saved_keys = []
-
-        def save(key, password):
-            self.secrets[key] = password
-            self.saved_keys.append(key)
-            return 'fake'
-
-        def get(key, backend=None):
-            self.reads.append((key, backend))
-            return self.secrets.get(key)
-
-        def delete(key, backend=None):
-            self.secrets.pop(key, None)
-        for name, function in (('save_secret', save), ('get_secret', get), ('delete_secret', delete)):
-            patch = mock.patch.object(api.secret_store, name, side_effect=function)
-            patch.start()
-            self.addCleanup(patch.stop)
-
-    def test_auth_save_status_clear_are_secret_free_shapes(self):
-        self.assertEqual(api.api_ssh_auth_status(SPEC), {'has_password': False})
-        self.assertEqual(api.api_ssh_auth_save(SPEC, 'secret-value'), {'saved': True})
-        self.assertEqual(api.api_ssh_auth_status(SPEC), {'has_password': True})
-        key = self.saved_keys[0]
-        fingerprint = hashlib.sha256(b'example.test\x00reader\x002222').hexdigest()[:24]
-        self.assertRegex(key, '^sshpw\\.' + fingerprint + '\\.[0-9a-f]{16}$')
-        self.assertEqual(api.api_ssh_auth_clear(SPEC), {'cleared': True})
-        self.assertEqual(api.api_ssh_auth_status(SPEC), {'has_password': False})
-        self.assertEqual(self.secrets, {})
-
-    def test_endpoint_binding_checked_before_secret_store_read(self):
-        api.api_ssh_auth_save(SPEC, 'A-only')
-        other = dict(SPEC, ssh_host='other.test')
-        self.assertEqual(api.api_ssh_auth_status(other), {'has_password': False})
-        self.assertEqual(self.reads, [])
-        api._AUTH_REFS[api._endpoint(other)] = api._AUTH_REFS[api._endpoint(SPEC)]
-        with self.assertRaisesRegex(ValueError, 'different SSH details'):
-            api._password_for(other)
-        self.assertEqual(self.reads, [])
-        for change in ({'ssh_user': 'another'}, {'ssh_port': 22}):
-            changed = dict(SPEC, **change)
-            self.assertFalse(api._matches(self.saved_keys[0], changed))
-
-    def test_normalized_endpoint_and_config_port_distinction(self):
-        api.api_ssh_auth_save(dict(SPEC, ssh_host=' example.test ', ssh_port='2222'), 'saved')
-        self.assertEqual(api._password_for(SPEC), 'saved')
-        self.assertNotEqual(api._fingerprint({'ssh_host': 'example.test'}),
-                            api._fingerprint({'ssh_host': 'example.test', 'ssh_port': 22}))
-
-    def test_replacement_deletes_old_secret_and_drops_cache(self):
-        session = mock.Mock()
-        api._SESSIONS[api._endpoint(SPEC)] = {'session': session, 'timer': None}
-        api.api_ssh_auth_save(SPEC, 'first')
-        session.close.assert_called_once()
-        first = self.saved_keys[-1]
-        api.api_ssh_auth_save(SPEC, 'second')
-        self.assertNotIn(first, self.secrets)
-        self.assertEqual(api._password_for(SPEC), 'second')
-
-    def test_password_validation_and_backend_error_hygiene(self):
-        for bad in (None, True, 123, '', 'x' * 1025, 'two\nlines', 'nul\x00'):
-            with self.subTest(bad=type(bad)), self.assertRaises(ValueError):
-                api.api_ssh_auth_save(SPEC, bad)
-        with mock.patch.object(api.secret_store, 'save_secret', side_effect=ValueError('typed-secret leaked')):
-            with self.assertRaises(ValueError) as caught:
-                api.api_ssh_auth_save(SPEC, 'typed-secret')
-        self.assertNotIn('typed-secret', str(caught.exception))
-        self.assertEqual(api._AUTH_REFS, {})
-
     def test_askpass_modes_exclusive_creation_single_read_and_cleanup(self):
         helper = sftp._Askpass('one-use-123')
         self.addCleanup(helper.close)
@@ -551,11 +524,21 @@ class TestAuthentication(Isolated):
         self.assertEqual(stat.S_IMODE(os.stat(helper.secret_file).st_mode), 0o600)
         with self.assertRaises(FileExistsError):
             helper._write(helper.secret_file, b'replaced', 0o600)
-        process = subprocess.run([helper.helper], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=2)
+        # Bound to this process (the helper's parent below), as sftp.py binds
+        # it to the ssh it starts. A grandchild (a ProxyJump ssh) gets nothing
+        # and the secret stays for the real parent.
+        helper.bind(os.getpid())
+        self.assertEqual(stat.S_IMODE(os.stat(helper.pid_file).st_mode), 0o600)
+        proxy = subprocess.run(['/bin/sh', '-c', '/bin/sh "$0"; exit $?', helper.helper],
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=8)
+        self.assertNotEqual(proxy.returncode, 0)
+        self.assertNotIn(b'one-use-123', proxy.stdout + proxy.stderr)
+        self.assertTrue(os.path.exists(helper.secret_file), 'a refused caller does not consume the secret')
+        process = subprocess.run(['/bin/sh', helper.helper], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=2)
         self.assertEqual(process.returncode, 0)
         self.assertEqual(process.stdout, b'one-use-123\n')
         self.assertFalse(os.path.exists(helper.secret_file))
-        again = subprocess.run([helper.helper], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=2)
+        again = subprocess.run(['/bin/sh', helper.helper], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=2)
         self.assertNotEqual(again.returncode, 0)
         self.assertNotIn(b'one-use-123', again.stdout + again.stderr)
         helper.close()
@@ -578,7 +561,7 @@ class TestAuthentication(Isolated):
             return server
         with mock.patch.object(sftp.subprocess, 'Popen', side_effect=spawn), \
                 mock.patch.object(sftp.ssh_tunnel, 'find_ssh', return_value='/usr/bin/ssh'):
-            session = sftp.SftpSession(SPEC, password='private-password')
+            session = sftp.SftpSession(SPEC, auth='password', secret='private-password')
         session._owns_group = False
         self.addCleanup(session.close)
         self.assertEqual(seen['argv'][-3:], ['--', 'example.test', 'sftp'])
@@ -606,7 +589,7 @@ class TestAuthentication(Isolated):
         server = PipeServer(failure='Bad transport for very-private-password')
         self.addCleanup(self.check_server, server)
         with self.assertRaises(sftp.SftpError) as caught:
-            sftp.SftpSession(SPEC, password='very-private-password', _process=server)
+            sftp.SftpSession(SPEC, auth='password', secret='very-private-password', _process=server)
         self.assertNotIn('very-private-password', str(caught.exception))
         self.assertIn('[redacted]', str(caught.exception))
         session, _ = self.session(password='very-private-password', status_error=(4, 'very-private-password rejected'))
@@ -617,22 +600,148 @@ class TestAuthentication(Isolated):
     def test_key_auth_failure_has_plain_actionable_error(self):
         server = PipeServer(failure='reader@example.test: Permission denied (publickey).')
         self.addCleanup(self.check_server, server)
-        with self.assertRaisesRegex(sftp.SftpAuthError, 'Save a password or fix your SSH keys'):
+        with self.assertRaisesRegex(sftp.SftpAuthError, 'your keys or agent'):
             sftp.SftpSession(SPEC, _process=server)
 
-    def test_frozen_password_mode_fails_clearly_before_spawn(self):
-        with mock.patch.object(sys, 'frozen', True, create=True), \
-                mock.patch.object(sftp.ssh_tunnel, '_is_program', return_value=False), \
-                mock.patch.object(sftp.subprocess, 'Popen') as spawn:
-            with self.assertRaises(sftp.SftpAuthError):
-                sftp.SftpSession(SPEC, password='secret')
+    def test_all_auth_argv_and_quoted_known_hosts(self):
+        key = self.local('key with spaces')
+        hosts = os.path.join(self.root, 'trusted hosts')
+        for method, secret in (('agent', None), ('key', None), ('key', 'passphrase'), ('password', 'password-value')):
+            server = PipeServer()
+            self.addCleanup(self.check_server, server)
+            with self.subTest(method=method, secret=bool(secret)), \
+                    mock.patch.object(sftp.ssh_tunnel, 'find_ssh', return_value='/usr/bin/ssh'), \
+                    mock.patch.object(sftp.subprocess, 'Popen', return_value=server) as spawn, \
+                    mock.patch.object(sftp, '_knows_use_keychain', return_value=True), \
+                    mock.patch.object(sftp, 'known_hosts_config',
+                                      return_value=([], ['/etc/ssh/ssh_known_hosts', '/etc/ssh/ssh_known_hosts2'])), \
+                    mock.patch.object(sys, 'frozen', True, create=True):
+                session = sftp.SftpSession(SPEC, auth=method, key_path=key if method == 'key' else '',
+                                           secret=secret, known_hosts=hosts)
+                session._owns_group = False
+                self.addCleanup(session.close)
+                argv = spawn.call_args[0][0]
+                env = spawn.call_args[1]['env']
+                self.assertIn('GlobalKnownHostsFile="/etc/ssh/ssh_known_hosts" "/etc/ssh/ssh_known_hosts2" "' + hosts + '"', argv)
+                self.assertEqual('BatchMode=yes' in argv, secret is None)
+                if secret:
+                    self.assertNotIn(secret, repr(argv) + repr(env))
+                    self.assertIn('NumberOfPasswordPrompts=1', argv)
+                    self.assertIn('BatchMode=no', argv)
+                if method == 'key':
+                    self.assertIn('IdentityFile="' + key + '"', argv)
+                    self.assertIn('IdentitiesOnly=yes', argv)
+                    self.assertIn('PreferredAuthentications=publickey', argv)
+                # Only a passphrase myflames supplies is kept from the agent and Keychain.
+                self.assertEqual('AddKeysToAgent=no' in argv, method == 'key' and bool(secret))
+                self.assertEqual('UseKeychain=no' in argv, method == 'key' and bool(secret))
+                if method == 'password':
+                    self.assertIn('PreferredAuthentications=password', argv)
+                    self.assertIn('PubkeyAuthentication=no', argv)
+                for option in ('StrictHostKeyChecking=yes', 'UpdateHostKeys=no', 'PermitLocalCommand=no',
+                               'ControlMaster=no', 'ControlPath=none', 'ClearAllForwardings=yes',
+                               'ForwardAgent=no', 'ForwardX11=no'):
+                    self.assertIn(option, argv)
+                session.close()
+
+    def test_silent_drop_before_sign_in_is_explained(self):
+        server = PipeServer(failure='')
+        self.addCleanup(self.check_server, server)
+        with self.assertRaisesRegex(sftp.SftpError, 'closed the connection before sign-in.*wait a moment'):
+            sftp.SftpSession(SPEC, _process=server)
+
+    def test_known_hosts_config_reads_paths_with_spaces_and_custom_globals(self):
+        # Review: ssh -G prints paths unquoted; splitting at every space broke
+        # a home folder with a space, and sessions ignored a custom global file.
+        out = ('user lab\nuserknownhostsfile /Users/John Smith/.ssh/known_hosts /Users/John Smith/.ssh/known_hosts2\n'
+               'globalknownhostsfile /opt/team keys/known_hosts\n')
+        with mock.patch.object(sftp.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, out.encode(), b'')):
+            user, global_files = sftp.known_hosts_config('/usr/bin/ssh', {'ssh_host': 'db', 'ssh_port': 2222})
+        self.assertEqual(user, ['/Users/John Smith/.ssh/known_hosts', '/Users/John Smith/.ssh/known_hosts2'])
+        self.assertEqual(global_files, ['/opt/team keys/known_hosts'])
+        with mock.patch.object(sftp.subprocess, 'run', side_effect=OSError('no ssh')):
+            user, global_files = sftp.known_hosts_config('/usr/bin/ssh', {'ssh_host': 'db'})
+        self.assertTrue(user[0].endswith('/.ssh/known_hosts'))
+        self.assertEqual(global_files, ['/etc/ssh/ssh_known_hosts', '/etc/ssh/ssh_known_hosts2'])
+        # A session keeps that custom global file and adds myflames' own.
+        server = PipeServer()
+        self.addCleanup(self.check_server, server)
+        hosts = os.path.join(self.root, 'trusted hosts')
+        with mock.patch.object(sftp.ssh_tunnel, 'find_ssh', return_value='/usr/bin/ssh'), \
+                mock.patch.object(sftp, 'known_hosts_config', return_value=([], ['/opt/team keys/known_hosts'])), \
+                mock.patch.object(sftp.subprocess, 'Popen', return_value=server) as spawn:
+            session = sftp.SftpSession(SPEC, known_hosts=hosts)
+            session._owns_group = False
+            self.addCleanup(session.close)
+        self.assertIn('GlobalKnownHostsFile="/opt/team keys/known_hosts" "%s"' % hosts, spawn.call_args[0][0])
+
+    def test_known_hosts_paths_split_by_what_exists_and_relative_paths_kept(self):
+        # Review: "/team /known_hosts" is one path when that file exists, and
+        # a relative UserKnownHostsFile is resolved, not dropped.
+        team = os.path.join(self.root, 'team ')
+        os.mkdir(team)
+        spaced = os.path.join(team, 'known_hosts')
+        open(spaced, 'w').close()
+        plain = os.path.join(self.root, 'plain_hosts')
+        open(plain, 'w').close()
+        self.assertEqual(sftp._paths_of('%s %s' % (spaced, plain)), [spaced, plain])
+        # Without the spaced folder, the same text is two paths.
+        self.assertEqual(sftp._paths_of('%s/a %s/b' % (self.root, self.root)),
+                         [os.path.join(self.root, 'a'), os.path.join(self.root, 'b')])
+        cwd = os.getcwd()
+        os.chdir(self.root)
+        self.addCleanup(os.chdir, cwd)
+        self.assertEqual(sftp._paths_of('plain_hosts'), [os.path.abspath('plain_hosts')])
+
+    def test_use_keychain_probe_is_cached_and_fails_closed(self):
+        sftp._KEYCHAIN_OPTION.clear()
+        self.addCleanup(sftp._KEYCHAIN_OPTION.clear)
+        with mock.patch.object(sftp.subprocess, 'run', return_value=mock.Mock(returncode=0)) as run:
+            self.assertTrue(sftp._knows_use_keychain('/usr/bin/ssh'))
+            self.assertTrue(sftp._knows_use_keychain('/usr/bin/ssh'))
+        run.assert_called_once()
+        self.assertEqual(run.call_args[0][0], ['/usr/bin/ssh', '-o', 'UseKeychain=no', '-G', 'localhost'])
+        with mock.patch.object(sftp.subprocess, 'run', return_value=mock.Mock(returncode=255)):
+            self.assertFalse(sftp._knows_use_keychain('/opt/other/ssh'))
+        with mock.patch.object(sftp.subprocess, 'run', side_effect=OSError('missing')):
+            self.assertFalse(sftp._knows_use_keychain('/missing/ssh'))
+
+    def test_quotes_and_controls_in_ssh_paths_are_refused_before_spawn(self):
+        with mock.patch.object(sftp.subprocess, 'Popen') as spawn:
+            for bad in ('relative', '/key" -o ProxyCommand=bad', '/key\nvalue'):
+                for kwargs in ({'known_hosts': bad}, {'auth': 'key', 'key_path': bad}):
+                    with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                        sftp.SftpSession(SPEC, **kwargs)
         spawn.assert_not_called()
 
-    def test_frozen_helper_uses_absolute_system_interpreter(self):
-        with mock.patch.object(sys, 'frozen', True, create=True), \
-                mock.patch.dict(os.environ, {'PATH': '.:relative:/usr/bin'}), \
-                mock.patch.object(sftp.ssh_tunnel, '_is_program', side_effect=lambda p: p == '/usr/bin/python3'):
-            self.assertEqual(sftp._askpass_python(), '/usr/bin/python3')
+    def test_crlf_failure_reasons_and_changed_precedes_unknown(self):
+        cases = [('No ED25519 host key is known for example.test\r\nHost key verification failed.\r\n',
+                  'host_key_unknown'),
+                 ('REMOTE HOST IDENTIFICATION HAS CHANGED!\r\nHost key verification failed.\r\n',
+                  'host_key_changed'),
+                 ('Host key for example.test has changed\r', 'host_key_changed'),
+                 ('Permission denied (publickey).\r\n', 'auth_failed'),
+                 ('Authentication failed\r', 'auth_failed')]
+        for message, reason in cases:
+            server = PipeServer(failure=message)
+            self.addCleanup(self.check_server, server)
+            with self.subTest(reason=reason), self.assertRaises(sftp.SftpError) as caught:
+                sftp.SftpSession(SPEC, _process=server)
+            self.assertEqual(caught.exception.reason, reason)
+            self.assertNotIn('\r', str(caught.exception))
+            self.assertNotIn('\\u000d', str(caught.exception))
+            self.assertIn('example.test', str(caught.exception))
+        with mock.patch.object(sftp.ssh_tunnel, 'find_ssh', side_effect=sftp.ssh_tunnel.TunnelError('missing')):
+            with self.assertRaises(sftp.SftpSshMissing) as caught:
+                sftp.SftpSession(SPEC)
+        self.assertEqual(caught.exception.reason, 'ssh_missing')
+
+    def test_windows_passphrase_fails_closed(self):
+        key = self.local('id_key')
+        with mock.patch.object(os, 'name', 'nt'), mock.patch.object(sftp.subprocess, 'Popen') as spawn:
+            with self.assertRaisesRegex(sftp.SftpAuthError, 'Windows'):
+                sftp.SftpSession(SPEC, auth='key', key_path=key, secret='passphrase')
+        spawn.assert_not_called()
 
     def test_windows_keys_spawn_suspended_and_join_job_before_protocol(self):
         from myflames import win_job  # Load ctypes before simulating Windows.
@@ -653,7 +762,7 @@ class TestAuthentication(Isolated):
     def test_windows_password_fails_closed_without_process(self):
         with mock.patch.object(os, 'name', 'nt'), mock.patch.object(sftp.subprocess, 'Popen') as spawn:
             with self.assertRaisesRegex(sftp.SftpAuthError, 'Windows'):
-                sftp.SftpSession(SPEC, password='secret')
+                sftp.SftpSession(SPEC, auth='password', secret='secret')
         spawn.assert_not_called()
 
     def test_askpass_setup_error_never_exposes_secret_or_temp_path(self):
@@ -661,353 +770,74 @@ class TestAuthentication(Isolated):
                 mock.patch.object(sftp.ssh_tunnel, 'find_ssh', return_value='/usr/bin/ssh'), \
                 mock.patch.object(sftp.subprocess, 'Popen') as spawn:
             with self.assertRaises(sftp.SftpAuthError) as caught:
-                sftp.SftpSession(SPEC, password='secret')
+                sftp.SftpSession(SPEC, auth='password', secret='secret')
         self.assertNotIn('secret', str(caught.exception))
         self.assertNotIn('/private/hidden', str(caught.exception))
         spawn.assert_not_called()
 
 
-class FakeTransfer(object):
-    def __init__(self, data=b'downloaded', entered=None, release=None, stop_after_chunk=False, failure=False):
-        self.data, self.entered, self.release = data, entered, release
-        self.stop_after_chunk, self.failure = stop_after_chunk, failure
-        self.closed = False
-        self.uploaded = {}
-        self.removed = []
-        self.modes = []
-        self._password = None
-
-    def safe(self, text):
-        return text
-
-    def stat(self, path):
-        return {'size': len(self.data), 'mode': 0o100600, 'is_dir': False}
-
-    def lstat(self, path):
-        raise sftp.SftpError('Missing', 2)
-
-    def hold(self, stop):
-        if self.entered:
-            self.entered.set()
-        if self.release and not self.release.wait(3):
-            raise RuntimeError('Test did not release worker')
-        if stop.is_set():
-            raise sftp.SftpCancelled('File transfer cancelled.')
-
-    def get(self, remote, fd, size, progress, stop):
-        self.hold(stop)
-        os.write(fd, self.data)
-        progress(len(self.data))
-        if self.stop_after_chunk:
-            stop.set()
-            raise sftp.SftpCancelled('File transfer cancelled.')
-        if self.failure:
-            raise sftp.SftpError('Remote read failed')
-
-    def put(self, fd, remote, size, progress, stop, overwrite=False):
-        self.hold(stop)
-        self.uploaded[remote] = os.read(fd, size)
-        progress(size)
-
-    def setstat(self, path, mode):
-        self.modes.append((path, mode))
-
-    def remove(self, path):
-        self.removed.append(path)
-
-    def close(self):
-        self.closed = True
-        if self.release:
-            self.release.set()
-
-
-class TestJobs(Isolated):
-    def manager(self, session=None, factory=None, clock=None, store=None):
-        session = session or FakeTransfer()
-        manager = jobs.SftpJobManager(store=store, session_factory=factory or (lambda spec: session),
-                                      **({'clock': clock} if clock else {}))
-        self.addCleanup(manager.shutdown)
-        return manager, session
-
-    def finish(self, manager, job):
-        thread = manager._jobs[job['id']].thread
-        if thread:
-            thread.join(3)
-            self.assertFalse(thread.is_alive(), 'Transfer worker did not terminate')
-        return next(j for j in manager.jobs() if j['id'] == job['id'])
-
-    def test_download_atomic_publish_and_permissions(self):
-        manager, session = self.manager()
-        job = manager.start_download(SPEC, ['/var/log/mysql.log'], self.root, False)
-        final = self.finish(manager, job)
-        path = os.path.join(self.root, 'mysql.log')
-        with open(path, 'rb') as stream:
-            self.assertEqual(stream.read(), b'downloaded')
-        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
-        self.assertFalse(os.path.exists(path + '.myflames-part'))
-        self.assertEqual(final['state'], 'finished')
-        self.assertEqual(final['bytes_done'], 10)
-        self.assertTrue(session.closed)
-        json.dumps(final, allow_nan=False)
-
-    def test_upload_preserves_bytes_and_strips_special_mode_bits(self):
-        path = self.local(data=b'upload-payload')
-        os.chmod(path, 0o4750)
-        manager, session = self.manager()
-        final = self.finish(manager, manager.start_upload(SPEC, [path], '/logs', False))
-        self.assertEqual(final['state'], 'finished')
-        self.assertEqual(session.uploaded['/logs/source.log'], b'upload-payload')
-        self.assertEqual(session.modes, [('/logs/source.log', 0o750)])
-
-    def test_local_symlink_component_and_leaf_refused(self):
-        actual = os.path.join(self.root, 'actual')
-        os.mkdir(actual)
-        link = os.path.join(self.root, 'linked')
-        os.symlink(actual, link)
-        source = self.local()
-        leaf = os.path.join(self.root, 'leaf')
-        os.symlink(source, leaf)
-        manager, _ = self.manager()
-        for path in (link, link + '/sub/..'):
-            with self.subTest(path=path), self.assertRaises(ValueError):
-                manager.start_download(SPEC, ['/log'], path, False)
-        with self.assertRaises(ValueError):
-            manager.start_upload(SPEC, [leaf], '/', False)
-        with self.assertRaises(ValueError):
-            manager.start_download(SPEC, ['/leaf'], self.root, True)
-
-    def test_existing_final_requires_overwrite_and_remains_intact(self):
-        path = self.local('log', b'original')
-        manager, _ = self.manager()
-        with self.assertRaisesRegex(ValueError, 'Enable overwrite'):
-            manager.start_download(SPEC, ['/log'], self.root, False)
-        with open(path, 'rb') as stream:
-            self.assertEqual(stream.read(), b'original')
-        final = self.finish(manager, manager.start_download(SPEC, ['/log'], self.root, True))
-        self.assertEqual(final['state'], 'finished')
-        with open(path, 'rb') as stream:
-            self.assertEqual(stream.read(), b'downloaded')
-
-    def test_target_traversal_and_windows_names_refused(self):
-        manager, _ = self.manager()
-        for path in ('/logs/..', '/logs/.', '/logs/..\\outside', '/logs/C:secret', '/logs/NUL', '/logs/name.'):
-            with self.subTest(path=path), self.assertRaises(ValueError):
-                manager.start_download(SPEC, [path], self.root, False)
-        self.assertEqual(os.listdir(self.root), [])
-
-    def test_cancel_and_failure_remove_only_owned_partial(self):
-        for cancel in (True, False):
-            manager, _ = self.manager(FakeTransfer(stop_after_chunk=cancel, failure=not cancel))
-            final = self.finish(manager, manager.start_download(SPEC, ['/log'], self.root, False))
-            self.assertEqual(final['state'], 'cancelled' if cancel else 'failed')
-            self.assertEqual(os.listdir(self.root), [])
-        part = self.local('log.myflames-part', b'previous-part')
-        manager, _ = self.manager()
-        final = self.finish(manager, manager.start_download(SPEC, ['/log'], self.root, False))
-        self.assertEqual(final['state'], 'failed')
-        with open(part, 'rb') as stream:
-            self.assertEqual(stream.read(), b'previous-part')
-
-    def test_racing_final_file_is_not_overwritten_without_flag(self):
-        session = FakeTransfer()
-        original_get = session.get
-
-        def racing(*args):
-            original_get(*args)
-            self.local('log', b'racer')
-        session.get = racing
-        manager, _ = self.manager(session)
-        final = self.finish(manager, manager.start_download(SPEC, ['/log'], self.root, False))
-        self.assertEqual(final['state'], 'failed')
-        with open(os.path.join(self.root, 'log'), 'rb') as stream:
-            self.assertEqual(stream.read(), b'racer')
-        self.assertFalse(os.path.exists(os.path.join(self.root, 'log.myflames-part')))
-
-    def test_final_creation_after_last_preflight_still_refuses_overwrite(self):
-        manager, _ = self.manager()
-        original = jobs._LocalDirectory.check_final
-        checks = []
-
-        def racing(parent, name, overwrite):
-            original(parent, name, overwrite)
-            checks.append(name)
-            if len(checks) == 3:
-                self.local('log', b'racing-file')
-        with mock.patch.object(jobs._LocalDirectory, 'check_final', racing):
-            final = self.finish(manager, manager.start_download(SPEC, ['/log'], self.root, False))
-        self.assertEqual(final['state'], 'failed')
-        with open(os.path.join(self.root, 'log'), 'rb') as stream:
-            self.assertEqual(stream.read(), b'racing-file')
-
-    def test_directory_swapped_for_symlink_after_preflight_refused(self):
-        target = os.path.join(self.root, 'target')
-        outside = os.path.join(self.root, 'outside')
-        os.mkdir(target)
-        os.mkdir(outside)
-
-        def factory(spec):
-            os.rmdir(target)
-            os.symlink(outside, target)
-            return FakeTransfer()
-        manager, _ = self.manager(factory=factory)
-        final = self.finish(manager, manager.start_download(SPEC, ['/log'], target, False))
-        self.assertEqual(final['state'], 'failed')
-        self.assertEqual(os.listdir(outside), [])
-
-    def test_duplicate_targets_and_staging_collisions_refused(self):
-        manager, _ = self.manager()
-        for paths in (['/a/log', '/b/log'], ['/log', '/log.myflames-part']):
-            with self.subTest(paths=paths), self.assertRaises(ValueError):
-                manager.start_download(SPEC, paths, self.root, False)
-
-    def test_shutdown_prunes_expired_terminal_job_without_error(self):
-        now = [0.0]
-        manager, _ = self.manager(clock=lambda: now[0])
-        self.finish(manager, manager.start_download(SPEC, ['/log'], self.root, False))
-        now[0] = 3601
-        manager.shutdown()
-        self.assertEqual(manager.jobs(), [])
-
-    def test_queue_two_running_rest_queued_and_cancel(self):
-        release = threading.Event()
-        entered = [threading.Event(), threading.Event()]
-        count = []
-
-        def factory(spec):
-            index = len(count)
-            session = FakeTransfer(entered=entered[index], release=release)
-            count.append(session)
-            return session
-        manager, _ = self.manager(factory=factory)
-        path = self.local()
-        first = manager.start_upload(SPEC, [path], '/one', False)
-        second = manager.start_upload(SPEC, [path], '/two', False)
-        self.assertTrue(entered[0].wait(1))
-        self.assertTrue(entered[1].wait(1))
-        third = manager.start_upload(SPEC, [path], '/three', False)
-        self.assertEqual([j['state'] for j in manager.jobs()], ['running', 'running', 'queued'])
-        self.assertIsNone(manager._jobs[third['id']].thread)
-        self.assertEqual(manager.cancel(third['id'])['state'], 'cancelled')
-        manager.cancel(first['id'])
-        release.set()
-        self.assertEqual(self.finish(manager, first)['state'], 'cancelled')
-        self.assertEqual(self.finish(manager, second)['state'], 'finished')
-        self.assertEqual(len(count), 2)
-
-    def test_queue_starts_next_when_slot_frees(self):
-        release = threading.Event()
-        entered = [threading.Event(), threading.Event()]
-        count = []
-
-        def factory(spec):
-            index = len(count)
-            instance = FakeTransfer(entered=entered[index] if index < 2 else None,
-                                    release=release if index < 2 else None)
-            count.append(instance)
-            return instance
-        manager, _ = self.manager(factory=factory)
-        path = self.local()
-        first = manager.start_upload(SPEC, [path], '/one', False)
-        second = manager.start_upload(SPEC, [path], '/two', False)
-        self.assertTrue(entered[0].wait(1))
-        self.assertTrue(entered[1].wait(1))
-        third = manager.start_upload(SPEC, [path], '/three', False)
-        release.set()
-        self.finish(manager, first)
-        self.finish(manager, second)
-        self.assertEqual(self.finish(manager, third)['state'], 'finished')
-        self.assertEqual(len(count), 3)
-
-    def test_eta_rolling_window_with_fake_clock(self):
-        now = [10.0]
-        manager, _ = self.manager(clock=lambda: now[0])
-        item = {'source': 'x', 'target': 'y', 'bytes': 1000, 'done': 0, 'state': 'running', 'error': None}
-        job = jobs._Job('download', SPEC, [item], False, now[0])
-        job.started = now[0]
-        job.public['state'] = 'running'
-        job.samples.append((10.0, 0))
-        self.assertIsNone(job.public['eta_s'])
-        now[0] = 12
-        manager._progress(job, item, 200)
-        self.assertEqual(job.public['rate_bps'], 100)
-        self.assertEqual(job.public['eta_s'], 8)
-        now[0] = 17
-        manager._progress(job, item, 700)
-        self.assertEqual(job.public['rate_bps'], 100)
-        self.assertEqual(job.public['eta_s'], 3)
-        job.metrics(23)
-        self.assertEqual(job.public['rate_bps'], 0)
-        self.assertIsNone(job.public['eta_s'])
-
-    def test_terminal_ttl_and_snapshot_copy(self):
-        now = [0.0]
-        manager, _ = self.manager(clock=lambda: now[0])
-        job = manager.start_download(SPEC, ['/log'], self.root, False)
-        final = self.finish(manager, job)
-        final['items'][0]['source'] = 'changed'
-        self.assertEqual(manager.jobs()[0]['items'][0]['source'], '/log')
-        now[0] = 3599
-        self.assertEqual(len(manager.jobs()), 1)
-        now[0] = 3600
-        self.assertEqual(manager.jobs(), [])
-
-    def test_audit_actual_store_protocol_for_success_failure_cancel(self):
-        class Store(object):
-            def __init__(self):
-                self.records = []
-
-            def audit_insert(self, row):
-                self.records.append(dict(row))
-
-            def audit_complete(self, key, fields):
-                next(row for row in self.records if row['id'] == key).update(fields)
-        store = Store()
-        for index, session in enumerate((FakeTransfer(), FakeTransfer(failure=True), FakeTransfer(stop_after_chunk=True))):
-            manager, _ = self.manager(session, store=store)
-            self.finish(manager, manager.start_download(SPEC, ['/log%d' % index], self.root, False))
-        self.assertEqual([r['outcome'] for r in store.records], ['finished', 'failed', 'cancelled'])
-        self.assertEqual([r['status'] for r in store.records], ['ok', 'error', 'error'])
-        self.assertTrue(all(r['operation'] == 'sftp_download' for r in store.records))
-
-
 class TestApi(Isolated):
-    def test_connection_missing_host_exact_message_and_strict_types(self):
-        with self.assertRaises(ValueError) as caught:
-            api.api_listdir({}, '.')
-        self.assertEqual(str(caught.exception), 'This connection has no SSH details. Add an SSH host to the saved connection to transfer files.')
-        for value in ([], None, {'ssh_host': 1}, {'ssh_host': 'host', 'ssh_user': False},
-                      {'ssh_host': 'host', 'ssh_port': True}, {'ssh_host': 'host', 'ssh_port': 2.5},
-                      {'ssh_host': 'host', 'ssh_port': '2_222'}, {'ssh_host': 'host', 'ssh_port': '+22'},
-                      {'ssh_host': '-oProxyCommand=bad'}):
-            with self.subTest(value=value), self.assertRaises(ValueError):
-                api.api_realpath(value, '.')
+    def setUp(self):
+        super().setUp()
+        self.store = WorkspaceStore(os.path.join(self.root, 'store', 'workspace.sqlite3'))
+        self.draft = dict(name='Logs', host='example.test', port=2222, user='reader', auth='agent',
+                          key_path='', remote_dir='', local_dir='')
+        self.connection = ssh.save(self.store, {'connection': self.draft})['connection']
+        self.key = self.connection['id']
 
-    def test_transfer_shapes_no_coercion_and_unknown_fields(self):
-        valid = {'connection': SPEC, 'local_paths': ['/a'], 'remote_dir': '/logs', 'overwrite': False}
-        for changes in ({'overwrite': 1}, {'overwrite': 'true'}, {'local_paths': '/a'}, {'local_paths': [1]},
-                        {'local_paths': []}, {'remote_dir': 2}, {'secret_ref': 'external'}):
-            with self.subTest(changes=changes), self.assertRaises(ValueError):
-                api.api_start_upload(dict(valid, **changes))
-        with mock.patch.object(jobs, 'start_upload', return_value={'id': 'job'}) as start:
-            self.assertEqual(api.api_start_upload(valid), {'id': 'job'})
-        self.assertEqual(start.call_args[0], (SPEC, ['/a'], '/logs', False))
-        for job_id in (None, 1, '', '../job'):
-            with self.assertRaises(ValueError):
-                api.api_cancel(job_id)
-
-    def test_cached_session_reuse_idle_close_and_auth_drop(self):
+    def fake_session(self):
         session = mock.Mock()
         session._password = None
         session.alive.return_value = True
         session.listdir.return_value = []
         session.safe.side_effect = lambda text: text
-        session.realpath.return_value = '/home/reader'
-        with mock.patch.object(api, 'open_session', return_value=session) as factory, \
+        session.realpath.side_effect = lambda path: '/home/reader' if path == '.' else posixpath.normpath(path)
+        return session
+
+    def test_remote_home_empty_path_and_full_modes(self):
+        session, server = self.session(names=['log.txt', 'logs'])
+        with mock.patch.object(ssh, 'open_session', return_value=session):
+            result = api.api_listdir(self.store, self.key, '')
+        self.assertEqual(result['path'], '/home/reader')
+        self.assertEqual(result['home'], '/home/reader')
+        self.assertEqual(result['entries'], [
+            dict(name='log.txt', kind='file', is_dir=False, size=6, mtime=1700000000, mode=0o100640),
+            dict(name='logs', kind='dir', is_dir=True, size=6, mtime=1700000000, mode=0o40750)])
+        self.assertEqual([kind for kind, _ in server.calls].count(sftp.REALPATH), 1)
+
+    def test_remote_resolved_path_and_link_stat_cap(self):
+        session = self.fake_session()
+        session.realpath.side_effect = ['/home/reader', '/resolved']
+        session.listdir.return_value = [dict(name='link%d' % i, mode=0o120777, size=3, mtime=1) for i in range(205)]
+        session.stat.return_value = {'mode': 0o40700}
+        with mock.patch.object(ssh, 'open_session', return_value=session):
+            result = api.api_listdir(self.store, self.key, '/unresolved')
+        self.assertEqual(result['path'], '/resolved')
+        self.assertEqual(result['home'], '/home/reader')
+        self.assertEqual(session.stat.call_count, 200)
+        self.assertTrue(all(e['is_dir'] and e['kind'] == 'link' for e in result['entries'][:200]))
+        self.assertFalse(any(e['is_dir'] for e in result['entries'][200:]))
+        session.stat.assert_any_call('/resolved/link199')
+
+    def test_broken_link_is_not_directory_but_transport_errors_propagate(self):
+        session = self.fake_session()
+        session.listdir.return_value = [dict(name='broken', mode=0o120777)]
+        session.stat.side_effect = sftp.SftpError('missing', 2)
+        with mock.patch.object(ssh, 'open_session', return_value=session):
+            result = api.api_listdir(self.store, self.key, '')
+            self.assertFalse(result['entries'][0]['is_dir'])
+            session.stat.side_effect = sftp.SftpError('transport ended')
+            with self.assertRaisesRegex(sftp.SftpError, 'transport ended'):
+                api.api_listdir(self.store, self.key, '')
+
+    def test_cached_session_reused_and_expired(self):
+        session = self.fake_session()
+        with mock.patch.object(ssh, 'open_session', return_value=session) as factory, \
                 mock.patch.object(api.time, 'monotonic', return_value=10):
-            self.assertEqual(api.api_listdir(SPEC, '.'), [])
-            self.assertEqual(api.api_realpath(SPEC, '.'), '/home/reader')
-            factory.assert_called_once_with(SPEC)
-        key = api._endpoint(SPEC)
+            api.api_listdir(self.store, self.key, '')
+            api.api_listdir(self.store, self.key, '/x')
+            self.assertEqual(factory.call_count, 1)
+        key = next(iter(api._SESSIONS))
         entry = api._SESSIONS[key]
         with mock.patch.object(api.time, 'monotonic', return_value=129):
             api._expire(key, entry)
@@ -1017,12 +847,241 @@ class TestApi(Isolated):
         session.close.assert_called_once()
         self.assertEqual(api._SESSIONS, {})
 
+    def test_saved_edit_invalidates_browsing_session(self):
+        first, second = self.fake_session(), self.fake_session()
+        with mock.patch.object(ssh, 'open_session', side_effect=[first, second]) as factory:
+            api.api_listdir(self.store, self.key, '')
+            ssh.save(self.store, {'connection': dict(self.draft, id=self.key, host='other.test')})
+            first.close.assert_called_once()
+            api.api_listdir(self.store, self.key, '')
+        self.assertEqual(factory.call_count, 2)
+        self.assertEqual(factory.call_args[0][0]['host'], 'other.test')
+
+    def test_local_home_and_link_shapes(self):
+        os.mkdir(os.path.join(self.root, 'folder'))
+        source = self.local('file')
+        os.symlink('folder', os.path.join(self.root, 'folder-link'))
+        os.symlink('missing', os.path.join(self.root, 'broken'))
+        result = api.api_local_list('')
+        self.assertEqual((result['path'], result['home']), (self.root, self.root))
+        items = {item['name']: item for item in result['entries']}
+        self.assertEqual(items['folder-link']['kind'], 'link')
+        self.assertTrue(items['folder-link']['is_dir'])
+        self.assertFalse(items['broken']['is_dir'])
+        self.assertEqual(items['file']['mode'], os.lstat(source).st_mode)
+        self.assertIsInstance(items['file']['mtime'], int)
+        result = api.api_local_list(os.path.join(self.root, 'folder-link'))
+        self.assertEqual(result['path'], os.path.join(self.root, 'folder'))
+        for bad in (None, 1, '\x00', 'relative'):
+            with self.assertRaises(ValueError):
+                api.api_local_list(bad)
+
+    def test_local_mkdir_rename_and_refusals(self):
+        folder = os.path.join(self.root, 'new')
+        self.assertEqual(api.api_local_mkdir(folder), {'path': folder})
+        target = folder + '-renamed'
+        self.assertEqual(api.api_local_rename(folder, target), {'path': target})
+        self.assertTrue(os.path.isdir(target))
+        source = self.local()
+        existing = self.local('existing', b'keep')
+        broken = os.path.join(self.root, 'broken')
+        os.symlink('missing', broken)
+        for destination in (existing, broken, source):
+            with self.subTest(destination=destination), self.assertRaisesRegex(ValueError, 'already exists'):
+                api.api_local_rename(source, destination)
+        for bad in ('', 'relative', self.root + '/.', self.root + '/..', self.root + '/a\x00b',
+                    self.root + '/a\nb', self.root + '/a\rb', self.root + '/a\x7fb', self.root + '/missing/child'):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    api.api_local_mkdir(bad)
+                with self.assertRaises(ValueError):
+                    api.api_local_rename(source, bad)
+        with open(existing, 'rb') as stream:
+            self.assertEqual(stream.read(), b'keep')
+        with self.assertRaises(ValueError):
+            api.api_local_mkdir(target)
+
+    def test_local_mkdir_permission_error_is_plain(self):
+        with mock.patch.object(api, '_absent', side_effect=PermissionError('private path')):
+            with self.assertRaisesRegex(ValueError, 'could not be created') as caught:
+                api.api_local_mkdir(self.root + '/new')
+        self.assertNotIn('private path', str(caught.exception))
+
+    def tree_session(self):
+        session = self.fake_session()
+        modes = {'/tree': 0o40700, '/tree/child': 0o40700, '/tree/child/data': 0o100600,
+                 '/tree/link': 0o120777}
+        listings = {'/tree': [{'name': 'child'}, {'name': 'link'}], '/tree/child': [{'name': 'data'}]}
+        session.lstat.side_effect = lambda path: {'mode': modes[path]}
+        session.listdir.side_effect = lambda path: listings[path]
+        return session
+
+    def test_local_listing_and_operations_refuse_a_link_another_user_owns(self):
+        # Review: the listing answered the link's target, so a transfer started
+        # from it never saw the foreign link. Both now follow the same rule.
+        actual = os.path.join(self.root, 'actual')
+        os.mkdir(actual)
+        link = os.path.join(self.root, 'planted')
+        os.symlink(actual, link)
+        real_lstat = os.lstat
+
+        def foreign(path, *args, **kwargs):
+            info = real_lstat(path, *args, **kwargs)
+            if path == link:
+                values = list(info)
+                values[4] = 4242  # st_uid
+                return os.stat_result(values)
+            return info
+        with mock.patch.object(jobs.os, 'lstat', side_effect=foreign):
+            for call in (lambda: api.api_local_list(link), lambda: api.api_local_mkdir(os.path.join(link, 'new'))):
+                with self.assertRaisesRegex(ValueError, 'owned by another user'):
+                    call()
+        self.assertEqual(api.api_local_list(link)['path'], os.path.realpath(actual))
+
+    def test_recursive_remove_counts_first_and_unlinks_links(self):
+        session = self.tree_session()
+        with mock.patch.object(ssh, 'open_session', return_value=session):
+            result = api.api_remove(self.store, self.key, ['/tree', '/tree/child'])
+        self.assertEqual(result, {'removed': 4})
+        self.assertEqual(session.listdir.call_args_list, [mock.call('/tree'), mock.call('/tree/child')])
+        self.assertEqual(session.remove.call_args_list, [mock.call('/tree/child/data'), mock.call('/tree/link')])
+        self.assertEqual(session.rmdir.call_args_list, [mock.call('/tree/child'), mock.call('/tree')])
+        calls = session.mock_calls
+        first_delete = next(i for i, call in enumerate(calls) if call[0] in ('remove', 'rmdir'))
+        last_list = max(i for i, call in enumerate(calls) if call[0] == 'listdir')
+        self.assertGreater(first_delete, last_list)
+
+    def test_recursive_remove_caps_do_not_delete_anything(self):
+        for cap, value in (('MAX_REMOVE_ENTRIES', 3), ('MAX_REMOVE_DEPTH', 1)):
+            session = self.tree_session()
+            with mock.patch.object(api, cap, value), mock.patch.object(ssh, 'open_session', return_value=session):
+                with self.assertRaisesRegex(ValueError, 'Nothing was removed'):
+                    api.api_remove(self.store, self.key, ['/tree'])
+            session.remove.assert_not_called()
+            session.rmdir.assert_not_called()
+
+    def test_recursive_remove_symlink_swap_during_scan_fails_before_delete(self):
+        session = self.tree_session()
+        original = session.lstat.side_effect
+        counts = collections.Counter()
+
+        def swapped(path):
+            counts[path] += 1
+            if path == '/tree/child' and counts[path] >= 2:
+                return {'mode': 0o120777}
+            return original(path)
+        session.lstat.side_effect = swapped
+        with mock.patch.object(ssh, 'open_session', return_value=session):
+            with self.assertRaisesRegex(ValueError, 'no longer a directory'):
+                api.api_remove(self.store, self.key, ['/tree'])
+        session.remove.assert_not_called()
+        session.rmdir.assert_not_called()
+
+    def test_recursive_remove_stops_when_an_ancestor_becomes_a_link_between_deletions(self):
+        # Found by review: a check shared across deletions let the entries
+        # after the swap resolve through the link. Each deletion re-checks.
+        session = self.tree_session()
+        original = session.lstat.side_effect
+        state = {'swapped': False}
+
+        def lstat(path):
+            if state['swapped'] and path == '/tree':
+                return {'mode': 0o120777}
+            return original(path)
+
+        def remove(path):
+            state['swapped'] = True  # The swap lands right after the first deletion.
+        session.lstat.side_effect = lstat
+        session.remove.side_effect = remove
+        with mock.patch.object(ssh, 'open_session', return_value=session):
+            with self.assertRaisesRegex(ValueError, 'no longer a directory'):
+                api.api_remove(self.store, self.key, ['/tree'])
+        self.assertEqual(session.remove.call_args_list, [mock.call('/tree/child/data')])
+        session.rmdir.assert_not_called()
+
+    def test_recursive_remove_hostile_entry_and_root_are_refused(self):
+        for bad in ('../outside', '/absolute', 'x\x00y'):
+            session = self.tree_session()
+            session.listdir.side_effect = None
+            session.listdir.return_value = [{'name': bad}]
+            with mock.patch.object(ssh, 'open_session', return_value=session):
+                with self.assertRaises(sftp.SftpError):
+                    api.api_remove(self.store, self.key, ['/tree'])
+            session.remove.assert_not_called()
+        with self.assertRaises(ValueError):
+            api.api_remove(self.store, self.key, ['/'])
+
+    def test_transfer_shapes_validation_and_private_openers(self):
+        payload = {'ssh': self.key, 'local_paths': [self.root + '/file'], 'remote_dir': '/logs', 'on_exists': 'fail'}
+        for changes in ({'on_exists': True}, {'on_exists': 'true'}, {'local_paths': '/a'}, {'local_paths': [1]},
+                        {'local_paths': []}, {'local_paths': ['relative']}, {'remote_dir': 2}, {'secret_ref': 'external'},
+                        {'local_paths': ['/x/.']}, {'local_paths': ['/a\n']}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                api.api_start_upload(self.store, dict(payload, **changes))
+        with mock.patch.object(jobs, 'start_upload', return_value={'id': 'job'}) as start:
+            self.assertEqual(api.api_start_upload(self.store, payload), {'id': 'job'})
+        opener, label, paths, directory, policy = start.call_args[0]
+        self.assertEqual((label, paths, directory, policy),
+                         ({'ssh': self.key, 'name': 'Logs'}, [self.root + '/file'], '/logs', 'fail'))
+        first, second = self.fake_session(), self.fake_session()
+        with mock.patch.object(ssh, 'open_session', side_effect=[first, second]) as factory:
+            self.assertIs(opener(), first)
+            self.assertIs(opener(), second)
+            self.assertEqual(factory.call_count, 2)
+        self.assertEqual(api._SESSIONS, {})
+        ssh.save(self.store, {'connection': dict(self.draft, id=self.key, host='changed.test')})
+        with mock.patch.object(ssh, 'open_session') as factory:
+            with self.assertRaisesRegex(ValueError, 'connection changed'):
+                opener()
+        factory.assert_not_called()
+
+    def test_all_files_routes_shapes_through_ui(self):
+        from myflames import ui
+        workspace = mock.Mock(store=self.store)
+        session = self.fake_session()
+        session.lstat.return_value = {'mode': 0o100600}
+        job = {'id': 'a' * 32}
+        folder = self.root + '/created'
+        source = self.local()
+        cases = [
+            ('remote/list', {'ssh': self.key, 'path': ''}, {'path': '/home/reader', 'home': '/home/reader', 'entries': []}),
+            ('remote/mkdir', {'ssh': self.key, 'path': '/new'}, {'path': '/new'}),
+            ('remote/rename', {'ssh': self.key, 'from': '/old', 'to': '/new'}, {'path': '/new'}),
+            ('remote/remove', {'ssh': self.key, 'paths': ['/old']}, {'removed': 1}),
+            ('local/mkdir', {'path': folder}, {'path': folder}),
+            ('local/rename', {'from': source, 'to': source + '2'}, {'path': source + '2'}),
+            ('upload', {'ssh': self.key, 'local_paths': [source + '2'], 'remote_dir': '/', 'on_exists': 'skip'}, {'job': job}),
+            ('download', {'ssh': self.key, 'remote_paths': ['/x'], 'local_dir': self.root, 'on_exists': 'overwrite'}, {'job': job}),
+            ('jobs', {'ssh': self.key}, {'jobs': [job]}),
+            ('cancel', {'job_id': job['id']}, {'job': job}),
+            ('retry', {'job_id': job['id']}, {'job': job}),
+            ('clear', {'ssh': self.key}, {'cleared': 1})]
+        with mock.patch.object(ssh, 'open_session', return_value=session), \
+                mock.patch.object(jobs, 'start_upload', return_value=job), \
+                mock.patch.object(jobs, 'start_download', return_value=job), \
+                mock.patch.object(jobs, 'jobs', return_value=[job]) as listing, \
+                mock.patch.object(jobs, 'cancel', return_value=job), \
+                mock.patch.object(jobs, 'retry', return_value=job, create=True), \
+                mock.patch.object(jobs, 'clear', return_value=1, create=True) as clear:
+            for route, body, answer in cases:
+                with self.subTest(route=route):
+                    self.assertEqual(ui.api_response('/api/files/' + route, body, workspace), answer)
+            listing.assert_called_once_with(ssh=self.key)
+            clear.assert_called_once_with(ssh=self.key)
+        answer = ui.api_response('/api/files/local/list', {'path': ''}, workspace)
+        self.assertEqual(set(answer), {'path', 'home', 'entries'})
+        self.assertEqual(answer['home'], self.root)
+        for path in ui._FILES_PATHS + ui._SSH_CONNECTION_PATHS:
+            with self.subTest(path=path), self.assertRaisesRegex(ValueError, 'running workspace'):
+                ui.api_response(path, {})
+
     def test_new_modules_parse_as_python37_and_only_stdlib_dependencies(self):
-        allowed = {'atexit', 'collections', 'contextlib', 'copy', 'datetime', 'hashlib', 'hmac', 'os', 'posixpath',
+        allowed = {'atexit', 'collections', 'contextlib', 'copy', 'ctypes', 'datetime', 'errno', 'hashlib', 'hmac',
+                   'os', 'posixpath',
                    'queue', 're', 'secrets', 'shlex', 'shutil', 'signal', 'stat', 'struct', 'subprocess', 'sys',
                    'tempfile', 'threading', 'time'}
         root = os.path.dirname(os.path.dirname(__file__))
-        for module in ('sftp.py', 'sftp_jobs.py', 'sftp_api.py'):
+        for module in ('sftp.py', 'sftp_jobs.py', 'sftp_api.py', 'ssh_connections.py'):
             with open(os.path.join(root, 'myflames', module), encoding='utf-8') as stream:
                 source = stream.read()
             tree = ast.parse(source, feature_version=(3, 7)) if sys.version_info >= (3, 8) else ast.parse(source)

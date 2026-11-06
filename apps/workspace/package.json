@@ -101,7 +101,9 @@
     "test:perf-budgets": "npm run build && node test/perf-budgets.mjs",
     "test:perf-measure": "node test/perf-measure.mjs",
     "test:platform-shortcuts": "node test/platform-shortcuts.mjs",
-    "test:server-compare": "node test/server-compare.mjs"
+    "test:server-compare": "node test/server-compare.mjs",
+    "test:files": "node test/files-connections.mjs && node test/files-browser.mjs",
+    "test:files-live": "npm run build && node test/files-live.mjs"
   },
   "dependencies": {
     "mermaid": "11.17.2",

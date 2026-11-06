@@ -96,7 +96,6 @@ export const SERVER_KINDS = [
   "config",
   "instruments",
   "maintenance",
-  "files",
   "accounts",
 ] as const;
 export type ServerKind = (typeof SERVER_KINDS)[number];

@@ -45,4 +45,6 @@ import "./server-compare.css";
 import "./parameter-versions.css";
 import "./compare-shared.css";
 import "./files.css";
+import "./ssh-connections.css";
+import "./files-place.css";
 import "./style.css";

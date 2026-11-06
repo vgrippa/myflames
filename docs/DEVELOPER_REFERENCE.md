@@ -53,7 +53,7 @@ This is the detailed contract per feature; [AGENTS.md](../AGENTS.md) has the rul
   - [Saved connections and Database diagram Load](#saved-connections-and-database-diagram-load)
   - [Learn guided lessons](#learn-guided-lessons)
   - [MySQL Shell](#mysql-shell)
-  - [Files: SSH/SFTP file transfer](#files-sshsftp-file-transfer)
+  - [Files: SSH connections and file transfer](#files-ssh-connections-and-file-transfer)
   - [--quiet / -q](#--quiet---q)
   - [MCP server](#mcp-server)
   - [Playground](#playground)
@@ -4607,54 +4607,229 @@ against MySQL 8.4 and MariaDB 11.4 containers. The write-up is in
 11.5 and later (TIMESTAMP up to 2106), SSH tunnels and the Windows file
 chooser were not in the lab matrix and are covered by unit tests only.
 
-## Files: SSH/SFTP file transfer
+## Files: SSH connections and file transfer
 
-The Server place's **Files** view (`apps/workspace/src/Files.tsx`, `sftpApi.ts`,
-`files.css`) moves files between this computer and the database host over
-SSH/SFTP: browse both sides, upload and download with progress, transfer rate
-and time left, cancel, create folders and remove files. Dragging files onto a
-pane uploads them into the current remote folder.
+**Files** is a place of its own (sidebar key `files`, after Tuning; command
+palette "Files"). It does not use the workspace's database connection: it
+works with **SSH connections**, saved objects of their own, and moves files
+between this computer and an SSH host over SFTP, in the spirit of FileZilla.
+Frontend: `FilesPlace.tsx` (the frame, `files-place.css`) composes
+`SshConnections.tsx` (`SshConnectionList`, `SshConnectionSheet`,
+`HostKeySheet`; `ssh-connections.css`) and `FileBrowser.tsx` (`FilePane.tsx`,
+`Transfers.tsx`; `files.css`), all through `filesApi.ts`. The place stays
+mounted after its first visit, so transfers and the folders on screen survive
+a trip to another place. The selected connection id is a per-viewer
+convenience in localStorage (`myflames.files.selected`).
 
-Backend: `myflames/sftp.py` (a minimal SFTP v3 client over the system `ssh`
-process, never a library), `myflames/sftp_jobs.py` (bounded job manager: at
-most 256 jobs kept, 2 running at once, staged downloads via
-`.myflames-part` files, symlink-safe local opens through dir-fd), and
-`myflames/sftp_api.py` (validated calls, browsing-session cache of at most 8
-sessions idling out after 120 seconds, SSH credential management). Routes are
-registered in `ui.py` `_SFTP_PATHS` and answered by `_sftp_response`; every
-one is a POST behind the workspace's authenticated checks.
+Backend: `myflames/ssh_connections.py` (records, secrets, host keys, key
+discovery), `myflames/sftp.py` (a minimal SFTP v3 client over the system
+`ssh`, never a library), `myflames/sftp_api.py` (listings, file operations,
+browsing-session cache: at most 8 sessions, idle 120 s, keyed by the
+connection id and its session settings, so an edit drops it) and
+`myflames/sftp_jobs.py` (transfers). Routes: `_SSH_CONNECTION_PATHS` and
+`_FILES_PATHS` in `ui.py`, every one a POST behind the workspace's
+authenticated checks. An SSH failure (`SftpError` subclasses, which are
+`ConnectorError`s) answers 400 `{"error", "code"}` with `code` one of
+`host_key_unknown`, `host_key_changed`, `auth_failed`, `ssh_missing`; no other
+exception becomes a code, even one with a `reason` attribute (UnicodeError,
+SSLError, URLError).
 
-Endpoints (all `/api/live/sftp/*`): `list` (remote listing), `local-list`
-(this computer; `sftp_api.api_local_list`, lstat-based, symlinks never
-descended), `mkdir`, `remove`, `upload`, `download`, `jobs`, `cancel`, and
-`ssh-auth/status|save|clear`. Answer shapes match `sftpApi.ts` (`{path,
-entries}`, `{job}`, `{jobs}`, `{cancelled}`, `{saved}`, `{cleared}`,
-`{has_password}`). The Files view's "Choose files…" reuses the Import CSV
-native picker (`/api/import/csv/choose`), whose reply carries the chosen
-file's absolute `path` so an upload can start directly.
+### SSH connections
 
-Credential contract: SSH passwords live in the platform credential store under
-a separate `sshpw.<fingerprint>.<random>` namespace, never mixed with database
-password keys. The fingerprint binds host, user and port (SHA-256 of the
-NUL-joined endpoint), checked with `hmac.compare_digest`, so a saved password
-is used only for the exact endpoint it was saved for. `save` passes the
-password to `ssh` through a single-use askpass helper (0700 script, 0600
-password file created with O_EXCL), never on a command line or in an
-environment visible to other processes. **Endpoint references are kept in
-memory only** (see the `sftp_api.py` module docstring): after a myflames
-restart the store entry is orphaned and the user saves the password again;
-deleting the database profile does not delete SSH entries. A persisted
-SSH-reference schema in WorkspaceStore is future work. Unlike SSH tunnels
-(keys and agent only), SFTP accepts password sign-in because interactive
-key-only setups cannot cover every log-moving workflow; on Windows, where no
-askpass helper is available, password sign-in fails closed.
+WorkspaceStore records of kind `ssh_connection` (the `records` table, no
+schema change). API shape: `{id, name, host, port, user, auth:
+agent|key|password, key_path, has_secret, remote_dir, local_dir, updated}`.
+Validation (`ssh_connections.validate`): name 1 to 80 characters, unique
+ignoring case; host, user and port with `ssh_tunnel.ssh_fields` (a host may
+be a `~/.ssh/config` alias); `key_path` only for `key`, an absolute existing
+file without `"` or control characters; `remote_dir` absolute POSIX or empty;
+`local_dir` absolute or empty.
 
-SFTP actions are host-level file operations, not SQL writes: the connection's
-database write policy (Production/Development/Read-only) does not gate them.
-The database's saved password is never filled on these requests. Transfers are
-not written to the SQL Audit log (the job manager runs without an audit sink);
-the Transfers panel lists each job with its source, target, bytes and outcome
-while it lives (finished jobs expire after an hour).
+The secret (the SSH password, or a key's passphrase) is never in the record
+and never answered. It lives in `secret_store` under
+`sshconn.<id>.<fp>.<rand16>`, where `fp` is the first 24 hex characters of
+SHA-256 over the NUL-joined host, user, port (0 when empty), auth and key
+path; the record keeps `secret_ref` and `secret_backend`, checked with
+`hmac.compare_digest` before any store read. A save that changes any of those
+five fields deletes the old secret unless the same save sends a new one;
+`forget_secret` deletes it; deleting the connection deletes it. Order: a new
+secret is stored, then the record is written, and only then is the old secret
+deleted, so a failed write keeps the old record and its secret; a delete
+removes the record first, so a store failure leaves an orphaned entry (said
+in the error), never a connection that claims a secret it lost. A test of a
+draft (`{connection, secret}`) uses the sent secret and stores nothing.
+Endpoints: `/api/ssh/connections/list|save|delete|test`,
+`/api/ssh/hostkey/scan|trust`, `/api/ssh/keys` (private keys in
+`<ssh_home>/.ssh` with a matching `.pub`, read for type and comment, and
+`.pem` files without one, recognized by their first line only; a private key
+is never read past that line), and the existing `/api/ssh/hosts`.
+
+### ssh invocation
+
+Every session: `ssh -T -s` with `LogLevel=ERROR`, `StrictHostKeyChecking=yes`,
+`UpdateHostKeys=no`, `PermitLocalCommand=no`, `ControlMaster=no`,
+`ControlPath=none`, `ClearAllForwardings=yes`, `ForwardAgent=no`,
+`ForwardX11=no`, `ConnectTimeout=10`, `ServerAliveInterval=15`,
+`ServerAliveCountMax=2`, and `GlobalKnownHostsFile=` the global files ssh
+would use for the endpoint plus the myflames file, each double-quoted (the
+user's own `UserKnownHostsFile` is left as configured, so it still counts).
+`sftp.known_hosts_config` reads both lists from `ssh -G` (OpenSSH defaults
+when it cannot), splitting only where the next absolute path starts, because
+ssh prints paths unquoted and a home folder may contain a space. Auth `agent`: `BatchMode=yes` and the user's agent and
+`~/.ssh/config`. Auth `key`: `IdentityFile="<path>"`, `IdentitiesOnly=yes`,
+`PreferredAuthentications=publickey`; with a saved passphrase also
+`AddKeysToAgent=no` and, on Apple's ssh (probed once per binary with `ssh -o
+UseKeychain=no -G localhost`), `UseKeychain=no`, so the user's config never
+copies a passphrase myflames holds into the agent or the Keychain where
+Forget could not remove it (found live: `UseKeychain yes` stored it).
+Auth `password`: `PreferredAuthentications=password`,
+`PubkeyAuthentication=no`. A secret is handed over by a single-use askpass:
+a `/bin/sh` script in a 0700 `mkdtemp` folder that opens the 0600, O_EXCL
+secret file, unlinks it and only then prints it with `/bin/cat` (no Python,
+so the packaged app needs no system `python3`); `SSH_ASKPASS_REQUIRE=force`,
+`NumberOfPasswordPrompts=1`, never a secret on argv or in the environment.
+The helper answers only the ssh myflames started: its pid is written beside
+it right after `Popen`, and the helper refuses any other parent, so a
+ProxyJump or ProxyCommand ssh (a grandchild that inherits `SSH_ASKPASS`)
+never receives the target's secret for its bastion. Paths handed to ssh
+options are double-quoted and refuse `"`, `%` and `$` (ssh expands tokens
+and `${VAR}` in them).
+Windows fails closed for passwords and passphrases (keys and agent work).
+
+stderr is normalized (CRLF) before classification: a changed key
+(`REMOTE HOST IDENTIFICATION HAS CHANGED`, `Host key for ... has changed`)
+is `host_key_changed` and names the file and line of the trusted key when
+ssh reports them; an unknown key is `host_key_unknown`; `Permission denied`
+or `Authentication failed` is `auth_failed` worded for the method. ssh at
+`LogLevel=ERROR` prints nothing when a server drops the connection before
+sign-in (OpenSSH 9.8+ does that for a while after failed sign-ins,
+`PerSourcePenalties`): that case says so and suggests waiting; a drop after
+sign-in reads "The SSH connection to ... was lost."
+
+Chunks: a server that advertises `limits@openssh.com` is asked for its read
+and write limits (used up to 256 KiB); otherwise 32 KiB, the size every SFTP
+server must accept. OpenSSH's sftp-server closes the session on any message
+over 256 KiB with its headers, so a fixed 256 KiB WRITE broke every upload
+over 256 KB (found live). Eight requests are in flight per transfer.
+
+### Host keys
+
+Keys the user trusts in myflames go to `<WorkspaceStore folder>/ssh_known_hosts`
+(normally `~/.myflames/ssh_known_hosts`, 0600, created with
+`secret_store._open_private_file`); myflames never writes `~/.ssh/known_hosts`.
+`hostkey/scan` runs ssh once with `StrictHostKeyChecking=accept-new`,
+`UserKnownHostsFile="<private temp file>"`, `GlobalKnownHostsFile=/dev/null`,
+`HashKnownHosts=no`, `BatchMode=yes`, every authentication method off and the
+same host, port, user and `~/.ssh/config` (so a `ProxyJump` or `HostKeyAlias`
+applies), command `true`: ssh records the negotiated key before
+authentication fails. Each captured line must be `host keytype base64`;
+`ssh-keygen -l -E sha256` (next to the `ssh` in use) gives the fingerprints.
+The answer names the host as ssh checks it (`[db.example]:2222`, or the
+alias). Before a token is issued, exactly the files a session consults (the user
+files and the global files of `known_hosts_config`, and the myflames file) are
+searched with `ssh-keygen -F` (a file it cannot search refuses the scan): a host already trusted with other keys is
+`host_key_changed` (file and line named), not a first contact, because ssh
+calls a key of a new type for a known host "unknown" (an impersonator
+offering RSA where ED25519 is trusted). When nothing was captured the error carries ssh's first line
+(refused, unknown host) or the 15 s timeout. The lines wait under a random
+token for 5 minutes (at most 256 pending); `hostkey/trust` appends exactly
+those lines (identical lines once) and consumes the token.
+
+### Listings and file operations
+
+`/api/files/remote/list` `{ssh, path}` (`""` is the remote home, from
+`REALPATH(".")`) and `/api/files/local/list` `{path}` (`""` is the user's real
+home, `ssh_tunnel.ssh_home()`) answer `{path (resolved, absolute), home,
+entries}`; local paths resolve under the transfers' rule (a link is followed
+only when root or the user owns it), so a listing never answers a folder a
+transfer from it would refuse; an entry is `{name, kind: file|dir|link|other, is_dir, size, mtime
+(epoch s), mode (full st_mode)}`. `is_dir` is also true for a link to a
+folder (one STAT per link, at most 200 per listing). `.` and `..` from
+READDIR are skipped (every OpenSSH folder has them: refusing `..` broke every
+real listing, found live); any other name with `/` or NUL is refused. Local
+listings stop at 100000 entries and skip entries that cannot be read.
+
+Remote: `mkdir` (no permission attribute, so the server's umask decides),
+`rename`, and `remove` `{paths}`: folders with their contents, counted first
+(at most 10000 entries, depth 64, nothing removed over a limit), every type
+checked again before deletion, children before their folder, links removed as
+links and never followed, `/` refused. Ancestors are checked with lstat once
+per folder in the read-only phases and again, all of them, before every
+deletion, so a folder swapped for a link between two deletions stops the
+removal (SFTP v3 has no directory handles: this narrows the race, it cannot
+close it). Local: `mkdir` (the user's umask) and `rename`, which never
+replaces a target, even one created after the check: `renamex_np(RENAME_EXCL)`
+on macOS, `renameat2(RENAME_NOREPLACE)` on Linux, Windows' own rename; elsewhere
+`link()` then `unlink()` for a file, and a folder is refused. Local delete is
+not offered.
+
+### Transfers
+
+`/api/files/upload` `{ssh, local_paths, remote_dir, on_exists}` and
+`/api/files/download` `{ssh, remote_paths, local_dir, on_exists}` start a job
+(`on_exists`: `fail`, `skip` or `overwrite`, per file); `jobs` `{ssh?}`
+(newest first), `cancel`, `retry` (a new job with the failed and cancelled
+files of a finished one), `clear` `{ssh?}` (removes **finished** jobs only:
+failed and cancelled ones stay for their errors and Retry). Job shape:
+`filesApi.ts` `Transfer` (state, phase `scanning`/`transferring`, counts,
+bytes, rate over a rolling 5 s, ETA, `current`, the first 200 `items`,
+`items_more`, up to 200 `failed_items`, `error`). At most 256 jobs are kept,
+two run at once, finished ones expire after an hour.
+
+A job walks folders in its own thread: local with directory fds and
+`O_NOFOLLOW` at every level, remote by lstat-based READDIR; links and special
+files become `skipped` items ("Symbolic link not transferred.", "Not a
+regular file."); every created name passes `_target_name` (no separators,
+Windows device names or trailing dots). It fails before writing anything over
+10000 files or depth 64. Destination folders are reused when they exist (a
+non-folder in the way fails that subtree only) and created with the umask.
+One failed file does not stop the others; the job ends `failed` if any did. A
+local problem (a file that shrank while uploading, a disk that refused a
+write) is `SftpLocalError` (code 0) and fails that file only; a transport or
+protocol failure (no SFTP status) fails what is left. A job that fails as a
+whole names its SSH reason in `error_code` (`auth_failed`,
+`host_key_unknown`...), and the job row offers Edit connection or the
+host-key prompt. Retry after a job stopped while scanning starts the original
+selection again (nothing was transferred and not every file was listed);
+after that it retries the failed and cancelled files.
+The local folder the person chose is resolved once when the job starts
+(macOS `/tmp` and `/var` are links), following only links owned by root or
+the user (a link another user planted is refused); every later open walks
+the resolved path without following links, so a link swapped in afterwards
+is refused.
+Downloads are staged as `<name>.myflames-part` (0600) and published with
+`link()` (no overwrite) or `replace()` (overwrite); uploads set the local
+mode without setuid, setgid and sticky bits on the open handle (FSETSTAT)
+before CLOSE, never by path afterwards (a link swapped in would be chmodded),
+and a remote replacement removes the old regular file first (SFTP v3 cannot
+restore it if the upload stops). A queued job re-reads
+its connection before it starts and refuses to run after an edit of its
+endpoint or authentication.
+
+SFTP actions are host-level file operations, not SQL writes: no database write
+policy applies and they are not in the Audit log; the Transfers panel lists
+each job while it lives. The database's saved password is never used here.
+
+### Desktop drag and drop
+
+Electron 32 removed `File.path`. `apps/desktop/preload.cjs` (sandboxed,
+context-isolated) exposes exactly `window.myflamesDesktop.pathForFile(file)`
+(`webUtils.getPathForFile`; "" for a File built in JavaScript) and nothing
+else; `filesApi.droppedFilePath` reads it. The packaged smoke checks that the
+bridge holds only that function (`preload: true` in `smoke.json`).
+
+### Tests
+
+`test/test_ssh_connections.py`, `test/test_sftp.py` (pipe-based SFTP peer,
+including `limits@openssh.com`), `test/test_sftp_jobs.py`,
+`test/test_ui.py` (`TestFilesEndpoints`), browser suites
+`apps/workspace/test/files-connections.mjs` and `files-browser.mjs`, and the
+live suite `test/test_files_live.py` against a real OpenSSH server in Docker
+(`scripts/ssh-lab.sh`: up, test, down; password, plain key and
+passphrase-protected key sign-in, host-key trust, folders round trip with a
+64 MiB file checked by SHA-256, removal that must not follow links, a changed
+host key). The live suite runs only with `MYFLAMES_SSH_LAB` set and checks
+that `~/.ssh/known_hosts` is unchanged.
 
 ## Workspace navigation and configuration controls
 

@@ -87,6 +87,7 @@ const ReplicationPlace = lazyComponent(() => import("./ReplicationPlace").then((
 const ClusterPlace = lazyComponent(() => import("./ClusterPlace").then((m) => m.ClusterPlace));
 const ProxySqlPlace = lazyComponent(() => import("./ProxySqlPlace").then((m) => m.ProxySqlPlace));
 const ReadysetPlace = lazyComponent(() => import("./ReadysetPlace").then((m) => m.ReadysetPlace));
+const FilesPlace = lazyComponent(() => import("./FilesPlace").then((m) => m.FilesPlace));
 // Query digest (in the style of pt-query-digest) is a place of its own in the
 // SQL workspace group, after the Query editor; its row actions open the editor.
 const QueryDigestView = lazyComponent(() => import("./QueryDigest").then((m) => m.QueryDigestView));
@@ -118,8 +119,8 @@ const metrics: [string, string][] = [
 // in either direction; home and server are new. Each maps to one place, except
 // audit: the Audit log is local to this computer and opens from Settings, so
 // no place is "you are here" while it is on screen.
-type Mode = "home" | "inspect" | "compare" | "query" | "digest" | "diagram" | "schema" | "server" | "workload" | "replication" | "cluster" | "proxysql" | "readyset" | "tuning" | "library" | "teach" | "audit";
-const modes: Mode[] = ["home", "inspect", "compare", "query", "digest", "diagram", "schema", "server", "workload", "replication", "cluster", "proxysql", "readyset", "tuning", "library", "teach", "audit"];
+type Mode = "home" | "inspect" | "compare" | "query" | "digest" | "diagram" | "schema" | "server" | "workload" | "replication" | "cluster" | "proxysql" | "readyset" | "tuning" | "files" | "library" | "teach" | "audit";
+const modes: Mode[] = ["home", "inspect", "compare", "query", "digest", "diagram", "schema", "server", "workload", "replication", "cluster", "proxysql", "readyset", "tuning", "files", "library", "teach", "audit"];
 function placeOf(mode: Mode): Place | null {
   switch (mode) {
     case "audit":
@@ -148,6 +149,7 @@ const PLACE_MODE: Record<Exclude<Place, "plans">, Mode> = {
   proxysql: "proxysql",
   readyset: "readyset",
   tuning: "tuning",
+  files: "files",
   investigations: "library",
   learn: "teach",
 };
@@ -1460,13 +1462,16 @@ function App() {
   // (views read on open only while on screen, viewOnScreen.ts). A restored
   // skip loop mounts both at once so its status is found again (that status
   // reads no database). Start fresh and reopening a snapshot start over.
-  const visited = useRef({ key: resetKey, server: false, replication: false, cluster: false, proxysql: false, readyset: false, digest: false, schema: false });
-  if (visited.current.key !== resetKey) visited.current = { key: resetKey, server: false, replication: false, cluster: false, proxysql: false, readyset: false, digest: false, schema: false };
+  const visited = useRef({ key: resetKey, server: false, replication: false, cluster: false, proxysql: false, readyset: false, files: false, digest: false, schema: false });
+  if (visited.current.key !== resetKey) visited.current = { key: resetKey, server: false, replication: false, cluster: false, proxysql: false, readyset: false, files: false, digest: false, schema: false };
   if (serverOnScreen) visited.current.server = true;
   if (ready && mode === "replication") visited.current.replication = true;
   if (ready && mode === "cluster") visited.current.cluster = true;
   if (ready && mode === "proxysql") visited.current.proxysql = true;
   if (ready && mode === "readyset") visited.current.readyset = true;
+  // Files stays mounted after its first visit too, so a running transfer
+  // and the folders on screen survive a trip to another place.
+  if (ready && mode === "files") visited.current.files = true;
   if (ready && mode === "digest") visited.current.digest = true;
   if (ready && mode === "schema") visited.current.schema = true;
   const mountDigest = visited.current.digest;
@@ -1474,6 +1479,7 @@ function App() {
   const mountCluster = visited.current.cluster;
   const mountProxySql = visited.current.proxysql;
   const mountReadyset = visited.current.readyset;
+  const mountFiles = visited.current.files;
   const restoredLoop = labInitial?.slow?.replication_loop_active === true;
   const mountServer = visited.current.server || restoredLoop;
   const mountReplication = visited.current.replication || restoredLoop;
@@ -1481,7 +1487,7 @@ function App() {
   // (Server, Workload and Tuning, Replication, the Plans chart) in idle time,
   // so their first visit does not wait. Nothing mounts or reads a server.
   useEffect(() => {
-    if (ready) preloadWhenIdle([Server, ReplicationPlace, ClusterPlace, ProxySqlPlace, ReadysetPlace, QueryDigestView, SchemaVersionsPlace, PlanChart, ContextPanel]);
+    if (ready) preloadWhenIdle([Server, ReplicationPlace, ClusterPlace, ProxySqlPlace, ReadysetPlace, FilesPlace, QueryDigestView, SchemaVersionsPlace, PlanChart, ContextPanel]);
   }, [ready]);
   // Replication's and Query digest's "How to turn it on" open Server > Instruments at that row.
   const [instrumentsLink, setInstrumentsLink] = useState<{ row: string; n: number } | null>(null);
@@ -1690,6 +1696,7 @@ function App() {
     { id: "place-proxysql", label: "ProxySQL", group: "Places", icon: "proxy", keywords: "proxysql proxy hostgroups mysql_servers query rules digest connection pool admin", run: () => go("proxysql") },
     { id: "place-readyset", label: "Readyset", group: "Places", icon: "readyset", keywords: "readyset cache shallow deep querypilot resnapshot cdc replication", run: () => go("readyset") },
     { id: "place-tuning", label: "Tuning", group: "Places", icon: "tuning", keywords: "mysql tuning mariadb tuning advisor health score optimization", run: () => go("tuning") },
+    { id: "place-files", label: "Files", group: "Places", icon: "files", keywords: "files sftp ssh transfer upload download scp filezilla logs dump", run: () => go("files") },
     { id: "place-query", label: "Query editor", group: "Places", icon: "query", keywords: "sql run query editor", run: () => go("query") },
     { id: "place-digest", label: "Query digest", group: "Places", icon: "analysis", keywords: "pt-query-digest digest profile statements workload slow queries", run: () => go("digest") },
     { id: "place-diagram", label: "Database diagram", group: "Places", icon: "diagram", keywords: "schema diagram er erd mermaid tables relationships foreign keys", run: () => go("diagram") },
@@ -1859,6 +1866,7 @@ function App() {
             mode === "proxysql" ||
             mode === "readyset" ||
             mode === "tuning" ||
+            mode === "files" ||
             mode === "query" ||
             mode === "digest" ||
             mode === "diagram" ||
@@ -2166,6 +2174,11 @@ function App() {
               </ColumnStoreContext.Provider>
               </ViewOnScreenContext.Provider>
               </WritePolicyContext.Provider>
+            </div>
+          )}
+          {ready && mountFiles && (
+            <div hidden={mode !== "files"}>
+              <FilesPlace profiles={profiles} />
             </div>
           )}
           {ready && mode === "library" && <Library onOpen={openBundle} openPlanCount={plans.length}

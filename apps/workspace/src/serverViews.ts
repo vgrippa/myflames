@@ -16,7 +16,6 @@ export const SERVER_VIEWS: { id: ServerKind; label: string; icon: IconName; grou
   { id: "config", label: "Parameters", icon: "configuration", group: "Setup" },
   { id: "instruments", label: "Instruments", icon: "instruments", group: "Setup" },
   { id: "maintenance", label: "Maintenance", icon: "maintenance", group: "Setup" },
-  { id: "files", label: "Files", icon: "investigation", group: "Setup" },
   { id: "accounts", label: "Users and roles", icon: "users", group: "Security" },
 ];
 export const WORKLOAD_VIEWS: { id: ServerKind; label: string; icon: IconName; group: string }[] = [

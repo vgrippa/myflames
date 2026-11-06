@@ -1260,17 +1260,15 @@ _CONNECTION_PATHS = _CONNECTION_PATHS + _ACTION_PATHS
 from .csv_import_api import PATHS as _CSV_IMPORT_PATHS, WRITE_PATHS as _CSV_IMPORT_WRITE_PATHS  # noqa: E402
 from .slowlog_api import PATHS as _SLOW_LOG_PATHS  # noqa: E402
 _WRITE_PATHS = _WRITE_PATHS + _CSV_IMPORT_WRITE_PATHS
-#: SSH/SFTP file transfer of the Files view (sftp_api.py, answered by
-#: _sftp_response). The database's saved password is never filled for these:
-#: SSH credentials live in their own secret-store namespace (sshpw.*) managed
-#: by sftp_api. list, local-list, jobs and status only read. mkdir, remove,
-#: upload, download, cancel, save and clear change the remote host, the local
-#: disk or the credential store — host-level actions, not SQL writes, so the
-#: connection's database write policy does not gate them.
-_SFTP_PATHS = ("/api/live/sftp/list", "/api/live/sftp/local-list", "/api/live/sftp/mkdir",
-               "/api/live/sftp/remove", "/api/live/sftp/upload", "/api/live/sftp/download",
-               "/api/live/sftp/jobs", "/api/live/sftp/cancel", "/api/live/sftp/ssh-auth/status",
-               "/api/live/sftp/ssh-auth/save", "/api/live/sftp/ssh-auth/clear")
+#: Files uses SSH credentials in its own endpoint-bound namespace. These
+#: host-level file operations are independent of database write policy.
+_SSH_CONNECTION_PATHS = ("/api/ssh/connections/list", "/api/ssh/connections/save",
+                         "/api/ssh/connections/delete", "/api/ssh/connections/test",
+                         "/api/ssh/hostkey/scan", "/api/ssh/hostkey/trust", "/api/ssh/keys")
+_FILES_PATHS = ("/api/files/remote/list", "/api/files/remote/mkdir", "/api/files/remote/rename",
+                "/api/files/remote/remove", "/api/files/local/list", "/api/files/local/mkdir",
+                "/api/files/local/rename", "/api/files/upload", "/api/files/download",
+                "/api/files/jobs", "/api/files/cancel", "/api/files/retry", "/api/files/clear")
 #: The progress of a send the review sheet is waiting for
 #: (reviewed_writes.Progress by the action request's progress_id). No
 #: connection, no SQL, no credentials: phases and statement states only.
@@ -1695,36 +1693,10 @@ def _session_response(path, payload, workspace):
     raise ValueError("Unknown workspace operation.")
 
 
-def _sftp_response(path, payload):
-    """The Files view's SSH/SFTP calls (sftp_api.py). Answer shapes match sftpApi.ts."""
+def _sftp_response(path, payload, store):
+    """The Files place's calls. Answer shapes match filesApi.ts."""
     from . import sftp_api
-    if path == "/api/live/sftp/list":
-        return {"path": payload.get("path"),
-                "entries": sftp_api.api_listdir(payload.get("connection"), payload.get("path"))}
-    if path == "/api/live/sftp/local-list":
-        return sftp_api.api_local_list(payload.get("path"))
-    if path == "/api/live/sftp/mkdir":
-        result = sftp_api.api_mkdir(payload.get("connection"), payload.get("path"))
-        return dict(result, path=payload.get("path"))
-    if path == "/api/live/sftp/remove":
-        sftp_api.api_remove(payload.get("connection"), payload.get("path"))
-        return {"removed": payload.get("path")}
-    if path == "/api/live/sftp/upload":
-        return {"job": sftp_api.api_start_upload(payload)}
-    if path == "/api/live/sftp/download":
-        return {"job": sftp_api.api_start_download(payload)}
-    if path == "/api/live/sftp/jobs":
-        return {"jobs": sftp_api.api_jobs()}
-    if path == "/api/live/sftp/cancel":
-        sftp_api.api_cancel(payload.get("job_id"))
-        return {"cancelled": True}
-    if path == "/api/live/sftp/ssh-auth/status":
-        return sftp_api.api_ssh_auth_status(payload.get("connection"))
-    if path == "/api/live/sftp/ssh-auth/save":
-        return sftp_api.api_ssh_auth_save(payload.get("connection"), payload.get("password"))
-    if path == "/api/live/sftp/ssh-auth/clear":
-        return sftp_api.api_ssh_auth_clear(payload.get("connection"))
-    raise ValueError("Unknown file transfer operation.")
+    return sftp_api.response(path, payload, store)
 
 
 def _session_capture_response(payload, workspace):
@@ -1870,12 +1842,13 @@ def api_response(path, payload, workspace=None):
         if workspace is None:
             raise ValueError("This operation requires a running workspace.")
         return _accounts_response(path, payload, workspace)
-    if path in _SFTP_PATHS:
-        # The database password is never filled here; sftp_api manages SSH
-        # credentials in its own secret-store namespace.
+    if path in _SSH_CONNECTION_PATHS + _FILES_PATHS:
         if workspace is None:
             raise ValueError("This operation requires a running workspace.")
-        return _sftp_response(path, payload)
+        if path in _SSH_CONNECTION_PATHS:
+            from . import ssh_connections
+            return ssh_connections.response(path, payload, workspace.store)
+        return _sftp_response(path, payload, workspace.store)
     if path.startswith(("/api/investigations/", "/api/profiles/", "/api/live/", "/api/connection/")):
         if workspace is None:
             raise ValueError("This operation requires a running workspace.")
@@ -2293,7 +2266,7 @@ def _secret_values(value, store=None, found=None, depth=0):
         return found
     if isinstance(value, dict):
         for key, item in value.items():
-            if isinstance(key, str) and "password" in key.lower() and isinstance(item, str) and item:
+            if isinstance(key, str) and ("password" in key.lower() or key.lower() == "secret") and isinstance(item, str) and item:
                 found.add(item)
             else:
                 _secret_values(item, store, found, depth + 1)
@@ -2529,7 +2502,7 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                              "/api/analysis/prepare-query") + _LIFECYCLE_PATHS \
                 + _REPLICATION_PATHS + _CATALOG_PATHS + _VARIABLE_PATHS + _ACTION_PATHS + _ACCOUNT_PATHS + _DIAGRAM_PATHS + _SCHEMA_VERSION_PATHS + _COMPARE_PATHS + _APP_UPDATE_PATHS \
                 + _NEWS_PATHS + _PARAM_VERSION_PATHS + _CSV_IMPORT_PATHS + _SLOW_LOG_PATHS \
-                + _SFTP_PATHS \
+                + _SSH_CONNECTION_PATHS + _FILES_PATHS \
                 + (_ACTION_PROGRESS_PATH, "/api/live/proxysql/digests", "/api/live/readyset",
                    "/api/live/readyset/explain-cache", "/api/live/readyset/export-caches"):
             self._send(404, {"error": "Not found."})
@@ -2560,15 +2533,21 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
             # busy, identity_mismatch, too_many_sessions, no_session, ...
             self._send(409 if exc.code in ("busy", "identity_mismatch", "too_many_sessions") else 400,
                        {"error": str(exc), "code": exc.code})
-        except (ValueError, TypeError, KeyError, AttributeError, RecursionError, OverflowError) as exc:
-            self._send(400, {"error": request_error_text(exc)})
-        except ConnectorError as exc:
-            self._send(400, {"error": request_error_text(exc, prefix=False)})
-        except (BrokenPipeError, ConnectionResetError, TimeoutError):
-            return
-        except Exception:
-            _log_unexpected_error(self.path, sys.exc_info(), payload, getattr(self.server, "store", None))
-            self._send(500, {"error": _unexpected_error_message(self.path)})
+        except Exception as exc:
+            # SSH failures (sftp.py) name their reason; other exceptions with a
+            # reason attribute (UnicodeError, SSLError, URLError) are not codes.
+            reason = getattr(exc, "reason", None) if isinstance(exc, ConnectorError) else None
+            if isinstance(reason, str) and reason:
+                self._send(400, {"error": request_error_text(exc, prefix=False), "code": reason})
+            elif isinstance(exc, (ValueError, TypeError, KeyError, AttributeError, RecursionError, OverflowError)):
+                self._send(400, {"error": request_error_text(exc)})
+            elif isinstance(exc, ConnectorError):
+                self._send(400, {"error": request_error_text(exc, prefix=False)})
+            elif isinstance(exc, (BrokenPipeError, ConnectionResetError, TimeoutError)):
+                return
+            else:
+                _log_unexpected_error(self.path, sys.exc_info(), payload, getattr(self.server, "store", None))
+                self._send(500, {"error": _unexpected_error_message(self.path)})
 
 
 def cmd_ui(argv):
