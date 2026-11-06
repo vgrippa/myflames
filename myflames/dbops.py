@@ -498,12 +498,14 @@ def _select_function_checks(upper, idents):
     return found
 
 
-def _select_checks(upper, idents):
+def _select_checks(upper, idents, into=True):
+    """The SELECT expression checks; *into* False skips INTO (an explained
+    INSERT INTO or SELECT ... INTO writes nothing)."""
     found = _select_function_checks(upper, idents)
-    if re.search(r"\bINTO\s+(?:OUTFILE|DUMPFILE)\b", upper):
+    if into and re.search(r"\bINTO\s+(?:OUTFILE|DUMPFILE)\b", upper):
         found.append(_verdict("write", "file", "INTO OUTFILE or DUMPFILE writes a file on the database server host "
                                                "(it needs the FILE privilege)."))
-    elif re.search(r"\bINTO\b", upper):
+    elif into and re.search(r"\bINTO\b", upper):
         found.append(_verdict("write", "session", "INTO assigns the result to variables."))
     if re.search(r"\bFOR\s+(?:UPDATE|SHARE)\b|\bLOCK\s+IN\s+SHARE\s+MODE\b", upper):
         found.append(_verdict("write", "locking_read",
@@ -828,7 +830,29 @@ def _classify_code(upper, idents, key_columns):
             inner = _classify_code(rest, idents, key_columns)
             inner["reasons"] = ["EXPLAIN ANALYZE runs the statement."] + inner["reasons"]
             return inner
-        return _verdict("read", "read")
+        # Plain EXPLAIN does not run the statement, but planning evaluates
+        # constant parts: a derived table without tables is materialized
+        # while the plan is built (sql/sql_derived.cc; sql/sql_lex.cc
+        # has_tables()), so GET_LOCK, :=, sequences and, before MySQL 8.0.42,
+        # 8.4.5 and 9.3.0, stored functions in it take effect (Bug#37560280).
+        if re.match(r"\s*(?:CREATE|ALTER|DROP|RENAME|TRUNCATE|GRANT|REVOKE)\b", rest):
+            # EXPLAIN takes no DDL on either engine: the server refuses it
+            # with a syntax error and runs nothing.
+            return _verdict("read", "read")
+        # INSERT/REPLACE's target column list is names, not a call: drop it
+        # (a column list holds no parentheses) and check the value expressions.
+        target = re.match(r"\s*(?:INSERT|REPLACE)\b(?:\s+(?:LOW_PRIORITY|DELAYED|HIGH_PRIORITY|IGNORE)\b)*"
+                          r"\s*(?:INTO\b)?\s*(?:`\d+`|[A-Z0-9_$]+)(?:\s*\.\s*(?:`\d+`|[A-Z0-9_$]+))?"
+                          r"\s*(?:PARTITION\s*\([^()]*\)\s*)?\(", rest)
+        if target and ")" in rest[target.end():]:
+            close = rest.index(")", target.end())
+            if "(" not in rest[target.end():close]:
+                rest = rest[:target.end() - 1] + " " + rest[close + 1:]
+        verdict = _select_checks(rest, idents, into=False)
+        if verdict["kind"] != "read":
+            verdict["reasons"] = ["EXPLAIN evaluates constant expressions and derived tables while it plans "
+                                  "the statement."] + verdict["reasons"]
+        return verdict
     if word == "ANALYZE":
         if re.match(r"\s*(?:SELECT|UPDATE|DELETE|INSERT|REPLACE|WITH|FORMAT\b|\()", after):
             inner_text = re.sub(r"^\s*FORMAT\s*=\s*[A-Z_]+", "", after)

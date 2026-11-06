@@ -1267,7 +1267,7 @@ _SSH_CONNECTION_PATHS = ("/api/ssh/connections/list", "/api/ssh/connections/save
                          "/api/ssh/hostkey/scan", "/api/ssh/hostkey/trust", "/api/ssh/keys")
 _FILES_PATHS = ("/api/files/remote/list", "/api/files/remote/mkdir", "/api/files/remote/rename",
                 "/api/files/remote/remove", "/api/files/local/list", "/api/files/local/mkdir",
-                "/api/files/local/rename", "/api/files/upload", "/api/files/download",
+                "/api/files/local/rename", "/api/files/local/reveal", "/api/files/upload", "/api/files/download",
                 "/api/files/jobs", "/api/files/cancel", "/api/files/retry", "/api/files/clear")
 #: The progress of a send the review sheet is waiting for
 #: (reviewed_writes.Progress by the action request's progress_id). No

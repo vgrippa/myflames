@@ -16,6 +16,7 @@ const h = await open('/api/unused', 'plan-editor-layout', {
   '/api/live/schemas': ok({ schema_version: 'schemas-1.0', engine: 'mysql', server_version: '8.4.3', schemas: [{ name: 'shop', tables: 1, system: false }], system: [], all_note: '' }),
 });
 const { page } = h;
+const schemaReads = () => h.state.other.filter(r => r.path === '/api/live/schemas').length;
 const measures = [];
 async function capture(state, width, theme) {
   await pause(180);
@@ -40,6 +41,8 @@ try {
   await h.button('Home', '.main-nav ');
   await h.button('Explore sample plan');
   await page.waitForSelector('.wb-node');
+  // The Query editor is mounted but hidden: its Schemas panel reads nothing yet.
+  assert.equal(schemaReads(), 0, 'a hidden Schemas panel reads no schemas');
   for (const width of [1440, 720]) for (const theme of ['light', 'dark']) {
     await page.setViewport({ width, height: width === 1440 ? 900 : 600 });
     await page.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
@@ -106,8 +109,15 @@ try {
         assert.ok(await page.$eval(`.editor-toolbar button[aria-label="${name}"]`, e => e.getClientRects().length > 0), `${name} is on screen`);
     }
     if (!await page.$eval('.schema-browser-slot', e => !e.hidden)) await page.click('button[aria-label="Show the schema browser"]');
-    await page.waitForSelector('.browser-gate');
-    if (!baseline) assert.equal(await page.$('.browser-head button[aria-label="Reload schemas"]'), null);
+    // The visible panel lists the schemas by itself (no Load schemas gate),
+    // read once per connection: showing it again reuses the list. A baseline
+    // build may still show the old gate.
+    await page.waitForSelector(baseline ? '.schema-browser :is(.browser-gate, .tree-row.kind-schema)' : '.schema-browser .tree-row.kind-schema');
+    if (!baseline) {
+      assert.equal(await page.$('.schema-browser .browser-gate'), null, 'no Load schemas gate with a connection');
+      assert.ok(await page.$('.browser-head button[aria-label="Reload schemas"]'), 'Reload is offered once the list is read');
+      assert.equal(schemaReads(), 1, 'the schema list is read once and reused');
+    }
     await capture('schemas', width, theme);
     await page.click('.browser-head button[aria-label="Hide the schema browser"]');
     await h.button('Plans', '.main-nav ');
@@ -118,13 +128,18 @@ try {
   await page.$eval('.wb-node', e => e.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
   await page.waitForSelector('.plan-inspector .operator-detail');
   if (!baseline) assert.ok(await page.$eval('.plan-inspector', e => e.getBoundingClientRect().height > 40));
-  // Only an explicit Load schemas starts the first read; Refresh appears after it.
+  // Showing the panel again reuses the list it read by itself; only Reload
+  // schemas reads it again.
   await h.button('Query editor', '.main-nav ');
   await page.click('button[aria-label="Show the schema browser"]');
-  assert.equal(h.state.other.filter(r => r.path === '/api/live/schemas').length, 0);
-  await h.button('Load schemas', '.schema-browser ');
-  await page.waitForSelector('.browser-head button[aria-label="Reload schemas"]');
-  assert.equal(h.state.other.filter(r => r.path === '/api/live/schemas').length, 1);
+  if (!baseline) {
+    await page.waitForSelector('.schema-browser .tree-row.kind-schema');
+    assert.equal(schemaReads(), 1, 'showing the panel again reads nothing');
+    await page.click('.browser-head button[aria-label="Reload schemas"]');
+    for (let i = 0; i < 100 && schemaReads() < 2; i++) await pause(20);
+    assert.equal(schemaReads(), 2, 'Reload schemas reads the list again');
+    await page.waitForSelector('.browser-head button[aria-label="Reload schemas"]');
+  }
   if (!baseline) {
     await page.keyboard.press('Escape');
     await h.button('Plans', '.main-nav ');

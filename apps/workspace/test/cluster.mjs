@@ -15,7 +15,7 @@
 // and the 720 px window.
 import assert from "node:assert/strict";
 import path from "node:path";
-import { chooseConnection, connectionOption } from "./chrome-helpers.mjs";
+import { chooseConnection, connectionOption, openRefreshMenu } from "./chrome-helpers.mjs";
 import { load, open, pause } from "./perf-harness.mjs";
 
 const R = {};
@@ -564,6 +564,7 @@ try {
   const beforeAll = state.seen.length;
   await h.server();
   await page.evaluate(() => window.scrollTo(0, 0));
+  await openRefreshMenu(page);
   await page.click(".server-place [data-action=refresh-all]");
   await page.waitForFunction(() => !document.querySelector(".server-place .refresh-all-stop") && /refreshed/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""), { timeout: 20000 });
   assert.equal(state.seen.length, beforeAll + 1, "Refresh all sends one cluster read");
@@ -613,6 +614,7 @@ try {
     state.fallback = { status, body };
     await h.server();
     await page.evaluate(() => window.scrollTo(0, 0));
+    await openRefreshMenu(page);
     await page.click(".server-place [data-action=refresh-all]");
     await page.waitForFunction(() => !document.querySelector(".server-place .refresh-all-stop") && /refreshed/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""), { timeout: 20000 });
     await page.click(nav);

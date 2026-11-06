@@ -138,7 +138,7 @@ function TablePanel({ schema, value, onChange, tables, onDone }: {
     {!rows.length && !tables.loading && !tables.error && <p className="hint">{needle ? `No table matches “${query.trim()}”.` : `${schema} has no tables.`}</p>}
     <div className="perf-picker-foot">
       {tables.truncated && <button type="button" className="text-button" disabled={tables.loading} onClick={tables.more}>{tables.loading ? "Loading…" : "Load more tables"}</button>}
-      <button type="button" className="text-button" disabled={tables.loading} onClick={tables.reload}>Reload list</button>
+      <button type="button" className="text-button" disabled={tables.loading} onClick={tables.reload}>Reload tables</button>
       <button type="button" className="button" onClick={onDone}>Done</button>
     </div>
   </div>;

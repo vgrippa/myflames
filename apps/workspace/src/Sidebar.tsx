@@ -21,7 +21,7 @@ export const PLACES: { key: Place; label: string; icon: IconName }[] = [
   { key: "proxysql", label: "ProxySQL", icon: "proxy" },
   { key: "readyset", label: "Readyset", icon: "readyset" },
   { key: "tuning", label: "Tuning", icon: "tuning" },
-  { key: "files", label: "Files", icon: "files" },
+  { key: "files", label: "File transfer", icon: "files" },
   { key: "query", label: "Query editor", icon: "query" },
   { key: "digest", label: "Query digest", icon: "analysis" },
   { key: "diagram", label: "Database diagram", icon: "diagram" },

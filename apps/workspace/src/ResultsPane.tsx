@@ -1,6 +1,6 @@
 // The Query editor's results: one tab per result set, Messages (every
 // statement of the run with its outcome, errors with a jump to their
-// position), and the plan tab of the last Explain or Run analysis. Grids use
+// position), and the last Run analysis, with explicit navigation to Plans. Grids use
 // the shared DataTable; values are drawn as text only (NULL as a token, an
 // empty string as an empty cell, binary as the client's 0x hex).
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
@@ -748,9 +748,10 @@ function ExportMenu({
       </div>
       <ActionStatus className="export-status" state={{ phase: busy ? "pending" : "idle", startedAt: busySince,
         message: busy === "tsv" ? `Copying result ${n}…` : `Exporting result ${n} as ${busy === "markdown" ? "Markdown" : busy.toUpperCase()}…` }} />
-      <label className="checkbox export-guard">
+      <label className="checkbox export-guard" style={{ whiteSpace: "normal", alignItems: "flex-start" }}
+        title="Prefix CSV values starting with = + - @ with a single quote to protect spreadsheet formulas">
         <input type="checkbox" checked={guard} onChange={(e) => setGuard(e.target.checked)} />
-        <span>CSV: prefix values that start with = + - @ with ' (spreadsheet formulas)</span>
+        <span>Protect spreadsheet formulas (CSV)</span>
       </label>
       <fieldset className="export-sql">
         <legend>SQL INSERT</legend>
@@ -821,7 +822,8 @@ function StatementMessage({
   const time = duration(statement.duration_ms);
   if (time) facts.push(time);
   const errors = results.filter((r): r is EditorError => r.type === "error");
-  const first = statement.text.trim().split("\n")[0];
+  const sent = statement.sent || statement.text;
+  const first = sent.trim().split("\n")[0];
   return (
     <li className={`message-row is-${statement.status}`} data-statement={statement.index}>
       <div className="message-head">
@@ -832,7 +834,7 @@ function StatementMessage({
         </span>
         {facts.length > 0 && <span className="message-facts">{facts.join(" · ")}</span>}
       </div>
-      <code className="message-sql" title={statement.text}>
+      <code className="message-sql" title={sent}>
         {first.length > 160 ? first.slice(0, 160) + "…" : first}
       </code>
       {errors.map((e, k) => (
@@ -873,6 +875,11 @@ export type ResultsPaneProps = {
   onSelect: (key: string) => void;
   engine: string | null;
   plan: ReactNode | null;
+  explain?: boolean;
+  explaining?: boolean;
+  onExplore?: (result: EditorRows) => void;
+  exploreBusy?: boolean;
+  exploreDisabled?: boolean;
   onJump: (offset: number) => void;
   onLoadMore: (result: EditorRows) => void;
   /** Columns marked binary for export, per rows result (0-based). */
@@ -899,6 +906,7 @@ function runSummary(run: EditorRun) {
 
 export function ResultsPane(props: ResultsPaneProps) {
   const { run, running, selected, onSelect, plan } = props;
+  const runningLabel = props.explaining ? "Explaining…" : "Running…";
   // A run reacts at once, also the first one in a tab (which has no results
   // tabs yet): a spinner, "Running…" and its seconds in the results area.
   // One polite region, mounted in both layouts, announces the start and the end.
@@ -913,10 +921,10 @@ export function ResultsPane(props: ResultsPaneProps) {
   useEffect(() => {
     if (running && !wasRunning.current) {
       runAtStart.current = run;
-      setAnnounce("Running…");
+      setAnnounce(runningLabel);
     } else if (!running && wasRunning.current) setAnnounce(run && run !== runAtStart.current ? runSummary(run) : "");
     wasRunning.current = running;
-  }, [running, run]);
+  }, [running, run, runningLabel]);
   const live = <span className="visually-hidden" role="status" aria-live="polite">{announce}</span>;
   const elapsed = running && seconds * 1000 >= ACTION_ELAPSED_AFTER_MS
     ? <span className="action-elapsed" aria-hidden="true">{seconds} s so far</span> : null;
@@ -925,11 +933,11 @@ export function ResultsPane(props: ResultsPaneProps) {
   const errors = run ? run.results.filter((r) => r.type === "error" && !r.interrupted).length : 0;
   const keys: { key: string; label: ReactNode; title: string }[] = rows.map((r, i) => ({
     key: `result:${i}`,
-    label: resultLabel(r, i + 1),
+    label: props.explain ? resultLabel(r, i + 1).replace(`Result ${i + 1}`, "Explain") : resultLabel(r, i + 1),
     title: `Statement ${r.statement + 1}`,
   }));
   if (run) keys.push({ key: "messages", label: <>Messages{errors > 0 && <span className="tab-count is-error">{errors}</span>}</>, title: "Every statement of the run" });
-  if (plan) keys.push({ key: "plan", label: "Plan", title: "The last Explain or Run analysis of this tab" });
+  if (plan) keys.push({ key: "plan", label: "Analysis", title: "The last Run analysis of this tab" });
   const active = keys.some((k) => k.key === selected) ? selected : keys[0]?.key || "";
   const list = useRef<HTMLDivElement>(null);
   function onKey(e: KeyboardEvent<HTMLButtonElement>, i: number) {
@@ -946,7 +954,7 @@ export function ResultsPane(props: ResultsPaneProps) {
         {live}
         {running ? (
           <p className="results-running results-first-run">
-            <span className="spinner" aria-hidden="true" /> Running…{elapsed}
+            <span className="spinner" aria-hidden="true" /> {runningLabel}{elapsed}
           </p>
         ) : props.empty}
       </div>
@@ -977,12 +985,16 @@ export function ResultsPane(props: ResultsPaneProps) {
           ))}
           {running && (
             <span className="results-running">
-              <span className="spinner" aria-hidden="true" /> Running…{elapsed}
+              <span className="spinner" aria-hidden="true" /> {runningLabel}{elapsed}
             </span>
           )}
         </div>
         {result?.columns_known && (
           <div className="results-tabs-actions">
+            {props.explain && props.onExplore && <ActionButton small busy={props.exploreBusy} busyLabel="Exploring…"
+              disabled={!props.exploreBusy && props.exploreDisabled}
+              title="Capture a visual plan in this tab's session; the visual capture supports SELECT only"
+              onClick={() => props.onExplore?.(result)}>Explore</ActionButton>}
             <ExportMenu
               // A new result starts from its own statement's table.
               key={`${props.run?.id || ""}:${index}`}

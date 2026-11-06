@@ -328,3 +328,22 @@
 .action-review .action-steps .status-pill.is-info { color: var(--info-text); }
 /* A statement with the server: the spinner is its mark. */
 .action-review .action-steps li[data-state="sent"] .status-pill > .status-dot { display: none; }
+
+/* Keep blockers and their fixes beside Start, including on short windows. */
+.ops-preflight-result.has-result { margin-block: var(--space-3); padding: var(--space-3); border: 1px solid var(--danger); border-radius: var(--radius-md); }
+.ops-preflight-result h3 { font-size: inherit; margin-block: var(--space-3); }
+.ops-preflight-result td { white-space: normal; overflow-wrap: anywhere; }
+.ops-preflight-result .text-button { white-space: normal; text-align: left; }
+.ops-invalid input, .ops-invalid .perf-picker-button { outline: 2px solid var(--danger); outline-offset: 2px; }
+.ops-tool-loading { padding-block: var(--space-3); color: var(--ink-muted); }
+
+.ops-task-fields, .ops-folder-check { display: contents; }
+
+.ops-preflight-result .ops-check-reason { display: block; white-space: normal; overflow-wrap: anywhere; }
+
+/* Privilege evidence stays on the confirmation and in the accessible reason;
+   the first click only reads the preflight. */
+.ops-view[data-view="maintenance"] .ops-actions .visible-privilege > .privilege-status-note { display: none; }
+.ops-system-ack { min-width: 0; overflow-wrap: anywhere; }
+.ops-system-ack .checkbox { align-items: flex-start; white-space: normal; }
+.ops-dump .ops-folder-row .hint { overflow-wrap: anywhere; }

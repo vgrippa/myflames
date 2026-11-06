@@ -27,21 +27,13 @@
 .ssh-connections .view-status {
   padding: 0 var(--space-2);
 }
-.ssh-connections .view-empty {
-  /* The kit centers a shrink-wrapped box; in this narrow column it stretches
-     so its sentence and button wrap instead of overflowing. */
-  align-self: stretch;
-  min-width: 0;
-  max-height: none;
-  margin: var(--space-4) 0;
-  padding: var(--space-3);
-}
-.ssh-connections .view-empty p {
-  max-width: 100%;
-}
-.ssh-connections .view-empty .button {
-  max-width: 100%;
-  white-space: normal;
+/* The empty list says so in one muted line; the one New action for an empty
+   place is the primary button in the main area's empty state (FilesPlace). */
+.ssh-connections-empty {
+  margin: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
 }
 .ssh-connection-rows {
   display: grid;
@@ -99,16 +91,28 @@
   font-weight: 400;
   color: var(--ink-muted);
 }
-/* The hover Edit stays reachable by keyboard: hidden by opacity, never by
-   display, and always visible on the selected row or with focus inside. */
-.ssh-connection-edit {
+/* The row ⋯ menu button stays reachable by keyboard: hidden by opacity, never
+   by display, and always visible on the selected row or with focus inside. */
+.ssh-connection-more {
   flex: none;
   opacity: 0;
 }
-.ssh-connection-row:hover .ssh-connection-edit,
-.ssh-connection-row:focus-within .ssh-connection-edit,
-.ssh-connection-row:has(.ssh-connection-main[aria-current="page"]) .ssh-connection-edit {
+.ssh-connection-row:hover .ssh-connection-more,
+.ssh-connection-row:focus-within .ssh-connection-more,
+.ssh-connection-row:has(.ssh-connection-main[aria-current="page"]) .ssh-connection-more {
   opacity: 1;
+}
+/* The inline Test connection / Copy address result under a row; idle it takes
+   no room, so the list does not shift when a test starts. */
+.ssh-connection-status {
+  margin: 0 var(--space-2);
+  font-size: var(--text-sm);
+}
+.ssh-connection-status[data-phase="pending"],
+.ssh-connection-status[data-phase="done"],
+.ssh-connection-status[data-phase="failed"],
+.ssh-connection-status[data-phase="unknown"] {
+  padding-bottom: var(--space-1);
 }
 
 /* The New/Edit sheet is a ConfirmSheet-shaped dialog with a form body. */

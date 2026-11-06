@@ -3296,6 +3296,16 @@ function Inspector({
 
 // ---- View layout: toolbar, content, inspector -------------------------------------
 
+/** Server supplies the wider read only in Server and Workload. Other places
+ * retain their own Refresh scope and never inherit this menu. */
+export const RefreshAllContext = createContext<{
+  label: string;
+  count: number;
+  disabled: boolean;
+  running: boolean;
+  run: () => void;
+} | null>(null);
+
 /** The anatomy every data view shares: a toolbar (title, ⓘ, controls,
  * Refresh), then the content, and the inspector for the selection. Escape
  * closes the inspector and returns focus to the selected row. */
@@ -3352,6 +3362,7 @@ export function ViewLayout({
     /** The note's sentence, when "From X. <label> to load this server." does not fit. */
     text?: string };
 }) {
+  const refreshAll = useContext(RefreshAllContext);
   const reportActivity = useContext(ViewActivityContext);
   const backLabel = useContext(ViewBackLabelContext);
   // The floating list of views: this view's title switches views (never in
@@ -3417,19 +3428,37 @@ export function ViewLayout({
           {onRefresh && (
             // While it reads: a spinner and "Refreshing…", aria-busy, clicks
             // ignored, and focus stays on it (aria-disabled, not disabled).
-            <ActionButton
-              className="toolbar-refresh"
-              labelClassName="toolbar-refresh-label"
-              aria-label={refreshLabel}
-              data-action="refresh"
-              icon="refresh"
-              busy={!!loading}
-              busyLabel={refreshBusyLabel}
-              disabled={!loading && !!refreshDisabled}
-              onClick={onRefresh}
-            >
-              {refreshLabel}
-            </ActionButton>
+            <span className={refreshAll ? "split-button view-refresh" : undefined}>
+              <ActionButton
+                className="toolbar-refresh"
+                labelClassName="toolbar-refresh-label"
+                aria-label={refreshLabel}
+                data-action="refresh"
+                icon="refresh"
+                busy={!!loading}
+                busyLabel={refreshBusyLabel}
+                disabled={!loading && !!refreshDisabled}
+                onClick={onRefresh}
+              >
+                {refreshLabel}
+              </ActionButton>
+              {refreshAll && (
+                <Popover menu label="Refresh options" buttonTitle="Refresh options"
+                  buttonClassName="button split-button-options" wide
+                  disabled={refreshAll.disabled} busy={refreshAll.running}
+                  trigger={<Icon name="chevron-down" size={12} />}>
+                  <div className="view-refresh-menu">
+                    <button type="button" role="menuitem" data-action="refresh-all"
+                      disabled={refreshAll.disabled || refreshAll.running}
+                      title={`Reads all ${refreshAll.count} sections on ${refreshAll.label} (${shortcut("R", true)})`}
+                      onClick={() => { closePopovers(); refreshAll.run(); }}>
+                      <span>Refresh every view on {refreshAll.label} ({shortcut("R", true)})</span>
+                      <span className="hint">{refreshAll.count} sections</span>
+                    </button>
+                  </div>
+                </Popover>
+              )}
+            </span>
           )}
           {shared && !shared.sheet && !detailBackLabel && (
             <IconButton
@@ -3469,13 +3498,6 @@ export function ViewLayout({
             <div className="gate other-connection" role="note">
               <Icon name="connection" size={18} />
               <p>From {otherConnection}, refresh to load this server.</p>
-              {onRefresh && (
-                <span className="gate-action">
-                  <button type="button" className="button" disabled={refreshDisabled || loading} onClick={onRefresh}>
-                    {refreshLabel}
-                  </button>
-                </span>
-              )}
             </div>
           )}
           {children}

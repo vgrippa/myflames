@@ -399,7 +399,8 @@ def error_position(message, unit, offsets):
             if at < 0:
                 at = send.find(probe)
             found = at if at >= 0 else cut
-    offset = start + (found or 0)
+    # Explain adds a prefix to the wire statement, not to the editor text.
+    offset = start + max(0, (found or 0) - unit.get("explain_prefix", 0))
     line, column = offsets.line_col(offset)
     return {"offset": offsets.to_js(offset), "line": line, "column": column, "exact": found is not None}
 
@@ -1686,7 +1687,7 @@ class EditorSession(object):
                      "end": offsets.to_js(end), "verb": unit.get("verb"), "kind": unit.get("kind"),
                      "category": unit.get("category"), "status": unit.get("status", "pending"),
                      "duration_ms": unit.get("duration_ms")}
-            if unit["lead"]:
+            if unit["lead"] or unit.get("explain_prefix"):
                 entry["sent"] = unit["send"]
             statements.append(entry)
             step = by_unit.get(unit["index"])
@@ -2785,6 +2786,47 @@ def _plan_run(payload, session):
     text = sql[start:end]
     engine = session.engine if session is not None else None
     units = plan_statements(text, backslash, engine, base=start, delimiter=delimiter)
+    explain_format = payload.get("explain_format")
+    if explain_format is not None:
+        from . import dbops
+        if explain_format not in ("table", "tree", "json"):
+            raise EditorError("Choose Table, Tree or JSON for Explain.", "invalid")
+        # A custom DELIMITER must not smuggle an unprefixed second statement
+        # into this read. Keep the normal splitter and client-command checks.
+        if len(units) != 1 or len(dbops.split_statements(units[0]["send"], backslash)) != 1:
+            raise EditorError("Explain one statement at a time.", "invalid_statement")
+        unit = units[0]
+        if re.match(r"\s*(?:(?:FORMAT\s*=\s*\w+|EXTENDED|PARTITIONS)\s+)*ANALYZE\b", unit["code"], re.I):
+            raise EditorError("ANALYZE runs the statement. Use Run analysis or Run.", "invalid_statement")
+        if explain_format == "tree" and session is not None:
+            version = parse_version_tuple(session.server_version or "", leading=True, default=None)
+            if engine != "mysql" or version is None or version < (8, 0, 16):
+                raise EditorError("Tree format needs MySQL 8.0.16 or later. Choose Table or JSON.", "invalid")
+        prefix = ("EXPLAIN " if engine == "mariadb" and explain_format == "table"
+                  else "EXPLAIN FORMAT=%s " % {"table": "TRADITIONAL", "tree": "TREE", "json": "JSON"}[explain_format])
+        # :name placeholders (a Top statements digest) take their Parameters
+        # values as the literals Run analysis uses; a statement without one
+        # is sent as written.
+        parameters = payload.get("parameters")
+        if parameters is not None:
+            from . import live
+            try:
+                filled = live.fill_parameters(unit["send"], parameters)
+            except ValueError as e:
+                raise EditorError(str(e), "invalid")
+            if filled != unit["send"]:
+                spans = [m.span() for m in live.TOKEN.finditer(unit["send"])]
+                if spans != [m.span() for m in live.TOKEN_NO_BACKSLASH.finditer(unit["send"])]:
+                    raise EditorError("A backslash before a quote is read differently when sql_mode has "
+                                      "NO_BACKSLASH_ESCAPES. Write a quote inside a string by doubling it "
+                                      "('it''s') to use Parameters.", "invalid")
+                unit["send"] = filled
+        # Only prepend EXPLAIN: no SELECT projection, transaction wrapper or
+        # session setting changes. The server decides whether the statement
+        # can be explained.
+        unit["send"] = prefix + unit["send"]
+        unit["code"] = prefix + unit["code"]
+        unit["explain_prefix"] = len(prefix)
     # The guard is its own visible, audited statement. Failure stops the run
     # before ALTER, using the same error handling as every user statement.
     guarded = []
@@ -3269,7 +3311,9 @@ def _run_api(payload, workspace, fill_password):
                 blocked["session"] = session.status()
                 return blocked
     has_write = any(u.get("kind") != "read" for u in plan["units"])
-    run = Run(plan["units"], limit, full_options, plan["text"], plan["offsets"], plan["scope"],
+    # History must replay EXPLAIN, never the underlying UPDATE/DELETE.
+    history_sql = plan["units"][0]["send"] if payload.get("explain_format") is not None else plan["text"]
+    run = Run(plan["units"], limit, full_options, history_sql, plan["offsets"], plan["scope"],
               audit=audit if has_write else None, timeout=timeout,
               history={"record": _history_recorder(store, session, password)},
               alter_context=decision.get("alter_preflight"))

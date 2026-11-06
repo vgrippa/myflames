@@ -19,6 +19,14 @@
   min-width: 0;
   min-height: 0;
 }
+/* The first-run and no-selection states center in the main area, not in the
+   narrow list column. */
+.files-place-main > .view-empty {
+  margin: auto;
+}
+.files-place-main > .view-status {
+  margin: var(--space-3) var(--space-4) 0;
+}
 /* A narrow window puts the list above the browser as a short strip; the
    browser keeps the rest of the height and scrolls inside its panes. */
 @media (max-width: 900px) {

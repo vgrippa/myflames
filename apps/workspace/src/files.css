@@ -1,4 +1,4 @@
-/* The Files browser (FileBrowser.tsx, FilePane.tsx, Transfers.tsx): a
+/* The File transfer browser (FileBrowser.tsx, FilePane.tsx, Transfers.tsx): a
    toolbar, two flush panes divided by a hairline (stacked when the browser
    is narrower than 760 px), and the Transfers panel at the bottom. Each pane
    scrolls inside its own grid under a sticky header. Tokens only; the
@@ -58,6 +58,8 @@
   gap: var(--space-2);
 }
 .files-notes {
+  display: grid;
+  gap: var(--space-2);
   padding: var(--space-2) var(--space-4) 0;
 }
 .files-notes:empty {
@@ -111,10 +113,19 @@
 }
 .files-pane-titlebar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-2);
+  gap: var(--space-1-5) var(--space-2);
   min-width: 0;
+}
+.files-pane-titlebar-actions {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: var(--space-1-5);
+  min-width: 0;
+  margin-inline-start: auto;
 }
 .files-pane-title {
   min-width: 0;
@@ -152,6 +163,9 @@
 }
 .files-pane-nav .icon-button:disabled {
   opacity: 0.35;
+}
+.files-pane-nav .icon-button[data-action="refresh"][aria-busy="true"] svg {
+  animation: spin 0.8s linear infinite;
 }
 
 /* The path bar: breadcrumb segments, the empty end and Edit path; it turns
@@ -196,8 +210,12 @@
   flex: none;
   align-items: center;
 }
+.files-crumb.is-current {
+  max-width: 100%;
+}
 .files-crumb-sep {
   display: inline-flex;
+  flex: none;
   color: var(--ink-faint);
 }
 .files-crumb-button {
@@ -212,6 +230,10 @@
   font-size: var(--text-sm);
   line-height: var(--leading-sm);
 }
+.files-crumb.is-current .files-crumb-button {
+  min-width: 0;
+  max-width: 100%;
+}
 .files-crumb-button:hover {
   background: var(--surface-hover);
   color: var(--ink);
@@ -224,9 +246,9 @@
   font-family: var(--font-mono);
 }
 .files-path-end {
-  flex: 1 0 var(--space-5);
+  flex: 1 1 var(--space-4);
   align-self: stretch;
-  min-width: var(--space-5);
+  min-width: 0;
   padding: 0;
   border: 0;
   background: none;
@@ -240,6 +262,12 @@
 }
 
 /* ---- The listing ---------------------------------------------------------------- */
+.files-pane > .files-pane-action-status:not([data-phase="idle"]) {
+  display: flex;
+  padding: var(--space-1-5) var(--space-3);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-subtle);
+}
 .files-pane-error .view-status {
   padding: var(--space-2) var(--space-3) 0;
 }
@@ -486,7 +514,8 @@
   flex: none;
 }
 .button.files-transfer-button[aria-disabled="true"]:not(.is-pending),
-.button.files-transfer-button[aria-disabled="true"]:not(.is-pending):hover {
+.button.files-transfer-button[aria-disabled="true"]:not(.is-pending):hover,
+.button.files-transfer-button[aria-disabled="true"]:not(.is-pending):active {
   border-color: var(--line);
   background: var(--surface-pane);
   color: var(--ink-faint);
@@ -832,12 +861,6 @@
     border-left: 0;
     border-top: 1px solid var(--line);
   }
-  /* Both transfer buttons sit between the panes. */
-  .files-pane.is-remote .files-pane-foot {
-    order: -1;
-    border-top: 0;
-    border-bottom: 1px solid var(--line);
-  }
   .files-transfers {
     max-height: none;
   }
@@ -846,6 +869,9 @@
   }
 }
 @media (prefers-reduced-motion: reduce) {
+  .files-pane-nav .icon-button[data-action="refresh"][aria-busy="true"] svg {
+    animation: none;
+  }
   .files-loading-bar.is-on::before,
   .files-progress.is-indeterminate > span {
     animation-duration: 3s;

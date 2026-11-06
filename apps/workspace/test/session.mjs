@@ -250,8 +250,8 @@ try {
   await page.locator('[aria-label="Query name"]').fill("Orders by customer");
   await page.keyboard.press("Enter");
   await page.locator('[aria-label="SQL editor"]').fill("SELECT * FROM orders WHERE customer_id = :c");
-  // Parameters and the trace option live in the analysis options popover.
-  await page.click('button[aria-label="Explain and Run analysis options"]');
+  // Parameters and the trace option live in the Run analysis options popover.
+  await page.click('button[aria-label="Run analysis options"]');
   await page.click(".editor-parameters summary");
   await page.locator('[aria-label="Query parameters"]').fill('{"c": 42}');
   await page.$eval(".execution-options input[type=checkbox]", (e) => e.click());

@@ -11,6 +11,7 @@ import os
 import posixpath
 import re
 import stat as statmod
+import subprocess
 import sys
 import threading
 import time
@@ -269,7 +270,7 @@ def api_local_list(path):
                     break
     except OSError:
         raise ValueError('This local folder cannot be read.') from None
-    return {'path': resolved, 'home': home, 'entries': entries}
+    return {'path': resolved, 'home': home, 'entries': entries, 'transfers': sftp_jobs.local_transfers_available()}
 
 
 def _local_target(path):
@@ -332,6 +333,47 @@ def _rename_noreplace(source, target):
         if code == errno.EEXIST:
             raise FileExistsError(code, os.strerror(code), target)
         raise OSError(code, os.strerror(code), source)
+
+
+def _reveal_argv(path):
+    """The file manager command that shows *path* selected in its folder:
+    Finder (open -R), File Explorer (/select,) or, on Linux, the folder opened
+    with xdg-open. Absolute programs only, never found through PATH."""
+    if sys.platform == 'darwin':
+        return ['/usr/bin/open', '-R', path]
+    if os.name == 'nt':
+        root = os.environ.get('SystemRoot') or r'C:\Windows'
+        return [os.path.join(root, 'explorer.exe'), '/select,' + path]
+    for program in ('/usr/bin/xdg-open', '/usr/local/bin/xdg-open'):
+        if os.path.isfile(program) and os.access(program, os.X_OK):
+            return [program, os.path.dirname(path) or '/']
+    raise ValueError('No file manager was found on this computer (xdg-open is missing).')
+
+
+def _trim_separators(path, module=os.path):
+    """A folder given with a trailing separator is that folder, not a child;
+    a root (``/``, ``C:\\``, ``\\\\server\\share\\``) stays a root, never the
+    drive-relative ``C:``."""
+    drive, tail = module.splitdrive(path)
+    stripped = tail.rstrip(module.sep + (module.altsep or ''))
+    return drive + stripped if stripped else path
+
+
+def api_local_reveal(path):
+    """Reveal in Finder / Show in File Explorer: the item is shown selected in
+    its folder. Nothing is opened or run; the path resolves under the same
+    link rule as listings and must exist."""
+    path = _local(path)
+    trimmed = _trim_separators(path)
+    resolved = os.path.join(_local_realpath(os.path.dirname(trimmed)), os.path.basename(trimmed))
+    if not os.path.lexists(resolved):
+        raise ValueError('There is nothing at this path on this computer any more.')
+    try:
+        subprocess.run(_reveal_argv(resolved), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError):
+        raise ValueError('The file manager could not be opened.') from None
+    return {'revealed': resolved}
 
 
 def api_local_rename(source, target):
@@ -412,6 +454,8 @@ def response(path, payload, store):
         return api_local_mkdir(payload.get('path'))
     if path == '/api/files/local/rename':
         return api_local_rename(payload.get('from'), payload.get('to'))
+    if path == '/api/files/local/reveal':
+        return api_local_reveal(payload.get('path'))
     if path == '/api/files/upload':
         return {'job': api_start_upload(store, payload)}
     if path == '/api/files/download':

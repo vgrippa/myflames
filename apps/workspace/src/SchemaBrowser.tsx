@@ -1,8 +1,8 @@
 // The Query editor's schema browser: schemas, their tables and views, and a
 // table's columns and indexes, read on demand from the connection in use
 // (/api/live/schemas, shared with the Server pickers, then /api/live/catalog).
-// Nothing is read until the user asks; every read is keyed by the connection
-// (binding.ts), so a switch never shows another server's names.
+// The visible pane reads the schema list once per connection; expanded nodes
+// read their details on demand. A switch never shows another server's names.
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { api, type CatalogTable, type CatalogTables, type Connection } from "./api";
 import { connectionKey, connectionLabel } from "./binding";
@@ -39,6 +39,7 @@ const tableKey = (key: string, schema: string, table: string) => `${key}\u0000${
 
 export function SchemaBrowser({
   connection,
+  visible,
   width,
   onWidth,
   onClose,
@@ -49,6 +50,7 @@ export function SchemaBrowser({
   onImportCsv,
 }: {
   connection: Connection;
+  visible: boolean;
   width: number;
   onWidth: (width: number) => void;
   onClose: () => void;
@@ -65,8 +67,12 @@ export function SchemaBrowser({
   const key = connectionKey(connection);
   const label = connectionLabel(connection);
   const [asked, setAsked] = useState<Set<string>>(() => new Set());
-  const enabled = asked.has(key);
-  const catalog = useSchemaCatalog(connection, enabled);
+  const connected = !!(connection.host || connection.profile_id);
+  const enabled = connected && asked.has(key);
+  useEffect(() => {
+    if (visible && connected) setAsked(previous => previous.has(key) ? previous : new Set(previous).add(key));
+  }, [visible, connected, key]);
+  const catalog = useSchemaCatalog(connection, enabled && visible);
   const [tables, setTables] = useState<Record<string, Loaded<CatalogTables>>>({});
   const [details, setDetails] = useState<Record<string, Loaded<CatalogTable>>>({});
   const [open, setOpen] = useState<Set<string>>(() => new Set());
@@ -111,7 +117,7 @@ export function SchemaBrowser({
   const loadTablesRef = useRef(loadTables);
   loadTablesRef.current = loadTables;
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled || !visible) return;
     const timer = window.setTimeout(() => {
       for (const s of catalog.catalog?.schemas || []) {
         if (open.has(`s:${s.name}`) && !pagesRef.current[tablesKey(key, s.name, filter)]?.data)
@@ -119,7 +125,7 @@ export function SchemaBrowser({
       }
     }, 200);
     return () => window.clearTimeout(timer);
-  }, [key, enabled, open, filter, catalog.catalog]);
+  }, [key, enabled, visible, open, filter, catalog.catalog]);
   useEffect(() => {
     const active = requests.current;
     const activeDetails = detailRequests.current;
@@ -381,15 +387,10 @@ export function SchemaBrowser({
         message: reading ? `Reading the schemas of ${label}…` : catalog.error || "", startedAt: readingSince,
       }} onRetry={enabled && catalog.error ? refresh : undefined} />
       {!enabled ? (
+        // With a connection the list starts reading once the pane is shown
+        // (the effect above), so there is no button to press here.
         <div className="browser-gate">
-          <p>Read the schemas of {label}.</p>
-          <button type="button" className="button small" onClick={() => {
-            setAsked(new Set(asked).add(key));
-            // The gate goes away: focus moves to the filter, not to the page.
-            window.setTimeout(() => browser.current?.querySelector<HTMLInputElement>(".browser-filter input")?.focus());
-          }}>
-            Load schemas
-          </button>
+          <p role="status">{connected ? `Reading the schemas of ${label}…` : "Choose a connection to see its schemas."}</p>
         </div>
       ) : (
         <>

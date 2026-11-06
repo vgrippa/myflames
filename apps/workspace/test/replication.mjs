@@ -1,4 +1,4 @@
-import { chooseConnection, connectionOption } from "./chrome-helpers.mjs";
+import { chooseConnection, connectionOption, openRefreshMenu } from "./chrome-helpers.mjs";
 // Replication view of the Server place (Workload, after Sessions): mocked
 // /api/live/replication with replication-1.0 reports recorded live (MySQL
 // 8.4.11 and MariaDB 11.4.13 replicas; fixtures written by ops-fixtures.py),
@@ -546,6 +546,7 @@ try {
   const beforeAll = state.seen.length;
   await h.server();
   await page.evaluate(() => window.scrollTo(0, 0));
+  await openRefreshMenu(page);
   await page.click(".server-place [data-action=refresh-all]");
   await page.waitForFunction(() => !document.querySelector(".server-place .refresh-all-stop") && /views? refreshed|refreshed/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
   assert.equal(state.seen.length, beforeAll + 1, "Refresh all sends one replication read");

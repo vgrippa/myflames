@@ -202,7 +202,7 @@ try {
   state.fallback = { status: 200, body: capped };
   await page.click("#tuning-tab-analysis");
   await page.waitForSelector("#tuning-panel-analysis .report-look");
-  await page.click(".server-view[data-view=tuning] [data-action=refresh]");
+  await page.click(".server-view[data-view=tuning] [data-action=run-analysis]");
   for (let i = 0; i < 200 && state.seen.length < 2; i++) await pause(50);
   assert.equal(state.seen.length, 2, "the Full analysis read again");
   await page.click("#tuning-tab-scorecard");
@@ -255,7 +255,7 @@ try {
   await page.click("#tuning-tab-analysis");
   await page.waitForSelector("#tuning-panel-analysis .report-look");
   assert.equal(await page.$eval("#tuning-tab-analysis", (e) => e.getAttribute("aria-selected")), "true");
-  assert.ok(await page.$(".server-view[data-view=tuning] [data-action=refresh]"), "the tab's Refresh runs it again");
+  assert.ok(await page.$(".server-view[data-view=tuning] [data-action=run-analysis]"), "the tab names the same full analysis action");
   await shoot("tuning-full-analysis");
   await page.click("#tuning-tab-scorecard");
   await page.waitForSelector("#tuning-panel-scorecard");

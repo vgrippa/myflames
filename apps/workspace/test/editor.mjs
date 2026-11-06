@@ -310,7 +310,7 @@ try {
     // In the toolbar row: a late answer never pushes the editor down.
     assert.equal(await page.$eval(".editor-privilege-note", e => !!e.closest(".editor-toolbar")), true);
     assert.equal(await text(".editor-privilege-note"), expected);
-    for (const action of ["run", "run-all", "explain", "analyze"]) {
+    for (const action of ["run", "run-all", "analyze"]) {
       const selector = `[data-action=${action}]`;
       assert.doesNotMatch(await text(selector), /Unverified/);
       assert.equal(await page.$eval(selector, e => e.querySelector(".privilege-unverified")), null);
@@ -332,7 +332,7 @@ try {
   await page.waitForSelector(".query-lab .editor-toolbar");
   assert.equal(await page.$(".editor-heading, .editor-title"), null, "the editor has no duplicate heading or title row");
   assert.equal(await page.$('[aria-label="Query name"]'), null, "query names edit inline on demand");
-  const analysisOptions = '[aria-label="Explain and Run analysis options"]';
+  const analysisOptions = '[aria-label="Run analysis options"]';
   const runOptions = 'button[aria-label="Run options"]';
   assert.equal(await page.$eval(`button${analysisOptions}`, (e) => e.getAttribute("aria-expanded")), "false");
   await page.click(`button${analysisOptions}`);
@@ -857,9 +857,9 @@ try {
   await page.waitForFunction((sel) => document.querySelector(sel).value === "SELECT * FROM customers WHERE id = 7", {}, EDITOR);
   await page.click('button[aria-label="Hide the history"]');
 
-  // 10. Schema browser: nothing is read until asked; insert names; SELECT … LIMIT 100 runs.
-  assert.equal(seen.filter((s) => s.path === "/api/live/schemas").length, 0, "no read before Load schemas");
-  await page.locator(".schema-browser button ::-p-text(Load schemas)").click();
+  // 10. Schema browser: one automatic list read; details stay lazy.
+  assert.equal(seen.filter((s) => s.path === "/api/live/schemas").length, 1, "one schema-list read when the editor opens");
+  assert.equal(calls("/api/live/catalog").length, 0, "table details stay lazy");
   const treeRow = async (kind, label) => {
     await page.waitForFunction((kind, label) => [...document.querySelectorAll(`.tree-row.kind-${kind}`)].some((r) => r.querySelector(".tree-label")?.textContent === label), {}, kind, label);
     for (const handle of await page.$$(`.tree-row.kind-${kind}`))
@@ -1498,7 +1498,6 @@ try {
   // A table detail read on A must be aborted on A -> B -> A. Even a late
   // successful reply may not populate A's cache after returning to it.
   if (await page.$eval(".schema-browser-slot", e => e.hidden)) await page.click('button[aria-label="Show the schema browser"]');
-  await page.locator(".schema-browser button ::-p-text(Load schemas)").click();
   const schemaA = await treeRow("schema", "testdb");
   if ((await schemaA.evaluate(e => e.getAttribute("aria-expanded"))) !== "true") await schemaA.click();
   const tableA = await treeRow("table", "orders");
@@ -1585,7 +1584,7 @@ try {
   await refreshPrivileges();
   await setText("SELECT 1");
   const beforeDeniedCapture = calls("/api/live/start").length;
-  for (const action of ["explain", "analyze"]) {
+  for (const action of ["analyze"]) {
     const selector = `[data-action=${action}]`;
     assert.equal(await page.$eval(selector, e => e.disabled), false, "privilege denial stays focusable");
     assert.equal(await page.$eval(selector, e => e.getAttribute("aria-disabled")), "true");
@@ -1594,8 +1593,12 @@ try {
     assert.match(await page.$eval(selector, e => e.getAttribute("aria-describedby").split(" ").map(id => document.getElementById(id)?.textContent).join(" ")), /TEST_GLOBAL_PRIVILEGE/);
     await page.click(selector);
   }
+  const nativeBefore = calls("/api/editor/run").length;
   await page.focus(EDITOR);
   await chord("e");
+  await ran(nativeBefore + 1);
+  await idle();
+  assert.equal(calls("/api/editor/run").at(-1).explain_format, "table", "native Explain uses the tab's own privileges");
   await chord("e", true);
   assert.equal(calls("/api/live/start").length, beforeDeniedCapture, "buttons and shortcuts send no denied capture");
   assert.equal((await text(".editor-privilege-note")).match(/TEST_GLOBAL_PRIVILEGE/g)?.length, 1,

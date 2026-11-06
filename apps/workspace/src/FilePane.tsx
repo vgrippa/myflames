@@ -1,9 +1,11 @@
-// One pane of the Files browser: a folder on this computer or on the SSH
-// connection, with its path bar, history, filter, sortable grid, Finder-style
-// selection and keys, drag and drop, and the row menu. usePane owns the
-// listing requests (latest wins, one request per folder at a time, Stop) and
-// the selection; FileBrowser decides what transfers, renames and deletes do.
+// One pane of the File transfer browser: a folder on this computer or on the
+// SSH connection, with its path bar, history, filter, sortable grid,
+// Finder-style selection and keys, drag and drop, and the row menu. usePane
+// owns the listing requests (latest wins, one request per folder at a time,
+// Stop) and the selection; FileBrowser decides what transfers, renames and
+// deletes do.
 import {
+  Fragment,
   createElement,
   memo,
   useCallback,
@@ -22,6 +24,7 @@ import { Icon } from "./components";
 import { fileGlyphs } from "./fileGlyphs.generated";
 import {
   ActionButton,
+  ActionStatus,
   ContextMenu,
   IconButton,
   Notice,
@@ -32,12 +35,13 @@ import {
   type TableContextAction,
 } from "./kit";
 import { bytes } from "./PerfShared";
-import { MAC, shortcut } from "./platform";
+import { MAC, WINDOWS, shortcut } from "./platform";
 import { chooseBackupDirectory } from "./opsApi";
 import {
   baseName,
   joinPath,
   localList,
+  localReveal,
   parentPath,
   remoteList,
   sshErrorCode,
@@ -46,7 +50,11 @@ import {
 } from "./filesApi";
 
 export type Side = "local" | "remote";
-export type Listing = { path: string; home: string; entries: FileEntry[] };
+export type Listing = { path: string; home: string; entries: FileEntry[]; transfers?: boolean };
+export const REVEAL_LABEL = MAC ? "Reveal in Finder" : WINDOWS ? "Show in File Explorer" : "Show in folder";
+const REVEAL_PENDING = MAC ? "Opening in Finder…" : WINDOWS ? "Opening in File Explorer…" : "Opening folder…";
+const revealDone = (shown: string) =>
+  MAC ? `Revealed ${shown} in Finder.` : WINDOWS ? `Shown in File Explorer: ${shown}.` : `Opened folder for ${shown}.`;
 export type PaneState = {
   /** The last folder listed; kept (greyed) while a newer listing fails. */
   listing: Listing | null;
@@ -143,7 +151,7 @@ export function usePane(side: Side, ssh: string, onHostKeyUnknown?: (retry: () =
           : await localList(path, controller.signal);
         if (flight.current !== entry) return REPLACED;
         flight.current = null;
-        const listing: Listing = { path: answer.path, home: answer.home, entries: answer.entries || [] };
+        const listing: Listing = { path: answer.path, home: answer.home, entries: answer.entries || [], transfers: answer.transfers };
         const same = listing.path === current.current.listing?.path;
         setState((s) => ({
           ...s,
@@ -383,11 +391,25 @@ function PathBar({ path, title, editing, onEditing, onList, onDone }: {
     input.current?.focus();
     input.current?.select();
   }, [editing]);
-  // Long paths keep their end (the folder on screen) in view.
+  // Long paths keep their end (the folder on screen) in view, including after
+  // the strip changes width (for example switching between 720 px and 1440 px).
   useLayoutEffect(() => {
     const el = strip.current;
     if (el) el.scrollLeft = el.scrollWidth;
   }, [path, editing]);
+  useLayoutEffect(() => {
+    const el = strip.current;
+    if (!el || editing || typeof ResizeObserver === "undefined") return;
+    let lastWidth = el.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (el.clientWidth !== lastWidth) {
+        lastWidth = el.clientWidth;
+        el.scrollLeft = el.scrollWidth;
+      }
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [editing]);
   if (editing) {
     return (
       <div className="files-path is-editing">
@@ -421,20 +443,25 @@ function PathBar({ path, title, editing, onEditing, onList, onDone }: {
   return (
     <div className="files-path">
       <div ref={strip} className="files-crumbs" role="navigation" aria-label={`${title} path`} data-path={path}>
-        {parts.map((part, i) => (
-          <span key={part.path} className="files-crumb">
-            {i > 1 && <span className="files-crumb-sep" aria-hidden="true"><Icon name="chevron" size={12} /></span>}
-            <button
-              type="button"
-              className="files-crumb-button"
-              aria-current={i === parts.length - 1 ? "location" : undefined}
-              title={part.path}
-              onClick={() => onList(part.path)}
-            >
-              <bdi>{part.label}</bdi>
-            </button>
-          </span>
-        ))}
+        {parts.map((part, i) => {
+          const current = i === parts.length - 1;
+          return (
+            <Fragment key={part.path}>
+              {i > 1 && <span className="files-crumb-sep" aria-hidden="true"><Icon name="chevron" size={12} /></span>}
+              <span className={`files-crumb${current ? " is-current" : ""}`}>
+                <button
+                  type="button"
+                  className="files-crumb-button"
+                  aria-current={current ? "location" : undefined}
+                  title={part.path}
+                  onClick={() => onList(part.path)}
+                >
+                  <bdi>{part.label}</bdi>
+                </button>
+              </span>
+            </Fragment>
+          );
+        })}
         <button type="button" className="files-path-end" tabIndex={-1} aria-hidden="true" onClick={() => onEditing(true)} />
       </div>
       <IconButton icon="edit" size={14} label="Edit path" title={`Edit path (${shortcut("L")})`} onClick={() => onEditing(true)} />
@@ -448,6 +475,8 @@ export type PaneTransfer = {
   verb: "Upload" | "Download";
   /** The other pane's folder ("" while it has none). */
   target: string;
+  /** Set when transfers are unavailable on this platform (Windows). */
+  blocked?: string;
   busy: boolean;
   start: (names: string[]) => void;
 };
@@ -455,6 +484,8 @@ export type PaneTransfer = {
 export function FilePane({
   model,
   title,
+  active,
+  onActivate,
   showHidden,
   dragging,
   transfer,
@@ -469,6 +500,8 @@ export function FilePane({
 }: {
   model: PaneModel;
   title: string;
+  active: boolean;
+  onActivate: () => void;
   showHidden: boolean;
   /** The rows being dragged out of either pane (dragover cannot read the payload). */
   dragging: MutableRefObject<DragRows | null>;
@@ -495,7 +528,7 @@ export function FilePane({
   const [filter, setFilter] = useState({ text: "", path: "" });
   const needle = filter.path === shownPath ? filter.text : "";
   const [editing, setEditing] = useState(false);
-  const [menu, setMenu] = useState<{ x: number; y: number; targets: string[] } | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; targets: string[]; focus?: string } | null>(null);
   const [dropping, setDropping] = useState(false);
   const depth = useRef(0);
   const collapse = useRef<string | null>(null);
@@ -598,7 +631,7 @@ export function FilePane({
     const entry = byName.get(name);
     if (!entry || !listing) return;
     if (entry.is_dir) void model.list(joinPath(listing.path, name));
-    else transfer.start([name]);
+    else if (!transfer.blocked) transfer.start([name]);
   }
   function goUp() {
     if (!listing || isRoot(listing.path)) return;
@@ -618,15 +651,20 @@ export function FilePane({
     const entry = byName.get(name);
     if (entry) onRename(entry);
   }
-  function openMenuFor(targets: string[], x: number, y: number) {
-    setMenu({ x, y, targets });
+  function openMenuFor(targets: string[], x: number, y: number, focus?: string) {
+    setMenu({ x, y, targets, focus });
   }
   function menuForActive() {
     const index = indexOf.get(selection.active) ?? -1;
     const row = index >= 0 ? scroller.current?.querySelector<HTMLElement>(`[aria-rowindex="${index + 2}"]`) : null;
     const box = (row || scroller.current)?.getBoundingClientRect();
     if (!box) return;
-    openMenuFor(row ? ordered(selection.names.size ? selection.names : new Set([selection.active])) : [], box.left + 24, box.top + (row ? box.height : 8));
+    openMenuFor(
+      row ? ordered(selection.names.size ? selection.names : new Set([selection.active])) : [],
+      box.left + 24,
+      box.top + (row ? box.height : 8),
+      row ? selection.active : undefined,
+    );
   }
 
   function onKeyDownGrid(e: KeyboardEvent<HTMLDivElement>) {
@@ -742,7 +780,7 @@ export function FilePane({
     if (more) {
       const name = target.closest<HTMLElement>("[data-name]")?.dataset.name ?? "";
       const box = more.getBoundingClientRect();
-      openMenuFor(selection.names.has(name) ? ordered(selection.names) : [name], box.left, box.bottom + 2);
+      openMenuFor(selection.names.has(name) ? ordered(selection.names) : [name], box.left, box.bottom + 2, name);
       return;
     }
     const name = collapse.current;
@@ -763,7 +801,7 @@ export function FilePane({
       return;
     }
     if (!selection.names.has(name)) selectOne(name);
-    openMenuFor(selection.names.has(name) ? ordered(selection.names) : [name], e.clientX, e.clientY);
+    openMenuFor(selection.names.has(name) ? ordered(selection.names) : [name], e.clientX, e.clientY, name);
   }
 
   // ---- Drag and drop -------------------------------------------------------------
@@ -798,7 +836,7 @@ export function FilePane({
     if (!accepts(e)) return;
     e.preventDefault();
     depth.current += 1;
-    setDropping(true);
+    if (!transfer.blocked) setDropping(true);
   }
   function onDragOver(e: DragEvent<HTMLElement>) {
     if (!accepts(e)) return;
@@ -833,40 +871,77 @@ export function FilePane({
     }
   }
 
+  // ---- Reveal in file manager & Browse (This computer) ------------------------
+  const reveal = useAction(shownPath);
+  async function revealPath(targetPath: string) {
+    if (!targetPath) return;
+    await reveal.run(() => localReveal(targetPath), {
+      pending: REVEAL_PENDING,
+      done: (res) => revealDone(baseName(res.revealed || targetPath) || targetPath),
+    });
+  }
+  const browse = useAction();
+  async function chooseFolder() {
+    const result = await browse.run(() => chooseBackupDirectory(), { pending: "Choose a folder in the system dialog.", done: "" });
+    if (result.ok && !result.value.cancelled && result.value.path) void model.list(result.value.path);
+  }
+
   // ---- Menu ------------------------------------------------------------------------
-  function menuActions(targets: string[]): TableContextAction[] {
+  function menuActions(targets: string[], focus?: string): TableContextAction[] {
     const dir = listing?.path ?? "";
-    const refreshItem: TableContextAction = { label: "Refresh", icon: "refresh", onClick: () => void model.refresh() };
+    const refreshItem: TableContextAction = {
+      label: "Refresh",
+      icon: "refresh",
+      shortcut: "F5",
+      disabled: state.loading,
+      onClick: () => void model.refresh(),
+    };
     const newFolder: TableContextAction = { label: "New folder…", icon: "folder-add", disabled: !listing, onClick: onNewFolder };
+    const folderGlyph = <FileGlyph entry={{ kind: "dir", is_dir: true }} />;
     if (!targets.length) {
-      return [newFolder, { label: "Copy path", icon: "copy", disabled: !dir, onClick: () => onCopyPath([dir]) }, { divider: true }, refreshItem];
+      const items: TableContextAction[] = [newFolder];
+      if (!remote) {
+        items.push({
+          label: REVEAL_LABEL,
+          icon: folderGlyph,
+          disabled: !dir || reveal.pending,
+          hint: reveal.pending ? REVEAL_PENDING : undefined,
+          onClick: () => void revealPath(dir),
+        });
+      }
+      items.push({ label: "Copy path", icon: "copy", disabled: !dir, onClick: () => onCopyPath([dir]) });
+      items.push({ divider: true }, refreshItem);
+      return items;
     }
     const single = targets.length === 1 ? byName.get(targets[0]) : undefined;
+    const transferDisabled = !!transfer.blocked || !transfer.target;
     const items: TableContextAction[] = [
       {
         label: transfer.verb,
         icon: remote ? "import" : "export",
-        disabled: !transfer.target,
-        hint: transfer.target ? undefined : "The other pane has no folder open.",
-        onClick: () => transfer.start(targets),
+        disabled: transferDisabled,
+        hint: transfer.blocked || (transfer.target ? undefined : "The other pane has no folder open."),
+        onClick: () => { if (!transferDisabled) transfer.start(targets); },
       },
     ];
     if (single?.is_dir) items.push({ label: "Open", icon: "chevron", onClick: () => open(single.name) });
+    if (!remote) {
+      const chosen = (focus && targets.includes(focus) ? focus : selection.active && targets.includes(selection.active) ? selection.active : targets[0]) || "";
+      items.push({
+        label: REVEAL_LABEL,
+        icon: folderGlyph,
+        disabled: !dir || !chosen || reveal.pending,
+        hint: reveal.pending ? REVEAL_PENDING : undefined,
+        onClick: () => void revealPath(joinPath(dir, chosen)),
+      });
+    }
     items.push({ divider: true });
     if (single) items.push({ label: "Rename…", icon: "edit", shortcut: "F2", onClick: () => onRename(single) });
     items.push(newFolder);
     if (onDelete) items.push({ label: "Delete…", icon: "trash", danger: true, onClick: () => onDelete(targets) });
     items.push({ divider: true });
     items.push({ label: targets.length > 1 ? "Copy paths" : "Copy path", icon: "copy", onClick: () => onCopyPath(targets.map((n) => joinPath(dir, n))) });
-    items.push(refreshItem);
     return items;
-  }
-
-  // ---- Browse (This computer) ---------------------------------------------------
-  const browse = useAction();
-  async function chooseFolder() {
-    const result = await browse.run(() => chooseBackupDirectory(), { pending: "Choose a folder in the system dialog.", done: "" });
-    if (result.ok && !result.value.cancelled && result.value.path) void model.list(result.value.path);
   }
 
   // ---- Footer -----------------------------------------------------------------------
@@ -882,12 +957,14 @@ export function FilePane({
     summary = needle ? `${rows.length.toLocaleString()} of ${itemCount(all)}` : `${itemCount(all)}${hidden ? ` · ${hidden.toLocaleString()} hidden` : ""}`;
   } else summary = "";
   const otherSide = remote ? "this computer" : "the server";
-  const transferTitle = !transfer.target
-    ? `Waiting for the folder on ${otherSide}`
-    : selectedNames.length
-      ? `${transfer.verb} ${selectedNames.length === 1 ? selectedNames[0] : itemCount(selectedNames.length)} to ${transfer.target}`
-      : `Select files or folders to ${transfer.verb.toLowerCase()}`;
-  const transferOff = !selectedNames.length || !transfer.target;
+  const transferTitle = transfer.blocked
+    ? transfer.blocked
+    : !transfer.target
+      ? `Waiting for the folder on ${otherSide}`
+      : selectedNames.length
+        ? `${transfer.verb} ${selectedNames.length === 1 ? selectedNames[0] : itemCount(selectedNames.length)} to ${transfer.target}`
+        : `Select files or folders to ${transfer.verb.toLowerCase()}`;
+  const transferOff = !!transfer.blocked || !selectedNames.length || !transfer.target;
 
   const start = Math.max(0, view.first - OVERSCAN);
   const end = Math.min(rows.length, view.first + view.capacity + OVERSCAN);
@@ -901,10 +978,21 @@ export function FilePane({
       className={`files-pane is-${side}${dropping ? " is-drop" : ""}`}
       aria-label={title}
       data-side={side}
+      onPointerDownCapture={onActivate}
+      onFocusCapture={onActivate}
       onKeyDown={(e) => {
         if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "l") {
           e.preventDefault();
           setEditing(true);
+          return;
+        }
+        if (e.key === "F5" && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !editing) {
+          const target = e.target as HTMLElement | null;
+          const tag = target?.tagName;
+          if (tag !== "INPUT" && tag !== "TEXTAREA" && !target?.isContentEditable) {
+            e.preventDefault();
+            void model.refresh();
+          }
         }
       }}
       onDragEnter={onDragEnter}
@@ -915,7 +1003,14 @@ export function FilePane({
       <header className="files-pane-head">
         <div className="files-pane-titlebar">
           <h3 className="files-pane-title"><bdi>{title}</bdi></h3>
-          <SearchField label={`Filter ${title}`} placeholder="Filter" value={needle} onChange={(text) => setFilter({ text, path: shownPath })} />
+          <span className="files-pane-titlebar-actions">
+            <SearchField label={`Filter ${title}`} placeholder="Filter" value={needle} onChange={(text) => setFilter({ text, path: shownPath })} />
+            {!remote && (
+              <ActionButton small busy={browse.pending} busyLabel="Choosing…" title="Open a folder from the system dialog (another disk or volume)" onClick={() => void chooseFolder()}>
+                Browse…
+              </ActionButton>
+            )}
+          </span>
         </div>
         <div className="files-pane-nav">
           <span className="files-nav-buttons">
@@ -926,16 +1021,21 @@ export function FilePane({
           </span>
           <PathBar path={shownPath} title={title} editing={editing} onEditing={setEditing} onList={(p) => void model.list(p)} onDone={focusGrid} />
           <span className="files-nav-buttons">
-            <IconButton icon="refresh" label="Refresh" data-action="refresh" onClick={() => void model.refresh()} />
+            <IconButton
+              icon="refresh"
+              label={`Refresh ${title}`}
+              title="List this folder again (F5)"
+              data-action="refresh"
+              className={state.loading ? "is-busy" : ""}
+              aria-busy={state.loading || undefined}
+              aria-disabled={state.loading || undefined}
+              onClick={() => { if (!state.loading) void model.refresh(); }}
+            />
             <IconButton icon="folder-add" label="New folder" disabled={!listing} onClick={onNewFolder} />
-            {!remote && (
-              <ActionButton small busy={browse.pending} busyLabel="Choosing…" title="Open a folder from the system dialog (another disk or volume)" onClick={() => void chooseFolder()}>
-                Browse…
-              </ActionButton>
-            )}
           </span>
         </div>
       </header>
+      {!remote && <ActionStatus className="files-pane-action-status" state={reveal} onDismiss={reveal.reset} />}
       {browse.phase === "failed" && (
         <Notice variant="error" noticeKey={`${browse.message}#${browse.endedAt}`} onDismiss={browse.reset}>{browse.message}</Notice>
       )}
@@ -1024,14 +1124,15 @@ export function FilePane({
         </div>
         <ActionButton
           className="files-transfer-button"
-          primary
+          primary={active}
+          icon={remote ? "import" : "export"}
           busy={transfer.busy}
           busyLabel="Starting…"
           aria-disabled={transferOff || undefined}
           title={transferTitle}
-          onClick={() => transfer.start(selectedNames)}
+          onClick={() => { if (!transferOff) transfer.start(selectedNames); }}
         >
-          {remote ? "← Download" : "Upload →"}
+          {remote ? "Download" : "Upload"}
         </ActionButton>
       </footer>
       {menu && (
@@ -1040,7 +1141,7 @@ export function FilePane({
           y={menu.y}
           label={menu.targets.length ? `Actions for ${menu.targets.length === 1 ? menu.targets[0] : itemCount(menu.targets.length)}` : `Actions for ${title}`}
           opener={scroller.current}
-          actions={menuActions(menu.targets)}
+          actions={menuActions(menu.targets, menu.focus)}
           onClose={() => setMenu(null)}
         />
       )}

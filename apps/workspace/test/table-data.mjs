@@ -34,8 +34,11 @@ try {
  await h.button('Query editor','.main-nav ');
  await chooseConnection(page,first);
  if(await page.$('button[aria-label="Show the schema browser"]')) await page.click('button[aria-label="Show the schema browser"]');
- await h.button('Load schemas','.schema-browser ');
- await page.waitForSelector('.tree-row.kind-schema'); await page.click('.tree-row.kind-schema');
+ // The visible Schemas panel reads the chosen connection's list by itself: no Load schemas gate.
+ await page.waitForSelector('.tree-row.kind-schema');
+ assert.equal(await page.$('.schema-browser .browser-gate'),null,'no Load schemas gate with a connection');
+ assert.equal(h.state.other.filter(r=>r.path==='/api/live/schemas').at(-1)?.body.connection?.profile_id,first,'the list read is for the chosen connection');
+ await page.click('.tree-row.kind-schema');
  async function openGrid(){await page.waitForSelector('.tree-row.kind-table');await page.click('.tree-row.kind-table',{button:'right'});await h.button('Edit table data');await page.waitForSelector('.table-data-panel input');}
  await openGrid();
  assert.equal(await page.$eval('input[aria-label="id for first"]',e=>e.value),'9007199254740993');

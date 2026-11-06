@@ -11,7 +11,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { chooseConnection, chooseView, openConnectionPicker } from "./chrome-helpers.mjs";
+import { chooseConnection, chooseView, openConnectionPicker, openRefreshMenu } from "./chrome-helpers.mjs";
 import { operationScenarios } from "./action-feedback-operations.mjs";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
@@ -459,9 +459,9 @@ export const SCENARIOS = [
     },
   },
   {
-    // Refresh all turns into Stop in the same spot: a double click must not stop it.
+    // The menu closes into visible progress: a double click must not stop it.
     name: "server-refresh-all", label: "Refresh all", paths: LIVE_VIEWS, busy: ".server-place .refresh-all-stop", oneRequest: false,
-    setup: async ({ page }) => goView(page, "server", "health"),
+    setup: async ({ page }) => { await goView(page, "server", "health"); await openRefreshMenu(page); },
     target: ".server-place [data-action=refresh-all]",
     afterClick: async ({ page, ctx }) => {
       assert.ok(await page.$(".server-place .refresh-all-stop"), "a double click on Refresh all keeps it running (Stop is not armed yet)");
@@ -661,10 +661,23 @@ export const SCENARIOS = [
     hang: async ({ page }) => waitText(page, ".query-lab .results-running .action-elapsed", /^\d{2,} s so far$/),
   },
   {
-    name: "editor-load-schemas", label: "Load schemas", paths: ["/api/live/schemas"], busy: ".schema-browser .browser-head [aria-busy]",
-    setup: async ({ page }) => { await goPlace(page, "query"); await pause(300); },
-    target: named("Load schemas", ".schema-browser"),
-    ok: async ({ page }) => visible(page, ".schema-browser .browser-tree [role=treeitem]"),
+    // The visible panel reads the list by itself on arrival (answered at once:
+    // nothing is held during setup); the action is the header's Reload. The
+    // list it read stays on screen while Reload reads again.
+    name: "editor-reload-schemas", label: "Reload schemas", paths: ["/api/live/schemas"], busy: ".schema-browser .browser-head [aria-busy]",
+    setup: async ({ page }) => {
+      await goPlace(page, "query");
+      await visible(page, ".schema-browser .browser-tree [role=treeitem]");
+      await visible(page, '.schema-browser .browser-head button[aria-label="Reload schemas"]');
+    },
+    target: named("Reload schemas", ".schema-browser"),
+    ok: async ({ page }) => {
+      await page.waitForFunction(() => {
+        const b = document.querySelector('.schema-browser .browser-head button[aria-label="Reload schemas"]');
+        return b && b.getAttribute("aria-busy") !== "true";
+      });
+      await visible(page, ".schema-browser .browser-tree [role=treeitem]");
+    },
     error: async ({ page }) => { await waitText(page, ".schema-browser .action-status", /Simulated failure/); await named("Try again", ".schema-browser")(page); },
     hang: async ({ page }) => waitText(page, ".schema-browser .action-status .action-elapsed", /^\d{2,} s so far$/),
     double: false,
@@ -697,7 +710,7 @@ export const SCENARIOS = [
     mocks: TABLE_MOCKS,
     setup: async ({ page }) => {
       await goPlace(page, "query"); await pause(300);
-      await click(page, "Load schemas", ".schema-browser");
+      // The visible Schemas panel lists the schemas by itself.
       await (await visible(page, ".tree-row.kind-schema")).click();
       const table = await visible(page, ".tree-row.kind-table");
       await table.click({ button: "right" });

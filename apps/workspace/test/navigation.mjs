@@ -170,10 +170,10 @@ try {
   const overflow = () => page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
 
   // 1. Places: sixteen, in order (Cluster right after Replication, then
-  // ProxySQL and Readyset; Files after Tuning; Query digest, Database diagram
+  // ProxySQL and Readyset; File transfer after Tuning; Query digest, Database diagram
   // and Schema versions right below the Query editor in the SQL workspace
   // group), each with its own icon.
-  const places = ["Home", "Server", "Workload", "Replication", "Cluster", "ProxySQL", "Readyset", "Tuning", "Files", "Query editor", "Query digest", "Database diagram", "Schema versions", "Plans", "Investigations", "Learn"];
+  const places = ["Home", "Server", "Workload", "Replication", "Cluster", "ProxySQL", "Readyset", "Tuning", "File transfer", "Query editor", "Query digest", "Database diagram", "Schema versions", "Plans", "Investigations", "Learn"];
   assert.deepEqual(await texts(".main-nav button"), places);
   const icons = await page.$$eval(".main-nav button svg", (els) => els.map((e) => e.innerHTML));
   assert.equal(icons.length, 16);
@@ -218,7 +218,7 @@ try {
     ProxySQL: ".proxysql-place",
     Readyset: ".readyset-place",
     Tuning: ".server-place.is-tuning-place .server-view[data-view=tuning]",
-    Files: ".files-place .ssh-connections",
+    "File transfer": ".files-place .ssh-connections",
     Investigations: ".library .library-split.is-empty .view-empty",
     Learn: ".teach-workspace",
     Home: ".home",
@@ -266,24 +266,20 @@ try {
     // and no Privileges button (Account and privileges is in the picker).
     assert.equal(await page.$(".topbar .local-badge"), null, `${label}: no Local badge`);
     assert.equal(await page.$('.window-toolbar button[aria-label="Privileges"], .window-toolbar .privileges-button'), null, `${label}: no Privileges button`);
-    // Server and Workload: Refresh all follows the connection picker in the
-    // top bar, above the bar's hairline, and never sits over a view's Refresh.
+    // Server and Workload have one visible Refresh, with the wider read in its menu.
     if (label === "Server" || label === "Workload") {
+      assert.equal(await page.$('.place-toolbar [data-action=refresh-all]'), null,
+        `${label}: no competing Refresh all in the top bar`);
       const geometry = await page.evaluate(() => {
-        const box = (s) => { const e = [...document.querySelectorAll(s)].find((x) => x.getClientRects().length); return e ? e.getBoundingClientRect() : null; };
-        const all = box(".server-place [data-action=refresh-all]");
-        const own = box(".server-view [data-action=refresh]");
-        const bar = box(".window-toolbar");
-        const picker = box(".window-toolbar .connection-picker");
-        return { all: all && { left: all.left, right: all.right, bottom: all.bottom, icon: !!document.querySelector(".server-place [data-action=refresh-all] svg") },
-          own: own && { left: own.left, right: own.right }, barBottom: bar.bottom, pickerRight: picker && picker.right,
-          toolbarBottom: box(".server-place > .place-toolbar").bottom };
+        const box = (selector) => [...document.querySelectorAll(selector)]
+          .find((e) => e.getClientRects().length)?.getBoundingClientRect();
+        const own = box('.server-place .view-refresh [data-action=refresh]');
+        const options = box('.server-place .view-refresh [aria-label="Refresh options"]');
+        return own && options ? { gap: options.left - own.right, bottom: Math.abs(own.bottom - options.bottom) } : null;
       });
-      assert.ok(geometry.all, `${label}: Refresh all is shown`);
-      assert.equal(geometry.all.icon, false, `${label}: Refresh all is a text button, unlike a view's Refresh`);
-      if (geometry.pickerRight !== null) assert.ok(geometry.all.left >= geometry.pickerRight, `${label}: Refresh all follows the picker ${JSON.stringify(geometry)}`);
-      if (geometry.own) assert.ok(geometry.all.right <= geometry.own.left || geometry.all.left >= geometry.own.right, `${label}: Refresh all is not stacked over Refresh ${JSON.stringify(geometry)}`);
-      assert.ok(geometry.toolbarBottom <= geometry.barBottom - 1, `${label}: the top bar keeps its hairline ${JSON.stringify(geometry)}`);
+      assert.ok(geometry, `${label}: the view owns the Refresh split button`);
+      assert.ok(Math.abs(geometry.gap) <= 1 && geometry.bottom <= 1,
+        `${label}: both halves stay together (${JSON.stringify(geometry)})`);
     }
     // Database diagram is a place of its own too: one view, full width.
     if (label === "Database diagram") {
@@ -1012,7 +1008,7 @@ try {
   await page.keyboard.press("ArrowUp");
   assert.equal(await page.evaluate(() => document.activeElement.textContent), "Plans");
   await page.keyboard.press("Home");
-  // Query editor is the tenth place (after Replication, Cluster, ProxySQL, Readyset, Tuning and Files).
+  // Query editor is the tenth place (after Replication, Cluster, ProxySQL, Readyset, Tuning and File transfer).
   for (let i = 0; i < 9; i++) await page.keyboard.press("ArrowDown");
   assert.equal(await page.evaluate(() => document.activeElement.textContent), "Query editor");
   await page.keyboard.press("Enter");

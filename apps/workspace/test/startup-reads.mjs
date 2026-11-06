@@ -7,7 +7,7 @@
 // of the previous one. Run after `npm run build`: node test/startup-reads.mjs
 import assert from "node:assert/strict";
 import { load, open, pause } from "./perf-harness.mjs";
-import { chooseConnection, connectionOption, openConnectionPicker } from "./chrome-helpers.mjs";
+import { chooseConnection, connectionOption, openConnectionPicker, openRefreshMenu } from "./chrome-helpers.mjs";
 
 const healthy = await load("replication-mysql-8.4-healthy.json");
 const extra = {};
@@ -100,6 +100,7 @@ try {
   await place("Server");
   const beforeAll = replicationReads();
   await page.evaluate(() => window.scrollTo(0, 0));
+  await openRefreshMenu(page);
   await page.click(".server-place [data-action=refresh-all]");
   await page.waitForFunction(() => !document.querySelector(".server-place .refresh-all-stop") && /refreshed/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
   assert.equal(replicationReads(), beforeAll + 1, "Refresh all reads replication once");

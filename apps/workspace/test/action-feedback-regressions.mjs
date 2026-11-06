@@ -116,7 +116,7 @@ for (const file of ['ClusterPlace.tsx', 'ProxySqlPlace.tsx']) {
   const ViewLayout = executable(named(kit, 'ViewLayout'), {
     React, useContext: () => null, useEffect() {}, useRef: () => ({ current: null }),
     useInspector: () => ({ open: true, sheet: false }),
-    ViewActivityContext: {}, ViewBackLabelContext: {}, ViewSwitcherContext: { Provider: 'provider' },
+    RefreshAllContext: {}, ViewActivityContext: {}, ViewBackLabelContext: {}, ViewSwitcherContext: { Provider: 'provider' },
     Inspector: 'inspector', InfoPopover: 'info', Icon: 'icon',
   });
   const list = React.createElement('list', null, ...layout.parent.children.filter(n =>

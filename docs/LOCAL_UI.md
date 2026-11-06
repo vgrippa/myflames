@@ -77,7 +77,7 @@ The sidebar separates where you go from what you have open:
 | **ProxySQL** | The ProxySQL Admin interface the connection in use reaches: backends as ProxySQL runs them with their connection pool, hostgroups, query rules and query digests, with a server's or rule's changes in its inspector and Load and Save to disk on the Configuration line, each after its own confirmation. Greyed in the sidebar once the connection is known not to be a ProxySQL Admin interface |
 | **Readyset** | The Readyset SQL adapter or Admin SQL listener the connection in use reaches: multi-tier topology across ProxySQL, Readyset and upstream MySQL or MariaDB servers, shallow and deep caches, proxied queries with live `EXPLAIN CREATE CACHE` prechecks, replicated base tables, dynamic parameters and allowlists, and cached-versus-upstream telemetry, with reviewed operational changes. Greyed in the sidebar once the connection is known not to be a Readyset instance |
 | **Tuning** | A place of its own (for MySQL and MariaDB; the command palette also finds "mysql tuning"): the tuning scorecard full width, without Server's list of views, and the **Full analysis** as its second tab. Links to the Full analysis open it there |
-| **Files** | A place of its own, after Tuning: saved **SSH connections** on the left and, for the one chosen, two panes side by side (**This computer** and the server) with the **Transfers** panel below, to move files over SSH/SFTP like FileZilla. It does not use the database connection in use. See [The Files place](#the-files-place) |
+| **File transfer** | A place of its own, after Tuning: saved **SSH connections** on the left and, for the one chosen, two panes side by side (**This computer** and the server) with the **Transfers** panel below, to move files over SSH/SFTP like FileZilla. It does not use the database connection in use. See [The File transfer place](#the-file-transfer-place) |
 | **Investigations** | Saved investigations: search, open, delete; an investigation saved by Health's **Capture when…** lists its **Evidence** (processlist, InnoDB status, locks) with Copy and Download. With none saved, the empty list is hidden. If plans are open, **Save N open plans as an investigation…** opens the notebook sheet; with no plans open, the empty state offers **Import plan** |
 | **Learn** | The lesson catalog and player (`myflames teach` on the command line) |
 
@@ -141,11 +141,12 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
 - **Toolbar.** The view's title with an ⓘ that explains it, its controls (a
   sampling window, auto-refresh, a database picker, a filter) and **Refresh**.
   List controls wait on the list while details are open. Refresh stays at the
-  end of the toolbar, also on a detail page. The place's own controls follow the
-  connection picker in the top bar: **Refresh all** (a text button, so it never
-  reads as a second copy of a view's Refresh), an ⓘ with what Server does, and
-  one control for the list of views (dock or float it; in a narrow window a
-  **Views** menu instead).
+  end of the toolbar, also on a detail page; the arrow beside it opens
+  **Refresh every view on <connection>** (Refresh all), so a view shows one
+  Refresh. The place's own controls follow the connection picker in the top
+  bar: an ⓘ with what Server does, one control for the list of views (dock or
+  float it; in a narrow window a **Views** menu instead), and, while Refresh
+  all runs, its progress and **Stop**.
 - **One summary line**, with the status and a **N notes** button for engine
   differences, privileges, and caveats. Summary status words are **OK**,
   **Watch**, **Problem**, **Not judged** and **Unknown**.
@@ -299,7 +300,8 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
   actions. Connection write policies remain authoritative: read-only connections
   refuse writes, and Production connections ask for explicit confirmation.
 
-**Refresh all** (top bar, after the connection picker; ⌥⌘R or Alt+Ctrl+R) reads Server
+**Refresh all** (**Refresh every view on <connection>** in the menu beside a view's
+Refresh; ⌥⌘R or Alt+Ctrl+R) reads Server
 and Workload sections, Replication and Cluster, including sections not yet opened,
 using each view's window, databases and scope. Database diagram is included once
 a database is chosen; imported diagrams stay unchanged.
@@ -307,7 +309,7 @@ At most three section reads run at once, with Health, Waits and I/O first.
 Full analysis runs in a separate phase because it manages its own bounded reads.
 Maintenance detects tools; it never starts upgrade checks or jobs. Existing
 large-schema consent applies only to the same connection and scope.
-While it runs the button becomes **Stop**
+While it runs the top bar shows its progress and **Stop**
 (Escape also stops it) and each view waiting or reading shows a spinner in the
 list of views; a view whose own Refresh is already reading the same thing is
 joined, not read twice. Afterwards one line says "4 of 5 views refreshed; Locks
@@ -965,23 +967,42 @@ rules as Cluster and ProxySQL; once a read says the connection is not a
 Readyset instance, the sidebar item looks disabled for that connection only.
 
 **Maintenance** (Setup) has five tasks in a segmented control. **Tools**
-(**Detect tools**) lists the MySQL and MariaDB tools on this computer
-(mysqlsh, mysqldump, mariadb-dump, and the rest) with their versions and what
-they offer for the connection in use. Each tool links to its official download page. CLI tool discovery stays offline; in the workspace, Detect tools and Refresh also check vendor release metadata, and newer versions appear beside the installed version. Client tools are compared within their installed series, while MySQL Shell uses its latest GA release. Checks can be cached for an hour; failed checks are cached for a minute and remain unknown. No installer runs automatically. **Upgrade check** runs MySQL Shell's
+lists the MySQL and MariaDB tools on this computer (mysqlsh, mysqldump,
+mariadb-dump, and the rest) with their versions and what they offer for the
+connection in use; Maintenance finds them by itself when it opens (local
+probes only, reused for 60 seconds), and **Detect again** looks again. Each
+tool links to its official download page. Tool discovery stays offline until
+you choose **Check for updates**, which asks vendor release metadata; newer
+versions appear beside the installed version. Client tools are compared within their installed series, while MySQL Shell uses its latest GA release. Checks can be cached for an hour; failed checks are cached for a minute and remain unknown. No installer runs automatically. **Upgrade check** runs MySQL Shell's
 upgrade checker for a target version you choose, or a **Partial check
 (native subset)** without it, labeled as such, which never says an upgrade is
 safe; findings are rows (Error, Warning, Notice, Passed, Not checked, Check
 failed) with the objects and documentation in the inspector, and **Export
 JSON**. MariaDB gets the mariadb-upgrade steps to run on the server host.
-**Dump**, **Restore** and **Clone** each have a short form and **Run
-preflight…**, which only reads. Restore's **Default database** offers **As in
+**Dump**, **Restore** and **Clone** each have a short form and one button
+named for the task, **Start dump…**, **Start restore…** or **Start clone…**,
+which first runs the preflight (it only reads; the button reads
+**Checking…** meanwhile). Restore's **Default database** offers **As in
 the dump**, the server's databases, or **New database…** for a name to type;
 Clone's **Fill from saved connection** copies a saved connection's host, port,
 user and TLS settings into the donor fields (never its password). The
-preflight only reads: failed checks stay on screen with their
-reasons and nothing can start; a clean preflight opens the confirmation with
-the target, the exact commands, the warnings, and the checks. A dump goes into
-a folder on the computer running myflames. **Choose folder** opens its system folder dialog on macOS or Windows; Linux uses Zenity when available. You can also type the path. Cancelling leaves the existing path unchanged, and choosing a folder starts no backup. The folder must not exist yet or be empty (a folder with files in it is refused at the preflight); restore and clone also ask you to
+preflight only reads: failed checks are listed under the button with their
+reasons and a **Next step** (**Choose another folder…**, **Review fields**,
+or **Remove <table> from the selection**), the passed checks folded below
+them, and nothing can start. After you change a field, an earlier failure is
+marked as coming from the last preflight and its commands are hidden. A clean
+preflight opens the confirmation with the target, the exact commands, the
+warnings, and the checks; a dump's confirmation names its contents and puts
+its warnings first, and a restore that replaces the mysql system schema
+(accounts, passwords and grants) asks for a separate acknowledgement checkbox
+as well as the typed target. A dump goes into
+a new folder on the computer running myflames. **Output folder** is filled
+in for you: `<database or connection>-YYYY-MM-DD` in your home folder, or
+beside the last dump, with `-2`, `-3` added when the name is taken; a path you
+type is never replaced. **Browse…** chooses the folder it goes in, through
+the system folder dialog on macOS or Windows (Linux uses Zenity when
+available). Cancelling leaves the path unchanged, and choosing a folder
+starts no backup. The folder must not exist yet or be empty (a folder with files in it is refused at the preflight); restore and clone also ask you to
 type the target. The confirmation goes stale after a minute (run the preflight
 again), and myflames repeats the preflight right before starting. A running
 job shows its progress, the last output line, and **Cancel**; finished jobs
@@ -996,8 +1017,9 @@ its control (rows stack below 650 px): **Scope** (Whole instance or Databases),
 are read then (name, engine, the server's estimated rows and size; 200 at a
 time with **Load more tables**) into a searchable list whose default is **All
 tables**. Ticked tables make a table dump of exactly those names; a table that
-a **Reload list** no longer shows blocks the preflight until you choose again,
-and the preflight itself fails for a name the database does not have. A dump
+a **Reload tables** no longer shows blocks the preflight until you remove it
+(**Remove <table> from the selection**) or choose again, and the preflight
+itself fails for a name the database does not have. A dump
 uses MySQL Shell when it is offered, or the engine's SQL dump tool when you
 choose it (the Tool list names it). **Options for** the tool are one form in
 sections, with a line under the heading summarizing what differs from the
@@ -1103,9 +1125,9 @@ button opens a list of the open plans. At 650 px and below the sidebar becomes a
 the status, Settings, and a **Menu** button that opens the places and open plans
 in a drawer; Escape closes it.
 
-### The Files place
+### The File transfer place
 
-**Files** moves files between this computer and your servers over SSH/SFTP,
+**File transfer** moves files between this computer and your servers over SSH/SFTP,
 in the spirit of FileZilla. It is a place of its own in the sidebar (after
 Tuning) and does not use the database connection in use: it works with
 **SSH connections**, saved objects of their own.
@@ -1165,7 +1187,7 @@ connections** with progress, files, rate and time left, **Cancel** while it
 runs and **Retry** for failed or cancelled files; a job that could not sign
 in offers **Edit connection** or **Trust host…**. **Clear finished** keeps
 failed and cancelled jobs. Downloads are written as `.myflames-part` files
-and renamed only when complete. Files is not a SQL feature: the connection
+and renamed only when complete. File transfer is not a SQL feature: the connection
 type and read-only switch do not apply and transfers are not in the
 [Audit log](#audit-log). On Windows, uploads and downloads are not available
 yet.
@@ -1701,7 +1723,7 @@ Running queries tab open on Sessions). Choose **Start fresh** to clear it, turn 
 investigations to keep named copies in the library. Downloads are saved through your browser. Your session and
 saved investigations stay on this computer. Apart from your database servers,
 myflames contacts only official release pages when you check for updates
-(**Check for updates**, or **Detect tools** in Maintenance) and the two news
+(**Check for updates** on Home, About or Maintenance's Tools) and the two news
 feeds described below, while Home is shown and news is turned on.
 
 Home news only reads: while Home is on screen and **Settings > Show MySQL and
@@ -2299,4 +2321,4 @@ analysis's elapsed time continues when Tuning is reopened during its run.
 
 Plans sample opening and HTML export show progress immediately; reads can stop waiting, and export failures can retry the same input. HTML and JSON exports report **Saved** with the filename. Investigation Save shows **Saving…** and keeps its error in the sheet.
 
-Maintenance's Detect tools, Check upgrade and Run preflight controls show elapsed progress with **Stop waiting**. A read failure offers **Try again**. Start and Cluster/ProxySQL confirmations offer **Close** after ten seconds without a reply: the request continues, its progress and outcome appear in the view, and nothing is sent again. Cancelling a job shows **Cancelling…** until the reply arrives; a missing reply does not mean it stopped.
+Maintenance's Detect again, Check for updates, Check upgrade and Start dump…, Start restore… and Start clone… (while their preflight runs) show elapsed progress with **Stop waiting**. A read failure offers **Try again**. Start and Cluster/ProxySQL confirmations offer **Close** after ten seconds without a reply: the request continues, its progress and outcome appear in the view, and nothing is sent again. Cancelling a job shows **Cancelling…** until the reply arrives; a missing reply does not mean it stopped.

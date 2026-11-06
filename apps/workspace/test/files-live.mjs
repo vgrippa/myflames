@@ -71,13 +71,14 @@ try {
   await page.click('.main-nav button[data-place="files"]');
   await waitText("Save an SSH connection to move files between this computer and a server.");
   await fs.mkdir(shots, { recursive: true });
-  // The empty state fits its narrow column: nothing overflows sideways.
+  // One New action: the main area's empty state; the list column only says so.
   const overflow = await page.$eval(".ssh-connections", (e) => e.scrollWidth - e.clientWidth);
   assert.ok(overflow <= 1, `the SSH connection list overflows by ${overflow} px`);
+  assert.equal(await page.$$eval(".files-place button", (els) => els.filter((b) => /New SSH connection/.test(b.textContent)).length), 1);
   await page.screenshot({ path: path.join(shots, "empty-light-1440.png") });
 
   // New SSH connection: a pasted user@host:port fills User and Port; Name follows.
-  await page.click(".ssh-connections-head .button");
+  await page.click(".files-place-main .view-empty .button");
   await page.waitForSelector("#ssh-conn-host");
   await typeInto("#ssh-conn-host", `${labUser}@${labHost}:${labPort}`);
   await page.$eval("#ssh-conn-host", (e) => e.blur());
@@ -97,7 +98,9 @@ try {
   const shown = await page.$$eval("code.hostkey-fingerprint", (els) => els.map((e) => e.textContent));
   const real = execFileSync("sh", ["-c", `ssh-keyscan -p ${labPort} ${labHost} 2>/dev/null | ssh-keygen -l -E sha256 -f -`]).toString();
   for (const fingerprint of shown) assert.ok(real.includes(fingerprint), `fingerprint ${fingerprint} is the server's`);
-  assert.match(await page.$eval(".hostkey-sheet h2", (e) => e.textContent), new RegExp(`Trust \\[${labHost.replace(/\./g, "\\.")}\\]:${labPort}\\?`));
+  // The trust step replaces the connection sheet's body: one dialog, never two.
+  assert.equal(await page.$$eval("dialog[open]", (els) => els.length), 1);
+  assert.match(await page.$eval(".ssh-sheet h2", (e) => e.textContent), new RegExp(`Trust \\[${labHost.replace(/\./g, "\\.")}\\]:${labPort}\\?`));
   await page.screenshot({ path: path.join(shots, "hostkey-light-1440.png") });
   await page.click(".hostkey-trust-button");
   await waitText(`Home folder: /home/${labUser}`);

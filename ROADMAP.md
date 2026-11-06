@@ -82,20 +82,33 @@ views in Readyset, ProxySQL, Replication and Cluster cross-link saved
 connections across ProxySQL + Readyset + MySQL/MariaDB standalone servers,
 replicas and clusters (`scripts/readyset-matrix.sh`).
 
-**Shipped in 3.3.2: Files.** A place of its own (after Tuning) moves files
+**Shipped in 3.3.2: File transfer.** A place of its own (after Tuning) moves files
 between this computer and servers over SSH/SFTP, FileZilla style: saved SSH
 connections of their own (agent, key file with an optional passphrase, or
 password, kept in the credential store), host-key trust with fingerprints in
 myflames' own known_hosts file (a different key for a trusted host is
-refused), two panes with breadcrumbs, filter, sorting, Finder-style selection
-and a row menu, folder transfers with conflicts, progress, Cancel and Retry,
-and drag and drop from the Finder through a one-function desktop preload.
+refused), a right-click menu on each saved connection (Open, Edit…, Duplicate,
+Test connection, Copy address, Delete…), two panes with breadcrumbs, filter,
+sorting, Finder-style selection, a row menu with Reveal in Finder (Show in
+File Explorer on Windows), folder transfers with conflicts, progress, Cancel
+and Retry, and drag and drop from the Finder through a one-function desktop
+preload.
 Validated live against OpenSSH 10 in Docker (`scripts/ssh-lab.sh`: Python and
 browser suites). Next: resuming an interrupted transfer from its last byte,
 a Forget trusted key action, uploads and downloads on Windows (local file
 handling with Windows handles), a bastion container in the lab for a live
-ProxyJump check, local Delete (to the Trash), and a Files badge in the
-sidebar for active and failed transfers.
+ProxyJump check, local Delete (to the Trash), a File transfer badge in the
+sidebar for active and failed transfers, reconnecting a failed connection on
+the same click, and a Browse… button for the key file.
+
+**Shipped in 3.3.2: Workbench-style Explain and calmer actions.** The Query
+editor's Explain runs `EXPLAIN` (Table, Tree or JSON) in the tab's session and
+shows the server's rows with Export, and Explore opens the visual plan only
+when asked; Run analysis results stay in the editor. Maintenance finds tools
+on open and has one Start button per task that checks first; Refresh all sits
+in the view Refresh menu. Next for Workbench parity: a default schema picker,
+editing rows in a query result, continue on error, open and save SQL files,
+find and replace, and a result filter.
 
 **Shipped: Import CSV.** The workspace loads a .csv, .tsv or .txt file into
 an existing table or a new one created from the file, from the Query

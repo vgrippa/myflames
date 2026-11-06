@@ -100,8 +100,8 @@ export function FillParametersSheet({
       </div>
       <div className="sheet-body">
         <p id={leadId} className="sheet-lead">
-          The statement was recorded without these values. They go into Parameters; nothing runs until you choose Explain
-          or Run analysis.{lists ? " A list takes several values separated by commas." : ""}
+          The statement was recorded without these values. They go into Parameters for Run analysis; nothing runs yet.
+          Explain sends SQL as written, so put its values in the SQL text first.{lists ? " A list takes several values separated by commas." : ""}
         </p>
         <div className="fill-fields">
           {fields.map((f, i) => {

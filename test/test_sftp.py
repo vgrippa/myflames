@@ -916,6 +916,38 @@ class TestApi(Isolated):
         session.listdir.side_effect = lambda path: listings[path]
         return session
 
+    def test_local_reveal_runs_the_file_manager_with_an_argv_list_only(self):
+        target = self.local('report.sql', b'x')
+        with mock.patch.object(api.subprocess, 'run') as run, mock.patch.object(api.sys, 'platform', 'darwin'):
+            answer = api.api_local_reveal(target)
+        self.assertEqual(answer, {'revealed': os.path.realpath(target)})
+        argv = run.call_args[0][0]
+        self.assertEqual(argv, ['/usr/bin/open', '-R', os.path.realpath(target)])
+        self.assertNotIn('shell', run.call_args[1])
+        # A folder with a trailing separator reveals that folder.
+        folder = os.path.join(self.root, 'logs')
+        os.mkdir(folder)
+        with mock.patch.object(api.subprocess, 'run') as run, mock.patch.object(api.sys, 'platform', 'darwin'):
+            self.assertEqual(api.api_local_reveal(folder + os.sep), {'revealed': os.path.realpath(folder)})
+        import ntpath, posixpath
+        for given, expected in (('C:\\', 'C:\\'), ('C:\\logs\\', 'C:\\logs'), ('\\\\srv\\share\\', '\\\\srv\\share\\'),
+                                ('\\\\srv\\share\\d\\', '\\\\srv\\share\\d')):
+            self.assertEqual(api._trim_separators(given, ntpath), expected)
+        self.assertEqual(api._trim_separators('/', posixpath), '/')
+        self.assertEqual(api._trim_separators('/a/b//', posixpath), '/a/b')
+        with mock.patch.object(api.sys, 'platform', 'win32'), mock.patch.object(api.os, 'name', 'nt'), \
+                mock.patch.dict(api.os.environ, {'SystemRoot': 'C:\\Windows'}):
+            self.assertEqual(api._reveal_argv('C:\\data\\a b.sql'),
+                             [os.path.join('C:\\Windows', 'explorer.exe'), '/select,C:\\data\\a b.sql'])
+        for bad in ('relative/file', '', os.path.join(self.root, 'missing.sql'), 'x\x00y'):
+            with self.subTest(bad=bad), mock.patch.object(api.subprocess, 'run') as run:
+                with self.assertRaises(ValueError):
+                    api.api_local_reveal(bad)
+                run.assert_not_called()
+        from myflames import ui
+        self.assertIn('/api/files/local/reveal', ui._FILES_PATHS)
+        self.assertIn('transfers', api.api_local_list(self.root))
+
     def test_local_listing_and_operations_refuse_a_link_another_user_owns(self):
         # Review: the listing answered the link's target, so a transfer started
         # from it never saw the foreign link. Both now follow the same rule.
@@ -933,7 +965,8 @@ class TestApi(Isolated):
                 return os.stat_result(values)
             return info
         with mock.patch.object(jobs.os, 'lstat', side_effect=foreign):
-            for call in (lambda: api.api_local_list(link), lambda: api.api_local_mkdir(os.path.join(link, 'new'))):
+            for call in (lambda: api.api_local_list(link), lambda: api.api_local_mkdir(os.path.join(link, 'new')),
+                         lambda: api.api_local_reveal(os.path.join(link, 'x'))):
                 with self.assertRaisesRegex(ValueError, 'owned by another user'):
                     call()
         self.assertEqual(api.api_local_list(link)['path'], os.path.realpath(actual))
@@ -1069,7 +1102,7 @@ class TestApi(Isolated):
             listing.assert_called_once_with(ssh=self.key)
             clear.assert_called_once_with(ssh=self.key)
         answer = ui.api_response('/api/files/local/list', {'path': ''}, workspace)
-        self.assertEqual(set(answer), {'path', 'home', 'entries'})
+        self.assertEqual(set(answer), {'path', 'home', 'entries', 'transfers'})
         self.assertEqual(answer['home'], self.root)
         for path in ui._FILES_PATHS + ui._SSH_CONNECTION_PATHS:
             with self.subTest(path=path), self.assertRaisesRegex(ValueError, 'running workspace'):

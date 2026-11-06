@@ -53,7 +53,7 @@ This is the detailed contract per feature; [AGENTS.md](../AGENTS.md) has the rul
   - [Saved connections and Database diagram Load](#saved-connections-and-database-diagram-load)
   - [Learn guided lessons](#learn-guided-lessons)
   - [MySQL Shell](#mysql-shell)
-  - [Files: SSH connections and file transfer](#files-ssh-connections-and-file-transfer)
+  - [File transfer: SSH connections and SFTP](#file-transfer-ssh-connections-and-sftp)
   - [--quiet / -q](#--quiet---q)
   - [MCP server](#mcp-server)
   - [Playground](#playground)
@@ -547,8 +547,8 @@ Other views may keep the full-width details pattern.
 Tuning category cards use an auto-fit grid. A category with at least one
 measurement and fewer than half its checks measured has `is-low-coverage`:
 a muted, hatched bar and a score labelled with coverage, such as "100% of
-1 check". Run full analysis belongs in the Scorecard toolbar; the Full
-analysis tab uses Refresh for its next read. Database diagram uses its
+1 check". Run full analysis is the toolbar action on both Tuning tabs;
+Tuning has no generic Refresh. Database diagram uses its
 view Refresh for rebuilds. I/O keeps its view controls in the toolbar and
 its counters in the content, with no repeated action under a section heading.
 
@@ -1693,6 +1693,40 @@ planner, write gate and session engine from the CLI.
   backslash modes, `\g` and executable comments. `decline: true` is answered
   first on `/run`, `/commit`, `/rollback` and `/open`: it never executes,
   whatever the policy says by then (a write is recorded as declined).
+- Explain (`_plan_run`): `/run` with `explain_format` (`table`, `tree`,
+  `json`) explains exactly one statement in the tab's session, like MySQL
+  Workbench. It prefixes `EXPLAIN FORMAT=TRADITIONAL|TREE|JSON ` (MariaDB's
+  Table is plain `EXPLAIN `, which is always tabular there; MySQL 9.7
+  defaults `explain_format` to TREE in `sql/sys_vars.cc`, so Table names
+  TRADITIONAL) and records
+  `explain_prefix` so error offsets still point into the editor text. Tree
+  needs MySQL 8.0.16 or later (refused otherwise). More than one statement
+  (also through a DELIMITER) is `invalid_statement`, and so is a statement
+  that starts with `ANALYZE` after optional `FORMAT=`, `EXTENDED` or
+  `PARTITIONS`, because `EXPLAIN ANALYZE` executes. The prefixed text is
+  classified like any statement, so EXPLAIN of a DELETE is a read, runs on a
+  read-only connection without confirmation, and changes no row. Planning
+  still evaluates constant parts (a derived table without tables is
+  materialized while the plan is built, `sql/sql_derived.cc`; verified on
+  MySQL 9.7: `EXPLAIN SELECT * FROM (SELECT GET_LOCK('x', 0)) a` leaves the
+  lock held; stored functions ran this way before 8.0.42, 8.4.5 and 9.3.0,
+  Bug#37560280), so `dbops` applies the SELECT expression checks to the
+  explained statement (named locks, `:=`, sequences, locking clauses, and
+  functions that are not verified native readers) without the INTO check; DDL
+  after EXPLAIN stays a read because the server refuses it. An optional
+  `parameters` object fills `:name` placeholders with `live.fill_parameters`
+  (the literals of `bind_query`: hex strings, finite numbers, NULL, lists for
+  IN; refused when backslash and NO_BACKSLASH_ESCAPES readings disagree); a
+  statement without placeholders is sent as written, and Run never binds. No
+  SELECT projection, transaction wrapper or session setting change. Messages
+  and history show the exact `EXPLAIN …` sent (`statement.sent`). The UI's
+  Explain format select (`myflames.editor.explainFormat` in localStorage)
+  shows the rows in an "Explain" result tab with Export and Explore; Explore
+  captures the original statement (`live/start`, mode `explain`, SELECT
+  guards apply) and opens Plans. Run analysis keeps the capture path, and its
+  result is the "Analysis" tab with its own Explore
+  (`test/test_editor_session.py`, `test/editor-explain-live.mjs` against a
+  real server).
 - Workspace UI (`apps/workspace/src`): `QueryLab.tsx` keeps a `Runtime` per
   tab in page memory (session status, the connection key and connection it was
   opened with, the connection of the request on its way, where the results
@@ -1721,11 +1755,11 @@ planner, write gate and session engine from the CLI.
   gutter, statement tint, bracket match, error underline; `sqlHighlight.ts`
   tokenizer, off above `HIGHLIGHT_LIMIT` characters), `ResultsPane.tsx`
   (results tabs, `DataTable` grid, Messages, Export, copy menu),
-  `SchemaBrowser.tsx` (on demand: `/api/live/schemas` through
-  `useSchemaCatalog`, then `/api/live/catalog`, cached per connection key and
-  kept while hidden; before Load schemas is pressed for the connection
-  identity it is the only read control, and only then does the header show
-  Reload schemas, keeping the busy, retry and connection-scoped behavior),
+  `SchemaBrowser.tsx` (`/api/live/schemas` through `useSchemaCatalog` once
+  per connection identity, the first time the pane is visible with a
+  connection, then `/api/live/catalog` on expand; cached per connection key
+  and kept while hidden; the header has Reload schemas with the busy, retry
+  and connection-scoped behavior; with no connection it asks for one),
   `HistoryPanel.tsx`, `editor.css`. Session restore: tab
   `limit`, `selection`, `result_tab`, and `query_lab.editor_layout` (height,
   browser and width, history, run time limit), reported only once changed
@@ -2737,7 +2771,7 @@ Health diagnostic findings preserve the optional `state` from `health-1.0` (`str
 ### Database Tuning Advisor
 
 Workspace UI (`Tuning.tsx`, `tuning.css`, `tuningRules.ts`, `apps/workspace/test/tuning-browser.mjs`, `apps/workspace/test/tuning-rules.mjs`):
-- A place of its own (`Place: "tuning"`, label "Tuning", palette keyword "mysql tuning"), never a Server view. `Server` renders it with `place="tuning"`: the TuningView full width (`.server-place.is-tuning-place`), no list of views or place toolbar (no Refresh all, ⌥⌘R off), the window footer (scope `tuning:<connectionKey>`), and the bound reports passed to TuningView (a report read on another connection is shown greyed with the other-connection note and its actions off, never as this one's; the Full analysis tab keeps its report that way). The Run full analysis buttons and the tab's Refresh are disabled while Refresh all runs on the Server place (`runBlocked`), so the Full analysis never starts a worker pool beside the global view queue. A Full analysis link that reveals a row in a view of another place keeps that row's inspector open (`keepInspectorOnNavigation`, as Instruments links do). `Server.choose("tuning")` or `choose("report")` navigates to the place; the Full analysis is its second tab (a `report` link or the palette's Full analysis selects it). A session that saved `tuning` or `report` as the Server view opens Health there.
+- A place of its own (`Place: "tuning"`, label "Tuning", palette keyword "mysql tuning"), never a Server view. `Server` renders it with `place="tuning"`: the TuningView full width (`.server-place.is-tuning-place`), no list of views or place toolbar (no Refresh all, ⌥⌘R off), the window footer (scope `tuning:<connectionKey>`), and the bound reports passed to TuningView (a report read on another connection is shown greyed with the other-connection note and its actions off, never as this one's; the Full analysis tab keeps its report that way). The Run full analysis button is disabled while Refresh all runs on the Server place (`runBlocked`), so the Full analysis never starts a worker pool beside the global view queue. A Full analysis link that reveals a row in a view of another place keeps that row's inspector open (`keepInspectorOnNavigation`, as Instruments links do). `Server.choose("tuning")` or `choose("report")` navigates to the place; the Full analysis is its second tab (a `report` link or the palette's Full analysis selects it). A session that saved `tuning` or `report` as the Server view opens Health there.
 - Mounting and reads: `main.tsx` mounts `Server`, `ReplicationPlace` and `ClusterPlace` on their first visit (or at once for a restored skip loop) and keeps them mounted, hidden; `Server` keeps the place it showed last while another place is on screen. Each view gets `ViewOnScreenContext` (`viewOnScreen.ts`): true only for the chosen view of the place on screen (false for kept views that are hidden, and for the view under the list of views on phones). Automatic first reads go through `useOpenRead` (`viewOnScreen.ts`): a view reads when it comes on screen without a report of the connection in use, or while on screen with no report at all for a connection not tried yet; choosing another connection while it stays on screen keeps the old report greyed until Refresh; Refresh all and explicit Refresh or Load read regardless.
 - Two tabs: **Scorecard** and **Full analysis** (the report, its inspector, Refresh and its HTML, Markdown, JSON and Text export through `/api/report/export`). Optional prop `tabRequest {tab: "scorecard" | "analysis", n}` opens a tab; each new `n` switches again.
 - `tuningRules.evaluateTuning({report, health, config, tables})` is pure (`tuning-1.0` in memory and in the JSON export). It reads Python statuses and numbers by their keys and adds no thresholds of its own: Health metrics `bp_dirty`, `bp_wait_free`, `select_full_join`, `connections_used`, `aborted_clients` and diagnostics `buffer_pool`, `redo`, `tmp_tables`, `sorts`, `thread_cache`, `table_cache`, `table_definitions`; config-1.0 checks `redo`, `tmp_tables`, `slow_log`, `max_connections`, `table_open_cache`; the Tables report summary (or `tables.no_primary_key`, `tables.unique_stand_in`, `tables.engines` findings); `checks.no_password`, `checks.anonymous`, `checks.root_any_host` (count from the finding headline); `require_secure_transport` and `have_ssl` only from Parameters (`config.parameters.items`, every global variable). From a Full analysis it uses the report's `health_metrics` for the metrics findings leave out; without it (older reports) those checks are unknown. When a view's own report and the Full analysis both have an item, the newer `taken_at` wins.
@@ -2763,7 +2797,7 @@ Backend `myflames/lifecycle.py` (contract and evidence: the server-lifecycle ski
 - CLONE (MySQL only): `clone_preflight` (engine, version series, plugin on both, BACKUP_ADMIN donor, CLONE_ADMIN recipient or BACKUP_ADMIN with DATA DIRECTORY, platform and character set variables, collations, plugins, `max_allowed_packet`, `clone_valid_donor_list` containing the donor address, different servers; DATA DIRECTORY absolute and not under `@@datadir` as text, existence `not_checked` without a recipient-host probe because the server refuses an existing or in-datadir path before copying). `donor_address` (`--donor-address`) is the donor as the recipient reaches it, used in the statement and the donor-list check. The statement goes on the client's stdin (`clone_statement(..., redact=False)`), shown and audited redacted. Clone plans add `expect` with `donor` and `recipient` objects (`endpoint`, `connection_key`, `type`, `read_only`), `donor_address` and `require_ssl`, all included in the binding. The workspace evaluates both saved profiles with `dbops.connection_safety`; a read-only donor is allowed. Before sending a remembered donor password, it verifies negotiated TLS on the recipient connection. Start checks the reviewed pair before retrieving the saved donor password, and rejects TLS downgrades when the donor profile requires TLS. Both passwords are scrubbed from errors, audit records, logs and manifest free text. Progress: a second connection polls `performance_schema.clone_progress` (job `progress` percent and `detail`). In place: ERROR 3707 (no supervisor, the server shuts down) or a lost connection is expected; the job waits up to `restart_wait` (`--restart-wait`, default `RESTART_WAIT` 180 s) and then reads `clone_status`, tied to this clone by `BEGIN_TIME`, `SOURCE` and `DESTINATION` (the table keeps the previous clone's row); result `needs_restart` when it does not come back, `needs_verification` when the recipient account is refused (it now has the donor's accounts). GTID: donor `gtid_executed` at preflight against `clone_status.GTID_EXECUTED` (empty for DATA DIRECTORY clones, `not_checked`).
 - Jobs (`LifecycleJob`, `lifecycle-job-1.0`: `id, operation, state queued|running|done|failed|refused|cancelled, progress, detail, events[] (last 200), result {status, verification[], partial_state, cancel_error, audit_id}, error`): tool output drained on threads, CR progress parsed, ANSI colors stripped, secrets redacted. Cancel: SIGTERM then SIGKILL to the process group (EPERM from a zombie group tolerated), and `KILL QUERY` on the session the job printed on its own stdout (marker line; mysqlsh's `print` needs an explicit line break). `partial_state` names what may remain. `LifecycleJobs` (the workspace's registry: two running at most, never two on one target, finished ones kept an hour, closed with the server). Shutdown: `LifecycleJobs.shutdown()` runs first in `WorkspaceServer.server_close`, before replication loops, table data, live jobs and editor sessions (whose cleanup can block on `KILL QUERY`). It refuses new jobs and preflight runners, cancels every running job and runner, starts `KILL QUERY` on threads with the session id read before the tool stops, sends SIGTERM to every tool process group and SIGKILL after 1 s, then gives jobs 1.5 s to write their audit record (cancelled, outcome unknown, as for Cancel); `close()` finishes the rest. `ToolGroups` lists a tool's process group from just after it starts until the group is gone. Tools start through `ToolGroups.start`, serialized with shutdown (`close_spawning`): a tool being started is listed before shutdown's snapshot, and none starts afterwards. With `MYFLAMES_TOOL_GROUPS_FILE` (set only by the desktop app, in a 0700 directory it owns; a missing or shared directory refuses startup with exit 2) the list is also kept in an owner-only `tool-groups-1.0` file (`{"schema_version", "groups"}`), written before the launch line, replaced atomically and kept (empty) after a clean close. When it cannot be rewritten it is removed, so it never names a group that may have ended, and the desktop treats a missing file after launch as unconfirmed; a tool whose group cannot be recorded is stopped at once and reported as cancelled. Shell dryRun and upgrade check tools run under `LifecycleJobs.runner()`, so shutdown stops them too.
 - Writes: dump, restore and clone are `risky` for `dbops.decide` (a read-only connection refuses, Production and Development confirm). CLI: policy from `--profile` before any prompt or connection; plan and commands on stderr; dump asks `[y/N]`, restore and clone ask to type the target; non-TTY needs `--yes` (plus `--confirm-target TARGET` for restore and clone); `--preflight` prints the plan (exit 0 ready, 1 not); Ctrl+C cancels the job. Exit 0 completed, 1 a started job failed, was cancelled or was not verified, 2 an unsent refusal, decline, bad input or connection failure. Failed-job text names the reason once in the operation heading, omits duplicate or empty `not_checked operation` rows and repeated status words, and retains distinct verification and partial-state guidance; JSON evidence is unchanged. UI: `POST /api/lifecycle/start` (`operation`, `plan`, `typed_target`, `confirmed: true`, `connection`, and `donor` for clone) is in `ui._WRITE_PATHS`: `dbops.gate` first (refused envelope with `audit_id`), then saved passwords (`connection.profile_id`, `donor.profile_id`), then the job; `POST /api/lifecycle/status` and `/api/lifecycle/cancel` take `id` and `connection`. Every attempt has an `AuditTrail` record (`surface` cli or ui; refused, declined, `unknown` after a cancel, `ok` or `error`). `POST /api/lifecycle/jobs` (`connection`; `lifecycle-jobs-1.0`, `_lifecycle_jobs_response`) lists the jobs this workspace holds for the connection's endpoint (`dbops.identity_endpoint`, recorded by `_lifecycle_add` before the job starts and dropped when `LifecycleJobs` lets the job go); it opens no connection and starts nothing (`test/test_lifecycle_cli.py`). Status and cancel check this same owner before looking up or cancelling a job and return “No such job.” for missing, expired or mismatched jobs. They open no connection and read no saved password. A change to type or read-only preserves access to the original job.
-- Workspace UI (`Maintenance.tsx`, Server > Setup): Tools, Upgrade check (MySQL Shell, or the labeled partial check), Dump, Restore, Clone; Run preflight only reads and opens the confirmation only when `ready` (target, exact commands, warnings, checks; restore and clone type the target; stale after `PREFLIGHT_TTL_MS`, 60 s); Cancel and Escape call `audit/declined`. Frontend callers must send the original `connection` on every status and cancel request, and show both `plan.expect.donor.endpoint` and `plan.expect.recipient.endpoint` with their policy when confirming clone. Jobs are polled while they run and bound to their connection (greyed after a switch). On open, and after a Start whose reply failed, the view reads `lifecycle/jobs` and adopts what it finds, so a reload or a lost reply never sends Start twice. The session keeps only `slow.maintenance_section`; the donor password stays in the page. Browser suite `apps/workspace/test/maintenance.mjs`.
+- Workspace UI (`Maintenance.tsx`, Server > Setup): Tools, Upgrade check (MySQL Shell, or the labeled partial check), Dump, Restore, Clone. Tools are detected on open through `useOpenRead` (`lifecycle/tools` without `check_updates`; the probes are cached for 60 s in `lifecycle.py`); the view's Refresh is labeled Detect again and shows only on Tools; Check for updates sends `check_updates: true`. Start dump…, Start restore… and Start clone… run the preflight (it only reads) and open the confirmation only when `ready` (target, exact commands, warnings, checks; restore and clone type the target; stale after `PREFLIGHT_TTL_MS`, 60 s). Failed checks show under the button with a Next step (Choose another folder…, Review fields, Remove <table> from the selection); passed ones fold into a details line. A preflight error clears the old plan; after a field changes, the old checks are labeled as the last preflight's and the planned commands are hidden. Dump's Output folder is suggested (`OpsShared.suggestDumpFolder`: `dumpFolderStem` of the database or connection plus the local date, in the home folder or the last dump's parent, `-2`, `-3` past names already listed or reserved this session; never over a typed path); Browse… picks the parent. The dump confirmation is primary-toned (policy, review token and audit unchanged), names its Contents and shows non-routine warnings first. A restore plan with `required_acknowledgement` needs its own checkbox; the workspace sends that exact string as `typed_acknowledgement` only when checked, and `lifecycle.restore_job` compares it with the fresh plan's; Cancel and Escape call `audit/declined`. Frontend callers must send the original `connection` on every status and cancel request, and show both `plan.expect.donor.endpoint` and `plan.expect.recipient.endpoint` with their policy when confirming clone. Jobs are polled while they run and bound to their connection (greyed after a switch). On open, and after a Start whose reply failed, the view reads `lifecycle/jobs` and adopts what it finds, so a reload or a lost reply never sends Start twice. The session keeps only `slow.maintenance_section`; the donor password stays in the page. Browser suite `apps/workspace/test/maintenance.mjs`.
 - Not wired to the CLI or UI yet: `prepare_physical_backup` / `physical_backup_job` (MariaDB `mariadb-backup --backup` then `--prepare`, only with a matching local socket and an explicit same-host confirmation); `clone` on MariaDB prints the `mariadb-backup` steps instead.
 
 ### Replication: status, skip, skip-loop
@@ -4607,10 +4641,11 @@ against MySQL 8.4 and MariaDB 11.4 containers. The write-up is in
 11.5 and later (TIMESTAMP up to 2106), SSH tunnels and the Windows file
 chooser were not in the lab matrix and are covered by unit tests only.
 
-## Files: SSH connections and file transfer
+## File transfer: SSH connections and SFTP
 
-**Files** is a place of its own (sidebar key `files`, after Tuning; command
-palette "Files"). It does not use the workspace's database connection: it
+**File transfer** is a place of its own (sidebar label "File transfer",
+internal key `files`, after Tuning; command palette "File transfer", also
+found by "files", "sftp" or "scp"; icon CircleArrowDataTransferHorizontal). It does not use the workspace's database connection: it
 works with **SSH connections**, saved objects of their own, and moves files
 between this computer and an SSH host over SFTP, in the spirit of FileZilla.
 Frontend: `FilesPlace.tsx` (the frame, `files-place.css`) composes
@@ -4620,6 +4655,38 @@ Frontend: `FilesPlace.tsx` (the frame, `files-place.css`) composes
 mounted after its first visit, so transfers and the folders on screen survive
 a trip to another place. The selected connection id is a per-viewer
 convenience in localStorage (`myflames.files.selected`).
+
+- Connection list: a click, Enter or Space opens a connection; arrow keys,
+  Home and End only move focus (nothing connects). Each row has a menu
+  (right-click, Shift+F10 or the context-menu key, or its ⋯ button): Open,
+  Edit… (F2), Duplicate (the New sheet prefilled as "NAME copy", never the id
+  or the saved secret), Test connection (inline result under the row; an
+  unknown host key opens the trust prompt and tests again), Copy address
+  (`targetLabel`, IPv6 in brackets) and Delete… (a ConfirmSheet; the secret
+  is deleted with the record). The menu never selects or connects. Deleting
+  the open connection leaves "Choose an SSH connection" instead of opening
+  another one. With none saved, the main area's EmptyState holds the one
+  New SSH connection action and the list says "None saved yet." In the New
+  or Edit sheet an unknown host key turns the same dialog into the trust
+  step (Back or Escape returns to the form; the typed secret waits in memory
+  only for the retried test). The Key file list leads with the file name
+  (`id_ed25519 (ed25519) · comment · folder`), with the full path in the
+  hint.
+- Panes: each pane has one Refresh (F5 while the pane has focus; it spins
+  and ignores clicks while listing); the browser toolbar has none. The
+  footer buttons are Upload and Download; only the pane last focused or
+  clicked shows its button as primary. Rows of This computer, and its
+  folder menu, offer Reveal in Finder (macOS), Show in File Explorer
+  (Windows) or Show in folder (elsewhere): `/api/files/local/reveal`
+  `{path}` resolves the folder with the listing's link rule and runs
+  `open -R`, `explorer.exe /select,` or `xdg-open <folder>` with an argv
+  list, never a shell. `/api/files/local/list` answers `transfers`
+  (`sftp_jobs.local_transfers_available()`: POSIX with `O_NOFOLLOW` and
+  `dir_fd` opens); when it is false (Windows) Upload, Download, Enter on a
+  file and drops are off with "Uploads and downloads are not available on
+  Windows yet." Browse… sits in This computer's title bar beside Filter, and
+  the path bar keeps the current folder's name in view at any width. Below
+  760 px the panes stack and each keeps header, list, footer order.
 
 Backend: `myflames/ssh_connections.py` (records, secrets, host keys, key
 discovery), `myflames/sftp.py` (a minimal SFTP v3 client over the system
@@ -4823,7 +4890,11 @@ bridge holds only that function (`preload: true` in `smoke.json`).
 `test/test_ssh_connections.py`, `test/test_sftp.py` (pipe-based SFTP peer,
 including `limits@openssh.com`), `test/test_sftp_jobs.py`,
 `test/test_ui.py` (`TestFilesEndpoints`), browser suites
-`apps/workspace/test/files-connections.mjs` and `files-browser.mjs`, and the
+`apps/workspace/test/files-connections.mjs` (the real `FilesPlace` with
+fixture routes: row menu, focus without connecting, empty state, in-sheet
+trust step), `files-browser.mjs` (reveal, per-pane Refresh, one primary
+transfer button, the `transfers: false` state, 720 px order) and
+`files-live.mjs` (the built app against the SSH lab), and the
 live suite `test/test_files_live.py` against a real OpenSSH server in Docker
 (`scripts/ssh-lab.sh`: up, test, down; password, plain key and
 passphrase-protected key sign-in, host-key trust, folders round trip with a
@@ -4861,7 +4932,7 @@ Cluster/ProxySQL rules below.
 | `ActionButton` | The control that runs it. While `busy`: a spinner and `busyLabel` in the present tense ("Testing…", "Applying…"), `aria-busy`, clicks ignored, and focus kept (`aria-disabled`, never `disabled`). The other label is reserved, invisible, in the same grid cell, so the width never changes; the visible label stays centered in the width reserved for its busy state. |
 | `ActionStatus` | The line beside or under the action: a polite live region that is always mounted (a region inserted with its text is often not read), with the seconds after 1 s (drawn, `aria-hidden`, never announced), "Still waiting for the server." after `ACTION_SLOW_AFTER_MS` (10 s) with `onStop` ("Stop" or "Stop waiting"), and `onRetry` ("Try again") after a failure. Idle it takes no room; `keepLine` keeps its empty line, for a status under a centered control. |
 | `ConfirmSheet` | `busyLabel` on the confirm button (it keeps focus), and the busy label read aloud at once; after 1 s a one-line `progress` ("Waiting for the server" by default) with the seconds at the start of the action row, which never wraps the buttons. With `onLeave`, after 10 s without a reply the line reads "No reply yet", `leaveText` (what Close does) appears at the end of the body, and Cancel becomes Close: the sheet closes, the request goes on, and its owner shows the outcome in the view. Cancel and Escape never decline a write that was sent. Its buttons share one box (`.sheet-buttons`, `display: contents`), so the first is Cancel and the last confirms. |
-| `ViewLayout` and `ViewStatus` | Refresh is an `ActionButton` ("Refreshing…"). The loading line counts seconds after 1 s; after `slowAfter` (20 s; sampling views add their window, Indexes and Tables 45 s) it says so (`slowText`, "Still waiting for the server." by default) and offers Stop (`reads.stop`: the view keeps its report and the request is aborted unless Refresh all waits for the same read); a read error offers Try again (`onRetry`) beside the alert, never inside it; `doneAt` (`reads.doneAt`) announces "Updated at …". Every new `loading` text is announced, so it stays the same while the read runs: never put the seconds in it (Tuning's Full analysis passes "Running every Server view once, about 10 to 20 s in all. It only reads." and `slowText` "Longer than the usual 10 to 20 s."). |
+| `ViewLayout` and `ViewStatus` | Refresh is an `ActionButton` ("Refreshing…"; `refreshLabel` renames it, for example Maintenance's Detect again). The other-connection note has no button of its own: it points to the toolbar Refresh, or names `otherAction` when that differs. The loading line counts seconds after 1 s; after `slowAfter` (20 s; sampling views add their window, Indexes and Tables 45 s) it says so (`slowText`, "Still waiting for the server." by default) and offers Stop (`reads.stop`: the view keeps its report and the request is aborted unless Refresh all waits for the same read); a read error offers Try again (`onRetry`) beside the alert, never inside it; `doneAt` (`reads.doneAt`) announces "Updated at …". Every new `loading` text is announced, so it stays the same while the read runs: never put the seconds in it (Tuning's Full analysis passes "Running every Server view once, about 10 to 20 s in all. It only reads." and `slowText` "Longer than the usual 10 to 20 s."). |
 | `writeFailure(error)` | A write's exception: an HTTP 4xx reply is a failure in the server's words; anything else (no reply, a lost connection, a 5xx, a time limit) is "Outcome unknown", and the write is never sent again. |
 
 Top statements keeps its first-load control mounted while reading, with progress
@@ -4900,8 +4971,11 @@ Rules:
 - A guard that must hold before React renders the busy state uses a ref set in
   the click handler (Refresh news reads start in an effect, so its click checks
   `reading.current` as well as `loading`).
-- Refresh all becomes Stop in the same spot. Stop takes clicks only after
-  `STOP_ARM_MS` (600 ms), so a double click on Refresh all does not stop the
+- Refresh all is the item "Refresh every view on <connection>" in the menu
+  of the view's Refresh (`RefreshAllContext` in `kit.tsx`, supplied by
+  `Server` in Server and Workload only); the toolbar keeps one Refresh. While
+  it runs, the top bar shows its progress and Stop. Stop takes clicks only
+  after `STOP_ARM_MS` (600 ms), so a fast repeated click does not stop the
   run it started; its status names the views being read ("Refreshing 4 of 17 ·
   Waits, I/O…") with the seconds, and announces only the start and the end.
 - Kill sessions…: the review is prepared with "Preparing review…" and Stop
@@ -4962,7 +5036,7 @@ Rules:
   report Saved with the filename. Try again retains the original export input.
   Investigation Save keeps focus, shows its error once in the sheet, and can
   be closed while saving; its late outcome appears in the window.
-- Maintenance: Detect tools, Check upgrade and each preflight keep focus and
+- Maintenance: Detect again, Check for updates, Check upgrade and each preflight keep focus and
   show progress beside their initiating control, with Stop waiting for reads.
   Read errors offer Try again, and completed reads show Updated at. Start
   keeps its exact review and policy checks; closing its slow sheet leaves a

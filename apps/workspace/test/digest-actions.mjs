@@ -1,10 +1,14 @@
 import { chooseConnection, chooseView, openAccountSheet, closeAccountSheet } from "./chrome-helpers.mjs";
-// Top statements row actions: Explain, Run analysis (with its confirmation),
-// the parameter path for normalized text, Explain top N with progress and
-// cancel, disabled non-SELECT rows, and session restore of the digest source.
-// The live/* endpoints are mocked; plan analysis and session storage use the
-// real Python server. Run: npm run test:digest-actions
+// Top statements row actions: Explain (EXPLAIN in the tab's session, rows in
+// the editor, Plans only through Explore), Run analysis (with its
+// confirmation, measured in the editor's Analysis tab), the parameter path for
+// normalized text, Explain top N with progress and cancel, disabled
+// non-SELECT rows, and session restore of the digest source.
+// The live/* endpoints and the editor session API are mocked; plan analysis,
+// SQL preparation and session storage use the real Python server.
+// Run: npm run test:digest-actions
 import assert from "node:assert/strict";
+import { isDeepStrictEqual } from "node:util";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs/promises";
@@ -113,23 +117,66 @@ const planFor = (query) =>
       },
     ],
   });
-const captureFor = (request) => ({
-  schema_version: "capture-1.0",
-  raw: planFor(request.query),
-  query: request.query,
-  mode: request.mode,
-  engine: "mysql",
-  server_version: "8.4.3",
-  captured_at: "2026-10-12T11:00:00+00:00",
-  conditions: "",
-  warnings: [],
-  runs: [{ total_time_ms: null, statistics: null, session_status_delta: {}, plan: "" }],
-  schema: {},
-  table_stats: {},
-  variables: {},
-  trace: null,
-  ...(request.source ? { source: request.source } : {}),
-});
+// Shaped like live.py's capture: an analysis has one measured run per repeat
+// and their summary (measurement_summary); an Explain has no measured time.
+const captureFor = (request) => {
+  const analyze = request.mode === "analyze";
+  const runs = Array.from({ length: analyze ? request.repeat || 1 : 1 }, () =>
+    ({ total_time_ms: analyze ? 45 : null, statistics: null, session_status_delta: {}, plan: "" }));
+  return {
+    schema_version: "capture-1.0",
+    raw: planFor(request.query),
+    query: request.query,
+    mode: request.mode,
+    engine: "mysql",
+    server_version: "8.4.3",
+    captured_at: "2026-10-12T11:00:00+00:00",
+    conditions: "",
+    warnings: [],
+    runs,
+    measurements: analyze
+      ? { count: runs.length, median_ms: 45, min_ms: 45, max_ms: 45, stdev_ms: 0 }
+      : { count: 0, median_ms: null, min_ms: null, max_ms: null, stdev_ms: null },
+    schema: {},
+    table_stats: {},
+    variables: {},
+    trace: null,
+    ...(request.source ? { source: request.source } : {}),
+  };
+};
+
+// Mocked editor session API. Only Explain runs in this suite: its reply has
+// the shape of editor_session's run (the statement as typed and the EXPLAIN
+// sent, one rows result). The mock does not bind :name values; the request
+// assertions check what reaches the server.
+const editorRuns = [];
+const sessions = new Map();
+// The session names the connection it was opened with, as editor_session's
+// status() does (profile_id and name included).
+const editorSession = (tab, c = {}) => {
+  if (!sessions.has(tab)) sessions.set(tab, { schema_version: "editor-session-1.0", tab_id: tab, state: "idle",
+    connection: { profile_id: c.profile_id || null, name: c.name || null, host: c.host, port: c.port, user: c.user,
+      type: c.type || "production", read_only: !!c.read_only },
+    engine: "mysql", server_version: "8.4.3", connection_id: 100 + sessions.size, autocommit: true, in_transaction: false,
+    sql_mode: "", backslash_escapes: true, safe_updates: true, safe_updates_default: true,
+    read_only_transactions: false, ended: false, notes: [], run: null });
+  return sessions.get(tab);
+};
+function explainReply(body) {
+  const text = body.sql.trim();
+  const prefix = body.explain_format === "table" ? "EXPLAIN FORMAT=TRADITIONAL " : `EXPLAIN FORMAT=${body.explain_format.toUpperCase()} `;
+  const columns = ["id", "select_type", "table", "type", "rows", "Extra"];
+  const rows = [["1", "SIMPLE", "orders", "ALL", "3000", "Using filesort"]];
+  return {
+    status: "complete", session: editorSession(body.tab_id, body.connection),
+    run: { schema_version: "editor-run-1.0", id: `run-${editorRuns.length}`, kind: "run", state: "complete", scope: "statement", duration_ms: 2,
+      statements: [{ index: 0, text, sent: prefix + text, start: 0, end: text.length, verb: "EXPLAIN", kind: "read", category: "read", status: "ok", duration_ms: 2 }],
+      results: [{ type: "rows", statement: 0, columns: columns.map((name) => ({ name, hex: false, type: null })), columns_known: true,
+        rows, row_count: rows.length, truncated: false, limit: body.limit ?? 1000, stopped: null, label: null,
+        server_rows: rows.length, warnings: 0, duration_ms: 2 }],
+      error: null, counts: { statements: 1, run: 1, rows: rows.length, errors: 0, affected_rows: 0, warnings: 0 } },
+  };
+}
 
 // Mocked capture engine. `busyOnce` makes the next start report the
 // two-capture limit; `hang` keeps jobs running until they are cancelled.
@@ -140,6 +187,16 @@ const privilegeReads = [];
 let privilegeActions = {};
 const mock = { busyOnce: false, hang: false, busyReplies: 0 };
 function respond(pathname, body) {
+  if (pathname === "/api/editor/run") {
+    editorRuns.push(body);
+    // A plain run would reach a database: refused, and asserted absent below.
+    if (!body.explain_format) return [400, { error: "Only Explain is mocked in this suite." }];
+    return [200, explainReply(body)];
+  }
+  if (pathname === "/api/editor/status")
+    return [200, { status: sessions.has(body.tab_id) ? "idle" : "none", session: sessions.get(body.tab_id) || null, run: null }];
+  if (["/api/editor/open", "/api/editor/stop", "/api/editor/commit", "/api/editor/rollback"].includes(pathname))
+    return [400, { error: "Not mocked in this suite." }];
   if (pathname === "/api/live/privileges") {
     privilegeReads.push(body);
     return [200, { schema_version: "privileges-1.0", account: "test@%", actions: privilegeActions }];
@@ -264,8 +321,9 @@ try {
   await page.reload({ waitUntil: "networkidle0" });
   await nav("Query editor");
   await chooseConnection(page, privilegeProfile);
-  // Query editor settings that the row actions must reuse.
-  await page.click('button[aria-label="Explain and Run analysis options"]');
+  // Query editor settings that the row actions must reuse (Run analysis and
+  // the captures Explore and Explain top N start).
+  await page.click('button[aria-label="Run analysis options"]');
   await setField("Time limit per run", "45");
   await setField("Analysis runs", "3");
   await page.locator("label.check-field ::-p-text(Capture optimizer trace)").click();
@@ -276,7 +334,8 @@ try {
   await page.waitForSelector(".server-view tbody tr");
   assert.equal((await page.$$(".server-view tbody tr")).length, 6);
 
-  // 1. A non-SELECT row: Explain and Run analysis are disabled with a reason.
+  // 1. A non-SELECT row: Run analysis is disabled with a reason; Explain stays
+  // on (EXPLAIN never runs the statement).
   const disabled = (label) => page.$eval(`[aria-label="${label}"]`, (e) => e.disabled);
   await row(2);
   assert.ok(await page.$('.server-view[data-view=top] th[data-col=avg]'),
@@ -286,14 +345,14 @@ try {
   assert.equal(await page.$eval('.server-view[data-view=top] .view-inspector.is-detail', e => e.checkVisibility()), true,
     "statement actions are visible in the full-width detail");
   assert.ok(await page.$('.server-view[data-view=top] th[data-col=statement]'));
-  assert.equal(await disabled("Explain statement 2"), true);
+  assert.equal(await disabled("Explain statement 2"), false);
   assert.equal(await disabled("Run analysis on statement 2"), true);
   assert.equal(await disabled("Use statement 2 in the editor"), false);
   assert.match(
     await text("#top-reason-2"),
-    /Explain and Run analysis are off for this statement: Capture accepts one SELECT/,
+    /Run analysis is off for this statement: Capture accepts one SELECT/,
   );
-  assert.ok(await page.$eval('[aria-label="Explain statement 2"]', (e) => e.getAttribute("aria-describedby").split(" ").includes("top-reason-2")));
+  assert.ok(await page.$eval('[aria-label="Run analysis on statement 2"]', (e) => e.getAttribute("aria-describedby").split(" ").includes("top-reason-2")));
   await row(1);
   assert.equal(await disabled("Explain statement 1"), false);
   assert.doesNotMatch(await text('[aria-label="Explain statement 1"]'), /Unverified/);
@@ -328,6 +387,7 @@ try {
     await page.click(selector);
   }
   assert.equal(starts.length, beforeGated);
+  assert.equal(editorRuns.length, 0, "a denied Explain sends nothing to the editor session either");
   assert.equal(await page.$(".run-confirm"), null);
   await row(1);
   privilegeActions = {};
@@ -357,19 +417,36 @@ try {
   );
   assert.equal(await page.$(".fill-notice"), null);
   assert.equal(starts.length, 0);
+  assert.equal(editorRuns.length, 0, "Use this query runs nothing");
 
-  // 2. Explain from a row: new tab, digest schema as default database, editor
-  // settings, source recorded, and the plan opens in Plans.
+  // 2. Explain from a row: a new tab, the digest schema as default database,
+  // EXPLAIN in that tab's session and its rows in an Explain result tab,
+  // without leaving the editor or capturing. Explore captures the plan in the
+  // session, with the source recorded, and only then opens Plans.
   await nav("Workload");
   await row(1);
   await page.locator('[aria-label="Explain statement 1"]').click();
+  await page.waitForSelector('.results-tabs [data-key="result:0"]');
+  assert.match(await text('.results-tabs [data-key="result:0"]'), /^Explain/);
+  assert.equal(await text(".main-nav button.active"), "Query editor", "Explain stays in the Query editor");
+  assert.equal(await activeTab(), "Top #1 · orders");
+  assert.equal(starts.length, 0, "Explain captures nothing");
+  assert.equal(editorRuns.length, 1);
+  let ran = editorRuns[0];
+  assert.equal(ran.sql, SAMPLE_1, "the sample is explained as recorded");
+  assert.equal(ran.explain_format, "table");
+  assert.equal(ran.connection.database, "shop");
+  assert.equal(ran.parameters, undefined, "a statement without :name markers carries no parameters");
+  await page.locator(".results-tabs-actions button ::-p-text(Explore)").click();
   await heading("Top #1 · orders");
   assert.equal(starts.length, 1);
   let sent = starts[0];
   assert.equal(sent.query, SAMPLE_1);
   assert.equal(sent.mode, "explain");
+  assert.equal(sent.session_tab, ran.tab_id, "Explore captures in the tab's session");
   assert.equal(sent.timeout, 45);
-  assert.equal(sent.trace, true);
+  assert.equal(sent.repeat, 1);
+  assert.equal(sent.trace, false, "an in-session capture has no optimizer trace");
   assert.equal(sent.connection.database, "shop");
   assert.deepEqual(sent.parameters, {});
   assert.deepEqual(sent.source, { kind: "digest", digest: A, schema: "shop" });
@@ -382,7 +459,8 @@ try {
   assert.equal(await activeTab(), "Top #1 · orders");
   assert.match(await text(".tab-source"), /From Top statements, digest aaaaaaaaaaaa · runs in shop, the schema it was recorded in/);
 
-  // 3. Run analysis states what it executes before anything runs.
+  // 3. Run analysis states what it executes before anything runs, then shows
+  // its measurements in the editor's Analysis tab; Explore opens Plans.
   await nav("Workload");
   await row(4);
   await page.locator('[aria-label="Run analysis on statement 4"]').click();
@@ -401,12 +479,21 @@ try {
   assert.equal(starts.length, 1);
   await page.locator('[aria-label="Run analysis on statement 4"]').click();
   await page.locator(".run-confirm button ::-p-text(Execute and analyze)").click();
-  await heading("Top #4 · customers");
+  await page.waitForFunction(() => document.querySelector(".plan-pane")?.textContent.includes("Measured:"), { timeout: 20000 });
+  assert.equal(await text(".main-nav button.active"), "Query editor", "the analysis stays in the Query editor");
+  assert.equal(await activeTab(), "Top #4 · customers");
+  assert.match(await text(".results-tabs [data-key=plan]"), /Analysis/);
+  assert.match(await text(".plan-pane"), /the statement ran 3 time/);
+  assert.equal(starts.length, 2);
   sent = starts[1];
   assert.equal(sent.mode, "analyze");
   assert.equal(sent.repeat, 3);
+  assert.equal(sent.timeout, 45);
   assert.equal(sent.query, SAMPLE_4);
   assert.deepEqual(sent.source, { kind: "digest", digest: C, schema: "shop" });
+  await page.locator(".plan-pane button ::-p-text(Explore)").click();
+  await heading("Top #4 · customers");
+  assert.equal(starts.length, 2, "opening the analysis never runs it again");
 
   // 4. Normalized text: :p1, :p2 and a parameters skeleton; nothing runs
   // until the values are filled in. The parameter form asks for them first:
@@ -448,28 +535,35 @@ try {
     { p1: null, p2: null },
   );
   assert.equal(await page.$eval(".editor-parameters", (e) => e.open), true);
-  assert.ok(await page.$('[role=dialog][aria-label="Explain and Run analysis options"]:not([hidden]) [aria-label="Query parameters"]'), "a digest needing values opens its parameters popover automatically");
+  assert.ok(await page.$('[role=dialog][aria-label="Run analysis options"]:not([hidden]) [aria-label="Query parameters"]'), "a digest needing values opens its parameters popover automatically");
   const notice = await text(".fill-notice");
   assert.match(notice, /only the normalized text/);
-  assert.match(notice, /Fill in p1 and p2 under Parameters/);
+  assert.match(notice, /Fill in p1 and p2 under Parameters with real values, then run Explain/);
   assert.match(notice, /p1 replaces a collapsed list of values/);
   assert.equal(starts.length, 2, "the parameter path must not run");
+  assert.equal(editorRuns.length, 1, "the parameter path must not run");
   await clickExact(".editor-actions button", "Explain");
   await page.waitForFunction(() =>
-    document.querySelector(".editor-panel .error")?.textContent.includes("Fill in p1 and p2 under Parameters before running"),
+    document.querySelector(".editor-panel .error")?.textContent.includes("Fill in p1 and p2 under Parameters before Explain"),
   );
+  assert.equal(editorRuns.length, 1, "Explain sends nothing while a value is missing");
   assert.equal(starts.length, 2);
   await page.locator('[aria-label="Query parameters"]').fill('{"p1": 7, "p2": "2026-01-01"}');
   await page.waitForFunction(() => !document.querySelector(".fill-notice"));
   await clickExact(".editor-actions button", "Explain");
-  await heading("Top #3 · orders");
-  sent = starts[2];
-  assert.equal(sent.query, "SELECT * FROM `orders` WHERE `customer_id` IN (:p1) AND `created_at` > :p2");
-  assert.deepEqual(sent.parameters, { p1: 7, p2: "2026-01-01" });
-  assert.deepEqual(sent.source, { kind: "digest", digest: B, schema: "shop" });
-  assert.equal(sent.connection.database, "shop");
-  assert.match(await text(".primary-finding .strip-body"), /From Top statements: bbbbbbbbbbbb/);
-  await page.screenshot({ path: path.join(directory, "digest-plan.png") });
+  await page.waitForSelector('.results-tabs [data-key="result:0"]');
+  assert.match(await text('.results-tabs [data-key="result:0"]'), /^Explain/);
+  assert.equal(editorRuns.length, 2);
+  ran = editorRuns[1];
+  assert.equal(ran.sql, "SELECT * FROM `orders` WHERE `customer_id` IN (:p1) AND `created_at` > :p2",
+    "the statement goes as typed; the server binds the values");
+  assert.deepEqual(ran.parameters, { p1: 7, p2: "2026-01-01" }, "the filled values travel with Explain");
+  assert.equal(ran.explain_format, "table");
+  assert.equal(ran.connection.database, "shop");
+  assert.equal(starts.length, 2, "Explain captures nothing");
+  assert.equal(await text(".main-nav button.active"), "Query editor");
+  assert.match(await text(".tab-source"), /digest bbbbbbbbbbbb/);
+  await page.screenshot({ path: path.join(directory, "digest-explain.png") });
 
   // 4b. Use values writes the form into the Parameters JSON (a JSON list for
   // IN (...)); Enter moves to the next value, then to Use values; a value
@@ -477,6 +571,7 @@ try {
   await nav("Workload");
   await row(3);
   const beforeForm = starts.length;
+  const runsBeforeForm = editorRuns.length;
   await page.locator('[aria-label="Explain statement 3"]').click();
   await page.waitForSelector("dialog.fill-sheet[open]");
   await page.waitForFunction((sel) => document.activeElement === document.querySelector(sel), {}, fillPart("p1", "input"));
@@ -497,14 +592,16 @@ try {
   await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "SQL editor");
   assert.deepEqual(JSON.parse(await page.$eval('[aria-label="Query parameters"]', (e) => e.value)), { p1: [7, 8], p2: "2026-01-01" });
   assert.equal(await page.$(".fill-notice"), null, "every value is filled in");
-  assert.match(await text(".editor-feedback"), /^Values for p1 and p2 are in Parameters\. Nothing ran\.$/);
+  assert.match(await text(".editor-feedback"), /^Values for p1 and p2 are in Parameters\. Nothing ran\. Explain and Run analysis use these values\.$/);
   assert.equal(starts.length, beforeForm, "Use values runs nothing");
+  assert.equal(editorRuns.length, runsBeforeForm, "Use values runs nothing");
   await clickExact(".editor-actions button", "Explain");
-  for (const end = Date.now() + 10000; starts.length === beforeForm && Date.now() < end;) await new Promise((r) => setTimeout(r, 50));
-  sent = starts[beforeForm];
-  assert.ok(sent, "Explain started a capture");
-  await heading("Top #3 · orders");
-  assert.deepEqual(sent.parameters, { p1: [7, 8], p2: "2026-01-01" }, "the list reaches the capture as a JSON array");
+  for (const end = Date.now() + 10000; editorRuns.length === runsBeforeForm && Date.now() < end;) await new Promise((r) => setTimeout(r, 50));
+  ran = editorRuns[runsBeforeForm];
+  assert.ok(ran, "Explain ran in the tab's session");
+  await page.waitForSelector('.results-tabs [data-key="result:0"]');
+  assert.deepEqual(ran.parameters, { p1: [7, 8], p2: "2026-01-01" }, "the list reaches Explain as a JSON array");
+  assert.equal(starts.length, beforeForm, "Explain captures nothing");
 
   // 4c. Reopening the form while one value is still missing never rebuilds
   // another the user already gave: a list the comma field cannot hold (NULL
@@ -512,6 +609,7 @@ try {
   await nav("Workload");
   await row(3);
   const beforeKept = starts.length;
+  const runsBeforeKept = editorRuns.length;
   await page.locator('[aria-label="Explain statement 3"]').click();
   await page.waitForSelector("dialog.fill-sheet[open]");
   await page.locator("dialog.fill-sheet button ::-p-text(Later)").click();
@@ -519,7 +617,7 @@ try {
   await page.locator('[aria-label="Query parameters"]').fill('{"p1": [1, null, 2], "p2": null}');
   // Escape closes the options popover (it covers the notice), then the notice reopens the form.
   await page.keyboard.press("Escape");
-  await page.waitForSelector('[role=dialog][aria-label="Explain and Run analysis options"]', { hidden: true });
+  await page.waitForSelector('[role=dialog][aria-label="Run analysis options"]', { hidden: true });
   await page.locator('.fill-notice button[data-action="fill-values"]').click();
   await page.waitForSelector("dialog.fill-sheet[open]");
   await page.waitForSelector(fillPart("p1", ".fill-json"));
@@ -548,8 +646,9 @@ try {
   assert.deepEqual(JSON.parse(await page.$eval('[aria-label="Query parameters"]', (e) => e.value)), { p1: [1, null, 2], p2: "2026-01-01" },
     "the list the user gave is kept exactly");
   assert.equal(await page.$(".fill-notice"), null);
-  assert.match(await text(".editor-feedback"), /^Values for p2 are in Parameters\. Nothing ran\.$/);
+  assert.match(await text(".editor-feedback"), /^Values for p2 are in Parameters\. Nothing ran\. Explain and Run analysis use these values\.$/);
   assert.equal(starts.length, beforeKept, "Use values runs nothing");
+  assert.equal(editorRuns.length, runsBeforeKept, "Use values runs nothing");
 
   // 5. Explain top N: the two-capture limit, a failure, skipped rows, and
   // plans added without leaving Server.
@@ -564,7 +663,8 @@ try {
   // Editor runs wait while the batch runs (the first start waits a second
   // for a free capture slot, so the batch is still running here).
   await page.waitForFunction(
-    () => document.querySelector(".editor-actions [data-action=analyze]")?.disabled === true,
+    () => document.querySelector(".editor-actions [data-action=analyze]")?.disabled === true &&
+      document.querySelector(".editor-actions [data-action=explain]")?.disabled === true,
   );
   await page.waitForFunction(() =>
     document.querySelector(".batch-summary [role=status]")?.textContent.includes("Waiting for a free capture slot"),
@@ -599,6 +699,7 @@ try {
     await page.$eval(".editor-actions [data-action=analyze]", (e) => e.disabled),
     false,
   );
+  assert.equal(await page.$eval(".editor-actions [data-action=explain]", (e) => e.disabled), false);
   await page.locator('[aria-label="Open plan Top #4 · customers"]').click();
   await heading("Top #4 · customers");
   assert.match(await text(".primary-finding .strip-body"), /From Top statements: cccccccccccc/);
@@ -658,7 +759,10 @@ try {
   assert.deepEqual(storedTab.source, { kind: "digest", digest: B, schema: "shop" });
   assert.deepEqual(storedTab.fill, ["p1", "p2"]);
   await page.reload({ waitUntil: "networkidle0" });
-  await page.waitForSelector(".session-notice");
+  // A clean restore reports nothing (.session-notice lists only what it had
+  // to leave out or change); wait for the restored plans instead.
+  await page.waitForSelector(".plan-select ::-p-text(Top #1 · orders)");
+  assert.equal(await page.$(".held-notice"), null, "every saved plan reopened");
   await page.locator(".plan-select ::-p-text(Top #1 · orders)").click();
   await heading("Top #1 · orders");
   assert.match(await text(".primary-finding .strip-body"), /From Top statements: aaaaaaaaaaaa/);
@@ -667,6 +771,40 @@ try {
   assert.match(await text(".tab-source"), /digest bbbbbbbbbbbb/);
   assert.equal(await page.$(".fill-notice"), null, "filled parameters stay filled");
 
+  // 9. The restored values still reach Explain, and Explore captures the
+  // statement that was explained: with those values, never the :name text
+  // alone (the capture's bind_query refuses that with "Missing parameter").
+  const runsBeforeRestored = editorRuns.length;
+  await clickExact(".editor-actions button", "Explain");
+  for (const end = Date.now() + 10000; editorRuns.length === runsBeforeRestored && Date.now() < end;) await new Promise((r) => setTimeout(r, 50));
+  ran = editorRuns[runsBeforeRestored];
+  assert.ok(ran, "Explain ran on the restored tab");
+  assert.deepEqual(ran.parameters, { p1: 7, p2: "2026-01-01" });
+  await page.waitForSelector(".results-tabs-actions button ::-p-text(Explore)");
+  // Values edited after the Explain do not change what Explore captures: it
+  // captures the statement whose rows are on screen.
+  if (!(await page.$('[aria-label="Query parameters"]'))) await page.click('button[aria-label="Run analysis options"]');
+  await page.waitForSelector('.editor-parameters');
+  await page.$eval('.editor-parameters', (d) => { d.open = true; });
+  await page.waitForSelector('[aria-label="Query parameters"]', { visible: true });
+  await page.evaluate(() => {
+    const field = document.querySelector('[aria-label="Query parameters"]');
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(field, '{"p1": 99, "p2": "1999-01-01"}');
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.waitForFunction(() => document.querySelector('[aria-label="Query parameters"]')?.value.includes("99"));
+  await page.keyboard.press("Escape");
+  const startsBeforeExplore = starts.length;
+  await page.locator(".results-tabs-actions button ::-p-text(Explore)").click();
+  for (const end = Date.now() + 10000; starts.length === startsBeforeExplore && Date.now() < end;) await new Promise((r) => setTimeout(r, 50));
+  const explored = starts[startsBeforeExplore];
+  assert.ok(explored, "Explore started a capture");
+  assert.ok(/(^|[^:]):p[12](?![A-Za-z0-9_])/.test(explored.query) && isDeepStrictEqual(explored.parameters, { p1: 7, p2: "2026-01-01" }),
+    `Explore must capture the explained statement with its Parameters values; it sent ${JSON.stringify({ query: explored.query, parameters: explored.parameters })}`);
+  await heading("Top #3 · orders");
+  assert.match(await text(".primary-finding .strip-body"), /From Top statements: bbbbbbbbbbbb/);
+
+  assert.ok(editorRuns.every((r) => r.explain_format), "every editor run in this suite was an Explain");
   assert.deepEqual(errors, []);
   console.log("Digest actions passed. " + directory);
 } finally {

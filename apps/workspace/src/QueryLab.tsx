@@ -58,7 +58,7 @@ import { Icon } from "./components";
 import { ActionButton, ActionStatus, IDLE_ACTION, writeFailure, type ActionState, Checkbox, ConfirmSheet, EmptyState, IconButton, InfoPopover, Notice, NumberField, StatusPill, useFocusScope, useWindowStatus, type Tone } from "./kit";
 import { ConnectionTypeBand, useWritePolicy, TYPE_LABEL } from "./Connections";
 import { SqlEditor, type Range } from "./SqlEditor";
-import { ResultsPane, rowResults } from "./ResultsPane";
+import { ResultsPane, rowResults, duration as resultDuration } from "./ResultsPane";
 import { SchemaBrowser } from "./SchemaBrowser";
 import { HistoryPanel, type SidePanelTab } from "./HistoryPanel";
 import { SaveQuerySheet } from "./SavedQueries";
@@ -95,6 +95,14 @@ const RESULTS_KEEP = 208;
 /** The editor itself keeps three lines. */
 const EDITOR_FLOOR = 72;
 type Tab = QueryTab;
+type ExplainFormat = "table" | "tree" | "json";
+const EXPLAIN_FORMAT_KEY = "myflames.editor.explainFormat";
+function storedExplainFormat(): ExplainFormat {
+  try {
+    const value = localStorage.getItem(EXPLAIN_FORMAT_KEY);
+    return value === "tree" || value === "json" ? value : "table";
+  } catch { return "table"; }
+}
 /** Options for adding a captured plan: `open: false` keeps the current screen. */
 export type CaptureOptions = { open?: boolean };
 /** The editor part of the restorable lab state (the connection and the
@@ -105,8 +113,8 @@ export type EditorState = Pick<
 >;
 /** What the Server place asks of the editor. */
 export type QueryLabHandle = {
-  /** Open a Top statements row in a new tab and, for Explain and Run
-   * analysis, capture it with the editor's settings. With *expect* (a
+  /** Open a Top statements row in a new tab. Explain runs in that tab;
+   * Run analysis captures measured timings. With *expect* (a
    * connectionKey), nothing opens or runs unless that is still the
    * connection in use. */
   openDigest: (row: TopStatement, rank: number, action: DigestAction, expect?: string) => void;
@@ -186,6 +194,11 @@ type Runtime = {
   run: EditorRun | null;
   /** The editor text when the run started (positions are stale after an edit). */
   runSql: string;
+  explain: boolean;
+  /** The Parameters an Explain bound, reused by its Load more and Explore. */
+  explainParameters?: Record<string, unknown>;
+  explaining: boolean;
+  analysis: { capture: Capture; name: string } | null;
   running: boolean;
   stopping: boolean;
   /** The per-tab control owning a request, including session opens and closes. */
@@ -217,6 +230,9 @@ const blankRuntime = (): Runtime => ({
   pollTrouble: false,
   run: null,
   runSql: "",
+  explain: false,
+  explaining: false,
+  analysis: null,
   running: false,
   stopping: false,
   operation: "",
@@ -232,6 +248,8 @@ const blankRuntime = (): Runtime => ({
 });
 type SendMeta = {
   runSql: string;
+  explain?: boolean;
+  explainParameters?: Record<string, unknown>;
   /** Load more: the reloaded result replaces this one in the current run. */
   merge?: { statement: number; result: number; limit: number };
   /** Commit or Roll back: the run is an action; the tab's results stay. */
@@ -547,6 +565,7 @@ export const QueryLab = forwardRef<
   // and Cancel only for that connection.
   const jobConnection = useRef<Connection | null>(null);
   const [starting, setStarting] = useState(false);
+  const [captureOwner, setCaptureOwner] = useState<{ tabId: string; mode: string } | null>(null);
   // The capture being started (live/start not answered yet), and whether
   // Cancel was pressed meanwhile; jobs the user cancelled are never imported.
   const pendingStart = useRef<{ cancelled: boolean } | null>(null);
@@ -566,7 +585,13 @@ export const QueryLab = forwardRef<
   const [parametersOpen, setParametersOpen] = useState(false);
   /** The tab whose parameter form is open (a digest that needs values). */
   const [fillFormTab, setFillFormTab] = useState<string | null>(null);
+  const [explainFormat, setExplainFormat] = useState<ExplainFormat>(storedExplainFormat);
   const [analysisOptionsOpen, setAnalysisOptionsOpen] = useState(false);
+  const [analysisReview, setAnalysisReview] = useState<{
+    tab: Tab; sql: string; parameters: unknown; label: string; binding: string;
+  } | null>(null);
+  const [openingPlan, setOpeningPlan] = useState(false);
+  const openingPlanRef = useRef(false);
   const [runOptionsOpen, setRunOptionsOpen] = useState(false);
   const [renaming, setRenaming] = useState<{ id: string; name: string; invalid?: boolean } | null>(null);
   /** End a rename. Enter saves the trimmed name; an empty one keeps the field
@@ -679,6 +704,16 @@ export const QueryLab = forwardRef<
   // continuation such as Commit and close reads it before React renders).
   const runtimeRef = useRef(runtime);
   const rt = runtime[tab.id] || blankRuntime();
+  const sessionServer = rt.sessionKey === connectionKey(connection) && !rt.session?.ended ? rt.session : null;
+  const engine = sessionServer?.engine || privileges?.report?.engine;
+  const version = sessionServer?.server_version || privileges?.report?.version || "";
+  const versionParts = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
+  const treeAvailable = engine === "mysql" && !!versionParts &&
+    (Number(versionParts[1]) > 8 || (Number(versionParts[1]) === 8 &&
+      (Number(versionParts[2]) > 0 || Number(versionParts[3]) >= 16)));
+  const effectiveExplainFormat = explainFormat === "tree" && !treeAvailable ? "table" : explainFormat;
+  const analysisBinding = JSON.stringify([tab.id, tab.sql, tab.parameters, connectionKey(connection), timeout, repeat, trace, conditions]);
+  useEffect(() => { setAnalysisReview(null); }, [analysisBinding]);
   const [ddl, setDdl] = useState<{ owner: string; progress: DdlProgress } | null>(null);
   const ddlOwner = JSON.stringify([tab.id, rt.gen, rt.run?.id, rt.sessionKey]);
   const ddlEligible = rt.running && rt.run?.state === "running" && !rt.stopping && rt.stopGen !== rt.gen &&
@@ -813,8 +848,8 @@ export const QueryLab = forwardRef<
     if (focus) window.setTimeout(() => editor.current?.focus());
   }
   /**
-   * Open a Top statements row in a new tab and, for Explain and Run
-   * analysis, capture it right away. A statement that only has normalized
+   * Open a Top statements row in a new tab and run the requested action.
+   * A statement that only has normalized
    * text opens with a parameters skeleton and waits for values.
    */
   function openDigest(row: TopStatement, rank: number, action: DigestAction, expect?: string) {
@@ -825,7 +860,7 @@ export const QueryLab = forwardRef<
     }
     // A statement capture refuses (not a SELECT) opens as recorded: there is
     // nothing to fill in for a run that cannot happen.
-    const refused = row.capture_problem || "";
+    const refused = action === "explain" ? "" : row.capture_problem || "";
     const q = digestQuery(row);
     const source = normalizeSource({
       kind: "digest",
@@ -854,11 +889,11 @@ export const QueryLab = forwardRef<
     setError("");
     setStatus("");
     if (refused) {
-      setStatus(`Loaded the statement into a new tab. Explain and Run analysis cannot run it: ${refused}`);
+      setStatus(`Loaded the statement into a new tab. Run analysis cannot run it: ${refused}. Explain can ask the server for its plan.`);
       window.setTimeout(() => editor.current?.focus());
       return;
     }
-    if (row.analysis_warning) {
+    if (row.analysis_warning && action !== "explain") {
       setAnalysisWarning({ tab: next.id, text: row.analysis_warning });
       if (q.names.length) setFillFormTab(next.id);
       else window.setTimeout(() => editor.current?.focus());
@@ -884,7 +919,8 @@ export const QueryLab = forwardRef<
     window.setTimeout(() =>
       editor.current?.scrollIntoView({ block: "nearest" }),
     );
-    void startCapture(next, q.sql, {}, action, `Top statements #${rank}`);
+    if (action === "explain") runSql(false, q.sql, 0, true, next);
+    else void startCapture(next, q.sql, {}, action, `Top statements #${rank}`);
   }
   /** Later: close the form and edit the Parameters JSON by hand, as before it. */
   function editParametersByHand() {
@@ -914,7 +950,7 @@ export const QueryLab = forwardRef<
       ? `${listNames(remaining)} still ${remaining.length === 1 ? "needs a value" : "need values"}`
       : "";
     note(id, filled.length
-      ? `Values for ${listNames(filled)} are in Parameters${still ? `; ${still}` : ""}. Nothing ran.`
+      ? `Values for ${listNames(filled)} are in Parameters${still ? `; ${still}` : ""}. Nothing ran. Explain and Run analysis use these values.`
       : `No values were given; ${still}.`);
   }
   const received = useRef("");
@@ -971,8 +1007,15 @@ export const QueryLab = forwardRef<
           received.current !== next.id
         ) {
           received.current = next.id;
-          setStatus("Capture complete. The plan is open in Plans.");
-          await onCapture(next.result, captureName.current);
+          const info = lastRunInfo.current;
+          if (info?.mode === "analyze") {
+            patchRuntime(info.tabId, { analysis: { capture: next.result, name: captureName.current } });
+            changeTab({ result_tab: "plan" }, info.tabId);
+            setStatus("Analysis complete. The statement ran. Choose Explore to open the visual plan.");
+          } else {
+            setStatus("Visual plan ready.");
+            await onCapture(next.result, captureName.current);
+          }
         }
         if (next.error) { offerSessionFallback(next.error); setError(next.error); denied(next.error, jobConnection.current); }
       } catch (e) {
@@ -1152,7 +1195,7 @@ export const QueryLab = forwardRef<
   // quiet: the server decides, and each button keeps its reason for
   // assistive technology. Keep mixed batches runnable.
   const privilegeReasons = [...new Set(
-    [runGate, allGate, explainGate, analysisGate].map(gate => gate.disabledReason)
+    [runGate, allGate, analysisGate].map(gate => gate.disabledReason)
       .filter(reason => reason && !previewWarning?.includes(reason)),
   )];
   const privilegeNotice = [previewWarning, ...privilegeReasons].filter(Boolean).join(" ");
@@ -1206,8 +1249,8 @@ export const QueryLab = forwardRef<
     label: string,
     inSession = false,
   ) {
-    // Every capture path (buttons, shortcuts, a row's Explain) passes here.
-    if (busy || pendingStart.current) return;
+    // Run analysis and the explicit Explore action share the capture guards.
+    if (busy || pendingStart.current || runtimeRef.current[t.id]?.running || runtimeRef.current[t.id]?.operation) return;
     const gate = mode === "explain" ? explainGate : analysisGate;
     const problem = bindingProblem(t) || sessionProblem(t.id) || gate.disabledReason;
     if (problem) {
@@ -1217,12 +1260,14 @@ export const QueryLab = forwardRef<
     }
     const pending = { cancelled: false };
     pendingStart.current = pending;
+    setCaptureOwner({ tabId: t.id, mode });
     setStarting(true);
-    changeTab({ result_tab: "plan" }, t.id);
+    if (mode === "analyze") changeTab({ result_tab: "plan" }, t.id);
     try {
       const expectedConnection = connectionKey(connectionRef.current);
-      const prepared = await api<{ sql: string; converted: boolean; warning: string; problem: string }>(
-        "analysis/prepare-query", { query: sql });
+      const prepared = mode === "analyze"
+        ? await api<{ sql: string; converted: boolean; warning: string; problem: string }>("analysis/prepare-query", { query: sql })
+        : { sql, converted: false, warning: "", problem: "" };
       if (pending.cancelled) return;
       if (expectedConnection !== connectionKey(connectionRef.current))
         throw new Error("The connection changed. Review the query and try again.");
@@ -1235,7 +1280,7 @@ export const QueryLab = forwardRef<
         setTabs(ts => [...ts, projected]);
         setTabId(projected.id);
         setAnalysisWarning({ tab: projected.id, text: prepared.warning });
-        setStatus("Review the converted SELECT, then choose Explain or Run analysis.");
+        setStatus("Review the converted SELECT, then choose Run analysis.");
         return;
       }
       sql = prepared.sql;
@@ -1316,8 +1361,12 @@ export const QueryLab = forwardRef<
       setError((e as Error).message);
     }
   }
-  /** Explain or Run analysis: one SELECT, captured as a plan. */
+  /** Run analysis executes one SELECT after explicit review. */
   async function capture(mode: string) {
+    if (mode === "explain") { runSql(false, undefined, undefined, true); return; }
+    if (busy || rt.running || rt.operation || rt.stopping) return;
+    const problem = bindingProblem(tab) || sessionProblem(tab.id) || analysisGate.disabledReason;
+    if (problem) { setError(problem); return; }
     setError("");
     setStatus("");
     // Read the selection now: a click on a button keeps the editor's
@@ -1346,7 +1395,7 @@ export const QueryLab = forwardRef<
       return;
     }
     if (chosen.scope === "statement") flashRange(chosen.start, chosen.end);
-    await startCapture(tab, chosen.text, parameters, mode, sentLabel(chosen));
+    setAnalysisReview({ tab: { ...tab }, sql: chosen.text, parameters, label: sentLabel(chosen), binding: analysisBinding });
   }
   function flashRange(startAt: number, endAt: number, sql = tab.sql) {
     window.clearTimeout(flashTimer.current);
@@ -1390,10 +1439,11 @@ export const QueryLab = forwardRef<
    * server decides what runs: it gets the whole text with the selection, or
    * only the caret, and splits with the session's own rules.
    */
-  function runSql(all: boolean, text?: string, caret?: number) {
+  function runSql(all: boolean, text?: string, caret?: number, explain = false, runTab = tab) {
+    setSessionFallback(null);
     setError("");
     setStatus("");
-    const t = tab;
+    const t = runTab;
     const sql = text ?? t.sql;
     const el = editor.current;
     const lo = caret ?? (el ? el.selectionStart : cursor.start);
@@ -1409,10 +1459,31 @@ export const QueryLab = forwardRef<
       setError(problem);
       return;
     }
-    if (now.running || now.operation || now.stopping) return;
+    if (now.running || now.operation || now.stopping || busy || pendingStart.current) return;
     if (now.session?.ended) {
       setError("This tab's session ended. Choose Reconnect to start a new session.");
       return;
+    }
+    // Explain fills :name placeholders from Parameters (a digest from Top
+    // statements); the server binds them with Run analysis's literals.
+    let explainParameters: Record<string, unknown> | undefined;
+    if (explain && /(^|[^:]):[A-Za-z_]/.test(sql.slice(part.start, part.end))) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(t.parameters || "{}");
+      } catch (e) {
+        setError(`Parameters: ${(e as Error).message}`);
+        setParametersOpen(true);
+        return;
+      }
+      const missing = unfilled(t, sql.slice(part.start, part.end), parsed);
+      if (missing.length) {
+        setError(`Fill in ${listNames(missing)} under Parameters before Explain. ${missing.length === 1 ? "It stands" : "They stand"} for literal values the digest left out.`);
+        setParametersOpen(true);
+        return;
+      }
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && Object.keys(parsed).length)
+        explainParameters = parsed as Record<string, unknown>;
     }
     if (part.scope === "statement" && part.total > 1) flashRange(part.start, part.end, sql);
     const payload: Record<string, unknown> = {
@@ -1423,15 +1494,17 @@ export const QueryLab = forwardRef<
       ...(part.cursor !== undefined ? { cursor: part.cursor } : {}),
       limit: t.limit ?? DEFAULT_ROW_LIMIT,
       timeout: layout.run_timeout || 0,
+      ...(explain ? { explain_format: effectiveExplainFormat } : {}),
+      ...(explainParameters ? { parameters: explainParameters } : {}),
       wait: 2,
       ...(now.safe === true ? { safe_updates: true } : {}),
     };
     const gate = editorPrivilegeGate(currentPreview(previewKey(payload)));
-    if (gate.disabledReason) {
+    if (!explain && gate.disabledReason) {
       setError(gate.disabledReason);
       return;
     }
-    void send(t.id, "editor/run", payload, { runSql: sql });
+    void send(t.id, "editor/run", payload, { runSql: sql, explain, explainParameters });
   }
   async function send(id: string, path: string, payload: Record<string, unknown>, meta: SendMeta) {
     const now = runtimeRef.current[id];
@@ -1444,13 +1517,14 @@ export const QueryLab = forwardRef<
     // The connection of this request, before any reply: Stop uses it even
     // when the picker changes while the request is on its way.
     patchRuntime(id, { running: isRun, operation, note: "", noteError: false, gen, execConnection: payload.connection as Connection,
+      ...(!meta.action && !meta.merge && isRun ? { explaining: !!meta.explain } : {}),
       stopFeedback: IDLE_ACTION, stopGen: null,
       sessionFeedback: operation === "run" ? IDLE_ACTION : { phase: "pending", message: pendingText, startedAt: Date.now(), endedAt: null } });
     let reply: EditorReply;
     try {
       reply = await api<EditorReply>(path, payload);
     } catch (e) {
-      patchRuntime(id, { running: false, operation: "", execConnection: null });
+      patchRuntime(id, { running: false, explaining: false, operation: "", execConnection: null });
       const err = e as ApiError;
       denied(err, payload.connection as Connection);
       if (meta.action) {
@@ -1489,7 +1563,7 @@ export const QueryLab = forwardRef<
     const previousSession = runtimeRef.current[id]?.session;
     adoptSession(id, reply.session, payload);
     denied(reply, payload.connection as Connection);
-    const done = { running: false, operation: "" as const, execConnection: null, sessionFeedback: IDLE_ACTION };
+    const done = { running: false, explaining: false, operation: "" as const, execConnection: null, sessionFeedback: IDLE_ACTION };
     if (reply.status === "needs_confirmation" && reply.confirmation) {
       patchRuntime(id, done);
       let again = "";
@@ -1539,7 +1613,7 @@ export const QueryLab = forwardRef<
     }
     if (run.state === "running") {
       if (!meta.merge && !meta.action) {
-        patchRuntime(id, { run, runSql: meta.runSql, binary: {}, reloaded: {}, ...bound(id, reply.session) });
+        patchRuntime(id, { run, explain: !!meta.explain, explainParameters: meta.explainParameters, runSql: meta.runSql, binary: {}, reloaded: {}, ...bound(id, reply.session) });
         changeTab({ result_tab: "messages" }, id);
       }
       void poll(id, run.id, meta, gen);
@@ -1607,7 +1681,7 @@ export const QueryLab = forwardRef<
   function finish(id: string, run: EditorRun, meta: SendMeta, session?: EditorSession | null) {
     if (run.error) denied(run.error, sessionConnectionOf(id));
     // A completed statement does not acknowledge a Stop still on its way.
-    patchRuntime(id, { running: false, operation: "", execConnection: null, pollTrouble: false });
+    patchRuntime(id, { running: false, explaining: false, operation: "", execConnection: null, pollTrouble: false });
     setHistoryTick((n) => n + 1);
     if (meta.action) {
       const word = meta.action === "commit" ? "Committed" : "Rolled back";
@@ -1647,7 +1721,7 @@ export const QueryLab = forwardRef<
       });
       return;
     }
-    patchRuntime(id, { run, runSql: meta.runSql, binary: {}, reloaded: {}, ...bound(id, session) });
+    patchRuntime(id, { run, explain: !!meta.explain, explainParameters: meta.explainParameters, runSql: meta.runSql, binary: {}, reloaded: {}, ...bound(id, session) });
     const rows = rowResults(run);
     changeTab({ result_tab: run.error || !rows.length || run.state === "session_ended" ? "messages" : "result:0" }, id);
     if (run.state === "stopped") note(id, run.stopped?.message || "Stopped.");
@@ -1742,11 +1816,14 @@ export const QueryLab = forwardRef<
         connection: connectionFor(tab),
         sql: now.runSql,
         selection: { start: statement.start, end: statement.end },
+        ...(now.explain ? { explain_format: statement.sent?.startsWith("EXPLAIN FORMAT=TREE ") ? "tree"
+          : statement.sent?.startsWith("EXPLAIN FORMAT=JSON ") ? "json" : "table" } : {}),
+        ...(now.explain && now.explainParameters ? { parameters: now.explainParameters } : {}),
         limit,
         timeout: layout.run_timeout || 0,
         wait: 2,
       },
-      { runSql: now.runSql, merge: { statement: result.statement, result: index, limit } },
+      { runSql: now.runSql, explain: now.explain, explainParameters: now.explainParameters, merge: { statement: result.statement, result: index, limit } },
     );
   }
   async function confirmPending() {
@@ -2068,7 +2145,7 @@ export const QueryLab = forwardRef<
     : "";
   const session = rt.session;
   const running = rt.running;
-  const runBusy = running && (!rt.operation || rt.operation === "run");
+  const runBusy = running && !rt.explaining && (!rt.operation || rt.operation === "run");
   const sessionBusy = !!rt.operation || rt.stopping;
   const transactionUnknown = rt.sessionFeedback.phase === "unknown";
   const stale = !!rt.run && rt.runSql !== tab.sql;
@@ -2100,24 +2177,37 @@ export const QueryLab = forwardRef<
     // of the run in its result tabs: the footer does not repeat them.
     lastRunAt: statusRun?.finished_at ? Date.parse(statusRun.finished_at) : undefined,
   });
-  const planPane =
-    lastRun?.tabId === tab.id || (jobBusy && lastRun?.tabId === tab.id) ? (
-      <div className="plan-pane">
-        {jobBusy && (
-          <p role="status" className="capture-status">
-            <span className="spinner" /> Capturing {job?.progress || 0} /{" "}
-            {job?.repeat || 1} runs…
-          </p>
-        )}
-        {!jobBusy && <p className="hint">Each capture opens as a plan in Plans.</p>}
-        {lastRun && lastRun.tabId === tab.id && (
-          <details className="sent-sql">
-            <summary>SQL sent: {lastRun.label}</summary>
-            <pre>{lastRun.sql}</pre>
-          </details>
-        )}
-      </div>
-    ) : null;
+  async function openAnalysis() {
+    if (!rt.analysis || openingPlanRef.current) return;
+    openingPlanRef.current = true;
+    setOpeningPlan(true);
+    try { await onCapture(rt.analysis.capture, rt.analysis.name); }
+    catch (e) { setError((e as Error).message); }
+    finally { openingPlanRef.current = false; setOpeningPlan(false); }
+  }
+  function exploreExplain(result: EditorRows) {
+    if (!canReload(tab.id) || busy || !rt.explain) return;
+    const statement = rt.run?.statements[result.statement];
+    if (!statement) return;
+    // The server kept the original statement alongside the prefixed SQL.
+    // Capture's existing SELECT guards still apply to this optional view, and
+    // its :name placeholders take the Parameters the Explain bound, not
+    // values edited since.
+    void startCapture(tab, statement.text, rt.explainParameters || {}, "explain", "the Explain result", true);
+  }
+  const analysisBusy = jobBusy && captureOwner?.mode === "analyze";
+  const planPane = rt.analysis || (analysisBusy && lastRun?.tabId === tab.id) ? (
+    <div className="plan-pane">
+      {analysisBusy && lastRun?.tabId === tab.id ? (
+        <p role="status" className="capture-status"><span className="spinner" /> Analyzing {job?.progress || 0} / {job?.repeat || repeat} runs…</p>
+      ) : rt.analysis && <>
+        <p>Measured: the statement ran {rt.analysis.capture.measurements.count} time(s).
+          {rt.analysis.capture.measurements.median_ms != null && ` Median: ${resultDuration(rt.analysis.capture.measurements.median_ms)}.`}</p>
+        <ActionButton small busy={openingPlan} busyLabel="Opening…" onClick={() => void openAnalysis()}>Explore</ActionButton>
+        <details className="sent-sql"><summary>SQL analyzed</summary><pre>{rt.analysis.capture.query}</pre></details>
+      </>}
+    </div>
+  ) : null;
   const ctrl = (shift: boolean, key: "Enter" | "E") =>
     key === "E" ? (MAC ? `Meta+${shift ? "Shift+" : ""}E` : `Control+${shift ? "Shift+" : ""}E`) : `Control+${shift ? "Shift+" : ""}Enter Meta+${shift ? "Shift+" : ""}Enter`;
   return (
@@ -2134,6 +2224,7 @@ export const QueryLab = forwardRef<
           role={narrow && showBrowser ? "dialog" : undefined} aria-label="Schemas" tabIndex={-1}>
           <SchemaBrowser
             connection={connection}
+            visible={onScreen && showBrowser && !tableData}
             width={narrow ? 0 : layout.browser_width}
             onWidth={(w) => setLayout((l) => ({ ...l, browser_width: w }))}
             onClose={() => togglePane("browser")}
@@ -2329,7 +2420,7 @@ export const QueryLab = forwardRef<
                       className="privilege-action"
                       data-action="run"
                       busy={runBusy} busyLabel="Running…"
-                  disabled={!runBusy && (running || sessionBusy || mismatch)}
+                  disabled={!runBusy && (busy || running || sessionBusy || mismatch)}
                       data-privilege-state={runGate.state}
                       aria-keyshortcuts={ctrl(false, "Enter")}
                       {...privilegeButtonProps(runGate, () => runSql(false), mismatchReason, privilegeNoticeId || `${privilegeId}-run`)}
@@ -2386,7 +2477,7 @@ export const QueryLab = forwardRef<
                   data-action="run-all"
                   className="privilege-action"
                   busy={runBusy} busyLabel="Running…"
-                      disabled={!runBusy && (running || sessionBusy || mismatch)}
+                      disabled={!runBusy && (busy || running || sessionBusy || mismatch)}
                   data-privilege-state={allGate.state}
                   aria-keyshortcuts={ctrl(true, "Enter")}
                   {...privilegeButtonProps(allGate, () => runSql(true), mismatchReason, privilegeNoticeId || `${privilegeId}-run-all`)}
@@ -2408,41 +2499,51 @@ export const QueryLab = forwardRef<
               {!privilegeNotice && <>
                 <span id={`${privilegeId}-run`} className="account-sr">{runGate.reason}</span>
                 <span id={`${privilegeId}-run-all`} className="account-sr">{allGate.reason}</span>
-                <span id={`${privilegeId}-explain`} className="account-sr">{explainGate.reason}</span>
                 <span id={`${privilegeId}-analysis`} className="account-sr">{analysisGate.reason}</span>
               </>}
               <div className="editor-actions toolbar-group">
                 <ActionButton
-                  data-action="explain" busy={jobBusy} busyLabel="Capturing…"
-                  disabled={!jobBusy && (busy || mismatch)}
-                  title={`Explain ${scopePhrase} (${keys(false, "E")})`}
+                  data-action="explain" busy={running && rt.explaining} busyLabel="Explaining…"
+                  disabled={busy || mismatch || !!rt.operation || rt.stopping}
+                  title={mismatchReason || `Explain ${scopePhrase} (${keys(false, "E")})`}
                   aria-keyshortcuts={ctrl(false, "E")}
-                  data-privilege-state={explainGate.state}
-                  {...privilegeButtonProps(explainGate, () => void capture("explain"), mismatchReason, `${privilegeNoticeId || `${privilegeId}-explain`}${scopeLabel ? " run-scope" : ""}`)}
-                  aria-disabled={jobBusy || !!mismatchReason || !!explainGate.disabledReason ? "true" : "false"}
+                  onClick={() => void capture("explain")}
+                  aria-disabled={running || busy || !!mismatchReason ? "true" : "false"}
                 >
                   {selecting ? "Explain selection" : "Explain"}
                 </ActionButton>
+                <select aria-label="Explain format" value={effectiveExplainFormat}
+                  title="Explain output format; Tree needs MySQL 8.0.16 or later"
+                  disabled={running || busy} onChange={e => {
+                    const format = e.target.value as ExplainFormat;
+                    setExplainFormat(format);
+                    try { localStorage.setItem(EXPLAIN_FORMAT_KEY, format); } catch { /* Viewer storage may be unavailable. */ }
+                  }}>
+                  <option value="table">Table</option>
+                  <option value="tree" disabled={!treeAvailable}>Tree</option>
+                  <option value="json">JSON</option>
+                </select>
                 <EditorSplitButton
-                  label="Explain and Run analysis options"
+                  label="Run analysis options"
                   open={showAnalysisOptions}
                   onOpen={toggleAnalysisOptions}
                   action={
                     <ActionButton
-                      data-action="analyze" busy={jobBusy} busyLabel="Capturing…"
-                      disabled={!jobBusy && (busy || mismatch)}
+                      data-action="analyze" busy={analysisBusy} busyLabel="Analyzing…"
+                      disabled={!analysisBusy && (busy || mismatch || running || !!rt.operation)}
                       title={`Run analysis on ${scopePhrase} (${keys(true, "E")}): it executes the SELECT and captures measured timings`}
                       aria-keyshortcuts={ctrl(true, "E")}
                       data-privilege-state={analysisGate.state}
                       {...privilegeButtonProps(analysisGate, () => void capture("analyze"), mismatchReason, `${privilegeNoticeId || `${privilegeId}-analysis`}${scopeLabel ? " run-scope" : ""}`)}
                       aria-disabled={jobBusy || !!mismatchReason || !!analysisGate.disabledReason ? "true" : "false"}
                     >
-                      {selecting ? "Analyze selection" : "Run analysis"}
+                      {selecting ? "Run analysis on selection" : "Run analysis"}
                     </ActionButton>
                   }
                 >
-                  <div className="execution-options plan-options" aria-label="Explain and Run analysis settings" role="group">
-                    <span className="plan-options-label">Explain and Run analysis</span>
+                  <div className="execution-options plan-options" aria-label="Run analysis settings" role="group">
+                    <span className="plan-options-label">Run analysis</span>
+                    <p className="hint">Executes the SELECT {repeat} time(s) in a read-only transaction; each run is limited to {timeout} s.</p>
                     <label className="field inline-field">
                       Time limit per run
                       <NumberField
@@ -2481,7 +2582,7 @@ export const QueryLab = forwardRef<
                         />
                       </label>
                       <p className="hint">
-                        Use :name in SQL, for example WHERE id = :id with {`{"id": 42}`}.
+                        Explain and Run analysis substitute :name values, for example WHERE id = :id with {`{"id": 42}`}. Run sends SQL as written.
                       </p>
                       <label className="field">
                         Conditions
@@ -2764,6 +2865,11 @@ export const QueryLab = forwardRef<
               engine={session?.engine || null}
               backslash={session?.backslash_escapes !== false}
               plan={planPane}
+              explain={rt.explain}
+              explaining={rt.explaining}
+              onExplore={exploreExplain}
+              exploreBusy={jobBusy && captureOwner?.mode === "explain" && captureOwner.tabId === tab.id}
+              exploreDisabled={busy || !canReload(tab.id)}
               onJump={jump}
               onLoadMore={loadMore}
               canLoadMore={(r) => rt.run?.statements[r.statement]?.kind === "read" && canReload(tab.id)}
@@ -2796,6 +2902,18 @@ export const QueryLab = forwardRef<
             onInsert={insertAtCursor} onOpenSaved={openSaved} onClose={() => togglePane("history")} />
         </div>}
       </div>
+      {analysisReview && analysisReview.binding === analysisBinding && <ConfirmSheet
+        title={`Run analysis on ${connectionLabel(connection)}?`}
+        description={/^\s*(?:\(|SELECT\b|WITH\b|TABLE\b)/i.test(analysisReview.sql.replace(/^(?:\s+|\/\*[\s\S]*?\*\/|(?:--\s|#)[^\n]*(?:\n|$))*/, ""))
+          ? `Run analysis runs the statement ${repeat} time(s) in a read-only transaction, with a ${timeout} s time limit per run.`
+          : "This is not a SELECT, so Run analysis does not run it. It prepares a SELECT that reads the same rows, when the statement allows one, in a new tab for you to review first. Nothing runs now."}
+        confirmLabel="Run analysis" confirmTone="primary" busy={starting}
+        onCancel={() => setAnalysisReview(null)} onConfirm={() => {
+          if (analysisReview.binding !== analysisBinding) return;
+          const review = analysisReview;
+          setAnalysisReview(null);
+          void startCapture(review.tab, review.sql, review.parameters, "analyze", review.label);
+        }}><pre className="confirm-sql">{analysisReview.sql}</pre></ConfirmSheet>}
       {saveFor && (() => {
         const t = tabs.find((x) => x.id === saveFor);
         if (!t) return null;

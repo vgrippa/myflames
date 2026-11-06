@@ -551,6 +551,30 @@
   height: 13px;
   margin: 0;
 }
+
+/* The view read is primary; the chevron states the wider connection scope. */
+.view-refresh-menu [role="menuitem"] {
+  display: grid;
+  gap: var(--space-1);
+  width: 100%;
+  padding: var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.view-refresh-menu [role="menuitem"]:is(:hover:not(:disabled), :focus-visible) {
+  background: var(--surface-hover);
+}
+.view-refresh-menu [role="menuitem"]:disabled {
+  color: var(--ink-faint);
+  cursor: default;
+}
+
 .inspector-toggle[aria-pressed="true"] {
   color: var(--accent-text);
   background: var(--accent-soft);

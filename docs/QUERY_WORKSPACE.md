@@ -195,7 +195,8 @@ switch to another saved connection, **Manage connections** (back to Home), and
 a **Session password** field when no password is saved (**Set**, Enter or
 leaving the field applies it for this window; it is never saved). The editor runs any SQL in a
 session of its own ([Run SQL in the Query editor](#run-sql-in-the-query-editor));
-**Explain** and **Run analysis**, described here, capture a plan.
+**Explain** shows the server's EXPLAIN output in the editor and **Run
+analysis** measures the statement, as described here.
 
 ### Remember a password
 
@@ -279,16 +280,38 @@ those (`{"ids": [1, 2, 3]}`) is written as a comma-separated list, for
 {"customer_id": 42}
 ```
 
-- **Explain** captures an estimated JSON plan, once.
-- **Run analysis** executes the SELECT and captures actual iterator timings.
-- Choose 1–10 analysis runs and a 1–300 second limit per run.
+- **Explain** works like MySQL Workbench: it runs `EXPLAIN` on the statement
+  as written, in the tab's own session, and shows the rows in an **Explain**
+  results tab in the editor, with Export. The **Explain format** menu beside
+  the button picks **Table** (`EXPLAIN FORMAT=TRADITIONAL`, the classic
+  `id`, `select_type`, `table`, `type`, `possible_keys`, `key`, `rows`,
+  `filtered` and `Extra` columns; plain `EXPLAIN` on MariaDB), **Tree**
+  (`EXPLAIN FORMAT=TREE`, MySQL 8.0.16 and later) or **JSON**
+  (`EXPLAIN FORMAT=JSON`); the choice is remembered on this computer. EXPLAIN
+  does not run the statement, so an UPDATE or DELETE can be explained on any
+  connection. The server does evaluate constant parts while it plans (a
+  subquery with no table, such as `(SELECT GET_LOCK('x', 0))`), so a
+  statement whose expressions would need a confirmation under Run (named
+  locks, `:=`, stored or unknown functions) needs the same one under Explain. A statement that starts with `ANALYZE` is refused, because
+  `EXPLAIN ANALYZE` would run it. `:name` placeholders (a Top statements
+  digest) take their values from Parameters, written as the same literals Run
+  analysis uses; a statement without placeholders is sent exactly as written.
+  **Explore** on the result captures the visual plan
+  (SELECT only) and opens it in Plans; nothing leaves the editor until you
+  choose it.
+- **Run analysis** executes the SELECT, after a confirmation that says so, and
+  captures actual iterator timings. The **Analysis** results tab shows how
+  many times it ran, the median time and the SQL analyzed; **Explore** opens
+  the plan in Plans.
+- Choose 1–10 analysis runs and a 1–300 second limit per run under **Run
+  analysis options**.
 
 The editor can hold several statements, as in DBeaver or MySQL Workbench.
 Explain and Run analysis send one of them:
 
 - **Selected text.** With text selected, only the selection runs. It is
   trimmed, and a trailing `;` (and any comment after it) is dropped. The
-  buttons read **Explain selection** and **Analyze selection**, and a chip shows
+  buttons read **Explain selection** and **Run analysis on selection**, and a chip shows
   how many lines are selected. A selection that holds two or more statements,
   or only comments, is refused with a message before anything is sent.
 - **Statement under the cursor.** With no selection and several statements
@@ -304,14 +327,16 @@ Explain and Run analysis send one of them:
 **Ctrl+E** (**⌘E** on macOS) explains, and **Ctrl+Shift+E** (**⇧⌘E**) runs
 analysis, on the same text the buttons would send (earlier versions used
 Ctrl+Enter and Ctrl+Shift+Enter, which now run SQL in the tab's session). The
-button tooltips list the shortcuts. Parameters are bound against the text that
-runs, so a selection only needs the parameters it references; a reference that
-the JSON does not define is reported as `Missing parameter: name`. The **Plan**
-results tab shows **SQL sent**, the text of the last capture, and the plan's SQL card
-in Plans shows the statement that was executed, with parameter values bound.
-The time limit per run, analysis runs, optimizer trace and **Parameters and
-execution conditions** sit in one row under the editor, labeled **Explain and
-Run analysis**: they apply to captures only.
+button tooltips list the shortcuts. Parameters are bound against the text
+that runs, so a selection only needs the parameters it references; a reference
+that the JSON does not define is reported as `Missing parameter: name`. Run
+never binds them. The **Analysis** results tab shows **SQL analyzed**, the
+text of the last analysis, and the plan's SQL card in Plans shows the
+statement that was executed, with parameter values bound. Messages shows the
+exact `EXPLAIN …` statement an Explain sent. The time limit per run, analysis
+runs, optimizer trace and **Parameters and execution conditions** sit under
+**Run analysis options** (the arrow beside Run analysis); Parameters apply to
+Explain too, the rest to Run analysis only.
 - **Cancel capture** requests cancellation of this job's database query and
   terminates its client process. A time limit follows the same cancellation path.
 
@@ -326,7 +351,7 @@ Draft tabs are kept by [session restore](#session-restore). Captured SQL is
 included when you save an investigation. At most two captures run concurrently. Finished captures are
 kept in server memory for up to one hour, with a maximum of 50 jobs.
 
-Explain and Run analysis can prepare a reviewed SELECT projection from supported DML. Conversion creates a new editor tab and keeps the original SQL unchanged. It does not start a capture: read the warning and select Explain or Run analysis again. Ordinary Run still executes the original statement under the existing write policy and confirmation rules.
+Run analysis can prepare a reviewed SELECT projection from supported DML. Conversion creates a new editor tab and keeps the original SQL unchanged. It does not start a capture: read the warning and choose Run analysis again. Explain never converts: it explains the statement as written. Ordinary Run still executes the original statement under the existing write policy and confirmation rules.
 
 ## Format SQL
 
@@ -476,7 +501,9 @@ Results come back in tabs: one per result set (**Result 1 · 1,000 rows ·
 outcome: rows, affected rows and the server's info line (`Rows matched: 3
 Changed: 3`), warnings, duration, and errors with their code, SQLSTATE and
 message. **Go to line N, column M** puts the cursor where the error points.
-After Explain or Run analysis a **Plan** tab shows the capture and the SQL sent.
+Explain's rows come back as an **Explain** tab (with **Explore** beside
+Export), and after Run analysis an **Analysis** tab shows the measurement and
+the SQL analyzed.
 
 - The grid is the shared table: resize and hide columns, sort the loaded rows
   (a result cut at the row limit says "Sorting applies to loaded rows"), row numbers, and long results
@@ -604,10 +631,12 @@ and write policy:
   connections reject writes before execution, and Production connections prompt
   for explicit confirmation.
 
-The **schema browser** reads nothing until you choose **Load schemas**, its
-only read control until then; afterwards its header has **Reload schemas**. It
-lists the schemas of the connection in use, a schema's tables and views, and a
-table's columns (type, key, NULL) and indexes, each on demand. Column and index
+The **schema browser** reads the schema list of the connection in use by
+itself the first time it is shown for that connection (once per connection;
+with no connection chosen it says to choose one), and its header has **Reload
+schemas**. It lists the schemas, a schema's tables and views, and a table's
+columns (type, key, NULL) and indexes; tables, columns and indexes are read
+when you expand them. Column and index
 rows stay on one line, and the actions button shows only on the row being
 pointed at, the focused row, or on touch screens. Double-click a
 name to insert it at the cursor (`schema.table`, quoted with backticks only
@@ -763,13 +792,18 @@ instruments](#performance-schema-instruments) for Instruments.
 
 A selected Top statement opens in a detail view using the available width; Back restores the list's sorting, filters and scroll. Its actions use the statement Performance Schema recorded:
 
-- **Explain** and **Run analysis** switch to the Query editor, open the
+- **Explain** and **Run analysis** switch to the Query editor and open the
   statement in a new tab named after its rank and first table (for example
-  **Top #3 · orders**), and capture it with the Query editor's time limit,
-  analysis runs, and optimizer trace settings. When the connection has no schema, the statement runs in the
-  schema it was recorded in; the tab says which schema it uses. The plan opens
-  in Plans like any capture, and its header reads **From Top
-  statements:** with the first 12 characters of the digest.
+  **Top #3 · orders**). Explain runs there as the editor's Explain does (rows
+  in an **Explain** tab, **Explore** for the visual plan); Run analysis
+  measures it with the Query editor's time limit, analysis runs, and
+  optimizer trace settings, and **Explore** on its **Analysis** tab opens the
+  plan in Plans. When the connection has no schema, the statement runs in the
+  schema it was recorded in; the tab says which schema it uses. Explain is
+  offered for any recorded statement, UPDATE and DELETE included, because
+  EXPLAIN does not run it (the server says when a statement cannot be
+  explained); Run analysis stays off, with the reason, for statements
+  capture refuses.
 - **Run analysis** first states what it does: it executes the statement on
   the server, in a read-only transaction that is rolled back, for the chosen
   number of runs, each stopped at the time limit. **Execute and analyze**
@@ -1624,7 +1658,7 @@ and never lowers a saved connection's protection.
 | `live/start` | `connection`, `query`, `parameters`, `mode`, `repeat`, `timeout`, `trace`, `conditions`, optional `source` (`{"kind": "digest", "digest", "schema"}`, copied into the capture) | Job `id`, `state` |
 | `live/status` | `id` | `state`, `progress`, `repeat`, `error`, optional `result` |
 | `live/cancel` | `id` | Current job snapshot |
-| `live/top` | `connection`, optional `limit`, `schema` (the shared schema filter), `order` (`total`, `avg`, `examined`, `count`, or the attribution orders `full_join`, `scan`, `no_index`), `table` (`"schema.table"` or `{schema, table}`) | `top-1.0` statements and notes. Each statement has `capture_problem`: null when Explain and Run analysis can capture it, otherwise the reason, and the attribution counters `select_full_join`, `select_range_check`, `select_scan`; with `table`, each has `table_match` and the report has `table` and `match` (label "text match, not proof", caveats). `coverage`: uptime, the oldest `first_seen`, the overflow row, `digest_lost`, `counting_since` (the oldest FIRST_SEEN of the whole digest table when it began more than an hour after the server started, else null). Ranked against the whole server in one more aggregate read: `totals` (`digests`, `total_ms`, `executions` of every digest row), `others` (the digests the list does not hold, or null), `cpu` (`{collected}` on MySQL with SUM_CPU_TIME: false while the `events_statements_cpu` consumer is off, null when unread; null on MariaDB), and per statement `cpu_ms`, `p95_ms`, `p99_ms`, `p999_ms` (null where the server has no such column) and `new` (first seen in the last 24 hours, decided on the server, and only while the counters cover more than a day) |
+| `live/top` | `connection`, optional `limit`, `schema` (the shared schema filter), `order` (`total`, `avg`, `examined`, `count`, or the attribution orders `full_join`, `scan`, `no_index`), `table` (`"schema.table"` or `{schema, table}`) | `top-1.0` statements and notes. Each statement has `capture_problem`: null when Run analysis (and Explore) can capture it, otherwise the reason (Explain in the editor does not need a capture), and the attribution counters `select_full_join`, `select_range_check`, `select_scan`; with `table`, each has `table_match` and the report has `table` and `match` (label "text match, not proof", caveats). `coverage`: uptime, the oldest `first_seen`, the overflow row, `digest_lost`, `counting_since` (the oldest FIRST_SEEN of the whole digest table when it began more than an hour after the server started, else null). Ranked against the whole server in one more aggregate read: `totals` (`digests`, `total_ms`, `executions` of every digest row), `others` (the digests the list does not hold, or null), `cpu` (`{collected}` on MySQL with SUM_CPU_TIME: false while the `events_statements_cpu` consumer is off, null when unread; null on MariaDB), and per statement `cpu_ms`, `p95_ms`, `p99_ms`, `p999_ms` (null where the server has no such column) and `new` (first seen in the last 24 hours, decided on the server, and only while the counters cover more than a day) |
 | `live/digest-histogram` | `connection`, `digest` (32 to 64 hexadecimal characters), `schema` (the statement's default schema; empty or null for none) | `digest-histogram-1.0`: the buckets of `performance_schema.events_statements_histogram_by_digest` with at least one call (`bucket`, `low_ms`, `high_ms` null for the open-ended last bucket, `count`). MariaDB and servers without the table answer `available: false` with a `reason`. Read when the statement's Latency section is on screen |
 | `live/digest-tables` | `connection`, `schema` (the statement's default schema, or null), `text` (normalized digest text or sample SQL, at most 1,000,000 characters) | `digest-tables-1.0`: `method` ("statement text"), `tables` (at most 20: `schema`, `name`, `found`, `type`, `engine`, `rows_estimate`, `data_bytes`, `index_bytes`, `indexes` with `name`, `unique`, `columns`, `visible`) and `notes`. Names come from the statement text; at most two bounded `information_schema` reads, never row data. A name without a schema stays unread. Read when the statement's Tables section is on screen |
 | `live/table-structure` | `connection`, `schema`, `table` | `table-structure-1.0` (`schema_browser.table_structure`); read-only; the saved password is filled like the views. |

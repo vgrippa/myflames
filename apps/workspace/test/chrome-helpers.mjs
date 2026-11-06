@@ -52,3 +52,17 @@ export async function chooseView(page, kind) {
 /** The Server or Workload view on screen ("" when none is). */
 export const currentView = (page) => page.evaluate(() =>
   [...document.querySelectorAll('.server-place .server-view')].find((v) => v.offsetParent !== null)?.dataset.view || '');
+
+/** Open the wider refresh scope from the visible view's split button. */
+export async function openRefreshMenu(page) {
+  if (await page.$('.view-refresh-menu [data-action="refresh-all"]')) return;
+  await page.waitForFunction(() => [...document.querySelectorAll('.server-place .view-refresh button[aria-label="Refresh options"]')]
+    .some((e) => !e.closest('[hidden]') && e.offsetParent !== null));
+  for (const button of await page.$$('.server-place .view-refresh button[aria-label="Refresh options"]')) {
+    if (await button.evaluate((e) => !e.closest('[hidden]') && e.offsetParent !== null)) {
+      await button.click();
+      break;
+    }
+  }
+  await page.waitForSelector('.view-refresh-menu [data-action="refresh-all"]', { visible: true });
+}

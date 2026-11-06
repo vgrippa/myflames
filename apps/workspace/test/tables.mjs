@@ -47,7 +47,7 @@ const inspectorHas = (pattern) =>
 const reloadCatalog = async (body, gated) => {
   schemasMock.body = body;
   await page.click("#tables-schemas");
-  await page.locator("#tables-schemas-panel button ::-p-text(Reload list)").click();
+  await page.locator("#tables-schemas-panel button ::-p-text(Reload databases)").click();
   await page.waitForFunction((expected) => !!document.querySelector("#tables-load-hint") === expected, {}, gated);
   await page.keyboard.press("Escape");
 };
@@ -252,7 +252,7 @@ try {
   // The selected scope is gated, even with cached MySQL numbers.
   schemasMock.body = largeCatalog;
   await page.click("#tables-schemas");
-  await page.locator("#tables-schemas-panel button ::-p-text(Reload list)").click();
+  await page.locator("#tables-schemas-panel button ::-p-text(Reload databases)").click();
   await page.waitForFunction(() => /4,999 tables/.test(document.querySelector("#tables-schemas-panel")?.textContent || ""));
   await page.keyboard.press("Escape");
   await assertRefreshBlocked();

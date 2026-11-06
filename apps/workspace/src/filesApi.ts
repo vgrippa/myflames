@@ -36,7 +36,13 @@ export type FileEntry = {
   /** Full st_mode, type bits included. */
   mode: number | null;
 };
-export type FileListing = { path: string; home: string; entries: FileEntry[] };
+export type FileListing = {
+  path: string;
+  home: string;
+  entries: FileEntry[];
+  /** Local listings only: false where uploads and downloads cannot run (Windows). */
+  transfers?: boolean;
+};
 
 export type OnExists = "fail" | "skip" | "overwrite";
 export type TransferItemState = "queued" | "running" | "finished" | "failed" | "cancelled" | "skipped";
@@ -121,6 +127,8 @@ export const remoteRemove = (ssh: string, paths: string[]) =>
   api<{ removed: number }>("files/remote/remove", { ssh, paths });
 export const localMkdir = (path: string) => api<{ path: string }>("files/local/mkdir", { path });
 export const localRename = (from: string, to: string) => api<{ path: string }>("files/local/rename", { from, to });
+/** Reveal in Finder / Show in File Explorer: shows the item selected in its folder. */
+export const localReveal = (path: string) => api<{ revealed: string }>("files/local/reveal", { path });
 
 // ---- Transfers ---------------------------------------------------------------
 export const upload = (ssh: string, local_paths: string[], remote_dir: string, on_exists: OnExists) =>

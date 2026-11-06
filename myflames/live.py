@@ -162,6 +162,18 @@ def bind_query(query, parameters=None):
     comma-separated list for ``IN (:name)``."""
     if not isinstance(query, str) or not query.strip() or len(query) > 200000:
         raise ValueError('Enter a SELECT statement of at most 200,000 characters.')
+    query = fill_parameters(query, parameters).strip().rstrip(';').strip()
+    problem = _select_problem(query)
+    if problem:
+        raise ValueError(problem)
+    return query
+
+
+def fill_parameters(query, parameters=None):
+    """Replace each ``:name`` outside strings, quoted identifiers and comments
+    with the literal of its value (the rules of :func:`bind_query`), and
+    leave everything else as it is. Strings become hex literals, so a value
+    reads the same under every sql_mode and never ends a string early."""
     params = {} if parameters is None else parameters
     if not isinstance(params, dict):
         raise ValueError('Parameters must be a JSON object.')
@@ -188,11 +200,7 @@ def bind_query(query, parameters=None):
         parts.extend([re.sub(r'(?<!:):([A-Za-z_][A-Za-z0-9_]*)', literal, query[at:token.start()]), token.group()])
         at = token.end()
     parts.append(re.sub(r'(?<!:):([A-Za-z_][A-Za-z0-9_]*)', literal, query[at:]))
-    query = ''.join(parts).strip().rstrip(';').strip()
-    problem = _select_problem(query)
-    if problem:
-        raise ValueError(problem)
-    return query
+    return ''.join(parts)
 
 
 def _select_problem(query):

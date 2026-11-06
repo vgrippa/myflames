@@ -644,6 +644,9 @@ export function TopActions({
   const text = row.sample_text || row.digest_text || "";
   const q = digestQuery(row);
   const problem = row.capture_problem || (q.reason === "missing" ? "No statement text was recorded." : "");
+  // Explain runs EXPLAIN in the editor tab and never runs the statement, so
+  // only missing text turns it off; capture limits apply to Run analysis.
+  const explainProblem = q.reason === "missing" ? problem : "";
   const schema = connection.database || row.schema || "";
   const identity = JSON.stringify([
     connectionKey(connection),
@@ -710,16 +713,16 @@ export function TopActions({
       <div className="button-row">
         <button
           className="button"
-          disabled={disabled || !!problem}
+          disabled={disabled || !!explainProblem}
           aria-label={`Explain ${label}`}
-          aria-describedby={problem ? reasonId : undefined}
+          aria-describedby={explainProblem ? reasonId : undefined}
           title={
             needsValues
               ? "Open in a new tab with parameters to fill in. Nothing runs until you do."
-              : "Open in a new tab and capture the estimated plan (EXPLAIN only)"
+              : "Open in a new tab and show the server's EXPLAIN (the statement does not run)"
           }
           data-privilege-state={explainGate.state}
-          {...privilegeButtonProps(explainGate, () => onAction("explain", row, rank), "", `${privilegeId}-explain${problem ? ` ${reasonId}` : ""}`)}
+          {...privilegeButtonProps(explainGate, () => onAction("explain", row, rank), "", `${privilegeId}-explain${explainProblem ? ` ${reasonId}` : ""}`)}
         >
           Explain
         </button>
@@ -765,7 +768,7 @@ export function TopActions({
       )}
       {problem && (
         <p className="hint top-reason" id={reasonId}>
-          Explain and Run analysis are off for this statement: {problem}
+          {explainProblem ? "Explain and Run analysis are" : "Run analysis is"} off for this statement: {problem}
         </p>
       )}
       {voided && !confirming && (

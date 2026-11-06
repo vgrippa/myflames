@@ -31,11 +31,19 @@ assert.match(detail, /data-empty="false"/);
 assert.match(detail, /operator-detail/);
 assert.match(detail, /Self time/);
 assert.match(detail, /Actual rows \/ loop/);
-const schemas = renderToStaticMarkup(React.createElement(SchemaBrowser, {
-  connection: { host: '127.0.0.1', port: 3306, user: 'app' }, width: 240,
-  onWidth() {}, onClose() {}, onInsert() {}, onQuery() {},
+// The visible panel starts its first read by itself (an effect, so it is not
+// in static markup; plan-editor-layout.mjs covers it in Chrome). The only
+// gate left asks for a connection and offers no Load schemas button.
+const schemaBrowser = connection => renderToStaticMarkup(React.createElement(SchemaBrowser, {
+  connection, visible: true, width: 240, onWidth() {}, onClose() {}, onInsert() {}, onQuery() {},
 }));
-assert.match(schemas, /Load schemas/);
+const unconnected = schemaBrowser({ host: '', port: 3306, user: '' });
+assert.match(unconnected, /Choose a connection to see its schemas\./);
+assert.doesNotMatch(unconnected, /Load schemas/);
+assert.doesNotMatch(unconnected, /aria-label="Reload schemas"/);
+const schemas = schemaBrowser({ host: '127.0.0.1', port: 3306, user: 'app' });
+assert.doesNotMatch(schemas, /Choose a connection/);
+// Reload is offered only once a read has started.
 assert.doesNotMatch(schemas, /aria-label="Reload schemas"/);
 assert.doesNotMatch(schemas, /aria-label="Reading schemas…"/);
 const newsSetting = renderToStaticMarkup(React.createElement(NewsSetting));
@@ -45,4 +53,4 @@ assert.doesNotMatch(newsSetting, /About Home news/);
 for (const [value, expected] of [[0, '0 B'], [1023, '1023 B'], [1024, '1.0 KiB'],
   [123456, '120.6 KiB'], [1048576, '1.0 MiB'], [1073741824, '1.0 GiB'], [1099511627776, '1.0 TiB'],
   [null, '—'], [undefined, '—']]) assert.equal(bytes(value), expected);
-console.log('plan/editor unit checks passed: inspector markup; first-read schema gate; news hint without duplicate info; byte unit boundaries');
+console.log('plan/editor unit checks passed: inspector markup; schema panel connection gate; news hint without duplicate info; byte unit boundaries');

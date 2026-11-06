@@ -1,8 +1,8 @@
-// The Files browser (FileBrowser.tsx, FilePane.tsx, Transfers.tsx) in a real
-// browser against an in-memory backend kept here: a remote and a local tree
-// (listings, New folder, Rename, Delete change what the next listing shows),
-// uploads and downloads as scripted jobs that land their files when they
-// finish. Every request is answered and recorded, and the bodies are
+// The File transfer browser (FileBrowser.tsx, FilePane.tsx, Transfers.tsx) in a
+// real browser against an in-memory backend kept here: a remote and a local
+// tree (listings, New folder, Rename, Delete change what the next listing
+// shows), uploads and downloads as scripted jobs that land their files when
+// they finish. Every request is answered and recorded, and the bodies are
 // asserted. Screenshots go to test/shots-files-browser/.
 // Run: node test/files-browser.mjs
 import assert from 'node:assert/strict';
@@ -17,6 +17,8 @@ const src = path.join(here, '../src');
 const shots = path.join(here, 'shots-files-browser');
 const ORIGIN = 'http://localhost:5199';
 const MOD = process.platform === 'darwin' ? 'Meta' : 'Control';
+const REVEAL = process.platform === 'darwin' ? 'Reveal in Finder' : process.platform === 'win32' ? 'Show in File Explorer' : 'Show in folder';
+const WINDOWS_REASON = 'Uploads and downloads are not available on Windows yet.';
 const MiB = 2 ** 20;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -40,7 +42,7 @@ const bundle = await build({
             <div className="harness-topbar" />
             <div className="files-place">
               <nav className="harness-list" aria-label="SSH connections">SSH connections</nav>
-              <section className="files-place-main" aria-label="Files">
+              <section className="files-place-main" aria-label="File transfer">
                 <FileBrowser connection={connection}
                   onHostKeyUnknown={(retry) => { w.__hostKeyCalls += 1; w.__retry = retry; }}
                   onEditConnection={() => { w.__edits += 1; }} />
@@ -151,10 +153,24 @@ const localTree = new Tree(dir({
     }),
   }),
   Volumes: dir({ Backup: dir({ 'dump-2026.sql': file(9 * MiB) }) }),
+  private: dir({
+    var: dir({
+      folders: dir({
+        '4z': dir({
+          l8k3q68d7395xxn3_yv5dyth0000gn: dir({
+            T: dir({
+              'myflames-uxshots-qAXx12': dir({ 'snap.txt': file(64) }),
+            }),
+          }),
+        }),
+      }),
+    }),
+  }),
 }), '/Users/me');
 
 const NAMES = { c1: 'lab-box', c2: 'prod-db-1', c3: 'new-box' };
 const backend = {
+  localTransfers: true,
   failures: new Map(), // "remote:<path>" → {error, code}
   delays: new Map(), // "remote:<path>" → ms
   jobs: [], // { view, steps, auto, land }
@@ -216,7 +232,25 @@ async function answer(route, body) {
       const want = body.path === '' ? tree.home : body.path;
       const node = tree.get(want);
       if (!node || node.kind !== 'dir') return fail(`No such folder: ${want}`);
-      return { body: { path: tree.norm(want), home: tree.home, entries: [...node.children].map(([n, c]) => entry(n, c)) } };
+      return {
+        body: {
+          path: tree.norm(want),
+          home: tree.home,
+          entries: [...node.children].map(([n, c]) => entry(n, c)),
+          ...(side === 'local' ? { transfers: backend.localTransfers } : {}),
+        },
+      };
+    }
+    case 'files/local/reveal': {
+      const key = `reveal:${body.path}`;
+      if (backend.delays.has(key)) await sleep(backend.delays.get(key));
+      if (backend.failures.has(key)) {
+        const f = backend.failures.get(key);
+        return fail(f.error, f.code);
+      }
+      const node = localTree.get(body.path);
+      if (!node) return fail(`No such file or folder: ${body.path}`);
+      return { body: { revealed: localTree.norm(body.path) } };
     }
     case 'files/remote/mkdir':
     case 'files/local/mkdir': {
@@ -454,6 +488,12 @@ try {
   assert.deepEqual(since(m, 'files/jobs')[0].body, {}, 'transfers are read for every connection');
   assert.equal(await page.$eval(`${pane('local')} .files-crumbs`, (e) => [...e.querySelectorAll('.files-crumb-button')].map((b) => b.textContent).join(' ')), '/ Users me',
     'the answered (resolved) home shows in the path bar');
+  assert.equal(await page.$('.files-toolbar button[data-action="refresh"]'), null, 'no browser-header Refresh duplicate');
+  assert.deepEqual(
+    await page.$$eval('.files-pane button[data-action="refresh"]', (els) => els.map((b) => [b.getAttribute('aria-label'), b.title])),
+    [['Refresh This computer', 'List this folder again (F5)'], ['Refresh lab-box', 'List this folder again (F5)']],
+    'one uniquely named Refresh per pane',
+  );
   assert.equal(await page.$eval('.files-endpoint', (e) => e.textContent), 'lab@127.0.0.1:2222');
   await page.waitForFunction(() => document.querySelector('.files-identity .status-indicator')?.textContent === 'Connected');
 
@@ -589,6 +629,32 @@ try {
   await sleep(150);
   assert.equal(since(m, 'files/remote/list').length, 0, 'Escape lists nothing');
 
+  step('local path bar keeps current folder visible in full across resizes');
+  const deepLocal = '/private/var/folders/4z/l8k3q68d7395xxn3_yv5dyth0000gn/T/myflames-uxshots-qAXx12';
+  await typePath('local', deepLocal);
+  await settled('local', deepLocal);
+  for (const [width, height] of [[1440, 900], [720, 520], [1440, 900]]) {
+    await page.setViewport({ width, height });
+    await sleep(100);
+    const crumbState = await page.evaluate(() => {
+      const strip = document.querySelector('[data-side="local"] .files-crumbs');
+      const current = strip.querySelector('[aria-current="location"]');
+      const sBox = strip.getBoundingClientRect();
+      const cBox = current.getBoundingClientRect();
+      return {
+        text: current.textContent,
+        clippedText: current.scrollWidth > current.clientWidth + 1,
+        leftOk: cBox.left >= sBox.left - 1,
+        rightOk: cBox.right <= sBox.right + 1,
+      };
+    });
+    assert.equal(crumbState.text, 'myflames-uxshots-qAXx12');
+    assert.equal(crumbState.clippedText, false, `${width} px: current folder name is shown in full`);
+    assert.ok(crumbState.leftOk && crumbState.rightOk, `${width} px: current folder crumb stays inside the strip (${JSON.stringify(crumbState)})`);
+  }
+  await page.click(`${pane('local')} button[aria-label="Home folder"]`);
+  await settled('local', '/Users/me');
+
   step('filter');
   await page.type(`${pane('remote')} input[type="search"]`, 'dump');
   await page.waitForFunction(() => document.querySelectorAll('[data-side="remote"] .files-grid-body [data-name]').length === 1);
@@ -623,19 +689,28 @@ try {
   await sleep(2500);
   assert.equal(since(polls, 'files/jobs').length, 0, 'polling stops when nothing is active');
 
-  step('Upload and Download buttons');
+  step('Upload and Download buttons and single primary action');
   await clickRow('local', 'report.pdf');
   await clickRow('local', 'Downloads', [MOD]);
   assert.equal(await page.$eval(`${pane('local')} .files-transfer-button`, (b) => b.title), 'Upload 2 items to /home/lab/data');
   m = mark();
-  await clickButton(pane('local'), 'Upload →', 2);
+  await clickButton(pane('local'), 'Upload', 2);
   assert.deepEqual(await one(m, 'files/upload', 'Upload button'), {
     ssh: 'c1', local_paths: ['/Users/me/Downloads', '/Users/me/report.pdf'], remote_dir: '/home/lab/data', on_exists: 'fail',
   }, 'Upload sends the selection in screen order, once for a double click');
   await clickRow('remote', 'dump.sql');
+  assert.equal(await page.$$eval('.files-transfer-button.primary', (els) => els.length), 1, 'only one primary transfer button when both panes have selections');
+  assert.ok(await page.$eval(`${pane('remote')} .files-transfer-button`, (b) => b.classList.contains('primary')), 'selecting on remote makes Download primary');
+  assert.ok(await page.$eval(`${pane('local')} .files-transfer-button`, (b) => !b.classList.contains('primary') && !b.hasAttribute('aria-disabled')),
+    'local Upload steps back to secondary while remaining reachable');
+  await focusGrid('local');
+  assert.equal(await page.$$eval('.files-transfer-button.primary', (els) => els.length), 1, 'focus moves primary emphasis to the focused pane');
+  assert.ok(await page.$eval(`${pane('local')} .files-transfer-button`, (b) => b.classList.contains('primary')), 'focusing local makes Upload primary');
+  assert.ok(await page.$eval(`${pane('remote')} .files-transfer-button`, (b) => !b.classList.contains('primary') && !b.hasAttribute('aria-disabled')),
+    'remote Download stays enabled as secondary');
   assert.equal(await page.$eval(`${pane('remote')} .files-transfer-button`, (b) => b.title), 'Download dump.sql to /Users/me');
   m = mark();
-  await clickButton(pane('remote'), '← Download');
+  await clickButton(pane('remote'), 'Download');
   assert.deepEqual(await one(m, 'files/download', 'Download button'), {
     ssh: 'c1', remote_paths: ['/home/lab/data/dump.sql'], local_dir: '/Users/me', on_exists: 'fail',
   });
@@ -645,7 +720,7 @@ try {
   step('conflicts');
   await clickRow('remote', 'big.bin');
   m = mark();
-  await clickButton(pane('remote'), '← Download');
+  await clickButton(pane('remote'), 'Download');
   await sheetOpen();
   assert.equal(await page.$eval(`${sheet} h2`, (e) => e.textContent), '1 item already exists in me');
   const conflictText = await page.$eval(sheet, (e) => e.textContent);
@@ -656,20 +731,20 @@ try {
   await sheetClosed();
   assert.deepEqual(await one(m, 'files/download', 'Skip existing'), { ssh: 'c1', remote_paths: ['/home/lab/data/big.bin'], local_dir: '/Users/me', on_exists: 'skip' });
   m = mark();
-  await clickButton(pane('remote'), '← Download');
+  await clickButton(pane('remote'), 'Download');
   await sheetOpen();
   await clickButton(sheet, 'Overwrite');
   await sheetClosed();
   assert.equal((await one(m, 'files/download', 'Overwrite')).on_exists, 'overwrite');
   m = mark();
-  await clickButton(pane('remote'), '← Download');
+  await clickButton(pane('remote'), 'Download');
   await sheetOpen();
   await clickButton(sheet, 'Cancel');
   await sheetClosed();
   await sleep(150);
   assert.equal(since(m, 'files/download').length, 0, 'Cancel starts nothing');
   await clickRow('local', 'logs');
-  await clickButton(pane('local'), 'Upload →');
+  await clickButton(pane('local'), 'Upload');
   await sheetOpen();
   const folderText = await page.$eval(sheet, (e) => e.textContent);
   assert.match(folderText, /Existing folders are merged: your choice applies to the files inside them\./);
@@ -769,9 +844,10 @@ try {
   await page.waitForFunction(() => document.querySelector('.files-notes')?.textContent.includes('Deleted 5 items.'));
   await page.waitForFunction(() => !document.querySelector('[data-side="remote"] [data-name="archive"]'));
 
-  step('context menu');
+  step('context menu and local reveal');
   await page.click(row('remote', 'logs'), { button: 'right' });
-  assert.deepEqual(await menuLabels(), ['Download', 'Open', 'Rename…', 'New folder…', 'Delete…', 'Copy path', 'Refresh']);
+  assert.deepEqual(await menuLabels(), ['Download', 'Open', 'Rename…', 'New folder…', 'Delete…', 'Copy path'],
+    'row menu has no Refresh and server rows never offer local reveal');
   m = mark();
   await menuClick('Open');
   await settled('remote', '/home/lab/data/logs');
@@ -799,15 +875,41 @@ try {
   });
   const emptyMenu = await menuLabels();
   assert.ok(emptyMenu.includes('New folder…') && emptyMenu.includes('Refresh') && emptyMenu.includes('Copy path'), 'empty space has a folder menu');
-  assert.ok(!emptyMenu.includes('Delete…'));
+  assert.ok(!emptyMenu.includes('Delete…') && !emptyMenu.includes(REVEAL), 'remote background menu has no Delete and no local reveal');
   m = mark();
   await menuClick('Refresh');
   assert.deepEqual(await one(m, 'files/remote/list', 'menu Refresh'), { ssh: 'c1', path: '/home/lab/data' });
   await settled('remote', '/home/lab/data');
   await page.click(row('local', 'todo.md'), { button: 'right' });
   const localMenu = await menuLabels();
-  assert.ok(localMenu.includes('Upload') && !localMenu.includes('Delete…'), 'This computer offers no Delete');
-  await page.keyboard.press('Escape');
+  assert.deepEqual(localMenu, ['Upload', REVEAL, 'Rename…', 'New folder…', 'Copy path'],
+    'This computer row offers reveal, no Delete, and no Refresh');
+  m = mark();
+  await menuClick(REVEAL);
+  assert.deepEqual(await one(m, 'files/local/reveal', 'local row reveal'), { path: '/Users/me/todo.md' });
+  await page.waitForFunction(() => document.querySelector('[data-side="local"] .files-pane-action-status[data-phase="done"]')?.textContent.includes('todo.md'));
+  await clickButton(`${pane('local')} .files-pane-action-status`, 'Dismiss');
+  backend.failures.set('reveal:/Users/me/todo.md', { error: 'Could not open file manager.' });
+  await page.click(row('local', 'todo.md'), { button: 'right' });
+  m = mark();
+  await menuClick(REVEAL);
+  await one(m, 'files/local/reveal', 'local row reveal error');
+  await page.waitForFunction(() => document.querySelector('[data-side="local"] .files-pane-action-status[data-phase="failed"]')?.textContent.includes('Could not open file manager.'));
+  backend.failures.delete('reveal:/Users/me/todo.md');
+  await clickButton(`${pane('local')} .files-pane-action-status`, 'Dismiss');
+  await page.evaluate(() => {
+    const grid = document.querySelector('[data-side="local"] .files-grid');
+    const box = grid.getBoundingClientRect();
+    grid.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: box.left + 40, clientY: box.bottom - 6 }));
+  });
+  const localEmptyMenu = await menuLabels();
+  assert.deepEqual(localEmptyMenu, ['New folder…', REVEAL, 'Copy path', 'Refresh'],
+    'This computer background menu offers reveal and Refresh');
+  m = mark();
+  await menuClick(REVEAL);
+  assert.deepEqual(await one(m, 'files/local/reveal', 'local background reveal'), { path: '/Users/me' });
+  await page.waitForFunction(() => document.querySelector('[data-side="local"] .files-pane-action-status[data-phase="done"]')?.textContent.includes('me'));
+  await clickButton(`${pane('local')} .files-pane-action-status`, 'Dismiss');
   await page.waitForFunction(() => !document.querySelector('.context-menu'));
 
   step('listing errors');
@@ -908,7 +1010,7 @@ try {
     view: backend.job({ id: 'jk1', direction: 'download', state: 'finished', target_dir: '/Users/me', sources: ['/home/lab/data/logs'], files_total: 3, files_done: 1, files_skipped: 2, bytes_total: 120, bytes_done: 120 }),
     steps: [], auto: false, land: null,
   });
-  await page.click('.files-toolbar button[data-action="refresh"]');
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await page.waitForSelector(jobRow('jm1'));
   assert.equal(await jobText('jk1', '.status-pill'), 'Done, some skipped');
   assert.ok(await page.$(`${jobRow('jk1')} .status-pill.is-watch`), 'skipped files turn the pill to watch');
@@ -973,10 +1075,12 @@ try {
   await page.click('.files-transfers-toggle');
   assert.equal(await page.evaluate(() => localStorage.getItem('myflames.files.transfersOpen')), '0');
   assert.ok(await page.$eval('.files-transfers-body', (e) => e.hidden));
+  m = mark();
   await page.click('.files-transfers-toggle');
   assert.equal(await page.evaluate(() => localStorage.getItem('myflames.files.transfersOpen')), '1');
+  await one(m, 'files/jobs', 'opening Transfers wakes the poll');
 
-  step('pane Refresh keeps the selection and sends one request');
+  step('pane Refresh and F5 keep the selection and send one request');
   await clickRow('remote', 'dump.sql');
   await clickRow('remote', 'readme.md', [MOD]);
   m = mark();
@@ -984,6 +1088,62 @@ try {
   await one(m, 'files/remote/list', 'pane Refresh');
   await settled('remote', '/home/lab/data');
   assert.deepEqual(await selected('remote'), ['dump.sql', 'readme.md'], 'a refresh keeps the selection');
+  m = mark();
+  await focusGrid('remote');
+  await page.keyboard.press('F5');
+  assert.deepEqual(await one(m, 'files/remote/list', 'F5 refresh'), { ssh: 'c1', path: '/home/lab/data' });
+  await settled('remote', '/home/lab/data');
+  m = mark();
+  await page.focus(`${pane('remote')} input[type="search"]`);
+  await page.keyboard.press('F5');
+  await sleep(200);
+  assert.equal(since(m, 'files/remote/list').length, 0, 'F5 inside the Filter field does not refresh the pane');
+
+  step('Windows transfers unavailable state');
+  backend.localTransfers = false;
+  await page.click(`${pane('local')} button[data-action="refresh"]`);
+  await page.waitForFunction((msg) => document.querySelector('.files-notes')?.textContent.includes(msg), {}, WINDOWS_REASON);
+  await clickRow('local', 'todo.md');
+  await clickRow('remote', 'dump.sql');
+  assert.deepEqual(
+    await page.$$eval('.files-transfer-button', (els) => els.map((b) => [b.getAttribute('aria-disabled'), b.title])),
+    [['true', WINDOWS_REASON], ['true', WINDOWS_REASON]],
+    'both transfer buttons are aria-disabled with the Windows reason',
+  );
+  m = mark();
+  await clickButton(pane('local'), 'Upload');
+  await clickButton(pane('remote'), 'Download');
+  await page.click(row('local', 'todo.md'), { count: 2 });
+  await focusGrid('local');
+  await page.keyboard.press('Enter');
+  await page.click(row('local', 'todo.md'), { button: 'right' });
+  const winLocalItem = await page.$eval('.context-menu [role="menuitem"]', (el) => [el.getAttribute('aria-disabled'), el.querySelector('.context-menu-hint')?.textContent]);
+  assert.deepEqual(winLocalItem, ['true', WINDOWS_REASON], 'local Upload menu item is disabled with the Windows hint');
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.querySelector('.context-menu'));
+  await page.click(row('remote', 'dump.sql'), { button: 'right' });
+  const winRemoteItem = await page.$eval('.context-menu [role="menuitem"]', (el) => [el.getAttribute('aria-disabled'), el.querySelector('.context-menu-hint')?.textContent]);
+  assert.deepEqual(winRemoteItem, ['true', WINDOWS_REASON], 'remote Download menu item is disabled with the Windows hint');
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.querySelector('.context-menu'));
+  // Dismiss the note, then drag rows and drop a file: no .is-drop, note returns, no upload/download sent.
+  await page.evaluate(() => [...document.querySelectorAll('.files-notes .notice-dismiss')].forEach((b) => b.click()));
+  await page.waitForFunction((msg) => !document.querySelector('.files-notes')?.textContent.includes(msg), {}, WINDOWS_REASON);
+  await drag(row('local', 'todo.md'), pane('remote'));
+  await page.waitForFunction((msg) => document.querySelector('.files-notes')?.textContent.includes(msg), {}, WINDOWS_REASON);
+  await page.evaluate(() => [...document.querySelectorAll('.files-notes .notice-dismiss')].forEach((b) => b.click()));
+  await dropFile(pane('remote'), 'photo.png');
+  await page.waitForFunction((msg) => document.querySelector('.files-notes')?.textContent.includes(msg), {}, WINDOWS_REASON);
+  await sleep(200);
+  assert.equal(since(m, 'files/upload').length + since(m, 'files/download').length, 0, 'no transfer requests sent while transfers is false');
+  // Folder navigation still works when transfers are unavailable.
+  await page.click(row('local', 'Downloads'), { count: 2 });
+  await settled('local', '/Users/me/Downloads');
+  await page.click(`${pane('local')} button[aria-label="Back"]`);
+  await settled('local', '/Users/me');
+  backend.localTransfers = true;
+  await page.click(`${pane('local')} button[data-action="refresh"]`);
+  await page.waitForFunction((msg) => !document.querySelector('.files-notes')?.textContent.includes(msg), {}, WINDOWS_REASON);
   assert.ok(errors.length === 0, `no console errors so far:\n${errors.join('\n')}`);
 
   // ==== Load 2: a host that is not trusted yet, Stop on a slow listing ===============
@@ -1047,7 +1207,7 @@ try {
       steps: [], auto: false, land: null,
     },
   ];
-  await page.click('.files-toolbar button[data-action="refresh"]');
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await page.waitForSelector(jobRow('js1'));
   await clickRow('remote', 'dump.sql');
   await clickRow('remote', 'big.bin', [MOD]);
@@ -1060,14 +1220,22 @@ try {
       const main = document.querySelector('.harness-main');
       const local = document.querySelector('[data-side="local"]').getBoundingClientRect();
       const remote = document.querySelector('[data-side="remote"]').getBoundingClientRect();
+      const orderOk = ['local', 'remote'].every((s) => {
+        const head = document.querySelector(`[data-side="${s}"] .files-pane-head`).getBoundingClientRect();
+        const grid = document.querySelector(`[data-side="${s}"] .files-grid-wrap`).getBoundingClientRect();
+        const foot = document.querySelector(`[data-side="${s}"] .files-pane-foot`).getBoundingClientRect();
+        return head.bottom <= grid.top + 1 && grid.bottom <= foot.top + 1;
+      });
       return {
         pageScroll: document.documentElement.scrollWidth - window.innerWidth,
         mainScroll: main.scrollWidth - main.clientWidth,
         stacked: local.bottom <= remote.top + 1,
         sideBySide: local.right <= remote.left + 1 && Math.abs(local.top - remote.top) < 1,
+        orderOk,
       };
     });
     assert.ok(layout.pageScroll <= 0 && layout.mainScroll <= 0, `${width} px: nothing scrolls sideways (${JSON.stringify(layout)})`);
+    assert.ok(layout.orderOk, `${width} px: every pane draws header, list, then footer (${JSON.stringify(layout)})`);
     if (width < 900) assert.ok(layout.stacked, '720 px: This computer above the server');
     else assert.ok(layout.sideBySide, '1440 px: panes side by side');
     // The header stays at the top of the pane's own scroll area.
@@ -1098,7 +1266,7 @@ try {
   }
 
   assert.deepEqual(requests.filter((r) => r.route.startsWith('files/') || r.route.startsWith('ssh/'))
-    .map((r) => r.route).filter((route) => !['files/remote/list', 'files/local/list', 'files/remote/mkdir', 'files/local/mkdir',
+    .map((r) => r.route).filter((route) => !['files/remote/list', 'files/local/list', 'files/local/reveal', 'files/remote/mkdir', 'files/local/mkdir',
       'files/remote/rename', 'files/local/rename', 'files/remote/remove', 'files/upload', 'files/download', 'files/jobs',
       'files/cancel', 'files/retry', 'files/clear'].includes(route)), [], 'only Files routes are used');
   assert.deepEqual(errors, [], 'no console errors');

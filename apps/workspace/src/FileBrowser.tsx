@@ -1,6 +1,6 @@
-// The Files browser for one SSH connection, FileZilla style: This computer on
-// the left, the server on the right (stacked in a narrow window), the
-// Transfers panel below. It owns the toolbar, what transfers, renames, new
+// The File transfer browser for one SSH connection, FileZilla style: This
+// computer on the left, the server on the right (stacked in a narrow window),
+// the Transfers panel below. It owns the toolbar, what transfers, renames, new
 // folders and remote deletes do, their sheets, and the notes they leave.
 // The panes (FilePane.tsx) own listing, selection, keys and drag and drop;
 // the jobs are polled in Transfers.tsx.
@@ -20,7 +20,7 @@ import {
   type Tone,
 } from "./kit";
 import { bytes } from "./PerfShared";
-import { MAC } from "./platform";
+import { MAC, WINDOWS } from "./platform";
 import {
   baseName,
   download,
@@ -43,6 +43,7 @@ import "./files.css";
 
 const HIDDEN_KEY = "myflames.files.showHidden";
 const PANEL_KEY = "myflames.files.transfersOpen";
+const WINDOWS_TRANSFERS_REASON = "Uploads and downloads are not available on Windows yet.";
 
 function storedFlag(key: string, fallback: boolean): boolean {
   try {
@@ -91,16 +92,25 @@ function Browser({ connection, onHostKeyUnknown, onEditConnection }: {
   const [showHidden, setShowHidden] = useState(() => storedFlag(HIDDEN_KEY, false));
   const [panelOpen, setPanelOpen] = useState(() => storedFlag(PANEL_KEY, true));
   const [scope, setScope] = useState<TransferScope>("this");
+  const [activeSide, setActiveSide] = useState<Side>("local");
   const [note, setNote] = useState<{ text: string; variant: "note" | "error"; seq: number } | null>(null);
+  const [transfersNoteDismissed, setTransfersNoteDismissed] = useState(false);
+  const [transfersNoteSeq, setTransfersNoteSeq] = useState(0);
   const [conflict, setConflict] = useState<Plan | null>(null);
   const [nameTask, setNameTask] = useState<NameTask | null>(null);
   const [removal, setRemoval] = useState<{ dir: string; names: string[] } | null>(null);
   const [startingDirection, setStartingDirection] = useState<"upload" | "download" | null>(null);
   const starting = useAction();
-  const refreshing = useAction();
   const removing = useAction();
   const noteSeq = useRef(0);
   const showNote = (variant: "note" | "error", text: string) => setNote({ variant, text, seq: ++noteSeq.current });
+  const transfersAvailable = local.state.listing?.transfers !== undefined ? local.state.listing.transfers : !WINDOWS;
+  const transfersBlocked = transfersAvailable ? "" : WINDOWS_TRANSFERS_REASON;
+  if (!transfersBlocked && transfersNoteDismissed) setTransfersNoteDismissed(false);
+  const showTransfersBlockedNote = () => {
+    setTransfersNoteDismissed(false);
+    setTransfersNoteSeq((n) => n + 1);
+  };
 
   // A job that left the active states refreshes the folder it wrote into, once.
   const onFinished = useCallback((left: Transfer[]) => {
@@ -163,6 +173,10 @@ function Browser({ connection, onHostKeyUnknown, onEditConnection }: {
   /** Asks about names that already exist in the destination, else starts. */
   function offer(direction: "upload" | "download", paths: string[], sources: Map<string, FileEntry> | null) {
     if (!paths.length || starting.pending) return;
+    if (transfersBlocked) {
+      showTransfersBlockedNote();
+      return;
+    }
     const target = direction === "upload" ? remote : local;
     const listing = target.state.listing;
     if (!listing) {
@@ -177,6 +191,10 @@ function Browser({ connection, onHostKeyUnknown, onEditConnection }: {
     else void start(plan, "fail");
   }
   function transferFrom(side: Side, names: string[], dir?: string) {
+    if (transfersBlocked) {
+      showTransfersBlockedNote();
+      return;
+    }
     const source = side === "local" ? local : remote;
     const listing = source.state.listing;
     const from = dir ?? listing?.path;
@@ -185,6 +203,11 @@ function Browser({ connection, onHostKeyUnknown, onEditConnection }: {
     offer(side === "local" ? "upload" : "download", names.map((n) => joinPath(from, n)), sources);
   }
   function dropFiles(files: File[]) {
+    if (!files.length) return;
+    if (transfersBlocked) {
+      showTransfersBlockedNote();
+      return;
+    }
     const paths = files.map(droppedFilePath);
     if (!paths.length) return;
     if (paths.some((p) => !p)) {
@@ -226,6 +249,7 @@ function Browser({ connection, onHostKeyUnknown, onEditConnection }: {
   const transferFor = (side: Side) => ({
     verb: side === "local" ? ("Upload" as const) : ("Download" as const),
     target: (side === "local" ? remote : local).state.listing?.path ?? "",
+    blocked: transfersBlocked || undefined,
     busy: starting.pending && startingDirection === (side === "local" ? "upload" : "download"),
     start: (names: string[]) => transferFrom(side, names),
   });
@@ -243,22 +267,14 @@ function Browser({ connection, onHostKeyUnknown, onEditConnection }: {
             Show hidden files
           </Checkbox>
           <ToolbarButton icon="edit" onClick={onEditConnection}>Edit</ToolbarButton>
-          <ActionButton
-            icon="refresh"
-            data-action="refresh"
-            busy={refreshing.pending}
-            busyLabel="Refreshing…"
-            title="List both folders again"
-            onClick={() => void refreshing.run(async () => {
-              jobs.wake();
-              await Promise.all([local.refresh(), remote.refresh()]);
-            }, { pending: "Refreshing…", done: "" })}
-          >
-            Refresh
-          </ActionButton>
         </div>
       </div>
       <div className="files-notes">
+        {transfersBlocked && !transfersNoteDismissed && (
+          <Notice variant="note" noticeKey={`transfers-unavailable#${transfersNoteSeq}`} onDismiss={() => setTransfersNoteDismissed(true)}>
+            {transfersBlocked}
+          </Notice>
+        )}
         {note && (
           <Notice variant={note.variant} noticeKey={`${note.text}#${note.seq}`} onDismiss={() => setNote(null)}>{note.text}</Notice>
         )}
@@ -267,6 +283,8 @@ function Browser({ connection, onHostKeyUnknown, onEditConnection }: {
         <FilePane
           model={local}
           title="This computer"
+          active={activeSide === "local"}
+          onActivate={() => setActiveSide("local")}
           showHidden={showHidden}
           dragging={dragging}
           transfer={transferFor("local")}
@@ -279,6 +297,8 @@ function Browser({ connection, onHostKeyUnknown, onEditConnection }: {
         <FilePane
           model={remote}
           title={connection.name}
+          active={activeSide === "remote"}
+          onActivate={() => setActiveSide("remote")}
           showHidden={showHidden}
           dragging={dragging}
           transfer={transferFor("remote")}
@@ -301,7 +321,7 @@ function Browser({ connection, onHostKeyUnknown, onEditConnection }: {
         connection={connection}
         model={jobs}
         open={panelOpen}
-        onToggle={(on) => { setPanelOpen(on); storeFlag(PANEL_KEY, on); }}
+        onToggle={(on) => { setPanelOpen(on); storeFlag(PANEL_KEY, on); if (on) jobs.wake(); }}
         scope={scope}
         onScope={setScope}
         starting={starting}
@@ -337,6 +357,7 @@ function Browser({ connection, onHostKeyUnknown, onEditConnection }: {
           onDone={(name) => {
             const side = nameTask.side;
             setNameTask(null);
+            setActiveSide(side);
             void (side === "local" ? local : remote).refresh({ select: [name] });
           }}
         />

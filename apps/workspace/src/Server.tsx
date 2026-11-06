@@ -9,7 +9,7 @@
 // them) and are never saved. The selected view, the controls, and whether the
 // inspector is open are restored with the workspace (session.ts).
 //
-// Refresh all (place toolbar, ⌥⌘R) reads every Server section, including
+// Refresh all (view Refresh menu, ⌥⌘R) reads every Server section, including
 // unopened views. Full analysis runs separately from the per-view reads so
 // its own worker pool cannot multiply the concurrency limit. At most
 // REFRESH_CONCURRENCY view reads run at once, the
@@ -49,6 +49,7 @@ import { validateDiagram, rebuildDiagramLayout, type DiagramDocument, type Schem
 import type { AccountsReport } from "./accountsApi";
 import {
   ColumnStoreContext,
+  RefreshAllContext,
   useColumnStore,
   ViewActivityContext,
   ViewBackLabelContext,
@@ -195,7 +196,7 @@ type RefreshItem = {
   /** A replaced read's answer: when the view shows it anyway (a joined read), it counts as refreshed. */
   result?: unknown;
 };
-/** Stop, which replaces Refresh all in the same spot, takes clicks only after this long. */
+/** Stop in the progress strip takes clicks only after this long. */
 const STOP_ARM_MS = 600;
 /** One Refresh all: the connection it ran on and each view's outcome. */
 type RefreshRun = {
@@ -875,8 +876,8 @@ export function Server({
   const [refresh, setRefresh] = useState<RefreshRun | null>(null);
   const refreshControl = useRef<{ id: number; controller: AbortController } | null>(null);
   const refreshSeq = useRef(0);
-  // Refresh all turns into Stop in the same spot: Stop takes clicks only after
-  // STOP_ARM_MS, so a double click on Refresh all does not stop the run it started.
+  // The progress strip shows Stop only while running. It takes clicks after
+  // STOP_ARM_MS, so a fast repeated click cannot stop the run it started.
   const stopArmedAt = useRef(0);
   const [stopArmed, setStopArmed] = useState(true);
   const [clock, setClock] = useState(0);
@@ -1114,7 +1115,7 @@ export function Server({
   }
   const refreshRef = useRef({ refreshAll, stopRefresh });
   refreshRef.current = { refreshAll, stopRefresh };
-  // Refresh all belongs to the Server and Workload toolbars; Tuning and
+  // Refresh all belongs to the Server and Workload Refresh menus; Tuning and
   // Database diagram have none.
   const tuningRef = useRef(singlePlace);
   tuningRef.current = singlePlace;
@@ -1585,6 +1586,10 @@ export function Server({
     <InstrumentsLinkContext.Provider value={openInstruments}>
       <InspectorContext.Provider value={inspector}>
         <ColumnStoreContext.Provider value={columnStore}>
+        <RefreshAllContext.Provider value={singlePlace ? null : {
+          label: connectionLabel(connection), count: refreshableCount,
+          disabled, running, run: () => { void refreshAll(); },
+        }}>
         <ViewActivityContext.Provider value={reportActivity}>
         <ViewBackLabelContext.Provider value={place === "workload" ? "Workload" : "Server"}>
         <section
@@ -1612,7 +1617,7 @@ export function Server({
                       They only read, except Kill in Processlist (with explicit confirmation).
                     </p>
                     <p>
-                      Refresh all ({shortcut("R", true)}) reads Server and Workload sections, Replication and Cluster, including unopened views, three at a time. Full analysis runs in a separate phase. Database diagram is read once a database is chosen; imported diagrams stay unchanged. Maintenance refreshes tool detection only.
+                      Refresh options offers Refresh every view on this connection ({shortcut("R", true)}): Server and Workload sections, Replication and Cluster, including unopened views, three at a time. Full analysis runs in a separate phase. Database diagram is read once a database is chosen; imported diagrams stay unchanged. Maintenance refreshes tool detection only.
                     </p>
                   </>
                 ) : (
@@ -1627,7 +1632,7 @@ export function Server({
                       Locks, Change in Parameters, a skip in Replication, or a dump, restore or clone in
                       Maintenance, or changes in Users and roles (your account needs the privilege).
                     </p>
-                    <p>Refresh all ({shortcut("R", true)}) reads Server and Workload sections, Replication and Cluster, including unopened views, three at a time. Full analysis runs in a separate phase. Database diagram is read once a database is chosen; imported diagrams stay unchanged. Maintenance refreshes tool detection only.</p>
+                    <p>Refresh options offers Refresh every view on this connection ({shortcut("R", true)}): Server and Workload sections, Replication and Cluster, including unopened views, three at a time. Full analysis runs in a separate phase. Database diagram is read once a database is chosen; imported diagrams stay unchanged. Maintenance refreshes tool detection only.</p>
                   </>
                 )}
               </InfoPopover>
@@ -1692,17 +1697,7 @@ export function Server({
                   <span className="spinner" aria-hidden="true" />
                   Stop
                 </ToolbarButton>
-              ) : (
-                <ToolbarButton
-                  className="refresh-all-button"
-                  data-action="refresh-all"
-                  disabled={disabled}
-                  title={`Refresh all ${refreshableCount} sections for this connection (${shortcut("R", true)})`}
-                  onClick={() => void refreshAll()}
-                >
-                  Refresh all
-                </ToolbarButton>
-              )}
+              ) : null}
               <span className="visually-hidden" role="status">{refreshAnnounce}</span>
               {refreshHere && (
                 <Popover
@@ -1885,6 +1880,7 @@ export function Server({
         </section>
         </ViewBackLabelContext.Provider>
         </ViewActivityContext.Provider>
+        </RefreshAllContext.Provider>
         </ColumnStoreContext.Provider>
       </InspectorContext.Provider>
     </InstrumentsLinkContext.Provider>

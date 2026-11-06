@@ -26,7 +26,7 @@ const MAP = {
   minus: "MinusSign", block: "CancelCircle", clean: "BrushCleaning", undo: "Undo02",
   cluster: "Network", proxy: "Split", readyset: "Layers01", format: "TextIndent",
   fullscreen: "FullScreen", "exit-fullscreen": "ArrowShrink02",
-  files: "FolderTransfer", "folder-add": "FolderAdd", up: "ArrowUp01",
+  files: "CircleArrowDataTransferHorizontal", "folder-add": "FolderAdd", up: "ArrowUp01",
 };
 // The Files place's row glyphs: only its lazy chunk imports them
 // (src/fileGlyphs.generated.ts), so they stay out of the entry chunk.

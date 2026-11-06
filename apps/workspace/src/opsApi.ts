@@ -173,6 +173,7 @@ export type PrepareRequest =
 export type CloneEndpoint = { endpoint: string; connection_key: string; type: ConnectionType; read_only: boolean };
 export type LifecyclePlan = {
   review_token?: string;
+  required_acknowledgement?: string | null;
   schema_version: "lifecycle-plan-1.0"; operation: LifecycleOperation;
   request: Facts; server: LifecycleServer; connection_key: string; tool: Tool;
   target: string; commands: string[]; checks: Verification[]; warnings: string[];
@@ -192,10 +193,10 @@ export type LifecycleJob = {
   result: LifecycleResult | null; error: string; policy?: OpsPolicy;
 };
 export function jobActive(job: LifecycleJob) { return job.state === "queued" || job.state === "running"; }
-export const readLifecycleTools = (connection: Connection, signal?: AbortSignal) => api<LifecycleTools>("lifecycle/tools", { connection, check_updates: true }, signal);
+export const readLifecycleTools = (connection: Connection, signal?: AbortSignal, checkUpdates = false) => api<LifecycleTools>("lifecycle/tools", { connection, check_updates: checkUpdates }, signal);
 export const checkUpgrade = (connection: Connection, target_version: string, prefer_shell: boolean, signal?: AbortSignal) => api<UpgradeReport>("lifecycle/upgrade-check", { connection, target_version, prefer_shell }, signal);
 export const prepareLifecycle = (connection: Connection, request: PrepareRequest, signal?: AbortSignal) => api<LifecyclePlan>("lifecycle/prepare", { connection, ...request }, signal);
-export const startLifecycle = (connection: Connection, plan: LifecyclePlan, typed_target: string, donor?: Connection) => api<LifecycleJob>("lifecycle/start", { connection, operation: plan.operation, plan, typed_target, donor, confirmed: true });
+export const startLifecycle = (connection: Connection, plan: LifecyclePlan, typed_target: string, donor?: Connection, typed_acknowledgement?: string) => api<LifecycleJob>("lifecycle/start", { connection, operation: plan.operation, plan, typed_target, donor, confirmed: true, ...(typed_acknowledgement ? { typed_acknowledgement } : {}) });
 export const readLifecycleJob = (connection: Connection, id: string, signal?: AbortSignal) => api<LifecycleJob>("lifecycle/status", { id, connection }, signal);
 export const cancelLifecycleJob = (connection: Connection, id: string) => api<LifecycleJob>("lifecycle/cancel", { id, connection });
 /** The jobs this myflames holds for the connection's endpoint (no database

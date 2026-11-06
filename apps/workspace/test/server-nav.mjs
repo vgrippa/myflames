@@ -1,3 +1,4 @@
+import { openRefreshMenu } from "./chrome-helpers.mjs";
 // The Server place's shell: the floating list of views (the default: the
 // view's title opens it, with keyboard, focus return and a marker for the
 // other views), docking it (persisted), the grouped sub-navigation (arrow
@@ -54,6 +55,17 @@ try {
   assert.ok(await page.$(".server-place.is-nav-collapsed"), "floating by default");
   assert.equal(await page.$(".server-source-wrap"), null, "no docked list");
   assert.equal(await page.$(".source-list"), null, "the list stays closed until the title opens it");
+  const beforeRefreshMenu = live().length;
+  assert.equal(await page.$('.place-toolbar [data-action="refresh-all"]'), null,
+    "only the view's Refresh is visible before a wider read");
+  await openRefreshMenu(page);
+  assert.match(await text('.view-refresh-menu'), /Refresh every view on .+ \(⌥⌘R\).*17 sections/s,
+    "the secondary action names its connection, shortcut and scope");
+  assert.equal(await page.$eval('.view-refresh-menu [data-action="refresh-all"]', e => e.getAttribute('role')), 'menuitem');
+  assert.equal(live().length, beforeRefreshMenu, "opening Refresh options reads nothing");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector('.view-refresh-menu'));
+  await page.waitForFunction(() => document.activeElement?.getAttribute('aria-label') === 'Refresh options');
   // The view's title is the switcher: one name, a pop-up button at the title's size and weight.
   assert.deepEqual(await switcher("health"), { expanded: "false", popup: "dialog", name: "Health", text: "Health", marker: "",
     heading: "health-title", size: "15px", weight: "600" });
@@ -429,6 +441,7 @@ try {
   assert.equal(tableReads.at(-1).all_schemas, true);
   assert.equal(tableReads.at(-1).fresh, true);
   const beforeRefresh = tableReads.length;
+  await openRefreshMenu(page);
   await page.click('.server-place [data-action="refresh-all"]');
   // Unopened sections refresh too; unsupported mocks fail independently.
   await page.waitForFunction(() => !document.querySelector(".refresh-all-stop"));
@@ -438,6 +451,7 @@ try {
   await page.click("#tables-schemas");
   await page.locator(".perf-picker-option ::-p-text(small)").click();
   await page.keyboard.press("Escape");
+  await openRefreshMenu(page);
   await page.click('.server-place [data-action="refresh-all"]');
   await page.waitForFunction(() => !document.querySelector(".refresh-all-stop"));
   assert.deepEqual(tableReads.at(-1).schemas, ["small"]);

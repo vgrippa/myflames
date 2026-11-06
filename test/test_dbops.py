@@ -298,6 +298,56 @@ class TestSelectFunctionSafety(unittest.TestCase):
 class TestClassify(unittest.TestCase):
     maxDiff = None
 
+    def test_native_explain_formats_are_reads_under_both_policies(self):
+        statements = (
+            "SELECT REPLACE(name, 'a', 'b'), INSERT(name, 1, 1, 'x') FROM t",
+            "SELECT CAST(name AS CHAR CHARACTER SET utf8mb4) FROM t",
+            "UPDATE t SET v = 2",
+            "DELETE FROM t", "INSERT INTO t VALUES (1)", "REPLACE INTO t VALUES (1)",
+            "TABLE t", "(SELECT 1)", "CREATE TABLE t (id INT)",
+        )
+        for prefix in ("EXPLAIN ", "EXPLAIN FORMAT=TRADITIONAL ", "EXPLAIN FORMAT=TREE ", "EXPLAIN FORMAT=JSON "):
+            for sql in statements:
+                with self.subTest(sql=prefix + sql):
+                    verdict = dbops.classify(prefix + sql)
+                    self.assertEqual(verdict["kind"], dbops.KINDS[0])
+                    self.assertEqual(verdict["kind"], "read")
+                    for policy in ("production", "development"):
+                        self.assertEqual(dbops.decide(verdict, policy, read_only=True)["action"], "allow")
+        # Measured execution retains its inner statement's write classification.
+        self.assertEqual(dbops.classify("EXPLAIN ANALYZE DELETE FROM t")["kind"], "risky")
+
+    def test_explain_keeps_the_expression_checks_planning_evaluates(self):
+        """Planning materializes a derived table without tables (verified on
+        MySQL 9.7: EXPLAIN of (SELECT GET_LOCK(...)) holds the lock after), so
+        the SELECT expression checks apply under EXPLAIN and DESCRIBE too."""
+        cases = (
+            ("EXPLAIN SELECT * FROM (SELECT GET_LOCK('m', 0)) a", "write", "lock"),
+            ("EXPLAIN FORMAT=TRADITIONAL SELECT * FROM (SELECT RELEASE_ALL_LOCKS()) a", "write", "lock"),
+            ("DESCRIBE SELECT * FROM (SELECT attacker.f()) a", "risky", "unknown"),
+            ("EXPLAIN FORMAT=JSON DELETE FROM t WHERE id = db.f()", "risky", "unknown"),
+            ("EXPLAIN FORMAT=TREE SELECT @x := 1", "write", "session"),
+            ("EXPLAIN SELECT NEXTVAL(s)", "write", "sequence"),
+            ("EXPLAIN SELECT * FROM t FOR UPDATE", "write", "locking_read"),
+            ("EXPLAIN INSERT INTO t (id) VALUES (f())", "risky", "unknown"),
+            ("EXPLAIN INSERT INTO t (id) SELECT GET_LOCK('m', 0)", "write", "lock"),
+        )
+        for sql, kind, category in cases:
+            with self.subTest(sql=sql):
+                verdict = dbops.classify(sql)
+                self.assertEqual((verdict["kind"], verdict["category"]), (kind, category))
+                self.assertIn("EXPLAIN evaluates constant expressions", verdict["reasons"][0])
+                self.assertNotEqual(dbops.decide(verdict, "development", read_only=True)["action"], "allow")
+        # An explained INSERT INTO or SELECT ... INTO writes nothing.
+        # A target column list is names, not a call.
+        for sql in ("EXPLAIN INSERT INTO t VALUES (1)", "EXPLAIN SELECT a INTO @x FROM t",
+                    "EXPLAIN INSERT INTO t (id) VALUES (1)", "EXPLAIN REPLACE INTO db.t (a, `b c`) VALUES (1, 2)",
+                    "EXPLAIN INSERT IGNORE INTO t PARTITION (p0) (id) SELECT id FROM u",
+                    "EXPLAIN INSERT INTO t (id) VALUES (1) ON DUPLICATE KEY UPDATE v = VALUES(v)",
+                    "EXPLAIN SELECT COUNT(*), MAX(id) FROM t WHERE created > NOW()", "DESCRIBE t"):
+            with self.subTest(sql=sql):
+                self.assertEqual(dbops.classify(sql)["kind"], "read")
+
     def test_handler_open_requires_review_and_read_close_stay_available(self):
         """Both engines give HANDLER OPEN's metadata lock explicit duration."""
         reason = ('HANDLER OPEN holds a metadata lock on the table until '

@@ -177,6 +177,12 @@ class _LocalDirectory(object):
         self.close()
 
 
+def local_transfers_available():
+    """Whether uploads and downloads can run here: they need POSIX directory
+    descriptors and O_NOFOLLOW (Windows fails closed; the UI says so)."""
+    return os.name == 'posix' and hasattr(os, 'O_NOFOLLOW') and os.open in os.supports_dir_fd
+
+
 def _check_paths(paths, label):
     if not isinstance(paths, list) or not paths or any(not isinstance(p, str) for p in paths):
         raise ValueError('%s must be a non-empty list of file paths.' % label)

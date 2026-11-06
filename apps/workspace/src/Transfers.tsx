@@ -1,9 +1,9 @@
-// The Transfers panel of the Files browser: the transfer jobs of every SSH
-// connection, read once on open and then every second while any job is
-// queued or running (one request at a time, paused in a hidden tab), shown
-// for this connection or for all of them, with progress, Cancel, Retry and
-// Clear finished. A job that leaves the active states is reported once, so
-// the browser can refresh the folder it wrote into.
+// The Transfers panel of the File transfer browser: the transfer jobs of every
+// SSH connection, read once on open, on window focus, and then every second
+// while any job is queued or running (one request at a time, paused in a hidden
+// tab), shown for this connection or for all of them, with progress, Cancel,
+// Retry and Clear finished. A job that leaves the active states is reported
+// once, so the browser can refresh the folder it wrote into.
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Icon } from "./components";
 import {
@@ -69,7 +69,14 @@ function followTransfers(poll: (signal: AbortSignal) => Promise<boolean>): Follo
     if (document.hidden) request?.abort();
     else if (!request) void run();
   };
+  const focus = () => {
+    if (!document.hidden && !request) {
+      window.clearTimeout(timer);
+      void run();
+    }
+  };
   document.addEventListener("visibilitychange", visibility);
+  window.addEventListener("focus", focus);
   void run();
   return {
     wake: () => {
@@ -85,6 +92,7 @@ function followTransfers(poll: (signal: AbortSignal) => Promise<boolean>): Follo
       window.clearTimeout(timer);
       request?.abort();
       document.removeEventListener("visibilitychange", visibility);
+      window.removeEventListener("focus", focus);
     },
   };
 }

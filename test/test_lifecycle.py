@@ -439,6 +439,64 @@ class LifecycleTests(unittest.TestCase):
         self.assertFalse(tools['tools']['mysql']['available'])
         self.assertFalse(lc.detect_tools(path=str(empty), common_dirs=())['tools']['mysqldump']['available'])
 
+    def test_probe_cache_reuses_completed_probes_and_returns_independent_reports(self):
+        self.stop_detect()
+        with mock.patch.object(lc.subprocess, 'run', wraps=lc.subprocess.run) as run:
+            first = lc.detect_tools(path=str(self.bin), common_dirs=())
+            first['tools']['mysqlsh']['version_tuple'][0] = 999
+            second = lc.detect_tools(path=str(self.bin), common_dirs=())
+        self.assertEqual(run.call_count, 0, 'setUp already probed these unchanged binaries')
+        self.assertNotEqual(second['tools']['mysqlsh']['version_tuple'][0], 999)
+
+    def test_probe_cache_expires_and_explicit_refresh_reprobes(self):
+        self.stop_detect()
+        with mock.patch.object(lc.time, 'monotonic', return_value=10 ** 12), \
+                mock.patch.object(lc.subprocess, 'run', wraps=lc.subprocess.run) as run:
+            lc.detect_tools(path=str(self.bin), common_dirs=())
+            self.assertEqual(run.call_count, len(lc.TOOLS))
+            lc.detect_tools(path=str(self.bin), common_dirs=())
+            self.assertEqual(run.call_count, len(lc.TOOLS))
+            lc.detect_tools(path=str(self.bin), common_dirs=(), refresh=True)
+            self.assertEqual(run.call_count, 2 * len(lc.TOOLS))
+
+    def test_probe_cache_never_remembers_timeouts_or_missing_tools(self):
+        self.stop_detect()
+        (self.bin / 'mysqlsh').write_text('#!' + sys.executable + '\nprint("mysqlsh 9.6.1")\n')
+        with mock.patch.object(lc, 'TOOLS', ('mysqlsh',)), \
+                mock.patch.object(lc.subprocess, 'run', side_effect=subprocess.TimeoutExpired('mysqlsh', 8)) as run:
+            for _ in range(2):
+                report = lc.detect_tools(path=str(self.bin), common_dirs=())
+                self.assertEqual(report['tools']['mysqlsh']['error'], 'TimeoutExpired')
+            self.assertEqual(run.call_count, 2)
+        (self.bin / 'mysqlsh').unlink()
+        self.assertFalse(lc.detect_tools(path=str(self.bin), common_dirs=())['tools']['mysqlsh']['available'])
+
+    def test_probe_cache_tracks_ctime_when_size_and_mtime_are_preserved(self):
+        self.stop_detect()
+        binary = self.bin / 'mysqlsh'
+        original = binary.stat()
+        source = '#!' + sys.executable + '\nprint("mysqlsh 9.6.1")\n'
+        binary.write_text(source)
+        lc.detect_tools(path=str(self.bin), common_dirs=())
+        original = binary.stat()
+        binary.write_text(source.replace('9.6.1', '9.6.2'))
+        os.utime(str(binary), ns=(original.st_atime_ns, original.st_mtime_ns))
+        report = lc.detect_tools(path=str(self.bin), common_dirs=())
+        self.assertEqual(report['tools']['mysqlsh']['version_tuple'], [9, 6, 2])
+
+    def test_probe_cache_shares_simultaneous_reads_and_bounds_entries(self):
+        from concurrent.futures import ThreadPoolExecutor
+        self.stop_detect()
+        binary = self.bin / 'mysqlsh'
+        binary.write_text('#!' + sys.executable + '\nprint("mysqlsh 9.6.1")\n')
+        with mock.patch.object(lc, 'TOOLS', ('mysqlsh',)), \
+                mock.patch.object(lc.subprocess, 'run', wraps=lc.subprocess.run) as run:
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                reports = list(pool.map(lambda _: lc.detect_tools(path=str(self.bin), common_dirs=()), range(4)))
+            self.assertEqual(run.call_count, 1, 'concurrent detection must share a cache miss')
+            self.assertTrue(all(r['tools']['mysqlsh']['available'] for r in reports))
+        self.assertLessEqual(len(lc._PROBE_CACHE), lc._PROBE_LIMIT)
+
     def test_option_file_escaping_and_permissions(self):
         password = 'a"b\\c\nd\r\t#;='
         connection = dict(CONNECTION, password=password)
@@ -1595,14 +1653,69 @@ class LifecycleTests(unittest.TestCase):
             plan = lc.prepare_restore(target, CONNECTION, self.output, tools=tools, existing_objects='drop')
             self.assertTrue(plan['ready'])
             with mock.patch.object(lc, 'detect_tools', return_value=tools):
-                result = lc.restore_job(CONNECTION, plan, True, plan['target'], self.audit(),
-                                        factory=lambda **kw: target, start=False).run()
-                self.assertEqual(result['state'], 'refused', result)
-                self.assertFalse((self.bin / 'restored').exists())
+                for acknowledgement in (None, '', 'wrong', plan['required_acknowledgement'] + ' '):
+                    with self.subTest(acknowledgement=acknowledgement):
+                        audit = self.audit()
+                        job = lc.restore_job(CONNECTION, plan, True, plan['target'], audit,
+                                             typed_acknowledgement=acknowledgement,
+                                             factory=lambda **kw: target, start=False)
+                        consume = mock.Mock()
+                        job.review_consumer = consume
+                        result = job.run()
+                        self.assertEqual(result['state'], 'refused', result)
+                        self.assertIn('system-table acknowledgement', result['error'])
+                        self.assertFalse((self.bin / 'restored').exists())
+                        consume.assert_not_called()
+                        record = next(r for r in self.store.audit_records() if r['id'] == audit.id)
+                        self.assertEqual(record['status'], 'refused')
+                        self.assertIn('nothing was sent', record['message'])
                 result = lc.restore_job(CONNECTION, plan, True, plan['target'], self.audit(),
                                         typed_acknowledgement=plan['required_acknowledgement'],
                                         factory=lambda **kw: target, start=False).run()
                 self.assertEqual(result['state'], 'done', result)
+
+    def test_api_system_table_acknowledgement_refuses_without_consuming_review(self):
+        from myflames import ui
+        self.make_dump()
+        path = Path(self.output, lc.MANIFEST)
+        manifest = json.loads(path.read_text(encoding='utf-8'))
+        manifest['scope'] = {'schemas': [], 'tables': []}
+        path.write_text(json.dumps(manifest))
+        target, tools = self.target(), self.native_tools()
+        registry = lc.LifecycleJobs()
+        self.addCleanup(registry.close)
+        workspace = types.SimpleNamespace(store=self.store, lifecycle=registry)
+        safety = dbops.connection_safety(None, CONNECTION)
+        options = ui._lifecycle_connection(CONNECTION, safety)
+        plan = lc.prepare_restore(target, options, self.output, tools=tools, existing_objects='drop')
+        self.assertTrue(plan['ready'], plan)
+        self.assertTrue(plan['required_acknowledgement'])
+        plan['review_token'] = ui._review_tokens(workspace).issue('lifecycle',
+            ui._review_identity(CONNECTION, workspace), ui._lifecycle_review_details(plan))
+        payload = {'connection': CONNECTION, 'operation': 'restore', 'plan': plan,
+                   'confirmed': True, 'typed_target': plan['target']}
+        with mock.patch.object(lc, 'detect_tools', return_value=tools), \
+                mock.patch.object(lc, '_connect', return_value=target):
+            for acknowledgement in (None, 'wrong'):
+                with self.subTest(acknowledgement=acknowledgement):
+                    request = dict(payload)
+                    if acknowledgement is not None:
+                        request['typed_acknowledgement'] = acknowledgement
+                    started = ui.api_response('/api/lifecycle/start', request, workspace)
+                    job = registry.get(started['id'])
+                    job.wait(5)
+                    result = job.snapshot()
+                    self.assertEqual(result['state'], 'refused', result)
+                    self.assertFalse((self.bin / 'restored').exists())
+                    record = next(r for r in self.store.audit_records()
+                                  if r['id'] == result['result']['audit_id'])
+                    self.assertEqual((record['surface'], record['status']), ('ui', 'refused'))
+            # The very same token still authorizes the unchanged reviewed plan.
+            request = dict(payload, typed_acknowledgement=plan['required_acknowledgement'])
+            started = ui.api_response('/api/lifecycle/start', request, workspace)
+            job = registry.get(started['id'])
+            job.wait(5)
+            self.assertEqual(job.snapshot()['state'], 'done', job.snapshot())
 
     def test_review_marker_redaction_does_not_disable_cancel(self):
         for password in ('a', '41'):

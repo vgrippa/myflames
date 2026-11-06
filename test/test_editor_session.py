@@ -60,6 +60,17 @@ PLAN_FAKE = r'''
         if upper == "ROLLBACK" and hasattr(self, "plan_read_only_before"):
             self.read_only = self.plan_read_only_before
             del self.plan_read_only_before
+        native = re.match(r"EXPLAIN(?: FORMAT=(TRADITIONAL|TREE))? (.*)$", text, re.S)
+        if native and not upper.startswith(("EXPLAIN FORMAT=JSON ", "EXPLAIN ANALYZE ")):
+            inner = native.group(2)
+            if "FROM tt" in inner and "tt" not in self.tables:
+                self.error(line, 1146, "42S02", "Table 'test.tt' doesn't exist")
+                return
+            if inner.startswith("CREATE "):
+                self.error(line, 1064, "42000", "Syntax error near 'CREATE' at line 1")
+                return
+            self.result(statement, ["id", "select_type", "session_value"], [["1", "SIMPLE", self.vars.get("v")]])
+            return
         plan = re.match(r"(?:EXPLAIN(?: ANALYZE)?|ANALYZE) FORMAT=JSON (.*)$", text, re.S)
         if plan:
             inner = plan.group(1)
@@ -695,6 +706,89 @@ class ProcessTests(unittest.TestCase):
                                confirm_token=result["confirmation"]["token"], **payload)
         return result
 
+    def test_native_explain_uses_tab_state_without_transaction_or_projection(self):
+        self.run_sql("CREATE TEMPORARY TABLE tt (id INT, v TEXT)")
+        self.run_sql("SET @v = 'kept'")
+        self.run_sql("SET SESSION sql_mode = 'NO_BACKSLASH_ESCAPES'")
+        self.run_sql("BEGIN")
+        session = self.registry.get("tab1")
+        before = (session.connection_id, session.in_transaction, session.sql_mode, session.safe_updates)
+        result = self.call("/api/editor/run", sql="SELECT * FROM tt", explain_format="table")
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(self.rows(result), [["1", "SIMPLE", "kept"]])
+        prefix = "EXPLAIN " if self.engine == "mariadb" else "EXPLAIN FORMAT=TRADITIONAL "
+        self.assertTrue(self.logged("tab1", prefix + "SELECT * FROM tt"))
+        statement = result["run"]["statements"][0]
+        self.assertEqual(statement["text"], "SELECT * FROM tt")
+        self.assertEqual(statement["sent"], prefix + "SELECT * FROM tt")
+        self.assertEqual(statement["kind"], "read")
+        self.assertEqual((session.connection_id, session.in_transaction, session.sql_mode, session.safe_updates), before)
+        # Another tab cannot see the temporary table; its server error is kept.
+        other = self.call("/api/editor/run", tab="fresh", sql="SELECT * FROM tt", explain_format="table")
+        self.assertEqual(other["run"]["error"]["code"], 1146)
+        # Safe updates does not reject the read in the application layer.
+        dml = self.call("/api/editor/run", sql="UPDATE tt SET v = 2", explain_format="table")
+        self.assertEqual(dml["status"], "complete")
+        self.assertTrue(self.logged("tab1", prefix + "UPDATE tt SET v = 2"))
+        self.assertEqual(self.call("/api/editor/history")["items"][0]["sql"], prefix + "UPDATE tt SET v = 2")
+        # Unsupported statements reach the server, preserving code and SQLSTATE.
+        failed = self.call("/api/editor/run", sql="CREATE TABLE nope (id INT)", explain_format="table")
+        self.assertEqual(failed["run"]["error"]["code"], 1064)
+        self.assertEqual(failed["run"]["error"]["sqlstate"], "42000")
+        self.assertNotIn("CREATE TABLE nope (id INT)", self.session_log())
+
+    def test_native_explain_read_only_is_sent_and_analyze_never_slips_in(self):
+        self.connection["read_only"] = True
+        result = self.call("/api/editor/run", sql="DELETE FROM t", explain_format="table")
+        self.assertEqual(result["status"], "complete")
+        self.assertTrue(result["session"]["read_only_transactions"])
+        for sql in ("ANALYZE SELECT 1", "/* note */ ANALYZE DELETE FROM t",
+                    "/*!80000 ANALYZE */ SELECT 1", "SELECT 1; DELETE FROM t",
+                    "DELIMITER $$\nSELECT 1; DELETE FROM t$$"):
+            with self.subTest(sql=sql):
+                reply = self.call("/api/editor/run", sql=sql, explain_format="table")
+                self.assertEqual(reply["status"], "invalid")
+        self.assertNotIn("DELETE FROM t", self.session_log())
+
+    def test_native_explain_with_planning_side_effects_is_reviewed(self):
+        # Planning materializes (SELECT GET_LOCK(...)): verified on MySQL 9.7,
+        # the explaining session holds the lock afterwards.
+        sql = "SELECT * FROM (SELECT GET_LOCK('myflames_probe', 0)) AS a"
+        self.save_profile(read_only=True)
+        refused = self.call("/api/editor/run", sql=sql, explain_format="table")
+        self.assertEqual(refused["status"], "refused")
+        session = self.registry.get("tab1")
+        if session is not None:
+            self.assertFalse(any("GET_LOCK" in line for line in self.session_log()))
+        self.call("/api/editor/close", discard=True)
+        self.save_profile(type="production")
+        asked = self.call("/api/editor/run", tab="tab2", sql=sql, explain_format="table")
+        self.assertEqual(asked["status"], "needs_confirmation")
+        # Reviewed before the tab's session exists (engine unknown, so MySQL's
+        # prefix); the run plans again with the session and asks again if the
+        # statement it would send differs (MariaDB's plain EXPLAIN).
+        [reviewed] = asked["confirmation"]["statements"]
+        self.assertTrue(reviewed.startswith("EXPLAIN ") and reviewed.endswith(sql), reviewed)
+        # A plain Explain on the same Production connection runs without asking.
+        self.assertEqual(self.call("/api/editor/run", tab="tab2", sql="SELECT 1", explain_format="table")["status"],
+                         "complete")
+
+    def test_native_explain_binds_digest_parameters_as_literals_only(self):
+        self.run_sql("CREATE TEMPORARY TABLE tt (id INT, v TEXT)")
+        prefix = "EXPLAIN " if self.engine == "mariadb" else "EXPLAIN FORMAT=TRADITIONAL "
+        value = "x' OR 1=1; DELETE FROM t -- "
+        result = self.call("/api/editor/run", sql="SELECT * FROM tt WHERE id = :id AND v = :v",
+                           explain_format="table", parameters={"id": 3, "v": value})
+        self.assertEqual(result["status"], "complete")
+        bound = "SELECT * FROM tt WHERE id = 3 AND v = CONVERT(X'%s' USING utf8mb4)" % value.encode("utf-8").hex()
+        self.assertTrue(self.logged("tab1", prefix + bound))
+        self.assertEqual(result["run"]["statements"][0]["sent"], prefix + bound)
+        self.assertEqual(result["run"]["statements"][0]["kind"], "read")
+        missing = self.call("/api/editor/run", sql="SELECT * FROM tt WHERE id = :id",
+                            explain_format="table", parameters={"v": 1})
+        self.assertEqual((missing["status"], missing["message"]), ("invalid", "Missing parameter: id"))
+        self.assertNotIn("DELETE FROM t", self.session_log())
+
     def test_plan_json_uses_the_tab_and_restores_settings_in_order(self):
         self.call("/api/editor/open")
         session = self.registry.get("tab1")
@@ -789,7 +883,7 @@ class ProcessTests(unittest.TestCase):
         self.call("/api/editor/open")
         session = self.registry.get("tab1")
         with self.assertRaises(ed.EditorError) as caught:
-            session.run_plan("SELECT PLAN_ERROR()", "explain")
+            session.run_plan("SELECT 'PLAN_ERROR()'", "explain")
         self.assertIn("1146", str(caught.exception))
         self.assertIn("[redacted]", str(caught.exception))
         self.assertNotIn(self.connection["password"], str(caught.exception))
@@ -804,7 +898,7 @@ class ProcessTests(unittest.TestCase):
         self.call("/api/editor/open")
         session = self.registry.get("tab1")
         with self.assertRaises(ed.EditorError):
-            session.run_plan("SELECT PLAN_DIE()", "explain")
+            session.run_plan("SELECT 'PLAN_DIE()'", "explain")
         self.assertTrue(session.ended)
         self.assertFalse(session.run_lock.locked())
         self.assertIsNotNone(session.proc.poll())
@@ -813,7 +907,7 @@ class ProcessTests(unittest.TestCase):
         self.call("/api/editor/open")
         session = self.registry.get("tab1")
         with self.assertRaisesRegex(ed.EditorError, "valid JSON"):
-            session.run_plan("SELECT PLAN_INVALID()", "explain")
+            session.run_plan("SELECT 'PLAN_INVALID()'", "explain")
         if self.engine == "mysql":
             self.assertEqual(self.session_log()[-2:], [ed.TAG + "ROLLBACK",
                                                       ed.TAG + "SET SESSION explain_json_format_version=1"])
@@ -2475,6 +2569,65 @@ class RunScopeTests(unittest.TestCase):
 
     def sends(self, payload, backslash=True):
         return [u["send"] for u in ed._plan_run(payload, self.session(backslash))["units"]]
+
+    def test_native_explain_scoping_formats_and_error_offsets(self):
+        sql = "SELECT 1;\nUPDATE t SET name = '😀';\nDELETE FROM t"
+        for engine, version in (("mysql", "8.0.16"), ("mariadb", "11.4.13")):
+            session = self.session(False)
+            session.engine, session.server_version = engine, version
+            for fmt in ("table", "json", "tree"):
+                payload = {"sql": sql, "cursor": sql.index("UPDATE") + 2, "explain_format": fmt}
+                if fmt == "tree" and engine == "mariadb":
+                    with self.assertRaisesRegex(ed.EditorError, "MySQL 8.0.16"):
+                        ed._plan_run(payload, session)
+                    continue
+                plan = ed._plan_run(payload, session)
+                unit = plan["units"][0]
+                prefix = "EXPLAIN " if engine == "mariadb" and fmt == "table" else "EXPLAIN FORMAT=%s " % {"table": "TRADITIONAL", "tree": "TREE", "json": "JSON"}[fmt]
+                self.assertEqual(unit["send"], prefix + "UPDATE t SET name = '😀'")
+                self.assertEqual(plan["verdict"]["kind"], "read")
+                position = ed.error_position("Syntax error near 'name' at line 1", unit, plan["offsets"])
+                self.assertEqual(position["offset"], sql.index("name"))
+                self.assertEqual((position["line"], position["column"]), (2, 14))
+        session = self.session()
+        session.server_version = "8.0.15"
+        with self.assertRaisesRegex(ed.EditorError, "MySQL 8.0.16"):
+            ed._plan_run({"sql": "SELECT 1", "explain_format": "tree"}, session)
+        with self.assertRaisesRegex(ed.EditorError, "Choose Table"):
+            ed._plan_run({"sql": "SELECT 1", "explain_format": "invalid"}, session)
+
+    def test_native_explain_preserves_selection_and_existing_wrappers(self):
+        sql = "SELECT 1;\nSELECT REPLACE(name, 'a', 'b') FROM t;"
+        start = sql.index("SELECT REPLACE")
+        plan = ed._plan_run({"sql": sql, "selection": {"start": start, "end": len(sql)},
+                             "explain_format": "table"}, self.session())
+        self.assertEqual(plan["units"][0]["send"], "EXPLAIN FORMAT=TRADITIONAL " + sql[start:-1])
+        for inner in ("EXPLAIN ANALYZE SELECT 1", "EXPLAIN FORMAT=JSON SELECT 1", "DESCRIBE SELECT 1",
+                      "UPDATE a JOIN b USING(id) SET a.v = 2", "SELECT * FROM t FOR UPDATE"):
+            plan = ed._plan_run({"sql": inner, "explain_format": "table"}, self.session())
+            self.assertEqual(plan["units"][0]["send"], "EXPLAIN FORMAT=TRADITIONAL " + inner)
+
+    def test_native_explain_parameters_fill_placeholders_outside_literals(self):
+        explain = lambda sql, parameters, backslash=True: self.sends(
+            {"sql": sql, "explain_format": "table", "parameters": parameters}, backslash)
+        self.assertEqual(explain("SELECT * FROM t WHERE a = :a AND b IN (:b) AND c = ':a' /* :a */ AND d = @x",
+                                 {"a": -7, "b": [1, None, True, "é"]}),
+                         ["EXPLAIN FORMAT=TRADITIONAL SELECT * FROM t WHERE a = -7 AND b IN (1, NULL, 1, "
+                          "CONVERT(X'c3a9' USING utf8mb4)) AND c = ':a' /* :a */ AND d = @x"])
+        # A statement without placeholders is sent as written, and Run never binds.
+        self.assertEqual(explain("SELECT 1", {"a": 1}), ["EXPLAIN FORMAT=TRADITIONAL SELECT 1"])
+        self.assertEqual(self.sends({"sql": "SELECT :a", "parameters": {"a": 1}}), ["SELECT :a"])
+        for parameters, message in (([1], "JSON object"), ({"a": []}, "empty list"),
+                                    ({"a": {"b": 1}}, "finite number"), ({"a": float("nan")}, "finite number"),
+                                    ({}, "Missing parameter: a")):
+            with self.subTest(parameters=parameters), self.assertRaisesRegex(ed.EditorError, message):
+                explain("SELECT :a", parameters)
+        # Strings end at different places with and without backslash escapes:
+        # binding would guess, so it is refused.
+        with self.assertRaisesRegex(ed.EditorError, "NO_BACKSLASH_ESCAPES"):
+            explain("SELECT 'it\\'s', :a", {"a": 1})
+        self.assertEqual(explain("SELECT 'it''s', :a", {"a": 1}, backslash=False),
+                         ["EXPLAIN FORMAT=TRADITIONAL SELECT 'it''s', 1"])
 
     def test_cursor_uses_the_sessions_backslash_reading(self):
         sql = "SELECT 'a\\'; INSERT INTO t VALUES (1); SELECT 'c';"
