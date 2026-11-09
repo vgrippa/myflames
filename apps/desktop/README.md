@@ -210,7 +210,8 @@ staples the app, and builds the DMG. The script then runs the packaged smoke,
 signs, notarizes and staples the DMG, checks that Gatekeeper accepts the app,
 the DMG and the app inside the mounted DMG as notarized, refuses a DMG over the
 150 MiB in-app update download limit (`myflames/app_update.py`), and writes
-`<name>.sha256` beside it in `dist/`. Attach both to the GitHub release.
+`<name>.sha256` beside it in `dist/`. Attach both to the GitHub release, before
+the update zip, as AGENTS.md "Release sync" describes.
 
 Notarization uploads the build to Apple and usually takes a few minutes per
 submission. When Apple rejects one, `xcrun notarytool log <id> --keychain-profile

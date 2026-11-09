@@ -1,0 +1,124 @@
+name: Docs and release sync
+
+# Keeps the CHANGELOG, the release notes and the release files in step with the
+# code (AGENTS.md "Release sync", DEVELOPER_REFERENCE "Release sync").
+#
+# - pull_request: a change to user-facing code (apps/workspace/src, apps/desktop
+#   outside test/, myflames outside tests and ui_assets) needs a CHANGELOG.md
+#   entry, unless the PR has the "no-changelog" label. A PR that changes the
+#   version in apps/desktop/package.json must be a complete release:
+#   scripts/check_release_sync.py VERSION.
+# - release (published), or run by hand for a tag: the release notes become
+#   the CHANGELOG section (scripts/release_notes.py), and the release must carry
+#   the DMG, the macOS update zip and the Windows installer, each with its
+#   .sha256, the DMG uploaded before the zip (scripts/check_release_assets.py).
+
+on:
+  pull_request:
+    branches: [master]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to check and sync, for example v3.3.4"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  changelog:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # The merge commit and its first parent, the base branch.
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: CHANGELOG entry for user-facing changes
+        env:
+          NO_CHANGELOG: ${{ contains(github.event.pull_request.labels.*.name, 'no-changelog') }}
+        run: |
+          changed=$(git diff --name-only HEAD^1 HEAD)
+          user_facing=$(printf '%s\n' "$changed" \
+            | grep -E '^(apps/workspace/src/|apps/desktop/|myflames/)' \
+            | grep -Ev '^(apps/desktop/test/|myflames/ui_assets/)' \
+            | grep -Ev '(^|/)tests?/|(^|/)test_[^/]*\.py$' || true)
+          if [ -z "$user_facing" ]; then
+            echo "No user-facing code changed."
+          elif printf '%s\n' "$changed" | grep -qx 'CHANGELOG.md'; then
+            echo "User-facing code changed and CHANGELOG.md has an entry."
+          elif [ "$NO_CHANGELOG" = "true" ]; then
+            echo "User-facing code changed without a CHANGELOG.md entry; the PR has the no-changelog label."
+          else
+            echo "::error file=CHANGELOG.md::User-facing code changed without a CHANGELOG.md entry. Add one under [Unreleased], or label the PR no-changelog when users see no difference."
+            printf '%s\n' "$user_facing"
+            exit 1
+          fi
+      - name: A version change is a complete release
+        run: |
+          read_version() { python3 -c 'import json, sys; print(json.load(sys.stdin)["version"])'; }
+          before=$(git show HEAD^1:apps/desktop/package.json | read_version)
+          after=$(read_version < apps/desktop/package.json)
+          if [ "$before" = "$after" ]; then
+            echo "The desktop version stays $after."
+          else
+            echo "The desktop version changes from $before to $after."
+            python3 scripts/check_release_sync.py "$after"
+          fi
+
+  release:
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - name: Release tag
+        run: |
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'; then
+            echo "::error::Not a release tag: $TAG (expected vX.Y.Z)."
+            exit 1
+          fi
+          echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Release notes are the CHANGELOG section
+        run: |
+          if ! python3 scripts/release_notes.py "$VERSION" > "$RUNNER_TEMP/notes.md"; then
+            echo "::error file=CHANGELOG.md::CHANGELOG.md at $TAG has no dated, non-empty section for $VERSION; the release notes were left as they are."
+            exit 1
+          fi
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/current.md"
+          if python3 - "$RUNNER_TEMP/notes.md" "$RUNNER_TEMP/current.md" <<'EOF'
+          import sys
+          notes, current = (open(p, encoding="utf-8").read().replace("\r\n", "\n").strip() for p in sys.argv[1:])
+          sys.exit(0 if notes == current else 1)
+          EOF
+          then
+            echo "The release notes already match CHANGELOG.md."
+          else
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/notes.md"
+            echo "Replaced the release notes with the CHANGELOG.md section for $VERSION."
+          fi
+      - name: Release files and upload order
+        # Also when the notes step failed, so one run reports both problems.
+        if: ${{ !cancelled() && env.VERSION != '' }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > "$RUNNER_TEMP/release.json"
+          python3 scripts/check_release_assets.py "$VERSION" "$RUNNER_TEMP/release.json"

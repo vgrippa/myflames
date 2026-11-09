@@ -7,9 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Release sync.** Releasing a new binary now brings the README screenshots, the GitHub release notes and the website documentation along, without a separate request. `npm run docs:screenshots` in `apps/workspace` captures the four README screenshots from the built workspace with fixture data and a frozen clock (two runs give the same images) and records the version and commit in `docs/screenshots/manifest.json`. `scripts/release_notes.py` prints a release's CHANGELOG section for `gh release create --notes-file`; `scripts/check_release_sync.py` fails unless the versions, that section, the screenshots and the handbook agree; `scripts/check_release_assets.py` checks the release files (DMG, update zip and Windows installer with their checksums, the DMG uploaded first). The **Docs and release sync** workflow asks for a CHANGELOG entry when a pull request changes user-facing code (label `no-changelog` to skip), runs the release check when the version changes, and when a release is published sets its notes from the CHANGELOG and checks its files. AGENTS.md "Release sync" lists the steps; the website syncs itself hourly, and Lovable's Publish stays manual.
+
 ### Changed
 
-- **README screenshots show myflames 3.3.3.** Home, Visual Explain, Query editor and Server Health were captured again from the 3.3.3 workspace (they showed 3.1.1). The website's documentation and homepage copy them from `docs/screenshots/`.
+- **README screenshots show myflames 3.3.3.** Home, Visual Explain, Query editor and Server Health were captured again from the 3.3.3 workspace (they showed 3.1.1), now by `npm run docs:screenshots`. The website's documentation and homepage copy them from `docs/screenshots/`.
 
 ## [3.3.3] - 2026-11-09
 
