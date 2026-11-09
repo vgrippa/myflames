@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/demo-db.sh
 #
-# Start a local MySQL demo server for trying live capture and `myflames ui`.
+# Start a local MySQL demo server to connect the myflames app to.
 # Loads three databases and creates a read-only `demo` user:
 #
 #   testdb     the scripts/generate-fixtures.sh schema, filled by
@@ -26,7 +26,7 @@
 #
 # Requirements: Docker, openssl, curl
 
-set -euo pipefail
+set -Eeuo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 CONTAINER_NAME="${CONTAINER_NAME:-myflames-demo}"
@@ -40,6 +40,10 @@ EMPLOYEES_URL="https://github.com/datacharmer/test_db/archive/refs/heads/master.
 
 log() { echo "[demo-db] $*" >&2; }
 
+# Client errors are hidden (they include the password warning), so say where
+# a failed start stopped.
+trap 'log "ERROR: setup failed at line $LINENO. Run \"$0 stop\" and start again."' ERR
+
 print_credentials() {
   # shellcheck disable=SC1090
   . "$CREDS_FILE"
@@ -47,19 +51,27 @@ print_credentials() {
 
 Demo database is ready ($MYSQL_IMAGE, container $CONTAINER_NAME).
 
-  Host:     127.0.0.1
-  Port:     $DEMO_PORT
-  User:     demo  (SELECT only)
-  Password: $DEMO_PASSWORD
+  Host:      127.0.0.1
+  Port:      $DEMO_PORT
+  User:      demo  (SELECT only)
+  Password:  $DEMO_PASSWORD
   Databases: $DEMO_DATASETS
 
 Credentials are stored in $CREDS_FILE.
 
-  myflames ui
-  myflames -h 127.0.0.1 -P $DEMO_PORT -u demo -p -D testdb \\
-    -e "SELECT u.id, SUM(o.total) AS spend FROM users u JOIN orders o ON o.user_id = u.id WHERE u.country = 'NZ' GROUP BY u.id ORDER BY spend DESC LIMIT 10" \\
-    --type workbench -o report.html
+In the myflames app, choose Add connection on Home and enter these details.
 EOF
+  case " $DEMO_DATASETS " in
+    *" testdb "*) cat <<'EOF'
+Values in testdb are skewed, so plans and timings change with the value
+queried. For example, compare country 'NZ' with 'US':
+
+  SELECT u.id, SUM(o.total) AS spend
+  FROM users u JOIN orders o ON o.user_id = u.id
+  WHERE u.country = 'NZ' GROUP BY u.id ORDER BY spend DESC LIMIT 10;
+EOF
+      ;;
+  esac
 }
 
 if [ "${1:-}" = "stop" ]; then
@@ -82,12 +94,22 @@ if docker ps -a --format '{{.Names}}' | grep -Fxq "$CONTAINER_NAME"; then
   exit 1
 fi
 
+# Check the dataset names before starting anything.
+[ -n "${DEMO_DATASETS// /}" ] || { log "ERROR: DEMO_DATASETS is empty."; exit 1; }
+for ds in $DEMO_DATASETS; do
+  case "$ds" in
+    testdb | sakila | employees) ;;
+    *) log "ERROR: unknown dataset '$ds' (expected testdb, sakila, employees)."; exit 1 ;;
+  esac
+done
+
 mkdir -p "$(dirname "$CREDS_FILE")"
 chmod 700 "$(dirname "$CREDS_FILE")"
 ROOT_PASSWORD="$(openssl rand -hex 12)"
 DEMO_PASSWORD="$(openssl rand -hex 8)"
 umask 077
-printf 'ROOT_PASSWORD=%s\nDEMO_PASSWORD=%s\n' "$ROOT_PASSWORD" "$DEMO_PASSWORD" > "$CREDS_FILE"
+printf "ROOT_PASSWORD=%s\nDEMO_PASSWORD=%s\nDEMO_DATASETS='%s'\n" \
+  "$ROOT_PASSWORD" "$DEMO_PASSWORD" "$DEMO_DATASETS" > "$CREDS_FILE"
 
 log "Starting $MYSQL_IMAGE on 127.0.0.1:$DEMO_PORT..."
 docker run -d --name "$CONTAINER_NAME" \
@@ -159,7 +181,6 @@ for ds in $DEMO_DATASETS; do
     testdb) load_testdb ;;
     sakila) load_sakila ;;
     employees) load_employees ;;
-    *) log "ERROR: unknown dataset '$ds' (expected testdb, sakila, employees)."; exit 1 ;;
   esac
 done
 
