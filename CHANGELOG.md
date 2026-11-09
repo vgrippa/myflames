@@ -15,6 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **README screenshots show myflames 3.3.3.** Home, Visual Explain, Query editor and Server Health were captured again from the 3.3.3 workspace (they showed 3.1.1), now by `npm run docs:screenshots`. The website's documentation and homepage copy them from `docs/screenshots/`.
 
+### Fixed
+
+- **Query editor toolbar labels no longer overlap.** With the schema browser closed in a 1440 px window and a server where Run analysis is unavailable (MySQL before 8.3), **Auto-commit** was drawn on top of the Run analysis note at the end of the toolbar. The toolbar now wraps onto another row whenever its items do not fit, at any width, and the transaction state keeps its full width. The note moves to the next row instead of being cut short and shows its whole sentence wherever one toolbar row can hold it; it ends with an ellipsis only in a narrower editor, such as the 720 px window (its tooltip keeps the full text).
+
+### Changed
+
+- **README screenshots show myflames 3.3.3.** Home, Visual Explain, Query editor and Server Health were captured again from the 3.3.3 workspace (they showed 3.1.1). The website's documentation and homepage copy them from `docs/screenshots/`.
+- **Larger demo database.** `scripts/demo-db.sh` loads a larger, skewed `testdb` (200,000 users, 2M orders, 6M order lines, 1M reviews) from `scripts/demo-db-seed.sql`, plus the `sakila` and `employees` sample databases, so demo queries take measurable time and plans change with the values queried. `DEMO_DATASETS` selects which databases to load.
+
 ## [3.3.3] - 2026-11-09
 
 ### Added

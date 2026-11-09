@@ -263,10 +263,14 @@ be in the environment of `myflames ui` and the CLI.
 store only), `vault` (the encrypted file), or `none` (turn remembering off; the
 checkbox is disabled).
 
-For a practice server, run `./scripts/demo-db.sh` (requires Docker). It starts
-MySQL 8.4 on `127.0.0.1:3406` with the `testdb` tables (users, orders,
-order_items, products, categories, reviews) and prints credentials for a
-read-only `demo` user.
+For a practice server, run `./scripts/demo-db.sh` (requires Docker and curl).
+It starts MySQL 8.4 on `127.0.0.1:3406` and prints credentials for a read-only
+`demo` user to add as a connection on Home. It loads `testdb` (users, orders,
+order_items, products, categories, reviews; about 9M rows with skewed values,
+from `scripts/demo-db-seed.sql`), MySQL's `sakila` sample, and the `employees`
+sample. The first start downloads the two samples and takes a few minutes. Set
+`DEMO_DATASETS` to load fewer, for example `DEMO_DATASETS=testdb`. Run
+`./scripts/demo-db.sh stop` to remove the container and its data.
 
 Use query tabs to keep drafts and name each query. Every tab has its own close button (shown on the active tab, on hover, and always on touch screens); a middle-click closes a tab, the tab on the left takes over, and the last tab stays.
 Right-click a tab (or focus it and press Shift+F10 or the context-menu key)
