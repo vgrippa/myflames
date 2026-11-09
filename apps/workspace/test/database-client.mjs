@@ -1,12 +1,13 @@
 // A missing database client (mysql/mariadb) is a typed, recoverable error:
 // the client-missing notice (with Choose client… and Try again, never the
-// --mysql-binary text) in Health, in the connection form's Test connection and
-// in Maintenance > Tools (which still lists the tools), and the Database
-// client dialog from Settings: the client in use, Detect, Use this one, a
-// refused path, and Use automatic detection. Mocked /api/client/*,
-// /api/connection/test and /api/lifecycle/tools; the real Python server for
-// the rest. Screenshots of the notice and the dialog at 1440 and 720 px,
-// light and dark.
+// --mysql-binary text) in Health, in the connection form's Test connection,
+// in Maintenance > Tools (which still lists the tools), in the Query editor
+// after a refused Run, and in the Users and roles inspector after a refused
+// account read; and the Database client dialog from Settings: the client in
+// use, Detect, Use this one, a refused path, and Use automatic detection.
+// Mocked /api/client/*, /api/connection/test, /api/lifecycle/tools,
+// /api/editor/* and /api/accounts/*; the real Python server for the rest.
+// Screenshots of the notice and the dialog at 1440 and 720 px, light and dark.
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -56,6 +57,16 @@ const h = await open("/api/live/health", "database-client", {
   "/api/client/detect": () => settingsAnswer(),
   "/api/connection/test": () => missing("Could not test the connection: "),
   "/api/lifecycle/tools": () => toolsAnswer,
+  "/api/editor/status": { status: 200, body: { status: "none", session: null, run: null } },
+  "/api/editor/preview": { status: 200, body: { status: "ready", statements: [],
+    aggregate: { state: "unknown", missing: [], reason: "This session's privileges are not verified.", warning: "" },
+    policy: { action: "confirm", text: "Review before running." } } },
+  "/api/editor/run": () => missing("Could not run the statement: "),
+  "/api/live/schemas": { status: 200, body: { schema_version: "schemas-1.0", engine: "mysql", server_version: "8.4.3", taken_at: "x", uptime_s: 1,
+    performance_schema: true, schemas: [{ name: "testdb", tables: 1, system: false }], user_tables: 1, all_limit: 2000, all_note: "", system: ["mysql"] } },
+  "/api/accounts/list": { status: 200, body: { schema_version: "accounts-1.0", engine: "mysql", version: "8.4.3", complete: true, warnings: [],
+    accounts: [{ name: "app", host: "%", role: false, locked: false }], role_grants: [], default_roles: [] } },
+  "/api/accounts/read": () => missing("Could not read the account: "),
 });
 const { page, state } = h;
 const shots = path.resolve(process.env.PERF_SHOTS || h.shots);
@@ -175,6 +186,43 @@ try {
   await page.waitForSelector('.server-view[data-view=maintenance] [data-client-missing]', { visible: true });
   assert.match(await h.text('.server-view[data-view=maintenance]'), /Server unreadable · Tools/);
   await noBinaryFlag("in Maintenance > Tools");
+
+  // 9. Query editor: a Run refused for a missing client shows the notice in
+  // the editor (not the bare text), and Try again runs the same statement.
+  await page.locator(".main-nav button ::-p-text(Query editor)").click();
+  await page.waitForSelector(".query-lab .editor-toolbar");
+  await page.locator('[aria-label="SQL editor"]').fill("SELECT 1");
+  await page.click("[data-action=run]");
+  const editorNotice = ".query-lab [data-client-missing]";
+  await page.waitForSelector(editorNotice, { visible: true });
+  assert.match(await h.text(editorNotice), /myflames needs the MySQL or MariaDB command-line client to read servers\./);
+  assert.match(await h.text(editorNotice), /Choose client…/);
+  assert.match(await h.text(editorNotice), /Try again/);
+  await noBinaryFlag("in the Query editor");
+  const editorRuns = () => state.other.filter((r) => r.path === "/api/editor/run");
+  const runsBefore = editorRuns().length;
+  await h.button("Try again", editorNotice + " ");
+  for (let i = 0; i < 100 && editorRuns().length === runsBefore; i++) await pause(50);
+  assert.equal(editorRuns().length, runsBefore + 1, "Try again runs the statement again");
+  assert.equal(editorRuns().at(-1).body.sql, "SELECT 1", "the same statement runs again");
+  await page.waitForSelector(editorNotice, { visible: true });
+
+  // 10. Users and roles: the inspector's account read refused for a missing
+  // client shows the notice there, and Try again reads the account again.
+  await h.server();
+  await h.view("accounts");
+  await page.waitForSelector(".accounts-view tbody tr[data-row-key]", { visible: true });
+  await page.click(".accounts-view tbody tr[data-row-key]");
+  const inspectorNotice = ".view-inspector [data-client-missing]";
+  await page.waitForSelector(inspectorNotice, { visible: true });
+  assert.match(await h.text(inspectorNotice), /myflames needs the MySQL or MariaDB command-line client to read servers\./);
+  assert.match(await h.text(inspectorNotice), /Choose client…/);
+  await noBinaryFlag("in the Users and roles inspector");
+  const accountReads = () => state.other.filter((r) => r.path === "/api/accounts/read").length;
+  const readsBefore = accountReads();
+  await h.button("Try again", inspectorNotice + " ");
+  for (let i = 0; i < 100 && accountReads() === readsBefore; i++) await pause(50);
+  assert.equal(accountReads(), readsBefore + 1, "Try again reads the account again");
 
   assert.deepEqual(h.errors, []);
   console.log(`Database client suite passed. Screenshots: ${shots}`);

@@ -2670,9 +2670,11 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
             # SSH failures (sftp.py) name their reason; other exceptions with a
             # reason attribute (UnicodeError, SSLError, URLError) are not codes.
             reason = getattr(exc, "reason", None) if isinstance(exc, ConnectorError) else None
-            if client_missing_error(exc) is not None:
-                self._send(400, {"error": request_error_text(exc, prefix=not isinstance(exc, ConnectorError)),
-                                 "code": "client-missing"})
+            missing = (client_missing_error(exc) if isinstance(
+                exc, (ConnectorError, ValueError, TypeError, KeyError, AttributeError, RecursionError, OverflowError))
+                else None)
+            if missing is not None:
+                self._send(400, {"error": str(missing), "code": "client-missing"})
             elif isinstance(reason, str) and reason:
                 self._send(400, {"error": request_error_text(exc, prefix=False), "code": reason})
             elif isinstance(exc, (ValueError, TypeError, KeyError, AttributeError, RecursionError, OverflowError)):

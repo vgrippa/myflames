@@ -132,10 +132,12 @@ Files folder, newest version first, `windowsClientDirectories` in `backend.cjs`)
 the MySQL and MariaDB installers do not add to PATH. Packaged app data is separate from development and CLI data.
 When no client is found, `connector.ClientMissingError` (a `ConnectorError`,
 `code = "client-missing"`) carries "myflames could not find the MySQL or MariaDB
-command-line client (mysql or mariadb)."; every refused workspace request it
-caused (found through `__cause__`/`__context__` by `connector.client_missing_error`,
-so wrappers such as Health's "Could not read the server status: " keep it) answers
-400 with `"code": "client-missing"`, and the CLI alone adds "Install it or pass
+command-line client (mysql or mariadb)."; workspace failures already eligible for
+400 text replies (`ConnectorError`, `ValueError`, `TypeError`, `KeyError`,
+`AttributeError`, `RecursionError`, `OverflowError`) retain this cause through
+`__cause__`/`__context__`, found by `connector.client_missing_error`, and answer
+400 with the client error's own text and `"code": "client-missing"`. Unexpected
+exceptions still answer with a generic 500, even with that cause. The CLI alone adds "Install it or pass
 --mysql-binary /path/to/mysql.". The workspace shows `ClientMissingNotice`
 (`ClientMissing.tsx`) for that code in every Server view's `ViewStatus`, Test
 connection, the Query editor tab and Maintenance > Tools, which keeps its tools
@@ -146,8 +148,10 @@ per stream, in `client_environment()`, naming mysql or mariadb, for a regular fi
 named `mysql`, `mariadb`, `mysql.exe` or `mariadb.exe`; `{"path": null}` clears;
 the workspace store keeps it) is `connector.set_default_binary` at server start
 and after each change, and `_resolve_binary` uses it after a per-connection
-`binary=` override and before PATH, probing it again when the file changes; a
-broken stored choice raises `ClientMissingError` ("The chosen database client is
+`binary=` override and before PATH, probing it again when the file changes. The
+chosen client serves server reads, the Query editor, reviewed writes and CSV
+import. Restore and clone use the client found by `lifecycle.detect_tools`.
+A broken stored choice raises `ClientMissingError` ("The chosen database client is
 unavailable…") instead of falling back. `POST /api/client/detect` lists usable
 clients on PATH and, on macOS and Linux, in `lifecycle.COMMON_BIN_DIRS`
 (deduplicated by real path, at most ten probed). Both answer `client-settings-1.0`
@@ -5079,14 +5083,21 @@ Read-only refuses before any connection opens. The review token
 file's size, mtime and SHA-256, the format, the target and its metadata
 fingerprint (table type, engine, every column, primary key, triggers,
 foreign keys, CHECK constraints), the mapping, the new columns, the method,
-the transaction mode, the NO_BACKSLASH_ESCAPES state and the statements; one
+the transaction mode, the NO_BACKSLASH_ESCAPES state, the resolved client path,
+its `client_limits_files` policy and the statements; one
 apply per plan, at most two imports at once. Apply re-checks, in order, the
 policy, the token, the file (size and mtime, then a full SHA-256), the saved
-password, the private session (the local-file capability only for LOAD DATA: a
+password, the client path and file policy, then the private session. A changed
+client path or file policy refuses the import and requires another review. Each
+plan or apply resolves the client once and uses that same path for the capability
+check and session start. A client or capability check failure refuses the import;
+it never falls back to `--local-infile=1`. Capability results are cached by file
+identity (`st_dev`, `st_ino`, `st_size`, `st_mtime_ns`), so a replacement at the
+same path is checked again. The local-file capability is only for LOAD DATA: a
 MySQL client gets `--local-infile=0 --load-data-local-dir=<private folder>`,
 so it sends no file outside that folder; the MariaDB client has only
 `--local-infile`, reported in `method.client_limits_files` with a plan
-warning), the
+warning. After the session opens, apply re-checks the
 target's metadata, the NO_BACKSLASH_ESCAPES state, `@@GLOBAL.local_infile`
 for LOAD DATA, the privileges and the saved policy again, consumes the
 token and writes the pending audit record before anything is sent; every

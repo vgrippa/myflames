@@ -157,11 +157,12 @@ function AccountsListView({ connection, disabled = false, onBack, selection, rep
     }
     selection.select(key, open);
   }
-  useEffect(() => {
+  const readDetail = useCallback(() => {
     if (!onScreen || !selected || other || !bound) return;
     const target = { ...selected, role: isRole(selected, bound.report) };
     void details.run(`account-detail:${accountKey(target)}`, "Reading account grants…", (c, signal) => readAccount(c, target, signal), setDetail, { force: true });
-  }, [selection.key, bound, other, details.run, onScreen]);
+  }, [selected, bound, other, details.run, onScreen]);
+  useEffect(() => { readDetail(); }, [readDetail]);
 
   async function prepare(target: AccountName, edits: AccountEdit[], password?: string) {
     if (operation.current || blocked || review) return;
@@ -276,7 +277,8 @@ function AccountsListView({ connection, disabled = false, onBack, selection, rep
       onPrepare={prepare} onForm={setForm} /> : undefined,
     body: currentDetail ? <AccountInspector key={`${reads.key}:${selection.key}:${currentDetail.fingerprint}:${editorRevision}`} detail={currentDetail} connection={connection} report={report!}
       blocked={blocked || (busy || review ? "Finish the current review first." : "")} pending={pending} onPending={setPending} onPrepare={prepare} /> :
-      details.loading || details.error ? <ViewStatus loading={details.loading} error={details.error} /> :
+      details.loading || details.error ? <ViewStatus loading={details.loading} error={details.error} errorCode={details.errorCode}
+        onRetry={details.error ? readDetail : undefined} /> :
       <p className="account-note">{other ? "Refresh to inspect this account on the connection in use." : "Select an account to read its grants."}</p> };
 
   return <ViewLayout id="accounts" title="Users and roles" className="accounts-view" onBack={onBack} otherConnection={other}

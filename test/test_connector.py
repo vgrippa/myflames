@@ -12,13 +12,16 @@ Integration tests that hit real MySQL / MariaDB containers live in
 import concurrent.futures
 import contextlib
 import json
+import ntpath
 import os
 import re
+import signal
 import stat
 import sys
 import subprocess
 import tempfile
 import threading
+import time
 import traceback
 import unittest
 from unittest import mock
@@ -406,7 +409,7 @@ class TestClientSelection(unittest.TestCase):
 
     def test_probe_checks_argv_and_isolates_credentials_and_login_files(self):
         body = ("import os, sys\n"
-                "assert sys.argv[1:] == ['--version']\n"
+                "assert sys.argv[1:] == ['--no-defaults', '--version']\n"
                 "assert 'MYSQL_PWD' not in os.environ and 'AWS_SECRET_ACCESS_KEY' not in os.environ\n"
                 "assert os.environ['HOME'] == os.environ['USERPROFILE']\n"
                 "assert not os.path.exists(os.environ['MYSQL_TEST_LOGIN_FILE'])\n"
@@ -444,6 +447,206 @@ class TestClientSelection(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Could not run'):
             connector.probe_client(path)
 
+    def test_writable_client_and_nonsticky_folder_are_refused_before_execution(self):
+        path = self.binary()
+        folder = os.path.dirname(path)
+        for file_mode, folder_mode in ((0o777, 0o755), (0o775, 0o755),
+                                       (0o755, 0o777), (0o755, 0o775)):
+            with self.subTest(file_mode=file_mode, folder_mode=folder_mode):
+                os.chmod(path, file_mode)
+                os.chmod(folder, folder_mode)
+                with mock.patch.object(connector, '_run_bounded') as run:
+                    with self.assertRaisesRegex(ValueError, 'can be changed by other users'):
+                        connector.probe_client(path)
+                    run.assert_not_called()
+
+    def _fake_stat(self, original, uid=None, mode=None):
+        fields = list(original)
+        if uid is not None:
+            fields[4] = uid
+        if mode is not None:
+            fields[0] = mode
+        return os.stat_result(fields)
+
+    def test_writable_sticky_folder_is_accepted_only_when_root_owns_it(self):
+        path = self.binary()
+        folder = os.path.dirname(path)
+        real_lstat = os.lstat
+        real_uid = os.geteuid()
+        user_uid = real_uid or 501
+        for owner, mode, accepted in ((0, 0o1777, True), (0, 0o777, False),
+                                      (user_uid, 0o1777, False), (user_uid + 1, 0o1777, False)):
+            def lstat(candidate, *args, **kwargs):
+                info = real_lstat(candidate, *args, **kwargs)
+                return self._fake_stat(info, owner, stat.S_IFDIR | mode) if candidate == folder else info
+            with self.subTest(owner=owner, mode=mode), \
+                    mock.patch.object(connector.os, 'geteuid', return_value=user_uid), \
+                    mock.patch.object(connector.os, 'lstat', side_effect=lstat):
+                if accepted:
+                    self.assertEqual(connector.probe_client(path)['path'], path)
+                else:
+                    with self.assertRaisesRegex(ValueError, 'can be changed by other users'):
+                        connector.probe_client(path)
+
+    def test_macos_admin_group_write_is_accepted_but_not_others(self):
+        # Homebrew's /opt/homebrew/bin and /Applications are writable by the
+        # admin group (gid 80), which can already act as root; other gids and
+        # any write for others stay refused, and only on macOS.
+        path = self.binary()
+        folder = os.path.dirname(path)
+        real_lstat = os.lstat
+        user_uid = os.geteuid() or 501
+        for platform, gid, mode, accepted in (('darwin', 80, 0o775, True), ('darwin', 20, 0o775, False),
+                                              ('darwin', 80, 0o777, False), ('linux', 80, 0o775, False)):
+            def lstat(candidate, *args, **kwargs):
+                info = real_lstat(candidate, *args, **kwargs)
+                if candidate != folder:
+                    return info
+                fields = list(self._fake_stat(info, user_uid, stat.S_IFDIR | mode))
+                fields[5] = gid
+                return os.stat_result(fields)
+            with self.subTest(platform=platform, gid=gid, mode=oct(mode)), \
+                    mock.patch.object(connector.sys, 'platform', platform), \
+                    mock.patch.object(connector.os, 'geteuid', return_value=user_uid), \
+                    mock.patch.object(connector.os, 'lstat', side_effect=lstat):
+                if accepted:
+                    self.assertEqual(connector.probe_client(path)['path'], path)
+                else:
+                    with self.assertRaisesRegex(ValueError, 'can be changed by other users'):
+                        connector.probe_client(path)
+
+    def test_other_users_client_is_refused(self):
+        path = self.binary()
+        real_lstat = os.lstat
+        def lstat(candidate, *args, **kwargs):
+            info = real_lstat(candidate, *args, **kwargs)
+            return self._fake_stat(info, os.geteuid() + 1) if candidate == path else info
+        with mock.patch.object(connector.os, 'lstat', side_effect=lstat), \
+                mock.patch.object(connector, '_run_bounded') as run:
+            with self.assertRaisesRegex(ValueError, 'can be changed by other users'):
+                connector.probe_client(path)
+            run.assert_not_called()
+
+    def test_cached_selection_rechecks_folder_permissions_before_receiving_secrets(self):
+        marker = os.path.join(self.temp.name, 'ran-with-credentials')
+        path = self.binary(body=('import sys\n'
+                                 'if "--version" in sys.argv:\n'
+                                 ' print("mysql 8.4")\n'
+                                 'else:\n'
+                                 ' open(%r, "w").close()' % marker))
+        connector.set_default_binary(path)
+        with MySQLConnection(host='localhost', password='private-secret') as conn:
+            self.assertEqual(conn._resolve_binary(), path)
+            os.chmod(os.path.dirname(path), 0o777)
+            with mock.patch.object(connector, 'probe_client', wraps=connector.probe_client) as probe:
+                with self.assertRaises(connector.ClientMissingError):
+                    conn.run('SELECT 1')
+                probe.assert_not_called()
+        self.assertFalse(os.path.exists(marker))
+
+    def test_trust_checks_symlink_owner_and_both_alias_and_target_parents(self):
+        path = self.binary(folder='target')
+        alias_folder = os.path.join(self.temp.name, 'alias')
+        os.mkdir(alias_folder)
+        link = os.path.join(alias_folder, 'mysql')
+        os.symlink(path, link)
+        self.assertEqual(connector.probe_client(link)['path'], link)
+        for folder in (alias_folder, os.path.dirname(path)):
+            os.chmod(folder, 0o777)
+            try:
+                with self.subTest(folder=folder), self.assertRaisesRegex(ValueError, 'can be changed'):
+                    connector.probe_client(link)
+            finally:
+                os.chmod(folder, 0o755)
+        real_lstat = os.lstat
+        def lstat(candidate, *args, **kwargs):
+            info = real_lstat(candidate, *args, **kwargs)
+            return self._fake_stat(info, os.geteuid() + 1) if candidate == link else info
+        with mock.patch.object(connector.os, 'lstat', side_effect=lstat):
+            with self.assertRaisesRegex(ValueError, 'can be changed by other users'):
+                connector.probe_client(link)
+
+    def test_detection_skips_untrusted_clients(self):
+        bad_file = self.binary(folder='bad-file')
+        bad_folder = self.binary(folder='bad-folder')
+        good = self.binary(folder='good')
+        os.chmod(bad_file, 0o777)
+        os.chmod(os.path.dirname(bad_folder), 0o777)
+        found = connector.detect_clients(path=os.pathsep.join(os.path.dirname(p)
+                                                               for p in (bad_file, bad_folder, good)),
+                                          common_dirs=())
+        self.assertEqual([entry['path'] for entry in found], [good])
+
+    def test_clearing_selection_discards_stale_path_cache(self):
+        automatic = self.binary(folder='automatic')
+        chosen = self.binary(folder='chosen')
+        replacement = self.binary(folder='replacement')
+        conn = MySQLConnection(host='localhost')
+        with mock.patch.dict(os.environ, {'PATH': os.path.dirname(automatic)}):
+            self.assertEqual(conn._resolve_binary(), automatic)
+        connector.set_default_binary(chosen)
+        self.assertEqual(conn._resolve_binary(), chosen)
+        os.unlink(automatic)
+        connector.set_default_binary(None)
+        with mock.patch.dict(os.environ, {'PATH': os.path.dirname(replacement)}):
+            self.assertEqual(conn._resolve_binary(), replacement)
+
+    def test_clearing_selection_invalidates_cache_even_without_an_intervening_resolution(self):
+        path = self.binary()
+        conn = MySQLConnection(host='localhost')
+        with mock.patch.dict(os.environ, {'PATH': os.path.dirname(path)}):
+            self.assertEqual(conn._resolve_binary(), path)
+        connector.set_default_binary(self.binary(folder='chosen'))
+        connector.set_default_binary(None)
+        with self.assertRaises(connector.ClientMissingError):
+            conn._resolve_binary()
+
+    def test_probe_does_not_hold_selection_lock(self):
+        marker = os.path.join(self.temp.name, 'probe-started')
+        path = self.binary(body='import time\nopen(%r, "w").close()\ntime.sleep(1)\nprint("mysql 8.4")' % marker)
+        connector.set_default_binary(path)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            resolving = pool.submit(connector._default_client_path)
+            deadline = time.monotonic() + 3
+            while not os.path.exists(marker) and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(os.path.exists(marker), 'the real version probe must be in flight')
+            reading = pool.submit(connector.default_binary)
+            self.assertEqual(reading.result(timeout=0.5), path)
+            self.assertFalse(resolving.done())
+            self.assertEqual(resolving.result(timeout=5), path)
+
+    def test_inflight_probe_cannot_publish_a_stale_selection_or_failure(self):
+        first = self.binary(folder='first')
+        second = self.binary('mariadb', folder='second')
+        for replacement in (second, None, first):
+            for failed in (False, True):
+                connector.set_default_binary(first)
+                entered, release = threading.Event(), threading.Event()
+                calls = []
+                original = connector.probe_client
+                def probe(path):
+                    calls.append(path)
+                    if len(calls) == 1:
+                        entered.set()
+                        if not release.wait(3):
+                            raise ValueError('test probe was not released')
+                        if failed:
+                            raise ValueError('the old selection failed')
+                    return original(path)
+                with self.subTest(replacement=replacement, failed=failed), \
+                        mock.patch.object(connector, 'probe_client', side_effect=probe), \
+                        concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    resolving = pool.submit(connector._default_client_path)
+                    try:
+                        self.assertTrue(entered.wait(2))
+                        # A -> A still needs a fresh probe after the new choice.
+                        connector.set_default_binary(replacement)
+                    finally:
+                        release.set()
+                    self.assertEqual(resolving.result(timeout=5), replacement)
+                    self.assertEqual(calls, [first] if replacement is None else [first, replacement])
+
     def test_real_probe_timeout_kills_and_reaps_the_process(self):
         import time
         path = self.binary(body='import time; time.sleep(30)')
@@ -460,6 +663,40 @@ class TestClientSelection(unittest.TestCase):
         self.assertLess(time.monotonic() - before, 8)
         self.assertEqual(len(children), 1)
         self.assertIsNotNone(children[0].poll())
+
+    def test_probe_deadline_kills_background_child_after_leader_exits(self):
+        late_marker = os.path.join(self.temp.name, 'background-survived')
+        child_code = 'import time\ntime.sleep(30)\nopen(%r, "w").close()' % late_marker
+        path = self.binary(body=('import subprocess, sys\n'
+                                 'subprocess.Popen([sys.executable, "-c", %r])\n'
+                                 'print("mysql 8.4", flush=True)\n' % child_code))
+        leaders = []
+        original = subprocess.Popen
+        def launch(*args, **kwargs):
+            self.assertTrue(kwargs.get('start_new_session'))
+            process = original(*args, **kwargs)
+            leaders.append(process)
+            return process
+        started = time.monotonic()
+        try:
+            with mock.patch.object(connector.subprocess, 'Popen', side_effect=launch), \
+                    mock.patch.object(connector.os, 'killpg', wraps=os.killpg) as killpg:
+                with self.assertRaisesRegex(ValueError, 'timed out after 5 seconds'):
+                    connector.probe_client(path)
+                killpg.assert_called_once_with(leaders[0].pid, signal.SIGKILL)
+            self.assertLess(time.monotonic() - started, 6.2)
+            self.assertEqual(len(leaders), 1)
+            self.assertEqual(leaders[0].returncode, 0, 'the leader already exited successfully')
+            self.assertFalse(os.path.exists(late_marker))
+            # Returning also proves the pipe workers joined: the sleeping
+            # child inherited both writers and would hold them for 30 s.
+        finally:
+            for leader in leaders:
+                try:
+                    os.killpg(leader.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                leader.wait(timeout=2)
 
     def test_detection_lists_usable_clients_deduplicates_and_searches_common_folders(self):
         path = self.binary()
@@ -481,7 +718,9 @@ class TestClientSelection(unittest.TestCase):
 
     def test_windows_names_are_case_insensitive_and_common_folders_are_skipped(self):
         path = self.binary('MYSQL.EXE')
-        with mock.patch.object(connector.os, 'name', 'nt'):
+        with mock.patch.object(connector.os, 'name', 'nt'), \
+                mock.patch.object(connector, '_run_bounded', return_value=_fake_completed(b'MySQL 8.4')), \
+                mock.patch.object(connector.ntpath, 'isabs', return_value=True):
             self.assertEqual(connector.probe_client(path)['name'], 'MYSQL.EXE')
             self.assertEqual(connector.detect_clients(path='', common_dirs=(os.path.dirname(path),)), [])
 
@@ -490,7 +729,7 @@ class TestClientSelection(unittest.TestCase):
             raise connector.ClientMissingError()
         except ConnectorError:
             try:
-                raise ValueError('a redacted wrapper') from None
+                raise ValueError('a redacted wrapper')
             except ValueError as wrapped:
                 self.assertIsInstance(connector.client_missing_error(wrapped), connector.ClientMissingError)
                 wrapped.__context__.__context__ = wrapped
@@ -499,6 +738,54 @@ class TestClientSelection(unittest.TestCase):
         unrelated.__context__ = unrelated
         self.assertIsNone(connector.client_missing_error(unrelated))
         self.assertIsNone(connector.client_missing_error(ValueError(connector.ClientMissingError.MESSAGE)))
+
+    def test_suppressed_context_and_unrelated_cleanup_failures_are_not_client_missing(self):
+        for kind in (PermissionError, OSError, RuntimeError):
+            try:
+                try:
+                    raise connector.ClientMissingError()
+                finally:
+                    raise kind('credential cleanup denied')
+            except kind as exc:
+                with self.subTest(kind=kind):
+                    self.assertIsNone(connector.client_missing_error(exc))
+        # A redaction wrapper ("from None", as ui._lifecycle_reraise does) keeps it.
+        try:
+            raise connector.ClientMissingError()
+        except ConnectorError:
+            try:
+                raise ValueError('redacted') from None
+            except ValueError as exc:
+                self.assertIsInstance(connector.client_missing_error(exc), connector.ClientMissingError)
+
+    def test_explicit_causes_take_priority_and_preserve_missing_errors(self):
+        missing = connector.ClientMissingError()
+        wrapper = RuntimeError('explicit wrapper')
+        wrapper.__cause__ = missing
+        self.assertIs(connector.client_missing_error(wrapper), missing)
+        wrapper = ValueError('new failure')
+        wrapper.__cause__ = OSError('actual cause')
+        wrapper.__context__ = missing
+        wrapper.__suppress_context__ = False
+        self.assertIsNone(connector.client_missing_error(wrapper))
+        wrapper.__cause__.__cause__ = wrapper
+        self.assertIsNone(connector.client_missing_error(wrapper))
+
+    def test_health_and_editor_wrappers_preserve_missing_client_type(self):
+        from myflames import editor_session, health
+        with self.assertRaises(ValueError) as caught:
+            health.health_report(MySQLConnection(host='localhost'), interval=1)
+        self.assertTrue(str(caught.exception).startswith('Could not read the server status: '))
+        self.assertIsInstance(connector.client_missing_error(caught.exception), connector.ClientMissingError)
+        registry = mock.Mock()
+        registry.open.side_effect = lambda tab, make, identity: make()
+        missing = connector.ClientMissingError()
+        with mock.patch.object(editor_session.EditorSession, 'start', side_effect=missing):
+            with self.assertRaises(ConnectorError) as caught:
+                editor_session._open_session(registry, 'tab', {'host': 'localhost'}, {},
+                                             {'type': 'development', 'read_only': False}, 'test', {})
+        self.assertIs(connector.client_missing_error(caught.exception), missing)
+        registry.remove.assert_called_once()
 
     def test_cli_hint_for_shared_failure_and_health_prefix_only(self):
         import io
@@ -525,6 +812,105 @@ class TestClientSelection(unittest.TestCase):
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertEqual(result.stdout, b'')
         self.assertIn(b' Install it or pass --mysql-binary /path/to/mysql.', result.stderr)
+
+
+class TestWindowsClientTrust(unittest.TestCase):
+    """Check Windows paths without starting a Windows executable on POSIX."""
+
+    def setUp(self):
+        windows_os = mock.Mock(wraps=os)
+        windows_os.name = 'nt'
+        windows_os.path = mock.Mock(wraps=ntpath)
+        windows_os.path.realpath.side_effect = ntpath.normpath
+        windows_os.path.isfile.return_value = True
+        windows_os.environ = {'ProgramFiles': r'C:\Program Files',
+                              'USERPROFILE': r'C:\Users\tester'}
+        self.windows_os = windows_os
+        windows_os.pathsep = ';'
+        windows_os.curdir = '.'
+        patch = mock.patch.object(connector, 'os', windows_os)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.real_run_bounded = connector._run_bounded
+        run = mock.patch.object(connector, '_run_bounded', return_value=_fake_completed(b'MySQL 8.4'))
+        self.run = run.start()
+        self.addCleanup(run.stop)
+
+    def test_only_local_exe_names_under_allowed_roots_are_accepted(self):
+        for path in (r'C:\Program Files\MySQL\bin\MYSQL.EXE',
+                     r'c:\PROGRAM FILES\MariaDB\mariadb.exe',
+                     r'C:\Users\tester\bin\mysql.exe'):
+            with self.subTest(path=path):
+                self.assertEqual(connector.probe_client(path)['path'], path)
+                self.assertEqual(self.run.call_args[0][0], [path, '--no-defaults', '--version'])
+                self.assertTrue(self.run.call_args[1]['kill_tree'])
+        for path in (r'\\server\share\mysql.exe', r'\\?\C:\Program Files\mysql.exe',
+                     r'\\.\C:\Program Files\mysql.exe', '//server/share/mysql.exe',
+                     r'C:\Program Files\MySQL\mysql', r'C:\Program Files\mariadb',
+                     r'C:\Program Files\mysql.cmd', r'C:\Program FilesOther\mysql.exe',
+                     r'C:\Users\tester-other\mysql.exe', r'C:\untrusted\mysql.exe',
+                     r'D:\Program Files\mysql.exe', r'C:\Program Files\..\untrusted\mysql.exe'):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                connector.probe_client(path)
+
+    def test_network_paths_are_refused_before_filesystem_access(self):
+        for path in (r'\\server\share\mysql.exe', r'\\?\C:\Program Files\mysql.exe',
+                     r'\\.\pipe\mysql.exe', '//server/share/mysql.exe'):
+            self.windows_os.path.realpath.reset_mock()
+            self.windows_os.path.isfile.reset_mock()
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                connector.probe_client(path)
+            self.windows_os.path.realpath.assert_not_called()
+            self.windows_os.path.isfile.assert_not_called()
+        self.run.assert_not_called()
+
+    def test_detection_skips_network_locations_before_filesystem_access(self):
+        self.assertEqual(connector.detect_clients(path=r'\\server\share', common_dirs=()), [])
+        self.windows_os.path.realpath.assert_not_called()
+        self.windows_os.path.isfile.assert_not_called()
+        self.run.assert_not_called()
+
+    def test_each_installation_root_is_accepted_and_unset_roots_are_not(self):
+        for key in ('ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'LOCALAPPDATA', 'USERPROFILE'):
+            self.windows_os.environ = {key: r'C:\Allowed'}
+            with self.subTest(key=key):
+                self.assertEqual(connector.probe_client(r'C:\Allowed\bin\mysql.exe')['name'], 'mysql.exe')
+        self.windows_os.environ = {}
+        with self.assertRaises(ValueError):
+            connector.probe_client(r'C:\Allowed\bin\mysql.exe')
+
+    def test_resolved_targets_and_roots_determine_containment(self):
+        path = r'C:\Program Files\MySQL\mysql.exe'
+        for destination in (r'C:\outside\mysql.exe', r'\\server\share\mysql.exe'):
+            self.windows_os.path.realpath.side_effect = lambda value: destination if value == path else value
+            with self.subTest(destination=destination), self.assertRaises(ValueError):
+                connector.probe_client(path)
+        self.windows_os.environ = {'ProgramFiles': r'C:\alias'}
+        self.windows_os.path.realpath.side_effect = lambda value: (
+            r'D:\actual' if value == r'C:\alias' else r'd:\ACTUAL\bin\mysql.exe')
+        self.assertEqual(connector.probe_client(r'C:\alias\bin\mysql.exe')['name'], 'mysql.exe')
+
+    def test_windows_process_group_and_taskkill_argument_list(self):
+        # Exercise transport setup/cleanup separately from the mocked probe.
+        process = mock.Mock()
+        process.pid = 1234
+        process.stdin = None
+        import io
+        process.stdout, process.stderr = io.BytesIO(b''), io.BytesIO(b'')
+        process.poll.return_value = None
+        with mock.patch.object(connector, '_run_bounded', wraps=self.real_run_bounded), \
+                mock.patch.object(connector.subprocess, 'CREATE_NEW_PROCESS_GROUP', 512, create=True), \
+                mock.patch.object(connector.subprocess, 'Popen', return_value=process) as popen, \
+                mock.patch.object(connector.subprocess, 'run') as taskkill:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                connector._run_bounded(['mysql.exe', '--version'], timeout=0, kill_tree=True)
+        self.assertEqual(popen.call_args[1]['creationflags'], 512)
+        self.assertNotIn('start_new_session', popen.call_args[1])
+        self.assertEqual(taskkill.call_args[0][0],
+                         [r'C:\Windows\System32\taskkill.exe', '/PID', '1234', '/T', '/F'])
+        self.assertFalse(taskkill.call_args[1].get('shell', False))
+        process.kill.assert_called_once()
+        process.wait.assert_called_once()
 
 
 class TestArgvConstruction(unittest.TestCase):

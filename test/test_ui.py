@@ -352,9 +352,54 @@ class TestDatabaseClientAPI(unittest.TestCase):
                 self.assertEqual(body['code'], 'client-missing')
                 self.assertIn(ClientMissingError.MESSAGE, body['error'])
                 self.assertNotIn('--mysql-binary', body['error'])
-                if route == '/api/live/health':
-                    self.assertTrue(body['error'].startswith('Could not read the server status: '), body)
+                self.assertEqual(body['error'], ClientMissingError.MESSAGE)
         self.assertEqual(self.workspace.editor.sessions, {})
+
+    def test_client_missing_wrappers_return_only_the_typed_cause(self):
+        from myflames import ui
+        from myflames.connector import ClientMissingError, ConnectorError
+        # myflames' redaction wrappers keep the typed cause; other types never inherit it.
+        for error_type in (ConnectorError, ValueError, TypeError, KeyError, AttributeError, RecursionError,
+                           OverflowError):
+            with self.subTest(error_type=error_type.__name__):
+                try:
+                    try:
+                        raise ClientMissingError('The chosen database client is unavailable.')
+                    except ClientMissingError:
+                        raise error_type('wrapper details must not reach the response') from None
+                except error_type as error:
+                    with mock.patch.object(ui, 'api_response', side_effect=error):
+                        status, body = self.post('/api/connection/test', {})
+                    if error_type in (ConnectorError, ValueError):
+                        self.assertEqual((status, body), (400, {'error': 'The chosen database client is unavailable.',
+                                                                'code': 'client-missing'}))
+                    else:
+                        self.assertNotIn('code', body)
+
+    def test_unexpected_errors_with_client_missing_context_stay_generic_500(self):
+        import io
+        from myflames import ui
+        from myflames.connector import ClientMissingError
+        for error_type in (RuntimeError, OSError):
+            with self.subTest(error_type=error_type.__name__):
+                try:
+                    try:
+                        raise ClientMissingError()
+                    except ClientMissingError:
+                        raise error_type('internal detail with secret-password')
+                except error_type as error:
+                    stderr = io.StringIO()
+                    with mock.patch.object(ui, 'api_response', side_effect=error), \
+                            mock.patch.object(ui.sys, 'stderr', stderr):
+                        status, body = self.post('/api/connection/test',
+                                                 {'connection': {'password': 'secret-password'}})
+                self.assertEqual(status, 500)
+                self.assertEqual(body, {'error': ui._unexpected_error_message('/api/connection/test')})
+                self.assertNotIn('internal detail', body['error'])
+                self.assertNotIn('client-missing', body)
+                self.assertIn('Traceback (most recent call last)', stderr.getvalue())
+                self.assertIn(error_type.__name__ + ': internal detail with [redacted]', stderr.getvalue())
+                self.assertNotIn('secret-password', stderr.getvalue())
 
     def test_other_refused_error_payloads_stay_unchanged(self):
         from myflames import ui

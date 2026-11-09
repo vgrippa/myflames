@@ -34,7 +34,8 @@ Endpoints (POST, JSON):
 
 The session is an :class:`editor_session.EditorSession` of its own (never a
 Query editor tab): a fresh client with the connection's options, the
-statements on stdin, ``--local-infile=1`` only for a LOAD DATA import. It
+statements on stdin, LOCAL INFILE enabled only for a LOAD DATA import and
+restricted to its private folder when the reviewed client supports it. It
 sends ``SET SESSION sql_mode`` with STRICT_ALL_TABLES added,
 ``lock_wait_timeout = 5`` and ``innodb_lock_wait_timeout = 5`` first, then
 CREATE TABLE (it commits on its own), then START TRANSACTION, the data
@@ -66,7 +67,7 @@ import time
 
 from . import csv_import as ci
 from . import dbops, editor_session as ed, privileges
-from .connector import ConnectorError
+from .connector import ClientMissingError, ConnectorError
 from .live import connection_options
 from .perf_common import literal
 from .review_tokens import ReviewTokens
@@ -522,7 +523,9 @@ _LOAD_DIR_LOCK = threading.Lock()
 def client_binary(full):
     """The mysql or mariadb client a session with these options runs."""
     from .connector import MySQLConnection
-    return MySQLConnection(**full)._resolve_binary()
+    # Pin symlinks too: an installer may replace the selected link between
+    # checking the client's file policy and starting the import session.
+    return os.path.realpath(MySQLConnection(**full)._resolve_binary())
 
 
 def limits_local_files(binary):
@@ -534,38 +537,51 @@ def limits_local_files(binary):
     files (sql-common/client.cc "Always send CLIENT_LOCAL_FILES"). The
     MariaDB client (client/mysql.cc) has only --local-infile, so with it the
     client sends any file the server asks for during that session."""
+    def identity():
+        info = os.stat(binary)
+        return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+
+    failure = ("The database client's local-file policy could not be checked. "
+               "Check the database client in Settings and review the import again.")
+    try:
+        key = identity()
+    except OSError as exc:
+        raise ClientMissingError(failure) from exc
     with _LOAD_DIR_LOCK:
-        if binary in _LOAD_DIR_SUPPORT:
-            return _LOAD_DIR_SUPPORT[binary]
-    supported = False
+        if key in _LOAD_DIR_SUPPORT:
+            return _LOAD_DIR_SUPPORT[key]
     home = tempfile.mkdtemp(prefix="myflames-client-")
     try:
         proc = subprocess.run([binary, "--no-defaults", "--help"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                               timeout=10, check=False, env=ed._clean_env(home))
+        if proc.returncode != 0 or identity() != key:
+            raise ClientMissingError(failure)
         text = (proc.stdout or b"").decode("utf-8", "replace")
         supported = bool(re.search(r"^\s*--load[-_]data[-_]local[-_]dir\b", text, re.M))
-    except (OSError, subprocess.SubprocessError):
-        supported = False
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ClientMissingError(failure) from exc
     finally:
         shutil.rmtree(home, ignore_errors=True)
     with _LOAD_DIR_LOCK:
-        _LOAD_DIR_SUPPORT[binary] = supported
+        _LOAD_DIR_SUPPORT[key] = supported
     return supported
 
 
-def load_flags(full, folder):
+def load_flags(full, folder, binary=None):
     """The client options of a LOAD DATA session and whether the client limits
     which files it sends to *folder*."""
-    try:
-        restricted = limits_local_files(client_binary(full))
-    except ConnectorError:
-        restricted = False
+    # A failed client check is not evidence that it lacks a folder limit.
+    # Propagate it before any client can connect with unrestricted LOCAL.
+    restricted = limits_local_files(binary=binary if binary is not None else client_binary(full))
     if restricted:
         return ("--local-infile=0", "--load-data-local-dir=" + folder), True
     return ("--local-infile=1",), False
 
 
-def _open_session(full, identity, safety, label, load_dir=None):
+def _open_session(full, identity, safety, label, load_dir=None, client_flags=None):
+    full = dict(full)
+    if "binary" not in full:
+        full["binary"] = client_binary(full)
     session = ed.EditorSession("csv-" + secrets.token_hex(12), identity, full, safety["type"], False, True,
                                PLAN_TTL, label)
     if load_dir:
@@ -577,7 +593,10 @@ def _open_session(full, identity, safety, label, load_dir=None):
         # server refuses LOAD DATA LOCAL otherwise (MySQL 3948, MySQL 5.7 1148,
         # MariaDB 4166, seen in the lab). Where the client can, only the private folder of
         # checked copies may be sent. This session runs only the reviewed import.
-        session.client_flags = load_flags(full, load_dir)[0]
+        # Apply passes the flags it checked against the review. Do not probe
+        # again here and silently choose a different file policy.
+        session.client_flags = (client_flags if client_flags is not None else
+                                load_flags(full, load_dir, binary=full["binary"])[0])
     session.start(full)
     return session
 
@@ -956,6 +975,8 @@ def _plan(payload, workspace, fill_password, imports, options, identity, safety,
     password = full.get("password")
     session = None
     try:
+        full["binary"] = client_binary(full)
+        limits_files = limits_local_files(binary=full["binary"]) if method == "load_data" else None
         session = _open_session(full, identity, safety, label)
         variables, global_vars, meta = _server_facts(session, target, method)
         actor = _actor(session)
@@ -1047,9 +1068,7 @@ def _plan(payload, workspace, fill_password, imports, options, identity, safety,
                "changes it; a DBA can turn it on with SET PERSIST local_infile = ON. INSERT batches work either way.")
     if method == "load_data" and not load_available:
         blockers.append(why)
-    limits_files = None
     if method == "load_data":
-        limits_files = load_flags(full, tempfile.gettempdir())[1]
         if limits_files:
             notes.append("The client may send only files from myflames' private folder of checked copies "
                          "(--load-data-local-dir), whatever the server asks for.")
@@ -1226,10 +1245,12 @@ def _plan(payload, workspace, fill_password, imports, options, identity, safety,
                "on_error": on_error, "backslash_escapes": backslash, "packet": packet, "budget": budget,
                "statements": {"create": create_sql, "data_summary": data_summary, "chunk_dir": chunk_dir},
                "rows": check["rows"], "engine": engine, "server_version": version,
+               "client_binary": full["binary"], "client_limits_files": limits_files,
                "exact_names": _exact_names(variables)}
     token = imports.tokens.issue(OPERATION, identity, details)
     internal = {"entry": dict(entry), "fmt": fmt, "target": target, "mapped": mapped, "width": width,
                 "method": method, "transaction": transaction, "on_error": on_error, "backslash": backslash,
+                "client_binary": full["binary"], "client_limits_files": limits_files,
                 "packet": packet, "budget": budget, "create": create_sql, "chunk_dir": chunk_dir,
                 "targets": targets, "sets": sets, "meta_fp": metadata_fingerprint(meta),
                 "transactional": transactional, "table_engine": table_engine, "rows_estimate": meta.get("rows_estimate"),
@@ -1543,8 +1564,20 @@ class _Import(object):
         self.password = self.full.get("password")
         self.audit.password = self.password
         try:
+            binary = client_binary(self.full)
+            self.full["binary"] = binary
+            flags, limits_files = (load_flags(self.full, plan["chunk_dir"], binary=binary)
+                                   if plan["method"] == "load_data" else ((), None))
+            # Refuse before connecting: even metadata reads must not open a
+            # session with a less restrictive LOCAL policy than was reviewed.
+            for reviewed in (self.record.details, plan):
+                if (binary != reviewed["client_binary"] or
+                        limits_files != reviewed["client_limits_files"]):
+                    self._refuse("The database client or its local-file policy changed after the review. "
+                                 "Review the import again; nothing was sent.", "changed")
             self.session = _open_session(self.full, self.identity, self.safety, self.label,
-                                         load_dir=plan["chunk_dir"] if plan["method"] == "load_data" else None)
+                                         load_dir=plan["chunk_dir"] if plan["method"] == "load_data" else None,
+                                         client_flags=flags)
         except ConnectorError as exc:
             self._refuse("Could not open the import session: %s. Nothing was sent." % _redact(exc, self.password),
                          "not_connected")

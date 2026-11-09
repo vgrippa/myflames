@@ -609,6 +609,9 @@ export const QueryLab = forwardRef<
   const [status, setStatus] = useState("");
   const [analysisWarning, setAnalysisWarning] = useState<{ tab: string; text: string } | null>(null);
   const [error, setError] = useState("");
+  // A Run or Explain refused for a missing database client keeps the failed
+  // request here, so the notice's Try again sends that same request again.
+  const [runClientMissing, setRunClientMissing] = useState<{ tabId: string; retry: () => void } | null>(null);
   // When a fresh-connection capture fails because the query names a table
   // the server does not have (a TEMPORARY table lives only in the tab's
   // session), the error notice offers one retry inside that session.
@@ -1601,6 +1604,7 @@ export const QueryLab = forwardRef<
    */
   function runSql(all: boolean, text?: string, caret?: number, explain = false, runTab = tab) {
     setSessionFallback(null);
+    setRunClientMissing(null);
     setError("");
     setStatus("");
     const t = runTab;
@@ -1694,6 +1698,7 @@ export const QueryLab = forwardRef<
           startedAt: null, endedAt: Date.now() } });
       } else {
         if (!isRun) patchRuntime(id, { sessionFeedback: { phase: "failed", message: err.message, code: isClientMissing(e) ? "client-missing" : undefined, startedAt: null, endedAt: Date.now() } });
+        else if (isClientMissing(e)) setRunClientMissing({ tabId: id, retry: () => void send(id, path, payload, meta) });
         else setError(err.message);
       }
       return;
@@ -1924,6 +1929,7 @@ export const QueryLab = forwardRef<
   function reconnect(id = tab.id) {
     const now = runtimeRef.current[id] || blankRuntime();
     if (now.running || now.operation || now.stopping) return;
+    setRunClientMissing(null);
     setError("");
     // Keep the ended-session banner (and its focused button) until the reply.
     void send(id, "editor/open", { tab_id: id, connection: connectionFor(tab), ...(now.safe === true ? { safe_updates: true } : {}) }, { runSql: "" });
@@ -3121,7 +3127,13 @@ export const QueryLab = forwardRef<
             {status && (
               <Notice variant="note">{status}</Notice>
             )}
-            {error && (
+            {runClientMissing && runClientMissing.tabId === tab.id ? (
+              <ClientMissingNotice onRetry={() => {
+                const retry = runClientMissing.retry;
+                setRunClientMissing(null);
+                retry();
+              }} />
+            ) : error && (
               <Notice variant="error" noticeKey={error}>
                 {error}
                 {sessionFallback && sessionFallback.tabId === tab.id && (

@@ -27,11 +27,37 @@ from myflames import csv_import_api as api  # noqa: E402
 from myflames import dbops, privileges, ui  # noqa: E402
 
 ORIGINAL_SEND = api._send
-from myflames.connector import ConnectorError  # noqa: E402
+ORIGINAL_CLIENT_BINARY = api.client_binary
+ORIGINAL_LIMITS_LOCAL_FILES = api.limits_local_files
+from myflames.connector import ClientMissingError, ConnectorError  # noqa: E402
 from myflames.workspace_store import WorkspaceStore  # noqa: E402
 from test_chart_data import validate  # noqa: E402
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
+
+
+def fake_client(folder, supports=True, fail_first_version=False):
+    """A real executable that logs argv; it never connects to a server."""
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, 'mysql')
+    log = os.path.join(folder, 'argv.jsonl')
+    marker = os.path.join(folder, 'version-checked')
+    source = '''import json, os, sys
+with open(%r, 'a') as handle:
+    handle.write(json.dumps(sys.argv[1:]) + '\\n')
+if sys.argv[1:] in (['--version'], ['--no-defaults', '--version']):
+    if %r and not os.path.exists(%r):
+        open(%r, 'w').close()
+        sys.exit(1)
+    print('mysql Ver 8.4.0')
+elif sys.argv[1:] == ['--no-defaults', '--help']:
+    print(%r)
+''' % (log, fail_first_version, marker, marker,
+       '  --load-data-local-dir=name' if supports else '  --local-infile')
+    with open(path, 'w', encoding='utf-8') as handle:
+        handle.write('#!' + sys.executable + '\n' + source)
+    os.chmod(path, 0o700)
+    return path, log
 
 
 def _schema(name):
@@ -200,10 +226,12 @@ class Base(unittest.TestCase):
         self.server = FakeServer()
         self.opened = []
 
-        def open_session(full, identity, safety, label, load_dir=None):
+        def open_session(full, identity, safety, label, load_dir=None, client_flags=None):
             if self.server.start_error:
                 raise ConnectorError(self.server.start_error)
             session = FakeSession(self.server, load_dir)
+            if client_flags is not None:
+                session.client_flags = client_flags
             self.opened.append((full, load_dir))
             return session
 
@@ -735,6 +763,12 @@ class VersionRuleTest(unittest.TestCase):
 
 
 class SessionFlagTest(unittest.TestCase):
+    def setUp(self):
+        self.home = tempfile.TemporaryDirectory()
+        self.addCleanup(self.home.cleanup)
+        api._LOAD_DIR_SUPPORT.clear()
+        self.addCleanup(api._LOAD_DIR_SUPPORT.clear)
+
     def test_local_files_only_for_load_data_and_only_from_the_folder(self):
         started = []
 
@@ -745,32 +779,188 @@ class SessionFlagTest(unittest.TestCase):
                 pass
 
             def start(self, options):
-                started.append(self.client_flags)
+                started.append((options['binary'], self.client_flags))
 
         with mock.patch.object(api.ed, 'EditorSession', Session), \
-                mock.patch.object(api, 'client_binary', lambda full: '/x/mysql'):
-            with mock.patch.object(api, 'limits_local_files', lambda binary: True):
+                mock.patch.object(api, 'client_binary', side_effect=['/x/mysql', '/x/mariadb', '/x/plain']) as resolve:
+            with mock.patch.object(api, 'limits_local_files', return_value=True) as limits:
                 api._open_session({}, 'id', {'type': 'production'}, 'x', load_dir='/tmp/myflames-csv-1-a')
-            with mock.patch.object(api, 'limits_local_files', lambda binary: False):
+                limits.assert_called_once_with(binary='/x/mysql')
+            with mock.patch.object(api, 'limits_local_files', return_value=False) as limits:
                 api._open_session({}, 'id', {'type': 'production'}, 'x', load_dir='/tmp/myflames-csv-1-a')
+                limits.assert_called_once_with(binary='/x/mariadb')
             api._open_session({}, 'id', {'type': 'production'}, 'x')
-        self.assertEqual(started, [('--local-infile=0', '--load-data-local-dir=/tmp/myflames-csv-1-a'),
-                                   ('--local-infile=1',), ()])
+            self.assertEqual(resolve.call_count, 3)
+        self.assertEqual(started, [('/x/mysql', ('--local-infile=0', '--load-data-local-dir=/tmp/myflames-csv-1-a')),
+                                   ('/x/mariadb', ('--local-infile=1',)), ('/x/plain', ())])
 
     def test_client_help_decides(self):
+        path, _ = fake_client(self.home.name)
+        mysql = SimpleNamespace(returncode=0, stdout=b'  --load-data-local-dir=name\n')
+        maria = SimpleNamespace(returncode=0, stdout=b'  --local-infile\n')
+        with mock.patch.object(api.subprocess, 'run', return_value=mysql) as run:
+            self.assertTrue(api.limits_local_files(path))
+            self.assertTrue(api.limits_local_files(path))
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual(run.call_args[0][0], [path, '--no-defaults', '--help'])
+        # A replacement at the same path must not inherit the old capability.
+        replacement, _ = fake_client(os.path.join(self.home.name, 'replacement'), supports=False)
+        os.replace(replacement, path)
+        with mock.patch.object(api.subprocess, 'run', return_value=maria):
+            self.assertFalse(api.limits_local_files(path))
+
+    def test_failed_capability_check_never_enables_unrestricted_local(self):
+        import subprocess
+        path, _ = fake_client(self.home.name)
+        for error in (OSError('gone'), subprocess.TimeoutExpired(path, 10)):
+            with self.subTest(error=error), mock.patch.object(api.subprocess, 'run', side_effect=error):
+                with self.assertRaises(ClientMissingError):
+                    api.load_flags({}, self.home.name, binary=path)
+                self.assertEqual(api._LOAD_DIR_SUPPORT, {})
+        for returncode in (1, -9):
+            with self.subTest(returncode=returncode), mock.patch.object(api.subprocess, 'run', return_value=
+                    SimpleNamespace(returncode=returncode, stdout=b'  --local-infile\n')):
+                with self.assertRaises(ClientMissingError):
+                    api.load_flags({}, self.home.name, binary=path)
+                self.assertEqual(api._LOAD_DIR_SUPPORT, {})
+        os.unlink(path)
+        with self.assertRaises(ClientMissingError):
+            api.load_flags({}, self.home.name, binary=path)
+
+    def test_client_changed_during_capability_check_is_refused(self):
+        path, _ = fake_client(self.home.name)
+
+        def changed(*args, **kwargs):
+            fake_client(self.home.name, supports=False)
+            return SimpleNamespace(returncode=0, stdout=b'  --load-data-local-dir=name\n')
+
+        with mock.patch.object(api.subprocess, 'run', side_effect=changed):
+            with self.assertRaises(ClientMissingError):
+                api.load_flags({}, self.home.name, binary=path)
+        self.assertEqual(api._LOAD_DIR_SUPPORT, {})
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX executable fixture')
+    def test_first_version_failure_does_not_downgrade_load_flags(self):
+        from myflames import connector
+        path, log = fake_client(self.home.name, fail_first_version=True)
+        previous = connector.default_binary()
+        self.addCleanup(connector.set_default_binary, previous)
+        connector.set_default_binary(path)
+        full = {'host': 'db.example.invalid'}
+        with self.assertRaises(ClientMissingError):
+            api.load_flags(full, self.home.name)
+        # Like probe_k2: the next resolution succeeds, but the first attempt
+        # must have refused instead of handing unrestricted flags to a session.
+        self.assertEqual(api.client_binary(full), os.path.realpath(path))
+        self.assertEqual(api.load_flags(full, self.home.name),
+                         (('--local-infile=0', '--load-data-local-dir=' + self.home.name), True))
+        with open(log) as handle:
+            calls = [json.loads(line) for line in handle]
+        self.assertEqual(calls[:2], [['--no-defaults', '--version'], ['--no-defaults', '--version']])
+        self.assertFalse(any('--local-infile=1' in argv for argv in calls))
+
+    def test_checked_flags_and_binary_are_used_without_reselecting(self):
+        flags = ('--local-infile=0', '--load-data-local-dir=' + self.home.name)
+        with mock.patch.object(api.ed, 'EditorSession') as session, \
+                mock.patch.object(api, 'client_binary', side_effect=AssertionError('must not reselect')), \
+                mock.patch.object(api, 'limits_local_files', side_effect=AssertionError('must not reprobe')):
+            api._open_session({'binary': '/checked/mysql'}, 'id', {'type': 'production'}, 'x',
+                              load_dir=self.home.name, client_flags=flags)
+        self.assertEqual(session.return_value.client_flags, flags)
+        session.return_value.start.assert_called_once_with({'binary': '/checked/mysql'})
+
+
+class ClientReviewTest(Base):
+    def test_client_and_policy_are_bound_to_the_review(self):
+        for method, expected in (('insert', None), ('load_data', True)):
+            with self.subTest(method=method):
+                plan = self.plan(method=method)
+                record = api.registry(self.ws).plan(plan['token'])
+                for bound in (record.details, record.internal):
+                    self.assertEqual(bound['client_binary'], '/usr/bin/mysql')
+                    self.assertIs(bound['client_limits_files'], expected)
+                # Changing the token's details invalidates the actual token.
+                record.details['client_limits_files'] = False
+                with self.assertRaisesRegex(ValueError, 'changed after the review'):
+                    self.apply(plan)
+        self.assertEqual(self.server.writes(), [])
+
+    def test_policy_change_in_either_direction_refuses_before_connecting(self):
+        for before, after in ((True, False), (False, True)):
+            with self.subTest(before=before):
+                self.limits = before
+                plan = self.plan(method='load_data')
+                opened, sent = len(self.opened), list(self.server.sent)
+                self.limits = after
+                with self.assertRaisesRegex(ValueError, 'local-file policy changed'):
+                    self.apply(plan)
+                self.assertEqual(len(self.opened), opened)
+                self.assertEqual(self.server.sent, sent)
+                self.assertEqual(self.audits()[0]['outcome'], 'changed')
+
+    def test_path_change_refuses_even_when_file_policy_matches(self):
+        for method in ('insert', 'load_data'):
+            with self.subTest(method=method):
+                plan = self.plan(method=method)
+                opened = len(self.opened)
+                with mock.patch.object(api, 'client_binary', return_value='/other/mysql'):
+                    with self.assertRaisesRegex(ValueError, 'client or its local-file policy changed'):
+                        self.apply(plan)
+                self.assertEqual(len(self.opened), opened)
+        self.assertEqual(self.server.writes(), [])
+
+    def test_unavailable_client_refuses_without_an_import_session(self):
+        plan = self.plan(method='load_data')
+        opened = len(self.opened)
+        with mock.patch.object(api, 'client_binary', side_effect=ClientMissingError()):
+            with self.assertRaisesRegex(ValueError, 'Nothing was sent'):
+                self.apply(plan)
+        self.assertEqual(len(self.opened), opened)
+        self.assertEqual(self.server.writes(), [])
+        self.assertEqual(self.audits()[0]['outcome'], 'not_connected')
+
+    def test_each_phase_resolves_once_and_passes_the_checked_binary(self):
+        with mock.patch.object(api, 'client_binary', return_value='/checked/mysql') as resolve, \
+                mock.patch.object(api, 'limits_local_files', return_value=True) as limits:
+            plan = self.plan(method='load_data')
+            resolve.assert_called_once()
+            limits.assert_called_once_with(binary='/checked/mysql')
+            resolve.reset_mock()
+            limits.reset_mock()
+            result = self.apply(plan)
+            self.assertEqual(result['outcome'], 'done')
+            resolve.assert_called_once()
+            limits.assert_called_once_with(binary='/checked/mysql')
+        self.assertEqual([options['binary'] for options, _ in self.opened], ['/checked/mysql', '/checked/mysql'])
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX executable fixture')
+    def test_switch_to_unrestricted_client_never_starts_it_with_local_enabled(self):
+        from myflames import connector
+        previous = connector.default_binary()
+        self.addCleanup(connector.set_default_binary, previous)
         api._LOAD_DIR_SUPPORT.clear()
         self.addCleanup(api._LOAD_DIR_SUPPORT.clear)
-        mysql = SimpleNamespace(stdout=b'  --load-data-local-dir=name \n                      Directory path safe\n')
-        maria = SimpleNamespace(stdout=b'  --local-infile      Enable LOAD DATA LOCAL INFILE.\n')
-        with mock.patch.object(api.subprocess, 'run', return_value=mysql) as run:
-            self.assertTrue(api.limits_local_files('/a/mysql'))
-            self.assertTrue(api.limits_local_files('/a/mysql'))
-            self.assertEqual(run.call_count, 1)
-            self.assertEqual(run.call_args[0][0], ['/a/mysql', '--no-defaults', '--help'])
-        with mock.patch.object(api.subprocess, 'run', return_value=maria):
-            self.assertFalse(api.limits_local_files('/a/mariadb'))
-        with mock.patch.object(api.subprocess, 'run', side_effect=OSError('gone')):
-            self.assertFalse(api.limits_local_files('/a/missing'))
+        for same_path in (False, True):
+            with self.subTest(same_path=same_path):
+                folder = os.path.join(self.home.name, 'chosen-' + str(same_path))
+                path, _ = fake_client(folder)
+                connector.set_default_binary(path)
+                with mock.patch.object(api, 'client_binary', ORIGINAL_CLIENT_BINARY), \
+                        mock.patch.object(api, 'limits_local_files', ORIGINAL_LIMITS_LOCAL_FILES):
+                    plan = self.plan(method='load_data')
+                    self.assertTrue(plan['method']['client_limits_files'])
+                    opened, sent = len(self.opened), list(self.server.sent)
+                    changed_path, log = fake_client(folder if same_path else folder + '-other', supports=False)
+                    connector.set_default_binary(changed_path)
+                    with self.assertRaisesRegex(ValueError, 'local-file policy changed'):
+                        self.apply(plan)
+                self.assertEqual(len(self.opened), opened)
+                self.assertEqual(self.server.sent, sent)
+                self.assertEqual(self.audits()[0]['outcome'], 'changed')
+                with open(log) as handle:
+                    calls = [json.loads(line) for line in handle]
+                self.assertIn(['--no-defaults', '--help'], calls)
+                self.assertFalse(any('--local-infile=1' in argv for argv in calls))
 
 
 class HttpTest(Base):
