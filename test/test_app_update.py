@@ -428,10 +428,10 @@ class TestUpdateDownloadRegression(unittest.TestCase):
 
     def test_regression_download_size_limit_cleans_partial_file(self):
         import itertools
-        self.response(itertools.repeat(b'x' * (64 * 1024), 2401))
+        self.response(itertools.repeat(b'x' * (64 * 1024), app_update.MAX_UPDATE_BYTES // (64 * 1024) + 1))
         result = download_binary_update(self.URL)
         self.assertEqual(result['status'], 'fallback_browser')
-        self.assertIn('150 MiB', result['message'])
+        self.assertIn('200 MiB', result['message'])
         self.assertEqual(list(self.downloads.iterdir()), [])
 
     def test_regression_download_refuses_untrusted_urls_before_io(self):
@@ -1462,7 +1462,7 @@ class TestUpdateStaging(unittest.TestCase):
                 with patch.object(app_update, 'MAX_UPDATE_BYTES', 25):
                     state = self.finish()
                 self.assertEqual(state['state'], 'failed')
-                self.assertIn('150 MiB', state['reason'])
+                self.assertIn('200 MiB', state['reason'])
                 self.assertEqual(list(self.updates.iterdir()), [])
 
     def test_stage_watchdog_start_failure_does_not_leave_the_job_running(self):

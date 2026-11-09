@@ -227,7 +227,7 @@ the DMG and the app inside the mounted DMG as notarized, extracts the zip and
 checks the app inside it the same way (`codesign --verify --deep --strict`,
 Gatekeeper source Notarized Developer ID, stapler validate), refuses a DMG or a
 zip over the
-150 MiB in-app update download limit (`myflames/app_update.py`), and writes
+200 MiB in-app update download limit (`myflames/app_update.py`; 3.3.3 and older stop at 150 MiB), and writes
 `<name>.sha256` beside both in `dist/`. Attach the DMG, the zip and both
 `.sha256` files to the GitHub release, uploading the DMG before the zip:
 3.3.3 and older pick the first matching `.zip` or `.dmg` in the release's

@@ -83,11 +83,11 @@ Build with `package:mac` (unsigned, for local use) or `package:mac:release`
 (`scripts/package-mac-release.sh`: Developer ID signing under the hardened runtime
 with only `com.apple.security.cs.allow-jit` from `entitlements.mac.plist`,
 notarization and stapling of the app and the DMG, Gatekeeper checks, and the
-150 MiB update download limit; it also builds the update zip
+200 MiB update download limit (3.3.3 and older stop their Download at 150 MiB and open the release page instead); it also builds the update zip
 (`electron-builder --mac dmg zip --arm64`; `mac.artifactName`
 `myflames-${version}-macos-${arch}.${ext}`), extracts it and checks the app
 inside (`codesign --verify --deep --strict`, Gatekeeper source Notarized
-Developer ID, stapler validate), applies the 150 MiB limit to the DMG and the
+Developer ID, stapler validate), applies the 200 MiB limit to the DMG and the
 zip, and writes `<name>.sha256` for both; the certificate comes from `MYFLAMES_MAC_IDENTITY`
 and the notary sign-in from `APPLE_KEYCHAIN_PROFILE`, or from an App Store Connect
 API key in `APPLE_API_KEY`, `APPLE_API_KEY_ID` and `APPLE_API_ISSUER`). Validate the delivered
@@ -248,7 +248,7 @@ Every redirect is checked before following it, and the final response URL is
 checked before reading the body. Other URLs raise `ValueError`; release-page
 fallbacks also require the project's official HTTPS release page. Downloads use
 an exclusively created private temporary file in the destination directory and
-enforce the 150 MiB limit before publishing. http.client returns an empty read
+enforce the 200 MiB limit (`MAX_UPDATE_BYTES`) before publishing. http.client returns an empty read
 at an early EOF even when Content-Length promised more (TLS ragged EOFs are
 suppressed too), so after the read loop a remaining declared length, a byte
 count different from Content-Length, or one different from the checked
@@ -273,7 +273,7 @@ the release's `<file>.sha256` (at most 1 KiB, one `<64 hex>  <name>` or
 `<64 hex> *<name>` line naming exactly that file), then downloads
 `myflames-<version>-macos-arm64.zip` on macOS or
 `myflames-<version>-windows-x64-setup.exe` on Windows with the same HTTPS,
-redirect, host and 150 MiB rules as Download, within 900 seconds
+redirect, host and 200 MiB rules as Download, within 900 seconds
 (`STAGE_DEADLINE`), checks size and SHA-256, publishes the file atomically into
 the desktop app's private updates folder (`MYFLAMES_UPDATES_DIR`, which
 `main.cjs` sets to the updates folder inside the desktop data folder and makes

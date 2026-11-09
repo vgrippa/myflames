@@ -124,10 +124,12 @@ notarized --type execute "$unzipped/myflames.app"
 xcrun stapler validate -q "$unzipped/myflames.app"
 rm -rf "$unzipped" "$zip.blockmap"
 
-# The in-app download and update stop at 150 MiB (myflames/app_update.py).
+# The in-app download and update stop at 200 MiB (myflames/app_update.py);
+# 3.3.3 and older stop their Download at 150 MiB.
 for file in "$dmg" "$zip"; do
   size=$(stat -f %z "$file")
-  [ "$size" -le $((150 * 1024 * 1024)) ] || die "$file is $size bytes, over the 150 MiB update download limit"
+  [ "$size" -le $((200 * 1024 * 1024)) ] || die "$file is $size bytes, over the 200 MiB update download limit"
+  [ "$size" -le $((150 * 1024 * 1024)) ] || echo "package-mac-release: $file is over 150 MiB: 3.3.3 and older cannot download it in the app (they open the release page instead)" >&2
 done
 # The app checks the update zip (and Download checks the DMG) against these.
 (cd dist && shasum -a 256 "$name" > "$name.sha256" && shasum -a 256 "$zipname" > "$zipname.sha256")

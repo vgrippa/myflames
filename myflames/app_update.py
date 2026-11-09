@@ -7,7 +7,7 @@ and every redirect checked against the official GitHub addresses before it is
 followed, its body closed unread. The check reads at most 1 MiB and answers
 within CHECK_DEADLINE seconds: it runs in a worker thread the caller waits for
 at most that long, and tls.Watchdog shuts the worker's sockets at the same
-deadline. The download reads at most 150 MiB with a per-read timeout and a
+deadline. The download reads at most 200 MiB with a per-read timeout and a
 DOWNLOAD_DEADLINE watchdog covering its TLS handshake, headers and body.
 In-place staging uses STAGE_DEADLINE for its checksum and binary together,
 then publishes a verified file and manifest in the desktop's private folder.
@@ -38,7 +38,7 @@ REQUEST_TIMEOUT = 5.0   # connect, and each read of the socket
 CHECK_DEADLINE = 10.0   # the caller's wait for the whole check; its sockets are shut then
 DOWNLOAD_DEADLINE = 300.0  # total network-read budget, including redirects
 STAGE_DEADLINE = 900.0  # checksum and binary share one network-read budget
-MAX_UPDATE_BYTES = 150 * 1024 * 1024
+MAX_UPDATE_BYTES = 200 * 1024 * 1024  # the DMG with its bundled MySQL client is about 147 MiB
 MAX_RELEASE_BYTES = 1024 * 1024
 CACHE_TTL = 300.0  # 5 minutes in-memory cache
 
@@ -760,7 +760,7 @@ def _stage_into(result, directory, expected_size, test_file):
             declared = _content_length(response)
             _stage_progress(total=expected_size if expected_size is not None else declared)
             if any(size is not None and size > MAX_UPDATE_BYTES for size in (declared, expected_size)):
-                raise _DownloadError("Update binary exceeded 150 MiB limit.")
+                raise _DownloadError("Update binary exceeded 200 MiB limit.")
             fd, temporary = tempfile.mkstemp(prefix=".myflames-stage-", suffix=".part", dir=str(directory))
             digest, received = hashlib.sha256(), 0
             with os.fdopen(fd, "wb") as output:
@@ -771,7 +771,7 @@ def _stage_into(result, directory, expected_size, test_file):
                         break
                     received += len(chunk)
                     if received > MAX_UPDATE_BYTES:
-                        raise _DownloadError("Update binary exceeded 150 MiB limit.")
+                        raise _DownloadError("Update binary exceeded 200 MiB limit.")
                     output.write(chunk)
                     digest.update(chunk)
                     _stage_progress(received=received)
@@ -880,7 +880,7 @@ def download_binary_update(asset_url=None, release_url=None):
                            if checksum_url else None)
         digest = hashlib.sha256()
         req = urllib.request.Request(asset_url, headers={"User-Agent": "myflames/%s" % __version__})
-        max_bytes = 150 * 1024 * 1024  # 150 MiB limit
+        max_bytes = MAX_UPDATE_BYTES
         downloaded = 0
         with _opener(_validate_update_url, watchdog).open(req, timeout=15.0) as resp:
             _validate_update_url(resp.geturl())
@@ -894,7 +894,7 @@ def download_binary_update(asset_url=None, release_url=None):
                         break
                     downloaded += len(chunk)
                     if downloaded > max_bytes:
-                        raise ValueError("Update binary exceeded 150 MiB limit.")
+                        raise ValueError("Update binary exceeded 200 MiB limit.")
                     out.write(chunk)
                     digest.update(chunk)
             # A watchdog shutdown may look like a clean EOF without a
