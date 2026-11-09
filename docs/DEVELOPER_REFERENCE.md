@@ -84,19 +84,36 @@ Build with `package:mac` (unsigned, for local use) or `package:mac:release`
 (`scripts/package-mac-release.sh`: Developer ID signing under the hardened runtime
 with only `com.apple.security.cs.allow-jit` from `entitlements.mac.plist`,
 notarization and stapling of the app and the DMG, Gatekeeper checks, and the
-150 MiB update download limit; the certificate comes from `MYFLAMES_MAC_IDENTITY`
+200 MiB update download limit (3.3.3 and older stop their Download at 150 MiB and open the release page instead); it also builds the update zip
+(`electron-builder --mac dmg zip --arm64`; `mac.artifactName`
+`myflames-${version}-macos-${arch}.${ext}`), extracts it and checks the app
+inside (`codesign --verify --deep --strict`, Gatekeeper source Notarized
+Developer ID, stapler validate), applies the 200 MiB limit to the DMG and the
+zip, and writes `<name>.sha256` for both; the certificate comes from `MYFLAMES_MAC_IDENTITY`
 and the notary sign-in from `APPLE_KEYCHAIN_PROFILE`, or from an App Store Connect
 API key in `APPLE_API_KEY`, `APPLE_API_KEY_ID` and `APPLE_API_ISSUER`). Validate the delivered
 `.app` using the packaged smoke, which removes system Python from the startup path
 and checks owned cleanup.
-Releases ship `myflames-<version>-macos-arm64.dmg` from `package:mac:release`
-(`apps/desktop/scripts/package-mac-release.sh`). Local builds (`package:mac`)
+Releases ship `myflames-<version>-macos-arm64.dmg` and
+`myflames-<version>-macos-arm64.zip` from `package:mac:release`
+(`apps/desktop/scripts/package-mac-release.sh`), with a `.sha256` for each;
+attach the DMG, the zip and both `.sha256` files, uploading the DMG before the
+zip because 3.3.3 and older pick the first matching `.zip` or `.dmg` in the
+release's asset order for Download. The first release with in-place updates
+must be installed by hand once. Packaging tests keep the desktop
+`package.json` version equal to `myflames.__version__` and `pyproject.toml`.
+Local builds (`package:mac`)
 keep Developer ID signing and notarization explicitly disabled; the certificate
 and the notary sign-in come from the environment, never the repository. Verify
 the delivered app with a minimal PATH and an unavailable system Python; normal
 Finder launches must not require a terminal. Keep the standard client-discovery
 paths fixed and preserve explicit PATH precedence. Keep the renderer sandboxed
-and isolated, with no Node integration or broad IPC bridge; its session refuses
+and isolated, with no Node integration or broad IPC bridge; the one bridge is
+the updater's (`preload.cjs` exposes `window.myflamesDesktop.update` with
+`support()`, `prepare()` and `restart()`, over the IPC channels
+`myflames:update-support`, `myflames:update-prepare` and
+`myflames:update-restart`, with no arguments; the main process answers only the
+workspace origin's top frame and refuses anything else). Its session refuses
 every permission request except the Fullscreen API for the workspace origin
 (Learn's Full screen).
 Quitting sends SIGINT to the backend's process group and waits 5 s; `backend.cjs`
@@ -280,10 +297,31 @@ timestamp in the tooltip ("Tried …" for a failure), "Not checked yet" before
 the first check, "Last check unknown" when the stored record could not be read
 (retried when Home or About mounts again), and a result older than 24 hours, or
 one whose time cannot be read, as "Last result: …".
+**Check for updates automatically** in Settings (on by default, stored in the
+workspace store's `settings` table under `app_update_auto` as `'on'`/`'off'`;
+`POST /api/app/update/settings` with an optional `{"auto_check": bool}` returns
+`app-update-settings-1.0` `{"auto_check"}`) lets the workspace check 10 seconds
+after it opens when there is no stored check, the last one is older than 24
+hours, or the last one failed more than an hour ago, re-testing that hourly; an
+automatic check uses the same `/api/app/update/check` as the button, and a
+failed automatic check shows no badge (Home's footer shows the reason as
+before). When a current check found a newer version, a round badge appears
+beside the flame logo and the myflames name at the top of the sidebar
+(`UpdateBadge.tsx`): available (a download arrow), the download's progress (a
+ring with the percent in its tooltip), preparing (a spinner) and ready (a green
+restart arrow); on the 48 px icon rail (651–900 px windows) it is a dot on the
+logo's corner, and a result older than 24 hours shows no badge. While an update
+is pending, the Settings popover also lists **Update available…**, **Update
+progress…** or **Restart to update…**; clicking the badge or the menu item
+opens the Software update dialog.
 **Download…** appears for a current newer release (unavailable while a check
 runs) and opens the update dialog with the result captured at the click;
 after a reload it checks again first, because the download needs the asset the
-check found.
+check found. Download update saves the DMG or EXE in Downloads and never
+installs it; it prefers the `.dmg` on macOS (then `.zip`, `.tar.gz`) and the
+`.exe` on Windows regardless of the order GitHub lists assets, and checks the
+download against the release's `<file>.sha256` when the release has one, a
+mismatch falling back to the release page like any failed download.
 
 Application updates (`myflames/app_update.py`, `/api/app/update/check` and
 `/api/app/update/download`) build both openers as `tool_updates._fetch` does
@@ -319,7 +357,7 @@ Every redirect is checked before following it, and the final response URL is
 checked before reading the body. Other URLs raise `ValueError`; release-page
 fallbacks also require the project's official HTTPS release page. Downloads use
 an exclusively created private temporary file in the destination directory and
-enforce the 150 MiB limit before publishing. http.client returns an empty read
+enforce the 200 MiB limit (`MAX_UPDATE_BYTES`) before publishing. http.client returns an empty read
 at an early EOF even when Content-Length promised more (TLS ragged EOFs are
 suppressed too), so after the read loop a remaining declared length, a byte
 count different from Content-Length, or one different from the checked
@@ -337,6 +375,86 @@ cannot be interrupted by this watchdog. The destination is `MYFLAMES_DOWNLOADS_D
 absolute existing directory (the desktop app sets it to the user's Downloads
 folder, because its backend runs with an isolated HOME), else `~/Downloads`,
 else the temporary directory.
+
+The Software update dialog's **Update** button stages the release's update file
+(`POST /api/app/update/stage`, `app-update-stage-1.0`): the backend first reads
+the release's `<file>.sha256` (at most 1 KiB, one `<64 hex>  <name>` or
+`<64 hex> *<name>` line naming exactly that file), then downloads
+`myflames-<version>-macos-arm64.zip` on macOS or
+`myflames-<version>-windows-x64-setup.exe` on Windows with the same HTTPS,
+redirect, host and 200 MiB rules as Download, within 900 seconds
+(`STAGE_DEADLINE`), checks size and SHA-256, publishes the file atomically into
+the desktop app's private updates folder (`MYFLAMES_UPDATES_DIR`, which
+`main.cjs` sets to the updates folder inside the desktop data folder and makes
+mode 0700), removes the updater's own older files there (`staged-update.json`,
+release file names and `.myflames-stage-*.part`; anything else stays) and writes `staged-update.json`
+(`staged-update-1.0`: `version`, `platform`, `file`, `size`, `sha256`,
+`staged_at`) atomically. Staging answers at once and runs in a background
+thread, one at a time; its state is `running` | `done` | `failed`, with
+`version`, `received`, `total` and `reason`. The update file must be named
+`myflames-<tag version>-(macos|windows)-(arm64|x64|universal)[-setup].(zip|exe)`
+and match the platform (zip on macOS, `-setup.exe` on Windows), and its URL must
+be this release's own `/releases/download/<tag>/<name>`. The updates folder must
+be a plain folder, not a link, and on macOS and Linux owned by the user with no
+access for others (`app_update._updates_directory` and `updater.checkFolder`
+check the same rule); otherwise staging, the status record and startup cleanup
+refuse it and touch nothing.
+`/api/app/update/status` (still never the network) adds `auto_check`,
+`staging` (that progress), `staged` (the verified record, or null) and
+`active_operations` (dump, restore and clone jobs queued or running). At
+startup, after the single-instance lock, the desktop app removes a staged
+update that is not newer than itself (installed) or whose record cannot be
+read. In development only (never a frozen backend, and the desktop's environment
+allowlist drops both variables), when `MYFLAMES_TEST_UPDATE` and
+`MYFLAMES_TEST_UPDATE_FILE` (an absolute path to a regular file) are set,
+staging copies that file instead of downloading.
+The page then calls `window.myflamesDesktop.update.prepare()`.
+`updater.cjs` reads `staged-update.json` from the fixed folder only (no links
+followed, at most 4096 bytes, the file name pattern above, this platform, a
+version newer than the app's) and hashes the file again. On macOS it serves the
+zip once on 127.0.0.1 (a random port, an unguessable 64-hex path, the JSON feed
+and the zip, closed after the update is staged or after 2 minutes) to
+Electron's `autoUpdater` (Squirrel.Mac, `serverType` `json`), which installs it
+only when its code signature satisfies the installed app's designated
+requirement (the same Developer ID team and bundle identifier), and
+`ElectronSquirrelPreventDowngrades` in the app's Info.plist refuses a lower
+version even from that team; a zip signed by anyone else is refused with "The update is not signed by the developer of this
+copy of myflames, so it was not installed." macOS updates in place only when
+the app is in an Applications folder (`app.isInApplicationsFolder()`) and its
+bundle and that folder are writable; otherwise the dialog names the reason (for
+example "Move myflames to the Applications folder to update it in place.") and
+offers **Download update** as before. The loopback feed answers only exact
+request lines with `Host: 127.0.0.1:<port>` (anything else gets 400, and no
+request can throw in the main process). **Restart to update** on macOS stops the
+backend and its dump, restore, clone and tunnel processes first (a second Quit
+meanwhile is held, as during any quit), then `autoUpdater.quitAndInstall()`
+replaces the app and opens the new version; **Later** installs the update when
+you next quit myflames, without reopening. Squirrel.Mac also applies a staged
+update at that quit when the backend could not be confirmed stopped.
+On Windows, when the app quits after the backend stopped (never when the stop
+failed, and never when `MYFLAMES_DESKTOP_DATA` chose the data folder, whose
+owner cannot be checked there), it runs the installer from the updates folder,
+in that folder, detached, without a shell: `<setup>.exe --updated /S`
+(silent, keeps the app's data), plus `--force-run` after **Restart to update**
+so the new version opens. The Windows installer is unsigned: the update is
+trusted through HTTPS from GitHub's release hosts and the SHA-256 published in
+the same release, and an Authenticode publisher check is to be added when
+Windows signing lands. When a dump, restore or clone is running, **Restart to
+update** first says "A dump is running. Restarting stops it before it
+finishes." and offers **Restart anyway**; other work in progress (an open
+editor transaction, an import, a file transfer, a skip loop) stops as it does
+on any quit. Verified on 2026-11-09 with Developer ID signed (not notarized)
+test builds 3.3.90 and 3.3.91 under a separate bundle identifier: **Restart to
+update** installed 3.3.91 and reopened it within about 5 seconds with only the
+new backend running, **Later** followed by a normal quit installed it without
+reopening, and an ad hoc signed 3.3.91 zip with a correct checksum was refused
+by Squirrel.Mac and the app stayed 3.3.90. On the Windows lab PC the CI
+installer, staged as a newer version, was installed silently after
+**Restart to update**, which replaced the install folder and reopened the app
+13 seconds later. After the security fixes, signed builds 3.3.95 and 3.3.96 repeated the
+macOS update through the Host-checked feed, and an older signed build staged
+as 3.3.99 was refused by `ElectronSquirrelPreventDowngrades` ("The update is
+older than this copy of myflames, so it was not installed.").
 
 Every HTTPS read (the release check and download, `tool_updates._fetch`, and
 Home news) takes its context from `myflames/tls.py` `https_context()`: the
@@ -687,8 +805,9 @@ are the contracts of the tools that check them.
   (ignoring line endings and outer blank lines), fails when the section is
   missing, and runs `check_release_assets.py`.
 - **Website.** myflames.io is built from the separate `vgrippa/myflames-website`
-  repository. Its `sync.yml` workflow (hourly and on demand) checks this
-  repository's master out beside it, runs `sync_releases.py` (the latest
+  repository. Its `sync.yml` workflow (every 6 hours and on demand) checks this
+  repository out at its latest release tag (the peeled commit of an annotated
+  tag; never master, so the site describes the released app) beside it, runs `sync_releases.py` (the latest
   release's DMG and Windows `-setup.exe` with their `.sha256`, never the update
   zip), `build_docs.py --source` (the handbook, the reference documents and the
   raster images in `docs/screenshots`; links and SVG files are not copied) and

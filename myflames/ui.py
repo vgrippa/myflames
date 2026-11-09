@@ -1388,10 +1388,16 @@ def _action_progress(workspace):
             registry = workspace.action_progress = ProgressRegistry()
         return registry
 
+def _active_lifecycle_operations(workspace):
+    """The dump, restore and clone jobs queued or running in this workspace."""
+    jobs = getattr(workspace, "lifecycle", None) if workspace is not None else None
+    return jobs.active_operations() if jobs is not None else []
+
 #: Application updates (app_update.py). Check reads GitHub only when the
-#: workspace asks (the Check for updates button) and keeps the outcome in the
-#: workspace store; status reads that stored outcome and never the network.
-_APP_UPDATE_PATHS = ('/api/app/update/check', '/api/app/update/download', '/api/app/update/status')
+#: workspace asks (a click, or the automatic check when that setting is on).
+#: Checks keep their outcome in the workspace store; status never reads the network.
+_APP_UPDATE_PATHS = ('/api/app/update/check', '/api/app/update/download', '/api/app/update/status',
+                     '/api/app/update/stage', '/api/app/update/settings')
 # Application client selection is separate from saved connection credentials.
 _CLIENT_PATHS = ('/api/client/settings', '/api/client/detect')
 _CLIENT_SETTINGS_LOCK = threading.Lock()
@@ -1923,7 +1929,20 @@ def api_response(path, payload, workspace=None):
         from . import app_update
         stored = workspace.store.app_update_last_check() if workspace is not None else None
         return {"schema_version": "app-update-status-1.0", "current_version": __version__,
-                "last_check": app_update.stored_last_check(stored)}
+                "last_check": app_update.stored_last_check(stored),
+                "auto_check": workspace.store.app_update_auto() if workspace is not None else True,
+                "staging": app_update.staging_state(), "staged": app_update.staged_update(),
+                # Restart to update stops these (quitting stops the backend's tools).
+                "active_operations": _active_lifecycle_operations(workspace)}
+    if path == "/api/app/update/stage":
+        from . import app_update
+        return app_update.stage_update()
+    if path == "/api/app/update/settings":
+        if workspace is None:
+            raise ValueError("This operation requires a running workspace.")
+        if "auto_check" in payload:
+            workspace.store.set_app_update_auto(payload["auto_check"])
+        return {"schema_version": "app-update-settings-1.0", "auto_check": workspace.store.app_update_auto()}
     if path == "/api/app/update/download":
         from . import app_update
         return app_update.download_binary_update(

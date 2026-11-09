@@ -46,6 +46,31 @@ test('the app names its publisher as NOTICE does, not Electron\'s default', () =
   assert.ok(notice.includes('Copyright 2026 ' + pkg.author + '\n'), 'author must match the NOTICE copyright holder');
 });
 
+// Same rule as app_update's update asset and updater.cjs FILE_NAME.
+const updateFile = /^myflames-([0-9]+\.[0-9]+\.[0-9]+)-(macos|windows)-(arm64|x64|universal)(-setup)?\.(zip|exe)$/i;
+
+test('the release zip, which the app installs in place, keeps the update file name', () => {
+  const name = artifact(config.mac.artifactName, 'arm64', 'zip');
+  assert.equal(name, 'myflames-' + pkg.version + '-macos-arm64.zip');
+  assert.equal(updateFile.exec(name)[1], pkg.version);
+  assert.match(name, label(['mac', 'macos', 'darwin', 'apple']));
+  const script = fs.readFileSync(path.join(desktop, 'scripts', 'package-mac-release.sh'), 'utf8');
+  assert.match(script, /electron-builder --mac dmg zip --arm64/);
+  assert.match(script, /shasum -a 256 "\$zipname" > "\$zipname.sha256"/);
+  assert.match(script, /codesign --verify --deep --strict "\$unzipped\/myflames.app"/);
+  assert.ok(config.files.includes('updater.cjs'), 'updater.cjs is packaged');
+  // Squirrel.Mac refuses a lower version even when it is signed by the same team.
+  assert.equal(config.mac.extendInfo.ElectronSquirrelPreventDowngrades, true);
+});
+
+test('the desktop, Python and package versions match, so an installed update is not offered again', () => {
+  const root = path.join(desktop, '..', '..');
+  const python = /__version__ = "([^"]+)"/.exec(fs.readFileSync(path.join(root, 'myflames', '__init__.py'), 'utf8'))[1];
+  const project = /^version = "([^"]+)"/m.exec(fs.readFileSync(path.join(root, 'pyproject.toml'), 'utf8'))[1];
+  assert.equal(pkg.version, python);
+  assert.equal(pkg.version, project);
+});
+
 test('Windows builds an unsigned x64 NSIS installer the update check matches', () => {
   assert.deepEqual(config.win.target, [{ target: 'nsis', arch: ['x64'] }]);
   assert.equal(config.win.signtoolOptions, undefined);
@@ -53,6 +78,7 @@ test('Windows builds an unsigned x64 NSIS installer the update check matches', (
   assert.match(pkg.scripts['package:win'], /--win --x64 --publish never/);
   const name = artifact(config.nsis.artifactName, 'x64', 'exe');
   assert.equal(name, 'myflames-' + pkg.version + '-windows-x64-setup.exe');
+  assert.equal(updateFile.exec(name)[1], pkg.version);
   assert.match(name, label(['win', 'windows']));
   assert.match(name, label(['x86_64', 'amd64', 'x64']));
   assert.doesNotMatch(name, label(['mac', 'macos', 'darwin', 'apple', 'linux']));

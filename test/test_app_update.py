@@ -1,3 +1,4 @@
+import hashlib
 import http.client
 import http.server
 import io
@@ -32,6 +33,94 @@ _BUILD_OPENER = urllib.request.build_opener
 
 
 class TestAppUpdate(unittest.TestCase):
+    def test_asset_extension_preference_and_update_checksum_fields(self):
+        cases = (
+            ('darwin', 'arm64', ['macos-arm64.zip', 'macos-arm64.tar.gz', 'macos-arm64.dmg'],
+             'macos-arm64.dmg', 'macos-arm64.zip'),
+            ('win32', 'AMD64', ['windows-x64.zip', 'windows-x64-setup.exe'],
+             'windows-x64-setup.exe', 'windows-x64-setup.exe'),
+            ('linux', 'x64', ['linux-x64.zip', 'linux-x64.tar.gz'], 'linux-x64.tar.gz', None),
+        )
+        for platform, machine, names, manual, update in cases:
+            with self.subTest(platform=platform):
+                assets = []
+                for suffix in names:
+                    name = 'myflames-99.0.0-' + suffix
+                    url = app_update.GITHUB_RELEASES_URL + '/download/v99.0.0/' + name
+                    assets.extend([{'name': name, 'browser_download_url': url, 'size': 42},
+                                   {'name': name + '.sha256', 'browser_download_url': url + '.sha256'}])
+                with patch.object(app_update, '_read_release', return_value=json.dumps(
+                        {'tag_name': 'v99.0.0', 'assets': assets}).encode()), \
+                        patch.object(app_update, 'detect_system_target', return_value=(platform, machine)), \
+                        patch.dict(app_update._CACHE, clear=True), \
+                        patch.dict(os.environ, {'MYFLAMES_TEST_UPDATE': ''}):
+                    result = check_for_updates(force=True)
+                self.assertEqual(result['asset_name'], 'myflames-99.0.0-' + manual)
+                self.assertEqual(result['asset_size'], 42)
+                self.assertEqual(result['asset_checksum_url'], result['asset_url'] + '.sha256')
+                self.assertEqual(result['update_asset_name'], 'myflames-99.0.0-' + update if update else None)
+                self.assertEqual(result['update_asset_size'], 42 if update else None)
+                self.assertEqual(result['update_checksum_url'],
+                                 result['update_asset_url'] + '.sha256' if update else None)
+
+    def test_update_asset_name_version_and_installer_are_strict(self):
+        for platform, machine, name in (
+                ('darwin', 'arm64', 'myflames-98.0.0-macos-arm64.zip'),
+                ('darwin', 'arm64', 'myflames-macos-arm64.zip'),
+                ('darwin', 'arm64', '../myflames-99.0.0-macos-arm64.zip'),
+                ('darwin', 'arm64', 'myflames-99.0.0-macos-x64.zip'),
+                ('win32', 'x64', 'myflames-99.0.0-windows-x64.exe'),
+                ('win32', 'x64', 'myflames-99.0.0-windows-x64.zip')):
+            with self.subTest(name=name), patch.dict(app_update._CACHE, clear=True), \
+                    patch.dict(os.environ, {'MYFLAMES_TEST_UPDATE': ''}), \
+                    patch.object(app_update, 'detect_system_target', return_value=(platform, machine)), \
+                    patch.object(app_update, '_read_release', return_value=json.dumps({
+                        'tag_name': 'v99.0.0', 'assets': [{'name': name, 'browser_download_url': 'https://x'}]
+                    }).encode()):
+                result = check_for_updates(force=True)
+                self.assertIsNone(result['update_asset_name'])
+                self.assertIsNone(result['update_checksum_url'])
+                self.assertIsNone(result['asset_checksum_url'])
+        self.assertIsNotNone(app_update._update_asset(
+            [{'name': 'MYFLAMES-99.0.0-MACOS-UNIVERSAL.ZIP'}], 'darwin', 'arm64', '99.0.0'))
+        # The update file must be served from this release's own tag (security review H2).
+        name = 'myflames-99.0.0-macos-arm64.zip'
+        here = app_update.GITHUB_RELEASES_URL + '/download/v99.0.0/' + name
+        elsewhere = app_update.GITHUB_RELEASES_URL + '/download/v98.0.0/' + name
+        self.assertIsNotNone(app_update._update_asset(
+            [{'name': name, 'browser_download_url': here}], 'darwin', 'arm64', '99.0.0', 'v99.0.0'))
+        self.assertIsNone(app_update._update_asset(
+            [{'name': name, 'browser_download_url': elsewhere}], 'darwin', 'arm64', '99.0.0', 'v99.0.0'))
+
+    def test_failed_and_simulated_checks_include_all_new_fields(self):
+        keys = ('asset_checksum_url', 'update_asset_name', 'update_asset_url',
+                'update_asset_size', 'update_checksum_url')
+        failed = app_update._failed_result('offline')
+        self.assertTrue(all(key in failed and failed[key] is None for key in keys))
+        for platform, name in (('darwin', 'myflames-99.0.0-macos-arm64.zip'),
+                               ('win32', 'myflames-99.0.0-windows-x64-setup.exe'), ('linux', None)):
+            with patch.dict(app_update._CACHE, clear=True), \
+                    patch.dict(os.environ, {'MYFLAMES_TEST_UPDATE': '99.0.0'}), \
+                    patch.object(app_update, 'detect_system_target', return_value=(platform, 'arm64')):
+                result = check_for_updates(force=True)
+            self.assertTrue(all(key in result for key in keys))
+            self.assertEqual(result['update_asset_name'], name)
+            if name:
+                url = 'https://github.com/vgrippa/myflames/releases/download/v99.0.0/' + name
+                self.assertEqual(result['update_asset_url'], url)
+                self.assertEqual(result['update_checksum_url'], url + '.sha256')
+
+    def test_checksum_line_formats_and_bounds(self):
+        name, digest = 'myflames-99.0.0-macos-arm64.zip', 'aBcD' * 16
+        for separator in ('  ', ' *'):
+            for newline in ('', '\n', '\r\n'):
+                self.assertEqual(app_update._parse_checksum((digest + separator + name + newline).encode(), name),
+                                 digest.lower())
+        for bad in (digest + '  other.zip\n', 'g' * 64 + '  ' + name, digest[:-1] + '  ' + name,
+                    digest + ' ' + name, digest + '  ' + name + '\nextra', 'x' * 1025):
+            with self.subTest(bad=bad[:80]), self.assertRaises(ValueError):
+                app_update._parse_checksum(bad.encode(), name)
+
     def test_version_parsing(self):
         self.assertEqual(parse_version_tuple("3.0.0"), (3, 0, 0))
         self.assertEqual(parse_version_tuple("v3.0.1"), (3, 0, 1))
@@ -339,10 +428,10 @@ class TestUpdateDownloadRegression(unittest.TestCase):
 
     def test_regression_download_size_limit_cleans_partial_file(self):
         import itertools
-        self.response(itertools.repeat(b'x' * (64 * 1024), 2401))
+        self.response(itertools.repeat(b'x' * (64 * 1024), app_update.MAX_UPDATE_BYTES // (64 * 1024) + 1))
         result = download_binary_update(self.URL)
         self.assertEqual(result['status'], 'fallback_browser')
-        self.assertIn('150 MiB', result['message'])
+        self.assertIn('200 MiB', result['message'])
         self.assertEqual(list(self.downloads.iterdir()), [])
 
     def test_regression_download_refuses_untrusted_urls_before_io(self):
@@ -1032,6 +1121,414 @@ class TestUpdateCheckTransport(unittest.TestCase):
         opener = MagicMock()
         opener.open.side_effect = error
         return patch('myflames.app_update.urllib.request.build_opener', return_value=opener)
+
+
+class TestUpdateStaging(unittest.TestCase):
+    VERSION = '99.0.0'
+    NAME = 'myflames-99.0.0-macos-arm64.zip'
+    URL = 'https://github.com/vgrippa/myflames/releases/download/v99.0.0/' + NAME
+    BODY = b'verified archive contents'
+
+    class Response(io.BytesIO):
+        def __init__(self, body, url, declared=None):
+            super().__init__(body)
+            self.url, self.length = url, None
+            self.headers = Message()
+            if declared is not None:
+                self.headers['Content-Length'] = str(declared)
+
+        def geturl(self):
+            return self.url
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.updates, self.downloads = self.root / 'updates', self.root / 'downloads'
+        self.updates.mkdir()
+        os.chmod(str(self.updates), 0o700)  # as the desktop app creates it
+        self.downloads.mkdir()
+        self.start_patch(patch.dict(os.environ, {
+            'HOME': temp.name, 'USERPROFILE': temp.name, 'MYFLAMES_SECRET_BACKEND': 'vault',
+            'MYFLAMES_UPDATES_DIR': str(self.updates), 'MYFLAMES_DOWNLOADS_DIR': str(self.downloads),
+            'MYFLAMES_TEST_UPDATE': '', 'MYFLAMES_TEST_UPDATE_FILE': ''}))
+        os.environ.pop('MYFLAMES_VAULT_PASSPHRASE', None)
+        self.start_patch(patch.object(app_update.sys, 'platform', 'darwin'))
+        self.start_patch(patch.object(app_update, '_STAGING', None))
+        self.start_patch(patch.object(app_update, '_STAGE_WORKER', None))
+        self.start_patch(patch.dict(app_update._CACHE, clear=True))
+        self.browser = self.start_patch(patch('webbrowser.open'))
+        self.opener = self.start_patch(patch.object(app_update, '_opener')).return_value
+        self.opener.open.side_effect = AssertionError('unexpected network request')
+        self.addCleanup(self.join_stage)
+        self.checked = {'latest_version': self.VERSION, 'update_available': True,
+                        'update_asset_name': self.NAME, 'update_asset_url': self.URL,
+                        'update_asset_size': len(self.BODY), 'update_checksum_url': self.URL + '.sha256',
+                        'asset_name': self.NAME, 'asset_url': self.URL, 'asset_size': len(self.BODY),
+                        'asset_checksum_url': self.URL + '.sha256'}
+        app_update._CACHE['result'] = self.checked
+
+    def start_patch(self, patcher):
+        result = patcher.start()
+        self.addCleanup(patcher.stop)
+        return result
+
+    def join_stage(self):
+        worker = app_update._STAGE_WORKER
+        if worker is not None:
+            worker.join(5)
+            self.assertFalse(worker.is_alive(), 'staging worker did not stop')
+
+    def replies(self, body=None, digest=None, declared=None, checksum=None):
+        body = self.BODY if body is None else body
+        digest = hashlib.sha256(body).hexdigest() if digest is None else digest
+        checksum = (digest + '  ' + self.NAME + '\n').encode() if checksum is None else checksum
+        responses = [self.Response(checksum, self.URL + '.sha256'), self.Response(body, self.URL, declared)]
+        self.opener.open.side_effect = responses
+        return responses
+
+    def finish(self):
+        started = app_update.stage_update()
+        self.assertEqual(started['state'], 'running')
+        self.join_stage()
+        self.browser.assert_not_called()
+        return app_update.staging_state()
+
+    def test_stage_success_publishes_manifest_and_cleans_only_regular_files(self):
+        older = self.updates / 'myflames-98.0.0-macos-arm64.zip'
+        older.write_bytes(b'old')
+        partial = self.updates / '.myflames-stage-abc.part'
+        partial.write_bytes(b'part')
+        # Files the updater did not write stay, whatever their names (security review S2).
+        notes, other_zip = self.updates / 'notes.txt', self.updates / 'old.zip'
+        notes.write_bytes(b'mine')
+        other_zip.write_bytes(b'mine too')
+        keep = self.updates / 'directory'
+        keep.mkdir()
+        target = self.root / 'untouched'
+        target.write_bytes(b'original')
+        symlink = self.updates / 'link.zip'
+        symlink.symlink_to(target)
+        self.replies(declared=len(self.BODY))
+        state = self.finish()
+        self.assertEqual(state, {'schema_version': 'app-update-stage-1.0', 'state': 'done',
+                                 'version': self.VERSION, 'received': len(self.BODY),
+                                 'total': len(self.BODY), 'reason': None})
+        destination = self.updates / self.NAME
+        self.assertEqual(destination.read_bytes(), self.BODY)
+        self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o600)
+        manifest = json.loads((self.updates / 'staged-update.json').read_text())
+        self.assertEqual(manifest['schema_version'], 'staged-update-1.0')
+        self.assertEqual(manifest['platform'], 'darwin')
+        self.assertTrue(app_update._valid_checked_at(manifest['staged_at']))
+        self.assertEqual(app_update.staged_update(), {'version': self.VERSION, 'file': self.NAME,
+                         'size': len(self.BODY), 'sha256': hashlib.sha256(self.BODY).hexdigest()})
+        self.assertFalse(older.exists())
+        self.assertFalse(partial.exists())
+        self.assertEqual((notes.read_bytes(), other_zip.read_bytes()), (b'mine', b'mine too'))
+        self.assertTrue(keep.is_dir())
+        self.assertTrue(symlink.is_symlink())
+        self.assertEqual(target.read_bytes(), b'original')
+        self.assertFalse(list(self.updates.glob('*.part')))
+        self.opener.open.reset_mock()
+        self.assertEqual(app_update.stage_update(), state)
+        self.opener.open.assert_not_called()
+        state['state'] = 'changed by caller'
+        self.assertEqual(app_update.staging_state()['state'], 'done')
+
+    def test_stage_checksum_mismatch_leaves_no_binary_or_manifest(self):
+        self.replies(digest='0' * 64)
+        state = self.finish()
+        self.assertEqual(state['state'], 'failed')
+        self.assertEqual(state['reason'], 'The download does not match its published checksum.')
+        self.assertEqual(list(self.updates.iterdir()), [])
+
+    def test_stage_size_mismatch_and_remaining_length_are_rejected(self):
+        for declared, expected, remaining in ((100, len(self.BODY), None),
+                                               (1, len(self.BODY), None),
+                                               (None, 100, None),
+                                               (len(self.BODY), 1, None),
+                                               (len(self.BODY), len(self.BODY), 1)):
+            with self.subTest(declared=declared, expected=expected, remaining=remaining):
+                self.checked['update_asset_size'] = expected
+                responses = self.replies(declared=declared)
+                responses[1].length = remaining
+                self.assertEqual(self.finish()['state'], 'failed')
+                self.assertEqual(list(self.updates.iterdir()), [])
+
+    def test_stage_refuses_a_linked_or_shared_updates_folder(self):
+        # Security review S1/S2: another user's folder, or a link to the user's
+        # files, is never staged into, listed or emptied.
+        self.replies(declared=len(self.BODY))
+        app_update._CACHE['result'] = dict(self.checked)
+        documents = self.root / 'Documents'
+        documents.mkdir(mode=0o700)
+        (documents / 'notes.txt').write_bytes(b'mine')
+        link = self.root / 'linked-updates'
+        link.symlink_to(documents)
+        shared = self.root / 'shared-updates'
+        shared.mkdir()
+        os.chmod(str(shared), 0o777)
+        for directory, reason in ((str(link), 'not a plain folder'), (str(shared), 'not private')):
+            with self.subTest(directory=directory), patch.dict(os.environ, {'MYFLAMES_UPDATES_DIR': directory}):
+                with self.assertRaisesRegex(ValueError, reason):
+                    app_update.stage_update()
+                self.assertIsNone(app_update.staged_update())
+        self.assertEqual([p.name for p in documents.iterdir()], ['notes.txt'])
+        self.opener.open.assert_not_called()
+
+    def test_test_hook_is_ignored_by_the_packaged_backend(self):
+        local = self.root / 'next.zip'
+        local.write_bytes(self.BODY)
+        app_update._CACHE['result'] = dict(self.checked)
+        self.replies(declared=len(self.BODY))
+        with patch.dict(os.environ, {'MYFLAMES_TEST_UPDATE': self.VERSION, 'MYFLAMES_TEST_UPDATE_FILE': str(local)}), \
+                patch.object(app_update.sys, 'frozen', True, create=True):
+            self.assertEqual(self.finish()['state'], 'done')
+        self.opener.open.assert_called()  # the real download path ran, not the local file
+
+    def test_stage_requires_desktop_directory_and_cached_compatible_update(self):
+        self.assertIsNone(app_update.staging_state())
+        for directory in ('', 'relative', str(self.updates / 'absent')):
+            with patch.dict(os.environ, {'MYFLAMES_UPDATES_DIR': directory}), \
+                    self.assertRaisesRegex(ValueError, 'Updating in place is available only in the desktop app.'):
+                app_update.stage_update()
+        for changes in (None, {'update_available': False}, {'update_asset_url': None},
+                        {'update_checksum_url': None}, {'update_asset_name': '../' + self.NAME},
+                        {'update_asset_name': 'myflames-98.0.0-macos-arm64.zip'}):
+            with self.subTest(changes=changes):
+                app_update._CACHE['result'] = dict(self.checked, **changes) if changes is not None else None
+                with self.assertRaisesRegex(ValueError, 'Check for updates again.'):
+                    app_update.stage_update()
+        self.opener.open.assert_not_called()
+        self.browser.assert_not_called()
+
+    def test_stage_single_flight_progress_and_cached_snapshot(self):
+        entered, release = threading.Event(), threading.Event()
+        responses = self.replies()
+        binary = responses[1]
+        original = binary.read
+        calls = [0]
+
+        def read(size):
+            calls[0] += 1
+            if calls[0] == 1:
+                return original(3)
+            if calls[0] == 2:
+                entered.set()
+                if not release.wait(5):
+                    raise RuntimeError('test did not release the read')
+            return original(size)
+
+        binary.read = read
+        try:
+            first = app_update.stage_update()
+            worker = app_update._STAGE_WORKER
+            self.assertEqual(first['state'], 'running')
+            self.assertTrue(entered.wait(5))
+            self.checked['latest_version'] = '100.0.0'
+            state = app_update.stage_update()
+            self.assertEqual(state['state'], 'running')
+            self.assertEqual(state['received'], 3)
+            self.assertEqual(state['total'], len(self.BODY))
+            self.assertEqual(state['version'], self.VERSION)
+            self.assertIs(app_update._STAGE_WORKER, worker)
+            self.assertEqual(self.opener.open.call_count, 2)
+        finally:
+            release.set()
+            self.join_stage()
+        self.assertEqual(app_update.staging_state()['state'], 'done')
+
+    def test_test_hook_copies_an_absolute_file_without_network(self):
+        source = self.root / 'release-gate.zip'
+        source.write_bytes(self.BODY)
+        with patch.dict(os.environ, {'MYFLAMES_TEST_UPDATE': self.VERSION,
+                                     'MYFLAMES_TEST_UPDATE_FILE': str(source)}):
+            state = self.finish()
+        self.assertEqual(state['state'], 'done')
+        self.assertEqual((self.updates / self.NAME).read_bytes(), self.BODY)
+        self.assertEqual(app_update.staged_update()['sha256'], hashlib.sha256(self.BODY).hexdigest())
+        self.opener.open.assert_not_called()
+
+    def test_test_hook_requires_both_variables_and_regular_absolute_file(self):
+        source = self.root / 'hook.zip'
+        source.write_bytes(self.BODY)
+        with patch.dict(os.environ, {'MYFLAMES_TEST_UPDATE_FILE': str(source)}):
+            self.replies()
+            self.assertEqual(self.finish()['state'], 'done')
+        self.assertEqual(self.opener.open.call_count, 2)
+        (self.updates / self.NAME).unlink()
+        (self.updates / 'staged-update.json').unlink()
+        link = self.root / 'hook-link.zip'
+        link.symlink_to(source)
+        for invalid in ('relative.zip', str(self.root), str(link), str(self.root / 'missing')):
+            with patch.dict(os.environ, {'MYFLAMES_TEST_UPDATE': self.VERSION,
+                                         'MYFLAMES_TEST_UPDATE_FILE': invalid}):
+                self.assertEqual(self.finish()['state'], 'failed')
+            self.assertEqual(list(self.updates.iterdir()), [])
+
+    def test_staged_manifest_is_bounded_and_refuses_unsafe_or_stale_files(self):
+        file = self.updates / self.NAME
+        file.write_bytes(self.BODY)
+        path = self.updates / 'staged-update.json'
+        good = {'schema_version': 'staged-update-1.0', 'version': self.VERSION, 'file': self.NAME,
+                'platform': 'darwin', 'size': len(self.BODY), 'sha256': hashlib.sha256(self.BODY).hexdigest()}
+        for changes in ({'schema_version': 'unknown'}, {'file': '../' + self.NAME},
+                        {'file': str(file)}, {'file': 'myflames-99.0.0-macos-universal.zip'},
+                        {'size': 1}, {'size': True}, {'sha256': 'g' * 64}, {'platform': 'win32'},
+                        {'version': app_update.__version__}, {'version': '0.0.1'}):
+            with self.subTest(changes=changes):
+                path.write_text(json.dumps(dict(good, **changes)))
+                self.assertIsNone(app_update.staged_update())
+        for content in ('x' * 4097, json.dumps(dict(good, extra='x' * 4096)), '[]', '{bad'):
+            path.write_text(content)
+            self.assertIsNone(app_update.staged_update())
+        path.write_text(json.dumps(good))
+        target = self.root / 'manifest.json'
+        path.replace(target)
+        path.symlink_to(target)
+        self.assertIsNone(app_update.staged_update())
+        path.unlink()
+        path.write_text(json.dumps(good))
+        original = self.root / 'original.zip'
+        file.replace(original)
+        file.symlink_to(original)
+        self.assertIsNone(app_update.staged_update())
+        file.unlink()
+        self.assertIsNone(app_update.staged_update())
+
+    def test_manual_download_checksum_match_publishes_and_mismatch_falls_back(self):
+        for digest, status in ((hashlib.sha256(self.BODY).hexdigest(), 'downloaded'),
+                               ('0' * 64, 'fallback_browser')):
+            with self.subTest(status=status):
+                self.replies(digest=digest)
+                result = download_binary_update(self.URL)
+                self.assertEqual(result['status'], status)
+                if status == 'downloaded':
+                    path = Path(result['download_path'])
+                    self.assertEqual(path.read_bytes(), self.BODY)
+                    path.unlink()
+                    self.browser.assert_not_called()
+                else:
+                    self.assertIn('The download does not match its published checksum.', result['message'])
+                    self.browser.assert_called_once_with(app_update.GITHUB_RELEASES_URL + '/latest')
+                self.assertEqual(list(self.downloads.iterdir()), [])
+
+    def test_checksum_transport_rejects_oversize_wrong_name_and_unsafe_urls(self):
+        for checksum in (b'x' * 1025, ('0' * 64 + '  other.zip\n').encode()):
+            with self.subTest(checksum=checksum[:80]):
+                self.replies(checksum=checksum)
+                self.opener.open.reset_mock()
+                self.assertEqual(self.finish()['state'], 'failed')
+                self.assertEqual(self.opener.open.call_count, 1)
+                self.assertEqual(list(self.updates.iterdir()), [])
+        self.checked['update_checksum_url'] = 'https://example.com/digest'
+        self.opener.open.reset_mock()
+        self.assertEqual(self.finish()['state'], 'failed')
+        self.opener.open.assert_not_called()
+        self.checked['update_checksum_url'] = self.URL + '.sha256'
+        replies = self.replies()
+        replies[0].url = 'https://example.com/redirect'
+        self.assertEqual(self.finish()['state'], 'failed')
+        self.assertEqual(list(self.updates.iterdir()), [])
+
+    def test_stage_deadline_at_eof_never_publishes(self):
+        replies = self.replies()
+        binary = replies[1]
+        original = binary.read
+        with patch.object(app_update, 'Watchdog') as factory:
+            guard = factory.return_value
+            guard.expired = False
+
+            def read(size):
+                body = original(size)
+                if not body:
+                    guard.expired = True
+                return body
+
+            binary.read = read
+            state = self.finish()
+            self.assertEqual(state['state'], 'failed')
+            self.assertEqual(state['reason'], 'The update download took too long.')
+            guard.stop.assert_called()
+        self.assertEqual(list(self.updates.iterdir()), [])
+
+    def test_stage_cap_applies_to_metadata_headers_and_streamed_bytes(self):
+        for checked, declared, body in ((26, None, self.BODY), (None, 26, self.BODY),
+                                        (None, None, b'x' * 26)):
+            with self.subTest(checked=checked, declared=declared):
+                self.checked['update_asset_size'] = checked
+                self.replies(body=body, declared=declared)
+                with patch.object(app_update, 'MAX_UPDATE_BYTES', 25):
+                    state = self.finish()
+                self.assertEqual(state['state'], 'failed')
+                self.assertIn('200 MiB', state['reason'])
+                self.assertEqual(list(self.updates.iterdir()), [])
+
+    def test_stage_watchdog_start_failure_does_not_leave_the_job_running(self):
+        with patch.object(app_update, 'Watchdog', side_effect=RuntimeError('private failure detail')):
+            state = self.finish()
+        self.assertEqual(state['state'], 'failed')
+        self.assertNotIn('private failure detail', state['reason'])
+        self.assertEqual(list(self.updates.iterdir()), [])
+
+    def test_stage_retries_when_a_previously_staged_file_is_missing(self):
+        self.replies()
+        self.assertEqual(self.finish()['state'], 'done')
+        (self.updates / self.NAME).unlink()
+        self.replies()
+        self.assertEqual(self.finish()['state'], 'done')
+        self.assertEqual(self.opener.open.call_count, 4)
+        self.assertEqual((self.updates / self.NAME).read_bytes(), self.BODY)
+
+    def test_stage_failure_during_manifest_publish_removes_new_binary_and_temps(self):
+        self.replies()
+        replace = os.replace
+
+        def publish(source, target):
+            if Path(target).name == 'staged-update.json':
+                raise PermissionError(13, 'private path must not reach the status')
+            return replace(source, target)
+
+        with patch.object(app_update.os, 'replace', side_effect=publish):
+            state = self.finish()
+        self.assertEqual(state['state'], 'failed')
+        self.assertEqual(state['reason'], 'Could not save the update. Check the updates folder.')
+        self.assertEqual(list(self.updates.iterdir()), [])
+
+    def test_stage_replaces_destination_symlinks_without_touching_their_targets(self):
+        target = self.root / 'private-file'
+        target.write_bytes(b'private original')
+        (self.updates / self.NAME).symlink_to(target)
+        (self.updates / 'staged-update.json').symlink_to(target)
+        self.replies()
+        self.assertEqual(self.finish()['state'], 'done')
+        self.assertEqual(target.read_bytes(), b'private original')
+        self.assertFalse((self.updates / self.NAME).is_symlink())
+        self.assertFalse((self.updates / 'staged-update.json').is_symlink())
+
+    def test_stage_refuses_untrusted_binary_initial_and_final_urls(self):
+        self.checked['update_asset_url'] = 'https://example.com/asset.zip'
+        self.replies()
+        self.assertEqual(self.finish()['state'], 'failed')
+        self.assertEqual(self.opener.open.call_count, 1)
+        self.checked['update_asset_url'] = self.URL
+        replies = self.replies()
+        replies[1].url = 'https://example.com/redirect'
+        self.assertEqual(self.finish()['state'], 'failed')
+        self.assertEqual(list(self.updates.iterdir()), [])
+
+    def test_stage_windows_installer_manifest_uses_win32_platform(self):
+        name = 'myflames-99.0.0-windows-x64-setup.exe'
+        url = app_update.GITHUB_RELEASES_URL + '/download/v99.0.0/' + name
+        self.checked.update(update_asset_name=name, update_asset_url=url, update_checksum_url=url + '.sha256')
+        checksum = (hashlib.sha256(self.BODY).hexdigest().upper() + ' *' + name + '\r\n').encode()
+        self.opener.open.side_effect = [self.Response(checksum, url + '.sha256'), self.Response(self.BODY, url)]
+        with patch.object(app_update.sys, 'platform', 'win32'):
+            self.assertEqual(self.finish()['state'], 'done')
+            self.assertEqual(app_update.staged_update()['file'], name)
+        manifest = json.loads((self.updates / 'staged-update.json').read_text())
+        self.assertEqual(manifest['platform'], 'win32')
 
 
 if __name__ == "__main__":

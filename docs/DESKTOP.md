@@ -35,10 +35,16 @@ tests and platform limitations.
 ## Design direction
 
 Home shows the installed engine version and a link to published releases.
-Update status reads **Not checked yet** until you click **Check for updates**
-in Home's version footer or About myflames; the result and its time are kept in
-the app's own workspace store. The app never installs updates: **Download…**
-saves the release file in your Downloads folder for you to install. SQL editing and plan analysis share
+With **Settings > Check for updates automatically** on (the default), the app
+checks at start and once a day; **Check for updates** in Home's version footer
+and About myflames still checks on demand, and the result and its time are kept
+in the app's own workspace store. Update status reads **Not checked yet** before
+the first check. When a newer release is found, a badge beside the logo follows
+its download; **Update** downloads the release's update file, verifies it
+against the release's SHA-256 and stages it, and **Restart to update** installs
+it in place (on macOS only while the app sits in an Applications folder; on
+Windows the installer runs silently after the app quits). **Download…** still
+saves the release file in your Downloads folder for you to install by hand. SQL editing and plan analysis share
 the **SQL workspace** navigation group. Home also opens Server and the diagram
 canvas, including Mermaid ER imports. The app mark uses saturated flame colors
 on white, while the interface retains system light and dark appearances.
@@ -113,7 +119,7 @@ the [signed release build](../apps/desktop/README.md#build-the-signed-release));
 local builds stay unsigned
 ([build instructions](../apps/desktop/README.md#build-an-unsigned-macos-app)).
 Before distributing official builds more widely, complete native packaging
-tests, dependency notices and a verified update channel. Keep the Python CLI
+tests and dependency notices. Keep the Python CLI
 available independently.
 
 Client distribution policy: the app bundles the official MySQL command-line

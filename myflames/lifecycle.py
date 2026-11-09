@@ -2901,6 +2901,12 @@ class LifecycleJobs(object):
             job.start()
         return job.snapshot()
 
+    def active_operations(self):
+        """The operations (dump, restore, clone) queued or running now, oldest
+        first: quitting stops them, so Restart to update names them first."""
+        with self.lock:
+            return [item.operation for item in self.jobs.values() if item.state in ('queued', 'running')]
+
     @contextlib.contextmanager
     def runner(self, operation, connection):
         """A LifecycleJob for a request's preflight tools, stopped by shutdown()."""

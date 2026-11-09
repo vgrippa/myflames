@@ -81,6 +81,23 @@ class TestWorkspaceStore(unittest.TestCase):
             conn.execute("UPDATE settings SET value = 'not json' WHERE key = 'app_update_last_check'")
         self.assertIsNone(self.store.app_update_last_check())
 
+    def test_app_update_auto_defaults_on_without_creating_storage(self):
+        self.assertIs(self.store.app_update_auto(), True)
+        self.assertFalse(self.path.exists())
+        self.assertIs(self.store.set_app_update_auto(False), False)
+        self.assertIs(WorkspaceStore(self.path).app_update_auto(), False)
+        self.assertIs(self.store.set_app_update_auto(True), True)
+        self.assertIs(WorkspaceStore(self.path).app_update_auto(), True)
+        with contextlib.closing(sqlite3.connect(str(self.path))) as conn, conn:
+            conn.execute("UPDATE settings SET value = 'unexpected' WHERE key = 'app_update_auto'")
+        self.assertIs(self.store.app_update_auto(), True)
+
+    def test_app_update_auto_rejects_non_boolean_values(self):
+        for invalid in (None, 0, 1, 'on', 'off', [], {}):
+            with self.subTest(value=invalid), self.assertRaisesRegex(ValueError, 'true or false'):
+                self.store.set_app_update_auto(invalid)
+        self.assertFalse(self.path.exists())
+
     def test_write_lock_timeout_closes_the_connection(self):
         # BEGIN IMMEDIATE raising (a busy timeout under write contention) must
         # not leak the connection, which no caller owns yet.

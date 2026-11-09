@@ -554,6 +554,17 @@ test('a group that vanishes between the check and SIGKILL is never signalled aga
     assert.ok(alive.has(4008));
   } finally { r.cleanup(); }
 });
+test('the packaged backend never receives the update test hooks', () => {
+  // app_update honors MYFLAMES_TEST_UPDATE(_FILE) only in development; the desktop's
+  // environment allowlist must keep them out of the packaged backend too.
+  for (const platform of ['darwin', 'win32', 'linux']) {
+    const env = backendEnvironment('/desktop', { PATH: '/usr/bin', MYFLAMES_TEST_UPDATE: '99.0.0',
+      MYFLAMES_TEST_UPDATE_FILE: '/tmp/evil.zip', MYFLAMES_UPDATES_DIR: '/tmp/elsewhere' }, platform, { readdirSync() { throw new Error('none'); } });
+    assert.equal(env.MYFLAMES_TEST_UPDATE, undefined, platform);
+    assert.equal(env.MYFLAMES_TEST_UPDATE_FILE, undefined, platform);
+    assert.equal(env.MYFLAMES_UPDATES_DIR, undefined, 'main.cjs sets it, never the inherited environment');
+  }
+});
 
 test('Windows passes the folders a chosen database client may live in to the backend', () => {
   // connector._check_client_trust accepts a chosen client only under these

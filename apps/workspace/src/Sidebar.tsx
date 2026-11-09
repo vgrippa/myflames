@@ -10,6 +10,7 @@ import { DatabaseClientDialog } from "./ClientMissing";
 import { Icon, type IconName } from "./components";
 import { Checkbox, CountBadge, Popover, closePopovers, useFocusScope } from "./kit";
 import { NewsSetting } from "./HomeNews";
+import { AutoUpdateSetting, UpdateBadge, UpdateMenuItem } from "./UpdateBadge";
 import type { SaveStatus } from "./session";
 
 export type Place = "home" | "server" | "workload" | "replication" | "cluster" | "proxysql" | "readyset" | "tuning" | "files" | "query" | "digest" | "diagram" | "schema" | "plans" | "investigations" | "learn";
@@ -225,6 +226,7 @@ export function Sidebar({
             <img src={logo} alt="" width="22" height="22" />
             <span className="brand-name">myflames</span>
           </button>
+          <UpdateBadge />
         </div>
         <button
           ref={menuButton}
@@ -449,7 +451,9 @@ export function Sidebar({
                 : "Off clears the saved workspace. Passwords are never saved in it."}
             </p>
             <NewsSetting />
+            <AutoUpdateSetting />
             <div className="settings-menu">
+              <UpdateMenuItem onChoose={() => { setSettingsOpen(false); setDrawerOpen(false); }} />
               {onStartFresh && <button type="button" className="settings-item" disabled={!ready}
                 aria-haspopup="dialog" onClick={() => { setSettingsOpen(false); setDrawerOpen(false); onStartFresh(); }}>
                 <Icon name="plus" size={16} />Start fresh

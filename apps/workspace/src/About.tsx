@@ -94,7 +94,7 @@ export function AboutDialog({
         {/* Privacy in one line: what the app contacts, and only when. It
             replaces the top bar's former Local badge. */}
         <section className="about-section about-privacy" aria-label="Privacy">
-          <p>myflames contacts only your database servers, official release pages when you check for updates, and news feeds when shown and turned on.</p>
+          <p>myflames contacts only your database servers, official release pages when it checks for updates (at start and once a day while that setting is on, or when you ask), and news feeds when shown and turned on.</p>
         </section>
         <section className="about-section about-credits" aria-labelledby={creditsId}>
           <h3 className="section-label" id={creditsId}>

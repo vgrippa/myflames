@@ -945,6 +945,21 @@ class WorkspaceStore:
             conn.execute("INSERT OR REPLACE INTO settings VALUES ('app_update_last_check', ?)", (text,))
         return record
 
+    def app_update_auto(self):
+        """True unless the user turned automatic checks off. Never creates the database."""
+        if not self.path.exists():
+            return True
+        with closing(self._connect()) as conn, conn:
+            row = conn.execute("SELECT value FROM settings WHERE key = 'app_update_auto'").fetchone()
+        return not row or row[0] != 'off'
+
+    def set_app_update_auto(self, enabled):
+        if not isinstance(enabled, bool):
+            raise ValueError('enabled must be true or false.')
+        with closing(self._connect()) as conn, conn:
+            conn.execute("INSERT OR REPLACE INTO settings VALUES ('app_update_auto', ?)", ('on' if enabled else 'off',))
+        return enabled
+
     # -- Application database client ----------------------------------------
 
     def client_binary(self):

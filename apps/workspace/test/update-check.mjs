@@ -4,6 +4,8 @@
 // time kept in the workspace store across a reload, and a result older than
 // 24 hours shown as a past result. The real Python server answers the stored
 // status and one check (MYFLAMES_TEST_UPDATE, no network); other checks are mocked.
+// "Check for updates automatically" is turned off first, so the automatic
+// check's start-up tick never races the steps below.
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -20,6 +22,10 @@ const h = await open("/api/unused-update-test", "update-check", {
   },
   "/api/app/update/status": (body, request) => {
     if (statusMock) return statusMock;
+    request.continue();
+    return null;
+  },
+  "/api/app/update/settings": (body, request) => {
     request.continue();
     return null;
   },
@@ -65,6 +71,17 @@ async function shoot(name) {
 }
 
 try {
+  // 0. Turn "Check for updates automatically" off so the automatic check's
+  // start-up tick (10 s after load) never races the steps below.
+  await page.click(".settings-button");
+  await page.waitForSelector("#settings-popover .update-auto-toggle input:not([disabled])");
+  await page.click("#settings-popover .update-auto-toggle");
+  await page.waitForFunction(() => document.querySelector(".update-auto-toggle input")?.checked === false);
+  assert.ok(state.other.some((r) => r.path === "/api/app/update/settings" && r.body.auto_check === false),
+    "the automatic check setting was turned off");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("#settings-popover"));
+
   // 1. Before the first check: the stored status is read, GitHub is not.
   await waitStatus(/Not checked yet/);
   assert.equal(checkCalls(), 0, "no update check without a click");
