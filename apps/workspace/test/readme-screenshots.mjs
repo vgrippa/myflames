@@ -148,6 +148,9 @@ async function shoot(file) {
     shot = again;
     if (tries === 9) throw new Error(`${file} never settled`);
   }
+  // Never write an image of a page that failed or tried the network.
+  assert.deepEqual(h.errors, [], "page errors");
+  assert.deepEqual(h.state.blocked, [], "requests outside the local server (blocked)");
   await fs.writeFile(path.join(out, file), shot);
   console.log("wrote", path.relative(root, path.join(out, file)));
 }
