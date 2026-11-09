@@ -112,7 +112,7 @@ export function summaryText(report: ClusterReport, stale = false): string {
   return parts.join(" · ");
 }
 
-export function ClusterPlace({ connection, disabled = false, report, onReport, failure = null, onFailure, onOpenProxySql, profiles, onSwitchConnection }: {
+export function ClusterPlace({ connection, disabled = false, report, onReport, failure = null, onFailure, onOpenProxySql, onOpenReadyset, profiles, onSwitchConnection }: {
   connection: Connection;
   disabled?: boolean;
   /** Owned by the shell so Server's Refresh all feeds this place and the sidebar. */
@@ -122,6 +122,7 @@ export function ClusterPlace({ connection, disabled = false, report, onReport, f
   failure?: ClusterFailure | null;
   onFailure?: (key: string, message: string) => void;
   onOpenProxySql?: () => void;
+  onOpenReadyset?: () => void;
   profiles?: Profile[];
   onSwitchConnection?: (id: string) => void;
 }) {
@@ -151,7 +152,7 @@ export function ClusterPlace({ connection, disabled = false, report, onReport, f
       <div className="cluster-place">
         <ClusterView connection={connection} disabled={disabled} report={report} onReport={onReport}
           failure={failure} onFailure={onFailure} selection={selection} tab={tab} onTab={setTab}
-          onOpenProxySql={onOpenProxySql} profiles={profiles} onSwitchConnection={onSwitchConnection} />
+          onOpenProxySql={onOpenProxySql} onOpenReadyset={onOpenReadyset} profiles={profiles} onSwitchConnection={onSwitchConnection} />
       </div>
     </InspectorContext.Provider>
   );
@@ -210,11 +211,11 @@ function Findings({ report, selection }: { report: ClusterReport; selection: Sel
   );
 }
 
-function ClusterView({ connection, disabled, report: bound, onReport, failure, onFailure, selection, tab, onTab, onOpenProxySql, profiles, onSwitchConnection }: {
+function ClusterView({ connection, disabled, report: bound, onReport, failure, onFailure, selection, tab, onTab, onOpenProxySql, onOpenReadyset, profiles, onSwitchConnection }: {
   connection: Connection; disabled: boolean; report: Bound<ClusterReport> | null;
   onReport: (report: Bound<ClusterReport>) => void; failure: ClusterFailure | null; onFailure?: (key: string, message: string) => void;
   selection: Selection; tab: ClusterTab; onTab: (tab: ClusterTab) => void;
-  onOpenProxySql?: () => void; profiles?: Profile[]; onSwitchConnection?: (id: string) => void;
+  onOpenProxySql?: () => void; onOpenReadyset?: () => void; profiles?: Profile[]; onSwitchConnection?: (id: string) => void;
 }) {
   const reads = useConnectionReads(connection);
   const report = bound?.report || null;
@@ -325,6 +326,7 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
     return list.length ? list : undefined;
   }, [report]);
   const isProxySql = !!report && (report.server_product === "ProxySQL Admin" || /ProxySQL Admin interface/i.test(report.message || ""));
+  const isReadyset = !!report && (report.readyset_hint === true || report.server_product === "Readyset" || /Readyset/i.test(report.message || ""));
   // Each table keeps its own column layout (ColumnStoreContext, saved with
   // the workspace): Galera and PXC Nodes, Group Replication Members and
   // Routers have different columns, so each has its own id and instance.
@@ -380,6 +382,14 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
             >
               This connection is a ProxySQL Admin interface.
             </EmptyState>
+          ) : isReadyset ? (
+            <EmptyState
+              icon="cluster"
+              title="Not part of a cluster"
+              action={!other && onOpenReadyset ? <ToolbarButton primary onClick={onOpenReadyset}>Open Readyset</ToolbarButton> : undefined}
+            >
+              This connection is a Readyset cache instance.
+            </EmptyState>
           ) : (
             <EmptyState icon="cluster" title="Not part of a cluster">
               {notClusterReason(report.message)} myflames reads MariaDB Galera Cluster, Galera Cluster for MySQL, Percona XtraDB Cluster and MySQL InnoDB Cluster (and Group Replication without InnoDB Cluster).
@@ -392,7 +402,8 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
           {report.status === "ok" && findings}
           {shownTab === "topology" ? (
             <ClusterTopology report={report} selection={selection} marker={marker}
-              profiles={!stale ? profiles : undefined} onSwitchConnection={!stale ? onSwitchConnection : undefined} />
+              profiles={!stale ? profiles : undefined} onSwitchConnection={!stale ? onSwitchConnection : undefined}
+              onOpenReadyset={!stale ? onOpenReadyset : undefined} onOpenProxySql={!stale ? onOpenProxySql : undefined} />
           ) : shownTab === "members" ? (
             <DataTable key={membersTable} id={membersTable} label={`Cluster ${noun.toLowerCase()}s`} columns={memberColumns} rows={members} rowKey={memberKey} selection={selection} />
           ) : (

@@ -1,0 +1,72 @@
+{
+  "query_optimization": {
+    "r_total_time_ms": 0.115686761
+  },
+  "query_block": {
+    "select_id": 1,
+    "cost": 0.152014721,
+    "r_loops": 1,
+    "r_total_time_ms": 9.430873358,
+    "filesort": {
+      "sort_key": "customers.region",
+      "r_loops": 1,
+      "r_total_time_ms": 0.011489296,
+      "r_used_priority_queue": false,
+      "r_output_rows": 4,
+      "r_buffer_size": "2KiB",
+      "r_sort_mode": "sort_key,rowid",
+      "temporary_table": {
+        "nested_loop": [
+          {
+            "table": {
+              "table_name": "customers",
+              "access_type": "range",
+              "possible_keys": ["PRIMARY"],
+              "key": "PRIMARY",
+              "key_length": "4",
+              "used_key_parts": ["id"],
+              "loops": 1,
+              "r_loops": 1,
+              "rows": 40,
+              "r_rows": 40,
+              "cost": 0.01011184,
+              "r_table_time_ms": 0.009818125,
+              "r_other_time_ms": 0.019636251,
+              "r_engine_stats": {
+                "pages_accessed": 4
+              },
+              "filtered": 100,
+              "r_total_filtered": 100,
+              "attached_condition": "customers.`id` <= 40",
+              "r_filtered": 100
+            }
+          },
+          {
+            "table": {
+              "table_name": "orders",
+              "access_type": "ref",
+              "possible_keys": ["idx_customer"],
+              "key": "idx_customer",
+              "key_length": "4",
+              "used_key_parts": ["customer_id"],
+              "ref": ["myflames_w2c_stale.customers.id"],
+              "loops": 40,
+              "r_loops": 40,
+              "rows": 1,
+              "r_rows": 451,
+              "cost": 0.116224,
+              "r_table_time_ms": 5.548661282,
+              "r_other_time_ms": 3.832703657,
+              "r_engine_stats": {
+                "pages_accessed": 36191
+              },
+              "filtered": 100,
+              "r_total_filtered": 100,
+              "r_filtered": 100
+            }
+          }
+        ]
+      }
+    }
+  }
+}

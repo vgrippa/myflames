@@ -419,14 +419,8 @@ async function loadSchemas() {
   await editorPlace();
   if (await page.$('button[aria-label="Show the schema browser"]')) await page.click('button[aria-label="Show the schema browser"]');
   await page.waitForSelector(".schema-browser", { visible: true });
-  const clicked = await page.evaluate(() => {
-    const load = [...document.querySelectorAll(".schema-browser button")].find((b) => b.textContent.trim() === "Load schemas" && b.offsetParent);
-    if (load) { load.click(); return "load"; }
-    const reload = document.querySelector('.schema-browser button[aria-label="Reload schemas"]');
-    if (reload) { reload.click(); return "reload"; }
-    return "";
-  });
-  if (!clicked) throw new Error("no Load schemas or Reload schemas button");
+  // The visible panel reads the chosen connection's list by itself (no Load
+  // schemas gate); every caller has just chosen a connection.
   const e2e = '.schema-browser .tree-row.kind-schema[data-node="s:e2e"]';
   await page.waitForSelector(e2e, { timeout: 60000 });
   await pause(300);

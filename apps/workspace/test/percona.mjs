@@ -342,11 +342,13 @@ try {
   // CPU time: "Not collected" on one line, the reason and its link on one
   // muted line below.
   const cpuNote = await page.evaluate((q) => {
-    const fields = document.querySelector(`${q} .view-inspector .inspector-fields`);
-    const rows = [...fields.children].map((r) => [r.querySelector("dt"), r.querySelector("dd")]);
+    // The shared statement inspector holds several field lists: use CPU time's.
+    const fields = [...document.querySelectorAll(`${q} .view-inspector .inspector-fields`)]
+      .find((list) => [...list.querySelectorAll("dt")].some((dt) => dt.textContent === "CPU time"));
+    const rows = fields ? [...fields.children].map((r) => [r.querySelector("dt"), r.querySelector("dd")]) : [];
     const rect = (e) => { const r = e?.getBoundingClientRect(); return r ? { top: r.top, bottom: r.bottom, right: r.right, height: r.height } : null; };
     const value = rect(rows.find(([dt]) => dt?.textContent === "CPU time")?.[1]);
-    const note = rect(fields.querySelector(".qd-cpu-note"));
+    const note = rect(fields?.querySelector(".qd-cpu-note"));
     const box = rect(document.querySelector(`${q} .view-inspector .inspector-scroll`));
     return { value, note, right: box?.right };
   }, qd);

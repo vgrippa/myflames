@@ -773,6 +773,17 @@
     },
     "routing": {
       "$ref": "#/$defs/routing_context"
+    },
+    "readyset_hint": {
+      "type": "boolean",
+      "description": "True when the connected endpoint is a Readyset instance rather than ProxySQL Admin."
+    },
+    "topology": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Classified multi-tier routing topology across ProxySQL, Readyset cache tiers, QueryPilot rules and downstream MySQL/MariaDB servers."
     }
   },
   "$defs": {

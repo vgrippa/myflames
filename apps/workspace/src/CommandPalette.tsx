@@ -9,8 +9,19 @@ export type WorkspaceCommand = {
   id: string; label: string; group: string; icon: IconName;
   keywords?: string; disabled?: boolean; run(): void;
 };
+/** The object search's state while a query is typed (2+ characters). */
+export type PaletteObjectStatus = { searching: boolean; error: string; truncated: boolean };
 
-export function CommandPalette({ commands, onClose }: { commands: WorkspaceCommand[]; onClose(): void }) {
+export function CommandPalette({ commands, recent = [], objects = [], objectStatus, onQueryChange, onClose }: {
+  commands: WorkspaceCommand[];
+  /** The last views visited, first while the search is empty. */
+  recent?: WorkspaceCommand[];
+  /** Schema objects matching the typed text (cached catalog, then the server). */
+  objects?: WorkspaceCommand[];
+  objectStatus?: PaletteObjectStatus;
+  onQueryChange?: (query: string) => void;
+  onClose(): void;
+}) {
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(0);
   const dialog = useRef<HTMLDialogElement>(null);
@@ -26,7 +37,20 @@ export function CommandPalette({ commands, onClose }: { commands: WorkspaceComma
     .map((command, order) => ({ command, order, rank: labelMatch(command) ? 0 : 1 }))
     .sort((a, b) => a.rank - b.rank || a.order - b.order)
     .map(({ command }) => command);
-  const index = Math.min(selected, Math.max(0, matches.length - 1));
+  // Recent views lead the empty palette; a typed search is a search, and
+  // objects join it from two characters up.
+  const recents = words.length ? [] : recent;
+  const objectItems = words.length
+    ? objects.filter(command => words.every(word =>
+        `${command.label} ${command.group}`.toLocaleLowerCase().includes(word)))
+    : [];
+  const items = [...recents, ...matches, ...objectItems];
+  const index = Math.min(selected, Math.max(0, items.length - 1));
+  const searching = !!objectStatus?.searching && words.length > 0;
+  const objectNote = searching ? "Searching objects…"
+    : objectStatus?.error && words.length ? `Object search: ${objectStatus.error}`
+    : objectStatus?.truncated && objectItems.length ? "More objects match; keep typing to narrow the search."
+    : "";
   useFocusScope(dialog, { open: true, onClose, initialFocus: () => input.current });
   useEffect(() => { document.getElementById(`${listId}-${index}`)?.scrollIntoView({ block: "nearest" }); }, [index, listId, query]);
   // A list taller than the palette ends on a whole command: its height is
@@ -59,7 +83,7 @@ export function CommandPalette({ commands, onClose }: { commands: WorkspaceComma
     };
     // Recomputed for every new set of matches (a filter can keep the count
     // but change which commands, and so their wrapped heights).
-  }, [matches.map((command) => command.id).join("\u0000")]);
+  }, [items.map((command) => command.id).join("\u0000") + objectNote]);
   function choose(command: WorkspaceCommand | undefined) {
     if (!command || command.disabled) return;
     onClose();
@@ -72,23 +96,24 @@ export function CommandPalette({ commands, onClose }: { commands: WorkspaceComma
       <input ref={input} value={query} type="search" autoComplete="off" spellCheck={false}
         aria-label="Search commands" placeholder="Search or jump to…" role="combobox"
         aria-expanded="true" aria-controls={listId} aria-autocomplete="list"
-        aria-activedescendant={matches.length ? `${listId}-${index}` : undefined}
-        onChange={event => { setQuery(event.target.value); setSelected(0); }}
+        aria-activedescendant={items.length ? `${listId}-${index}` : undefined}
+        onChange={event => { setQuery(event.target.value); setSelected(0); onQueryChange?.(event.target.value); }}
         onKeyDown={event => {
-          if (event.key === "ArrowDown") { event.preventDefault(); setSelected((index + 1) % Math.max(matches.length, 1)); }
-          else if (event.key === "ArrowUp") { event.preventDefault(); setSelected((index - 1 + matches.length) % Math.max(matches.length, 1)); }
-          else if (event.key === "Enter") { event.preventDefault(); choose(matches[index]); }
+          if (event.key === "ArrowDown") { event.preventDefault(); setSelected((index + 1) % Math.max(items.length, 1)); }
+          else if (event.key === "ArrowUp") { event.preventDefault(); setSelected((index - 1 + items.length) % Math.max(items.length, 1)); }
+          else if (event.key === "Enter") { event.preventDefault(); choose(items[index]); }
         }} />
       <button type="button" className="text-button command-esc" onClick={onClose} aria-label="Close commands"><kbd>Esc</kbd></button>
     </div>
     <div ref={results} className="command-results" id={listId} role="listbox" aria-label="Matching commands">
-      {matches.map((command, position) => <button type="button" key={command.id} id={`${listId}-${position}`}
+      {items.map((command, position) => <button type="button" key={command.id} id={`${listId}-${position}`}
         className="command-option" role="option" aria-selected={position === index}
         aria-disabled={command.disabled || undefined} tabIndex={-1}
         onMouseEnter={() => setSelected(position)} onClick={() => choose(command)}>
-        <Icon name={command.icon} /><span>{command.label}</span><small>{command.group}</small>
+        <Icon name={command.icon} /><span><bdi>{command.label}</bdi></span><small>{command.group}</small>
       </button>)}
-      {!matches.length && <p className="command-empty" role="status">No commands match “{query}”.</p>}
+      {objectNote && <p className="command-note" role="status">{objectNote}</p>}
+      {!items.length && !searching && <p className="command-empty" role="status">No commands match “{query}”.</p>}
     </div>
     <footer className="command-footer"><span><kbd>↑</kbd> <kbd>↓</kbd> to move</span><span><kbd>Return</kbd> to open</span><span><kbd>Esc</kbd> to close</span></footer>
   </dialog>;

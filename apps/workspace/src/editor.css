@@ -28,12 +28,14 @@
 .query-tabs {
   flex: none;
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   min-width: 0;
   max-width: 100%;
   overflow-x: auto;
   border-bottom: 1px solid var(--line);
   background: var(--surface-pane);
+  gap: var(--space-1);
+  padding: 0 var(--space-1);
 }
 .query-mode-switch {
   display: flex;
@@ -73,19 +75,39 @@
 }
 .query-tablist {
   display: flex;
+  align-items: flex-end;
+  gap: var(--space-1);
   flex: 1 1 auto;
   min-width: 0;
   overflow-x: auto;
 }
+/* Every open query reads as a tab: its own raised surface, a full border,
+   rounded top corners, sitting on the strip's bottom hairline. */
 .query-tab {
-  display: flex;
   flex: none;
+  display: flex;
   align-items: center;
-  border-right: 1px solid var(--line);
+  margin: var(--space-1) 0 0;
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  color: var(--ink-muted);
 }
+.query-tab:not(:has(> [role="tab"][aria-selected="true"])):hover {
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+/* The selected tab joins the panel below: the toolbar's surface, the bottom
+   border repainted in that surface over the strip's hairline, an accent bar
+   on top, text in the primary ink. The shape marks the state, so keyboard
+   focus keeps its own ring. */
 .query-tab:has(> [role="tab"][aria-selected="true"]) {
+  position: relative;
+  z-index: 1;
   background: var(--surface);
+  border-bottom-color: var(--surface);
   box-shadow: inset 0 2px var(--accent);
+  color: var(--ink);
 }
 .query-tab:has(> .query-tab-close) > [role="tab"] {
   padding-right: var(--space-1);
@@ -93,6 +115,7 @@
 /* Shown on the active tab and the tab being pointed at; touch screens
    always show it. Hidden keeps its space, so tabs never shift. */
 .query-tab-close {
+  position: relative;
   flex: none;
   display: inline-grid;
   place-items: center;
@@ -105,6 +128,13 @@
   background: none;
   color: var(--ink-faint);
   visibility: hidden;
+}
+/* The icon is 20 px; a transparent halo grows the hit box to 24 px without
+   moving anything (WCAG 2.5.8). */
+.query-tab-close::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
 }
 .query-tab:is(:hover, :focus-within, :has(> [aria-selected="true"])) > .query-tab-close {
   visibility: visible;
@@ -155,8 +185,7 @@
   flex: none;
   flex-wrap: nowrap;
 }
-.query-tab > button[role="tab"],
-.query-tabs > button {
+.query-tab > button[role="tab"] {
   flex: none;
   display: inline-flex;
   align-items: center;
@@ -166,14 +195,50 @@
   padding: 0 var(--space-4);
   min-height: var(--control-h);
   font-size: var(--text-sm);
-  color: var(--ink-muted);
+  color: inherit;
   white-space: nowrap;
 }
-.query-tabs > button {
-  border-right: 1px solid var(--line);
+/* The selected tab's shape already marks the state; keyboard focus keeps the
+   focus ring, drawn inside the tab so the strip's scroll never clips it. */
+.query-tab > button[role="tab"]:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
 }
-.query-tab > button[aria-selected="true"] {
-  color: var(--accent-text);
+/* An open transaction rides on the tab as a small status badge. */
+.tab-transaction {
+  flex: none;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
+  background: var(--warn-soft);
+  color: var(--warn-text);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  font-weight: 600;
+}
+/* New query tab: a small bordered button, aligned with the tab row. */
+.query-tabs > .query-tab-add {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: var(--space-5);
+  height: var(--space-5);
+  min-height: 0;
+  margin: 0 var(--space-1) var(--space-1);
+  padding: 0;
+  border: 1px solid var(--control-line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--ink-muted);
+  font-size: var(--text-md);
+  line-height: 1;
+}
+.query-tabs > .query-tab-add:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+.query-tabs > .query-tab-add:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
 }
 .tab-dot {
   width: var(--space-2);
@@ -213,6 +278,16 @@
   align-items: center;
   gap: var(--space-1);
   flex-wrap: nowrap;
+}
+/* A toolbar that still has to scroll keeps its run actions pinned to the
+   left edge; the shadow repaints the flex gap in the toolbar's surface.
+   z-index above the splitter (2) keeps the Run options popover over it. */
+.editor-toolbar .run-actions {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  background: var(--surface);
+  box-shadow: var(--space-2) 0 0 var(--surface);
 }
 .editor-toolbar .editor-actions {
   padding-left: var(--space-2);
@@ -901,9 +976,12 @@
 }
 
 /* This tab's transaction state, at the end of the editor toolbar (the
-   window status bar carries the connection, session and last run). */
+   window status bar carries the connection, session and last run). It is the
+   one toolbar item that gives way: a long meter shrinks with an ellipsis
+   (editor-insights.css) instead of pushing the run actions out. */
 .editor-toolbar .tx-state {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
   display: inline-flex;
   align-items: center;
   font-size: var(--text-sm);
@@ -1207,14 +1285,15 @@
 }
 
 /* ---- Narrow windows ---------------------------------------------------------- */
-/* A narrow editor pane (the 720 px window with the sidebar, or the schema
-   browser open in a window under about 1000 px): the toolbar wraps onto a
-   second row instead of hiding controls in a sideways scroll, and the scope
-   shares that row. */
+/* An editor pane narrower than the toolbar's one row (about 1,100 px with
+   the Database picker and a transaction meter: the 720 px window, or the
+   schema browser open in a 1440 px window): the toolbar wraps onto a second
+   row instead of hiding controls in a sideways scroll, and the scope shares
+   that row. */
 .query-lab .editor-panel {
   container: editor-panel / inline-size;
 }
-@container editor-panel (max-width: 700px) {
+@container editor-panel (max-width: 1100px) {
   .editor-toolbar {
     flex-wrap: wrap;
     overflow: visible;

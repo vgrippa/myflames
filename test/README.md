@@ -42,7 +42,8 @@ python3 -m unittest discover -s test -p "test_*.py" -v
 ## Test a current MySQL release
 
 Pull the desired image explicitly, generate a separate corpus, and run the
-opt-in checks. The default generator still uses `mysql:8.4` and `test/fixtures/`.
+opt-in checks. Keep fresh version corpora separate from the committed fixture
+directory unless you are intentionally updating it. The default generator still uses `mysql:8.4` and `test/fixtures/`.
 
 ```bash
 docker pull mysql:latest
@@ -65,7 +66,7 @@ the ordinary suite unless `MYFLAMES_MYSQL_FIXTURES` is set. These checks exercis
 captured server output; they do not open a live connection themselves.
 
 The September 2026 review used MySQL 26.7.0 from a freshly pulled `mysql:latest`
-image. See [review results](../docs/reviews/2026-09-15.md) for the tested scope and
+image. See the September 2026 review in the CHANGELOG (3.x) for the tested scope and
 remaining limitations.
 
 ## GA version matrix (live servers)

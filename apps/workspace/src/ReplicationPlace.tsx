@@ -23,6 +23,9 @@ export function ReplicationPlace({
   onBack,
   clusterKind = null,
   onOpenCluster,
+  onOpenReadyset,
+  onOpenProxySql,
+  onSwitchConnection,
   onOpenInstruments,
   loops: propLoops,
   onLoops,
@@ -39,6 +42,9 @@ export function ReplicationPlace({
    * sidebar's marker is drawn by the shell from the shared report. */
   clusterKind?: ClusterKind | null;
   onOpenCluster?: () => void;
+  onOpenReadyset?: () => void;
+  onOpenProxySql?: () => void;
+  onSwitchConnection?: (profileId: string) => void;
   onOpenInstruments?: (row: string) => void;
   loops?: Bound<SkipLoop[]> | null;
   onLoops?: (loops: Bound<SkipLoop[]>) => void;
@@ -133,6 +139,9 @@ export function ReplicationPlace({
             onTabChange={setActiveTab}
             clusterKind={clusterKind}
             onOpenCluster={onOpenCluster}
+            onOpenReadyset={onOpenReadyset}
+            onOpenProxySql={onOpenProxySql}
+            onSwitchConnection={onSwitchConnection}
           />
         </div>
       </InstrumentsLinkContext.Provider>

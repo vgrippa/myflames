@@ -217,3 +217,9 @@ export function quoteName(name: string) {
     ? name
     : "`" + name.replace(/`/g, "``") + "`";
 }
+/** The SHOW CREATE statement of one schema object (the schema browser's menus
+ * and the command palette's object search); both engines qualify the name. */
+export function showCreateSql(kind: "procedure" | "function" | "trigger" | "event", schema: string, name: string) {
+  const keyword = { procedure: "PROCEDURE", function: "FUNCTION", trigger: "TRIGGER", event: "EVENT" }[kind];
+  return `SHOW CREATE ${keyword} ${quoteName(schema)}.${quoteName(name)}`;
+}

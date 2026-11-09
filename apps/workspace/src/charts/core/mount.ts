@@ -50,8 +50,10 @@ export function mount(element: HTMLElement, data: ChartData, options: MountOptio
     options: options.options || {},
   };
   const renderer = views.get(options.view);
+  let view: ViewInstance | null = null;
   if (renderer) {
-    parts.push(renderer(context));
+    view = renderer(context);
+    parts.push(view);
   } else {
     html(doc, "p", { class: "mfc-error", role: "status" }, container,
       "This chart type is not available in this runtime.");
@@ -68,6 +70,7 @@ export function mount(element: HTMLElement, data: ChartData, options: MountOptio
     select: (id, notify = false) => selection.select(id, notify),
     selected: () => selection.current(),
     clear: () => selection.clear(),
+    reveal: (id) => typeof id === "string" && !!view?.reveal && view.reveal(id),
     destroy() {
       if (bridge) bridge.dispose();
       parts.splice(0).forEach((part) => part.destroy());

@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { api, type Connection, type ConnectionType } from "./api";
 import { connectionKey } from "./binding";
+import type { DatabaseTopologyTiers } from "./readysetApi";
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export type Facts = { [key: string]: Json };
@@ -73,6 +74,8 @@ export type ReplicationReport = Partial<ReceiverGuard> & {
    * (a Galera provider loaded, or Group Replication configured), never a
    * verdict on the cluster. */
   cluster_hint?: "galera" | "group_replication" | null;
+  readyset_hint?: boolean;
+  topology_tiers?: DatabaseTopologyTiers | null;
   capabilities: Facts; notes: string[];
   summary: { channels: number; judged: number; ok: number; watch: number; problem: number; unknown: number; failed: number; lag_max_s: number | null };
 };
@@ -162,6 +165,29 @@ export type UpgradeReport = {
   checks: UpgradeFinding[]; counts: { error: number; warning: number; notice: number };
   manual_checks: Json[]; method: string; partial: boolean; status: string; limitations: string[];
 };
+export type InstallMethod = "rpm" | "distro_rpm" | "deb" | "ubuntu_deb" | "tarball" | "windows_msi" | "windows_zip" | "homebrew" | "macos" | "unknown";
+export type UpgradeTarget = {
+  version: string; check_version: string; series: string; date: string | null; url: string | null;
+  path: "patch" | "next_lts" | "innovation" | "lts_after_innovation"; path_label: string;
+  /** Percona only: the repository line (ps-84-lts) and where packages exist (codenames or el8, el9). */
+  repository?: string | null; packages?: string[];
+  /** A Docker-image-only release, offered because the server looks like a container. */
+  docker_only?: boolean;
+  shell: { ok: boolean; needs: string | null } | null;
+};
+export type UpgradeTargets = {
+  schema_version: "upgrade-targets-1.0";
+  server: { engine: "mysql" | "mariadb"; flavor: string; product: string; version: string };
+  install: { method: InstallMethod; label: string; confidence: "high" | "medium" | "low"; evidence: string[]; package: string | null; build_id: string | null; container: boolean };
+  source: { kind: "release_notes" | "percona_repository" | "bundled" | "none"; label: string; urls: string[]; checked_at: string | null; error: string | null };
+  guidance: { text: string; command: string | null; url: string | null };
+  targets: UpgradeTarget[]; recommended: string | null;
+  not_direct: { series: string; newest: string; reason: string }[];
+  unclassified: { series: string; newest: string; reason: string }[];
+  /** Releases the release notes list that cannot be installed this way (removed, Docker image only). */
+  unavailable: { version: string; reason: string }[];
+  notes: string[];
+};
 export type LifecycleOperation = "dump" | "restore" | "clone";
 export type PrepareRequest =
   | { operation: "dump"; directory: string; schemas: string[]; tables: string[]; threads: number; prefer_shell: boolean; options?: DumpOptions }
@@ -170,6 +196,7 @@ export type PrepareRequest =
 export type CloneEndpoint = { endpoint: string; connection_key: string; type: ConnectionType; read_only: boolean };
 export type LifecyclePlan = {
   review_token?: string;
+  required_acknowledgement?: string | null;
   schema_version: "lifecycle-plan-1.0"; operation: LifecycleOperation;
   request: Facts; server: LifecycleServer; connection_key: string; tool: Tool;
   target: string; commands: string[]; checks: Verification[]; warnings: string[];
@@ -185,14 +212,17 @@ export type LifecycleJob = {
   schema_version: "lifecycle-job-1.0"; id: string | null; operation: LifecycleOperation;
   state: "queued" | "running" | "done" | "failed" | "refused" | "cancelled";
   progress: number | null; detail: CloneProgress | null;
+  phase?: string | null; elapsed_s?: number | null;
+  output?: { written_bytes: number; estimated_bytes: number | null } | null;
   events: { at: string; stream: string; text: string }[];
   result: LifecycleResult | null; error: string; policy?: OpsPolicy;
 };
 export function jobActive(job: LifecycleJob) { return job.state === "queued" || job.state === "running"; }
-export const readLifecycleTools = (connection: Connection, signal?: AbortSignal) => api<LifecycleTools>("lifecycle/tools", { connection, check_updates: true }, signal);
+export const readLifecycleTools = (connection: Connection, signal?: AbortSignal, checkUpdates = false) => api<LifecycleTools>("lifecycle/tools", { connection, check_updates: checkUpdates }, signal);
+export const readUpgradeTargets = (connection: Connection, signal?: AbortSignal) => api<UpgradeTargets>("lifecycle/upgrade-targets", { connection }, signal);
 export const checkUpgrade = (connection: Connection, target_version: string, prefer_shell: boolean, signal?: AbortSignal) => api<UpgradeReport>("lifecycle/upgrade-check", { connection, target_version, prefer_shell }, signal);
 export const prepareLifecycle = (connection: Connection, request: PrepareRequest, signal?: AbortSignal) => api<LifecyclePlan>("lifecycle/prepare", { connection, ...request }, signal);
-export const startLifecycle = (connection: Connection, plan: LifecyclePlan, typed_target: string, donor?: Connection) => api<LifecycleJob>("lifecycle/start", { connection, operation: plan.operation, plan, typed_target, donor, confirmed: true });
+export const startLifecycle = (connection: Connection, plan: LifecyclePlan, typed_target: string, donor?: Connection, typed_acknowledgement?: string) => api<LifecycleJob>("lifecycle/start", { connection, operation: plan.operation, plan, typed_target, donor, confirmed: true, ...(typed_acknowledgement ? { typed_acknowledgement } : {}) });
 export const readLifecycleJob = (connection: Connection, id: string, signal?: AbortSignal) => api<LifecycleJob>("lifecycle/status", { id, connection }, signal);
 export const cancelLifecycleJob = (connection: Connection, id: string) => api<LifecycleJob>("lifecycle/cancel", { id, connection });
 /** The jobs this myflames holds for the connection's endpoint (no database
@@ -232,6 +262,14 @@ export function toolDownloadUrl(value?: string): string | undefined {
     const url = new URL(value || "");
     return url.protocol === "https:" && !url.username && !url.password && !url.port &&
       ["dev.mysql.com", "downloads.mysql.com", "mariadb.org", "mariadb.com"].includes(url.hostname) ? url.href : undefined;
+  } catch { return undefined; }
+}
+/** Release notes and repository guides the upgrade target list links to. */
+export function upgradeLinkUrl(value?: string | null): string | undefined {
+  try {
+    const url = new URL(value || "");
+    return url.protocol === "https:" && !url.username && !url.password && !url.port &&
+      ["dev.mysql.com", "docs.percona.com"].includes(url.hostname) ? url.href : undefined;
   } catch { return undefined; }
 }
 export const chooseBackupDirectory = () => api<{path: string | null; cancelled: boolean}>("lifecycle/choose-directory", {});

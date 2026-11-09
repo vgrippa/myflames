@@ -139,6 +139,10 @@ LOCKS_TAG = "/*myflames:locks*/ "
 #: INNODB_TRX timestamps use the OS zone, while NOW() uses the session zone.
 # Keep local: sessions.py imports this module, so importing its constant cycles.
 SYSTEM_TIME_ZONE = "SET SESSION time_zone = 'SYSTEM'; "
+#: The current time in the OS zone, for a session whose time_zone must stay
+#: as it is (the editor's own session): 'SYSTEM' is always a known zone name
+#: (M/sql/tztime.cc:1150, Ma/sql/tztime.cc:1683), with or without zone tables.
+SYSTEM_NOW = "CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', 'SYSTEM')"
 MAX_LIMIT = 5000
 MAX_MDL_EDGES = 5000
 MAX_TREE_DEPTH = 128
@@ -311,8 +315,7 @@ def _q(conn, sql):
         # ALTER review shares the editor's session: preserve its time_zone.
         prefix = SYSTEM_TIME_ZONE + LOCKS_TAG
         if sql.startswith(prefix):
-            sql = sql[len(prefix):].replace(
-                "NOW()", "CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', 'SYSTEM')")
+            sql = sql[len(prefix):].replace("NOW()", SYSTEM_NOW)
         return reader(LOCKS_TAG + sql)
     text = conn.run(LOCKS_TAG + sql, extra_flags=["--comments"])
     rows = []
@@ -352,6 +355,24 @@ def innodb_lock_tables(engine, ver):
 def lock_product(engine, ver):
     """The product name the INNODB_LOCKS notes use: MariaDB or MySQL 5.7."""
     return "MariaDB" if engine == "mariadb" else "MySQL 5.7"
+
+
+def blocking_transactions_query(engine, ver, trx_id, thread_expression, limit):
+    """Bounded wait identities for one editor transaction, using the same
+    engine split as the full wait reader. Count transactions, not lock edges.
+
+    Arguments are app-built integers and a trusted own-thread expression.
+    Do not join data_locks: the meter does not need lock payloads or their
+    additional InnoDB latch cost. LIMIT bounds returned identities, not the
+    server's work materializing information_schema on older engines.
+    """
+    if innodb_lock_tables(engine, ver):
+        return ("SELECT DISTINCT requesting_trx_id AS waiting_id FROM information_schema.INNODB_LOCK_WAITS "
+                "WHERE blocking_trx_id = %d LIMIT %d" % (int(trx_id), int(limit)))
+    return ("SELECT DISTINCT REQUESTING_ENGINE_TRANSACTION_ID AS waiting_id "
+            "FROM performance_schema.data_lock_waits WHERE ENGINE = 'INNODB' "
+            "AND REQUESTING_ENGINE_TRANSACTION_ID IS NOT NULL AND BLOCKING_THREAD_ID = "
+            + thread_expression + " LIMIT %d" % int(limit))
 
 
 def data_locks_latch_caution(engine, ver):
@@ -510,6 +531,49 @@ def lock_report(conn, limit=500, waits_only=False, deadlock_only=False, identity
     if not waits_only:
         deadlock = _read_deadlock(conn, r)
     return _assemble(r, deadlock, waits_only)
+
+
+def session_wait_edges(reader, server, sessions, transactions, process):
+    """Reuse the bounded Locks readers with Processlist's existing snapshot.
+
+    No transaction, server identity, kill-privilege or deadlock reads. The
+    adapter keeps these reads under the calling view's tag and timeout.
+    """
+    class Connection(object):
+        def query_lock_rows(self, sql):
+            return reader.rows(sql.replace(LOCKS_TAG, ""))
+
+    conn = Connection()
+    r = _Report(server.engine, server.version, server.version_tuple, server.ps_on, 1000, "waits")
+    r.caps["process_privilege"] = process
+    r.trx = [dict(t, trx_id=t["id"]) for t in transactions]
+    r.trx_by_id = {t["trx_id"]: t for t in r.trx}
+    r.sessions = {s["id"]: dict(s, connection_id=s["id"]) for s in sessions}
+    _read_waits(conn, r)
+    if r.ps_on and r.caps["data_locks_global_latch"]:
+        r.note("Reading lock waits on this MySQL version briefly holds InnoDB's global lock-system latch; "
+               "refresh by hand on a busy server.")
+    if any((s.get("lock_wait") or {}).get("kind") == "metadata" for s in sessions):
+        _read_mdl(conn, r, True)
+    _resolve_owners(r)
+    # Modern MySQL can expose lock owners through threads without PROCESS.
+    # Read that mapping only when the transaction snapshot did not resolve it.
+    if r.ps_on and any(w[k]["connection_id"] is None and w[k]["ps_thread_id"] is not None
+                       for w in r.waits for k in ("requesting", "blocking")):
+        _read_sessions(conn, r)
+        _resolve_owners(r)
+    edges = [(w["requesting"]["connection_id"], w["blocking"]["connection_id"])
+             for w in r.waits]
+    edges += [(w["waiting"]["connection_id"], b["lock"]["connection_id"])
+              for w in r.mdl_waits if w["certain"] for b in w["blocked_by"]]
+    partial = any(r.truncated.values()) or any(w["truncated"] for w in r.mdl_waits)
+    if partial:
+        r.note("Blocker counts cover a capped lock snapshot; additional wait edges may be missing.")
+    if any(not w["certain"] for w in r.mdl_waits):
+        r.note("Some metadata lock types have no verified compatibility rule; their blocker edges are omitted.")
+    if any(a is None or b is None for a, b in edges):
+        r.note("Some lock owners could not be resolved to a connection; blocker counts are partial.")
+    return edges, r.notes
 
 
 def alter_table_preflight(conn, schema, table, engine, version, ps_on, limit=500):

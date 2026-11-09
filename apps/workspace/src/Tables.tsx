@@ -1,8 +1,8 @@
 import { qualifiedTable, tableMaintenanceSql } from "./sqlIdent";
 // Server > Tables: tables without a primary key or a usable unique key, and
-// InnoDB free space (schema-2.0 from myflames/schema_health.py). One read per
-// click over the chosen databases (all user databases by default); myflames
-// runs an optional OPTIMIZE only after a separate SQL review. One sortable list at a
+// InnoDB fragmentation (schema-2.0 from myflames/schema_health.py). One read per
+// click over the chosen databases (all user databases by default). Rebuild
+// suggestions are copied or opened in the Query editor, never run here. One sortable list at a
 // time; the why, the checks and the fix statements are in the inspector.
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useOpenRead, useViewOnScreen } from "./viewOnScreen";
@@ -48,7 +48,7 @@ const STATUS_RANK: Record<string, number> = { problem: 0, watch: 1, info: 2, ok:
 const STATUS_LABEL: Record<string, string> = {
   problem: "Problem",
   watch: "Watch",
-  info: "Reusable space",
+  info: "Fragmented",
   ok: "OK",
   shared: "Shared tablespace",
   unknown: "Not judged",
@@ -82,6 +82,51 @@ function Statements({ items, hint }: { items: { label: string; sql: string; temp
 function scopeLabel(schemas: string[] | null) {
   if (!schemas || !schemas.length) return "All user databases";
   return schemas.length <= 3 ? schemas.join(", ") : `${schemas.length} databases`;
+}
+
+// DATA_FREE belongs to the whole space for shared tables and cannot be
+// attributed to an individual table when ownership is unknown.
+function reclaimable(row: FreeSpaceRow): number | null {
+  return row.status === "shared" || row.status === "unknown" ? null : row.free_bytes;
+}
+
+function Rebuild({ row, report, onOpenSql, disabled }: {
+  row: FreeSpaceRow;
+  report: TablesReport;
+  onOpenSql?: (sql: string) => void;
+  disabled: boolean;
+}) {
+  const target = qualifiedTable(row.schema, row.table);
+  const statements = [
+    { label: "OPTIMIZE TABLE", sql: `${tableMaintenanceSql("OPTIMIZE", row.schema, row.table)};` },
+    { label: "ALTER TABLE", sql: `ALTER TABLE ${target} ENGINE=InnoDB;` },
+  ];
+  const shared = report.shared_tablespaces.find(space => space.tables.includes(`${row.schema}.${row.table}`));
+  const exceptions = report.notes.filter(note => /innodb_(defragment|optimize_fulltext_only) is ON/.test(note));
+  return <InspectorSection title="Rebuild">
+    {statements.map(statement => <div key={statement.label}>
+      <CopySql sql={statement.sql} label={`${statement.label}: ${row.schema}.${row.table}`} />
+      {onOpenSql && <button type="button" className="text-button" disabled={disabled}
+        aria-label={`Open in Query editor: ${statement.label}`}
+        onClick={() => onOpenSql(statement.sql)}>Open in Query editor</button>}
+    </div>)}
+    {row.online_sql && <>
+      <p className="hint">The same rebuild, refused instead of blocking writes when it cannot run online:</p>
+      <CopySql sql={row.online_sql} label={`Rebuild ${row.schema}.${row.table} online`} />
+    </>}
+    <ul className="hint tables-rebuild-notes">
+      <li>On InnoDB, <code>OPTIMIZE TABLE</code> does recreate + analyze; <code>ALTER TABLE ... ENGINE=InnoDB</code> rebuilds without the separate <code>ANALYZE TABLE</code> step (InnoDB still recalculates persistent statistics when the rebuild commits).</li>
+      <li>Both normally rebuild online with concurrent reads and writes; brief metadata locks at the start and end can wait for transactions and hold up queries.</li>
+      <li>With a FULLTEXT or SPATIAL index{report.engine === "mariadb" ? " (or an index on a virtual column)" : ""}, InnoDB cannot rebuild the table online, so writes wait until the rebuild ends.</li>
+      <li>Allow free disk about the size of data plus indexes ({bytes((row.data_bytes === null || row.index_bytes === null) ? null : row.data_bytes + row.index_bytes)}), plus temporary files and the online change log. Large tables take time.</li>
+      <li>With binary logging enabled, both statements are logged, so replicas rebuild too. OPTIMIZE NO_WRITE_TO_BINLOG TABLE or OPTIMIZE LOCAL TABLE skips logging for OPTIMIZE{report.engine !== "mariadb" ? " (MySQL 8.4 and later then need OPTIMIZE_LOCAL_TABLE)" : ""}; ALTER TABLE ... ENGINE=InnoDB has neither clause.</li>
+      {row.status === "shared" && <li>{shared?.why || "DATA_FREE belongs to the shared tablespace. A rebuild frees pages for reuse; the file does not shrink."}</li>}
+      {row.status === "unknown" && <li>Reclaimable bytes are unknown until the tablespace and its ownership can be read.</li>}
+      <li>DATA_FREE counts whole free extents, including space at the end of the file that was allocated but never used (growth steps, AUTOEXTEND_SIZE), and misses free space inside partly filled pages: it overstates fragmentation just after a file grows and understates it otherwise. Future regrowth can reduce the benefit of rebuilding.</li>
+      {report.engine !== "mariadb" && !/^5\./.test(report.server_version || "") && <li>Statistics can be cached by information_schema_stats_expiry. Select Fresh numbers and refresh before deciding.</li>}
+    </ul>
+    {exceptions.map(note => <p key={note}>{note}</p>)}
+  </InspectorSection>;
 }
 
 type List = "all" | "missing" | "free";
@@ -541,12 +586,14 @@ export function TablesView({
       sort: (f) => (f.data_bytes || 0) + (f.index_bytes || 0),
       render: (f) => bytes((f.data_bytes || 0) + (f.index_bytes || 0)),
     },
-    { key: "free", label: "Free", num: true, width: 112, sort: (f) => f.free_bytes, render: (f) => bytes(f.free_bytes) },
+    { key: "free", label: "Reclaimable", title: "Estimated bytes a rebuild could reclaim for file-per-table tables (DATA_FREE); shared or unknown tablespaces cannot be attributed per table.", num: true, width: 128,
+      sort: reclaimable, render: (f) => reclaimable(f) === null ? "Unknown" : bytes(reclaimable(f)) },
     {
       key: "pct",
-      label: "Free %",
+      label: "Fragmentation %",
+      title: "DATA_FREE / (DATA_LENGTH + INDEX_LENGTH + DATA_FREE) x 100. Whole free extents only; half-empty pages are not counted. Partitioned tables use summed partition values.",
       num: true,
-      width: 96,
+      width: 160,
       sort: (f) => f.free_pct,
       render: (f) => (f.status === "shared" || f.status === "unknown" || f.free_pct === null ? "Unknown" : `${Math.round(f.free_pct)}%`),
     },
@@ -685,20 +732,14 @@ export function TablesView({
                 rows={[
                   ["Data", bytes(f.data_bytes)],
                   ["Indexes", bytes(f.index_bytes)],
-                  ["Free", `${bytes(f.free_bytes)}${f.status === "shared" || f.status === "unknown" || f.free_pct === null ? "" : ` (${Math.round(f.free_pct)}%)`}`],
+                  ["Reclaimable", reclaimable(f) === null ? "Unknown" : bytes(reclaimable(f))],
+                  ["Fragmentation %", f.status === "shared" || f.status === "unknown" || f.free_pct === null ? "Unknown" : `${Math.round(f.free_pct)}%`],
+                  ["DATA_FREE", bytes(f.free_bytes)],
                   ["Tablespace", f.tablespace_name || f.tablespace || "—"],
                 ]}
               />
             </InspectorSection>
-            {f.fix_sql && (
-              <InspectorSection title="What to do">
-                <CopySql sql={f.fix_sql} label={`Rebuild ${f.table}`} />
-                <ReviewedSqlAction action="optimize_table" sql={f.fix_sql} label={`Optimize ${f.table}`} warning={f.caveat} />
-                <p className="hint">The same rebuild, refused instead of blocking writes when it cannot run online:</p>
-                <CopySql sql={f.online_sql || ""} label={`Rebuild ${f.table} online`} />
-                <p className="hint perf-caveat">{f.caveat}</p>
-              </InspectorSection>
-            )}
+            <Rebuild row={f} report={report} onOpenSql={onOpenSql} disabled={disabled || !!other} />
           </>
         ),
       };
@@ -732,10 +773,10 @@ export function TablesView({
       info={
         <>
           <p>
-            Tables without a primary key (or a unique key InnoDB can use instead) and InnoDB tables with free space a
-            rebuild could return. It reads information_schema for the chosen databases.
+            Tables without a primary key (or a unique key InnoDB can use instead) and fragmented InnoDB tables.
+            Rank rebuild candidates by Reclaimable bytes. It reads information_schema for the chosen databases.
           </p>
-          <p>Refresh only reads. Optional Optimize actions show the exact SQL and require confirmation.</p>
+          <p>Refresh only reads. Rebuild statements can be copied or opened in the Query editor for review.</p>
           {report && <p>{whyButton}</p>}
         </>
       }
@@ -824,7 +865,7 @@ export function TablesView({
           >
             <span className="perf-summary-line">
               {s.no_usable_key} {s.no_usable_key === 1 ? "table" : "tables"} without a usable key, {s.not_null_unique} with only a
-              unique NOT NULL key · {s.free_info ?? report.fragmentation.filter(row => row.status === "info").length} tables with reusable free space
+              unique NOT NULL key · {s.free_info ?? report.fragmentation.filter(row => row.status === "info").length} fragmented tables
             </span>
           </SummaryLine>
           <FactStrip
@@ -850,7 +891,7 @@ export function TablesView({
                     options={[
                       ...(report.tables ? [{ value: "all" as List, label: "All tables", count: inventory.length }] : []),
                       { value: "missing", label: "Missing primary keys", count: missing.length },
-                      { value: "free", label: "Free space", count: free.length },
+                      { value: "free", label: "Fragmentation", count: free.length },
                     ]}
                   />
                   <SearchField label="Filter tables" value={filter} onChange={setFilter} placeholder="Filter tables" />
@@ -887,13 +928,13 @@ export function TablesView({
                         value={freeStatus}
                         onChange={setFreeStatus}
                         options={[
-                          ["info", "With reusable free space"],
+                          ["info", "Fragmented tables"],
                           ["all", "All InnoDB tables"],
                           ["shared", "In a shared tablespace"],
                           ["unknown", "Not judged"],
                         ]}
                       />
-                      <label className="tables-min-free">Minimum reusable space % <input type="number" aria-label="Minimum reusable table space percent" min="0" max="100" step="1" value={minimumFree} onChange={e => setMinimumFree(Math.min(100, Math.max(0, Number(e.target.value) || 0)))} /></label>
+                      <label className="tables-min-free">Minimum fragmentation % <input type="number" aria-label="Minimum fragmentation percent" min="0" max="100" step="1" value={minimumFree} onChange={e => setMinimumFree(Math.min(100, Math.max(0, Number(e.target.value) || 0)))} /></label>
                     </>
                   ) : null}
                 </>
@@ -948,20 +989,21 @@ export function TablesView({
               ) : (
                 <>
                   <PaginatedReportTable
+                    key="fragmentation"
                     filters={listFilters}
                     exportContext={exportContext} resetKey={resetKey}
-                    exportColumns={[{label:"Database",value:f=>f.schema},{label:"Table",value:f=>f.table},{label:"Status",value:f=>STATUS_LABEL[f.status] || f.status},{label:"Rows (estimated)",value:f=>f.rows},{label:"Data bytes",value:f=>f.data_bytes},{label:"Index bytes",value:f=>f.index_bytes},{label:"Reusable bytes",value:f=>f.free_bytes},{label:"Reusable space %",value:f=>f.status === "shared" || f.status === "unknown" ? null : f.free_pct}]}
+                    exportColumns={[{label:"Database",value:f=>f.schema},{label:"Table",value:f=>f.table},{label:"Status",value:f=>STATUS_LABEL[f.status] || f.status},{label:"Rows (estimated)",value:f=>f.rows},{label:"Data bytes",value:f=>f.data_bytes},{label:"Index bytes",value:f=>f.index_bytes},{label:"Reclaimable bytes",value:reclaimable},{label:"Fragmentation %",value:f=>f.status === "shared" || f.status === "unknown" ? null : f.free_pct}]}
                     id="tables.free"
-                    label="Free space by table"
+                    label="Fragmentation by table"
                     columns={freeColumns}
                     rows={free}
                     rowKey={(f) => `free:${f.schema}.${f.table}`}
                     rowAction={tableRowAction}
                     selection={selection}
-                    defaultSort={{ key: "status", dir: "asc" }}
+                    defaultSort={{ key: "free", dir: "desc" }}
                     rowAttrs={(f) => ({ "data-table": `${f.schema}.${f.table}` })}
                     rowContextMenu={f => getTableRowContextMenu(f.schema, f.table)}
-                    empty={freeStatus === "info" ? "No reusable free space reported for individual tables." : "No table matches these filters."}
+                    empty={freeStatus === "info" ? "No fragmented tables reported from DATA_FREE." : "No table matches these filters."}
                   />
                 {report.more.fragmentation > 0 && <p className="hint table-more">{report.more.fragmentation} more not shown.</p>}
                 <p className="grouped-footer">Rule of thumb: {report.rules.free}.</p>

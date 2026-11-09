@@ -11,6 +11,7 @@ import { useOpenRead } from "./viewOnScreen";
 import { PrivilegeConfirmLabel, privilegeResult, targetPrivilege, usePrivilege } from "./privileges";
 import { ConnectionTypeBand, useWritePolicy } from "./Connections";
 import { CopySql, bytes, engineLabel } from "./PerfShared";
+import { ObjectChanges, parameterUndo } from "./ObjectChanges";
 import {
   ActionStatus,
   ConfirmSheet,
@@ -20,6 +21,7 @@ import {
   Disclosure,
   DataTable,
   Fields,
+  Notice,
   StatusDot,
   ToolbarSelect,
   type Column,
@@ -150,7 +152,7 @@ export function openSessionSql(plan: VariablePlan, onOpenSql?: (sql: string) => 
 
 /** The connection a Change sheet was opened for (Locks' killVia pattern). */
 type Via = { connection: Connection; key: string; label: string };
-type ChangeRequest = { name: string; mode: VariableMode | null; via: Via; draft?: string };
+type ChangeRequest = { name: string; mode: VariableMode | null; via: Via; draft?: string | null; exactMode?: boolean };
 type ChangeNote = { name: string; mode: VariableMode; status: string; message: string; type: VariableInfo["type"]; result: VariableChange | null; via?: Via };
 
 const BYTE_NAMES = /(_size|_capacity|_ram|_packet|_buffer|_limit|_threshold|_max_table_size)$/i;
@@ -365,11 +367,12 @@ function VariableSheet({
     api<VariableInfo>("live/variable", { connection: via.connection, name }, controller.signal)
       .then((v) => {
         if (controller.signal.aborted) return;
-        const m = firstMode(v, request.mode);
+        // Undo retains its scope even when a fresh read no longer offers it.
+        const m = request.exactMode ? request.mode : firstMode(v, request.mode);
         setInfo(v);
         setMode(m);
         setValue(request.draft ?? startValue(v, m));
-        setIsNull(request.draft === undefined && v.nullable && (m === "session" ? v.session_value : v.global_value) === null);
+        setIsNull(request.draft === null || (request.draft === undefined && v.nullable && (m === "session" ? v.session_value : v.global_value) === null));
       })
       .catch((e) => {
         if (!controller.signal.aborted) setReadError((e as Error).message);
@@ -380,7 +383,9 @@ function VariableSheet({
   // Plan the change once the inputs settle; only the latest answer counts.
   // Without an available mode (a read-only MariaDB variable) the plan of
   // SET GLOBAL still says why and gives the option file line.
-  const planMode: VariableMode | null = mode ?? (info?.exists ? "global" : null);
+  const undoUnavailable = !!request.exactMode && !!info && (!request.mode || !info.modes[request.mode]?.available);
+  const undoReason = undoUnavailable ? `Cannot undo: ${request.mode ? info?.modes[request.mode]?.reason || "the original scope is no longer available." : "the original scope is unknown."}` : "";
+  const planMode: VariableMode | null = undoUnavailable ? null : mode ?? (info?.exists ? "global" : null);
   const requestedValue = (planMode ?? request.mode) === "reset_persist" || isNull ? null : value;
   const loaded = !!info;
   useEffect(() => {
@@ -422,7 +427,7 @@ function VariableSheet({
   // Neither the variable nor an ordinary SET SESSION can be judged by a
   // generic restricted-variable answer. Wait for this mode's exact hint.
   const gate = current && plan?.privileges ? targetPrivilege(generic, plan.privileges) : privilegeResult();
-  const ready = current && !!mode && plan?.status === "ready";
+  const ready = !undoUnavailable && current && !!mode && plan?.status === "ready";
   const stale = activeKey !== via.key;
   const refused = current && plan?.policy?.action === "refuse";
   const blocked = policy?.blocked || (via.connection.read_only ? "This connection is read-only." : "");
@@ -484,10 +489,11 @@ function VariableSheet({
     }
   }
 
-  const modes = info ? MODE_ORDER.filter((m) => info.modes[m]?.available) : [];
+  const modes = info ? MODE_ORDER.filter((m) => info.modes[m]?.available && (!request.exactMode || m === request.mode)) : [];
   const confirmLabel = mode ? MODES[mode].confirm : "No change at runtime";
   let lock = "";
-  if (stale) lock = "The connection in use changed after this sheet opened. Close it and open Review change again.";
+  if (undoReason) lock = undoReason;
+  else if (stale) lock = "The connection in use changed after this sheet opened. Close it and open Review change again.";
   else if (mode === "session") lock = !onOpenSql ? "Query editor is unavailable. Copy the statement to your query tab." : "";
   else if (blocked) lock = blocked;
   else if (refused) lock = plan?.policy?.text || "This connection is read-only in myflames.";
@@ -569,13 +575,13 @@ function VariableSheet({
               ))}
             </fieldset>
           ) : (
-            info.exists && (
+            info.exists && !request.exactMode && (
               <p className="variable-note" role="note">
                 {info.modes.global.reason} It changes only at a restart.
               </p>
             )
           )}
-          {request.mode === "reset_persist" && !info.modes.reset_persist?.available && (
+          {!request.exactMode && request.mode === "reset_persist" && !info.modes.reset_persist?.available && (
             <p className="variable-note" role="note">
               {info.modes.reset_persist?.reason} The value was loaded from it at startup; after a RESET PERSIST the
               source stays until the next restart.
@@ -603,11 +609,11 @@ function VariableSheet({
             </p>
           )}
           {planError && (
-            <p className="variable-problems" role="alert">
+            <Notice variant="error" className="variable-problems">
               {planError}
-            </p>
+            </Notice>
           )}
-          {current && plan && <PlanDetails plan={plan} onUseMode={(m) => setMode(m)} canUse={(m) => modes.includes(m)} />}
+          {current && plan && !undoUnavailable && <PlanDetails plan={plan} onUseMode={(m) => setMode(m)} canUse={(m) => modes.includes(m)} />}
           {lock && (
             <p className="variable-problems" role="alert">
               {lock}
@@ -1065,6 +1071,7 @@ function ConfigListView({ connection, disabled, onBack, selection, report: bound
   const [batchResultVia, setBatchResultVia] = useState<Via | null>(null);
   const [batchLeft, setBatchLeft] = useState<number | null>(null);
   const [change, setChange] = useState<ChangeRequest | null>(null);
+  const [auditRevision, setAuditRevision] = useState(0);
   const [changeLeft, setChangeLeft] = useState<number | null>(null);
   const [note, setNote] = useState<ChangeNote | null>(null);
   const [focusName, setFocusName] = useState("");
@@ -1144,11 +1151,13 @@ function ConfigListView({ connection, disabled, onBack, selection, report: bound
   }
   function closeChange() { setChange(null); window.setTimeout(() => trigger.current?.focus(), 0); }
   async function changed(result: ChangeNote) {
+    setAuditRevision(n => n + 1);
     const via = change?.via; setChange(null); setChangeLeft(null); setNote({ ...result, via });
     window.setTimeout(() => noteRef.current?.focus(), 0);
     if (result.status === "changed" && via && reads.currentKey() === via.key) { discard(result.name); await load(true); }
   }
   async function batchDone(results: BatchResult[]) {
+    setAuditRevision(n => n + 1);
     const via = batch?.via; setBatch(null); setBatchLeft(null);
     setBatchResults(results);
     setBatchResultVia(via || null);
@@ -1221,6 +1230,16 @@ function ConfigListView({ connection, disabled, onBack, selection, report: bound
           ]} />
         </InspectorSection>
         {flagged.length > 0 && <ParameterRecommendation name={p.name} flagged={flagged} />}
+        {!other && <ObjectChanges key={`${p.name}:${auditRevision}`} connection={connection} object={{ kind: "parameter", key: p.name }} undo={record => {
+          const intent = parameterUndo(record);
+          return intent && <button type="button" className="button small" disabled={actionsOff || !!offTitle || !!reason}
+            title={offTitle || reason || undefined} onClick={e => {
+              if (actionsOff || offTitle || reason) return;
+              trigger.current = e.currentTarget; setNote(null);
+              setChange({ name: p.name, mode: intent.mode, draft: intent.value, exactMode: true,
+                via: { connection, key: reads.key, label: connectionLabel(connection) } });
+            }}>Undo…</button>;
+        }} />}
       </> };
   }
   const s = report?.summary;

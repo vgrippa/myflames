@@ -380,6 +380,7 @@ class EditorTransactionProbe57(unittest.TestCase):
 
         class Step(object):
             entries = []
+            marker = True  # the batch completed (editor_insights.helper_rows)
 
             def real_errors(self):
                 return []

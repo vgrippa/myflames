@@ -3,12 +3,15 @@
 One bar per operator with measurable self time, sorted by self time. A bar's
 color is a heat step by its share of the plan's time (``bar_color``), its
 times print like the execution tree (``output_tree._format_time``), and the
-label column narrows with the chart width (``label_width``). The TypeScript
-twin is apps/workspace/src/charts/bargraph.ts; keep both in step.
+label column narrows with the chart width (``label_width``). A misestimated
+operator (``details["misestimate"]``, parser) carries the row-estimate chip
+at the start of its label column, and its details name the estimate. The
+TypeScript twin is apps/workspace/src/charts/bargraph.ts; keep both in step.
 """
 from .parser import xml_escape, flatten_nodes, render_info_panel
 from ._labels import fit_label
-from .output_tree import _format_time
+from .output_tree import MARK_GAP, MARK_ROW_H, _format_time
+from .output_workbench import MARK_COLOR, MARK_FILL, _misestimate, mark_width
 
 #: Hottest first (charts/bargraph.ts COLORS).
 COLORS = (
@@ -77,6 +80,9 @@ def _build_bar_info(op, pct):
                      else "Rows: not measured")
     else:
         parts.append(f"Rows: {op['rows']:.0f}")
+    miss = _misestimate(details)
+    if miss:
+        parts.append("Row estimate: " + miss["text"])
     parts.append(f"Loops: {loops_t}")
     table = details.get("table_name") or ""
     index = details.get("index_name") or ""
@@ -170,6 +176,7 @@ def render_bargraph(
         "  .subtitle { font-size: 11px; fill: #666; }",
         "  .col-header { font-size: 12px; fill: #666; font-weight: 600; }",
         "  .label { font-size: 11px; fill: #333; }",
+        f"  .mfc-mis {{ font-size: 11px; font-weight: 600; fill: {MARK_COLOR}; }}",
         "  .loops { font-size: 10px; fill: #777; }",
         "  .value { font-size: 11px; font-weight: bold; fill: #222; }",
         "  .bar { transition: opacity 0.12s; }",
@@ -211,15 +218,21 @@ def render_bargraph(
 
     y = top_margin
     for op in all_nodes:
-        pct = (op["self_time"] / total_time) * 100
-        bar_width = max(3, (op["self_time"] / total_time) * bar_area_width) if op["self_time"] > 0 else 0
-        color = bar_color(op["self_time"] / total_time)
+        # A node's self time can exceed the plan total (loop double counting);
+        # clamp so the bar never escapes the bar area.
+        ratio = min(1.0, op["self_time"] / total_time) if total_time > 0 else 0
+        pct = ratio * 100
+        bar_width = max(3, ratio * bar_area_width) if op["self_time"] > 0 else 0
+        color = bar_color(ratio)
+        miss = _misestimate(op.get("details"))
+        mark_w = mark_width(miss["label"]) if miss else 0
         # Pixel-budget fit via the shared helper (V5). The label column
         # is `label_width` px wide at 11 px Arial (font-width ratio ≈ 0.55);
-        # subtract a small gutter so the text never touches the column edge.
+        # subtract a small gutter so the text never touches the column edge,
+        # and the row-estimate chip's room when it starts the column.
         label = fit_label(
             op["short_label"] or "",
-            px_width=label_w - 14,
+            px_width=label_w - 14 - (mark_w + 2 * MARK_GAP if miss else 0),
             font_size=11,
             font_width=0.55,
         )
@@ -237,6 +250,15 @@ def render_bargraph(
         if teach_index_by_folded and folded in teach_index_by_folded:
             teach_attr = f' data-teach-index="{teach_index_by_folded[folded]}"'
         lines.append(f'<text x="{col_label_x + label_w - 10}" y="{text_y}" text-anchor="end" class="label">{xml_escape(label)}</text>')
+        if miss:
+            lines.append(
+                f'<rect class="mfc-mis-chip" x="{col_label_x:.1f}" y="{y + 6}" width="{mark_w:.1f}"'
+                f' height="{MARK_ROW_H}" rx="8" fill="{MARK_FILL}" stroke="{MARK_COLOR}" pointer-events="none"/>'
+            )
+            lines.append(
+                f'<text class="mfc-mis" x="{col_label_x + mark_w / 2:.1f}" y="{text_y}" text-anchor="middle">'
+                f'{xml_escape(miss["label"])}</text>'
+            )
         lines.append(f'<text x="{col_loops_x + loops_width/2}" y="{text_y}" text-anchor="middle" class="loops">{loops_t}</text>')
         lines.append(
             f'<rect class="{bar_class}" x="{col_bar_x}" y="{y}" width="{bar_width}" height="{bar_height}" fill="{color}" rx="3" ry="3" '

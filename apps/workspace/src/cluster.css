@@ -390,6 +390,10 @@
 }
 
 .cluster-card > .cluster-mark {
+  /* Galera membership caveats are full sentences, not one-line badges. */
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
   margin-top: var(--space-1);
   font-size: var(--text-md);
 }

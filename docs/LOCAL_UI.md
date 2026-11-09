@@ -71,11 +71,13 @@ The sidebar separates where you go from what you have open:
 | **Database diagram** | After Query digest: the tables, columns and relationships of a database, read from the connection in use or imported without executing SQL, with a Diagram \| Mermaid view. See [Database diagram](#database-diagram) |
 | **Schema versions** | After Database diagram: versions of a database's schema saved on this computer, and comparisons of any two schemas (saved versions, or databases read now through any connection): what differs between a source and a target, and the sync script that would change the target to match the source. See [Schema versions](#schema-versions) |
 | **Server** | Views of the connection in use that only read (the exceptions are **Kill** in Locks or Sessions, which ends one session after you confirm and needs the privilege, parameter changes in **Parameters**, runtime instrument or consumer updates in **Instruments**, a dump, restore or clone in **Maintenance**, and account changes in **Users and roles**, each after its own confirmation), in a grouped sub-navigation: **Overview** (Health, which opens first, InnoDB, Error log), **Contention** (Locks), **Schema** (Indexes, Tables), **Setup** (Parameters, Instruments, Maintenance), and **Security** (Users and roles). See [The Server place](#the-server-place) |
-| **Workload** | The same kind of views for the statements and resources: **Queries** (Top statements, Processlist) and **Resources** (Waits, I/O) |
+| **Workload** | The same kind of views for the statements and resources: **Queries** (Top statements, Processlist) and **Resources** (Waits, I/O, Memory) |
 | **Replication** | Replication channels or connections of the connection in use, with a skip after its own confirmation. A server with no asynchronous channel reads **Not a replica** (never Unknown), and the item is greyed in the sidebar once a read says so |
 | **Cluster** | The MariaDB Galera Cluster, Galera Cluster for MySQL, Percona XtraDB Cluster or MySQL InnoDB Cluster (or Group Replication) the connection in use belongs to: members, roles, state, quorum, failures tolerated and routers, with a member's changes (Make primary, Stop or Start Group Replication, Desync, Resync, Bootstrap a Primary component) in its inspector, each after its own confirmation. Greyed in the sidebar once the connection is known not to be part of a cluster |
 | **ProxySQL** | The ProxySQL Admin interface the connection in use reaches: backends as ProxySQL runs them with their connection pool, hostgroups, query rules and query digests, with a server's or rule's changes in its inspector and Load and Save to disk on the Configuration line, each after its own confirmation. Greyed in the sidebar once the connection is known not to be a ProxySQL Admin interface |
+| **Readyset** | The Readyset SQL adapter or Admin SQL listener the connection in use reaches: multi-tier topology across ProxySQL, Readyset and upstream MySQL or MariaDB servers, shallow and deep caches, proxied queries with live `EXPLAIN CREATE CACHE` prechecks, replicated base tables, dynamic parameters and allowlists, and cached-versus-upstream telemetry, with reviewed operational changes. Greyed in the sidebar once the connection is known not to be a Readyset instance |
 | **Tuning** | A place of its own (for MySQL and MariaDB; the command palette also finds "mysql tuning"): the tuning scorecard full width, without Server's list of views, and the **Full analysis** as its second tab. Links to the Full analysis open it there |
+| **File transfer** | A place of its own, after Tuning: saved **SSH connections** on the left and, for the one chosen, two panes side by side (**This computer** and the server) with the **Transfers** panel below, to move files over SSH/SFTP like FileZilla. It does not use the database connection in use. See [The File transfer place](#the-file-transfer-place) |
 | **Investigations** | Saved investigations: search, open, delete; an investigation saved by Health's **Capture when…** lists its **Evidence** (processlist, InnoDB status, locks) with Copy and Download. With none saved, the empty list is hidden. If plans are open, **Save N open plans as an investigation…** opens the notebook sheet; with no plans open, the empty state offers **Import plan** |
 | **Learn** | The lesson catalog and player (`myflames teach` on the command line) |
 
@@ -120,7 +122,7 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
   Nothing is read just for a badge. A view reads when it is opened on screen,
   once per connection (Refresh retries), Top statements and Error log
   included; Tables and Indexes keep their schema-size consent, and nothing
-  reads off screen (Server, Replication, Cluster, ProxySQL and Query digest
+  reads off screen (Server, Replication, Cluster, ProxySQL, Readyset and Query digest
   mount on their first visit, and a hidden view never reads on its own). The arrow keys move between items.
 - **The list of views floats** by default in a wide window, so the view gets
   the full width: the view's title is a pop-up button ("Health ▾") that opens
@@ -139,11 +141,12 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
 - **Toolbar.** The view's title with an ⓘ that explains it, its controls (a
   sampling window, auto-refresh, a database picker, a filter) and **Refresh**.
   List controls wait on the list while details are open. Refresh stays at the
-  end of the toolbar, also on a detail page. The place's own controls follow the
-  connection picker in the top bar: **Refresh all** (a text button, so it never
-  reads as a second copy of a view's Refresh), an ⓘ with what Server does, and
-  one control for the list of views (dock or float it; in a narrow window a
-  **Views** menu instead).
+  end of the toolbar, also on a detail page; the arrow beside it opens
+  **Refresh every view on <connection>** (Refresh all), so a view shows one
+  Refresh. The place's own controls follow the connection picker in the top
+  bar: an ⓘ with what Server does, one control for the list of views (dock or
+  float it; in a narrow window a **Views** menu instead), and, while Refresh
+  all runs, its progress and **Stop**.
 - **One summary line**, with the status and a **N notes** button for engine
   differences, privileges, and caveats. Summary status words are **OK**,
   **Watch**, **Problem**, **Not judged** and **Unknown**.
@@ -297,7 +300,8 @@ Every Server view has the same anatomy, after the Apple apps DBAs already know
   actions. Connection write policies remain authoritative: read-only connections
   refuse writes, and Production connections ask for explicit confirmation.
 
-**Refresh all** (top bar, after the connection picker; ⌥⌘R or Alt+Ctrl+R) reads Server
+**Refresh all** (**Refresh every view on <connection>** in the menu beside a view's
+Refresh; ⌥⌘R or Alt+Ctrl+R) reads Server
 and Workload sections, Replication and Cluster, including sections not yet opened,
 using each view's window, databases and scope. Database diagram is included once
 a database is chosen; imported diagrams stay unchanged.
@@ -305,7 +309,7 @@ At most three section reads run at once, with Health, Waits and I/O first.
 Full analysis runs in a separate phase because it manages its own bounded reads.
 Maintenance detects tools; it never starts upgrade checks or jobs. Existing
 large-schema consent applies only to the same connection and scope.
-While it runs the button becomes **Stop**
+While it runs the top bar shows its progress and **Stop**
 (Escape also stops it) and each view waiting or reading shows a spinner in the
 list of views; a view whose own Refresh is already reading the same thing is
 joined, not read twice. Afterwards one line says "4 of 5 views refreshed; Locks
@@ -343,13 +347,18 @@ when the statement ends, you press Stop, switch tabs or leave.
 **Health** shows **Live charts** above Diagnostics from its first reading
 (queries per second, threads running, buffer pool reads from disk per second
 and connections in use), from up to 60 readings per connection kept in
-memory. With one reading each card shows its value only, under "Charts start
-with the next reading. Turn on Auto-refresh." (or the Auto-refresh period when
-it is on); from the second reading each chart draws with its current value
+memory. With one reading each card shows its value only, with "Collecting…" beside Live charts; from the second reading each chart draws with its current value
 and the range shown, and readings that never change say "Steady over the last
 N readings" instead of a minimum equal to its maximum (the inspector's trend
 and the tile sparklines say the same). Hover a chart for each reading's local
-time and value.
+time and value. **Auto-refresh** defaults to **While visible** (using the sampling window while Health is on screen), with **Off** and every 10, 30, or 60 seconds: each
+automatic read is scheduled one full interval after the previous read finishes,
+never replaces another connection's greyed report (after a connection switch the
+report stays greyed until **Refresh**, and the schedule resumes after it), and
+reads immediately on return unless a failed read is still in backoff. **Save baseline** in the
+Refresh menu keeps the reading on this computer for that server (`with_identity:
+true`, up to 20 per server, requiring a verified identity that matches the server reached when saving), and **Compare with baseline** shows the
+baseline value under each tile and marks changed statuses.
 **Capture when…** in its toolbar watches the connection in use
 for threads running at or above a number, a row lock wait older than a number
 of seconds, or a statement running longer than that, checking every 5, 10, 30
@@ -943,29 +952,74 @@ the [Audit log](#audit-log). Another connection's report is greyed and offers no
 change. Once a read says the connection is not a ProxySQL Admin interface, the
 sidebar item looks disabled for that connection only.
 
-**Maintenance** (Setup, last) has five tasks in a segmented control. **Tools**
-(**Detect tools**) lists the MySQL and MariaDB tools on this computer
-(mysqlsh, mysqldump, mariadb-dump, and the rest) with their versions and what
-they offer for the connection in use. Each tool links to its official download page. CLI tool discovery stays offline; in the workspace, Detect tools and Refresh also check vendor release metadata, and newer versions appear beside the installed version. Client tools are compared within their installed series, while MySQL Shell uses its latest GA release. Checks can be cached for an hour; failed checks are cached for a minute and remain unknown. No installer runs automatically. **Upgrade check** runs MySQL Shell's
+**Readyset** (a place of its own, right after ProxySQL) reads the Readyset SQL
+adapter (port 3307 by default) or Admin SQL listener (port 6036) the connection
+in use reaches. It reads when opened on screen, once per connection; **Refresh**
+reads again. Tabs cover **Topology** (linking ProxySQL frontends, Readyset and
+upstream MySQL or MariaDB standalone servers, replicas and clusters when saved
+connections match), **Caches** (shallow and deep caches with **Create cache…**,
+**Export cache DDL**, **Flush cache…** and **Drop cache…**), **Proxied queries**
+(observed queries with one-click **Create cache…** prefill and **Drop all
+proxied queries…**), **Tables** (base-table snapshot status, **Re-snapshot
+table…**, **Add tables…** and replication controls), **Dynamic parameters**
+(log level, eviction memory limit, eviction period, shallow cache allowlists,
+maintenance mode, **Flush privileges…** and Admin-port **Shutdown…**), and
+**Performance** (cached versus upstream share, latency percentiles and shallow
+hit rate). **Create cache…** runs a read-only `EXPLAIN CREATE CACHE` precheck
+and warns when a query ID or cache name already exists. Every change follows the
+same reviewed write sheet, connection-type policy and [Audit log](#audit-log)
+rules as Cluster and ProxySQL; once a read says the connection is not a
+Readyset instance, the sidebar item looks disabled for that connection only.
+
+**Maintenance** (Setup) has five tasks in a segmented control. **Tools**
+lists the MySQL and MariaDB tools on this computer (mysqlsh, mysqldump,
+mariadb-dump, and the rest) with their versions and what they offer for the
+connection in use; Maintenance finds them by itself when it opens (local
+probes only, reused for 60 seconds), and **Detect again** looks again. Each
+tool links to its official download page. Tool discovery stays offline until
+you choose **Check for updates**, which asks vendor release metadata; newer
+versions appear beside the installed version. Client tools are compared within their installed series, while MySQL Shell uses its latest GA release. Checks can be cached for an hour; failed checks are cached for a minute and remain unknown. No installer runs automatically. **Upgrade check** runs MySQL Shell's
 upgrade checker for a target version you choose, or a **Partial check
 (native subset)** without it, labeled as such, which never says an upgrade is
 safe; findings are rows (Error, Warning, Notice, Passed, Not checked, Check
 failed) with the objects and documentation in the inspector, and **Export
 JSON**. MariaDB gets the mariadb-upgrade steps to run on the server host.
-**Dump**, **Restore** and **Clone** each have a short form and **Run
-preflight…**, which only reads. Restore's **Default database** offers **As in
+**Dump**, **Restore** and **Clone** each have a short form and one button
+named for the task, **Start dump…**, **Start restore…** or **Start clone…**,
+which first runs the preflight (it only reads; the button reads
+**Checking…** meanwhile). Restore's **Default database** offers **As in
 the dump**, the server's databases, or **New database…** for a name to type;
 Clone's **Fill from saved connection** copies a saved connection's host, port,
 user and TLS settings into the donor fields (never its password). The
-preflight only reads: failed checks stay on screen with their
-reasons and nothing can start; a clean preflight opens the confirmation with
-the target, the exact commands, the warnings, and the checks. A dump goes into
-a folder on the computer running myflames. **Choose folder** opens its system folder dialog on macOS or Windows; Linux uses Zenity when available. You can also type the path. Cancelling leaves the existing path unchanged, and choosing a folder starts no backup. The folder must not exist yet or be empty (a folder with files in it is refused at the preflight); restore and clone also ask you to
+preflight only reads: failed checks are listed under the button with their
+reasons and a **Next step** (**Choose another folder…**, **Review fields**,
+or **Remove <table> from the selection**), the passed checks folded below
+them, and nothing can start. After you change a field, an earlier failure is
+marked as coming from the last preflight and its commands are hidden. A clean
+preflight opens the confirmation with the target, the exact commands, the
+warnings, and the checks; a dump's confirmation names its contents and puts
+its warnings first, and a restore that replaces the mysql system schema
+(accounts, passwords and grants) asks for a separate acknowledgement checkbox
+as well as the typed target. A dump goes into
+a new folder on the computer running myflames. **Output folder** is filled
+in for you: `<database or connection>-YYYY-MM-DD` in your home folder, or
+beside the last dump, with `-2`, `-3` added when the name is taken; a path you
+type is never replaced. **Browse…** chooses the folder it goes in, through
+the system folder dialog on macOS or Windows (Linux uses Zenity when
+available). Cancelling leaves the path unchanged, and choosing a folder
+starts no backup. The folder must not exist yet or be empty (a folder with files in it is refused at the preflight); restore and clone also ask you to
 type the target. The confirmation goes stale after a minute (run the preflight
-again), and myflames repeats the preflight right before starting. A running
-job shows its progress, the last output line, and **Cancel**; finished jobs
-show the verification (passed, failed, or not checked, with the reason) and
-the dump manifest. Jobs belong to the myflames process and to the connection
+again), and myflames repeats the preflight right before starting. Starting
+brings the job's card into view. A running job shows a progress bar, the step
+it is on, the elapsed time, the last output line and **Cancel**. MySQL Shell
+reports its own percent; `mysqldump` and `mariadb-dump` print nothing, so for
+them the bar is an estimate ("≈46%") from the bytes written to `dump.sql`
+beside the server's table sizes, with the size written and the rate. The same
+summary sits next to the disabled Start button, with **Show progress** to jump
+to the card. Finished jobs show the verification (passed, failed, or not
+checked, with the reason) and the dump manifest; a completed dump has **Open
+in Finder** (**Open in File Explorer** on Windows), and on macOS a dump you
+started opens its folder by itself when it completes. Jobs belong to the myflames process and to the connection
 they ran on: after a switch they stay greyed until you switch back, a reloaded
 page finds them again, and a Start whose reply was lost is found in the job
 list instead of being sent twice. A running job is also named above any other
@@ -975,8 +1029,9 @@ its control (rows stack below 650 px): **Scope** (Whole instance or Databases),
 are read then (name, engine, the server's estimated rows and size; 200 at a
 time with **Load more tables**) into a searchable list whose default is **All
 tables**. Ticked tables make a table dump of exactly those names; a table that
-a **Reload list** no longer shows blocks the preflight until you choose again,
-and the preflight itself fails for a name the database does not have. A dump
+a **Reload tables** no longer shows blocks the preflight until you remove it
+(**Remove <table> from the selection**) or choose again, and the preflight
+itself fails for a name the database does not have. A dump
 uses MySQL Shell when it is offered, or the engine's SQL dump tool when you
 choose it (the Tool list names it). **Options for** the tool are one form in
 sections, with a line under the heading summarizing what differs from the
@@ -1045,7 +1100,11 @@ Tuning, Query digest and Database diagram, one view each, name the place in thei
 toggle. With plans open it also shows **Save investigation** with **Unsaved
 changes** or **Investigation saved**. The top bar holds no status badge and no
 privileges button: on the places that send to a connection it shows the sidebar
-toggle, the place, the connection picker, then on Server and Workload **Refresh
+toggle, **Back** and **Forward** (**⌘[** and **⌘]** on macOS, **Alt+Left** and
+**Alt+Right** elsewhere; up to 100 entries across places, Server and Workload
+views, query tabs, and open plans, never switching the connection in use), a
+**Back to &lt;place&gt;** chip after you follow a cross-link from another view,
+the place, the connection picker, then on Server and Workload **Refresh
 all**, an ⓘ about the place and the control that docks or floats the list of
 views (a **Views** menu in a narrow window), and **Search…**.
 
@@ -1063,15 +1122,25 @@ where they appear, in their tooltips, descriptions and review dialogs. The sideb
 The light appearance uses a white window, like the dark one uses its content
 color: gray is for the sidebar and side panes only.
 
-The command palette (⌘K or **Search…** in the top bar) lists the places in the
-sidebar's order, then what belongs to one of them (Full analysis under Tuning,
+The command palette (⌘K or **Search…** in the top bar) starts with a **Recent**
+group of up to five recent destinations when the search field is empty, then
+lists the places in the
+sidebar's order, what belongs to one of them (Full analysis under Tuning,
 **Compare** under Plans), the Server and Workload views, and actions such as
 Import plan, the Audit log, and the Query editor's **Rename query tab** and
 **Format SQL** (they open the Query editor and act on its current tab).
 When you type, commands whose name contains
 every word come first, then those that match only a keyword or their group,
 each in that same order: **innodb** opens the InnoDB view, not the Cluster
-place, and **health** opens the Health view, not Tuning.
+place, and **health** opens the Health view, not Tuning. With a connection in
+use and 2 to 128 characters typed, the palette also searches database objects on
+that server after a short pause (`POST /api/live/object-search`, up to 50
+tables, views, procedures, functions, triggers and events across visible schemas),
+with matching database names from the cached schema list. Choosing a database,
+table or view reveals it in the Query editor's Schemas panel; choosing a routine,
+trigger or event opens its `SHOW CREATE` in a new query tab, selected and not run.
+Object search and schema object folders preserve names containing control
+characters without losing their exact identity.
 
 Use the Up and Down arrow keys to move between places, and Home or End to jump
 to the first or last. From 651 to 900 px the sidebar becomes a **48 px icon
@@ -1081,6 +1150,86 @@ Escape closes it and returns focus to the toggle. An **Open plans (N)** rail
 button opens a list of the open plans. At 650 px and below the sidebar becomes a compact bar with
 the status, Settings, and a **Menu** button that opens the places and open plans
 in a drawer; Escape closes it.
+
+### Memory
+
+**Workload > Resources > Memory** reads tracked allocations by category, session
+and account over a sampling window. Values use binary units; Numbers and Server context in the inspector show the exact bytes beside each value. General rules of thumb live
+once in the notes (ⓘ); a finding about a row has a status pill on the row and a
+reason in its inspector. **Sum of highs** and **Share (%)** have their full names
+in tooltips; the inspector keeps **Sum of event highs**, or **Session high** for
+MariaDB's PROCESSLIST counters. These highs are upper bounds, not a recorded
+server peak. Missing total highs read "sum of highs not collected". When no
+categories were collected but sessions were, the view opens on **By session**.
+Tracked allocations are not process RSS or machine RAM; collection gaps remain
+visible instead of reading as zero. Refresh reads again; the view does not poll.
+
+### The File transfer place
+
+**File transfer** moves files between this computer and your servers over SSH/SFTP,
+in the spirit of FileZilla. It is a place of its own in the sidebar (after
+Tuning) and does not use the database connection in use: it works with
+**SSH connections**, saved objects of their own.
+
+**SSH connections** are listed on the left; **New** opens **New SSH
+connection** (the empty list offers it too). **Start from** fills Host, Port
+and User from a saved database connection (its SSH tunnel, or else its own
+host) or a `~/.ssh/config` alias; pasting `user@host:port` or
+`sftp://user@host:port/path` into Host fills User, Port and the default
+remote folder as well, and Name follows `user@host` until you type one.
+**Authentication** is **SSH agent or keys** (your agent and `~/.ssh/config`),
+**Key file** (a pick list of the keys in `~/.ssh`, `.pem` files included,
+or a typed path, with an optional passphrase) or **Password**. A password or
+passphrase you save shows **Saved securely** with **Replace** and **Forget**;
+it is kept in the platform credential store, bound to the host, user, port,
+sign-in method and key file, and changing any of those asks for it again.
+**Default remote folder** and **Default local folder** set where the panes
+open. **Test connection** signs in without saving and says how long it took
+and the server's home folder. On Windows, password and passphrase sign-in are
+not available yet.
+
+The first connection to a server shows **Trust <host>?** with the server's
+host key fingerprints (type, size, SHA-256, with **Copy**) to compare with
+the ones your administrator gives you; **Trust and connect** keeps the key in
+myflames' own `ssh_known_hosts` file (never `~/.ssh/known_hosts`) and signs in
+again. A server whose key differs from the one already trusted, in myflames'
+file or in your own known_hosts, is refused with the file and line of the
+trusted key; nothing offers to trust it.
+
+The browser shows **This computer** on the left and the server on the right.
+Each pane has Back and Forward, Up, Home, Refresh and New folder, a path bar of
+breadcrumbs (click a folder; **Edit path** or ⌘L / Ctrl+L to type one;
+**Browse…** on This computer opens the system folder dialog), a **Filter**,
+and sortable columns (Name, Size, Modified, and Permissions on the server).
+Folders come first; **Show hidden files** reveals names that start with a
+dot; symbolic links carry a link badge and open when they point to a folder.
+Select like the Finder: click, ⌘ or Ctrl to add, Shift for a range, ⌘A or
+Ctrl+A for all; arrows move, Enter or a double-click opens a folder or
+transfers a file to the other pane, Backspace goes up, F2 renames and Delete
+removes on the server. Each row's **⋯** button and a right-click open the
+same menu: Upload or Download, Open, Rename…, New folder…, Delete…, Copy
+path and Refresh. The footer says how many items there are and what is
+selected, with **Upload →** or **← Download**. Drag rows to the other pane,
+or files and folders from the Finder or Explorer onto the server pane, to
+transfer them. A slow listing counts its seconds and offers **Stop**; an
+error stays in its pane with **Try again**.
+
+Transfers handle folders as well as files. When names already exist at the
+destination, the sheet lists them with both sizes and dates and offers
+**Skip existing** or **Overwrite** (existing folders are merged; the choice
+applies to the files inside); overwriting a server file removes the old copy
+first and cannot bring it back if the upload stops. Symbolic links and special
+files inside folders are skipped, never followed, and a transfer stops before
+writing anything if it has more than 10000 files or 64 folder levels. The
+**Transfers** panel lists each job for **This connection** or **All
+connections** with progress, files, rate and time left, **Cancel** while it
+runs and **Retry** for failed or cancelled files; a job that could not sign
+in offers **Edit connection** or **Trust host…**. **Clear finished** keeps
+failed and cancelled jobs. Downloads are written as `.myflames-part` files
+and renamed only when complete. File transfer is not a SQL feature: the connection
+type and read-only switch do not apply and transfers are not in the
+[Audit log](#audit-log). On Windows, uploads and downloads are not available
+yet.
 
 ### Window status bar
 
@@ -1243,7 +1392,17 @@ upgrade check, dump and restore (structure only included) and no CLONE.
 Home's **Connections** table shows the name, the type and Read-only as two
 pills that never truncate (a read-only Development connection keeps its teal
 pill beside the Read-only outline), user@host:port (which takes the spare
-width), **Default database**, saved-password state, and Last used. The accent
+width), **Database** (tooltip "Default database"), **Server**, saved-password state, and Last used.
+The default columns are sized for 1440 px. In Server, product and version take priority over the "seen … stale" hint, which yields first; hover for the full text. The import sheet is wider to fit its preview columns and shows no empty error alert. The Server column keeps the last facts collected for that server (product and
+version, replication or cluster role, read-only and Performance Schema
+state), so they stay visible while the server is offline, marked as stale.
+**Test connection**, an explicit choice in the connection picker, and **Check
+now** in a connection's menu refresh them; opening the window never connects
+to refresh them. The Connections header menu has **Import from MySQL Workbench or DBeaver…**,
+which opens the **Import connections** sheet with a **From** selector (**MySQL
+Workbench** or **DBeaver**): a preview lists what was found with duplicates
+unchecked, and imported connections are Production, carry no password and
+never connect automatically. The accent
 bar marks the connection in use, also named for screen readers. Last used covers
 choices made during this window; a connection not used in it reads "—", with
 "Not used in this window. Earlier use is not recorded." on hover. A search
@@ -1353,7 +1512,7 @@ Thread pool row (threads and idle threads) in place of the Thread cache under
 Parameters tags the variables Percona adds with **Percona**.
 
 The window footer of the Query editor, Query digest, Database diagram, Schema
-versions, Server, Workload, Replication, Cluster, ProxySQL and Tuning starts with the write safety
+versions, Server, Workload, Replication, Cluster, ProxySQL, Readyset and Tuning starts with the write safety
 of the connection in use: a purple dot and
 "Production · changes ask first" (the full sentence, "Production: every change
 on NAME asks first", is its tooltip and accessible name), an outlined dot and
@@ -1378,6 +1537,12 @@ are loading or cannot be read, the footer says **Production assumed** (with
 the host, port, user and TLS settings it was made with.
 
 ## Audit log
+
+Parameters and Users and roles show **Changed through myflames** for the selected
+object: the newest matching successful or outcome-unknown local record, with
+readable operation names (raw key on hover), "Kept on this computer.", the stored
+SQL boxed with Copy beside it, and **Open in Audit log** for the exact record.
+
 
 **Settings > Audit log** opens the record of every change myflames sent to a
 server, kept on this computer (`~/.myflames/workspace.sqlite3`, never a
@@ -1470,6 +1635,21 @@ path on hover), its self time, share of the plan's time, rows and loops. The
 arrow keys, Home and End move between rows; Enter, Space or a click jumps to
 that operator in the chart. It works in every chart view and in both panes of
 Compare. HTML reports include the Stats tables, collapsed.
+
+When a measured plan has eligible base-table accesses, or filters directly above them,
+whose rows per loop differ by at least 10×
+(`max(actual, estimated) / max(1, min(actual, estimated)) >= 10`) and whose
+larger estimate or actual count times loops reaches 1,000 rows, the plan header shows **Misestimates N**: click it to step through them in
+descending ratio order, marked in violet across Visual Explain, the flame
+graph, the execution tree, and the bar chart (when the bar chart omits an
+operator because its self time is zero, a status message above the chart
+explains why and the inspector still opens it). The inspector's **Row
+estimate** section shows how far off the estimate was and, when the operator's
+table maps unambiguously to a single base table in the captured schema
+evidence, the table's `mysql.innodb_table_stats.last_update`, statistics row count and
+histograms with an `ANALYZE TABLE` statement to copy. Overestimates are skipped
+below early-stop ancestors such as Limit and semijoin inner sides; MariaDB
+compares only eligible index lookups and only underestimates.
 
 The UI accepts the same MySQL and MariaDB plan formats as the Python engine,
 including MySQL's `query_plan` wrapper. It checks plan size and nesting before
@@ -1613,7 +1793,7 @@ Running queries tab open on Sessions). Choose **Start fresh** to clear it, turn 
 investigations to keep named copies in the library. Downloads are saved through your browser. Your session and
 saved investigations stay on this computer. Apart from your database servers,
 myflames contacts only official release pages when you check for updates
-(**Check for updates**, or **Detect tools** in Maintenance) and the two news
+(**Check for updates** on Home, About or Maintenance's Tools) and the two news
 feeds described below, while Home is shown and news is turned on.
 
 Home news only reads: while Home is on screen and **Settings > Show MySQL and
@@ -1637,17 +1817,36 @@ same run chose it; both stay editable), the schema browser and the run history a
 described in
 [Run SQL in the Query editor](QUERY_WORKSPACE.md#run-sql-in-the-query-editor).
 Results stay in page memory: session restore keeps the tab's text, caret,
-row limit and pane sizes, never results. Run options (the arrow beside Run)
-holds Rows, Time limit and **Safe updates**; the ⓘ beside Safe updates says in
+default database, On error choice, row limit and pane sizes, never results or
+file paths. The toolbar has a **Database** picker for the tab's default
+database (its list of databases is read only while the Query editor is on
+screen; choosing a database while a session is open sends `USE` in that session
+via `POST /api/editor/use`, and choosing **None** keeps the open session's
+current database while setting the default for a new session to none) and
+**Find and replace** (**⌘F** / **Ctrl+F**, **⌥⌘F** / **Ctrl+H**). None survives restore explicitly, even when the connection has a default database; a tab with a session on another connection refuses a database change. Run options (the arrow beside Run)
+holds Rows, Time limit, **On error: Stop / Continue** (for Run all), and **Safe updates**. A finished Continue run counts succeeded, failed, not run, stopped and outcome unknown statements in Messages. Errors 1213 and 1205 add a note on InnoDB behavior (a deadlock rolls back the victim's whole transaction; a lock wait timeout does only with `innodb_rollback_on_timeout` ON), never a claim about this run. The On error ⓘ explains statement-only rollback by default and whole-transaction rollback for these cases. The error mode is part of the write review, so changing it asks again; the ⓘ beside Safe updates says in
 plain words what `sql_safe_updates` refuses, its default per connection type,
 how to turn it off for the tab, and links to the MySQL and MariaDB
 documentation (opened in your browser). A tab's menu (right-click, or Shift+F10
-or the context-menu key on the tab) has **Rename…**, **Duplicate**, **Close**
-and **Close others**; double-click or F2 renames too. **Format SQL** (the
+or the context-menu key on the tab) has **Open SQL file…** (**⌘O** / **Ctrl+O**,
+for `.sql` and `.txt` files up to 5 MiB), **Save…** (**⌘S** / **Ctrl+S**),
+**Save as…** (**⇧⌘S** / **Ctrl+Shift+S**), **Save query…**, **Rename…**, **Duplicate**, **Close**
+and **Close others**; double-click or F2 renames too, and a file-backed tab with
+unsaved edits shows an edited dot (`●`) and asks **Unsaved changes** before
+closing. The Schemas panel also lists **Routines**, **Triggers**, and **Events**
+folders under each expanded database. **Format SQL** (the
 indent button in the toolbar, Shift+Option+F) lays out the selection or the
 whole tab as one undo step, changes only white space and keyword case, never
 runs anything, and refuses when the result would read differently; see
 [Format SQL](QUERY_WORKSPACE.md#format-sql).
+Save refuses symbolic-link targets and a folder changed since it was chosen;
+use **Save as…** to choose it again. Adding `.sql` never replaces a file that
+already exists: choose its full name to approve replacement. Open refuses special
+files and a file or folder swapped for a link after selection, and enforces the
+5 MiB limit even if the file grows while being read. If a backend restart loses
+the file binding, Save opens Save as within the same operation and reports the
+outcome. Cancelling or failing a save or close keeps unsaved edits.
+
 Connections store settings (the API and CLI call them profiles). When you save
 one with a typed password, myflames asks whether to save the password too; it is saved only if you choose
 **Save with password**, and then in the operating system's credential store or
@@ -1683,7 +1882,9 @@ fails when the committed chart bundle is older than its sources. `npm run dev`
 watches and rebuilds the app assets; run `myflames ui --no-browser` in another
 terminal and reload the page after a rebuild.
 
-Top statements opens a selected statement in a detail view using the available width. Back returns to the retained list with its sorting, filters and scroll position. Supported write statements offer a read-only SELECT projection for review before Explain or Run analysis. The original editor text remains in its own tab; the converted SELECT needs a second explicit action. This is a different plan and does not measure writes, UPDATE assignment expressions, triggers, constraints or locking. Batch analysis leaves these rows for individual review.
+With **Slow log table**, opening a statement reads its **Tables** section immediately (metadata only, no table rows).
+
+Top statements and Query digest share one statement inspector (`StatementInspector.tsx`) and statement thread (`statementThread.ts`). Top statements opens a selected statement in a detail view using the available width. Back returns to the retained list with its sorting, filters and scroll position. In Top statements and Query digest's Statement digests source, a statement flagged No index used or Full scan offers **Suggested index** under Flags. **Read suggestion** starts the estimated `EXPLAIN FORMAT=JSON` and existing-index read (`POST /api/live/index-suggestion`); planning can evaluate expressions, so the inspector never starts it on its own. A fresh result is reused on reopening, and **Read again** reads anew. The result proposes a `CREATE INDEX` to copy or open in the Query editor, names an index already leading with the columns, or explains why it cannot suggest one. A proven unfiltered `SELECT * FROM t` needs no server read to explain that no index reduces rows read if `t` is a base table, and a truncated statement shows the server setting that cut it with the memory cost and option-file or `SET PERSIST_ONLY` lines. Supported write statements offer a read-only SELECT projection for review before Explain or Run analysis. The original editor text remains in its own tab; the converted SELECT needs a second explicit action. This is a different plan and does not measure writes, UPDATE assignment expressions, triggers, constraints or locking. Batch analysis leaves these rows for individual review. After a suggested `CREATE INDEX` succeeds in its Query editor tab, **Measure the statement again** there opens the source statement and asks before one Run analysis on the same connection. Its **Analysis** tab shows the digest's before average latency and rows examined per execution beside this run's statement-history time and rows examined (which may be unavailable). **Compare plans** appears there when an earlier non-session capture of the same SQL, connection and database is still in memory, and opens the two captures in **Plans > Compare**.
 
 **Table structure** is the first action in a Tables row's menu, its context menu and the inspector's action bar: a sheet with the table's columns (type, nullability, default, character set, collation, comment), indexes, foreign keys and the exact `SHOW CREATE TABLE`, read once when it opens through the connection the list was read with, with **Copy CREATE TABLE** and **Download .sql** (`<schema>.<table>.sql`). It is read-only; a refused `SHOW CREATE TABLE` keeps the other tabs with its reason, and columns a server lacks (MySQL 5.7 index visibility) read Unknown. It is disabled with the reason on a list read from another connection. Tables shows reusable InnoDB free space as information. **Optimize table** is an optional action with exact SQL and rebuild caveats to review. Instruments reads on open (one attempt per connection) and organizes its view into **Features**, **Instruments**, **Consumers**, and **Actors and objects** tabs: filter and select up to 2,000 instruments (with **Enable**, **Enable without timing**, **Disable**, and **Clear selection**) or consumers (enabling required parent consumers automatically), and run batched `UPDATE` statements (up to 500 names per statement) through the reviewed SQL runner, with copy-only option file lines under **Keep after restart**. Both require confirmation on Development and Production connections, refuse Read-only connections and remain disabled for stale data from another connection. Copying statements still works independently.
 
@@ -1808,6 +2009,12 @@ Right-click or Shift+F10 offers the same view actions, then **Copy statement**
 and **Copy digest**. Explain shows its refusal reason when capture is unavailable.
 Another connection's report stays greyed with **From <connection>** and its
 statement actions disabled until refreshed; dispatch checks identity again.
+With **Statement digests**, **Save baseline** in the Refresh menu keeps the
+current digest totals on this computer for that server (`with_identity: true`,
+literals hidden, no samples, up to 20 per server), and **Compare with baseline**
+lists new digests and digests whose average time or call rate rose by more than
+50% (comparing average latency only when the server restarted or the digest
+table's `oldest_first_seen` moved forward since the baseline).
 
 **Export** offers **Text report** (preview, Copy and download) and **CSV** for
 all loaded rows. Both add New, P95, P99, P99.9 and CPU time per statement; only
@@ -2052,18 +2259,19 @@ Workspace routing in `myflames/ui.py` (`api_response`) dispatches across dedicat
 - Browser authentication (`/api/auth/session`).
 - Database diagrams (`/api/schema-diagram/read`, `/api/schema-diagram/import`, `/api/schema-diagram/export`).
 - Session management (`/api/session/load`, `/api/session/save`, `/api/session/clear`, `/api/session/settings`).
-- Local audit logging (`/api/audit/list`, `/api/audit/export`, `/api/audit/settings`, `/api/audit/declined`).
-- Query editor sessions (`/api/editor/open`, `/api/editor/run`, `/api/editor/status`, `/api/editor/stop`, `/api/editor/commit`, `/api/editor/rollback`, `/api/editor/close`, `/api/editor/history`, `/api/editor/export`).
+- Local audit logging (`/api/audit/list`, `/api/audit/export`, `/api/audit/settings`, `/api/audit/declined`, and `/api/audit/object` for the change history shown in an object's inspector).
+- Query editor sessions (`/api/editor/open`, `/api/editor/run`, `/api/editor/preview`, `/api/editor/status`, `/api/editor/stop`, `/api/editor/commit`, `/api/editor/rollback`, `/api/editor/close`, `/api/editor/use`, `/api/editor/file/open`, `/api/editor/file/save`, `/api/editor/history`, `/api/editor/export`).
 - Server lifecycle tasks (`/api/lifecycle/tools`, `/api/lifecycle/upgrade-check`, `/api/lifecycle/prepare`, `/api/lifecycle/start`, `/api/lifecycle/status`, `/api/lifecycle/cancel`, `/api/lifecycle/jobs`).
 - Users and roles (`/api/accounts/list`, `/api/accounts/read`, `/api/accounts/scope-objects`, `/api/accounts/plan`, `/api/accounts/apply`). The grant matrix supports all catalog privileges at their legal levels, dynamic grant options, role admin/default settings, anonymous proxy accounts, MariaDB package/package-body scopes and MySQL 9.2+ MLE library scopes. Packages and libraries accept exact names.
 - Full analysis export (`/api/report/export`).
 - Home news (`/api/news`, `news-1.0`, and `/api/news/settings` for the Settings switch); see [Session and scope](#session-and-scope).
-- Saved profiles and investigations (`/api/profiles/*`, `/api/investigations/*`, `/api/connection/test`, which also returns `databases`, and `/api/ssh/hosts` for the SSH host pick list).
+- Saved profiles and investigations (`/api/profiles/*`, `/api/investigations/*`, `/api/connection/test`, which also returns `databases`, `/api/ssh/hosts` for the SSH host pick list, `/api/live/readiness` for the cached server facts on Home, and `/api/connections/import` for MySQL Workbench and DBeaver imports).
 - Saved queries (`/api/editor/saved/list`, `save`, `rename`, `move`, `delete`; local only).
 - Schema versions (`/api/schema-versions/*`, including `sync` for a new choice of objects and `lint` for Checks).
 - CSV import (`/api/import/csv/choose`, `open-path`, `inspect`, `plan`, `apply`, `progress` and `stop`; apply is a reviewed write).
 - Parameter snapshots and server comparison (`/api/config/snapshots/list`, `save`, `get`, `delete`, `/api/config/compare`, `/api/accounts/compare`, `/api/accounts/export`; each side reads with its own connection and nothing is executed).
-- Live diagnostics, Server views, and actions (`/api/live/*`, including `health`, `watch` and `watch/capture`, `innodb`, `error-log`, `top`, `digest-histogram`, `digest-tables`, `sessions`, `ddl-progress`, `running`, `locks`, `kill/prepare`, `kill`, `waits`, `indexes`, `tables`, `io`, `config`, `variable`, `instruments`, `replication`, `cluster`, `privileges`, `catalog`, and `schemas`).
+- Baselines (`/api/baselines/list`, `save`, `get`, `delete`; Health and Query digest readings kept on this computer, tied to the server's identity; `list` probes the server's identity, and `save` verifies the server's identity in one bounded probe).
+- Live diagnostics, Server views, and actions (`/api/live/*`, including `health`, `watch` and `watch/capture`, `innodb`, `error-log`, `top`, `index-suggestion`, `digest-histogram`, `digest-tables`, `table-structure`, `slow-log`, `sessions`, `sessions/history`, `ddl-progress`, `running`, `locks`, `kill/prepare`, `kill`, `waits`, `indexes`, `tables`, `io`, `memory`, `config`, `variable`, `instruments`, `replication`, `cluster`, `proxysql`, `readyset`, `privileges`, `catalog`, `schemas`, and `object-search`).
 
 Detailed schemas and request/response payloads are documented in [QUERY_WORKSPACE.md](QUERY_WORKSPACE.md#api-additions).
 
@@ -2211,4 +2419,4 @@ analysis's elapsed time continues when Tuning is reopened during its run.
 
 Plans sample opening and HTML export show progress immediately; reads can stop waiting, and export failures can retry the same input. HTML and JSON exports report **Saved** with the filename. Investigation Save shows **Saving…** and keeps its error in the sheet.
 
-Maintenance's Detect tools, Check upgrade and Run preflight controls show elapsed progress with **Stop waiting**. A read failure offers **Try again**. Start and Cluster/ProxySQL confirmations offer **Close** after ten seconds without a reply: the request continues, its progress and outcome appear in the view, and nothing is sent again. Cancelling a job shows **Cancelling…** until the reply arrives; a missing reply does not mean it stopped.
+Maintenance's Detect again, Check for updates, Check upgrade and Start dump…, Start restore… and Start clone… (while their preflight runs) show elapsed progress with **Stop waiting**. A read failure offers **Try again**. Start and Cluster/ProxySQL confirmations offer **Close** after ten seconds without a reply: the request continues, its progress and outcome appear in the view, and nothing is sent again. Cancelling a job shows **Cancelling…** until the reply arrives; a missing reply does not mean it stopped.

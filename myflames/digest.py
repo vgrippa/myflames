@@ -218,10 +218,10 @@ def build_digest(payload):
     vitals = "{} ops".format(ps.get("operator_count", "?"))
     if ps.get("max_depth"):
         vitals += " | depth {}".format(ps["max_depth"])
-    if ps.get("total_time_ms"):
+    # A measured 0.0 ms still reads as measured; only None means "not
+    # measured" (sidecar 1.4).
+    if ps.get("total_time_ms") is not None:
         vitals += " | {} ms".format(ps["total_time_ms"])
-    # Null measurements (sidecar 1.4: the plan does not carry them) read
-    # "not measured", never 0.
     rows_sent = ps.get("rows_sent")
     rows_ex = ps.get("rows_examined_estimate")
     if rows_sent is None and rows_ex is None:

@@ -68,6 +68,7 @@ class Client(object):
         self.safe_updates = False
         self.read_only = False
         self.sql_mode = "STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION"
+        self.database = None
         self.lost = False
         with open(os.path.join(STATE, "session-%d.log" % self.conn_id), "w"):
             pass
@@ -189,7 +190,7 @@ class Client(object):
                       "version": "11.4.13-MariaDB-fake" if ENGINE == "mariadb" else "8.4.11-fake",
                       "autocommit": "1" if self.autocommit else "0", "sql_mode": self.sql_mode,
                       "sql_safe_updates": "1" if self.safe_updates else "0",
-                      "in_transaction": "1" if self.in_trx else "0"}
+                      "in_transaction": "1" if self.in_trx else "0", "database_name": self.database}
             self.result(statement, names, [[values.get(n) for n in names]])
             return
         if "PERFORMANCE_SCHEMA.SETUP_CONSUMERS" in upper:
@@ -222,6 +223,11 @@ class Client(object):
         m = re.match(r"SET @(\w+)\s*=\s*(.+)$", text)
         if m:
             self.vars[m.group(1)] = m.group(2).strip("'")
+            self.ok()
+            return
+        m = re.match(r"USE `((?:[^`]|``)*)`$", text, re.I)
+        if m:
+            self.database = m.group(1).replace("``", "`") or None
             self.ok()
             return
         m = re.match(r"SELECT @(\w+)(?: AS (\w+))?$", text)

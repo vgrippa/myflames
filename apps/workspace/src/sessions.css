@@ -388,3 +388,8 @@
   margin-left: var(--space-1);
   vertical-align: middle;
 }
+/* Keep bounded statement history and blocker links inside the inspector. */
+.session-history { margin: 0; padding-inline-start: var(--space-5); }
+.session-history > li { margin-block-end: var(--space-4); min-width: 0; }
+.session-history bdi { overflow-wrap: anywhere; }
+.session-block-links { display: flex; flex-wrap: wrap; gap: var(--space-2); min-width: 0; }

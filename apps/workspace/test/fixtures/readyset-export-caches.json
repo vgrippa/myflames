@@ -1,0 +1,17 @@
+{
+ "schema_version": "readyset-export-1.0",
+ "version": "stable-250605",
+ "count": 2,
+ "caches": [
+  {
+   "database": "shop",
+   "statement": "CREATE DEEP CACHE `c_orders_deep` FROM SELECT id, total FROM orders WHERE customer_id = 1;"
+  },
+  {
+   "database": "shop",
+   "statement": "CREATE SHALLOW CACHE `c_recent_shallow` WITH (ttl = 30s) FROM SELECT id, status FROM orders WHERE created_at > '2026-01-01';"
+  }
+ ],
+ "sql": "-- Readyset cache definitions exported by myflames (Readyset stable-250605)\nUSE `shop`;\nCREATE DEEP CACHE `c_orders_deep` FROM SELECT id, total FROM orders WHERE customer_id = 1;\nCREATE SHALLOW CACHE `c_recent_shallow` WITH (ttl = 30s) FROM SELECT id, status FROM orders WHERE created_at > '2026-01-01';\n",
+ "notes": []
+}

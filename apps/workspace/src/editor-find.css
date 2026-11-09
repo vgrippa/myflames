@@ -1,0 +1,128 @@
+/* Find and replace in the Query editor (SqlEditor.tsx): the bar docks at the
+   editor's top right and floats over the text; matches are marks on the
+   highlight layer, the current one stronger. */
+.sql-find {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-3);
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: calc(100% - 2 * var(--space-3));
+  padding: var(--space-1);
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-raised);
+  font-size: var(--text-sm);
+}
+.sql-find-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+.sql-find-field {
+  width: 168px;
+  min-width: 96px;
+  height: var(--control-h);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--control-line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: var(--text-sm);
+}
+.sql-find-field[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+.sql-find-count {
+  flex: none;
+  min-width: 52px;
+  padding: 0 var(--space-1);
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  white-space: nowrap;
+}
+.sql-find button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0 var(--space-1);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink);
+  font-size: var(--text-sm);
+  font-family: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+.sql-find button:hover:not(:disabled) {
+  background: var(--surface-muted);
+}
+.sql-find button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.sql-find button:disabled {
+  color: var(--ink-faint);
+  cursor: default;
+}
+.sql-find-toggle[aria-pressed="true"] {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  color: var(--accent-text);
+}
+.sql-find-word {
+  font-family: var(--font-mono);
+}
+.sql-find-action {
+  padding: 0 var(--space-2);
+  border: 1px solid var(--control-line);
+  background: var(--surface);
+  white-space: nowrap;
+}
+.sql-find-error {
+  padding: 0 var(--space-2) 2px;
+  max-width: 320px;
+  color: var(--danger-text);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+.sql-find-error[hidden] {
+  display: none;
+}
+/* Match marks on the highlight layer: every match tinted, the current one
+   ringed. */
+.sql-layer .sql-find-mark {
+  background: var(--accent-soft);
+  border-radius: 2px;
+}
+.sql-layer .sql-find-current {
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+@media (forced-colors: active) {
+  .sql-layer .sql-find-mark {
+    background: none;
+    box-shadow: 0 0 0 1px Highlight;
+  }
+  .sql-layer .sql-find-current {
+    background: Highlight;
+    box-shadow: 0 0 0 1px Highlight;
+  }
+  .sql-find {
+    border-color: ButtonBorder;
+    box-shadow: none;
+  }
+  .sql-find-toggle[aria-pressed="true"] {
+    box-shadow: inset 0 0 0 1px Highlight;
+  }
+}

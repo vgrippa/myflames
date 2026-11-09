@@ -28,7 +28,7 @@ export const SERVER_GROUPS = {
 };
 export const WORKLOAD_GROUPS = {
   Queries: ["Top statements", "Processlist"],
-  Resources: ["Waits", "I/O"],
+  Resources: ["Memory", "Waits", "I/O"],
 };
 export const SERVER_VIEW_LABELS = Object.values(SERVER_GROUPS).flat();
 export const WORKLOAD_VIEW_LABELS = Object.values(WORKLOAD_GROUPS).flat();
@@ -36,7 +36,7 @@ export const WORKLOAD_VIEW_LABELS = Object.values(WORKLOAD_GROUPS).flat();
  * session.ts). Suites spread it under the values they set, so an exact
  * comparison stays exact when a view adds a saved key: update it here. */
 export const SLOW_DEFAULTS = {
-  kind: "health", order: "total", min_seconds: 0, health_interval: 5, schema: "", waits_interval: 10, io_interval: 10,
+  kind: "health", order: "total", min_seconds: 0, health_interval: 5, schema: "", memory_interval: 5, waits_interval: 10, io_interval: 10,
   inspector: false, sessions_scope: "active", maintenance_section: "tools",
 };
 
@@ -184,12 +184,25 @@ export async function open(endpoint, name, extra = {}, { fallback = null, list =
       await helpers.button("Workload", ".main-nav ");
       await helpers.views();
     },
-    /** Wait for the list of views: docked beside the view, or floating
-     * (the view's title button, its list closed). */
+    /** Wait for the list of views: docked beside the view, floating (the
+     * view's title button, its list closed), or in a narrow place (below
+     * COMPACT_WIDTH in Server.tsx, which includes the 720 px window) the
+     * pushed list or the pushed view with its Back button. */
     async views() {
       // Any of them on screen (kept views stay mounted, hidden, with their own title).
-      await page.waitForFunction(() => [...document.querySelectorAll(".server-place:not(.is-tuning-place) :is(.source-list, .view-switcher)")]
+      await page.waitForFunction(() => [...document.querySelectorAll(".server-place:not(.is-tuning-place) :is(.source-list, .view-switcher, .server-view .server-back)")]
         .some((e) => !e.closest("[hidden]") && e.offsetParent !== null));
+    },
+    /** In a narrow place, go back from the pushed view to the list of views
+     * with the view's Back button, as a person would (a no-op otherwise). */
+    async backToViews() {
+      for (const back of await page.$$(".server-place:not(.is-tuning-place) .server-view .server-back")) {
+        if (await back.evaluate((e) => !e.closest("[hidden]") && e.offsetParent !== null)) {
+          await back.click();
+          await page.waitForSelector(".server-layout.show-list .source-list", { visible: true });
+          return;
+        }
+      }
     },
     /** The list of views is floating (opened from the view's title). */
     floating: () => page.$eval(".server-place:not(.is-tuning-place)", (e) => e.classList.contains("is-nav-collapsed")).catch(() => false),
@@ -224,13 +237,15 @@ export async function open(endpoint, name, extra = {}, { fallback = null, list =
         await page.waitForSelector('.server-place.is-diagram-place .server-view[data-view="diagram"]', { visible: true });
         return;
       }
-      const isWorkload = ["top", "sessions", "waits", "io"].includes(kind);
+      const isWorkload = ["top", "sessions", "memory", "waits", "io"].includes(kind);
       const place = isWorkload ? "Workload" : "Server";
       if (!(await shown(`#server-nav-${kind}`))) {
         if (!(await page.$(`.main-nav button[data-place="${isWorkload ? "workload" : "server"}"].active`))) {
           await helpers.button(place, ".main-nav ");
         }
         await helpers.views();
+        // A narrow place shows the pushed view over its list: Back shows the list.
+        if (!(await shown(`#server-nav-${kind}`))) await helpers.backToViews();
         if (!(await shown(`#server-nav-${kind}`))) await helpers.openViews();
       }
       const floating = !!(await page.$(".view-switcher-popover"));

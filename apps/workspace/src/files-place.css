@@ -1,0 +1,44 @@
+/* The Files place frame: the SSH connection list beside the browser, flush
+   panes divided by hairlines like the Query editor. The list and browser
+   style themselves (ssh-connections.css, files.css). Tokens only. */
+.files-place {
+  display: grid;
+  grid-template-columns: minmax(200px, 248px) minmax(0, 1fr);
+  height: calc(100dvh - var(--topbar-height));
+  min-width: 0;
+  background: var(--bg);
+}
+.files-place > :first-child {
+  min-height: 0;
+  overflow: auto;
+  border-right: 1px solid var(--line);
+}
+.files-place-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+/* The first-run and no-selection states center in the main area, not in the
+   narrow list column. */
+.files-place-main > .view-empty {
+  margin: auto;
+}
+.files-place-main > .view-status {
+  margin: var(--space-3) var(--space-4) 0;
+}
+/* A narrow window puts the list above the browser as a short strip; the
+   browser keeps the rest of the height and scrolls inside its panes. */
+@media (max-width: 900px) {
+  .files-place {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    height: auto;
+    min-height: calc(100dvh - var(--topbar-height));
+  }
+  .files-place > :first-child {
+    max-height: 168px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+}

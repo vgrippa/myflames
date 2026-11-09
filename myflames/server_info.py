@@ -33,18 +33,25 @@ def detect_flavor(version, version_comment=""):
 
 
 #: Product names by flavor; Percona XtraDB Cluster has its own name.
-PRODUCT_NAMES = {"mysql": "MySQL", "mariadb": "MariaDB", "percona": "Percona Server"}
+PRODUCT_NAMES = {"mysql": "MySQL", "mariadb": "MariaDB", "percona": "Percona Server", "readyset": "Readyset"}
 PXC_PRODUCT = "Percona XtraDB Cluster"
+
+
+def is_readyset_comment(version_comment):
+    """True when ``@@version_comment`` identifies Readyset."""
+    return str(version_comment or "").strip().lower() == "readyset"
 
 
 def product_identity(version, version_comment=""):
     """``{"engine", "flavor", "product"}`` from ``@@version`` and ``@@version_comment``.
 
     engine is ``mysql`` or ``mariadb`` (the rules that apply), flavor is
-    ``mysql``, ``percona`` or ``mariadb``, and product is the name to show:
-    MySQL, Percona Server, Percona XtraDB Cluster or MariaDB. An unknown
-    comment is MySQL, as before.
+    ``mysql``, ``percona``, ``mariadb`` or ``readyset``, and product is the
+    name to show: MySQL, Percona Server, Percona XtraDB Cluster, MariaDB or
+    Readyset. An unknown comment is MySQL, as before.
     """
+    if is_readyset_comment(version_comment):
+        return {"engine": "mysql", "flavor": "readyset", "product": PRODUCT_NAMES["readyset"]}
     engine = detect_flavor(version, version_comment)
     comment = str(version_comment or "").lower()
     if engine == "mariadb":

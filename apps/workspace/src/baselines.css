@@ -1,0 +1,208 @@
+/* Baselines (Baselines.tsx): the compare bar of Health and Query digest,
+   the save and choose sheets, and the "was" markers. Tokens only. */
+
+/* Baseline → Now: one band under the toolbar while a view compares (the
+   Source → Target bar's anatomy, compare-shared.css; the band of Health's
+   watch status, health.css). */
+.baseline-bar {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-subtle);
+}
+.baseline-status:not([data-phase="idle"]) {
+  padding: var(--space-1) var(--space-3) var(--space-1) var(--space-4);
+}
+.baseline-bar-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-1) var(--space-2);
+  align-items: center;
+  min-width: 0;
+}
+.baseline-bar-names {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  min-width: 0;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.baseline-bar-names > span:not(.baseline-bar-arrow) {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.baseline-bar-names b {
+  font-weight: 600;
+}
+.baseline-bar-arrow {
+  flex-shrink: 0;
+  color: var(--ink-muted);
+}
+.baseline-bar-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: var(--space-2);
+  align-items: center;
+  white-space: nowrap;
+}
+.baseline-bar-note {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+}
+/* A narrow view stacks the names over the actions. */
+@media (max-width: 760px) {
+  .baseline-bar-head {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* "was OK": a verdict that changed since the baseline, in words beside the
+   status it has now (never color alone). */
+.verdict-was {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  padding: 0 var(--space-1-5);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  font-weight: 500;
+  white-space: nowrap;
+}
+/* Positioned, so its visually hidden reason stays inside the tile strip
+   that scrolls sideways on narrow windows (never a page scroll). */
+.baseline-not-compared {
+  position: relative;
+  font-style: italic;
+}
+
+/* Health while it compares: a fourth line for "was X" (health.css keeps
+   three; tiles stay under 120 px). The narrow strips keep their 44 px. */
+.health-panel.is-comparing .metric-tile {
+  height: 94px;
+  min-height: 94px;
+  max-height: 94px;
+}
+@media (max-width: 900px) {
+  .health-panel.is-comparing .tile-grid .metric-tile {
+    height: 44px;
+    min-height: 44px;
+    max-height: 44px;
+  }
+}
+
+/* The sheets. */
+.baseline-sheet .baseline-error {
+  margin: var(--space-2) 0 0;
+}
+.baseline-empty {
+  margin: var(--space-2) 0;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+}
+.baseline-choices {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+}
+.baseline-choices legend {
+  padding: 0 var(--space-1);
+  color: var(--ink-muted);
+}
+.baseline-choice {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-2);
+  align-items: center;
+  min-width: 0;
+  padding: var(--space-1) 0;
+}
+.baseline-choice + .baseline-choice {
+  border-top: 1px solid var(--line);
+}
+.baseline-choice label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-2);
+  align-items: start;
+  min-width: 0;
+  cursor: pointer;
+}
+.baseline-choice input {
+  margin: 3px 0 0;
+}
+.baseline-choice-text {
+  display: grid;
+  min-width: 0;
+}
+.baseline-choice-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.baseline-choice-text .hint {
+  overflow-wrap: anywhere;
+}
+.baseline-delete,
+.baseline-delete-ask {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.baseline-delete-ask {
+  display: inline-flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+@media (max-width: 650px) {
+  .baseline-choice {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .baseline-delete,
+  .baseline-delete-ask {
+    justify-self: end;
+  }
+}
+
+/* Query digest while it compares: the changes, then a muted line. */
+.baseline-changes-head {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  margin: 0 0 var(--space-2);
+}
+.baseline-changes-head h3 {
+  margin: 0;
+  font-size: var(--text-md);
+  line-height: var(--leading-md);
+}
+.baseline-change-words {
+  white-space: nowrap;
+}
+.baseline-before-after {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.baseline-footnote {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+}

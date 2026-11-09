@@ -124,7 +124,7 @@ type Confirmation = {
 
 export type ReplicationSubTab = "topology" | "channels" | "lag" | "gtid" | "recovery";
 
-export function ReplicationView({ connection, disabled, selection, report: bound, onReport, loops: boundLoops, onLoops, restoredLoop = false, onLoopActivity, missingPrivileges = {}, activeTab = "topology", onTabChange, clusterKind = null, onOpenCluster }: {
+export function ReplicationView({ connection, disabled, selection, report: bound, onReport, loops: boundLoops, onLoops, restoredLoop = false, onLoopActivity, missingPrivileges = {}, activeTab = "topology", onTabChange, clusterKind = null, onOpenCluster, onOpenReadyset, onOpenProxySql, onSwitchConnection }: {
   connection: Connection; disabled: boolean; onBack?: () => void; selection: Selection;
   report: Bound<ReplicationReport> | null; onReport: (report: Bound<ReplicationReport>) => void;
   /** Memory only, owned by Server. Keep this view mounted while hidden. */
@@ -138,6 +138,9 @@ export function ReplicationView({ connection, disabled, selection, report: bound
    * is not a replica says where its own replication is shown. */
   clusterKind?: ClusterKind | null;
   onOpenCluster?: () => void;
+  onOpenReadyset?: () => void;
+  onOpenProxySql?: () => void;
+  onSwitchConnection?: (profileId: string) => void;
 }) {
   const reads = useConnectionReads(connection);
   const captureScope = useOpsScope(connection);
@@ -652,13 +655,22 @@ export function ReplicationView({ connection, disabled, selection, report: bound
         {!report.available ? (
           <PrerequisiteGate>{report.message || "Replication status is not available for this connection."}</PrerequisiteGate>
         ) : !report.replica ? (
-          <NotAReplica report={report} clusterKind={other ? null : clusterKind} onOpenCluster={other ? undefined : onOpenCluster} />
+          <NotAReplica
+            report={report}
+            clusterKind={other ? null : clusterKind}
+            onOpenCluster={other ? undefined : onOpenCluster}
+            onOpenReadyset={other ? undefined : onOpenReadyset}
+          />
         ) : activeTab === "topology" ? (
           <ReplicationTopology
             report={topologyReport!}
+            current={!other && !reads.error}
             connection={connection}
             selection={selection}
             onSelectChannel={(name) => selection.select(channelKey({ name } as any))}
+            onSwitchConnection={!other ? onSwitchConnection : undefined}
+            onOpenReadyset={!other ? onOpenReadyset : undefined}
+            onOpenProxySql={!other ? onOpenProxySql : undefined}
           />
         ) : (
           <DataTable id="replication.channels" label={engine === "mariadb" ? "Replication connections" : "Replication channels"} columns={columns} rows={report.channels} rowKey={channelKey} selection={selection} />
@@ -712,15 +724,17 @@ export function ReplicationView({ connection, disabled, selection, report: bound
 /** The calm state of a server with no asynchronous replication channel: why
  * (the backend's sentence without its lead, which names Cluster for a Group
  * Replication member or a Galera node), and Open Cluster for those. */
-function NotAReplica({ report, clusterKind, onOpenCluster }: { report: ReplicationReport; clusterKind: ClusterKind | null; onOpenCluster?: () => void }) {
+function NotAReplica({ report, clusterKind, onOpenCluster, onOpenReadyset }: { report: ReplicationReport; clusterKind: ClusterKind | null; onOpenCluster?: () => void; onOpenReadyset?: () => void }) {
   const text = (report.message || "").replace(/^This server is not a replica:\s*/, "");
   const reason = text ? text.charAt(0).toUpperCase() + text.slice(1) : "It has no replication channel.";
   // The backend's hint (a Galera provider, Group Replication configured or
   // its channels), or the Cluster place's own report for this connection.
   const member = !!report.cluster_hint || (report.group_replication_channels || []).length > 0 || !!clusterKind;
+  const isReadyset = !!report.readyset_hint || /Readyset/i.test(report.message || "");
   return (
     <EmptyState icon="replication" title="Not a replica"
-      action={member && onOpenCluster ? <ToolbarButton onClick={onOpenCluster}>Open Cluster</ToolbarButton> : undefined}>
+      action={isReadyset && onOpenReadyset ? <ToolbarButton primary onClick={onOpenReadyset}>Open Readyset</ToolbarButton>
+        : member && onOpenCluster ? <ToolbarButton onClick={onOpenCluster}>Open Cluster</ToolbarButton> : undefined}>
       {reason}
     </EmptyState>
   );

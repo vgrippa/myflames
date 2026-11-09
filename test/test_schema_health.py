@@ -391,8 +391,8 @@ class TestRules(unittest.TestCase):
         maria = {w['key']: w for w in schema_health.why_texts(server('mariadb'))}
         self.assertIn('a generated column or a long hash key', maria['clustering']['text'])
 
-    def test_reusable_space_is_informational_at_every_size(self):
-        # DATA_FREE alone cannot establish exhaustion or the value of rebuilding.
+    def test_fragmentation_candidates_keep_existing_statuses_at_every_size(self):
+        # Rank rebuild candidates without introducing new health thresholds.
         cases = [('small', 50 * MIB, 50 * MIB), ('share', 1000 * MIB, 105 * MIB),
                  ('old_watch', 900 * MIB, 100 * MIB), ('big', 9 * GIB, 2 * GIB),
                  ('mostly_free', 100 * MIB, 500 * MIB), ('old_problem', 3 * GIB, GIB),
@@ -412,10 +412,64 @@ class TestRules(unittest.TestCase):
                 self.assertEqual(report['thresholds'], {})
                 self.assertEqual(report['fragmentation'][0]['table'], 'user_example')
                 for item in report['fragmentation']:
-                    self.assertIn('reusable space', item['why'])
+                    self.assertIn('potentially reclaimable by rebuilding this fragmented table', item['why'])
+                    self.assertIn('half-empty pages', item['why'])
+                    self.assertIn('real fragmentation can be higher', item['why'])
                     self.assertIn('not measured', item['why'])
-                    self.assertIn('Optional maintenance', item['caveat'])
+                    self.assertIn('Rebuild candidate; review before running', item['caveat'])
                     self.assertIn('OPTIMIZE TABLE', item['fix_sql'])
+
+    def test_fragmentation_percentage_includes_indexes_and_free_in_denominator(self):
+        """100 MiB free / (200 data + 100 indexes + 100 free) = 25%, not 33%."""
+        for engine in ('mysql', 'mariadb'):
+            with self.subTest(engine=engine):
+                report = schema_health.compute_tables(server(engine), raw(
+                    [table('part', data=200 * MIB, index=100 * MIB, free=100 * MIB, options='partitioned')],
+                    spaces=[['shop/part#p#p0', 'Single'], ['shop/part#p#p1', 'Single']]))
+                entry = report['fragmentation'][0]
+                self.assertEqual(entry['free_pct'], 25.0)
+                self.assertEqual(entry['free_bytes'], 100 * MIB, 'TABLES already sums the partitions')
+                self.assertEqual((entry['partitioned'], entry['status']), (True, 'info'))
+
+    def test_fragmentation_ranks_reclaimable_bytes_above_percentage(self):
+        """A 20%-free table reclaiming 5 GiB precedes a 90%-free table reclaiming 1 GiB."""
+        rows = [table('high_percent', data=GIB // 9, free=GIB), table('more_bytes', data=20 * GIB, free=5 * GIB)]
+        for engine in ('mysql', 'mariadb'):
+            with self.subTest(engine=engine):
+                report = schema_health.compute_tables(server(engine), raw(
+                    rows, spaces=[['shop/high_percent', 'Single'], ['shop/more_bytes', 'Single']]))
+                self.assertEqual([r['table'] for r in report['fragmentation']], ['more_bytes', 'high_percent'])
+                self.assertEqual([r['free_pct'] for r in report['fragmentation']], [20.0, 90.0])
+
+    def test_rebuild_wire_statements_quote_backquotes_and_dots_as_identifiers(self):
+        """Preserve SQL fields and online guard while quoting each full identifier exactly once."""
+        for engine in ('mysql', 'mariadb'):
+            for schema, name, quoted, encoded in [
+                    ('s`name', 't`name', '`s``name`.`t``name`', 's@0060name/t@0060name'),
+                    ('s.name', 't.name', '`s.name`.`t.name`', 's@002ename/t@002ename')]:
+                with self.subTest(engine=engine, schema=schema, table=name):
+                    space = schema + '/' + name if engine == 'mysql' else encoded
+                    report = schema_health.compute_tables(server(engine), raw(
+                        [table(name, schema=schema, free=MIB)], spaces=[[space, 'Single']]))
+                    item = report['fragmentation'][0]
+                    self.assertEqual(item['fix_sql'], 'OPTIMIZE TABLE ' + quoted + ';')
+                    self.assertEqual(item['online_sql'], 'ALTER TABLE ' + quoted +
+                                     ' FORCE, ALGORITHM=INPLACE, LOCK=NONE;')
+                    self.assertIn('ALTER TABLE ... ENGINE=InnoDB rebuilds without the separate ANALYZE TABLE step',
+                                  item['caveat'])
+
+    def test_rebuild_caveats_cover_logging_locks_disk_and_analyze(self):
+        for engine in ('mysql', 'mariadb'):
+            with self.subTest(engine=engine):
+                text = schema_health.optimize_caveat(server(engine))
+                for expected in ('recreates the table and then analyzes it', 'reads and writes continue',
+                                 'metadata locks at the start and the end', 'FULLTEXT or SPATIAL index',
+                                 'blocks writes', 'free disk space about the size of data plus indexes',
+                                 'Large tables take time', 'Both statements are written to the binary log',
+                                 'OPTIMIZE NO_WRITE_TO_BINLOG TABLE (or OPTIMIZE LOCAL TABLE)',
+                                 'ALTER TABLE ... ENGINE=InnoDB has no NO_WRITE_TO_BINLOG or LOCAL clause'):
+                    self.assertIn(expected, text)
+                self.assertEqual('OPTIMIZE_LOCAL_TABLE' in text, engine == 'mysql')
 
     def test_tablespace_classification(self):
         rows = [table('fpt', free=200 * MIB), table('gen', free=300 * MIB), table('sysx', free=50 * MIB),
@@ -720,6 +774,16 @@ class TestTablesCLI(unittest.TestCase):
         self.assertIn('note: Fresh numbers', err)
         code, out, err, _, _ = self.call('mysql-8.4', '--fresh', '-q')
         self.assertEqual((code, err), (0, ''))
+
+    def test_fragmentation_rename_preserves_deprecated_cli_text(self):
+        code, out, _, _, _ = self.call('mysql-8.4', '--fresh')
+        self.assertEqual(code, 0)
+        self.assertIn('free space: 2 informational observations', out)
+        self.assertIn('FREE SPACE (InnoDB, file-per-table tablespaces)', out)
+        self.assertIn('Informational: DATA_FREE is reusable space inside the tablespace. Its amount or percentage '
+                      'alone does not establish a problem or a need to rebuild. File capacity and filesystem '
+                      'headroom are not measured by this report.', out)
+        self.assertNotIn('Prioritize fragmented', out)
 
     def test_fail_on_exit_codes(self):
         code, out, err, _, _ = self.call('mysql-8.4', '--fresh', '--fail-on', 'problem')

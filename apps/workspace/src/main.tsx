@@ -10,10 +10,12 @@ import {
   download,
   exportedAnalysis,
   number,
+  searchObjects,
   time,
   type Analysis,
   type Bundle,
   type Capture,
+  type CatalogObject,
   type Comparison,
   type Operator,
   type Plan,
@@ -21,18 +23,21 @@ import {
   type TopStatement,
   type View,
 } from "./api";
-import { Icon, ImportDialog } from "./components";
+import { Icon, ImportDialog, type IconName } from "./components";
 import { CommandPalette, type WorkspaceCommand } from "./CommandPalette";
 import { Teach } from "./Teach";
-import type { EditorState, QueryLabHandle } from "./QueryLab";
+import type { EditorState, QueryLabHandle, QueryNavigation } from "./QueryLab";
 import { Home } from "./Home";
-import { SERVER_VIEWS, WORKLOAD_VIEWS, WORKLOAD_KINDS } from "./serverViews";
+import { SERVER_VIEWS, WORKLOAD_VIEWS, WORKLOAD_KINDS, ALL_SERVER_VIEWS } from "./serverViews";
 import { lazyComponent, preloadWhenIdle } from "./lazy";
 import { connectionKey, connectionLabel, type Bound } from "./binding";
 import { refreshSavedConnections, useSavedConnections } from "./savedConnections";
+import { showCreateSql } from "./sqlHighlight";
+import { useSchemaCatalog } from "./PerfShared";
 import { NOT_A_REPLICA, replicationNav, type ReplicationReport, type SkipLoop } from "./opsApi";
 import { clusterNav, NOT_A_CLUSTER, type ClusterFailure, type ClusterReport } from "./clusterApi";
 import { NOT_A_PROXYSQL, proxySqlNav, type ProxySqlFailure, type ProxySqlReport } from "./proxysqlApi";
+import { NOT_A_READYSET, readysetNav, type ReadysetFailure, type ReadysetReport } from "./readysetApi";
 import { NavMarker, WindowStatusBar, WindowStatusProvider } from "./kit";
 import { MAC, shortcut } from "./platform";
 import { ViewOnScreenContext } from "./viewOnScreen";
@@ -56,10 +61,8 @@ import { Checkbox, ActionButton, ExportMenu, ActionStatus, useAction, closePopov
 import { changeExact, changeText, matchText, pairTitle, severityText, statusText } from "./compareText";
 import {
   defaultLab,
-  hasContent,
   loadSession,
   normalizeLab,
-  relativeTime,
   sameLab,
   serializePlans,
   serializeSession,
@@ -74,7 +77,7 @@ import {
   type SlowState,
 } from "./session";
 import example from "./example.json";
-import logo from "../../../docs/brand/myflames-icon-v3-128.png";
+import logo from "../../../docs/brand/myflames-app-logo.png";
 // Places and views that are not on the first screen load their chunk when
 // they first mount (lazy.tsx); Home, the sidebar and the shell stay here.
 // The Query editor mounts at startup, hidden; its chunk loads beside the
@@ -87,6 +90,8 @@ const Server = lazyComponent(() => import("./Server").then((m) => m.Server));
 const ReplicationPlace = lazyComponent(() => import("./ReplicationPlace").then((m) => m.ReplicationPlace));
 const ClusterPlace = lazyComponent(() => import("./ClusterPlace").then((m) => m.ClusterPlace));
 const ProxySqlPlace = lazyComponent(() => import("./ProxySqlPlace").then((m) => m.ProxySqlPlace));
+const ReadysetPlace = lazyComponent(() => import("./ReadysetPlace").then((m) => m.ReadysetPlace));
+const FilesPlace = lazyComponent(() => import("./FilesPlace").then((m) => m.FilesPlace));
 // Query digest (in the style of pt-query-digest) is a place of its own in the
 // SQL workspace group, after the Query editor; its row actions open the editor.
 const QueryDigestView = lazyComponent(() => import("./QueryDigest").then((m) => m.QueryDigestView));
@@ -118,8 +123,8 @@ const metrics: [string, string][] = [
 // in either direction; home and server are new. Each maps to one place, except
 // audit: the Audit log is local to this computer and opens from Settings, so
 // no place is "you are here" while it is on screen.
-type Mode = "home" | "inspect" | "compare" | "query" | "digest" | "diagram" | "schema" | "server" | "workload" | "replication" | "cluster" | "proxysql" | "tuning" | "library" | "teach" | "audit";
-const modes: Mode[] = ["home", "inspect", "compare", "query", "digest", "diagram", "schema", "server", "workload", "replication", "cluster", "proxysql", "tuning", "library", "teach", "audit"];
+type Mode = "home" | "inspect" | "compare" | "query" | "digest" | "diagram" | "schema" | "server" | "workload" | "replication" | "cluster" | "proxysql" | "readyset" | "tuning" | "files" | "library" | "teach" | "audit";
+const modes: Mode[] = ["home", "inspect", "compare", "query", "digest", "diagram", "schema", "server", "workload", "replication", "cluster", "proxysql", "readyset", "tuning", "files", "library", "teach", "audit"];
 function placeOf(mode: Mode): Place | null {
   switch (mode) {
     case "audit":
@@ -146,12 +151,53 @@ const PLACE_MODE: Record<Exclude<Place, "plans">, Mode> = {
   replication: "replication",
   cluster: "cluster",
   proxysql: "proxysql",
+  readyset: "readyset",
   tuning: "tuning",
+  files: "files",
   investigations: "library",
   learn: "teach",
 };
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   !!v && typeof v === "object" && !Array.isArray(v);
+/** One stop in the window's navigation history (Back and Forward, the cross-link
+ * chip, the palette's Recent views). In-memory only. */
+type NavEntry = {
+  mode: Mode;
+  /** Document/object identities, never SQL or results. */
+  selection: { query?: QueryNavigation; plan?: string; compare?: [string, string] };
+  /** Explicit cross-links are separate stops even within the same place. */
+  stop: number;
+  /** The Server or Workload view on the stop (null elsewhere). */
+  view: ServerKind | null;
+  /** connectionKey of the connection the stop belonged to ("" without one). */
+  connection: string;
+  connectionName: string;
+  label: string;
+  icon: IconName;
+};
+/** The name and glyph of one history stop: the place, and for Server and
+ * Workload the view on it. */
+function navEntryLabel(mode: Mode, view: ServerKind | null): { label: string; icon: IconName } {
+  if ((mode === "server" || mode === "workload") && view) {
+    const found = ALL_SERVER_VIEWS.find((v) => v.id === view);
+    const placeLabel = mode === "server" ? "Server" : "Workload";
+    if (found) return { label: `${placeLabel} · ${found.label}`, icon: found.icon };
+    return { label: placeLabel, icon: mode === "server" ? "server" : "statements" };
+  }
+  if (mode === "compare") return { label: "Plans · Compare", icon: "compare" };
+  const place = placeOf(mode);
+  const found = place ? PLACES.find((p) => p.key === place) : null;
+  return { label: found?.label || "Audit log", icon: found?.icon || "audit" };
+}
+/** Object kinds in the palette's search results: one glyph and one noun each. */
+const OBJECT_ICONS: Record<string, IconName> = {
+  table: "table", view: "view", "system view": "view", sequence: "table",
+  procedure: "query", function: "query", trigger: "run", event: "history", schema: "database",
+};
+const OBJECT_GROUP_LABELS: Record<string, string> = {
+  table: "Table", view: "View", "system view": "System view", sequence: "Sequence",
+  procedure: "Procedure", function: "Function", trigger: "Trigger", event: "Event",
+};
 /** The analysis request limit (ui.py MAX_BODY), less room for framing. */
 const ANALYZE_BUDGET = 12 * 1024 * 1024 - 64 * 1024;
 const utf8 = new TextEncoder();
@@ -265,6 +311,11 @@ function App() {
   const exporting = exportAction.pending;
   const exportRetry = useRef<(() => void) | null>(null);
   const [search, setSearch] = useState("");
+  // The plan header's Misestimates chip: which operator the chart should
+  // bring into view (n counts presses) and the announcement of the last one.
+  const [reveal, setReveal] = useState({ id: "", n: 0 });
+  const [misestimateNote, setMisestimateNote] = useState<ReactNode>("");
+  const [misestimateNotShown, setMisestimateNotShown] = useState(false);
   const [beforeId, setBeforeId] = useState("");
   const [afterId, setAfterId] = useState("");
   const before = plans.find((p) => p.id === beforeId),
@@ -342,6 +393,20 @@ function App() {
   );
   const failProxySql = useCallback(
     (key: string, message: string) => setProxyShared((s) => {
+      const report = s.reset === resetKeyRef.current ? s.report : null;
+      return { reset: resetKeyRef.current, report, failure: { key, message, over: report } };
+    }),
+    [],
+  );
+  const [readysetShared, setReadysetShared] = useState<{ reset: number; report: Bound<ReadysetReport> | null; failure?: ReadysetFailure }>({ reset: 0, report: null });
+  const readysetReport = readysetShared.reset === resetKey ? readysetShared.report : null;
+  const readysetFailure = readysetShared.reset === resetKey ? readysetShared.failure || null : null;
+  const shareReadyset = useCallback(
+    (report: Bound<ReadysetReport>) => setReadysetShared({ reset: resetKeyRef.current, report }),
+    [],
+  );
+  const failReadyset = useCallback(
+    (key: string, message: string) => setReadysetShared((s) => {
       const report = s.reset === resetKeyRef.current ? s.report : null;
       return { reset: resetKeyRef.current, report, failure: { key, message, over: report } };
     }),
@@ -923,6 +988,13 @@ function App() {
     setServerNavigation(undefined);
     setServerLink(null);
     setInstrumentsLink(null);
+    navHistory.current = { entries: [], index: -1 };
+    traversing.current = null;
+    observedNav.current = "";
+    pendingObjectLink.current = null;
+    pendingServerView.current = null;
+    setLinkBack(null);
+    setNavRevision((v) => v + 1);
     setError("");
     setNotice("");
   }
@@ -933,7 +1005,7 @@ function App() {
    */
   async function applySession(
     raw: unknown,
-    savedAt: string,
+    _savedAt: string,
     reason: "startup" | "conflict",
   ) {
     const state = isRecord(raw) ? raw : {};
@@ -1118,6 +1190,13 @@ function App() {
     setServerNavigation(undefined);
     setServerLink(null);
     setInstrumentsLink(null);
+    navHistory.current = { entries: [], index: -1 };
+    traversing.current = null;
+    observedNav.current = "";
+    pendingObjectLink.current = null;
+    pendingServerView.current = null;
+    setLinkBack(null);
+    setNavRevision((v) => v + 1);
     const snapshotText = serializeSession(
       {
         mode: nextMode,
@@ -1135,7 +1214,6 @@ function App() {
       },
       serializePlans([...restoredPlans, ...kept]),
     );
-    const restoredState = JSON.parse(snapshotText);
     if (reason === "conflict")
       setRestored({
         text: [
@@ -1144,14 +1222,9 @@ function App() {
         ].join(" "),
         fresh: false,
       });
-    else if (hasContent(restoredState) || notes.length)
-      setRestored({
-        text: [
-          `Restored your workspace from ${relativeTime(savedAt)}.`,
-          ...notes,
-        ].join(" "),
-        fresh: true,
-      });
+    else if (notes.length)
+      setRestored({ text: notes.join(" "), fresh: false });
+    else setRestored(null);
     return snapshotText;
   }
   async function startFresh(backup: boolean) {
@@ -1358,6 +1431,34 @@ function App() {
     if (!q) return ops;
     return ops.filter((n) => `${n.label} ${JSON.stringify(n.details)}`.toLowerCase().includes(q));
   }, [active?.operators, search]);
+  /** Operators the parser flags for a row misestimate (chart data), worst
+   * first, then in plan order. The plan header's chip steps through them. */
+  const misestimated = useMemo(() => (active?.chart_data?.nodes || [])
+    .flatMap((node, order) => node.misestimate ? [{ id: node.id, label: node.short_label, mark: node.misestimate, order }] : [])
+    .sort((a, b) => b.mark.factor - a.mark.factor || a.order - b.order), [active?.chart_data]);
+  useEffect(() => {
+    setMisestimateNote("");
+    setMisestimateNotShown(false);
+  }, [activeId, view]);
+  useEffect(() => {
+    if (selectedId === reveal.id) return;
+    setMisestimateNote("");
+    setMisestimateNotShown(false);
+  }, [selectedId, reveal.id]);
+  /** Select the next (or previous) misestimated operator and bring it into
+   * view; keyboard focus stays on the chip so it can be pressed again. */
+  function cycleMisestimate(step: number) {
+    if (!misestimated.length) return;
+    const at = misestimated.findIndex((item) => item.id === selectedId);
+    const index = at === -1 ? (step > 0 ? 0 : misestimated.length - 1)
+      : (at + step + misestimated.length) % misestimated.length;
+    const target = misestimated[index];
+    setSearch("");
+    selectOperator(target.id);
+    setReveal((current) => ({ id: target.id, n: current.n + 1 }));
+    setMisestimateNotShown(false);
+    setMisestimateNote(<>Misestimate {index + 1} of {misestimated.length}: <bdi>{target.label}</bdi>, <bdi>{target.mark.label}</bdi></>);
+  }
   const place = placeOf(mode);
   const placeLabel = place ? PLACES.find((item) => item.key === place)!.label : "Audit log";
   const activeConnection: ActiveConnection = {
@@ -1396,22 +1497,182 @@ function App() {
     [labState.profile_id, labState.connection, activePassword, safety.type, safety.read_only, safety.endpointMatches, safety.known],
   );
   const [serverNavigation, setServerNavigation] = useState<{ view: ServerKind; n: number } | undefined>(undefined);
+  // Navigation history (Back/Forward, the cross-link chip, the palette's
+  // Recent views): one entry per settled place or view, in-memory only.
+  const navHistory = useRef<{ entries: NavEntry[]; index: number }>({ entries: [], index: -1 });
+  const [navRevision, setNavRevision] = useState(0);
+  // A Server/Workload view the shell asked for but Server has not reported
+  // yet (slow.kind lags one render): the transition is not a history stop.
+  const pendingServerView = useRef<ServerKind | null>(null);
+  // The cross-link chip in the top bar: "← <previous view>", back on click.
+  const [linkBack, setLinkBack] = useState<NavEntry | null>(null);
+  const [navStop, setNavStop] = useState(0);
+  const nextNavStop = useRef(0);
+  const traversing = useRef<{ entry: NavEntry; waiting: boolean; connection: string } | null>(null);
+  // Actual UI state last observed, independent of an entry's historical
+  // connection. Traversal never changes the connection in use.
+  const observedNav = useRef("");
+  const pendingObjectLink = useRef<{ connection: string } | null>(null);
+  const lastServerView = useRef<ServerKind>("health");
+  const lastWorkloadView = useRef<ServerKind>("top");
+  if (WORKLOAD_KINDS.includes(labState.slow.kind)) lastWorkloadView.current = labState.slow.kind;
+  else if (!["tuning", "report", "replication", "cluster", "diagram"].includes(labState.slow.kind))
+    lastServerView.current = labState.slow.kind;
+  const serverViewNow: ServerKind | null = mode === "server"
+    ? (WORKLOAD_KINDS.includes(labState.slow.kind) ? lastServerView.current : labState.slow.kind)
+    : mode === "workload"
+      ? (WORKLOAD_KINDS.includes(labState.slow.kind) ? labState.slow.kind : lastWorkloadView.current)
+      : null;
+  const navKey = connectionKey(request);
+  const navStateRef = useRef({ key: "", name: "", label: "" });
+  navStateRef.current = { key: navKey, name: connectionLabel(request), label: navEntryLabel(mode, serverViewNow).label };
+  function navSelection(): NavEntry["selection"] {
+    if (mode === "query") return { query: labRef.current?.navigationSelection() || { tabId: labState.tab_id, reveal: null } };
+    if (mode === "inspect") return { plan: activeId };
+    if (mode === "compare") return { compare: [beforeId, afterId] };
+    return {};
+  }
+  useEffect(() => {
+    if (!ready) return;
+    if (pendingObjectLink.current) {
+      if (pendingObjectLink.current.connection === navKey) return;
+      pendingObjectLink.current = null;
+    }
+    if (mode !== "server" && mode !== "workload") pendingServerView.current = null;
+    else if (pendingServerView.current) {
+      if (serverViewNow === pendingServerView.current) pendingServerView.current = null;
+      else return;
+    }
+    const selection = navSelection();
+    const signature = JSON.stringify([mode, serverViewNow, navKey, selection, navStop]);
+    if (traversing.current && traversing.current.connection !== navKey) traversing.current = null;
+    const traversal = traversing.current;
+    if (traversal) {
+      // Child state can settle after the shell. Hold the cursor until the
+      // destination is restored, including a same-place query tab change.
+      if (traversal.waiting || mode !== traversal.entry.mode || serverViewNow !== traversal.entry.view ||
+          navStop !== traversal.entry.stop || JSON.stringify(selection) !== JSON.stringify(traversal.entry.selection)) return;
+      traversing.current = null;
+      observedNav.current = signature;
+      return;
+    }
+    if (observedNav.current === signature) return;
+    observedNav.current = signature;
+    const h = navHistory.current;
+    const { label, icon } = navEntryLabel(mode, serverViewNow);
+    h.entries = h.entries.slice(0, h.index + 1);
+    h.entries.push({ mode, view: serverViewNow, selection, stop: navStop, connection: navKey,
+      connectionName: connectionLabel(connectedRequest.current), label, icon });
+    if (h.entries.length > 100) h.entries.shift();
+    h.index = h.entries.length - 1;
+    setNavRevision((v) => v + 1);
+  }, [ready, mode, serverViewNow, navKey, labState.tab_id, activeId, beforeId, afterId, navStop, navRevision]);
+  /** Capture the origin itself, not a relative Back step that can change
+   * after another tab or cross-link is opened. */
+  function linkOrigin() {
+    traversing.current = null;
+    return navHistory.current.entries[navHistory.current.index] || null;
+  }
+  function finishLink(origin: NavEntry | null) {
+    setNavStop(++nextNavStop.current);
+    setLinkBack(origin);
+  }
+  function applyNavEntry(entry: NavEntry, index: number) {
+    pendingObjectLink.current = null;
+    const h = navHistory.current;
+    // A retained chip can outlive the 100-entry cap. Restore its captured
+    // origin without treating an unrelated predecessor as the destination.
+    if (index < 0) {
+      h.entries = [...h.entries.slice(0, h.index + 1), entry].slice(-100);
+      index = h.entries.length - 1;
+    }
+    h.index = index;
+    const target = { ...entry, selection: { ...entry.selection } };
+    const traversal = { entry: target, waiting: !!target.selection.query, connection: navStateRef.current.key };
+    traversing.current = traversal;
+    setNavStop(entry.stop);
+    setNavRevision((v) => v + 1);
+    setLinkBack(null);
+    if (entry.mode === "inspect" || entry.mode === "compare") setMode(entry.mode);
+    else if (entry.mode === "audit") { setAuditFocus(""); setMode("audit"); }
+    else {
+      const place = placeOf(entry.mode);
+      if (place) go(place, true);
+    }
+    if (target.selection.query) withLab((lab) => {
+      if (traversing.current !== traversal) return;
+      target.selection.query = lab.restoreNavigation(target.selection.query!);
+      traversal.waiting = false;
+      setNavRevision((v) => v + 1);
+    });
+    if (target.selection.plan !== undefined) {
+      target.selection.plan = plans.some((p) => p.id === target.selection.plan) ? target.selection.plan : activeId;
+      setActiveId(target.selection.plan);
+    }
+    if (target.selection.compare) {
+      target.selection.compare = target.selection.compare.map((id) => plans.some((p) => p.id === id) ? id : "") as [string, string];
+      setBeforeId(target.selection.compare[0]);
+      setAfterId(target.selection.compare[1]);
+    }
+    if ((entry.mode === "server" || entry.mode === "workload") && entry.view) {
+      pendingServerView.current = entry.view;
+      setServerNavigation((n) => ({ view: entry.view as ServerKind, n: (n?.n || 0) + 1 }));
+    }
+    const now = navStateRef.current;
+    if (entry.connection && entry.connection !== now.key)
+      setNotice(`${entry.label} was open on ${entry.connectionName}; this window is on ${now.name}. Nothing was switched: views read the connection in use.`);
+  }
+  function navMove(dir: -1 | 1) {
+    const h = navHistory.current;
+    const target = h.entries[h.index + dir];
+    if (!target) return;
+    applyNavEntry(target, h.index + dir);
+  }
+  const applyNavEntryRef = useRef(applyNavEntry);
+  applyNavEntryRef.current = applyNavEntry;
+  const navMoveRef = useRef(navMove);
+  navMoveRef.current = navMove;
+  // Back/Forward through the window's views: ⌘[ and ⌘]; Alt+Left/Right on
+  // Windows and Linux. An open dialog (the palette, a sheet) keeps its keys.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      let dir: -1 | 0 | 1 = 0;
+      if ((e.metaKey || e.ctrlKey) && e.key === "[") dir = -1;
+      else if ((e.metaKey || e.ctrlKey) && e.key === "]") dir = 1;
+      else if (!MAC && e.altKey && e.key === "ArrowLeft") dir = -1;
+      else if (!MAC && e.altKey && e.key === "ArrowRight") dir = 1;
+      if (!dir || document.querySelector("dialog[open]")) return;
+      e.preventDefault();
+      navMoveRef.current(dir);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   // The Cluster item names the state of the connection in use once the place
   // or Refresh all has read it: muted when it is not part of a cluster (still
   // focusable; the place explains), otherwise the cluster's status. Before
   // the first read it looks like any other place.
   const isProxyHere = proxyReport?.key === connectionKey(request) && proxyReport.report.is_proxysql;
-  const shownClusterReport = isProxyHere && clusterReport?.key !== connectionKey(request) ? null : clusterReport;
+  const isReadysetHere = readysetReport?.key === connectionKey(request) && readysetReport.report.is_readyset;
+  const shownClusterReport = (isProxyHere || isReadysetHere) && clusterReport?.key !== connectionKey(request) ? null : clusterReport;
   const clusterState = clusterNav(shownClusterReport, connectionKey(request));
-  const clusterMuted = clusterState.state === "none" || isProxyHere;
+  const clusterMuted = clusterState.state === "none" || isProxyHere || isReadysetHere;
   const proxyNav = proxySqlNav(proxyReport, connectionKey(request));
-  const proxyMuted = proxyNav === "none";
+  const proxyMuted = proxyNav === "none" || isReadysetHere;
   const proxyNow = proxyNav === "proxysql" && proxyReport && proxyReport.key === connectionKey(request) ? proxyReport.report : null;
   const proxyIssues = proxyNow && (proxyNow.status === "problem" || proxyNow.status === "watch") ? proxyNow.status_why.length : 0;
   const proxyBadge = !proxyNow ? null
     : proxyIssues > 0
       ? <NavMarker compact tone={proxyNow.status} count={proxyIssues} countTone={proxyNow.status === "problem" ? "danger" : "warn"} text={`ProxySQL ${proxyNow.status === "problem" ? "problem" : "to watch"}, ${proxyIssues} ${proxyIssues === 1 ? "issue" : "issues"}`} />
       : <NavMarker compact tone={proxyNow.status === "unknown" ? "unknown" : proxyNow.status} text={proxyNow.status === "ok" ? "ProxySQL OK" : proxyNow.status === "unknown" ? "ProxySQL not judged" : `ProxySQL ${proxyNow.status === "problem" ? "problem" : "to watch"}`} />;
+  const readysetNavState = readysetNav(readysetReport, connectionKey(request));
+  const readysetMuted = readysetNavState === "none" || isProxyHere;
+  const readysetNow = (readysetNavState === "ok" || readysetNavState === "watch" || readysetNavState === "problem" || readysetNavState === "unknown") && readysetReport && readysetReport.key === connectionKey(request) ? readysetReport.report : null;
+  const readysetIssues = readysetNow && (readysetNow.status === "problem" || readysetNow.status === "watch") ? readysetNow.status_why.length : 0;
+  const readysetBadge = !readysetNow ? null
+    : readysetIssues > 0
+      ? <NavMarker compact tone={readysetNow.status} count={readysetIssues} countTone={readysetNow.status === "problem" ? "danger" : "warn"} text={`Readyset ${readysetNow.status === "problem" ? "problem" : "to watch"}, ${readysetIssues} ${readysetIssues === 1 ? "issue" : "issues"}`} />
+      : <NavMarker compact tone={readysetNow.status === "unknown" ? "unknown" : readysetNow.status} text={readysetNow.status === "ok" ? "Readyset OK" : readysetNow.status === "unknown" ? "Readyset not judged" : `Readyset ${readysetNow.status === "problem" ? "problem" : "to watch"}`} />;
   const clusterBadge = clusterState.state !== "cluster" ? null
     : clusterState.status === "problem" && clusterState.problems > 0
       ? <NavMarker compact tone="problem" count={clusterState.problems} countTone="danger" text={clusterState.text} />
@@ -1422,14 +1683,14 @@ function App() {
   // replica (a neutral state; Group Replication's own channels do not count),
   // Unknown only when the status could not be read.
   const replicationState = replicationNav(replicationReport, connectionKey(request));
-  const replicationMuted = replicationState.state === "none";
+  const replicationMuted = replicationState.state === "none" || isReadysetHere;
   const replicationBadge = replicationState.state !== "replica" ? null
     : replicationState.failed > 0
       ? <NavMarker compact tone="problem" count={replicationState.failed} countTone="danger" text={replicationState.text} />
       : <NavMarker compact tone={replicationState.tone} text={replicationState.text} />;
   // The places that send to the connection in use (the footer names its
   // write safety there, and only there).
-  const connectionPlace = mode === "query" || mode === "digest" || mode === "diagram" || mode === "schema" || mode === "server" || mode === "workload" || mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "tuning";
+  const connectionPlace = mode === "query" || mode === "digest" || mode === "diagram" || mode === "schema" || mode === "server" || mode === "workload" || mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "readyset" || mode === "tuning";
   // Server renders Server, Workload, Tuning and Database diagram. While
   // another place is on screen it keeps the one shown last, so leaving it
   // never swaps (and mounts) a different view in the hidden place.
@@ -1442,18 +1703,24 @@ function App() {
   // (views read on open only while on screen, viewOnScreen.ts). A restored
   // skip loop mounts both at once so its status is found again (that status
   // reads no database). Start fresh and reopening a snapshot start over.
-  const visited = useRef({ key: resetKey, server: false, replication: false, cluster: false, proxysql: false, digest: false, schema: false });
-  if (visited.current.key !== resetKey) visited.current = { key: resetKey, server: false, replication: false, cluster: false, proxysql: false, digest: false, schema: false };
+  const visited = useRef({ key: resetKey, server: false, replication: false, cluster: false, proxysql: false, readyset: false, files: false, digest: false, schema: false });
+  if (visited.current.key !== resetKey) visited.current = { key: resetKey, server: false, replication: false, cluster: false, proxysql: false, readyset: false, files: false, digest: false, schema: false };
   if (serverOnScreen) visited.current.server = true;
   if (ready && mode === "replication") visited.current.replication = true;
   if (ready && mode === "cluster") visited.current.cluster = true;
   if (ready && mode === "proxysql") visited.current.proxysql = true;
+  if (ready && mode === "readyset") visited.current.readyset = true;
+  // Files stays mounted after its first visit too, so a running transfer
+  // and the folders on screen survive a trip to another place.
+  if (ready && mode === "files") visited.current.files = true;
   if (ready && mode === "digest") visited.current.digest = true;
   if (ready && mode === "schema") visited.current.schema = true;
   const mountDigest = visited.current.digest;
   const mountSchema = visited.current.schema;
   const mountCluster = visited.current.cluster;
   const mountProxySql = visited.current.proxysql;
+  const mountReadyset = visited.current.readyset;
+  const mountFiles = visited.current.files;
   const restoredLoop = labInitial?.slow?.replication_loop_active === true;
   const mountServer = visited.current.server || restoredLoop;
   const mountReplication = visited.current.replication || restoredLoop;
@@ -1461,23 +1728,29 @@ function App() {
   // (Server, Workload and Tuning, Replication, the Plans chart) in idle time,
   // so their first visit does not wait. Nothing mounts or reads a server.
   useEffect(() => {
-    if (ready) preloadWhenIdle([Server, ReplicationPlace, ClusterPlace, ProxySqlPlace, QueryDigestView, SchemaVersionsPlace, PlanChart, ContextPanel]);
+    if (ready) preloadWhenIdle([Server, ReplicationPlace, ClusterPlace, ProxySqlPlace, ReadysetPlace, FilesPlace, QueryDigestView, SchemaVersionsPlace, PlanChart, ContextPanel]);
   }, [ready]);
   // Replication's and Query digest's "How to turn it on" open Server > Instruments at that row.
   const [instrumentsLink, setInstrumentsLink] = useState<{ row: string; n: number } | null>(null);
   const openInstrumentsRow = useCallback((row: string) => {
+    const back = linkOrigin();
     setInstrumentsLink((l) => ({ row, n: (l?.n || 0) + 1 }));
     setMode("server");
+    pendingServerView.current = "instruments";
+    finishLink(back);
     setError("");
     setNotice("");
   }, []);
 
-  function go(next: Place) {
+  function go(next: Place, restoring = false) {
+    if (!restoring) traversing.current = null;
+    pendingObjectLink.current = null;
     if (next === "learn") {
       setLesson("");
       setReturnToPlan(false);
     }
     setMode(next === "plans" ? plansView : PLACE_MODE[next]);
+    setLinkBack(null);
     setError("");
     setNotice("");
     setRestored(null);
@@ -1498,7 +1771,12 @@ function App() {
   const openAuditRef = useRef(openAuditLog);
   openAuditRef.current = openAuditLog;
   useEffect(() => {
-    const open = (e: Event) => { openAuditRef.current(); setAuditFocus(String((e as CustomEvent).detail || "")); };
+    const open = (e: Event) => {
+      const back = linkOrigin();
+      openAuditRef.current();
+      setAuditFocus(String((e as CustomEvent).detail || ""));
+      finishLink(back);
+    };
     window.addEventListener("myflames-open-audit", open);
     return () => window.removeEventListener("myflames-open-audit", open);
   }, []);
@@ -1537,15 +1815,20 @@ function App() {
     n: number;
   } | null>(null);
   const openServerTable = useCallback((view: "indexes" | "tables", schema: string, table: string, from: string) => {
+    const back = linkOrigin();
     setServerLink((l) => ({ view, schema, table, from, n: (l?.n || 0) + 1 }));
     setMode("server");
+    pendingServerView.current = view;
+    finishLink(back);
     setError("");
     setNotice("");
   }, []);
   const openDigest = useCallback(
     (row: TopStatement, rank: number, action: DigestAction, expect?: string) => {
+      const back = linkOrigin();
       withLab((lab) => lab.openDigest(row, rank, action, expect));
       setMode("query");
+      finishLink(back);
       setError("");
       setNotice("");
     },
@@ -1610,7 +1893,7 @@ function App() {
     return () => { appear.disconnect(); observer?.disconnect(); };
   }, [ready, mode, resetKey]);
   const statusScope = mode === "query" ? `query:${connectionKey(request)}:${labState.tab_id}`
-    : (mode === "digest" || mode === "diagram" || mode === "schema" || mode === "server" || mode === "workload" || mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "tuning") ? `${mode}:${connectionKey(request)}` : mode === "compare" ? `compare:${beforeId}:${afterId}` : `plans:${activeId}`;
+    : (mode === "digest" || mode === "diagram" || mode === "schema" || mode === "server" || mode === "workload" || mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "readyset" || mode === "tuning") ? `${mode}:${connectionKey(request)}` : mode === "compare" ? `compare:${beforeId}:${afterId}` : `plans:${activeId}`;
   const plansStatus = mode === "inspect" || mode === "compare";
   const connectedRequest = useRef(request);
   connectedRequest.current = request;
@@ -1635,6 +1918,7 @@ function App() {
     });
   }, []);
   function chooseServerView(viewId: ServerKind) {
+    traversing.current = null;
     // Database diagram is a place of its own now: an old route to it opens it.
     if (viewId === "diagram") {
       go("diagram");
@@ -1645,6 +1929,7 @@ function App() {
     } else {
       if (mode !== "server") go("server");
     }
+    pendingServerView.current = viewId;
     setServerNavigation((n) => ({ view: viewId, n: (n?.n || 0) + 1 }));
   }
 
@@ -1659,6 +1944,110 @@ function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+  // ⌘K: recent views lead the empty palette; from two characters the cached
+  // schema catalog answers first, then one bounded server search adds objects.
+  const [paletteQuery, setPaletteQuery] = useState("");
+  useEffect(() => {
+    if (!commandPaletteOpen) setPaletteQuery("");
+  }, [commandPaletteOpen]);
+  const paletteConnected = !!(request.host || request.profile_id);
+  const objectCatalog = useSchemaCatalog(request, commandPaletteOpen && paletteConnected && paletteQuery.trim().length >= 2);
+  const [objectSearch, setObjectSearch] = useState<{ key: string; text: string; searching: boolean; error: string; matches: CatalogObject[]; truncated: boolean }>(
+    { key: "", text: "", searching: false, error: "", matches: [], truncated: false });
+  const paletteSearchRef = useRef({ key: navKey, text: "", open: false });
+  paletteSearchRef.current = { key: navKey, text: paletteQuery.trim(), open: commandPaletteOpen };
+  useEffect(() => {
+    const text = paletteQuery.trim();
+    if (!commandPaletteOpen || !paletteConnected || text.length < 2) {
+      setObjectSearch({ key: navKey, text: "", searching: false, error: "", matches: [], truncated: false });
+      return;
+    }
+    const controller = new AbortController();
+    const from = { ...connectedRequest.current };
+    const current = () => !controller.signal.aborted && paletteSearchRef.current.open &&
+      paletteSearchRef.current.key === navKey && paletteSearchRef.current.text === text;
+    setObjectSearch({ key: navKey, text, searching: true, error: "", matches: [], truncated: false });
+    const timer = window.setTimeout(() => {
+      if (!current()) return;
+      searchObjects(from, text, controller.signal).then(
+        (result) => { if (current()) setObjectSearch({ key: navKey, text, searching: false, error: "", matches: result.objects, truncated: result.truncated }); },
+        (e: unknown) => { if (current()) setObjectSearch({ key: navKey, text, searching: false, error: message(e), matches: [], truncated: false }); },
+      );
+    }, 250);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [paletteQuery, commandPaletteOpen, paletteConnected, navKey]);
+  const objectSearchHere = objectSearch.key === navKey && objectSearch.text === paletteQuery.trim();
+  /** A palette object: a table or view is revealed in the Query editor's
+   * schema browser; a routine, trigger or event opens its SHOW CREATE in a
+   * new tab (the schema browser's Show CREATE path), selected, not run. */
+  function openObject(o: CatalogObject | { kind: "schema"; schema: string; name: string }, from: string) {
+    // The palette defers selection until after it closes; the lazy editor
+    // can defer it again. Check both boundaries against the active identity.
+    if (navStateRef.current.key !== from) return;
+    const back = linkOrigin();
+    go("query");
+    const pending = { connection: from };
+    pendingObjectLink.current = pending;
+    withLab((lab) => {
+      if (pendingObjectLink.current !== pending) return;
+      pendingObjectLink.current = null;
+      if (navStateRef.current.key !== from) {
+        setNavRevision((v) => v + 1);
+        return;
+      }
+      const kind = o.kind;
+      if (kind === "procedure" || kind === "function" || kind === "trigger" || kind === "event")
+        lab.openSql(showCreateSql(kind, o.schema, o.name));
+      else lab.revealInSchemaBrowser(o.schema, kind === "schema" ? null : o.name);
+      finishLink(back);
+    });
+  }
+  const recentCommands = useMemo((): WorkspaceCommand[] => {
+    const h = navHistory.current;
+    const seen = new Set<string>();
+    const current = h.entries[h.index];
+    if (current) seen.add(JSON.stringify([current.mode, current.view, current.connection, current.selection]));
+    const out: WorkspaceCommand[] = [];
+    for (let i = h.entries.length - 1; i >= 0 && out.length < 5; i--) {
+      const entry = h.entries[i];
+      const key = JSON.stringify([entry.mode, entry.view, entry.connection, entry.selection]);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const at = i;
+      out.push({
+        id: `recent-${at}`, label: entry.label, group: "Recent", icon: entry.icon,
+        run: () => applyNavEntryRef.current(entry, navHistory.current.entries.indexOf(entry)),
+      });
+    }
+    return out;
+    // Rebuilt when the history moves (navRevision), not per render.
+  }, [navRevision]);
+  const objectCommands = useMemo((): WorkspaceCommand[] => {
+    const text = paletteQuery.trim().toLocaleLowerCase();
+    if (text.length < 2 || !paletteConnected) return [];
+    const out: WorkspaceCommand[] = [];
+    const seen = new Set<string>();
+    // Cached catalog first: the schemas already read for this connection.
+    for (const s of objectCatalog.catalog?.schemas || []) {
+      if (!s.name.toLocaleLowerCase().includes(text)) continue;
+      seen.add(`schema ${s.name}`);
+      out.push({
+        id: `object-schema-${s.name}`, label: s.name, group: "Database", icon: OBJECT_ICONS.schema,
+        run: () => openObject({ kind: "schema", schema: s.name, name: s.name }, navKey),
+      });
+    }
+    for (const o of objectSearchHere ? objectSearch.matches : []) {
+      const key = `${o.kind} ${o.schema} ${o.name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        id: `object-${key}`, label: `${o.schema}.${o.name}`, group: OBJECT_GROUP_LABELS[o.kind] || "Object",
+        icon: OBJECT_ICONS[o.kind] || "table",
+        run: () => openObject(o, objectSearch.key),
+      });
+    }
+    return out;
+  }, [paletteQuery, objectSearch, objectSearchHere, objectCatalog.catalog, paletteConnected, navKey]);
 
   const workspaceCommands: WorkspaceCommand[] = [
     // Places in the sidebar's order, then what belongs to one of them.
@@ -1668,7 +2057,9 @@ function App() {
     { id: "place-replication", label: "Replication", group: "Places", icon: "replication", keywords: "slave replica topology channels lag gtid", run: () => go("replication") },
     { id: "place-cluster", label: "Cluster", group: "Places", icon: "cluster", keywords: "galera percona xtradb pxc innodb cluster group replication wsrep members quorum router", run: () => go("cluster") },
     { id: "place-proxysql", label: "ProxySQL", group: "Places", icon: "proxy", keywords: "proxysql proxy hostgroups mysql_servers query rules digest connection pool admin", run: () => go("proxysql") },
+    { id: "place-readyset", label: "Readyset", group: "Places", icon: "readyset", keywords: "readyset cache shallow deep querypilot resnapshot cdc replication", run: () => go("readyset") },
     { id: "place-tuning", label: "Tuning", group: "Places", icon: "tuning", keywords: "mysql tuning mariadb tuning advisor health score optimization", run: () => go("tuning") },
+    { id: "place-files", label: "File transfer", group: "Places", icon: "files", keywords: "files sftp ssh transfer upload download scp filezilla logs dump", run: () => go("files") },
     { id: "place-query", label: "Query editor", group: "Places", icon: "query", keywords: "sql run query editor", run: () => go("query") },
     { id: "place-digest", label: "Query digest", group: "Places", icon: "analysis", keywords: "pt-query-digest digest profile statements workload slow queries", run: () => go("digest") },
     { id: "place-diagram", label: "Database diagram", group: "Places", icon: "diagram", keywords: "schema diagram er erd mermaid tables relationships foreign keys", run: () => go("diagram") },
@@ -1730,11 +2121,13 @@ function App() {
         onRemovePlan={removePlan}
         onToggleRestore={toggleRestore}
         onAuditLog={openAuditLog}
-        placeBadges={{ replication: replicationBadge, cluster: clusterBadge, proxysql: proxyBadge }}
-        placeMuted={clusterMuted || proxyMuted || replicationMuted ? {
+        onStartFresh={() => setConfirmFresh(true)}
+        placeBadges={{ replication: replicationBadge, cluster: clusterBadge, proxysql: proxyBadge, readyset: readysetBadge }}
+        placeMuted={clusterMuted || proxyMuted || readysetMuted || replicationMuted ? {
           ...(replicationMuted ? { replication: NOT_A_REPLICA } : {}),
           ...(clusterMuted ? { cluster: NOT_A_CLUSTER } : {}),
           ...(proxyMuted ? { proxysql: NOT_A_PROXYSQL } : {}),
+          ...(readysetMuted ? { readyset: NOT_A_READYSET } : {}),
         } : undefined}
       />
       <div ref={chrome} data-place={place || "audit"} className="workspace" style={{ "--place-actions-width": `${placeActionsWidth}px` } as CSSProperties}>
@@ -1749,8 +2142,15 @@ function App() {
                 document in the plan header. Replication and Tuning are one
                 view whose header already says the place name, so it stays
                 here for assistive technology only. */}
-            <strong className={mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "tuning" || mode === "digest" || mode === "diagram" || mode === "schema" ? "visually-hidden" : undefined}>{placeLabel}</strong>
+            <strong className={mode === "replication" || mode === "cluster" || mode === "proxysql" || mode === "readyset" || mode === "tuning" || mode === "digest" || mode === "diagram" || mode === "schema" ? "visually-hidden" : undefined}>{placeLabel}</strong>
           </div>
+          {linkBack && (
+            <button type="button" className="nav-back-chip" aria-label={`Back to ${linkBack.label}`}
+              title={`Back to ${linkBack.label} (${shortcut("[")})`} onClick={() => applyNavEntry(linkBack, navHistory.current.entries.indexOf(linkBack))}>
+              <Icon name="back" size={12} />
+              <span>{linkBack.label}</span>
+            </button>
+          )}
           {ready && mode === "library" && (
             <Popover label="About Investigations" className="topbar-info">
               <p>Saved collections of plans, notes, and tags on this computer.</p>
@@ -1834,7 +2234,9 @@ function App() {
             mode === "replication" ||
             mode === "cluster" ||
             mode === "proxysql" ||
+            mode === "readyset" ||
             mode === "tuning" ||
+            mode === "files" ||
             mode === "query" ||
             mode === "digest" ||
             mode === "diagram" ||
@@ -1868,60 +2270,8 @@ function App() {
           )}
           {restored && (
             <div className="notice session-notice" role="status">
-              {confirmFresh ? (
-                <>
-                  <span>
-                    {plans.length === 1
-                      ? "One plan is not in a saved investigation."
-                      : `${plans.length} plans are not in a saved investigation.`}{" "}
-                    Download a backup before starting fresh?
-                  </span>
-                  <span className="button-row">
-                    <button
-                      className="text-button"
-                      onClick={() => startFresh(true)}
-                    >
-                      Download backup and start fresh
-                    </button>
-                    <button
-                      className="text-button"
-                      onClick={() => startFresh(false)}
-                    >
-                      Start fresh without a backup
-                    </button>
-                    <button
-                      className="text-button"
-                      onClick={() => setConfirmFresh(false)}
-                    >
-                      Cancel
-                    </button>
-                  </span>
-                </>
-              ) : (
-                <>
-                  <span>{restored.text}</span>
-                  <span className="button-row">
-                    {restored.fresh && (
-                      <button
-                        className="text-button"
-                        onClick={() =>
-                          plans.length && (!savedId || dirty)
-                            ? setConfirmFresh(true)
-                            : startFresh(false)
-                        }
-                      >
-                        Start fresh
-                      </button>
-                    )}
-                    <button
-                      className="text-button"
-                      onClick={() => setRestored(null)}
-                    >
-                      Dismiss
-                    </button>
-                  </span>
-                </>
-              )}
+              <span>{restored.text}</span>
+              <button className="text-button" onClick={() => setRestored(null)}>Dismiss</button>
             </div>
           )}
           {held.length > 0 && (
@@ -2019,7 +2369,13 @@ function App() {
                 onBusyChange={setLabBusy}
                 onConnected={(via) => { if (connectionKey(via) === connectionKey(connectedRequest.current)) setConnectRevision(n => n + 1); }}
                 onCapture={capture}
+                onCompareCaptures={async (before, after) => {
+                  const left = await capture(before.capture, before.name, { open: false });
+                  const right = await capture(after.capture, after.name, { open: false });
+                  if (left && right) { setBeforeId(left.id); setAfterId(right.id); setMode("compare"); }
+                }}
                 onOpenTable={openServerTable}
+                onOpenLocks={() => chooseServerView("locks")}
                 onScreen={mode === "query"}
                 onOpenInstruments={openInstrumentsRow}
               />
@@ -2040,6 +2396,10 @@ function App() {
                   connection={request}
                   onOpenInEditor={(row, rank, from) => openDigest(row, rank, "open", from)}
                   onExplain={(row, rank, from) => openDigest(row, rank, "explain", from)}
+                  onAnalyze={(row, rank, from) => openDigest(row, rank, "analyze", from)}
+                  onOpenSql={(sql, options) => { setMode("query"); withLab(lab => lab.openSql(sql, options)); }}
+                  settings={{ timeout: labState.timeout, repeat: labState.repeat, server: `${request.host}:${request.port}` }}
+                  disabled={labBusy || batchRunning}
                   onOpenInstruments={openInstrumentsRow}
                   onOpenIndexes={(schema, table, from) => openServerTable("indexes", schema, table, from)}
                 />
@@ -2055,7 +2415,12 @@ function App() {
               <ViewOnScreenContext.Provider value={mode === "schema"}>
               <ColumnStoreContext.Provider value={columnStore}>
                 <SchemaVersionsPlace key={resetKey} connection={request} profiles={profiles}
-                  onOpenSql={(sql) => { withLab((lab) => lab.openSql(sql)); go("query"); }} />
+                  onOpenSql={(sql) => {
+                    const back = linkOrigin();
+                    withLab((lab) => lab.openSql(sql));
+                    go("query");
+                    finishLink(back);
+                  }} />
               </ColumnStoreContext.Provider>
               </ViewOnScreenContext.Provider>
             </div>
@@ -2069,9 +2434,14 @@ function App() {
                 place={serverPlace}
                 onScreen={serverOnScreen}
                 onNavigatePlace={(targetPlace, targetView) => {
+                  const back = linkOrigin();
                   go(targetPlace);
                   // Tuning, Database diagram, Replication and Cluster show their one view; Server and Workload choose theirs.
-                  if (targetPlace !== "tuning" && targetPlace !== "diagram" && targetPlace !== "replication" && targetPlace !== "cluster") setServerNavigation((n) => ({ view: targetView, n: (n?.n || 0) + 1 }));
+                  if (targetPlace !== "tuning" && targetPlace !== "diagram" && targetPlace !== "replication" && targetPlace !== "cluster") {
+                    pendingServerView.current = targetView;
+                    setServerNavigation((n) => ({ view: targetView, n: (n?.n || 0) + 1 }));
+                  }
+                  finishLink(back);
                 }}
                 navCollapsed={serverNavCollapsed}
                 onToggleNavCollapsed={toggleServerNavCollapsed}
@@ -2108,13 +2478,17 @@ function App() {
                   setLesson(key);
                 }}
                 onOpenSql={(sql, options) => {
+                  const back = linkOrigin();
                   withLab((lab) => lab.openSql(sql, options));
                   go("query");
+                  finishLink(back);
                 }}
                 onOpenInvestigation={(id) => {
+                  const back = linkOrigin();
                   setSavedRevision((n) => n + 1);
                   if (id) setSelectedInvestigationId(id);
                   go("investigations");
+                  finishLink(back);
                 }}
               />
               </ViewOnScreenContext.Provider>
@@ -2131,6 +2505,9 @@ function App() {
                   disabled={labBusy}
                   clusterKind={clusterReport?.key === connectionKey(request) && clusterReport.report.available && clusterReport.report.kind !== "none" ? clusterReport.report.kind : null}
                   onOpenCluster={() => go("cluster")}
+                  onOpenReadyset={() => go("readyset")}
+                  onOpenProxySql={() => go("proxysql")}
+                  onSwitchConnection={switchConnection}
                   onOpenInstruments={openInstrumentsRow}
                   loops={replicationLoops}
                   onLoops={setReplicationLoops}
@@ -2157,7 +2534,8 @@ function App() {
               <ColumnStoreContext.Provider value={columnStore}>
                 <ClusterPlace connection={request} disabled={labBusy} report={shownClusterReport} onReport={shareCluster}
                   failure={clusterFailure} onFailure={failCluster}
-                  onOpenProxySql={() => go("proxysql")} profiles={profiles} onSwitchConnection={switchConnection} />
+                  onOpenProxySql={() => go("proxysql")} onOpenReadyset={() => go("readyset")}
+                  profiles={profiles} onSwitchConnection={switchConnection} />
               </ColumnStoreContext.Provider>
               </ViewOnScreenContext.Provider>
               </WritePolicyContext.Provider>
@@ -2169,10 +2547,32 @@ function App() {
               <ViewOnScreenContext.Provider value={mode === "proxysql"}>
               <ColumnStoreContext.Provider value={columnStore}>
                 <ProxySqlPlace connection={request} disabled={labBusy} report={proxyReport} onReport={shareProxySql}
-                  failure={proxyFailure} onFailure={failProxySql} />
+                  failure={proxyFailure} onFailure={failProxySql}
+                  onSwitchConnection={switchConnection} onOpenReadyset={() => go("readyset")}
+                  onOpenCluster={() => go("cluster")} onOpenReplication={() => go("replication")} />
               </ColumnStoreContext.Provider>
               </ViewOnScreenContext.Provider>
               </WritePolicyContext.Provider>
+            </div>
+          )}
+          {ready && mountReadyset && (
+            <div hidden={mode !== "readyset"}>
+              <WritePolicyContext.Provider value={writePolicy}>
+              <ViewOnScreenContext.Provider value={mode === "readyset"}>
+              <ColumnStoreContext.Provider value={columnStore}>
+                <ReadysetPlace connection={request} disabled={labBusy} report={readysetReport} onReport={shareReadyset}
+                  failure={readysetFailure} onFailure={failReadyset}
+                  onOpenProxySql={() => go("proxysql")} onOpenCluster={() => go("cluster")}
+                  onOpenReplication={() => go("replication")} onOpenServer={() => go("server")}
+                  onSwitchConnection={switchConnection} />
+              </ColumnStoreContext.Provider>
+              </ViewOnScreenContext.Provider>
+              </WritePolicyContext.Provider>
+            </div>
+          )}
+          {ready && mountFiles && (
+            <div hidden={mode !== "files"}>
+              <FilesPlace profiles={profiles} />
             </div>
           )}
           {ready && mode === "library" && <Library onOpen={openBundle} openPlanCount={plans.length}
@@ -2278,6 +2678,24 @@ function App() {
                     value={String(active.analysis.warnings.length)}
                     hint={`${active.analysis.suggestions.length} suggestions to review`}
                   />
+                  {/* Where the optimizer was wrong first: each press selects
+                      the next operator whose row estimate the parser flags
+                      (worst first) and brings it into view. */}
+                  {misestimated.length > 0 && (
+                    <div className="plan-stat-chip">
+                      <dt className="visually-hidden">Misestimated operators</dt>
+                      <dd>
+                        <button type="button" className="misestimate-chip"
+                          aria-label={`Misestimates ${misestimated.length}: select the next operator whose row estimate is off`}
+                          title={`Misestimates ${misestimated.length}: operators whose actual rows are far from the optimizer's estimate. Click for the next one, Shift-click for the previous one.`}
+                          onClick={(e) => cycleMisestimate(e.shiftKey ? -1 : 1)}>
+                          <span className="misestimate-chip-mark" aria-hidden="true" />
+                          <span className="misestimate-chip-label">Misestimates</span>{" "}
+                          <strong>{misestimated.length}</strong>
+                        </button>
+                      </dd>
+                    </div>
+                  )}
                 </dl>
                 {/* The plan summary and its SQL open in place from the
                     header: one click each, no band of their own. */}
@@ -2333,6 +2751,8 @@ function App() {
                 </div>
                 <PlanExports label="Export plan" onJson={exportJson} onHtml={exportHtml} exporting={exporting} hideLiterals={hideLiterals} onHideLiterals={setHideLiterals} />
               </header>
+              <div className={misestimateNotShown ? "misestimate-status hint" : "misestimate-status visually-hidden"}
+                role="status">{misestimateNote}</div>
               <div className="exploration-layout plan-fold">
                 <section className="plan-canvas" aria-label="Execution plan">
                   <PlanChart
@@ -2353,6 +2773,12 @@ function App() {
                     }}
                     metricsTarget={metricsTarget}
                     visibleOperatorIds={visibleOps.map((op) => op.node_id)}
+                    reveal={reveal}
+                    onReveal={(id, shown) => {
+                      if (id !== selectedId || shown || view !== "bargraph") return;
+                      setMisestimateNotShown(true);
+                      setMisestimateNote("Not shown in the bar chart (no self time); open Visual Explain or the execution tree to see it");
+                    }}
                     toolbar={<>
                       <Segmented label="Chart view" className="chart-views" value={view}
                         options={views.map(([value, label]) => ({ value, label }))} onChange={setView} />
@@ -2702,6 +3128,11 @@ function App() {
           }}
         />
       )}
+      {confirmFresh && <FreshWorkspaceSheet
+        backupAvailable={!!plans.length && (!savedId || dirty)}
+        onClose={() => setConfirmFresh(false)}
+        onStart={(backup) => { void startFresh(backup); }}
+      />}
       {accountOpen && (
         <AccountPrivilegesSheet
           name={activeConnection.fields.name || connectionTarget(activeConnection.fields)}
@@ -2712,6 +3143,10 @@ function App() {
       {commandPaletteOpen && (
         <CommandPalette
           commands={workspaceCommands}
+          recent={recentCommands}
+          objects={objectCommands}
+          objectStatus={objectSearchHere ? objectSearch : { searching: paletteConnected && paletteQuery.trim().length >= 2, error: "", truncated: false }}
+          onQueryChange={setPaletteQuery}
           onClose={() => setCommandPaletteOpen(false)}
         />
       )}
@@ -2831,3 +3266,22 @@ function openWorkspace() {
 }
 window.addEventListener("hashchange", openWorkspace);
 openWorkspace();
+
+/** A deliberate workspace action, available even when nothing was restored. */
+function FreshWorkspaceSheet({ backupAvailable, onClose, onStart }: {
+  backupAvailable: boolean; onClose: () => void; onStart: (backup: boolean) => void;
+}) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  useFocusScope(dialog, { open: true, onClose });
+  return <dialog ref={dialog} className="fresh-workspace-sheet notebook-sheet" tabIndex={-1}
+    aria-labelledby="fresh-workspace-title" onCancel={(event) => { event.preventDefault(); onClose(); }}>
+    <div className="dialog-heading"><h2 id="fresh-workspace-title">Start fresh</h2></div>
+    <p>Close the open plans and query tabs and clear this workspace. Saved investigations and connections remain available.</p>
+    {backupAvailable && <p>Download a backup of your unsaved plans before starting fresh? Query tab text is not included in this backup.</p>}
+    <div className="dialog-actions sheet-actions">
+      <button type="button" className="button" onClick={onClose}>Cancel</button>
+      <button type="button" className="button" onClick={() => onStart(false)}>{backupAvailable ? "Start fresh without a backup" : "Start fresh"}</button>
+      {backupAvailable && <button type="button" className="button primary" onClick={() => onStart(true)}>Download backup and start fresh</button>}
+    </div>
+  </dialog>;
+}

@@ -195,6 +195,25 @@ def replay(view, server, clock=None, edit=None, error=None):
                       simulated_partitioning=metadata), data
 
 
+def deny_blocker_read(conn):
+    """For recordings that predate Processlist's optional blocker read
+    (locks.session_wait_edges): its lock queries answer as a privilege denial
+    and the requested-lock list as empty, the way test_sessions.replay does."""
+    from myflames.connector import ConnectorError
+    recorded_run = conn.run
+
+    def run(sql, extra_flags=None, timeout=None):
+        if 'data_lock_waits' in sql or 'INNODB_LOCK_WAITS' in sql or "SELECT 'instrument', ENABLED" in sql:
+            conn.calls.append((sql, list(extra_flags or [])))
+            raise ConnectorError('ERROR 1142: SELECT command denied')
+        if 'SELECT trx_requested_lock_id' in sql:
+            conn.calls.append((sql, list(extra_flags or [])))
+            return ''
+        return recorded_run(sql, extra_flags=extra_flags, timeout=timeout)
+    conn.run = run
+    return conn
+
+
 def assert_read_only(case, conn, tag):
     """Only SELECT and SHOW statements, each tagged and kept with --comments."""
     case.assertTrue(conn.calls, 'no SQL was sent')

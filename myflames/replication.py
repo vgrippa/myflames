@@ -446,7 +446,8 @@ def _summary():
             "lag_max_s": None}
 
 
-def read_status(conn, source_versions=False, profiles=(), open_profile=None, replica_host=None):
+def read_status(conn, source_versions=False, profiles=(), open_profile=None, replica_host=None,
+                current_profile_id=None, topology_tiers=False):
     """The ``replication-1.0`` report. Read-only.
 
     MySQL: ``SHOW REPLICA STATUS`` (``SHOW SLAVE STATUS`` before 8.0.22),
@@ -473,7 +474,30 @@ def read_status(conn, source_versions=False, profiles=(), open_profile=None, rep
     skips and the skip loop leave it off.
     """
     reader = Reader(conn, REPLICATION_TAG)
-    server = preflight(reader, EXTRA_VARIABLES)
+    try:
+        server = preflight(reader, EXTRA_VARIABLES)
+    except ConnectorError as exc:
+        if not _fatal(exc) and not denied(exc):
+            try:
+                from . import readyset
+                rs_ok, rs_ver = readyset.identify(conn)
+            except Exception:
+                rs_ok, rs_ver = False, None
+            if rs_ok:
+                return {
+                    "schema_version": SCHEMA_VERSION, "engine": "mysql", "flavor": "readyset",
+                    "server_product": "Readyset", "server_version": rs_ver, "captured_at": now(),
+                    "uptime_s": None, "available": True,
+                    "message": "This connection is a Readyset instance (%s): Readyset (myflames readyset) shows its "
+                               "upstream replication and caches." % (rs_ver or "Readyset"),
+                    "replica": False, "readyset_hint": True, "statement": "SHOW READYSET VERSION",
+                    "gtid": {}, "settings": {}, "global_skip_counter": None, "channels": [],
+                    "group_replication_channels": [], "cluster_hint": None,
+                    "capabilities": {"status": False, "performance_schema": False, "worker_timestamps": False,
+                                     "agat": False, "source_version": False},
+                    "notes": [], "summary": _summary(),
+                }
+        raise
     show_sql = status_statement(server.engine, server.version_tuple)
     report = {
         "schema_version": SCHEMA_VERSION,
@@ -523,6 +547,26 @@ def read_status(conn, source_versions=False, profiles=(), open_profile=None, rep
     rows = others
     names = [_text(row.get("Channel_Name")) for row in group]
     report["group_replication_channels"] = names
+    obs_host = replica_host if replica_host is not None else reached_host(conn)
+
+    def _attach_tiers():
+        if topology_tiers and profiles and open_profile is not None:
+            from .topology_links import discover_database_tiers
+            local_ident = {
+                "profile_host": obs_host,
+                "profile_port": getattr(conn, "port", None) or 3306,
+                "port": getattr(conn, "port", None) or 3306,
+            }
+            peers = [
+                {"host": ch["source"].get("host"), "port": ch["source"].get("port"),
+                 "server_uuid": ch["source"].get("uuid")}
+                for ch in (report.get("channels") or ())
+                if ch.get("source") and ch["source"].get("host")
+            ]
+            report["topology_tiers"] = discover_database_tiers(
+                conn, local_ident, peer_endpoints=peers, profiles=profiles, open_profile=open_profile,
+                observer_host=obs_host, current_profile_id=current_profile_id, check_footprint=False)
+
     if not rows:
         report["message"] = ("This server is not a replica: %s returned no %s%s." % (
             show_sql, "asynchronous " if group else "", "connection" if server.engine == "mariadb" else "channel"))
@@ -534,6 +578,7 @@ def read_status(conn, source_versions=False, profiles=(), open_profile=None, rep
             report["message"] += " " + GALERA_NOT_REPLICA
         elif report["cluster_hint"] == "group_replication" and not group:
             report["message"] += " " + GR_CONFIGURED_NOT_REPLICA
+        _attach_tiers()
         return report
     if group:
         report["notes"].append(GR_CHANNELS_NOTE % " and ".join(names))
@@ -581,8 +626,8 @@ def read_status(conn, source_versions=False, profiles=(), open_profile=None, rep
             "either server after that skews it, and one long transaction shows as a jump, so it is never "
             "the only lag signal." % lag_name)
     if source_versions:
-        attach_source_versions(reader, report, profiles, open_profile,
-                               replica_host if replica_host is not None else reached_host(conn))
+        attach_source_versions(reader, report, profiles, open_profile, obs_host)
+        _attach_tiers()
     return report
 
 

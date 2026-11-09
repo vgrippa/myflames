@@ -8,8 +8,8 @@ export const FONT = '-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-
 // Theme defaults also travel inside exported SVGs. Workspace tokens are mapped
 // in style.css; standalone reports use these defaults. Operator palettes are kept
 // intact, with dark ink on their light bands in either appearance.
-const LIGHT_THEME = "--mfc-canvas:#fafafa;--mfc-card:#fff;--mfc-pane:#f2f2f4;--mfc-ink:#243341;--mfc-muted:#596a79;--mfc-line:#d8e0e5;--mfc-boundary:#82858c;--mfc-focus:#007aff;--mfc-link:#0063cc;--mfc-hover:rgba(0,0,0,.04);--mfc-selected:#eaf3ff;--mfc-danger:#b42318;--mfc-edge:#8795a1;--mfc-mark-ink:#18222c;--mfc-venn:#f5f5f7;--mfc-venn-on:#b7d9ff;--mfc-venn-ring:#6e7d8c;";
-const DARK_THEME = "--mfc-canvas:#151719;--mfc-card:#25282c;--mfc-pane:#1c1e21;--mfc-ink:#ededee;--mfc-muted:#a5a9af;--mfc-line:#34383d;--mfc-boundary:#7b8592;--mfc-focus:#0a84ff;--mfc-link:#409cff;--mfc-hover:rgba(255,255,255,.06);--mfc-selected:#20354e;--mfc-danger:#ff8b82;--mfc-edge:#a0aeba;--mfc-venn:#3a3f45;--mfc-venn-on:#2d5f96;--mfc-venn-ring:#8b97a3;";
+const LIGHT_THEME = "--mfc-canvas:#fafafa;--mfc-card:#fff;--mfc-pane:#f2f2f4;--mfc-ink:#243341;--mfc-muted:#596a79;--mfc-line:#d8e0e5;--mfc-boundary:#82858c;--mfc-focus:#007aff;--mfc-link:#0063cc;--mfc-hover:rgba(0,0,0,.04);--mfc-selected:#eaf3ff;--mfc-danger:#b42318;--mfc-edge:#8795a1;--mfc-mark-ink:#18222c;--mfc-venn:#f5f5f7;--mfc-venn-on:#b7d9ff;--mfc-venn-ring:#6e7d8c;--mfc-estimate:#5b3cc4;";
+const DARK_THEME = "--mfc-canvas:#151719;--mfc-card:#25282c;--mfc-pane:#1c1e21;--mfc-ink:#ededee;--mfc-muted:#a5a9af;--mfc-line:#34383d;--mfc-boundary:#7b8592;--mfc-focus:#0a84ff;--mfc-link:#409cff;--mfc-hover:rgba(255,255,255,.06);--mfc-selected:#20354e;--mfc-danger:#ff8b82;--mfc-edge:#a0aeba;--mfc-venn:#3a3f45;--mfc-venn-on:#2d5f96;--mfc-venn-ring:#8b97a3;--mfc-estimate:#b3a4ff;";
 export const THEME_CSS = ":root{" + LIGHT_THEME + "}" +
   "@media(prefers-color-scheme:dark){:root:not([data-theme=light]){" + DARK_THEME + "}}" +
   "[data-theme=light]{" + LIGHT_THEME + "}[data-theme=dark]{" + DARK_THEME + "}" +
@@ -18,7 +18,12 @@ export const THEME_CSS = ":root{" + LIGHT_THEME + "}" +
   ":is(.mfc-tree,.mfc-bar) .mfc-rule{stroke:var(--mfc-line)}" +
   ".mfc-tree .mfc-stripe{fill:var(--mfc-hover)}" +
   ".wb-plan .wb-box{fill:var(--mfc-card);stroke:var(--mfc-boundary)}" +
-  ".wb-plan .mfc-edge{stroke:var(--mfc-edge)}.wb-plan .mfc-arrow-head{fill:var(--mfc-edge)}";
+  ".wb-plan .mfc-edge{stroke:var(--mfc-edge)}.wb-plan .mfc-arrow-head{fill:var(--mfc-edge)}" +
+  // Row-estimate marks (core/marks.ts): their own hue, never a status or
+  // search color; text at least 4.5:1 on the card and canvas in both themes.
+  ":is(.wb-plan,.mfc-tree,.mfc-bar) .mfc-mis-chip{fill:var(--mfc-card);stroke:var(--mfc-estimate)}" +
+  ":is(.wb-plan,.mfc-tree,.mfc-bar) .mfc-mis{fill:var(--mfc-estimate);font-size:11px;font-weight:600}" +
+  ".wb-plan .mfc-mis-outline{stroke:var(--mfc-estimate)}";
 
 export const WORKBENCH_CSS = [THEME_CSS,
   ".wb-plan{font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;background:var(--mfc-canvas);color:var(--mfc-ink)}",

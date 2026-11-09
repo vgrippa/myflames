@@ -170,7 +170,7 @@ export const SCENARIOS_B = [
     paths: ["/api/lifecycle/upgrade-check"], mocks: { "/api/lifecycle/upgrade-check": () => FIX.upgradeNative },
     setup: async ({ page }) => {
       await goView(page, "server", "maintenance");
-      await click(page, "Detect tools"); await pause(800);
+      await waitVisible(page, '.server-view[data-view=maintenance] [data-row-key="tool:mysqlsh"]');
       await click(page, "Upgrade check"); await pause(600);
       const value = await page.$$eval('select[aria-label="Target version"] option', (os) => os.map((o) => o.value).find((v) => /^\d/.test(v)));
       await page.select('select[aria-label="Target version"]', value);
@@ -179,17 +179,17 @@ export const SCENARIOS_B = [
     target: named("Check upgrade", ".ops-actions"),
   },
   {
-    name: "maintenance-dump-preflight", label: "Run preflight… (Dump)", owner: "Maintenance.tsx", place: "server",
+    name: "maintenance-dump-preflight", label: "Start dump… (checks first)", owner: "Maintenance.tsx", place: "server",
     paths: ["/api/lifecycle/prepare"], mocks: { "/api/lifecycle/prepare": () => FIX.dumpPlan },
     setup: async ({ page }) => {
       await goView(page, "server", "maintenance");
-      await click(page, "Detect tools"); await pause(800);
+      await waitVisible(page, '.server-view[data-view=maintenance] [data-row-key="tool:mysqlsh"]');
       await click(page, "Dump"); await pause(600);
       const input = await waitVisible(page, ".server-view[data-view=maintenance] .ops-folder-input input");
       await input.click({ clickCount: 3 }); await input.type("/tmp/myflames-audit-dump");
       await pause(300);
     },
-    target: named("Run preflight…"),
+    target: named("Start dump…"),
   },
   // ---- Cluster and ProxySQL (ActionReview) ---------------------------------------
   {

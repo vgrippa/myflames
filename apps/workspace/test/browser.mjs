@@ -1015,11 +1015,13 @@ print(json.dumps(build_sidecar(root, analyze_plan(root), source_type="file", eng
     dialog.accept();
   });
   await page.reload({ waitUntil: "networkidle0" });
-  await page.waitForSelector(".session-notice");
+  await page.waitForSelector(".plan-item");
+  assert.equal(await page.$(".session-notice"), null);
   assert.equal(prompted, false);
   assert.equal((await page.$$(".plan-item")).length, 2);
-  await button("Start fresh", ".session-notice ");
-  await button("Start fresh without a backup", ".session-notice ");
+  await page.click('[aria-label="Settings"]');
+  await button("Start fresh", ".settings-menu ");
+  await button("Start fresh without a backup", ".fresh-workspace-sheet ");
   await page.waitForSelector(".home");
   assert.equal((await page.$$(".plan-item")).length, 0);
   await page.evaluate(

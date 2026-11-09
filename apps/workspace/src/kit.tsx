@@ -2621,6 +2621,8 @@ export function MetricTile({
   toneLabel,
   trend,
   attrs,
+  compare,
+  badge,
 }: {
   rowKey: string;
   selection?: Selection;
@@ -2631,6 +2633,10 @@ export function MetricTile({
   toneLabel?: string;
   trend?: ReactNode;
   attrs?: Record<string, string | undefined>;
+  /** One short muted line under the value (a baseline's "was 12/s"). */
+  compare?: ReactNode;
+  /** A marker after the status (a changed verdict). */
+  badge?: ReactNode;
 }) {
   const selected = !!selection && selection.key === rowKey;
   const content = (
@@ -2640,10 +2646,12 @@ export function MetricTile({
         {value}
         {unit && <span className="tile-unit">{unit === "%" || unit.startsWith("/") ? unit : ` ${unit}`}</span>}
       </span>
+      {compare && <span className="tile-compare">{compare}</span>}
       <span className="tile-foot">
         {/* A tile without a threshold (info, no label of its own) draws no
             marker: a lone dash in most tiles read as missing data. */}
         {tone && !(tone === "info" && !toneLabel) && <StatusPill tone={tone} label={toneLabel} quiet />}
+        {badge}
         {trend}
       </span>
     </>
@@ -2747,6 +2755,51 @@ export function Sparkline({
       ))}
       <circle cx={x(points.length - 1)} cy={y(last.value)} r={2.5} className="sparkline-last" />
     </svg>
+  );
+}
+
+// ---- Dismissible notice -------------------------------------------------------
+
+/** An error or note line the reader can dismiss: a small × (aria-label
+ * "Dismiss") at the end of the row. Dismissal is client-side only and keyed
+ * on the message: it hides the current content, and content with a different
+ * identity (a new error of the same view) shows again. The markup contract of
+ * the places it replaces is kept: a <p> whose class and role come from
+ * *variant* ("error" → role alert / .error, "note" → role status / .notice),
+ * overridable with *role* and *className*; the × sits inside that element. */
+export function Notice({ variant, role, className, children, noticeKey, onDismiss }: {
+  variant: "error" | "note";
+  /** Overrides the variant's role (a note that must interrupt: role="alert"). */
+  role?: "alert" | "status";
+  /** Replaces the variant's class when the placement has its own (the
+   * Parameters sheet's .variable-problems). */
+  className?: string;
+  children: ReactNode;
+  /** The content identity when children are not a plain string (a message
+   * with an inline action): a dismissal holds until this key changes. */
+  noticeKey?: string;
+  onDismiss?: () => void;
+}) {
+  const [dismissed, setDismissed] = useState<string | null>(null);
+  const identity = noticeKey ?? (typeof children === "string" ? children : "");
+  // Content that went away resets the dismissal, so a message that clears and
+  // returns identical counts as new content.
+  if (!identity && dismissed !== null) setDismissed(null);
+  if (!identity || dismissed === identity) return null;
+  return (
+    <p role={role || (variant === "error" ? "alert" : "status")} className={className || (variant === "error" ? "error" : "notice")}>
+      <span className="notice-body">{children}</span>
+      <IconButton
+        icon="close"
+        size={12}
+        className="notice-dismiss"
+        label="Dismiss"
+        onClick={() => {
+          setDismissed(identity);
+          onDismiss?.();
+        }}
+      />
+    </p>
   );
 }
 
@@ -3251,6 +3304,16 @@ function Inspector({
 
 // ---- View layout: toolbar, content, inspector -------------------------------------
 
+/** Server supplies the wider read only in Server and Workload. Other places
+ * retain their own Refresh scope and never inherit this menu. */
+export const RefreshAllContext = createContext<{
+  label: string;
+  count: number;
+  disabled: boolean;
+  running: boolean;
+  run: () => void;
+} | null>(null);
+
 /** The anatomy every data view shares: a toolbar (title, ⓘ, controls,
  * Refresh), then the content, and the inspector for the selection. Escape
  * closes the inspector and returns focus to the selected row. */
@@ -3274,6 +3337,7 @@ export function ViewLayout({
   className = "",
   otherConnection,
   otherAction,
+  refreshMenu,
 }: {
   id: string;
   title: string;
@@ -3281,6 +3345,10 @@ export function ViewLayout({
   hideTitle?: boolean;
   info?: ReactNode;
   controls?: ReactNode;
+  /** More items in the Refresh split button's menu (role="menuitem"
+   * buttons, after Refresh every view): actions on the reading on screen,
+   * such as Save baseline, so they add no toolbar button. */
+  refreshMenu?: ReactNode;
   onRefresh?: () => void;
   refreshDisabled?: boolean;
   /** The Refresh button's words when it reads something not shown yet
@@ -3307,6 +3375,7 @@ export function ViewLayout({
     /** The note's sentence, when "From X. <label> to load this server." does not fit. */
     text?: string };
 }) {
+  const refreshAll = useContext(RefreshAllContext);
   const reportActivity = useContext(ViewActivityContext);
   const backLabel = useContext(ViewBackLabelContext);
   // The floating list of views: this view's title switches views (never in
@@ -3372,19 +3441,42 @@ export function ViewLayout({
           {onRefresh && (
             // While it reads: a spinner and "Refreshing…", aria-busy, clicks
             // ignored, and focus stays on it (aria-disabled, not disabled).
-            <ActionButton
-              className="toolbar-refresh"
-              labelClassName="toolbar-refresh-label"
-              aria-label={refreshLabel}
-              data-action="refresh"
-              icon="refresh"
-              busy={!!loading}
-              busyLabel={refreshBusyLabel}
-              disabled={!loading && !!refreshDisabled}
-              onClick={onRefresh}
-            >
-              {refreshLabel}
-            </ActionButton>
+            <span className={refreshAll || refreshMenu ? "split-button view-refresh" : undefined}>
+              <ActionButton
+                className="toolbar-refresh"
+                labelClassName="toolbar-refresh-label"
+                aria-label={refreshLabel}
+                data-action="refresh"
+                icon="refresh"
+                busy={!!loading}
+                busyLabel={refreshBusyLabel}
+                disabled={!loading && !!refreshDisabled}
+                onClick={onRefresh}
+              >
+                {refreshLabel}
+              </ActionButton>
+              {(refreshAll || refreshMenu) && (
+                // With items of its own the menu stays available while
+                // Refresh every view cannot run; that item says so itself.
+                <Popover menu label="Refresh options" buttonTitle="Refresh options"
+                  buttonClassName="button split-button-options" wide
+                  disabled={!refreshMenu && !!refreshAll?.disabled} busy={!refreshMenu && !!refreshAll?.running}
+                  trigger={<Icon name="chevron-down" size={12} />}>
+                  <div className="view-refresh-menu">
+                    {refreshAll && (
+                      <button type="button" role="menuitem" data-action="refresh-all"
+                        disabled={refreshAll.disabled || refreshAll.running}
+                        title={`Reads all ${refreshAll.count} sections on ${refreshAll.label} (${shortcut("R", true)})`}
+                        onClick={() => { closePopovers(); refreshAll.run(); }}>
+                        <span>Refresh every view on {refreshAll.label} ({shortcut("R", true)})</span>
+                        <span className="hint">{refreshAll.count} sections</span>
+                      </button>
+                    )}
+                    {refreshMenu}
+                  </div>
+                </Popover>
+              )}
+            </span>
           )}
           {shared && !shared.sheet && !detailBackLabel && (
             <IconButton
@@ -3424,13 +3516,6 @@ export function ViewLayout({
             <div className="gate other-connection" role="note">
               <Icon name="connection" size={18} />
               <p>From {otherConnection}, refresh to load this server.</p>
-              {onRefresh && (
-                <span className="gate-action">
-                  <button type="button" className="button" disabled={refreshDisabled || loading} onClick={onRefresh}>
-                    {refreshLabel}
-                  </button>
-                </span>
-              )}
             </div>
           )}
           {children}
@@ -3497,6 +3582,11 @@ export function ViewStatus({
   const [announce, setAnnounce] = useState("");
   const previous = useRef({ loading, doneAt });
   const stopped = useRef(false);
+  // The reader can dismiss the current error (×); it stays hidden until the
+  // message changes or clears (a fresh failed read of the same view shows again).
+  const [dismissedError, setDismissedError] = useState("");
+  if (!error && dismissedError) setDismissedError("");
+  const showError = !!error && error !== dismissedError;
   useEffect(() => {
     const was = previous.current;
     previous.current = { loading, doneAt };
@@ -3507,7 +3597,7 @@ export function ViewStatus({
     else if (!loading && was.loading && !stopped.current) setAnnounce("");
   }, [loading, doneAt]);
   return (
-    <div ref={root} tabIndex={-1} className={`view-status${!loading && !error ? " is-idle" : ""}`}>
+    <div ref={root} tabIndex={-1} className={`view-status${!loading && !showError ? " is-idle" : ""}`}>
       <span className="visually-hidden" role="status" aria-live="polite">{announce}</span>
       {loading && (
         <p className="capture-status">
@@ -3532,7 +3622,7 @@ export function ViewStatus({
           )}
         </p>
       )}
-      {error && (
+      {showError && (
         // The alert holds the error alone; Try again sits beside it in the same box.
         <div className={`error view-status-error${onRetry ? " has-retry" : ""}`}>
           <p role="alert">
@@ -3544,6 +3634,16 @@ export function ViewStatus({
               Try again
             </button>
           )}
+          <IconButton
+            icon="close"
+            size={12}
+            className="notice-dismiss"
+            label="Dismiss"
+            onClick={() => {
+              setDismissedError(error || "");
+              refocus();
+            }}
+          />
         </div>
       )}
     </div>

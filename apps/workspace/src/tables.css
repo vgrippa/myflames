@@ -127,3 +127,4 @@
   overflow-wrap: anywhere;
 }
 
+.tables-rebuild-notes { display: grid; gap: var(--space-1); margin: var(--space-2) 0 0; padding-left: 1.2em; }

@@ -27,7 +27,6 @@ export function batchC({ goPlace, goView, visible, named, click, confirmButton, 
   }
   async function tools(page) {
     await goView(page, "server", "maintenance");
-    await click(page, "Detect tools", MV);
     await visible(page, `${MV} [data-row-key="tool:mysqlsh"]`);
   }
   async function field(page, text, value) {
@@ -59,7 +58,7 @@ export function batchC({ goPlace, goView, visible, named, click, confirmButton, 
   }
   async function openStart(page, op) {
     await operationForm(page, op);
-    await click(page, 'Run preflight…', MV);
+    await click(page, `Start ${op}…`, MV);
     await visible(page, SHEET);
     if (op !== 'dump') await field(page, `Type ${plans[op].target} to confirm`, plans[op].target);
   }
@@ -86,7 +85,7 @@ export function batchC({ goPlace, goView, visible, named, click, confirmButton, 
     await waitText(page, `${MV} .ops-job .action-status`, /Whether it started is unknown/);
     assert.equal(ctx.log.filter((r) => r.path === '/api/audit/declined').length, declines, 'Close never declines a sent request');
     // Trying the preflight while Start still waits sends nothing.
-    await (await named('Run preflight…', MV)(page)).evaluate((e) => e.click());
+    await page.$eval(`${MV} .ops-actions button.primary`, e => e.click());
     assert.equal(ctx.log.filter((r) => r.path === PREPARE).length, 1);
     ctx.hold.clear();
     for (const h of ctx.held.splice(0)) {
@@ -195,13 +194,15 @@ export function batchC({ goPlace, goView, visible, named, click, confirmButton, 
         checkNoResend(ctx, '/api/investigations/save');
       },
     },
-    ...[false, true].map((prerequisite) => ({
-      name: `maintenance-detect-${prerequisite ? 'prerequisite' : 'empty'}`, label: 'Detect tools', paths: [TOOLS], delayMs: 2000,
-      setup: async ({ page }) => { await goView(page, 'server', 'maintenance'); if (prerequisite) await click(page, 'Dump', MV); }, target: named('Detect tools', MV),
-      ok: async ({ page }) => { if (prerequisite) await named('Run preflight…', MV)(page); else await visible(page, `${MV} [data-row-key="tool:mysqlsh"]`); },
-      error: readError, hang: stopRead,
-    })),
-    viewRefresh('maintenance', 'server', TOOLS, { setup: async ({ page }) => tools(page), delayMs: 2000 }),
+    {
+      ...viewRefresh('maintenance', 'server', TOOLS, {go: tools, delayMs: 2000}),
+      name: 'maintenance-detect-again', label: 'Detect again',
+    },
+    {
+      name: 'maintenance-tool-updates', label: 'Check for updates', paths: [TOOLS], delayMs: 2000,
+      setup: async ({page}) => tools(page), target: named('Check for updates', MV),
+      ok: async ({page}) => { await waitNotBusy(page, `${MV} .ops-actions button`); await visible(page, `${MV} [data-row-key="tool:mysqlsh"]`); }, error: readError, hang: stopRead,
+    },
     {
       name: 'maintenance-check-upgrade', label: 'Check upgrade', paths: ['/api/lifecycle/upgrade-check'], delayMs: 2000,
       mocks: { '/api/lifecycle/upgrade-check': () => upgrade },
@@ -211,9 +212,9 @@ export function batchC({ goPlace, goView, visible, named, click, confirmButton, 
     ...['dump', 'restore', 'clone'].flatMap((op) => [
       {
         name: `maintenance-${op}-preflight`, label: `${op} preflight`, paths: [PREPARE], mocks: mocks(op), delayMs: 2000,
-        setup: async ({ page }) => operationForm(page, op), target: named('Run preflight…', MV),
+        setup: async ({ page }) => operationForm(page, op), target: named(`Start ${op}…`, MV),
         ok: async ({ page }) => { await waitText(page, `${SHEET} .ops-pre`, new RegExp(op === 'clone' ? 'CLONE' : op === 'dump' ? 'dump' : 'load|mysql')); },
-        error: readError, hang: stopRead,
+        error: async ({page}) => waitText(page, `${MV} .ops-preflight-result`, /Simulated failure/), hang: stopRead,
       },
       ...[false, true].map((unknown) => ({
         name: `maintenance-${op}-start${unknown ? '-late-unknown' : ''}`, label: `Start ${op}`, paths: [START], mocks: mocks(op), delayMs: 2000,

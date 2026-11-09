@@ -168,6 +168,12 @@ def _first_child_kind(node):
     kids = (node or {}).get("children") or []
     if not kids:
         return ""
+    # parse_node appends select-list and subquery children AFTER the regular
+    # join inputs (details.input_kind); the join's inner side is the last
+    # regular input, not the last child overall.
+    for kid in reversed(kids):
+        if not (kid.get("details") or {}).get("input_kind"):
+            return _normalize_kind(kid)
     return _normalize_kind(kids[-1])
 
 

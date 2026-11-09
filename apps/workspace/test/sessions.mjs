@@ -44,6 +44,7 @@ const kill = { status: 200, body: { schema_version: "kill-1.0", status: "killed"
 // The list of views docked, as a person who docked it: this suite asserts
 // the list's markers and keys (server-nav covers the floating default).
 const h = await open("/api/live/sessions", "sessions", {
+  "/api/live/sessions/history": body => ({ status: 200, body: { id: body.id, available: true, reason: "No completed statements are retained for this session.", statements: [], limit: 10 } }),
   "/api/live/explain-connection": { status: 200, body: plan },
   "/api/live/kill": kill,
   "/api/live/instruments": { status: 200, body: instruments },

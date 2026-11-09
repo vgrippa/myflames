@@ -80,6 +80,39 @@ class TestWriteHTTP(unittest.TestCase):
             payload['expect']['connection_identity'] = dbops.connection_identity(self.connection)
         return payload
 
+    def test_index_suggestion_http_uses_server_digest_and_read_only_connection(self):
+        from test_index_hint import fake
+        conn = fake()
+        payload = {'connection': dict(self.connection, read_only=True), 'digest': 'd' * 64, 'schema': 'shop',
+                   'sql': 'DROP TABLE orders'}
+        with mock.patch('myflames.connector.MySQLConnection', return_value=conn) as factory:
+            status, result = self.post('/api/live/index-suggestion', payload)
+        self.assertEqual(status, 200)
+        self.assertEqual(result['status'], 'suggestion')
+        self.assertIn('/api/live/index-suggestion', ui._SERVER_VIEW_PATHS)
+        self.assertEqual(factory.call_args[1]['query_timeout'], 12)
+        self.assertEqual(len(conn.sql('EXPLAIN FORMAT=JSON')), 1)
+        self.assertFalse(any('DROP' in sql for sql, _ in conn.calls))
+
+    def test_index_suggestion_http_auth_rejects_before_connection(self):
+        with mock.patch('myflames.connector.MySQLConnection') as factory:
+            status, result = self.post('/api/live/index-suggestion',
+                {'connection': self.connection, 'digest': 'd' * 64, 'schema': 'shop'},
+                headers={'X-Myflames-Token': 'wrong'})
+        self.assertEqual(status, 403)
+        factory.assert_not_called()
+
+    def test_index_suggestion_http_rejects_nonselect_without_explain(self):
+        from test_index_hint import fake, row
+        conn = fake(row(digest_text='DELETE FROM orders', sample_text='DELETE FROM orders'))
+        with mock.patch('myflames.connector.MySQLConnection', return_value=conn):
+            status, result = self.post('/api/live/index-suggestion',
+                {'connection': self.connection, 'digest': 'd' * 64, 'schema': 'shop'})
+        self.assertEqual(status, 200)
+        self.assertEqual(result['status'], 'not_explainable')
+        self.assertEqual(conn.sql('EXPLAIN'), [])
+        self.assertEqual(conn.sql('STATISTICS'), [])
+
     def test_socket_setup_preserves_headers_and_authenticated_json_body(self):
         plan = Path(__file__).with_name('mysql-explain-json-sample.json').read_text(encoding="utf-8")
         body = json.dumps({'plan': plan}).encode('utf-8')

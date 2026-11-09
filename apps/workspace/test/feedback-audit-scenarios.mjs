@@ -1,6 +1,6 @@
 // Scenarios for the action feedback audit: how to reach each action, the
 // control to click, and the endpoints whose answer is delayed, failed or held.
-import { chooseView } from "./chrome-helpers.mjs";
+import { chooseView, openRefreshMenu } from "./chrome-helpers.mjs";
 import { clickText, pause, visibleHandle, waitVisible } from "./feedback-audit-lib.mjs";
 
 export async function goPlace(page, place) {
@@ -63,11 +63,11 @@ export const SCENARIOS = [
   },
   {
     name: "server-refresh-all", label: "Refresh all", owner: "Server.tsx", place: "server", paths: LIVE_VIEWS,
-    setup: async ({ page }) => { await goView(page, "server", "health"); }, target: "[data-action=refresh-all]",
+    setup: async ({ page }) => { await goView(page, "server", "health"); await openRefreshMenu(page); }, target: "[data-action=refresh-all]",
   },
   {
     name: "server-refresh-all-single", label: "Refresh all (one click)", owner: "Server.tsx", place: "server", paths: LIVE_VIEWS, noSecondClick: true,
-    setup: async ({ page }) => { await goView(page, "server", "health"); }, target: "[data-action=refresh-all]",
+    setup: async ({ page }) => { await goView(page, "server", "health"); await openRefreshMenu(page); }, target: "[data-action=refresh-all]",
   },
   {
     name: "tuning-run-full-analysis", label: "Run full analysis", owner: "Tuning.tsx / Report.tsx (Server.tsx owns the read)", place: "tuning",
@@ -160,14 +160,21 @@ export const SCENARIOS = [
     target: "[data-action=run-all]",
   },
   {
+    // Explain runs EXPLAIN in the tab's session (editor/run), not a capture.
     name: "editor-explain", label: "Explain", owner: "QueryLab.tsx", place: "query",
-    paths: ["/api/live/start"], setup: async ({ page }) => { await goPlace(page, "query"); await page.locator('[aria-label="SQL editor"]').fill("SELECT * FROM orders"); await pause(600); },
+    paths: ["/api/editor/run"], setup: async ({ page }) => { await goPlace(page, "query"); await page.locator('[aria-label="SQL editor"]').fill("SELECT * FROM orders"); await pause(600); },
     target: "[data-action=explain]",
   },
   {
-    name: "editor-load-schemas", label: "Load schemas", owner: "SchemaBrowser.tsx", place: "query",
-    paths: ["/api/live/schemas"], setup: async ({ page }) => { await goPlace(page, "query"); await pause(400); },
-    target: byText("Load schemas"),
+    // The visible panel reads the list by itself on arrival (answered at once,
+    // before the mode is set); the audited action is the header's Reload.
+    name: "editor-reload-schemas", label: "Reload schemas", owner: "SchemaBrowser.tsx", place: "query",
+    paths: ["/api/live/schemas"], setup: async ({ page }) => {
+      await goPlace(page, "query");
+      await waitVisible(page, ".schema-browser .browser-tree [role=treeitem]");
+      await waitVisible(page, '.schema-browser .browser-head button[aria-label="Reload schemas"]');
+    },
+    target: byText("Reload schemas", ".schema-browser"),
   },
   // ---- Database diagram ----------------------------------------------------------------
   {

@@ -268,7 +268,7 @@ export function useSchemaCatalog(connection: Connection, enabled = true) {
       }
       const request = catalogs.get(key)!;
       // Only the latest read of the connection on screen may answer: an older
-      // read of the same connection (before Reload list) is dropped.
+      // read of the same connection (before Reload databases) is dropped.
       // (A failed read removes itself from the cache first.)
       const latest = () => !catalogs.has(key) || catalogs.get(key) === request;
       setState((s) => ({ key, catalog: s.key === key ? s.catalog : null, error: "", loading: true }));
@@ -457,7 +457,7 @@ function SchemaPickerPanel({
           </label>
         )}
         <button type="button" className="text-button" disabled={loading} onClick={onReload}>
-          Reload list
+          Reload databases
         </button>
         <button type="button" className="button" onClick={onDone}>
           Done

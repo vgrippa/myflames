@@ -190,7 +190,7 @@ try {
   await page.keyboard.press("ArrowDown");
   await page.waitForFunction(() => document.activeElement?.id === "server-nav-locks");
   assert.equal(await page.$eval("#server-nav-locks", (e) => e.getAttribute("aria-current")), "page");
-  // A view reads once when it first appears on screen (AGENTS: reads on screen, once per connection).
+  // A view reads once when it first appears on screen (DEVELOPER_REFERENCE: reads on screen, once per connection).
   await page.waitForSelector(`${view} .lock-tree`);
   assert.equal(lockCalls().length, 1, "opening the view reads once on its own");
   assert.equal(await page.$(`${view} .view-empty`), null, "no Load button once the automatic read answered");

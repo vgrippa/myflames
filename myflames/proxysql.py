@@ -236,14 +236,17 @@ def _row_key(row, columns):
     return tuple("" if row.get(c) is None else str(row.get(c)) for c in columns)
 
 
-def _not_proxysql(message, version=None):
-    return {
+def _not_proxysql(message, version=None, readyset_hint=False):
+    out = {
         "schema_version": SCHEMA_VERSION, "captured_at": now(), "available": False, "is_proxysql": False,
         "version": version, "uptime_s": None, "message": message, "status": "unknown", "status_why": [message],
         "config_readable": False, "servers": [], "hostgroups": [], "monitors": [], "query_rules": [],
         "query_digests": [], "pending": _empty_pending(), "fingerprints": {}, "metrics": {}, "summary": _summary([]),
-        "actions": [], "notes": [], "statements": [], "routing": None,
+        "actions": [], "notes": [], "statements": [], "routing": None, "topology": None,
     }
+    if readyset_hint:
+        out["readyset_hint"] = True
+    return out
 
 
 def _empty_pending():
@@ -262,10 +265,20 @@ def _summary(servers):
     return out
 
 
-def read_status(conn):
+def read_status(conn, profiles=(), open_profile=None, reached_host=None, current_profile_id=None):
     """The ``proxysql-1.0`` report. Read-only; see the module docstring."""
     ok, detail = identify(conn)
     if not ok:
+        try:
+            from . import readyset
+            rs_ok, rs_ver = readyset.identify(conn)
+        except Exception:
+            rs_ok, rs_ver = False, None
+        if rs_ok:
+            return _not_proxysql(
+                "This connection is a Readyset instance (%s), not ProxySQL Admin. Open Readyset to inspect caches, "
+                "replication and upstream topology." % (rs_ver or "Readyset"),
+                version=rs_ver, readyset_hint=True)
         return _not_proxysql("This connection is not a ProxySQL Admin interface: %s. ProxySQL Admin listens on "
                              "port 6032 unless admin-mysql_ifaces says otherwise." % detail)
     reads = _Reads(conn)
@@ -354,6 +367,11 @@ def read_status(conn):
                 "runtime hostgroups (seen live on ProxySQL 3.0.11)." % MONITOR_WORD[server["monitor"]])
     for rule in report["query_rules"]:
         rule["actions"] = available_actions(report, {"rule_id": rule["rule_id"]})
+    from .topology_links import classify_proxysql_topology
+    obs_host = reached_host if reached_host is not None else getattr(conn, "host", None)
+    report["topology"] = classify_proxysql_topology(
+        report, profiles=profiles, open_profile=open_profile,
+        observer_host=obs_host, current_profile_id=current_profile_id)
     return report
 
 

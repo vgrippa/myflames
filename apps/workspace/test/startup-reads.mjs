@@ -7,14 +7,16 @@
 // of the previous one. Run after `npm run build`: node test/startup-reads.mjs
 import assert from "node:assert/strict";
 import { load, open, pause } from "./perf-harness.mjs";
-import { chooseConnection, connectionOption, openConnectionPicker } from "./chrome-helpers.mjs";
+import { chooseConnection, connectionOption, openConnectionPicker, openRefreshMenu } from "./chrome-helpers.mjs";
 
 const healthy = await load("replication-mysql-8.4-healthy.json");
 const extra = {};
 const h = await open("/api/live/replication", "startup-reads", extra, { fallback: { status: 200, body: healthy } });
 const { page, state } = h;
 // Skip loop status lists the loops this myflames holds and reads no database.
-const viewReads = () => [...state.seen.map(() => "/api/live/replication"), ...state.other.map((o) => o.path)].filter((p) => p !== "/api/live/replication/skip-loop/status");
+const viewReads = () => [...state.seen.map(() => "/api/live/replication"), ...state.other.map((o) => o.path)].filter((p) => p !== "/api/live/replication/skip-loop/status"
+  // A connection chosen in the picker checks its readiness: not a view read.
+  && p !== "/api/live/readiness");
 const reset = () => { state.seen.length = 0; state.other.length = 0; state.privilegeReads.length = 0; };
 const place = async (label) => {
   await page.locator(`.main-nav button ::-p-text(${label})`).click();
@@ -100,6 +102,7 @@ try {
   await place("Server");
   const beforeAll = replicationReads();
   await page.evaluate(() => window.scrollTo(0, 0));
+  await openRefreshMenu(page);
   await page.click(".server-place [data-action=refresh-all]");
   await page.waitForFunction(() => !document.querySelector(".server-place .refresh-all-stop") && /refreshed/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
   assert.equal(replicationReads(), beforeAll + 1, "Refresh all reads replication once");

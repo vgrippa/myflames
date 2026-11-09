@@ -211,6 +211,7 @@ with sqlite3.connect(sys.argv[1]) as db:
   // the kit owns whether a long key needs its own row.
   await page.click(row(ids.unknown));
   await page.waitForSelector(".view-inspector .inspector-title");
+
   const inspector = await text(".view-inspector");
   assert.match(inspector, /Kill connection/);
   assert.match(inspector, /Outcome unknown/);
@@ -405,6 +406,19 @@ with sqlite3.connect(sys.argv[1]) as db:
   await page.evaluate((id) => window.dispatchEvent(new CustomEvent("myflames-open-audit", { detail: id })), focusId);
   await page.waitForFunction((t, id) => document.querySelector(`${t} tr.is-selected[data-row-key]`)?.dataset.rowKey === id, {}, table, focusId);
   await page.waitForSelector(".view-inspector .inspector-title");
+
+  assert.equal(last("/api/audit/list").body.id, focusId, "cross-place navigation filters to the requested record before paging");
+  assert.equal(await page.$$eval(`${table} tbody tr[data-row-key]`, rows => rows.length), 1);
+  // ViewLayout intentionally hides list controls while full-view details are
+  // open. Return to the filtered list before using Export or Show all records.
+  assert.equal(await page.$eval(`${view} .toolbar-controls`, e => e.hidden), true);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(v => !document.querySelector(`${v} .toolbar-controls`)?.hidden, {}, view);
+  const focusedExport = JSON.parse(await download("json"));
+  assert.deepEqual(focusedExport.records.map(r => r.id), [focusId], "export keeps the record filter");
+  await page.locator(`${view} .audit-actions button ::-p-text(Show all records)`).click();
+  await page.waitForFunction(t => document.querySelectorAll(`${t} tbody tr[data-row-key]`).length > 1, {}, table);
+  assert.equal(last("/api/audit/list").body.id, undefined);
 
   assert.deepEqual(errors, []);
   console.log("Audit log checks passed. " + directory);

@@ -1,0 +1,160 @@
+{
+  "schema_version": "memory-1.0",
+  "engine": "mysql",
+  "flavor": "mysql",
+  "server_product": "MySQL",
+  "server_version": "9.7.2",
+  "taken_at": "2026-11-08T18:00:00+00:00",
+  "uptime_s": 1000,
+  "performance_schema": true,
+  "available": true,
+  "source": "performance_schema",
+  "interval": 5,
+  "elapsed_s": 5,
+  "window_status": "ok",
+  "coverage": {
+    "enabled": 400,
+    "total": 400
+  },
+  "consumers": {
+    "global_instrumentation": true,
+    "thread_instrumentation": true
+  },
+  "gate": null,
+  "gate_row": null,
+  "thread_coverage": {
+    "uninstrumented": 0,
+    "foreground": 4
+  },
+  "status": "watch",
+  "current_bytes": 2076180480,
+  "high_bytes": 2726297600,
+  "growth_bytes_per_s": 119957094.4,
+  "innodb_buffer_pool_size": 1073741824,
+  "buffer_pool_share_pct": 51.72,
+  "categories": [
+    {
+      "key": "buffer_pool",
+      "label": "InnoDB buffer pool",
+      "current_bytes": 1073741824,
+      "high_bytes": 1572864000,
+      "source": "performance_schema.memory_summary_global_by_event_name",
+      "elapsed_s": 5,
+      "growth_bytes_per_s": 0,
+      "share_pct": 51.72
+    },
+    {
+      "key": "sort",
+      "label": "Sort",
+      "current_bytes": 734003200,
+      "high_bytes": 734003200,
+      "source": "performance_schema.memory_summary_global_by_event_name",
+      "elapsed_s": 5,
+      "growth_bytes_per_s": 119957094.4,
+      "share_pct": 35.35
+    },
+    {
+      "key": "performance_schema",
+      "label": "Performance Schema",
+      "current_bytes": 134217728,
+      "high_bytes": 209715200,
+      "source": "performance_schema.memory_summary_global_by_event_name",
+      "elapsed_s": 5,
+      "growth_bytes_per_s": 0,
+      "share_pct": 6.46
+    },
+    {
+      "key": "other",
+      "label": "Other",
+      "current_bytes": 134217728,
+      "high_bytes": 209715200,
+      "source": "performance_schema.memory_summary_global_by_event_name",
+      "elapsed_s": 5,
+      "growth_bytes_per_s": 0,
+      "share_pct": 6.46
+    }
+  ],
+  "events": [
+    {
+      "event": "memory/innodb/buf_buf_pool",
+      "category": "buffer_pool",
+      "current_bytes": 1073741824,
+      "high_bytes": 1572864000,
+      "source": "performance_schema.memory_summary_global_by_event_name"
+    },
+    {
+      "event": "memory/sql/Filesort_buffer::sort_keys",
+      "category": "sort",
+      "current_bytes": 734003200,
+      "high_bytes": 734003200,
+      "source": "performance_schema.memory_summary_global_by_event_name"
+    },
+    {
+      "event": "memory/performance_schema/accounts",
+      "category": "performance_schema",
+      "current_bytes": 134217728,
+      "high_bytes": 209715200,
+      "source": "performance_schema.memory_summary_global_by_event_name"
+    },
+    {
+      "event": "memory/sql/THD::main_mem_root",
+      "category": "other",
+      "current_bytes": 134217728,
+      "high_bytes": 209715200,
+      "source": "performance_schema.memory_summary_global_by_event_name"
+    }
+  ],
+  "sessions": [
+    {
+      "thread_id": 52,
+      "processlist_id": 42,
+      "user": "app",
+      "host": "localhost",
+      "current_bytes": 1153433600,
+      "high_bytes": 1258291200,
+      "source": "performance_schema.memory_summary_by_thread_by_event_name"
+    }
+  ],
+  "accounts": [
+    {
+      "user": "app",
+      "host": "localhost",
+      "current_bytes": 134217728,
+      "high_bytes": 209715200,
+      "source": "performance_schema.memory_summary_by_account_by_event_name"
+    }
+  ],
+  "collection": {
+    "events": true,
+    "sessions": true,
+    "accounts": true
+  },
+  "findings": [
+    {
+      "key": "growth",
+      "status": "watch",
+      "rule": "Rule of thumb: tracked bytes increased by more than both 1% of the starting total and 16 MiB across the window.",
+      "reason": "A short allocation burst can be normal; this does not prove a leak."
+    },
+    {
+      "key": "category:sort",
+      "status": "watch",
+      "rule": "Rule of thumb: one workload-driven category (temporary tables, sort, join and hash buffers, or network) exceeds 25% of non-negative category bytes.",
+      "reason": "Sort exceeds this threshold in the current sample; the workload can explain it."
+    },
+    {
+      "key": "session:42",
+      "status": "watch",
+      "rule": "Rule of thumb: one visible session exceeds 1 GiB currently tracked; memory another thread freed can still count here.",
+      "reason": "Inspect this session's workload before changing any setting."
+    }
+  ],
+  "notes": [
+    "Tracked allocations are not process RSS or machine RAM; no RAM capacity is inferred.",
+    "Each event high is an upper bound (current bytes plus per-thread, account and host headroom), not a recorded peak; their sum is not a server peak.",
+    "Enabled instruments do not recover earlier allocations; session/account totals need not add up to the global total.",
+    "Categories use known event-name prefixes; unmatched allocations stay in Other, and TempTable may include mapped files.",
+    "Reads are sequential, not an atomic snapshot; the collection itself can allocate memory.",
+    "Performance Schema on MySQL 8.0.23 and later charges a free made by another thread to the global total, so the session or account that allocated the memory can be overstated."
+  ]
+}

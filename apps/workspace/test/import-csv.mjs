@@ -339,7 +339,9 @@ try {
   await h.button("Query editor", ".main-nav ");
   await chooseConnection(page, prod);
   if (await page.$('button[aria-label="Show the schema browser"]')) await page.click('button[aria-label="Show the schema browser"]');
-  await h.button("Load schemas", ".schema-browser ");
+  // The visible Schemas panel reads the list by itself: no Load schemas gate.
+  await page.waitForSelector('.schema-browser .tree-row.kind-schema');
+  assert.equal(await page.$(".schema-browser .browser-gate"), null, "no Load schemas gate with a connection");
   await expandShop();
 
   // ---- Entry points in the Schemas panel: names, pre-fill, system databases.
@@ -971,8 +973,11 @@ try {
   assert.equal((await menuItem("Import CSV…")).aria, null, "unknown leaves it enabled");
   await page.keyboard.press("Escape");
   await chooseConnection(page, readOnly);
-  await h.button("Load schemas", ".schema-browser ");
+  // Another connection: the visible panel reads its list by itself.
   await expandShop();
+  assert.equal(await page.$(".schema-browser .browser-gate"), null, "no Load schemas gate after a connection change");
+  assert.equal(h.state.other.filter((r) => r.path === "/api/live/schemas").at(-1)?.body.connection?.profile_id, readOnly,
+    "the list shown was read from the read-only connection");
   await treeMenu("table", "orders");
   item = await menuItem("Import CSV…");
   assert.equal(item.aria, "true");

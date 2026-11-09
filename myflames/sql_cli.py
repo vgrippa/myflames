@@ -134,7 +134,8 @@ def _authorize(plan, safety, options, args, registry, audit, session=None, revie
     audit.policy = dbops.policy_summary(decision)
     statements = [u["send"] for u in plan["units"]]
     writes = [u["send"] for u in plan["units"] if u["kind"] != "read"]
-    digest = editor._review_digest("cli", dbops.connection_identity(options, safety), statements, decision)
+    # The command line always stops at the first error (no Continue mode).
+    digest = editor._review_digest("cli", dbops.connection_identity(options, safety), statements, decision, "stop")
     name = safety.get("profile_name") or "%s:%s" % (options.get("host"), options.get("port"))
     payload = {}
     decline_message = None

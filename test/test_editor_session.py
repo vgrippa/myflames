@@ -16,11 +16,13 @@ Three layers:
 Every test that reaches the workspace database runs with a temporary HOME
 and MYFLAMES_SECRET_BACKEND=vault.
 """
+import datetime
 import io
 import json
 import os
 from pathlib import Path
 import random
+import re
 import shutil
 import stat
 import sys
@@ -36,6 +38,392 @@ from myflames.workspace_store import WorkspaceStore
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "editor"
 FAKE = Path(__file__).resolve().parent / "_fake_mysql_client.py"
+
+# Extend only this module's disposable fake binary. The shared client fixture
+# remains unchanged, and all commands still cross the real framed XML pipes.
+PLAN_FAKE = r'''
+        self.insight_seq = getattr(self, "insight_seq", 0) + 1
+        self.insight_events = getattr(self, "insight_events", [])
+        if not statement.startswith("/*myflames:editor*/ "):
+            self.insight_events.append((self.insight_seq, text))
+        if upper.startswith("SELECT @@PERFORMANCE_SCHEMA AS PERFORMANCE_SCHEMA"):
+            on = "NO" if os.environ.get("FAKE_PS") == "off" else "YES"
+            self.result(statement, ["performance_schema", "current_consumer", "history_consumer", "instrumented", "event_id"],
+                        [["0" if on == "NO" else "1", on, on, on, str(self.insight_seq - 1)]])
+            return
+        if upper.startswith("SELECT EVENT_ID, LEFT(SQL_TEXT, 4096) AS SQL_TEXT, NESTING_EVENT_TYPE"):
+            boundary = int(re.search(r"EVENT_ID > (\d+)", text).group(1))
+            names = ["event_id", "sql_text", "nesting_event_type", "nesting_event_level", "rows_examined", "rows_sent", "rows_affected",
+                     "no_index_used", "no_good_index_used", "created_tmp_tables", "created_tmp_disk_tables",
+                     "sort_merge_passes", "select_full_join", "select_scan", "lock_time", "timer_wait", "errors", "warnings"]
+            events = [[str(event), sql, None, "0", "1", "1", "0", "0", "0", "0", "0", "0", "0", "0", "0", None, "0", "0"]
+                      for event, sql in reversed(self.insight_events[-1000:]) if event > boundary]
+            self.result(statement, names, events)
+            return
+        failure = re.search(r"/\*fail:(\d+)\*/", text)
+        if failure:
+            # A user statement the server rejects without changing the session.
+            code = int(failure.group(1))
+            self.error(line, code, "42000" if code == 1064 else "XAE07", "fake failure %d" % code)
+            return
+        if "FROM INFORMATION_SCHEMA.INNODB_TRX" in upper:
+            # gate-meter-<id> holds this read until release-<id> (a slow meter poll).
+            held = os.path.join(STATE, "gate-meter-%d" % self.conn_id)
+            if os.path.exists(held):
+                os.remove(held)
+                self.flush()
+                self.gate(honor_kill=False)
+            if os.environ.get("FAKE_NO_PROCESS") == "1":
+                self.error(line, 1227, "42000", "Access denied; you need (at least one of) the PROCESS "
+                                                "privilege(s) for this operation")
+                return
+            if os.environ.get("FAKE_TRX_ROW") == "1":
+                self.result(statement, ["trx_id", "age_seconds", "rows_modified", "rows_locked", "lock_structs"],
+                            [["77", "240", "1", "1", "2"]] if self.in_trx else [])
+                return
+        if upper == "SELECT @@SESSION.EXPLAIN_JSON_FORMAT_VERSION AS PLAN_VERSION":
+            self.result(statement, ["plan_version"], [[str(getattr(self, "plan_version", 1))]])
+            return
+        version_set = re.match(r"SET SESSION explain_json_format_version=(\d+)$", text)
+        if version_set:
+            if version_set.group(1) == "1" and os.environ.get("FAKE_PLAN_RESTORE_FAIL"):
+                self.error(line, 1231, "42000", "restore failed")
+                return
+            self.plan_version = int(version_set.group(1))
+            self.ok()
+            return
+        if upper == "START TRANSACTION READ ONLY":
+            self.plan_read_only_before = self.read_only
+            self.read_only = True
+            self.begin()
+            self.ok()
+            return
+        if upper == "ROLLBACK" and hasattr(self, "plan_read_only_before"):
+            self.read_only = self.plan_read_only_before
+            del self.plan_read_only_before
+        native = re.match(r"EXPLAIN(?: FORMAT=(TRADITIONAL|TREE))? (.*)$", text, re.S)
+        if native and not upper.startswith(("EXPLAIN FORMAT=JSON ", "EXPLAIN ANALYZE ")):
+            inner = native.group(2)
+            if "FROM tt" in inner and "tt" not in self.tables:
+                self.error(line, 1146, "42S02", "Table 'test.tt' doesn't exist")
+                return
+            if inner.startswith("CREATE "):
+                self.error(line, 1064, "42000", "Syntax error near 'CREATE' at line 1")
+                return
+            self.result(statement, ["id", "select_type", "session_value"], [["1", "SIMPLE", self.vars.get("v")]])
+            return
+        plan = re.match(r"(?:EXPLAIN(?: ANALYZE)?|ANALYZE) FORMAT=JSON (.*)$", text, re.S)
+        if plan:
+            inner = plan.group(1)
+            if "PLAN_DIE()" in inner:
+                self.error(line, 2013, "HY000", "Lost connection during plan")
+                self.flush()
+                sys.exit(1)
+            if "PLAN_ERROR()" in inner:
+                self.error(line, 1146, "42S02", "Table 's3cret-pw.missing' doesn't exist")
+                return
+            if "FROM tt" in inner and "tt" not in self.tables:
+                self.error(line, 1146, "42S02", "Table 'test.tt' doesn't exist")
+                return
+            if "PLAN_INVALID()" in inner:
+                raw = "this is not JSON"
+            elif ENGINE == "mariadb":
+                raw = '{"query_block":{"select_id":1,"table":{"table_name":"tt","access_type":"ALL","rows":1}}}'
+            else:
+                raw = '{"query_plan":{"operation":"Table scan on tt","estimated_rows":1,"inputs":[]}}'
+            self.result(statement, ["ANALYZE" if upper.startswith("ANALYZE ") else "EXPLAIN"], [[raw]])
+            return
+'''
+
+
+class InsightTests(unittest.TestCase):
+    """History attribution and transaction reads, with hand-authored engine
+    shapes. No sockets, user's workspace, keychain or real database writes.
+    """
+
+    def session(self, engine="mysql"):
+        data = json.loads((FIXTURES / ("insights-" + engine + ".json")).read_text())
+        session = ed.EditorSession("t", "k", {"host": "h", "port": 1, "user": "u"})
+        session.engine, session.server_version = engine, data["server_version"]
+        session.in_transaction = True
+        return session, data
+
+    @staticmethod
+    def step(rows=(), errors=()):
+        names = list(rows[0]) if rows else []
+        entry = {"type": "rows", "columns": [{"name": name} for name in names],
+                 "rows": [[row.get(name) for name in names] for row in rows]}
+        return types.SimpleNamespace(marker=True, entries=[entry], real_errors=lambda: list(errors))
+
+    def run_for(self, sql="SELECT * FROM t"):
+        units = ed.plan_statements(sql)
+        for unit in units:
+            unit.update(status="ok", server_stats={"available": False, "reason": "not read"})
+        return types.SimpleNamespace(units=units)
+
+    def test_both_engines_preserve_counters_null_timer_and_bigint(self):
+        for engine in ("mysql", "mariadb"):
+            with self.subTest(engine=engine):
+                session, fixture = self.session(engine)
+                run = self.run_for()
+                fixture["history"][0]["rows_affected"] = "18446744073709551615"
+                session._attribute_history(run, fixture["history"], 40)
+                stats = run.units[0]["server_stats"]
+                self.assertTrue(stats["available"])
+                self.assertEqual(stats["rows_affected"], "18446744073709551615")
+                self.assertEqual(stats["rows_sent"], "50")
+                self.assertEqual(stats["timer_wait"], None if engine == "mariadb" else "15000000000")
+                self.assertEqual(stats["select_full_join"], "1" if engine == "mariadb" else "0")
+
+    def test_helpers_old_events_nested_statements_and_foreign_sql_never_match(self):
+        session, fixture = self.session()
+        good = fixture["history"][0]
+        for change in ({"sql_text": ed.TAG + good["sql_text"]}, {"event_id": "39"},
+                       {"nesting_event_type": "STATEMENT"}, {"nesting_event_type": "TRANSACTION", "nesting_event_level": "1"},
+                       {"sql_text": "SELECT * FROM other"},
+                       {"rows_examined": "-1"}, {"rows_examined": "²"}, {"rows_examined": None}):
+            with self.subTest(change=change):
+                run = self.run_for()
+                session._attribute_history(run, [dict(good, **change)], 40)
+                self.assertFalse(run.units[0]["server_stats"]["available"])
+
+    def test_history_orders_event_ids_and_does_not_guess_lost_duplicates(self):
+        session, fixture = self.session()
+        row = fixture["history"][0]
+        run = self.run_for("SELECT * FROM t; SELECT * FROM t")
+        session._attribute_history(run, [dict(row, event_id="43", rows_examined="2"), row], 40)
+        self.assertEqual([u["server_stats"]["rows_examined"] for u in run.units], ["15000", "2"])
+        run = self.run_for("SELECT * FROM t; SELECT * FROM t")
+        session._attribute_history(run, [row], 40)
+        self.assertFalse(any(u["server_stats"]["available"] for u in run.units))
+        run = self.run_for("SELECT * FROM gone; SELECT * FROM t")
+        session._attribute_history(run, [row], 40)
+        self.assertFalse(run.units[0]["server_stats"]["available"])
+        self.assertTrue(run.units[1]["server_stats"]["available"])
+
+    def test_truncated_sql_and_multiple_statements_in_a_unit_are_unavailable(self):
+        session, fixture = self.session()
+        run = self.run_for()
+        session._attribute_history(run, [dict(fixture["history"][0], sql_text="SELECT * F")], 40)
+        self.assertFalse(run.units[0]["server_stats"]["available"])
+        run.units[0]["single"] = False
+        session._attribute_history(run, fixture["history"], 40)
+        self.assertFalse(run.units[0]["server_stats"]["available"])
+
+    def test_history_boundary_and_57_projection_are_read_only_bounded_and_own_thread(self):
+        for engine in ("mysql", "mariadb"):
+            session, fixture = self.session(engine)
+            run = self.run_for()
+            guard = {"performance_schema": "1", "current_consumer": "YES", "history_consumer": "YES",
+                     "instrumented": "YES", "event_id": "40"}
+            with mock.patch.object(session, "_helper", side_effect=[self.step([guard]), self.step(fixture["history"])]) as read:
+                boundary = session._history_boundary(run)
+                session._collect_statement_history(run, boundary)
+            self.assertEqual(boundary, 40)
+            self.assertTrue(run.units[0]["server_stats"]["available"])
+            for call in read.call_args_list:
+                self.assertTrue(call[0][0].startswith(ed.TAG + "SELECT "))
+                self.assertIn("PROCESSLIST_ID = CONNECTION_ID() LIMIT 1", call[0][0])
+                self.assertNotIn("PS_CURRENT_THREAD_ID", call[0][0])
+            query = read.call_args_list[1][0][0]
+            self.assertIn("ORDER BY EVENT_ID DESC LIMIT 1000", query)
+            self.assertIn("NESTING_EVENT_TYPE <> 'STATEMENT'", query)
+            self.assertIn("NESTING_EVENT_LEVEL = 0", query)
+            self.assertIn("LEFT(SQL_TEXT, 20)", query)
+            for column in ("ROWS_EXAMINED", "ROWS_SENT", "ROWS_AFFECTED", "NO_INDEX_USED", "NO_GOOD_INDEX_USED",
+                           "CREATED_TMP_TABLES", "CREATED_TMP_DISK_TABLES", "SORT_MERGE_PASSES", "SELECT_FULL_JOIN",
+                           "SELECT_SCAN", "LOCK_TIME", "TIMER_WAIT", "ERRORS", "WARNINGS"):
+                self.assertIn(column, query)
+
+    def test_consumers_off_ps_off_and_denial_have_one_reason(self):
+        for engine in ("mysql", "mariadb"):
+            session, _ = self.session(engine)
+            good = {"performance_schema": "1", "current_consumer": "YES", "history_consumer": "YES",
+                    "instrumented": "YES", "event_id": "40"}
+            for step, reason in ((self.step([dict(good, performance_schema="0")]), "Performance Schema is off"),
+                                 (self.step([dict(good, history_consumer="NO")]), "collection"),
+                                 (self.step(errors=[{"code": 1142, "message": "secret"}]), "could not be read")):
+                run = self.run_for()
+                with mock.patch.object(session, "_helper", return_value=step):
+                    self.assertIsNone(session._history_boundary(run))
+                stats = run.units[0]["server_stats"]
+                self.assertFalse(stats["available"])
+                self.assertIn(reason, stats["reason"])
+                self.assertIn("Server > Instruments", stats["reason"])
+                self.assertNotIn("secret", json.dumps(stats))
+
+    def test_meter_uses_innodb_age_and_counts_distinct_waiters_on_both_engines(self):
+        for engine in ("mysql", "mariadb"):
+            with self.subTest(engine=engine):
+                session, fixture = self.session(engine)
+                with mock.patch.object(session, "_helper", side_effect=[self.step([fixture["transaction"]]), self.step(fixture["waits"])]) as read:
+                    session._refresh_transaction_meter()
+                meter = session.status()["transaction_meter"]
+                self.assertEqual((meter["age_source"], meter["age_seconds"], meter["rows_modified"], meter["blocking"]),
+                                 ("innodb", 240, "1240", 3))
+                self.assertEqual((meter["rows_locked"], meter["lock_structs"]), ("1243", "5"))
+                self.assertIn("WHERE trx_mysql_thread_id = CONNECTION_ID() LIMIT 1", read.call_args_list[0][0][0])
+                query = read.call_args_list[1][0][0]
+                self.assertIn("INNODB_LOCK_WAITS", query)  # MySQL fixture is 5.7.
+                self.assertIn("DISTINCT requesting_trx_id", query)
+                self.assertIn("blocking_trx_id = 123 LIMIT 501", query)
+        session.server_version, session.engine = "8.4.11", "mysql"
+        with mock.patch.object(session, "_helper", side_effect=[self.step([fixture["transaction"]]), self.step(fixture["waits"])]) as read:
+            session._refresh_transaction_meter()
+        self.assertIn("BLOCKING_THREAD_ID = PS_CURRENT_THREAD_ID() LIMIT 501", read.call_args_list[1][0][0])
+        self.assertNotIn("data_locks ", read.call_args_list[1][0][0])
+
+    def test_meter_process_denied_retains_only_observed_age_and_does_not_leak_error(self):
+        session, _ = self.session()
+        with mock.patch("myflames.editor_insights.time.monotonic", return_value=100):
+            session._transaction_seen_at = 70
+            with mock.patch.object(session, "_helper", return_value=self.step(errors=[{"code": 1227, "message": "password=secret"}])) as read:
+                session._refresh_transaction_meter()
+            meter = session.status()["transaction_meter"]
+        self.assertEqual(read.call_count, 1)
+        self.assertEqual((meter["age_seconds"], meter["age_source"]), (30, "observed"))
+        self.assertIsNone(meter["rows_modified"])
+        self.assertIsNone(meter["blocking"])
+        self.assertIn("PROCESS", meter["note"])
+        self.assertNotIn("secret", json.dumps(meter))
+
+    def test_meter_poll_is_single_flight_throttled_and_does_not_extend_idle(self):
+        session, _ = self.session()
+        last_used = session.last_used
+        with mock.patch.object(session, "_refresh_transaction_meter") as read:
+            with mock.patch("myflames.editor_insights.time.monotonic", return_value=100):
+                session.run_lock.acquire()
+                session.refresh_transaction_meter()
+                session.run_lock.release()
+                read.assert_not_called()
+                session.refresh_transaction_meter()
+                session.refresh_transaction_meter()
+                self.assertEqual(read.call_count, 1)
+            with mock.patch("myflames.editor_insights.time.monotonic", return_value=110):
+                session.refresh_transaction_meter()
+                self.assertEqual(read.call_count, 2)
+        self.assertEqual(session.last_used, last_used)
+
+    def test_meter_age_compares_both_operands_in_the_os_zone_whatever_the_session_zone(self):
+        """trx_started is OS-local time (field_store_time_t's localtime_r:
+        M/storage/innobase/handler/i_s.cc:339, Ma i_s.cc:226) while NOW() is
+        in the session time_zone (M/sql/item_timefunc.cc:2462, Ma :2241). On
+        a UTC host a -03:00 session read a 4-minute transaction as 0 s
+        (GREATEST clamped -10560) and a +05:30 one as 5 h 34 min.
+        CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', 'SYSTEM') is OS-local in any
+        session zone. The meter must not change the session's time_zone."""
+        utc_now = datetime.datetime(2026, 11, 8, 15, 0, 0)
+        # Each clock expression the meter could send, as the server evaluates it.
+        clocks = {"NOW()": lambda os_zone, session_zone: utc_now + session_zone,
+                  "CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', 'SYSTEM')": lambda os_zone, session_zone: utc_now + os_zone}
+        hours = lambda h: datetime.timedelta(hours=h)
+        for engine in ("mysql", "mariadb"):
+            for os_zone in (hours(0), hours(9)):
+                for session_zone in (hours(-3), hours(5.5), os_zone):
+                    session, fixture = self.session(engine)
+                    started = utc_now + os_zone - datetime.timedelta(seconds=240)  # what INNODB_TRX prints
+                    sent = []
+
+                    def answer(sql, *args, **kwargs):
+                        sent.append(sql)
+                        if "INNODB_TRX" not in sql:
+                            return self.step(fixture["waits"])
+                        clock = re.search(r"TIMESTAMPDIFF\(SECOND, trx_started, (.+?)\)\) AS age_seconds", sql)
+                        self.assertIsNotNone(clock, sql)
+                        now = clocks[clock.group(1)](os_zone, session_zone)
+                        age = max(0, int((now - started).total_seconds()))
+                        return self.step([dict(fixture["transaction"], age_seconds=str(age))])
+                    with mock.patch.object(session, "_helper", side_effect=answer):
+                        session._refresh_transaction_meter()
+                    with self.subTest(engine=engine, os_zone=os_zone, session_zone=session_zone):
+                        self.assertEqual((session.transaction_meter["age_source"], session.transaction_meter["age_seconds"]),
+                                         ("innodb", 240), "the age depends on the session's time_zone")
+                        self.assertFalse([s for s in sent if "TIME_ZONE" in s.upper() or s.upper().startswith(ed.TAG.upper() + "SET")],
+                                         "the meter changed the session's time_zone")
+
+    def test_user_operations_wait_only_for_an_observation_and_never_hang(self):
+        """run_lock held by a user operation still answers busy at once; a
+        meter poll is waited for (ProcessTests covers that race through the
+        real pipes), never started while a user operation waits, and a poll
+        that outlives the bound ends in busy rather than a hung request."""
+        from myflames import editor_insights
+        self.assertGreater(editor_insights.OBSERVATION_WAIT, ed.HELPER_TIMEOUT,
+                           "a user operation must outwait the poll's one read in flight")
+        session, _ = self.session()
+        session.run_lock.acquire()
+        started = time.monotonic()
+        self.assertFalse(session._acquire_run_lock(timeout=5))
+        self.assertLess(time.monotonic() - started, 1, "a user operation's hold is not an observation")
+        session.run_lock.release()
+        with session.lock:
+            session._users_waiting = 1
+        with mock.patch.object(session, "_refresh_transaction_meter") as read:
+            session.refresh_transaction_meter()
+        read.assert_not_called()
+        self.assertFalse(session.run_lock.locked())
+        with session.lock:
+            session._users_waiting = 0
+            session.run_lock.acquire()
+            session._observing = True
+        self.assertFalse(session._acquire_run_lock(timeout=0.2))
+        self.assertEqual(session._users_waiting, 0)
+        with session.lock:
+            session._observing = False
+            session.run_lock.release()
+        self.assertTrue(session._acquire_run_lock(timeout=0.2))
+        session.run_lock.release()
+
+    def test_only_statements_that_may_end_the_transaction_restart_its_observed_age(self):
+        """The observed age (no PROCESS) is a lower bound, so a statement that
+        may have ended the transaction restarts it and one that cannot keeps
+        it. ROLLBACK TO SAVEPOINT is classified ROLLBACK but keeps the
+        transaction (SQLCOM_ROLLBACK_TO_SAVEPOINT); a failed COMMIT or
+        ROLLBACK either changed nothing or left no transaction open, which the
+        state read after the run shows; a parse error ran nothing."""
+        cases = (
+            ("COMMIT", "ok", (), True), ("ROLLBACK", "ok", (), True), ("ROLLBACK AND CHAIN", "ok", (), True),
+            ("COMMIT", "stopped", (1317,), True), ("BEGIN", "ok", (), True), ("SET autocommit = 1", "ok", (), True),
+            ("ROLLBACK TO SAVEPOINT keep", "ok", (), False), ("ROLLBACK WORK TO keep", "ok", (), False),
+            ("rollback /* back */ to savepoint `keep`", "ok", (), False),
+            ("ROLLBACK TO SAVEPOINT gone", "error", (1305,), False),
+            ("SAVEPOINT keep", "ok", (), False), ("RELEASE SAVEPOINT keep", "ok", (), False),
+            ("COMMIT", "error", (1399,), False), ("ROLLBACK", "error", (1399,), False),
+            ("COMMIT WORK RELEASE NOW", "error", (1064,), False),
+            ("CREATE TABLEE t (id INT)", "error", (1064,), False),
+            # A failed BEGIN may have committed, and on MariaDB opened a new one.
+            ("START TRANSACTION READ WRITE", "error", (1290,), True),
+            # DDL commits before it can fail.
+            ("CREATE TABLE t (id INT)", "error", (1050,), True),
+            ("SELECT 1", "ok", (), False), ("UPDATE t SET v = 1 WHERE id = 1", "error", (1205,), False),
+            ("COMMIT", "not_run", (), False), ("COMMIT", "session_ended", (), False),
+            # Several server statements in one client statement: each part counts,
+            # and an error cannot say which part ran.
+            ("DELIMITER $$\nCOMMIT; START TRANSACTION $$", "error", (1064,), True),
+            ("DELIMITER $$\nROLLBACK TO SAVEPOINT a; COMMIT $$", "ok", (), True),
+            ("DELIMITER $$\nSAVEPOINT a; ROLLBACK WORK TO a $$", "ok", (), False),
+        )
+        for sql, status, codes, expected in cases:
+            with self.subTest(sql=sql, status=status, codes=codes):
+                units = ed.plan_statements(sql)
+                ed.classify_units(units, True, sql)
+                self.assertEqual(len(units), 1)
+                units[0]["status"] = status
+                errors = [{"code": code, "message": "x"} for code in codes]
+                self.assertIs(ed.may_replace_transaction(units[0], errors), expected)
+
+    def test_commit_clears_age_and_meter_and_wait_cap_is_explicit(self):
+        session, fixture = self.session()
+        waits = [{"waiting_id": str(n)} for n in range(501)]
+        with mock.patch.object(session, "_helper", side_effect=[self.step([fixture["transaction"]]), self.step(waits)]):
+            session._refresh_transaction_meter()
+        self.assertEqual(session.transaction_meter["blocking"], 500)
+        self.assertTrue(session.transaction_meter["blocking_truncated"])
+        session.in_transaction = False
+        with mock.patch.object(session, "_helper") as read:
+            session._refresh_transaction_meter()
+            read.assert_not_called()
+        self.assertIsNone(session.status()["transaction_meter"])
+        self.assertIsNone(session._transaction_seen_at)
 
 
 class _Stdin(object):
@@ -395,6 +783,25 @@ class ResultBudgetTests(unittest.TestCase):
 
 
 class PlanTests(unittest.TestCase):
+    def test_index_audit_target_comes_from_one_parsed_clause(self):
+        cases = [
+            ("ALTER TABLE `s`.`t` ALTER INDEX `i``x` INVISIBLE", 'i`x'),
+            ("ALTER TABLE s.t ALTER INDEX i VISIBLE", 'i'),
+            ("ALTER TABLE s.t ALTER INDEX i IGNORED", 'i'),
+            ("ALTER TABLE s.t ALTER INDEX i NOT IGNORED", 'i'),
+            ("ALTER TABLE s.t DROP INDEX i", 'i'),
+            ("ALTER TABLE s.t DROP PRIMARY KEY", 'PRIMARY'),
+            ("ALTER TABLE s.t /* DROP INDEX wrong */ DROP INDEX `right`", 'right'),
+            ("ALTER TABLE s.t ADD COLUMN n INT COMMENT 'DROP INDEX fake'", None),
+            ("ALTER TABLE s.t DROP INDEX i, DROP INDEX j", None),
+            ("ALTER TABLE s.t ALTER INDEX i INVISIBLE, ADD COLUMN c INT", None),
+        ]
+        for sql, expected in cases:
+            with self.subTest(sql=sql):
+                units = ed.plan_statements(sql)
+                self.assertEqual(ed._alter_index_name(ed._alter_unit({'units': units})), expected)
+        self.assertIsNone(ed._alter_index_name(None))
+
     def test_splitting_and_what_is_sent(self):
         units = ed.plan_statements("-- note\nSELECT 1;  \n/* keep */ SELECT 2 -- tail\n;\n"
                                    "DELIMITER //\nCREATE PROCEDURE p() BEGIN SELECT 1; SELECT 2; END//\n"
@@ -605,6 +1012,7 @@ class ProcessTests(unittest.TestCase):
             '"connection_id": str(self.conn_id), "hostname": "fake-db", "port": "3306", "server_id": "1",')
         client = client.replace('arg.startswith("--defaults-extra-file=")',
                                 'arg.startswith(("--defaults-file=", "--defaults-extra-file="))')
+        client = client.replace('        upper = text.upper()\n', '        upper = text.upper()\n' + PLAN_FAKE)
         script.write_text("#!%s\n%s" % (sys.executable, client), encoding="utf-8")
         script.chmod(script.stat().st_mode | stat.S_IEXEC)
         env = {"HOME": self.temp.name, "USERPROFILE": self.temp.name, "MYFLAMES_SECRET_BACKEND": "vault",
@@ -648,6 +1056,478 @@ class ProcessTests(unittest.TestCase):
                                confirm_token=result["confirmation"]["token"], **payload)
         return result
 
+    def test_statement_insights_cross_the_real_framed_client_without_helpers_in_script(self):
+        result = self.run_sql("SELECT 1; SELECT 2")
+        self.assertEqual(result["status"], "complete")
+        statements = result["run"]["statements"]
+        self.assertTrue(all(s.get("server_stats", {}).get("available") for s in statements),
+                        "each completed statement must carry its own history stats")
+        self.assertEqual([s["server_stats"]["rows_examined"] for s in statements], ["1", "1"])
+        log = self.session_log()
+        start = log.index("SELECT 1")
+        self.assertEqual(log[start:start + 2], ["SELECT 1", "SELECT 2"])
+        self.assertIn("events_statements_history", log[start + 2])
+        self.assertEqual([r["rows"] for r in result["run"]["results"] if r["type"] == "rows"], [[["1"]], [["2"]]])
+
+    def test_meter_poll_makes_no_run_commit_or_rollback_busy(self):
+        """A meter poll holds run_lock while its INNODB_TRX read is out, and
+        busy() stays false. Run, Commit and Roll back wait for that read, and
+        the poll then skips its blocking-session read. Before, start_run
+        refused them with "A statement is already running in this tab"
+        (aborting the poll's browser request does not end its read here)."""
+        os.environ["FAKE_TRX_ROW"] = "1"
+        self.dev()
+        for path in ("/api/editor/run", "/api/editor/commit", "/api/editor/rollback"):
+            with self.subTest(path=path):
+                self.assertIs(self.run_sql("BEGIN")["session"]["in_transaction"], True)
+                session = self.registry.get("tab1")
+                session._meter_last_poll = None
+                reads = len(self.log_lines("INNODB_TRX"))
+                (self.state / ("gate-meter-%d" % session.connection_id)).write_text("1")
+                outcome = {}
+
+                def call(name, path, **payload):
+                    try:
+                        outcome[name] = self.call(path, **payload)
+                    except Exception as exc:  # recorded for the assertion below
+                        outcome[name] = exc
+                poll = threading.Thread(target=call, args=("poll", "/api/editor/status"),
+                                        kwargs={"refresh_insights": True, "wait": 0}, daemon=True)
+                user = threading.Thread(target=call, args=("user", path),
+                                        kwargs={"sql": "SELECT 1"} if path.endswith("/run") else {}, daemon=True)
+                try:
+                    poll.start()
+                    self.until(lambda: len(self.log_lines("INNODB_TRX")) > reads, "the poll's INNODB_TRX read")
+                    self.assertFalse(session.busy())
+                    self.assertTrue(session.run_lock.locked(), "the poll holds the session pipe")
+                    user.start()
+                    self.until(lambda: "user" in outcome or getattr(session, "_users_waiting", 0) == 1,
+                               "the user operation to wait for the poll")
+                    self.assertNotIn("user", outcome, "refused while the poll was reading: %r" % (outcome.get("user"),))
+                finally:
+                    self.release()
+                poll.join(15)
+                user.join(15)
+                self.assertFalse(poll.is_alive() or user.is_alive())
+                self.assertNotIsInstance(outcome["poll"], Exception)
+                self.assertNotIsInstance(outcome["user"], Exception)
+                self.assertEqual(outcome["user"]["status"], "complete")
+                if not path.endswith("/run"):
+                    self.assertIs(outcome["user"]["session"]["in_transaction"], False)
+                lines = self.log_lines()
+                polled = [n for n, line in enumerate(lines) if "INNODB_TRX" in line][reads]
+                sent = "SELECT 1" if path.endswith("/run") else path.rsplit("/", 1)[1].upper()
+                user_at = next(n for n in range(polled + 1, len(lines)) if lines[n].endswith(sent))
+                self.assertFalse([line for line in lines[polled + 1:user_at] if "LOCK_WAITS" in line.upper()],
+                                 "the poll read blocking sessions while a user operation waited")
+                if path.endswith("/run"):
+                    self.run_sql("ROLLBACK")
+
+    def test_observed_age_survives_savepoint_rollback_and_failed_control_without_process(self):
+        """Without PROCESS the age is this tab's observation, a lower bound.
+        ROLLBACK TO SAVEPOINT (classified ROLLBACK) keeps the transaction, and
+        a COMMIT or ROLLBACK the server rejects while the transaction stays
+        open changed nothing: neither may restart the age. A failed BEGIN,
+        and a COMMIT that ran, must."""
+        os.environ["FAKE_NO_PROCESS"] = "1"
+        self.dev()
+        self.assertIs(self.run_sql("BEGIN")["session"]["in_transaction"], True)
+        session = self.registry.get("tab1")
+        for sql in ("SAVEPOINT keep", "ROLLBACK TO SAVEPOINT keep", "ROLLBACK WORK TO keep",
+                    "COMMIT /*fail:1399*/", "ROLLBACK /*fail:1399*/", "COMMIT WORK RELEASE NOW /*fail:1064*/"):
+            with self.subTest(sql=sql):
+                session._transaction_seen_at = time.monotonic() - 240
+                status = self.run_sql(sql)["session"]
+                self.assertIs(status["in_transaction"], True)
+                meter = status["transaction_meter"]
+                self.assertEqual(meter["age_source"], "observed")
+                self.assertIn("PROCESS is required", meter["note"])
+                self.assertGreaterEqual(meter["age_seconds"], 240, sql + " restarted the transaction's age")
+        for sql in ("BEGIN /*fail:1399*/", "COMMIT; BEGIN"):
+            with self.subTest(sql=sql):
+                session._transaction_seen_at = time.monotonic() - 240
+                status = self.run_sql(sql)["session"]
+                self.assertIs(status["in_transaction"], True)
+                self.assertLess(status["transaction_meter"]["age_seconds"], 5, sql + " kept an age from before it")
+
+    def test_observed_transaction_age_does_not_survive_replacement_inside_script(self):
+        self.dev()
+        self.run_sql("BEGIN")
+        session = self.registry.get("tab1")
+        session._transaction_seen_at = time.monotonic() - 240
+        same = self.run_sql("SELECT 1")["session"]["transaction_meter"]
+        self.assertGreaterEqual(same["age_seconds"], 240)
+        replaced = self.run_sql("COMMIT; BEGIN")["session"]["transaction_meter"]
+        self.assertEqual(replaced["age_source"], "observed")
+        self.assertLess(replaced["age_seconds"], 5)
+
+    def test_native_explain_uses_tab_state_without_transaction_or_projection(self):
+        self.run_sql("CREATE TEMPORARY TABLE tt (id INT, v TEXT)")
+        self.run_sql("SET @v = 'kept'")
+        self.run_sql("SET SESSION sql_mode = 'NO_BACKSLASH_ESCAPES'")
+        self.run_sql("BEGIN")
+        session = self.registry.get("tab1")
+        before = (session.connection_id, session.in_transaction, session.sql_mode, session.safe_updates)
+        result = self.call("/api/editor/run", sql="SELECT * FROM tt", explain_format="table")
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(self.rows(result), [["1", "SIMPLE", "kept"]])
+        prefix = "EXPLAIN " if self.engine == "mariadb" else "EXPLAIN FORMAT=TRADITIONAL "
+        self.assertTrue(self.logged("tab1", prefix + "SELECT * FROM tt"))
+        statement = result["run"]["statements"][0]
+        self.assertEqual(statement["text"], "SELECT * FROM tt")
+        self.assertEqual(statement["sent"], prefix + "SELECT * FROM tt")
+        self.assertEqual(statement["kind"], "read")
+        self.assertEqual((session.connection_id, session.in_transaction, session.sql_mode, session.safe_updates), before)
+        # Another tab cannot see the temporary table; its server error is kept.
+        other = self.call("/api/editor/run", tab="fresh", sql="SELECT * FROM tt", explain_format="table")
+        self.assertEqual(other["run"]["error"]["code"], 1146)
+        # Safe updates does not reject the read in the application layer.
+        dml = self.call("/api/editor/run", sql="UPDATE tt SET v = 2", explain_format="table")
+        self.assertEqual(dml["status"], "complete")
+        self.assertTrue(self.logged("tab1", prefix + "UPDATE tt SET v = 2"))
+        self.assertEqual(self.call("/api/editor/history")["items"][0]["sql"], prefix + "UPDATE tt SET v = 2")
+        # Unsupported statements reach the server, preserving code and SQLSTATE.
+        failed = self.call("/api/editor/run", sql="CREATE TABLE nope (id INT)", explain_format="table")
+        self.assertEqual(failed["run"]["error"]["code"], 1064)
+        self.assertEqual(failed["run"]["error"]["sqlstate"], "42000")
+        self.assertNotIn("CREATE TABLE nope (id INT)", self.session_log())
+
+    def test_native_explain_read_only_is_sent_and_analyze_never_slips_in(self):
+        self.connection["read_only"] = True
+        result = self.call("/api/editor/run", sql="DELETE FROM t", explain_format="table")
+        self.assertEqual(result["status"], "complete")
+        self.assertTrue(result["session"]["read_only_transactions"])
+        for sql in ("ANALYZE SELECT 1", "/* note */ ANALYZE DELETE FROM t",
+                    "/*!80000 ANALYZE */ SELECT 1", "SELECT 1; DELETE FROM t",
+                    "DELIMITER $$\nSELECT 1; DELETE FROM t$$"):
+            with self.subTest(sql=sql):
+                reply = self.call("/api/editor/run", sql=sql, explain_format="table")
+                self.assertEqual(reply["status"], "invalid")
+        self.assertNotIn("DELETE FROM t", self.session_log())
+
+    def test_native_explain_with_planning_side_effects_is_reviewed(self):
+        # Planning materializes (SELECT GET_LOCK(...)): verified on MySQL 9.7,
+        # the explaining session holds the lock afterwards.
+        sql = "SELECT * FROM (SELECT GET_LOCK('myflames_probe', 0)) AS a"
+        self.save_profile(read_only=True)
+        refused = self.call("/api/editor/run", sql=sql, explain_format="table")
+        self.assertEqual(refused["status"], "refused")
+        session = self.registry.get("tab1")
+        if session is not None:
+            self.assertFalse(any("GET_LOCK" in line for line in self.session_log()))
+        self.call("/api/editor/close", discard=True)
+        self.save_profile(type="production")
+        asked = self.call("/api/editor/run", tab="tab2", sql=sql, explain_format="table")
+        self.assertEqual(asked["status"], "needs_confirmation")
+        # Reviewed before the tab's session exists (engine unknown, so MySQL's
+        # prefix); the run plans again with the session and asks again if the
+        # statement it would send differs (MariaDB's plain EXPLAIN).
+        [reviewed] = asked["confirmation"]["statements"]
+        self.assertTrue(reviewed.startswith("EXPLAIN ") and reviewed.endswith(sql), reviewed)
+        # A plain Explain on the same Production connection runs without asking.
+        self.assertEqual(self.call("/api/editor/run", tab="tab2", sql="SELECT 1", explain_format="table")["status"],
+                         "complete")
+
+    def test_native_explain_binds_digest_parameters_as_literals_only(self):
+        self.run_sql("CREATE TEMPORARY TABLE tt (id INT, v TEXT)")
+        prefix = "EXPLAIN " if self.engine == "mariadb" else "EXPLAIN FORMAT=TRADITIONAL "
+        value = "x' OR 1=1; DELETE FROM t -- "
+        result = self.call("/api/editor/run", sql="SELECT * FROM tt WHERE id = :id AND v = :v",
+                           explain_format="table", parameters={"id": 3, "v": value})
+        self.assertEqual(result["status"], "complete")
+        bound = "SELECT * FROM tt WHERE id = 3 AND v = CONVERT(X'%s' USING utf8mb4)" % value.encode("utf-8").hex()
+        self.assertTrue(self.logged("tab1", prefix + bound))
+        self.assertEqual(result["run"]["statements"][0]["sent"], prefix + bound)
+        self.assertEqual(result["run"]["statements"][0]["kind"], "read")
+        missing = self.call("/api/editor/run", sql="SELECT * FROM tt WHERE id = :id",
+                            explain_format="table", parameters={"v": 1})
+        self.assertEqual((missing["status"], missing["message"]), ("invalid", "Missing parameter: id"))
+        self.assertNotIn("DELETE FROM t", self.session_log())
+
+    def test_plan_json_uses_the_tab_and_restores_settings_in_order(self):
+        self.call("/api/editor/open")
+        session = self.registry.get("tab1")
+        before = (session.autocommit, session.in_transaction, session.sql_mode, session.safe_updates)
+        offset = len(self.session_log())
+        raw = session.run_plan("SELECT 1;", "explain")
+        self.assertIsInstance(json.loads(raw), dict)
+        from myflames.plan_input import _plan
+        _plan({"plan": raw})
+        log = self.session_log()[offset:]
+        if self.engine == "mysql":
+            expected = [ed.TAG + "SELECT @@SESSION.explain_json_format_version AS plan_version",
+                        ed.TAG + "SET SESSION explain_json_format_version=2",
+                        ed.TAG + "START TRANSACTION READ ONLY", "EXPLAIN FORMAT=JSON SELECT 1",
+                        ed.TAG + "ROLLBACK", ed.TAG + "SET SESSION explain_json_format_version=1"]
+            self.assertEqual(log[-6:], expected)
+            self.assertEqual(session._helper_row(session._helper(
+                ed.TAG + "SELECT @@SESSION.explain_json_format_version AS plan_version"))["plan_version"], "1")
+        else:
+            self.assertEqual(log[-1], "EXPLAIN FORMAT=JSON SELECT 1")
+            self.assertFalse(any("explain_json_format_version" in line or "START TRANSACTION" in line for line in log))
+        self.assertTrue(session.refresh_state())
+        self.assertEqual((session.autocommit, session.in_transaction, session.sql_mode, session.safe_updates), before)
+        self.assertFalse(session.busy())
+        self.assertFalse(session.run_lock.locked())
+        self.assertEqual(self.rows(self.run_sql("SELECT 2")), [["2"]])
+
+    def test_plan_temporary_table_endpoint_returns_an_importable_capture(self):
+        from myflames import live, ui
+        self.workspace.jobs = live.LiveJobs()
+        self.addCleanup(self.workspace.jobs.close)
+        self.run_sql("CREATE TEMPORARY TABLE tt (id INT, v TEXT)")
+        self.run_sql("INSERT INTO tt VALUES (1, 'kept')")
+        self.call("/api/editor/open", tab="fresh")
+        with self.assertRaisesRegex(ed.EditorError, "1146"):
+            self.registry.get("fresh").run_plan("SELECT * FROM tt", "explain")
+        # Request passwords do not authenticate an existing session. No new
+        # connection or saved-password lookup may hide the session-affinity bug.
+        payload = {"connection": dict(self.connection, password="wrong"), "session_tab": "tab1",
+                   "query": "SELECT * FROM tt", "mode": "explain"}
+        with mock.patch.object(ui, "_with_saved_password", side_effect=AssertionError("fresh lookup")):
+            started = ui.api_response("/api/live/start", payload, self.workspace)
+        self.assertEqual(set(started), {"id", "state"})
+        result = ui.api_response("/api/live/status", dict(connection=self.connection, id=started["id"]), self.workspace)
+        self.assertEqual(result["state"], "complete")
+        self.assertEqual(result["progress"], 1)
+        capture = result["result"]
+        self.assertEqual(capture["query"], "SELECT * FROM tt")
+        self.assertIsNone(capture["runs"][0]["statistics"])
+        imported = ui.api_response("/api/analyze", {"plan": capture["raw"], "capture": capture}, self.workspace)
+        self.assertEqual(imported["query"], "SELECT * FROM tt")
+        self.assertTrue(imported["chart_data"]["nodes"])
+        self.assertEqual(self.rows(self.run_sql("SELECT * FROM tt")), [["1", "kept"]])
+        self.assertEqual(len(list(self.state.glob("session-*.log"))), 2)
+        with self.assertRaises(ValueError):
+            ui.api_response("/api/live/status", dict(connection=dict(self.connection, user="other"),
+                                                   id=started["id"]), self.workspace)
+
+    def test_plan_read_only_analyze_refuses_delete_but_explain_allows_it(self):
+        self.connection["read_only"] = True
+        self.call("/api/editor/open")
+        session = self.registry.get("tab1")
+        before = self.session_log()
+        with self.assertRaises(ed.EditorError) as caught:
+            session.run_plan("DELETE FROM t", "analyze")
+        self.assertEqual(caught.exception.code, "refused")
+        self.assertEqual(self.session_log(), before)
+        self.assertIsInstance(json.loads(session.run_plan("DELETE FROM t", "explain")), dict)
+        self.assertTrue(self.logged("tab1", "EXPLAIN FORMAT=JSON DELETE FROM t"))
+
+    def test_plan_analyze_cannot_bypass_review_on_a_writable_connection(self):
+        self.call("/api/editor/open")
+        session = self.registry.get("tab1")
+        before = self.session_log()
+        with self.assertRaises(ed.EditorError) as caught:
+            session.run_plan("DELETE FROM t", "analyze")
+        self.assertEqual(caught.exception.code, "needs_confirmation")
+        self.assertEqual(self.session_log(), before)
+
+    def test_plan_rejects_multiple_statements_and_client_commands(self):
+        self.call("/api/editor/open")
+        session = self.registry.get("tab1")
+        for sql in ("SELECT 1; SELECT 2", "SELECT 1\\g SELECT 2", "DELIMITER $$\nSELECT 1; SELECT 2$$",
+                    "SELECT 1\\! touch /tmp/should-never-exist", "SELECT 'unclosed"):
+            with self.subTest(sql=sql):
+                before = self.session_log()
+                with self.assertRaises(ed.EditorError):
+                    session.run_plan(sql, "explain")
+                self.assertEqual(self.session_log(), before)
+
+    def test_plan_server_error_rolls_back_restores_and_redacts_the_session_password(self):
+        self.call("/api/editor/open")
+        session = self.registry.get("tab1")
+        with self.assertRaises(ed.EditorError) as caught:
+            session.run_plan("SELECT 'PLAN_ERROR()'", "explain")
+        self.assertIn("1146", str(caught.exception))
+        self.assertIn("[redacted]", str(caught.exception))
+        self.assertNotIn(self.connection["password"], str(caught.exception))
+        if self.engine == "mysql":
+            self.assertEqual(self.session_log()[-2:], [ed.TAG + "ROLLBACK",
+                                                      ed.TAG + "SET SESSION explain_json_format_version=1"])
+        self.assertFalse(session.ended)
+        self.assertFalse(session.run_lock.locked())
+        self.assertEqual(self.rows(self.run_sql("SELECT 3")), [["3"]])
+
+    def test_plan_client_death_ends_cleanly_and_releases_tab(self):
+        self.call("/api/editor/open")
+        session = self.registry.get("tab1")
+        with self.assertRaises(ed.EditorError):
+            session.run_plan("SELECT 'PLAN_DIE()'", "explain")
+        self.assertTrue(session.ended)
+        self.assertFalse(session.run_lock.locked())
+        self.assertIsNotNone(session.proc.poll())
+
+    def test_plan_invalid_json_also_restores_state(self):
+        self.call("/api/editor/open")
+        session = self.registry.get("tab1")
+        with self.assertRaisesRegex(ed.EditorError, "valid JSON"):
+            session.run_plan("SELECT 'PLAN_INVALID()'", "explain")
+        if self.engine == "mysql":
+            self.assertEqual(self.session_log()[-2:], [ed.TAG + "ROLLBACK",
+                                                      ed.TAG + "SET SESSION explain_json_format_version=1"])
+        self.assertFalse(session.ended)
+
+    def test_plan_timeout_kills_the_statement_and_restores_state(self):
+        self.call("/api/editor/open")
+        session = self.registry.get("tab1")
+        with self.assertRaisesRegex(ed.EditorError, "1317"):
+            session.run_plan("SELECT 1 /*gate*/", "analyze", timeout=0.1)
+        self.assertFalse(session.ended)
+        self.assertFalse(session.busy())
+        self.assertFalse(session.run_lock.locked())
+        self.assertTrue((self.state / "kills.log").exists())
+        self.assertEqual(self.rows(self.run_sql("SELECT 4")), [["4"]])
+
+    def test_plan_version_gate_original_value_and_failed_restore(self):
+        self.call("/api/editor/open")
+        session = self.registry.get("tab1")
+        if self.engine == "mariadb":
+            # MariaDB never reads or writes this MySQL-only system variable.
+            session.run_plan("SELECT 1", "analyze")
+            self.assertFalse(any("plan_version" in line or "explain_json_format_version" in line
+                                 for line in self.session_log()))
+            return
+        session._helper(ed.TAG + "SET SESSION explain_json_format_version=2", results=0)
+        session.run_plan("SELECT 1", "explain")
+        self.assertEqual(self.session_log()[-1], ed.TAG + "SET SESSION explain_json_format_version=2")
+        # The fake version is startup metadata. Changing the cached version
+        # exercises feature selection, not an assertion about a live 8.0 server.
+        session.server_version = "8.0.36"
+        start = len(self.session_log())
+        session.run_plan("SELECT 1", "explain")
+        self.assertFalse(any("explain_json_format_version" in line for line in self.session_log()[start:]))
+        before = self.session_log()
+        with self.assertRaises(ed.EditorError):
+            session.run_plan("SELECT 1", "analyze")
+        self.assertEqual(self.session_log(), before)
+        os.environ["FAKE_PLAN_RESTORE_FAIL"] = "1"
+        self.call("/api/editor/open", tab="restore-fails")
+        failed = self.registry.get("restore-fails")
+        with self.assertRaisesRegex(ed.EditorError, "restore failed"):
+            failed.run_plan("SELECT 1", "explain")
+        self.assertTrue(failed.ended)
+        self.assertEqual(failed.ended_reason, "plan_cleanup_failed")
+        self.assertFalse(failed.run_lock.locked())
+        self.assertIsNotNone(failed.proc.poll())
+
+    def test_plan_endpoint_refuses_another_connections_tab_or_a_missing_tab(self):
+        from myflames import live, ui
+        self.workspace.jobs = live.LiveJobs()
+        self.addCleanup(self.workspace.jobs.close)
+        self.call("/api/editor/open")
+        before = self.session_log()
+        for connection, tab in ((dict(self.connection, user="other"), "tab1"), (self.connection, "missing"),
+                                (dict(self.connection, read_only=True), "tab1")):
+            with self.subTest(connection=connection, tab=tab):
+                with self.assertRaises(ed.EditorError):
+                    ui.api_response("/api/live/start", {"connection": connection, "session_tab": tab,
+                                                       "query": "SELECT 1"}, self.workspace)
+        self.assertEqual(self.session_log(), before)
+        self.assertFalse(self.workspace.jobs.jobs)
+
+    def test_plan_endpoint_keeps_legacy_captures_and_refuses_unsupported_options(self):
+        from myflames import live, ui
+        self.workspace.jobs = live.LiveJobs()
+        self.addCleanup(self.workspace.jobs.close)
+        with mock.patch.object(self.workspace.jobs, "start", return_value={"id": "legacy"}) as start:
+            result = ui.api_response("/api/live/start", {"connection": self.connection, "query": "SELECT 1"},
+                                     self.workspace)
+            self.assertEqual(result, {"id": "legacy"})
+            start.assert_called_once()
+        self.call("/api/editor/open")
+        before = self.session_log()
+        for extra in ({"mode": "analyze", "repeat": 2}, {"trace": True}, {"session_tab": None}):
+            payload = dict(connection=self.connection, session_tab="tab1", query="SELECT 1")
+            payload.update(extra)
+            with self.assertRaises(ValueError):
+                ui.api_response("/api/live/start", payload, self.workspace)
+        self.assertEqual(self.session_log(), before)
+        self.assertFalse(self.workspace.jobs.jobs)
+
+    def test_plan_analyze_uses_the_engine_specific_syntax(self):
+        self.call("/api/editor/open")
+        session = self.registry.get("tab1")
+        self.assertIsInstance(json.loads(session.run_plan("SELECT 1", "analyze")), dict)
+        expected = "ANALYZE FORMAT=JSON SELECT 1" if self.engine == "mariadb" else "EXPLAIN ANALYZE FORMAT=JSON SELECT 1"
+        self.assertIn(expected, self.session_log())
+        if self.engine == "mariadb":
+            self.assertFalse(any("explain_json_format_version" in line for line in self.session_log()))
+
+    def test_plan_busy_ended_and_invalid_mode_refusals(self):
+        self.call("/api/editor/open")
+        session = self.registry.get("tab1")
+        with self.assertRaises(ed.EditorError):
+            session.run_plan("SELECT 1", "other")
+        session.run_lock.acquire()
+        try:
+            with self.assertRaises(ed.EditorError) as caught:
+                session.run_plan("SELECT 1", "explain")
+            self.assertEqual(caught.exception.code, "busy")
+        finally:
+            session.run_lock.release()
+        session.end()
+        with self.assertRaises(ed.EditorError) as caught:
+            session.run_plan("SELECT 1", "explain")
+        self.assertEqual(caught.exception.code, "session_ended")
+
+    def test_plan_stop_uses_the_existing_kill_path_and_cleans_up(self):
+        self.call("/api/editor/open")
+        session = self.registry.get("tab1")
+        errors = []
+
+        def plan():
+            try:
+                session.run_plan("SELECT 1 /*gate*/", "analyze")
+            except Exception as exc:
+                errors.append(exc)
+        worker = threading.Thread(target=plan)
+        worker.start()
+        try:
+            self.until(lambda: self.logged("tab1", "FORMAT=JSON SELECT 1 /*gate*/"), "plan running")
+            with self.assertRaises(ed.EditorError) as caught:
+                session.run_plan("SELECT 2", "explain")
+            self.assertEqual(caught.exception.code, "busy")
+            stopped = self.call("/api/editor/stop")
+            self.assertTrue(stopped["stopped"])
+            worker.join(10)
+        finally:
+            if worker.is_alive():
+                self.release()
+                worker.join(10)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], ed.EditorError)
+        self.assertIn("1317", str(errors[0]))
+        self.assertFalse(session.ended)
+        self.assertFalse(session.busy())
+        if self.engine == "mysql":
+            self.assertEqual(self.session_log()[-2:], [ed.TAG + "ROLLBACK",
+                                                      ed.TAG + "SET SESSION explain_json_format_version=1"])
+
+    def test_plan_mysql_refuses_to_commit_an_open_or_unknown_transaction(self):
+        # MariaDB does not start the private transaction and can safely explain
+        # within the user's transaction. MySQL must never commit it implicitly.
+        self.run_sql("START TRANSACTION")
+        session = self.registry.get("tab1")
+        if self.engine == "mysql":
+            with self.assertRaises(ed.EditorError) as caught:
+                session.run_plan("SELECT 1", "explain")
+            self.assertEqual(caught.exception.code, "transaction_open")
+            self.assertTrue(session.in_transaction)
+            self.assertNotIn(ed.TAG + "START TRANSACTION READ ONLY", self.session_log())
+            self.assertNotIn(ed.TAG + "ROLLBACK", self.session_log())
+            self.call("/api/editor/rollback")
+            os.environ["FAKE_PS"] = "off"
+            self.call("/api/editor/open", tab="unknown")
+            with self.assertRaises(ed.EditorError) as caught:
+                self.registry.get("unknown").run_plan("SELECT 1", "explain")
+            self.assertEqual(caught.exception.code, "transaction_open")
+        else:
+            session.run_plan("SELECT 1", "explain")
+            self.assertTrue(session.in_transaction)
+            self.assertNotIn(ed.TAG + "ROLLBACK", self.session_log())
+
     def rows(self, result, index=0):
         return [r for r in result["run"]["results"] if r["type"] == "rows"][index]["rows"]
 
@@ -669,6 +1549,13 @@ class ProcessTests(unittest.TestCase):
         session = self.registry.get(tab)
         path = self.state / ("session-%d.log" % session.connection_id)
         return path.exists() and any(text in line for line in path.read_text(encoding="utf-8").splitlines())
+
+    def log_lines(self, text=None, tab="tab1"):
+        """Every statement tab's client received, in order (optionally those containing *text*)."""
+        session = self.registry.get(tab)
+        path = self.state / ("session-%d.log" % session.connection_id)
+        lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+        return [line for line in lines if text is None or text in line]
 
     def release(self, tab="tab1"):
         session = self.registry.get(tab)
@@ -713,6 +1600,7 @@ class ProcessTests(unittest.TestCase):
         result = self.run_sql("CALL rows_then_write()", limit=100, wait=0)
         self.assertEqual(result["status"], "running")
         session = self.registry.get("tab1")
+        self.until(lambda: session.run.current and session.run.current.kind == "user", "the user CALL after the history boundary")
         step = session.run.current
         self.until(lambda: step.entries and step.entries[0]["truncated"], "the 101st row")
         self.assertFalse(step.kill_requested)
@@ -965,12 +1853,15 @@ class ProcessTests(unittest.TestCase):
         argv = (self.state / "argv.log").read_text(encoding="utf-8")
         for flag in ("--xml", "--binary-as-hex", "--binary-mode", "--comments", "--force", "--quick", "--unbuffered",
                      "-vv", "--skip-reconnect", "--default-character-set=utf8mb4",
-                     "--init-command=SET NAMES utf8mb4"):
+                     "--init-command=SET NAMES utf8mb4", "--local-infile=0"):
             self.assertIn(repr(flag), argv)
         self.assertNotIn("s3cret-pw", argv)
         self.assertIn("defaults-exists=True", argv)
         child_argv = next(call[0][0] for call in self.processes.call_args_list if "--xml" in call[0][0])
         self.assertTrue(child_argv[1].startswith("--defaults-file="), child_argv)
+        # --local-infile=0 must come right after the defaults file so a
+        # hostile server cannot make the editor client send it a local file.
+        self.assertEqual(child_argv[2], "--local-infile=0", child_argv)
         self.assertNotIn("--defaults-extra-file=", argv)
         session = self.registry.get("tab1")
         self.assertIsNone(session._conn._defaults_file_path)      # removed once the client connected
@@ -1456,6 +2347,34 @@ class ProcessTests(unittest.TestCase):
         self.assertIn("unknown", status["transaction_note"])
 
     # -- safety -------------------------------------------------------------------------
+    def test_review_binds_on_error_before_any_statement_is_sent(self):
+        sql = 'SET @sf_review = 1; SELECT * FROM nope; SET @sf_review = 2'
+        for reviewed, executed in (('stop', 'continue'), ('continue', 'stop')):
+            for opened in (False, True):
+                with self.subTest(reviewed=reviewed, opened=opened):
+                    tab = 'sf-%s-%s' % (reviewed, opened)
+                    if opened:
+                        self.call('/api/editor/open', tab=tab)
+                    asked = self.call('/api/editor/run', tab=tab, sql=sql, on_error=reviewed)
+                    self.assertEqual(asked['status'], 'needs_confirmation')
+                    refused = self.call('/api/editor/run', tab=tab, sql=sql, on_error=executed,
+                                        confirmed=True, confirm_token=asked['confirmation']['token'])
+                    self.assertEqual(refused['status'], 'needs_confirmation')
+                    session = self.registry.get(tab)
+                    self.assertTrue(session is None or session.run is None, 'mismatched mode started a run')
+                    record = next(r for r in self.store.audit_records() if r['id'] == refused['audit_id'])
+                    self.assertEqual(record['status'], 'refused')
+
+    def test_review_accepts_same_on_error_mode_and_preserves_execution(self):
+        sql = 'SET @sf_review = 1; SELECT * FROM nope; SET @sf_review = 2'
+        for mode in ('stop', 'continue'):
+            with self.subTest(mode=mode):
+                result = self.run_sql(sql, tab='sf-same-' + mode, on_error=mode)
+                self.assertEqual(result['status'], 'error')
+                self.assertEqual(result['run']['on_error'], mode)
+                self.assertEqual([s['status'] for s in result['run']['statements']],
+                                 ['ok', 'error', 'not_run' if mode == 'stop' else 'ok'])
+
     def save_profile(self, **safety):
         profile = self.store.save("profile", dict({"name": "dev", "host": "127.0.0.1", "port": 3306, "user": "app"},
                                                   **safety))
@@ -1586,7 +2505,10 @@ class ProcessTests(unittest.TestCase):
         review = {"schema": "reviewed", "table": "tt", "warnings": []}
         original = ed.EditorSession._helper_row
         def row(session, step):
-            if "AS database_name" in step.send:
+            # Only the ALTER context re-check (refresh_state's combined state
+            # read also selects DATABASE() AS database_name since the default
+            # database picker).
+            if "SELECT DATABASE() AS database_name" in step.send:
                 self.assertTrue(session.run_lock.locked())
                 return {"database_name": "changed"}
             return original(session, step)
@@ -1599,6 +2521,21 @@ class ProcessTests(unittest.TestCase):
         self.assertFalse(self.logged("tab1", sql))
         self.assertFalse(self.logged("tab1", ed.ALTER_LOCK_WAIT))
         self.assertEqual(self.store.audit_records()[0]["outcome"], "target_changed")
+
+    def test_review_index_actions_audit_exact_index_after_confirmation(self):
+        visibility = 'IGNORED' if self.engine == 'mariadb' else 'INVISIBLE'
+        for clause, index in (('ALTER INDEX `i``x` ' + visibility, 'i`x'), ('DROP INDEX i', 'i'),
+                              ('DROP PRIMARY KEY', 'PRIMARY')):
+            with self.subTest(engine=self.engine, clause=clause):
+                sql = 'ALTER TABLE test.tt ' + clause
+                with mock.patch.object(ed, '_alter_review', return_value={'schema': 'test', 'table': 'tt', 'warnings': []}):
+                    done = self.run_sql(sql)
+                self.assertNotEqual(done['status'], 'needs_confirmation')
+                records = self.store.audit_records()
+                self.assertEqual(records[0]['target']['alter_table'], {'schema': 'test', 'table': 'tt', 'index': index})
+                self.assertEqual(records[0]['operation'], 'editor_run')
+                self.assertIn('alter_context', records[0]['verified'])
+                self.assertIn(sql, records[0]['statements'])
 
     def test_review_alter_guard_error_stops_before_ddl(self):
         # Change this test's fake binary only, leaving the shared fixture intact.
@@ -2142,6 +3079,65 @@ class RunScopeTests(unittest.TestCase):
     def sends(self, payload, backslash=True):
         return [u["send"] for u in ed._plan_run(payload, self.session(backslash))["units"]]
 
+    def test_native_explain_scoping_formats_and_error_offsets(self):
+        sql = "SELECT 1;\nUPDATE t SET name = '😀';\nDELETE FROM t"
+        for engine, version in (("mysql", "8.0.16"), ("mariadb", "11.4.13")):
+            session = self.session(False)
+            session.engine, session.server_version = engine, version
+            for fmt in ("table", "json", "tree"):
+                payload = {"sql": sql, "cursor": sql.index("UPDATE") + 2, "explain_format": fmt}
+                if fmt == "tree" and engine == "mariadb":
+                    with self.assertRaisesRegex(ed.EditorError, "MySQL 8.0.16"):
+                        ed._plan_run(payload, session)
+                    continue
+                plan = ed._plan_run(payload, session)
+                unit = plan["units"][0]
+                prefix = "EXPLAIN " if engine == "mariadb" and fmt == "table" else "EXPLAIN FORMAT=%s " % {"table": "TRADITIONAL", "tree": "TREE", "json": "JSON"}[fmt]
+                self.assertEqual(unit["send"], prefix + "UPDATE t SET name = '😀'")
+                self.assertEqual(plan["verdict"]["kind"], "read")
+                position = ed.error_position("Syntax error near 'name' at line 1", unit, plan["offsets"])
+                self.assertEqual(position["offset"], sql.index("name"))
+                self.assertEqual((position["line"], position["column"]), (2, 14))
+        session = self.session()
+        session.server_version = "8.0.15"
+        with self.assertRaisesRegex(ed.EditorError, "MySQL 8.0.16"):
+            ed._plan_run({"sql": "SELECT 1", "explain_format": "tree"}, session)
+        with self.assertRaisesRegex(ed.EditorError, "Choose Table"):
+            ed._plan_run({"sql": "SELECT 1", "explain_format": "invalid"}, session)
+
+    def test_native_explain_preserves_selection_and_existing_wrappers(self):
+        sql = "SELECT 1;\nSELECT REPLACE(name, 'a', 'b') FROM t;"
+        start = sql.index("SELECT REPLACE")
+        plan = ed._plan_run({"sql": sql, "selection": {"start": start, "end": len(sql)},
+                             "explain_format": "table"}, self.session())
+        self.assertEqual(plan["units"][0]["send"], "EXPLAIN FORMAT=TRADITIONAL " + sql[start:-1])
+        for inner in ("EXPLAIN ANALYZE SELECT 1", "EXPLAIN FORMAT=JSON SELECT 1", "DESCRIBE SELECT 1",
+                      "UPDATE a JOIN b USING(id) SET a.v = 2", "SELECT * FROM t FOR UPDATE"):
+            plan = ed._plan_run({"sql": inner, "explain_format": "table"}, self.session())
+            self.assertEqual(plan["units"][0]["send"], "EXPLAIN FORMAT=TRADITIONAL " + inner)
+
+    def test_native_explain_parameters_fill_placeholders_outside_literals(self):
+        explain = lambda sql, parameters, backslash=True: self.sends(
+            {"sql": sql, "explain_format": "table", "parameters": parameters}, backslash)
+        self.assertEqual(explain("SELECT * FROM t WHERE a = :a AND b IN (:b) AND c = ':a' /* :a */ AND d = @x",
+                                 {"a": -7, "b": [1, None, True, "é"]}),
+                         ["EXPLAIN FORMAT=TRADITIONAL SELECT * FROM t WHERE a = -7 AND b IN (1, NULL, 1, "
+                          "CONVERT(X'c3a9' USING utf8mb4)) AND c = ':a' /* :a */ AND d = @x"])
+        # A statement without placeholders is sent as written, and Run never binds.
+        self.assertEqual(explain("SELECT 1", {"a": 1}), ["EXPLAIN FORMAT=TRADITIONAL SELECT 1"])
+        self.assertEqual(self.sends({"sql": "SELECT :a", "parameters": {"a": 1}}), ["SELECT :a"])
+        for parameters, message in (([1], "JSON object"), ({"a": []}, "empty list"),
+                                    ({"a": {"b": 1}}, "finite number"), ({"a": float("nan")}, "finite number"),
+                                    ({}, "Missing parameter: a")):
+            with self.subTest(parameters=parameters), self.assertRaisesRegex(ed.EditorError, message):
+                explain("SELECT :a", parameters)
+        # Strings end at different places with and without backslash escapes:
+        # binding would guess, so it is refused.
+        with self.assertRaisesRegex(ed.EditorError, "NO_BACKSLASH_ESCAPES"):
+            explain("SELECT 'it\\'s', :a", {"a": 1})
+        self.assertEqual(explain("SELECT 'it''s', :a", {"a": 1}, backslash=False),
+                         ["EXPLAIN FORMAT=TRADITIONAL SELECT 'it''s', 1"])
+
     def test_cursor_uses_the_sessions_backslash_reading(self):
         sql = "SELECT 'a\\'; INSERT INTO t VALUES (1); SELECT 'c';"
         self.assertEqual(self.sends({"sql": sql, "cursor": 3}, backslash=False), ["SELECT 'a\\'"])
@@ -2430,3 +3426,65 @@ class AlterPreflightTests(unittest.TestCase):
             with self.subTest(sql=sql, engine=engine, version=version):
                 unit = ed._alter_unit(ed._plan_run({"sql": sql}, None))
                 self.assertIsNone(ed._alter_suggestion(unit, {"table_engine": storage}, engine, version))
+
+
+class ContinueOnErrorTests(ProcessTests):
+    """Run all with the tab's On error: Continue option runs every statement
+    and counts the failures (editor_session Run.continue_on_error)."""
+
+    def test_continue_runs_every_statement(self):
+        result = self.run_sql("SELECT 1; SELECT * FROM nope; SELECT 2", on_error="continue")
+        self.assertEqual(result["status"], "error")
+        run = result["run"]
+        self.assertEqual(run["on_error"], "continue")
+        self.assertEqual([s["status"] for s in run["statements"]], ["ok", "error", "ok"])
+        self.assertEqual(run["counts"]["statements"], 3)
+        self.assertEqual(run["counts"]["run"], 3)
+        self.assertEqual(run["counts"]["errors"], 1)
+        rows = [r for r in run["results"] if r["type"] == "rows"]
+        self.assertEqual([r["rows"] for r in rows], [[["1"]], [["2"]]])
+        errors = [r for r in run["results"] if r["type"] == "error"]
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0]["statement"], 1)
+
+    def test_stop_at_the_first_error_is_the_default(self):
+        result = self.run_sql("SELECT 1; SELECT * FROM nope; SELECT 2")
+        self.assertEqual(result["run"]["on_error"], "stop")
+        self.assertEqual([s["status"] for s in result["run"]["statements"]], ["ok", "error", "not_run"])
+        self.assertEqual(result["run"]["counts"]["run"], 2)
+
+    def test_continue_applies_to_run_all_only(self):
+        # A single statement at the cursor has nothing to continue past.
+        result = self.run_sql("SELECT 1; SELECT 2", cursor=0, on_error="continue")
+        self.assertEqual(result["run"]["on_error"], "stop")
+
+    def test_on_error_is_validated(self):
+        with self.assertRaisesRegex(ValueError, "on_error"):
+            self.run_sql("SELECT 1", on_error="maybe")
+
+
+class UseDatabaseProcessTests(ProcessTests):
+    """The editor's default database: USE in the tab's session, verified by
+    reading DATABASE() in the refresh_state pass (status database_name)."""
+
+    def test_status_reports_no_database_at_first(self):
+        reply = self.run_sql("SELECT 1")
+        self.assertIsNone(reply["session"]["database_name"])
+
+    def test_use_changes_the_database_and_is_verified(self):
+        self.run_sql("SELECT 1")
+        reply = self.call("/api/editor/use", database="mydb")
+        self.assertEqual(reply["database"], "mydb")
+        self.assertEqual(reply["session"]["database_name"], "mydb")
+        self.assertTrue(self.logged("tab1", "USE `mydb`"))
+
+    def test_use_escapes_backquotes(self):
+        self.run_sql("SELECT 1")
+        reply = self.call("/api/editor/use", database="we`ird")
+        self.assertEqual(reply["database"], "we`ird")
+        self.assertTrue(self.logged("tab1", "USE `we``ird`"))
+
+    def test_use_without_a_session_keeps_the_choice(self):
+        reply = self.call("/api/editor/use", database="mydb")
+        self.assertEqual(reply["status"], "none")
+        self.assertIsNone(reply["session"])

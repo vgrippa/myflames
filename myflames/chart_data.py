@@ -10,6 +10,11 @@ Schemas: ``docs/schemas/chart-data-1.0.json`` (HTML reports and explore
 pages) and ``chart-data-2.0.json`` (the workspace's ``/api/analyze``, which
 stores each analysis message once). The bundle accepts both. This payload is
 deliberately separate from the slim sidecar ``plan_tree``.
+
+A node the parser flags for a row misestimate carries ``misestimate`` (the
+record ``parser.misestimate_record`` stores in its details, plus the
+advisor's statistics evidence for its table when the analysis has it); other
+nodes have no such key, so a plan without one serializes exactly as before.
 """
 import math
 import json
@@ -60,6 +65,30 @@ def _highlights(analysis):
         if label and label not in messages:
             messages[label] = item.get("message") or ""
     return messages
+
+
+#: Fields of the parser's row-estimate record the bundle receives.
+MISESTIMATE_FIELDS = ("direction", "factor", "estimated", "actual", "loops", "table",
+                      "kind", "label", "text", "reason")
+EVIDENCE_FIELDS = ("table", "last_update", "n_rows", "histograms", "text", "statement")
+
+
+def _misestimate(details, evidence_by_table):
+    """``(field, evidence)`` for an operator: the parser's record
+    (``details["misestimate"]``) with the advisor's statistics evidence for
+    its table identity (schema-qualified when supplied by the plan;
+    ``analysis["statistics_evidence"]``), or ``(None, None)``. Never fall
+    back from a qualified identity to a bare-name evidence entry.
+    """
+    miss = details.get("misestimate")
+    if not isinstance(miss, dict) or not miss.get("label"):
+        return None, None
+    evidence = evidence_by_table.get(miss.get("table") or "")
+    evidence = evidence if isinstance(evidence, dict) and evidence.get("statement") else None
+    field = {key: miss.get(key) for key in MISESTIMATE_FIELDS}
+    field["evidence"] = ({key: evidence.get(key) for key in EVIDENCE_FIELDS}
+                         if evidence else None)
+    return field, evidence
 
 
 def _flame_details(node):
@@ -199,6 +228,7 @@ def build_chart_data(root, title="Query plan", engine=None,
 
     by_id = {node["node_id"]: node for node in flatten_nodes(root)}
     rows = []
+    evidence_by_table = (analysis or {}).get("statistics_evidence") or {}
 
     def visit(node, parent, index, depth):
         d = node.get("details") or {}
@@ -206,7 +236,8 @@ def build_chart_data(root, title="Query plan", engine=None,
         measured = _number(d.get("actual_last_row_ms")) is not None
         children = node.get("children") or []
         highlight_key, highlight_value = highlight_field(node)
-        rows.append({
+        misestimate, evidence = _misestimate(d, evidence_by_table)
+        row = {
             "id": node["node_id"],
             "group": _operator_group(d),
             "parent_id": parent["node_id"] if parent is not None else None,
@@ -244,9 +275,14 @@ def build_chart_data(root, title="Query plan", engine=None,
             "teach_index": teach.get((node.get("folded_label") or "").strip()),
             highlight_key: highlight_value,
             "metrics": {name: list(metric_value(node, name)) for name in METRICS},
-            "details_text": _details(node),
+            "details_text": _details(node, evidence),
             "flame_details": _flame_details(node),
-        })
+        }
+        # Only misestimated operators carry the field, so a plan without one
+        # serializes exactly as before.
+        if misestimate:
+            row["misestimate"] = misestimate
+        rows.append(row)
         for i, child in enumerate(children):
             visit(child, node, i, depth + 1)
 

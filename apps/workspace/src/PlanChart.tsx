@@ -37,6 +37,11 @@ export type PlanChartProps = {
   visibleOperatorIds?: string[];
   statsIds?: string[];
   onSelectStats?: (ids: string[]) => void;
+  /** Bring this operator into view each time `n` changes (the plan header's
+   * Misestimates chip). Selection itself still follows `selectedId`. */
+  reveal?: { id: string; n: number };
+  /** Report whether the current view actually contains the requested mark. */
+  onReveal?: (id: string, shown: boolean) => void;
 };
 
 /** True when the runtime draws *view* and the plan carries chart data. */
@@ -153,6 +158,8 @@ function NativeChart({
   metricsTarget,
   visibleOperatorIds,
   statsIds = [],
+  reveal,
+  onReveal,
 }: PlanChartProps) {
   const host = useRef<HTMLDivElement>(null);
   const handle = useRef<ChartHandle | null>(null);
@@ -166,6 +173,8 @@ function NativeChart({
   selectedRef.current = selectedId;
   const onSelectRef = useRef(onSelect);
   onSelectRef.current = onSelect;
+  const onRevealRef = useRef(onReveal);
+  onRevealRef.current = onReveal;
   const data = plan.chart_data!;
   // A stable dependency for the collapsed set (a fresh array each render).
   const collapsedKey = collapsed.join("\n");
@@ -378,6 +387,17 @@ function NativeChart({
     // shows a stale operator while the page selects another one.
     if (!selectedId || !chart.select(selectedId, false)) chart.clear();
   }, [selectedId]);
+  // After the selection above (effects run in order): pan or scroll the
+  // chart to the operator the header asked for. A redraw in the same commit
+  // (focus or collapse cleared) has already selected it.
+  const revealN = reveal?.n || 0;
+  useEffect(() => {
+    const chart = handle.current;
+    if (revealN && reveal?.id && chart) {
+      const shown = chart.reveal(reveal.id);
+      onRevealRef.current?.(reveal.id, shown);
+    }
+  }, [revealN]);
   return (
     <>
       {toolbarSlot && createPortal(toolbar, toolbarSlot)}

@@ -13,7 +13,9 @@ Wire contracts:
     manual_checks[], limitations[], status (findings are NOT a process failure).
   lifecycle-plan-1.0: operation, request, server, connection_key, tool, target,
     commands[], warnings[], checks[], ready, binding.
-  lifecycle-job-1.0: id, operation, state, progress, events[], result, error;
+  lifecycle-job-1.0: id, operation, state, progress, events[], result, error,
+    phase (the current step in words), elapsed_s, output (SQL dumps:
+    written_bytes and the server's estimated_bytes, else null);
     result: status, verification[] and (for dumps) manifest.
     Failures include failure_category (input, connection, operation).
   Restore plans carry manifest, manifest_hash, required_acknowledgement and a
@@ -221,11 +223,30 @@ def _report_safe(value, passwords=(), field=''):
     return value
 
 
-def detect_tools(path=None, common_dirs=None, job=None, check_updates=False):
+# Completed local version probes only. Release-page results belong to tool_updates.
+_PROBE_CACHE = collections.OrderedDict()
+_PROBE_LOCK = threading.Lock()
+_PROBE_TTL = 60
+_PROBE_LIMIT = 64
+
+
+def _probe_key(name, binary):
+    try:
+        info = os.stat(binary)
+        return (name, os.path.realpath(binary), info.st_dev, info.st_ino,
+                info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    except OSError:
+        return None
+
+
+def detect_tools(path=None, common_dirs=None, job=None, check_updates=False, refresh=False):
     """Discover each external tool, including deprecated mysqlpump (never offered).
 
     common_dirs=() makes PATH-only discovery deterministic for callers/tests.
     An unrecognized or failing version probe is unavailable, never guessed.
+    Completed probes are memoized for 60 seconds by binary identity; discovery
+    still runs every time. refresh=True bypasses the cache. Failures to launch
+    and timeouts are never cached. No network check runs unless requested.
     """
     found = {}
     for name in TOOLS:
@@ -241,19 +262,35 @@ def detect_tools(path=None, common_dirs=None, job=None, check_updates=False):
         entry = {'available': False, 'deprecated': name == 'mysqlpump'}
         if binary:
             entry['path'] = os.path.abspath(binary)
-            try:
-                with tempfile.TemporaryDirectory(prefix='myflames-probe-') as home:
-                    child = subprocess.run([entry['path'], '--version'], stdout=subprocess.PIPE,
-                                           stderr=subprocess.STDOUT, timeout=8, env=_clean_env(home))
-                output = child.stdout.decode('utf-8', 'replace').strip()[:4096]
-                entry['version'] = output
-                entry['version_tuple'] = list(version_tuple(output))
-                entry['engine'] = detect_flavor(output)
-                entry['available'] = child.returncode == 0 and version_tuple(output) != (0, 0, 0)
-                if not entry['available']:
-                    entry['error'] = 'Version probe failed or returned an unrecognized version.'
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                entry['error'] = type(exc).__name__
+            # Discovery is cheap and always fresh. A replaced binary invalidates
+            # the cache even when its path and mtime were preserved.
+            with _PROBE_LOCK:
+                if job:
+                    job.check_cancel()
+                cache_key = _probe_key(name, binary)
+                cached = _PROBE_CACHE.get(cache_key)
+                if not refresh and cached and time.monotonic() - cached[0] < _PROBE_TTL:
+                    entry.update(copy.deepcopy(cached[1]))
+                else:
+                    try:
+                        with tempfile.TemporaryDirectory(prefix='myflames-probe-') as home:
+                            child = subprocess.run([entry['path'], '--version'], stdout=subprocess.PIPE,
+                                                   stderr=subprocess.STDOUT, timeout=8, env=_clean_env(home))
+                        output = child.stdout.decode('utf-8', 'replace').strip()[:4096]
+                        entry['version'] = output
+                        entry['version_tuple'] = list(version_tuple(output))
+                        entry['engine'] = detect_flavor(output)
+                        entry['available'] = child.returncode == 0 and version_tuple(output) != (0, 0, 0)
+                        if not entry['available']:
+                            entry['error'] = 'Version probe failed or returned an unrecognized version.'
+                        if cache_key is not None and _probe_key(name, binary) == cache_key:
+                            fields = {key: value for key, value in entry.items() if key not in ('path', 'deprecated')}
+                            _PROBE_CACHE[cache_key] = (time.monotonic(), copy.deepcopy(fields))
+                            _PROBE_CACHE.move_to_end(cache_key)
+                            while len(_PROBE_CACHE) > _PROBE_LIMIT:
+                                _PROBE_CACHE.popitem(last=False)
+                    except (OSError, subprocess.TimeoutExpired) as exc:
+                        entry['error'] = type(exc).__name__
         found[name] = entry
     from .tool_updates import enrich_tools
     return enrich_tools({'schema_version': 'lifecycle-tools-1.0', 'tools': found},
@@ -722,7 +759,9 @@ class LifecycleJob(object):
     start() is optional: run() executes synchronously in tests/CLI. wait() joins
     the worker; close() cancels and joins. Callers must close jobs on shutdown.
     Every external stream is drained concurrently; logs are capped at 200 events.
-    A percent is absent until actually reported; no invented time estimate.
+    A percent is absent until the tool reports one; an SQL dump instead reports
+    the bytes it wrote beside the server's size estimate, and the reader draws
+    an estimated percent from those. No invented time estimate.
     """
     def __init__(self, operation, work, connection=None, factory=LifecycleConnection, passwords=()):
         self.id = uuid.uuid4().hex
@@ -732,6 +771,11 @@ class LifecycleJob(object):
         self.passwords = tuple(passwords) + (self.connection.get('password'),)
         self.state, self.error, self.result = 'queued', '', None
         self.progress = None
+        #: The current step in words (step()); never holds a percent sign.
+        self.phase = None
+        #: SQL dumps: {'written_bytes', 'estimated_bytes'} while dump.sql grows.
+        self.output = None
+        self.began = self.ended = None
         self.cancelled = threading.Event()
         self.events = collections.deque(maxlen=200)
         self.lock = threading.RLock()
@@ -752,6 +796,10 @@ class LifecycleJob(object):
         #: ToolGroups that records this job's tool process groups (LifecycleJobs sets it).
         self.groups = None
 
+    def _clean(self, text):
+        # Tools such as mysqlsh color their output even without a terminal.
+        return terminal_text(_safe(_ANSI.sub('', str(text)), self.passwords))[:8192]
+
     def emit(self, text, stream='status'):
         # Control data must be consumed before any password replacement. Even
         # a one-character password may overlap the marker or session number.
@@ -762,8 +810,7 @@ class LifecycleJob(object):
             if self.cancelled.is_set():
                 self._kill_query()
             return
-        # Tools such as mysqlsh color their output even without a terminal.
-        text = terminal_text(_safe(_ANSI.sub('', str(text)), self.passwords))[:8192]
+        text = self._clean(text)
         with self.lock:
             match = re.search(r'(?<![\d.])(\d{1,3}(?:\.\d+)?)\s*%', text)
             if match and 0 <= float(match.group(1)) <= 100:
@@ -771,12 +818,22 @@ class LifecycleJob(object):
             self.events.append({'at': now(), 'stream': stream, 'text': text})
             self.emitted += 1
 
+    def step(self, text):
+        """Name the step the job is on: its phase, and a line in the log."""
+        with self.lock:
+            self.phase = self._clean(text)
+        self.emit(text)
+
     def snapshot(self):
         with self.lock:
+            elapsed = None
+            if self.began is not None:
+                elapsed = round((self.ended if self.ended is not None else time.monotonic()) - self.began, 1)
             return _report_safe({'schema_version': 'lifecycle-job-1.0', 'id': self.id,
                           'operation': self.operation, 'state': self.state,
                           'progress': self.progress, 'detail': copy.deepcopy(self.detail),
-                          'events': list(self.events),
+                          'events': list(self.events), 'phase': self.phase, 'elapsed_s': elapsed,
+                          'output': copy.deepcopy(self.output),
                           'result': copy.deepcopy(self.result), 'error': self.error}, self.passwords)
 
     def start(self):
@@ -797,6 +854,7 @@ class LifecycleJob(object):
         return self.snapshot()
 
     def _run(self):
+        self.began = time.monotonic()
         self.state = 'running'
         try:
             self.check_cancel()
@@ -824,6 +882,7 @@ class LifecycleJob(object):
                 if isinstance(self.result, dict):
                     self.result['audit_id'] = self.audit.id
             self.process, self.connection_id = None, None
+            self.ended = time.monotonic()
 
     def check_cancel(self):
         if self.cancelled.is_set():
@@ -883,6 +942,18 @@ class LifecycleJob(object):
         self.cancelled.set()
         self._kill_query()
         self._signal(signal.SIGTERM)
+
+    def _measure(self, handle):
+        """Record how much the tool has written into *handle* (an SQL dump's
+        dump.sql), when the operation asked for it by setting output."""
+        if self.output is None:
+            return
+        try:
+            size = os.fstat(handle.fileno()).st_size
+        except (OSError, ValueError, AttributeError):
+            return
+        with self.lock:
+            self.output = dict(self.output, written_bytes=size)
 
     def wait(self, timeout=None):
         if self.thread:
@@ -988,10 +1059,14 @@ class LifecycleJob(object):
             writer.start()
         started = time.monotonic()
         terminating = None
+        measured = started
         try:
             while proc.poll() is None:
                 if timeout and time.monotonic() - started > timeout:
                     self.cancel()
+                if output_file is not None and time.monotonic() - measured >= 0.5:
+                    measured = time.monotonic()
+                    self._measure(output_file)
                 if self.cancelled.is_set():
                     if terminating is None:
                         terminating = time.monotonic()
@@ -1022,6 +1097,8 @@ class LifecycleJob(object):
                 self.process, self.connection_id = None, None
             if groups is not None:
                 groups.settle(proc.pid)
+            if output_file is not None:
+                self._measure(output_file)
         self.check_cancel()
         from .connector import _client_text
         stdout = _client_text(captured['stdout'])
@@ -1371,7 +1448,7 @@ def _privileges_check(conn, groups):
                          'Privilege hint only; server/tool has the final decision.', missing_any_of=missing)
 
 
-def _catalog(conn, schemas=None, tables=None, include_system=False):
+def _catalog_where(schemas=None, tables=None, include_system=False):
     where = "TABLE_SCHEMA NOT IN ('mysql','sys','performance_schema','information_schema')"
     if include_system:
         where = "TABLE_SCHEMA NOT IN ('performance_schema','information_schema')"
@@ -1379,8 +1456,39 @@ def _catalog(conn, schemas=None, tables=None, include_system=False):
         where = 'TABLE_SCHEMA IN (' + ','.join(literal(s) for s in schemas) + ')'
     if tables:
         where += ' AND TABLE_NAME IN (' + ','.join(literal(t) for t in tables) + ')'
+    return where
+
+
+def _catalog(conn, schemas=None, tables=None, include_system=False):
     return Reader(conn, TAG).rows('SELECT TABLE_SCHEMA,TABLE_NAME,TABLE_TYPE,ENGINE,COALESCE(DATA_LENGTH,0),'
-                                  'COALESCE(INDEX_LENGTH,0) FROM information_schema.TABLES WHERE ' + where)
+                                  'COALESCE(INDEX_LENGTH,0) FROM information_schema.TABLES WHERE ' +
+                                  _catalog_where(schemas, tables, include_system))
+
+
+def _dump_size_estimate(conn, server, catalog, schemas, tables, include_system):
+    """About how many bytes an SQL dump writes: the data size (DATA_LENGTH)
+    of its tables, for a progress bar only, never a check. MySQL 8.0 and
+    later cache information_schema table sizes for a day by default
+    (information_schema_stats_expiry, a session variable that SET_VAR cannot
+    set), so there the sizes are read from the storage engine instead of that
+    cache, in one bounded call; when that fails, the catalog's sizes stand.
+    MariaDB names a system-versioned table SYSTEM VERSIONED; it is dumped too.
+    None when nothing is known."""
+    def total(rows):
+        size = 0
+        for row in rows:
+            if len(row) >= 5 and row[2] in ('BASE TABLE', 'SYSTEM VERSIONED') and str(row[4] or '').isdigit():
+                size += int(row[4])
+        return size or None
+    if server.get('engine') == 'mysql' and version_tuple(server.get('version') or '') >= (8, 0, 3):
+        try:
+            return total(Reader(conn, TAG).rows(
+                'SET SESSION information_schema_stats_expiry=0;\n' + TAG + 'SELECT TABLE_SCHEMA,TABLE_NAME,'
+                'TABLE_TYPE,ENGINE,COALESCE(DATA_LENGTH,0) FROM information_schema.TABLES WHERE ' +
+                _catalog_where(schemas, tables, include_system)))
+        except (ConnectorError, LifecycleError):
+            pass  # A cancel is raised again before the tool starts.
+    return total(catalog)
 
 
 def _samples(conn, catalog, limit=3, max_bytes=1024 * 1024, seconds=5, job=None):
@@ -1789,6 +1897,7 @@ def _write_job(operation, connection, plan, rebuild, action, confirmed, typed_ta
             if typed_target != plan.get('target'):
                 refuse('Type the exact target from the preflight; nothing was sent.')
             _check_profile_policy(job)
+            job.step('Repeating the preflight before anything starts.')
             with contextlib.ExitStack() as stack:
                 conn = _BoundedConnection(stack.enter_context(_connect(factory, connection)), job)
                 identity = read_server(conn, connection)
@@ -1890,19 +1999,29 @@ def _perform_dump(job, conn, plan, connection):
                 'started_at': started, 'finished_at': now(), 'files': records, 'samples': samples,
                 'object_catalog': catalog, 'verification': verification, 'complete': complete}
     try:
-        catalog = _catalog(conn, request['schemas'], request['tables'],
-                           include_system=tool['name'] != 'mysqlsh' and not request['schemas'])
+        job.step('Reading the list of tables.')
+        include_system = tool['name'] != 'mysqlsh' and not request['schemas']
+        catalog = _catalog(conn, request['schemas'], request['tables'], include_system=include_system)
         structure_only = bool(request.get('options', {}).get('structure_only'))
         # Source row counts feed restore's row comparison; a structure-only
         # dump carries no rows, so no counts are sampled or recorded.
         if not structure_only:
+            job.step('Counting rows of small tables to verify the dump.')
             samples = _samples(conn, catalog, job=job)
         if tool['name'] == 'mysqlsh':
+            job.step('Dumping with MySQL Shell.')
             _invoke(job, tool, connection, ['--js'], _shell_script(job, _shell_dump_expression(request)))
         else:
+            estimate = None if structure_only else _dump_size_estimate(
+                conn, plan['server'], catalog, request['schemas'], request['tables'], include_system)
+            job.check_cancel()  # The estimate keeps a cancel for the tool; stop before dump.sql exists.
+            with job.lock:
+                job.output = {'written_bytes': 0, 'estimated_bytes': estimate}
+            job.step('Dumping with %s into dump.sql.' % tool['name'])
             fd = os.open(os.path.join(directory, 'dump.sql'), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, 'wb') as handle:
                 _invoke(job, tool, connection, _dump_args(request, tool), output_file=handle)
+        job.step('Checksumming the dump files.')
         records = _file_records(directory, job)
         present = bool(records) and any(r['size_bytes'] > 0 for r in records)
         if tool['name'] == 'mysqlsh':
@@ -1915,6 +2034,7 @@ def _perform_dump(job, conn, plan, connection):
             verification.append(_verification('dump_rows', 'not_checked',
                                                'Structure-only dump (no rows): restore compares objects, not row counts.'))
         else:
+            job.step('Counting rows again to compare.')
             after = _samples(conn, catalog, job=job)
             verification.append(_verification('source_sample_stability', 'passed' if samples and samples == after and
                                                all('count' in sample for sample in samples) else 'not_checked',
@@ -1928,6 +2048,7 @@ def _perform_dump(job, conn, plan, connection):
         complete = complete and bool(records) and not job.cancelled.is_set()
         if not complete:
             records = []
+        job.step('Writing the manifest.')
         manifest = _report_safe(manifest_value(records), job.passwords)
         _save_manifest(directory, manifest)
         if not complete:
@@ -2128,6 +2249,7 @@ def restore_job(connection, plan, confirmed=False, typed_target=None, audit=None
         if tool['name'] == 'mysqlsh':
             # Shell reads chunks lazily. Loading the original directory would
             # leave a TOCTOU window even after its preflight checksums passed.
+            job.step('Copying the reviewed dump files to staging.')
             with tempfile.TemporaryDirectory(prefix='myflames-restore-', dir=request['staging_directory']) as staged:
                 for record in manifest['files']:
                     destination = os.path.join(staged, *_manifest_path(record['path']))
@@ -2136,9 +2258,10 @@ def restore_job(connection, plan, confirmed=False, typed_target=None, audit=None
                         _copy_reviewed_file(request['directory'], record, output, job)
                 _check_reviewed_manifest(request['directory'], fresh['manifest_hash'], job)
                 staged_request = dict(request, directory=staged)
+                job.step('Loading with MySQL Shell.')
                 _invoke(job, tool, connection, ['--js'], _shell_script(job, _load_expression(staged_request)))
         else:
-            args = ['--batch', '--skip-column-names', '--unbuffered'] + list(dbops.WRITE_CLIENT_FLAGS)
+            args = ['--local-infile=0', '--batch', '--skip-column-names', '--unbuffered'] + list(dbops.WRITE_CLIENT_FLAGS)
             if request.get('schema'):
                 args += ['--database=' + request['schema']]
             # An stdin prefix prints the actual executing session id before
@@ -2146,10 +2269,13 @@ def restore_job(connection, plan, confirmed=False, typed_target=None, audit=None
             with tempfile.TemporaryFile('w+b', dir=request['staging_directory']) as sql:
                 sql.write((TAG + "SELECT CONCAT('%s',CONNECTION_ID());\n" % job.marker).encode('utf-8'))
                 record = next(r for r in manifest['files'] if r['path'] == 'dump.sql')
+                job.step('Copying the reviewed dump.sql to staging.')
                 _copy_reviewed_file(request['directory'], record, sql, job)
                 _check_reviewed_manifest(request['directory'], fresh['manifest_hash'], job)
                 sql.seek(0)
+                job.step('Loading dump.sql with %s.' % tool['name'])
                 _invoke(job, tool, connection, args, input_file=sql)
+        job.step('Verifying the restored objects and row counts.')
         after_server = read_server(conn, connection)
         if after_server['identity'] != fresh['server']['identity']:
             raise LifecycleError('Target identity changed during restore; verification refused.')
@@ -2555,7 +2681,7 @@ def clone_job(donor_connection, recipient_connection, plan, confirmed=False, typ
             sql += clone_statement(donor_connection, request.get('data_directory'), request.get('require_ssl', True),
                                    redact=False, donor_address=donor_address) + ';\n'
             try:
-                _invoke(job, tool, recipient_connection, ['--batch', '--skip-column-names', '--unbuffered'] + list(dbops.WRITE_CLIENT_FLAGS), sql)
+                _invoke(job, tool, recipient_connection, ['--local-infile=0', '--batch', '--skip-column-names', '--unbuffered'] + list(dbops.WRITE_CLIENT_FLAGS), sql)
             except LifecycleError as exc:
                 if request.get('data_directory') or job.cancelled.is_set() or not _restart_expected(exc):
                     raise

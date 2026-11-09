@@ -551,6 +551,30 @@
   height: 13px;
   margin: 0;
 }
+
+/* The view read is primary; the chevron states the wider connection scope. */
+.view-refresh-menu [role="menuitem"] {
+  display: grid;
+  gap: var(--space-1);
+  width: 100%;
+  padding: var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.view-refresh-menu [role="menuitem"]:is(:hover:not(:disabled), :focus-visible) {
+  background: var(--surface-hover);
+}
+.view-refresh-menu [role="menuitem"]:disabled {
+  color: var(--ink-faint);
+  cursor: default;
+}
+
 .inspector-toggle[aria-pressed="true"] {
   color: var(--accent-text);
   background: var(--accent-soft);
@@ -607,6 +631,40 @@
 .view-status .error + .capture-status,
 .view-status .capture-status + .error {
   margin-top: var(--space-2);
+}
+/* The dismiss × of a Notice or a view's error line: at the end of the flex
+   row (.notice/.error are flex, space-between), quiet until hovered. The body
+   text keeps the room and wraps. */
+.notice-body {
+  min-width: 0;
+}
+.notice-dismiss {
+  flex: none;
+  align-self: flex-start;
+  margin: -3px -6px 0 0;
+  color: inherit;
+  opacity: 0.6;
+}
+.notice-dismiss:hover,
+.notice-dismiss:focus-visible {
+  opacity: 1;
+}
+/* An inline action inside a notice ("Run in this tab's session"): text
+   styling, one step stronger than the surrounding message. */
+.notice-action {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  color: var(--accent-text);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.notice-action:hover,
+.notice-action:focus-visible {
+  color: var(--accent-hover);
 }
 .view-split {
   display: flex;
@@ -1700,6 +1758,22 @@ button.metric-tile.is-selected:hover {
 .tile-foot > .sparkline {
   margin-left: auto;
 }
+/* A comparison under the value ("was 12/s"), and a marker kept beside the
+   status (a changed verdict). */
+.tile-compare {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+.tile-foot > .tile-badge {
+  flex-shrink: 0;
+  margin-right: auto;
+  white-space: nowrap;
+}
 @media (max-width: 900px) {
   .tile-grid {
     display: flex;
@@ -2656,9 +2730,9 @@ details[open]:not([class]) > summary:not([class]):not(:has(> svg))::before {
   align-items: center;
   gap: var(--space-1-5);
 }
-/* Beside an icon the label starts at the icon; the reserved room trails. */
+/* Center the visible label within the width reserved for its busy state. */
 .action-button.has-icon .action-button-label {
-  justify-items: start;
+  justify-items: center;
 }
 /* The label the button is not showing, kept for its width only. */
 .action-button-label::after {

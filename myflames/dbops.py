@@ -138,6 +138,8 @@ REASON_DASH_CONTROL = ("'--' before a control character is code to the client an
                        "statement boundaries are uncertain.")
 REASON_DELIMITER = ("A DELIMITER line without a usable delimiter (none, or one with a backslash) leaves the "
                     "statement boundaries uncertain.")
+REASON_READYSET_HINT = "A /*rs+ ... create ... */ hint creates a Readyset cache when run on Readyset."
+_READYSET_CREATE_HINT = re.compile(r"^/\*rs\+.*\bcreate\b", re.I | re.S)
 
 
 def _delimiter_argument(sql, at):
@@ -267,6 +269,8 @@ def split_statements(sql, backslash_escapes=True, delimiter=";"):
             at = token.index("\\")
             issue(REASON_CLIENT_COMMAND % (token[at + 1:at + 2] or ""))
         if token.startswith("/*"):
+            if _READYSET_CREATE_HINT.match(token):
+                issue(REASON_READYSET_HINT)
             opener = _VERSIONED_OPEN.match(token)
             if opener and not versioned:
                 # The body of an executable comment is code: scan it (a
@@ -335,9 +339,9 @@ def _name(token, idents):
     return token
 
 
-_OBJECT_WORDS = ("TABLE", "TABLES", "INDEX", "VIEW", "DATABASE", "SCHEMA", "USER", "ROLE", "PROCEDURE",
+_OBJECT_WORDS = ("READYSET", "TABLE", "TABLES", "INDEX", "VIEW", "DATABASE", "SCHEMA", "USER", "ROLE", "PROCEDURE",
                  "FUNCTION", "TRIGGER", "EVENT", "SERVER", "TABLESPACE", "LOGFILE", "SEQUENCE", "INSTANCE",
-                 "PACKAGE", "RESOURCE", "UNDO", "SPATIAL")
+                 "PACKAGE", "RESOURCE", "UNDO", "SPATIAL", "CACHE", "CACHES", "QUERIES")
 
 
 def _verb(upper):
@@ -494,12 +498,14 @@ def _select_function_checks(upper, idents):
     return found
 
 
-def _select_checks(upper, idents):
+def _select_checks(upper, idents, into=True):
+    """The SELECT expression checks; *into* False skips INTO (an explained
+    INSERT INTO or SELECT ... INTO writes nothing)."""
     found = _select_function_checks(upper, idents)
-    if re.search(r"\bINTO\s+(?:OUTFILE|DUMPFILE)\b", upper):
+    if into and re.search(r"\bINTO\s+(?:OUTFILE|DUMPFILE)\b", upper):
         found.append(_verdict("write", "file", "INTO OUTFILE or DUMPFILE writes a file on the database server host "
                                                "(it needs the FILE privilege)."))
-    elif re.search(r"\bINTO\b", upper):
+    elif into and re.search(r"\bINTO\b", upper):
         found.append(_verdict("write", "session", "INTO assigns the result to variables."))
     if re.search(r"\bFOR\s+(?:UPDATE|SHARE)\b|\bLOCK\s+IN\s+SHARE\s+MODE\b", upper):
         found.append(_verdict("write", "locking_read",
@@ -792,8 +798,19 @@ def _classify_code(upper, idents, key_columns):
         if re.match(r"\s*%s(?:\s*\.\s*%s)?\s*OPEN\b" % (name, name), after):
             return _verdict("risky", "lock", "HANDLER OPEN holds a metadata lock on the table until "
                                             "HANDLER CLOSE or the session ends")
-        return _verdict("read", "read")
-    if word in ("SHOW", "HELP", "USE", "CHECKSUM", "SIGNAL", "RESIGNAL", "GET", "DEALLOCATE"):
+        # HANDLER READ evaluates its WHERE expression on the server; apply
+        # the SELECT expression checks (functions, :=, named locks) to it.
+        return _select_checks(upper, idents)
+    if word == "SHOW":
+        # SHOW's WHERE and expression parts are evaluated by the server
+        # (sql/sql_show.cc evaluates the condition like a SELECT WHERE), so
+        # SHOW TABLES WHERE GET_LOCK('x', 0) would take a named lock. Apply
+        # the SELECT expression checks instead of trusting the verb.
+        return _select_checks(upper, idents)
+    if word == "GET":
+        # GET DIAGNOSTICS only assigns variables (session state).
+        return _verdict("write", "session", "GET DIAGNOSTICS assigns condition information to variables.")
+    if word in ("HELP", "USE", "CHECKSUM", "SIGNAL", "RESIGNAL", "DEALLOCATE"):
         return _verdict("read", "session" if word in ("USE", "DEALLOCATE") else "read")
     if word == "PREPARE":
         return _verdict("read", "session", "PREPARE only prepares a statement; EXECUTE runs it.")
@@ -813,7 +830,29 @@ def _classify_code(upper, idents, key_columns):
             inner = _classify_code(rest, idents, key_columns)
             inner["reasons"] = ["EXPLAIN ANALYZE runs the statement."] + inner["reasons"]
             return inner
-        return _verdict("read", "read")
+        # Plain EXPLAIN does not run the statement, but planning evaluates
+        # constant parts: a derived table without tables is materialized
+        # while the plan is built (sql/sql_derived.cc; sql/sql_lex.cc
+        # has_tables()), so GET_LOCK, :=, sequences and, before MySQL 8.0.42,
+        # 8.4.5 and 9.3.0, stored functions in it take effect (Bug#37560280).
+        if re.match(r"\s*(?:CREATE|ALTER|DROP|RENAME|TRUNCATE|GRANT|REVOKE)\b", rest):
+            # EXPLAIN takes no DDL on either engine: the server refuses it
+            # with a syntax error and runs nothing.
+            return _verdict("read", "read")
+        # INSERT/REPLACE's target column list is names, not a call: drop it
+        # (a column list holds no parentheses) and check the value expressions.
+        target = re.match(r"\s*(?:INSERT|REPLACE)\b(?:\s+(?:LOW_PRIORITY|DELAYED|HIGH_PRIORITY|IGNORE)\b)*"
+                          r"\s*(?:INTO\b)?\s*(?:`\d+`|[A-Z0-9_$]+)(?:\s*\.\s*(?:`\d+`|[A-Z0-9_$]+))?"
+                          r"\s*(?:PARTITION\s*\([^()]*\)\s*)?\(", rest)
+        if target and ")" in rest[target.end():]:
+            close = rest.index(")", target.end())
+            if "(" not in rest[target.end():close]:
+                rest = rest[:target.end() - 1] + " " + rest[close + 1:]
+        verdict = _select_checks(rest, idents, into=False)
+        if verdict["kind"] != "read":
+            verdict["reasons"] = ["EXPLAIN evaluates constant expressions and derived tables while it plans "
+                                  "the statement."] + verdict["reasons"]
+        return verdict
     if word == "ANALYZE":
         if re.match(r"\s*(?:SELECT|UPDATE|DELETE|INSERT|REPLACE|WITH|FORMAT\b|\()", after):
             inner_text = re.sub(r"^\s*FORMAT\s*=\s*[A-Z_]+", "", after)
@@ -879,6 +918,14 @@ def _classify_code(upper, idents, key_columns):
                 r"\s*(?:OR\s+REPLACE\s+)?(USER|ROLE)", after).group(1)))
         if word in ("CREATE", "DROP") and re.match(r"\s*(?:OR\s+REPLACE\s+)?TEMPORARY\s+TABLES?\b", after):
             return _verdict("write", "ddl_temporary", "A temporary table exists only in this session.")
+        if word == "ALTER" and second == "READYSET":
+            return _verdict("risky", "server", "ALTER READYSET changes the Readyset server's replication, tables, "
+                                               "memory or mode.")
+        if word == "CREATE" and re.match(r"\s*(?:(?:DEEP|SHALLOW)\s+)?CACHE\b", after):
+            return _verdict("risky", "server", "CREATE CACHE adds or replaces a Readyset query cache.")
+        if word == "DROP" and re.match(
+                r"\s*(?:CACHE\b|ALL\s+(?:(?:DEEP|SHALLOW)\s+)?CACHES\b|ALL\s+PROXIED\s+QUERIES\b)", after):
+            return _verdict("risky", "server", "DROP CACHE removes Readyset query caches or recorded proxied queries.")
         if word == "ALTER" and second == "INSTANCE":
             return _verdict("risky", "server", "ALTER INSTANCE changes the whole server.")
         if re.match(r"\s*(?:OR\s+REPLACE\s+)?SERVER\b", after):
@@ -909,6 +956,9 @@ def _classify_code(upper, idents, key_columns):
     if word == "UNLOCK":
         return _verdict("read", "lock")
     if word == "FLUSH":
+        if re.match(r"\s*(?:CACHE\b|ALL\s+SHALLOW\s+CACHES\b)", after):
+            return _verdict("risky", "server", "FLUSH CACHE discards cached Readyset entries so later reads refresh "
+                                               "from upstream.")
         if re.search(r"\bTABLES?\b", _flat(text)):
             return _verdict("risky", "server", "FLUSH TABLES waits for running statements and makes new ones "
                                                "wait; WITH READ LOCK blocks every write.")
@@ -943,7 +993,8 @@ def _classify_statement(stmt, key_columns):
         reasons = list(stmt.get("issues") or [])
         if stmt["unclosed"] and REASON_DELIMITER not in reasons:
             reasons.append("An unclosed quote, comment or DELIMITER line makes the statement boundaries uncertain.")
-        return {"kind": "risky", "category": "unknown", "reasons": reasons}
+        category = "server" if not stmt["unclosed"] and reasons == [REASON_READYSET_HINT] else "unknown"
+        return {"kind": "risky", "category": category, "reasons": reasons}
     parts = [p for p in stmt["code"].upper().split(";") if p.strip()]
     verdicts = [_classify_code(p, stmt["idents"], key_columns) for p in parts]
     verdict = _worst(verdicts)
@@ -1542,6 +1593,8 @@ _SECRET_PATTERNS = tuple(re.compile(p + "(" + _STRING + ")", re.I | re.S) for p 
 #: MySQL SHOW CREATE USER prints a hash with non-printable bytes as a hex
 #: literal when print_identified_with_as_hex is ON: ``AS 0x2441...``.
 _HEX_SECRET = re.compile(r"(\b(?:AS|BY|USING)\s+(?:PASSWORD\s+)?)0x[0-9A-F]+\b", re.I)
+#: Database URLs with user:secret@host (including Readyset N*mysql://... pool prefixes).
+_URL_SECRET = re.compile(r"(\b(?:\d+\*)?(?:mysql|mariadb|postgres|postgresql)://[^:/@\s'\"`]+:)([^@\s'\"`]+)(@)", re.I)
 
 
 def _redact_literal(match):
@@ -1553,9 +1606,9 @@ def _redact_literal(match):
 def redact(text, password=None):
     """*text* with secrets replaced by ``[redacted]``: the literals after
     IDENTIFIED BY / AS / USING, PASSWORD('...'), SET PASSWORD, SOURCE_PASSWORD,
-    MASTER_PASSWORD and other ``*PASSWORD = '...'`` options, and the
-    connection's own *password* anywhere (also as written in SQL with a
-    doubled or backslash-escaped quote)."""
+    MASTER_PASSWORD and other ``*PASSWORD = '...'`` options, database URL
+    credentials, and the connection's own *password* anywhere (also as written
+    in SQL with a doubled or backslash-escaped quote)."""
     if text is None:
         return None
     text = str(text)
@@ -1567,6 +1620,7 @@ def redact(text, password=None):
                 text = text.replace(variant, REDACTED)
     for pattern in _SECRET_PATTERNS:
         text = pattern.sub(_redact_literal, text)
+    text = _URL_SECRET.sub(lambda m: m.group(1) + REDACTED + m.group(3), text)
     return _HEX_SECRET.sub(lambda m: m.group(1) + "'" + REDACTED + "'", text)
 
 
@@ -1838,7 +1892,68 @@ AUDIT_CSV_COLUMNS = ("id", "attempted_at", "finished_at", "status", "outcome", "
                      "rows_affected", "duration_ms", "ssh")
 
 
-def audit_report(store, since_days=None, server=None, limit=None, status=None, before=None):
+def audit_object_report(store, server, kind, key, ssh=None):
+    """Local history with an exact structured target and SSH endpoint."""
+    if (not isinstance(server, str) or not 1 <= len(server) <= 300 or
+            not re.fullmatch(r'.+:[0-9]{1,5}', server)):
+        raise ValueError('server must be the audit host:port.')
+    tunnel = None
+    if ssh is not None:
+        if (not isinstance(ssh, dict) or set(ssh) != {'host', 'user', 'port'} or
+                not isinstance(ssh['host'], str) or not ssh['host'].strip() or len(ssh['host']) > 255 or
+                not isinstance(ssh['user'], str) or len(ssh['user']) > 255 or
+                isinstance(ssh['port'], bool) or not isinstance(ssh['port'], int) or not 0 <= ssh['port'] <= 65535 or
+                any(ch in ssh['host'] + ssh['user'] for ch in ('\x00', '\n', '\r'))):
+            raise ValueError('ssh must identify one SSH host, user and port.')
+        from .ssh_tunnel import target_text
+        tunnel = target_text({'ssh_host': ssh['host'], 'ssh_user': ssh['user'], 'ssh_port': ssh['port'] or None})
+    fields = {'parameter': ('name',), 'account': ('name', 'host'), 'index': ('schema', 'table', 'index')}
+    if not isinstance(kind, str) or kind not in fields:
+        raise ValueError('kind must be index, parameter or account.')
+    if kind == 'parameter' and isinstance(key, str):
+        key = {'name': key}
+    expected_fields = set(fields[kind]) | ({'role'} if kind == 'account' else set())
+    if not isinstance(key, dict) or set(key) != expected_fields:
+        raise ValueError('key must identify exactly one %s.' % kind)
+    if kind == 'account' and not isinstance(key['role'], bool):
+        raise ValueError('key.role must be true or false.')
+    for field in fields[kind]:
+        value = key[field]
+        if (not isinstance(value, str) or len(value) > 256 or '\x00' in value or
+                (not value and not (kind == 'account' and field in ('name', 'host')))):
+            raise ValueError('key.%s must be object-name text.' % field)
+    return {'schema_version': AUDIT_SCHEMA_VERSION, 'records': store.audit_object_records(server, kind, key, tunnel)}
+
+
+def audit_object_matches(operation, target, engine, kind, key):
+    """SQLite predicate. Old, malformed or insufficient targets fail closed."""
+    try:
+        target = json.loads(target) if target else None
+    except (ValueError, TypeError, RecursionError):
+        return False
+    if not isinstance(target, dict):
+        return False
+    if kind == 'parameter':
+        return (operation in ('set_global', 'set_persist', 'set_persist_only', 'set_session', 'reset_persist') and
+                target.get('name') == key['name'])
+    if kind == 'account':
+        from .accounts import _name
+        if engine not in ('mysql', 'mariadb'):
+            return False
+        try:
+            account = _name(key['name'], key['host'], engine, key['role'])
+        except ValueError:
+            return False
+        return operation.startswith('accounts.') and target.get('account') == account
+    if kind == 'index':
+        index = target.get('alter_table')
+        return (operation == 'editor_run' and isinstance(index, dict) and
+                all(index.get(field) == key[field] for field in ('schema', 'table', 'index')))
+    # Never infer an index from its table or stored statement text.
+    return False
+
+
+def audit_report(store, since_days=None, server=None, limit=None, status=None, before=None, record_id=None):
     """The ``audit-1.0`` envelope: newest records first, with the retention
     setting. Every filter (*since_days*, *server*, *status*) applies before
     *limit*; *before* (a record id) continues a list after that record, and
@@ -1846,7 +1961,8 @@ def audit_report(store, since_days=None, server=None, limit=None, status=None, b
     if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100000):
         raise ValueError('limit must be an integer from 1 to 100000.')
     fetch = limit + 1 if limit is not None and limit < 100000 else limit
-    records = store.audit_records(since_days=since_days, server=server, limit=fetch, status=status, before=before)
+    records = store.audit_records(since_days=since_days, server=server, limit=fetch, status=status, before=before,
+                                  record_id=record_id)
     more = fetch != limit and len(records) > limit
     return {"schema_version": AUDIT_SCHEMA_VERSION, "retention_days": store.audit_retention_days(),
             "records": records[:limit] if more else records, "has_more": more}
@@ -1882,11 +1998,11 @@ def audit_csv(records):
     return buffer.getvalue()
 
 
-def audit_export(store, fmt="json", since_days=None, server=None, status=None):
+def audit_export(store, fmt="json", since_days=None, server=None, status=None, record_id=None):
     """``{"format", "content", "mime", "filename"}`` for every matching record."""
     if fmt not in ("json", "csv"):
         raise ValueError("Choose export format 'json' or 'csv'.")
-    report = audit_report(store, since_days=since_days, server=server, status=status)
+    report = audit_report(store, since_days=since_days, server=server, status=status, record_id=record_id)
     report.pop("has_more", None)
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
     if fmt == "csv":

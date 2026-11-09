@@ -94,7 +94,9 @@ async function start() {
   });
   window = new BrowserWindow({ width: 1440, height: 960, minWidth: 720, minHeight: 520,
     show: false, title: 'myflames', backgroundColor: '#202124',
+    // preload.cjs exposes only the path of a dropped file (the Files place).
     webPreferences: { session: browserSession, sandbox: true, contextIsolation: true,
+      preload: path.join(__dirname, 'preload.cjs'),
       nodeIntegration: false, nodeIntegrationInWorker: false, nodeIntegrationInSubFrames: false,
       webSecurity: true, allowRunningInsecureContent: false, webviewTag: false, spellcheck: false,
       devTools: !app.isPackaged },
@@ -142,6 +144,8 @@ async function smokeWindow(origin) {
         continue;
       }
       const externalBlocked = await window.webContents.executeJavaScript(`fetch('http://127.0.0.1:65534/').then(() => false, () => true)`);
+      // The preload is packaged and exposes exactly one function (the Files place's dropped-file paths).
+      const preload = await window.webContents.executeJavaScript(`JSON.stringify(Object.keys(window.myflamesDesktop || {})) === '["pathForFile"]' && window.myflamesDesktop.pathForFile(new File(['x'], 'x.txt')) === ''`);
       if (!externalBlocked || blockedSmokeRequests < 1) throw new Error('Desktop origin restriction failed.');
       // A smoke started from a terminal or CI does not make the window key, so
       // Chromium withholds focus events and the editor never opens completion.
@@ -164,7 +168,7 @@ async function smokeWindow(origin) {
       // Capture the completed editor, not a cached startup/refusal frame.
       await window.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
       fs.writeFileSync(path.join(dataDirectory, 'smoke.png'), (await window.webContents.capturePage()).toPNG());
-      fs.writeFileSync(path.join(dataDirectory, 'smoke.json'), JSON.stringify({ ready: true, packaged: app.isPackaged, backendExecutable: backend.child.spawnfile, shellNavigation: true, completion: true, authenticated: true, reloadAuthenticated: reloaded, sandbox: window.webContents.getLastWebPreferences().sandbox, nodeIntegration: false, backendPid: backend.child.pid }));
+      fs.writeFileSync(path.join(dataDirectory, 'smoke.json'), JSON.stringify({ ready: true, packaged: app.isPackaged, backendExecutable: backend.child.spawnfile, shellNavigation: true, completion: true, authenticated: true, reloadAuthenticated: reloaded, preload, sandbox: window.webContents.getLastWebPreferences().sandbox, nodeIntegration: false, backendPid: backend.child.pid }));
       process.stdout.write('Desktop smoke passed: authenticated workspace, sandboxed renderer, isolated data.\n');
       app.quit(); return;
     }

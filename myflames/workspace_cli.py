@@ -1485,7 +1485,8 @@ def cmd_replication(argv):
     def work(conn):
         store = WorkspaceStore()
         report = read_status(conn, source_versions=True, profiles=saved_profiles(store),
-                             open_profile=profile_opener(store), replica_host=reached_host(conn))
+                             open_profile=profile_opener(store), replica_host=reached_host(conn),
+                             topology_tiers=True)
         if args.channel is not None:
             channel = _replication_channel(report, args.channel)
             report = dict(report, channels=[channel])
@@ -1533,6 +1534,85 @@ def cmd_cluster(argv):
                     sys.stderr.write(terminal_text('  [%s] %s: %s\n' % (item['status'], item['title'], item['text'])))
             else:
                 sys.stderr.write('OK: no finding at --fail-on %s\n' % args.fail_on)
+        if tripped:
+            raise SystemExit(1)
+
+
+def cmd_readyset(argv):
+    """Readyset status, caches, proxied queries, replication, topology, cache DDL export and dry-run explain."""
+    from .readyset import at_or_worse, explain_cache, export_caches, format_text, read_status
+    from .replication import profile_opener, reached_host, saved_profiles
+    parser = _discover_parser(
+        'readyset',
+        'Inspect a Readyset SQL (3307) or admin (6036) port: caches (deep and shallow), observed cached vs upstream '
+        'latencies, proxied query support, base-table replication and offsets, shallow allowlists, and multi-tier '
+        'ProxySQL / Readyset / MySQL or MariaDB topology.',
+        'Read-only: SHOW READYSET VERSION, SHOW READYSET STATUS, SHOW READYSET UPSTREAM SERVERS, SHOW READYSET '
+        'CONNECTIONS, SHOW READYSET ALL TABLES, SHOW CACHES, SHOW PROXIED DEEP/SHALLOW QUERIES, and the readyset '
+        'virtual schema tables. Pass --export-caches for EXPLAIN ALL CACHES DDL, or --explain-cache QUERY_OR_ID for '
+        'an EXPLAIN CREATE CACHE dry-run and collision check. '
+        'Exit codes: 0 success (status below --fail-on), 1 status at --fail-on or worse, 2 bad input, not Readyset '
+        '(with --json the available:false report is still written), or connection failure.')
+    parser.add_argument('--readyset-schema', default='readyset', metavar='NAME',
+                        help="Virtual schema name configured via --readyset-schema-name (default: readyset).")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--export-caches', action='store_true',
+                      help='Export CREATE CACHE DDL for every cache via EXPLAIN ALL CACHES (read-only).')
+    mode.add_argument('--explain-cache', metavar='QUERY_OR_ID',
+                      help='Dry-run EXPLAIN CREATE SHALLOW/DEEP CACHE for a SELECT or query ID (q_...) on the SQL port.')
+    parser.add_argument('--fail-on', choices=('problem', 'watch'), metavar='LEVEL',
+                        help="Exit 1 if Readyset status is at LEVEL or worse: 'problem', or 'watch' (watch, unknown or problem).")
+    _add_output_args(parser, 'the readyset-1.0 report')
+    args = parser.parse_args(argv)
+
+    if args.export_caches:
+        exported = _discover_run(args, export_caches, query_timeout=30)
+
+        def _fmt_export(res):
+            ddl = (res.get('sql') or res.get('ddl') or '').strip()
+            return (ddl + '\n') if ddl else ('-- %d caches exported\n' % (res.get('count') or 0))
+        _emit_report(args, exported, _fmt_export)
+        return
+
+    if args.explain_cache:
+        explained = _discover_run(
+            args, lambda c: explain_cache(c, args.explain_cache, schema=args.readyset_schema), query_timeout=30)
+
+        def _fmt_explain(res):
+            lines = ['Readyset %s cache check for %s:' % (res.get('version') or '?', res.get('target') or '?')]
+            for key, label in (('shallow', 'Shallow cache'), ('deep', 'Deep cache')):
+                item = res.get(key)
+                if item:
+                    reason_part = (' (%s)' % item['reason']) if item.get('reason') else ''
+                    qid_part = (' [%s]' % item['query_id']) if item.get('query_id') else ''
+                    lines.append('  %s: %s%s%s' % (label, item.get('supported'), reason_part, qid_part))
+            for col in res.get('collisions') or ():
+                lines.append('  collision: %s (%s) already caches this query ID' % (col.get('name'), col.get('query_id')))
+            return terminal_text('\n'.join(lines)) + '\n'
+        _emit_report(args, explained, _fmt_explain)
+        return
+
+    def work(conn):
+        from .workspace_store import WorkspaceStore
+        store = WorkspaceStore()
+        return read_status(conn, profiles=saved_profiles(store), open_profile=profile_opener(store),
+                           reached_host=reached_host(conn), schema=args.readyset_schema)
+
+    report = _discover_run(args, work, query_timeout=30)
+    if not report['available']:
+        if args.json:
+            _emit_report(args, report, format_text)
+        _fail(report['message'])
+    _emit_report(args, report, format_text)
+    if args.fail_on:
+        tripped = at_or_worse(report, args.fail_on)
+        if not args.quiet:
+            if tripped:
+                sys.stderr.write('FAIL: Readyset status is %s (--fail-on %s):\n' % (report['status'], args.fail_on))
+                for reason_line in report.get('status_why') or ():
+                    sys.stderr.write(terminal_text('  [%s] %s\n' % (report['status'], reason_line)))
+            else:
+                sys.stderr.write('OK: Readyset status is %s (below --fail-on %s)\n' % (report['status'], args.fail_on))
         if tripped:
             raise SystemExit(1)
 

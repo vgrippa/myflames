@@ -8,9 +8,12 @@
 //
 // Hover shows details, click pins (and selects), regex search highlights
 // matches with n/N to step and Esc to clear. Everything is instance-scoped.
+// A misestimated operator (the parser's node.misestimate) carries the
+// row-estimate chip at the start of its label column (output_bargraph).
 import { svg } from "./core/dom";
 import { commas, cpSlice, estimateText, fitLabel, pyFixed, treeTime } from "./core/format";
 import { highlightText } from "./core/highlights";
+import { drawChip, MARK_GAP, MARK_ROW_H, markWidth, misestimateOf } from "./core/marks";
 import { BAR_CSS } from "./core/styles";
 import { bindKeys, compile, createToolbar, isTyping } from "./core/toolbar";
 import type { ChartNode } from "./core/types";
@@ -78,6 +81,8 @@ export function barInfo(bar: Bar, pct: number): string {
   // MySQL operator that never ran) read "not executed" (output_bargraph._build_bar_info).
   parts.push(node.actual_rows !== null ? "Rows: " + pyFixed(rows, 0)
     : node.loops === null ? "Rows: not executed" : "Rows: not measured");
+  const mark = misestimateOf(node);
+  if (mark) parts.push("Row estimate: " + mark.text);
   parts.push("Loops: " + commas(node.loops || 1));
   if (node.table) parts.push("Table: " + node.table);
   if (node.index) parts.push("Index: " + node.index);
@@ -150,8 +155,12 @@ export function renderBargraph(context: ViewContext): ViewInstance {
     const info = barInfo(bar, pct);
     const message = highlightText(data, node);
     const highlight = message ? cpSlice(message, 0, 400) : "";
-    svg(doc, "text", { x: MARGIN + LABEL_W - 10, y: textY, "text-anchor": "end", class: "label" }, root,
-      fitLabel(node.short_label || "", LABEL_W - 14, 11, 0.55));
+    const mark = misestimateOf(node);
+    // The chip starts the label column; the right-aligned label keeps the rest.
+    const labelRoom = LABEL_W - 14 - (mark ? markWidth(mark.label) + 2 * MARK_GAP : 0);
+    const shownLabel = fitLabel(node.short_label || "", labelRoom, 11, 0.55);
+    svg(doc, "text", { x: MARGIN + LABEL_W - 10, y: textY, "text-anchor": "end", class: "label" }, root, shownLabel);
+    if (mark) drawChip(doc, root, mark.label, MARGIN, y + 6, MARK_ROW_H, 8, textY, { "pointer-events": "none" });
     svg(doc, "text", { x: loopsX + LOOPS_W / 2, y: textY, "text-anchor": "middle", class: "loops" }, root, commas(node.loops || 1));
     const label = node.short_label || node.full_label || "";
     const rect = svg(doc, "rect", {
@@ -161,7 +170,7 @@ export function renderBargraph(context: ViewContext): ViewInstance {
       role: "button", tabindex: 0, "aria-label": label,
     }, root);
     // A shortened label shows the whole name on the bar's hover (and in the inspector).
-    if (workspace && fitLabel(node.short_label || "", LABEL_W - 14, 11, 0.55) !== (node.short_label || "")) {
+    if (workspace && shownLabel !== (node.short_label || "")) {
       svg(doc, "title", undefined, rect, node.short_label || "");
     }
     svg(doc, "text", { x: timeX, y: textY, class: "value" }, root, treeTime(node.self_ms ?? 0) + " (" + pyFixed(pct, 1) + "%)");
@@ -253,6 +262,12 @@ export function renderBargraph(context: ViewContext): ViewInstance {
 
   root.setAttribute("data-wired", "true");
   return {
+    reveal(id: string) {
+      const item = byId.get(id);
+      if (!item) return false;
+      item.rect.scrollIntoView({ block: "nearest", inline: "nearest" });
+      return true;
+    },
     destroy() {
       cleanups.splice(0).forEach((cleanup) => cleanup());
       root.remove();

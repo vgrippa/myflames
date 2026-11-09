@@ -1,10 +1,76 @@
 // Small pieces shared by Replication and Maintenance (Server > Workload and
 // Setup): exact commands with a neutral Copy, engine facts as label and value
 // rows, and the plain names of replication channels.
-import { useState } from "react";
-import { Fields } from "./kit";
+import { useEffect, useId, useRef, useState } from "react";
+import { ActionButton, ActionStatus, Fields, useAction } from "./kit";
 import { Duration } from "./PerfShared";
-import { factText, type Facts, type Json } from "./opsApi";
+import { chooseBackupDirectory, factText, type Facts, type Json } from "./opsApi";
+import { baseName, joinPath, localList, parentPath } from "./filesApi";
+
+/** A portable child name, never a path supplied by a database identifier. */
+export function dumpFolderStem(name: string, now = new Date()) {
+  const letters = Array.from(name.replace(/[\\/<>:"|?*\u0000-\u001f\u007f-\u009f]/g, "-")
+    .replace(/\.{2,}/g, "-").replace(/^[.\s-]+|[.\s]+$/g, "")).slice(0, 80);
+  while (new TextEncoder().encode(letters.join("")).length > 180) letters.pop();
+  const safe = letters.join("") || "dump";
+  const date = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, "0"), String(now.getDate()).padStart(2, "0")].join("-");
+  return `${safe}-${date}`;
+}
+
+/** Advisory only: preflight and Start retain their empty-directory checks. */
+export async function suggestDumpFolder(parent: string, stem: string, signal?: AbortSignal, reserved: string[] = []) {
+  const listing = await localList(parent, signal);
+  const names = new Set([...listing.entries.map(e => e.name.toLowerCase()), ...reserved
+    .filter(p => parentPath(p) === listing.path).map(p => baseName(p).toLowerCase())]);
+  let name = stem, suffix = 2;
+  while (names.has(name.toLowerCase())) name = `${stem}-${suffix++}`;
+  return joinPath(listing.path, name);
+}
+
+/** A manually entered root or dot path is not a child of a Browse choice. */
+export function dumpOutputName(value: string, fallback: string) {
+  const name = baseName(value);
+  return name && name !== "." && name !== ".." && !/[\\/<>:"|?*\u0000-\u001f\u007f-\u009f]/.test(name)
+    && !/[.\s]$/.test(name) && !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name) ? name : fallback;
+}
+
+/** Browse chooses an existing parent; it never creates the output directory. */
+export function DumpFolderField({ value, stem, onChange, onPicking, disabled }: {
+  value: string; stem: string; onChange: (path: string) => void; onPicking: (picking: boolean) => void; disabled: boolean;
+}) {
+  const id = useId();
+  const action = useAction();
+  const latest = useRef({ value, disabled, onChange, onPicking });
+  latest.current = { value, disabled, onChange, onPicking };
+  useEffect(() => () => latest.current.onPicking(false), []);
+  async function browse() {
+    const previous = value;
+    if (disabled || action.pending) return;
+    onPicking(true);
+    const result = await action.run(async signal => {
+      const picked = await chooseBackupDirectory();
+      if (picked.cancelled || !picked.path) return "";
+      return suggestDumpFolder(picked.path, dumpOutputName(previous, stem), signal);
+    }, { pending: "Choose the parent folder in the system dialog.", done: path => path ? "Output folder selected." : "Folder selection cancelled.",
+      failed: e => `${(e as Error).message} You can enter the output path above.` });
+    if (result.ok && result.value && !latest.current.disabled && latest.current.value === previous)
+      latest.current.onChange(result.value);
+    if (result.ok || (result.reason !== "busy" && result.reason !== "cancelled")) latest.current.onPicking(false);
+  }
+  return <div className="form-row ops-folder-row">
+    <label htmlFor={id}>Output folder</label>
+    <div className="form-row-control ops-field">
+      <div className="ops-folder-input">
+        <input id={id} value={value} disabled={disabled || action.pending} spellCheck={false} autoComplete="off"
+          aria-describedby={`${id}-hint`} placeholder="Enter a new folder path"
+          onChange={e => { action.reset(); onChange(e.target.value); }} />
+        <ActionButton busy={action.pending} busyLabel="Choosing…" disabled={disabled} aria-label="Browse for output folder" onClick={() => { void browse(); }}>Browse…</ActionButton>
+      </div>
+      <span id={`${id}-hint`} className="hint">{value ? `Creates ${baseName(value)} in ${parentPath(value)}. ` : "On this computer. "}Browse picks the folder it goes in.</span>
+      <ActionStatus state={action} />
+    </div>
+  </div>;
+}
 
 /** The exact statements or commands a confirmation will send. They may be
  * SQL, a Shell expression or an external program, so Copy says only that the

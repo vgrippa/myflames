@@ -7,7 +7,7 @@
 // open, each kind (Galera, PXC, InnoDB Cluster with routers, multi-primary
 // Group Replication), the topology (member cards, roles, "This connection",
 // a degraded member drawn apart by a dashed edge, a broken link and a mark,
-// not color alone; no animation), Members and Routers tables, the inspector
+// not color alone; controlled motion), Members and Routers tables, the inspector
 // per member and per router, findings, the not-a-cluster state and the
 // sidebar item that looks disabled but stays focusable, an account that
 // cannot read, connection binding (another connection's report greyed, the
@@ -15,7 +15,7 @@
 // and the 720 px window.
 import assert from "node:assert/strict";
 import path from "node:path";
-import { chooseConnection, connectionOption } from "./chrome-helpers.mjs";
+import { chooseConnection, connectionOption, openRefreshMenu } from "./chrome-helpers.mjs";
 import { load, open, pause } from "./perf-harness.mjs";
 
 const R = {};
@@ -83,6 +83,8 @@ try {
   await api("/api/profiles/save", { value: { name: "cluster-galera-2", host: "192.168.80.3", port: 3306, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "" } });
   await page.reload({ waitUntil: "networkidle0" });
 
+  // Session hydration can finish after networkidle under parallel browser load.
+  await page.waitForSelector(nav, { visible: true });
   // The place sits right after Replication and reads nothing until it is on screen.
   const places = await page.$$eval(".main-nav button[data-place]", (els) => els.map((e) => e.dataset.place));
   assert.equal(places[places.indexOf("replication") + 1], "cluster", `Cluster follows Replication: ${places}`);
@@ -114,12 +116,16 @@ try {
   assert.equal(new Set(nameTops).size, 1, `name rows line up: ${nameTops}`);
   assert.match(await h.text(`${view} .cluster-bus-label`), /Single-primary group · quorum · tolerates 1 failure/);
   assert.equal(await page.$$eval(`${view} .cluster-routers .cluster-card`, (els) => els.length), 1, "the router hangs under the group");
-  // Static: nothing in the picture animates.
-  const animated = await page.$$eval(`${view} .cluster-topology *`, (els) => els.filter((e) => {
-    const s = getComputedStyle(e);
-    return s.animationName !== "none" && s.animationName !== "";
-  }).length);
-  assert.equal(animated, 0, "no animation in the topology");
+  // Motion conveys known healthy membership, with a pause and OS override.
+  const stemMotion = () => page.$eval(`${view} .cluster-stem.is-active`, (e) => getComputedStyle(e, "::after").animationName);
+  assert.equal(await stemMotion(), "topology-membership");
+  await page.click(`${view} .topology-motion-toggle`);
+  assert.equal(await stemMotion(), "none", "pause stops illustrative flow");
+  await page.click(`${view} .topology-motion-toggle`);
+  await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
+  assert.equal(await stemMotion(), "none", "system reduced motion overrides playback");
+  await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "no-preference" }]);
+  assert.equal(await stemMotion(), "topology-membership");
   const info = await h.popover("About Cluster");
   assert.match(info, /Opening it reads; nothing changes/);
   assert.match(info, /asks first, and is recorded in the Audit log/);
@@ -551,13 +557,16 @@ try {
 
   // Until now the Cluster place read nothing but /api/live/cluster (the review
   // above planned and sent one change, whose progress it followed).
+  // A connection chosen in the picker checks its readiness (connection
+  // readiness contract): that check is not a view read.
   assert.deepEqual(state.other.filter((o) => o.path.startsWith("/api/live/") && !o.path.startsWith("/api/live/cluster/")
-    && o.path !== "/api/live/action/progress").map((o) => o.path), [], "no other view read");
+    && o.path !== "/api/live/action/progress" && o.path !== "/api/live/readiness").map((o) => o.path), [], "no other view read");
   // Server's Refresh all reads the cluster once, and the place shows that answer.
   await answer(R["mysql-8.4-standalone"]);
   const beforeAll = state.seen.length;
   await h.server();
   await page.evaluate(() => window.scrollTo(0, 0));
+  await openRefreshMenu(page);
   await page.click(".server-place [data-action=refresh-all]");
   await page.waitForFunction(() => !document.querySelector(".server-place .refresh-all-stop") && /refreshed/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""), { timeout: 20000 });
   assert.equal(state.seen.length, beforeAll + 1, "Refresh all sends one cluster read");
@@ -607,6 +616,7 @@ try {
     state.fallback = { status, body };
     await h.server();
     await page.evaluate(() => window.scrollTo(0, 0));
+    await openRefreshMenu(page);
     await page.click(".server-place [data-action=refresh-all]");
     await page.waitForFunction(() => !document.querySelector(".server-place .refresh-all-stop") && /refreshed/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""), { timeout: 20000 });
     await page.click(nav);
@@ -671,6 +681,52 @@ try {
   assert.ok(tableTop.top < tableTop.fold - 24, `the members table starts above the fold: ${JSON.stringify(tableTop)}`);
   await page.setViewport({ width: 1440, height: 1000 });
   await h.narrow("cluster-390.png", { place: ".cluster-place" });
+
+  // Multi-tier upstream tiers in ClusterTopology: ProxySQL -> Readyset -> InnoDB Cluster.
+  await page.setViewport({ width: 1440, height: 1000 });
+  const multiTierCluster = {
+    ...R["ic-8.4-healthy"],
+    topology_tiers: {
+      proxysql: [
+        {
+          key: "proxysql:127.0.0.1:6032",
+          label: "ProxySQL Admin",
+          address: "127.0.0.1:6032",
+          version: "3.0.11",
+          routes_to_readyset: true,
+          querypilot_rule_count: 2,
+          profile_id: null,
+          profile_name: "ProxySQL Admin",
+        },
+      ],
+      readyset: [
+        {
+          key: "readyset:127.0.0.1:3307",
+          label: "Readyset Cache",
+          address: "127.0.0.1:3307",
+          version: "stable-250605",
+          status: "Online",
+          replication_status: "Online",
+          purpose: "cdc, query",
+          cache_count: 7,
+          profile_id: null,
+          profile_name: "Readyset Cache",
+        },
+      ],
+      live_readyset_connections: 3,
+      readyset_heartbeat_schema: true,
+      notes: [],
+    },
+  };
+  await refreshTo(multiTierCluster);
+  await tab("Topology");
+  await page.waitForSelector(`${view} .upstream-tiers`, { visible: true });
+  const clusterTierText = await h.text(`${view} .upstream-tiers`);
+  assert.match(clusterTierText, /ProxySQL routing tier/);
+  assert.match(clusterTierText, /2 QueryPilot rules/);
+  assert.match(clusterTierText, /Readyset cache tier/);
+  assert.match(clusterTierText, /7 caches/);
+  await shot("cluster-multitier-1440.png");
 
   assert.deepEqual(h.errors, []);
   console.log("cluster: ok");

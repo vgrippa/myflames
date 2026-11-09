@@ -1,9 +1,11 @@
 """The Query editor's schema browser: tables of one schema, then the columns
-and indexes of one table, read on demand (``catalog-1.0``).
+and indexes of one table, read on demand (``catalog-1.0``), plus the routines,
+triggers and events of one schema (loaded when the browser's group opens) and
+the command palette's object search across schemas (``object-search-1.0``).
 
 The schema list itself comes from :func:`myflames.perf_common.schema_catalog`
 (``/api/live/schemas``, shared with the Server views' schema picker). This
-module adds the two levels below it, each one small read of
+module adds the levels below it, each one small read of
 ``information_schema`` tagged ``/*myflames:editor*/`` so Top statements leaves
 it out. It only reads; names are passed as hex literals
 (:func:`perf_common.literal`), never spliced into the SQL.
@@ -19,6 +21,12 @@ Engine notes (mysql-server 9.7 "M/", mariadb-server 13.0 "Ma/"):
 * STATISTICS has an EXPRESSION column for functional key parts on MySQL 8.0.13+
   (COLUMN_NAME is NULL there) and none on MariaDB, so the index read selects
   every column and reads them by name.
+* ROUTINES, TRIGGERS and EVENTS carry the same columns on both engines
+  (M/sql/dd/impl/system_views/routines.cc:41-44, triggers.cc:40-47,
+  events.cc:38-62; Ma/sql/sql_show.cc:10253-10256, 10462-10481,
+  10207-10231), and MySQL 5.7 has all three tables with these columns, so the
+  group and search reads are identical everywhere. MariaDB's package routines
+  (ROUTINE_TYPE 'PACKAGE' / 'PACKAGE BODY') are out of scope and filtered out.
 """
 from .connector import ConnectorError
 from .perf_common import Reader, check_schema, literal, reason
@@ -46,6 +54,18 @@ def _count(value):
     return int(value) if isinstance(value, str) and value.isdigit() else None
 
 
+def _table_kind(value):
+    """A TABLES.TABLE_TYPE as the workspace names it."""
+    kind = (value or "").upper()
+    if kind == "VIEW":
+        return "view"
+    if kind == "SYSTEM VIEW":
+        return "system view"
+    if kind == "SEQUENCE":
+        return "sequence"
+    return "table"
+
+
 def tables_of(reader, schema, prefix=None, after=None, stats=False):
     """One name-ordered page and whether more exist; prefix is literal text.
 
@@ -71,10 +91,7 @@ def tables_of(reader, schema, prefix=None, after=None, stats=False):
         name = row.get("TABLE_NAME")
         if name is None:
             continue
-        kind = (row.get("TABLE_TYPE") or "").upper()
-        table = {"name": name, "type": "view" if kind == "VIEW" else
-                 "system view" if kind == "SYSTEM VIEW" else
-                 "sequence" if kind == "SEQUENCE" else "table"}
+        table = {"name": name, "type": _table_kind(row.get("TABLE_TYPE"))}
         if stats:
             data, index = _count(row.get("DATA_LENGTH")), _count(row.get("INDEX_LENGTH"))
             table.update(engine=row.get("ENGINE") or None, rows=_count(row.get("TABLE_ROWS")),
@@ -120,9 +137,10 @@ def indexes_of(reader, schema, table):
     return [indexes[name] for name in order]
 
 
-def catalog_report(conn, schema, table=None, prefix=None, after=None, stats=False):
+def catalog_report(conn, schema, table=None, prefix=None, after=None, stats=False, group=None):
     """``catalog-1.0``: the tables of *schema* (with *stats*, also their
-    engine, estimated rows and size), or with *table* its columns and indexes."""
+    engine, estimated rows and size), with *table* its columns and indexes,
+    or with *group* the routines, triggers or events of *schema*."""
     schema = check_schema(schema)
     table = check_table(table)
     prefix, after = check_table(prefix), check_table(after)
@@ -130,6 +148,10 @@ def catalog_report(conn, schema, table=None, prefix=None, after=None, stats=Fals
         raise ValueError("Choose a schema to list its tables (the schema list is /api/live/schemas).")
     reader = Reader(conn, TAG)
     try:
+        if group is not None:
+            objects, truncated = objects_of(reader, schema, check_group(group))
+            return {"schema_version": CATALOG_VERSION, "level": "objects", "schema": schema, "group": group,
+                    "objects": objects, "truncated": truncated, "limit": MAX_OBJECTS}
         if table is None:
             tables, truncated = tables_of(reader, schema, prefix, after, stats=stats is True)
             return {"schema_version": CATALOG_VERSION, "level": "tables", "schema": schema, "tables": tables,
@@ -143,6 +165,123 @@ def catalog_report(conn, schema, table=None, prefix=None, after=None, stats=Fals
     except ConnectorError as exc:
         raise ValueError("Could not read %s: %s" % (schema if table is None else "%s.%s" % (schema, table),
                                                    reason(exc)))
+
+
+# ---- Object groups (schema browser folders) and the palette's object search ----------
+
+#: The groups a schema expands to in the schema browser (MariaDB's packages
+#: are out of scope: only PROCEDURE and FUNCTION rows are listed).
+OBJECT_GROUPS = ("routines", "triggers", "events")
+#: Objects per group in one schema; a truncated group says so in its folder.
+MAX_OBJECTS = 200
+#: Matches the object search returns (one more row is read to flag the rest).
+OBJECT_SEARCH_LIMIT = 50
+#: The object search accepts 2 to this many characters (the palette asks from 2).
+MAX_SEARCH = 128
+
+
+def check_group(group):
+    """One of OBJECT_GROUPS."""
+    if group not in OBJECT_GROUPS:
+        raise ValueError("Choose routines, triggers or events.")
+    return group
+
+
+def check_search(text):
+    """The palette's object search text: 2 to 128 characters, one line."""
+    if not isinstance(text, str):
+        raise ValueError("Send the search text.")
+    text = text.strip()
+    if not 2 <= len(text) <= MAX_SEARCH or any(c in text for c in "\x00\n\r"):
+        raise ValueError("Type 2 to %d characters to search for an object." % MAX_SEARCH)
+    return text
+
+
+def objects_of(reader, schema, group):
+    """[{name, ...}] of one group (routines, triggers or events) in one
+    schema, name-ordered and bounded, and whether more exist. The columns are
+    the same on every supported server (see the module docstring)."""
+    if group == "routines":
+        rows = reader.named(
+            "SELECT ROUTINE_NAME, ROUTINE_TYPE FROM information_schema.ROUTINES "
+            "WHERE ROUTINE_SCHEMA = %s AND ROUTINE_TYPE IN ('PROCEDURE', 'FUNCTION') "
+            "ORDER BY ROUTINE_TYPE, BINARY ROUTINE_NAME LIMIT %d" % (literal(schema), MAX_OBJECTS + 1))
+        objects = [{"name": row["ROUTINE_NAME"],
+                    "kind": "procedure" if row.get("ROUTINE_TYPE") == "PROCEDURE" else "function"}
+                   for row in rows[:MAX_OBJECTS] if row.get("ROUTINE_NAME")]
+    elif group == "triggers":
+        rows = reader.named(
+            "SELECT TRIGGER_NAME, EVENT_OBJECT_TABLE, EVENT_MANIPULATION, ACTION_TIMING "
+            "FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = %s "
+            "ORDER BY BINARY TRIGGER_NAME LIMIT %d" % (literal(schema), MAX_OBJECTS + 1))
+        objects = [{"name": row["TRIGGER_NAME"], "table": row.get("EVENT_OBJECT_TABLE"),
+                    "event": (row.get("EVENT_MANIPULATION") or "").lower(),
+                    "timing": (row.get("ACTION_TIMING") or "").lower()}
+                   for row in rows[:MAX_OBJECTS] if row.get("TRIGGER_NAME")]
+    else:
+        rows = reader.named(
+            "SELECT EVENT_NAME, STATUS FROM information_schema.EVENTS WHERE EVENT_SCHEMA = %s "
+            "ORDER BY BINARY EVENT_NAME LIMIT %d" % (literal(schema), MAX_OBJECTS + 1))
+        objects = [{"name": row["EVENT_NAME"], "status": (row.get("STATUS") or "").lower()}
+                   for row in rows[:MAX_OBJECTS] if row.get("EVENT_NAME")]
+    return objects, len(rows) > MAX_OBJECTS
+
+
+def _like_pattern(text):
+    """A literal substring pattern. ESCAPE '!' has one character with or
+    without NO_BACKSLASH_ESCAPES on both engines; the pattern is hex-quoted.
+    """
+    return "%" + "".join("!" + c if c in "!%_" else c for c in text) + "%"
+
+
+def _search_kind(value):
+    kind = (value or "").upper()
+    if kind == "PROCEDURE":
+        return "procedure"
+    if kind == "FUNCTION":
+        return "function"
+    if kind == "TRIGGER":
+        return "trigger"
+    if kind == "EVENT":
+        return "event"
+    return _table_kind(value)
+
+
+def _search_sql(pattern):
+    """One UNION over the four catalog tables, ordered and bounded.
+    The explicit escape character is independent of the session SQL mode.
+    """
+    like = " LIKE %s ESCAPE '!'" % pattern
+    union = (
+        "(SELECT TABLE_SCHEMA AS obj_schema, TABLE_NAME AS obj_name, TABLE_TYPE AS obj_kind "
+        "FROM information_schema.TABLES WHERE TABLE_NAME%s) UNION ALL "
+        "(SELECT ROUTINE_SCHEMA, ROUTINE_NAME, ROUTINE_TYPE FROM information_schema.ROUTINES "
+        "WHERE ROUTINE_TYPE IN ('PROCEDURE', 'FUNCTION') AND ROUTINE_NAME%s) UNION ALL "
+        "(SELECT TRIGGER_SCHEMA, TRIGGER_NAME, 'TRIGGER' FROM information_schema.TRIGGERS "
+        "WHERE TRIGGER_NAME%s) UNION ALL "
+        "(SELECT EVENT_SCHEMA, EVENT_NAME, 'EVENT' FROM information_schema.EVENTS "
+        "WHERE EVENT_NAME%s)" % (like, like, like, like))
+    return ("SELECT obj_schema, obj_name, obj_kind FROM (%s) found "
+            "ORDER BY BINARY obj_name, BINARY obj_schema, obj_kind LIMIT %d"
+            % (union, OBJECT_SEARCH_LIMIT + 1))
+
+
+def object_search(conn, text):
+    """``object-search-1.0``: tables, views, routines, triggers and events
+    whose name holds *text*, in every schema the account can see. One
+    information_schema read (a UNION of the four catalog tables), bounded to
+    OBJECT_SEARCH_LIMIT matches; the endpoint gives it 2 seconds."""
+    text = check_search(text)
+    reader = Reader(conn, TAG)
+    try:
+        rows = reader.named(_search_sql(literal(_like_pattern(text))))
+    except ConnectorError as exc:
+        raise ValueError("Could not search objects: %s" % reason(exc))
+    objects = [{"schema": row.get("obj_schema"), "name": row.get("obj_name"),
+                "kind": _search_kind(row.get("obj_kind"))}
+               for row in rows[:OBJECT_SEARCH_LIMIT] if row.get("obj_schema") and row.get("obj_name")]
+    return {"schema_version": "object-search-1.0", "text": text, "objects": objects,
+            "truncated": len(rows) > OBJECT_SEARCH_LIMIT, "limit": OBJECT_SEARCH_LIMIT}
 
 
 # ---- Table structure (Server > Tables) ---------------------------------------------------------

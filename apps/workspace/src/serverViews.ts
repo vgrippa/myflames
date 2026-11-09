@@ -21,10 +21,11 @@ export const SERVER_VIEWS: { id: ServerKind; label: string; icon: IconName; grou
 export const WORKLOAD_VIEWS: { id: ServerKind; label: string; icon: IconName; group: string }[] = [
   { id: "top", label: "Top statements", icon: "statements", group: "Queries" },
   { id: "sessions", label: "Processlist", icon: "sessions", group: "Queries" },
+  { id: "memory", label: "Memory", icon: "memory", group: "Resources" },
   { id: "waits", label: "Waits", icon: "waits", group: "Resources" },
   { id: "io", label: "I/O", icon: "io", group: "Resources" },
 ];
-export const WORKLOAD_KINDS: ServerKind[] = ["top", "sessions", "waits", "io"];
+export const WORKLOAD_KINDS: ServerKind[] = ["top", "sessions", "memory", "waits", "io"];
 export const ALL_SERVER_VIEWS = [...SERVER_VIEWS, ...WORKLOAD_VIEWS];
 export const SERVER_GROUPS = ["Overview", "Contention", "Schema", "Setup", "Security"];
 export const WORKLOAD_GROUPS = ["Queries", "Resources"];

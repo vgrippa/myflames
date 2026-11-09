@@ -31,7 +31,11 @@
 .ops-form .ops-warning,
 .ops-form .ops-target,
 .ops-form > fieldset > .checkbox,
-.ops-form .ops-wide { grid-column: 1 / -1; }
+.ops-form .ops-wide,
+.ops-form .ops-targets { grid-column: 1 / -1; }
+.ops-targets { display: grid; gap: var(--space-1); max-width: 80ch; margin: 0; }
+.ops-targets > p { margin: 0; }
+.ops-evidence { margin: var(--space-1) 0 0; padding-left: 1.2em; }
 .ops-form details[open] > :not(summary) { margin-top: var(--space-2); }
 .ops-form details[open] { display: grid; gap: var(--space-2); }
 .ops-form details .ops-field { max-width: 320px; }
@@ -84,6 +88,32 @@
 .ops-loop .count-badge { margin-inline-start: var(--space-2); }
 .ops-progress { display: flex; align-items: center; gap: var(--space-2); margin-block: var(--space-2); font-variant-numeric: tabular-nums; }
 .ops-progress progress { flex: 1; min-width: 0; accent-color: var(--accent); }
+.ops-job { scroll-margin-block-start: calc(var(--toolbar-h) + var(--space-3)); }
+.ops-job:focus { outline: 2px solid var(--focus); outline-offset: -2px; }
+.ops-job-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  margin-block: var(--space-2);
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+.ops-job-facts > span { min-width: 0; overflow-wrap: anywhere; }
+.ops-job-folder { margin-block: var(--space-2); }
+.ops-job-summary {
+  display: flex;
+  flex: 1 1 18rem;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+.ops-job-summary progress { width: var(--space-7); min-width: 0; accent-color: var(--accent); }
+.ops-job-summary > span { min-width: 0; overflow-wrap: anywhere; }
+.ops-job-summary .text-button { flex: none; }
 .ops-log-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: var(--text-sm); }
 .ops-pre {
   max-width: 100%;
@@ -328,3 +358,22 @@
 .action-review .action-steps .status-pill.is-info { color: var(--info-text); }
 /* A statement with the server: the spinner is its mark. */
 .action-review .action-steps li[data-state="sent"] .status-pill > .status-dot { display: none; }
+
+/* Keep blockers and their fixes beside Start, including on short windows. */
+.ops-preflight-result.has-result { margin-block: var(--space-3); padding: var(--space-3); border: 1px solid var(--danger); border-radius: var(--radius-md); }
+.ops-preflight-result h3 { font-size: inherit; margin-block: var(--space-3); }
+.ops-preflight-result td { white-space: normal; overflow-wrap: anywhere; }
+.ops-preflight-result .text-button { white-space: normal; text-align: left; }
+.ops-invalid input, .ops-invalid .perf-picker-button { outline: 2px solid var(--danger); outline-offset: 2px; }
+.ops-tool-loading { padding-block: var(--space-3); color: var(--ink-muted); }
+
+.ops-task-fields, .ops-folder-check { display: contents; }
+
+.ops-preflight-result .ops-check-reason { display: block; white-space: normal; overflow-wrap: anywhere; }
+
+/* Privilege evidence stays on the confirmation and in the accessible reason;
+   the first click only reads the preflight. */
+.ops-view[data-view="maintenance"] .ops-actions .visible-privilege > .privilege-status-note { display: none; }
+.ops-system-ack { min-width: 0; overflow-wrap: anywhere; }
+.ops-system-ack .checkbox { align-items: flex-start; white-space: normal; }
+.ops-dump .ops-folder-row .hint { overflow-wrap: anywhere; }

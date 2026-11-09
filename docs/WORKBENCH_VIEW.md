@@ -61,6 +61,36 @@ optimizer cost as a separate value. Missing measurements read `n/a`; zero is
 still zero. Cost is not milliseconds. Times adapt between microseconds,
 milliseconds, and seconds; this view does not force the CLI's display-unit flag.
 
+## Row misestimates
+
+A measured plan (EXPLAIN ANALYZE, MariaDB ANALYZE) shows where the optimizer's
+row estimate was wrong. The rule is the plan finding's (`parser._row_misestimate`):
+a base-table access, or the filter directly above one, whose rows per loop
+differ from the estimate by 10× or more on at least 1,000 rows across loops.
+Below a LIMIT or on the inner side of a semijoin only underestimates count
+(reading stops early on purpose); MariaDB compares index lookups (ref, eq_ref)
+and reports only underestimates, because its plans hide LIMIT; CTE references
+and recursive work tables are skipped.
+
+| Mark | Meaning |
+| --- | --- |
+| Chip at the right of the header, for example `rows ×451 under` | Actual rows per loop are 451 times the estimate (`over`: the estimate was higher) |
+| Dashed outline around the card | The same operator, visible when zoomed out |
+
+The marks use their own violet, never a status color. The card's tooltip and
+details add the estimate against the actual rows. When the plan came from a
+capture that read the table's InnoDB statistics, they also give when those
+statistics were last updated, their row count, the columns with histograms,
+and the `ANALYZE TABLE` statement to copy; myflames never runs it. The
+execution tree and bar chart carry the same chip in the operator's label
+column, and the flame graph underlines the frame and names the estimate in
+its details line, without changing labels.
+
+In the workspace, **Misestimates N** in the plan's measurements selects each
+misestimated operator in turn, worst first, and brings it into view
+(Shift-click goes back); the inspector's **Row estimate** section shows the
+same facts with a Copy button for the statement.
+
 ## Join symbols
 
 The larger circles depict the **reported plan operator**, not row counts or

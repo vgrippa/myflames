@@ -274,6 +274,10 @@ try {
   await page.waitForSelector(`${view("sessions")}[data-other-connection=true]`);
   assert.match(await text(`${view("sessions")} .other-connection`),
     /From Prod \(analyst@db\.prod:3306\), refresh to load this server\./);
+  assert.equal(await page.$(`${view("sessions")} .other-connection .gate-action button`), null,
+    "the connection note reuses the header Refresh");
+  assert.equal(await disabled(`${view("sessions")} [data-action=refresh]`), false,
+    "the header can read the connection in use");
   assert.equal(await disabled('.view-inspector [aria-label="Kill: connection 93"]'), true, "Kill is off on another connection");
   await selectSession(100);
   assert.equal(await disabled('.view-inspector [aria-label="Show plan for connection 100"]'), true, "Show plan is off");
@@ -464,7 +468,7 @@ try {
   assert.equal(await page.$(".run-confirm"), null);
   assert.equal(await disabled('[aria-label="Run analysis on statement 2"]'), true);
   assert.equal(await disabled('[aria-label="Explain statement 2"]'), true);
-  assert.equal(await disabled('[aria-label="Use statement 2 in the editor"]'), true);
+  assert.equal(await disabled('[aria-label="Open in Query editor: statement 2"]'), true);
   assert.equal(await other("top"), true);
   assert.equal(calls("/api/live/start").length, 0, "nothing ran");
 
@@ -577,9 +581,11 @@ try {
   assert.deepEqual(await tabState(), { selected: 2, focused: 2, stops: 1, controls: true, labelled: true });
   await page.keyboard.press("Home");
 
-  // 12. Cancel capture while the start is still on its way.
+  // 12. Cancel capture while the start is still on its way (Run analysis
+  // captures; Explain runs in the tab's session).
   hold.add("/api/live/start");
-  await clickExact(".editor-actions button", "Explain");
+  await page.click(".editor-actions [data-action=analyze]");
+  await page.locator("dialog[open] button ::-p-text(Run analysis)").click();
   const start = await held("/api/live/start");
   await page.locator(".editor-actions button ::-p-text(Cancel capture)").click();
   answer(start);
@@ -651,6 +657,8 @@ try {
   await page.waitForFunction(() => !document.querySelector(".query-lab .tab-target"));
   hold.add("/api/live/start");
   await clickExact(".editor-actions button", "Run analysis");
+  // Run analysis says first that it runs the statement.
+  await page.locator("dialog[open] button ::-p-text(Run analysis)").click();
   const rebound = await held("/api/live/start");
   assert.deepEqual([rebound.body.connection.profile_id, rebound.body.source.digest, rebound.body.mode],
     ["p2", PARAMETERIZED, "analyze"]);

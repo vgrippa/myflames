@@ -23,6 +23,31 @@ COLORS = {
     "unknown": "#ccd2d8", "result": "#bec7ce",
 }
 
+#: Row-estimate marks (parser.misestimate_record), keep in step with
+#: charts/workbench.ts and charts/core/styles.ts: a chip with the record's
+#: label at the right of the card's header band, and a dashed outline just
+#: outside the card. MARK_COLOR is the light value of --mfc-estimate, a mark
+#: color that is never a status color; the runtime themes it.
+MARK_COLOR = "#5b3cc4"
+MARK_FILL = "#ffffff"
+#: 11 px semibold text, per code point (measured: at most 6.19 px).
+MARK_CHAR_W = 6.2
+MARK_PAD = 10
+MARK_H = 18
+MARK_INSET = 8
+OUTLINE_GAP = 3
+
+
+def mark_width(text):
+    """Width of a row-estimate chip: 6.2 px per code point plus 10 px."""
+    return len(text) * MARK_CHAR_W + MARK_PAD
+
+
+def _misestimate(details):
+    """The parser's row-estimate record of an operator, or None."""
+    miss = (details or {}).get("misestimate")
+    return miss if isinstance(miss, dict) and miss.get("label") else None
+
 
 def _number(value):
     try:
@@ -219,13 +244,22 @@ def _layout(root):
     return nodes, edges, layout["width"], layout["height"]
 
 
-def _details(node):
+def _details(node, evidence=None):
+    """Details text of one operator (tooltip, details strip, search text).
+
+    A misestimated operator adds the parser's row-estimate line; *evidence*
+    (one ``advisor.statistics_evidence`` entry for its table) adds the
+    statistics facts and the ANALYZE TABLE statement, which myflames never
+    runs.
+    """
     d = node.get("details") or {}
     measured = _number(d.get("actual_last_row_ms")) is not None
+    miss = _misestimate(d)
     fields = [
         ("Operation", node.get("full_label") or node.get("short_label") or "Unknown"),
         ("Actual rows / loop", d.get("actual_rows")),
         ("Estimated rows / loop", d.get("estimated_rows")),
+        ("Row estimate", miss.get("text") if miss else None),
         ("Actual loops", d.get("actual_loops")),
         ("Actual first row (ms / loop)", d.get("actual_first_row_ms")),
         ("Actual last row (ms / loop)", d.get("actual_last_row_ms")),
@@ -241,6 +275,9 @@ def _details(node):
         label, meaning = JOIN_LABELS[_join_type(node)]
         fields.extend([("Join type", label), ("Highlighted region", meaning),
                        ("Join symbol", "Logical join semantics, not row counts or duplicates. L/R refer to this plan operator, not SQL text order.")])
+    if miss and isinstance(evidence, dict) and evidence.get("statement"):
+        fields.extend([("Statistics", "%s: %s" % (evidence.get("table") or miss.get("table"), evidence.get("text") or "")),
+                       ("Suggested SQL", evidence["statement"])])
     return "\n".join("%s: %s" % (label, value) for label, value in fields if value is not None and value != "" and value != [])
 
 
@@ -263,7 +300,7 @@ def render_workbench(root, width=1200, title="MySQL Query Plan", unit_display="m
         '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xhtml="http://www.w3.org/1999/xhtml" '
         'width="%d" height="%d" viewBox="0 0 %d %d" class="wb-plan" role="group" aria-label="Visual Explain">' % (width, height, width, height),
         '<title>%sVisual Explain</title>' % (text(title) + ': ' if title else ''),
-        '<style>.wb-plan{font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;background:#f8fafb;color:#243341}.wb-plan text{fill:#243341;font-size:12px}.wb-plan .wb-heading{font-size:19px;font-weight:650}.wb-plan .wb-caption{fill:#596a79;font-size:11px}.wb-plan .wb-title{font-size:13px;font-weight:650}.wb-plan .wb-node{cursor:pointer;outline:none}.wb-plan .wb-node:hover .wb-box,.wb-plan .wb-node:focus .wb-box,.wb-plan .wb-node.selected .wb-box{stroke:#176aa8;stroke-width:3}.wb-plan .wb-node.dim{opacity:.25}.wb-plan .wb-controls{display:flex;align-items:center;height:100%}.wb-plan .wb-controls button,.wb-plan .wb-controls input{box-sizing:border-box;height:28px;margin:0;font:12px -apple-system,BlinkMacSystemFont,system-ui,sans-serif;color:#1d1d1f}.wb-plan .wb-controls button{cursor:pointer;min-width:30px;padding:0 10px;border:1px solid #8e8e98;border-left-width:0;border-radius:0;background:#f2f2f4}.wb-plan .wb-controls [data-action="out"]{border-left-width:1px;border-radius:6px 0 0 6px}.wb-plan .wb-controls [data-action="reset"]{min-width:56px;font-variant-numeric:tabular-nums}.wb-plan .wb-controls [data-action="fit"]{border-radius:0 6px 6px 0}.wb-plan .wb-controls button:hover:not(:disabled){background:#e9e9ed}.wb-plan .wb-controls button:active:not(:disabled),.wb-plan .wb-controls button.wb-activated:not(:disabled){background:#fff;color:#176aa8}.wb-plan .wb-controls button:disabled{opacity:.4;cursor:default}.wb-plan .wb-controls input{width:180px;margin-left:8px;padding:0 8px;border:1px solid #8e8e98;border-radius:4px;background:#fff}.wb-plan .wb-search-status{margin-left:8px;font:12px -apple-system,BlinkMacSystemFont,system-ui,sans-serif;color:#5c5c66}.wb-plan button:focus-visible,.wb-plan input:focus-visible{position:relative;z-index:1;outline:2px solid #176aa8}.wb-plan .wb-details{user-select:text;font:12px/1.6 system-ui;color:#243341;white-space:pre-wrap;overflow:auto;height:100%;box-sizing:border-box;padding:12px;border:1px solid #d8e0e5;border-radius:6px;background:#fff}.wb-plan .wb-edge-label{font-size:11px;paint-order:stroke;stroke:var(--surface,#f8fafb);stroke-width:6px;stroke-linejoin:round}.wb-plan .wb-edge-chip{fill:var(--surface,#f8fafb)}</style>',
+        '<style>.wb-plan{font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;background:#f8fafb;color:#243341}.wb-plan text{fill:#243341;font-size:12px}.wb-plan .wb-heading{font-size:19px;font-weight:650}.wb-plan .wb-caption{fill:#596a79;font-size:11px}.wb-plan .wb-title{font-size:13px;font-weight:650}.wb-plan .wb-node{cursor:pointer;outline:none}.wb-plan .wb-node:hover .wb-box,.wb-plan .wb-node:focus .wb-box,.wb-plan .wb-node.selected .wb-box{stroke:#176aa8;stroke-width:3}.wb-plan .wb-node.dim{opacity:.25}.wb-plan .wb-controls{display:flex;align-items:center;height:100%}.wb-plan .wb-controls button,.wb-plan .wb-controls input{box-sizing:border-box;height:28px;margin:0;font:12px -apple-system,BlinkMacSystemFont,system-ui,sans-serif;color:#1d1d1f}.wb-plan .wb-controls button{cursor:pointer;min-width:30px;padding:0 10px;border:1px solid #8e8e98;border-left-width:0;border-radius:0;background:#f2f2f4}.wb-plan .wb-controls [data-action="out"]{border-left-width:1px;border-radius:6px 0 0 6px}.wb-plan .wb-controls [data-action="reset"]{min-width:56px;font-variant-numeric:tabular-nums}.wb-plan .wb-controls [data-action="fit"]{border-radius:0 6px 6px 0}.wb-plan .wb-controls button:hover:not(:disabled){background:#e9e9ed}.wb-plan .wb-controls button:active:not(:disabled),.wb-plan .wb-controls button.wb-activated:not(:disabled){background:#fff;color:#176aa8}.wb-plan .wb-controls button:disabled{opacity:.4;cursor:default}.wb-plan .wb-controls input{width:180px;margin-left:8px;padding:0 8px;border:1px solid #8e8e98;border-radius:4px;background:#fff}.wb-plan .wb-search-status{margin-left:8px;font:12px -apple-system,BlinkMacSystemFont,system-ui,sans-serif;color:#5c5c66}.wb-plan button:focus-visible,.wb-plan input:focus-visible{position:relative;z-index:1;outline:2px solid #176aa8}.wb-plan .wb-details{user-select:text;font:12px/1.6 system-ui;color:#243341;white-space:pre-wrap;overflow:auto;height:100%;box-sizing:border-box;padding:12px;border:1px solid #d8e0e5;border-radius:6px;background:#fff}.wb-plan .wb-edge-label{font-size:11px;paint-order:stroke;stroke:var(--surface,#f8fafb);stroke-width:6px;stroke-linejoin:round}.wb-plan .wb-edge-chip{fill:var(--surface,#f8fafb)}.wb-plan .mfc-mis{fill:' + MARK_COLOR + ';font-size:11px;font-weight:600}</style>',
         '<rect width="100%" height="100%" fill="#f8fafb"/>',
         '<text x="20" y="29" class="wb-heading">%s</text>' % text(title or "Visual Explain"),
         '<text x="20" y="50" class="wb-caption">Data flows downward · Colors identify operators · Arrow width = estimated rows (log scale)</text>',
@@ -298,16 +335,28 @@ def render_workbench(root, width=1200, title="MySQL Query Plan", unit_display="m
         lines.append('<text x="%.1f" y="%.1f" class="wb-edge-label">%s</text>' % (source["x"] + 8, sy + 23, text(rows)))
         if edge["phase"]:
             lines.append('<text x="%.1f" y="%.1f" class="wb-edge-label">%s</text>' % (source["x"] + 8, sy + 41, text(edge["phase"])))
+    evidence_by_table = (analysis or {}).get("statistics_evidence") or {}
     for item in nodes:
         node, x, y = item["node"], item["x"], item["y"]
         d = node.get("details") or {}
         kind = _kind(node)
         is_join = kind in ("nested_loop", "hash", "bka")
         label = node.get("short_label") or "Unknown operator"
-        detail = _details(node)
+        miss = _misestimate(d)
+        detail = _details(node, evidence_by_table.get(miss["table"]) if miss else None)
+        # The marker is drawn, so its words are in the accessible name too.
+        name = label + ", " + miss["label"] if miss else label
+        mark_w = mark_width(miss["label"]) if miss else 0
+        chip = []
+        if miss:
+            chip_x = BOX_W - MARK_INSET - mark_w
+            chip = ['<rect class="mfc-mis-chip" x="%.1f" y="8" width="%.1f" height="%d" rx="9" fill="%s" stroke="%s"/>'
+                    % (chip_x, mark_w, MARK_H, MARK_FILL, MARK_COLOR),
+                    '<text class="mfc-mis" x="%.1f" y="21" text-anchor="middle">%s</text>'
+                    % (chip_x + mark_w / 2, text(miss["label"]))]
         teach = (teach_index_by_folded or {}).get((node.get("folded_label") or "").strip())
         teach_attr = ' data-teach-index="%s"' % teach if teach is not None else ''
-        lines.append('<g class="wb-node" role="button" tabindex="0" aria-label="%s" data-node-id="%s" data-details="%s" data-label="%s" data-kind="%s" transform="translate(%.1f %.1f)"%s><title>%s</title>' % (attr(label), attr(node.get("node_id", "")), attr(detail), attr(label), kind, x, y, teach_attr, text(detail)))
+        lines.append('<g class="wb-node" role="button" tabindex="0" aria-label="%s" data-node-id="%s" data-details="%s" data-label="%s" data-kind="%s" transform="translate(%.1f %.1f)"%s><title>%s</title>' % (attr(name), attr(node.get("node_id", "")), attr(detail), attr(label), kind, x, y, teach_attr, text(detail)))
         lines.append('<rect class="wb-box" width="%d" height="%d" rx="7" fill="white" stroke="#c4cfd6"/>' % (BOX_W, item["height"]))
         if is_join:
             join_type = _join_type(node)
@@ -316,18 +365,25 @@ def render_workbench(root, width=1200, title="MySQL Query Plan", unit_display="m
             algorithm = {"hash": "Hash", "nested_loop": "Nested loop", "bka": "BKA"}[kind]
             heading = JOIN_LABELS[join_type][0] + " · " + algorithm
             lines.append('<text x="128" y="124" text-anchor="middle" class="wb-title">%s</text>' % text(fit_label(heading, BOX_W - 24, 13)))
+            lines.extend(chip)
         else:
             secondary = d.get("table_name") or d.get("condition") or d.get("index_name") or d.get("operation") or ""
             if d.get("table_name") and d.get("index_name"):
                 secondary += " · " + d["index_name"]
             heading = label.split(" [", 1)[0] if (d.get("table_name") and " [" in label and label.endswith("]")) else ("Filter" if (not d.get("table_name") and d.get("condition") and label.startswith("Filter: ")) else label)
             lines.append('<path d="M7 0 H249 Q256 0 256 7 V34 H0 V7 Q0 0 7 0" fill="%s"/>' % COLORS[kind])
-            lines.append('<text x="12" y="23" class="wb-title">%s</text>' % text(fit_label(heading, BOX_W - 24, 13)))
+            # The chip takes the right of the header band; the title keeps the rest.
+            lines.append('<text x="12" y="23" class="wb-title">%s</text>' % text(fit_label(heading, BOX_W - 24 - (mark_w + 6 if miss else 0), 13)))
+            lines.extend(chip)
             lines.append('<text x="12" y="57">%s</text>' % text(fit_label(str(secondary), BOX_W - 24, 12)))
         measured = _number(d.get("actual_last_row_ms")) is not None
         timing = "Self %s · total %s" % (_time(node.get("self_time") if measured else None), _time(node.get("total_time") if measured else None))
         lines.append('<text x="12" y="%d" class="wb-caption">%s</text>' % (item["height"] - 35, text(timing)))
-        lines.append('<text x="12" y="%d" class="wb-caption">Est. cost %s · loops %s</text></g>' % (item["height"] - 14, text(_fmt(d.get("estimated_total_cost"))), text(_fmt(d.get("actual_loops")))))
+        lines.append('<text x="12" y="%d" class="wb-caption">Est. cost %s · loops %s</text>' % (item["height"] - 14, text(_fmt(d.get("estimated_total_cost"))), text(_fmt(d.get("actual_loops")))))
+        if miss:
+            lines.append('<rect class="mfc-mis-outline" x="%d" y="%d" width="%d" height="%d" rx="10" fill="none" stroke="%s" stroke-width="2" stroke-dasharray="6 4" pointer-events="none"/>'
+                         % (-OUTLINE_GAP, -OUTLINE_GAP, BOX_W + 2 * OUTLINE_GAP, item["height"] + 2 * OUTLINE_GAP, MARK_COLOR))
+        lines.append('</g>')
     terminal_x = nodes[0]["x"] + BOX_W / 2
     terminal_y = nodes[0]["y"] + nodes[0]["height"]
     lines.extend([

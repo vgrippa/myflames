@@ -34,6 +34,7 @@ export type IconName =
   | "errorlog"
   | "statements"
   | "sessions"
+  | "memory"
   | "waits"
   | "io"
   | "lock"
@@ -45,6 +46,7 @@ export type IconName =
   | "replication"
   | "cluster"
   | "proxy"
+  | "readyset"
   | "maintenance"
   | "info"
   | "refresh"
@@ -83,11 +85,19 @@ export type IconName =
   | "format"
   // Learn: show a lesson's animation full screen, and leave it.
   | "fullscreen"
-  | "exit-fullscreen";
+  | "exit-fullscreen"
+  // Files: the place, New folder and Up (row glyphs: fileGlyphs.generated.ts).
+  | "files"
+  | "folder-add"
+  | "up";
 // Glyphs are Hugeicons (free Stroke Rounded set, MIT) vendored into
 // icons.generated.ts by scripts/vendor-hugeicons.mjs, drawn on a 24 px grid and
 // scaled to 16 px (rows, navigation) or 12 px (disclosures, inline status).
-const data: Record<IconName, IconShape> = icons;
+// Memory's DIMM glyph is local; the vendored icon set stays generated.
+const data: Record<IconName, IconShape> = { ...icons, memory: [
+  ["rect", { x: "3", y: "6", width: "18", height: "12", rx: "2" }],
+  ["path", { d: "M7 9v5h3V9H7ZM14 9v5h3V9h-3ZM6 18v3M10 18v3M14 18v3M18 18v3" }],
+] };
 export function isIconName(name: string): name is IconName {
   return Object.prototype.hasOwnProperty.call(data, name);
 }

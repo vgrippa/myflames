@@ -370,3 +370,28 @@ class ContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SubqueryChildOrderTests(unittest.TestCase):
+    """parse_node appends select-list and subquery children AFTER the regular
+    join inputs (details.input_kind). The join's inner side is the last
+    regular input, not the last child (review 2026-11-05)."""
+
+    def test_join_inner_ignores_trailing_subquery_children(self):
+        outer = node(access_type="table")
+        inner = node(access_type="ref")
+        subq = node(access_type="table")
+        subq["details"]["input_kind"] = "subquery"
+        join = node(access_type="join", op="Nested loop inner join",
+                    children=[outer, inner, subq])
+        c = compute_complexity(join)
+        self.assertEqual(c["big_o"], "O(n · log m)")
+        self.assertEqual(c["learn_more"], "nested_loop_join")
+
+    def test_join_with_only_a_subquery_child_opts_out_cleanly(self):
+        # No regular inputs: the join handler has no inner side to judge and
+        # may opt out (None); it must not crash on the tagged child.
+        subq = node(access_type="table")
+        subq["details"]["input_kind"] = "subquery"
+        join = node(access_type="join", op="Nested loop inner join", children=[subq])
+        compute_complexity(join)

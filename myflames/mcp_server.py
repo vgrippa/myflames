@@ -147,6 +147,8 @@ def _read_sql(sql):
     # No arbitrary SQL reaches this adapter: tools call a fixed set of module
     # readers. Check every statement anyway, including the multi-read privilege
     # script, so a future module change cannot add SET or a write here.
+    if re.search(r"/\*rs\+", sql, re.I):
+        raise ValueError("MCP server analysis does not permit Readyset optimizer hints.")
     statements = [part.strip() for part in TOKEN.sub(" ", sql).split(";") if part.strip()]
     if not statements or any(not re.match(r"^(SELECT|SHOW)\b", part, re.I) for part in statements):
         raise ValueError("MCP server analysis permits only SELECT and SHOW statements.")
@@ -186,18 +188,19 @@ def _server_read(profile, detail, read, formatter):
         output = result if detail == "full" else formatter(result)
         # Some server errors are returned as notes inside reports. Sanitize
         # both projections, including nested values, before they reach MCP.
-        if password:
-            output = _without_secret(output, password)
+        output = _without_secret(output, password)
         return output
     except Exception as exc:
         # The client and report modules can include diagnostics in exceptions.
-        # Never propagate the saved password, even if a backend echoes it.
-        raise ValueError(str(exc).replace(password, "[redacted]") if password else str(exc)) from None
+        # Never propagate the saved password or URL credentials.
+        from .dbops import redact
+        raise ValueError(redact(str(exc), password)) from None
 
 
 def _without_secret(value, password):
     if isinstance(value, str):
-        return value.replace(password, "[redacted]")
+        from .dbops import redact
+        return redact(value, password)
     if isinstance(value, dict):
         return {_without_secret(k, password): _without_secret(v, password) for k, v in value.items()}
     if isinstance(value, list):
@@ -387,6 +390,18 @@ def cluster_status_tool(profile: str, detail: str = "core") -> object:
                         lambda r: _text_with_notes(cluster.format_text, r))
 
 
+def readyset_status_tool(profile: str, detail: str = "core") -> object:
+    """Read-only Readyset cache, proxied query, replication and upstream topology status; never creates, drops or alters caches.
+
+    profile is a saved workspace connection name or ID; its saved password is
+    resolved locally. detail="core" returns compact text; detail="full" returns
+    the complete readyset-1.0 JSON report. No password or SQL arguments are accepted.
+    """
+    from . import readyset
+    return _server_read(profile, detail, readyset.read_status,
+                        lambda r: _text_with_notes(readyset.format_text, r))
+
+
 # ---------------------------------------------------------------------------
 # MCP transport (optional — imports `mcp` lazily)
 # ---------------------------------------------------------------------------
@@ -491,15 +506,32 @@ def build_server():
         ("my_privileges", my_privileges_tool),
         ("replication_status", replication_status_tool),
         ("cluster_status", cluster_status_tool),
+        ("readyset_status", readyset_status_tool),
     ):
         server.tool(name=name)(tool)
 
     return server
 
 
+MCP_DEPRECATION = (
+    "warning: myflames-mcp is deprecated and gets no new tools; myflames now focuses on the "
+    "desktop app (https://github.com/vgrippa/myflames/releases). "
+    "Set MYFLAMES_NO_DEPRECATION_WARNING=1 to hide this notice.\n")
+
+
 def main():
-    """Console entry point (``myflames-mcp``). Runs the server over stdio."""
+    """Console entry point (``myflames-mcp``). Runs the server over stdio.
+
+    Deprecated with the command line: one notice on stderr (stdout carries
+    the protocol), before the SDK is even imported; every tool still works."""
+    import os
     import sys
+    if os.environ.get("MYFLAMES_NO_DEPRECATION_WARNING") != "1":
+        try:
+            sys.stderr.write(MCP_DEPRECATION)
+            sys.stderr.flush()
+        except (OSError, ValueError):
+            pass
     try:
         server = build_server()
     except ImportError as exc:

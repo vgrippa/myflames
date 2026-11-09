@@ -221,7 +221,7 @@ macOS does not hand out a notarytool profile while the screen is locked
 uses `APPLE_KEYCHAIN_PROFILE` needs the Mac unlocked until it ends; the script
 keeps the display awake, but a manual lock still stops it. For a build that may
 run unattended, create an App Store Connect API key (Users and Access >
-Integrations > Team Keys, with App Manager access; Apple lets you download the
+Integrations > Team Keys, with Developer access; Apple lets you download the
 `AuthKey_<id>.p8` file once), keep that file readable only by you, and pass
 the key instead of `APPLE_KEYCHAIN_PROFILE`:
 

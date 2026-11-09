@@ -361,7 +361,7 @@ export function TuningView({
         <>
           {tabs}
           {exportMenu}
-          {tab === "scorecard" && onRunReport && (
+          {onRunReport && (
             // While it runs: a spinner and "Running…", aria-busy, clicks
             // ignored, and focus stays on it (aria-disabled, not disabled).
             <ActionButton
@@ -378,12 +378,10 @@ export function TuningView({
           )}
         </>
       }
-      onRefresh={tab === "analysis" && onRunReport ? run : undefined}
-      refreshDisabled={disabled || !!runBlocked}
       loading={running}
       otherConnection={tab === "scorecard" ? other : analysisOther}
-      // The scorecard has no Refresh: the toolbar's Run full analysis reads this server.
-      otherAction={tab === "scorecard" && onRunReport ? { label: "Run full analysis" } : undefined}
+      // Both tabs name the same read in the toolbar and the connection note.
+      otherAction={onRunReport ? { label: "Run full analysis" } : undefined}
       inspector={inspector}
       inspectorEmpty={
         <p>

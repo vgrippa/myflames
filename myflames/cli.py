@@ -13,6 +13,7 @@ from .parser import (
     flatten_nodes,
     enhance_flame_titles,
     analyze_plan,
+    misestimate_marks,
     render_info_panel,
 )
 from .flamegraph import folded_to_svg, plan_folded
@@ -1012,9 +1013,40 @@ def _close_on_termination_signals():
             pass
 
 
+CLI_DEPRECATION = (
+    "warning: the myflames command line is deprecated and gets no new features; "
+    "use the myflames desktop app (https://github.com/vgrippa/myflames/releases). "
+    "Set MYFLAMES_NO_DEPRECATION_WARNING=1 to hide this notice.\n")
+
+
+def _quiet_in(argv):
+    """-q, -qq, --quiet or an abbreviation of it (--qui, --quie) before ``--``."""
+    for arg in argv:
+        if arg == "--":
+            return False
+        if (len(arg) > 1 and arg[0] == "-" and set(arg[1:]) == {"q"}) or (len(arg) >= 5 and "--quiet".startswith(arg)):
+            return True
+    return False
+
+
+def _cli_deprecation_notice(argv):
+    """One line on standard error for every command but ``ui``, which the
+    desktop app runs as its own backend and which has its own notice. Like
+    other deprecation warnings, --quiet hides it. Output, exit codes and flags
+    stay as they were."""
+    if (argv[1:2] == ["ui"] or os.environ.get("MYFLAMES_NO_DEPRECATION_WARNING") == "1"
+            or _quiet_in(argv[1:])):
+        return
+    try:
+        sys.stderr.write(CLI_DEPRECATION)
+    except (OSError, ValueError):
+        pass
+
+
 def main():
     _close_on_termination_signals()
     _utf8_standard_streams()
+    _cli_deprecation_notice(sys.argv)
     # Handle subcommands before argparse to avoid conflicts with positional args
     if len(sys.argv) > 1:
         if (len(sys.argv) > 2 and
@@ -1033,7 +1065,7 @@ def main():
             return
         if sys.argv[1] in ("capture", "explore", "top", "sessions", "running", "locks", "innodb", "error-log", "health",
                            "waits", "indexes", "tables", "io", "config", "instruments", "report", "profiles",
-                           "audit", "replication", "cluster"):
+                           "audit", "replication", "cluster", "readyset"):
             from . import workspace_cli
             command = getattr(workspace_cli, "cmd_" + sys.argv[1].replace("-", "_"))
             command(sys.argv[2:])
@@ -1090,7 +1122,8 @@ def main():
 
     parser = argparse.ArgumentParser(
         prog="myflames",
-        description="MySQL EXPLAIN ANALYZE visualizer: flame graphs, bar charts, diagrams, execution trees, and Workbench-style plans.",
+        description="MySQL EXPLAIN ANALYZE visualizer: flame graphs, bar charts, diagrams, execution trees, and Workbench-style plans. "
+                    "Deprecated: the command line gets no new features; use the myflames desktop app.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         # add_help=False so the short flag ``-h`` is free for ``--host`` — we
         # add our own ``--help`` below. ``mysql -h host`` users expect this.
@@ -1117,6 +1150,7 @@ Examples:
   myflames report -h localhost -u admin -p --html -o report.html # full analysis of the server
   myflames replication --profile replica                # channels, lag caveats, skip plans
   myflames cluster --profile node1 --fail-on problem    # Galera, PXC, InnoDB Cluster, Group Replication
+  myflames readyset --profile rs1 --fail-on watch       # Readyset caches, replication, upstream topology
   myflames upgrade-check -h localhost -u admin -p --target-version 8.4.0 # before an upgrade
   myflames dump /backups/shop -h localhost -u admin -p --schema shop # dump with a verified manifest
   myflames restore /backups/shop -h staging -u admin -p # restore after typing the target
@@ -1171,6 +1205,7 @@ Subcommands:
   report    Full analysis: every Server view once, ranked findings, sections (--html, --fail-on)
   replication  Replication channels and lag; skip one failed transaction; skip-loop until stopped
   cluster   Galera, Percona XtraDB Cluster, InnoDB Cluster or Group Replication members (--fail-on)
+  readyset  Readyset caches, proxied queries, base-table replication and upstream topology (--fail-on)
   upgrade-check  Check a MySQL server before an upgrade (MySQL Shell, else a partial native subset)
   dump      Dump databases into a new directory with a verified manifest (mysqlsh, mysqldump, mariadb-dump)
   restore   Restore a myflames dump after typing the target; verify objects and row counts
@@ -1476,7 +1511,7 @@ Subcommands:
     if args.type == "flamegraph":
         # Whole microseconds per measured operator (flamegraph.flame_scale);
         # tooltips print readable units (flamegraph.flame_value_text).
-        folded_text, flame_unit = plan_folded(build_flame_entries(root), root["total_time"],
+        folded_text, flame_unit = plan_folded(build_flame_entries(root, node_identity=True), root["total_time"],
                                               keep_root=True)
         if not folded_text.strip():
             # Empty/degenerate input, not a tripped finding — exit 2 (bad input)
@@ -1505,6 +1540,9 @@ Subcommands:
             teach_index_by_folded=teach_maps["by_folded_label"],
             complexity_by_folded=_complexity_by_folded or None,
             family_by_folded=_family_by_folded or None,
+            frame_labels={"operator:" + n["node_id"]: n["folded_label"] for n in flatten_nodes(root)},
+            frame_ids={"operator:" + n["node_id"]: n["node_id"] for n in flatten_nodes(root)},
+            marks=misestimate_marks(root),
         )
         if not args.no_enhance:
             # Each frame's tooltip gets its own operator's details

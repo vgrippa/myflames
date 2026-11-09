@@ -40,10 +40,12 @@ import {
   type ProxySqlFailure, type ProxySqlHostgroup, type ProxySqlQueryRule, type ProxySqlReport, type ProxySqlRouting,
   type ProxySqlServer, type ProxySqlTarget,
 } from "./proxysqlApi";
+import { ProxySqlTopologyDiagram } from "./ProxySqlTopology";
 import "./cluster.css";
 import "./proxysql.css";
+import "./readyset.css";
 
-export type ProxySqlTab = "servers" | "hostgroups" | "rules" | "digests";
+export type ProxySqlTab = "topology" | "servers" | "hostgroups" | "rules" | "digests";
 const SHEET_WIDTH = 1100;
 export const DEFAULT_DIGEST_FILTERS: DigestFilters = {
   order: "time", limit: 10, hostgroup: null, schema: null, user: null, text: null, digest: null, rule_id: null,
@@ -106,7 +108,7 @@ export function summaryText(report: ProxySqlReport): string {
   return parts.join(" · ");
 }
 
-export function ProxySqlPlace({ connection, disabled = false, report, onReport, failure = null, onFailure }: {
+export function ProxySqlPlace({ connection, disabled = false, report, onReport, failure = null, onFailure, onSwitchConnection, onOpenReadyset, onOpenCluster, onOpenReplication }: {
   connection: Connection;
   disabled?: boolean;
   /** Owned by the shell so the sidebar knows when the connection is not ProxySQL Admin. */
@@ -114,6 +116,10 @@ export function ProxySqlPlace({ connection, disabled = false, report, onReport, 
   onReport: (report: Bound<ProxySqlReport>) => void;
   failure?: ProxySqlFailure | null;
   onFailure?: (key: string, message: string) => void;
+  onSwitchConnection?: (profileId: string) => void;
+  onOpenReadyset?: () => void;
+  onOpenCluster?: () => void;
+  onOpenReplication?: () => void;
 }) {
   const [selectedKey, setSelectedKey] = useState("");
   const [inspectorOpen, setInspectorOpen] = useState(false);
@@ -171,17 +177,23 @@ export function ProxySqlPlace({ connection, disabled = false, report, onReport, 
       <div ref={placeRef} className="cluster-place proxysql-place">
         <ProxySqlView connection={connection} disabled={disabled} report={report} onReport={onReport}
           failure={failure} onFailure={onFailure} selection={selection} tab={tab}
-          onTab={(t) => { setTab(t); setSelectedKey(""); }} filters={filters} onFilters={setFilters} go={go} />
+          onTab={(t) => { setTab(t); setSelectedKey(""); }} filters={filters} onFilters={setFilters} go={go}
+          onSwitchConnection={onSwitchConnection} onOpenReadyset={onOpenReadyset}
+          onOpenCluster={onOpenCluster} onOpenReplication={onOpenReplication} />
       </div>
     </InspectorContext.Provider>
   );
 }
 
-function ProxySqlView({ connection, disabled, report: bound, onReport, failure, onFailure, selection, tab, onTab, filters, onFilters, go }: {
+function ProxySqlView({ connection, disabled, report: bound, onReport, failure, onFailure, selection, tab, onTab, filters, onFilters, go, onSwitchConnection, onOpenReadyset, onOpenCluster, onOpenReplication }: {
   connection: Connection; disabled: boolean; report: Bound<ProxySqlReport> | null;
   onReport: (report: Bound<ProxySqlReport>) => void; failure: ProxySqlFailure | null; onFailure?: (key: string, message: string) => void;
   selection: Selection; tab: ProxySqlTab; onTab: (tab: ProxySqlTab) => void;
   filters: DigestFilters; onFilters: (filters: DigestFilters) => void; go: Go;
+  onSwitchConnection?: (profileId: string) => void;
+  onOpenReadyset?: () => void;
+  onOpenCluster?: () => void;
+  onOpenReplication?: () => void;
 }) {
   const reads = useConnectionReads(connection);
   const digestReads = useConnectionReads(connection);
@@ -271,7 +283,7 @@ function ProxySqlView({ connection, disabled, report: bound, onReport, failure, 
   const hostgroups = isProxy ? report!.hostgroups : [];
   const rules = isProxy ? report!.query_rules : [];
   const digests = digestsReport?.digests || [];
-  const chosenServer = tab === "servers" ? servers.find((s) => s.key === selection.key) : undefined;
+  const chosenServer = tab === "servers" || tab === "topology" ? servers.find((s) => s.key === selection.key) : undefined;
   const chosenGroup = tab === "hostgroups" ? hostgroups.find((h) => `hg:${h.id}` === selection.key) : undefined;
   const chosenRule = tab === "rules" ? rules.find((r) => `rule:${r.rule_id}` === selection.key) : undefined;
   // A digest opened from a rule shows at once from the report while its own read runs.
@@ -342,18 +354,19 @@ function ProxySqlView({ connection, disabled, report: bound, onReport, failure, 
   const configLine = isProxy && (tab === "servers" || tab === "rules")
     ? <ConfigLine report={report!} module={tab === "servers" ? "servers" : "query_rules"} block={changeBlock}
       busy={actions.busy} planning={actions.planning} onAction={startModule} /> : null;
-  const shownResult = actions.result;
+  const shownResult = actions.result && actions.result.key === reads.key ? actions.result : null;
   return (
     <ViewLayout id="proxysql" title="ProxySQL" detailBackLabel="" className={`cluster-view proxysql-view${failedOver ? " is-stale" : ""}`}
       onRefresh={() => { void load(true); if (tab === "digests" && isProxy && !stale) void loadDigests(true); }} refreshDisabled={disabled}
       loading={!!reads.loading || !!digestReads.loading} otherConnection={other} inspector={content}
-      inspectorEmpty={<p>Select a row to see its details{tab === "servers" || tab === "rules" ? " and the changes it offers" : ""}.</p>}
+      inspectorEmpty={<p>Select a row to see its details{tab === "servers" || tab === "topology" || tab === "rules" ? " and the changes it offers" : ""}.</p>}
       controls={isProxy ? (
         <Segmented<ProxySqlTab>
           label="ProxySQL sections"
           value={tab}
           onChange={onTab}
           options={[
+            { value: "topology", label: "Topology", title: "Multi-tier routing across ProxySQL, Readyset cache tiers and MySQL/MariaDB backends" },
             { value: "servers", label: "Servers", title: "Each backend as ProxySQL runs it, with its connection pool", count: servers.length },
             { value: "hostgroups", label: "Hostgroups", title: "Hostgroups in runtime and the monitors that manage them", count: hostgroups.length },
             { value: "rules", label: "Query rules", title: "mysql_query_rules: where ProxySQL routes each query", count: rules.length },
@@ -388,7 +401,8 @@ function ProxySqlView({ connection, disabled, report: bound, onReport, failure, 
           {summaryText(report)}
         </SummaryLine>
         {!report.is_proxysql ? (
-          <EmptyState icon="proxy" title="Not a ProxySQL Admin interface">
+          <EmptyState icon="proxy" title="Not a ProxySQL Admin interface"
+            action={!other && report.readyset_hint && onOpenReadyset ? <ToolbarButton primary onClick={onOpenReadyset}>Open Readyset</ToolbarButton> : undefined}>
             {(report.message || "").replace(/^This connection is not a ProxySQL Admin interface:\s*/, "").replace(/^./, (c) => c.toUpperCase())} Connect to ProxySQL's Admin port (6032 by default) with an admin account.
           </EmptyState>
         ) : <>
@@ -402,7 +416,18 @@ function ProxySqlView({ connection, disabled, report: bound, onReport, failure, 
           {tab !== "digests" && proxyTiles(report)}
           {!report.config_readable && <PrerequisiteGate>This account cannot read ProxySQL's configuration tables (a stats-only account reads the stats schema only), so servers show what runs and no change is offered. Connect with an admin account to change anything.</PrerequisiteGate>}
           {configLine}
-          {tab === "servers" ? (
+          {tab === "topology" ? (
+            <ProxySqlTopologyDiagram
+              report={report}
+              current={!stale}
+              selectedServerKey={selection.key || null}
+              onSelectServer={(k) => selection.select(selection.key === k ? "" : k, selection.key !== k)}
+              onSwitchConnection={!stale ? onSwitchConnection : undefined}
+              onOpenReadyset={onOpenReadyset}
+              onOpenCluster={onOpenCluster}
+              onOpenReplication={onOpenReplication}
+            />
+          ) : tab === "servers" ? (
             <DataTable key="proxysql.servers" id="proxysql.servers" label="ProxySQL servers" columns={serverColumns} rows={servers} rowKey={(s) => s.key} selection={selection}
               empty={<EmptyState icon="proxy" title="No backends">mysql_servers is empty and nothing runs in runtime.</EmptyState>} />
           ) : tab === "hostgroups" ? (

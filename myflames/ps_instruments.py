@@ -286,6 +286,12 @@ FEATURES = (
      "tables": ("data_locks", "data_lock_waits"), "needs": {}, "engine": "mysql",
      "explain": ("MySQL lists row locks in performance_schema.data_locks, which needs Performance Schema on but "
                  "no instrument. MariaDB reads them from information_schema, with or without it.")},
+    {"key": "memory", "label": "Memory", "view": "memory", "modules": ("memory",),
+     "tables": ("memory_summary_global_by_event_name", "memory_summary_by_thread_by_event_name",
+                "memory_summary_by_account_by_event_name", "threads"),
+     "needs": {"consumers": ("global_instrumentation",), "instruments": ("memory/%",)},
+     "optional": {"consumers": ("thread_instrumentation",)}, "timed": False,
+     "explain": "Tracked allocations by category, session and account; MariaDB also has allocator and process-list counters."},
     {"key": "waits", "label": "Waits", "view": "waits", "modules": ("waits", "perf_common"),
      "tables": ("events_waits_summary_global_by_event_name",),
      "needs": {"consumers": ("global_instrumentation",),
@@ -340,6 +346,8 @@ TABLES = {
     "threads": (), "processlist": (), "global_status": (), "global_variables": (), "variables_info": (),
     "setup_instruments": (), "setup_consumers": (), "setup_actors": (), "setup_objects": (),
     "memory_summary_global_by_event_name": (),
+    "memory_summary_by_thread_by_event_name": ("memory",),
+    "memory_summary_by_account_by_event_name": ("memory",),
     # Error log uses logging sinks, not Performance Schema instruments or consumers.
     "error_log": (),
     # Replication (replication.py) and a read replica's channel (cluster.py): filled whenever Performance Schema is on, no instrument or consumer.

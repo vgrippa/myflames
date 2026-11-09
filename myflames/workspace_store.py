@@ -1016,13 +1016,49 @@ class WorkspaceStore:
                                   [fields[c] for c in columns] + [audit_id, 'pending'])
             return cursor.rowcount == 1
 
-    def audit_records(self, since_days=None, server=None, limit=None, status=None, before=None):
+    def audit_object_records(self, server, kind, key, ssh=None):
+        """One bounded local SELECT, five newest exact targets, no server I/O.
+
+        A Python predicate avoids requiring SQLite's optional JSON extension.
+        The progress budget bounds a scan of the retained local audit trail.
+        """
+        from .dbops import audit_object_matches
+        if not self.path.exists():
+            return []
+        import time
+        deadline = time.monotonic() + 0.25
+        budget = [200]
+
+        def stop():
+            budget[0] -= 1
+            return budget[0] <= 0 or time.monotonic() > deadline
+
+        with closing(self._connect()) as conn:
+            conn.create_function('audit_object_match', 3,
+                                 lambda operation, target, engine: audit_object_matches(operation, target, engine, kind, key))
+            conn.set_progress_handler(stop, 1000)
+            try:
+                rows = conn.execute(
+                    "SELECT %s FROM audit WHERE lower(host || ':' || port) = ? "
+                    "AND COALESCE(ssh, '') = ? AND status IN ('ok', 'unknown') "
+                    "AND audit_object_match(operation, target, engine) "
+                    "ORDER BY attempted_at DESC, rowid DESC LIMIT 5" % ', '.join(AUDIT_COLUMNS),
+                    (server.lower(), ssh or '')).fetchall()
+            except sqlite3.OperationalError as exc:
+                if str(exc) == 'interrupted':
+                    raise ValueError('Local change history took too long to read. Open the Audit log.')
+                raise
+        return [_audit_record(dict(zip(AUDIT_COLUMNS, row))) for row in rows]
+
+    def audit_records(self, since_days=None, server=None, limit=None, status=None, before=None, record_id=None):
         """Audit records, newest first (audit-1.0 shape). *server* matches the
         saved connection name, the host, or host:port, ignoring case. *status*
         keeps one audit status; like every filter it applies before *limit*.
         *before* is the id of a record already listed: only records older than
         it are returned (the next page)."""
         from .dbops import AUDIT_STATUSES
+        if record_id is not None and (not isinstance(record_id, str) or not _RECORD_ID.fullmatch(record_id)):
+            raise ValueError('id must be the id of an audit record.')
         if status is not None and status not in AUDIT_STATUSES:
             raise ValueError('status must be one of: %s.' % ', '.join(AUDIT_STATUSES))
         if before is not None and (not isinstance(before, str) or not 0 < len(before) <= 64):
@@ -1037,6 +1073,9 @@ class WorkspaceStore:
         if not self.path.exists():
             return []
         where, args = [], []
+        if record_id is not None:
+            where.append('id = ?')
+            args.append(record_id)
         if since_days is not None:
             where.append('attempted_at >= ?')
             args.append(_cutoff(since_days))
@@ -1452,6 +1491,96 @@ class WorkspaceStore:
             conn.execute('DELETE FROM parameter_snapshots WHERE id = ?', (key,))
         return {'deleted': True, 'id': key}
 
+    # -- Baselines (baselines.py) ---------------------------------------------
+    # A Health reading or the Query digest totals of one server, kept to
+    # compare a later reading with. server_key names the server itself
+    # (baselines.server_key: server_uuid, else @@hostname and port), never the
+    # connection that read it. The table is created on first use, so an older
+    # myflames sharing this file is unaffected. Nothing is ever deleted to make
+    # room: a full server refuses the next save (BaselineLimit).
+
+    def _baseline_connection(self):
+        conn = self._connect()
+        try:
+            conn.execute(_BASELINE_TABLE)
+            conn.execute(_BASELINE_INDEX)
+            conn.commit()
+        except BaseException:
+            conn.close()
+            raise
+        return conn
+
+    def baseline_save(self, server_key, kind, name, summary, payload):
+        """Keep one baseline and return its list item. *payload* is the value
+        to keep (at most BASELINE_MAX_BYTES as JSON), *summary* what a list
+        shows. A server that already keeps BASELINE_MAX_PER_SERVER baselines
+        of *kind* refuses with BaselineLimit."""
+        kind, server_key, name = _baseline_fields(kind, server_key, name)
+        data = json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(',', ':')).encode('utf-8')
+        if len(data) > BASELINE_MAX_BYTES:
+            raise ValueError('Could not save the baseline: it would take %.1f MiB, and a baseline holds at most '
+                             '2 MiB. Load fewer statements, then save again.' % (len(data) / 1048576.0))
+        summary_text = json.dumps(summary, ensure_ascii=False, allow_nan=False)
+        key, created_at = uuid.uuid4().hex, _now()
+        conn = self._baseline_connection()
+        conn.isolation_level = None
+        try:
+            # IMMEDIATE takes the write lock first, so two saves cannot both
+            # pass the count.
+            conn.execute('BEGIN IMMEDIATE')
+            count = conn.execute('SELECT COUNT(*) FROM baselines WHERE server_key = ? AND kind = ?',
+                                 (server_key, kind)).fetchone()[0]
+            if count >= BASELINE_MAX_PER_SERVER:
+                raise BaselineLimit('Could not save the baseline: %d %s baselines of this server are already kept '
+                                    'on this computer, the most allowed. Delete one in Compare with baseline, then '
+                                    'save again.' % (BASELINE_MAX_PER_SERVER, BASELINE_KIND_NAMES[kind]))
+            conn.execute('INSERT INTO baselines (id, created_at, server_key, kind, name, summary, payload) '
+                         'VALUES (?, ?, ?, ?, ?, ?, ?)',
+                         (key, created_at, server_key, kind, name, summary_text, zlib.compress(data, 6)))
+            conn.execute('COMMIT')
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute('ROLLBACK')
+            raise
+        finally:
+            conn.close()
+        return _baseline_item(key, created_at, kind, name, summary, server_key)
+
+    def baseline_list(self, server_key, kind):
+        """The baselines of one server and kind, newest first (never decodes a payload)."""
+        kind, server_key, _name = _baseline_fields(kind, server_key, 'list')
+        if not self.path.exists():
+            return []
+        with closing(self._baseline_connection()) as conn, conn:
+            rows = conn.execute('SELECT id, created_at, kind, name, summary, server_key FROM baselines '
+                                'WHERE server_key = ? AND kind = ? ORDER BY created_at DESC, id LIMIT ?',
+                                (server_key, kind, BASELINE_MAX_PER_SERVER * 5)).fetchall()
+        return [_baseline_item(row[0], row[1], row[2], row[3], json.loads(row[4]), row[5]) for row in rows]
+
+    def baseline_get(self, key):
+        """One baseline with its ``payload``, or None."""
+        if not isinstance(key, str) or not _RECORD_ID.fullmatch(key) or not self.path.exists():
+            return None
+        with closing(self._baseline_connection()) as conn, conn:
+            row = conn.execute('SELECT id, created_at, kind, name, summary, payload, server_key FROM baselines '
+                               'WHERE id = ?', (key,)).fetchone()
+        if row is None:
+            return None
+        decoder = zlib.decompressobj()
+        raw = decoder.decompress(row[5], BASELINE_MAX_BYTES + 1)
+        if len(raw) > BASELINE_MAX_BYTES or not decoder.eof or decoder.unused_data:
+            raise ValueError('This saved baseline is damaged or larger than 2 MiB.')
+        item = _baseline_item(row[0], row[1], row[2], row[3], json.loads(row[4]), row[6])
+        item['payload'] = json.loads(raw.decode('utf-8'))
+        return item
+
+    def baseline_delete(self, key):
+        """Delete one baseline (only on the user's request); True when it existed."""
+        if not isinstance(key, str) or not _RECORD_ID.fullmatch(key) or not self.path.exists():
+            return False
+        with closing(self._baseline_connection()) as conn, conn:
+            return conn.execute('DELETE FROM baselines WHERE id = ?', (key,)).rowcount > 0
+
     def connection_with_saved_password(self, value):
         """Fill ``password`` from the profile named by ``value['profile_id']``.
 
@@ -1524,6 +1653,46 @@ def _version_item(key, saved_at, source, number, name, note, summary):
     """One ``schema-version-list-1.0`` item."""
     item = {'id': key, 'saved_at': saved_at, 'source_key': source, 'number': number, 'name': name, 'note': note}
     item.update(summary)
+    return item
+
+
+#: Baselines (baselines.py): what can be kept, and the limits of one server.
+BASELINE_KINDS = ('health', 'digest')
+BASELINE_KIND_NAMES = {'health': 'Health', 'digest': 'Query digest'}
+#: The largest baseline, measured as its JSON before compression.
+BASELINE_MAX_BYTES = 2 * 1024 * 1024
+#: Baselines of one kind kept per server; the next save is refused.
+BASELINE_MAX_PER_SERVER = 20
+BASELINE_NAME_MAX = 80
+_BASELINE_TABLE = ('CREATE TABLE IF NOT EXISTS baselines (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, '
+                   'server_key TEXT NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL, summary TEXT NOT NULL, '
+                   'payload BLOB NOT NULL)')
+_BASELINE_INDEX = 'CREATE INDEX IF NOT EXISTS baselines_server ON baselines (server_key, kind, created_at)'
+_CONTROL = re.compile(r'[\x00-\x1f\x7f]')
+
+
+class BaselineLimit(ValueError):
+    """The server already keeps BASELINE_MAX_PER_SERVER baselines of a kind."""
+
+
+def _baseline_fields(kind, server_key, name):
+    if kind not in BASELINE_KINDS:
+        raise ValueError('Could not save the baseline: it is a Health reading or Query digest totals.')
+    if not isinstance(server_key, str) or not server_key or len(server_key) > 400:
+        raise ValueError('Could not identify the server of this baseline.')
+    if not isinstance(name, str) or _CONTROL.search(name) or not name.strip() \
+            or len(name.strip()) > BASELINE_NAME_MAX:
+        raise ValueError('Could not save the baseline: name it with one line of 1 to %d characters.'
+                         % BASELINE_NAME_MAX)
+    return kind, server_key, name.strip()
+
+
+def _baseline_item(key, created_at, kind, name, summary, server_key):
+    """One ``baseline-list-1.0`` item: the summary's fields, then these
+    (``server_key`` names the server, so a reading is compared only with a
+    baseline of the server it came from)."""
+    item = dict(summary)
+    item.update({'id': key, 'created_at': created_at, 'kind': kind, 'name': name, 'server_key': server_key})
     return item
 
 

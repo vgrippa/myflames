@@ -190,25 +190,22 @@ class TestWorkspaceAPI(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(headers['Content-Type'].split(';')[0], 'image/png')
         self.assertEqual(body, logos[0].read_bytes())
-        self.assertEqual(body, (Path(__file__).resolve().parents[1] / 'docs/brand/myflames-icon-v3-128.png').read_bytes())
+        self.assertEqual(body, (Path(__file__).resolve().parents[1] / 'docs/brand/myflames-app-logo.png').read_bytes())
         self.assertTrue(body.startswith(b'\x89PNG\r\n\x1a\n'))
         self.assertEqual(headers['X-Content-Type-Options'], 'nosniff')
 
-    def test_logo_urls_from_open_older_tabs_still_work(self):
-        expected = (ASSET_DIR / 'assets' / 'myflames-logo.png').read_bytes()
+    def test_earlier_hashed_logo_urls_are_gone(self):
+        # The workspace is not GA: logo URLs of earlier bundles are not kept.
         for name in ('myflames-BpuTIrWf.jpeg', 'logo-BpuTIrWf.jpeg',
                      'myflames-icon-v2-CFba5YPm.png'):
             with self.subTest(name=name):
-                status, body, headers = self.request('/assets/' + name, method='GET')
-                self.assertEqual(status, 200)
-                self.assertEqual(body, expected)
-                self.assertEqual(headers['Content-Type'].split(';')[0], 'image/png')
-                self.assertEqual(headers['Cache-Control'], 'no-store')
+                status, unused, unused_headers = self.request('/assets/' + name, method='GET')
+                self.assertEqual(status, 404)
 
     def test_page_favicon_versions_stable_logo_url(self):
         status, body, _ = self.request('/', method='GET')
         self.assertEqual(status, 200)
-        self.assertIn(b'href="/assets/myflames-logo.png?v=3"', body)
+        self.assertIn(b'href="/assets/myflames-logo.png?v=4"', body)
         status, icon, headers = self.request('/assets/myflames-logo.png?v=2', method='GET')
         self.assertEqual(status, 200)
         self.assertEqual(icon, (ASSET_DIR / 'assets' / 'myflames-logo.png').read_bytes())

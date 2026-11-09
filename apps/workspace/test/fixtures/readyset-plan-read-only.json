@@ -1,0 +1,67 @@
+{
+ "schema_version": "readyset-action-1.0",
+ "action": "flush_cache",
+ "target": {
+  "kind": "cache",
+  "name": "c_recent_shallow",
+  "query_id": "q_2222bbbb"
+ },
+ "value": null,
+ "eyebrow": "FLUSH CACHE",
+ "title": "Flush shallow cache c_recent_shallow?",
+ "confirm_label": "Flush cache",
+ "description": "Discards all currently stored entries for c_recent_shallow; the cache definition stays active and subsequent queries refresh from upstream.",
+ "target_text": "Shallow cache c_recent_shallow",
+ "statements": [
+  "FLUSH CACHE `c_recent_shallow`;"
+ ],
+ "facts": [
+  [
+   "Readyset",
+   "stable-250605 (adapter port)"
+  ],
+  [
+   "Cache",
+   "c_recent_shallow (shallow)"
+  ],
+  [
+   "Query ID",
+   "q_2222bbbb"
+  ],
+  [
+   "Query",
+   "SELECT id, status FROM orders WHERE created_at > $1"
+  ]
+ ],
+ "warnings": [],
+ "changes": null,
+ "typed_guard": null,
+ "undo": "Entries repopulate automatically on the next matching read.",
+ "next": null,
+ "verified": [
+  "Readyset identity (@@version_comment, SHOW READYSET VERSION)",
+  "cache c_recent_shallow unchanged since review"
+ ],
+ "timeout_s": 30,
+ "checks": [
+  "Refresh the Readyset place to inspect the current caches, tables and status.",
+  "The Audit log keeps this attempt as Outcome unknown; nothing is sent again."
+ ],
+ "expect": {
+  "readyset_version": "stable-250605",
+  "cache": {
+   "name": "c_recent_shallow",
+   "query_id": "q_2222bbbb",
+   "cache_type": "shallow"
+  }
+ },
+ "policy": {
+  "action": "refuse",
+  "tone": "danger",
+  "title": "Read-only connection",
+  "text": "Connection Readyset lab is read-only in myflames, so this statement was not sent. To allow writes, turn off Read-only in its settings, or run: myflames profiles set 'Readyset lab' --read-write.",
+  "connection_type": "production",
+  "read_only": true
+ },
+ "review_token": "fixture-token-flush_cache"
+}

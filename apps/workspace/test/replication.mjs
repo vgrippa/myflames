@@ -1,4 +1,4 @@
-import { chooseConnection, connectionOption } from "./chrome-helpers.mjs";
+import { chooseConnection, connectionOption, openRefreshMenu } from "./chrome-helpers.mjs";
 // Replication view of the Server place (Workload, after Sessions): mocked
 // /api/live/replication with replication-1.0 reports recorded live (MySQL
 // 8.4.11 and MariaDB 11.4.13 replicas; fixtures written by ops-fixtures.py),
@@ -271,7 +271,7 @@ try {
   await pause(2500);
   assert.equal(calls(STATUS).length, 1, "no polling while no loop runs");
 
-  // Topology: a static diagram. State is a line style plus a text label; nothing loops.
+  // Topology: failed and stopped links remain still, with explicit state labels.
   const topology = ".replication-topology-container";
   const tab = (label) => page.evaluate((l) => {
     [...document.querySelectorAll('[aria-label="Replication sub-tabs"] button')].find((b) => b.offsetParent && b.textContent.startsWith(l)).click();
@@ -292,8 +292,8 @@ try {
   assert.equal(failing.text, "Error 1062", "the error state shows a visible text label");
   assert.ok(failing.visible && failing.cls.includes("is-error"));
   assert.equal(await infinite(), 0, "no endless animation while a channel has an error");
-  assert.equal(await page.evaluate((q) => [...document.querySelectorAll(q)].find((e) => e.offsetParent).querySelectorAll(".topology-map svg, [class*=packet], [class*=radar]").length, topology), 0, "no packets or radar pulses");
-  assert.equal(await page.evaluate((q) => [...document.querySelectorAll(`${q} button`)].filter((b) => /pause|play|speed|0\.5|2×|1×/i.test(b.textContent + (b.getAttribute("aria-label") || ""))).length, topology), 0, "no play, pause or speed control");
+  assert.equal(await page.evaluate((q) => [...document.querySelectorAll(q)].find((e) => e.offsetParent).querySelectorAll(".topology-server-glyph").length, topology), 2, "source and replica have server glyphs");
+  assert.equal(await page.evaluate((q) => [...document.querySelectorAll(q)].find((e) => e.offsetParent).querySelectorAll(".topology-motion-toggle").length, topology), 1, "motion has an accessible pause control");
   // A stopped thread without an error: dashed line, the stopped thread named.
   const stopped = structuredClone(error);
   stopped.channels[0].sql.error = { ...stopped.channels[0].sql.error, errno: 0, message: null };
@@ -546,6 +546,7 @@ try {
   const beforeAll = state.seen.length;
   await h.server();
   await page.evaluate(() => window.scrollTo(0, 0));
+  await openRefreshMenu(page);
   await page.click(".server-place [data-action=refresh-all]");
   await page.waitForFunction(() => !document.querySelector(".server-place .refresh-all-stop") && /views? refreshed|refreshed/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
   assert.equal(state.seen.length, beforeAll + 1, "Refresh all sends one replication read");
@@ -781,6 +782,53 @@ try {
   await page.setViewport({ width: 1440, height: 1000 });
   await pause(150);
   await page.screenshot({ path: path.join(h.shots, "replication-1440.png") });
+
+  // Multi-tier upstream tiers in ReplicationTopology: ProxySQL -> Readyset -> MySQL Source -> Replica.
+  const multiTierReplica = {
+    ...healthy,
+    topology_tiers: {
+      proxysql: [
+        {
+          key: "proxysql:127.0.0.1:6032",
+          label: "ProxySQL Admin",
+          address: "127.0.0.1:6032",
+          version: "3.0.11",
+          routes_to_readyset: true,
+          querypilot_rule_count: 3,
+          profile_id: null,
+          profile_name: "ProxySQL Admin",
+        },
+      ],
+      readyset: [
+        {
+          key: "readyset:127.0.0.1:3307",
+          label: "Readyset Cache",
+          address: "127.0.0.1:3307",
+          version: "stable-250605",
+          status: "Online",
+          replication_status: "Online",
+          purpose: "cdc, query",
+          cache_count: 4,
+          profile_id: null,
+          profile_name: "Readyset Cache",
+        },
+      ],
+      live_readyset_connections: 2,
+      readyset_heartbeat_schema: true,
+      notes: [],
+    },
+  };
+  state.queue.push({ status: 200, body: multiTierReplica });
+  await h.refresh();
+  await page.locator('[aria-label="Replication sub-tabs"] button ::-p-text(Topology)').click();
+  await page.waitForSelector(`${view} .upstream-tiers`, { visible: true });
+  const replTierText = await text(`${view} .upstream-tiers`);
+  assert.match(replTierText, /ProxySQL routing tier/);
+  assert.match(replTierText, /3 QueryPilot rules/);
+  assert.match(replTierText, /Readyset cache tier/);
+  assert.match(replTierText, /4 caches/);
+  await page.screenshot({ path: path.join(h.shots, "replication-multitier-1440.png") });
+
   assert.deepEqual(h.errors, []);
   console.log("replication: ok");
 } finally {

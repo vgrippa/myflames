@@ -108,6 +108,16 @@ def format_sql(sql):
 # Index suggestion heuristics
 # ---------------------------------------------------------------------------
 
+def _qident(name):
+    """Backtick-quote an identifier from a plan file (possibly shared) when it
+    needs quoting, so a suggested DDL stays one statement. Simple names keep
+    the historic unquoted form."""
+    name = str(name)
+    if re.fullmatch(r"[A-Za-z0-9_$]+", name):
+        return name
+    return "`" + name.replace("`", "``") + "`"
+
+
 def _col_refs_for_table(condition, table_name):
     """Extract column names referenced for *table_name* in a condition string.
 
@@ -159,8 +169,8 @@ def _suggest_indexes(root):
             cols = _col_refs_for_table(effective_cond, table_name)
             if cols:
                 idx_name = "idx_{}_{}".format(table_name, "_".join(cols[:3]))
-                cols_ddl = ", ".join(cols[:3])
-                ddl = "CREATE INDEX {} ON {} ({});".format(idx_name, table_name, cols_ddl)
+                cols_ddl = ", ".join(_qident(c) for c in cols[:3])
+                ddl = "CREATE INDEX {} ON {} ({});".format(_qident(idx_name), _qident(table_name), cols_ddl)
                 if ddl not in seen_ddl:
                     seen_ddl.add(ddl)
                     suggestions.append({
@@ -307,10 +317,10 @@ def _suggest_sort_indexes(root, seen_ddl):
         # Build "col" / "col DESC" segments preserving order + direction.
         col_segments = []
         for col, is_desc in parsed:
-            col_segments.append(col + " DESC" if is_desc else col)
+            col_segments.append(_qident(col) + (" DESC" if is_desc else ""))
         cols_ddl = ", ".join(col_segments)
         idx_name = "idx_{}_{}".format(base_table, "_".join(cols))
-        ddl = "CREATE INDEX {} ON {} ({});".format(idx_name, base_table, cols_ddl)
+        ddl = "CREATE INDEX {} ON {} ({});".format(_qident(idx_name), _qident(base_table), cols_ddl)
         if ddl in seen_ddl:
             return
         seen_ddl.add(ddl)
@@ -553,7 +563,10 @@ def build_folded_label(node):
 def parse_node(node):
     if not isinstance(node, dict):
         return None
-    op = (node.get("operation") or "unknown").replace("`", "")
+    operation = node.get("operation")
+    if operation is not None and not isinstance(operation, str):
+        raise ValueError("Plan node operation must be a string, got %s." % type(operation).__name__)
+    op = (operation or "unknown").replace("`", "")
     op = re.sub(r"DATE'(\d{4}-\d{2}-\d{2})'", r"\1", op)
     loops = node.get("actual_loops", 1) or 1
     total_time = (node.get("actual_last_row_ms") or 0) * loops
@@ -2190,16 +2203,20 @@ def parse_explain(text):
         raise ValueError("Failed to parse EXPLAIN JSON")
     root["engine"] = engine
     _assign_node_ids(root)
+    _annotate_misestimates(root)
     return root
 
 
-def build_flame_entries(node, path=None):
-    """Yield (path_list, self_time) for flame graph."""
+def build_flame_entries(node, path=None, node_identity=False):
+    """Yield (path_list, self_time) for a flame graph. Plan renderers use
+    identity tokens so equal display labels never merge distinct operators;
+    callers exporting human-readable folded stacks keep the default labels.
+    """
     path = list(path or [])
-    path.append(node["folded_label"])
+    path.append("operator:" + node["node_id"] if node_identity else node["folded_label"])
     yield (path, node["self_time"])
     for child in node["children"]:
-        yield from build_flame_entries(child, path)
+        yield from build_flame_entries(child, path, node_identity=node_identity)
 
 
 def flatten_nodes(node):
@@ -2207,6 +2224,15 @@ def flatten_nodes(node):
     yield node
     for child in node["children"]:
         yield from flatten_nodes(child)
+
+
+def misestimate_marks(root):
+    """Flame graph tokens of the misestimated operators, for
+    ``flamegraph.folded_to_svg(marks=...)``. Only node identity may mark a
+    frame: accurate operators can share a flagged operator's display label.
+    """
+    return {"operator:" + node["node_id"] for node in flatten_nodes(root)
+            if isinstance((node.get("details") or {}).get("misestimate"), dict)}
 
 
 def build_diagram_steps(node):
@@ -2330,6 +2356,11 @@ def enhance_tooltip_flame(original, op_details):
         if 0 < r < 0.5:
             ri += " [OVERESTIMATE]"
         lines.append(ri)
+    # The parser's row-estimate rule (details["misestimate"], set by
+    # parse_explain): the frame's detail line names it; labels stay as they are.
+    miss = best.get("misestimate")
+    if isinstance(miss, dict) and miss.get("text"):
+        lines.append("Row estimate: " + miss["text"])
     if best.get("actual_loops") and best["actual_loops"] > 1:
         lines.append(f"Loops: {best['actual_loops']}")
     if best.get("actual_last_row_ms") is not None:
@@ -2890,8 +2921,13 @@ def _cte_names(root):
     return frozenset(names)
 
 
-def _collect_misestimates(root):
-    """Walk the plan with early-stop context; see :func:`_row_misestimate`."""
+def _misestimated_nodes(root):
+    """``[(node, miss), ...]`` for every operator :func:`_row_misestimate`
+    flags, in plan order, with the early-stop context (a Limit above, or
+    the inner side of a semijoin/antijoin) and the CTE names of the whole
+    plan. :func:`_collect_misestimates` (the analysis) and
+    :func:`_annotate_misestimates` (the per-operator record) both read it,
+    so the chart markers and the plan warning never disagree."""
     engine = root.get("engine") or "mysql"
     cte_names = _cte_names(root)
     found = []
@@ -2899,7 +2935,7 @@ def _collect_misestimates(root):
     def walk(node, early_stop):
         miss = _row_misestimate(node, engine, early_stop, cte_names)
         if miss:
-            found.append(miss)
+            found.append((node, miss))
         details = node.get("details") or {}
         op = (details.get("operation") or "").lower()
         stops = early_stop or (details.get("access_type") or "").lower() == "limit" \
@@ -2910,6 +2946,87 @@ def _collect_misestimates(root):
 
     walk(root, False)
     return found
+
+
+def _collect_misestimates(root):
+    """Walk the plan with early-stop context; see :func:`_row_misestimate`."""
+    return [miss for _node, miss in _misestimated_nodes(root)]
+
+
+def _factor_text(ratio):
+    """Compact factor for a marker: ``451``, ``9,999``, ``12K``, ``3M``."""
+    whole = int(math.floor(ratio + 0.5))
+    if whole < 10000:
+        return "{:,}".format(whole)
+    thousands = int(math.floor(whole / 1000.0 + 0.5))
+    if thousands < 1000:
+        return "{}K".format(thousands)
+    return "{:,}M".format(int(math.floor(whole / 1000000.0 + 0.5)))
+
+
+def _rows_text(value):
+    """Rows per loop as text: whole rows with separators, else 3 digits."""
+    value = float(value)
+    if value >= 100 or value == int(value):
+        return "{:,.0f}".format(value)
+    return "{:.3g}".format(value)
+
+
+def _misestimate_reason(kind, engine):
+    """One sentence naming what was compared and the rule that flagged it."""
+    rule = "by {:.0f}× or more, on at least {:,} rows across loops".format(
+        _MISESTIMATE_RATIO, _MISESTIMATE_MIN_ROWS)
+    if kind == "filter":
+        text = ("Rows passing this filter per loop differ from the estimate {}. "
+                "The table access below it is not flagged, so the estimated "
+                "selectivity of the condition is off.").format(rule)
+    elif engine == "mariadb":
+        text = ("Rows examined per lookup, before the WHERE condition, differ "
+                "from the estimate {}.").format(rule)
+    else:
+        text = "Rows returned per loop differ from the optimizer's estimate {}.".format(rule)
+    if engine == "mariadb":
+        text += " MariaDB plans hide LIMIT, so only underestimates are flagged."
+    return text
+
+
+def misestimate_record(miss, engine="mysql"):
+    """The per-operator row-estimate record stored in ``details["misestimate"]``.
+
+    Built from one :func:`_row_misestimate` result, never re-derived:
+    ``direction`` ("under": more rows than estimated, "over": fewer),
+    ``factor`` (the parser's ratio), ``estimated`` and ``actual`` rows per
+    loop, ``loops``, ``table`` (schema-qualified when the plan supplies it),
+    ``kind`` ("access" or "filter"), and the text
+    every renderer shows as is: ``label`` (the compact chart marker, for
+    example "rows ×12 under"), ``text`` (estimate against actual) and
+    ``reason`` (what was compared and the rule).
+    """
+    ratio = float(miss["ratio"])
+    direction = "under" if miss["under"] else "over"
+    return {
+        "direction": direction,
+        "factor": ratio,
+        "estimated": float(miss["estimated"]),
+        "actual": float(miss["actual"]),
+        "loops": int(miss["loops"]),
+        "table": miss["table"],
+        "kind": miss["kind"],
+        "label": "rows ×{} {}".format(_factor_text(ratio), direction),
+        "text": "{:,.0f}× {} (estimated {}, actual {} rows per loop)".format(
+            ratio, direction, _rows_text(miss["estimated"]), _rows_text(miss["actual"])),
+        "reason": _misestimate_reason(miss["kind"], engine),
+    }
+
+
+def _annotate_misestimates(root):
+    """Store :func:`misestimate_record` in the details of each flagged
+    operator of the canonical tree. Projections and literal-hiding copies
+    keep it, so a focused branch shows the same markers as the whole plan
+    (the early-stop context comes from the whole plan)."""
+    engine = root.get("engine") or "mysql"
+    for node, miss in _misestimated_nodes(root):
+        node["details"]["misestimate"] = misestimate_record(miss, engine)
 
 
 def _row_misestimate(node, engine="mysql", early_stop=False, cte_names=frozenset()):
@@ -2984,7 +3101,12 @@ def _row_misestimate(node, engine="mysql", early_stop=False, cte_names=frozenset
         return None
     if (early_stop or engine == "mariadb") and actual < estimated:
         return None
-    return {"table": table, "kind": kind, "estimated": estimated,
+    # MySQL format 2 reports schema_name beside the base table name. Keep
+    # that identity on filters too, using their access child's details.
+    # Retain the schema separately: a dotted MariaDB alias is not proof.
+    schema = target.get("schema_name") or ""
+    table_identity = schema + "." + table if schema else table
+    return {"table": table_identity, "schema": schema, "kind": kind, "estimated": estimated,
             "actual": actual, "loops": loops, "ratio": ratio,
             "under": actual > estimated,
             "short_label": (node.get("short_label") or "").strip()}

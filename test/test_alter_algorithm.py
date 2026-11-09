@@ -858,6 +858,10 @@ class _FakeSession(object):
     def _helper_problem(self, step):
         return step.errors[0]["message"] if step.errors else None
 
+    def _acquire_run_lock(self, timeout=None):
+        # EditorInsights waits out a meter poll; no poll runs here.
+        return self.run_lock.acquire(False)
+
 
 class EditorReviewTests(unittest.TestCase):
     """The ALTER review payload carries the prediction (editor_session)."""

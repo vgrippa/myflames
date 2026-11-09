@@ -8,6 +8,7 @@
 // with its confirmation, Open in Top statements with the table chip), and the
 // choice is restored with the workspace.
 import assert from "node:assert/strict";
+import { objectAuditFixture, assertObjectHistory } from "./object-changes-fixture.mjs";
 import path from "node:path";
 import { load, open, pause } from "./perf-harness.mjs";
 
@@ -46,12 +47,15 @@ const topFor = (body) => ({
 // The list of views docked, as a person who docked it: this suite asserts
 // the list's markers and keys (server-nav covers the floating default).
 const h = await open("/api/live/indexes", "indexes", {
+  "/api/audit/object": objectAuditFixture,
   "/api/live/schemas": schemasMock,
   "/api/live/tables": { status: 200, body: tablesReport },
   "/api/live/top": (body) => ({ status: 200, body: topFor(body) }),
   "/api/live/start": { status: 400, body: { error: "Not mocked in this suite." } },
   "/api/editor/preview": { status: 400, body: { error: "Authority unknown in this fixture." } },
-  "/api/editor/run": body => body.decline ? { status: 200, body: { status: "declined" } } : {
+  // The index review below; an Explain (explain_format) is not part of it.
+  "/api/editor/run": body => body.explain_format ? { status: 400, body: { error: "Explain is not mocked in this suite." } }
+    : body.decline ? { status: 200, body: { status: "declined" } } : {
     status: 200, body: { status: "needs_confirmation", confirmation: { token: "index-review", text: "Review the statement.", tone: "primary",
       connection: { user: "root", host: "127.0.0.1", port: 3306 }, connection_type: "development", warnings: [], statements: [body.sql], typed_target: null } } },
   "/api/editor/close": { status: 200, body: { closed: true, session: null } },
@@ -84,7 +88,7 @@ try {
   assert.equal(await page.$eval(picker, (e) => e.getAttribute("aria-expanded")), "true");
   // Focus moves to the search once the popover is placed (the next frame).
   await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Search databases");
-  await page.locator("#indexes-schemas-panel button ::-p-text(Reload list)").click();
+  await page.locator("#indexes-schemas-panel button ::-p-text(Reload databases)").click();
   await page.waitForFunction((sel) => document.querySelector(sel).disabled, {}, refresh);
   assert.match(await text(`${view} .gate #indexes-load-hint`), /12,345 tables in user databases, more than 2,000: choose databases/);
   await page.click("#indexes-schemas-panel .perf-picker-list input");
@@ -141,6 +145,10 @@ try {
     ["orders.k_status", "Candidate"], ["orders.k_status_dup", "Candidate"], ["orders.k_customer", "Keep: backs a foreign key"],
   ]);
   await h.select(`${view} tr[data-index="orders.k_customer"]`);
+  await assertObjectHistory(page, "index", { empty: true });
+  const localRead = state.other.filter(call => call.path === "/api/audit/object");
+  assert.equal(localRead.length, 1, "one local lookup on inspector open");
+  assert.deepEqual(localRead[0].body.key, { schema: "mfshop", table: "orders", index: "k_customer" });
   await page.waitForFunction(() => /backs a foreign key \(child side of fk_orders_customer/.test(document.querySelector(".view-inspector")?.textContent || ""));
   assert.equal(await page.$(".view-inspector .perf-sql"), null, "no drop statement for an index to keep");
   // Keyboard: Up moves to the candidate above; details open on Enter with the statements.
@@ -154,6 +162,7 @@ try {
   await page.keyboard.press("ArrowUp");
   await page.keyboard.press("Enter");
   await page.waitForFunction(() => document.querySelector(".view-inspector h3")?.textContent === "k_status");
+  await assertObjectHistory(page, "index");
   const why = await h.inspector();
   assert.match(why, /COUNT_STAR = 0/);
   assert.match(why, /ALTER TABLE `mfshop`\.`orders` ALTER INDEX `k_status` INVISIBLE;/);
@@ -246,11 +255,16 @@ try {
   await h.select(scan);
   await page.waitForSelector(".view-inspector .statements-behind-list li");
   assert.equal(topCalls().length, 3, "returning shows the statements read before");
+  // Explain runs EXPLAIN in the new editor tab's session (no capture).
+  const editorRuns = [];
+  const watchRuns = (r) => { if (new URL(r.url()).pathname === "/api/editor/run") editorRuns.push(JSON.parse(r.postData() || "{}")); };
+  page.on("request", watchRuns);
   await page.click('.view-inspector [aria-label="Explain statement 1 that names mfshop.orders"]');
   await page.waitForFunction(() => document.querySelector(".main-nav [aria-current=page]")?.textContent.includes("Query editor"));
-  for (let i = 0; i < 100 && !h.state.other.some((o) => o.path === "/api/live/start"); i++) await pause(50);
-  const start = h.state.other.find((o) => o.path === "/api/live/start").body;
-  assert.deepEqual([start.mode, start.query, start.source?.kind], ["explain", "SELECT * FROM orders WHERE status = 'new'", "digest"]);
+  for (let i = 0; i < 100 && !editorRuns.length; i++) await pause(50);
+  page.off("request", watchRuns);
+  assert.deepEqual([editorRuns[0]?.explain_format, editorRuns[0]?.sql], ["table", "SELECT * FROM orders WHERE status = 'new'"]);
+  assert.equal(h.state.other.some((o) => o.path === "/api/live/start"), false, "Explain starts no capture");
   await h.server();
   await h.view("indexes");
   await page.waitForSelector(`${view} .fact-strip`);
@@ -362,7 +376,7 @@ try {
   await page.click("#indexes-schemas-panel .perf-picker-all input");
   // Still the large server: All user databases cannot be loaded.
   assert.equal(await page.$eval(refresh, (e) => e.disabled), true);
-  await page.locator("#indexes-schemas-panel button ::-p-text(Reload list)").click();
+  await page.locator("#indexes-schemas-panel button ::-p-text(Reload databases)").click();
   await page.waitForFunction((sel) => !document.querySelector(sel).disabled, {}, refresh);
   await page.keyboard.press("Escape");
   state.queue.push({ status: 400, body: { error: "Could not read index health: ERROR 1142 (42000): SELECT command denied" } });

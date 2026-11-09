@@ -351,6 +351,9 @@
   margin-bottom: var(--space-3);
   font-size: var(--text-sm);
 }
+.kill-blocking p {
+  margin: 0;
+}
 .kill-blocking ul {
   margin: 0;
   padding-left: var(--space-4);
@@ -358,7 +361,7 @@
 .kill-choices {
   display: grid;
   gap: var(--space-2);
-  margin: 0;
+  margin: 0 0 var(--space-3);
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
@@ -382,6 +385,40 @@
 .kill-choices .hint {
   display: block;
   margin-top: 2px;
+}
+@media (max-height: 600px) {
+  .kill-dialog.confirm-sheet {
+    padding: var(--space-3) var(--space-4);
+  }
+  .kill-dialog .connection-type-band {
+    margin-bottom: var(--space-1);
+    padding-block: 2px;
+  }
+  .kill-dialog .dialog-heading {
+    margin-bottom: var(--space-1);
+  }
+  .kill-dialog .sheet-lead {
+    margin-bottom: var(--space-2);
+  }
+  .kill-dialog > .sheet-actions {
+    margin-top: var(--space-2);
+  }
+  .kill-dialog :is(.lock-sql, .kill-choices, .kill-blocking, .kill-facts, .kill-warning, .kill-review-error) {
+    margin-bottom: var(--space-2);
+  }
+  .kill-dialog .lock-sql pre {
+    padding: var(--space-1) var(--space-2);
+  }
+  .kill-choices {
+    gap: var(--space-1);
+    padding: var(--space-1) var(--space-2);
+  }
+}
+@media (max-height: 600px) and (min-width: 651px) {
+  .kill-facts {
+    grid-template-columns: max-content minmax(0, 1fr) max-content minmax(0, 1fr);
+    gap: 2px var(--space-3);
+  }
 }
 @media (max-width: 650px) {
   .kill-facts {

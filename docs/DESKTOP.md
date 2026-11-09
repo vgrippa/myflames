@@ -15,7 +15,7 @@ installer is built and smoke-tested in CI and attached to releases unsigned
 
 ## Install and first launch
 
-Download `myflames-3.3.1-macos-arm64.dmg` from the GitHub release, open it and
+Download `myflames-3.3.3-macos-arm64.dmg` from the GitHub release, open it and
 drag `myflames.app` to Applications. The app is signed with a Developer ID and
 notarized by Apple, so it opens from Finder like any other downloaded app.
 Releases before 3.3.0 were unsigned zips: Control-click those and choose Open
@@ -23,9 +23,7 @@ the first time. App data lives
 under `~/Library/Application Support/myflames-desktop`, separate from the CLI's
 `~/.myflames`. The minimum window size is 720 by 520 pixels.
 
-`apps/desktop` is the development foundation. It opens the real workspace;
-`docs/design/desktop-workspace.html` is a separate interactive design preview
-with synthetic data. The preview does not connect to a database or execute SQL.
+`apps/desktop` is the development foundation. It opens the real workspace.
 The working workspace now uses this design direction: compact neutral
 navigation, links to open queries, a command palette and full-width Server
 details. The preview remains a synthetic reference, not live application data.

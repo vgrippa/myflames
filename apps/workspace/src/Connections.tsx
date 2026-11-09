@@ -1,15 +1,18 @@
 // Saved connections (the API calls them profiles) and the active connection
 // that the Query editor and Server use. The UI says "connection"; requests
 // keep the `profiles/*` endpoints and `profile_id`.
-import { createContext, useContext, useEffect, useId, useRef, useState } from "react";
+import { lazy, Suspense, createContext, useContext, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api, type Connection, type ConnectionType, type Profile, type SecretStore } from "./api";
 import { Icon } from "./components";
+import { ReadinessFacts, checkReadiness, copyReadiness, readinessHint, readinessLine } from "./readiness";
 import { connectionKey, connectionLabel, hostHasSpace, sshKey, trimPasted, trimPastedEnd } from "./binding";
 import { ActionButton, ActionStatus, Checkbox, ConfirmSheet, DataTable, InfoPopover, InspectorContext, Popover, closePopovers,
   SearchField, Segmented, Select, ViewLayout, useFocusScope, type Column } from "./kit";
 import { actionLabel, privilegeResult, usePrivileges } from "./privileges";
 import { defaultConnection, relativeTime, SSL_MODES, type SessionConnection } from "./session";
+
+const ImportConnections = lazy(() => import("./ImportConnections").then(module => ({ default: module.ImportConnections })));
 
 /** connection/test: the version, the product named in @@version_comment, and the bounded database list. */
 type ConnectionTestResult = {
@@ -388,6 +391,8 @@ export function Connections({
   onAddHandled?: () => void;
 }) {
   // null: the form is closed. "": a new connection. Otherwise the id being edited.
+  const [importingConnections, setImportingConnections] = useState(false);
+  const [readinessNote, setReadinessNote] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<Connection>(blank);
   const [schemas, setSchemas] = useState<string[]>([]);
@@ -500,6 +505,7 @@ export function Connections({
   });
 
   function openForm(p?: Profile, fields?: SessionConnection) {
+    statusFromTest.current = false;
     formGen.current++;
     draftGen.current++;
     const source = p || fields;
@@ -517,6 +523,7 @@ export function Connections({
     setSavePrompt(null);
     setOfferSave(false);
     setSchemas([]);
+    setReadinessNote("");
     setSchemasError("");
     setShowSystemSchemas(false);
     setTypingSchema(false);
@@ -557,6 +564,7 @@ export function Connections({
     }
   }
   function edit<K extends keyof Connection>(key: K, value: Connection[K]) {
+    setReadinessNote("");
     if (key === "name") nameEditedRef.current = true;
     setDraft((c) => {
       const next = { ...c, [key]: value };
@@ -618,6 +626,7 @@ export function Connections({
         password: storeTyped ? password : undefined,
         remember_password: storeTyped || keepExisting,
       });
+      copyReadiness(formConnection, { ...settings, profile_id: p.id });
       await refresh();
       // The edited connection stays in use, and a first saved connection
       // becomes the one in use, unless the user chose another connection
@@ -669,10 +678,12 @@ export function Connections({
     // The result line belongs to this test from now on.
     if (statusFromTest.current) { statusFromTest.current = false; setStatus(""); }
     try {
-      const r = await api<ConnectionTestResult>(
-        "connection/test",
-        { connection: formConnection },
-      );
+      const [test, readiness] = await Promise.allSettled([
+        api<ConnectionTestResult>("connection/test", { connection: formConnection }),
+        checkReadiness(formConnection),
+      ]);
+      if (test.status === "rejected") throw test.reason;
+      const r = test.value;
       if (draftGen.current !== gen || testSeq.current !== seq) return;
       const dbs = Array.isArray(r.databases) ? r.databases : Array.isArray(r.schemas) ? r.schemas : [];
       setSchemas(dbs);
@@ -680,7 +691,8 @@ export function Connections({
       setTypingSchema(false);
       setShowSystemSchemas(!!draft.database && isSystemDatabase(draft.database));
       statusFromTest.current = true;
-      setStatus(testedText(r));
+      setStatus(readiness.status === "fulfilled" ? `Connected · ${readinessLine(readiness.value)}` : testedText(r));
+      setReadinessNote(readiness.status === "fulfilled" ? readinessHint(readiness.value) : "Readiness could not be checked; try Check now.");
       if (tested.editing && !savedPassword && tested.password && canRemember)
         setOfferSave(true);
     } catch (e) {
@@ -775,7 +787,11 @@ export function Connections({
     const put = (next: RowTest) => setRowTests((t) => (t[key]?.seq === seq ? { ...t, [key]: next } : t));
     setRowTests((t) => ({ ...t, [key]: { state: "testing", identity, seq } }));
     try {
-      const r = await api<ConnectionTestResult>("connection/test", { connection });
+      const [test] = await Promise.allSettled([
+        api<ConnectionTestResult>("connection/test", { connection }), checkReadiness(connection),
+      ]);
+      if (test.status === "rejected") throw test.reason;
+      const r = test.value;
       put({ state: "ok", text: testedText(r), identity, seq });
     } catch (e) {
       put({ state: "failed", text: (e as Error).message, identity, seq });
@@ -817,7 +833,7 @@ export function Connections({
         setSelected(ids => checked ? [...new Set([...ids, row.key])] : ids.filter(id => id !== row.key));
       }}><span className="visually-hidden">Select {row.fields.name || connectionTarget(row.fields)}</span></Checkbox>
     ) },
-    { key: "name", label: "Name", primary: true, width: 140, minWidth: 120, sort: row => row.fields.name,
+    { key: "name", label: "Name", primary: true, width: 108, minWidth: 96, sort: row => row.fields.name,
       render: row => <span className="cell-name">
         <TypeDot type={row.profile?.type || "production"} readOnly={row.fields.read_only} />
         <strong className="cell-truncate" title={row.fields.name || connectionTarget(row.fields)}>{row.fields.name || connectionTarget(row.fields)}</strong>
@@ -828,15 +844,17 @@ export function Connections({
     { key: "type", label: "Type", width: 184, minWidth: 184, sort: row => row.profile?.type || "production", render: row => (
       <SafetyTags type={row.profile?.type || "production"} readOnly={row.fields.read_only} />
     ) },
-    { key: "endpoint", label: "user@host:port", flex: true, width: 200, minWidth: 140, sort: row => connectionTarget(row.fields),
+    { key: "endpoint", label: "user@host:port", flex: true, width: 112, minWidth: 92, sort: row => connectionTarget(row.fields),
       render: row => <span className="cell-truncate" title={connectionTarget(row.fields)}>{connectionTarget(row.fields)}</span> },
-    { key: "schema", label: "Default database", width: 140, sort: row => row.fields.database,
+    { key: "schema", label: "Database", title: "Default database", width: 104, sort: row => row.fields.database,
       render: row => row.fields.database
         ? <span className="cell-truncate" title={row.fields.database}>{row.fields.database}</span>
         : <span className="cell-truncate cell-empty" title="No default database">—<span className="visually-hidden">No default database</span></span> },
-    { key: "password", label: "Password", width: 88, sort: row => row.profile?.has_saved_password ? 1 : 0,
+    { key: "server", label: "Server", width: 124, minWidth: 112,
+      render: row => <ReadinessFacts connection={{ ...row.fields, profile_id: row.profile?.id, type: row.profile?.type }} /> },
+    { key: "password", label: "Password", width: 80, sort: row => row.profile?.has_saved_password ? 1 : 0,
       render: row => <span className="cell-truncate" title={passwordStatus(row.profile)}>{row.profile?.has_saved_password ? "Saved" : "Not saved"}</span> },
-    { key: "last-used", label: "Last used", width: 96, title: "Usage observed during this window; earlier use is not recorded.",
+    { key: "last-used", label: "Last used", width: 80, title: "Usage observed during this window; earlier use is not recorded.",
       sort: row => lastUsed.get(row.key) || "", render: row => row.profile?.id === active.id || row.key === "active" ? <span title="In use">In use</span>
         : lastUsed.has(row.key) ? <time className="cell-truncate" title={new Date(lastUsed.get(row.key)!).toLocaleString()} dateTime={lastUsed.get(row.key)}>{relativeTime(lastUsed.get(row.key)!)}</time>
           : <span className="cell-empty" title="Not used in this window. Earlier use is not recorded.">—<span className="visually-hidden">Not used in this window</span></span> },
@@ -851,6 +869,10 @@ export function Connections({
           <button role="menuitem" onClick={() => act(() => activate(row))} aria-label={`Use ${name}`}>Use</button>
           <button role="menuitem" onClick={() => act(() => openForm(row.profile))} aria-label={`Edit ${name}`}>Edit</button>
           <button role="menuitem" onClick={() => act(() => duplicate(row))} aria-label={`Duplicate ${name}`}>Duplicate</button>
+          <button role="menuitem" disabled={busy} onClick={() => act(() => {
+            void checkReadiness({ ...row.fields, type: row.profile?.type, profile_id: row.key,
+              password: row.key === active.id && sameEndpoint(row.fields, active.fields) ? active.password : "" }).catch(() => {});
+          })} aria-label={`Check now ${name}`}>Check now</button>
           <button role="menuitem" disabled={busy} onClick={() => act(() => {
             openForm(row.profile);
             void testRow(row.key, { ...row.fields, type: row.profile?.type, profile_id: row.key, password: row.key === active.id && sameEndpoint(row.fields, active.fields) ? active.password : "" });
@@ -876,6 +898,7 @@ export function Connections({
           <h3 id="connection-form-title" className="visually-hidden">
             {editingId ? `Edit “${profile?.name || draft.name}”` : "Add connection"}
           </h3>
+          {editingId && !statusFromTest.current && <ReadinessFacts connection={formConnection} details />}
           <div className="connection-fields">
             <label className="field">
               Connection name
@@ -1213,7 +1236,8 @@ export function Connections({
           />
           {/* Always mounted: what Test, Save and Forget password did is announced. */}
           <div className="connections-live" role="status" aria-live="polite">
-            {status && <p className="notice connections-status">{status}</p>}
+            {status && <p className="notice connections-status"><bdi>{status}</bdi></p>}
+            {readinessNote && <p className="hint"><bdi>{readinessNote}</bdi></p>}
             {editingId && rowTests[editingId] && rowTests[editingId].identity === connectionKey(formConnection) && rowTests[editingId].state !== "failed" && (
               <p className="row-test">
                 {rowTests[editingId].state === "testing"
@@ -1239,9 +1263,13 @@ export function Connections({
     }, sheet, width: inspectorWidth, setWidth: setInspectorWidth }}>
       <ViewLayout id="connections" title="Connections" className="home-pane connections"
         info={<p>Double click or press Enter to use a connection. Select rows to delete them together. Last used covers this window only.</p>}
-        controls={<button ref={addButtonRef} className="button primary pane-action" disabled={deleting || saving} onClick={() => openForm()}>
+        controls={<span className="connections-header-actions"><button ref={addButtonRef} className="button primary pane-action" disabled={deleting || saving} onClick={() => openForm()}>
           <Icon name="plus" size={14} /> Add connection
-        </button>}
+        </button><Popover menu label="Connections menu" buttonClassName="icon-button" trigger={<Icon name="more" />}>
+          <div className="connection-menu"><button role="menuitem" onClick={() => { closePopovers(); setImportingConnections(true); }}>
+            Import from MySQL Workbench or DBeaver…
+          </button></div>
+        </Popover></span>}
         inspector={editingId === null ? null : { key: editingId || "new", title: editingId ? `Edit “${profile?.name || draft.name}”` : "Add connection", body: form }}>
         <div className="connections-table-toolbar">
           {(rows.length >= 6 || !!search) && <SearchField label="Search connections" value={search} onChange={setSearch} />}
@@ -1265,7 +1293,7 @@ export function Connections({
             selection={{ key: cursor, select: key => setCursor(key) }} multiSelection={{ keys: selected, select: setSelected }} onActivate={activate}
             rowClass={row => `connection-row${(row.profile?.id === active.id || row.key === "active") ? " is-active" : ""}`}
             rowAttrs={row => ({ "aria-label": `${row.fields.name || connectionTarget(row.fields)}${row.profile?.id === active.id || row.key === "active" ? ", in use" : ""}` })}
-            rowAction={rowMenu} compact={sheet || editingId !== null} detailColumns={phone || editingId !== null ? ["type", "endpoint", "schema", "password", "last-used"] : ["schema", "password", "last-used"]}
+            rowAction={rowMenu} compact={sheet || editingId !== null} detailColumns={phone || editingId !== null ? ["type", "endpoint", "schema", "server", "password", "last-used"] : ["schema", "server", "password", "last-used"]}
             empty={loading ? undefined : <p className="empty-small">{search ? "No connections match your search." : "Add a connection to start working with a server."}</p>} />
         </div>
         {Object.entries(deleteErrors).map(([id, message]) => <p key={id} role="alert" className="error connection-delete-error">
@@ -1279,6 +1307,7 @@ export function Connections({
         </div>
         {editingId === null && error && <p role="alert" className="error connections-status">{error}</p>}
       </ViewLayout>
+      {importingConnections && <Suspense fallback={<p role="status">Loading import…</p>}><ImportConnections profiles={profiles} refresh={refresh} onClose={() => setImportingConnections(false)} /></Suspense>}
       {confirmDelete && !deleteLeft && <ConfirmSheet title={confirmDelete.every(row => !row.profile) ? "Remove connection?"
         : confirmDelete.length === 1 ? "Delete connection?" : `Delete ${confirmDelete.length} connections?`}
         description="Remove these settings from this computer. Existing editor sessions are not closed."
@@ -1372,13 +1401,19 @@ export function ConnectionPicker({
         <div className="picker-panel">
           <h3 className="popover-title">Connection in use</h3>
           <label className="field">Connection
-            <Select label="Connection" value={active.id} onChange={onSwitch} options={[
+            <Select label="Connection" value={active.id} onChange={id => {
+              onSwitch(id);
+              const chosen = profiles.find(p => p.id === id);
+              if (chosen) void checkReadiness({ ...chosen, profile_id: chosen.id,
+                password: id === active.id ? active.password : "" }).catch(() => {});
+            }} options={[
               ...(profile ? [] : [[active.id, hasConnection ? `${name} (not saved)` : "No connection"] as [string, string]]),
               ...profiles.map((p): [string, string] => [p.id, p.name]),
             ]} />
           </label>
           {hasConnection && <>
           <p className="picker-endpoint">{connectionTarget(active.fields)}{active.fields.database ? ` · ${active.fields.database}` : ""}</p>
+          <ReadinessFacts connection={{ ...active.fields, profile_id: active.id || undefined, type: profile?.type }} details />
           <p className="hint">TLS {active.fields.ssl_mode}</p>
           {hasConnection && safety.known && <SafetyTags type={safety.type} readOnly={safety.read_only} />}
           <p className={`picker-state${saved && !active.password ? " saved" : ""}`}>{state}</p>

@@ -1,0 +1,60 @@
+{
+ "schema_version": "readyset-action-1.0",
+ "action": "create_cache",
+ "status": "done",
+ "message": "Cache created on Readyset (3 caches active).",
+ "statements": [
+  "CREATE SHALLOW CACHE `c_orders_status` WITH (POLICY TTL 60 SECONDS REFRESH EVERY 30 SECONDS, COALESCE 50 MS, ADAPTIVE) FROM q_3333cccc;"
+ ],
+ "sent": [
+  "CREATE SHALLOW CACHE `c_orders_status` WITH (POLICY TTL 60 SECONDS REFRESH EVERY 30 SECONDS, COALESCE 50 MS, ADAPTIVE) FROM q_3333cccc;"
+ ],
+ "not_sent": [],
+ "error": null,
+ "after": {
+  "status": "Online",
+  "replication_status": "Running",
+  "max_offset": "aaaa:1-100",
+  "cache_count": 3,
+  "caches": {
+   "c_orders_deep": "q_1111aaaa",
+   "c_recent_shallow": "q_2222bbbb",
+   "c_new": "q_9999eeee"
+  },
+  "shallow_entries_hits": 1080,
+  "proxied_count": 2,
+  "tables": {
+   "`shop`.`orders`": "Snapshotted",
+   "`shop`.`audit_blob`": "Ignored"
+  },
+  "allowlists": {
+   "functions": [
+    "NOW",
+    "UNIX_TIMESTAMP"
+   ],
+   "variables": [
+    "time_zone"
+   ],
+   "schemas": [
+    "shop"
+   ]
+  }
+ },
+ "undo": "DROP CACHE `c_orders_status`;",
+ "next": null,
+ "audit_id": null,
+ "states": [
+  "done"
+ ],
+ "effect": [
+  [
+   "Caches",
+   "2",
+   "3"
+  ]
+ ],
+ "checks": [
+  "Refresh the Readyset place to inspect the current caches, tables and status.",
+  "The Audit log keeps this attempt as Outcome unknown; nothing is sent again."
+ ]
+}

@@ -375,6 +375,20 @@ class TestArgvConstruction(unittest.TestCase):
         finally:
             c.close()
 
+    def test_local_infile_disabled_right_after_defaults_file(self):
+        """A hostile server can request a readable local file in reply to any
+        statement when the client's LOCAL capability stays at its build
+        default (MariaDB's is AUTO/ON). Every invocation pins it off; only the
+        CSV LOAD DATA session overrides it later in argv (csv_import_api).
+        """
+        for method in ("run", "run_write", "run_script"):
+            with self.subTest(method=method), self._conn(binary="/bin/mariadb") as conn, \
+                    mock.patch.object(connector, "_run_bounded", return_value=_fake_completed()) as run:
+                getattr(conn, method)("SELECT 1")
+                argv = run.call_args[0][0]
+                self.assertTrue(argv[1].startswith("--defaults-file="))
+                self.assertEqual(argv[2], "--local-infile=0", argv)
+
     def test_utf8mb4_for_reads_and_writes_before_and_after_engine_detection(self):
         # A MySQL (or unknown) client talking to MariaDB 10.11 needs SET
         # NAMES too: its utf8mb4 handshake collation can be unrecognized.
@@ -950,6 +964,48 @@ class TestBoundedTransport(unittest.TestCase):
             with self.assertRaisesRegex(ConnectorError, 'timed out'):
                 conn.run_write('SELECT 1', timeout=0.2)
             self.assertIsNotNone(self.children[0].poll())
+
+    def test_identity_tail_has_its_own_budget_and_retains_output_after_reaping(self):
+        for newline in ('\n', '\r\n'):
+            output = newline.join(('myflames_reading_0', 'name\tvalue', 'myflames_reading_1', ''))
+            script = ('import os,sys\nassert "--unbuffered" in sys.argv\n'
+                      'os.write(1, %r)\nr,w=os.pipe()\nos.read(r,1)' % output.encode())
+            with self.subTest(newline=newline), self.child(script), MySQLConnection('h', binary='mysql') as conn:
+                tail_started = []
+                with self.assertRaises(connector.PartialReadError) as caught:
+                    conn.run('SELECT 1', timeout=5, tail_timeout=('myflames_reading_1', 0.2),
+                             on_tail_start=lambda: tail_started.append(self.children[0].poll()))
+                self.assertEqual(tail_started, [None], 'capture completion once, before the tail times out')
+                self.assertIn('after 0.2s', str(caught.exception), 'the tail does not inherit the data budget')
+                self.assertEqual(caught.exception.stdout.replace('\r\n', '\n'), output.replace('\r\n', '\n'))
+                self.assertNotIn('name\tvalue', str(caught.exception), 'partial server data is not an error message')
+                self.assertEqual(len(self.children), 1)
+                self.assertIsNotNone(self.children[0].poll())
+
+    def test_marker_in_data_or_without_newline_cannot_extend_the_read_budget(self):
+        for output in ('name\tmyflames_reading_1\n', 'myflames_reading_1',
+                       'name\tmyflames_reading_1\\nspoof\n'):
+            script = 'import os\nos.write(1, %r)\nr,w=os.pipe()\nos.read(r,1)' % output.encode()
+            with self.subTest(output=output), self.child(script), MySQLConnection('h', binary='mysql') as conn:
+                on_tail_start = mock.Mock()
+                with self.assertRaises(connector.PartialReadError) as caught:
+                    conn.run('SELECT 1', timeout=0.2, tail_timeout=('myflames_reading_1', 5),
+                             on_tail_start=on_tail_start)
+                on_tail_start.assert_not_called()
+                self.assertIn('after 0.2s', str(caught.exception), 'only a complete marker row changes the deadline')
+                self.assertIsNotNone(self.children[0].poll())
+
+    def test_identity_sql_error_retains_stdout_only_for_opted_in_read_batches(self):
+        output = 'myflames_reading_0\nname\tvalue\nmyflames_reading_1\n'
+        script = 'import sys\nsys.stdout.write(%r)\nsys.stderr.write("ERROR 1227: denied")\nsys.exit(1)' % output
+        for options in ({}, {'tail_timeout': ('myflames_reading_1', 3)}):
+            with self.subTest(options=options), self.child(script), MySQLConnection('h', binary='mysql') as conn:
+                with self.assertRaises(ConnectorError) as caught:
+                    conn.run('SELECT 1', **options)
+                self.assertEqual(isinstance(caught.exception, connector.PartialReadError), bool(options))
+                if options:
+                    self.assertEqual(caught.exception.stdout, output)
+                self.assertIsNotNone(self.children[0].poll())
 
 
 class TestClientText(unittest.TestCase):

@@ -1,7 +1,8 @@
 """TLS context and deadline for myflames' few HTTPS reads.
 
-Release checks (app_update.py), tool update checks (tool_updates.py) and Home
-news (news.py) are the only HTTPS clients. They verify certificates and host
+Release checks (app_update.py), tool update checks (tool_updates.py), the
+Upgrade check's version list (upgrade_targets.py) and Home news (news.py) are
+the only HTTPS clients. They verify certificates and host
 names with the standard library's default context.
 
 The packaged macOS app carries its own OpenSSL, whose built-in certificate

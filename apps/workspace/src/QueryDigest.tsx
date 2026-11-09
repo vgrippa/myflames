@@ -7,8 +7,8 @@ import { connectionLabel, useConnectionReads, type Bound } from "./binding";
 import { useOpenRead, useViewOnScreen } from "./viewOnScreen";
 import {
   ActionButton, ActionStatus, ConfirmSheet, DataTable, Disclosure, EmptyState, ExportMenu, Fields, IDLE_ACTION, InfoPopover,
-  InspectorContext, InspectorSection, Pill, SearchField, Select, SummaryLine, ToolbarButton, ViewLayout, ViewStatus,
-  copyToClipboard, errorText, storedInspectorWidth, useWindowStatus, type ActionState, type Column, type InspectorContent,
+  InspectorContext, InspectorSection, Pill, SearchField, Select, SummaryLine, ViewLayout, ViewStatus,
+  copyToClipboard, errorText, storedInspectorWidth, useAction, useWindowStatus, type ActionState, type Column, type InspectorContent,
   type InspectorShared,
 } from "./kit";
 import { CompactNumber, bytes, compact, count } from "./PerfShared";
@@ -19,10 +19,18 @@ import { InstrumentsLink, InstrumentsLinkContext } from "./Instruments";
 import { binLow, boundText, latencyBins, latencySummary, rangeText, BINS_PER_DECADE, type LatencyBins } from "./latencyHistogram";
 import { ANY_TIME, inputValue, overlaps, rangeActive, rangeText as timeRangeText, wallText, type TimeRange } from "./digestTimes";
 import { TimeRangeButton } from "./DigestRange";
+import { baselineMismatch, compareDigests, growthText, perSecondText, savedAtText, type DigestChange } from "./baselineCompare";
+import { readingServerOf, type DigestBaselinePayload, type DigestReading, type ReadingServer } from "./baselinesApi";
+import {
+  BaselineBar, BaselineMenu, CompareBaselineSheet, SaveBaselineSheet, defaultBaselineName, type ActiveBaseline,
+} from "./Baselines";
 import {
   chooseSlowLog, openSlowLogPath, progressId, readSlowLog, readSlowLogTable, slowLogProgress, stopSlowLog,
   type SlowLogFile, type SlowLogOrder, type SlowLogProgress, type SlowLogQuery, type SlowLogReport, type SlowLogStatement,
 } from "./slowLogApi";
+import { StatementInspector } from "./StatementInspector";
+import { TopActions, type LabSettings } from "./SlowQueries";
+import type { SqlOpenOptions } from "./statementThread";
 import "./query-digest.css";
 
 export type DigestFilterMode = "time" | "scans" | "full_join" | "tmp_tables" | "locks";
@@ -30,6 +38,10 @@ export type QueryDigestProps = {
   connection: Connection;
   onOpenInEditor?: (row: TopStatement, rank: number, from: string) => void;
   onExplain?: (row: TopStatement, rank: number, from: string) => void;
+  onAnalyze?: (row: TopStatement, rank: number, from: string) => void;
+  onOpenSql?: (sql: string, options?: SqlOpenOptions) => void;
+  settings: LabSettings;
+  disabled?: boolean;
   /** Opens Server > Instruments at one row (the CPU time note's link). */
   onOpenInstruments?: (row: string) => void;
   onOpenIndexes?: (schema: string, table: string, from: string) => void;
@@ -66,8 +78,17 @@ type DigestReport = {
   others?: TopTotals | null;
   cpu?: { collected: boolean | null } | null;
   notes: string[];
+  /** Performance Schema: when this computer received it (ISO) and how many
+   * statements were asked for (Save baseline keeps both). */
+  read_at?: string;
+  limit?: number;
+  /** The server it came from, read in the same request (with_identity). */
+  reading_server?: ReadingServer | null;
 };
 type DigestRow = { key: string; rank: number; statement: TopStatement };
+/** A statement that is new or grew since the baseline, with its row. */
+type ChangeRow = { key: string; row: DigestRow; change: DigestChange };
+const ORDER_LABEL: Record<string, string> = Object.fromEntries(MODES);
 /** The Schema choice for statements recorded without a default schema (no
  * database name can contain NUL). */
 const NO_SCHEMA = "\u0000none";
@@ -327,12 +348,6 @@ function LatencySection({ statement, read, enabled, blocked, onRead, onStop }: {
   }, [visible, enabled, blocked, read]);
   const data = read?.result?.available ? latencyBins(read.result.buckets) : null;
   return <div ref={root} className="qd-latency">
-    {/* Spans: a plain "P99.9" label would read as an identifier (code). */}
-    <Fields label="Latency percentiles" rows={[
-      [<span>P95</span>, <Ms value={statement.p95_ms} />],
-      [<span>P99</span>, <Ms value={statement.p99_ms} />],
-      [<span>P99.9</span>, <Ms value={statement.p999_ms} />],
-    ]} />
     {blocked ? <p className="muted qd-hist-note">{blocked}</p> : <>
       <ViewStatus loading={read?.phase === "loading" ? "Reading the latency histogram…" : ""} error={read?.phase === "failed" ? read.error : ""}
         onStop={onStop} onRetry={onRead} slowAfter={10_000} />
@@ -344,12 +359,17 @@ function LatencySection({ statement, read, enabled, blocked, onRead, onStop }: {
 
 type TablesRead = { phase: "loading" | "done" | "failed"; result?: DigestTables; error?: string };
 
-/** The section may sit below the inspector's fold. Opening the inspector
- * alone must not read metadata; leaving it also cancels pending reads. */
-function TablesSection({ read, enabled, blocked, onRead, onStop, onLeave, onOpenIndexes }: {
+/** The section may sit below the inspector's fold. For Performance Schema
+ * digests, opening the inspector alone must not read metadata (it reads when
+ * the section is on screen; leaving it cancels pending reads). A slow log
+ * table's report already holds the histogram, so its only inspector read is
+ * this one: it starts when the statement opens (eager). */
+function TablesSection({ read, enabled, blocked, eager = false, onRead, onStop, onLeave, onOpenIndexes }: {
   read: TablesRead | undefined;
   enabled: boolean;
   blocked: string;
+  /** Read when the statement opens, not only when the section scrolls into view. */
+  eager?: boolean;
   onRead: () => void;
   onStop: () => void;
   onLeave: () => void;
@@ -357,13 +377,14 @@ function TablesSection({ read, enabled, blocked, onRead, onStop, onLeave, onOpen
 }) {
   const root = useRef<HTMLDivElement>(null);
   const visible = useOnScreen(root);
+  const live = eager || visible;
   useEffect(() => {
-    if (visible && enabled && !blocked && !read) onRead();
-  }, [visible, enabled, blocked, read]);
+    if (live && enabled && !blocked && !read) onRead();
+  }, [live, enabled, blocked, read]);
   useEffect(() => {
-    if (!visible || !enabled) onLeave();
+    if (!live || !enabled) onLeave();
     return () => onLeave();
-  }, [visible, enabled]);
+  }, [live, enabled]);
   return <div ref={root} className="qd-tables">
     <p className="qd-tables-note">Found in the statement text</p>
     {blocked ? <p className="muted">{blocked}</p> : <>
@@ -403,9 +424,6 @@ function SlowLatency({ statement }: { statement: SlowLogStatement }) {
   return <div className="qd-latency">
     <Fields label="Latency percentiles" rows={[
       [<span>Min</span>, <Ms value={statement.min_ms} />],
-      [<span>P95</span>, <Ms value={statement.p95_ms} />],
-      [<span>P99</span>, <Ms value={statement.p99_ms} />],
-      [<span>P99.9</span>, <Ms value={statement.p999_ms} />],
     ]} />
     {data.total ? <LatencyChart data={data} maxMs={statement.max_ms} /> : <p className="muted qd-hist-note">No calls were timed.</p>}
   </div>;
@@ -417,10 +435,38 @@ function namesText(names: { name: string; count: number }[], empty: string) {
   return names.map((n) => `${n.name || "(none)"} (${number(n.count)})`).join(", ");
 }
 
+/** What changed, in words: "New", "Avg latency +180%", "Calls per second +75%". */
+function changeWords(c: DigestChange) {
+  if (c.kinds[0] === "new") return "New";
+  return c.kinds.map((k) => (k === "slower" ? `Avg latency ${growthText(c.avgGrowth)}` : `Calls per second ${growthText(c.rateGrowth)}`)).join(", ");
+}
+/** "2.10 ms → 5.88 ms"; a missing side reads "—". */
+function beforeAfter(before: number | null | undefined, after: number | null | undefined, format: (v: number) => string) {
+  const text = (v: number | null | undefined) => (v === null || v === undefined || !Number.isFinite(v) ? "—" : format(v));
+  return `${text(before)} → ${text(after)}`;
+}
+/** The rule Compare with baseline applies, stated where its list is. */
+const BASELINE_RULE = <>
+  <p>New: not in the baseline, and first seen after it was read (FIRST_SEEN, on the server's clock).</p>
+  <p>Grew: average latency or calls per second more than 50% above the baseline, once 10 or more calls ran since it. Before is
+    the baseline's own totals; after is the difference of the counters between the two readings.</p>
+  <p>After a restart or a reset of the digest table only average latency is compared, over the calls since counting began again.</p>
+</>;
+/** A Performance Schema report as Save baseline sends it (the server keeps a part). */
+export function digestReading(r: DigestReport): DigestReading {
+  return {
+    schema_version: "top-1.0", engine: r.engine, server_version: r.version, server_product: r.server_product ?? null,
+    order: r.filter, limit: r.limit ?? r.statements.length, read_at: r.read_at || new Date().toISOString(),
+    coverage: r.coverage ? { uptime_s: r.coverage.uptime_s, counting_since: r.coverage.counting_since ?? null,
+      oldest_first_seen: r.coverage.oldest_first_seen ?? null, digest_lost: r.coverage.digest_lost } : null,
+    totals: r.totals ?? null, statements: r.statements, reading_server: r.reading_server ?? null,
+  };
+}
+
 type FileRead = { loading: string; error: string; doneAt?: number; progress: SlowLogProgress | null; stopped?: string };
 const FILE_IDLE: FileRead = { loading: "", error: "", progress: null };
 
-export function QueryDigestView({ connection, onOpenInEditor, onExplain, onOpenInstruments, onOpenIndexes }: QueryDigestProps) {
+export function QueryDigestView({ connection, onOpenInEditor, onExplain, onAnalyze, onOpenSql, settings, disabled = false, onOpenInstruments, onOpenIndexes }: QueryDigestProps) {
   const [source, setSource] = useState<DigestSource>("pfs");
   // A reply that lands after the Source changed keeps its report but never
   // touches the selection or filters of the Source on screen.
@@ -459,7 +505,7 @@ export function QueryDigestView({ connection, onOpenInEditor, onExplain, onOpenI
   const sourceBound = !isFile && bound?.report.kind === source ? bound : null;
   const report = isFile ? fileReport : sourceBound?.report;
   const other = sourceBound && sourceBound.key !== reads.key ? sourceBound.label : null;
-  const actionsOff = isFile ? !fileReport : !sourceBound || !!other;
+  const actionsOff = disabled || (isFile ? !fileReport : !sourceBound || !!other);
   const [selectedKey, setSelectedKey] = useState("");
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [inspectorWidth, setInspectorWidth] = useState(storedInspectorWidth);
@@ -507,6 +553,45 @@ export function QueryDigestView({ connection, onOpenInEditor, onExplain, onOpenI
   const totals = useMemo(() => rows.reduce((sum, { statement: s }) => ({
     ms: sum.ms + s.total_ms, calls: sum.calls + s.count,
   }), { ms: 0, calls: 0 }), [rows]);
+  // Save baseline and Compare with baseline (the Refresh menu): Performance
+  // Schema statement digests of the connection in use. A sheet keeps the
+  // connection (and Save the reading) of the moment it opened; a connection
+  // switch closes it and ends the comparison.
+  const [baselineSheet, setBaselineSheet] = useState<
+    null | { kind: "save"; connection: Connection; report: DigestReading } | { kind: "compare"; key: string; connection: Connection }
+  >(null);
+  const [activeBaseline, setActiveBaseline] = useState<ActiveBaseline<DigestBaselinePayload> | null>(null);
+  const baselineSaved = useAction(reads.key);
+  useEffect(() => {
+    setBaselineSheet(null);
+    setActiveBaseline((b) => (b && b.key !== reads.key ? null : b));
+  }, [reads.key]);
+  const pfsReport = !isFile && sourceBound?.report.kind === "pfs" && !other ? sourceBound.report : null;
+  const readingServer = pfsReport?.reading_server ?? null;
+  const baselineReason = source !== "pfs" ? "Baselines keep Performance Schema statement digests: choose Statement digests."
+    : other ? `From ${other}; refresh to read this server.`
+      : !pfsReport ? "Load statement digests first; they need Performance Schema (Server > Instruments)."
+        : !readingServer || readingServer.error !== undefined ? "Refresh first: the server's identity was not read with these digests." : "";
+  const comparing = !!activeBaseline && activeBaseline.key === reads.key && !!pfsReport;
+  // Digests from another server than the baseline's are never compared.
+  const mismatch = comparing && activeBaseline ? baselineMismatch(readingServer, activeBaseline.baseline) : "";
+  const comparison = useMemo(() => (comparing && !mismatch && activeBaseline && pfsReport
+    ? compareDigests(activeBaseline.baseline.payload, {
+      statements: pfsReport.statements, version: pfsReport.version, coverage: pfsReport.coverage,
+      readAt: pfsReport.read_at || "",
+    }) : null), [comparing, mismatch, activeBaseline, pfsReport]);
+  const changeRows = useMemo<ChangeRow[]>(() => {
+    if (!comparison) return [];
+    const byStatement = new Map(rows.map((r) => [r.statement, r]));
+    const visible = new Set(shown.map((r) => r.key));
+    return comparison.changes.flatMap((change) => {
+      const row = byStatement.get(change.statement);
+      return row && visible.has(row.key) ? [{ key: row.key, row, change }] : [];
+    });
+  }, [comparison, rows, shown]);
+  const selectedChange = comparison && selected ? comparison.changes.find((c) => c.statement === selected.statement) || null : null;
+  const openBaselines = () => setBaselineSheet({ kind: "compare", key: reads.key, connection: { ...connection } });
+  const refreshOptions = () => root.current?.querySelector<HTMLElement>('[data-view="query-digest"] button[aria-label="Refresh options"]');
   const [exportOpen, setExportOpen] = useState(false);
   const [exportNote, setExportNote] = useState("");
   // Freeze the preview and its origin while open, even if a read finishes behind it.
@@ -520,13 +605,15 @@ export function QueryDigestView({ connection, onOpenInEditor, onExplain, onOpenI
     return reads.run(params, source === "table" ? "Reading mysql.slow_log…" : "Reading statement digests…",
       async (c, signal): Promise<DigestReport> => {
         if (source === "table") return fromSlow(await readSlowLogTable(c, slowQuery, signal), "table");
-        const res = await api<TopReport>("live/top", { connection: c, order: filter as TopOrder, limit, extra_metrics: true }, signal);
+        // with_identity: the server's identity read with the digests, so a
+        // baseline is filed under (and compared with) the server they came from.
+        const res = await api<TopReport>("live/top", { connection: c, order: filter as TopOrder, limit, extra_metrics: true, with_identity: true }, signal);
         return {
           kind: "pfs", statements: res.statements || [], engine: res.engine, version: res.server_version,
           server_product: res.server_product,
           coverage: "coverage" in res ? res.coverage : undefined, notes: res.notes || [], filter,
           totals: "totals" in res ? res.totals : undefined, others: "others" in res ? res.others : undefined,
-          cpu: "cpu" in res ? res.cpu : undefined,
+          cpu: "cpu" in res ? res.cpu : undefined, read_at: new Date().toISOString(), limit, reading_server: readingServerOf(res),
         };
       }, (result) => {
         // Another connection's databases differ: its statements start with All schemas.
@@ -785,29 +872,62 @@ export function QueryDigestView({ connection, onOpenInEditor, onExplain, onOpenI
         return <span className={high >= 1000 ? "qd-ratio-danger" : high >= 50 ? "qd-ratio-warn" : undefined}>{ratio(s.rows_examined, s.rows_sent)}</span>;
       } },
   ];
+  // Compare with baseline: what changed, then before → after.
+  const rateJudged = comparison?.mode === "since";
+  const changeColumns: Column<ChangeRow>[] = [
+    { key: "statement", label: "Statement", primary: true, flex: true, minWidth: 200,
+      sort: ({ row }) => row.statement.digest_text || "", render: ({ row, change }) => <span className="qd-statement-cell">
+        {change.kinds[0] === "new" && <Pill tone="info" title={`First seen ${row.statement.first_seen || "?"} (server time), after the baseline`}>New</Pill>}
+        <code className="qd-statement" title={row.statement.digest_text || "No normalized SQL recorded"}>{normalized(row.statement).replace(/\s+/g, " ")}</code>
+      </span> },
+    { key: "schema", label: "Schema", sort: ({ row }) => row.statement.schema || "", render: ({ row }) => <span className="muted">{row.statement.schema || "—"}</span> },
+    { key: "change", label: "Change", sort: ({ change }) => (change.kinds[0] === "new" ? Number.MAX_VALUE : Math.max(change.avgGrowth ?? 0, change.rateGrowth ?? 0)),
+      render: ({ change }) => <span className="baseline-change-words">{changeWords(change)}</span> },
+    { key: "avg", label: "Avg latency", num: true, sort: ({ change }) => change.after.avg_ms,
+      render: ({ change }) => <span className="baseline-before-after">{beforeAfter(change.before?.avg_ms, change.after.avg_ms, time)}</span> },
+    { key: "rate", label: "Calls per second", num: true, sort: ({ change }) => change.after.per_s,
+      render: ({ change }) => <span className="baseline-before-after">{rateJudged ? beforeAfter(change.before?.per_s, change.after.per_s, perSecondText) : "Not compared"}</span> },
+    { key: "calls", label: rateJudged ? "Calls since" : "Calls", num: true, sort: ({ change }) => change.after.calls,
+      render: ({ change }) => <CompactNumber value={change.after.calls} /> },
+  ];
   const fileHint = "This statement comes from a file: it opens and runs on the connection in use.";
   const slowSelected = selected && slow ? slowOf(selected.statement) : null;
   const inspector: InspectorContent | null = selected ? {
     key: selected.key, title: `#${selected.rank} · ${selected.statement.schema || "No default schema"}`,
     meta: selected.statement.new ? <NewBadge statement={selected.statement} /> : undefined,
-    actions: <div className="qd-actions">
-      <ToolbarButton primary icon="query" disabled={actionsOff || !!editorReason} title={editorReason || (report?.kind === "file" ? fileHint : "Open in Query editor")}
-        onClick={() => openRow(selected, onOpenInEditor)}>Open in Query editor</ToolbarButton>
-      <ToolbarButton icon="plan" disabled={actionsOff || !!explainReason(selected)} title={explainReason(selected) || (report?.kind === "file" ? fileHint : "Explain this statement")}
-        onClick={() => openRow(selected, onExplain, true)}>Explain</ToolbarButton>
-    </div>,
-    body: <>
-      <InspectorSection title="Statement">
+    body: <StatementInspector row={selected.statement} source={report?.kind || "pfs"} connection={connection}
+      disabled={!!other} onOpenSql={onOpenSql}
+      actions={<div title={report?.kind === "file" ? fileHint : undefined}><TopActions row={selected.statement} rank={selected.rank} connection={connection} settings={settings}
+        available={{ open: !!onOpenInEditor, explain: !!onExplain, analyze: !!onAnalyze }}
+        disabled={actionsOff} idPrefix="qd-" onAction={action => openRow(selected,
+          action === "open" ? onOpenInEditor : action === "explain" ? onExplain : onAnalyze)} /></div>}
+      notes={<>
+        <p className="hint">{report && sourceSentence(report)}</p>
+        {report?.kind === "file" && <p className="hint">{fileHint}</p>}
+        {report && reportNotes(report).map((note, i) => <p className="hint" key={i}><bdi>{note}</bdi></p>)}
+      </>}
+      latencyDetails={slowSelected ? <SlowLatency key={selected.key} statement={slowSelected} />
+        : report?.engine === "mysql" && selected.statement.p95_ms != null
+          ? <LatencySection key={selected.key} statement={selected.statement} read={histograms[selected.key]}
+              enabled={onScreen && !other} blocked={other ? `From ${other}; refresh to read this server.` : ""}
+              onRead={() => readHistogram(selected)} onStop={() => stopHistogram(selected)} /> : undefined}>
+      {selectedChange && comparison && activeBaseline && <InspectorSection title="Since the baseline" info={BASELINE_RULE}>
+        <Fields label="Since the baseline" rows={[
+          ["Baseline", <bdi>{activeBaseline.baseline.name}</bdi>],
+          ["Change", changeWords(selectedChange)],
+          ["Avg latency", beforeAfter(selectedChange.before?.avg_ms, selectedChange.after.avg_ms, time)],
+          ["Calls per second", comparison.mode === "since"
+            ? beforeAfter(selectedChange.before?.per_s, selectedChange.after.per_s, perSecondText) : "Not compared"],
+          [selectedChange.kinds[0] === "new" || comparison.mode !== "since" ? "Calls" : "Calls since the baseline",
+            <CompactNumber value={selectedChange.after.calls} />],
+        ]} />
+      </InspectorSection>}
+      <InspectorSection title="Activity and source details">
         <Fields rows={[
-          ["Total time", <Ms value={selected.statement.total_ms} />],
           ["Calls", <CompactNumber value={selected.statement.count} />],
-          ["Avg", <Ms value={selected.statement.avg_ms} />],
-          ["Max", <Ms value={selected.statement.max_ms} />],
           cpu && ["CPU time", <CpuTime statement={selected.statement} collected={cpu.collected} />],
           cpu && cpu.collected === false && ["", <span className="qd-cpu-note">events_statements_cpu is off. <InstrumentsLink row="consumer:events_statements_cpu" /></span>],
           ["Lock time", <Ms value={selected.statement.lock_time_ms} />],
-          ["Rows examined", <CompactNumber value={selected.statement.rows_examined} />],
-          ["Rows sent", <CompactNumber value={selected.statement.rows_sent} />],
           slowSelected && slowSelected.rows_affected != null && ["Rows affected", <CompactNumber value={slowSelected.rows_affected} />],
           (!slowSelected || slowSelected.tmp_tables != null) && ["Temp tables (on disk)", <><CompactNumber value={selected.statement.tmp_tables} /> (<CompactNumber value={selected.statement.tmp_disk_tables} />)</>],
           (!slowSelected || slowSelected.select_scan != null) && ["Full scans", <CompactNumber value={selected.statement.select_scan} />],
@@ -820,26 +940,16 @@ export function QueryDigestView({ connection, onOpenInEditor, onExplain, onOpenI
           ["Last seen", <SeenAt value={selected.statement.last_seen} clock={seenClock} />],
         ]} />
       </InspectorSection>
-      {slowSelected && <InspectorSection title="Latency" info={<p>P95, P99 and P99.9: 95, 99 and 99.9 percent of calls took at most this long.
-          Each is the upper edge of the histogram bucket that holds it, never above the slowest call. Counted from the log, in the range.</p>}>
-        <SlowLatency key={selected.key} statement={slowSelected} />
-      </InspectorSection>}
       {slowSelected && <InspectorSection title="Who ran it">
         <Fields rows={[
           ["Users", namesText(slowSelected.users, "Not logged")],
           ["Hosts", namesText(slowSelected.hosts, "Not logged")],
         ]} />
       </InspectorSection>}
-      {!slow && report?.engine === "mysql" && selected.statement.p95_ms != null &&
-        <InspectorSection title="Latency" info={<p>P95, P99 and P99.9: 95, 99 and 99.9 percent of calls took at most this long.
-          Each is the upper edge of the histogram bucket that holds it. Counted since the statement was first seen.</p>}>
-          <LatencySection key={selected.key} statement={selected.statement} read={histograms[selected.key]}
-            enabled={onScreen && !other} blocked={other ? `From ${other}; refresh to read this server.` : ""}
-            onRead={() => readHistogram(selected)} onStop={() => stopHistogram(selected)} />
-        </InspectorSection>}
       {report?.kind !== "file" && <InspectorSection title="Tables" info={<p>A text match, not proof of access. Views and routines may refer to other tables.
         Sizes come from information_schema and rows are estimates. No table rows are read.</p>}>
         <TablesSection key={selected.key} read={tableReports[selected.key]} enabled={onScreen && !other} blocked={other ? `From ${other}; refresh to read this server.` : ""}
+          eager={report?.kind === "table"}
           onRead={() => readTables(selected)} onStop={() => stopTables(selected)} onLeave={() => stopTables(selected, true)}
           onOpenIndexes={onOpenIndexes ? (schema, table) => {
             if (bound && bound.key === reads.currentKey()) onOpenIndexes(schema, table, bound.key);
@@ -856,7 +966,7 @@ export function QueryDigestView({ connection, onOpenInEditor, onExplain, onOpenI
           ].filter(Boolean).join(" · ")}{slowSelected.sample.truncated ? " · cut" : ""}</p>}
           <CodeBlock key={selected.key} text={selected.statement.sample_text} label="sample SQL" />
         </> : <p className="muted">No sample recorded.</p>}</InspectorSection>
-    </>,
+    </StatementInspector>,
   } : null;
 
   function textReport() {
@@ -930,6 +1040,9 @@ export function QueryDigestView({ connection, onOpenInEditor, onExplain, onOpenI
     {slow && slow.range.applied && <> · <span title={`${slow.range.from || "the start"} to ${slow.range.to || "the end"} (${slow.clock.label || "as written"})`}>
       {timeRangeText({ from: inputValue(slow.range.from), to: inputValue(slow.range.to) })}</span></>}
     {shown.length !== rows.length ? ` · ${shown.length} shown` : ""}
+    {comparison && activeBaseline && <span className="baseline-summary" data-baseline-summary>
+      {" "}· {comparison.newCount} new, {comparison.grewCount} grew by more than 50% since <bdi>{activeBaseline.baseline.name}</bdi>,
+      {" "}{savedAtText(activeBaseline.baseline.created_at)}</span>}
   </SummaryLine> : null;
   const rangeScope = isFile || source === "table"
     ? "Only entries logged in the range are counted."
@@ -953,6 +1066,9 @@ export function QueryDigestView({ connection, onOpenInEditor, onExplain, onOpenI
       <ViewLayout id="query-digest" title="Query digest" className="qd-view" detailBackLabel=""
         otherConnection={other} inspector={inspector} onRefresh={() => { void load(); }} loading={!!reads.loading || !!fileRead.loading}
         refreshDisabled={isFile && !file}
+        refreshMenu={<BaselineMenu saveReason={baselineReason} compareReason={baselineReason}
+          onSave={() => { if (pfsReport) setBaselineSheet({ kind: "save", connection: { ...connection }, report: digestReading(pfsReport) }); }}
+          onCompare={openBaselines} />}
         info={<>
           <p>{report ? sourceSentence(report) : isFile
             ? <>Reads a slow query log file on this computer (MySQL 5.7 to 9.x, Percona Server or MariaDB). Nothing is sent to a server.</>
@@ -961,7 +1077,7 @@ export function QueryDigestView({ connection, onOpenInEditor, onExplain, onOpenI
           <p>{slow ? "Share of total time compares each statement with every statement in the range; the totals cover the loaded statements."
             : "Share of total time compares each statement with every digest the server keeps; the totals cover the loaded statements."}</p>
         </>}
-        controls={<>
+        controls={<div className="qd-filter-bar" role="group" aria-label="Query digest filters">
           <label className="toolbar-field qd-source"><span className="qd-field-word">Source</span> <Select label="Source" value={source} options={SOURCES} onChange={(v) => changeSource(v as DigestSource)} /></label>
           {source === "pfs"
             ? <label className="toolbar-field">Rank by <Select label="Rank by" value={filter} options={MODES} onChange={(v) => setFilter(v as DigestFilterMode)} /></label>
@@ -977,8 +1093,20 @@ export function QueryDigestView({ connection, onOpenInEditor, onExplain, onOpenI
             { key: "text", label: "Text report", onSelect: () => { setPreview({ text: textReport(), filename: filename("txt") }); setExportOpen(true); } },
             { key: "csv", label: "CSV", onSelect: () => { const name = filename("csv"); downloadFile(name, csvReport(), "text/csv"); setExportNote(`Saved ${name}.`); } },
           ]} />
-        </>}
+        </div>}
         status={<>{summary && <div className="qd-summary">{summary}</div>}
+          <ActionStatus className="baseline-status" state={baselineSaved} onDismiss={baselineSaved.reset} />
+          {comparing && activeBaseline && pfsReport && <BaselineBar name={activeBaseline.baseline.name}
+            savedAt={savedAtText(activeBaseline.baseline.created_at)} now={pfsReport.read_at ? savedAtText(pfsReport.read_at) : "this reading"}
+            notes={!comparison ? [`Not compared: ${mismatch}.`] : [
+              comparison.mode === "restarted" ? "The server restarted since the baseline: new statements and calls per second are not judged, and average latency covers the calls since the restart." : "",
+              comparison.mode === "reset" ? "The digest table was reset since the baseline: new statements and calls per second are not judged, and average latency covers the calls since the reset." : "",
+              comparison.mode === "unknown" ? "A reading has no server uptime: new statements and calls per second are not judged." : "",
+              comparison.upgraded ? `Upgraded since the baseline: ${comparison.upgraded.from} → ${comparison.upgraded.to}.` : "",
+              activeBaseline.baseline.payload.order !== pfsReport.filter
+                ? `The baseline ranked statements by ${ORDER_LABEL[activeBaseline.baseline.payload.order] || activeBaseline.baseline.payload.order}; this list ranks by ${ORDER_LABEL[pfsReport.filter] || pfsReport.filter}.` : "",
+            ]}
+            onChange={openBaselines} onStop={() => { setActiveBaseline(null); }} />}
           {pfsRange && <p className="qd-range-note">
             Numbers are totals since counting began, not only this range: the range keeps the statements seen in it.
             <InfoPopover label="About time ranges and Performance Schema">
@@ -1021,7 +1149,21 @@ export function QueryDigestView({ connection, onOpenInEditor, onExplain, onOpenI
         </div> : isFile && !fileReport ? <EmptyState icon="import" title={fileRead.loading ? `Reading ${file?.name}…` : fileRead.error ? `Could not read ${file?.name}` : `${file?.name} is not read yet`}
           action={fileRead.loading ? undefined : <div className="qd-file-actions">{openAnother}</div>}>
           {fileRead.loading ? "The whole file is read on this computer; the progress shows above." : "Read it again with Refresh, or choose another file."}
-        </EmptyState> : <>
+        </EmptyState> : comparison && activeBaseline ? <section className="baseline-changes" aria-labelledby="qd-baseline-h" data-baseline-changes>
+          <div className="baseline-changes-head">
+            <h3 id="qd-baseline-h">Since the baseline</h3>
+            <InfoPopover label="How statements are compared with the baseline">{BASELINE_RULE}</InfoPopover>
+          </div>
+          <DataTable label="Statements new or grown since the baseline" columns={changeColumns} rows={changeRows} rowKey={(r) => r.key} compact
+            selection={{ key: selectedKey, select: (key, open) => { setSelectedKey(key); if (open !== false) setInspectorOpen(true); } }}
+            empty={<EmptyState icon="statements" title={filtered && comparison.changes.length ? "No matching statements" : "Nothing new or grown since the baseline"}>
+              {filtered && comparison.changes.length ? "Change the schema or the filter to show the other changes."
+                : `${comparison.matched.toLocaleString()} ${comparison.matched === 1 ? "statement" : "statements"} of this list ${comparison.matched === 1 ? "is" : "are"} in the baseline; none is new or grew by more than 50%.`}
+            </EmptyState>} />
+          {comparison.notInBaseline > 0 && <p className="baseline-footnote">
+            {`${comparison.notInBaseline.toLocaleString()} listed ${comparison.notInBaseline === 1 ? "statement is" : "statements are"} not in the baseline and not judged new.`}
+          </p>}
+        </section> : <>
           <DataTable label="Query digest statements" columns={columns} rows={shown} rowKey={(r) => r.key}
             compact detailColumns={["cpu"]}
             selection={{ key: selectedKey, select: (key, open) => { setSelectedKey(key); if (open !== false) setInspectorOpen(true); } }}
@@ -1052,6 +1194,19 @@ export function QueryDigestView({ connection, onOpenInEditor, onExplain, onOpenI
           onConfirm={() => { downloadFile(preview.filename, preview.text, "text/plain"); setExportNote(`Saved ${preview.filename}.`); setExportOpen(false); }}>
           <CodeBlock text={preview.text} label="text report" />
         </ConfirmSheet>}
+        {baselineSheet?.kind === "save" && <SaveBaselineSheet kind="digest" connection={baselineSheet.connection}
+          server={connectionLabel(baselineSheet.connection)} defaultName={defaultBaselineName(baselineSheet.report.read_at)}
+          report={baselineSheet.report} returnFocus={refreshOptions} onClose={() => setBaselineSheet(null)}
+          onSaved={(item) => { setBaselineSheet(null); baselineSaved.show("done", `Saved the baseline \u2068${item.name}\u2069.`); }} />}
+        {baselineSheet?.kind === "compare" && <CompareBaselineSheet<DigestBaselinePayload> kind="digest" connection={baselineSheet.connection}
+          server={connectionLabel(baselineSheet.connection)} current={activeBaseline?.baseline.id} reading={readingServer}
+          returnFocus={refreshOptions}
+          onClose={() => setBaselineSheet(null)}
+          onCompare={(baseline) => {
+            const chosenOn = baselineSheet.key;
+            setBaselineSheet(null); baselineSaved.reset(); setSelectedKey(""); setInspectorOpen(false);
+            setActiveBaseline({ key: chosenOn, baseline });
+          }} />}
       </ViewLayout>
     </div>
     </InstrumentsLinkContext.Provider>

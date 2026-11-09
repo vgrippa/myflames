@@ -10,18 +10,21 @@ import { privilegeResult, targetPrivilege, usePrivilege, usePrivileges } from ".
 import { download, recordDeclined, type Connection, type Profile } from "./api";
 import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "./binding";
 import { ConnectionTypeBand, TYPE_LABEL, useWritePolicy } from "./Connections";
-import { SchemaPicker, useSchemaCatalog } from "./PerfShared";
+import { bytes, SchemaPicker, useSchemaCatalog } from "./PerfShared";
 import {
-  ActionButton, ActionStatus, useSince, writeFailure, Checkbox, ConfirmSheet, DataTable, EmptyState, Fields, FormGrid, FormRow, InspectorSection,
+  ActionButton, ActionStatus, useAction, useSince, writeFailure, Checkbox, ConfirmSheet, DataTable, Fields, FormGrid, FormRow, InspectorSection,
   NumberField, PrerequisiteGate, Segmented, Select, StatusPill, SummaryLine,
   ToolbarButton, ViewLayout, ViewStatus,
   type Column, type InspectorContent, type Selection, type Tone,
 } from "./kit";
-import { Commands, engineName, plural } from "./OpsShared";
+import { Commands, DumpFolderField, dumpFolderStem, engineName, plural, suggestDumpFolder } from "./OpsShared";
+import { joinPath, localReveal, parentPath } from "./filesApi";
+import { MAC, WINDOWS } from "./platform";
+import { durationText } from "./duration";
 import {
   cancelLifecycleJob, checkUpgrade, documentationUrl, jobActive, listLifecycleJobs,
-  prepareLifecycle, readLifecycleJob, readLifecycleTools, startLifecycle, useOpsScope,
-  type LifecycleJob, type LifecyclePlan, type LifecycleTools,
+  prepareLifecycle, readLifecycleJob, readLifecycleTools, readUpgradeTargets, startLifecycle, upgradeLinkUrl, useOpsScope,
+  type LifecycleJob, type LifecyclePlan, type LifecycleTools, type UpgradeTarget, type UpgradeTargets,
   type MissingPrivileges, type PrepareRequest, type Tool, type UpgradeFinding,
   type UpgradeReport, type Verification,
 } from "./opsApi";
@@ -32,22 +35,26 @@ import { DumpOptions, optionShown, optionsSummary } from "./DumpOptions";
 import { TablePicker, useSchemaTables } from "./DumpTables";
 import type { DumpOptions as DumpOptionValues } from "./opsApi";
 import { FolderField } from "./FolderField";
-import { useViewOnScreen } from "./viewOnScreen";
+import { useOpenRead, useViewOnScreen } from "./viewOnScreen";
 import { toolDownloadUrl } from "./opsApi";
 
 export type MaintenanceSection = "tools" | "upgrade" | "dump" | "restore" | "clone";
 export type MaintenanceMemory = {
   tools: Bound<LifecycleTools> | null;
   upgrade: Bound<UpgradeReport> | null;
+  /** Upgrade targets from the vendor's releases and the install method (upgrade-targets-1.0). */
+  targets: Bound<UpgradeTargets> | null;
   jobs: Bound<LifecycleJob>[];
 };
-export const emptyMaintenance: MaintenanceMemory = { tools: null, upgrade: null, jobs: [] };
+export const emptyMaintenance: MaintenanceMemory = { tools: null, upgrade: null, targets: null, jobs: [] };
 const SECTION_LABEL: Record<MaintenanceSection, string> = { tools: "Tools", upgrade: "Upgrade check", dump: "Dump", restore: "Restore", clone: "Clone" };
 /** A preflight older than this is prepared again before anything starts. */
 export const PREFLIGHT_TTL_MS = 60_000;
 const JOB_POLL_MS = 1500;
 /** Finished jobs kept per workspace (the server keeps 20 for an hour). */
 const KEEP_FINISHED = 20;
+// A convenience for this viewer session only; no directories are created here.
+let lastDumpParent = "";
 const checkTone = (check: Verification): Tone => check.status === "passed" ? "ok" : check.status === "failed" ? "problem" : "unknown";
 const checkWord = (check: Verification) => check.status === "passed" ? "Passed" : check.status === "failed" ? "Failed" : "Not checked";
 const validInteger = (value: number, min: number, max: number) => Number.isInteger(value) && value >= min && value <= max;
@@ -96,7 +103,26 @@ export function adoptJobs(memory: MaintenanceMemory, key: string, label: string,
 
 type Prepared = Bound<LifecyclePlan> & { donor?: Connection; at: number; inputKey: string };
 /** The last part of a folder path, for a title (the full path is shown below it). */
-const folderName = (target: string) => target.replace(/\/+$/, "").split("/").pop() || target;
+const folderName = (target: string) => target.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || target;
+function dumpContents(plan: LifecyclePlan) {
+  const schemas = plan.request.schemas as string[] | undefined;
+  const tables = plan.request.tables as string[] | undefined;
+  const contents = !schemas?.length ? plan.tool.name === "mysqlsh" ? "Whole instance (no user accounts)"
+    : "Whole instance, including mysql system tables and account hashes"
+    : tables?.length ? `${schemas.join(", ")}: ${tables.join(", ")} (${plural(tables.length, "table")})`
+      : `${schemas.join(", ")} (all tables)`;
+  return contents + ((plan.request.options as DumpOptionValues | undefined)?.structure_only ? ", structure only (no rows)" : "");
+}
+function planMessages(plan: LifecyclePlan) {
+  // Legacy plans have one warnings list. Recognize only the two routine
+  // caveats; unknown warnings always stay prominent. Never mutate the plan.
+  const routine = (line: string) => plan.operation === "dump" &&
+    (line.startsWith("A consistent snapshot protects InnoDB data only.") || line.startsWith("The reviewed tool options determine"));
+  const warnings = plan.warnings.filter(line => !routine(line));
+  const versionWarning = warnings.findIndex(line => line.startsWith("MySQL Shell ") && line.includes("older than the server"));
+  if (versionWarning > 0) warnings.unshift(...warnings.splice(versionWarning, 1));
+  return { warnings, notes: plan.warnings.filter(routine) };
+}
 /** "mysqlsh 9.6.0" (the full --version banner is in the plan's tool). */
 // A plan of another step (or one still loading) may carry no tool yet.
 const toolName = (tool?: Tool) => (tool ? [tool.name, tool.version_tuple?.length ? tool.version_tuple.join(".") : tool.version].filter(Boolean).join(" ") : "") || "Not available";
@@ -107,14 +133,21 @@ function FormField({ label, value, onChange, disabled, type = "text", hint, wide
 }) {
   return <label className={`ops-field${wide ? " ops-wide" : ""}`}><span>{label}</span><input type={type} value={value} disabled={disabled} placeholder={placeholder} spellCheck={false} autoComplete={type === "password" ? "new-password" : "off"} onChange={(e) => onChange(e.target.value)} />{hint && <span className="hint">{hint}</span>}</label>;
 }
-function Checks({ checks, selection }: { checks: Verification[]; selection?: Selection }) {
-  const rows = checks.map((check, index) => ({ ...check, row: String(index) }));
+const checkLabel = (name: string) => name.replace(/_/g, " ").replace(/^./, c => c.toUpperCase());
+function Checks({ checks, selection, fix }: { checks: Verification[]; selection?: Selection; fix: (check: Verification) => ReactNode }) {
+  const rows = checks.map((check, index) => ({ ...check, row: String(index) })).filter(c => c.status === "failed");
+  const other = checks.filter(c => c.status !== "failed");
   const columns: Column<(typeof rows)[number]>[] = [
     { key: "status", label: "Result", sort: (r) => (r.status === "failed" ? 0 : r.status === "not_checked" ? 1 : 2), render: (r) => <StatusPill tone={checkTone(r)} label={checkWord(r)} /> },
-    { key: "check", label: "Check", primary: true, sort: (r) => r.check, render: (r) => r.check },
-    { key: "reason", label: "Reason", flex: true, render: (r) => r.reason },
+    { key: "check", label: "Check", primary: true, sort: (r) => r.check, render: (r) => checkLabel(r.check) },
+    { key: "reason", label: "Reason", flex: true, render: (r) => <span className="ops-check-reason">{r.reason}</span> },
+    { key: "fix", label: "Next step", render: (r) => fix(r) },
   ];
-  return <DataTable id="maintenance.checks" label="Preflight checks" rows={rows} columns={columns} rowKey={(r) => `check:${r.row}`} selection={selection} defaultSort={{ key: "status", dir: "asc" }} />;
+  return <><DataTable id="maintenance.checks" label="Preflight checks" rows={rows} columns={columns} rowKey={(r) => `check:${r.row}`} selection={selection} defaultSort={{ key: "status", dir: "asc" }} />
+    {!!other.length && <details><summary>{plural(checks.filter(c => c.status === "passed").length, "check")} passed{checks.some(c => c.status === "not_checked") ? `, ${checks.filter(c => c.status === "not_checked").length} not checked` : ""}</summary>
+      <ul className="ops-verification">{other.map((c, i) => <li key={i}><StatusPill tone={checkTone(c)} label={checkWord(c)} /><strong>{checkLabel(c.check)}</strong><span>{c.reason}</span></li>)}</ul>
+    </details>}
+  </>;
 }
 
 /** Keep the existing privilege/policy gate, including its reason, while
@@ -128,11 +161,59 @@ function ReadAction({ busy, busyLabel, children, disabled, blocked, ...props }: 
   </VisiblePrivilegeGate>;
 }
 
+/** Tool percentages take precedence. Table sizes estimate output, never completion. */
+export function lifecycleProgress(job: LifecycleJob) {
+  const written = job.output && Number.isFinite(job.output.written_bytes) && job.output.written_bytes >= 0 ? job.output.written_bytes : null;
+  const estimate = job.output?.estimated_bytes;
+  const estimated = typeof estimate === "number" && Number.isFinite(estimate) && estimate > 0 ? estimate : null;
+  const reported = typeof job.progress === "number" && Number.isFinite(job.progress) ? Math.max(0, Math.min(100, job.progress)) : null;
+  const value = reported ?? (written !== null && estimated !== null && written < estimated ? written / estimated * 100 : null);
+  const approximate = reported === null && value !== null;
+  // Rounding an estimate up to 100% would imply completion before verification.
+  const percent = value === null ? "" : `${approximate ? "≈" : ""}${approximate ? Math.min(99, Math.round(value)) : Math.round(value)}%`;
+  const output = written === null ? "" : estimated === null ? `${bytes(written)} written`
+    : written > estimated ? `${bytes(written)} written, more than the ${bytes(estimated)} estimate`
+      : `${bytes(written)} written of about ${bytes(estimated)}`;
+  return { value, percent, approximate, written, output };
+}
+export type OutputSample = { written: number; at: number };
+/** A rate needs two snapshots of this job, with increasing sample times. */
+export function lifecycleRate(previous: OutputSample | null, next: OutputSample): number | null {
+  if (!previous || next.at <= previous.at || next.written < previous.written) return null;
+  return (next.written - previous.written) / ((next.at - previous.at) / 1000);
+}
+/** Clock form for the facts line; durationText supplies its accessible wording. */
+export function lifecycleElapsed(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "";
+  const seconds = Math.max(0, Math.floor(value));
+  const tail = String(seconds % 60).padStart(2, "0");
+  const minutes = Math.floor(seconds / 60);
+  return minutes < 60 ? `${minutes}:${tail}` : `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, "0")}:${tail}`;
+}
+/** Open the folder of a completed dump by itself only for one this view
+ * started, once. Not on Windows: File Explorer's /select, argument splits a
+ * path at commas (security open lead 17), so there it opens only on a click. */
+export function autoRevealDump(job: { id: string | null; directory?: string }, started: boolean, revealed: Set<string>, windows: boolean) {
+  return !!job.directory && !!job.id && started && !revealed.has(job.id) && !windows;
+}
+const ESTIMATE_HINT = "Estimated from the server's table sizes; the SQL dump can be smaller or larger.";
+const OPEN_FOLDER_LABEL = MAC ? "Open in Finder" : WINDOWS ? "Open in File Explorer" : "Open folder";
+const OPEN_FOLDER_PENDING = MAC ? "Opening in Finder…" : WINDOWS ? "Opening in File Explorer…" : "Opening folder…";
+const OPEN_FOLDER_DONE = MAC ? "Opened the dump folder in Finder." : WINDOWS ? "Opened the dump folder in File Explorer." : "Opened the dump folder.";
+function showJob(id: string) {
+  // Match the attribute as data, without interpolating a job id into a selector.
+  const card = Array.from(document.querySelectorAll<HTMLElement>("[data-job]")).find(e => e.dataset.job === id);
+  if (!card) return;
+  card.scrollIntoView({ block: "start", behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  card.focus({ preventScroll: true });
+}
+
 /** Job status is an outcome, not proof of verification: a tool that exited 0
  * can still leave checks not checked. */
-function JobProgress({ bound, currentKey, cancelling, onCancel }: {
+function JobProgress({ bound, currentKey, cancelling, onCancel, shown, started, revealed }: {
   bound: Bound<LifecycleJob>; currentKey: string; cancelling: string;
   onCancel: (bound: Bound<LifecycleJob>) => void;
+  shown: boolean; started: boolean; revealed: Set<string>;
 }) {
   const job = bound.report;
   const other = bound.key !== currentKey;
@@ -140,12 +221,44 @@ function JobProgress({ bound, currentKey, cancelling, onCancel }: {
   const [tone, word] = jobWord(job);
   const cancelSince = useSince(cancelling === job.id);
   const last = job.events.length ? job.events[job.events.length - 1].text : "";
-  return <section className={`ops-job${other ? " is-other-connection" : ""}`} aria-label={`${SECTION_LABEL[job.operation]} on ${bound.label}`} data-job={job.id || undefined} data-state={job.state} data-other-connection={other || undefined}>
+  const progress = lifecycleProgress(job);
+  const sample = useRef<OutputSample | null>(null);
+  const [rate, setRate] = useState<number | null>(null);
+  useEffect(() => {
+    if (progress.written === null) { sample.current = null; setRate(null); return; }
+    // The job's own clock, so a late poll does not skew the rate.
+    const next = { written: progress.written, at: job.elapsed_s != null ? job.elapsed_s * 1000 : performance.now() };
+    if (sample.current && next.at === sample.current.at) return;
+    setRate(lifecycleRate(sample.current, next));
+    sample.current = next;
+  }, [job]);
+  const reveal = useAction(job.id || "");
+  const completed = job.state === "done" && job.result?.status === "completed";
+  const directory = job.operation === "dump" && completed ? job.result?.directory : undefined;
+  const openFolder = () => reveal.run(() => localReveal(joinPath(directory!, "myflames-manifest.json")), {
+    pending: OPEN_FOLDER_PENDING, done: OPEN_FOLDER_DONE,
+  });
+  useEffect(() => {
+    if (!job.id || !autoRevealDump({ id: job.id, directory }, started, revealed, WINDOWS)) return;
+    // Claim before sending, including failures: polling never retries a reveal.
+    revealed.add(job.id);
+    void openFolder();
+  }, [directory, job.id, started, revealed]);
+  const elapsed = lifecycleElapsed(job.elapsed_s);
+  // A finished dump wrote what it wrote; the estimate only mattered while it ran.
+  const output = active ? progress.output : progress.written !== null ? `${bytes(progress.written)} written` : "";
+  const facts = [active ? job.phase : "", output, active && rate !== null ? `${bytes(rate)}/s` : ""].filter(Boolean);
+  // Keep following jobs from this mounted view across Maintenance sections.
+  if (!shown) return null;
+  return <section className={`ops-job${other ? " is-other-connection" : ""}`} aria-label={`${SECTION_LABEL[job.operation]} on ${bound.label}`} data-job={job.id || undefined} data-state={job.state} data-other-connection={other || undefined} tabIndex={-1}>
     <div className="ops-job-head"><strong>{SECTION_LABEL[job.operation]} · {bound.label}</strong><StatusPill tone={tone} label={word} />{active && <ActionButton busy={cancelling === job.id} busyLabel="Cancelling…" disabled={other || !job.id} title={other ? "Switch back to this connection to cancel it." : undefined} onClick={() => onCancel(bound)}>Cancel</ActionButton>}</div>
     <ActionStatus state={{ phase: cancelling === job.id ? "pending" : "idle", message: "Waiting for the cancellation reply. The job may still be running.", startedAt: cancelSince }} />
     {other && <p className="hint">From {bound.label}. Switch back to that connection to manage this job.</p>}
-    {active && <div className="ops-progress" role="status"><progress aria-label={`${SECTION_LABEL[job.operation]} progress`} max={100} value={job.progress ?? undefined} /><span>{job.progress === null ? word : `${job.progress.toFixed(0)}%`}</span></div>}
-    {last && <p className="ops-log-line" title={last}>{last}</p>}
+    {active && <div className="ops-progress" role="status" title={progress.approximate ? ESTIMATE_HINT : undefined}><progress aria-label={`${SECTION_LABEL[job.operation]} progress`} max={100} value={progress.value ?? undefined} />{progress.percent && <span>{progress.percent}</span>}</div>}
+    {(facts.length > 0 || elapsed) && <p className="ops-job-facts">{facts.map((fact, i) => <span key={i}>{fact}</span>)}{elapsed && <span>{completed ? "Completed in" : "Elapsed"} <abbr title={durationText(job.elapsed_s)}>{elapsed}</abbr></span>}</p>}
+    {directory && <div className="ops-job-folder"><ActionButton busy={reveal.pending} busyLabel={OPEN_FOLDER_PENDING} onClick={() => { void openFolder(); }}>{OPEN_FOLDER_LABEL}</ActionButton></div>}
+    <ActionStatus state={reveal} />
+    {last && last !== job.phase && <p className="ops-log-line" title={last}>{last}</p>}
     {job.policy?.text && <p>{job.policy.text}</p>}
     {job.error && !job.result?.verification?.some((check) => check.reason === job.error) && <p role="alert" className="error">{job.error}</p>}
     {job.result?.partial_state && <p className="ops-warning">{job.result.partial_state}</p>}
@@ -155,6 +268,15 @@ function JobProgress({ bound, currentKey, cancelling, onCancel }: {
     {job.detail && <details><summary>Clone progress and status</summary><pre className="ops-pre">{JSON.stringify(job.detail, null, 2)}</pre></details>}
     <details><summary>Output ({job.events.length.toLocaleString()} lines)</summary><pre className="ops-pre" tabIndex={0}>{job.events.map((event) => `${event.at} ${event.stream}: ${event.text}`).join("\n") || "No output yet."}</pre></details>
   </section>;
+}
+
+function JobSummary({ job, onShow }: { job: LifecycleJob; onShow: () => void }) {
+  const progress = lifecycleProgress(job);
+  return <div className="ops-job-summary">
+    <progress aria-label={`${SECTION_LABEL[job.operation]} progress summary`} max={100} value={progress.value ?? undefined} title={progress.approximate ? ESTIMATE_HINT : undefined} />
+    <span>{[`${SECTION_LABEL[job.operation]} ${job.state === "queued" ? "waiting" : "running"}`, progress.percent, progress.written !== null ? bytes(progress.written) : ""].filter(Boolean).join(" · ")}</span>
+    <button className="text-button" type="button" onClick={onShow}>Show progress</button>
+  </div>;
 }
 
 export function MaintenanceView({ connection, disabled, onBack, selection, section, onSection, memory, onMemory, targetVersions = [], missingPrivileges = {}, profiles = [] }: {
@@ -189,6 +311,12 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   const [schemas, setSchemas] = useState<string[]>([]);
   const [tables, setTables] = useState<string[]>([]);
   const [directory, setDirectory] = useState("");
+  const [directoryTouched, setDirectoryTouched] = useState(false);
+  const [directoryVersion, setDirectoryVersion] = useState(0);
+  const [directoryPicking, setDirectoryPicking] = useState(false);
+  const [directoryError, setDirectoryError] = useState("");
+  const directoryEdit = useRef(0);
+  const reservedDirectories = useRef<string[]>([]);
   const [restoreDirectory, setRestoreDirectory] = useState("");
   const [restoreSchema, setRestoreSchema] = useState("");
   /** Restore into a database the list does not have (typed). */
@@ -208,13 +336,19 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   const [cloneMode, setCloneMode] = useState<"in_place" | "directory">("in_place");
   const [dataDirectory, setDataDirectory] = useState("");
   const [prepared, setPrepared] = useState<Prepared | null>(null);
+  const [attempt, setAttempt] = useState<{ key: string; inputKey: string } | null>(null);
+  useEffect(() => { setAttempt(null); }, [donor.password]);
+  const resultRef = useRef<HTMLElement>(null);
+  const fieldsRef = useRef<HTMLDivElement>(null);
   const [sheet, setSheet] = useState<Prepared | null>(null);
   const sheetRef = useRef(sheet);
   sheetRef.current = sheet;
   const [typed, setTyped] = useState("");
+  const [acknowledged, setAcknowledged] = useState(false);
   const [busy, setBusy] = useState(false);
   const [startLeft, setStartLeft] = useState(false);
   const startSince = useSince(busy);
+  const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [readKind, setReadKind] = useState<"tools" | "upgrade" | "preflight">("tools");
   const readSince = useSince(!!reads.loading);
   const detecting = !!reads.loading && readKind === "tools";
@@ -223,6 +357,21 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   const sending = useRef(false);
   const [cancelling, setCancelling] = useState("");
   const cancelPending = useRef(new Set<string>());
+  const startedJobs = useRef(new Set<string>());
+  const revealedJobs = useRef(new Set<string>());
+  const [focusJob, setFocusJob] = useState("");
+  useEffect(() => {
+    if (!focusJob || sheet) return;
+    // Wait for the card to render and the sheet's focus restoration to finish.
+    const frame = requestAnimationFrame(() => { showJob(focusJob); setFocusJob(""); });
+    return () => cancelAnimationFrame(frame);
+  }, [focusJob, sheet, memory.jobs]);
+  function rememberStart(job: LifecycleJob) {
+    if (!job.id || job.state === "refused") return;
+    startedJobs.current.add(job.id);
+    onSection(job.operation);
+    setFocusJob(job.id);
+  }
   const [failure, setFailure] = useState<{ key: string; text: string; poll?: boolean } | null>(null);
   const [notice, setNotice] = useState("");
   const [pollRetry, setPollRetry] = useState(0);
@@ -244,11 +393,17 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   // screen. The chosen tables last while that database stays the only one.
   const oneSchema = scope === "schemas" && schemas.length === 1 ? schemas[0] : "";
   const schemaTables = useSchemaTables(connection, oneSchema, onScreen && section === "dump" && !!oneSchema);
+  const [missingTables, setMissingTables] = useState<string[]>([]);
+  useEffect(() => { setMissingTables([]); }, [key, oneSchema, tables.join("\u0000")]);
   useEffect(() => { setTables([]); }, [key, oneSchema]);
   const loadedTables = new Set(schemaTables.tables.map((t) => t.name));
   const unknownTables = tables.filter((name) => !loadedTables.has(name));
   const tableScope = !!oneSchema && tables.length > 0;
   const tools = memory.tools?.key === key ? memory.tools.report : null;
+  const targetReport = memory.targets?.key === key ? memory.targets.report : null;
+  // Percona targets are "8.4.11-11"; the checker takes the upstream version.
+  const chosenTarget: UpgradeTarget | undefined = targetReport?.targets.find((t) => t.version === target);
+  const chosenVersion = () => target === "custom" ? customTarget.trim() : chosenTarget ? chosenTarget.check_version : target;
   // Dump's databases, and Restore's Default database once its form is shown.
   const catalog = useSchemaCatalog(connection, onScreen && ((section === "dump" && scope !== "instance") || (section === "restore" && !!tools)));
   const restoreDatabases = (catalog.catalog?.schemas || []).filter((s) => !s.system).map((s) => s.name);
@@ -279,13 +434,48 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   useEffect(() => { setDumpOptions({}); }, [key, dumpToolName]);
   const plan = prepared?.report;
   const upgrade = memory.upgrade?.report || null;
-  const shownPlan = plan?.operation === section ? prepared : null;
+  const shownPlan = plan?.operation === section && prepared?.key === key ? prepared : null;
+  const planMatches = !!shownPlan && shownPlan.inputKey === requestKey() &&
+    (plan?.operation !== "clone" || shownPlan.donor?.password === donor.password);
+  const preflightError = readKind === "preflight" && attempt?.key === key && attempt.inputKey === requestKey() ? reads.error : "";
+  const failedChecks = shownPlan?.report.checks.filter(c => c.status === "failed") || [];
+  const tableFailure = planMatches ? failedChecks.find(c => c.check === "tables") : undefined;
+  const folderFailure = planMatches ? failedChecks.find(c => ["output_folder", "free_space", "staging_space"].includes(c.check)) : undefined;
   const shownUpgrade = section === "upgrade" ? memory.upgrade : null;
   const oldData = shownPlan || shownUpgrade || memory.tools;
   const other = oldData && oldData.key !== key ? oldData.label : null;
   const blocked = policy?.blocked || (connection.read_only ? "Read-only: myflames refuses every change on this connection." : "");
-  const activeHere = memory.jobs.some((b) => b.key === key && jobActive(b.report));
-  const formDisabled = disabled || busy || !!reads.loading || activeHere;
+  const activeJob = memory.jobs.find((b) => b.key === key && jobActive(b.report));
+  const activeHere = !!activeJob;
+  const dumpStem = dumpFolderStem(oneSchema || connection.name || connection.host);
+  const finishedDumps = memory.jobs.filter(b => b.key === key && b.report.operation === "dump" && !jobActive(b.report)).map(b => b.report.id).join(",");
+  useEffect(() => {
+    if (section !== "dump" || !onScreen || directoryTouched || directoryPicking || busy || activeHere) return;
+    const controller = new AbortController();
+    const edit = directoryEdit.current;
+    setDirectoryError("");
+    // Clearing a field often precedes typing a replacement. Let that edit
+    // finish, and never apply a suggestion over a newer keystroke.
+    const timer = window.setTimeout(() => {
+      void suggestDumpFolder(lastDumpParent, dumpStem, controller.signal, reservedDirectories.current).then(path => {
+        if (!controller.signal.aborted && edit === directoryEdit.current) setDirectory(path);
+      }).catch(e => {
+        if (!controller.signal.aborted && edit === directoryEdit.current) setDirectoryError(`Could not suggest an output folder: ${(e as Error).message} Browse or enter a new folder path.`);
+      });
+    }, 250);
+    return () => { controller.abort(); window.clearTimeout(timer); };
+  }, [key, section, onScreen, dumpStem, scope, schemas.join("\u0000"), directoryTouched, directoryVersion, directoryPicking, busy, activeHere, finishedDumps]);
+  function changeDirectory(path: string) {
+    directoryEdit.current++;
+    setDirectoryVersion(n => n + 1);
+    setDirectoryTouched(!!path); setDirectory(path); setDirectoryError("");
+  }
+  function removeTables(names: string[]) {
+    const remaining = tables.filter(name => !names.includes(name));
+    setTables(remaining);
+    if (!remaining.length) setNotice(`No tables are selected. Start dump… will run a fresh preflight for every table in ${oneSchema}.`);
+  }
+  const formDisabled = disabled || busy || (!!reads.loading && readKind !== "tools") || activeHere;
   const operation = section === "dump" || section === "restore" || section === "clone" ? section : null;
   const recipientGate = usePrivilege("clone_recipient");
   const restoreGate = usePrivilege("restore");
@@ -305,7 +495,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
       const remote = checkGate(source);
       return [local, remote].find(g => !!g.disabledReason) || [local, remote].find(g => g.state === "unknown") || local;
     }
-    const action = op === "restore" ? "restore" : ({ mysqlsh: "dump_shell", mysqldump: "dump_mysqldump", "mariadb-dump": "dump_mariadb" } as Record<string, string>)[p?.tool?.name || ""];
+    const action = op === "restore" ? "restore" : ({ mysqlsh: "dump_shell", mysqldump: "dump_mysqldump", "mariadb-dump": "dump_mariadb" } as Record<string, string>)[p?.tool?.name || dumpToolName || ""];
     const generic = op === "restore" ? restoreGate : privilegeResult(action ? privileges?.report?.actions[action] : undefined, privileges?.report?.account);
     // Legacy dump/restore checks cover only a subset of grants. Object-grant
     // absence is not definitive denial, nor is this a complete allowance.
@@ -374,21 +564,69 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   useEffect(() => {
     const p = sheetRef.current;
     if (p && p.key !== key && !sending.current) { decline(p); setSheet(null); sheetConnection.current = null; }
-    setTyped(""); setNotice("");
+    setTyped(""); setAcknowledged(false); setNotice("");
     setDonor((c) => ({ ...c, password: "" }));
     setPrepared((p) => p ? { ...p, donor: undefined, inputKey: "" } : p);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
   useEffect(() => () => { const p = sheetRef.current; if (p && !sending.current) decline(p); }, []);
 
-  async function loadTools() {
+  async function loadTools(checkUpdates = false) {
     if (disabled || busy || reads.running()) return;
     setReadKind("tools");
+    setCheckingUpdates(checkUpdates);
     setFailure(null);
-    await reads.run("maintenance-tools", "Detecting tools…", readLifecycleTools, (bound) => onMemory((m) => ({ ...m, tools: bound })));
+    await reads.run(checkUpdates ? "maintenance-tools:updates" : "maintenance-tools", checkUpdates ? "Checking tool updates…" : "Finding MySQL and MariaDB tools on this computer…", (c, signal) => readLifecycleTools(c, signal, checkUpdates), (bound) => onMemory((m) => ({ ...m, tools: bound })));
+  }
+  useOpenRead({ key, reportKey: tools ? key : null, ready: !disabled && !busy,
+    busy: !!reads.loading || reads.running(), read: () => { void loadTools(); } });
+  // The target list reads once per connection when Upgrade check opens; it
+  // runs beside the view's reads so it never holds up Check upgrade.
+  const targetsTried = useRef("");
+  const [targetsLoading, setTargetsLoading] = useState(false);
+  const [targetsError, setTargetsError] = useState<{ key: string; text: string } | null>(null);
+  useEffect(() => {
+    if (section !== "upgrade" || !tools || disabled || memory.targets?.key === key || targetsTried.current === key) return;
+    targetsTried.current = key;
+    const from = connection, label = connectionLabel(connection);
+    const controller = new AbortController();
+    setTargetsLoading(true); setTargetsError(null);
+    readUpgradeTargets(from, controller.signal).then((report) => {
+      onMemory((m) => ({ ...m, targets: { key: connectionKey(from), label, report } }));
+    }, (e: unknown) => {
+      if (!controller.signal.aborted) setTargetsError({ key: connectionKey(from), text: e instanceof Error ? e.message : String(e) });
+    }).finally(() => { if (!controller.signal.aborted) setTargetsLoading(false); });
+    return () => { controller.abort(); setTargetsLoading(false); if (targetsTried.current === key && memory.targets?.key !== key) targetsTried.current = ""; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [section, !!tools, disabled, key]);
+  useEffect(() => { setTarget(""); setCustomTarget(""); }, [key]);
+  useEffect(() => { if (targetReport?.recommended) setTarget((t) => t || targetReport.recommended || ""); }, [targetReport]);
+  useEffect(() => {
+    if (!preflightError && !failedChecks.length) return;
+    resultRef.current?.focus();
+    resultRef.current?.scrollIntoView({ block: "nearest" });
+  }, [shownPlan, preflightError]);
+  function focusFix(check: Verification) {
+    const selector = check.check === "tables" ? "#ops-dump-tables" : ["shell_version", "dry_run"].includes(check.check) ? "#ops-dump-tool"
+      : operation === "dump" ? '.ops-folder-input button' : operation === "restore" ? '.ops-folder-input button' : 'input';
+    const control = fieldsRef.current?.querySelector<HTMLElement>(selector);
+    // After the click's own row selection settles (the inspector would take focus).
+    requestAnimationFrame(() => { control?.focus(); control?.scrollIntoView({ block: "center" }); });
+  }
+  function fixCheck(check: Verification) {
+    const missing = check.check === "tables" ? missingTables.filter(n => tables.includes(n)) : [];
+    // The fix buttons sit inside a check row: they act without selecting it.
+    if (check.check === "tables" && missing.length) return <button type="button" className="text-button" onMouseDown={(e) => e.stopPropagation()} onClick={(e) => {
+      e.stopPropagation(); removeTables(missing); schemaTables.reload();
+    }}>Remove {missing.join(", ")} from the selection</button>;
+    if (["output_folder", "free_space", "staging_space", "tables", "shell_version", "dry_run"].includes(check.check))
+      return <button type="button" className="text-button" onMouseDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); focusFix(check); }}>{["output_folder", "free_space", "staging_space"].includes(check.check) ? "Choose another folder…" : "Review fields"}</button>;
+    // Server configuration and grants have no field here. Keep their full
+    // evidence available without suggesting an unrelated form change.
+    return <button type="button" className="text-button" onClick={() => selection.select(`check:${shownPlan?.report.checks.findIndex(c => c.check === check.check)}`, true)}>Review check</button>;
   }
   async function runUpgrade() {
-    const version = target === "custom" ? customTarget.trim() : target;
+    const version = chosenVersion();
     if (formDisabled || reads.running() || !VERSION.test(version) || missingPrivileges.upgrade_check) return;
     setNotice(""); setFailure(null);
     selection.select("", false);
@@ -410,23 +648,31 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
     const payload = request();
     if (!payload) return;
     setNotice(""); setFailure(null);
+    setAttempt({ key, inputKey: requestKey() });
     const donorSnapshot = payload.operation === "clone" ? { ...payload.donor } : undefined;
     const from = { ...connection };
     // No secret in the shared read's parameter/cache key. A forced read
     // ensures that edits to the donor's transient password are never joined.
     setReadKind("preflight");
-    const result = await reads.run("maintenance-prepare", "Running the preflight…", (c, signal) => prepareLifecycle(c, payload, signal), () => {}, { force: true });
+    const result = await reads.run("maintenance-prepare", "Running the preflight…", (c, signal) => prepareLifecycle(c, payload, signal), () => {}, { force: true, onError: () => setPrepared(null) });
     if (!result) return;
     const p: Prepared = { ...result, donor: donorSnapshot, at: Date.now(), inputKey: requestKey() };
     setPrepared(p);
     selection.select("", false);
-    if (p.report.ready) { sheetConnection.current = from; setTyped(""); setStartLeft(false); setSheet(p); }
-    else setNotice("The preflight found problems, so nothing can start. Select a failed check for its reason, fix it, then run the preflight again.");
+    if (p.report.ready) { sheetConnection.current = from; setTyped(""); setAcknowledged(false); setStartLeft(false); setSheet(p); }
+    else {
+      const failed = p.report.checks.find(c => c.check === "tables" && c.status === "failed");
+      if (failed) {
+        setMissingTables(Array.isArray(failed.missing) ? failed.missing.filter((n): n is string => typeof n === "string") : []);
+        schemaTables.reload();
+      }
+    }
   }
   async function start() {
     const p = sheet;
     if (!p || sheetBlock || sending.current || p.key !== reads.currentKey() || !p.report.ready) return;
     if (p.report.operation !== "dump" && typed !== p.report.target) return;
+    if (p.report.required_acknowledgement && !acknowledged) return;
     const live = captureScope();
     sending.current = true; setStartLeft(false); setBusy(true); setFailure(null);
     let sent = false;
@@ -441,11 +687,18 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
         decline(p); setSheet(null); setNotice("The preflight expired. Run it again to review a fresh plan. Nothing was started."); return;
       }
       sent = true;
-      const job = await startLifecycle(checked, p.report, p.report.operation === "dump" ? p.report.target : typed, p.donor);
+      const job = await startLifecycle(checked, p.report, p.report.operation === "dump" ? p.report.target : typed, p.donor,
+        acknowledged ? p.report.required_acknowledgement || undefined : undefined);
+      if (p.report.operation === "dump" && job.state !== "refused") {
+        lastDumpParent = parentPath(p.report.target);
+        reservedDirectories.current = [...reservedDirectories.current.slice(-KEEP_FINISHED), p.report.target];
+        setDirectoryTouched(false);
+      }
       // An authorized job keeps its original binding even if the user
       // switched while start was in flight; keep its id for Cancel.
       denied(job.error, checked);
       rememberOwners([job], checked);
+      rememberStart(job);
       publish.current((previous) => adoptJobs(previous, p.key, p.label, [job]));
       setSheet(null); sheetConnection.current = null;
       if (live()) {
@@ -469,7 +722,13 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
         const answer = await listLifecycleJobs(from);
         found = answer.jobs.find((job) => job.id && !known.has(job.id) && job.operation === p.report.operation);
         if (found) {
+          if (p.report.operation === "dump" && found.state !== "refused") {
+            lastDumpParent = parentPath(p.report.target);
+            reservedDirectories.current = [...reservedDirectories.current.slice(-KEEP_FINISHED), p.report.target];
+            setDirectoryTouched(false);
+          }
           rememberOwners([found], from);
+          rememberStart(found);
           publish.current((m) => adoptJobs(m, p.key, p.label, [found as LifecycleJob]));
         }
       } catch {
@@ -551,23 +810,28 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
       </>,
     };
   }
-  if (selectedCheck) inspector = { key: selection.key, title: selectedCheck.check, meta: <StatusPill tone={checkTone(selectedCheck)} label={checkWord(selectedCheck)} />, body: <InspectorSection title="Preflight check"><p>{selectedCheck.reason}</p><details className="ops-raw"><summary>Details</summary><pre className="ops-pre">{JSON.stringify(selectedCheck, null, 2)}</pre></details></InspectorSection> };
+  if (selectedCheck) inspector = { key: selection.key, title: selectedCheck.check, meta: <StatusPill tone={checkTone(selectedCheck)} label={checkWord(selectedCheck)} />, body: <InspectorSection title="Preflight check">{!planMatches && <p className="hint">From the last preflight; settings changed since. Start again to check the new settings.</p>}<p>{selectedCheck.reason}</p><details className="ops-raw"><summary>As the preflight reported it</summary><pre className="ops-pre">{JSON.stringify(selectedCheck, null, 2)}</pre></details></InspectorSection> };
 
   const shellVersion = tools?.tools.mysqlsh?.available ? tools.tools.mysqlsh.version_tuple?.join(".") || "" : "";
   const versions = [...new Set([...targetVersions, shellVersion].filter((v) => VERSION.test(v)))];
-  const version = target === "custom" ? customTarget.trim() : target;
+  const version = chosenVersion();
+  // Newest first; the suggested target says so. Without a target list (still
+  // reading, or it failed) the MySQL Shell version stays the one offer.
+  const targetOptions: [string, string][] = targetReport && targetReport.targets.length
+    ? [...targetReport.targets].reverse().map((t): [string, string] => [t.version,
+      [t.version, t.path_label, t.version === targetReport.recommended ? "suggested" : ""].filter(Boolean).join(" · ")])
+    : targetReport?.server.engine === "mariadb" ? [] : versions.map((v): [string, string] => [v, v]);
   // Chosen tables come from the loaded list: one a reload no longer lists blocks the preflight.
-  const dumpValid = !!directory.trim() && validInteger(threads, 1, 64) && (scope === "instance" || schemas.length > 0) && !unknownTables.length;
+  const dumpValid = !!directory.trim() && validInteger(threads, 1, 64) && (scope === "instance" || schemas.length > 0) && !unknownTables.length && !missingTables.length;
   const restoreValid = !!restoreDirectory.trim() && validInteger(threads, 1, 64);
   const cloneValid = !!donor.host.trim() && !!donor.user.trim() && validInteger(donor.port, 1, 65535) && (cloneMode === "in_place" || dataDirectory.startsWith("/"));
   const canPrepare = operation === "dump" ? dumpValid && !!tools?.offered.dump.some((name) => !sqlDump || name !== "mysqlsh") : operation === "restore" ? restoreValid && !!tools : operation === "clone" ? cloneValid && !!tools?.offered.clone : false;
   const controls = <>
-    <Segmented label="Maintenance task" value={section} options={(Object.keys(SECTION_LABEL) as MaintenanceSection[]).filter(value => value !== "clone" || !tools || tools.offered.clone).map((value) => ({ value, label: SECTION_LABEL[value], disabled: busy || !!reads.loading }))} onChange={(next) => { selection.select("", false); setNotice(""); onSection(next); }} />
+    <Segmented label="Maintenance task" value={section} options={(Object.keys(SECTION_LABEL) as MaintenanceSection[]).filter(value => value !== "clone" || !tools || tools.offered.clone).map((value) => ({ value, label: SECTION_LABEL[value], disabled: busy || (!!reads.loading && readKind !== "tools") }))} onChange={(next) => { selection.select("", false); setNotice(""); onSection(next); }} />
   </>;
   const form = (children: ReactNode) => <div className="ops-form"><fieldset disabled={formDisabled}>{children}</fieldset></div>;
-  const hereJobs = memory.jobs.filter((b) => b.report.operation === section);
-  const statusError = failure?.key === key ? failure.text : reads.error;
-  const retryRead = () => { void (readKind === "upgrade" ? runUpgrade() : readKind === "preflight" ? prepare() : loadTools()); };
+  const statusError = failure?.key === key ? failure.text : readKind === "preflight" ? "" : reads.error;
+  const retryRead = () => { void (readKind === "upgrade" ? runUpgrade() : readKind === "preflight" ? prepare() : loadTools(checkingUpdates)); };
   const readStatus = (kind: typeof readKind) => <ActionStatus keepLine state={{ phase: reads.loading && readKind === kind ? "pending" : "idle", message: reads.loading, startedAt: readSince }}
     onStop={reads.stop} stopLabel="Stop waiting" />;
   const counts = upgrade?.counts;
@@ -586,40 +850,43 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
       : "";
   const upgradeNotes = section === "upgrade" && upgrade ? upgrade.limitations : undefined;
   return <>
-    <ViewLayout id="maintenance" title="Maintenance" className="ops-view" onBack={onBack} controls={controls} onRefresh={() => { void loadTools(); }} refreshDisabled={disabled || busy || !!reads.loading} loading={!!reads.loading} inspector={inspector} otherConnection={other}
+    <ViewLayout id="maintenance" title="Maintenance" className="ops-view" onBack={onBack} controls={controls} onRefresh={section === "tools" ? () => { void loadTools(); } : undefined} refreshLabel="Detect again" refreshDisabled={disabled || busy || !!reads.loading} loading={!!reads.loading} inspector={inspector} otherConnection={other}
       inspectorEmpty={<p>Select a tool, a finding or a check to see its details here.</p>}
       info={<><p>Detect the MySQL and MariaDB tools on this computer, check an upgrade, or dump, restore or clone the connection in use.</p><p>The upgrade check and every preflight only read. A dump, restore or clone starts only after you review its exact commands and confirm (restore and clone also ask you to type the target), and it is recorded in the Audit log.</p></>}
-      status={<><ViewStatus loading={readKind === "tools" && memory.tools ? reads.loading : ""} error={statusError}
-        onStop={reads.loading ? reads.stop : undefined} onRetry={reads.error && failure?.key !== key ? retryRead : undefined} doneAt={reads.doneAt}>{failure?.key === key && failure.poll && <button className="text-button" type="button" onClick={() => { setFailure(null); setPollRetry((n) => n + 1); }}>Retry status</button>}</ViewStatus>
+      status={<><ViewStatus loading={readKind === "tools" && tools && !checkingUpdates ? reads.loading : ""} error={statusError}
+        onStop={reads.loading ? reads.stop : undefined} onRetry={reads.error && readKind !== "preflight" && failure?.key !== key ? retryRead : undefined} doneAt={reads.doneAt}>{failure?.key === key && failure.poll && <button className="text-button" type="button" onClick={() => { setFailure(null); setPollRetry((n) => n + 1); }}>Retry status</button>}</ViewStatus>
         {startLeft && busy && sheet && <section className="ops-job" aria-label={`${SECTION_LABEL[sheet.report.operation]} start on ${sheet.label}`}>
           <strong>{SECTION_LABEL[sheet.report.operation]} · {sheet.label}</strong>
           <ActionStatus state={{ phase: "pending", message: "Waiting for the Start reply. Whether it started is unknown; do not start it again.", startedAt: startSince }} />
         </section>}
-        {hereJobs.map((bound, i) => <JobProgress key={`${bound.key}:${bound.report.id || i}`} bound={bound} currentKey={key} cancelling={cancelling} onCancel={(b) => { void cancel(b); }} />)}</>}>
+        {memory.jobs.map((bound, i) => <JobProgress key={bound.report.id || `${bound.key}:${i}`} bound={bound} shown={bound.report.operation === section} started={startedJobs.current.has(bound.report.id || "")} revealed={revealedJobs.current} currentKey={key} cancelling={cancelling} onCancel={(b) => { void cancel(b); }} />)}</>}>
       {summary && (
         <SummaryLine tone={section === "upgrade" ? upgradeTone : undefined} toneLabel={section === "upgrade" ? upgradeToneLabel : undefined} notes={upgradeNotes}
           extra={section === "upgrade" && upgrade ? <ToolbarButton onClick={() => download(JSON.stringify(upgrade, null, 2), "myflames-upgrade-check.json", "application/json")}>Export JSON</ToolbarButton> : undefined}>
           {summary}
         </SummaryLine>
       )}
-      {!tools && section !== "tools" && <PrerequisiteGate action={<><ActionButton busy={detecting} busyLabel="Detecting…" disabled={!detecting && (disabled || busy || !!reads.loading)} onClick={() => { void loadTools(); }}>Detect tools</ActionButton>{readStatus("tools")}</>}>Detect the tools for this connection first.</PrerequisiteGate>}
-      {section === "tools" && (memory.tools ? <>
+      {!tools && <div className="ops-tool-loading">{detecting ? "Finding MySQL and MariaDB tools on this computer…" : reads.error ? "Tool detection failed. Try again above to continue." : "Waiting to detect local tools…"}{readStatus("tools")}</div>}
+      {section === "tools" && memory.tools && <>
+        <div className="ops-actions"><ActionButton busy={detecting && checkingUpdates} busyLabel="Checking…" disabled={disabled || busy || (!!reads.loading && !checkingUpdates)} onClick={() => { void loadTools(true); }}>Check for updates</ActionButton>{tools && <ActionStatus keepLine state={{ phase: detecting && checkingUpdates ? "pending" : "idle", message: reads.loading, startedAt: readSince }} onStop={reads.stop} stopLabel="Stop waiting" />}</div>
         {!!availableUpdates.length && <div className="ops-tool-updates" role="status">Updates available for {availableUpdates.map(t => t.name).join(", ")}.</div>}
         <DataTable id="maintenance.tools" label="Detected tools" rows={toolRows} columns={toolColumns} rowKey={(r) => `tool:${r.name}`} selection={selection} />
         <div className="ops-offered"><Fields label="Offered for this server" rows={[["Dump", memory.tools.report.offered.dump.join(", ") || "No dump tool for this engine"], ["Upgrade check", memory.tools.report.offered.upgrade === "mysqlsh" ? "MySQL Shell (full check)" : memory.tools.report.offered.upgrade === "native_subset" ? "Partial check (native subset)" : "mariadb-upgrade steps to run on the server host"], ["Clone", memory.tools.report.offered.clone ? "Offered after its preflight" : "Not offered"], ["Physical backup", memory.tools.report.offered.physical_backup ? "Detected; runs on the server host" : "Not available"]]} /></div>
-      </> : <EmptyState icon="maintenance" title="Detect maintenance tools" action={<><ActionButton primary busy={detecting} busyLabel="Detecting…" disabled={!detecting && (disabled || busy || !!reads.loading)} onClick={() => { void loadTools(); }}>Detect tools</ActionButton>{readStatus("tools")}</>}>Find installed tools and check official release pages for updates. No connection details are sent to those sites.</EmptyState>)}
+      </>}
       {section === "upgrade" && tools && <>
         {form(<>
-          <label className="ops-field"><span>Target version</span><Select label="Target version" value={target} options={[["", "Choose a version"], ...versions.map((v): [string, string] => [v, v]), ["custom", "Other version…"]]} onChange={setTarget} /></label>
+          <label className="ops-field"><span>Target version</span><Select label="Target version" value={target} options={[["", targetsLoading ? "Reading releases…" : "Choose a version"], ...targetOptions, ["custom", "Other version…"]]} onChange={setTarget} /></label>
           {target === "custom" && <FormField label="Exact version" value={customTarget} onChange={setCustomTarget} placeholder="8.4.0" hint="major.minor.patch" />}
+          <UpgradeTargetNotes report={targetReport} chosen={chosenTarget} loading={targetsLoading} error={targetsError?.key === key ? targetsError.text : ""} />
           <Checkbox checked={!preferShell} onChange={(v) => setPreferShell(!v)}>Partial check without MySQL Shell (native subset)</Checkbox>
         </>)}
-        <div className="ops-actions"><ReadAction busy={checking} busyLabel="Checking…" gate={privilegeResult()} write={false} className="primary" disabled={formDisabled || !VERSION.test(version)} blocked={missingPrivileges.upgrade_check} onClick={() => { void runUpgrade(); }}>Check upgrade</ReadAction>{readStatus("upgrade")}<span className="hint">Only reads. Never says an upgrade is safe.</span></div>
+        <div className="ops-actions"><ReadAction busy={checking} busyLabel="Checking…" gate={privilegeResult()} write={false} className="primary" disabled={formDisabled || detecting || !VERSION.test(version)} blocked={missingPrivileges.upgrade_check} onClick={() => { void runUpgrade(); }}>Check upgrade</ReadAction>{readStatus("upgrade")}<span className="hint">Only reads. Never says an upgrade is safe.</span></div>
         {upgrade && <>
           {upgrade.method === "mariadb_upgrade_guidance" ? <div className="ops-result">{upgrade.limitations.map((line, i) => <p key={i}>{line}</p>)}</div> : <DataTable id="maintenance.upgrade" label="Upgrade findings" columns={findingColumns} rows={findings} rowKey={(r) => `finding:${r.row}`} selection={selection} defaultSort={{ key: "result", dir: "desc" }} />}
           {upgrade.manual_checks.length > 0 && <details className="ops-details"><summary>Manual checks ({upgrade.manual_checks.length.toLocaleString()})</summary><pre className="ops-pre">{JSON.stringify(upgrade.manual_checks, null, 2)}</pre></details>}
         </>}
       </>}
+      <div ref={fieldsRef} className="ops-task-fields">
       {section === "dump" && tools && <div className="ops-form ops-dump"><fieldset disabled={formDisabled}>
         <FormGrid>
           <FormRow label="Scope" htmlFor="ops-dump-scope">
@@ -632,24 +899,26 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
               <p className="hint">{!schemas.length ? "Choose at least one database." : schemas.length > 1 ? "Choose one database to pick its tables." : ""}</p>
             </div>
           </div>}
-          {oneSchema && <div className="form-row" data-dump-tables={oneSchema}>
+          {oneSchema && <div className={`form-row${tableFailure || missingTables.length ? " ops-invalid" : ""}`} role="group" aria-label="Tables" aria-invalid={!!tableFailure || !!missingTables.length || undefined} data-dump-tables={oneSchema}>
             <span className="form-row-label">Tables</span>
             <div className="form-row-control">
               <TablePicker id="ops-dump-tables" schema={oneSchema} value={tables} onChange={setTables} tables={schemaTables} disabled={formDisabled} />
-              <p className={unknownTables.length || schemaTables.error ? "form-error" : "hint"} role={unknownTables.length || schemaTables.error ? "alert" : undefined}>
-                {unknownTables.length && schemaTables.truncated ? `Not in the tables loaded so far: ${unknownTables.join(", ")}. Load more tables to confirm them.`
+              <p className={tableFailure || missingTables.length || unknownTables.length || schemaTables.error ? "form-error" : "hint"} role={tableFailure || missingTables.length || unknownTables.length || schemaTables.error ? "alert" : undefined}>
+                {missingTables.length ? `Not found in ${oneSchema}: ${missingTables.join(", ")}.` : tableFailure ? tableFailure.reason : unknownTables.length && schemaTables.truncated ? `Not in the tables loaded so far: ${unknownTables.join(", ")}. Load more tables to confirm them.`
                   : unknownTables.length ? `No longer in ${oneSchema}: ${unknownTables.join(", ")}. Choose tables from the list again.`
                   : schemaTables.error ? `Could not read the tables of ${oneSchema}: ${schemaTables.error}`
                     : schemaTables.loading && !schemaTables.tables.length ? `Reading the tables of ${oneSchema}…`
                       : tables.length ? `${tables.length.toLocaleString()} of ${schemaTables.truncated ? `${schemaTables.tables.length.toLocaleString()}+` : schemaTables.tables.length.toLocaleString()} tables.`
                         : `Every table of ${oneSchema}; choose tables to dump only those.`}
               </p>
+              {(missingTables.length ? missingTables : !schemaTables.truncated && !schemaTables.loading && !schemaTables.error ? unknownTables : []).map(name =>
+                <button key={name} type="button" className="text-button" onClick={() => removeTables([name])}>Remove {name} from the selection</button>)}
             </div>
           </div>}
           <FormRow label="Tool" htmlFor="ops-dump-tool">
             <Select id="ops-dump-tool" label="Tool" value={sqlDump ? "sql" : "auto"} options={[["auto", "Automatic (MySQL Shell first)"], ["sql", `SQL dump (${tools.offered.dump.find(name => name !== "mysqlsh") || (tools.server.engine === "mariadb" ? "mariadb-dump" : "mysqldump")})`]]} onChange={(v) => setSqlDump(v === "sql")} />
           </FormRow>
-          <FolderField key={`dump:${key}`} row label="Output folder" value={directory} onChange={setDirectory} disabled={formDisabled} hint="On this computer. Choose an empty folder, or enter a new folder path." />
+          <div className={`ops-folder-check${folderFailure ? " ops-invalid" : ""}`} role="group" aria-label="Output folder" aria-invalid={!!folderFailure || undefined}><DumpFolderField key={`dump:${key}`} value={directory} stem={dumpStem} onChange={changeDirectory} onPicking={picking => { directoryEdit.current++; setDirectoryPicking(picking); }} disabled={formDisabled} />{directoryError && <p className="form-error" role="alert">{directoryError}</p>}{folderFailure && <p className="form-error">{folderFailure.reason}</p>}</div>
         </FormGrid>
         <details className="ops-dump-options"><summary>Options{dumpToolName ? ` for ${dumpToolName}` : ""}{dumpCapabilities && <span className="hint">{optionsSummary(dumpCapabilities, dumpOptions, dumpToolName === "mysqlsh" ? threads : undefined) || "Tool defaults"}</span>}</summary>
           {dumpCapabilities && <DumpOptions catalog={dumpCapabilities} value={dumpOptions} onChange={setDumpOptions} disabled={formDisabled}
@@ -702,24 +971,38 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
         {cloneMode === "directory" ? <FormField wide label="Data directory" value={dataDirectory} onChange={setDataDirectory} placeholder="/var/lib/mysql-clone" hint="Absolute path on the recipient host. It must not exist and must be outside its data directory." /> : <p className="ops-warning">Replacing the recipient's data drops all its user data and restarts the server. This cannot be undone.</p>}
         <details><summary>Donor TLS</summary><label className="ops-field"><span>TLS mode</span><Select label="TLS mode" value={donor.ssl_mode || "REQUIRED"} options={[["REQUIRED", "Required"], ["VERIFY_CA", "Verify CA"], ["VERIFY_IDENTITY", "Verify identity"]]} onChange={(v) => setDonor({ ...donor, ssl_mode: v })} /></label><FormField label="CA file" value={donor.ssl_ca || ""} onChange={(v) => setDonor({ ...donor, ssl_ca: v })} /></details>
       </>))}
-      {operation && tools && (operation !== "clone" || tools.offered.clone) && <div className="ops-actions"><ReadAction busy={preparing} busyLabel="Running preflight…" action={operation === "clone" ? "clone_recipient" : operation === "restore" ? "restore" : undefined} gate={operationGate} className="primary" disabled={formDisabled || !canPrepare} blocked={blocked || privilegeBlock} onClick={() => { void prepare(); }}>Run preflight…</ReadAction>{readStatus("preflight")}{!blocked && !privilegeBlock && <span className="hint">{activeHere ? "A job is running on this connection." : "Only reads; the confirmation comes next."}</span>}</div>}
+      </div>
+      {operation && tools && (operation !== "clone" || tools.offered.clone) && <div className="ops-actions"><ReadAction busy={preparing} busyLabel="Checking…" action={operation === "clone" ? "clone_recipient" : operation === "restore" ? "restore" : undefined} gate={operationGate} className="primary" disabled={formDisabled || detecting || !canPrepare} blocked={blocked || privilegeBlock} onClick={() => { void prepare(); }}>{`Start ${operation}…`}</ReadAction>{readStatus("preflight")}{activeJob ? <JobSummary job={activeJob.report} onShow={() => { onSection(activeJob.report.operation); setFocusJob(activeJob.report.id || ""); }} /> : !blocked && !privilegeBlock && <span className="hint">Checks first (reads only), then shows the exact commands for you to confirm.</span>}</div>}
       {notice && <p className="ops-note" role="status">{notice}</p>}
-      {shownPlan && !shownPlan.report.ready && <Checks checks={shownPlan.report.checks} selection={selection} />}
-      {shownPlan && <details className="ops-details"><summary>Planned commands and warnings</summary><Commands label="Planned commands" text={shownPlan.report.commands.join("\n")} />{shownPlan.report.warnings.map((line, i) => <p key={i}>{line}</p>)}</details>}
+      <section ref={resultRef} className={`ops-preflight-result${preflightError || failedChecks.length ? " has-result" : ""}`} role="alert" tabIndex={-1}>
+        {preflightError && <><p>Start {operation} is blocked: {preflightError} Fix the fields, then click Start {operation}… again.</p><button type="button" className="text-button" onClick={() => focusFix({ check: "input", status: "failed", reason: preflightError })}>Review fields</button></>}
+        {shownPlan && !shownPlan.report.ready && <>
+          {!planMatches && <p className="hint">From the last preflight; settings changed since. Start again to check the new settings.</p>}
+          <p>{planMatches ? `Start ${operation} is blocked by` : "The last preflight found"} {plural(failedChecks.length, "failed check")}: {failedChecks.map(c => checkLabel(c.check)).join(", ")}. Fix {failedChecks.length === 1 ? "it" : "them"}, then click Start {operation}… again.</p>
+          <h3>Fix before the {operation} can start ({failedChecks.length})</h3>
+          <Checks checks={shownPlan.report.checks} selection={selection} fix={fixCheck} />
+        </>}
+      </section>
+      {shownPlan && planMatches && <details className="ops-details"><summary>Planned commands and warnings</summary><Commands label="Planned commands" text={shownPlan.report.commands.join("\n")} />{shownPlan.report.warnings.map((line, i) => <p key={i}>{line}</p>)}</details>}
 
     </ViewLayout>
     {sheet && !startLeft && <ConfirmSheet className="ops-confirm"
+      // Dump keeps the risky policy, review and audit gates, with a primary
+      // confirmation because its destination must be absent or empty.
+      confirmTone={sheet.report.operation === "dump" ? "primary" : "danger"}
       band={<ConnectionTypeBand connection={pConnection(sheet)} label={sheet.label} />}
       eyebrow={sheet.report.operation.toUpperCase()}
       title={sheet.report.operation === "dump" ? `Dump into the folder ${folderName(sheet.report.target)}?` : sheet.report.operation === "restore" ? `Restore into ${sheet.report.target}?` : `Clone into ${sheet.report.target}?`}
-      description={sheet.report.operation === "dump" ? "The dump reads the server and writes only into the folder." : "This changes the server and cannot be undone."}
+      description={sheet.report.operation === "dump" ? `Reads the server and writes only into this folder.${sheet.report.tool.name === "mysqlsh" ? " MySQL Shell briefly takes a global read lock." : ""}` : "This changes the server and cannot be undone."}
       busy={busy} busyLabel="Starting…" progress="Waiting for the server to start the job" onLeave={() => setStartLeft(true)}
       leaveText="Close keeps the Start request running. The job or its unknown outcome appears in this view; do not start it again."
       confirmLabel={<VisiblePrivilegeConfirmLabel gate={{ ...sheetGate, disabledReason: sheetBlock }}>{`Start ${sheet.report.operation}`}</VisiblePrivilegeConfirmLabel>}
-      confirmDisabled={sheet.key !== key || (sheet.report.operation !== "dump" && typed !== sheet.report.target)}
-      onCancel={() => { decline(sheet); setSheet(null); sheetConnection.current = null; setTyped(""); }} onConfirm={() => { void start(); }}>
+      confirmDisabled={sheet.key !== key || (sheet.report.operation !== "dump" && typed !== sheet.report.target) || (!!sheet.report.required_acknowledgement && !acknowledged)}
+      onCancel={() => { decline(sheet); setSheet(null); sheetConnection.current = null; setTyped(""); setAcknowledged(false); }} onConfirm={() => { void start(); }}>
       <div className="ops-target"><span>{sheet.report.operation === "dump" ? "Folder" : "Target"}</span><strong>{sheet.report.target}</strong></div>
+      {sheet.report.operation === "dump" && planMessages(sheet.report).warnings.map((line, i) => <p className="ops-warning" key={i}>{line}</p>)}
       <Fields rows={[
+        ...(sheet.report.operation === "dump" ? [["Contents", dumpContents(sheet.report)] as [string, string]] : []),
         ["Connection", sheet.label],
         ...(sheet.report.operation === "clone" && sheet.report.expect ? [
           ["Donor", sheet.report.expect.donor.endpoint],
@@ -731,16 +1014,59 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
         ["Server", engineName(sheet.report.server.engine, sheet.report.server.version, sheet.report.server.product)],
         !!sheet.report.server.identity?.hostname && ["Host name", String(sheet.report.server.identity.hostname)],
         ["Tool", toolName(sheet.report.tool)],
-        ...(sheet.report.operation === "dump" && (sheet.report.request?.options as DumpOptionValues | undefined)?.structure_only === true
-          ? [["Contents", "Structure only (no rows)"] as [string, string]] : []),
         ["Preflight", `${plural(sheet.report.checks.filter((c) => c.status === "passed").length, "check")} passed${sheet.report.checks.some((c) => c.status === "not_checked") ? `, ${sheet.report.checks.filter((c) => c.status === "not_checked").length.toLocaleString()} not checked` : ""}`],
       ]} />
       {sheet.report.policy?.text && <p>{sheet.report.policy.text}</p>}
-      {sheet.report.warnings.map((line, i) => <p className="ops-warning" key={i}>{line}</p>)}
+      {sheet.report.operation !== "dump" && sheet.report.warnings.map((line, i) => <p className="ops-warning" key={i}>{line}</p>)}
+      {!!planMessages(sheet.report).notes.length && <ul className="hint">{planMessages(sheet.report).notes.map((line, i) => <li key={i}>{line}</li>)}</ul>}
       <Commands label="Exact commands" text={sheet.report.commands.join("\n")} />
       <details><summary>Preflight checks</summary><ul className="ops-verification">{sheet.report.checks.map((check, i) => <li key={i}><StatusPill tone={checkTone(check)} label={checkWord(check)} /><strong>{check.check}</strong><span>{check.reason}</span></li>)}</ul></details>
       {sheet.report.operation !== "dump" && <FormField label={`Type ${sheet.report.target} to confirm`} value={typed} onChange={setTyped} disabled={busy} />}
+      {sheet.report.required_acknowledgement && <div className="ops-system-ack">
+        <p className="ops-warning">This SQL backup replaces the mysql system schema, including accounts, passwords and grants. Accounts absent from the backup can be dropped, including the account this connection uses.</p>
+        <Checkbox checked={acknowledged} disabled={busy} onChange={setAcknowledged}>I acknowledge replacing mysql system tables and accounts on {sheet.report.target}.</Checkbox>
+      </div>}
       <p className="hint">myflames repeats the preflight right before starting and stops if anything changed. Cancelling a running job may leave partial data to clean up.</p>
     </ConfirmSheet>}
   </>;
+}
+
+const INSTALL_HINT: Record<string, string> = { high: "", medium: " (likely)", low: " (uncertain)" };
+
+/** Where the target list came from, how the server was installed and what that means for the upgrade. */
+function UpgradeTargetNotes({ report, chosen, loading, error }: { report: UpgradeTargets | null; chosen?: UpgradeTarget; loading: boolean; error: string }) {
+  if (loading && !report) return <p className="hint ops-targets" role="status">Reading the releases this server can upgrade to…</p>;
+  if (!report) return error ? <p className="hint ops-targets">Could not list target versions ({error}). Choose Other version… to type one.</p> : null;
+  const { install, source, guidance } = report;
+  // Only a Percona line name (ps-84-lts) fills the placeholder; a function replacer keeps "$" literal.
+  const repository = chosen?.repository && /^ps-[0-9a-z]{2}(?:-lts|-innovation)?$/.test(chosen.repository) ? chosen.repository : "";
+  const command = !guidance.command ? "" : guidance.command.includes("{repository}")
+    ? (repository ? guidance.command.replace("{repository}", () => repository) : "") : guidance.command;
+  const read = source.checked_at ? ` · read ${source.checked_at.slice(11, 16)} UTC` : "";
+  const releaseNotes = upgradeLinkUrl(chosen?.url);
+  const guide = upgradeLinkUrl(guidance.url);
+  return <div className="ops-targets">
+    <p className="hint">
+      <strong>Installed from: {install.label}{INSTALL_HINT[install.confidence]}</strong>
+      {" · "}{source.label}{source.kind !== "none" && `${read} · ${report.targets.length.toLocaleString()} ${report.targets.length === 1 ? "release" : "releases"} offered`}
+      {source.error && source.kind !== "bundled" ? ` (partly read: ${source.error})` : ""}
+    </p>
+    {guidance.text && <p className="hint">{guidance.text}{guide && <> <a href={guide} target="_blank" rel="noopener noreferrer">{guide.includes("percona") ? "percona-release guide" : "Repository guide"}</a></>}</p>}
+    {command && <Commands text={command} label="Repository setup command" />}
+    {chosen && <p className="hint">
+      {chosen.version}{chosen.date ? ` (${chosen.date})` : ""}: {chosen.path_label}{chosen.docker_only ? " · Docker image only" : ""}{chosen.packages?.length ? ` · packages for ${chosen.packages.join(", ")}` : ""}
+      {chosen.shell && !chosen.shell.ok ? ` · needs MySQL Shell ${chosen.shell.needs || "newer than the server"} or newer for the full check` : ""}
+      {releaseNotes && <> · <a href={releaseNotes} target="_blank" rel="noopener noreferrer">Release notes</a></>}
+    </p>}
+    {report.notes.map((note, i) => <p key={i} className="hint">{note}</p>)}
+    {(install.evidence.length > 0 || report.not_direct.length > 0 || report.unclassified.length > 0 || (report.unavailable || []).length > 0) && <details className="ops-details">
+      <summary>How this was decided</summary>
+      <ul className="ops-evidence">
+        {install.evidence.map((e, i) => <li key={`e${i}`}>{e}</li>)}
+        {install.container && <li>The host name looks like a container ID.</li>}
+        {[...report.not_direct, ...report.unclassified].map((n) => <li key={`n${n.series}`}>{n.series} (newest {n.newest}): {n.reason}</li>)}
+        {(report.unavailable || []).map((u) => <li key={`u${u.version}`}>{u.version}: {u.reason}</li>)}
+      </ul>
+    </details>}
+  </div>;
 }

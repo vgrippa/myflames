@@ -18,7 +18,7 @@ try{
  for(const {server,id} of saved){
   await chooseConnection(page,id);
   if(await page.$('button[aria-label="Show the schema browser"]'))await page.click('button[aria-label="Show the schema browser"]');
-  await h.button('Load schemas','.schema-browser ');
+  // The visible panel reads the chosen connection's list by itself: no Load schemas gate.
   await page.waitForFunction(()=>[...document.querySelectorAll('.tree-row.kind-schema')].some(e=>e.querySelector('.tree-label')?.textContent==='grid_lab'));
   for(const node of await page.$$('.tree-row.kind-schema'))if(await node.$eval('.tree-label',e=>e.textContent==='grid_lab')){if(await node.evaluate(e=>e.getAttribute('aria-expanded')!=='true'))await node.click();break;}
   await page.waitForFunction(()=>[...document.querySelectorAll('.tree-row.kind-table')].some(e=>e.querySelector('.tree-label')?.textContent==='customers'));

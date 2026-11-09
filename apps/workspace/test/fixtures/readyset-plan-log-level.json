@@ -1,0 +1,53 @@
+{
+ "schema_version": "readyset-action-1.0",
+ "action": "set_log_level",
+ "target": null,
+ "value": {
+  "directives": "info,readyset_adapter=debug"
+ },
+ "eyebrow": "PARAMETER",
+ "title": "Set Readyset log level to 'info,readyset_adapter=debug'?",
+ "confirm_label": "Set log level",
+ "description": "Updates Readyset's runtime tracing filter immediately (for example 'info' or 'info,readyset_adapter=debug').",
+ "target_text": "Readyset (stable-250605)",
+ "statements": [
+  "ALTER READYSET SET LOG LEVEL 'info,readyset_adapter=debug';"
+ ],
+ "facts": [
+  [
+   "Readyset",
+   "stable-250605 (adapter port)"
+  ],
+  [
+   "Log directives",
+   "info,readyset_adapter=debug"
+  ]
+ ],
+ "warnings": [
+  "Runtime change only: resets to the startup --log-level value if Readyset restarts."
+ ],
+ "changes": null,
+ "typed_guard": null,
+ "undo": "ALTER READYSET SET LOG LEVEL 'info';",
+ "next": null,
+ "verified": [
+  "Readyset identity (@@version_comment, SHOW READYSET VERSION)"
+ ],
+ "timeout_s": 30,
+ "checks": [
+  "Refresh the Readyset place to inspect the current caches, tables and status.",
+  "The Audit log keeps this attempt as Outcome unknown; nothing is sent again."
+ ],
+ "expect": {
+  "readyset_version": "stable-250605"
+ },
+ "policy": {
+  "action": "confirm",
+  "tone": "danger",
+  "title": "Risky write",
+  "text": "Connection Readyset lab is a Development connection. myflames asks only before risky writes, and this statement is one.",
+  "connection_type": "development",
+  "read_only": false
+ },
+ "review_token": "fixture-token-set_log_level"
+}

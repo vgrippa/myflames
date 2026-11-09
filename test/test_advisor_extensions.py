@@ -168,7 +168,7 @@ class TestRowMisestimate(unittest.TestCase):
         self.assertTrue(warning[0].get("node_labels"))
         statistics = [s for s in payload["suggestions"] if s["category"] == "statistics"]
         self.assertEqual(len(statistics), 1)
-        self.assertIn("ANALYZE TABLE t1", statistics[0]["action"])
+        self.assertIn("ANALYZE TABLE testdb.t1", statistics[0]["action"])
         self.assertIn("PERSISTENT FOR COLUMNS", statistics[0]["action"])
 
     def test_limit_fixture_has_no_misestimate(self):
@@ -208,7 +208,7 @@ class TestRedundantIndexes(unittest.TestCase):
 
 class TestStaleStatistics(unittest.TestCase):
     def test_freshness_is_reported_for_misestimated_tables(self):
-        analysis = {"misestimates": [{"table": "t1"}, {"table": "other"}]}
+        analysis = {"misestimates": [{"table": "db.t1", "schema": "db"}, {"table": "other"}]}
         freshness = {"db.t1": {"last_update": "2026-01-02 03:04:05", "n_rows": 1000,
                                "histograms": []}}
         advise(analysis, freshness=freshness)
@@ -410,13 +410,19 @@ class TestWorkspaceAnalyzeContext(unittest.TestCase):
         capture = {"mode": "analyze", "raw": raw, "runs": [
             {"total_time_ms": 900.0, "session_status_delta": {"Innodb_buffer_pool_reads": 2400}, "plan": ""},
             {"total_time_ms": 100.0, "session_status_delta": {"Innodb_buffer_pool_reads": 0}, "plan": ""}],
-            "stats_freshness": {"db.t1": {"last_update": "2026-01-02 03:04:05", "n_rows": 10,
+            "stats_freshness": {"testdb.t1": {"last_update": "2026-01-02 03:04:05", "n_rows": 10,
                                           "histograms": []}}}
         result = api_response("/api/analyze", {"plan": raw, "capture": capture})
         categories = {w["category"] for w in result["analysis"]["warnings"]}
         self.assertIn("cold_cache", categories)
         texts = [w["text"] for w in result["analysis"]["warnings"] if w["category"] == "misestimate"]
-        self.assertTrue(any("Statistics for misestimated table db.t1" in text for text in texts))
+        self.assertTrue(any("Statistics for misestimated table testdb.t1" in text for text in texts))
+        # The plan names testdb.t1; a capture entry for db.t1 is not its
+        # statistics even when no other freshness entry is available.
+        capture["stats_freshness"] = {"db.t1": capture["stats_freshness"]["testdb.t1"]}
+        wrong_schema = api_response("/api/analyze", {"plan": raw, "capture": capture})
+        self.assertFalse(any("Statistics for misestimated table" in w["text"]
+                             for w in wrong_schema["analysis"]["warnings"]))
 
 
 class TestReviewRegressions(unittest.TestCase):
@@ -441,7 +447,7 @@ class TestReviewRegressions(unittest.TestCase):
                     {"db.t": {"last_update": 3}}):
             with self.assertRaises(ValueError):
                 normalize_capture({"mode": "explain", "stats_freshness": bad})
-        analysis = {"misestimates": [{"table": "t"}]}
+        analysis = {"misestimates": [{"table": "db.t", "schema": "db"}]}
         advise(analysis, freshness={"db.t": {"n_rows": "12", "histograms": "abc"}})
         found = [f for f in analysis["environment_findings"] if f["rule_id"] == "STALE_STATS"]
         self.assertIn("no column histograms", found[0]["warning"])

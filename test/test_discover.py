@@ -15,7 +15,7 @@ import unittest
 from unittest import mock
 
 from myflames import discover, ui, workspace_cli
-from myflames.connector import ConnectorError
+from myflames.connector import ConnectorError, PartialReadError
 from myflames.live import normalize_capture
 
 MYSQL_V2_PLAN = json.dumps({
@@ -1079,9 +1079,181 @@ def detail_row(text, cpu_ps=0, p95_ps=0, p99_ps=0, p999_ps=0, new=0, **kwargs):
     return attribution_row(text, **kwargs) + [cpu_ps, p95_ps, p99_ps, p999_ps, new]
 
 
+class IdentityDigestConn(FakeConn):
+    """A router reaches db1 for digest batches and db2 on later invocations."""
+
+    def __init__(self, version, missing_identity=False, retry=False, aggregate_error=None, identity_error=False):
+        super().__init__(version)
+        self.missing_identity, self.retry = missing_identity, retry
+        self.batch_count = 0
+        self.aggregate_error, self.identity_error = aggregate_error, identity_error
+        self.aggregate_timeouts, self.identity_timeouts = [], []
+
+    def run(self, sql, extra_flags=None, timeout=None, tail_timeout=None):
+        self.calls.append((sql, list(extra_flags or [])))
+        if 'myflames_reading_0' not in sql:
+            if sql == discover.DISCOVER_TAG + discover.SERVER_STATE_SQL:
+                return batch([[self.version, 1]])
+            if sql == discover.DISCOVER_TAG + discover._CONSUMERS_SQL:
+                return CONSUMERS_ON[1]
+            if sql == discover.DISCOVER_TAG + discover._MAX_TEXT_SQL:
+                return MAX_TEXT[1]
+            if sql == discover.DISCOVER_TAG + discover._CONTEXT_SQL:
+                self.aggregate_timeouts.append(timeout)
+                if self.aggregate_error:
+                    raise self.aggregate_error
+                return batch([[10, 10000000000000, 100, '2026-11-09 12:00:00', 20, None]])
+            raise AssertionError('unexpected separate invocation: ' + sql)
+        self.batch_count += 1
+        self.identity_timeouts.append(tail_timeout)
+        for column in discover._OPTIONAL_COLUMNS:
+            if re.search(r'\b' + column + r'\b', sql) and (self.version.startswith('5.7')
+                                                        or (self.retry and column == 'SUM_CPU_TIME')):
+                raise ConnectorError("mysql client exited 1: ERROR 1054 (42S22): Unknown column '%s' in 'field list'" % column)
+        maria = 'mariadb' in self.version.lower()
+        has_sample = not maria and not self.version.startswith('5.7')
+        fields = [('hostname', 'db1'), ('port', '3306'), ('version', self.version), ('version_comment', '')]
+        if not maria:
+            fields.append(('server_uuid', '3e11fa47-71ca-11e1-9e33-c80aa9429562'))
+        out = []
+        for statement in sql.split('; '):
+            raw = re.sub(r'/\*.*?\*/\s*', '', statement)
+            marker = re.fullmatch(r"SELECT '(myflames_reading_\d+)'", raw)
+            if marker:
+                out.append(batch([[marker.group(1)]]))
+            elif raw.startswith('SELECT SCHEMA_NAME, DIGEST'):
+                row = digest_row('SELECT * FROM `orders`', with_sample=has_sample) + [1, 2, 3]
+                row[13:15] = ['2026-11-09 12:00:10', '2026-11-09 12:00:20']
+                row += [0 for col in discover._OPTIONAL_COLUMNS if re.search(r'\b' + col + r'\b', raw)]
+                if 'FIRST_SEEN > NOW()' in raw:
+                    row += [1]
+                out.append(batch([row]))
+            elif raw.startswith('SELECT COUNT(*), SUM(SUM_TIMER_WAIT)'):
+                if self.aggregate_error:
+                    raise self.aggregate_error
+                out.append(batch([[10, 10000000000000, 100, '2026-11-09 12:00:00', 20, None]]))
+            elif raw == discover._COVERAGE_SQL:
+                out.append(batch([['Uptime', 30], ['Performance_schema_digest_lost', 0]]))
+            elif raw == discover._OVERFLOW_SQL:
+                out.append('')
+            elif raw.startswith('SHOW GLOBAL VARIABLES'):
+                if self.identity_error:
+                    raise PartialReadError('Query timed out after 3s.', ''.join(out))
+                out.append(batch([] if self.missing_identity else fields))
+            elif raw.startswith('SHOW GLOBAL STATUS'):
+                out.append(batch([['Uptime', 30]]))
+            elif raw == "SELECT 'now', NOW(6)":
+                out.append(batch([['now', '2026-11-09 12:00:20.000000']]))
+            else:
+                raise AssertionError('unexpected statement: ' + raw)
+        return ''.join(out)
+
+
+class TestDigestIdentity(unittest.TestCase):
+    def test_identity_and_counts_share_invocation_with_separately_bounded_context(self):
+        for version in ('5.7.44', '8.0.40', '8.4.3', '9.7.2', '26.7.0', '8.4.11-11', '10.11.16-MariaDB', '11.4.13-MariaDB'):
+            with self.subTest(version=version):
+                conn = IdentityDigestConn(version)
+                report = discover.top_report(conn, limit=1, with_identity=True)
+                self.assertTrue(report['reading_server']['verified'])
+                self.assertEqual(report['reading_server']['server']['hostname'], 'db1')
+                self.assertEqual(report['coverage']['oldest_first_seen'], '2026-11-09 12:00:00')
+                self.assertEqual(report['coverage']['first_seen'], '2026-11-09 12:00:10',
+                                 'the whole-table oldest value is not the oldest top-N row')
+                self.assertIsNone(report['coverage']['counting_since'], 'first-hour resets must not depend on this display field')
+                self.assertEqual(report['coverage']['uptime_s'], 30)
+                self.assertEqual(report['statements'][0]['count'], 10)
+                if version.startswith('5.7'):
+                    self.assertIsNone(report['statements'][0]['sample_text'])
+                    self.assertIsNone(report['statements'][0]['p95_ms'])
+                    self.assertIsNone(report['cpu'])
+                self.assertEqual(report['totals']['executions'], 100)
+                self.assertEqual(conn.batch_count, 5 if version.startswith('5.7') else 1)
+                self.assertIn('--skip-reconnect', conn.calls[-1][1])
+                combined = conn.sql('SELECT SCHEMA_NAME, DIGEST')
+                self.assertEqual(len(combined), conn.batch_count)
+                for required in (discover._COVERAGE_SQL, discover._OVERFLOW_SQL, 'NOW(6)', "'server_uuid'"):
+                    self.assertIn(required, combined[0])
+                self.assertNotIn(discover._CONTEXT_SQL, combined[0])
+                self.assertEqual(conn.aggregate_timeouts, [3])
+                self.assertTrue(all(value == ('myflames_reading_3', 3) for value in conn.identity_timeouts))
+
+    def test_failed_or_timed_out_aggregate_keeps_identified_digest_report(self):
+        for version in ('8.4.3', '11.4.13-MariaDB'):
+            for message in ('ERROR 1142: SELECT command denied', 'Query timed out after 3s.'):
+                with self.subTest(version=version, error=message):
+                    conn = IdentityDigestConn(version, aggregate_error=ConnectorError(message))
+                    report = discover.top_report(conn, with_identity=True)
+                    self.assertTrue(report['reading_server']['verified'])
+                    self.assertEqual(report['statements'][0]['count'], 10)
+                    self.assertEqual(report['coverage']['uptime_s'], 30)
+                    self.assertIsNone(report['coverage']['oldest_first_seen'])
+                    self.assertIsNone(report['coverage']['counting_since'])
+                    self.assertIsNone(report['totals'])
+                    self.assertIsNone(report['others'])
+                    self.assertEqual(conn.aggregate_timeouts, [3])
+                    self.assertEqual(conn.batch_count, 1)
+
+    def test_identity_failure_keeps_digest_rows_without_a_later_identity_read(self):
+        for version in ('8.4.3', '11.4.13-MariaDB'):
+            with self.subTest(version=version):
+                conn = IdentityDigestConn(version, identity_error=True)
+                report = discover.top_report(conn, with_identity=True)
+                self.assertFalse(report['reading_server']['verified'])
+                self.assertEqual(report['statements'][0]['count'], 10)
+                self.assertEqual(len(conn.sql("'server_uuid'")), 1)
+
+    def test_optional_column_retry_uses_only_the_successful_batch_identity(self):
+        conn = IdentityDigestConn('8.0.20', retry=True)
+        report = discover.top_report(conn, with_identity=True)
+        self.assertEqual(conn.batch_count, 2)
+        self.assertTrue(report['reading_server']['verified'])
+        self.assertEqual(report['statements'][0]['count'], 10)
+        self.assertIsNone(report['statements'][0]['cpu_ms'])
+
+    def test_missing_identity_is_not_replaced_by_a_later_read(self):
+        conn = IdentityDigestConn('11.4.13-MariaDB', missing_identity=True)
+        report = discover.top_report(conn, with_identity=True)
+        self.assertFalse(report['reading_server']['verified'])
+        self.assertEqual(report['statements'][0]['count'], 10)
+        self.assertEqual(conn.batch_count, 1)
+
+    def test_legacy_call_has_no_new_identity_or_oldest_field(self):
+        report = discover.top_report(mysql_top('8.4.3', [detail_row('SELECT * FROM `orders`')]))
+        self.assertNotIn('reading_server', report)
+        self.assertNotIn('oldest_first_seen', report['coverage'])
+
+    def test_performance_schema_off_is_one_sentence_with_an_instruments_pointer(self):
+        for version in ('5.7.44', '10.11.16-MariaDB'):
+            conn = FakeConn(version, [server(version, ps_on=False)])
+            with self.subTest(version=version), self.assertRaisesRegex(ValueError, 'open Server > Instruments') as error:
+                discover.top_report(conn, with_identity=True)
+            self.assertEqual(str(error.exception).count('.'), 1)
+            self.assertFalse(conn.sql('myflames_reading_0'))
+
+
 class TestServerContext(unittest.TestCase):
     """top_report ranks against the whole server: totals, the closing other
     statements, the counting window, the New badge, CPU time and quantiles."""
+
+    def test_aggregate_failure_keeps_the_report_without_identity_on_both_engines(self):
+        for version in ('8.4.3', '11.4.13-MariaDB'):
+            for message in ('ERROR 1142: SELECT command denied', 'Query timed out after 3s.'):
+                with self.subTest(version=version, error=message):
+                    row = (detail_row('SELECT 1', sample='SELECT 1') if 'MariaDB' not in version
+                           else attribution_row('SELECT 1', with_sample=False) + [0])
+                    conn = mysql_top(version, [row], extra=[
+                        ('COUNT(*), SUM(SUM_TIMER_WAIT)', ConnectorError(message))])
+                    with mock.patch.object(conn, 'run', wraps=conn.run) as run:
+                        report = discover.top_report(conn)
+                    self.assertEqual(len(report['statements']), 1)
+                    self.assertIsNone(report['totals'])
+                    self.assertIsNone(report['others'])
+                    self.assertIsNone(report['coverage']['counting_since'])
+                    self.assertNotIn('reading_server', report)
+                    aggregate = [call for call in run.call_args_list if discover._CONTEXT_SQL in call[0][0]]
+                    self.assertEqual(len(aggregate), 1)
+                    self.assertEqual(aggregate[0][1]['timeout'], 3)
 
     def test_totals_rank_against_the_server_and_close_with_other_statements(self):
         rows = [detail_row('SELECT * FROM `a`', count=10, total_ps=2 * 10 ** 12, sample='SELECT * FROM a'),
@@ -1278,7 +1450,182 @@ class TestServerContext(unittest.TestCase):
                                                          detail_row('SELECT 2', sample=cut)]))
         self.assertTrue(all(s['sample_truncated'] for s in report['statements']))
         self.assertEqual([n for n in report['notes'] if 'Sample text' in n],
-                         ['Sample text was cut at 1024 bytes (performance_schema_max_sql_text_length).'])
+                         ['Sample text was cut at 1024 bytes: raise performance_schema_max_sql_text_length '
+                          '(now 1024; needs a restart) to keep whole sample statements.'])
+
+
+def text_limit_vars(**over):
+    """The variables and connection high-water mark read behind text_limits
+    (discover._TEXT_LIMIT_VARS_SQL)."""
+    values = {'max_digest_length': 1024, 'performance_schema_max_digest_length': 1024,
+              'performance_schema_digests_size': 10000,
+              'performance_schema_events_statements_history_long_size': 10000,
+              'performance_schema_events_statements_history_size': 10,
+              'performance_schema_max_thread_instances': 100,
+              'max_connections': 151, 'Max_used_connections': 17}
+    values.update(over)
+    status = {'Max_used_connections': values.pop('Max_used_connections')} if 'Max_used_connections' in values else {}
+    # Two SHOW reads (MariaDB has no performance_schema.global_variables).
+    return [("Variable_name IN ('max_digest_length'", batch([[name, value] for name, value in values.items()])),
+            ("'Max_used_connections'", batch([[name, value] for name, value in status.items()]))]
+
+
+def text_limit_memory(**over):
+    """The memory_summary read behind text_limits (discover._TEXT_LIMIT_MEMORY_SQL)."""
+    values = {'memory/performance_schema/events_statements_current.sql_text': 100000,
+              'memory/performance_schema/events_statements_history.sql_text': 1000000,
+              'memory/performance_schema/events_statements_history_long.sql_text': 10240000,
+              'memory/performance_schema/events_statements_summary_by_digest.digest_text': 10240000,
+              'memory/performance_schema/events_statements_current.digest_text': 100000,
+              'memory/performance_schema/events_statements_history.digest_text': 1000000,
+              'memory/performance_schema/events_statements_history_long.digest_text': 10240000}
+    values.update(over)
+    return ('memory_summary_global_by_event_name', batch([[name, value] for name, value in values.items()]))
+
+
+CUT_SAMPLE = 'SELECT ' + 'x' * 1014 + '...'
+#: The owner's case: an INSERT ... SELECT ... ON DUPLICATE KEY UPDATE digest
+#: cut at the default 1024 bytes.
+CUT_DIGEST = 'INSERT INTO `t` SELECT * FROM `u` ON DUPLICATE ...'
+
+
+class TestTextLimits(unittest.TestCase):
+    """top-1.0 text_limits: which startup parameter cut the sample or digest
+    text, its current value, a suggested value and what raising it costs."""
+
+    def test_cut_detection(self):
+        self.assertTrue(discover._digest_text_cut(CUT_DIGEST))
+        # A cut digest may keep the digest text's trailing space.
+        self.assertTrue(discover._digest_text_cut('SELECT `a` FROM `t` WHERE `x` = ? ... '))
+        # A collapsed IN list ends with ")", not with the cut marker.
+        self.assertFalse(discover._digest_text_cut('SELECT `a` FROM `t` WHERE `x` IN (?, ...)'))
+        self.assertFalse(discover._digest_text_cut('SELECT 1'))
+        self.assertFalse(discover._digest_text_cut(None))
+        self.assertEqual(discover._suggest_text_length(1024), 4096)
+        self.assertEqual(discover._suggest_text_length(4096), 8192)
+        self.assertEqual(discover._suggest_text_length(65535), 65536)
+        self.assertIsNone(discover._suggest_text_length(65536))
+        self.assertIsNone(discover._suggest_text_length(1048576))
+
+    def test_no_cut_means_no_text_limits_and_no_reads(self):
+        conn = mysql_top('8.4.3', [detail_row('SELECT 1', sample='SELECT 1')])
+        self.assertIsNone(discover.top_report(conn)['text_limits'])
+        self.assertEqual(conn.sql("Variable_name IN ('max_digest_length'"), [])
+        self.assertEqual(conn.sql('memory_summary_global_by_event_name'), [])
+
+    def test_cut_sample_names_the_parameter_and_the_measured_estimate(self):
+        conn = mysql_top('8.4.3', [detail_row('INSERT INTO `t` SELECT * FROM `u` ON DUPLICATE KEY UPDATE `a` = ?',
+                                              sample=CUT_SAMPLE)],
+                         extra=[*text_limit_vars(), text_limit_memory()])
+        report = discover.top_report(conn)
+        limits = report['text_limits']
+        self.assertTrue(limits['persist_only'])
+        self.assertIsNone(limits['digest'])
+        sql_text = limits['sql_text']
+        self.assertEqual(sql_text['name'], 'performance_schema_max_sql_text_length')
+        self.assertEqual((sql_text['value'], sql_text['cut_rows'], sql_text['suggested']), (1024, 1, 4096))
+        # (100000 + 1000000 + 10240000) x (4096/1024 - 1) + 10000 x (4096 - 1024).
+        self.assertEqual(sql_text['estimate_bytes'], 64740000)
+        self.assertEqual(sql_text['estimate_basis'], 'measured')
+        json.dumps(report, allow_nan=False)
+
+    def test_variables_are_read_with_show_on_both_engines(self):
+        # MariaDB has no performance_schema.global_variables (ERROR 1146 on 11.8).
+        conn = mysql_top('8.4.3', [detail_row(CUT_DIGEST, sample='INSERT INTO t SELECT a FROM u')],
+                         extra=[*text_limit_vars(), text_limit_memory()])
+        discover.top_report(conn)
+        sent = [sql for sql, _ in conn.calls] if conn.calls and isinstance(conn.calls[0], tuple) else list(conn.calls)
+        self.assertTrue(any("SHOW GLOBAL VARIABLES WHERE Variable_name IN ('max_digest_length'" in sql for sql in sent))
+        self.assertTrue(any("SHOW GLOBAL STATUS WHERE Variable_name = 'Max_used_connections'" in sql for sql in sent))
+        self.assertFalse(any('performance_schema.global_variables' in sql or 'performance_schema.global_status' in sql
+                             for sql in sent))
+
+    def test_unequal_digest_limits_raise_only_the_smaller_one(self):
+        conn = mysql_top('8.4.3', [detail_row(CUT_DIGEST, sample='INSERT INTO t SELECT a FROM u')],
+                         extra=[*text_limit_vars(performance_schema_max_digest_length=65536), text_limit_memory()])
+        digest = discover.top_report(conn)['text_limits']['digest']
+        self.assertEqual(digest['suggested'], 4096)
+        self.assertEqual(digest['suggested_values'], {'max_digest_length': 4096,
+                                                      'performance_schema_max_digest_length': 65536})
+        # The stored buffers keep their size; only 17 connections x (4096 - 1024) is added.
+        self.assertEqual(digest['estimate_bytes'], 17 * 3072)
+
+    def test_cut_digest_names_both_parameters(self):
+        conn = mysql_top('8.4.3', [detail_row(CUT_DIGEST, sample='INSERT INTO t SELECT a FROM u')],
+                         extra=[*text_limit_vars(), text_limit_memory()])
+        report = discover.top_report(conn)
+        limits = report['text_limits']
+        self.assertIsNone(limits['sql_text'])
+        digest = limits['digest']
+        self.assertEqual(digest['names'], ['max_digest_length', 'performance_schema_max_digest_length'])
+        self.assertEqual(digest['values'], {'max_digest_length': 1024,
+                                            'performance_schema_max_digest_length': 1024})
+        self.assertEqual((digest['cut_rows'], digest['suggested']), (1, 4096))
+        # (10240000 + 100000 + 1000000 + 10240000) x 3 + 17 connections x (4096 - 1024).
+        self.assertEqual(digest['estimate_bytes'], 64792224)
+        self.assertIn('Max_used_connections', digest['estimate_basis'])
+        self.assertTrue(any('Digest text was cut' in n for n in report['notes']))
+        json.dumps(report, allow_nan=False)
+
+    def test_sample_and_digest_both_cut(self):
+        conn = mysql_top('8.4.3', [detail_row(CUT_DIGEST, sample=CUT_SAMPLE)],
+                         extra=[*text_limit_vars(), text_limit_memory()])
+        limits = discover.top_report(conn)['text_limits']
+        self.assertEqual((limits['sql_text']['cut_rows'], limits['digest']['cut_rows']), (1, 1))
+        self.assertIsNotNone(limits['sql_text']['estimate_bytes'])
+        self.assertIsNotNone(limits['digest']['estimate_bytes'])
+
+    def test_mariadb_has_only_the_digest_case(self):
+        """MariaDB keeps no QUERY_SAMPLE_TEXT: only the digest length applies,
+        and there is no SET PERSIST_ONLY."""
+        conn = FakeConn('11.4.3-MariaDB-ubu2404', [
+            *text_limit_vars(), text_limit_memory(), server('11.4.3-MariaDB-ubu2404'), CONSUMERS_ON,
+            ('events_statements_summary_by_digest',
+             batch([attribution_row(CUT_DIGEST, with_sample=False) + [1]]))])
+        report = discover.top_report(conn)
+        limits = report['text_limits']
+        self.assertFalse(limits['persist_only'])
+        self.assertIsNone(limits['sql_text'])
+        self.assertEqual(limits['digest']['suggested'], 4096)
+        self.assertEqual(limits['digest']['estimate_bytes'], 64792224)
+
+    def test_formula_estimate_when_memory_is_unreadable(self):
+        denied = ConnectorError("mysql client exited 1: ERROR 1142 (42000): SELECT command denied "
+                                "to user 'app'@'%' for table 'memory_summary_global_by_event_name'")
+        conn = mysql_top('8.4.3', [detail_row(CUT_DIGEST, sample=CUT_SAMPLE)],
+                         extra=[*text_limit_vars(), ('memory_summary_global_by_event_name', denied)])
+        limits = discover.top_report(conn)['text_limits']
+        # (10000 + 100 threads x (10 history + 10 statement stack levels)) x 3072
+        # + 10000 digest samples x 3072 (statement stack unread: its default 10).
+        self.assertEqual(limits['sql_text']['estimate_bytes'], 67584000)
+        self.assertEqual(limits['sql_text']['estimate_basis'], 'formula')
+        # (10000 + 10000 + 100 x (10 + 10)) x 3072 + 17 connections x 3072.
+        self.assertEqual(limits['digest']['estimate_bytes'], 67636224)
+        self.assertTrue(limits['digest']['estimate_basis'].startswith('formula'))
+
+    def test_refused_reads_leave_a_null_estimate_with_the_reason(self):
+        denied = ConnectorError("mysql client exited 1: ERROR 1142 (42000): SELECT command denied "
+                                "to user 'app'@'%' for table 'global_variables'")
+        conn = mysql_top('8.4.3', [detail_row(CUT_DIGEST, sample=CUT_SAMPLE)],
+                         extra=[("Variable_name IN ('max_digest_length'", denied), ("'Max_used_connections'", denied), ('memory_summary_global_by_event_name', denied)])
+        # A refused read is never an error: the report stands.
+        limits = discover.top_report(conn)['text_limits']
+        sql_text = limits['sql_text']
+        self.assertEqual((sql_text['value'], sql_text['suggested']), (1024, 4096))
+        self.assertIsNone(sql_text['estimate_bytes'])
+        self.assertIn('command denied', sql_text['estimate_basis'])
+        digest = limits['digest']
+        self.assertEqual(digest['values'], {'max_digest_length': None,
+                                            'performance_schema_max_digest_length': None})
+        self.assertIsNone(digest['suggested'])
+        self.assertIsNone(digest['estimate_bytes'])
+        self.assertIn('could not be read', digest['estimate_basis'])
+
+    def test_without_server_context_there_are_no_text_limits(self):
+        conn = mysql_top('8.4.3', [attribution_row(CUT_DIGEST, sample=CUT_SAMPLE)])
+        report = discover.top_report(conn, 5, None, 'full_join', server_context=False)
+        self.assertIsNone(report['text_limits'])
+        self.assertEqual(conn.sql("Variable_name IN ('max_digest_length'"), [])
 
 
 class TestDigestHistogram(unittest.TestCase):

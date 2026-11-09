@@ -1,0 +1,50 @@
+{
+ "schema_version": "readyset-action-1.0",
+ "action": "enter_maintenance_mode",
+ "target": null,
+ "value": null,
+ "eyebrow": "MAINTENANCE MODE",
+ "title": "Enter Readyset maintenance mode?",
+ "confirm_label": "Enter maintenance mode",
+ "description": "Stops serving queries from Readyset caches and proxies traffic directly to upstream.",
+ "target_text": "Readyset (stable-250605)",
+ "statements": [
+  "ALTER READYSET ENTER MAINTENANCE MODE;"
+ ],
+ "facts": [
+  [
+   "Readyset",
+   "stable-250605 (adapter port)"
+  ],
+  [
+   "Status",
+   "Online → Maintenance Mode"
+  ]
+ ],
+ "warnings": [],
+ "changes": null,
+ "typed_guard": "MAINTENANCE MODE",
+ "undo": "ALTER READYSET EXIT MAINTENANCE MODE;",
+ "next": null,
+ "verified": [
+  "Readyset identity (@@version_comment, SHOW READYSET VERSION)"
+ ],
+ "timeout_s": 30,
+ "checks": [
+  "Refresh the Readyset place to inspect the current caches, tables and status.",
+  "The Audit log keeps this attempt as Outcome unknown; nothing is sent again."
+ ],
+ "expect": {
+  "readyset_version": "stable-250605",
+  "status": "Online"
+ },
+ "policy": {
+  "action": "confirm",
+  "tone": "danger",
+  "title": "Risky write",
+  "text": "Connection Readyset lab is a Development connection. myflames asks only before risky writes, and this statement is one.",
+  "connection_type": "development",
+  "read_only": false
+ },
+ "review_token": "fixture-token-enter_maintenance_mode"
+}

@@ -77,6 +77,11 @@
   --env-dev: #1594a8;
   --env-dev-text: #0b7489;
   --env-dev-soft: rgba(48, 176, 199, 0.13);
+  /* Row-estimate marks (Plans: chart markers, the Misestimates chip, the
+     inspector): their own hue, never a status color. Text at least 4.5:1
+     on the window, panes and its -soft tint. */
+  --estimate: #5b3cc4;
+  --estimate-soft: rgba(91, 60, 196, 0.10);
   /* Connection type strip and write-review band: the type's own hue
      (Production purple, Development teal), never a status color, so
      Production never reads as a problem; Read-only a neutral role. */
@@ -154,6 +159,8 @@
   --plan-canvas-min-h: 360px;
   --plan-compare-max-h: 640px;
   --home-table-max-h: 384px;
+  --connection-import-max-h: 50dvh;
+  --connection-import-width: 104ch;
   --sidebar-width: var(--sidebar-w);
   /* The top bar row, which is the whole sticky top: the write safety of the
      connection in use is in the window footer. Sticky panes use
@@ -237,6 +244,11 @@
   --env-dev: #1594a8;
   --env-dev-text: #0b7489;
   --env-dev-soft: rgba(48, 176, 199, 0.13);
+  /* Row-estimate marks (Plans: chart markers, the Misestimates chip, the
+     inspector): their own hue, never a status color. Text at least 4.5:1
+     on the window, panes and its -soft tint. */
+  --estimate: #5b3cc4;
+  --estimate-soft: rgba(91, 60, 196, 0.10);
   /* Connection type strip and write-review band: the type's own hue
      (Production purple, Development teal), never a status color, so
      Production never reads as a problem; Read-only a neutral role. */
@@ -316,6 +328,8 @@
     --env-dev: #40c8e0;
     --env-dev-text: #6fd6e8;
     --env-dev-soft: rgba(64, 200, 224, 0.16);
+    --estimate: #b3a4ff;
+    --estimate-soft: rgba(179, 164, 255, 0.14);
     --conn-prod-strip: var(--env-prod);
     --conn-prod-band-bg: var(--env-prod-soft);
     --conn-prod-band-text: var(--env-prod-text);
@@ -399,6 +413,8 @@
   --env-dev: #40c8e0;
   --env-dev-text: #6fd6e8;
   --env-dev-soft: rgba(64, 200, 224, 0.16);
+  --estimate: #b3a4ff;
+  --estimate-soft: rgba(179, 164, 255, 0.14);
   --conn-prod-strip: var(--env-prod);
   --conn-prod-band-bg: var(--env-prod-soft);
   --conn-prod-band-text: var(--env-prod-text);
@@ -933,6 +949,24 @@ details > p {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* After a cross-link: one chip back to the view it came from. */
+.nav-back-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: none;
+  min-width: 0;
+  max-width: 240px;
+  height: var(--control-h);
+  padding: 0 var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+}
+.nav-back-chip:hover { color: var(--ink); border-color: var(--line-strong); }
+.nav-back-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .topbar-info {
   margin-left: calc(-1 * var(--space-2));
   margin-right: auto;
@@ -1117,12 +1151,13 @@ main.is-flush > :is(.error, .notice) {
   justify-content: center;
   min-height: var(--control-h);
   border: 1px solid var(--control-line);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   background: var(--surface);
   color: var(--ink);
   font-size: var(--text-md);
   line-height: var(--leading-md);
   font-weight: 500;
+  text-align: center;
   padding: 0 var(--space-3);
   white-space: nowrap;
 }
@@ -1424,6 +1459,11 @@ details[open] > summary > .strip-text {
   flex: 1 1 0;
   min-width: 0;
 }
+.misestimate-status:not(.visually-hidden) {
+  padding: var(--space-1) var(--space-4);
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
 .plan-header-tools .plan-strip {
   /* Panels anchor to the header (its right edge), so they stay on screen. */
   position: static;
@@ -1471,6 +1511,98 @@ details[open] > summary > .strip-text {
 .plan-header-meta {
   display: none;
   color: var(--ink-muted);
+}
+/* Misestimates N, last in the plan's measurements: steps through the
+   operators whose row estimate the parser flags, in the same hue and dashed
+   edge as their chart marks. */
+.plan-stats > .plan-stat-chip {
+  align-items: center;
+}
+.plan-heading .plan-stats > .plan-stat-chip {
+  flex-direction: row;
+  align-items: center;
+}
+.plan-stat-chip dd {
+  display: flex;
+}
+.misestimate-chip {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-1-5);
+  min-height: 24px;
+  padding: 0 var(--space-2);
+  border: 1px dashed var(--estimate);
+  border-radius: var(--radius-sm);
+  background: var(--estimate-soft);
+  color: var(--estimate);
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 400;
+  line-height: var(--leading-sm);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.misestimate-chip:hover {
+  border-style: solid;
+}
+.misestimate-chip:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.misestimate-chip strong {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.misestimate-chip-mark {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border: 1.5px dashed currentColor;
+  border-radius: 2px;
+}
+/* Above 1200 px the measurements share the header's first row with the plan
+   name, Plan summary, SQL and Export, which fill it: the chip keeps its mark
+   and count (the word stays in its accessible name and tooltip) unless the
+   plan screen is very wide. Narrower windows put the measurements on their
+   own row, with room for the word. */
+@media (min-width: 1201px) {
+  @container plan-screen (max-width: 1499px) {
+    .misestimate-chip {
+      gap: var(--space-1);
+      padding: 0 var(--space-1-5);
+    }
+    .misestimate-chip .misestimate-chip-label {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: nowrap;
+    }
+  }
+}
+/* The inspector's row-estimate verdict: the chart's chip, then its text. */
+.misestimate-verdict {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-2);
+  margin: 0 0 var(--space-2);
+  min-width: 0;
+}
+.misestimate-tag {
+  flex: none;
+  padding: 0 var(--space-1-5);
+  border: 1px solid var(--estimate);
+  border-radius: 9px;
+  color: var(--estimate);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  white-space: nowrap;
+}
+@media (forced-colors: active) {
+  .misestimate-chip, .misestimate-tag { border-color: CanvasText; color: CanvasText; }
 }
 /* A narrow plan (the 720 px window): the plan header keeps one row for the
    name, Plan summary, SQL and Export (the engine and operator count move
@@ -4043,6 +4175,7 @@ kbd {
   --mfc-link: var(--accent-text);
   --mfc-hover: var(--surface-hover);
   --mfc-selected: var(--accent-soft);
+  --mfc-estimate: var(--estimate);
   margin-left: var(--sidebar-width);
   width: calc(100% - var(--sidebar-width));
   min-width: 0;

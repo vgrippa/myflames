@@ -361,7 +361,7 @@ export function KillDialog({
 }: {
   target: KillTarget;
   /** What the session blocks (Locks), or nothing when unknown. */
-  blocking?: ReactNode;
+  blocking?: ReactNode | ((mode: "connection" | "query") => ReactNode);
   busy: boolean;
   /** The KILL chosen before the sheet opened (a row menu's Kill query… or
    * Kill connection…); KILL QUERY only while the session runs a statement. */
@@ -422,6 +422,38 @@ export function KillDialog({
     >
       {reviewError && <p role="alert" className="error kill-review-error">{reviewError}</p>}
       {review && <Sql text={review.statements.join(";\n")} label="Statement to send" />}
+      <fieldset className="kill-choices" disabled={busy}>
+        <legend>What to end</legend>
+        <label>
+          <input type="radio" name="kill-mode" value="connection" checked={mode === "connection"} onChange={() => setMode("connection")} />
+          <span>
+            <strong>Kill connection</strong> (rolls back its open transaction)
+            <span className="hint">
+              {target.running
+                ? "Closes the connection and rolls back its transaction; its locks are released when the rollback ends."
+                : "The session is idle, so KILL QUERY would not help: there is no statement to stop, and its transaction keeps its locks."}
+            </span>
+          </span>
+        </label>
+        {target.running && (
+          <label>
+            <input type="radio" name="kill-mode" value="query" checked={mode === "query"} onChange={() => setMode("query")} />
+            <span>
+              <strong>Kill query only</strong>
+              <span className="hint">
+                Stops the running statement. Its transaction stays open with its locks unless the session runs in autocommit
+                mode, so the sessions it blocks may keep waiting.
+              </span>
+            </span>
+          </label>
+        )}
+      </fieldset>
+      {blocking && (
+        <div className="kill-blocking">
+          <span className="lock-sql-label">Blocking</span>
+          {typeof blocking === "function" ? blocking(mode) : blocking}
+        </div>
+      )}
       <dl className="kill-facts">
         {target.via && (
           <div>
@@ -469,38 +501,6 @@ export function KillDialog({
       ) : target.last_statement ? (
         <Sql text={target.last_statement} label="Last statement" />
       ) : null}
-      {blocking && (
-        <div className="kill-blocking">
-          <span className="lock-sql-label">Blocking</span>
-          {blocking}
-        </div>
-      )}
-      <fieldset className="kill-choices" disabled={busy}>
-        <legend>What to end</legend>
-        <label>
-          <input type="radio" name="kill-mode" value="connection" checked={mode === "connection"} onChange={() => setMode("connection")} />
-          <span>
-            <strong>Kill connection</strong> (rolls back its open transaction)
-            <span className="hint">
-              {target.running
-                ? "Closes the connection and rolls back its transaction; its locks are released when the rollback ends."
-                : "The session is idle, so KILL QUERY would not help: there is no statement to stop, and its transaction keeps its locks."}
-            </span>
-          </span>
-        </label>
-        {target.running && (
-          <label>
-            <input type="radio" name="kill-mode" value="query" checked={mode === "query"} onChange={() => setMode("query")} />
-            <span>
-              <strong>Kill query only</strong>
-              <span className="hint">
-                Stops the running statement. Its transaction stays open with its locks unless the session runs in autocommit
-                mode, so the sessions it blocks may keep waiting.
-              </span>
-            </span>
-          </label>
-        )}
-      </fieldset>
     </ConfirmSheet>
   );
 }

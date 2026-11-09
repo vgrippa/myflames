@@ -1,0 +1,42 @@
+/* Depth is confined to the diagram. Text remains planar and selectable. */
+.topology-presentation-bar { display: flex; justify-content: flex-end; margin-bottom: var(--space-4); }
+.topology-presentation-controls { display: inline-flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.topology-presentation-controls button[aria-pressed=true] { border-color: var(--accent); }
+.topology-server-glyph { width: 32px; height: 32px; flex: none; stroke: var(--line-strong); stroke-width: 1; stroke-linejoin: round; }
+.server-top { fill: var(--surface-hover); }
+.server-side { fill: var(--surface-muted); }
+.server-front { fill: var(--surface-raised); }
+.server-slots { fill: none; stroke: var(--ink-secondary); stroke-linecap: round; }
+.topology-eyebrow { display: flex; align-items: center; gap: var(--space-2); }
+[data-depth=on] .topology-node,
+[data-depth=on] .cluster-card:not(.is-detached) {
+  border-bottom-width: 4px;
+  background: linear-gradient(145deg, var(--surface-raised), var(--surface));
+  box-shadow: 4px 4px 0 var(--surface-muted), 5px 5px 0 var(--line);
+}
+[data-depth=on] .cluster-card.is-selected { background: var(--accent-soft); border-color: var(--accent); }
+[data-depth=on] .cluster-card.tone-watch { border-left: 3px solid var(--warn); }
+.cluster-card { transition: transform 180ms ease-out, background var(--motion-hover), box-shadow var(--motion-hover); }
+[data-depth=on] button.cluster-card:hover { transform: translateY(-2px); }
+.topology-line::before {
+  content: ""; display: none; position: absolute; top: -4px; left: 0;
+  width: 6px; height: 6px; border-radius: 50%; background: var(--link-color);
+}
+[data-motion=on] .topology-link.is-running .topology-line::before {
+  display: block; animation: topology-direction 2.8s ease-in-out infinite;
+}
+.cluster-stem { position: relative; }
+[data-motion=on] .cluster-stem.is-active::after {
+  content: ""; position: absolute; left: -4px; top: 0;
+  width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+  animation: topology-membership 2.8s ease-in-out infinite alternate;
+}
+@keyframes topology-direction { from { left: 0; } to { left: calc(100% - 6px); } }
+@keyframes topology-membership { from { transform: translateY(0); } to { transform: translateY(18px); } }
+/* Stale and offscreen reports must never suggest a live connection. */
+:is([hidden], .is-stale, .is-other-connection) .topology-line::before, :is([hidden], .is-stale, .is-other-connection) .cluster-stem::after { animation: none !important; display: none !important; }
+@media (prefers-reduced-motion: reduce) {
+  .topology-line::before, .cluster-stem::after { animation: none !important; display: none !important; }
+  .cluster-card { transition: none; }
+  [data-depth=on] button.cluster-card:hover { transform: none; }
+}

@@ -45,6 +45,9 @@ export interface ZoomController {
   /** The page may have changed the canvas's screen scale (a report column
    * resized): refit while still fitted; a deliberate zoom or pan is kept. */
   rescale(): void;
+  /** Pan, keeping the zoom, so a graph rectangle is in view: centered when
+   * any part of it (with a 28-unit margin) was outside the view. */
+  show(x: number, y: number, w: number, h: number): void;
   /** True when the current pointer gesture moved beyond the drag threshold. */
   dragged(): boolean;
   destroy(): void;
@@ -171,6 +174,18 @@ export function createZoom(options: ZoomOptions): ZoomController {
     if (fitted && Math.abs(screenScale() - fittedScale) > 1e-6) fit();
   }
 
+  function show(x: number, y: number, w: number, h: number) {
+    if (![x, y, w, h].every(Number.isFinite)) return;
+    const margin = 28;
+    if (x - margin >= box.x && y - margin >= box.y &&
+        x + w + margin <= box.x + box.w && y + h + margin <= box.y + box.h) return;
+    stopWheel();
+    fitted = false;
+    box.x = x + w / 2 - box.w / 2;
+    box.y = y + h / 2 - box.h / 2;
+    paint();
+  }
+
   function animateWheel(now: number) {
     // A bounded logarithmic target avoids a backlog from macOS momentum
     // events; elapsed time is capped so a background tab cannot jump.
@@ -283,6 +298,7 @@ export function createZoom(options: ZoomOptions): ZoomController {
     zoom,
     resize,
     rescale,
+    show,
     dragged: () => moved,
     destroy() {
       stopWheel();

@@ -11,10 +11,10 @@ from .parser import (
     format_sql,
     build_flame_entries,
     flatten_nodes,
-    enhance_tooltip_flame,
+    enhance_flame_titles,
     analyze_plan,
+    misestimate_marks,
     render_info_panel,
-    xml_escape,
 )
 from .flamegraph import folded_to_svg, plan_folded
 from .output_bargraph import render_bargraph
@@ -75,7 +75,7 @@ def render_explain(
     if output_type == "flamegraph":
         # Whole microseconds per measured operator (flamegraph.flame_scale);
         # tooltips print readable units (flamegraph.flame_value_text).
-        folded_text, flame_unit = plan_folded(build_flame_entries(root), root["total_time"],
+        folded_text, flame_unit = plan_folded(build_flame_entries(root, node_identity=True), root["total_time"],
                                               keep_root=True)
         if not folded_text.strip():
             raise ValueError("No flame graph data (all zero self-time)")
@@ -96,16 +96,12 @@ def render_explain(
             colors=colors,
             teach_index_by_folded=teach_maps["by_folded_label"],
             complexity_by_folded=_complexity_by_folded or None,
+            frame_labels={"operator:" + n["node_id"]: n["folded_label"] for n in flatten_nodes(root)},
+            frame_ids={"operator:" + n["node_id"]: n["node_id"] for n in flatten_nodes(root)},
+            marks=misestimate_marks(root),
         )
         if not no_enhance:
-            op_details = {n["folded_label"]: n["details"] for n in flatten_nodes(root)}
-
-            def repl(m):
-                original = m.group(1).replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&").replace("&quot;", '"')
-                enhanced = enhance_tooltip_flame(original, op_details)
-                return "<title>" + xml_escape(enhanced).replace("\n", "&#10;") + "</title>"
-
-            svg = re.sub(r"<title>([^<]+)</title>", repl, svg)
+            svg = enhance_flame_titles(svg, root)
         m_height = re.search(r'<svg[^>]+height="(\d+)"', svg)
         m_width = re.search(r'<svg[^>]+width="(\d+)"', svg)
         if m_height and m_width:

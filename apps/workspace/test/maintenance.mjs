@@ -4,8 +4,8 @@ import { chooseConnection, connectionOption } from "./chrome-helpers.mjs";
 // tool detection and plans from test_lifecycle's fake tools and replayed
 // connections, the dump job running and cancelled, the upgrade checks from
 // the live recordings in test/fixtures/lifecycle/), and the real Python server
-// for the session, saved connections and the audit trail. Covers: nothing read
-// until asked, tools, the upgrade check with its partial check label, the
+// for the session, saved connections and the audit trail. Covers: automatic local
+// tool detection, tools, the upgrade check with its partial check label, the
 // dump preflight refused for a folder with files and the confirmation with the
 // exact commands (Cancel and Escape recorded as declined), start, progress
 // and Cancel, a lost Start reply recovered from the job list without a second
@@ -36,7 +36,7 @@ async function assertPrivilege(page, selector, state, need) {
   }, state);
   assert.equal(feedback.inlineUnknown, false, 'status never appears inside the action button');
   if (state === 'unknown' || state === 'denied') {
-    assert.equal(feedback.visible, true, 'the gate has visible secondary text');
+    assert.equal(feedback.visible, state !== 'unknown' || !selector.includes('.ops-actions'), 'read-only preflight hides the unknown note; confirmation retains it');
     assert.equal(feedback.outside, true, 'feedback sits beside or below the button');
     if (state === 'unknown') assert.equal(feedback.text, 'Unverified');
     else if (need) assert.ok(feedback.text.includes(need), feedback.text);
@@ -58,14 +58,17 @@ const done = await load("lifecycle-job-dump-done.json");
 const schemas = await load("schemas-mysql-8.4.json");
 
 const UPGRADE = "/api/lifecycle/upgrade-check";
+const TARGETS = "/api/lifecycle/upgrade-targets";
+const targets = await load("lifecycle-upgrade-targets-mysql-8.4.json");
 const PREPARE = "/api/lifecycle/prepare";
 const START = "/api/lifecycle/start";
 const STATUS = "/api/lifecycle/status";
 const CANCEL = "/api/lifecycle/cancel";
 const JOBS = "/api/lifecycle/jobs";
 const DECLINED = "/api/audit/declined";
+const REVEAL = "/api/files/local/reveal";
 /** What the mocked server answers next, per path. */
-const next = { upgrade: native, prepare: [], start: [] };
+const next = { upgrade: native, prepare: [], start: [], reveal: [] };
 /** The jobs myflames holds, by id, as the status endpoint would return them,
  * and the endpoint each belongs to (the jobs list answers by endpoint). */
 const held = new Map();
@@ -76,7 +79,10 @@ const job = (base, id, extra = {}) => ({ ...structuredClone(base), id, ...extra 
 // The list of views docked, as a person who docked it: this suite asserts
 // the list's markers and keys (server-nav covers the floating default).
 const h = await open("/api/lifecycle/tools", "maintenance", {
+  "/api/files/local/list": body => ({ status: 200, body: { path: body.path || "/Users/dba", home: "/Users/dba", entries: [], transfers: false } }),
+  [REVEAL]: body => next.reveal.shift() || { status: 200, body: { revealed: body.path }, delay: 100 },
   [UPGRADE]: () => ({ status: 200, body: next.upgrade, delay: 50 }),
+  [TARGETS]: () => ({ status: 200, body: targets, delay: 50 }),
   [PREPARE]: () => next.prepare.shift() || { status: 200, body: dumpPlan },
   [START]: (body) => {
     const reply = next.start.shift();
@@ -150,9 +156,22 @@ const preflight = async () => {
   // The window footer is fixed over the bottom of the page: a button in the last pixels of the
   // viewport is in view for Puppeteer but covered, so bring it to the middle first.
   await page.$eval(`${view} .ops-actions button`, (e) => e.scrollIntoView({ block: "center" }));
-  await page.locator(`${view} .ops-actions button ::-p-text(Run preflight)`).click();
+  await page.locator(`${view} .ops-actions button ::-p-text(Start)`).click();
 };
 const closedSheet = () => page.waitForFunction(() => !document.querySelector("dialog.ops-confirm"));
+async function captureSheet(prefix) {
+  for (const theme of ['light', 'dark']) {
+    await page.evaluate(t => document.documentElement.dataset.theme = t, theme);
+    for (const width of [1440, 720]) {
+      await page.setViewport({ width, height: width === 720 ? 520 : 900 });
+      await page.evaluate(() => document.fonts.ready);
+      await page.waitForFunction(() => document.documentElement.scrollWidth <= innerWidth + 1);
+      await page.screenshot({ path: path.join(h.shots, `${prefix}-${theme}-${width}.png`) });
+    }
+  }
+  await page.setViewport({ width: 1440, height: 1000 });
+  await page.evaluate(() => document.documentElement.dataset.theme = 'light');
+}
 
 try {
   // Two saved connections: Primary (the one in use) and Archive (to switch to).
@@ -164,20 +183,23 @@ try {
   // Maintenance is the last view in Setup.
   assert.deepEqual(await page.$$eval(".source-list .source-group", (groups) =>
     [...groups.find((g) => g.querySelector("h3").textContent === "Setup").querySelectorAll(".source-item")].at(-1).dataset.view), "maintenance");
+  state.fallback = { status: 200, body: tools };
   await h.view("maintenance");
-  assert.match(await text(`${view} .view-empty`), /Detect maintenance tools/);
+  await page.waitForSelector(`${view} [data-row-key="tool:mysqlsh"]`);
   assert.match(await h.popover("About Maintenance"), /only read.*Audit log/s);
-  assert.equal(state.seen.length, 0, "nothing is read until asked");
+  assert.equal(state.seen.length, 1, "one local tool detection on open");
+  assert.equal(state.seen[0].check_updates, false);
+  assert.equal(calls(PREPARE).length + calls(START).length, 0, "opening never checks or starts a task");
   await settle(JOBS, 1, "the job list (no database read) is asked once for the connection in use");
   // Health is the Server place's first view: it read once on open for each connection
   // it was shown with (the default one, then Primary). Maintenance itself read nothing else.
   const healthReads = calls("/api/live/health");
   assert.deepEqual(healthReads.map((o) => o.body.connection.host), ["127.0.0.1", "primary.test"], "one on-open Health read per connection");
-  assert.deepEqual(state.other.filter((o) => o.path !== JOBS && o.path !== "/api/live/health"), []);
+  // Choosing Primary in the picker checked its readiness (connection readiness contract).
+  assert.deepEqual(state.other.filter((o) => o.path !== JOBS && o.path !== "/api/live/health" && o.path !== "/api/live/readiness"), []);
 
   // Tools on this computer and what they offer for the server.
   state.fallback = { status: 200, body: tools };
-  await page.locator(`${view} .view-empty button ::-p-text(Detect tools)`).click();
   await page.waitForSelector(`${view} [data-row-key="tool:mysqlsh"]`);
   assert.equal(await text(`${view} .summary-text`), "MySQL 8.4.3 · Tools");
   assert.equal(await page.$(`${view} .summary-line .status-pill`), null, "no verdict on a tool list");
@@ -188,7 +210,24 @@ try {
 
   // Upgrade check: the partial check without MySQL Shell, labelled as such.
   await section("Upgrade check");
-  assert.deepEqual(await page.$$eval(`${view} select[aria-label="Target version"] option`, (els) => els.map((e) => e.value)), ["", "9.6.0", "custom"]);
+  // Targets come from the release notes and the upgrade paths: 8.4 patches and
+  // the next LTS (9.7), newest first, with the newest 9.7 suggested and chosen.
+  await page.waitForSelector(`${view} .ops-targets strong`);
+  assert.equal(calls(TARGETS).length, 1, "the target list reads once when Upgrade check opens");
+  assert.deepEqual(await page.$$eval(`${view} select[aria-label="Target version"] option`, (els) => els.map((e) => e.value)),
+    ["", "9.7.4", "9.7.3", "9.7.2", "9.7.1", "9.7.0", "8.4.13", "8.4.12", "8.4.11", "8.4.10", "8.4.9", "8.4.8", "8.4.7", "8.4.6", "8.4.5", "8.4.4", "custom"]);
+  assert.equal(await page.$eval(`${view} select[aria-label="Target version"]`, (e) => e.value), "9.7.4");
+  assert.match(await text(`${view} select[aria-label="Target version"] option[value="9.7.4"]`), /^9\.7\.4 · next LTS · suggested$/);
+  const notes = await text(`${view} .ops-targets`);
+  assert.match(notes, /Installed from: RPM packages · MySQL release notes · read 21:20 UTC · 15 releases offered/);
+  assert.match(notes, /MySQL Yum repository/);
+  assert.match(notes, /9\.7\.4 \(2026-10-20\): next LTS · needs MySQL Shell 9\.7 or newer for the full check · Release notes/);
+  assert.equal(await page.$eval(`${view} .ops-targets a[href*="news-9-7-4"]`, (a) => a.getAttribute("href")), "https://dev.mysql.com/doc/relnotes/mysql/9.7/en/news-9-7-4.html");
+  await page.select(`${view} select[aria-label="Target version"]`, "8.4.13");
+  assert.match(await text(`${view} .ops-targets`), /8\.4\.13 \(2026-10-20\): same series · Release notes/);
+  assert.doesNotMatch(await text(`${view} .ops-targets`), /needs MySQL Shell/);
+  await page.select(`${view} select[aria-label="Target version"]`, "9.7.4");
+  await captureSheet("upgrade-targets");
   await page.select(`${view} select[aria-label="Target version"]`, "custom");
   await field("Exact version", "8.4.0");
   await assertPrivilege(page, `${view} .ops-actions button`, "unknown");
@@ -230,11 +269,20 @@ try {
   const asked = calls(PREPARE)[0].body;
   assert.deepEqual([asked.operation, asked.directory, asked.schemas, asked.tables, asked.threads, asked.prefer_shell],
     ["dump", "/Users/dba/maintenance/busy", ["mftab"], [], 4, true]);
-  await page.waitForSelector(`${view} .view-status [role=alert]`);
-  assert.match(await text(`${view} .view-status [role=alert]`), /must not exist or must be empty; refusing to overwrite/);
+  await page.waitForSelector(`${view} .ops-preflight-result.has-result`);
+  assert.match(await text(`${view} .ops-preflight-result.has-result`), /must not exist or must be empty; refusing to overwrite/);
   assert.equal(await page.$(sheet), null, "no confirmation after a refused preflight");
   // An absent folder: the confirmation with the exact commands, no typed target for a dump.
   await field("Output folder", dumpPlan.target);
+  const warningPlan = structuredClone(dumpPlan);
+  warningPlan.tool.name = 'mysqlsh';
+  warningPlan.warnings = [
+    'A consistent snapshot protects InnoDB data only. Concurrent DDL must be avoided.',
+    'The reviewed tool options determine whether routines, events and triggers are included.',
+    'Shell briefly takes a global read lock; writers wait behind long statements.',
+    'MySQL Shell 8.4 is older than the server (8.5) and may fail on it; update MySQL Shell.',
+  ];
+  next.prepare.push({ status: 200, body: warningPlan });
   await preflight();
   await page.waitForSelector(sheet);
   assert.equal(await text(`${sheet} .eyebrow`), "DUMP");
@@ -242,6 +290,12 @@ try {
   assert.equal(await text(`${sheet} .ops-target strong`), dumpPlan.target);
   assert.equal(await text(`${sheet} .ops-commands code`), dumpPlan.commands.join("\n"));
   assert.equal(await page.$(`${sheet} input[type=text]`), null);
+  assert.equal(await page.$eval(confirmButton, e => e.classList.contains('primary') && !e.classList.contains('danger-solid')), true);
+  assert.match(await text(`${sheet} .inspector-fields`), /Contentsapp \(all tables\)/);
+  assert.match(await text(`${sheet} .ops-warning`), /^MySQL Shell .*older than the server/);
+  assert.equal(await page.$eval(`${sheet} .ops-warning`, e => !!(e.compareDocumentPosition(e.parentElement.querySelector('.inspector-fields')) & Node.DOCUMENT_POSITION_FOLLOWING)), true);
+  assert.equal(await page.$$eval(`${sheet} .ops-warning`, es => es.length), 2, 'routine caveats remain plain notes');
+  await captureSheet('dump-confirm');
   assert.equal(await page.evaluate(() => document.activeElement?.textContent), "Cancel");
   await page.keyboard.press("Escape");
   await closedSheet();
@@ -254,6 +308,13 @@ try {
   await closedSheet();
   await settle(DECLINED, 2);
   assert.equal(calls(START).length, 0, "nothing was started");
+  await field('Output folder', '/tmp/settings-changed');
+  assert.equal(await page.$(`${view} .ops-details`), null, 'form edits hide commands from the previous plan');
+  next.prepare.push({ status: 400, body: { error: 'Shell dry run failed for the new settings.' } });
+  await preflight();
+  await page.waitForFunction(v => document.querySelector(`${v} .ops-preflight-result`)?.textContent.includes('Shell dry run failed'), {}, view);
+  assert.equal(await page.$(`${view} .ops-details`), null, 'failed preflight clears old commands');
+  await field('Output folder', dumpPlan.target);
 
   // Start, progress, Cancel.
   next.start.push({ job: job(running, "job-1") });
@@ -262,6 +323,7 @@ try {
   await page.click(confirmButton);
   await settle(START, 1);
   const started = calls(START)[0].body;
+  assert.equal('typed_acknowledgement' in started, false, 'ordinary dumps send no acknowledgement');
   assert.equal(started.plan.review_token, "review-dump");
   assert.deepEqual(started.plan, dumpPlan, "Start round-trips the whole prepared plan");
   assert.deepEqual([started.operation, started.typed_target, started.confirmed, started.plan.binding], ["dump", dumpPlan.target, true, dumpPlan.binding]);
@@ -269,7 +331,35 @@ try {
   await page.waitForSelector(`${view} .ops-job[data-job=job-1][data-state=running]`);
   assert.match(await text(`${view} .ops-job`), /Dump · .*Running.*Cancel/);
   assert.match(await text(`${view} .ops-job .ops-progress`), /25%/);
-  await settle(STATUS, 2, "a running job is polled");
+  await page.waitForFunction(() => document.activeElement?.dataset.job === 'job-1');
+  assert.equal(await page.$eval(`${view} .ops-job[data-job=job-1]`, e => e.tabIndex), -1, 'Start focuses its job card after closing the sheet');
+  // mysqldump is silent: table sizes supply an explicitly approximate percent.
+  const mib = 2 ** 20;
+  const phase = 'Dumping with mysqldump into dump.sql.';
+  held.set('job-1', job(running, 'job-1', { progress: null, phase, elapsed_s: 83,
+    output: { written_bytes: 120 * mib, estimated_bytes: 262 * mib },
+    events: [{ at: 'now', stream: 'stderr', text: phase }] }));
+  const firstCard = `${view} .ops-job[data-job=job-1]`;
+  await page.waitForFunction(s => document.querySelector(`${s} .ops-progress`)?.textContent.includes('≈46%'), {}, firstCard);
+  assert.match(await text(`${firstCard} .ops-job-facts`), /Dumping with mysqldump.*120.0 MiB written of about 262.0 MiB.*Elapsed 1:23/);
+  assert.equal(await page.$(`${firstCard} .ops-log-line`), null, 'phase is not repeated as tool output');
+  assert.equal(await page.$eval(`${firstCard} progress`, e => e.hasAttribute('value')), true);
+  assert.match(await page.$eval(`${firstCard} .ops-progress`, e => e.title), /Estimated from the server's table sizes/);
+  assert.match(await text(`${view} .ops-actions .ops-job-summary`), /Dump running · ≈46% · 120.0 MiB.*Show progress/);
+  // Show progress has the same focus behavior, including reduced motion.
+  await page.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'reduce' }]);
+  await page.locator(`${view} .ops-job-summary button ::-p-text(Show progress)`).click();
+  await page.waitForFunction(() => document.activeElement?.dataset.job === 'job-1');
+  await page.emulateMediaFeatures([]);
+  held.set('job-1', job(running, 'job-1', { progress: null, phase, elapsed_s: 85,
+    output: { written_bytes: 314 * mib, estimated_bytes: 262 * mib } }));
+  await page.waitForFunction(s => { const text = document.querySelector(`${s} .ops-job-facts`)?.textContent || ''; return text.includes('more than') && /MiB\/s/.test(text); }, {}, firstCard);
+  assert.match(await text(`${firstCard} .ops-job-facts`), /314.0 MiB written, more than the 262.0 MiB estimate/);
+  assert.match(await text(`${firstCard} .ops-job-facts`), /MiB\/s/, 'rate appears after two output snapshots');
+  assert.equal(await page.$eval(`${firstCard} progress`, e => e.hasAttribute('value')), false, 'exceeding the estimate is indeterminate');
+  assert.doesNotMatch(await text(`${firstCard} .ops-progress`), /Running|%/, 'no duplicate Running label or invented completion');
+  await captureSheet('dump-progress');
+  assert.ok(calls(STATUS).length >= 2, "a running job is polled through successive snapshots");
   assert.equal(await page.$eval(`${view} .ops-actions button`, (e) => e.disabled), true, "no second operation while one runs");
   await page.locator(`${view} .ops-job button ::-p-text(Cancel)`).click();
   await settle(CANCEL, 1);
@@ -279,6 +369,7 @@ try {
   await page.waitForSelector(`${view} .ops-job[data-state=cancelled]`);
   assert.match(await text(`${view} .ops-job`), /Cancelled/);
   assert.match(await text(`${view} .ops-job .ops-warning`), /An incomplete dump may remain/);
+  assert.equal(calls(REVEAL).length, 0, "cancelled dumps never open a folder");
   const polls = calls(STATUS).length;
   await pause(2000);
   assert.equal(calls(STATUS).length, polls, "a finished job is not polled");
@@ -295,12 +386,34 @@ try {
   assert.match(await text(`${view} .ops-note`), /The Start reply was lost, but the dump is in myflames' job list.*It was not started again\./);
   await pause(500);
   assert.equal(calls(START).length, 2, "Start is sent once");
-  // A completed dump shows its verification and manifest.
-  held.set("job-2", job(done, "job-2"));
+  // Completion is followed even after leaving Dump for another section.
+  await section("Restore");
+  held.set("job-2", job(done, "job-2", { elapsed_s: 91 }));
+  await settle(REVEAL, 1, "completion opens the folder while another section is visible");
+  await section("Dump");
   await page.waitForSelector(`${view} .ops-job[data-job=job-2][data-state=done]`);
   assert.match(await text(`${view} .ops-job[data-job=job-2]`), /Completed/);
+  await settle(REVEAL, 1, 'a dump recovered after a lost Start reply auto-opens once');
+  assert.deepEqual(calls(REVEAL)[0].body, { path: `${done.result.directory}/myflames-manifest.json` });
+  const completedCard = `${view} .ops-job[data-job=job-2]`;
+  assert.match(await text(`${completedCard} .ops-job-facts`), /Completed in 1:31/);
+  await page.waitForFunction(s => document.querySelector(s)?.textContent.includes('Opened the dump folder'), {}, completedCard);
+  const openLabel = await page.evaluate(() => /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent)
+    ? 'Open in Finder' : /Win/.test(navigator.platform || navigator.userAgent) ? 'Open in File Explorer' : 'Open folder');
+  assert.equal(await text(`${completedCard} .ops-job-folder button .action-button-label > span`), openLabel);
+  await section('Tools'); await section('Dump');
+  await pause(1700);
+  assert.equal(calls(REVEAL).length, 1, 'rerenders and section changes never auto-open twice');
+  await page.click(`${completedCard} .ops-job-folder button`);
+  await settle(REVEAL, 2, 'the Open folder button can reveal again');
+  assert.deepEqual(calls(REVEAL)[1].body, calls(REVEAL)[0].body);
+  await page.waitForFunction(s => document.querySelector(s)?.textContent.includes('Opened the dump folder') && !document.querySelector(`${s} .ops-job-folder button[aria-busy=true]`), {}, completedCard);
   assert.deepEqual(await texts(`${view} .ops-job[data-job=job-2] .ops-verification strong`), ["files", "source_sample_stability", "dump_rows"]);
   assert.ok(await page.$(`${view} .ops-job[data-job=job-2] details summary ::-p-text(Manifest)`));
+  await page.waitForFunction((v, old) => {
+    const path = document.querySelector(`${v} .ops-folder-input input`)?.value;
+    return path?.startsWith('/Users/dba/maintenance/') && path !== old;
+  }, {}, view, dumpPlan.target);
 
   // Restore: the typed target gates Start.
   await section("Restore");
@@ -327,9 +440,41 @@ try {
   await page.click(confirmButton);
   await settle(START, 3);
   assert.equal(calls(START)[2].body.typed_target, "127.0.0.1:3306");
+  assert.equal('typed_acknowledgement' in calls(START)[2].body, false, 'ordinary restores send no acknowledgement');
   await closedSheet();
   await page.waitForSelector(`${view} .view-status [role=alert]`);
   assert.match(await text(`${view} .view-status [role=alert]`), /Read-only: myflames refuses every change/);
+
+  // System-table restores need a separate explicit acknowledgement. Checking
+  // it never replaces typing the target, and each new review starts unchecked.
+  const systemPlan = { ...structuredClone(restorePlan), review_token: 'review-system-tables',
+    required_acknowledgement: `REPLACE mysql SYSTEM TABLES ON ${restorePlan.target}` };
+  const ack = `${sheet} .ops-system-ack input[type=checkbox]`;
+  next.prepare.push({ status: 200, body: systemPlan });
+  await preflight(); await page.waitForSelector(ack);
+  assert.equal(await page.$eval(ack, e => e.checked), false);
+  assert.equal(await page.$eval(confirmButton, e => e.disabled), true);
+  await page.click(ack);
+  assert.equal(await page.$eval(confirmButton, e => e.disabled), true, 'acknowledgement alone does not confirm the target');
+  await page.type(`${sheet} input[type=text]`, 'wrong target');
+  assert.equal(await page.$eval(confirmButton, e => e.disabled), true);
+  await page.$eval(`${sheet} input[type=text]`, e => e.select());
+  await page.type(`${sheet} input[type=text]`, systemPlan.target);
+  assert.equal(await page.$eval(confirmButton, e => e.disabled), false);
+  await page.keyboard.press('Escape'); await closedSheet();
+  next.prepare.push({ status: 200, body: systemPlan });
+  await preflight(); await page.waitForSelector(ack);
+  assert.equal(await page.$eval(ack, e => e.checked), false, 'cancelled acknowledgement never carries into a new review');
+  await page.type(`${sheet} input[type=text]`, systemPlan.target);
+  assert.equal(await page.$eval(confirmButton, e => e.disabled), true, 'typed target alone cannot acknowledge mysql replacement');
+  await page.click(ack);
+  await captureSheet('restore-system-ack');
+  const beforeAckStart = calls(START).length;
+  next.start.push({ status: 200, body: { schema_version: 'lifecycle-job-1.0', id: null, operation: 'restore', state: 'refused', progress: null, detail: null, events: [], result: null, error: 'Synthetic acknowledgement fixture refusal.' } });
+  await page.click(confirmButton); await closedSheet();
+  await settle(START, beforeAckStart + 1);
+  assert.equal(calls(START).at(-1).body.typed_acknowledgement, systemPlan.required_acknowledgement);
+  assert.deepEqual(calls(START).at(-1).body.plan, systemPlan, 'the reviewed plan and token are unchanged');
 
   // Clone: the donor fields fill from a saved connection (never the one in
   // use, never a password), and stay editable.
@@ -353,12 +498,12 @@ try {
   await preflight();
   await page.waitForSelector(`${view} [data-row-key^="check:"]`);
   assert.equal(await page.$(sheet), null, "no confirmation after failed checks");
-  assert.match(await text(`${view} .ops-note`), /found problems, so nothing can start/);
+  assert.match(await text(`${view} .ops-preflight-result`), /Start clone is blocked by 2 failed checks/);
   const asked2 = calls(PREPARE).at(-1).body;
   assert.deepEqual([asked2.operation, asked2.donor.host, asked2.donor.user, asked2.require_ssl, asked2.data_directory], ["clone", "donor.test", "clone", true, ""]);
   const first = await page.$$eval(`${view} [data-row-key^="check:"]`, (rows) => rows.slice(0, 2).map((r) => [...r.querySelectorAll("td")].slice(0, 2).map((td) => td.textContent)));
-  assert.deepEqual(first, [["Failed", "donor_plugin"], ["Failed", "valid_donor"]]);
-  const failedRow = await page.$$eval(`${view} [data-row-key^="check:"]`, (rows) => rows.find((r) => /valid_donor/.test(r.textContent)).dataset.rowKey);
+  assert.deepEqual(first, [["Failed", "Donor plugin"], ["Failed", "Valid donor"]]);
+  const failedRow = await page.$$eval(`${view} [data-row-key^="check:"]`, (rows) => rows.find((r) => /Valid donor/.test(r.textContent)).dataset.rowKey);
   await h.select(`${view} [data-row-key="${failedRow}"]`);
   assert.match(await h.inspector(), /valid_donorFailed/);
   assert.match(await h.inspector(), /clone_valid_donor_list/);
@@ -387,6 +532,7 @@ try {
   assert.deepEqual(calls(START).at(-1).body.plan, reviewedClone);
   assert.equal(calls(START).at(-1).body.donor.password, "donor-secret-1");
   await closedSheet();
+  assert.equal(calls(REVEAL).length, 2, "a completed clone never opens the dump folder");
 
   // A running job and the tools report greyed after a connection switch; polling waits.
   await section("Dump");
@@ -399,7 +545,8 @@ try {
   await page.waitForSelector(`${view} .ops-job[data-job=job-3][data-other-connection]`);
   assert.match(await text(`${view} .ops-job[data-job=job-3]`), /Switch back to that connection to manage this job\./);
   assert.equal(await page.$eval(`${view} .ops-job[data-job=job-3] .ops-job-head button`, (e) => e.disabled), true);
-  assert.ok(await page.$(`${view}[data-other-connection]`), "the plan from the other connection is greyed");
+  await page.waitForFunction(v => !document.querySelector(`${v}[data-other-connection]`), {}, view);
+  assert.equal(state.seen.filter(r => r.connection.host === "archive.test").length, 1, "tool discovery follows the new connection automatically");
   const quiet = calls(STATUS).length;
   await pause(2000);
   assert.ok(calls(STATUS).length <= quiet + 1, "no polling for another connection's job");
@@ -414,11 +561,15 @@ try {
   assert.equal(await page.$eval(`${view} .segmented [aria-pressed=true]`, (e) => e.textContent), "Dump");
   // The page is on Archive now: its job list is empty.
   assert.equal(await page.$(`${view} .ops-job`), null);
+  const revealsBeforeAdoption = calls(REVEAL).length;
   // Back on Primary the running job is found again and followed.
   const before = calls(STATUS).length;
   await connect("Primary");
   await page.waitForSelector(`${view} .ops-job[data-job=job-3][data-state=running]`);
   await settle(STATUS, before + 1, "the found job is polled");
+  await page.waitForSelector(`${view} .ops-job[data-job=job-2][data-state=done] .ops-job-folder button`);
+  await pause(1700);
+  assert.equal(calls(REVEAL).length, revealsBeforeAdoption, 'a completed dump adopted on mount never auto-reveals');
   await page.locator(`${view} .ops-job[data-job=job-3] button ::-p-text(Cancel)`).click();
   await page.waitForSelector(`${view} .ops-job[data-job=job-3][data-state=cancelled]`);
   assert.equal(calls(START).length, starts, "a restored workspace never starts a job");
@@ -427,18 +578,58 @@ try {
     assert.equal(endpoint(call.body.connection), owners.get(call.body.id), "status/cancel always use the owner endpoint");
   for (const call of [...calls(UPGRADE), ...calls(PREPARE)]) assert.equal("config_path" in call.body, false);
 
+  // A completed Start reply opens its folder even when reveal fails. The
+  // error stays in the card; only an explicit click retries the reveal.
+  next.start.push({ job: job(done, 'immediate-dump', { elapsed_s: 2 }) });
+  next.reveal.push({ status: 400, body: { error: 'Could not reveal the dump folder.' }, delay: 300 });
+  await preflight(); await page.waitForSelector(sheet);
+  await page.click(confirmButton); await closedSheet();
+  const immediate = `${view} .ops-job[data-job=immediate-dump]`;
+  await page.waitForFunction(() => document.activeElement?.dataset.job === 'immediate-dump');
+  await settle(REVEAL, revealsBeforeAdoption + 1);
+  await page.waitForFunction(s => document.querySelector(s)?.textContent.includes('Could not reveal the dump folder.'), {}, immediate);
+  await section('Restore'); await section('Dump');
+  assert.match(await text(immediate), /Could not reveal the dump folder\./, 'reveal feedback survives a section switch');
+  assert.equal(calls(REVEAL).length, revealsBeforeAdoption + 1, 'failed automatic reveal is not retried by rendering');
+  await page.click(`${immediate} .ops-job-folder button`);
+  await settle(REVEAL, revealsBeforeAdoption + 2);
+  await page.waitForFunction(s => document.querySelector(s)?.textContent.includes('Opened the dump folder'), {}, immediate);
+  assert.deepEqual(calls(REVEAL).at(-1).body, { path: `${done.result.directory}/myflames-manifest.json` });
+
+  next.start.push({ job: job(done, 'failed-dump', { state: 'failed', result: { ...done.result, status: 'verification_failed' } }) });
+  await preflight(); await page.waitForSelector(sheet);
+  await page.click(confirmButton); await closedSheet();
+  await page.waitForFunction(() => document.activeElement?.dataset.job === 'failed-dump');
+  assert.equal(await page.$(`${view} .ops-job[data-job=failed-dump] .ops-job-folder button`), null);
+  assert.equal(calls(REVEAL).length, revealsBeforeAdoption + 2, 'failed dumps do not reveal, even when a directory is present');
+
   // The tool is chosen by preflight, not guessed from the user's preference.
+  await section("Tools");
   await h.refresh(); await h.idle(view);
   await section("Dump");
   const prepareButton = `${view} .ops-actions button`;
   for (const [tool, key] of [["mysqlsh", "dump_shell"], ["mysqldump", "dump_mysqldump"], ["mariadb-dump", "dump_mariadb"]]) {
+    const detected = structuredClone(tools);
+    detected.offered.dump = [tool];
+    state.queue.push({ status: 200, body: detected });
+    await section("Tools");
+    const detection = page.waitForResponse(r => new URL(r.url()).pathname === '/api/lifecycle/tools');
+    await h.refresh(); await detection;
+    await page.waitForFunction(() => !document.querySelector('.ops-view .spinner'));
+    await section("Dump");
     await field("Output folder", `/tmp/gating-${tool}`);
     await h.setPrivileges({ [key]: privilegeAnswer("denied", "RELOAD") });
-    await assertPrivilege(page, prepareButton, "unknown");
+    await assertPrivilege(page, prepareButton, "denied", "RELOAD");
+    const beforePrepare = calls(PREPARE).length;
+    await preflight();
+    assert.equal(calls(PREPARE).length, beforePrepare, 'detected tool grants are used before a plan exists');
+    await h.setPrivileges({ [key]: privilegeAnswer("allowed") });
+    await assertPrivilege(page, prepareButton, "allowed");
     const chosenTool = structuredClone(dumpPlan);
     chosenTool.tool.name = tool;
     next.prepare.push({ status: 200, body: chosenTool });
     await preflight(); await page.waitForSelector(sheet);
+    await h.setPrivileges({ [key]: privilegeAnswer("denied", "RELOAD") });
     await assertPrivilege(page, confirmButton, "denied", "RELOAD");
     const before = calls(START).length;
     await page.click(confirmButton); await page.keyboard.press("Enter");
@@ -505,13 +696,14 @@ try {
   await page.type(`${sheet} input[type=text]`, permittedClone.target);
   await assertPrivilege(page, confirmButton, "allowed");
   await page.keyboard.press("Escape"); await closedSheet();
-  assert.equal(await page.$eval(`${view} [data-action=refresh]`, e => e.disabled), false);
+  assert.equal(await page.$(`${view} [data-action=refresh]`), null, "Clone has no unrelated tool refresh");
   const unsupported = structuredClone(tools);
   unsupported.server.engine = "mariadb"; unsupported.offered.clone = false;
   state.queue.push({ status: 200, body: unsupported });
+  await section("Tools");
   await h.refresh(); await h.idle(view);
   assert.equal(await page.$(`${view} .segmented [data-value=clone]`), null);
-  assert.equal(await page.$(prepareButton), null, "unsupported clone has no write action");
+  assert.equal(await page.$(`${view} .ops-actions button.primary`), null, "unsupported clone has no write action");
   await section("Tools");
   await h.setPrivileges({});
 

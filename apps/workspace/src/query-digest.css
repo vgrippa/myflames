@@ -191,7 +191,9 @@
    Schema and Top on the first, the growing filter field and Export on the
    second (the shared narrow rule starts the controls below the title). */
 .qd-toolbar-break {
-  display: none;
+  display: block;
+  flex-basis: 100%;
+  height: 0;
 }
 @container view (max-width: 760px) {
   .qd-toolbar-break {
@@ -475,4 +477,27 @@
   .qd-range-button {
     max-width: 180px;
   }
+}
+
+/* Keep the title and actions together; filters occupy their own predictable row. */
+.qd-view > .view-toolbar > .toolbar-controls {
+  order: 3;
+  flex: 1 0 100%;
+  justify-content: stretch;
+}
+.qd-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  width: 100%;
+  min-width: 0;
+  padding-block: var(--space-1);
+}
+.qd-filter-bar .toolbar-field { gap: var(--space-1-5); }
+.qd-filter-bar .toolbar-search { flex: 1 1 180px; max-width: none; }
+.qd-filter-bar .toolbar-search input { width: 100%; }
+@container view (max-width: 760px) {
+  .qd-filter-bar { gap: var(--space-2); }
+  .qd-filter-bar .toolbar-search { flex-basis: 160px; }
 }

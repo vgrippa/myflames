@@ -1,0 +1,196 @@
+/* The Files place: SSH connection list, New/Edit sheet and host-key trust
+   sheet (SshConnections.tsx). Tokens from style.css/kit.css only, so light and
+   dark follow the theme. */
+
+.ssh-connections {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  min-height: 0;
+  background: var(--surface-pane);
+}
+.ssh-connections-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-3) var(--space-1);
+}
+.ssh-connections-head h2 {
+  margin: 0;
+  font-size: var(--section-size);
+  line-height: var(--section-leading);
+  font-weight: var(--section-weight);
+  color: var(--section-ink);
+}
+.ssh-connections .view-status {
+  padding: 0 var(--space-2);
+}
+/* The empty list says so in one muted line; the one New action for an empty
+   place is the primary button in the main area's empty state (FilesPlace). */
+.ssh-connections-empty {
+  margin: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+}
+.ssh-connection-rows {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1px;
+  margin: 0;
+  padding: 0 var(--space-2) var(--space-2);
+  list-style: none;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.ssh-connection-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  border-radius: var(--radius-md);
+}
+.ssh-connection-row:hover {
+  background: var(--surface-hover);
+}
+.ssh-connection-row:has(.ssh-connection-main[aria-current="page"]) {
+  background: var(--selection-fill);
+}
+.ssh-connection-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+  min-height: var(--row-h);
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--ink);
+  font-size: var(--nav-text);
+  line-height: var(--leading-md);
+  text-align: left;
+}
+.ssh-connection-main[aria-current="page"] {
+  color: var(--selection-ink);
+  font-weight: 600;
+}
+.ssh-connection-name,
+.ssh-connection-target {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ssh-connection-target {
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  font-weight: 400;
+  color: var(--ink-muted);
+}
+/* The row ⋯ menu button stays reachable by keyboard: hidden by opacity, never
+   by display, and always visible on the selected row or with focus inside. */
+.ssh-connection-more {
+  flex: none;
+  opacity: 0;
+}
+.ssh-connection-row:hover .ssh-connection-more,
+.ssh-connection-row:focus-within .ssh-connection-more,
+.ssh-connection-row:has(.ssh-connection-main[aria-current="page"]) .ssh-connection-more {
+  opacity: 1;
+}
+/* The inline Test connection / Copy address result under a row; idle it takes
+   no room, so the list does not shift when a test starts. */
+.ssh-connection-status {
+  margin: 0 var(--space-2);
+  font-size: var(--text-sm);
+}
+.ssh-connection-status[data-phase="pending"],
+.ssh-connection-status[data-phase="done"],
+.ssh-connection-status[data-phase="failed"],
+.ssh-connection-status[data-phase="unknown"] {
+  padding-bottom: var(--space-1);
+}
+
+/* The New/Edit sheet is a ConfirmSheet-shaped dialog with a form body. */
+.ssh-sheet {
+  width: min(600px, calc(100vw - 32px));
+}
+.ssh-sheet-status {
+  margin-top: var(--space-2);
+}
+.ssh-sheet-actions {
+  gap: var(--space-2);
+}
+.ssh-sheet-actions .ssh-delete-button {
+  margin-right: auto;
+}
+.ssh-secret-saved {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--control-h);
+}
+.ssh-secret-saved .ssh-secret-state {
+  font-size: var(--text-md);
+  color: var(--ink-muted);
+}
+.ssh-secret-saved .hint {
+  margin: 0;
+}
+/* FolderField's layout classes live in ops.css, which the Files place does
+   not load; the sheet lays the field out itself. */
+.ssh-sheet .ops-folder-input {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.ssh-sheet .ops-folder-input input {
+  flex: 1;
+  min-width: 0;
+}
+.ssh-sheet .ops-folder-input .button {
+  flex: none;
+}
+.ssh-sheet .ops-folder-row .ops-field {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+/* Host-key trust sheet: one card per offered key, fingerprint in monospace
+   and selectable so it can be compared with the administrator's copy. */
+.hostkey-list {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+  padding: 0;
+  list-style: none;
+}
+.hostkey-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+.hostkey-kind {
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+}
+.hostkey-fingerprint {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  user-select: text;
+  overflow-wrap: anywhere;
+}
+.hostkey-retry {
+  margin-top: var(--space-2);
+}

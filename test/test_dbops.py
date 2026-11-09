@@ -298,6 +298,56 @@ class TestSelectFunctionSafety(unittest.TestCase):
 class TestClassify(unittest.TestCase):
     maxDiff = None
 
+    def test_native_explain_formats_are_reads_under_both_policies(self):
+        statements = (
+            "SELECT REPLACE(name, 'a', 'b'), INSERT(name, 1, 1, 'x') FROM t",
+            "SELECT CAST(name AS CHAR CHARACTER SET utf8mb4) FROM t",
+            "UPDATE t SET v = 2",
+            "DELETE FROM t", "INSERT INTO t VALUES (1)", "REPLACE INTO t VALUES (1)",
+            "TABLE t", "(SELECT 1)", "CREATE TABLE t (id INT)",
+        )
+        for prefix in ("EXPLAIN ", "EXPLAIN FORMAT=TRADITIONAL ", "EXPLAIN FORMAT=TREE ", "EXPLAIN FORMAT=JSON "):
+            for sql in statements:
+                with self.subTest(sql=prefix + sql):
+                    verdict = dbops.classify(prefix + sql)
+                    self.assertEqual(verdict["kind"], dbops.KINDS[0])
+                    self.assertEqual(verdict["kind"], "read")
+                    for policy in ("production", "development"):
+                        self.assertEqual(dbops.decide(verdict, policy, read_only=True)["action"], "allow")
+        # Measured execution retains its inner statement's write classification.
+        self.assertEqual(dbops.classify("EXPLAIN ANALYZE DELETE FROM t")["kind"], "risky")
+
+    def test_explain_keeps_the_expression_checks_planning_evaluates(self):
+        """Planning materializes a derived table without tables (verified on
+        MySQL 9.7: EXPLAIN of (SELECT GET_LOCK(...)) holds the lock after), so
+        the SELECT expression checks apply under EXPLAIN and DESCRIBE too."""
+        cases = (
+            ("EXPLAIN SELECT * FROM (SELECT GET_LOCK('m', 0)) a", "write", "lock"),
+            ("EXPLAIN FORMAT=TRADITIONAL SELECT * FROM (SELECT RELEASE_ALL_LOCKS()) a", "write", "lock"),
+            ("DESCRIBE SELECT * FROM (SELECT attacker.f()) a", "risky", "unknown"),
+            ("EXPLAIN FORMAT=JSON DELETE FROM t WHERE id = db.f()", "risky", "unknown"),
+            ("EXPLAIN FORMAT=TREE SELECT @x := 1", "write", "session"),
+            ("EXPLAIN SELECT NEXTVAL(s)", "write", "sequence"),
+            ("EXPLAIN SELECT * FROM t FOR UPDATE", "write", "locking_read"),
+            ("EXPLAIN INSERT INTO t (id) VALUES (f())", "risky", "unknown"),
+            ("EXPLAIN INSERT INTO t (id) SELECT GET_LOCK('m', 0)", "write", "lock"),
+        )
+        for sql, kind, category in cases:
+            with self.subTest(sql=sql):
+                verdict = dbops.classify(sql)
+                self.assertEqual((verdict["kind"], verdict["category"]), (kind, category))
+                self.assertIn("EXPLAIN evaluates constant expressions", verdict["reasons"][0])
+                self.assertNotEqual(dbops.decide(verdict, "development", read_only=True)["action"], "allow")
+        # An explained INSERT INTO or SELECT ... INTO writes nothing.
+        # A target column list is names, not a call.
+        for sql in ("EXPLAIN INSERT INTO t VALUES (1)", "EXPLAIN SELECT a INTO @x FROM t",
+                    "EXPLAIN INSERT INTO t (id) VALUES (1)", "EXPLAIN REPLACE INTO db.t (a, `b c`) VALUES (1, 2)",
+                    "EXPLAIN INSERT IGNORE INTO t PARTITION (p0) (id) SELECT id FROM u",
+                    "EXPLAIN INSERT INTO t (id) VALUES (1) ON DUPLICATE KEY UPDATE v = VALUES(v)",
+                    "EXPLAIN SELECT COUNT(*), MAX(id) FROM t WHERE created > NOW()", "DESCRIBE t"):
+            with self.subTest(sql=sql):
+                self.assertEqual(dbops.classify(sql)["kind"], "read")
+
     def test_handler_open_requires_review_and_read_close_stay_available(self):
         """Both engines give HANDLER OPEN's metadata lock explicit duration."""
         reason = ('HANDLER OPEN holds a metadata lock on the table until '
@@ -325,6 +375,42 @@ class TestClassify(unittest.TestCase):
                 self.assertEqual(dbops.decide(verdict, read_only=True)['action'], 'allow')
         self.assertEqual(dbops.classify('HANDLER t OPEN; HANDLER t READ FIRST; HANDLER t CLOSE')['kind'],
                          'risky')
+
+    def test_show_and_handler_where_expressions_are_evaluated(self):
+        """SHOW and HANDLER READ evaluate their WHERE on the server, so the
+        SELECT expression checks (functions, :=, named locks) apply: a
+        side-effect call must never classify read (review 2026-11-05)."""
+        for sql in ("SHOW TABLES WHERE GET_LOCK('mf', 0)",
+                    "SHOW TABLE STATUS WHERE Name = 't' OR RELEASE_LOCK('mf')",
+                    "SHOW COLUMNS FROM t WHERE @x := SLEEP(0)",
+                    "SHOW TABLES WHERE densify(t) > 1",
+                    "HANDLER t READ FIRST WHERE GET_LOCK('mf', 0)",
+                    "HANDLER t READ idx = (1) WHERE myfunc(v)"):
+            with self.subTest(sql=sql):
+                verdict = dbops.classify(sql)
+                self.assertNotEqual(verdict['kind'], 'read', verdict)
+                self.assertEqual(dbops.decide(verdict, read_only=True)['action'], 'refuse')
+        for sql in ("SHOW TABLES", "SHOW FULL PROCESSLIST", "SHOW TABLES LIKE 'a%'",
+                    "SHOW TABLES WHERE Tables_in_db LIKE 't%'",
+                    "SHOW TABLE STATUS WHERE Name = 't'",
+                    "SHOW GRANTS FOR CURRENT_USER()", "SHOW COUNT(*) WARNINGS",
+                    "SHOW VARIABLES WHERE Variable_name = 'x' AND Value IN ('ON', 'OFF')",
+                    "HANDLER t READ FIRST", "HANDLER t READ idx = (1, 2)",
+                    "HANDLER t READ FIRST WHERE v > 3 LIMIT 5"):
+            with self.subTest(sql=sql):
+                verdict = dbops.classify(sql)
+                self.assertEqual(verdict['kind'], 'read', verdict)
+                self.assertEqual(dbops.decide(verdict, read_only=True)['action'], 'allow')
+
+    def test_get_diagnostics_assigns_variables(self):
+        """GET DIAGNOSTICS only assigns variables; it is a session write."""
+        for sql in ('GET DIAGNOSTICS CONDITION 1 @p = MESSAGE_TEXT',
+                    'GET DIAGNOSTICS @c = NUMBER',
+                    'GET CURRENT DIAGNOSTICS CONDITION 1 @s = RETURNED_SQLSTATE'):
+            with self.subTest(sql=sql):
+                verdict = dbops.classify(sql)
+                self.assertEqual((verdict['kind'], verdict['category']), ('write', 'session'))
+                self.assertEqual(dbops.decide(verdict, read_only=True)['action'], 'refuse')
 
     def test_table(self):
         for sql, kind, category, verbs in CASES:
@@ -1630,3 +1716,55 @@ class TestCLIConfirmation(unittest.TestCase):
         self.assertNotIn('secret', text)
         self.assertNotIn('\x1b', text)
         self.assertIn('[redacted]', text)
+
+
+class TestReadysetClassificationAndRedaction(unittest.TestCase):
+    """Readyset SQL verbs, inline cache hints, and upstream URL credential redaction."""
+
+    def test_readyset_ddl_and_commands_are_risky_server_operations(self):
+        for sql in (
+            "ALTER READYSET SET LOG LEVEL 'info'",
+            "ALTER READYSET SET EVICTION MEMORY LIMIT 1073741824",
+            "ALTER READYSET ENTER MAINTENANCE MODE",
+            "ALTER READYSET RESNAPSHOT TABLE `shop`.`orders`",
+            "ALTER READYSET SHUTDOWN RESET",
+            "CREATE SHALLOW CACHE `c_orders` WITH (ttl = 30s) FROM q_1234abcd",
+            "CREATE DEEP CACHE FROM SELECT * FROM orders WHERE customer_id = 1",
+            "DROP CACHE `c_orders`",
+            "DROP ALL SHALLOW CACHES",
+            "DROP ALL PROXIED QUERIES",
+            "FLUSH CACHE `c_orders`",
+            "FLUSH ALL SHALLOW CACHES",
+        ):
+            with self.subTest(sql=sql):
+                c = dbops.classify(sql)
+                self.assertEqual(c['kind'], 'risky')
+                self.assertEqual(c['statements'][0]['category'], 'server')
+                self.assertEqual(dbops.decide(c, 'production', read_only=True)['action'], 'refuse')
+
+    def test_readyset_explain_and_show_stay_read_only(self):
+        for sql in (
+            "SHOW READYSET STATUS",
+            "SHOW READYSET VERSION",
+            "SHOW CACHES",
+            "SHOW PROXIED QUERIES",
+            "SHOW SHALLOW CACHE ALLOWED FUNCTIONS",
+            "EXPLAIN ALL CACHES",
+            "EXPLAIN CREATE SHALLOW CACHE FROM SELECT * FROM orders WHERE id = 1",
+        ):
+            with self.subTest(sql=sql):
+                self.assertEqual(dbops.classify(sql)['kind'], 'read')
+
+    def test_readyset_inline_create_hint_is_classified_as_risky(self):
+        hinted = "SELECT /*rs+ create shallow(ttl=30s) */ * FROM orders WHERE id = 1"
+        c = dbops.classify(hinted)
+        self.assertEqual(c['kind'], 'risky')
+        self.assertEqual(c['statements'][0]['category'], 'server')
+        plain_hint = "SELECT /*rs+ nocache */ * FROM orders WHERE id = 1"
+        self.assertEqual(dbops.classify(plain_hint)['kind'], 'read')
+
+    def test_url_passwords_are_redacted(self):
+        raw = "Upstream failed: mysql://readyset_user:s3cr3t!pw@db-primary.internal:3306/shop?ssl-mode=DISABLED"
+        clean = dbops.redact(raw)
+        self.assertNotIn("s3cr3t!pw", clean)
+        self.assertIn("mysql://readyset_user:[redacted]@db-primary.internal:3306/shop", clean)

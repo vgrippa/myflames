@@ -1,0 +1,110 @@
+{
+  "query": "/* select#1 */ select `c`.`region` AS `region`,count(0) AS `orders`,sum(`o`.`total`) AS `revenue` from `myflames_w2c_stale`.`customers` `c` join `myflames_w2c_stale`.`orders` `o` where ((`o`.`customer_id` = `c`.`id`) and (`c`.`id` <= 40)) group by `myflames_w2c_stale`.`c`.`region`",
+  "query_plan": {
+    "inputs": [
+      {
+        "inputs": [
+          {
+            "inputs": [
+              {
+                "inputs": [
+                  {
+                    "alias": "c",
+                    "ranges": [
+                      "(id <= 40)"
+                    ],
+                    "covering": false,
+                    "operation": "Index range scan on c using PRIMARY over (id <= 40)",
+                    "index_name": "PRIMARY",
+                    "table_name": "customers",
+                    "access_type": "index",
+                    "actual_rows": 40.0,
+                    "key_columns": [
+                      "id"
+                    ],
+                    "schema_name": "myflames_w2c_stale",
+                    "actual_loops": 1,
+                    "used_columns": [
+                      "id",
+                      "region"
+                    ],
+                    "estimated_rows": 40.0,
+                    "index_access_type": "index_range_scan",
+                    "actual_last_row_ms": 0.020706000000000002,
+                    "actual_first_row_ms": 0.015208000000000001,
+                    "estimated_total_cost": 8.273617092961226
+                  }
+                ],
+                "condition": "(c.id <= 40)",
+                "operation": "Filter: (c.id <= 40)",
+                "access_type": "filter",
+                "actual_rows": 40.0,
+                "actual_loops": 1,
+                "estimated_rows": 40.0,
+                "filter_columns": [
+                  "c.id"
+                ],
+                "actual_last_row_ms": 0.026208000000000002,
+                "actual_first_row_ms": 0.017249999999999998,
+                "estimated_total_cost": 8.273617092961226
+              },
+              {
+                "alias": "o",
+                "covering": false,
+                "operation": "Index lookup on o using idx_customer (customer_id = c.id)",
+                "index_name": "idx_customer",
+                "table_name": "orders",
+                "access_type": "index",
+                "actual_rows": 451.0,
+                "key_columns": [
+                  "customer_id"
+                ],
+                "schema_name": "myflames_w2c_stale",
+                "actual_loops": 40,
+                "used_columns": [
+                  "id",
+                  "customer_id",
+                  "total"
+                ],
+                "estimated_rows": 1.0,
+                "lookup_condition": "customer_id = c.id",
+                "index_access_type": "index_lookup",
+                "lookup_references": [
+                  "myflames_w2c_stale.c.id"
+                ],
+                "actual_last_row_ms": 0.18215062499999998,
+                "actual_first_row_ms": 0.0027708,
+                "estimated_total_cost": 0.2525
+              }
+            ],
+            "join_type": "inner join",
+            "operation": "Nested loop inner join",
+            "access_type": "join",
+            "actual_rows": 18040.0,
+            "actual_loops": 1,
+            "estimated_rows": 40.0,
+            "join_algorithm": "nested_loop",
+            "actual_last_row_ms": 7.961506,
+            "actual_first_row_ms": 0.038917,
+            "estimated_total_cost": 22.273617092961224
+          }
+        ],
+        "operation": "Aggregate using temporary table",
+        "access_type": "temp_table_aggregate",
+        "actual_rows": 4.0,
+        "actual_loops": 1,
+        "actual_last_row_ms": 17.008375,
+        "actual_first_row_ms": 17.008375
+      }
+    ],
+    "operation": "Table scan on <temporary>",
+    "table_name": "<temporary>",
+    "access_type": "table",
+    "actual_rows": 4.0,
+    "actual_loops": 1,
+    "actual_last_row_ms": 17.01421,
+    "actual_first_row_ms": 17.013459
+  },
+  "query_type": "select",
+  "json_schema_version": "2.0"
+}

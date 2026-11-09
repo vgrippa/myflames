@@ -12,6 +12,10 @@ from unittest import mock
 from myflames import cli, workspace_cli
 from myflames.teach import cmd_teach
 
+# These tests check each command's own stderr; the CLI deprecation notice has
+# its own tests (test_cli_contract.CliDeprecationTests), which clear this.
+os.environ.setdefault("MYFLAMES_NO_DEPRECATION_WARNING", "1")
+
 ROOT = Path(__file__).resolve().parent.parent
 PLAN = str(ROOT / 'test/fixtures/explain-004-pk-lookup-user.json')
 
@@ -203,14 +207,12 @@ class TestCLIConsistency(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn('deprecated', err)
 
-    def test_alias_inventory_and_readme_connection_reference(self):
+    def test_alias_inventory(self):
+        # The README no longer documents the deprecated CLI; --help is its reference.
         code, out, _ = self.call(['--help'])
         self.assertEqual(code, 0)
         for alias in ('tokens', 'findings', 'diff', 'running'):
             self.assertRegex(out, r'(?m)^  ' + alias + r'\s+Deprecated alias')
-        readme = (ROOT / 'README.md').read_text(encoding="utf-8")
-        row = next(line for line in readme.splitlines() if line.startswith('| `--profile NAME_OR_ID`'))
-        self.assertIn('replication', row)
 
     def test_repeated_single_schema_is_rejected_before_connecting(self):
         with mock.patch.object(workspace_cli, '_discover_run') as run:
