@@ -6,6 +6,7 @@ This is the detailed contract per feature; [AGENTS.md](../AGENTS.md) has the rul
 
 - [Commands Reference](#commands-reference)
   - [Local UI](#local-ui)
+  - [Release sync](#release-sync)
   - [Shared view presentation](#shared-view-presentation)
   - [Chart runtime](#chart-runtime)
   - [Bundle and lazy loading](#bundle-and-lazy-loading)
@@ -610,6 +611,91 @@ the window-open handler always denies a new app window. Tests:
   accessible; verify open/error states at desktop and narrow, short viewports.
   Use `docs/UI_TESTING.md` for the interaction matrix. Check contextual Learn
   links after navigating to a different lesson and returning to the plan.
+
+### Release sync
+
+A release is one commit in which the versions, the CHANGELOG, the README
+screenshots and the handbook agree, and one GitHub release whose notes and
+files come from that commit. AGENTS.md "Release sync" lists the steps; these
+are the contracts of the tools that check them.
+
+- **Versions.** `apps/desktop/package.json` `version`, `myflames/__init__.py`
+  `__version__` and `pyproject.toml` `[project] version` are equal.
+- **Release notes.** `scripts/release_notes.py X.Y.Z` (or `vX.Y.Z`) prints the
+  body of `CHANGELOG.md`'s `## [X.Y.Z] - YYYY-MM-DD` section (the older
+  `## [X.Y.Z] (YYYY-MM-DD)` form is read too): everything up to the next
+  level-two heading outside a code fence (a fence closes only on its own
+  character, at least as long), without the heading and without leading or
+  trailing blank lines, as UTF-8. A missing, undated, duplicated or empty
+  section (subsection headings with no entry under them), or one with a fence
+  that never closes, prints why on stderr and exits 1. The GitHub release notes are this text verbatim, so a
+  summary paragraph for the release goes at the top of the section.
+- **README screenshots.** `npm run docs:screenshots` in `apps/workspace`
+  (`test/readme-screenshots.mjs`) builds nothing: it opens the built
+  workspace in `myflames/ui_assets` through the perf harness (`open()` with
+  `seed`, `beforeGoto`, `viewport`, `refuse`, `offline` and `launchArgs`), with the real Python server on
+  a throwaway HOME, store and vault, two saved connections (Dev MySQL,
+  Prod MySQL) and every database read answered from fixtures
+  (`health-mysql-8.4-full.json`, `schemas-mysql-8.4.json`, a 24-row editor
+  result, readiness, the editor's privileges preview, offline news). The page
+  clock is frozen at 2026-10-14T16:26:00Z, the time zone is UTC, the locale
+  en-US, the theme light, motion reduced, transitions and the caret hidden, and
+  the window 1440x900 at scale 1. Chromium runs with `--disable-partial-raster`
+  and `--force-color-profile=srgb` (without them a rounded corner's
+  anti-aliasing changed between runs), and each image is written once two
+  captures in a row agree. It writes `docs/screenshots/home.png`,
+  `plan-visual-explain.png` (the sample plan), `query-editor.png` and
+  `server-health.png`, then `manifest.json` (`version` from
+  `apps/desktop/package.json`, `commit` from the checkout's HEAD,
+  `captured_at` in UTC). Every request that is not for the local server is
+  aborted from the first navigation on, and the script fails when one was made
+  or on a page error; `--out DIR` writes elsewhere. Two runs of one build on one machine
+  write identical PNGs (only `manifest.json` changes); fonts differ between
+  systems, so capture on macOS, where the README's app runs. Run it after
+  `npm run build` at the release commit.
+- **`scripts/check_release_sync.py X.Y.Z`** exits 0 only when the three
+  versions equal X.Y.Z, `CHANGELOG.md` has the dated, non-empty section,
+  `docs/screenshots/manifest.json` `version` is X.Y.Z with the four README
+  images present, and `docs/handbook/manifest.json` parses with every listed
+  chapter file present; otherwise it lists every problem and exits 1.
+- **Release files.** A release carries `myflames-X.Y.Z-macos-arm64.dmg` (new
+  installs), `myflames-X.Y.Z-macos-arm64.zip` (the in-app update file) and
+  `myflames-X.Y.Z-windows-x64-setup.exe`, each with its `.sha256`. The DMG is
+  uploaded before the zip (a lower asset id): an installed myflames up to
+  3.3.3 takes the first macOS asset GitHub lists
+  (`app_update.match_asset_for_platform`), which must stay the DMG.
+  `gh release create` uploads its files in parallel, so the zip and its
+  `.sha256` go up with a separate `gh release upload` after the create ends.
+  `scripts/check_release_assets.py X.Y.Z RELEASE_JSON` (the
+  `gh api repos/vgrippa/myflames/releases/tags/vX.Y.Z` answer, or for a draft,
+  which has no tag yet, `gh release view vX.Y.Z --json assets`, whose node ids
+  it reads the number from `apiUrl` for; `-` reads stdin) checks the names,
+  that every file finished uploading, the id order, and that the first macOS
+  file in GitHub's list, by the 3.3.3 rule (`legacy_macos_choice`), is the DMG.
+- **`.github/workflows/docs-sync.yml`** (`contents: read`; `contents: write`
+  only in the release job). On a pull request to master (also when its labels
+  change): a change under `apps/workspace/src/`, `apps/desktop/` (not
+  `test/`) or `myflames/` (not `ui_assets/`, `tests/` or `test_*.py`; both
+  sides of a rename count, and names are compared whole, so a name holding a
+  newline cannot pass for `CHANGELOG.md`) without a
+  `CHANGELOG.md` change fails unless the PR has the `no-changelog` label, and a
+  change of the `apps/desktop/package.json` version runs
+  `check_release_sync.py` for the new version. When a release is published, or
+  by hand for a tag (Actions > Docs and release sync > Run workflow), it checks
+  out the tag (the whole value must match `vX.Y.Z`; it is never echoed),
+  replaces the release notes with `release_notes.py`'s text when they differ
+  (ignoring line endings and outer blank lines), fails when the section is
+  missing, and runs `check_release_assets.py`.
+- **Website.** myflames.io is built from the separate `vgrippa/myflames-website`
+  repository. Its `sync.yml` workflow (hourly and on demand) checks this
+  repository's master out beside it, runs `sync_releases.py` (the latest
+  release's DMG and Windows `-setup.exe` with their `.sha256`, never the update
+  zip), `build_docs.py --source` (the handbook, the reference documents and the
+  raster images in `docs/screenshots`; links and SVG files are not copied) and
+  its QA without the CLI examples (no code from this repository runs in that
+  job, which can push), and commits to its default branch when something
+  changed. The site goes live only when someone clicks Publish
+  in Lovable.
 
 ### Shared view presentation
 
