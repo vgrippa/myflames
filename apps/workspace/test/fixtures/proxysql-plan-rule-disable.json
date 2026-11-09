@@ -1,0 +1,90 @@
+{
+ "schema_version": "proxysql-action-1.0",
+ "action": "rule_disable",
+ "target": {
+  "rule_id": 30
+ },
+ "value": null,
+ "facts": [
+  [
+   "ProxySQL",
+   "3.0.11-797-g7c91137"
+  ],
+  [
+   "Rule",
+   "30: ^SELECT"
+  ],
+  [
+   "Destination hostgroup",
+   "32"
+  ],
+  [
+   "Hits",
+   "41"
+  ],
+  [
+   "Active",
+   "Yes → No"
+  ]
+ ],
+ "warnings": [
+  "Applied to runtime only. Save query rules to disk afterwards, or ProxySQL loads the previous rules at its next start."
+ ],
+ "typed_guard": null,
+ "undo": "UPDATE mysql_query_rules SET active = 1 WHERE rule_id = 30; then LOAD MYSQL QUERY RULES TO RUNTIME;",
+ "next": {
+  "action": "query_rules_save",
+  "label": "Save query rules to disk…"
+ },
+ "verified": [
+  "ProxySQL Admin identity (admin-version)",
+  "rule 30 unchanged since review"
+ ],
+ "timeout_s": 60,
+ "eyebrow": "UPDATE",
+ "title": "Disable query rule 30?",
+ "confirm_label": "Disable rule 30",
+ "target_text": "Query rule 30",
+ "description": "Queries rule 30 matched go to the next matching rule, or to the user's default hostgroup.",
+ "statements": [
+  "/*myflames:proxysql_op*/ UPDATE mysql_query_rules SET active = 0 WHERE rule_id = 30;",
+  "LOAD MYSQL QUERY RULES TO RUNTIME;"
+ ],
+ "expect": {
+  "proxysql_version": "3.0.11-797-g7c91137",
+  "fingerprints": {
+   "query_rules_memory": "09c589ac5433a5f263aa629e0e08e27863b11b106b8cafab9739323c152a210f",
+   "query_rules_runtime": "09c589ac5433a5f263aa629e0e08e27863b11b106b8cafab9739323c152a210f"
+  },
+  "rule": {
+   "rule_id": "30",
+   "active": "1",
+   "username": null,
+   "schemaname": null,
+   "flagIN": "0",
+   "match_digest": "^SELECT",
+   "match_pattern": null,
+   "negate_match_pattern": "0",
+   "destination_hostgroup": "32",
+   "apply": "1",
+   "comment": "reads",
+   "re_modifiers": "CASELESS",
+   "flagOUT": null
+  },
+  "pending_runtime": []
+ },
+ "checks": [
+  "Refresh this place. Query rules shows rule 30 as active or not in memory, and its inspector says whether runtime runs it.",
+  "If memory changed and runtime did not, the UPDATE ran and LOAD MYSQL QUERY RULES TO RUNTIME did not: the Configuration line then says a change is not loaded to runtime. Load query rules to runtime, or undo.",
+  "The Audit log keeps this attempt as Outcome unknown; nothing is sent again."
+ ],
+ "policy": {
+  "action": "confirm",
+  "tone": "danger",
+  "title": "Risky write",
+  "text": "Connection ProxySQL lab is a Development connection. myflames asks only before risky writes, and these 2 statements include one.",
+  "connection_type": "development",
+  "read_only": false
+ },
+ "review_token": "fixture-token-rule_disable"
+}

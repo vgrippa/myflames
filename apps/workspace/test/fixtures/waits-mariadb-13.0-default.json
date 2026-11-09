@@ -1,0 +1,21 @@
+{
+ "available": false,
+ "coverage": null,
+ "elapsed_s": null,
+ "enable_caveat": "The UPDATE takes effect at once, for existing and new instances, and lasts until the server restarts; the my.cnf line (under [mysqld]) keeps it after a restart. Waits already in progress when you turn it on are missed. Synch instruments add overhead on busy servers, so enable them for an investigation and turn them off afterwards.",
+ "engine": "mariadb",
+ "interval": 5,
+ "notes": [
+  "Performance Schema is off, so wait events cannot be read. MariaDB ships with it off. To turn it on, add performance_schema=ON under [mysqld] in my.cnf and restart the server (it cannot be changed at runtime). It then uses some memory and a little CPU."
+ ],
+ "performance_schema": false,
+ "restarted": false,
+ "schema_version": "waits-1.0",
+ "server_version": "13.0.2-MariaDB-ubu2604",
+ "since_start": null,
+ "started_at": null,
+ "taken_at": "2026-10-13T17:15:16.209750+00:00",
+ "unavailable": "performance_schema_off",
+ "uptime_s": 872,
+ "window": null
+}

@@ -1,0 +1,62 @@
+{
+ "schema_version": "readyset-1.0",
+ "captured_at": "2026-10-20T14:40:00+00:00",
+ "available": false,
+ "is_readyset": false,
+ "version": null,
+ "port_role": null,
+ "in_readyset_schema": false,
+ "readyset_schema": "readyset",
+ "message": "This connection is not a Readyset SQL or admin port: @@version_comment is MySQL Community Server - GPL, not Readyset. Readyset listens on port 3307 (SQL) and port 6036 (admin) by default.",
+ "status": "unknown",
+ "status_why": [
+  "This connection is not a Readyset SQL or admin port: @@version_comment is MySQL Community Server - GPL, not Readyset. Readyset listens on port 3307 (SQL) and port 6036 (admin) by default."
+ ],
+ "status_fields": {},
+ "capabilities": {
+  "can_explain_cache": false,
+  "can_create_cache": false,
+  "can_manage_caches": false,
+  "can_alter_readyset": false,
+  "can_shutdown": false,
+  "virtual_tables": false
+ },
+ "replication": null,
+ "telemetry": {
+  "cached_executions": 0,
+  "upstream_executions": 0,
+  "total_observed_executions": 0,
+  "cached_share_pct": null,
+  "shallow_hits": 0,
+  "shallow_misses": 0,
+  "shallow_hit_rate_pct": null,
+  "shallow_refreshes": 0,
+  "wasted_refreshes": 0,
+  "dropped_refreshes": 0,
+  "coalesces": 0,
+  "upstream_saved_ms": 0.0
+ },
+ "caches": [],
+ "proxied_queries": [],
+ "tables": [],
+ "table_counts": {
+  "total": 0,
+  "snapshotted": 0,
+  "snapshotting": 0,
+  "ignored": 0,
+  "error": 0,
+  "other": 0
+ },
+ "shallow_allowlists": {
+  "functions": [],
+  "variables": [],
+  "schemas": []
+ },
+ "connections": [],
+ "upstreams": [],
+ "topology": null,
+ "fingerprints": {},
+ "actions": [],
+ "notes": [],
+ "statements": []
+}

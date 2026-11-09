@@ -1,0 +1,321 @@
+{
+ "server": "MySQL 8.4.11 replica, channels '' and ch80 (MySQL 8.0 source), duplicate key on ch80 (live, 2026-10-15)",
+ "args": {},
+ "calls": [
+  [
+   "/*myflames:replication*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('enforce_gtid_consistency', 'gtid_current_pos', 'gtid_domain_id', 'gtid_mode', 'gtid_slave_pos', 'gtid_strict_mode', 'performance_schema', 'read_only', 'replica_parallel_workers', 'replica_preserve_commit_order', 'slave_parallel_threads', 'slave_parallel_workers', 'slave_preserve_commit_order', 'super_read_only', 'userstat', 'version', 'version_comment')",
+   "enforce_gtid_consistency\tON\ngtid_mode\tON\nperformance_schema\tON\nread_only\tOFF\nreplica_parallel_workers\t4\nreplica_preserve_commit_order\tON\nslave_parallel_workers\t4\nslave_preserve_commit_order\tON\nsuper_read_only\tOFF\nversion\t8.4.11\nversion_comment\tMySQL Community Server - GPL\n"
+  ],
+  [
+   "/*myflames:replication*/ SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime' OR Variable_name LIKE 'Performance\\_schema\\_%\\_lost'",
+   "Performance_schema_accounts_lost\t0\nPerformance_schema_cond_classes_lost\t0\nPerformance_schema_cond_instances_lost\t0\nPerformance_schema_digest_lost\t0\nPerformance_schema_file_classes_lost\t0\nPerformance_schema_file_handles_lost\t0\nPerformance_schema_file_instances_lost\t0\nPerformance_schema_hosts_lost\t0\nPerformance_schema_index_stat_lost\t0\nPerformance_schema_locker_lost\t0\nPerformance_schema_logger_lost\t0\nPerformance_schema_memory_classes_lost\t0\nPerformance_schema_metadata_lock_lost\t0\nPerformance_schema_meter_lost\t0\nPerformance_schema_metric_lost\t0\nPerformance_schema_mutex_classes_lost\t0\nPerformance_schema_mutex_instances_lost\t0\nPerformance_schema_nested_statement_lost\t0\nPerformance_schema_prepared_statements_lost\t0\nPerformance_schema_program_lost\t0\nPerformance_schema_rwlock_classes_lost\t0\nPerformance_schema_rwlock_instances_lost\t0\nPerformance_schema_session_connect_attrs_lost\t0\nPerformance_schema_socket_classes_lost\t0\nPerformance_schema_socket_instances_lost\t0\nPerformance_schema_stage_classes_lost\t0\nPerformance_schema_statement_classes_lost\t0\nPerformance_schema_table_handles_lost\t0\nPerformance_schema_table_instances_lost\t0\nPerformance_schema_table_lock_stat_lost\t0\nPerformance_schema_thread_classes_lost\t0\nPerformance_schema_thread_instances_lost\t0\nPerformance_schema_users_lost\t0\nUptime\t829\n"
+  ],
+  [
+   "/*myflames:replication*/ SHOW REPLICA STATUS",
+   "<?xml version=\"1.0\"?>\n\n<resultset statement=\"/*myflames:replication*/ SHOW REPLICA STATUS\n\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n  <row>\n\t<field name=\"Replica_IO_State\">Waiting for source to send event</field>\n\t<field name=\"Source_Host\">mf-repl-g-src</field>\n\t<field name=\"Source_User\">repl</field>\n\t<field name=\"Source_Port\">3306</field>\n\t<field name=\"Connect_Retry\">60</field>\n\t<field name=\"Source_Log_File\">binlog.000003</field>\n\t<field name=\"Read_Source_Log_Pos\">3720</field>\n\t<field name=\"Relay_Log_File\">f8b13f9003b4-relay-bin.000003</field>\n\t<field name=\"Relay_Log_Pos\">3931</field>\n\t<field name=\"Relay_Source_Log_File\">binlog.000003</field>\n\t<field name=\"Replica_IO_Running\">Yes</field>\n\t<field name=\"Replica_SQL_Running\">Yes</field>\n\t<field name=\"Replicate_Do_DB\"></field>\n\t<field name=\"Replicate_Ignore_DB\"></field>\n\t<field name=\"Replicate_Do_Table\"></field>\n\t<field name=\"Replicate_Ignore_Table\"></field>\n\t<field name=\"Replicate_Wild_Do_Table\"></field>\n\t<field name=\"Replicate_Wild_Ignore_Table\"></field>\n\t<field name=\"Last_Errno\">0</field>\n\t<field name=\"Last_Error\"></field>\n\t<field name=\"Skip_Counter\">0</field>\n\t<field name=\"Exec_Source_Log_Pos\">3720</field>\n\t<field name=\"Relay_Log_Space\">3000488</field>\n\t<field name=\"Until_Condition\">None</field>\n\t<field name=\"Until_Log_File\"></field>\n\t<field name=\"Until_Log_Pos\">0</field>\n\t<field name=\"Source_SSL_Allowed\">No</field>\n\t<field name=\"Source_SSL_CA_File\"></field>\n\t<field name=\"Source_SSL_CA_Path\"></field>\n\t<field name=\"Source_SSL_Cert\"></field>\n\t<field name=\"Source_SSL_Cipher\"></field>\n\t<field name=\"Source_SSL_Key\"></field>\n\t<field name=\"Seconds_Behind_Source\">0</field>\n\t<field name=\"Source_SSL_Verify_Server_Cert\">No</field>\n\t<field name=\"Last_IO_Errno\">0</field>\n\t<field name=\"Last_IO_Error\"></field>\n\t<field name=\"Last_SQL_Errno\">0</field>\n\t<field name=\"Last_SQL_Error\"></field>\n\t<field name=\"Replicate_Ignore_Server_Ids\"></field>\n\t<field name=\"Source_Server_Id\">1</field>\n\t<field name=\"Source_UUID\">7256d98a-c8b1-11f1-be59-aa9276ea306a</field>\n\t<field name=\"Source_Info_File\">mysql.slave_master_info</field>\n\t<field name=\"SQL_Delay\">0</field>\n\t<field name=\"SQL_Remaining_Delay\" xsi:nil=\"true\" />\n\t<field name=\"Replica_SQL_Running_State\">Replica has read all relay log; waiting for more updates</field>\n\t<field name=\"Source_Retry_Count\">10</field>\n\t<field name=\"Source_Bind\"></field>\n\t<field name=\"Last_IO_Error_Timestamp\"></field>\n\t<field name=\"Last_SQL_Error_Timestamp\"></field>\n\t<field name=\"Source_SSL_Crl\"></field>\n\t<field name=\"Source_SSL_Crlpath\"></field>\n\t<field name=\"Retrieved_Gtid_Set\">7256d98a-c8b1-11f1-be59-aa9276ea306a:1-18</field>\n\t<field name=\"Executed_Gtid_Set\">7256d98a-c8b1-11f1-be59-aa9276ea306a:1-18,\n726f0649-c8b1-11f1-a91e-f6c08cc89039:1-12,\n72de0ef8-c8b1-11f1-9ec5-5695642bff44:1-14</field>\n\t<field name=\"Auto_Position\">1</field>\n\t<field name=\"Replicate_Rewrite_DB\"></field>\n\t<field name=\"Channel_Name\"></field>\n\t<field name=\"Source_TLS_Version\"></field>\n\t<field name=\"Source_public_key_path\"></field>\n\t<field name=\"Get_Source_public_key\">1</field>\n\t<field name=\"Network_Namespace\"></field>\n  </row>\n\n  <row>\n\t<field name=\"Replica_IO_State\">Waiting for source to send event</field>\n\t<field name=\"Source_Host\">mf-repl-80-src</field>\n\t<field name=\"Source_User\">repl</field>\n\t<field name=\"Source_Port\">3306</field>\n\t<field name=\"Connect_Retry\">60</field>\n\t<field name=\"Source_Log_File\">binlog.000003</field>\n\t<field name=\"Read_Source_Log_Pos\">2862</field>\n\t<field name=\"Relay_Log_File\">f8b13f9003b4-relay-bin-ch80.000002</field>\n\t<field name=\"Relay_Log_Pos\">412</field>\n\t<field name=\"Relay_Source_Log_File\">binlog.000003</field>\n\t<field name=\"Replica_IO_Running\">Yes</field>\n\t<field name=\"Replica_SQL_Running\">No</field>\n\t<field name=\"Replicate_Do_DB\"></field>\n\t<field name=\"Replicate_Ignore_DB\"></field>\n\t<field name=\"Replicate_Do_Table\"></field>\n\t<field name=\"Replicate_Ignore_Table\"></field>\n\t<field name=\"Replicate_Wild_Do_Table\"></field>\n\t<field name=\"Replicate_Wild_Ignore_Table\"></field>\n\t<field name=\"Last_Errno\">1062</field>\n\t<field name=\"Last_Error\">Coordinator stopped because there were error(s) in the worker(s). The most recent failure being: Worker 1 failed executing transaction '72de0ef8-c8b1-11f1-9ec5-5695642bff44:15' at source log binlog.000003, end_log_pos 2831. See error log and/or performance_schema.replication_applier_status_by_worker table for more details about this failure or others, if any.</field>\n\t<field name=\"Skip_Counter\">0</field>\n\t<field name=\"Exec_Source_Log_Pos\">2574</field>\n\t<field name=\"Relay_Log_Space\">923</field>\n\t<field name=\"Until_Condition\">None</field>\n\t<field name=\"Until_Log_File\"></field>\n\t<field name=\"Until_Log_Pos\">0</field>\n\t<field name=\"Source_SSL_Allowed\">No</field>\n\t<field name=\"Source_SSL_CA_File\"></field>\n\t<field name=\"Source_SSL_CA_Path\"></field>\n\t<field name=\"Source_SSL_Cert\"></field>\n\t<field name=\"Source_SSL_Cipher\"></field>\n\t<field name=\"Source_SSL_Key\"></field>\n\t<field name=\"Seconds_Behind_Source\" xsi:nil=\"true\" />\n\t<field name=\"Source_SSL_Verify_Server_Cert\">No</field>\n\t<field name=\"Last_IO_Errno\">0</field>\n\t<field name=\"Last_IO_Error\"></field>\n\t<field name=\"Last_SQL_Errno\">1062</field>\n\t<field name=\"Last_SQL_Error\">Coordinator stopped because there were error(s) in the worker(s). The most recent failure being: Worker 1 failed executing transaction '72de0ef8-c8b1-11f1-9ec5-5695642bff44:15' at source log binlog.000003, end_log_pos 2831. See error log and/or performance_schema.replication_applier_status_by_worker table for more details about this failure or others, if any.</field>\n\t<field name=\"Replicate_Ignore_Server_Ids\"></field>\n\t<field name=\"Source_Server_Id\">5</field>\n\t<field name=\"Source_UUID\">72de0ef8-c8b1-11f1-9ec5-5695642bff44</field>\n\t<field name=\"Source_Info_File\">mysql.slave_master_info</field>\n\t<field name=\"SQL_Delay\">0</field>\n\t<field name=\"SQL_Remaining_Delay\" xsi:nil=\"true\" />\n\t<field name=\"Replica_SQL_Running_State\"></field>\n\t<field name=\"Source_Retry_Count\">10</field>\n\t<field name=\"Source_Bind\"></field>\n\t<field name=\"Last_IO_Error_Timestamp\"></field>\n\t<field name=\"Last_SQL_Error_Timestamp\">261015 16:13:43</field>\n\t<field name=\"Source_SSL_Crl\"></field>\n\t<field name=\"Source_SSL_Crlpath\"></field>\n\t<field name=\"Retrieved_Gtid_Set\">72de0ef8-c8b1-11f1-9ec5-5695642bff44:15</field>\n\t<field name=\"Executed_Gtid_Set\">7256d98a-c8b1-11f1-be59-aa9276ea306a:1-18,\n726f0649-c8b1-11f1-a91e-f6c08cc89039:1-12,\n72de0ef8-c8b1-11f1-9ec5-5695642bff44:1-14</field>\n\t<field name=\"Auto_Position\">1</field>\n\t<field name=\"Replicate_Rewrite_DB\"></field>\n\t<field name=\"Channel_Name\">ch80</field>\n\t<field name=\"Source_TLS_Version\"></field>\n\t<field name=\"Source_public_key_path\"></field>\n\t<field name=\"Get_Source_public_key\">1</field>\n\t<field name=\"Network_Namespace\"></field>\n  </row>\n</resultset>\n"
+  ],
+  [
+   "/*myflames:replication*/ SELECT CHANNEL_NAME, HEARTBEAT_INTERVAL FROM performance_schema.replication_connection_configuration",
+   "\t30.000\nch80\t30.000\n"
+  ],
+  [
+   "/*myflames:replication*/ SELECT CHANNEL_NAME, ASSIGN_GTIDS_TO_ANONYMOUS_TRANSACTIONS_TYPE FROM performance_schema.replication_applier_configuration",
+   "\tOFF\nch80\tOFF\n"
+  ],
+  [
+   "/*myflames:replication*/ SELECT CHANNEL_NAME, SERVICE_STATE, COUNT_RECEIVED_HEARTBEATS, LAST_HEARTBEAT_TIMESTAMP, LAST_QUEUED_TRANSACTION, LAST_QUEUED_TRANSACTION_END_QUEUE_TIMESTAMP, TIMESTAMPDIFF(MICROSECOND, LAST_HEARTBEAT_TIMESTAMP, NOW(6)), TIMESTAMPDIFF(MICROSECOND, LAST_QUEUED_TRANSACTION_END_QUEUE_TIMESTAMP, NOW(6)) FROM performance_schema.replication_connection_status",
+   "\tON\t12\t2026-10-15 16:13:23.021677\t7256d98a-c8b1-11f1-be59-aa9276ea306a:18\t2026-10-15 16:12:53.013629\t23358600\t53366648\nch80\tON\t1\t2026-10-15 16:13:35.494314\t72de0ef8-c8b1-11f1-9ec5-5695642bff44:15\t2026-10-15 16:13:43.901645\t10885963\t2478632\n"
+  ],
+  [
+   "/*myflames:replication*/ SELECT CHANNEL_NAME, WORKER_ID, LAST_ERROR_NUMBER, LAST_ERROR_MESSAGE, LAST_ERROR_TIMESTAMP, APPLYING_TRANSACTION, APPLYING_TRANSACTION_ORIGINAL_COMMIT_TIMESTAMP, TIMESTAMPDIFF(MICROSECOND, APPLYING_TRANSACTION_ORIGINAL_COMMIT_TIMESTAMP, NOW(6)), LAST_APPLIED_TRANSACTION, LAST_APPLIED_TRANSACTION_END_APPLY_TIMESTAMP, TIMESTAMPDIFF(MICROSECOND, LAST_APPLIED_TRANSACTION_ORIGINAL_COMMIT_TIMESTAMP, LAST_APPLIED_TRANSACTION_END_APPLY_TIMESTAMP) FROM performance_schema.replication_applier_status_by_worker",
+   "\t1\t0\t\t0000-00-00 00:00:00.000000\t\t0000-00-00 00:00:00.000000\tNULL\t\t0000-00-00 00:00:00.000000\tNULL\n\t2\t0\t\t0000-00-00 00:00:00.000000\t\t0000-00-00 00:00:00.000000\tNULL\t\t0000-00-00 00:00:00.000000\tNULL\n\t3\t0\t\t0000-00-00 00:00:00.000000\t\t0000-00-00 00:00:00.000000\tNULL\t\t0000-00-00 00:00:00.000000\tNULL\n\t4\t0\t\t0000-00-00 00:00:00.000000\t\t0000-00-00 00:00:00.000000\tNULL\t\t0000-00-00 00:00:00.000000\tNULL\nch80\t1\t1062\tWorker 1 failed executing transaction '72de0ef8-c8b1-11f1-9ec5-5695642bff44:15' at source log binlog.000003, end_log_pos 2831; Could not execute Write_rows event on table shop.t; Duplicate entry '60' for key 't.PRIMARY', Error_code: 1062; handler error HA_ERR_FOUND_DUPP_KEY; the event's source log binlog.000003, end_log_pos 2831\t2026-10-15 16:13:43.902380\t72de0ef8-c8b1-11f1-9ec5-5695642bff44:15\t2026-10-15 16:13:43.900832\t2501752\t\t0000-00-00 00:00:00.000000\tNULL\nch80\t2\t0\t\t0000-00-00 00:00:00.000000\t\t0000-00-00 00:00:00.000000\tNULL\t\t0000-00-00 00:00:00.000000\tNULL\nch80\t3\t0\t\t0000-00-00 00:00:00.000000\t\t0000-00-00 00:00:00.000000\tNULL\t\t0000-00-00 00:00:00.000000\tNULL\nch80\t4\t0\t\t0000-00-00 00:00:00.000000\t\t0000-00-00 00:00:00.000000\tNULL\t\t0000-00-00 00:00:00.000000\tNULL\n"
+  ],
+  [
+   "/*myflames:replication*/ SHOW RELAYLOG EVENTS IN 'f8b13f9003b4-relay-bin-ch80.000002' FROM 412 LIMIT 100 FOR CHANNEL 'ch80'",
+   "<?xml version=\"1.0\"?>\n\n<resultset statement=\"/*myflames:replication*/ SHOW RELAYLOG EVENTS IN 'f8b13f9003b4-relay-bin-ch80.000002' FROM 412 LIMIT 100 FOR CHANNEL 'ch80'\n\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n  <row>\n\t<field name=\"Log_name\">f8b13f9003b4-relay-bin-ch80.000002</field>\n\t<field name=\"Pos\">412</field>\n\t<field name=\"Event_type\">Gtid</field>\n\t<field name=\"Server_id\">5</field>\n\t<field name=\"End_log_pos\">2653</field>\n\t<field name=\"Info\">SET @@SESSION.GTID_NEXT= '72de0ef8-c8b1-11f1-9ec5-5695642bff44:15'</field>\n  </row>\n\n  <row>\n\t<field name=\"Log_name\">f8b13f9003b4-relay-bin-ch80.000002</field>\n\t<field name=\"Pos\">491</field>\n\t<field name=\"Event_type\">Query</field>\n\t<field name=\"Server_id\">5</field>\n\t<field name=\"End_log_pos\">2724</field>\n\t<field name=\"Info\">BEGIN</field>\n  </row>\n\n  <row>\n\t<field name=\"Log_name\">f8b13f9003b4-relay-bin-ch80.000002</field>\n\t<field name=\"Pos\">562</field>\n\t<field name=\"Event_type\">Table_map</field>\n\t<field name=\"Server_id\">5</field>\n\t<field name=\"End_log_pos\">2779</field>\n\t<field name=\"Info\">table_id: 88 (shop.t)</field>\n  </row>\n\n  <row>\n\t<field name=\"Log_name\">f8b13f9003b4-relay-bin-ch80.000002</field>\n\t<field name=\"Pos\">617</field>\n\t<field name=\"Event_type\">Write_rows</field>\n\t<field name=\"Server_id\">5</field>\n\t<field name=\"End_log_pos\">2831</field>\n\t<field name=\"Info\">table_id: 88 flags: STMT_END_F</field>\n  </row>\n\n  <row>\n\t<field name=\"Log_name\">f8b13f9003b4-relay-bin-ch80.000002</field>\n\t<field name=\"Pos\">669</field>\n\t<field name=\"Event_type\">Xid</field>\n\t<field name=\"Server_id\">5</field>\n\t<field name=\"End_log_pos\">2862</field>\n\t<field name=\"Info\">COMMIT /* xid=56 */</field>\n  </row>\n</resultset>\n"
+  ]
+ ],
+ "report": {
+  "schema_version": "replication-1.0",
+  "engine": "mysql",
+  "server_version": "8.4.11",
+  "captured_at": "2026-10-15T16:34:49.304979+00:00",
+  "uptime_s": 829,
+  "available": true,
+  "message": null,
+  "replica": true,
+  "statement": "SHOW REPLICA STATUS",
+  "gtid": {
+   "mode": "ON",
+   "enforce_consistency": "ON"
+  },
+  "settings": {
+   "read_only": "OFF",
+   "super_read_only": "OFF",
+   "parallel_workers": 4,
+   "preserve_commit_order": "ON"
+  },
+  "channels": [
+   {
+    "name": "",
+    "kind": "replication",
+    "judged": true,
+    "source": {
+     "host": "mf-repl-g-src",
+     "port": 3306,
+     "uuid": "7256d98a-c8b1-11f1-be59-aa9276ea306a",
+     "server_id": 1
+    },
+    "io": {
+     "running": "Yes",
+     "state": "Waiting for source to send event",
+     "error": {
+      "errno": 0,
+      "message": null,
+      "timestamp": null
+     }
+    },
+    "sql": {
+     "running": "Yes",
+     "state": "Replica has read all relay log; waiting for more updates",
+     "error": {
+      "errno": 0,
+      "message": null,
+      "timestamp": null,
+      "table": null,
+      "end_log_pos": null
+     },
+     "delay_s": 0,
+     "remaining_delay_s": null
+    },
+    "lag_s": 0,
+    "lag_notes": [
+     "Seconds_Behind_Source is 0 because the applier has caught up with what the receiver has, which is also true when the receiver is far behind the source."
+    ],
+    "lag_signals": {
+     "applying_lag_s": null,
+     "last_apply_lag_s": null,
+     "heartbeat_interval_s": 30.0,
+     "heartbeats_received": 12,
+     "heartbeat_age_s": 23.359,
+     "last_queued_age_s": 53.367,
+     "receiver_idle_s": 23.359
+    },
+    "position": {
+     "auto_position": true,
+     "retrieved_gtid_set": "7256d98a-c8b1-11f1-be59-aa9276ea306a:1-18",
+     "executed_gtid_set": "7256d98a-c8b1-11f1-be59-aa9276ea306a:1-18,\n726f0649-c8b1-11f1-a91e-f6c08cc89039:1-12,\n72de0ef8-c8b1-11f1-9ec5-5695642bff44:1-14",
+     "source_log_file": "binlog.000003",
+     "read_source_log_pos": 3720,
+     "exec_file": "binlog.000003",
+     "exec_pos": 3720,
+     "relay_log_file": "f8b13f9003b4-relay-bin.000003",
+     "relay_log_pos": 3931,
+     "skip_counter": 0
+    },
+    "worker": {
+     "workers": 4,
+     "error": {
+      "errno": 0,
+      "message": null,
+      "timestamp": null
+     },
+     "failing_worker_id": null,
+     "failing_applying_transaction": null,
+     "applying_transactions": [],
+     "last_applied_transaction": null,
+     "last_applied_end_apply": null
+    },
+    "agat": "OFF",
+    "failing_gtid": null,
+    "relay": null,
+    "status": "ok",
+    "status_why": [],
+    "receiver": {
+     "service_state": "ON",
+     "last_queued_transaction": "7256d98a-c8b1-11f1-be59-aa9276ea306a:18"
+    }
+   },
+   {
+    "name": "ch80",
+    "kind": "replication",
+    "judged": true,
+    "source": {
+     "host": "mf-repl-80-src",
+     "port": 3306,
+     "uuid": "72de0ef8-c8b1-11f1-9ec5-5695642bff44",
+     "server_id": 5
+    },
+    "io": {
+     "running": "Yes",
+     "state": "Waiting for source to send event",
+     "error": {
+      "errno": 0,
+      "message": null,
+      "timestamp": null
+     }
+    },
+    "sql": {
+     "running": "No",
+     "state": null,
+     "error": {
+      "errno": 1062,
+      "message": "Coordinator stopped because there were error(s) in the worker(s). The most recent failure being: Worker 1 failed executing transaction '72de0ef8-c8b1-11f1-9ec5-5695642bff44:15' at source log binlog.000003, end_log_pos 2831. See error log and/or performance_schema.replication_applier_status_by_worker table for more details about this failure or others, if any.",
+      "timestamp": "261015 16:13:43",
+      "table": "shop.t",
+      "end_log_pos": 2831
+     },
+     "delay_s": 0,
+     "remaining_delay_s": null
+    },
+    "lag_s": null,
+    "lag_notes": [
+     "Seconds_Behind_Source is NULL because the SQL thread is not running."
+    ],
+    "lag_signals": {
+     "applying_lag_s": null,
+     "last_apply_lag_s": null,
+     "heartbeat_interval_s": 30.0,
+     "heartbeats_received": 1,
+     "heartbeat_age_s": 10.886,
+     "last_queued_age_s": 2.479,
+     "receiver_idle_s": 2.479
+    },
+    "position": {
+     "auto_position": true,
+     "retrieved_gtid_set": "72de0ef8-c8b1-11f1-9ec5-5695642bff44:15",
+     "executed_gtid_set": "7256d98a-c8b1-11f1-be59-aa9276ea306a:1-18,\n726f0649-c8b1-11f1-a91e-f6c08cc89039:1-12,\n72de0ef8-c8b1-11f1-9ec5-5695642bff44:1-14",
+     "source_log_file": "binlog.000003",
+     "read_source_log_pos": 2862,
+     "exec_file": "binlog.000003",
+     "exec_pos": 2574,
+     "relay_log_file": "f8b13f9003b4-relay-bin-ch80.000002",
+     "relay_log_pos": 412,
+     "skip_counter": 0
+    },
+    "worker": {
+     "workers": 4,
+     "error": {
+      "errno": 1062,
+      "message": "Worker 1 failed executing transaction '72de0ef8-c8b1-11f1-9ec5-5695642bff44:15' at source log binlog.000003, end_log_pos 2831; Could not execute Write_rows event on table shop.t; Duplicate entry '60' for key 't.PRIMARY', Error_code: 1062; handler error HA_ERR_FOUND_DUPP_KEY; the event's source log binlog.000003, end_log_pos 2831",
+      "timestamp": "2026-10-15 16:13:43.902380"
+     },
+     "failing_worker_id": 1,
+     "failing_applying_transaction": "72de0ef8-c8b1-11f1-9ec5-5695642bff44:15",
+     "applying_transactions": [
+      "72de0ef8-c8b1-11f1-9ec5-5695642bff44:15"
+     ],
+     "last_applied_transaction": null,
+     "last_applied_end_apply": null
+    },
+    "agat": "OFF",
+    "failing_gtid": "72de0ef8-c8b1-11f1-9ec5-5695642bff44:15",
+    "relay": {
+     "gtid": "72de0ef8-c8b1-11f1-9ec5-5695642bff44:15",
+     "anonymous": false,
+     "events": 5,
+     "end_log_pos": 2862,
+     "complete": true,
+     "event_end_positions": [
+      2653,
+      2724,
+      2779,
+      2831,
+      2862
+     ],
+     "tables": [
+      "shop.t"
+     ]
+    },
+    "status": "problem",
+    "status_why": [
+     "The applier (SQL thread) stopped with error 1062: Coordinator stopped because there were error(s) in the worker(s). The most recent failure being: Worker 1 failed executing transaction '72de0ef8-c8b1-11f1-9ec5-5695642bff44:15' at source log binlog.000003, end_log_pos 2831. See error log and/or performance_schema.replication_applier_status_by_worker table for more details about this failure or others, if any."
+    ],
+    "receiver": {
+     "service_state": "ON",
+     "last_queued_transaction": "72de0ef8-c8b1-11f1-9ec5-5695642bff44:15"
+    },
+    "skip_plan": {
+     "channel": "ch80",
+     "engine": "mysql",
+     "server_version": "8.4.11",
+     "available": true,
+     "message": null,
+     "method": "empty_gtid_transaction",
+     "statements": [
+      "SET GTID_NEXT = '72de0ef8-c8b1-11f1-9ec5-5695642bff44:15'",
+      "BEGIN",
+      "COMMIT",
+      "SET GTID_NEXT = 'AUTOMATIC'",
+      "START REPLICA SQL_THREAD FOR CHANNEL 'ch80'"
+     ],
+     "identity": {
+      "channel": "ch80",
+      "method": "empty_gtid_transaction",
+      "last_sql_errno": 1062,
+      "last_sql_error": "Coordinator stopped because there were error(s) in the worker(s). The most recent failure being: Worker 1 failed executing transaction '72de0ef8-c8b1-11f1-9ec5-5695642bff44:15' at source log binlog.000003, end_log_pos 2831. See error log and/or performance_schema.replication_applier_status_by_worker table for more details about this failure or others, if any.",
+      "last_sql_error_timestamp": "261015 16:13:43",
+      "gtid": "72de0ef8-c8b1-11f1-9ec5-5695642bff44:15",
+      "position": {
+       "relay_log_file": "f8b13f9003b4-relay-bin-ch80.000002",
+       "relay_log_pos": 412,
+       "exec_file": "binlog.000003",
+       "exec_pos": 2574
+      },
+      "source": {
+       "host": "mf-repl-80-src",
+       "port": 3306,
+       "uuid": "72de0ef8-c8b1-11f1-9ec5-5695642bff44"
+      }
+     },
+     "skip": {
+      "gtid": "72de0ef8-c8b1-11f1-9ec5-5695642bff44:15",
+      "exec_file": "binlog.000003",
+      "exec_pos": 2574,
+      "end_log_pos": 2862,
+      "error_end_log_pos": 2831,
+      "table": "shop.t",
+      "tables": [
+       "shop.t"
+      ],
+      "relay_checked": true
+     },
+     "error": {
+      "errno": 1062,
+      "message": "Coordinator stopped because there were error(s) in the worker(s). The most recent failure being: Worker 1 failed executing transaction '72de0ef8-c8b1-11f1-9ec5-5695642bff44:15' at source log binlog.000003, end_log_pos 2831. See error log and/or performance_schema.replication_applier_status_by_worker table for more details about this failure or others, if any.",
+      "timestamp": "261015 16:13:43"
+     },
+     "drift_warning": "A skipped transaction is missing on the replica. Rows it touched now differ from the source, and later transactions on those rows may fail or change different data silently.",
+     "after": [
+      "Find the cause: writes run directly on the replica (check read_only and super_read_only), non-deterministic statements, or a replica restored from an inconsistent backup.",
+      "Verify the affected tables with checksums computed on both sides over the same data (CHECKSUM TABLE on a quiet table, or a chunked checksum tool in the style of pt-table-checksum). myflames recommends this and never runs it for you.",
+      "Resync those tables or rebuild the replica (clone or backup restore)."
+     ],
+     "privileges": "SET GTID_NEXT needs SUPER, SYSTEM_VARIABLES_ADMIN, SESSION_VARIABLES_ADMIN or REPLICATION_APPLIER; START REPLICA needs REPLICATION_SLAVE_ADMIN or SUPER.",
+     "notes": [
+      "The empty transaction takes the failing transaction's GTID, so the applier treats it as already applied and continues with the next one."
+     ]
+    }
+   }
+  ],
+  "capabilities": {
+   "status": true,
+   "performance_schema": true,
+   "worker_timestamps": true,
+   "agat": true
+  },
+  "notes": [
+   "Seconds_Behind_Source compares the original timestamp of the event being applied with the replica's clock, adjusted by the clock difference measured when the receiver connected. A clock change on either server after that skews it, and one long transaction shows as a jump, so it is never the only lag signal."
+  ],
+  "summary": {
+   "channels": 2,
+   "judged": 2,
+   "ok": 1,
+   "watch": 0,
+   "problem": 1,
+   "unknown": 0,
+   "failed": 1,
+   "lag_max_s": 0
+  }
+ }
+}

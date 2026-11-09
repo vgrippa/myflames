@@ -1,0 +1,125 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "61.15"
+    },
+    "table": {
+      "table_name": "c",
+      "access_type": "index",
+      "key": "idx_fk_address_id",
+      "used_key_parts": [
+        "address_id"
+      ],
+      "key_length": "2",
+      "rows_examined_per_scan": 599,
+      "rows_produced_per_join": 599,
+      "filtered": "100.00",
+      "using_index": true,
+      "cost_info": {
+        "read_cost": "1.25",
+        "eval_cost": "59.90",
+        "prefix_cost": "61.15",
+        "data_read_per_join": "341K"
+      },
+      "used_columns": [
+        "customer_id",
+        "address_id"
+      ],
+      "attached_condition": "(<in_optimizer>(`sakila`.`c`.`customer_id`,`sakila`.`c`.`customer_id` in ( <materialize> (/* select#2 */ select `sakila`.`rental`.`customer_id` from `sakila`.`rental` where ((`sakila`.`rental`.`rental_date` > TIMESTAMP'2006-01-01 00:00:00') and (`sakila`.`rental`.`staff_id` = 1)) ), <primary_index_lookup>(`sakila`.`c`.`customer_id` in <temporary table> on <auto_distinct_key> where ((`sakila`.`c`.`customer_id` = `<materialized_subquery>`.`customer_id`))))) or <in_optimizer>(`sakila`.`c`.`address_id`,`sakila`.`c`.`address_id` in ( <materialize> (/* select#3 */ select `sakila`.`address`.`address_id` from `sakila`.`address` where (`sakila`.`address`.`district` = 'Alberta') ), <primary_index_lookup>(`sakila`.`c`.`address_id` in <temporary table> on <auto_distinct_key> where ((`sakila`.`c`.`address_id` = `<materialized_subquery>`.`address_id`))))))",
+      "attached_subqueries": [
+        {
+          "table": {
+            "table_name": "<materialized_subquery>",
+            "access_type": "eq_ref",
+            "key": "<auto_key>",
+            "key_length": "2",
+            "rows_examined_per_scan": 1,
+            "materialized_from_subquery": {
+              "using_temporary_table": true,
+              "dependent": true,
+              "cacheable": false,
+              "query_block": {
+                "select_id": 3,
+                "cost_info": {
+                  "query_cost": "61.80"
+                },
+                "table": {
+                  "table_name": "address",
+                  "access_type": "ALL",
+                  "possible_keys": [
+                    "PRIMARY"
+                  ],
+                  "rows_examined_per_scan": 603,
+                  "rows_produced_per_join": 60,
+                  "filtered": "10.00",
+                  "cost_info": {
+                    "read_cost": "55.77",
+                    "eval_cost": "6.03",
+                    "prefix_cost": "61.80",
+                    "data_read_per_join": "37K"
+                  },
+                  "used_columns": [
+                    "address_id",
+                    "district"
+                  ],
+                  "attached_condition": "(`sakila`.`address`.`district` = 'Alberta')"
+                }
+              }
+            }
+          }
+        },
+        {
+          "table": {
+            "table_name": "<materialized_subquery>",
+            "access_type": "eq_ref",
+            "key": "<auto_key>",
+            "key_length": "2",
+            "rows_examined_per_scan": 1,
+            "materialized_from_subquery": {
+              "using_temporary_table": true,
+              "dependent": true,
+              "cacheable": false,
+              "query_block": {
+                "select_id": 2,
+                "cost_info": {
+                  "query_cost": "82.16"
+                },
+                "table": {
+                  "table_name": "rental",
+                  "access_type": "range",
+                  "possible_keys": [
+                    "rental_date",
+                    "idx_fk_customer_id",
+                    "idx_fk_staff_id"
+                  ],
+                  "key": "rental_date",
+                  "used_key_parts": [
+                    "rental_date"
+                  ],
+                  "key_length": "5",
+                  "rows_examined_per_scan": 182,
+                  "rows_produced_per_join": 91,
+                  "filtered": "50.22",
+                  "index_condition": "(`sakila`.`rental`.`rental_date` > TIMESTAMP'2006-01-01 00:00:00')",
+                  "cost_info": {
+                    "read_cost": "73.02",
+                    "eval_cost": "9.14",
+                    "prefix_cost": "82.16",
+                    "data_read_per_join": "2K"
+                  },
+                  "used_columns": [
+                    "rental_date",
+                    "customer_id",
+                    "staff_id"
+                  ],
+                  "attached_condition": "(`sakila`.`rental`.`staff_id` = 1)"
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

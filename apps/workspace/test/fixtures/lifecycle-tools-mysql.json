@@ -1,0 +1,179 @@
+{
+ "schema_version": "lifecycle-tools-1.0",
+ "tools": {
+  "mysqlsh": {
+   "available": true,
+   "deprecated": false,
+   "path": "/usr/local/bin/mysqlsh",
+   "version": "mysqlsh Ver 9.6.0",
+   "version_tuple": [
+    9,
+    6,
+    0
+   ],
+   "engine": "mysql",
+   "download_url": "https://dev.mysql.com/downloads/shell/",
+   "update": {
+    "status": "not_checked",
+    "latest_version": null,
+    "checked_at": null,
+    "source_url": "https://dev.mysql.com/downloads/shell/",
+    "message": "Update check not requested."
+   }
+  },
+  "mysqldump": {
+   "available": true,
+   "deprecated": false,
+   "path": "/usr/local/bin/mysqldump",
+   "version": "mysqldump Ver 8.4.3",
+   "version_tuple": [
+    8,
+    4,
+    3
+   ],
+   "engine": "mysql",
+   "download_url": "https://dev.mysql.com/downloads/mysql/",
+   "update": {
+    "status": "not_checked",
+    "latest_version": null,
+    "checked_at": null,
+    "source_url": "https://dev.mysql.com/downloads/mysql/",
+    "message": "Update check not requested."
+   }
+  },
+  "mysqlpump": {
+   "available": true,
+   "deprecated": true,
+   "path": "/usr/local/bin/mysqlpump",
+   "version": "mysqlpump Ver 8.0.36",
+   "version_tuple": [
+    8,
+    0,
+    36
+   ],
+   "engine": "mysql",
+   "download_url": "https://dev.mysql.com/doc/refman/8.0/en/mysqlpump.html",
+   "update": {
+    "status": "deprecated",
+    "latest_version": null,
+    "checked_at": null,
+    "source_url": "https://dev.mysql.com/doc/refman/8.0/en/mysqlpump.html",
+    "message": "Deprecated tool. Use MySQL Shell or mysqldump."
+   }
+  },
+  "mariadb-dump": {
+   "available": true,
+   "deprecated": false,
+   "path": "/usr/local/bin/mariadb-dump",
+   "version": "mariadb-dump Ver 10.19 Distrib 11.4.5-MariaDB",
+   "version_tuple": [
+    11,
+    4,
+    5
+   ],
+   "engine": "mariadb",
+   "download_url": "https://mariadb.org/download/",
+   "update": {
+    "status": "not_checked",
+    "latest_version": null,
+    "checked_at": null,
+    "source_url": "https://mariadb.org/download/",
+    "message": "Update check not requested."
+   }
+  },
+  "mariadb-backup": {
+   "available": true,
+   "deprecated": false,
+   "path": "/usr/local/bin/mariadb-backup",
+   "version": "mariadb-backup based on MariaDB server 11.4.5-MariaDB",
+   "version_tuple": [
+    11,
+    4,
+    5
+   ],
+   "engine": "mariadb",
+   "download_url": "https://mariadb.org/download/",
+   "update": {
+    "status": "not_checked",
+    "latest_version": null,
+    "checked_at": null,
+    "source_url": "https://mariadb.org/download/",
+    "message": "Update check not requested."
+   }
+  },
+  "mysql": {
+   "available": true,
+   "deprecated": false,
+   "path": "/usr/local/bin/mysql",
+   "version": "mysql Ver 8.4.3",
+   "version_tuple": [
+    8,
+    4,
+    3
+   ],
+   "engine": "mysql",
+   "download_url": "https://dev.mysql.com/downloads/mysql/",
+   "update": {
+    "status": "not_checked",
+    "latest_version": null,
+    "checked_at": null,
+    "source_url": "https://dev.mysql.com/downloads/mysql/",
+    "message": "Update check not requested."
+   }
+  },
+  "mariadb": {
+   "available": true,
+   "deprecated": false,
+   "path": "/usr/local/bin/mariadb",
+   "version": "mariadb Ver 15.1 Distrib 11.4.5-MariaDB",
+   "version_tuple": [
+    11,
+    4,
+    5
+   ],
+   "engine": "mariadb",
+   "download_url": "https://mariadb.org/download/",
+   "update": {
+    "status": "not_checked",
+    "latest_version": null,
+    "checked_at": null,
+    "source_url": "https://mariadb.org/download/",
+    "message": "Update check not requested."
+   }
+  },
+  "mariadb-upgrade": {
+   "available": true,
+   "deprecated": false,
+   "path": "/usr/local/bin/mariadb-upgrade",
+   "version": "mariadb-upgrade Ver 2.0.0 Distrib 11.4.5-MariaDB",
+   "version_tuple": [
+    11,
+    4,
+    5
+   ],
+   "engine": "mariadb",
+   "download_url": "https://mariadb.org/download/",
+   "update": {
+    "status": "not_checked",
+    "latest_version": null,
+    "checked_at": null,
+    "source_url": "https://mariadb.org/download/",
+    "message": "Update check not requested."
+   }
+  }
+ },
+ "server": {
+  "engine": "mysql",
+  "version": "8.4.3"
+ },
+ "offered": {
+  "dump": [
+   "mysqlsh",
+   "mysqldump"
+  ],
+  "upgrade": "mysqlsh",
+  "clone": true,
+  "physical_backup": false,
+  "physical_backup_requires_local_files": true
+ }
+}

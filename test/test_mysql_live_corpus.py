@@ -37,7 +37,7 @@ class TestMySQLLiveCorpus(unittest.TestCase):
                 root = parse_explain(text)
                 self.assertGreater(len(list(flatten_nodes(root))), 0)
                 self.assertGreaterEqual(root['total_time'], 0)
-            for view in ('flamegraph', 'bargraph', 'treemap', 'diagram', 'tree'):
+            for view in ('flamegraph', 'bargraph', 'diagram', 'tree'):
                 with self.subTest(plan=path.name, view=view):
                     svg = render_explain(text, view)
                     element = ET.fromstring(svg)

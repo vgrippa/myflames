@@ -1,0 +1,92 @@
+{
+  "query_block": {
+    "intersect_result": {
+      "using_temporary_table": true,
+      "select_id": 3,
+      "table_name": "<intersect1,2>",
+      "access_type": "ALL",
+      "query_specifications": [
+        {
+          "dependent": false,
+          "cacheable": true,
+          "query_block": {
+            "select_id": 1,
+            "cost_info": {
+              "query_cost": "1.25"
+            },
+            "table": {
+              "table_name": "film_actor",
+              "access_type": "ref",
+              "possible_keys": [
+                "PRIMARY",
+                "idx_fk_film_id"
+              ],
+              "key": "idx_fk_film_id",
+              "used_key_parts": [
+                "film_id"
+              ],
+              "key_length": "2",
+              "ref": [
+                "const"
+              ],
+              "rows_examined_per_scan": 10,
+              "rows_produced_per_join": 10,
+              "filtered": "100.00",
+              "using_index": true,
+              "cost_info": {
+                "read_cost": "0.25",
+                "eval_cost": "1.00",
+                "prefix_cost": "1.25",
+                "data_read_per_join": "160"
+              },
+              "used_columns": [
+                "actor_id",
+                "film_id"
+              ]
+            }
+          }
+        },
+        {
+          "dependent": false,
+          "cacheable": true,
+          "query_block": {
+            "select_id": 2,
+            "cost_info": {
+              "query_cost": "0.75"
+            },
+            "table": {
+              "table_name": "film_actor",
+              "access_type": "ref",
+              "possible_keys": [
+                "PRIMARY",
+                "idx_fk_film_id"
+              ],
+              "key": "idx_fk_film_id",
+              "used_key_parts": [
+                "film_id"
+              ],
+              "key_length": "2",
+              "ref": [
+                "const"
+              ],
+              "rows_examined_per_scan": 5,
+              "rows_produced_per_join": 5,
+              "filtered": "100.00",
+              "using_index": true,
+              "cost_info": {
+                "read_cost": "0.25",
+                "eval_cost": "0.50",
+                "prefix_cost": "0.75",
+                "data_read_per_join": "80"
+              },
+              "used_columns": [
+                "actor_id",
+                "film_id"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

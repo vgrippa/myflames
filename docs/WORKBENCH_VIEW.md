@@ -11,14 +11,28 @@ myflames --type workbench explain.json -o workbench.svg
 ```
 
 The HTML report includes the existing findings, teaching links, and JSON-LD.
-The SVG contains its own interaction script. Open either file directly in a
-browser for interactive controls; an SVG embedded as an image is static.
+It draws the chart in the browser with the inlined myflames chart runtime, so
+it needs JavaScript; **Export SVG** in the report saves a static, self-styled
+copy. A `.svg` output file contains its own interaction script. Open either file
+directly in a browser for interactive controls; an SVG embedded as an image is
+static.
 
 ## Reading the plan
 
-The zoom percentage follows **+**, **−**, wheel gestures, and **Fit plan**.
-Click the percentage to reset to 100%. Buttons highlight when activated; a
+The zoom controls read **−**, the percentage, **+**, then **Fit** (the same
+order as the Database diagram). The percentage follows the buttons, wheel
+gestures and **Fit**; click it to reset to 100%. Buttons highlight when activated; a
 disabled zoom button means that direction has reached its limit.
+Fitting (on open, **Fit**, a double click, and a resize while fitted) never
+makes the smallest card or edge text (11 px) smaller than 11 px on screen. In
+the workspace the diagram fits its width without going past 100%; in reports
+and the standalone SVG it fits the whole plan. A plan too large for that
+starts at its top inputs and stays pannable by dragging the canvas; zoom out
+with **−** or the wheel to see more of it at once. When a report page scales
+the chart with its column, a chart that is still fitted refits at the new
+size (a zoom or pan you made is kept), and a very small chart may zoom in
+past the 500% button limit to keep its text readable. In Compare mode, plans stack vertically at narrow viewport
+widths to preserve readable card layouts.
 
 Data flows from inputs at the top toward the plan output below. Every node and
 parent-child edge in the myflames parsed tree is retained, including filters,
@@ -47,6 +61,36 @@ optimizer cost as a separate value. Missing measurements read `n/a`; zero is
 still zero. Cost is not milliseconds. Times adapt between microseconds,
 milliseconds, and seconds; this view does not force the CLI's display-unit flag.
 
+## Row misestimates
+
+A measured plan (EXPLAIN ANALYZE, MariaDB ANALYZE) shows where the optimizer's
+row estimate was wrong. The rule is the plan finding's (`parser._row_misestimate`):
+a base-table access, or the filter directly above one, whose rows per loop
+differ from the estimate by 10× or more on at least 1,000 rows across loops.
+Below a LIMIT or on the inner side of a semijoin only underestimates count
+(reading stops early on purpose); MariaDB compares index lookups (ref, eq_ref)
+and reports only underestimates, because its plans hide LIMIT; CTE references
+and recursive work tables are skipped.
+
+| Mark | Meaning |
+| --- | --- |
+| Chip at the right of the header, for example `rows ×451 under` | Actual rows per loop are 451 times the estimate (`over`: the estimate was higher) |
+| Dashed outline around the card | The same operator, visible when zoomed out |
+
+The marks use their own violet, never a status color. The card's tooltip and
+details add the estimate against the actual rows. When the plan came from a
+capture that read the table's InnoDB statistics, they also give when those
+statistics were last updated, their row count, the columns with histograms,
+and the `ANALYZE TABLE` statement to copy; myflames never runs it. The
+execution tree and bar chart carry the same chip in the operator's label
+column, and the flame graph underlines the frame and names the estimate in
+its details line, without changing labels.
+
+In the workspace, **Misestimates N** in the plan's measurements selects each
+misestimated operator in turn, worst first, and brings it into view
+(Shift-click goes back); the inspector's **Row estimate** section shows the
+same facts with a Copy button for the statement.
+
 ## Join symbols
 
 The larger circles depict the **reported plan operator**, not row counts or
@@ -66,7 +110,7 @@ Structured `join_type` takes priority over operation labels. MariaDB's synthetic
 join nodes remain unknown because its flat input list does not reliably identify
 logical join semantics. The inspector gives a text explanation for each symbol.
 
-The README's [inner and left join samples](../README.md#query-samples-inner-join-and-left-join)
+The README's [execution plan examples](../README.md#1-analyze-execution-plans)
 show both shadings on the same `users` and `orders` tables. Interactive copies
 live in [`docs/demos/mysql-joins/`](demos/mysql-joins/).
 
@@ -77,8 +121,12 @@ live in [`docs/demos/mysql-joins/`](demos/mysql-joins/).
   small macOS mouse/trackpad gestures make small changes. Horizontal scrolling
   and zero vertical deltas do not zoom. Fit, buttons, and dragging stop pending
   wheel motion.
-- Use **Fit plan**, **+**, **−**, or **100%** to change the viewport.
-- Search node details to dim nonmatching operations.
+- Use **−**, **100%**, **+**, or **Fit** to change the viewport. **Fit**
+  returns to the opening view: the plan fitted as far as its 11 px text
+  allows, starting at the top inputs when it is larger, and pannable.
+- Search node details (**Search operators**) to dim nonmatching operations.
+- Each edge's rows label sits on an opaque chip, so the edge line never runs
+  through the words.
 - Click a node, or focus it and press Enter/Space, to see its details. In the
   workspace this also selects the matching operator in the inspector.
 - Export HTML from the workspace to keep the current visualization type.
@@ -93,18 +141,29 @@ The older Workbench source's `plugins/wb.query.analysis/explain_renderer.py`
 uses a different, classic diamond layout. The former **Diagram** view now
 forwards to this renderer so interactions and join semantics stay consistent.
 
-This is an independent SVG implementation in `myflames/output_workbench.py`
-and `myflames/workbench.js`. It adds no Workbench code, runtime, or dependency
-to the package. Python remains standard-library-only.
+This is an independent implementation with two renderers that draw the same
+picture. `apps/workspace/src/charts/workbench.ts`, built into the committed
+`myflames/assets/myflames-charts.js`, draws HTML reports, `myflames explore`
+pages, and the workspace from the chart data that `myflames/chart_data.py`
+builds (`chart-data-1.0` in reports and explore pages, `chart-data-2.0` in the
+workspace; they differ only in how analysis messages are stored). `myflames/output_workbench.py` and
+`myflames/workbench.js` still write standalone `.svg` files. The parity suite
+(`apps/workspace/test/parity.mjs`) checks that both produce the same nodes,
+edges, positions, and colors for every fixture. Neither adds Workbench code,
+runtime, or dependency to the package, and Python remains
+standard-library-only.
 
 The view uses myflames' existing parser, including its MySQL and MariaDB
 normalization. It is not a complete reproduction of Workbench: it does not add
 Workbench's raw-schema support, query-block reconstruction, or metadata that
 the current parser does not retain (such as some query-block metadata).
-There is one downward orientation, and large plans initially fit to the canvas;
-zoom in to read individual cards. The separate output terminal is a visual
-endpoint, not another measured operator. Existing analysis and JSON schemas
-remain unchanged.
+There is one downward orientation; plans open fitted only as far as keeps
+their text at 11 px or more, starting at the top inputs, while larger trees
+can be panned. In
+Compare mode, plans stack vertically at narrow widths to maintain card
+legibility. Zoom in or out to inspect individual cards. The separate output
+terminal is a visual endpoint, not another measured operator. Existing
+analysis and JSON schemas remain unchanged.
 
 The workspace adds shared selection, branch focus/collapse, and metric bars to
 this view. SELECT-list subqueries are now preserved as additional branches. See

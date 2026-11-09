@@ -1,0 +1,259 @@
+{
+  "schema_version": "error-log-1.0",
+  "engine": "mysql",
+  "server_version": "8.4.11",
+  "taken_at": "2026-10-19T20:30:00",
+  "uptime_s": 234,
+  "performance_schema": true,
+  "notes": [
+    "The buffer expired 120 older events. Counts describe events retained in the buffer.",
+    "Entries older than server start are from previous runs."
+  ],
+  "available": true,
+  "reason": null,
+  "reason_text": null,
+  "how_to_view": null,
+  "source": "performance_schema.error_log",
+  "settings": {
+    "log_error": "/var/log/mysql/error.log",
+    "log_error_verbosity": 3,
+    "log_error_services": "log_filter_internal; log_sink_internal",
+    "log_warnings": null,
+    "datadir": null
+  },
+  "buffer": {
+    "bytes": 5632,
+    "events": 12,
+    "expired_events": 120,
+    "latest_write": "2026-10-19 20:29:15.338106",
+    "capacity_bytes": 5242880
+  },
+  "file": null,
+  "server_started": "2026-10-19 20:26:06",
+  "counts": {
+    "system": 4,
+    "error": 3,
+    "warning": 4,
+    "note": 1
+  },
+  "counts_current_run": {
+    "system": 3,
+    "error": 2,
+    "warning": 4,
+    "note": 1
+  },
+  "codes": [
+    {
+      "error_code": "MY-010914",
+      "prio": "Warning",
+      "subsystem": "Server",
+      "count": 2,
+      "first_logged": "2026-10-19 20:28:42.203309",
+      "last_logged": "2026-10-19 20:29:15.338106",
+      "sample": "Aborted connection 47 to db: 'shop' user: 'app' host: 'localhost' (Got an error reading communication packets). Context: client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/end-of-message"
+    },
+    {
+      "error_code": "MY-013183",
+      "prio": "Error",
+      "subsystem": "InnoDB",
+      "count": 2,
+      "first_logged": "2026-10-19 20:28:50.040001",
+      "last_logged": "2026-10-19 20:29:01.040001",
+      "sample": "InnoDB: Assertion failure while reading page 42.\nDiagnostic context: <script>window.errorLogInjected = true</script> & record contents."
+    },
+    {
+      "error_code": "MY-010119",
+      "prio": "Error",
+      "subsystem": "Server",
+      "count": 1,
+      "first_logged": "2026-10-19 19:58:20.000001",
+      "last_logged": "2026-10-19 19:58:20.000001",
+      "sample": "Aborting after a startup configuration error."
+    },
+    {
+      "error_code": "MY-010910",
+      "prio": "System",
+      "subsystem": "Server",
+      "count": 1,
+      "first_logged": "2026-10-19 19:59:30.000001",
+      "last_logged": "2026-10-19 19:59:30.000001",
+      "sample": "/usr/sbin/mysqld: Shutdown complete (mysqld 8.4.11)."
+    },
+    {
+      "error_code": "MY-013576",
+      "prio": "System",
+      "subsystem": "InnoDB",
+      "count": 1,
+      "first_logged": "2026-10-19 20:26:07.002030",
+      "last_logged": "2026-10-19 20:26:07.002030",
+      "sample": "InnoDB initialization has started."
+    },
+    {
+      "error_code": "MY-013577",
+      "prio": "System",
+      "subsystem": "InnoDB",
+      "count": 1,
+      "first_logged": "2026-10-19 20:26:12.001110",
+      "last_logged": "2026-10-19 20:26:12.001110",
+      "sample": "InnoDB initialization has ended."
+    },
+    {
+      "error_code": "MY-011810",
+      "prio": "Warning",
+      "subsystem": "Server",
+      "count": 1,
+      "first_logged": "2026-10-19 20:26:13.112001",
+      "last_logged": "2026-10-19 20:26:13.112001",
+      "sample": "Insecure configuration for --pid-file: Location '/var/run/mysqld' in the path is accessible to all OS users."
+    },
+    {
+      "error_code": "MY-010068",
+      "prio": "Warning",
+      "subsystem": "Server",
+      "count": 1,
+      "first_logged": "2026-10-19 20:26:14.112001",
+      "last_logged": "2026-10-19 20:26:14.112001",
+      "sample": "CA certificate ca.pem is self signed."
+    },
+    {
+      "error_code": "MY-010931",
+      "prio": "System",
+      "subsystem": "Server",
+      "count": 1,
+      "first_logged": "2026-10-19 20:26:15.338106",
+      "last_logged": "2026-10-19 20:26:15.338106",
+      "sample": "/usr/sbin/mysqld: ready for connections. Version: '8.4.11' socket: '/var/run/mysqld/mysqld.sock' port: 3306 MySQL Community Server - GPL."
+    },
+    {
+      "error_code": "MY-010051",
+      "prio": "Note",
+      "subsystem": "Server",
+      "count": 1,
+      "first_logged": "2026-10-19 20:27:02.440102",
+      "last_logged": "2026-10-19 20:27:02.440102",
+      "sample": "Event Scheduler: Loaded 0 events"
+    }
+  ],
+  "entries": [
+    {
+      "logged": "2026-10-19 20:29:15.338106",
+      "thread_id": 47,
+      "prio": "Warning",
+      "error_code": "MY-010914",
+      "subsystem": "Server",
+      "message": "Aborted connection 47 to db: 'shop' user: 'app' host: 'localhost' (Got an error reading communication packets). Context: client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/client-route/end-of-message",
+      "previous_run": false
+    },
+    {
+      "logged": "2026-10-19 20:29:01.040001",
+      "thread_id": 29,
+      "prio": "Error",
+      "error_code": "MY-013183",
+      "subsystem": "InnoDB",
+      "message": "InnoDB: Assertion failure while reading page 42.\nDiagnostic context: <script>window.errorLogInjected = true</script> & record contents.",
+      "previous_run": false
+    },
+    {
+      "logged": "2026-10-19 20:28:50.040001",
+      "thread_id": 28,
+      "prio": "Error",
+      "error_code": "MY-013183",
+      "subsystem": "InnoDB",
+      "message": "InnoDB: Assertion failure while reading page 41.",
+      "previous_run": false
+    },
+    {
+      "logged": "2026-10-19 20:28:42.203309",
+      "thread_id": 48,
+      "prio": "Warning",
+      "error_code": "MY-010914",
+      "subsystem": "Server",
+      "message": "Aborted connection 48 to db: 'shop' user: 'app' host: 'localhost' (Got an error reading communication packets).",
+      "previous_run": false
+    },
+    {
+      "logged": "2026-10-19 20:27:02.440102",
+      "thread_id": 0,
+      "prio": "Note",
+      "error_code": "MY-010051",
+      "subsystem": "Server",
+      "message": "Event Scheduler: Loaded 0 events",
+      "previous_run": false
+    },
+    {
+      "logged": "2026-10-19 20:26:15.338106",
+      "thread_id": 0,
+      "prio": "System",
+      "error_code": "MY-010931",
+      "subsystem": "Server",
+      "message": "/usr/sbin/mysqld: ready for connections. Version: '8.4.11' socket: '/var/run/mysqld/mysqld.sock' port: 3306 MySQL Community Server - GPL.",
+      "previous_run": false
+    },
+    {
+      "logged": "2026-10-19 20:26:14.112001",
+      "thread_id": 0,
+      "prio": "Warning",
+      "error_code": "MY-010068",
+      "subsystem": "Server",
+      "message": "CA certificate ca.pem is self signed.",
+      "previous_run": false
+    },
+    {
+      "logged": "2026-10-19 20:26:13.112001",
+      "thread_id": 0,
+      "prio": "Warning",
+      "error_code": "MY-011810",
+      "subsystem": "Server",
+      "message": "Insecure configuration for --pid-file: Location '/var/run/mysqld' in the path is accessible to all OS users.",
+      "previous_run": false
+    },
+    {
+      "logged": "2026-10-19 20:26:12.001110",
+      "thread_id": 1,
+      "prio": "System",
+      "error_code": "MY-013577",
+      "subsystem": "InnoDB",
+      "message": "InnoDB initialization has ended.",
+      "previous_run": false
+    },
+    {
+      "logged": "2026-10-19 20:26:07.002030",
+      "thread_id": 1,
+      "prio": "System",
+      "error_code": "MY-013576",
+      "subsystem": "InnoDB",
+      "message": "InnoDB initialization has started.",
+      "previous_run": false
+    },
+    {
+      "logged": "2026-10-19 19:59:30.000001",
+      "thread_id": 0,
+      "prio": "System",
+      "error_code": "MY-010910",
+      "subsystem": "Server",
+      "message": "/usr/sbin/mysqld: Shutdown complete (mysqld 8.4.11).",
+      "previous_run": true
+    },
+    {
+      "logged": "2026-10-19 19:58:20.000001",
+      "thread_id": null,
+      "prio": "Error",
+      "error_code": "MY-010119",
+      "subsystem": "Server",
+      "message": "Aborting after a startup configuration error.",
+      "previous_run": true
+    }
+  ],
+  "entries_total": 12,
+  "limit": 200,
+  "levels": [
+    "System",
+    "Error",
+    "Warning",
+    "Note"
+  ],
+  "summary": {
+    "status": "watch",
+    "text": "2 errors and 4 warnings since the server started at 2026-10-19 20:26:06. The buffer holds 12 events; 120 older events expired."
+  }
+}

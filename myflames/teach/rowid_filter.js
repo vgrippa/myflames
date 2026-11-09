@@ -1,5 +1,4 @@
 function rowidFilterCost(mainRows, filterSelectivity, rowSize) {
-  var bitmapRows = mainRows;
   var rowsAfterFilter = Math.max(1, Math.ceil(mainRows * filterSelectivity / 100));
   var rowsSkipped = mainRows - rowsAfterFilter;
   var withoutFilterFetches = mainRows;
@@ -20,7 +19,9 @@ function rowidFilterCost(mainRows, filterSelectivity, rowSize) {
 var W = 800, H = 400;
 var stage = null;
 
-// Sample rows for animation.  "pass" = rowid IS in the bitmap (status='shipped').
+// Sample idx_date entries for the animation, in created_date order. The
+// entry holds (created_date, id); status is stored only in the row.
+// "pass" = the id IS in the rowid filter (status = 'shipped').
 var SAMPLE_ROWS = [
   {id: 1001, date: "2024-02-14", status: "shipped",   pass: true},
   {id: 1002, date: "2024-03-01", status: "pending",   pass: false},
@@ -33,225 +34,234 @@ var SAMPLE_ROWS = [
   {id: 1009, date: "2024-07-11", status: "shipped",   pass: true},
   {id: 1010, date: "2024-07-30", status: "cancelled", pass: false}
 ];
+// The filter holds only the shipped orders' primary keys, sorted.
+var FILTER_IDS = SAMPLE_ROWS.filter(function(r) { return r.pass; })
+  .map(function(r) { return r.id; });
+
+function fmtFull(n) {
+  return Math.round(n).toLocaleString("en-US");
+}
 
 function buildStage() {
   var svg = document.getElementById("rowid-filter-svg");
   while (svg.firstChild) svg.removeChild(svg.firstChild);
 
-  var zoneH = 100;
-  // --- Zone 1: Filtering index scan -> bitmap (top, blue) ---
+  // --- Zone 1: filter index scan -> rowid filter (top) ---
   var z1y = 10;
   var z1Title = anim.svgEl("text", {
     x: W / 2, y: z1y + 14, "text-anchor": "middle",
-    "font-size": 13, "font-weight": 700, fill: "#1d4ed8"
+    "font-size": 13, "font-weight": 700, fill: "var(--svg-token-ink)"
   });
-  z1Title.textContent = "Phase 1: Scan idx_status \u2192 build rowid bitmap";
+  z1Title.textContent = "Step 1: scan idx_status for status = 'shipped' → rowid filter (sorted primary keys)";
   svg.appendChild(z1Title);
 
-  var bitmapBg = anim.svgEl("rect", {
+  svg.appendChild(anim.svgEl("rect", {
     x: 40, y: z1y + 24, width: W - 80, height: 36, rx: 6, ry: 6,
-    fill: "#eff6ff", stroke: "#3b82f6", "stroke-width": 1.5
-  });
-  svg.appendChild(bitmapBg);
+    fill: "var(--svg-token-soft)", stroke: "var(--svg-token)", "stroke-width": 1.5
+  }));
 
-  // Bitmap cells — one per sample row
-  var cellW = (W - 100) / SAMPLE_ROWS.length;
-  var bitmapCells = [];
-  for (var i = 0; i < SAMPLE_ROWS.length; i++) {
-    var cx = 50 + i * cellW;
+  // One slot per key the filter will hold.
+  var slotW = (W - 100) / FILTER_IDS.length;
+  var slots = [];
+  for (var i = 0; i < FILTER_IDS.length; i++) {
+    var sx = 50 + i * slotW;
     var cell = anim.svgEl("rect", {
-      x: cx, y: z1y + 30, width: cellW - 4, height: 24, rx: 3, ry: 3,
-      fill: "#e5e7eb", stroke: "#d1d5db", "stroke-width": 1
+      x: sx, y: z1y + 30, width: slotW - 6, height: 24, rx: 3, ry: 3,
+      fill: "var(--svg-node-muted)", stroke: "var(--svg-node-stroke)", "stroke-width": 1
     });
     svg.appendChild(cell);
-    var bitLbl = anim.svgEl("text", {
-      x: cx + (cellW - 4) / 2, y: z1y + 46,
-      "text-anchor": "middle", "font-size": 11, "font-weight": 700, fill: "#9ca3af"
+    var idLbl = anim.svgEl("text", {
+      x: sx + (slotW - 6) / 2, y: z1y + 46,
+      "text-anchor": "middle", "font-size": 11, "font-weight": 700, fill: "var(--svg-ink-muted)"
     });
-    bitLbl.textContent = "?";
-    svg.appendChild(bitLbl);
-    bitmapCells.push({cell: cell, lbl: bitLbl, pass: SAMPLE_ROWS[i].pass});
+    idLbl.textContent = "–";
+    svg.appendChild(idLbl);
+    slots.push({cell: cell, lbl: idLbl, id: FILTER_IDS[i]});
   }
 
-  // --- Zone 2: Main index scan + bitmap check (middle, purple) ---
+  // --- Zone 2: main index scan + filter check (middle) ---
   var z2y = z1y + 80;
   var z2Title = anim.svgEl("text", {
     x: W / 2, y: z2y + 14, "text-anchor": "middle",
-    "font-size": 13, "font-weight": 700, fill: "#7c3aed"
+    "font-size": 13, "font-weight": 700, fill: "var(--svg-group)"
   });
-  z2Title.textContent = "Phase 2: Scan idx_date \u2192 check bitmap per row";
+  z2Title.textContent = "Step 2: scan idx_date → look each id up in the filter before reading the row";
   svg.appendChild(z2Title);
 
   var rowEntries = [];
-  var rowH = 22;
-  var rowStartY = z2y + 24;
+  var rowH = 21;
+  var rowStartY = z2y + 30;
+  var statusHdr = anim.svgEl("text", {
+    x: 380, y: rowStartY - 1, "font-size": 9, "font-weight": 600, fill: "var(--svg-ink-muted)"
+  });
+  statusHdr.textContent = "status is in the row, not in idx_date:";
+  svg.appendChild(statusHdr);
   for (var j = 0; j < SAMPLE_ROWS.length; j++) {
     var r = SAMPLE_ROWS[j];
-    var ry2 = rowStartY + j * rowH;
+    var ry2 = rowStartY + j * rowH + 2;
     var bg = anim.svgEl("rect", {
       x: 40, y: ry2, width: W - 80, height: rowH - 3, rx: 4, ry: 4,
-      fill: "#fafafa", stroke: "#e5e7eb", "stroke-width": 1
+      fill: "var(--svg-node-bg)", stroke: "var(--svg-edge)", "stroke-width": 1
     });
     svg.appendChild(bg);
-    var idLbl = anim.svgEl("text", {
-      x: 52, y: ry2 + 14, "font-size": 10, "font-weight": 600, fill: "#374151"
+    var idLbl2 = anim.svgEl("text", {
+      x: 52, y: ry2 + 14, "font-size": 10, "font-weight": 600, fill: "var(--svg-ink)"
     });
-    idLbl.textContent = "id=" + r.id + "  date=" + r.date;
-    svg.appendChild(idLbl);
+    idLbl2.textContent = "idx_date entry: date=" + r.date + ", id=" + r.id;
+    svg.appendChild(idLbl2);
     var statusLbl = anim.svgEl("text", {
-      x: 380, y: ry2 + 14, "font-size": 10, "font-weight": 600, fill: "#6b7280"
+      x: 380, y: ry2 + 14, "font-size": 10, "font-weight": 600, fill: "var(--svg-ink-muted)"
     });
     statusLbl.textContent = "status=" + r.status;
     svg.appendChild(statusLbl);
     var icon = anim.svgEl("text", {
-      x: W - 60, y: ry2 + 14, "text-anchor": "end",
-      "font-size": 10, "font-weight": 700, fill: "#9ca3af"
+      x: W - 52, y: ry2 + 14, "text-anchor": "end",
+      "font-size": 10, "font-weight": 700, fill: "var(--svg-ink-muted)"
     });
     icon.textContent = "";
     svg.appendChild(icon);
     rowEntries.push({bg: bg, icon: icon, pass: r.pass, id: r.id});
   }
 
-  // --- Zone 3: Result counter (bottom, green) ---
+  // --- Zone 3: result counter (bottom) ---
   var z3y = rowStartY + SAMPLE_ROWS.length * rowH + 12;
-  var resultBox = anim.svgEl("rect", {
+  svg.appendChild(anim.svgEl("rect", {
     x: 40, y: z3y, width: W - 80, height: 48, rx: 6, ry: 6,
-    fill: "#ecfdf5", stroke: "#059669", "stroke-width": 1.5
-  });
-  svg.appendChild(resultBox);
+    fill: "var(--svg-ok-soft)", stroke: "var(--svg-ok)", "stroke-width": 1.5
+  }));
   var resultLbl = anim.svgEl("text", {
     x: W / 2, y: z3y + 22, "text-anchor": "middle",
-    "font-size": 14, "font-weight": 700, fill: "#047857"
+    "font-size": 14, "font-weight": 700, fill: "var(--svg-ok)"
   });
-  resultLbl.textContent = "Rows fetched: 0 | Skipped random reads: 0";
+  resultLbl.textContent = "Rows read: 0 | Clustered index reads skipped: 0";
   svg.appendChild(resultLbl);
   var resultSub = anim.svgEl("text", {
     x: W / 2, y: z3y + 40, "text-anchor": "middle",
-    "font-size": 10, fill: "#065f46"
+    "font-size": 10, fill: "var(--svg-ok)"
   });
-  resultSub.textContent = "Only rows in the bitmap proceed to full table fetch";
+  resultSub.textContent = "Only ids found in the filter go on to a clustered index read";
   svg.appendChild(resultSub);
 
   stage = {
-    svg: svg, bitmapCells: bitmapCells, rowEntries: rowEntries,
+    svg: svg, slots: slots, rowEntries: rowEntries,
     resultLbl: resultLbl, resultSub: resultSub
   };
 }
 
 function resetStage() {
   if (!stage) return;
-  for (var i = 0; i < stage.bitmapCells.length; i++) {
-    stage.bitmapCells[i].cell.setAttribute("fill", "#e5e7eb");
-    stage.bitmapCells[i].cell.setAttribute("stroke", "#d1d5db");
-    stage.bitmapCells[i].lbl.textContent = "?";
-    stage.bitmapCells[i].lbl.setAttribute("fill", "#9ca3af");
+  for (var i = 0; i < stage.slots.length; i++) {
+    stage.slots[i].cell.setAttribute("fill", "var(--svg-node-muted)");
+    stage.slots[i].cell.setAttribute("stroke", "var(--svg-node-stroke)");
+    stage.slots[i].cell.setAttribute("stroke-width", "1");
+    stage.slots[i].lbl.textContent = "–";
+    stage.slots[i].lbl.setAttribute("fill", "var(--svg-ink-muted)");
   }
   for (var j = 0; j < stage.rowEntries.length; j++) {
-    stage.rowEntries[j].bg.setAttribute("fill", "#fafafa");
-    stage.rowEntries[j].bg.setAttribute("stroke", "#e5e7eb");
+    stage.rowEntries[j].bg.setAttribute("fill", "var(--svg-node-bg)");
+    stage.rowEntries[j].bg.setAttribute("stroke", "var(--svg-edge)");
     stage.rowEntries[j].icon.textContent = "";
   }
-  stage.resultLbl.textContent = "Rows fetched: 0 | Skipped random reads: 0";
-  stage.resultSub.textContent = "Only rows in the bitmap proceed to full table fetch";
+  stage.resultLbl.textContent = "Rows read: 0 | Clustered index reads skipped: 0";
+  stage.resultSub.textContent = "Only ids found in the filter go on to a clustered index read";
 }
 
 function buildTimeline() {
   resetStage();
   var tl = anim.timeline();
   var phase = document.getElementById("phase-label");
-  var fetched = 0;
-  var skipped = 0;
 
-  // Phase 1: build bitmap from idx_status
-  tl.mark("Build rowid bitmap");
+  // Step 1: build the filter from idx_status. Only the shipped entries are
+  // read: a range scan of idx_status touches nothing else.
+  tl.mark("Build the rowid filter");
+  tl.beat("build");
   tl.call(function() {
-    phase.textContent = "Phase 1/2 \u2014 scanning idx_status (status='shipped') to build rowid bitmap";
+    phase.textContent = "Range scan of idx_status for status = 'shipped', reading the index only: " +
+      FILTER_IDS.length + " entries, each one adds its primary key to the filter: " + FILTER_IDS.join(", ");
   });
-  tl.delay(400);
-
-  for (var i = 0; i < SAMPLE_ROWS.length; i++) {
+  for (var i = 0; i < stage.slots.length; i++) {
     (function(idx) {
-      var row = SAMPLE_ROWS[idx];
       tl.call(function() {
-        var bc = stage.bitmapCells[idx];
-        if (row.pass) {
-          bc.cell.setAttribute("fill", "#dbeafe");
-          bc.cell.setAttribute("stroke", "#3b82f6");
-          bc.lbl.textContent = "1";
-          bc.lbl.setAttribute("fill", "#1d4ed8");
-        } else {
-          bc.cell.setAttribute("fill", "#fee2e2");
-          bc.cell.setAttribute("stroke", "#f87171");
-          bc.lbl.textContent = "0";
-          bc.lbl.setAttribute("fill", "#dc2626");
-        }
-        phase.textContent = "Bitmap: id=" + row.id + " status=" + row.status +
-          " \u2192 " + (row.pass ? "1 (in bitmap)" : "0 (not in bitmap)");
+        var slot = stage.slots[idx];
+        slot.cell.setAttribute("fill", "var(--svg-token-soft)");
+        slot.cell.setAttribute("stroke", "var(--svg-token)");
+        slot.lbl.textContent = "id " + slot.id;
+        slot.lbl.setAttribute("fill", "var(--svg-token-ink)");
+        anim.pulse(slot.cell, 3, 1, 320);
       });
-      tl.delay(250);
+      tl.delay(220);
     })(i);
   }
 
-  tl.delay(400);
-
-  // Phase 2: main index scan with bitmap check
-  tl.mark("Main scan + bitmap check");
+  tl.beat("sort");
   tl.call(function() {
-    phase.textContent = "Phase 2/2 \u2014 scanning idx_date, checking bitmap before each table fetch";
+    phase.textContent = "MariaDB sorts the filter's keys so each check is a binary search. " +
+      "Entries with one status are stored in id order, so these were already sorted.";
+    stage.resultSub.textContent = "Filter: " + FILTER_IDS.length + " sorted primary keys of shipped orders";
   });
-  tl.delay(400);
+  tl.delay(600);
 
+  // Step 2: scan idx_date; each entry's id is looked up in the filter
+  // before InnoDB reads the row from the clustered index.
+  tl.mark("Scan idx_date, check the filter");
   for (var j = 0; j < SAMPLE_ROWS.length; j++) {
     (function(idx) {
       var row = SAMPLE_ROWS[idx];
+      var readSoFar = 0;
+      for (var k = 0; k <= idx; k++) if (SAMPLE_ROWS[k].pass) readSoFar++;
+      var skippedSoFar = idx + 1 - readSoFar;
+      var slotIdx = FILTER_IDS.indexOf(row.id);
 
-      if (idx % 3 === 0) {
-        tl.mark("Check id=" + row.id);
-      }
-
-      // Highlight bitmap cell being checked
+      if (idx > 0 && idx % 3 === 0) tl.mark("Check id=" + row.id);
+      tl.beat(row.pass ? "row-pass" : "row-skip");
       tl.call(function() {
-        var bc = stage.bitmapCells[idx];
-        bc.cell.setAttribute("stroke-width", "3");
         var re = stage.rowEntries[idx];
-        re.bg.setAttribute("fill", "#f5f3ff");
-        re.bg.setAttribute("stroke", "#8b5cf6");
-        phase.textContent = "id=" + row.id + " \u2192 bitmap check: " +
-          (row.pass ? "bit=1 \u2192 FETCH row" : "bit=0 \u2192 SKIP (no random I/O)");
+        re.bg.setAttribute("fill", "var(--svg-group-soft)");
+        re.bg.setAttribute("stroke", "var(--svg-group)");
+        if (slotIdx >= 0) stage.slots[slotIdx].cell.setAttribute("stroke-width", "3");
+        phase.textContent = "idx_date entry (" + row.date + ", id " + row.id + "): binary search for " +
+          row.id + " in the filter…";
       });
       tl.delay(300);
-
       tl.call(function() {
-        var bc = stage.bitmapCells[idx];
-        bc.cell.setAttribute("stroke-width", "1");
         var re = stage.rowEntries[idx];
+        if (slotIdx >= 0) stage.slots[slotIdx].cell.setAttribute("stroke-width", "1");
         if (row.pass) {
-          re.bg.setAttribute("fill", "#dcfce7");
-          re.bg.setAttribute("stroke", "#22c55e");
-          re.icon.textContent = "\u2714 fetched";
-          re.icon.setAttribute("fill", "#16a34a");
-          fetched++;
+          re.bg.setAttribute("fill", "var(--svg-ok-soft)");
+          re.bg.setAttribute("stroke", "var(--svg-ok)");
+          re.icon.textContent = "✔ in filter: row read, sent";
+          re.icon.setAttribute("fill", "var(--svg-ok)");
+          phase.textContent = "idx_date entry (" + row.date + ", id " + row.id + "): " + row.id +
+            " is in the filter, so InnoDB reads the row from the clustered index (status = shipped) and sends it";
         } else {
-          re.bg.setAttribute("fill", "#fef2f2");
-          re.bg.setAttribute("stroke", "#fca5a5");
-          re.icon.textContent = "\u2718 skipped";
-          re.icon.setAttribute("fill", "#dc2626");
-          skipped++;
+          re.bg.setAttribute("fill", "var(--svg-danger-soft)");
+          re.bg.setAttribute("stroke", "var(--svg-danger-soft)");
+          re.icon.textContent = "✘ not in filter: row not read";
+          re.icon.setAttribute("fill", "var(--svg-danger)");
+          phase.textContent = "idx_date entry (" + row.date + ", id " + row.id + "): " + row.id +
+            " is not in the filter, so InnoDB skips it without reading the row";
         }
-        stage.resultLbl.textContent = "Rows fetched: " + fetched +
-          " | Skipped random reads: " + skipped;
+        stage.resultLbl.textContent = "Rows read: " + readSoFar +
+          " | Clustered index reads skipped: " + skippedSoFar;
       });
       tl.delay(250);
     })(j);
   }
 
   tl.delay(400);
+  tl.beat("done");
   tl.mark("Summary");
   tl.call(function() {
-    phase.textContent = "\u2713 Done \u2014 fetched " + fetched + " rows, skipped " +
-      skipped + " random reads thanks to rowid bitmap filter";
-    stage.resultSub.textContent = "Without filter: " + SAMPLE_ROWS.length +
-      " table fetches. With filter: " + fetched + ". Saved " + skipped + " random I/Os.";
+    var c = teachRuntime.readControls();
+    var cost = rowidFilterCost(c.main_rows, c.filter_selectivity, c.row_size);
+    var read = FILTER_IDS.length;
+    var skipped = SAMPLE_ROWS.length - read;
+    phase.textContent = "✓ Done — " + SAMPLE_ROWS.length + " idx_date entries checked: " + read +
+      " rows read, " + skipped + " clustered index reads skipped. At " + fmtFull(cost.mainRows) +
+      " idx_date entries and " + cost.filterSelectivity + "% shipped: " + fmtFull(cost.withFilterFetches) +
+      " rows read, " + fmtFull(cost.rowsSkipped) + " skipped.";
+    stage.resultSub.textContent = "Without the filter: " + SAMPLE_ROWS.length +
+      " clustered index reads. With it: " + read + ", so " + skipped + " are saved.";
   });
 
   return tl;
@@ -262,7 +272,7 @@ function buildCurrentTimeline() {
 }
 function resetAnim() {
   resetStage();
-  document.getElementById("phase-label").textContent = "Ready \u2014 press Play";
+  document.getElementById("phase-label").textContent = "Ready: press Next step, or Play to run it all";
 }
 
 function renderChart(mainRows) {
@@ -272,11 +282,11 @@ function renderChart(mainRows) {
     xMin: 100, xMax: 500000,
     xLabel: "Main index rows scanned", yLabel: "Table-row random I/Os",
     curves: [
-      { label: "Without rowid filter (all rows fetched)", color: "#dc2626",
+      { label: "Without rowid filter (all rows fetched)", color: "var(--svg-danger)",
         fn: function(n) { return n; } },
-      { label: "With rowid filter (20% selectivity)", color: "#059669",
+      { label: "With rowid filter (20% selectivity)", color: "var(--svg-ok)",
         fn: function(n) { return Math.max(1, Math.ceil(n * 0.20)); } },
-      { label: "With rowid filter (5% selectivity)", color: "#0284c7",
+      { label: "With rowid filter (5% selectivity)", color: "var(--svg-token)",
         fn: function(n) { return Math.max(1, Math.ceil(n * 0.05)); } }
     ],
     current: { x: mainRows },
@@ -298,11 +308,11 @@ function recompute() {
   document.getElementById("out-saved").textContent = teachRuntime.formatInt(cost.savings);
   document.getElementById("out-saved").className = "value " + (cost.savings > 0 ? "ok" : "");
   document.getElementById("out-explanation").textContent =
-    "Without rowid filter: all " + teachRuntime.formatInt(cost.withoutFilterFetches) +
-    " main-index rows trigger a table fetch. With filter: bitmap passes " +
-    cost.filterSelectivity + "% of rows \u2014 only " +
-    teachRuntime.formatInt(cost.withFilterFetches) + " fetches, saving " +
-    teachRuntime.formatInt(cost.savings) + " random I/Os.";
+    "Without a rowid filter: all " + teachRuntime.formatInt(cost.withoutFilterFetches) +
+    " idx_date entries cost a clustered index read. With the filter: " +
+    cost.filterSelectivity + "% of the ids are found in it \u2014 only " +
+    teachRuntime.formatInt(cost.withFilterFetches) + " rows read, saving " +
+    teachRuntime.formatInt(cost.savings) + " clustered index reads.";
   renderChart(c.main_rows);
 }
 

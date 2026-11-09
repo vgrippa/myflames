@@ -1,0 +1,82 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost": 26.22178138,
+    "const_condition": "1",
+    "filesort": {
+      "sort_key": "d.n",
+      "temporary_table": {
+        "nested_loop": [
+          {
+            "table": {
+              "table_name": "<derived2>",
+              "access_type": "ALL",
+              "loops": 1,
+              "rows": 2,
+              "cost": 0.010089369,
+              "filtered": 100,
+              "materialized": {
+                "query_block": {
+                  "recursive_union": {
+                    "table_name": "<union2,3>",
+                    "access_type": "ALL",
+                    "query_specifications": [
+                      {
+                        "query_block": {
+                          "select_id": 2,
+                          "table": {
+                            "message": "No tables used"
+                          }
+                        }
+                      },
+                      {
+                        "query_block": {
+                          "select_id": 3,
+                          "operation": "UNION",
+                          "cost": 0.010089369,
+                          "nested_loop": [
+                            {
+                              "table": {
+                                "table_name": "<derived2>",
+                                "access_type": "ALL",
+                                "loops": 1,
+                                "rows": 2,
+                                "cost": 0.010089369,
+                                "filtered": 100,
+                                "attached_condition": "d.n < 31"
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          {
+            "block-nl-join": {
+              "table": {
+                "table_name": "r",
+                "access_type": "index",
+                "key": "rental_date",
+                "key_length": "10",
+                "used_key_parts": ["rental_date", "inventory_id", "customer_id"],
+                "loops": 2,
+                "rows": 16070,
+                "cost": 4.74295574,
+                "filtered": 100,
+                "using_index": true
+              },
+              "buffer_type": "flat",
+              "buffer_size": "87",
+              "join_type": "BNL",
+              "attached_condition": "trigcond(dayofmonth(r.rental_date) = d.n)"
+            }
+          }
+        ]
+      }
+    }
+  }
+}

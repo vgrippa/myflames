@@ -1,0 +1,49 @@
+{
+ "schema_version": "schemas-1.0",
+ "engine": "mysql",
+ "server_version": "8.4.11",
+ "taken_at": "2026-10-14T16:44:33.009169+00:00",
+ "uptime_s": 2270,
+ "performance_schema": true,
+ "schemas": [
+  {
+   "name": "mfother",
+   "tables": 1,
+   "system": false
+  },
+  {
+   "name": "mftab",
+   "tables": 18,
+   "system": false
+  },
+  {
+   "name": "information_schema",
+   "tables": 0,
+   "system": true
+  },
+  {
+   "name": "mysql",
+   "tables": 38,
+   "system": true
+  },
+  {
+   "name": "performance_schema",
+   "tables": 114,
+   "system": true
+  },
+  {
+   "name": "sys",
+   "tables": 1,
+   "system": true
+  }
+ ],
+ "user_tables": 19,
+ "all_limit": 2000,
+ "all_note": "Reading every user schema is the default up to 2,000 tables. Above that, choose schemas: the read costs time per table (Performance Schema walks every table and open handle for each index row, and MariaDB opens every table for information_schema.STATISTICS); 2,000 matches MySQL's default table_definition_cache.",
+ "system": [
+  "mysql",
+  "performance_schema",
+  "information_schema",
+  "sys"
+ ]
+}

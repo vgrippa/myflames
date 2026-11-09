@@ -1,0 +1,450 @@
+{
+ "schema_version": "readyset-1.0",
+ "captured_at": "2026-10-20T14:40:00+00:00",
+ "available": true,
+ "is_readyset": true,
+ "version": "stable-250605",
+ "port_role": "adapter",
+ "in_readyset_schema": false,
+ "readyset_schema": "readyset",
+ "message": null,
+ "status": "ok",
+ "status_why": [],
+ "status_fields": {
+  "database_connection": "Connected",
+  "connection_count": 5,
+  "status": "Online",
+  "replication_status": "Running",
+  "cdc_server": "mysql-primary:3306",
+  "max_replication_offset": "aaaa:1-100",
+  "min_replication_offset": "aaaa:1-100",
+  "controller_status": "Online",
+  "last_started_controller": null,
+  "last_completed_snapshot": "2026-10-20 12:00:00 UTC",
+  "last_started_replication": null,
+  "last_replicator_error": null,
+  "enabled_features": null,
+  "host_cpus": 8,
+  "host_memory": null,
+  "host_disk": null,
+  "host_arch": null,
+  "host_os": null,
+  "host_kernel": null,
+  "host_container": null,
+  "raw": {
+   "Database Connection": "Connected",
+   "Connection Count": "5",
+   "Status": "Online",
+   "Replication Status": "Running",
+   "CDC Server": "mysql-primary:3306",
+   "Maximum Replication Offset": "aaaa:1-100",
+   "Minimum Replication Offset": "aaaa:1-100",
+   "Readyset Controller Status": "Online",
+   "Last completed snapshot": "2026-10-20 12:00:00 UTC",
+   "Last replicator error": null,
+   "Host CPUs": "8"
+  }
+ },
+ "capabilities": {
+  "can_explain_cache": true,
+  "can_create_cache": true,
+  "can_manage_caches": true,
+  "can_alter_readyset": true,
+  "can_shutdown": false,
+  "virtual_tables": true
+ },
+ "replication": {
+  "status": "Running",
+  "cdc_server": "mysql-primary:3306",
+  "max_offset": "aaaa:1-100",
+  "min_offset": "aaaa:1-100",
+  "last_error": null,
+  "last_started": null,
+  "last_snapshot": "2026-10-20 12:00:00 UTC",
+  "mode": "mysql_file",
+  "lag_unit": "bytes",
+  "consume_lag": 1024,
+  "persist_lag": 2048,
+  "upstream_offset": "mysql-bin.000003:4096",
+  "replicator_offset": "mysql-bin.000003:3072",
+  "persisted_offset": "mysql-bin.000003:2048",
+  "heartbeat_staleness_s": 2.0
+ },
+ "telemetry": {
+  "cached_executions": 1000,
+  "upstream_executions": 250,
+  "total_observed_executions": 1250,
+  "cached_share_pct": 80.0,
+  "shallow_hits": 540,
+  "shallow_misses": 60,
+  "shallow_hit_rate_pct": 90.0,
+  "shallow_refreshes": 10,
+  "wasted_refreshes": 2,
+  "dropped_refreshes": 0,
+  "coalesces": 8,
+  "upstream_saved_ms": 24.0
+ },
+ "caches": [
+  {
+   "query_id": "q_1111aaaa",
+   "name": "c_orders_deep",
+   "cache_type": "deep",
+   "query": "SELECT id, total FROM orders WHERE customer_id = $1",
+   "properties": "deep",
+   "database": "shop",
+   "count": 400,
+   "always": false,
+   "until_write": true,
+   "ttl_ms": null,
+   "refresh_ms": null,
+   "coalesce_ms": null,
+   "adaptive": null,
+   "schedule": null,
+   "hits": null,
+   "misses": null,
+   "hit_rate_pct": null,
+   "refreshes": null,
+   "coalesces": null,
+   "wasted_refreshes": null,
+   "dropped_refreshes": null,
+   "over_cap": null,
+   "upstream_saved_ms": null,
+   "cached_stats": {
+    "total_count": 400,
+    "avg_ms": 0.2,
+    "min_ms": 0.09,
+    "max_ms": 1.5,
+    "p50_ms": 0.18,
+    "p90_ms": 0.32,
+    "p95_ms": 0.45,
+    "p99_ms": 0.9,
+    "p999_ms": 1.4,
+    "last_executed_s": 3
+   },
+   "upstream_stats": null
+  },
+  {
+   "query_id": "q_2222bbbb",
+   "name": "c_recent_shallow",
+   "cache_type": "shallow",
+   "query": "SELECT id, status FROM orders WHERE created_at > $1",
+   "properties": "shallow (ttl = 30s)",
+   "database": "shop",
+   "count": 600,
+   "always": false,
+   "until_write": false,
+   "ttl_ms": 30000,
+   "refresh_ms": 15000,
+   "coalesce_ms": 50,
+   "adaptive": true,
+   "schedule": null,
+   "hits": 540,
+   "misses": 60,
+   "hit_rate_pct": 90.0,
+   "refreshes": 10,
+   "coalesces": 8,
+   "wasted_refreshes": 2,
+   "dropped_refreshes": 0,
+   "over_cap": false,
+   "upstream_saved_ms": 24.0,
+   "cached_stats": {
+    "total_count": 600,
+    "avg_ms": 0.3,
+    "min_ms": 0.11,
+    "max_ms": 2.2,
+    "p50_ms": 0.25,
+    "p90_ms": 0.48,
+    "p95_ms": 0.65,
+    "p99_ms": 1.2,
+    "p999_ms": 2.0,
+    "last_executed_s": 1
+   },
+   "upstream_stats": null
+  }
+ ],
+ "proxied_queries": [
+  {
+   "query_id": "q_3333cccc",
+   "query": "SELECT COUNT(*) FROM orders WHERE status = $1",
+   "count": 150,
+   "deep_support": "yes",
+   "deep_reason": null,
+   "shallow_support": "yes",
+   "shallow_reason": null,
+   "already_cached": false,
+   "upstream_stats": {
+    "total_count": 250,
+    "avg_ms": 10.0,
+    "min_ms": 4.0,
+    "max_ms": 45.0,
+    "p50_ms": 9.0,
+    "p90_ms": 18.0,
+    "p95_ms": 24.0,
+    "p99_ms": 38.0,
+    "p999_ms": 44.0,
+    "last_executed_s": 2
+   },
+   "cached_stats": null
+  },
+  {
+   "query_id": "q_4444dddd",
+   "query": "SELECT RAND(), id FROM orders",
+   "count": 12,
+   "deep_support": "unsupported",
+   "deep_reason": "non-deterministic function RAND",
+   "shallow_support": "unsupported",
+   "shallow_reason": "non-deterministic function RAND",
+   "already_cached": false,
+   "upstream_stats": null,
+   "cached_stats": null
+  }
+ ],
+ "tables": [
+  {
+   "table": "`shop`.`orders`",
+   "status": "Snapshotted",
+   "bucket": "snapshotted",
+   "description": null
+  },
+  {
+   "table": "`shop`.`audit_blob`",
+   "status": "Ignored",
+   "bucket": "ignored",
+   "description": "Unsupported column type"
+  }
+ ],
+ "table_counts": {
+  "total": 2,
+  "snapshotted": 1,
+  "snapshotting": 0,
+  "ignored": 1,
+  "error": 0,
+  "other": 0
+ },
+ "shallow_allowlists": {
+  "functions": [
+   "NOW",
+   "UNIX_TIMESTAMP"
+  ],
+  "variables": [
+   "time_zone"
+  ],
+  "schemas": [
+   "shop"
+  ]
+ },
+ "connections": [
+  {
+   "client_addr": "172.18.0.5:51234",
+   "username": "app",
+   "upstream": "mysql://readyset:[redacted]@mysql-primary:3306/shop"
+  }
+ ],
+ "upstreams": [
+  {
+   "host": "mysql-primary",
+   "port": 3306,
+   "address": "mysql-primary:3306",
+   "database": "shop",
+   "user": "readyset",
+   "weight": 100,
+   "purpose": "cdc, query",
+   "active_cdc": true,
+   "health": "up",
+   "down_since": null,
+   "last_ok": "2026-10-20T12:00:00Z",
+   "connections": 3
+  },
+  {
+   "host": "mysql-replica",
+   "port": 3306,
+   "address": "mysql-replica:3306",
+   "database": "shop",
+   "user": "readyset",
+   "weight": 100,
+   "purpose": "query",
+   "active_cdc": false,
+   "health": "up",
+   "down_since": null,
+   "last_ok": "2026-10-20T12:00:00Z",
+   "connections": 2
+  }
+ ],
+ "topology": {
+  "this_server": {
+   "kind": "readyset",
+   "port_role": "adapter",
+   "version": "stable-250605",
+   "address": null,
+   "status": "Online",
+   "replication_status": "Running",
+   "connection_count": 1
+  },
+  "proxysql_nodes": [],
+  "upstreams": [
+   {
+    "key": "upstream:mysql-primary:3306",
+    "host": "mysql-primary",
+    "port": 3306,
+    "address": "mysql-primary:3306",
+    "database": "shop",
+    "user": "readyset",
+    "weight": 100,
+    "purpose": "cdc, query",
+    "is_cdc": true,
+    "is_proxy": false,
+    "active_cdc": true,
+    "health": "up",
+    "connections": 3,
+    "product": null,
+    "version": null,
+    "engine": null,
+    "read_only": null,
+    "cluster_kind": null,
+    "cluster_name": null,
+    "profile_id": null,
+    "profile_name": null,
+    "verified": false,
+    "evidence": null
+   },
+   {
+    "key": "upstream:mysql-replica:3306",
+    "host": "mysql-replica",
+    "port": 3306,
+    "address": "mysql-replica:3306",
+    "database": "shop",
+    "user": "readyset",
+    "weight": 100,
+    "purpose": "query",
+    "is_cdc": false,
+    "is_proxy": false,
+    "active_cdc": false,
+    "health": "up",
+    "connections": 2,
+    "product": null,
+    "version": null,
+    "engine": null,
+    "read_only": null,
+    "cluster_kind": null,
+    "cluster_name": null,
+    "profile_id": null,
+    "profile_name": null,
+    "verified": false,
+    "evidence": null
+   }
+  ],
+  "database_peers": [],
+  "cluster": null,
+  "notes": [
+   "Upstream mysql-primary:3306 did not match a saved database connection.",
+   "Upstream mysql-replica:3306 did not match a saved database connection."
+  ]
+ },
+ "fingerprints": {
+  "caches": "b9da95a6b09e0974",
+  "tables": "3557064d4166c1c1",
+  "allowlists": "7520570c0cae3bc2",
+  "replication": "17973225ab55c47b"
+ },
+ "actions": [
+  {
+   "id": "create_cache",
+   "label": "Create cache…",
+   "tone": "default"
+  },
+  {
+   "id": "flush_all_shallow_caches",
+   "label": "Flush shallow caches…",
+   "tone": "default"
+  },
+  {
+   "id": "drop_all_caches",
+   "label": "Drop all caches…",
+   "tone": "danger"
+  },
+  {
+   "id": "drop_all_shallow_caches",
+   "label": "Drop shallow caches…",
+   "tone": "danger"
+  },
+  {
+   "id": "drop_all_deep_caches",
+   "label": "Drop deep caches…",
+   "tone": "danger"
+  },
+  {
+   "id": "drop_all_proxied_queries",
+   "label": "Clear proxied queries…",
+   "tone": "danger"
+  },
+  {
+   "id": "enter_maintenance_mode",
+   "label": "Enter maintenance mode…",
+   "tone": "danger"
+  },
+  {
+   "id": "stop_replication",
+   "label": "Stop replication…",
+   "tone": "danger"
+  },
+  {
+   "id": "set_replication_position",
+   "label": "Set replication position…",
+   "tone": "danger"
+  },
+  {
+   "id": "add_tables",
+   "label": "Add tables to replicate…",
+   "tone": "default"
+  },
+  {
+   "id": "set_log_level",
+   "label": "Set log level…",
+   "tone": "default"
+  },
+  {
+   "id": "set_eviction_memory_limit",
+   "label": "Set eviction memory limit…",
+   "tone": "default"
+  },
+  {
+   "id": "set_eviction_period",
+   "label": "Set eviction period…",
+   "tone": "default"
+  },
+  {
+   "id": "add_shallow_allowed",
+   "label": "Add shallow allowlist item…",
+   "tone": "default"
+  },
+  {
+   "id": "flush_privileges",
+   "label": "Flush Readyset privileges…",
+   "tone": "default"
+  }
+ ],
+ "notes": [
+  "Upstream mysql-primary:3306 did not match a saved database connection.",
+  "Upstream mysql-replica:3306 did not match a saved database connection.",
+  "ALTER READYSET SHUTDOWN is accepted only on the Readyset admin SQL port (default 6036)."
+ ],
+ "statements": [
+  "SHOW READYSET STATUS",
+  "SHOW CACHES",
+  "readyset.upstream_servers",
+  "readyset.replication_status",
+  "readyset.deep_caches",
+  "readyset.shallow_caches",
+  "readyset.shallow_cache_refresh_stats",
+  "readyset.shallow_cache_coalesce_stats",
+  "readyset.cached_query_stats",
+  "readyset.upstream_query_stats",
+  "SHOW SHALLOW CACHE ALLOWED FUNCTIONS",
+  "SHOW SHALLOW CACHE ALLOWED VARIABLES",
+  "SHOW SHALLOW CACHE ALLOWED SCHEMAS",
+  "SHOW CONNECTIONS",
+  "SHOW READYSET ALL TABLES",
+  "SHOW PROXIED DEEP QUERIES",
+  "SHOW PROXIED SHALLOW QUERIES"
+ ]
+}

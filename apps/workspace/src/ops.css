@@ -1,0 +1,379 @@
+/* Flush operations panes. Shared controls, tables, sheets and status colors
+   remain owned by kit.css and the workspace design tokens. */
+.ops-view .ops-form,
+.ops-view .ops-actions,
+.ops-offered,
+.ops-result,
+.ops-job,
+.ops-details,
+.ops-note,
+.ops-loop,
+.ops-result-head {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+}
+/* A form is a grid of fields that share a row when they fit; labels line up
+   at the top, and hints, disclosures, warnings and checkboxes take the row. */
+.ops-form > fieldset {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
+  align-items: start;
+  gap: var(--space-3);
+  min-width: 0;
+  max-width: 960px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.ops-form details,
+.ops-form .perf-picker-panel,
+.ops-form .ops-warning,
+.ops-form .ops-target,
+.ops-form > fieldset > .checkbox,
+.ops-form .ops-wide,
+.ops-form .ops-targets { grid-column: 1 / -1; }
+.ops-targets { display: grid; gap: var(--space-1); max-width: 80ch; margin: 0; }
+.ops-targets > p { margin: 0; }
+.ops-evidence { margin: var(--space-1) 0 0; padding-left: 1.2em; }
+.ops-form details[open] > :not(summary) { margin-top: var(--space-2); }
+.ops-form details[open] { display: grid; gap: var(--space-2); }
+.ops-form details .ops-field { max-width: 320px; }
+.ops-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  max-width: 100%;
+  font-size: var(--text-sm);
+}
+.ops-field .toolbar-field { display: flex; flex-direction: column; align-items: stretch; gap: var(--space-1); }
+.ops-actions .hint { color: var(--ink-muted); }
+.ops-field input { width: 100%; min-width: 0; height: var(--control-h); }
+.ops-field .hint { max-width: 70ch; }
+.ops-target { display: flex; flex-direction: column; gap: var(--space-1); }
+.ops-target > span { font-size: var(--text-sm); color: var(--ink-muted); }
+.ops-target > strong { font-size: var(--text-lg); overflow-wrap: anywhere; }
+.ops-warning { color: var(--danger-text); max-width: 70ch; }
+/* Notes, warnings and job details read as secondary text, like the rest of a view. */
+.ops-view .ops-note,
+.ops-view .ops-warning,
+.ops-view .ops-result,
+.ops-job p,
+.ops-job details > summary,
+.ops-verification,
+.ops-view .ops-details { font-size: var(--text-sm); line-height: var(--leading-sm); }
+.ops-view > .ops-note,
+.ops-view .view-main > .ops-note { color: var(--ink-muted); }
+.ops-job .error { margin: var(--space-2) 0; }
+.ops-view > .ops-warning,
+.ops-view > .ops-note {
+  padding: var(--space-3) var(--space-4);
+  margin: 0;
+  border-bottom: 1px solid var(--line);
+}
+.ops-actions,
+.ops-job-head,
+.ops-loop,
+.ops-result-head { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
+.ops-job-head > strong,
+.ops-loop > span,
+.ops-loop > .ops-loop-copy { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.ops-job.is-other-connection { color: var(--ink-muted); background: var(--surface-pane); }
+.ops-job.is-other-connection > :not(.ops-job-head) { opacity: 0.65; }
+.ops-loop { background: var(--warn-soft); }
+.ops-loop.is-stopped { background: var(--surface-pane); }
+.ops-loop.is-stopped.needs-attention { background: var(--warn-soft); }
+.ops-last { display: block; color: var(--ink-muted); font-size: var(--text-sm); }
+.ops-loop .count-badge { margin-inline-start: var(--space-2); }
+.ops-progress { display: flex; align-items: center; gap: var(--space-2); margin-block: var(--space-2); font-variant-numeric: tabular-nums; }
+.ops-progress progress { flex: 1; min-width: 0; accent-color: var(--accent); }
+.ops-job { scroll-margin-block-start: calc(var(--toolbar-h) + var(--space-3)); }
+.ops-job:focus { outline: 2px solid var(--focus); outline-offset: -2px; }
+.ops-job-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  margin-block: var(--space-2);
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+.ops-job-facts > span { min-width: 0; overflow-wrap: anywhere; }
+.ops-job-folder { margin-block: var(--space-2); }
+.ops-job-summary {
+  display: flex;
+  flex: 1 1 18rem;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+.ops-job-summary progress { width: var(--space-7); min-width: 0; accent-color: var(--accent); }
+.ops-job-summary > span { min-width: 0; overflow-wrap: anywhere; }
+.ops-job-summary .text-button { flex: none; }
+.ops-log-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: var(--text-sm); }
+.ops-pre {
+  max-width: 100%;
+  max-height: 40vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  padding: var(--space-2);
+  background: var(--surface-pane);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.ops-wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
+.ops-gtid {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--leading-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ops-gtid-item {
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.ops-verification { list-style: none; margin: var(--space-2) 0; padding: 0; }
+.ops-verification li { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2); padding-block: var(--space-2); border-bottom: 1px solid var(--line); }
+.ops-verification li > span:last-child { flex-basis: 100%; color: var(--ink-muted); }
+.ops-loop-options { display: flex; flex-direction: column; gap: var(--space-2); border: 1px solid var(--line); margin-block: var(--space-3); padding: var(--space-3); }
+.ops-loop-options > label:not(.checkbox) { display: flex; justify-content: space-between; align-items: center; gap: var(--space-2); }
+.ops-confirm .ops-target { margin-block: var(--space-3); }
+/* Sheet text is secondary to the statements: small, and the drift warning in
+   the warning tone like the Kill sheet's. */
+.ops-confirm p,
+.ops-confirm li,
+.ops-confirm details > summary,
+.ops-confirm .ops-loop-options { font-size: var(--text-sm); line-height: var(--leading-sm); }
+.ops-confirm .inspector-fields { margin-bottom: var(--space-3); }
+.ops-confirm ul,
+.ops-result ul { margin: var(--space-2) 0 0; padding-left: var(--space-4); }
+.ops-drift,
+.ops-confirm .ops-warning {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  color: var(--warn-text);
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-line);
+  border-radius: var(--radius-md);
+}
+.ops-notice { color: var(--info-text); font-weight: 600; }
+.ops-confirm .ops-plan-note { margin: 0 0 var(--space-2); }
+.ops-commands { margin-bottom: var(--space-3); }
+.ops-loop-options legend { padding: 0 var(--space-1); font-weight: 600; }
+.ops-loop-options { border-radius: var(--radius-md); }
+.ops-raw { margin-top: var(--space-3); font-size: var(--text-sm); }
+.ops-result p { margin: var(--space-1) 0; }
+.ops-confirm .ops-field { margin-block: var(--space-3); }
+.ops-view details > summary,
+.ops-confirm details > summary { cursor: pointer; }
+.ops-view details > summary:focus-visible,
+.ops-confirm details > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 650px) {
+  .ops-form > fieldset { grid-template-columns: minmax(0, 1fr); }
+  .ops-form details .ops-field { max-width: none; }
+  .ops-target > strong { font-size: var(--text-md); }
+}
+
+.ops-folder-input { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.ops-folder-input input { flex: 1; min-width: 0; }
+.ops-folder-input button { flex: none; }
+.ops-tool-updates { padding: var(--space-2) var(--space-4); color: var(--warn-text); font-size: var(--text-sm); }
+.ops-tool-link { color: var(--accent-text); text-decoration: underline; text-underline-offset: var(--space-1); }
+
+/* Dump: one two-column form (FormGrid), labels left of their controls, then
+   the tool's options in sections (DumpOptions.tsx). Rows stack below 650 px. */
+.ops-dump > fieldset { display: block; max-width: 760px; }
+.ops-dump .form-row > .form-row-label {
+  text-align: right;
+  padding-top: var(--space-1);
+  font-size: var(--text-base);
+  color: var(--ink-secondary);
+}
+.ops-dump .form-row-control { max-width: 32rem; }
+/* One width for every select and picker; numbers keep their own width. */
+.ops-dump .form-row-control > :is(select, .select) { width: 18rem; max-width: 100%; }
+.ops-dump .form-row-control > .number-field { width: auto; }
+.ops-dump .form-row-control > .hint:empty { display: none; }
+.ops-dump .form-row-control > :is(.hint, .form-error) { max-width: 60ch; }
+.ops-dump .perf-picker > span[aria-hidden="true"] { display: none; }
+.ops-dump .perf-picker-button { width: 18rem; min-width: 0; max-width: 100%; }
+.ops-dump .ops-folder-row .ops-field { gap: var(--space-1); max-width: 32rem; }
+.ops-dump .ops-dump-options { display: block; margin-top: var(--space-4); }
+.ops-dump .ops-dump-options > summary { font-size: var(--text-md); font-weight: 600; }
+.ops-dump .ops-dump-options > summary .hint { margin-left: var(--space-2); font-weight: 400; font-size: var(--text-sm); color: var(--ink-muted); }
+.dump-options { display: grid; gap: var(--space-4); margin-top: var(--space-3); min-width: 0; }
+.dump-group { min-width: 0; margin: 0; padding: 0; border: 0; }
+.dump-group > legend {
+  padding: 0;
+  margin-bottom: var(--space-2);
+  font-size: var(--section-size);
+  line-height: var(--section-leading);
+  color: var(--section-ink);
+  font-weight: var(--section-weight);
+}
+.dump-checks { display: grid; gap: 2px; justify-items: start; }
+.dump-check { display: grid; justify-items: start; }
+.dump-check .hint { margin: 0 0 var(--space-1) calc(16px + var(--space-2)); font-size: var(--text-sm); color: var(--ink-muted); }
+.dump-check-row > .form-row-label { padding-top: 6px; }
+.dump-text { display: inline-flex; align-items: center; gap: var(--space-2); max-width: 100%; }
+.ops-dump .dump-text input { width: 10rem; max-width: 100%; height: var(--control-h); }
+.dump-unit { font-size: var(--text-sm); color: var(--ink-muted); white-space: nowrap; }
+.dump-encryption { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--space-2); font-size: var(--text-sm); color: var(--ink-muted); }
+.dump-encryption .disclosure > summary { font-size: var(--text-sm); }
+.dump-encryption .disclosure-body { flex-basis: 100%; }
+.dump-encryption .disclosure[open] { flex-basis: 100%; }
+@media (max-width: 649px) {
+  .ops-dump .form-row > .form-row-label { text-align: left; padding-top: 0; }
+  .ops-dump .form-row-control { max-width: none; }
+}
+/* The table list: name, then engine, estimated rows and size. */
+.dump-table-option code { flex: 0 1 auto; }
+.dump-table-option .hint { margin-left: auto; font-variant-numeric: tabular-nums; }
+.dump-table-list { max-height: 300px; }
+
+/* Reviewed changes (ActionReview.tsx): the change buttons in an inspector's
+   action bar, the result under the toolbar, the typed name in the sheet. */
+.review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.review-actions .button[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.review-actions .hint {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+}
+.action-result p { font-size: var(--text-sm); line-height: var(--leading-sm); }
+.action-result .ops-result-head > strong {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.action-review .action-typed input {
+  font-family: var(--font-mono);
+}
+.action-review details > summary { font-size: var(--text-sm); }
+/* The sheet after Confirm: the step it is on, each statement and its state,
+   then the outcome, what changed, what to check and the Audit log record. */
+.action-review .action-phase {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+  font-variant-numeric: tabular-nums;
+}
+.action-review .action-phase .spinner { width: 13px; height: 13px; flex: none; }
+.action-review .action-outcome {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  margin: 0 0 var(--space-3);
+}
+.action-review .action-outcome p { margin: 0; max-width: 70ch; }
+.action-steps {
+  list-style: none;
+  margin: 0 0 var(--space-3);
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-pane);
+}
+.action-steps li {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2);
+  min-width: 0;
+}
+.action-steps li + li { border-top: 1px solid var(--line); }
+.action-steps code {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.action-step-state {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: none;
+  white-space: nowrap;
+}
+.action-step-state .spinner { width: 11px; height: 11px; }
+.action-effect {
+  width: 100%;
+  margin: 0 0 var(--space-3);
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  font-variant-numeric: tabular-nums;
+}
+.action-effect caption {
+  text-align: start;
+  font-weight: 600;
+  padding-bottom: var(--space-1);
+}
+.action-effect th,
+.action-effect td {
+  text-align: start;
+  vertical-align: top;
+  padding: var(--space-1) var(--space-2) var(--space-1) 0;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+.action-effect thead th { color: var(--ink-muted); font-weight: 500; }
+.action-effect tbody th { font-weight: 500; color: var(--ink-muted); }
+.action-effect tr[data-changed="true"] td:last-child { font-weight: 600; }
+.action-checks { margin: 0 0 var(--space-3); }
+.action-checks h3 { margin: 0 0 var(--space-1); font-size: var(--text-sm); font-weight: 600; }
+.action-checks ol { margin: 0; padding-left: var(--space-4); }
+.action-review .action-audit { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1); }
+/* In the sheet the outcome and each statement's state keep their mark and
+   color, OK included: this is the answer the person waited for. */
+.action-review .action-outcome .status-pill { font-size: var(--text-md); line-height: var(--leading-md); font-weight: 600; }
+.action-review :is(.action-outcome, .action-steps) .status-pill.is-ok { color: var(--ok-text); font-weight: 600; }
+.action-review :is(.action-outcome, .action-steps) .status-pill:is(.is-ok, .is-info) > .status-dot { display: inline-block; }
+.action-review .action-steps .status-pill.is-info { color: var(--info-text); }
+/* A statement with the server: the spinner is its mark. */
+.action-review .action-steps li[data-state="sent"] .status-pill > .status-dot { display: none; }
+
+/* Keep blockers and their fixes beside Start, including on short windows. */
+.ops-preflight-result.has-result { margin-block: var(--space-3); padding: var(--space-3); border: 1px solid var(--danger); border-radius: var(--radius-md); }
+.ops-preflight-result h3 { font-size: inherit; margin-block: var(--space-3); }
+.ops-preflight-result td { white-space: normal; overflow-wrap: anywhere; }
+.ops-preflight-result .text-button { white-space: normal; text-align: left; }
+.ops-invalid input, .ops-invalid .perf-picker-button { outline: 2px solid var(--danger); outline-offset: 2px; }
+.ops-tool-loading { padding-block: var(--space-3); color: var(--ink-muted); }
+
+.ops-task-fields, .ops-folder-check { display: contents; }
+
+.ops-preflight-result .ops-check-reason { display: block; white-space: normal; overflow-wrap: anywhere; }
+
+/* Privilege evidence stays on the confirmation and in the accessible reason;
+   the first click only reads the preflight. */
+.ops-view[data-view="maintenance"] .ops-actions .visible-privilege > .privilege-status-note { display: none; }
+.ops-system-ack { min-width: 0; overflow-wrap: anywhere; }
+.ops-system-ack .checkbox { align-items: flex-start; white-space: normal; }
+.ops-dump .ops-folder-row .hint { overflow-wrap: anywhere; }

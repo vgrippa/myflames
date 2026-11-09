@@ -1,0 +1,234 @@
+{
+  "schema_version": "capture-1.0",
+  "raw": "{\n  \"query_optimization\": {\n    \"r_total_time_ms\": 0.115686761\n  },\n  \"query_block\": {\n    \"select_id\": 1,\n    \"cost\": 0.152014721,\n    \"r_loops\": 1,\n    \"r_total_time_ms\": 9.430873358,\n    \"filesort\": {\n      \"sort_key\": \"customers.region\",\n      \"r_loops\": 1,\n      \"r_total_time_ms\": 0.011489296,\n      \"r_used_priority_queue\": false,\n      \"r_output_rows\": 4,\n      \"r_buffer_size\": \"2KiB\",\n      \"r_sort_mode\": \"sort_key,rowid\",\n      \"temporary_table\": {\n        \"nested_loop\": [\n          {\n            \"table\": {\n              \"table_name\": \"customers\",\n              \"access_type\": \"range\",\n              \"possible_keys\": [\"PRIMARY\"],\n              \"key\": \"PRIMARY\",\n              \"key_length\": \"4\",\n              \"used_key_parts\": [\"id\"],\n              \"loops\": 1,\n              \"r_loops\": 1,\n              \"rows\": 40,\n              \"r_rows\": 40,\n              \"cost\": 0.01011184,\n              \"r_table_time_ms\": 0.009818125,\n              \"r_other_time_ms\": 0.019636251,\n              \"r_engine_stats\": {\n                \"pages_accessed\": 4\n              },\n              \"filtered\": 100,\n              \"r_total_filtered\": 100,\n              \"attached_condition\": \"customers.`id` <= 40\",\n              \"r_filtered\": 100\n            }\n          },\n          {\n            \"table\": {\n              \"table_name\": \"orders\",\n              \"access_type\": \"ref\",\n              \"possible_keys\": [\"idx_customer\"],\n              \"key\": \"idx_customer\",\n              \"key_length\": \"4\",\n              \"used_key_parts\": [\"customer_id\"],\n              \"ref\": [\"myflames_w2c_stale.customers.id\"],\n              \"loops\": 40,\n              \"r_loops\": 40,\n              \"rows\": 1,\n              \"r_rows\": 451,\n              \"cost\": 0.116224,\n              \"r_table_time_ms\": 5.548661282,\n              \"r_other_time_ms\": 3.832703657,\n              \"r_engine_stats\": {\n                \"pages_accessed\": 36191\n              },\n              \"filtered\": 100,\n              \"r_total_filtered\": 100,\n              \"r_filtered\": 100\n            }\n          }\n        ]\n      }\n    }\n  }\n}",
+  "query": "SELECT customers.region, COUNT(*) AS order_count, SUM(orders.total) AS revenue\nFROM myflames_w2c_stale.customers\nJOIN myflames_w2c_stale.orders ON orders.customer_id = customers.id\nWHERE customers.id <= 40\nGROUP BY customers.region",
+  "mode": "analyze",
+  "engine": "mariadb",
+  "server_version": "11.8.9-MariaDB-ubu2404-log",
+  "captured_at": "2026-11-08T22:11:37.231190+00:00",
+  "runs": [
+    {
+      "total_time_ms": 9.430873358,
+      "statistics": {
+        "timer_wait_ps": 9715334000,
+        "rows_examined": 18088,
+        "rows_sent": 5,
+        "tmp_tables": 1,
+        "tmp_disk_tables": 0,
+        "sort_rows": 4,
+        "sort_merge_passes": 0,
+        "no_index_used": 0
+      },
+      "session_status_delta": {
+        "Created_tmp_disk_tables": 0,
+        "Created_tmp_tables": 1,
+        "Handler_commit": 1,
+        "Handler_delete": 0,
+        "Handler_discover": 0,
+        "Handler_external_lock": 0,
+        "Handler_icp_attempts": 0,
+        "Handler_icp_match": 0,
+        "Handler_mrr_init": 0,
+        "Handler_mrr_key_refills": 0,
+        "Handler_mrr_rowid_refills": 0,
+        "Handler_prepare": 0,
+        "Handler_read_first": 1,
+        "Handler_read_key": 18080,
+        "Handler_read_last": 0,
+        "Handler_read_next": 18080,
+        "Handler_read_prev": 0,
+        "Handler_read_retry": 0,
+        "Handler_read_rnd": 4,
+        "Handler_read_rnd_deleted": 0,
+        "Handler_read_rnd_next": 5,
+        "Handler_rollback": 0,
+        "Handler_savepoint": 0,
+        "Handler_savepoint_rollback": 0,
+        "Handler_tmp_delete": 0,
+        "Handler_tmp_update": 18036,
+        "Handler_tmp_write": 4,
+        "Handler_update": 0,
+        "Handler_write": 0,
+        "Innodb_buffer_pool_read_ahead": 0,
+        "Innodb_buffer_pool_read_requests": 0,
+        "Innodb_buffer_pool_reads": 0,
+        "Select_scan": 0,
+        "Sort_merge_passes": 0,
+        "Sort_rows": 4
+      },
+      "plan": "{\n  \"query_optimization\": {\n    \"r_total_time_ms\": 0.115686761\n  },\n  \"query_block\": {\n    \"select_id\": 1,\n    \"cost\": 0.152014721,\n    \"r_loops\": 1,\n    \"r_total_time_ms\": 9.430873358,\n    \"filesort\": {\n      \"sort_key\": \"customers.region\",\n      \"r_loops\": 1,\n      \"r_total_time_ms\": 0.011489296,\n      \"r_used_priority_queue\": false,\n      \"r_output_rows\": 4,\n      \"r_buffer_size\": \"2KiB\",\n      \"r_sort_mode\": \"sort_key,rowid\",\n      \"temporary_table\": {\n        \"nested_loop\": [\n          {\n            \"table\": {\n              \"table_name\": \"customers\",\n              \"access_type\": \"range\",\n              \"possible_keys\": [\"PRIMARY\"],\n              \"key\": \"PRIMARY\",\n              \"key_length\": \"4\",\n              \"used_key_parts\": [\"id\"],\n              \"loops\": 1,\n              \"r_loops\": 1,\n              \"rows\": 40,\n              \"r_rows\": 40,\n              \"cost\": 0.01011184,\n              \"r_table_time_ms\": 0.009818125,\n              \"r_other_time_ms\": 0.019636251,\n              \"r_engine_stats\": {\n                \"pages_accessed\": 4\n              },\n              \"filtered\": 100,\n              \"r_total_filtered\": 100,\n              \"attached_condition\": \"customers.`id` <= 40\",\n              \"r_filtered\": 100\n            }\n          },\n          {\n            \"table\": {\n              \"table_name\": \"orders\",\n              \"access_type\": \"ref\",\n              \"possible_keys\": [\"idx_customer\"],\n              \"key\": \"idx_customer\",\n              \"key_length\": \"4\",\n              \"used_key_parts\": [\"customer_id\"],\n              \"ref\": [\"myflames_w2c_stale.customers.id\"],\n              \"loops\": 40,\n              \"r_loops\": 40,\n              \"rows\": 1,\n              \"r_rows\": 451,\n              \"cost\": 0.116224,\n              \"r_table_time_ms\": 5.548661282,\n              \"r_other_time_ms\": 3.832703657,\n              \"r_engine_stats\": {\n                \"pages_accessed\": 36191\n              },\n              \"filtered\": 100,\n              \"r_total_filtered\": 100,\n              \"r_filtered\": 100\n            }\n          }\n        ]\n      }\n    }\n  }\n}"
+    }
+  ],
+  "measurements": {
+    "count": 1,
+    "median_ms": 9.430873358,
+    "min_ms": 9.430873358,
+    "max_ms": 9.430873358,
+    "stdev_ms": 0
+  },
+  "trace": null,
+  "conditions": "Lab fixture: InnoDB statistics deliberately stale (STATS_AUTO_RECALC=0, then 18,000 orders moved onto 20 customers).",
+  "warnings": [],
+  "schema": {
+    "myflames_w2c_stale.customers": {
+      "ddl": "CREATE TABLE `customers` (\n  `id` int(11) NOT NULL,\n  `region` varchar(10) NOT NULL,\n  PRIMARY KEY (`id`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci STATS_PERSISTENT=1 STATS_AUTO_RECALC=0",
+      "table_name": "customers",
+      "columns": [
+        {
+          "name": "id",
+          "type": "int(11)",
+          "rest": "NOT NULL"
+        },
+        {
+          "name": "region",
+          "type": "varchar(10)",
+          "rest": "NOT NULL"
+        }
+      ],
+      "indexes": [
+        {
+          "kind": "PRIMARY KEY",
+          "name": null,
+          "columns": [
+            "id"
+          ],
+          "parts": [
+            {
+              "name": "id",
+              "length": null,
+              "desc": false,
+              "expression": false
+            }
+          ],
+          "using": null
+        }
+      ],
+      "engine": "InnoDB",
+      "charset": "utf8mb4"
+    },
+    "myflames_w2c_stale.orders": {
+      "ddl": "CREATE TABLE `orders` (\n  `id` int(11) NOT NULL,\n  `customer_id` int(11) NOT NULL,\n  `total` decimal(10,2) NOT NULL,\n  PRIMARY KEY (`id`),\n  KEY `idx_customer` (`customer_id`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci STATS_PERSISTENT=1 STATS_AUTO_RECALC=0",
+      "table_name": "orders",
+      "columns": [
+        {
+          "name": "id",
+          "type": "int(11)",
+          "rest": "NOT NULL"
+        },
+        {
+          "name": "customer_id",
+          "type": "int(11)",
+          "rest": "NOT NULL"
+        },
+        {
+          "name": "total",
+          "type": "decimal(10,2)",
+          "rest": "NOT NULL"
+        }
+      ],
+      "indexes": [
+        {
+          "kind": "PRIMARY KEY",
+          "name": null,
+          "columns": [
+            "id"
+          ],
+          "parts": [
+            {
+              "name": "id",
+              "length": null,
+              "desc": false,
+              "expression": false
+            }
+          ],
+          "using": null
+        },
+        {
+          "kind": "KEY",
+          "name": "idx_customer",
+          "columns": [
+            "customer_id"
+          ],
+          "parts": [
+            {
+              "name": "customer_id",
+              "length": null,
+              "desc": false,
+              "expression": false
+            }
+          ],
+          "using": null
+        }
+      ],
+      "engine": "InnoDB",
+      "charset": "utf8mb4"
+    }
+  },
+  "table_stats": {
+    "myflames_w2c_stale.customers": {
+      "table_schema": "myflames_w2c_stale",
+      "table_name": "customers",
+      "table_rows": 10000,
+      "data_length": 327680,
+      "index_length": 0,
+      "data_free": 0,
+      "auto_increment": 0,
+      "engine": "InnoDB",
+      "row_format": "Dynamic"
+    },
+    "myflames_w2c_stale.orders": {
+      "table_schema": "myflames_w2c_stale",
+      "table_name": "orders",
+      "table_rows": 19907,
+      "data_length": 1589248,
+      "index_length": 311296,
+      "data_free": 4194304,
+      "auto_increment": 0,
+      "engine": "InnoDB",
+      "row_format": "Dynamic"
+    }
+  },
+  "stats_freshness": {
+    "myflames_w2c_stale.customers": {
+      "last_update": "2026-11-08 22:10:32",
+      "n_rows": 10000,
+      "histograms": []
+    },
+    "myflames_w2c_stale.orders": {
+      "last_update": "2026-11-08 22:10:32",
+      "n_rows": 19907,
+      "histograms": []
+    }
+  },
+  "variables": {
+    "bulk_insert_buffer_size": "8388608",
+    "character_set_connection": "utf8mb4",
+    "character_set_server": "utf8mb4",
+    "collation_connection": "utf8mb4_uca1400_ai_ci",
+    "collation_server": "utf8mb4_uca1400_ai_ci",
+    "eq_range_index_dive_limit": "200",
+    "innodb_buffer_pool_size": "134217728",
+    "innodb_file_per_table": "ON",
+    "innodb_flush_log_at_trx_commit": "1",
+    "innodb_flush_method": "O_DIRECT",
+    "innodb_io_capacity": "200",
+    "innodb_log_buffer_size": "16777216",
+    "innodb_log_file_size": "100663296",
+    "join_buffer_size": "262144",
+    "max_allowed_packet": "16777216",
+    "max_connections": "151",
+    "max_heap_table_size": "16777216",
+    "optimizer_prune_level": "2",
+    "optimizer_search_depth": "62",
+    "optimizer_switch": "index_merge=on,index_merge_union=on,index_merge_sort_union=on,index_merge_intersection=on,index_merge_sort_intersection=off,index_condition_pushdown=on,derived_merge=on,derived_with_keys=on,firstmatch=on,loosescan=on,materialization=on,in_to_exists=on,semijoin=on,partial_match_rowid_merge=on,partial_match_table_scan=on,subquery_cache=on,mrr=off,mrr_cost_based=off,mrr_sort_keys=off,outer_join_with_cache=on,semijoin_with_cache=on,join_cache_incremental=on,join_cache_hashed=on,join_cache_bka=on,optimize_join_buffer_size=on,table_elimination=on,extended_keys=on,exists_to_in=on,orderby_uses_equalities=on,condition_pushdown_for_derived=on,split_materialized=on,condition_pushdown_for_subquery=on,rowid_filter=on,condition_pushdown_from_having=on,not_null_range_scan=off,hash_join_cardinality=on,cset_narrowing=on,sargable_casefold=on",
+    "read_buffer_size": "131072",
+    "read_rnd_buffer_size": "262144",
+    "sort_buffer_size": "2097152",
+    "table_open_cache": "2000",
+    "thread_cache_size": "151",
+    "tmp_table_size": "16777216",
+    "version": "11.8.9-MariaDB-ubu2404-log",
+    "version_comment": "mariadb.org binary distribution",
+    "version_compile_os": "debian-linux-gnu"
+  }
+}

@@ -30,7 +30,7 @@ function advance(ms) {
 '''
         result = subprocess.run(
             [shutil.which('node'), '-e', harness + ANIM_JS + body],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, encoding="utf-8",
             timeout=10,
         )
         self.assertEqual(result.returncode, 0, result.stderr)

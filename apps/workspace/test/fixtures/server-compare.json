@@ -1,0 +1,1078 @@
+{
+  "parameters": {
+    "schema_version": "parameter-compare-1.0",
+    "compared_at": "2026-10-27T20:49:53.067555+00:00",
+    "source": {
+      "kind": "live",
+      "server": {
+        "host": "db1",
+        "port": 3306,
+        "engine": "mysql",
+        "flavor": "mysql",
+        "server_product": "MySQL",
+        "server_version": "test"
+      },
+      "captured_at": "2026-10-27T12:00:00+00:00",
+      "label": "",
+      "complete": true
+    },
+    "target": {
+      "kind": "snapshot",
+      "id": "11111111-1111-4111-8111-111111111111",
+      "number": 1,
+      "label": "Before upgrade",
+      "saved_at": "2026-10-27T12:00:00+00:00",
+      "server": {
+        "host": "db1",
+        "port": 3306,
+        "engine": "mysql",
+        "flavor": "mysql",
+        "server_product": "MySQL",
+        "server_version": "test"
+      },
+      "captured_at": "2026-10-27T12:00:00+00:00",
+      "complete": true
+    },
+    "items": [
+      {
+        "name": "max_connections",
+        "status": "different",
+        "status_text": "Different",
+        "identity": false,
+        "group": "Connections",
+        "source": {
+          "name": "max_connections",
+          "value": "200",
+          "default": "151",
+          "type": "integer",
+          "group": "Connections"
+        },
+        "target": {
+          "name": "max_connections",
+          "value": "300",
+          "default": "151",
+          "type": "integer",
+          "group": "Connections"
+        },
+        "source_at_default": false,
+        "target_at_default": false
+      },
+      {
+        "name": "redacted_setting",
+        "status": "not_compared",
+        "status_text": "Not compared",
+        "identity": false,
+        "group": null,
+        "source": {
+          "name": "redacted_setting",
+          "value": "[redacted]",
+          "default": null,
+          "type": "integer",
+          "redacted": true
+        },
+        "target": {
+          "name": "redacted_setting",
+          "value": "[redacted]",
+          "default": null,
+          "type": "integer",
+          "redacted": true
+        },
+        "source_at_default": null,
+        "target_at_default": null,
+        "reason": "A value was truncated or redacted."
+      },
+      {
+        "name": "same_setting",
+        "status": "identical",
+        "status_text": "Identical",
+        "identity": false,
+        "group": null,
+        "source": {
+          "name": "same_setting",
+          "value": "ON",
+          "default": "ON",
+          "type": "boolean"
+        },
+        "target": {
+          "name": "same_setting",
+          "value": "1",
+          "default": "OFF",
+          "type": "boolean"
+        },
+        "source_at_default": true,
+        "target_at_default": false
+      },
+      {
+        "name": "server_id",
+        "status": "different",
+        "status_text": "Different",
+        "identity": true,
+        "group": null,
+        "source": {
+          "name": "server_id",
+          "value": "1",
+          "default": "0",
+          "type": "integer"
+        },
+        "target": {
+          "name": "server_id",
+          "value": "2",
+          "default": "0",
+          "type": "integer"
+        },
+        "source_at_default": false,
+        "target_at_default": false
+      },
+      {
+        "name": "source_setting",
+        "status": "only_in_source",
+        "status_text": "Only in source",
+        "identity": false,
+        "group": null,
+        "source": {
+          "name": "source_setting",
+          "value": "9",
+          "default": null,
+          "type": "integer"
+        },
+        "target": null,
+        "source_at_default": null,
+        "target_at_default": null
+      },
+      {
+        "name": "target_setting",
+        "status": "only_in_target",
+        "status_text": "Only in target",
+        "identity": false,
+        "group": null,
+        "source": null,
+        "target": {
+          "name": "target_setting",
+          "value": "8",
+          "default": null,
+          "type": "integer"
+        },
+        "source_at_default": null,
+        "target_at_default": null
+      }
+    ],
+    "notes": [],
+    "counts": {
+      "different": 2,
+      "only_in_source": 1,
+      "only_in_target": 1,
+      "identical": 1,
+      "not_compared": 1
+    },
+    "identical": false,
+    "complete": true
+  },
+  "side_error": {
+    "schema_version": "parameter-compare-1.0",
+    "compared_at": "2026-10-27T20:49:53.067784+00:00",
+    "source": {
+      "kind": "live",
+      "server": {
+        "host": "db1",
+        "port": 3306,
+        "engine": "mysql",
+        "flavor": "mysql",
+        "server_product": "MySQL",
+        "server_version": "test"
+      },
+      "captured_at": "2026-10-27T12:00:00+00:00",
+      "label": "",
+      "complete": true
+    },
+    "target": {
+      "kind": "unavailable",
+      "complete": false,
+      "error": "Access denied on target"
+    },
+    "items": [
+      {
+        "name": "max_connections",
+        "status": "not_compared",
+        "status_text": "Not compared",
+        "identity": false,
+        "group": "Connections",
+        "source": {
+          "name": "max_connections",
+          "value": "200",
+          "default": "151",
+          "type": "integer",
+          "group": "Connections"
+        },
+        "target": null,
+        "source_at_default": false,
+        "target_at_default": null,
+        "reason": "A comparison side could not be read."
+      },
+      {
+        "name": "redacted_setting",
+        "status": "not_compared",
+        "status_text": "Not compared",
+        "identity": false,
+        "group": null,
+        "source": {
+          "name": "redacted_setting",
+          "value": "[redacted]",
+          "default": null,
+          "type": "integer",
+          "redacted": true
+        },
+        "target": null,
+        "source_at_default": null,
+        "target_at_default": null,
+        "reason": "A comparison side could not be read."
+      },
+      {
+        "name": "same_setting",
+        "status": "not_compared",
+        "status_text": "Not compared",
+        "identity": false,
+        "group": null,
+        "source": {
+          "name": "same_setting",
+          "value": "ON",
+          "default": "ON",
+          "type": "boolean"
+        },
+        "target": null,
+        "source_at_default": true,
+        "target_at_default": null,
+        "reason": "A comparison side could not be read."
+      },
+      {
+        "name": "server_id",
+        "status": "not_compared",
+        "status_text": "Not compared",
+        "identity": true,
+        "group": null,
+        "source": {
+          "name": "server_id",
+          "value": "1",
+          "default": "0",
+          "type": "integer"
+        },
+        "target": null,
+        "source_at_default": false,
+        "target_at_default": null,
+        "reason": "A comparison side could not be read."
+      },
+      {
+        "name": "source_setting",
+        "status": "not_compared",
+        "status_text": "Not compared",
+        "identity": false,
+        "group": null,
+        "source": {
+          "name": "source_setting",
+          "value": "9",
+          "default": null,
+          "type": "integer"
+        },
+        "target": null,
+        "source_at_default": null,
+        "target_at_default": null,
+        "reason": "A comparison side could not be read."
+      }
+    ],
+    "notes": [
+      "Target: Access denied on target"
+    ],
+    "counts": {
+      "different": 0,
+      "only_in_source": 0,
+      "only_in_target": 0,
+      "identical": 0,
+      "not_compared": 5
+    },
+    "identical": false,
+    "complete": false
+  },
+  "accounts": {
+    "schema_version": "account-compare-1.0",
+    "compared_at": "2026-10-27T20:49:53.068037+00:00",
+    "source": {
+      "kind": "live",
+      "server": {
+        "host": "db1",
+        "port": 3306,
+        "engine": "mysql",
+        "flavor": "mysql",
+        "server_version": "test",
+        "server_product": "mysql"
+      },
+      "captured_at": "2026-10-27T12:00:00+00:00",
+      "complete": true
+    },
+    "target": {
+      "kind": "live",
+      "server": {
+        "host": "db2",
+        "port": 3306,
+        "engine": "mysql",
+        "flavor": "mysql",
+        "server_version": "test",
+        "server_product": "mysql"
+      },
+      "captured_at": "2026-10-27T12:00:00+00:00",
+      "complete": true
+    },
+    "items": [
+      {
+        "name": "app",
+        "host": "%",
+        "account": "app@%",
+        "status": "different",
+        "status_text": "Different",
+        "system": false,
+        "source": {
+          "name": "app",
+          "host": "%",
+          "role": false,
+          "exists": true,
+          "attributes_checked": true,
+          "defaults_checked": true,
+          "tls_checked": true,
+          "system": false,
+          "grants": [
+            "GRANT SELECT ON `shop`.* TO `app`@`%`",
+            "GRANT INSERT ON `shop`.* TO `app`@`%`"
+          ],
+          "roles": [
+            {
+              "name": "reader",
+              "host": "%",
+              "admin_option": true
+            }
+          ],
+          "default_roles": [
+            {
+              "name": "reader",
+              "host": "%"
+            }
+          ],
+          "attributes": {
+            "plugins": [
+              "caching_sha2_password"
+            ],
+            "locked": false,
+            "expired": false,
+            "limits": {},
+            "password_options": {},
+            "tls": {
+              "type": "ANY",
+              "cipher_hex": "",
+              "issuer_hex": "",
+              "subject_hex": ""
+            }
+          }
+        },
+        "target": {
+          "name": "app",
+          "host": "%",
+          "role": false,
+          "exists": true,
+          "attributes_checked": true,
+          "defaults_checked": true,
+          "tls_checked": true,
+          "system": false,
+          "grants": [
+            "GRANT SELECT ON `shop`.* TO `app`@`%`",
+            "GRANT UPDATE ON `shop`.* TO `app`@`%`"
+          ],
+          "roles": [],
+          "default_roles": [],
+          "attributes": {
+            "plugins": [
+              "caching_sha2_password"
+            ],
+            "locked": true,
+            "expired": false,
+            "limits": {},
+            "password_options": {},
+            "tls": {
+              "type": "",
+              "cipher_hex": "",
+              "issuer_hex": "",
+              "subject_hex": ""
+            }
+          }
+        },
+        "differences": {
+          "grants": {
+            "only_in_source": [
+              "GRANT INSERT ON `shop`.* TO `app`@`%`"
+            ],
+            "only_in_target": [
+              "GRANT UPDATE ON `shop`.* TO `app`@`%`"
+            ]
+          },
+          "roles": {
+            "only_in_source": [
+              {
+                "name": "reader",
+                "host": "%",
+                "admin_option": true
+              }
+            ],
+            "only_in_target": []
+          },
+          "default_roles": {
+            "only_in_source": [
+              {
+                "name": "reader",
+                "host": "%"
+              }
+            ],
+            "only_in_target": []
+          },
+          "attributes": [
+            {
+              "name": "locked",
+              "source": false,
+              "target": true
+            },
+            {
+              "name": "tls",
+              "source": {
+                "type": "ANY",
+                "cipher_hex": "",
+                "issuer_hex": "",
+                "subject_hex": ""
+              },
+              "target": {
+                "type": "",
+                "cipher_hex": "",
+                "issuer_hex": "",
+                "subject_hex": ""
+              }
+            }
+          ]
+        }
+      },
+      {
+        "name": "mysql.sys",
+        "host": "localhost",
+        "account": "mysql.sys@localhost",
+        "status": "only_in_source",
+        "status_text": "Only in source",
+        "system": true,
+        "source": {
+          "name": "mysql.sys",
+          "host": "localhost",
+          "role": false,
+          "exists": true,
+          "attributes_checked": true,
+          "defaults_checked": true,
+          "tls_checked": true,
+          "system": true,
+          "grants": [
+            "GRANT USAGE ON *.* TO `mysql.sys`@`localhost`"
+          ],
+          "roles": [],
+          "default_roles": [],
+          "attributes": {
+            "plugins": [
+              "caching_sha2_password"
+            ],
+            "locked": true,
+            "expired": false,
+            "limits": {},
+            "password_options": {},
+            "tls": {
+              "type": "",
+              "cipher_hex": "",
+              "issuer_hex": "",
+              "subject_hex": ""
+            }
+          }
+        },
+        "target": null,
+        "differences": null
+      },
+      {
+        "name": "reader",
+        "host": "%",
+        "account": "reader@%",
+        "status": "identical",
+        "status_text": "Identical",
+        "system": false,
+        "source": {
+          "name": "reader",
+          "host": "%",
+          "role": true,
+          "exists": true,
+          "attributes_checked": true,
+          "defaults_checked": true,
+          "tls_checked": true,
+          "system": false,
+          "grants": [],
+          "roles": [],
+          "default_roles": [],
+          "attributes": {
+            "plugins": [
+              "caching_sha2_password"
+            ],
+            "locked": false,
+            "expired": false,
+            "limits": {},
+            "password_options": {},
+            "tls": {
+              "type": "",
+              "cipher_hex": "",
+              "issuer_hex": "",
+              "subject_hex": ""
+            }
+          }
+        },
+        "target": {
+          "name": "reader",
+          "host": "%",
+          "role": true,
+          "exists": true,
+          "attributes_checked": true,
+          "defaults_checked": true,
+          "tls_checked": true,
+          "system": false,
+          "grants": [],
+          "roles": [],
+          "default_roles": [],
+          "attributes": {
+            "plugins": [
+              "caching_sha2_password"
+            ],
+            "locked": false,
+            "expired": false,
+            "limits": {},
+            "password_options": {},
+            "tls": {
+              "type": "",
+              "cipher_hex": "",
+              "issuer_hex": "",
+              "subject_hex": ""
+            }
+          }
+        },
+        "differences": {
+          "grants": {
+            "only_in_source": [],
+            "only_in_target": []
+          },
+          "roles": {
+            "only_in_source": [],
+            "only_in_target": []
+          },
+          "default_roles": {
+            "only_in_source": [],
+            "only_in_target": []
+          },
+          "attributes": []
+        }
+      },
+      {
+        "name": "same",
+        "host": "%",
+        "account": "same@%",
+        "status": "identical",
+        "status_text": "Identical",
+        "system": false,
+        "source": {
+          "name": "same",
+          "host": "%",
+          "role": false,
+          "exists": true,
+          "attributes_checked": true,
+          "defaults_checked": true,
+          "tls_checked": true,
+          "system": false,
+          "grants": [],
+          "roles": [],
+          "default_roles": [],
+          "attributes": {
+            "plugins": [
+              "caching_sha2_password"
+            ],
+            "locked": false,
+            "expired": false,
+            "limits": {},
+            "password_options": {},
+            "tls": {
+              "type": "",
+              "cipher_hex": "",
+              "issuer_hex": "",
+              "subject_hex": ""
+            }
+          }
+        },
+        "target": {
+          "name": "same",
+          "host": "%",
+          "role": false,
+          "exists": true,
+          "attributes_checked": true,
+          "defaults_checked": true,
+          "tls_checked": true,
+          "system": false,
+          "grants": [],
+          "roles": [],
+          "default_roles": [],
+          "attributes": {
+            "plugins": [
+              "caching_sha2_password"
+            ],
+            "locked": false,
+            "expired": false,
+            "limits": {},
+            "password_options": {},
+            "tls": {
+              "type": "",
+              "cipher_hex": "",
+              "issuer_hex": "",
+              "subject_hex": ""
+            }
+          }
+        },
+        "differences": {
+          "grants": {
+            "only_in_source": [],
+            "only_in_target": []
+          },
+          "roles": {
+            "only_in_source": [],
+            "only_in_target": []
+          },
+          "default_roles": {
+            "only_in_source": [],
+            "only_in_target": []
+          },
+          "attributes": []
+        }
+      },
+      {
+        "name": "source_only",
+        "host": "%",
+        "account": "source_only@%",
+        "status": "only_in_source",
+        "status_text": "Only in source",
+        "system": false,
+        "source": {
+          "name": "source_only",
+          "host": "%",
+          "role": false,
+          "exists": true,
+          "attributes_checked": true,
+          "defaults_checked": true,
+          "tls_checked": true,
+          "system": false,
+          "grants": [],
+          "roles": [],
+          "default_roles": [],
+          "attributes": {
+            "plugins": [
+              "caching_sha2_password"
+            ],
+            "locked": false,
+            "expired": false,
+            "limits": {},
+            "password_options": {},
+            "tls": {
+              "type": "",
+              "cipher_hex": "",
+              "issuer_hex": "",
+              "subject_hex": ""
+            }
+          }
+        },
+        "target": null,
+        "differences": null
+      },
+      {
+        "name": "target_only",
+        "host": "%",
+        "account": "target_only@%",
+        "status": "only_in_target",
+        "status_text": "Only in target",
+        "system": false,
+        "source": null,
+        "target": {
+          "name": "target_only",
+          "host": "%",
+          "role": false,
+          "exists": true,
+          "attributes_checked": true,
+          "defaults_checked": true,
+          "tls_checked": true,
+          "system": false,
+          "grants": [],
+          "roles": [],
+          "default_roles": [],
+          "attributes": {
+            "plugins": [
+              "caching_sha2_password"
+            ],
+            "locked": false,
+            "expired": false,
+            "limits": {},
+            "password_options": {},
+            "tls": {
+              "type": "",
+              "cipher_hex": "",
+              "issuer_hex": "",
+              "subject_hex": ""
+            }
+          }
+        },
+        "differences": null
+      }
+    ],
+    "notes": [],
+    "counts": {
+      "different": 1,
+      "only_in_source": 2,
+      "only_in_target": 1,
+      "identical": 2,
+      "not_compared": 0
+    },
+    "identical": false,
+    "complete": true
+  },
+  "snapshot_list": {
+    "schema_version": "parameter-snapshot-list-1.0",
+    "items": [
+      {
+        "id": "11111111-1111-4111-8111-111111111111",
+        "number": 1,
+        "saved_at": "2026-10-27T12:00:00+00:00",
+        "source_key": "[\"db1\",3306]",
+        "label": "Before upgrade",
+        "server": {
+          "host": "db1",
+          "port": 3306,
+          "engine": "mysql",
+          "flavor": "mysql",
+          "server_product": "MySQL",
+          "server_version": "test"
+        },
+        "captured_at": "2026-10-27T12:00:00+00:00",
+        "complete": true,
+        "count": 5
+      }
+    ]
+  },
+  "snapshot": {
+    "schema_version": "parameter-snapshot-1.0",
+    "server": {
+      "host": "db1",
+      "port": 3306,
+      "engine": "mysql",
+      "flavor": "mysql",
+      "server_product": "MySQL",
+      "server_version": "test"
+    },
+    "captured_at": "2026-10-27T12:00:00+00:00",
+    "label": "",
+    "complete": true,
+    "notes": [],
+    "items": [
+      {
+        "name": "max_connections",
+        "value": "200",
+        "type": "integer",
+        "default": "151",
+        "group": "Connections"
+      },
+      {
+        "name": "server_id",
+        "value": "1",
+        "type": "integer",
+        "default": "0"
+      },
+      {
+        "name": "same_setting",
+        "value": "ON",
+        "type": "boolean",
+        "default": "ON"
+      },
+      {
+        "name": "source_setting",
+        "value": "9",
+        "type": "integer",
+        "default": null
+      },
+      {
+        "name": "redacted_setting",
+        "value": "[redacted]",
+        "type": "integer",
+        "default": null,
+        "redacted": true
+      }
+    ]
+  },
+  "export": {
+    "filename": "account-grants.sql",
+    "text": "-- Review before running. This text was not sent to a server.\n-- Grants only. Authentication, TLS requirements and resource limits are not copied.\nCREATE USER IF NOT EXISTS `source_only`@`%`;\n-- Set the password separately before allowing this account to log in.\n",
+    "side": {
+      "kind": "live",
+      "server": {
+        "host": "db1",
+        "port": 3306,
+        "engine": "mysql",
+        "flavor": "mysql",
+        "server_version": "test",
+        "server_product": "mysql"
+      },
+      "captured_at": "2026-10-27T12:00:00+00:00",
+      "complete": true
+    }
+  },
+  "accounts_side_error": {
+    "schema_version": "account-compare-1.0",
+    "compared_at": "2026-10-27T20:57:01.359083+00:00",
+    "source": {
+      "kind": "live",
+      "server": {
+        "host": "db1",
+        "port": 3306,
+        "engine": "mysql",
+        "flavor": "mysql",
+        "server_version": "test",
+        "server_product": "mysql"
+      },
+      "captured_at": "2026-10-27T12:00:00+00:00",
+      "complete": true
+    },
+    "target": {
+      "kind": "unavailable",
+      "complete": false,
+      "error": "Access denied on target"
+    },
+    "items": [
+      {
+        "name": "app",
+        "host": "%",
+        "account": "app@%",
+        "status": "not_compared",
+        "status_text": "Not compared",
+        "system": false,
+        "source": {
+          "name": "app",
+          "host": "%",
+          "role": false,
+          "exists": true,
+          "attributes_checked": true,
+          "defaults_checked": true,
+          "tls_checked": true,
+          "system": false,
+          "grants": [
+            "GRANT SELECT ON `shop`.* TO `app`@`%`",
+            "GRANT INSERT ON `shop`.* TO `app`@`%`"
+          ],
+          "roles": [
+            {
+              "name": "reader",
+              "host": "%",
+              "admin_option": true
+            }
+          ],
+          "default_roles": [
+            {
+              "name": "reader",
+              "host": "%"
+            }
+          ],
+          "attributes": {
+            "plugins": [
+              "caching_sha2_password"
+            ],
+            "locked": false,
+            "expired": false,
+            "limits": {},
+            "password_options": {},
+            "tls": {
+              "type": "ANY",
+              "cipher_hex": "",
+              "issuer_hex": "",
+              "subject_hex": ""
+            }
+          }
+        },
+        "target": null,
+        "differences": null,
+        "reason": "A comparison side could not be read."
+      },
+      {
+        "name": "mysql.sys",
+        "host": "localhost",
+        "account": "mysql.sys@localhost",
+        "status": "not_compared",
+        "status_text": "Not compared",
+        "system": true,
+        "source": {
+          "name": "mysql.sys",
+          "host": "localhost",
+          "role": false,
+          "exists": true,
+          "attributes_checked": true,
+          "defaults_checked": true,
+          "tls_checked": true,
+          "system": true,
+          "grants": [
+            "GRANT USAGE ON *.* TO `mysql.sys`@`localhost`"
+          ],
+          "roles": [],
+          "default_roles": [],
+          "attributes": {
+            "plugins": [
+              "caching_sha2_password"
+            ],
+            "locked": true,
+            "expired": false,
+            "limits": {},
+            "password_options": {},
+            "tls": {
+              "type": "",
+              "cipher_hex": "",
+              "issuer_hex": "",
+              "subject_hex": ""
+            }
+          }
+        },
+        "target": null,
+        "differences": null,
+        "reason": "A comparison side could not be read."
+      },
+      {
+        "name": "reader",
+        "host": "%",
+        "account": "reader@%",
+        "status": "not_compared",
+        "status_text": "Not compared",
+        "system": false,
+        "source": {
+          "name": "reader",
+          "host": "%",
+          "role": true,
+          "exists": true,
+          "attributes_checked": true,
+          "defaults_checked": true,
+          "tls_checked": true,
+          "system": false,
+          "grants": [],
+          "roles": [],
+          "default_roles": [],
+          "attributes": {
+            "plugins": [
+              "caching_sha2_password"
+            ],
+            "locked": false,
+            "expired": false,
+            "limits": {},
+            "password_options": {},
+            "tls": {
+              "type": "",
+              "cipher_hex": "",
+              "issuer_hex": "",
+              "subject_hex": ""
+            }
+          }
+        },
+        "target": null,
+        "differences": null,
+        "reason": "A comparison side could not be read."
+      },
+      {
+        "name": "same",
+        "host": "%",
+        "account": "same@%",
+        "status": "not_compared",
+        "status_text": "Not compared",
+        "system": false,
+        "source": {
+          "name": "same",
+          "host": "%",
+          "role": false,
+          "exists": true,
+          "attributes_checked": true,
+          "defaults_checked": true,
+          "tls_checked": true,
+          "system": false,
+          "grants": [],
+          "roles": [],
+          "default_roles": [],
+          "attributes": {
+            "plugins": [
+              "caching_sha2_password"
+            ],
+            "locked": false,
+            "expired": false,
+            "limits": {},
+            "password_options": {},
+            "tls": {
+              "type": "",
+              "cipher_hex": "",
+              "issuer_hex": "",
+              "subject_hex": ""
+            }
+          }
+        },
+        "target": null,
+        "differences": null,
+        "reason": "A comparison side could not be read."
+      },
+      {
+        "name": "source_only",
+        "host": "%",
+        "account": "source_only@%",
+        "status": "not_compared",
+        "status_text": "Not compared",
+        "system": false,
+        "source": {
+          "name": "source_only",
+          "host": "%",
+          "role": false,
+          "exists": true,
+          "attributes_checked": true,
+          "defaults_checked": true,
+          "tls_checked": true,
+          "system": false,
+          "grants": [],
+          "roles": [],
+          "default_roles": [],
+          "attributes": {
+            "plugins": [
+              "caching_sha2_password"
+            ],
+            "locked": false,
+            "expired": false,
+            "limits": {},
+            "password_options": {},
+            "tls": {
+              "type": "",
+              "cipher_hex": "",
+              "issuer_hex": "",
+              "subject_hex": ""
+            }
+          }
+        },
+        "target": null,
+        "differences": null,
+        "reason": "A comparison side could not be read."
+      }
+    ],
+    "notes": [
+      "Target: Access denied on target"
+    ],
+    "counts": {
+      "different": 0,
+      "only_in_source": 0,
+      "only_in_target": 0,
+      "identical": 0,
+      "not_compared": 5
+    },
+    "identical": false,
+    "complete": false
+  }
+}

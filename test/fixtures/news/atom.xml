@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>An Atom feed</title>
+  <id>tag:example,2026:feed</id>
+  <updated>2026-10-18T10:00:00Z</updated>
+  <entry>
+    <title type="html">MariaDB 12.1 &lt;b&gt;released&lt;/b&gt;</title>
+    <link rel="self" href="https://mariadb.org/self-link/"/>
+    <link rel="alternate" type="text/html" href="https://mariadb.org/mariadb-12-1-released/"/>
+    <id>tag:example,2026:1</id>
+    <published>2026-10-18T10:00:00+02:00</published>
+    <updated>2026-10-18T11:00:00+02:00</updated>
+    <summary type="html">&lt;p&gt;The release notes are &lt;a href="https://mariadb.org/x"&gt;here&lt;/a&gt;.&lt;/p&gt;</summary>
+  </entry>
+  <entry>
+    <title>A relative link</title>
+    <link href="/relative-post/"/>
+    <id>tag:example,2026:2</id>
+    <updated>2026-10-17T09:30:00.123Z</updated>
+    <content type="html">&lt;div&gt;Body&lt;/div&gt;</content>
+  </entry>
+  <entry>
+    <title type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml">Galera <em>4</em> notes</div></title>
+    <link href="https://mariadb.org/galera-4-notes/"/>
+    <id>tag:example,2026:3</id>
+    <updated>2026-10-16T08:00:00-05:30</updated>
+  </entry>
+</feed>

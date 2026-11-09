@@ -1,0 +1,83 @@
+{
+  "query_optimization": {
+    "r_total_time_ms": 0.146463176
+  },
+  "query_block": {
+    "select_id": 1,
+    "cost": 16.5469326,
+    "r_loops": 1,
+    "r_total_time_ms": 0.314465054,
+    "nested_loop": [
+      {
+        "table": {
+          "table_name": "c",
+          "access_type": "ALL",
+          "possible_keys": ["PRIMARY", "idx_fk_store_id"],
+          "loops": 1,
+          "r_loops": 1,
+          "rows": 599,
+          "r_rows": 12,
+          "cost": 0.111911,
+          "r_table_time_ms": 0.005018727,
+          "r_other_time_ms": 0.003429463,
+          "r_engine_stats": {
+            "pages_accessed": 4
+          },
+          "filtered": 54.42404175,
+          "r_total_filtered": 58.33333333,
+          "attached_condition": "c.store_id = 1",
+          "r_filtered": 58.33333333
+        }
+      },
+      {
+        "table": {
+          "table_name": "p",
+          "access_type": "ref",
+          "possible_keys": ["idx_fk_customer_id", "fk_payment_rental"],
+          "key": "idx_fk_customer_id",
+          "key_length": "2",
+          "used_key_parts": ["customer_id"],
+          "ref": ["sakila.c.customer_id"],
+          "loops": 326,
+          "r_loops": 7,
+          "rows": 26,
+          "r_rows": 28.57142857,
+          "cost": 8.77428576,
+          "r_table_time_ms": 0.068923847,
+          "r_other_time_ms": 0.008531835,
+          "r_engine_stats": {
+            "pages_accessed": 430
+          },
+          "filtered": 100,
+          "r_total_filtered": 100,
+          "attached_condition": "p.rental_id is not null",
+          "r_filtered": 100
+        }
+      },
+      {
+        "table": {
+          "table_name": "r",
+          "access_type": "eq_ref",
+          "possible_keys": ["PRIMARY"],
+          "key": "PRIMARY",
+          "key_length": "4",
+          "used_key_parts": ["rental_id"],
+          "ref": ["sakila.p.rental_id"],
+          "loops": 8476,
+          "r_loops": 200,
+          "rows": 1,
+          "r_rows": 1,
+          "cost": 7.66073584,
+          "r_table_time_ms": 0.215303378,
+          "r_other_time_ms": 0.011710362,
+          "r_engine_stats": {
+            "pages_accessed": 402
+          },
+          "filtered": 100,
+          "r_total_filtered": 100,
+          "r_filtered": 100
+        }
+      }
+    ]
+  }
+}

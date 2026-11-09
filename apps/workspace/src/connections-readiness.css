@@ -1,0 +1,15 @@
+.connection-readiness { min-width: 0; overflow-wrap: anywhere; font-size: var(--text-sm); }
+.connection-readiness-line { min-width: 0; }
+.connection-readiness .form-error { display: block; }
+.connections-header-actions { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.connection-import-controls { display: flex; align-items: end; flex-wrap: wrap; gap: var(--space-3); margin-block: var(--space-3); }
+.connection-import-preview { max-height: var(--connection-import-max-h); overflow: auto; min-width: 0; }
+.connection-import-preview .hint { display: block; }
+/* Wider than the default sheet (560 px) so the preview's five columns fit. */
+.confirm-sheet.connection-import-sheet { width: min(var(--connection-import-width), calc(100vw - 32px)); max-width: none; }
+
+.connections .data-table [data-col="server"] .connection-readiness { display: flex; align-items: baseline; gap: var(--space-1); white-space: nowrap; }
+/* The product and version keep their room; the "seen ... stale" hint yields first (full text on hover). */
+.connections .data-table [data-col="server"] .connection-readiness-line { flex: 0 1 auto; min-width: 6ch; overflow: hidden; text-overflow: ellipsis; }
+.connections .data-table [data-col="server"] .connection-readiness-line:empty::before { content: "Not checked"; color: var(--ink-faint); }
+.connections .data-table [data-col="server"] .connection-readiness > .hint { flex: 0 100 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }

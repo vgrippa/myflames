@@ -1,8 +1,8 @@
 {
   "$schema": "https://myflames.dev/schemas/sidecar-v1.json",
   "schema_version": "1.3",
-  "generated_at": "2026-04-25T12:51:26Z",
-  "myflames_version": "1.5.0",
+  "generated_at": "2026-10-15T19:53:26Z",
+  "myflames_version": "2.3.0",
   "source": {
     "type": "file",
     "engine": "mysql",
@@ -27,23 +27,13 @@
     {
       "name": "materialization",
       "value": "on",
-      "explanation": "A subquery or derived table is executed once and its result stored in a temporary table for reuse. Watch tmp_table_size / max_heap_table_size — it may spill to disk.",
+      "explanation": "A subquery or derived table is executed once and its result stored in a temporary table for reuse. It may spill to disk past tmp_table_size (MySQL's TempTable engine) or the smaller of tmp_table_size and max_heap_table_size (MEMORY engine, MariaDB).",
       "node_labels": [
         "Materialize"
       ]
     }
   ],
   "warnings": [
-    {
-      "severity": "warn",
-      "category": "full_scan",
-      "text": "Full table scan: <temporary> (10 rows), org_chart (1000 rows)",
-      "source": "plan",
-      "node_labels": [
-        "Table scan [<temporary>]",
-        "Table scan [org_chart]"
-      ]
-    },
     {
       "severity": "warn",
       "category": "temp_table",
@@ -65,16 +55,11 @@
   ],
   "suggestions": [
     {
-      "severity": "high",
-      "category": "index",
-      "action": "Add indexes on filter/join columns to avoid full table scans",
-      "source": "plan"
-    },
-    {
       "severity": "medium",
       "category": "tuning_variable",
-      "action": "Increase tmp_table_size / max_heap_table_size to keep temp tables in memory",
+      "action": "Check internal_tmp_mem_storage_engine and temporary-table disk usage before raising tmp_table_size.",
       "source": "plan",
+      "why": "the default TempTable engine limits each in-memory internal temporary table by tmp_table_size, and max_heap_table_size does not apply to it; only the MEMORY engine also uses max_heap_table_size, taking the smaller of the two. A temporary table in the plan does not by itself show that it spilled to disk.",
       "target_variable": "tmp_table_size"
     },
     {
@@ -85,7 +70,7 @@
       "target_variable": "sort_buffer_size"
     }
   ],
-  "executive_summary": "Query scans 2 tables, materializes 1 temp table and sorts the result; examines ~601 rows to return 10 in 1.6 ms. Main finding: full scan of org_chart (1,000 rows).",
+  "executive_summary": "Query materializes 1 temp table and sorts the result; examines ~601 rows to return 10 in 1.6 ms. Main finding: a temp table is materialized.",
   "plan_tree": {
     "node_id": "n:347eeced0b3c",
     "short_label": "Sort",

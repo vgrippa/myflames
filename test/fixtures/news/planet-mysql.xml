@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!-- Shaped like https://planet.mysql.com/rss20.xml (2026-10-20), trimmed. -->
+<rss version="2.0"
+     xmlns:dc="http://purl.org/dc/elements/1.1/"
+     xmlns:content="http://purl.org/rss/1.0/modules/content/">
+<channel>
+  <title>Planet MySQL</title>
+  <link>https://planet.mysql.com</link>
+  <pubDate>Tue, 20 Oct 2026 14:20:41 +0000</pubDate>
+  <item>
+    <title>Troubleshooting MySQL with &lt;em&gt;OpenTelemetry&lt;/em&gt; Metrics</title>
+    <guid isPermaLink="false">ed5189806daa7bd6f1b67b0863c877a2</guid>
+    <link>https://blogs.oracle.com/mysql/troubleshooting-mysql-with-opentelemetry-metrics</link>
+    <description>&lt;p&gt;In the first post, we exported &lt;b&gt;native&lt;/b&gt;   MySQL telemetry.&lt;/p&gt;&lt;script&gt;alert(1)&lt;/script&gt;&lt;style&gt;p{}&lt;/style&gt;</description>
+    <pubDate>Mon, 19 Oct 2026 23:48:23 +0000</pubDate>
+    <dc:creator>MySQL team</dc:creator>
+  </item>
+  <item>
+    <title>Upgrading MySQL HeatWave High Availability from MySQL 8.0.46 to MySQL 8.4 LTS</title>
+    <link>https://blogs.oracle.com/mysql/upgrading-mysql-heatwave-high-availability</link>
+    <description><![CDATA[<p>Planning, compatibility testing &amp; validation.</p>]]></description>
+    <pubDate>Mon, 19 Oct 2026 12:50:31 -0700</pubDate>
+  </item>
+  <item>
+    <title>When a Small Change Writes Too Much</title>
+    <link>https://www.percona.com/blog/when-a-small-change-writes-too-much/</link>
+    <pubDate>Fri, 16 Oct 2026 12:58:08 +0000</pubDate>
+  </item>
+  <item>
+    <title>JavaScript in MySQL: Extending SQL</title>
+    <link>http://blogs.oracle.com/mysql/javascript-in-mysql</link>
+    <pubDate>Thu, 15 Oct 2026 15:04:29 +0000</pubDate>
+  </item>
+  <item>
+    <title>Oracle Cloud news</title>
+    <link>https://blogs.oracle.com/cloud/news</link>
+    <pubDate>Thu, 15 Oct 2026 15:00:00 +0000</pubDate>
+  </item>
+  <item>
+    <title>Visualizing MySQL Telemetry with Grafana</title>
+    <link>https://blogs.oracle.com/mysql/visualizing-mysql-telemetry-with-grafana</link>
+    <dc:date>2026-10-15T04:10:08Z</dc:date>
+  </item>
+  <item>
+    <title>Credentials in a link</title>
+    <link>https://user:secret@blogs.oracle.com/mysql/credentials</link>
+  </item>
+  <item>
+    <title>A script link</title>
+    <link>javascript:alert(1)</link>
+  </item>
+  <item>
+    <title>Another port</title>
+    <link>https://blogs.oracle.com:8443/mysql/port</link>
+  </item>
+  <item>
+    <title>Just Because You Can SELECT Everything Doesn’t Mean You Should</title>
+    <link>https://blogs.oracle.com/mysql/mysql-select-star-best-practices</link>
+    <pubDate>sometime last week</pubDate>
+  </item>
+  <item>
+    <title>   </title>
+    <link>https://blogs.oracle.com/mysql/no-title</link>
+  </item>
+</channel>
+</rss>

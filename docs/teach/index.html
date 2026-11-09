@@ -3,179 +3,409 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>myflames teach — algorithm catalog</title>
+  <title>myflames teach: algorithm catalog</title>
   <meta name="description" content="Catalog of interactive myflames teach lessons: join strategies, index access, scans, cache.">
   <style>
-    :root {
-      --bg: #f5f6fa; --card: #fff; --fg: #111827;
-      --muted: #4a5260; --accent: #1a73e8;
-      --accent-soft: #e8eaf6; --border: #dbe4f0;
-      --rad: 10px; --rad-sm: 6px;
-      --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-                 "Helvetica Neue", Arial, sans-serif;
-    }
+    :root { color-scheme: light;
+
+  --ink-secondary: #3c3c46;
+  --line-subtle: #efeff4;
+  --control-line-hover: #a8a8b3;
+  --shadow-popover: 0 8px 24px rgba(15, 15, 20, 0.12), 0 0 0 1px rgba(15, 15, 20, 0.08);
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --surface-muted: #f4f5f6;
+  --surface-hover: rgba(15, 17, 23, 0.045);
+  --surface-subtle: #fafbfc;
+  --ink: #202429;
+  --ink-muted: #59616b;
+  --ink-faint: #626a74;
+  --line: #d1d5da;
+  --line-strong: #a7afb9;
+  --control-line: #8c939b;
+  --accent-line: #8ebcab;
+  --accent: #16654e;
+  --accent-hover: #104d3b;
+  --accent-soft: rgba(22, 101, 78, 0.10);
+  --accent-ink: #ffffff;
+  --focus: var(--accent);
+  --ok: #157347;
+  --ok-soft: rgba(21, 115, 71, 0.10);
+  --warn: #945300;
+  --warn-soft: rgba(148, 83, 0, 0.12);
+  --warn-line: #efdfc1;
+  --danger: #c42b1c;
+  --danger-soft: rgba(196, 43, 28, 0.10);
+  --danger-line: rgba(196, 43, 28, 0.25);
+  --info: #005fb8;
+  --info-soft: rgba(0, 95, 184, 0.10);
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto,
+    sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --leading-sm: 18px;
+  --text-md: 13px;
+  --leading-md: 20px;
+  --text-lg: 15px;
+  --text-xl: 20px;
+  --radius-sm: 5px;
+  --radius-md: 7px;
+  --radius-lg: 10px;
+  --control-h: 28px;
+  --svg-node-bg: #ffffff;
+  --svg-node-muted: #f4f5f6;
+  --svg-node-stroke: #b8bfc7;
+  --svg-edge: #b8bfc7;
+  --svg-line: #e4e7eb;
+  --svg-ink: #17191c;
+  --svg-ink-muted: #636b75;
+  --svg-counter-bg: #17191c;
+  --svg-counter-ink: #ffffff;
+  --svg-on-solid: #ffffff;
+  --svg-build-ink: #85400b;
+  --svg-token-ink: #17598a;
+  --svg-token: #17598a;
+  --svg-token-soft: #eaf2f8;
+  --svg-highlight: #fef08a;
+  --svg-highlight-stroke: #d97706;
+  --svg-hop: #b45309;
+  --svg-hop-soft: #fdf3dc;
+  --svg-build: #b45309;
+  --svg-build-soft: #fdf3dc;
+  --svg-probe: #0f766e;
+  --svg-probe-soft: #e6f7f5;
+  --svg-ok: #146c43;
+  --svg-ok-soft: #e8f5ee;
+  --svg-danger: #b42318;
+  --svg-danger-soft: #fdeceb;
+  --svg-group: #6d28d9;
+  --svg-group-soft: #f3e8ff;
+  --svg-group-alt: #be185d;
+  --svg-group-alt-soft: #fce7f3;
+  --panel: var(--surface);
+  --panel-soft: var(--surface-muted);
+  --panel-muted: var(--surface-muted);
+  --text: var(--ink);
+  --muted: var(--ink-muted);
+  --border: var(--line);
+  --border-strong: var(--line-strong);
+  --code-bg: var(--surface-subtle);
+  --accent-strong: var(--accent-hover);
+  --hot: var(--danger);
+  --cool: var(--svg-probe);
+  --warm: var(--svg-highlight);
+  --problem: var(--danger);
+  --radius: var(--radius-md);
+}
+@media (prefers-color-scheme: dark) {
+:root:not([data-theme="light"]) { color-scheme: dark;
+
+  --bg: #151719;
+  --surface: #151719;
+  --surface-raised: #25282c;
+  --surface-muted: #1c1e21;
+  --surface-hover: rgba(255, 255, 255, 0.06);
+  --surface-subtle: #191b1e;
+  --ink: #ededee;
+  --ink-secondary: #d0d0d6;
+  --ink-muted: #a5a9af;
+  --ink-faint: #989ea7;
+  --line: #34383d;
+  --line-subtle: #292c30;
+  --line-strong: #646c77;
+  --control-line: #656e79;
+  --control-line-hover: #6c6c74;
+  --accent: #a9e7d3;
+  --accent-hover: #c0eedf;
+  --accent-soft: rgba(169, 231, 211, 0.12);
+  --accent-line: #507b6e;
+  --accent-ink: #143b31;
+  --ok: #46c487;
+  --ok-soft: rgba(70, 196, 135, 0.16);
+  --warn: #e5a843;
+  --warn-soft: rgba(229, 168, 67, 0.16);
+  --warn-line: #5b4622;
+  --danger: #ff6b5e;
+  --danger-soft: rgba(255, 107, 94, 0.16);
+  --danger-line: rgba(255, 107, 94, 0.4);
+  --info: #63b3ff;
+  --info-soft: rgba(99, 179, 255, 0.16);
+  --shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  --svg-node-bg: #1c1e21;
+  --svg-node-muted: #23272b;
+  --svg-node-stroke: #454b52;
+  --svg-edge: #454b52;
+  --svg-line: #34383d;
+  --svg-ink: #f0f2f4;
+  --svg-ink-muted: #9ca3af;
+  --svg-counter-bg: #25292e;
+  --svg-counter-ink: #f0f2f4;
+  --svg-on-solid: #151719;
+  --svg-build-ink: #fcd38d;
+  --svg-token-ink: #93c5fd;
+  --svg-token: #60a5fa;
+  --svg-token-soft: #1e3a5f;
+  --svg-highlight: #713f12;
+  --svg-highlight-stroke: #facc15;
+  --svg-hop: #f59e0b;
+  --svg-hop-soft: #3b2a14;
+  --svg-build: #f59e0b;
+  --svg-build-soft: #382814;
+  --svg-probe: #2dd4bf;
+  --svg-probe-soft: #133633;
+  --svg-ok: #4ade80;
+  --svg-ok-soft: #163324;
+  --svg-danger: #f87171;
+  --svg-danger-soft: #3b1d1d;
+  --svg-group: #c4b5fd;
+  --svg-group-soft: #302044;
+  --svg-group-alt: #f9a8d4;
+  --svg-group-alt-soft: #431e34;
+}
+}
+:root[data-theme="dark"] { color-scheme: dark;
+
+  --bg: #151719;
+  --surface: #151719;
+  --surface-raised: #25282c;
+  --surface-muted: #1c1e21;
+  --surface-hover: rgba(255, 255, 255, 0.06);
+  --surface-subtle: #191b1e;
+  --ink: #ededee;
+  --ink-secondary: #d0d0d6;
+  --ink-muted: #a5a9af;
+  --ink-faint: #989ea7;
+  --line: #34383d;
+  --line-subtle: #292c30;
+  --line-strong: #646c77;
+  --control-line: #656e79;
+  --control-line-hover: #6c6c74;
+  --accent: #a9e7d3;
+  --accent-hover: #c0eedf;
+  --accent-soft: rgba(169, 231, 211, 0.12);
+  --accent-line: #507b6e;
+  --accent-ink: #143b31;
+  --ok: #46c487;
+  --ok-soft: rgba(70, 196, 135, 0.16);
+  --warn: #e5a843;
+  --warn-soft: rgba(229, 168, 67, 0.16);
+  --warn-line: #5b4622;
+  --danger: #ff6b5e;
+  --danger-soft: rgba(255, 107, 94, 0.16);
+  --danger-line: rgba(255, 107, 94, 0.4);
+  --info: #63b3ff;
+  --info-soft: rgba(99, 179, 255, 0.16);
+  --shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  --svg-node-bg: #1c1e21;
+  --svg-node-muted: #23272b;
+  --svg-node-stroke: #454b52;
+  --svg-edge: #454b52;
+  --svg-line: #34383d;
+  --svg-ink: #f0f2f4;
+  --svg-ink-muted: #9ca3af;
+  --svg-counter-bg: #25292e;
+  --svg-counter-ink: #f0f2f4;
+  --svg-on-solid: #151719;
+  --svg-build-ink: #fcd38d;
+  --svg-token-ink: #93c5fd;
+  --svg-token: #60a5fa;
+  --svg-token-soft: #1e3a5f;
+  --svg-highlight: #713f12;
+  --svg-highlight-stroke: #facc15;
+  --svg-hop: #f59e0b;
+  --svg-hop-soft: #3b2a14;
+  --svg-build: #f59e0b;
+  --svg-build-soft: #382814;
+  --svg-probe: #2dd4bf;
+  --svg-probe-soft: #133633;
+  --svg-ok: #4ade80;
+  --svg-ok-soft: #163324;
+  --svg-danger: #f87171;
+  --svg-danger-soft: #3b1d1d;
+  --svg-group: #c4b5fd;
+  --svg-group-soft: #302044;
+  --svg-group-alt: #f9a8d4;
+  --svg-group-alt-soft: #431e34;
+}
+:root[data-theme="light"] { color-scheme: light; }
+
     * { box-sizing: border-box; }
     html, body { margin: 0; padding: 0; }
-    body {
-      background: var(--bg); color: var(--fg);
-      font-family: var(--font-ui); line-height: 1.55; font-size: 15px;
-    }
-    :focus-visible {
-      outline: 2px solid var(--accent); outline-offset: 2px;
-      border-radius: var(--rad-sm);
-    }
-    header.hub-header {
-      background: #1a1a2e; color: #fff;
-      padding: 18px 28px;
-    }
-    header.hub-header h1 {
-      font-size: 20px; font-weight: 600; margin: 0 0 4px 0;
-    }
-    header.hub-header p {
-      margin: 0; opacity: 0.8; font-size: 13px;
-    }
-    main {
-      max-width: 1100px; margin: 28px auto; padding: 0 24px;
-      display: flex; flex-direction: column; gap: 24px;
-    }
-    section.curriculum, section.family {
-      background: var(--card); border: 1px solid var(--border);
-      border-radius: var(--rad); padding: 18px 22px;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-    }
-    section h2 {
-      margin: 0 0 12px 0; font-size: 17px; font-weight: 600;
-    }
-    .curriculum-list, .lesson-list {
-      list-style: none; padding: 0; margin: 0;
-      display: grid; gap: 8px;
-    }
-    .curriculum-list {
-      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-    }
-    .curriculum-list li {
-      display: flex; align-items: center; gap: 10px;
-      padding: 8px 12px; background: var(--accent-soft);
-      border-radius: var(--rad-sm);
-    }
-    .curriculum-list .step {
-      font-family: ui-monospace, Menlo, monospace;
-      font-size: 11px; color: var(--muted);
-      flex: 0 0 auto;
-    }
-    .curriculum-list a {
-      color: var(--accent); text-decoration: none; font-weight: 500;
-    }
-    .curriculum-list a:hover { text-decoration: underline; }
-    .lesson-list li {
-      padding: 0;
-    }
-    .lesson-list a {
-      display: flex; flex-direction: column; gap: 4px;
-      padding: 12px 14px; border: 1px solid var(--border);
-      border-radius: var(--rad-sm);
-      text-decoration: none; color: inherit;
-      transition: background 0.12s, border-color 0.12s;
-    }
-    .lesson-list a:hover {
-      background: var(--accent-soft); border-color: var(--accent);
-    }
-    .lesson-title {
-      font-weight: 600; color: var(--accent);
-    }
-    .lesson-summary {
-      color: var(--muted); font-size: 13px;
-    }
-    footer {
-      max-width: 1100px; margin: 24px auto 48px;
-      padding: 0 24px; color: var(--muted); font-size: 12px;
-    }
+    body { background: var(--bg); color: var(--ink); font: var(--text-md)/1.5 var(--font-sans); }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    [hidden] { display: none !important; }
+    .hub-header { background: var(--surface-muted); border-bottom: 1px solid var(--line); padding: 10px 24px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+    .hub-header h1 { font-size: var(--text-lg); font-weight: 600; margin: 0; }
+    .hub-header p { margin: 0; font-size: var(--text-sm); color: var(--ink-muted); }
+    .catalog-filters { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
+    input, select, button { font: inherit; font-size: var(--text-sm); min-height: var(--control-h); padding: 3px 8px; border: 1px solid var(--control-line); border-radius: var(--radius-sm); color: var(--ink); background: var(--surface); min-width: 0; max-width: 100%; }
+    button { cursor: pointer; }
+    select { appearance: none; padding-right: 24px; background-image: linear-gradient(45deg, transparent 50%, var(--ink-muted) 50%), linear-gradient(135deg, var(--ink-muted) 50%, transparent 50%); background-position: calc(100% - 12px) 50%, calc(100% - 8px) 50%; background-size: 4px 4px; background-repeat: no-repeat; }
+    main { max-width: 1120px; margin: 14px auto 28px; padding: 0 20px; display: flex; flex-direction: column; gap: 14px; }
+    section.curriculum, section.family { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-md); overflow: hidden; }
+    section h2 { margin: 0; padding: 7px 12px; background: var(--surface-muted); border-bottom: 1px solid var(--line); color: var(--ink-secondary); font-size: var(--text-sm); font-weight: 600; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .family-count { color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+    .curriculum-list, .lesson-list { list-style: none; padding: 0; margin: 0; }
+    .lesson-row { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding: 8px 12px; border-bottom: 1px solid var(--line-subtle); text-decoration: none; color: var(--ink); }
+    li:last-child > .lesson-row { border-bottom: 0; }
+    .lesson-row:hover { background: var(--surface-subtle); }
+    .lesson-title { flex: 1; font-weight: 500; }
+    .lesson-summary { flex: 1; color: var(--ink-muted); font-size: var(--text-sm); }
+    .curriculum-list .lesson-row { justify-content: flex-start; gap: 12px; }
+    .step { flex: 0 0 auto; color: var(--ink-muted); font: var(--text-xs) var(--font-mono); }
+    footer { max-width: 1120px; margin: 24px auto; padding: 0 20px; color: var(--ink-muted); font-size: var(--text-sm); }
     footer a { color: var(--accent); }
+    @media (max-width: 650px) {
+      :root { --control-h: 32px; }
+      .hub-header { padding: 12px; }
+      .catalog-filters, .catalog-filters > * { width: 100%; }
+      main { padding: 0 12px; }
+      .lesson-list .lesson-row { flex-direction: column; gap: 2px; }
+    }
   </style>
 </head>
 <body>
   <header class="hub-header">
-    <h1>myflames teach</h1>
-    <p>Interactive database algorithm lessons — offline, stdlib-only,
-       each file self-contained.</p>
+    <div>
+      <h1>myflames · Learn</h1>
+      <p>Interactive MySQL 8.4 &amp; MariaDB 10.11+ execution lessons</p>
+    </div>
+    <div class="catalog-filters">
+      <input type="search" id="catalog-search" aria-label="Search lessons" placeholder="Filter lessons…">
+      <select id="catalog-family" aria-label="Lesson family"><option value="">All families</option><option value="join_family">Join family</option><option value="index_family">Index access family</option><option value="scan_family">Scan, sort and temp family</option><option value="cache_family">Cache and memory family</option><option value="planner_family">Planner and optimizer family</option></select>
+    </div>
   </header>
   <main>
     <section class="curriculum" aria-labelledby="curr-heading">
-  <h2 id="curr-heading">Start here — recommended order</h2>
+  <h2 id="curr-heading">Start here: recommended order</h2>
   <ol class="curriculum-list">
-    <li><span class="step">01</span><a href="./scan/full_scan.html">Full table scan — why every row gets read</a></li>
-    <li><span class="step">02</span><a href="./index/btree.html">B+tree lookup — how InnoDB finds a row</a></li>
-    <li><span class="step">03</span><a href="./index/unique_lookup.html">Unique Key Lookup — single-row index lookup</a></li>
-    <li><span class="step">04</span><a href="./index/non_unique_lookup.html">Non-Unique Key Lookup — index hits that return many rows</a></li>
-    <li><span class="step">05</span><a href="./index/icp.html">Index Condition Pushdown — filtering inside InnoDB</a></li>
-    <li><span class="step">06</span><a href="./scan/covering_index.html">Covering index — why "Using index" in EXPLAIN is the goal</a></li>
-    <li><span class="step">07</span><a href="./join/nested_loop.html">Nested Loop Join — dedicated operator view</a></li>
-    <li><span class="step">08</span><a href="./join/hash.html">Hash join — build, probe, and grace-hash spill</a></li>
-    <li><span class="step">09</span><a href="./join/bnl.html">Block Nested Loop join — MariaDB's default for non-indexed joins</a></li>
-    <li><span class="step">10</span><a href="./join/bka_join.html">Batched Key Access (BKA) join — batch, sort, MRR</a></li>
-    <li><span class="step">11</span><a href="./join/semijoin_weedout.html">Semijoin Duplicate Weedout — dedup via temp table</a></li>
-    <li><span class="step">12</span><a href="./scan/derived_table.html">Derived Table Materialization</a></li>
-    <li><span class="step">13</span><a href="./planner/join_order.html">Join-order search — why query planning is factorial</a></li>
-    <li><span class="step">14</span><a href="./cache/lru.html">InnoDB buffer pool — midpoint-insertion LRU</a></li>
-    <li><span class="step">15</span><a href="./cache/buffer_pool_warmup.html">InnoDB buffer pool — cold-start vs warm, dump/load cure</a></li>
+    <li><a class="lesson-row" href="./scan/full_scan.html"><span class="step">01</span><span>Full table scan: why every row gets read</span></a></li>
+    <li><a class="lesson-row" href="./index/btree.html"><span class="step">02</span><span>B+tree lookup: how InnoDB finds a row</span></a></li>
+    <li><a class="lesson-row" href="./index/unique_lookup.html"><span class="step">03</span><span>Unique key lookup: single-row index lookup</span></a></li>
+    <li><a class="lesson-row" href="./index/non_unique_lookup.html"><span class="step">04</span><span>Non-unique key lookup: index hits that return many rows</span></a></li>
+    <li><a class="lesson-row" href="./index/icp.html"><span class="step">05</span><span>Index condition pushdown: filtering inside InnoDB</span></a></li>
+    <li><a class="lesson-row" href="./scan/covering_index.html"><span class="step">06</span><span>Covering index: why &quot;Using index&quot; in EXPLAIN is the goal</span></a></li>
+    <li><a class="lesson-row" href="./join/nested_loop.html"><span class="step">07</span><span>Nested loop join: dedicated operator view</span></a></li>
+    <li><a class="lesson-row" href="./join/hash.html"><span class="step">08</span><span>Hash join: build, probe, and grace-hash spill</span></a></li>
+    <li><a class="lesson-row" href="./join/bnl.html"><span class="step">09</span><span>Block nested loop join: MariaDB&#x27;s default for non-indexed joins</span></a></li>
+    <li><a class="lesson-row" href="./join/bka_join.html"><span class="step">10</span><span>Batched key access (BKA) join: batch, sort, MRR</span></a></li>
+    <li><a class="lesson-row" href="./join/semijoin_firstmatch.html"><span class="step">11</span><span>Semijoin FirstMatch: stop looking after the first match</span></a></li>
+    <li><a class="lesson-row" href="./join/semijoin_weedout.html"><span class="step">12</span><span>Semijoin duplicate weedout: dedup via temp table</span></a></li>
+    <li><a class="lesson-row" href="./scan/derived_table.html"><span class="step">13</span><span>Derived table materialization: a subquery becomes a temp table</span></a></li>
+    <li><a class="lesson-row" href="./planner/join_order.html"><span class="step">14</span><span>Join-order search: why query planning is factorial</span></a></li>
+    <li><a class="lesson-row" href="./cache/lru.html"><span class="step">15</span><span>InnoDB buffer pool: midpoint-insertion LRU</span></a></li>
+    <li><a class="lesson-row" href="./cache/buffer_pool_warmup.html"><span class="step">16</span><span>InnoDB buffer pool: cold-start vs warm, dump/load cure</span></a></li>
   </ol>
 </section>
 
-    <section class="family">
-  <h2>Scan / Sort / Temp Family</h2>
+    <section class="family" data-family="scan_family">
+  <h2>Scan, sort and temp family<span class="family-count">6</span></h2>
   <ul class="lesson-list">
-    <li><a href="./scan/filesort.html"><span class="lesson-title">Filesort — how MySQL sorts without an index</span><span class="lesson-summary">sort_buffer_size, sorted runs, k-way merge. Why ORDER BY is slow without an index.</span></a></li>
-    <li><a href="./scan/tmp.html"><span class="lesson-title">Temporary tables — MEMORY to on-disk conversion</span><span class="lesson-summary">Watch GROUP BY hit the tmp_table_size limit and convert to on-disk InnoDB.</span></a></li>
-    <li><a href="./scan/full_scan.html"><span class="lesson-title">Full table scan — why every row gets read</span><span class="lesson-summary">See O(n) row reads in action and compare against indexed access O(log n + k).</span></a></li>
-    <li><a href="./scan/filter.html"><span class="lesson-title">Filter operator — WHERE predicate row-by-row</span><span class="lesson-summary">Rows entering filter are all evaluated; only matching rows continue.</span></a></li>
-    <li><a href="./scan/derived_table.html"><span class="lesson-title">Derived Table Materialization</span><span class="lesson-summary">FROM-clause subquery materialized into temp table, auto-indexed, then probed.</span></a></li>
-    <li><a href="./scan/covering_index.html"><span class="lesson-title">Covering index — why "Using index" in EXPLAIN is the goal</span><span class="lesson-summary">Non-covering vs covering plan; the InnoDB PK-append trick that silently covers many queries.</span></a></li>
+    <li data-family="scan_family"><a class="lesson-row" href="./scan/filesort.html"><span class="lesson-title">Filesort: how MySQL sorts without an index</span><span class="lesson-summary">sort_buffer_size, sorted runs, k-way merge. Why ORDER BY is slow without an index.</span></a></li>
+    <li data-family="scan_family"><a class="lesson-row" href="./scan/tmp.html"><span class="lesson-title">Temporary tables: in-memory to on-disk conversion</span><span class="lesson-summary">Watch GROUP BY hit the in-memory temp table limit and convert to on-disk InnoDB (Aria on MariaDB).</span></a></li>
+    <li data-family="scan_family"><a class="lesson-row" href="./scan/full_scan.html"><span class="lesson-title">Full table scan: why every row gets read</span><span class="lesson-summary">See O(n) row reads in action and compare against indexed access O(log n + k).</span></a></li>
+    <li data-family="scan_family"><a class="lesson-row" href="./scan/filter.html"><span class="lesson-title">Filter operator: WHERE predicate row-by-row</span><span class="lesson-summary">Rows entering filter are all evaluated; only matching rows continue.</span></a></li>
+    <li data-family="scan_family"><a class="lesson-row" href="./scan/derived_table.html"><span class="lesson-title">Derived table materialization: a subquery becomes a temp table</span><span class="lesson-summary">FROM-clause subquery materialized into temp table, auto-indexed, then probed.</span></a></li>
+    <li data-family="scan_family"><a class="lesson-row" href="./scan/covering_index.html"><span class="lesson-title">Covering index: why &quot;Using index&quot; in EXPLAIN is the goal</span><span class="lesson-summary">Non-covering vs covering plan; the InnoDB PK-append trick that silently covers many queries.</span></a></li>
   </ul>
 </section>
 
-<section class="family">
-  <h2>Index Access Family</h2>
+<section class="family" data-family="index_family">
+  <h2>Index access family<span class="family-count">7</span></h2>
   <ul class="lesson-list">
-    <li><a href="./index/btree.html"><span class="lesson-title">B+tree lookup — how InnoDB finds a row</span><span class="lesson-summary">Clustered primary key vs secondary-to-clustered; 16 KiB page fan-out.</span></a></li>
-    <li><a href="./index/non_unique_lookup.html"><span class="lesson-title">Non-Unique Key Lookup — index hits that return many rows</span><span class="lesson-summary">Understand Index lookup / Index range scan and non-covering row fetch cost.</span></a></li>
-    <li><a href="./index/unique_lookup.html"><span class="lesson-title">Unique Key Lookup — single-row index lookup</span><span class="lesson-summary">Exact-key lookup path and why covering indexes can skip table-row fetch.</span></a></li>
-    <li><a href="./index/icp.html"><span class="lesson-title">Index Condition Pushdown — filtering inside InnoDB</span><span class="lesson-summary">See how ICP checks trailing index columns before fetching the row.</span></a></li>
-    <li><a href="./index/index_merge.html"><span class="lesson-title">Index Merge — combining two index scans</span><span class="lesson-summary">Union, intersection, sort-union: two indexes are better than a full table scan.</span></a></li>
-    <li><a href="./index/skip_scan.html"><span class="lesson-title">Skip Scan — range access without the leading index column</span><span class="lesson-summary">Low-NDV leading column lets MySQL do N small range scans instead of a full table scan.</span></a></li>
-    <li><a href="./index/rowid_filter.html"><span class="lesson-title">Rowid Filter — bitmap pre-filter before table access</span><span class="lesson-summary">MariaDB scans a filtering index to build a rowid bitmap, skipping table fetches for non-matching rows.</span></a></li>
+    <li data-family="index_family"><a class="lesson-row" href="./index/btree.html"><span class="lesson-title">B+tree lookup: how InnoDB finds a row</span><span class="lesson-summary">Clustered primary key vs secondary-to-clustered; 16 KiB page fan-out.</span></a></li>
+    <li data-family="index_family"><a class="lesson-row" href="./index/non_unique_lookup.html"><span class="lesson-title">Non-unique key lookup: index hits that return many rows</span><span class="lesson-summary">Understand Index lookup / Index range scan and non-covering row fetch cost.</span></a></li>
+    <li data-family="index_family"><a class="lesson-row" href="./index/unique_lookup.html"><span class="lesson-title">Unique key lookup: single-row index lookup</span><span class="lesson-summary">Exact-key lookup path and why covering indexes can skip table-row fetch.</span></a></li>
+    <li data-family="index_family"><a class="lesson-row" href="./index/icp.html"><span class="lesson-title">Index condition pushdown: filtering inside InnoDB</span><span class="lesson-summary">See how ICP checks trailing index columns before fetching the row.</span></a></li>
+    <li data-family="index_family"><a class="lesson-row" href="./index/index_merge.html"><span class="lesson-title">Index merge: combining two index scans</span><span class="lesson-summary">Union, intersection, sort-union: two indexes are better than a full table scan.</span></a></li>
+    <li data-family="index_family"><a class="lesson-row" href="./index/skip_scan.html"><span class="lesson-title">Skip scan: range access without the leading index column</span><span class="lesson-summary">Low-NDV leading column lets MySQL do N small range scans instead of a full table scan.</span></a></li>
+    <li data-family="index_family"><a class="lesson-row" href="./index/rowid_filter.html"><span class="lesson-title">Rowid filter: a sorted key pre-filter before table access</span><span class="lesson-summary">MariaDB scans a filtering index into a sorted array of primary keys, skipping table reads for entries not in it.</span></a></li>
   </ul>
 </section>
 
-<section class="family">
-  <h2>Join Family</h2>
+<section class="family" data-family="join_family">
+  <h2>Join family<span class="family-count">7</span></h2>
   <ul class="lesson-list">
-    <li><a href="./join/bka_join.html"><span class="lesson-title">Batched Key Access (BKA) join — batch, sort, MRR</span><span class="lesson-summary">Batch outer keys, sort by rowid, and sweep the inner index sequentially via Multi-Range Read.</span></a></li>
-    <li><a href="./join/bnl.html"><span class="lesson-title">Block Nested Loop join — MariaDB's default for non-indexed joins</span><span class="lesson-summary">Watch `join_buffer_size` decide how many times the inner table is rescanned.</span></a></li>
-    <li><a href="./join/hash.html"><span class="lesson-title">Hash join — build, probe, and grace-hash spill</span><span class="lesson-summary">MySQL 8.4's default for non-indexed equi-joins; animated build + probe phases.</span></a></li>
-    <li><a href="./join/join.html"><span class="lesson-title">BNL vs hash join — side by side</span><span class="lesson-summary">MariaDB BNL (default) vs MySQL 8.4 hash join; move the sliders and feel the asymptotic difference.</span></a></li>
-    <li><a href="./join/nested_loop.html"><span class="lesson-title">Nested Loop Join — dedicated operator view</span><span class="lesson-summary">Single-operator view of the outer-driver/inner-probe loop shape from EXPLAIN.</span></a></li>
-    <li><a href="./join/semijoin_weedout.html"><span class="lesson-title">Semijoin Duplicate Weedout — dedup via temp table</span><span class="lesson-summary">IN/EXISTS rewritten as inner join; a temp table keyed on outer rowid removes duplicates.</span></a></li>
+    <li data-family="join_family"><a class="lesson-row" href="./join/bka_join.html"><span class="lesson-title">Batched key access (BKA) join: batch, sort, MRR</span><span class="lesson-summary">Batch outer keys, sort by rowid, and sweep the inner index sequentially via Multi-Range Read.</span></a></li>
+    <li data-family="join_family"><a class="lesson-row" href="./join/bnl.html"><span class="lesson-title">Block nested loop join: MariaDB&#x27;s default for non-indexed joins</span><span class="lesson-summary">Watch join_buffer_size decide how many times the inner table is rescanned.</span></a></li>
+    <li data-family="join_family"><a class="lesson-row" href="./join/hash.html"><span class="lesson-title">Hash join: build, probe, and grace-hash spill</span><span class="lesson-summary">MySQL 8.4&#x27;s default for non-indexed equi-joins; animated build + probe phases.</span></a></li>
+    <li data-family="join_family"><a class="lesson-row" href="./join/join.html"><span class="lesson-title">BNL vs hash join: side by side</span><span class="lesson-summary">MariaDB BNL (default) vs MySQL 8.4 hash join; move the sliders and feel the asymptotic difference.</span></a></li>
+    <li data-family="join_family"><a class="lesson-row" href="./join/nested_loop.html"><span class="lesson-title">Nested loop join: dedicated operator view</span><span class="lesson-summary">Single-operator view of the outer-driver/inner-probe loop shape from EXPLAIN.</span></a></li>
+    <li data-family="join_family"><a class="lesson-row" href="./join/semijoin_firstmatch.html"><span class="lesson-title">Semijoin FirstMatch: stop looking after the first match</span><span class="lesson-summary">IN/EXISTS as a semijoin; the inner scan short-circuits the moment one matching row is found.</span></a></li>
+    <li data-family="join_family"><a class="lesson-row" href="./join/semijoin_weedout.html"><span class="lesson-title">Semijoin duplicate weedout: dedup via temp table</span><span class="lesson-summary">IN/EXISTS rewritten as inner join; a temp table keyed on outer rowid removes duplicates.</span></a></li>
   </ul>
 </section>
 
-<section class="family">
-  <h2>Cache / Memory Family</h2>
+<section class="family" data-family="cache_family">
+  <h2>Cache and memory family<span class="family-count">2</span></h2>
   <ul class="lesson-list">
-    <li><a href="./cache/lru.html"><span class="lesson-title">InnoDB buffer pool — midpoint-insertion LRU</span><span class="lesson-summary">Why MySQL's LRU is scan-resistant — young/old sublists, innodb_old_blocks_time.</span></a></li>
-    <li><a href="./cache/buffer_pool_warmup.html"><span class="lesson-title">InnoDB buffer pool — cold-start vs warm, dump/load cure</span><span class="lesson-summary">Why repeat queries are fast, why restarts hurt, and what ib_buffer_pool does about it.</span></a></li>
+    <li data-family="cache_family"><a class="lesson-row" href="./cache/lru.html"><span class="lesson-title">InnoDB buffer pool: midpoint-insertion LRU</span><span class="lesson-summary">Why MySQL&#x27;s LRU is scan-resistant — young/old sublists, innodb_old_blocks_time.</span></a></li>
+    <li data-family="cache_family"><a class="lesson-row" href="./cache/buffer_pool_warmup.html"><span class="lesson-title">InnoDB buffer pool: cold-start vs warm, dump/load cure</span><span class="lesson-summary">Why repeat queries are fast, why restarts hurt, and what ib_buffer_pool does about it.</span></a></li>
   </ul>
 </section>
 
-<section class="family">
-  <h2>Planner / Optimizer Family</h2>
+<section class="family" data-family="planner_family">
+  <h2>Planner and optimizer family<span class="family-count">1</span></h2>
   <ul class="lesson-list">
-    <li><a href="./planner/join_order.html"><span class="lesson-title">Join-order search — why query planning is factorial</span><span class="lesson-summary">MySQL's greedy_search picks the join order one table at a time; with deep lookahead and pruning off, the search space is O(N!).</span></a></li>
+    <li data-family="planner_family"><a class="lesson-row" href="./planner/join_order.html"><span class="lesson-title">Join-order search: why query planning is factorial</span><span class="lesson-summary">MySQL&#x27;s greedy_search picks the join order one table at a time; with deep lookahead and pruning off, the search space is O(N!).</span></a></li>
   </ul>
 </section>
+    <p id="catalog-empty" hidden>No lessons match. <button id="catalog-clear" type="button">Clear filters</button></p>
+    <p id="catalog-status" role="status" aria-live="polite" hidden></p>
   </main>
   <footer>
     Generated by <a href="https://github.com/vgrippa/myflames">myflames</a>.
     Lessons verified against MySQL 8.4 and MariaDB 11.4 source trees.
   </footer>
+  <script>
+(function() {
+  var params = new URLSearchParams(window.location.search);
+  var theme = params.get("theme");
+  if (theme === "light" || theme === "dark") {
+    document.documentElement.setAttribute("data-theme", theme);
+  }
+  if (params.get("embedded") === "1") {
+    document.documentElement.setAttribute("data-embedded", "true");
+  }
+})();
+
+  (function() {
+    var search = document.getElementById("catalog-search");
+    var family = document.getElementById("catalog-family");
+    var groups = document.querySelectorAll("section.family");
+    function filterLessons() {
+      var query = search.value.trim().toLowerCase();
+      var count = 0;
+      groups.forEach(function(group) {
+        var matches = 0;
+        group.querySelectorAll("li").forEach(function(row) {
+          var visible = (!family.value || row.dataset.family === family.value) &&
+            row.textContent.toLowerCase().indexOf(query) !== -1;
+          row.hidden = !visible;
+          if (visible) matches++;
+        });
+        group.hidden = matches === 0;
+        group.querySelector(".family-count").textContent = matches;
+        count += matches;
+      });
+      var track = document.querySelector(".curriculum");
+      if (track) track.hidden = !!query || !!family.value;
+      document.getElementById("catalog-empty").hidden = count !== 0;
+      var status = document.getElementById("catalog-status");
+      status.textContent = count + (count === 1 ? " lesson" : " lessons");
+      status.hidden = !query && !family.value;
+    }
+    search.addEventListener("input", filterLessons);
+    family.addEventListener("change", filterLessons);
+    document.getElementById("catalog-clear").addEventListener("click", function() {
+      search.value = "";
+      family.value = "";
+      filterLessons();
+      search.focus();
+    });
+  })();
+  </script>
 </body>
 </html>

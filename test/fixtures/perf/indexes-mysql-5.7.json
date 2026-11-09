@@ -1,0 +1,709 @@
+{
+ "server": "mysql-5.7",
+ "source": "live",
+ "args": {
+  "schemas": [
+   "testdb",
+   "review"
+  ]
+ },
+ "calls": [
+  [
+   "/*myflames:indexes*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('performance_schema', 'userstat', 'version', 'version_comment')",
+   "performance_schema\tON\nversion\t5.7.44-log\nversion_comment\tMySQL Community Server (GPL)\n"
+  ],
+  [
+   "/*myflames:indexes*/ SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime' OR Variable_name LIKE 'Performance\\_schema\\_%\\_lost'",
+   "Performance_schema_accounts_lost\t0\nPerformance_schema_cond_classes_lost\t0\nPerformance_schema_cond_instances_lost\t0\nPerformance_schema_digest_lost\t0\nPerformance_schema_file_classes_lost\t0\nPerformance_schema_file_handles_lost\t0\nPerformance_schema_file_instances_lost\t2\nPerformance_schema_hosts_lost\t0\nPerformance_schema_index_stat_lost\t0\nPerformance_schema_locker_lost\t0\nPerformance_schema_memory_classes_lost\t0\nPerformance_schema_metadata_lock_lost\t0\nPerformance_schema_mutex_classes_lost\t0\nPerformance_schema_mutex_instances_lost\t0\nPerformance_schema_nested_statement_lost\t0\nPerformance_schema_prepared_statements_lost\t0\nPerformance_schema_program_lost\t0\nPerformance_schema_rwlock_classes_lost\t0\nPerformance_schema_rwlock_instances_lost\t0\nPerformance_schema_session_connect_attrs_lost\t0\nPerformance_schema_socket_classes_lost\t0\nPerformance_schema_socket_instances_lost\t0\nPerformance_schema_stage_classes_lost\t0\nPerformance_schema_statement_classes_lost\t0\nPerformance_schema_table_handles_lost\t0\nPerformance_schema_table_instances_lost\t0\nPerformance_schema_table_lock_stat_lost\t0\nPerformance_schema_thread_classes_lost\t0\nPerformance_schema_thread_instances_lost\t0\nPerformance_schema_users_lost\t0\nUptime\t1933\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_TYPE IN ('BASE TABLE', 'SYSTEM VERSIONED') AND TABLE_SCHEMA IN (CONVERT(X'746573746462' USING utf8mb4), CONVERT(X'726576696577' USING utf8mb4))",
+   "14\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT NAME, ENABLED FROM performance_schema.setup_instruments WHERE NAME = 'wait/io/table/sql/handler'",
+   "wait/io/table/sql/handler\tYES\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT NAME, ENABLED FROM performance_schema.setup_consumers WHERE NAME IN ('global_instrumentation', 'thread_instrumentation')",
+   "global_instrumentation\tYES\nthread_instrumentation\tYES\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT HOST, USER, ROLE, ENABLED FROM performance_schema.setup_actors",
+   "%\t%\t%\tYES\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT OBJECT_SCHEMA, OBJECT_NAME, ENABLED FROM performance_schema.setup_objects WHERE OBJECT_TYPE = 'TABLE'",
+   "mysql\t%\tNO\nperformance_schema\t%\tNO\ninformation_schema\t%\tNO\n%\t%\tYES\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT OBJECT_SCHEMA, OBJECT_NAME, INDEX_NAME, COUNT_STAR, COUNT_FETCH, SUM_TIMER_FETCH FROM performance_schema.table_io_waits_summary_by_index_usage WHERE OBJECT_TYPE = 'TABLE' AND OBJECT_SCHEMA IN (CONVERT(X'746573746462' USING utf8mb4), CONVERT(X'726576696577' USING utf8mb4))",
+   "testdb\tcategories\tPRIMARY\t0\t0\t0\ntestdb\tcategories\tidx_parent\t12\t12\t154079371\ntestdb\tcategories\tNULL\t50\t0\t0\ntestdb\tusers\tPRIMARY\t14406\t14406\t6547380754\ntestdb\tusers\tuq_email\t0\t0\t0\ntestdb\tusers\tidx_country\t36306\t36306\t5759128626\ntestdb\tusers\tidx_created\t0\t0\t0\ntestdb\tusers\tNULL\t57000\t54000\t12275103880\ntestdb\tproducts\tPRIMARY\t180\t180\t228520376\ntestdb\tproducts\tidx_category\t300\t300\t753523627\ntestdb\tproducts\tidx_price\t0\t0\t0\ntestdb\tproducts\tidx_cat_price\t9000\t9000\t2710635624\ntestdb\tproducts\tidx_stock\t0\t0\t0\ntestdb\tproducts\tNULL\t19506\t18006\t6278243595\ntestdb\torders\tPRIMARY\t0\t0\t0\ntestdb\torders\tidx_user\t145224\t145224\t57740819311\ntestdb\torders\tidx_status\t158406\t158406\t47107266958\ntestdb\torders\tidx_created\t117078\t117078\t25654492936\ntestdb\torders\tidx_user_status\t0\t0\t0\ntestdb\torders\tNULL\t84000\t72000\t16366752000\ntestdb\torder_items\tPRIMARY\t0\t0\t0\ntestdb\torder_items\tidx_order\t167160\t167160\t101041433590\ntestdb\torder_items\tidx_product\t240000\t240000\t245611573125\ntestdb\torder_items\tNULL\t280000\t240000\t40971174626\ntestdb\treviews\tPRIMARY\t0\t0\t0\ntestdb\treviews\tidx_product\t0\t0\t0\ntestdb\treviews\tidx_user\t0\t0\t0\ntestdb\treviews\tidx_prod_rating\t0\t0\t0\ntestdb\treviews\tNULL\t73168\t63168\t8269924573\nreview\tno_pk_events\tNULL\t21000\t18000\t4241405496\nreview\tredundant_idx\tPRIMARY\t0\t0\t0\nreview\tredundant_idx\tidx_customer\t18000\t18000\t2514725124\nreview\tredundant_idx\tidx_customer_status\t0\t0\t0\nreview\tredundant_idx\tNULL\t3000\t0\t0\nreview\tparent_accounts\tPRIMARY\t5394\t5394\t1468491270\nreview\tparent_accounts\tNULL\t100\t0\t0\nreview\tchild_invoices\tPRIMARY\t0\t0\t0\nreview\tchild_invoices\tfk_invoice_account\t0\t0\t0\nreview\tchild_invoices\tNULL\t7006\t6006\t829829022\nreview\tchurn\tPRIMARY\t36001\t18001\t7616291373\nreview\tchurn\tidx_bucket\t240\t240\t114529378\nreview\tchurn\tNULL\t20000\t0\t0\nreview\tlock_probe\tPRIMARY\t29\t15\t69152095139002\nreview\tlock_probe\tNULL\t2\t0\t0\nreview\tmdl_probe\tPRIMARY\t2\t2\t379774249\nreview\tmdl_probe\tNULL\t1\t0\t0\nreview\trepl_probe\tPRIMARY\t0\t0\t0\nreview\trepl_probe\tNULL\t1\t0\t0\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT TABLE_SCHEMA, TABLE_NAME, INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX, COLUMN_NAME, SUB_PART, COLLATION, INDEX_TYPE, IS_VISIBLE, EXPRESSION FROM information_schema.STATISTICS WHERE TABLE_SCHEMA IN (CONVERT(X'746573746462' USING utf8mb4), CONVERT(X'726576696577' USING utf8mb4))",
+   null,
+   "mysql client exited 1: ERROR 1054 (42S22) at line 1: Unknown column 'IS_VISIBLE' in 'field list'"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT TABLE_SCHEMA, TABLE_NAME, INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX, COLUMN_NAME, SUB_PART, COLLATION, INDEX_TYPE, 'YES', EXPRESSION FROM information_schema.STATISTICS WHERE TABLE_SCHEMA IN (CONVERT(X'746573746462' USING utf8mb4), CONVERT(X'726576696577' USING utf8mb4))",
+   null,
+   "mysql client exited 1: ERROR 1054 (42S22) at line 1: Unknown column 'EXPRESSION' in 'field list'"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT TABLE_SCHEMA, TABLE_NAME, INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX, COLUMN_NAME, SUB_PART, COLLATION, INDEX_TYPE, 'YES', NULL FROM information_schema.STATISTICS WHERE TABLE_SCHEMA IN (CONVERT(X'746573746462' USING utf8mb4), CONVERT(X'726576696577' USING utf8mb4))",
+   "review\tchild_invoices\tPRIMARY\t0\t1\tid\tNULL\tA\tBTREE\tYES\tNULL\nreview\tchild_invoices\tfk_invoice_account\t1\t1\taccount_id\tNULL\tA\tBTREE\tYES\tNULL\nreview\tchurn\tPRIMARY\t0\t1\tid\tNULL\tA\tBTREE\tYES\tNULL\nreview\tchurn\tidx_bucket\t1\t1\tbucket\tNULL\tA\tBTREE\tYES\tNULL\nreview\tlock_probe\tPRIMARY\t0\t1\tid\tNULL\tA\tBTREE\tYES\tNULL\nreview\tmdl_probe\tPRIMARY\t0\t1\tid\tNULL\tA\tBTREE\tYES\tNULL\nreview\tparent_accounts\tPRIMARY\t0\t1\tid\tNULL\tA\tBTREE\tYES\tNULL\nreview\tredundant_idx\tPRIMARY\t0\t1\tid\tNULL\tA\tBTREE\tYES\tNULL\nreview\tredundant_idx\tidx_customer\t1\t1\tcustomer_id\tNULL\tA\tBTREE\tYES\tNULL\nreview\tredundant_idx\tidx_customer_status\t1\t1\tcustomer_id\tNULL\tA\tBTREE\tYES\tNULL\nreview\tredundant_idx\tidx_customer_status\t1\t2\tstatus\tNULL\tA\tBTREE\tYES\tNULL\nreview\trepl_probe\tPRIMARY\t0\t1\tid\tNULL\tA\tBTREE\tYES\tNULL\ntestdb\tcategories\tPRIMARY\t0\t1\tid\tNULL\tA\tBTREE\tYES\tNULL\ntestdb\tcategories\tidx_parent\t1\t1\tparent_id\tNULL\tA\tBTREE\tYES\tNULL\ntestdb\torder_items\tPRIMARY\t0\t1\tid\tNULL\tA\tBTREE\tYES\tNULL\ntestdb\torder_items\tidx_order\t1\t1\torder_id\tNULL\tA\tBTREE\tYES\tNULL\ntestdb\torder_items\tidx_product\t1\t1\tproduct_id\tNULL\tA\tBTREE\tYES\tNULL\ntestdb\torders\tPRIMARY\t0\t1\tid\tNULL\tA\tBTREE\tYES\tNULL\ntestdb\torders\tidx_user\t1\t1\tuser_id\tNULL\tA\tBTREE\tYES\tNULL\ntestdb\torders\tidx_status\t1\t1\tstatus\tNULL\tA\tBTREE\tYES\tNULL\ntestdb\torders\tidx_created\t1\t1\tcreated_at\tNULL\tA\tBTREE\tYES\tNULL\ntestdb\torders\tidx_user_status\t1\t1\tuser_id\tNULL\tA\tBTREE\tYES\tNULL\ntestdb\torders\tidx_user_status\t1\t2\tstatus\tNULL\tA\tBTREE\tYES\tNULL\ntestdb\tproducts\tPRIMARY\t0\t1\tid\tNULL\tA\tBTREE\tYES\tNULL\ntestdb\tproducts\tidx_category\t1\t1\tcategory_id\tNULL\tA\tBTREE\tYES\tNULL\ntestdb\tproducts\tidx_price\t1\t1\tprice\tNULL\tA\tBTREE\tYES\tNULL\ntestdb\tproducts\tidx_cat_price\t1\t1\tcategory_id\tNULL\tA\tBTREE\tYES\tNULL\ntestdb\tproducts\tidx_cat_price\t1\t2\tprice\tNULL\tA\tBTREE\tYES\tNULL\ntestdb\tproducts\tidx_stock\t1\t1\tstock\tNULL\tA\tBTREE\tYES\tNULL\ntestdb\treviews\tPRIMARY\t0\t1\tid\tNULL\tA\tBTREE\tYES\tNULL\ntestdb\treviews\tidx_product\t1\t1\tproduct_id\tNULL\tA\tBTREE\tYES\tNULL\ntestdb\treviews\tidx_user\t1\t1\tuser_id\tNULL\tA\tBTREE\tYES\tNULL\ntestdb\treviews\tidx_prod_rating\t1\t1\tproduct_id\tNULL\tA\tBTREE\tYES\tNULL\ntestdb\treviews\tidx_prod_rating\t1\t2\trating\tNULL\tA\tBTREE\tYES\tNULL\ntestdb\tusers\tPRIMARY\t0\t1\tid\tNULL\tA\tBTREE\tYES\tNULL\ntestdb\tusers\tuq_email\t0\t1\temail\tNULL\tA\tBTREE\tYES\tNULL\ntestdb\tusers\tidx_country\t1\t1\tcountry\tNULL\tA\tBTREE\tYES\tNULL\ntestdb\tusers\tidx_created\t1\t1\tcreated_at\tNULL\tA\tBTREE\tYES\tNULL\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT TABLE_SCHEMA, TABLE_NAME, CONSTRAINT_NAME, COLUMN_NAME, ORDINAL_POSITION, REFERENCED_TABLE_SCHEMA, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE REFERENCED_TABLE_NAME IS NOT NULL AND TABLE_SCHEMA IN (CONVERT(X'746573746462' USING utf8mb4), CONVERT(X'726576696577' USING utf8mb4))",
+   "review\tchild_invoices\tfk_invoice_account\taccount_id\t1\treview\tparent_accounts\tid\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT TABLE_SCHEMA, TABLE_NAME, CREATE_OPTIONS FROM information_schema.TABLES WHERE TABLE_TYPE = 'BASE TABLE' AND TABLE_SCHEMA = CONVERT(X'726576696577' USING utf8mb4) AND (TABLE_NAME = CONVERT(X'6368696c645f696e766f69636573' USING utf8mb4) OR TABLE_NAME = CONVERT(X'726564756e64616e745f696478' USING utf8mb4))",
+   "review\tchild_invoices\t\nreview\tredundant_idx\t\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT TABLE_SCHEMA, TABLE_NAME, CREATE_OPTIONS FROM information_schema.TABLES WHERE TABLE_TYPE = 'BASE TABLE' AND TABLE_SCHEMA = CONVERT(X'746573746462' USING utf8mb4) AND (TABLE_NAME = CONVERT(X'6f7264657273' USING utf8mb4) OR TABLE_NAME = CONVERT(X'70726f6475637473' USING utf8mb4) OR TABLE_NAME = CONVERT(X'72657669657773' USING utf8mb4) OR TABLE_NAME = CONVERT(X'7573657273' USING utf8mb4))",
+   "testdb\torders\t\ntestdb\tproducts\t\ntestdb\treviews\t\ntestdb\tusers\t\n"
+  ]
+ ],
+ "report": {
+  "schema_version": "indexes-1.0",
+  "engine": "mysql",
+  "flavor": "mysql",
+  "server_product": "MySQL",
+  "server_version": "5.7.44-log",
+  "taken_at": "2026-10-31T13:03:49.848400+00:00",
+  "uptime_s": 1933,
+  "performance_schema": true,
+  "scope": {
+   "schema": null,
+   "schemas": [
+    "testdb",
+    "review"
+   ],
+   "server_wide": false
+  },
+  "source": "performance_schema",
+  "available": true,
+  "userstat": {
+   "enabled": false,
+   "read": false,
+   "role": null
+  },
+  "unused": [
+   {
+    "schema": "review",
+    "table": "redundant_idx",
+    "index": "idx_customer_status",
+    "columns": "customer_id, status",
+    "visible": true,
+    "foreign_keys": [],
+    "verdict": "candidate",
+    "keep_reason": null,
+    "userstat_rows_read": null,
+    "why": "No use since server start or the last change to this table's indexes (COUNT_STAR = 0 in performance_schema.table_io_waits_summary_by_index_usage).",
+    "test_sql": "",
+    "drop_sql": "ALTER TABLE `review`.`redundant_idx` DROP INDEX `idx_customer_status`;",
+    "caveat": "This server has no invisible indexes, so dropping is the only test. Wait a full business cycle (month-end jobs, reports, replicas) first, and keep its definition: adding it back means building it again. Queries with an index hint that names it fail once it is dropped."
+   },
+   {
+    "schema": "testdb",
+    "table": "orders",
+    "index": "idx_user_status",
+    "columns": "user_id, status",
+    "visible": true,
+    "foreign_keys": [],
+    "verdict": "candidate",
+    "keep_reason": null,
+    "userstat_rows_read": null,
+    "why": "No use since server start or the last change to this table's indexes (COUNT_STAR = 0 in performance_schema.table_io_waits_summary_by_index_usage).",
+    "test_sql": "",
+    "drop_sql": "ALTER TABLE `testdb`.`orders` DROP INDEX `idx_user_status`;",
+    "caveat": "This server has no invisible indexes, so dropping is the only test. Wait a full business cycle (month-end jobs, reports, replicas) first, and keep its definition: adding it back means building it again. Queries with an index hint that names it fail once it is dropped."
+   },
+   {
+    "schema": "testdb",
+    "table": "products",
+    "index": "idx_price",
+    "columns": "price",
+    "visible": true,
+    "foreign_keys": [],
+    "verdict": "candidate",
+    "keep_reason": null,
+    "userstat_rows_read": null,
+    "why": "No use since server start or the last change to this table's indexes (COUNT_STAR = 0 in performance_schema.table_io_waits_summary_by_index_usage).",
+    "test_sql": "",
+    "drop_sql": "ALTER TABLE `testdb`.`products` DROP INDEX `idx_price`;",
+    "caveat": "This server has no invisible indexes, so dropping is the only test. Wait a full business cycle (month-end jobs, reports, replicas) first, and keep its definition: adding it back means building it again. Queries with an index hint that names it fail once it is dropped."
+   },
+   {
+    "schema": "testdb",
+    "table": "products",
+    "index": "idx_stock",
+    "columns": "stock",
+    "visible": true,
+    "foreign_keys": [],
+    "verdict": "candidate",
+    "keep_reason": null,
+    "userstat_rows_read": null,
+    "why": "No use since server start or the last change to this table's indexes (COUNT_STAR = 0 in performance_schema.table_io_waits_summary_by_index_usage).",
+    "test_sql": "",
+    "drop_sql": "ALTER TABLE `testdb`.`products` DROP INDEX `idx_stock`;",
+    "caveat": "This server has no invisible indexes, so dropping is the only test. Wait a full business cycle (month-end jobs, reports, replicas) first, and keep its definition: adding it back means building it again. Queries with an index hint that names it fail once it is dropped."
+   },
+   {
+    "schema": "testdb",
+    "table": "reviews",
+    "index": "idx_prod_rating",
+    "columns": "product_id, rating",
+    "visible": true,
+    "foreign_keys": [],
+    "verdict": "candidate",
+    "keep_reason": null,
+    "userstat_rows_read": null,
+    "why": "No use since server start or the last change to this table's indexes (COUNT_STAR = 0 in performance_schema.table_io_waits_summary_by_index_usage).",
+    "test_sql": "",
+    "drop_sql": "ALTER TABLE `testdb`.`reviews` DROP INDEX `idx_prod_rating`;",
+    "caveat": "This server has no invisible indexes, so dropping is the only test. Wait a full business cycle (month-end jobs, reports, replicas) first, and keep its definition: adding it back means building it again. Queries with an index hint that names it fail once it is dropped."
+   },
+   {
+    "schema": "testdb",
+    "table": "reviews",
+    "index": "idx_product",
+    "columns": "product_id",
+    "visible": true,
+    "foreign_keys": [],
+    "verdict": "candidate",
+    "keep_reason": null,
+    "userstat_rows_read": null,
+    "why": "No use since server start or the last change to this table's indexes (COUNT_STAR = 0 in performance_schema.table_io_waits_summary_by_index_usage).",
+    "test_sql": "",
+    "drop_sql": "ALTER TABLE `testdb`.`reviews` DROP INDEX `idx_product`;",
+    "caveat": "This server has no invisible indexes, so dropping is the only test. Wait a full business cycle (month-end jobs, reports, replicas) first, and keep its definition: adding it back means building it again. Queries with an index hint that names it fail once it is dropped."
+   },
+   {
+    "schema": "testdb",
+    "table": "reviews",
+    "index": "idx_user",
+    "columns": "user_id",
+    "visible": true,
+    "foreign_keys": [],
+    "verdict": "candidate",
+    "keep_reason": null,
+    "userstat_rows_read": null,
+    "why": "No use since server start or the last change to this table's indexes (COUNT_STAR = 0 in performance_schema.table_io_waits_summary_by_index_usage).",
+    "test_sql": "",
+    "drop_sql": "ALTER TABLE `testdb`.`reviews` DROP INDEX `idx_user`;",
+    "caveat": "This server has no invisible indexes, so dropping is the only test. Wait a full business cycle (month-end jobs, reports, replicas) first, and keep its definition: adding it back means building it again. Queries with an index hint that names it fail once it is dropped."
+   },
+   {
+    "schema": "testdb",
+    "table": "users",
+    "index": "idx_created",
+    "columns": "created_at",
+    "visible": true,
+    "foreign_keys": [],
+    "verdict": "candidate",
+    "keep_reason": null,
+    "userstat_rows_read": null,
+    "why": "No use since server start or the last change to this table's indexes (COUNT_STAR = 0 in performance_schema.table_io_waits_summary_by_index_usage).",
+    "test_sql": "",
+    "drop_sql": "ALTER TABLE `testdb`.`users` DROP INDEX `idx_created`;",
+    "caveat": "This server has no invisible indexes, so dropping is the only test. Wait a full business cycle (month-end jobs, reports, replicas) first, and keep its definition: adding it back means building it again. Queries with an index hint that names it fail once it is dropped."
+   },
+   {
+    "schema": "review",
+    "table": "child_invoices",
+    "index": "fk_invoice_account",
+    "columns": "account_id",
+    "visible": true,
+    "foreign_keys": [
+     "child side of fk_invoice_account (references review.parent_accounts)"
+    ],
+    "verdict": "keep",
+    "keep_reason": "foreign_key",
+    "userstat_rows_read": null,
+    "why": "Shows no use since server start or the last change to this table's indexes, but it backs a foreign key (child side of fk_invoice_account (references review.parent_accounts)). InnoDB checks foreign keys without going through the counters, so keep it."
+   }
+  ],
+  "redundant": [
+   {
+    "schema": "review",
+    "table": "redundant_idx",
+    "index": "idx_customer",
+    "columns": "customer_id",
+    "unique": false,
+    "visible": true,
+    "dominant": "idx_customer_status",
+    "dominant_columns": "customer_id, status",
+    "reason": "is a leftmost prefix of",
+    "foreign_keys": [],
+    "why": "idx_customer (customer_id) is a leftmost prefix of idx_customer_status (customer_id, status), so idx_customer_status serves every lookup idx_customer serves. Each extra index slows writes and uses buffer pool memory.",
+    "test_sql": "",
+    "drop_sql": "ALTER TABLE `review`.`redundant_idx` DROP INDEX `idx_customer`;",
+    "caveat": "Check for FORCE INDEX or USE INDEX hints that name it. This server has no invisible indexes, so dropping is the only test. Wait a full business cycle (month-end jobs, reports, replicas) first, and keep its definition: adding it back means building it again. Queries with an index hint that names it fail once it is dropped."
+   },
+   {
+    "schema": "testdb",
+    "table": "orders",
+    "index": "idx_user",
+    "columns": "user_id",
+    "unique": false,
+    "visible": true,
+    "dominant": "idx_user_status",
+    "dominant_columns": "user_id, status",
+    "reason": "is a leftmost prefix of",
+    "foreign_keys": [],
+    "why": "idx_user (user_id) is a leftmost prefix of idx_user_status (user_id, status), so idx_user_status serves every lookup idx_user serves. Each extra index slows writes and uses buffer pool memory.",
+    "test_sql": "",
+    "drop_sql": "ALTER TABLE `testdb`.`orders` DROP INDEX `idx_user`;",
+    "caveat": "Check for FORCE INDEX or USE INDEX hints that name it. This server has no invisible indexes, so dropping is the only test. Wait a full business cycle (month-end jobs, reports, replicas) first, and keep its definition: adding it back means building it again. Queries with an index hint that names it fail once it is dropped."
+   },
+   {
+    "schema": "testdb",
+    "table": "products",
+    "index": "idx_category",
+    "columns": "category_id",
+    "unique": false,
+    "visible": true,
+    "dominant": "idx_cat_price",
+    "dominant_columns": "category_id, price",
+    "reason": "is a leftmost prefix of",
+    "foreign_keys": [],
+    "why": "idx_category (category_id) is a leftmost prefix of idx_cat_price (category_id, price), so idx_cat_price serves every lookup idx_category serves. Each extra index slows writes and uses buffer pool memory.",
+    "test_sql": "",
+    "drop_sql": "ALTER TABLE `testdb`.`products` DROP INDEX `idx_category`;",
+    "caveat": "Check for FORCE INDEX or USE INDEX hints that name it. This server has no invisible indexes, so dropping is the only test. Wait a full business cycle (month-end jobs, reports, replicas) first, and keep its definition: adding it back means building it again. Queries with an index hint that names it fail once it is dropped."
+   },
+   {
+    "schema": "testdb",
+    "table": "reviews",
+    "index": "idx_product",
+    "columns": "product_id",
+    "unique": false,
+    "visible": true,
+    "dominant": "idx_prod_rating",
+    "dominant_columns": "product_id, rating",
+    "reason": "is a leftmost prefix of",
+    "foreign_keys": [],
+    "why": "idx_product (product_id) is a leftmost prefix of idx_prod_rating (product_id, rating), so idx_prod_rating serves every lookup idx_product serves. Each extra index slows writes and uses buffer pool memory.",
+    "test_sql": "",
+    "drop_sql": "ALTER TABLE `testdb`.`reviews` DROP INDEX `idx_product`;",
+    "caveat": "Check for FORCE INDEX or USE INDEX hints that name it. This server has no invisible indexes, so dropping is the only test. Wait a full business cycle (month-end jobs, reports, replicas) first, and keep its definition: adding it back means building it again. Queries with an index hint that names it fail once it is dropped."
+   }
+  ],
+  "full_scans": [
+   {
+    "schema": "testdb",
+    "table": "order_items",
+    "rows_without_index": 240000,
+    "rows_with_index": 407160,
+    "share_rows": 0.3709,
+    "fetch_ms_without_index": 40.971,
+    "fetch_ms_with_index": 346.653,
+    "share_time": 0.1057,
+    "mostly": false,
+    "why": "240,000 rows read without an index, 407,160 through indexes; 41.0 ms of read time without an index (11% of this table's read time). Rows read without an index are table scans and row-position reads (for example after a sort). A scan of a small lookup table is normal; look at the time and at the statements in Top statements for this schema."
+   },
+   {
+    "schema": "testdb",
+    "table": "orders",
+    "rows_without_index": 72000,
+    "rows_with_index": 420708,
+    "share_rows": 0.1461,
+    "fetch_ms_without_index": 16.367,
+    "fetch_ms_with_index": 130.503,
+    "share_time": 0.1114,
+    "mostly": false,
+    "why": "72,000 rows read without an index, 420,708 through indexes; 16.4 ms of read time without an index (11% of this table's read time). Rows read without an index are table scans and row-position reads (for example after a sort). A scan of a small lookup table is normal; look at the time and at the statements in Top statements for this schema."
+   },
+   {
+    "schema": "testdb",
+    "table": "users",
+    "rows_without_index": 54000,
+    "rows_with_index": 50712,
+    "share_rows": 0.5157,
+    "fetch_ms_without_index": 12.275,
+    "fetch_ms_with_index": 12.307,
+    "share_time": 0.4994,
+    "mostly": false,
+    "why": "54,000 rows read without an index, 50,712 through indexes; 12.3 ms of read time without an index (50% of this table's read time). Rows read without an index are table scans and row-position reads (for example after a sort). A scan of a small lookup table is normal; look at the time and at the statements in Top statements for this schema."
+   },
+   {
+    "schema": "testdb",
+    "table": "reviews",
+    "rows_without_index": 63168,
+    "rows_with_index": 0,
+    "share_rows": 1,
+    "fetch_ms_without_index": 8.27,
+    "fetch_ms_with_index": 0,
+    "share_time": 1,
+    "mostly": true,
+    "why": "63,168 rows read without an index, 0 through indexes; 8.3 ms of read time without an index (100% of this table's read time). Rows read without an index are table scans and row-position reads (for example after a sort). A scan of a small lookup table is normal; look at the time and at the statements in Top statements for this schema."
+   },
+   {
+    "schema": "testdb",
+    "table": "products",
+    "rows_without_index": 18006,
+    "rows_with_index": 9480,
+    "share_rows": 0.6551,
+    "fetch_ms_without_index": 6.278,
+    "fetch_ms_with_index": 3.693,
+    "share_time": 0.6297,
+    "mostly": true,
+    "why": "18,006 rows read without an index, 9,480 through indexes; 6.3 ms of read time without an index (63% of this table's read time). Rows read without an index are table scans and row-position reads (for example after a sort). A scan of a small lookup table is normal; look at the time and at the statements in Top statements for this schema."
+   },
+   {
+    "schema": "review",
+    "table": "child_invoices",
+    "rows_without_index": 6006,
+    "rows_with_index": 0,
+    "share_rows": 1,
+    "fetch_ms_without_index": 0.83,
+    "fetch_ms_with_index": 0,
+    "share_time": 1,
+    "mostly": true,
+    "why": "6,006 rows read without an index, 0 through indexes; 830 µs of read time without an index (100% of this table's read time). Rows read without an index are table scans and row-position reads (for example after a sort). A scan of a small lookup table is normal; look at the time and at the statements in Top statements for this schema."
+   }
+  ],
+  "no_data": [],
+  "foreign_keys": 1,
+  "notes": [
+   "Unused means no row read, written or looked up through the index since the server started (32 min 13 s ago), or since an index on that table was added, dropped or renamed, or the table was renamed or rebuilt by copying, any of which restarts its counts. An index used only by a weekly or monthly job looks unused until the job runs.",
+   "Tables with no row read or written since the counts started (never opened, or opened only to read their definition) are listed under No data, never as unused. A TRUNCATE of a Performance Schema summary table also resets the counts.",
+   "Performance Schema could not record everything: Performance_schema_file_instances_lost above zero. Some rows are missing, so absent data does not prove there was no activity. Raise the matching performance_schema_max_* or *_size setting (needs a restart).",
+   "The server has been up only 32 min 13 s, so infrequent jobs may not have run yet.",
+   "PRIMARY and UNIQUE indexes are never listed as unused: they enforce constraints even when no query reads them. Indexes that back a foreign key are marked keep: InnoDB checks foreign keys without going through the usage counters.",
+   "Foreign keys declared in other schemas that reference testdb, review are not checked; a non-unique parent index they use could look unused.",
+   "Counts are per server: reads on replicas are not included."
+  ],
+  "summary": {
+   "tables": 13,
+   "indexes": 34,
+   "unused": 9,
+   "unused_candidates": 8,
+   "keep_foreign_key": 1,
+   "keep_userstat": 0,
+   "redundant": 4,
+   "full_scans": 6,
+   "mostly_full_scans": 3,
+   "no_data": 0
+  },
+  "indexes": [
+   {
+    "schema": "review",
+    "table": "child_invoices",
+    "index": "PRIMARY",
+    "columns": "id",
+    "unique": true,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "review",
+    "table": "child_invoices",
+    "index": "fk_invoice_account",
+    "columns": "account_id",
+    "unique": false,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "review",
+    "table": "churn",
+    "index": "PRIMARY",
+    "columns": "id",
+    "unique": true,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "review",
+    "table": "churn",
+    "index": "idx_bucket",
+    "columns": "bucket",
+    "unique": false,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "review",
+    "table": "lock_probe",
+    "index": "PRIMARY",
+    "columns": "id",
+    "unique": true,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "review",
+    "table": "mdl_probe",
+    "index": "PRIMARY",
+    "columns": "id",
+    "unique": true,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "review",
+    "table": "parent_accounts",
+    "index": "PRIMARY",
+    "columns": "id",
+    "unique": true,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "review",
+    "table": "redundant_idx",
+    "index": "PRIMARY",
+    "columns": "id",
+    "unique": true,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "review",
+    "table": "redundant_idx",
+    "index": "idx_customer",
+    "columns": "customer_id",
+    "unique": false,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "review",
+    "table": "redundant_idx",
+    "index": "idx_customer_status",
+    "columns": "customer_id, status",
+    "unique": false,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "review",
+    "table": "repl_probe",
+    "index": "PRIMARY",
+    "columns": "id",
+    "unique": true,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "testdb",
+    "table": "categories",
+    "index": "PRIMARY",
+    "columns": "id",
+    "unique": true,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "testdb",
+    "table": "categories",
+    "index": "idx_parent",
+    "columns": "parent_id",
+    "unique": false,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "testdb",
+    "table": "order_items",
+    "index": "PRIMARY",
+    "columns": "id",
+    "unique": true,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "testdb",
+    "table": "order_items",
+    "index": "idx_order",
+    "columns": "order_id",
+    "unique": false,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "testdb",
+    "table": "order_items",
+    "index": "idx_product",
+    "columns": "product_id",
+    "unique": false,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "testdb",
+    "table": "orders",
+    "index": "PRIMARY",
+    "columns": "id",
+    "unique": true,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "testdb",
+    "table": "orders",
+    "index": "idx_created",
+    "columns": "created_at",
+    "unique": false,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "testdb",
+    "table": "orders",
+    "index": "idx_status",
+    "columns": "status",
+    "unique": false,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "testdb",
+    "table": "orders",
+    "index": "idx_user",
+    "columns": "user_id",
+    "unique": false,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "testdb",
+    "table": "orders",
+    "index": "idx_user_status",
+    "columns": "user_id, status",
+    "unique": false,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "testdb",
+    "table": "products",
+    "index": "PRIMARY",
+    "columns": "id",
+    "unique": true,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "testdb",
+    "table": "products",
+    "index": "idx_cat_price",
+    "columns": "category_id, price",
+    "unique": false,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "testdb",
+    "table": "products",
+    "index": "idx_category",
+    "columns": "category_id",
+    "unique": false,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "testdb",
+    "table": "products",
+    "index": "idx_price",
+    "columns": "price",
+    "unique": false,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "testdb",
+    "table": "products",
+    "index": "idx_stock",
+    "columns": "stock",
+    "unique": false,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "testdb",
+    "table": "reviews",
+    "index": "PRIMARY",
+    "columns": "id",
+    "unique": true,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "testdb",
+    "table": "reviews",
+    "index": "idx_prod_rating",
+    "columns": "product_id, rating",
+    "unique": false,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "testdb",
+    "table": "reviews",
+    "index": "idx_product",
+    "columns": "product_id",
+    "unique": false,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "testdb",
+    "table": "reviews",
+    "index": "idx_user",
+    "columns": "user_id",
+    "unique": false,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "testdb",
+    "table": "users",
+    "index": "PRIMARY",
+    "columns": "id",
+    "unique": true,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "testdb",
+    "table": "users",
+    "index": "uq_email",
+    "columns": "email",
+    "unique": true,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "testdb",
+    "table": "users",
+    "index": "idx_country",
+    "columns": "country",
+    "unique": false,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "testdb",
+    "table": "users",
+    "index": "idx_created",
+    "columns": "created_at",
+    "unique": false,
+    "type": "BTREE",
+    "visible": true
+   }
+  ],
+  "more": {
+   "indexes": 0,
+   "unused": 0,
+   "redundant": 0,
+   "full_scans": 0,
+   "no_data": 0
+  }
+ }
+}

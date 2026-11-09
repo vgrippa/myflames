@@ -1,0 +1,2 @@
+# Build tooling only; the myflames Python core remains stdlib-only.
+PyInstaller==6.22.3

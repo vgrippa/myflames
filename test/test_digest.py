@@ -310,5 +310,36 @@ class TestCompareDigest(unittest.TestCase):
         self.assertIn("total time 10 ms -> 5 ms (-50%)", digest)
 
 
+class TestCompareDigestRounding(unittest.TestCase):
+    def test_float_noise_is_rounded(self):
+        from myflames.digest import build_compare_digest
+        sidecar = {"before": {"total_time_ms": 0.20727341500000002, "timing_available": True},
+                   "after": {"total_time_ms": 0.6328760000000013, "timing_available": True},
+                   "summary": {}, "operator_deltas": []}
+        digest = build_compare_digest(sidecar)
+        self.assertIn("total time 0.2073 ms -> 0.6329 ms", digest)
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestVitalsZero(unittest.TestCase):
+    """A measured total_time_ms of exactly 0.0 is a measurement, not a
+    missing one (review 2026-11-05)."""
+
+    def test_zero_total_time_is_shown(self):
+        from myflames.digest import build_digest
+        payload = {"executive_summary": "s", "warnings": [], "plan_summary": {
+            "operator_count": 3, "max_depth": 2, "total_time_ms": 0.0,
+            "rows_sent": None, "rows_examined_estimate": None}}
+        digest = build_digest(payload)
+        self.assertIn("0.0 ms", digest)
+
+    def test_missing_total_time_stays_hidden(self):
+        from myflames.digest import build_digest
+        payload = {"executive_summary": "s", "warnings": [], "plan_summary": {
+            "operator_count": 3, "max_depth": 2,
+            "rows_sent": None, "rows_examined_estimate": None}}
+        digest = build_digest(payload)
+        self.assertNotIn(" ms", digest)

@@ -15,8 +15,9 @@ Top-level invariants
 1. Every sidecar carries ``schema_version`` — callers version-gate against it.
 2. Enum fields (severity, category, source, engine, source.type) are
    restricted to the short stable strings listed below. Fail fast on violations.
-3. Optional fields are OMITTED when absent. Never ``null`` — ``null`` is
-   reserved for "explicitly nothing there", which we never need.
+3. Optional fields are OMITTED when absent. ``null`` is reserved for
+   "explicitly nothing there": a ``plan_summary`` measurement the plan does
+   not carry (1.4), never a zero standing in for it.
 4. Freeform strings (text, why, action, explanation) are the ONLY place
    arbitrary prose lives. Everything else is greppable.
 5. Human and machine never drift — the HTML template MUST read from the
@@ -35,7 +36,7 @@ from .teach_hooks import build_teach_hooks, SUPPORTED_LESSONS
 # Schema constants
 # ---------------------------------------------------------------------------
 
-SCHEMA_VERSION = "1.3"
+SCHEMA_VERSION = "1.4"
 
 # Stable URL pointing at the JSON Schema for this version. Kept as a
 # per-version path under docs/schemas/ so old consumers can pin an older
@@ -60,15 +61,17 @@ _SIDECAR_HEAVY_KEYS = ("collected", "query", "teach_hooks")
 _WARNING_CATEGORIES = frozenset({
     "full_scan", "filesort", "temp_table",
     "hash_join", "bnl", "semijoin", "index_merge",
-    "nonsargable_join",
-    "env", "engine", "durability", "other",
+    "nonsargable_join", "misestimate",
+    "env", "engine", "durability", "redundant_index", "cold_cache", "other",
 })
 _SUGGESTION_SEVERITIES = frozenset({"high", "medium", "low"})
 _SUGGESTION_CATEGORIES = frozenset({
     "tuning_variable", "index", "optimizer_switch",
-    "engine", "durability", "rewrite", "other",
+    "engine", "durability", "rewrite", "statistics", "other",
 })
 _WARNING_SOURCES = frozenset({"plan", "environment"})
+# plan_summary measurements that are null when the plan does not carry them.
+_PLAN_SUMMARY_NULLABLE = frozenset({"total_time_ms", "rows_sent", "rows_examined_estimate"})
 _COMPLEXITY_SEVERITIES = frozenset({"good", "medium", "bad"})
 _COMPLEXITY_CONFIDENCES = frozenset({"exact", "typical", "worst_case"})
 
@@ -108,6 +111,8 @@ def _classify_plan_warning(text):
     t = (text or "").lower()
     if "non-sargable" in t or "nonsargable" in t:
         return ("error", "nonsargable_join")
+    if t.startswith("row estimate off by"):
+        return ("warn", "misestimate")
     if "full table scan" in t or "full scan" in t:
         return ("warn", "full_scan")
     if "block nested" in t or "bnl" in t:
@@ -138,6 +143,12 @@ def _classify_suggestion(text):
     # possible wins, ranked above any variable / index tweak.
     if "rewrite the join" in t or "rewrite the query" in t or "non-sargable" in t:
         return ("high", "rewrite", None)
+    if t.startswith("refresh statistics with analyze table"):
+        return ("medium", "statistics", None)
+    if t.startswith("add an index that returns rows in order by order"):
+        # The sort advice leads with the index (parser.SORT_SUGGESTION); a
+        # bigger sort buffer is only its conditional second sentence.
+        return ("medium", "index", None)
 
     tuning_vars = (
         "innodb_buffer_pool_size", "sort_buffer_size", "join_buffer_size",
@@ -176,32 +187,63 @@ def _split_action_why(text):
     return (text.strip(), "")
 
 
+def _rows_measured(node):
+    details = node.get("details") or {}
+    return bool(details.get("rows_measured")) and details.get("actual_rows") is not None
+
+
 def _compute_plan_summary(root):
     """Walk the parsed EXPLAIN tree and return the ``plan_summary`` dict.
 
-    Counts are approximations — ``rows_examined_estimate`` sums the
-    actual_rows of leaf table-access nodes, which matches the intuition of
-    "how many rows the storage engine actually had to touch" but doesn't
-    include range-lookup amplification.
+    ``rows_examined_estimate`` sums rows times loops of the leaf operators
+    (the table reads): MySQL ``actual_rows`` and MariaDB ``r_rows`` are per
+    loop, so a lookup run 10,000 times for 2 rows each examined 20,000 rows.
+    It approximates Handler_read_* totals and leaves out range-lookup
+    amplification. A leaf without a counter in an executed plan never ran
+    and adds nothing.
+
+    ``rows_sent`` is the root operator's rows per loop times loops. A
+    MariaDB table counts rows read before its attached condition, so a
+    one-table MariaDB root uses the rows that passed it (``rows_returned``:
+    r_rows x r_filtered / 100).
+
+    Unavailable is not zero: ``total_time_ms`` is null when the plan carries
+    no measured time, ``rows_sent`` when the root operator has no measured
+    row count (an estimated plan, or the last join of a MariaDB select:
+    MariaDB has no counter on the join itself, and a join's rows are the
+    next table's r_loops, which the last join does not have), and
+    ``rows_examined_estimate`` when the plan has no row counters.
     """
-    stats = {"op_count": 0, "max_depth": 0, "rows_examined": 0}
+    from .plan_matching import timing_available
+    stats = {"op_count": 0, "max_depth": 0, "rows_examined": 0.0, "counted": False}
 
     def _walk(node, depth):
         stats["op_count"] += 1
         if depth > stats["max_depth"]:
             stats["max_depth"] = depth
         children = node.get("children") or []
-        if not children:
-            # Leaf — count as examined rows (approximates Handler_read_* totals)
-            stats["rows_examined"] += int(node.get("rows") or 0)
+        measured = _rows_measured(node)
+        if measured:
+            stats["counted"] = True
+        if not children and measured:
+            # Leaf: rows per loop times loops (approximates Handler_read_*).
+            stats["rows_examined"] += float(node["details"]["actual_rows"]) * float(node.get("loops") or 1)
         for c in children:
             _walk(c, depth + 1)
 
     _walk(root, 1)
+    rows_sent = None
+    returned = (root.get("details") or {}).get("rows_returned")
+    if isinstance(returned, (int, float)):
+        rows_sent = int(round(float(returned) * float(root.get("loops") or 1)))
+    elif _rows_measured(root):
+        rows_sent = int(round(float(root["details"]["actual_rows"]) * float(root.get("loops") or 1)))
     return {
-        "total_time_ms": round(float(root.get("total_time") or 0), 3),
-        "rows_sent": int(root.get("rows") or 0),
-        "rows_examined_estimate": stats["rows_examined"],
+        "total_time_ms": (round(float(root.get("total_time") or 0), 3)
+                          if timing_available(root) else None),
+        "rows_sent": rows_sent,
+        "rows_examined_estimate": (int(round(stats["rows_examined"]))
+                                   if stats["counted"] else None),
         "operator_count": stats["op_count"],
         "max_depth": stats["max_depth"],
     }
@@ -378,11 +420,24 @@ def build_sidecar(
         if linked:
             entry["node_labels"] = list(dict.fromkeys(linked))  # preserve order, dedupe
         warnings.append(entry)
-    for text in (analysis.get("environment_warnings") or []):
+    # Environment rules with their own catalog entry keep their category;
+    # every other environment rule is "env". environment_findings carries the
+    # rule_id in the same order as environment_warnings/suggestions.
+    from .advisor import RULE_CATEGORIES
+    env_findings = analysis.get("environment_findings")
+    if env_findings is None:
+        env_findings = [{"rule_id": "", "warning": w, "suggestion": ""}
+                        for w in analysis.get("environment_warnings") or []] + \
+                       [{"rule_id": "", "warning": "", "suggestion": s}
+                        for s in analysis.get("environment_suggestions") or []]
+    for f in env_findings:
+        if not f.get("warning"):
+            continue
+        category, severity, _ = RULE_CATEGORIES.get(f.get("rule_id"), ("env", "warn", None))
         warnings.append({
-            "severity": "warn",
-            "category": "env",
-            "text": text,
+            "severity": severity,
+            "category": category,
+            "text": f["warning"],
             "source": "environment",
         })
 
@@ -402,8 +457,13 @@ def build_sidecar(
         if target_var:
             entry["target_variable"] = target_var
         suggestions.append(entry)
-    for text in (analysis.get("environment_suggestions") or []):
+    for f in env_findings:
+        text = f.get("suggestion")
+        if not text:
+            continue
         severity, category, target_var = _classify_suggestion(text)
+        if f.get("rule_id") in RULE_CATEGORIES:
+            category = RULE_CATEGORIES[f["rule_id"]][2]
         action, why = _split_action_why(text)
         entry = {
             "severity": severity,
@@ -565,7 +625,11 @@ def validate_sidecar(payload):
               "operator_count", "max_depth"):
         if k not in ps:
             raise SidecarValidationError("plan_summary missing: " + k)
-        if not isinstance(ps[k], (int, float)):
+        # Measurements are null when the plan does not carry them (1.4+);
+        # the counts of the parsed tree are always numbers.
+        if ps[k] is None and k in _PLAN_SUMMARY_NULLABLE:
+            continue
+        if isinstance(ps[k], bool) or not isinstance(ps[k], (int, float)):
             raise SidecarValidationError(
                 "plan_summary.{} must be numeric, got {}".format(k, type(ps[k]).__name__)
             )

@@ -15,10 +15,11 @@ const server = spawn(
   process.env.PYTHON || "python3",
   [
     "-c",
-    "from myflames.ui import WorkspaceServer; import sys; s=WorkspaceServer(store_path=sys.argv[1]); print(s.origin,file=sys.stderr,flush=True); s.serve_forever()",
+    "from myflames.ui import WorkspaceServer; import sys; s=WorkspaceServer(store_path=sys.argv[1]); print(s.launch_url,file=sys.stderr,flush=True); s.serve_forever()",
     path.join(directory, "workspace.sqlite3"),
   ],
-  { cwd: root },
+  // A throwaway HOME and the vault backend: never ~/.myflames or the OS keychain.
+  { cwd: root, env: { ...process.env, HOME: directory, USERPROFILE: directory, MYFLAMES_SECRET_BACKEND: "vault" } },
 );
 let browser;
 try {
@@ -27,7 +28,7 @@ try {
     const timer = setTimeout(() => reject(Error(text)), 10000);
     server.stderr.on("data", (c) => {
       text += c;
-      const match = text.match(/http:\/\/127\.0\.0\.1:\d+/);
+      const match = text.match(/http:\/\/127\.0\.0\.1:\d+\/#launch=[A-Za-z0-9_-]+/);
       if (match) {
         clearTimeout(timer);
         resolve(match[0]);
@@ -48,35 +49,64 @@ try {
   });
   const button = (text, scope = "") =>
     page.locator(`${scope}button ::-p-text(${text})`).click();
+  // The inspect chart is drawn in the page (PlanChart), not in an iframe; its
+  // operator rows are docked in the inspector's Operators section.
+  const M = ".plan-fold .inspector-metrics .metric-row";
+  const inspectorSection = (section) =>
+    page.click(`.plan-fold .segmented[aria-label="Inspector section"] button[data-value="${section}"]`);
   async function frame() {
     await page.waitForNetworkIdle();
-    await page.waitForSelector(".chart-frame");
-    const f = await (await page.$(".chart-frame")).contentFrame();
-    await f.waitForSelector(".metric-row");
-    return f;
+    await page.waitForSelector(M);
+    assert.equal(await page.$(".plan-canvas iframe"), null);
+  }
+  // Focus/collapse/metric re-project the chart client-side; wait for it.
+  async function metricRows(min, max = min) {
+    await page.waitForFunction(
+      (selector, low, high) => {
+        const n = document.querySelectorAll(selector).length;
+        return n >= low && n <= high;
+      },
+      {},
+      M,
+      min,
+      max,
+    );
+    return page.$$eval(M, (els) => els.length);
   }
   async function select(label) {
     await page.$$eval(
-      ".operator-row",
+      M,
       (els, text) => els.find((e) => e.textContent.includes(text)).click(),
       label,
     );
   }
   await button("Explore sample plan");
   await frame();
+  assert.equal(await page.$(".save-state"), null, "the read-only sample is clean");
   await select("Table scan [categories]");
+  await inspectorSection("lessons");
   await button("Learn this operator");
   await page.waitForSelector(".lesson-frame");
   const operatorLesson = await page.$eval('.lesson-frame', el => el.title);
   await button("Next lesson");
   await page.waitForFunction(title => document.querySelector('.lesson-frame')?.title !== title,
     {}, operatorLesson);
-  await button("Back to investigation");
+  // Return through the plan after navigating to another lesson: the
+  // operator link must reopen the matching lesson.
+  const lessonRequests = [];
+  page.on("request", (request) => {
+    if (request.url().endsWith("/api/teach/lesson")) lessonRequests.push(JSON.parse(request.postData() || "{}"));
+  });
+  await button("Back to plan");
   await frame();
+  await inspectorSection("lessons");
   await button("Learn this operator");
   await page.waitForFunction(title => document.querySelector('.lesson-frame')?.title === title,
     {}, operatorLesson);
-  await button("Back to investigation");
+  assert.ok(lessonRequests.length > 0, "the operator lesson was requested");
+  assert.ok(lessonRequests.every((body) => !Object.hasOwn(body, "view")),
+    "lesson requests need only the lesson key");
+  await button("Back to plan");
   await frame();
   assert.match(
     await page.$eval(".operator-detail h3", (e) => e.textContent),
@@ -84,25 +114,41 @@ try {
   );
   await select("Nested loop inner join");
   await button("Focus branch");
-  let f = await frame();
-  const focused = await f.$$eval(".metric-row", (els) => els.length);
+  const focused = await metricRows(2, 7);
   assert.ok(focused < 8 && focused > 1);
   await button("Collapse branch");
-  f = await frame();
-  assert.equal(await f.$$eval(".metric-row", (els) => els.length), 1);
-  // Selecting a hidden descendant reveals it; an outside node exits focus.
+  assert.equal(await metricRows(1), 1);
+  // The Operators list holds the runtime's rows, so only operators the
+  // projection shows can be picked there: expand the branch, pick a
+  // descendant, then leave the focus for the entire plan.
+  await button("Expand branch");
+  assert.equal(await metricRows(2, 7), focused);
   await select("Table scan [categories]");
-  f = await frame();
-  assert.equal(await f.$$eval(".metric-row", els => els.length), focused);
-  await select("Limit: 20 rows");
-  f = await frame();
-  assert.equal(await f.$$eval(".metric-row", (els) => els.length), 8);
-  await page.select('[aria-label="Operator metric"]', "estimate_error");
-  f = await frame();
-  assert.match(
-    await f.$eval(".metric-panel h2", (e) => e.textContent),
-    /Estimate error/,
+  await page.waitForFunction(
+    (selector) =>
+      document.querySelector(selector + ".is-selected")?.textContent
+        .includes("Table scan [categories]"),
+    {},
+    M,
   );
+  await page.select('[aria-label="Focused branch"]', "");
+  assert.equal(await metricRows(8), 8);
+  await select("Limit: 20 rows");
+  await page.select('[aria-label="Operator metric"]', "estimate_error");
+  await page.waitForFunction(() =>
+    /Estimate error/.test(
+      document.querySelector(".plan-fold .inspector-metrics .metric-panel h2")?.textContent,
+    ),
+  );
+  // Projection changes keep the page selection on the chart.
+  assert.match(
+    await page.$eval(M + ".is-selected", (e) => e.textContent),
+    /Limit: 20 rows/,
+  );
+  // The notebook is a sheet opened by Save investigation, not a form under the chart.
+  assert.equal(await page.$(".investigation-notes"), null, "no notebook form under the chart");
+  await button("Save investigation", ".topbar ");
+  await page.waitForSelector("dialog.notebook-sheet[open] .investigation-notes");
   await page
     .locator(".notebook-grid .field:nth-child(1) input")
     .fill("Index investigation");
@@ -112,26 +158,185 @@ try {
   await page
     .locator(".notebook-grid .field:nth-child(4) input")
     .fill("index, review");
-  await button("Save investigation", ".investigation-notes ");
+  assert.equal(await page.$eval(".save-state", (e) => e.textContent), "Unsaved changes");
+  await button("Save", "dialog.notebook-sheet .sheet-actions ");
   await page.waitForFunction(
-    () => document.querySelector(".save-state")?.textContent === "Saved",
+    () => document.querySelector(".save-state")?.textContent === "Investigation saved",
   );
+  await page.waitForFunction(() => !document.querySelector("dialog.notebook-sheet"));
+  // Autosave restores the open plan and notebook after a reload.
+  await page.waitForFunction(async () => {
+    const token = (await (await fetch("/api/auth/session", { method: "POST", headers: { "Content-Type": "application/json", "X-Myflames-Bootstrap": "1", "X-Myflames-Token": localStorage.getItem("myflames.session-proof") || "" }, body: "{}" })).json()).token;
+    const r = await fetch("/api/session/load", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Myflames-Token": token },
+      body: "{}",
+    });
+    const state = (await r.json()).state;
+    return !!state?.investigation.id && !state.investigation.dirty;
+  });
   await page.reload({ waitUntil: "networkidle0" });
-  assert.equal((await page.$$(".plan-item")).length, 0);
-  await button("Investigations", ".main-nav ");
-  await page.waitForSelector(".library-card");
-  await page.locator('[aria-label="Search investigations"]').fill('no-matching-audit');
-  await page.waitForSelector('.empty-small[role="status"]');
-  assert.equal((await page.$$('.library-card')).length, 0);
-  await button('Clear search');
-  await page.waitForSelector('.library-card');
-  assert.match(
-    await page.$eval(".library-card", (e) => e.textContent),
-    /Index investigation/,
-  );
-  await button("Open investigation");
+  // The workspace restores quietly (3.3.2): wait for the restored plan.
+  await page.waitForSelector(".plan-item");
   await frame();
   assert.equal((await page.$$(".plan-item")).length, 1);
+  await button("Save investigation", ".topbar ");
+  await page.waitForSelector("dialog.notebook-sheet[open]");
+  assert.equal(
+    await page.$eval(".investigation-notes textarea", (e) => e.value),
+    "Baseline and candidate. Check warm-cache timings.",
+  );
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.notebook-sheet"));
+  await button("Investigations", ".main-nav ");
+  await page.waitForSelector(".library-item");
+  await page.locator('[aria-label="Search investigations"]').fill('no-matching-audit');
+  await page.waitForSelector(".library-list .view-empty");
+  assert.equal((await page.$$('.library-item')).length, 0);
+  await button('Clear search');
+  await page.waitForSelector('.library-item');
+  assert.match(
+    await page.$eval(".library-item", (e) => e.textContent),
+    /Index investigation/,
+  );
+  await page.click(".library-item");
+  assert.match(await page.$eval(".library-detail h2", (e) => e.textContent), /Index investigation/);
+  assert.equal(await page.$(".library-evidence"), null, "plans-only investigations look as before without an Evidence section");
+  // Save an investigation with evidence and verify the Evidence section, monospace text block, Copy and Download.
+  await page.evaluate(async () => {
+    const auth = await (await fetch("/api/auth/session", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Myflames-Bootstrap": "1",
+        "X-Myflames-Token": localStorage.getItem("myflames.session-proof") || "",
+      },
+      body: "{}",
+    })).json();
+    await fetch("/api/investigations/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Myflames-Token": auth.token },
+      body: JSON.stringify({
+        value: {
+          schema_version: "investigation-1.0",
+          name: "Capture: threads running 57 on prod-eu, 2026-10-27 14:02",
+          notes: "Captured automatically when threads running 57 on prod-eu.",
+          tags: ["watch", "capture"],
+          baseline_id: "",
+          plans: [],
+          evidence: [
+            {
+              id: "watch-1",
+              kind: "watch",
+              captured_at: "2026-10-27T14:02:31Z",
+              title: "Watch trigger snapshot",
+              text: "",
+              data: {
+                schema_version: "watch-1.0",
+                engine: "mysql",
+                server_version: "8.4.11",
+                read_at: "2026-10-27T14:02:31Z",
+                threads_running: 57,
+                longest_statement: { id: 42, seconds: 19, user: "app", db: "shop" },
+                longest_lock_wait: { id: 88, seconds: 12 },
+              },
+            },
+            {
+              id: "sessions-1",
+              kind: "sessions",
+              captured_at: "2026-10-27T14:02:32Z",
+              title: "Processlist",
+              text: "Sessions · MySQL 8.4.11\n#42 app shop Query 19s SELECT * FROM orders",
+              data: { schema_version: "sessions-1.0" },
+            },
+          ],
+        },
+      }),
+    });
+  });
+  await page.locator('[aria-label="Search investigations"]').fill("prod-eu");
+  await page.waitForFunction(() => document.querySelector(".library-detail h2")?.textContent?.includes("Capture: threads running 57 on prod-eu"));
+  await page.waitForSelector(".library-evidence [data-evidence-id]");
+  const evItems = await page.$$eval(".library-evidence [data-evidence-id]", (els) =>
+    els.map((e) => [e.dataset.evidenceKind, e.querySelector(".row-title")?.textContent, e.querySelector(".row-detail")?.textContent]),
+  );
+  assert.equal(evItems.length, 2);
+  assert.equal(evItems[0][0], "watch");
+  assert.equal(evItems[0][1], "Watch trigger snapshot");
+  // Evidence times are local, like the capture's name (the fixture instant is UTC).
+  const at = new Date("2026-10-27T14:02:31Z"), pad = (n) => String(n).padStart(2, "0");
+  const local = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`;
+  assert.ok(evItems[0][2]?.includes(local), `${evItems[0][2]} shows ${local}`);
+  await page.click('.library-evidence [data-evidence-kind="watch"]');
+  await page.waitForSelector(".library-evidence-view .library-evidence-text");
+  assert.match(await page.$eval(".library-evidence-view .library-evidence-text", (e) => e.textContent), /Threads running: 57/);
+  await button("Download", ".library-evidence-actions ");
+  await page.waitForSelector(".library-evidence-view [role=status]");
+  assert.equal(await page.$eval(".library-evidence-view [role=status]", (e) => e.textContent),
+    "Downloaded watch-trigger-snapshot-watch-1.txt.");
+  // The browser writes a download after the click returns: wait for the file.
+  const evDownloaded = path.join(directory, "watch-trigger-snapshot-watch-1.txt");
+  for (let i = 0; i < 100; i++) {
+    try { await fs.access(evDownloaded); break; } catch { await new Promise((r) => setTimeout(r, 50)); }
+  }
+  assert.match(await fs.readFile(evDownloaded, "utf8"), /Threads running: 57/, "the downloaded text is the evidence text");
+  // The evidence view in light and dark, at the 720 px minimum window and 1440 px:
+  // long lines scroll inside the text block, never the page.
+  await page.click('.library-evidence [data-evidence-kind="sessions"]');
+  await page.waitForFunction(() => /#42 app shop/.test(document.querySelector(".library-evidence-text")?.textContent || ""));
+  for (const width of [720, 1440]) {
+    for (const theme of ["light", "dark"]) {
+      await page.setViewport({ width, height: 900 });
+      await page.evaluate((t) => { document.documentElement.dataset.theme = t; }, theme);
+      await new Promise((r) => setTimeout(r, 100));
+      const fit = await page.evaluate(() => {
+        const view = document.querySelector(".library-evidence-view").getBoundingClientRect();
+        const detail = document.querySelector(".library-detail").getBoundingClientRect();
+        return { page: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+          inside: view.left >= detail.left - 1 && view.right <= detail.right + 1 };
+      });
+      assert.ok(fit.page <= 0 && fit.inside, `evidence fits at ${width}px (${theme}): ${JSON.stringify(fit)}`);
+      await page.screenshot({ path: path.join(directory, `evidence-${width}-${theme}.png`) });
+    }
+  }
+  await page.evaluate(() => { delete document.documentElement.dataset.theme; });
+  await page.setViewport({ width: 1512, height: 1050 });
+  // An investigation of evidence only lists its items, not an empty Plans box.
+  assert.equal(await page.$(".library-detail .library-plans"), null);
+  assert.match(await page.$eval(".library-item.is-selected small", (e) => e.textContent), /^2 evidence items/);
+  await page.evaluate(async () => {
+    const auth = await (await fetch("/api/auth/session", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Myflames-Bootstrap": "1",
+        "X-Myflames-Token": localStorage.getItem("myflames.session-proof") || "",
+      },
+      body: "{}",
+    })).json();
+    const list = await (await fetch("/api/investigations/list", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Myflames-Token": auth.token },
+      body: JSON.stringify({ search: "prod-eu" }),
+    })).json();
+    for (const item of (list.items || []).filter((i) => i.name.includes("prod-eu"))) {
+      await fetch("/api/investigations/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Myflames-Token": auth.token },
+        body: JSON.stringify({ id: item.id }),
+      });
+    }
+  });
+  // Clearing the search lists the saved investigations again, without the deleted capture.
+  await page.click('[aria-label="Search investigations"]', { clickCount: 3 });
+  await page.keyboard.press("Backspace");
+  await page.waitForFunction(() => document.querySelector(".library-detail h2")?.textContent?.includes("Index investigation"));
+  assert.equal(await page.$$eval(".library-item", (els) => els.filter((e) => e.textContent.includes("prod-eu")).length), 0);
+  await button("Open all", ".library-actions ");
+  await frame();
+  assert.equal((await page.$$(".plan-item")).length, 1);
+  await button("Save investigation", ".topbar ");
+  await page.waitForSelector("dialog.notebook-sheet[open]");
   assert.equal(
     await page.$eval(".investigation-notes textarea", (e) => e.value),
     "Baseline and candidate. Check warm-cache timings.",
@@ -144,20 +349,138 @@ try {
   assert.equal(bundle.schema_version, "investigation-1.0");
   assert.equal(bundle.plans.length, 1);
   assert.equal(bundle.baseline_id, bundle.plans[0].id);
-  await button("Import plan", ".heading-actions ");
+  await button("Close", "dialog.notebook-sheet ");
+  await page.waitForFunction(() => !document.querySelector("dialog.notebook-sheet"));
+  await button("Import plan", ".plans-bar ");
   await page.waitForSelector("dialog");
   await (
     await page.$("dialog input[type=file]")
   ).uploadFile(path.join(root, "test/mariadb-explain-join.json"));
   await frame();
   assert.equal((await page.$$(".plan-item")).length, 2);
-  await button("Compare plans", ".main-nav ");
+  await button("Compare", ".plans-bar ");
   await page.waitForSelector(".comparison-row");
-  await page.locator(".comparison-row").click();
-  await page.waitForFunction(() =>
-    document.querySelector(".comparison-row.selected"),
+  async function compareMeasurements(width) {
+    await page.setViewport({ width, height: 900 });
+    const measured = await page.evaluate(() => {
+      const rect = selector => {
+        const r = document.querySelector(selector).getBoundingClientRect();
+        return { top: r.top + scrollY, bottom: r.bottom + scrollY, left: r.left, right: r.right };
+      };
+      return { pickers: [...document.querySelectorAll(".compare-selectors .toolbar-field")].map(e => {
+        const r = e.getBoundingClientRect(); return { top: r.top, bottom: r.bottom };
+      }), tools: rect(".compare-tools"), stats: rect(".compare-stats"),
+        chart: rect(".comparison-canvases"), firstRow: rect(".comparison-row"),
+        overflow: document.documentElement.scrollWidth > innerWidth };
+    });
+    assert.equal(measured.overflow, false, JSON.stringify(measured));
+    assert.ok(Math.abs(measured.pickers[0].top - measured.pickers[1].top) < 1, "the two plan pickers share a row");
+    if (width === 1440) assert.ok(measured.tools.top < measured.stats.bottom && measured.stats.top < measured.tools.bottom,
+      "desktop controls and headline measurements share one bar: " + JSON.stringify(measured));
+    console.log("Compare geometry " + width + "x900: " + JSON.stringify(measured));
+    await page.screenshot({ path: path.join(directory, "compare-compact-" + width + ".png"), fullPage: false });
+    return measured;
+  }
+  await compareMeasurements(390);
+  await compareMeasurements(1440);
+  // Both plans are drawn in the page; the pair follows either side.
+  const charts = ".comparison-canvases .plan-chart";
+  await page.waitForFunction(
+    (selector) =>
+      [...document.querySelectorAll(selector)].filter((el) =>
+        el.querySelector(".wb-node"),
+      ).length === 2,
+    {},
+    charts,
   );
+  assert.equal(await page.$(".comparison-canvases iframe"), null);
+  assert.equal(await page.$(".comparison-canvases .wb-details"), null, "Compare has no empty report detail boxes");
+  assert.equal(await page.$$eval(".compare-pane", (panes) => {
+    const [a, b] = panes.map((el) => el.getBoundingClientRect());
+    return Math.abs(a.top - b.top) < 1 && Math.abs(a.width - b.width) < 1;
+  }), true, "desktop comparison panes share the row equally");
+  const selectedIds = () =>
+    page.$$eval(charts, (els) =>
+      els.map((el) =>
+        [...el.querySelectorAll(".wb-node.selected")].map(
+          (node) => node.dataset.nodeId,
+        ),
+      ),
+    );
+  const rowSelected = (index) =>
+    page.waitForFunction(
+      (i) =>
+        document
+          .querySelectorAll(".comparison-row")
+          [i].classList.contains("selected"),
+      {},
+      index,
+    );
+  const rows = await page.$$(".comparison-row");
+  // Row -> charts. A removed operator has no counterpart: After clears.
+  await rows[0].click();
+  await rowSelected(0);
+  const [beforeSel, afterSel] = await selectedIds();
+  assert.equal(beforeSel.length, 1);
+  assert.deepEqual(afterSel, []);
+  // A pair with the same label on both sides is titled once; its badge says
+  // it was matched (not Added or Removed).
+  const matched = await page.$$eval(".comparison-row", (els) =>
+    els.findIndex((el) =>
+      el.querySelector("strong").textContent === "Nested loop inner join" &&
+      !["added", "removed"].includes(el.querySelector(".match-badge").dataset.status),
+    ),
+  );
+  assert.ok(matched > 0);
+  await rows[matched].click();
+  await rowSelected(matched);
+  const pairIds = await selectedIds();
+  assert.equal(pairIds[0].length, 1);
+  assert.equal(pairIds[1].length, 1);
+  assert.notDeepEqual(pairIds[0], beforeSel);
+  // Chart -> row and counterpart, from the After side.
+  await rows[0].click();
+  await rowSelected(0);
+  await page.$$eval(
+    charts,
+    (els, id) =>
+      els[1]
+        .querySelector('.wb-node[data-node-id="' + id + '"]')
+        .dispatchEvent(new MouseEvent("click", { bubbles: true })),
+    pairIds[1][0],
+  );
+  await rowSelected(matched);
+  assert.deepEqual(await selectedIds(), pairIds);
+  // ...and from the Before side, back to the removed operator.
+  await page.$$eval(
+    charts,
+    (els, id) =>
+      els[0]
+        .querySelector('.wb-node[data-node-id="' + id + '"]')
+        .dispatchEvent(new MouseEvent("click", { bubbles: true })),
+    beforeSel[0],
+  );
+  await rowSelected(0);
+  assert.deepEqual(await selectedIds(), [beforeSel, []]);
   await page.setViewport({ width: 390, height: 844 });
+  await page.waitForFunction(() => [...document.querySelectorAll('.compare-pane svg.wb-plan')].every((svg) =>
+    Math.abs(svg.getBoundingClientRect().width - svg.viewBox.baseVal.width) < 1));
+  const narrowPanes = await page.$$eval(".compare-pane", (panes) => panes.map((el) => {
+    const rect = el.getBoundingClientRect();
+    const svg = el.querySelector('svg.wb-plan');
+    const canvas = svg.getBoundingClientRect();
+    const viewport = svg.querySelector('.wb-viewport').viewBox.baseVal;
+    return { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right,
+      width: rect.width, canvasWidth: canvas.width, zoom: canvas.width / viewport.width, y: viewport.y };
+  }));
+  assert.ok(narrowPanes[1].top >= narrowPanes[0].bottom - 1, "phone comparison stacks Before then After");
+  for (const pane of narrowPanes) {
+    assert.ok(pane.left >= 0 && pane.right <= 390 && Math.abs(pane.canvasWidth - pane.width) < 2);
+    // Fit keeps Visual Explain's 11 px text at 11 px (zoom 1, core/zoom.ts);
+    // the measured ratio of two rendered widths can land a rounding error off it.
+    assert.ok(pane.zoom >= 1 - 1e-6 && pane.zoom <= 1 + 1e-6, JSON.stringify(pane));
+    assert.equal(pane.y, -28, "each comparison starts at the inputs");
+  }
   assert.equal(
     await page.evaluate(
       () => document.documentElement.scrollWidth > innerWidth,
@@ -169,16 +492,36 @@ try {
     fullPage: true,
   });
   await page.setViewport({ width: 1512, height: 1050 });
-  await button("Plan explorer", ".main-nav ");
+  await button("Explore", ".plans-bar ");
+  await frame();
+  // The phone picker opens the same investigation plans; projection remains
+  // controlled by the shared chart state even when its controls are in a menu.
+  await page.setViewport({ width: 390, height: 844 });
+  await page.evaluate(() => window.scrollTo(0, 0));
+  const phonePlanIds = await page.$$eval('select[aria-label="Open plan"] option', options => options.map(option => option.value));
+  assert.equal(phonePlanIds.length, 2);
+  await page.select('select[aria-label="Open plan"]', phonePlanIds[1]);
+  await frame();
+  assert.equal(await page.$eval('select[aria-label="Open plan"]', select => select.value), phonePlanIds[1]);
+  await page.click('button[aria-label="Chart options"]');
+  await page.select('select[aria-label="Phone operator metric"]', 'rows');
+  await page.waitForFunction(() => document.querySelector('.plan-inspector .metric-panel h2')?.textContent.includes('rows'));
+  await page.keyboard.press('Escape');
+  await page.select('select[aria-label="Open plan"]', phonePlanIds[0]);
+  await frame();
+  assert.equal(await page.$eval('select[aria-label="Operator metric"]', select => select.value), 'rows', 'phone and desktop share the metric');
+  await page.setViewport({ width: 1512, height: 1050 });
+  await page.select('select[aria-label="Operator metric"]', 'self_time');
   await frame();
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({
     path: path.join(directory, "plan.png"),
     fullPage: true,
   });
-  await button("Query laboratory", ".main-nav ");
-  await page.waitForSelector(".query-lab");
   if (process.env.MYFLAMES_TEST_PORT) {
+    // Set up the connection on Home and put it in use, then capture.
+    await button("Home", ".main-nav ");
+    await button("Add connection");
     await page.locator(".connection-panel label ::-p-text(Host)").wait();
     await page.$eval(
       ".connection-panel",
@@ -205,15 +548,22 @@ try {
     await button("Test connection");
     await page.waitForFunction(() =>
       document
-        .querySelector(".query-lab .notice")
+        .querySelector(".connections .notice")
         ?.textContent.includes("Connected"),
     );
+    await button("Use without saving", ".connection-panel ");
+    await button("Query editor", ".main-nav ");
+    await page.waitForSelector(".query-lab");
     await page
       .locator('[aria-label="SQL editor"]')
       .fill("SELECT category, SUM(price) FROM items GROUP BY category");
+    // Tabs rename inline: F2 on the selected tab, Enter keeps the name.
+    await page.focus(".query-tabs [role=tab][aria-selected=true]");
+    await page.keyboard.press("F2");
     await page
-      .locator('[aria-label="Experiment name"]')
+      .locator('[aria-label="Query name"]')
       .fill("Live experiment");
+    await page.keyboard.press("Enter");
     await page.$eval(".execution-options input[type=checkbox]", (e) =>
       e.click(),
     );
@@ -238,7 +588,8 @@ try {
       /items/,
     );
   }
-  await button("Query laboratory", ".main-nav ");
+  await button("Query editor", ".main-nav ");
+  await page.waitForSelector(".query-lab");
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({
     path: path.join(directory, "query-lab.png"),
@@ -255,6 +606,40 @@ try {
     path: path.join(directory, "query-lab-mobile.png"),
     fullPage: true,
   });
+  // Unknown saved view fields must not affect lesson restore.
+  const snapshot = await page.evaluate(async () => {
+    const auth = await fetch("/api/auth/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Myflames-Bootstrap": "1",
+        "X-Myflames-Token": localStorage.getItem("myflames.session-proof") || "" },
+      body: "{}",
+    });
+    const { token } = await auth.json();
+    const response = await fetch("/api/session/load", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Myflames-Token": token },
+      body: "{}",
+    });
+    return response.json();
+  });
+  assert.ok(snapshot.state, "the workflow saved a session to restore");
+  snapshot.state.mode = "teach";
+  snapshot.state.teach = { lesson: "btree", return_to_plan: false, view: "3d" };
+  const restoreRequest = (request) => request.url().endsWith("/api/session/load")
+    ? request.respond({ status: 200, contentType: "application/json", body: JSON.stringify(snapshot) })
+    : request.continue();
+  await page.setRequestInterception(true);
+  page.on("request", restoreRequest);
+  await page.reload({ waitUntil: "networkidle0" });
+  await page.waitForSelector('.lesson-frame[title^="Lesson: B"]');
+  const restoredLesson = await (await page.$(".lesson-frame")).contentFrame();
+  await restoredLesson.waitForSelector("#btn-play");
+  assert.ok(await restoredLesson.$("svg"), "restored lesson uses the SVG player");
+  assert.equal(await page.$('.segmented[aria-label="Lesson view"]'), null);
+  assert.ok(lessonRequests.every((body) => !Object.hasOwn(body, "view")),
+    "restoring obsolete preferences requests the current lesson");
+  page.off("request", restoreRequest);
+  await page.setRequestInterception(false);
   assert.deepEqual(errors, []);
   console.log("Investigation workflow passed. " + directory);
 } finally {

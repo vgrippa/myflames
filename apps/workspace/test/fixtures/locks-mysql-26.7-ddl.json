@@ -1,0 +1,593 @@
+{
+ "schema_version": "locks-1.1",
+ "engine": "mysql",
+ "server_version": "26.7.0",
+ "captured_at": "2026-10-14T16:57:17.441720+00:00",
+ "scope": "all",
+ "limit": 500,
+ "capabilities": {
+  "performance_schema": true,
+  "process_privilege": true,
+  "transactions": true,
+  "row_locks": "all",
+  "lock_waits": true,
+  "metadata_locks": true,
+  "mdl_instrument": true,
+  "last_statement": true,
+  "deadlock": true,
+  "data_locks_global_latch": false,
+  "metadata_lock_info": null,
+  "xa_state": true
+ },
+ "notes": [
+  "Rows a transaction inserted, and index entries its updates wrote, are protected by implicit locks, which InnoDB lists only after another session conflicts with them. A transaction can hold more locks than the list shows.",
+  "Metadata lock blockers follow the server's compatibility rules: a waiting request waits for conflicting locks other sessions hold on the same object, or queues behind a waiting request with priority over it (for example SELECTs queued behind a waiting ALTER TABLE). Their wait time is the waiting statement's running time.",
+  "While a DDL statement such as ALTER TABLE waits for its exclusive metadata lock, new reads and writes of that table queue behind it, even when the lock the blocker holds (usually SHARED_READ or SHARED_WRITE from an open transaction) would let them through. One open transaction and one waiting DDL statement can stop every read and write of the table until the transaction ends or the DDL gives up after lock_wait_timeout (by default one year on MySQL, one day on MariaDB). Stopping the DDL statement (KILL QUERY on its connection) also releases the queue, but an ALTER TABLE stopped at its final step loses the work it has done and must run again.",
+  "This account can end other users' sessions (CONNECTION_ADMIN) but lacks SYSTEM_USER, so MySQL refuses to end a session of an account that has SYSTEM_USER (root has it).",
+  "myflames ends a session only when you choose Kill blocker (or run myflames locks --kill ID) and confirm. KILL QUERY n stops only the running statement; inside a transaction (after START TRANSACTION or BEGIN, or with autocommit=0), the transaction stays open and keeps its row and metadata locks until it commits or rolls back (in autocommit mode the statement is the whole transaction). KILL n closes the connection and rolls back its open transaction, which can take a while after many changes; its locks stay until the rollback ends. A prepared XA transaction survives both; end it with XA COMMIT or XA ROLLBACK.",
+  "Each section comes from a separate query, so a lock can appear or disappear between sections."
+ ],
+ "summary": {
+  "transactions": 1,
+  "row_lock_waits": 0,
+  "metadata_lock_waits": 2,
+  "blocked_sessions": 2,
+  "root_blockers": 1,
+  "idle_in_transaction_blockers": 1,
+  "longest_wait_s": 4.0,
+  "oldest_transaction_s": 5,
+  "row_locks": 2,
+  "deadlock": false,
+  "ddl_waits": 1
+ },
+ "ddl_waits": [
+  {
+   "connection_id": 54,
+   "user": "dba",
+   "host": "172.17.0.1",
+   "db": "lk",
+   "statement": "ALTER TABLE t ADD COLUMN c1791997033 INT",
+   "kind": "ALTER TABLE",
+   "state": "Waiting for table metadata lock",
+   "wait_s": 4.0,
+   "object_type": "TABLE",
+   "schema": "lk",
+   "table": "t",
+   "statement_schema": "lk",
+   "statement_table": "t",
+   "requested": "EXCLUSIVE",
+   "requested_short": "X",
+   "precision": "exact",
+   "blockers": [
+    {
+     "connection_id": 53,
+     "user": "app",
+     "host": "172.17.0.1",
+     "db": "lk",
+     "command": "Sleep",
+     "state": null,
+     "time_s": 5.0,
+     "statement": null,
+     "last_statement": "UPDATE t SET v = v + 1 WHERE id = 1",
+     "ps_thread_id": 102,
+     "trx_id": "2123",
+     "trx_state": "RUNNING",
+     "trx_started": "2026-10-14 16:57:12",
+     "trx_age_s": 5,
+     "rows_locked": 1,
+     "rows_modified": 1,
+     "idle_in_transaction": true,
+     "running": false,
+     "kill_allowed": true,
+     "xa_prepared": null,
+     "reason": "holds",
+     "certain": true,
+     "locks": [
+      {
+       "lock_type": "SHARED_READ",
+       "short": "SR",
+       "duration": "TRANSACTION",
+       "status": "GRANTED"
+      },
+      {
+       "lock_type": "SHARED_WRITE",
+       "short": "SW",
+       "duration": "TRANSACTION",
+       "status": "GRANTED"
+      }
+     ],
+     "started_before_ddl": null,
+     "via": null,
+     "waits_for": [],
+     "culprit": true
+    }
+   ],
+   "blockers_truncated": false,
+   "queued": [
+    {
+     "connection_id": 55,
+     "user": "app",
+     "host": "172.17.0.1",
+     "statement": "SELECT COUNT(*) FROM t",
+     "wait_s": 2.0,
+     "lock_type": "SHARED_READ",
+     "short": "SR",
+     "certain": true
+    }
+   ]
+  }
+ ],
+ "kill_privilege": {
+  "checked": true,
+  "user": "roleuser",
+  "account": "roleuser@%",
+  "can_kill_others": true,
+  "via": "CONNECTION_ADMIN",
+  "system_user": false,
+  "super_only": false
+ },
+ "blocking_tree": [
+  {
+   "key": "c53",
+   "connection_id": 53,
+   "trx_id": "2123",
+   "user": "app",
+   "host": "172.17.0.1",
+   "db": "lk",
+   "command": "Sleep",
+   "state": null,
+   "time_s": 5.0,
+   "query": null,
+   "last_statement": "UPDATE t SET v = v + 1 WHERE id = 1",
+   "idle_in_transaction": true,
+   "trx_state": "RUNNING",
+   "trx_age_s": 5,
+   "trx_started": "2026-10-14 16:57:12",
+   "rows_locked": 1,
+   "rows_modified": 1,
+   "ps_thread_id": 102,
+   "kill_allowed": true,
+   "xa_prepared": null,
+   "root": true,
+   "cycle": false,
+   "blocked_count": 2,
+   "kill": {
+    "query": null,
+    "connection": "KILL 53"
+   },
+   "waits_for": null,
+   "blocked": [
+    {
+     "key": "c54",
+     "connection_id": 54,
+     "trx_id": null,
+     "user": "dba",
+     "host": "172.17.0.1",
+     "db": "lk",
+     "command": "Query",
+     "state": "Waiting for table metadata lock",
+     "time_s": 4.0,
+     "query": "ALTER TABLE t ADD COLUMN c1791997033 INT",
+     "last_statement": null,
+     "idle_in_transaction": false,
+     "trx_state": null,
+     "trx_age_s": null,
+     "trx_started": null,
+     "rows_locked": null,
+     "rows_modified": null,
+     "ps_thread_id": 107,
+     "kill_allowed": true,
+     "xa_prepared": null,
+     "root": false,
+     "cycle": false,
+     "blocked_count": 0,
+     "kill": null,
+     "waits_for": [
+      {
+       "kind": "metadata",
+       "reason": "granted",
+       "lock": {
+        "lock_type": "EXCLUSIVE",
+        "mode": "X",
+        "object_type": "TABLE",
+        "schema": "lk",
+        "table": "t"
+       },
+       "blocking_lock": {
+        "lock_type": "SHARED_READ",
+        "mode": "SR",
+        "status": "GRANTED"
+       },
+       "wait_s": null,
+       "statement_s": 4.0,
+       "certain": true
+      },
+      {
+       "kind": "metadata",
+       "reason": "granted",
+       "lock": {
+        "lock_type": "EXCLUSIVE",
+        "mode": "X",
+        "object_type": "TABLE",
+        "schema": "lk",
+        "table": "t"
+       },
+       "blocking_lock": {
+        "lock_type": "SHARED_WRITE",
+        "mode": "SW",
+        "status": "GRANTED"
+       },
+       "wait_s": null,
+       "statement_s": 4.0,
+       "certain": true
+      }
+     ],
+     "blocked": [
+      {
+       "key": "c55",
+       "connection_id": 55,
+       "trx_id": null,
+       "user": "app",
+       "host": "172.17.0.1",
+       "db": "lk",
+       "command": "Query",
+       "state": "Waiting for table metadata lock",
+       "time_s": 2.0,
+       "query": "SELECT COUNT(*) FROM t",
+       "last_statement": null,
+       "idle_in_transaction": false,
+       "trx_state": null,
+       "trx_age_s": null,
+       "trx_started": null,
+       "rows_locked": null,
+       "rows_modified": null,
+       "ps_thread_id": 108,
+       "kill_allowed": true,
+       "xa_prepared": null,
+       "root": false,
+       "cycle": false,
+       "blocked_count": 0,
+       "kill": null,
+       "waits_for": [
+        {
+         "kind": "metadata",
+         "reason": "queued",
+         "lock": {
+          "lock_type": "SHARED_READ",
+          "mode": "SR",
+          "object_type": "TABLE",
+          "schema": "lk",
+          "table": "t"
+         },
+         "blocking_lock": {
+          "lock_type": "EXCLUSIVE",
+          "mode": "X",
+          "status": "PENDING"
+         },
+         "wait_s": null,
+         "statement_s": 2.0,
+         "certain": true
+        }
+       ],
+       "blocked": []
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "transactions": [
+  {
+   "trx_id": "2123",
+   "state": "RUNNING",
+   "started": "2026-10-14 16:57:12",
+   "age_s": 5,
+   "connection_id": 53,
+   "requested_lock_id": null,
+   "wait_started": null,
+   "wait_s": null,
+   "query": null,
+   "query_truncated": false,
+   "operation_state": null,
+   "tables_in_use": 0,
+   "tables_locked": 1,
+   "lock_structs": 2,
+   "rows_locked": 1,
+   "rows_modified": 1,
+   "isolation_level": "REPEATABLE READ",
+   "read_only": false,
+   "user": "app",
+   "host": "172.17.0.1",
+   "db": "lk",
+   "command": "Sleep",
+   "time_s": 5.0,
+   "session_state": null,
+   "current_statement": null,
+   "last_statement": "UPDATE t SET v = v + 1 WHERE id = 1",
+   "idle_in_transaction": true,
+   "blocking": [
+    "c54",
+    "c54"
+   ],
+   "blocked_by": [],
+   "kill": {
+    "query": null,
+    "connection": "KILL 53"
+   },
+   "ps_thread_id": 102,
+   "kill_allowed": true
+  }
+ ],
+ "row_locks": [
+  {
+   "lock_id": "281473514040568:152:1068:281473433261248",
+   "trx_id": "2123",
+   "connection_id": 53,
+   "ps_thread_id": 102,
+   "schema": "lk",
+   "table": "t",
+   "partition": null,
+   "index": null,
+   "lock_type": "TABLE",
+   "mode": "IX",
+   "status": "GRANTED",
+   "lock_data": null,
+   "lock_data_truncated": false,
+   "lock_data_missing": false,
+   "mode_label": "intention exclusive",
+   "explain": "The transaction is write-locking some rows of this table (UPDATE, DELETE, INSERT, SELECT ... FOR UPDATE). Intention locks never block each other; this one conflicts only with whole-table S and X locks."
+  },
+  {
+   "lock_id": "281473514040568:152:2:4:2:281473433258256",
+   "trx_id": "2123",
+   "connection_id": 53,
+   "ps_thread_id": 102,
+   "schema": "lk",
+   "table": "t",
+   "partition": null,
+   "index": "PRIMARY",
+   "lock_type": "RECORD",
+   "mode": "X,REC_NOT_GAP",
+   "status": "GRANTED",
+   "lock_data": "1",
+   "lock_data_truncated": false,
+   "lock_data_missing": false,
+   "mode_label": "record only",
+   "explain": "Locks only this index record (exclusive); the gap before it stays open."
+  }
+ ],
+ "row_locks_truncated": false,
+ "waits": [],
+ "waits_truncated": false,
+ "metadata_locks": {
+  "locks": [
+   {
+    "object_type": "TABLE",
+    "schema": "lk",
+    "name": "t",
+    "lock_type": "EXCLUSIVE",
+    "short": "X",
+    "duration": "TRANSACTION",
+    "status": "PENDING",
+    "source": "mdl.cc:3767",
+    "ps_thread_id": 107,
+    "connection_id": 54,
+    "explain": "Exclusive: DDL such as ALTER, DROP, RENAME or TRUNCATE needs the object to itself."
+   },
+   {
+    "object_type": "TABLE",
+    "schema": "lk",
+    "name": "t",
+    "lock_type": "SHARED_READ",
+    "short": "SR",
+    "duration": "TRANSACTION",
+    "status": "PENDING",
+    "source": "sql_parse.cc:6270",
+    "ps_thread_id": 108,
+    "connection_id": 55,
+    "explain": "Shared read: a statement is reading the table, or a transaction read it and has not ended (on MariaDB, also LOCK TABLES ... READ on InnoDB tables)."
+   },
+   {
+    "object_type": "BACKUP LOCK",
+    "schema": null,
+    "name": null,
+    "lock_type": "INTENTION_EXCLUSIVE",
+    "short": "IX",
+    "duration": "TRANSACTION",
+    "status": "GRANTED",
+    "source": "sql_base.cc:5756",
+    "ps_thread_id": 107,
+    "connection_id": 54,
+    "explain": "Intention exclusive: a statement that may change data or metadata (scoped lock)."
+   },
+   {
+    "object_type": "GLOBAL",
+    "schema": null,
+    "name": null,
+    "lock_type": "INTENTION_EXCLUSIVE",
+    "short": "IX",
+    "duration": "STATEMENT",
+    "status": "GRANTED",
+    "source": "sql_base.cc:5749",
+    "ps_thread_id": 107,
+    "connection_id": 54,
+    "explain": "Intention exclusive: a statement that may change data or metadata (scoped lock)."
+   },
+   {
+    "object_type": "SCHEMA",
+    "schema": "lk",
+    "name": null,
+    "lock_type": "INTENTION_EXCLUSIVE",
+    "short": "IX",
+    "duration": "TRANSACTION",
+    "status": "GRANTED",
+    "source": "sql_base.cc:5736",
+    "ps_thread_id": 107,
+    "connection_id": 54,
+    "explain": "Intention exclusive: a statement that may change data or metadata (scoped lock)."
+   },
+   {
+    "object_type": "TABLE",
+    "schema": "lk",
+    "name": "#sql-1_36",
+    "lock_type": "EXCLUSIVE",
+    "short": "X",
+    "duration": "STATEMENT",
+    "status": "GRANTED",
+    "source": "sql_table.cc:18162",
+    "ps_thread_id": 107,
+    "connection_id": 54,
+    "explain": "Exclusive: DDL such as ALTER, DROP, RENAME or TRUNCATE needs the object to itself."
+   },
+   {
+    "object_type": "TABLE",
+    "schema": "lk",
+    "name": "t",
+    "lock_type": "SHARED_READ",
+    "short": "SR",
+    "duration": "TRANSACTION",
+    "status": "GRANTED",
+    "source": "sql_parse.cc:6270",
+    "ps_thread_id": 102,
+    "connection_id": 53,
+    "explain": "Shared read: a statement is reading the table, or a transaction read it and has not ended (on MariaDB, also LOCK TABLES ... READ on InnoDB tables)."
+   },
+   {
+    "object_type": "TABLE",
+    "schema": "lk",
+    "name": "t",
+    "lock_type": "SHARED_WRITE",
+    "short": "SW",
+    "duration": "TRANSACTION",
+    "status": "GRANTED",
+    "source": "sql_parse.cc:6270",
+    "ps_thread_id": 102,
+    "connection_id": 53,
+    "explain": "Shared write: a statement is changing rows or running SELECT ... FOR UPDATE, or a transaction did so and has not ended."
+   },
+   {
+    "object_type": "TABLE",
+    "schema": "lk",
+    "name": "t",
+    "lock_type": "SHARED_UPGRADABLE",
+    "short": "SU",
+    "duration": "TRANSACTION",
+    "status": "GRANTED",
+    "source": "sql_parse.cc:6270",
+    "ps_thread_id": 107,
+    "connection_id": 54,
+    "explain": "Shared upgradable: ALTER TABLE and similar DDL take this first, then upgrade it."
+   },
+   {
+    "object_type": "TABLESPACE",
+    "schema": null,
+    "name": "lk/t",
+    "lock_type": "INTENTION_EXCLUSIVE",
+    "short": "IX",
+    "duration": "TRANSACTION",
+    "status": "GRANTED",
+    "source": "lock.cc:808",
+    "ps_thread_id": 107,
+    "connection_id": 54,
+    "explain": "Intention exclusive: a statement that may change data or metadata (scoped lock)."
+   }
+  ],
+  "waits": [
+   {
+    "waiting": {
+     "object_type": "TABLE",
+     "schema": "lk",
+     "name": "t",
+     "lock_type": "EXCLUSIVE",
+     "short": "X",
+     "duration": "TRANSACTION",
+     "status": "PENDING",
+     "source": "mdl.cc:3767",
+     "ps_thread_id": 107,
+     "connection_id": 54,
+     "explain": "Exclusive: DDL such as ALTER, DROP, RENAME or TRUNCATE needs the object to itself."
+    },
+    "statement": "ALTER TABLE t ADD COLUMN c1791997033 INT",
+    "state": "Waiting for table metadata lock",
+    "statement_s": 4.0,
+    "certain": true,
+    "blocked_by": [
+     {
+      "reason": "granted",
+      "lock": {
+       "object_type": "TABLE",
+       "schema": "lk",
+       "name": "t",
+       "lock_type": "SHARED_READ",
+       "short": "SR",
+       "duration": "TRANSACTION",
+       "status": "GRANTED",
+       "source": "sql_parse.cc:6270",
+       "ps_thread_id": 102,
+       "connection_id": 53,
+       "explain": "Shared read: a statement is reading the table, or a transaction read it and has not ended (on MariaDB, also LOCK TABLES ... READ on InnoDB tables)."
+      },
+      "statement": null
+     },
+     {
+      "reason": "granted",
+      "lock": {
+       "object_type": "TABLE",
+       "schema": "lk",
+       "name": "t",
+       "lock_type": "SHARED_WRITE",
+       "short": "SW",
+       "duration": "TRANSACTION",
+       "status": "GRANTED",
+       "source": "sql_parse.cc:6270",
+       "ps_thread_id": 102,
+       "connection_id": 53,
+       "explain": "Shared write: a statement is changing rows or running SELECT ... FOR UPDATE, or a transaction did so and has not ended."
+      },
+      "statement": null
+     }
+    ]
+   },
+   {
+    "waiting": {
+     "object_type": "TABLE",
+     "schema": "lk",
+     "name": "t",
+     "lock_type": "SHARED_READ",
+     "short": "SR",
+     "duration": "TRANSACTION",
+     "status": "PENDING",
+     "source": "sql_parse.cc:6270",
+     "ps_thread_id": 108,
+     "connection_id": 55,
+     "explain": "Shared read: a statement is reading the table, or a transaction read it and has not ended (on MariaDB, also LOCK TABLES ... READ on InnoDB tables)."
+    },
+    "statement": "SELECT COUNT(*) FROM t",
+    "state": "Waiting for table metadata lock",
+    "statement_s": 2.0,
+    "certain": true,
+    "blocked_by": [
+     {
+      "reason": "queued",
+      "lock": {
+       "object_type": "TABLE",
+       "schema": "lk",
+       "name": "t",
+       "lock_type": "EXCLUSIVE",
+       "short": "X",
+       "duration": "TRANSACTION",
+       "status": "PENDING",
+       "source": "mdl.cc:3767",
+       "ps_thread_id": 107,
+       "connection_id": 54,
+       "explain": "Exclusive: DDL such as ALTER, DROP, RENAME or TRUNCATE needs the object to itself."
+      },
+      "statement": "ALTER TABLE t ADD COLUMN c1791997033 INT"
+     }
+    ]
+   }
+  ],
+  "truncated": false
+ },
+ "deadlock": null
+}

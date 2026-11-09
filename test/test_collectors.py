@@ -249,9 +249,136 @@ class TestCollectSchema(unittest.TestCase):
 
 class TestCollectStats(unittest.TestCase):
 
+    def test_batches_800_tables_and_keeps_requested_order(self):
+        """MySQL and MariaDB expose the same TABLES columns used here."""
+        import re
+        rows = [["db", "t%d" % i, str(i), "1024", "512", "0", "NULL", "InnoDB", "Dynamic"]
+                for i in range(800)]
+
+        class Conn(StubConn):
+            def query_dicts(self, sql, columns):
+                self.calls.append(sql)
+                ids = [int(i) for i in re.findall(r"SELECT (\d+) AS request_id", sql)]
+                if not ids:  # The old per-table implementation.
+                    ids = [int(re.search(r"table_name = 't(\d+)'", sql).group(1))]
+                return [dict(zip(columns, ([str(i)] if columns[0] == "request_id" else []) + rows[i]))
+                        for i in reversed(ids)]
+
+        conn = Conn([])
+        names = ["db.t%d" % i for i in range(800)]
+        stats = collect_stats(conn, names)
+        self.assertEqual(len(conn.calls), 8)
+        for sql in conn.calls:
+            self.assertEqual(sql.count(" AS request_id"), 100)
+            self.assertLess(len(sql.encode("utf-8")), 64 * 1024)
+            self.assertEqual(sql.count("FROM information_schema.tables WHERE "), 100)
+        self.assertEqual(list(stats), names)
+        self.assertEqual([stats[name]["table_rows"] for name in names], list(range(800)))
+        self.assertTrue(all(set(row) == set((
+            "table_schema", "table_name", "table_rows", "data_length", "index_length", "data_free",
+            "auto_increment", "engine", "row_format")) for row in stats.values()))
+
+    def test_batch_failures_keep_readable_tables_and_requested_aliases(self):
+        """A refused request must not discard the other tables in its batch."""
+        import re
+        from myflames.connector import ConnectorError
+        names = ["db.users", "users", "secret.hidden", "other.users", "missing", "db.users", "DB.USERS"]
+        rows = {0: ["db", "users"], 1: ["db", "users"], 3: ["other", "users"],
+                5: ["db", "users"], 6: ["db", "users"]}
+
+        class Conn(StubConn):
+            def query_dicts(self, sql, columns):
+                self.calls.append(sql)
+                ids = [int(i) for i in re.findall(r"SELECT (\d+) AS request_id", sql)]
+                if not ids:
+                    raise AssertionError("Expected batched request identities")
+                if 2 in ids:
+                    raise ConnectorError("Access denied for hidden")
+                return [dict(zip(columns, [str(i)] + rows[i] +
+                                 ["4", "NULL", "bad", "0", "5", "InnoDB", "Dynamic"]))
+                        for i in reversed(ids) if i in rows]
+
+        conn = Conn([])
+        stats = collect_stats(conn, names)
+        self.assertEqual(list(stats), ["db.users", "users", "other.users", "DB.USERS"])
+        self.assertEqual(stats["db.users"], stats["users"])
+        self.assertEqual(stats["db.users"], stats["DB.USERS"])
+        self.assertEqual(stats["other.users"]["table_schema"], "other")
+        self.assertEqual(stats["db.users"]["index_length"], 0)
+        self.assertTrue(any("DATABASE()" in sql for sql in conn.calls))
+
+    def test_batches_stay_under_the_command_line_length(self):
+        """The SQL goes on the client's command line (mysql -e): long names split batches."""
+        import re
+        from myflames import collectors
+        names = ["s%03d%s.t%03d%s" % (i, "'" * 30 + "x" * 30, i, "\\" * 30) for i in range(300)]
+
+        class Conn(StubConn):
+            def query_dicts(self, sql, columns):
+                self.calls.append(sql)
+                return [dict(zip(columns, [i, "s", "t", "1", "1", "1", "0", "0", "InnoDB", "Dynamic"]))
+                        for i in re.findall(r"SELECT (\d+) AS request_id", sql)]
+
+        conn = Conn([])
+        stats = collect_stats(conn, names)
+        self.assertEqual(list(stats), names)
+        self.assertGreater(len(conn.calls), 3, "long names need more, shorter batches")
+        for sql in conn.calls:
+            self.assertLessEqual(len(sql), collectors._STATS_BATCH_CHARS)
+            self.assertLessEqual(sql.count(" AS request_id"), collectors._STATS_BATCH_SIZE)
+
+    def test_failed_batch_costs_one_extra_call_and_keeps_per_table_errors(self):
+        """As the per-table reads did: a table whose read fails is left out, and
+        a client that fails every read is asked once per table plus once per batch."""
+        import re
+        from myflames.connector import ConnectorError
+        for poisoned in (set(range(150)), {7}, set()):
+            with self.subTest(failing=len(poisoned)):
+                class Conn(StubConn):
+                    def query_dicts(self, sql, columns):
+                        self.calls.append(sql)
+                        ids = [int(i) for i in re.findall(r"SELECT (\d+) AS request_id", sql)]
+                        if poisoned.intersection(ids):
+                            raise ConnectorError("mysql client exited 1: ERROR 2013 (HY000): Lost connection")
+                        return [dict(zip(columns, [str(i), "db", "t%d" % i, "1", "1", "1", "0", "0", "InnoDB",
+                                                   "Dynamic"])) for i in ids]
+
+                conn = Conn([])
+                stats = collect_stats(conn, ["db.t%d" % i for i in range(150)])
+                self.assertEqual(sorted(int(k[4:]) for k in stats), sorted(set(range(150)) - poisoned))
+                expected = {150: 2 + 150, 1: 2 + 100, 0: 2}[len(poisoned)]
+                self.assertEqual(len(conn.calls), expected)
+
+    def test_rows_answer_only_their_own_request(self):
+        conn = StubConn([(lambda sql: "information_schema.tables" in sql, [
+            ["x", "db", "a", "1", "1", "1", "0", "0", "InnoDB", "Dynamic"],
+            ["7", "db", "a", "1", "1", "1", "0", "0", "InnoDB", "Dynamic"],
+            ["", "db", "a", "1", "1", "1", "0", "0", "InnoDB", "Dynamic"],
+            ["1", "db", "b", "2", "1", "1", "0", "0", "InnoDB", "Dynamic"],
+            ["1", "db", "B", "3", "1", "1", "0", "0", "InnoDB", "Dynamic"],
+        ])])
+        stats = collect_stats(conn, ["db.a", "db.b"])
+        self.assertEqual(list(stats), ["db.b"])
+        self.assertEqual(stats["db.b"]["table_rows"], 2, "the first row the server returns, as before")
+        self.assertEqual(len(conn.calls), 1)
+
+    def test_any_iterable_of_names_is_read_once(self):
+        row = ["0", "db", "t", "5", "1", "1", "0", "0", "InnoDB", "Dynamic"]
+        for names in (["db.t"], ("db.t",), iter(["db.t"]), (n for n in ["db.t"])):
+            with self.subTest(kind=type(names).__name__):
+                conn = StubConn([(lambda sql: "information_schema.tables" in sql, [row])])
+                self.assertEqual(collect_stats(conn, names)["db.t"]["table_rows"], 5)
+                self.assertEqual(len(conn.calls), 1)
+        self.assertEqual(collect_stats(StubConn([]), None), {})
+
+    def test_empty_stats_never_reads(self):
+        conn = StubConn([])
+        self.assertEqual(collect_stats(conn, []), {})
+        self.assertEqual(conn.calls, [])
+
     def test_parses_numeric_columns(self):
         row = [
-            "testdb", "users", "10000", "1048576", "524288",
+            "0", "testdb", "users", "10000", "1048576", "524288",
             "0", "10001", "InnoDB", "Dynamic",
         ]
         conn = StubConn([
@@ -273,7 +400,7 @@ class TestCollectStats(unittest.TestCase):
         self.assertEqual(stats, {})
 
     def test_non_numeric_coerced_to_zero(self):
-        row = ["testdb", "t", "NULL", "", "not_a_number", "0", "0", "InnoDB", "Dynamic"]
+        row = ["0", "testdb", "t", "NULL", "", "not_a_number", "0", "0", "InnoDB", "Dynamic"]
         conn = StubConn([
             (lambda sql: "information_schema.tables" in sql, [row]),
         ])

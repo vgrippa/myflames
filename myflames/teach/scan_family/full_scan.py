@@ -9,6 +9,74 @@ from .. import _html
 
 _LESSON_JS = _html.load_lesson_js(__file__)
 
+# Guided steps (see _html.normalize_guide). full_scan.js marks opening the
+# scan, each row read and the summary with tl.beat(kind). Function names
+# were checked in mysql-server (8.4.9 and 9.7.0).
+GUIDE = {
+    "code": {
+        "title": "Full table scan",
+        "lines": [
+            ("open", 0, "open a scan of users (no index on country)", "ha_innobase::rnd_init"),
+            ("read", 0, "for each row in users, in primary key order:", "ha_innobase::rnd_next"),
+            ("test", 1, "if row.country = 'US':", "FilterIterator::Read"),
+            ("send", 2, "send the row to the client"),
+            ("else", 1, "else:"),
+            ("discard", 2, "discard the row (it was still read)"),
+            ("end", 0, "no rows left: the scan ends"),
+        ],
+    },
+    "beats": {
+        "start": ["open"],
+        "row-match": ["read", "test", "send"],
+        "row-skip": ["read", "test", "else", "discard"],
+        "done": ["end"],
+    },
+    "quiz": [
+        {
+            "question": ("users has 1,000,000 rows, no index on country, and 2% of them are "
+                         "in the US. How many rows does WHERE country = 'US' read?"),
+            "choices": [
+                ("All 1,000,000", True,
+                 "Without an index on country the engine cannot tell which rows match "
+                 "until it has read each one."),
+                ("20,000, only the matching rows", False,
+                 "Those are the rows returned; finding them still means reading every row "
+                 "and discarding the other 980,000."),
+                ("About 3, one per B+tree level", False,
+                 "That is the cost of an index lookup, which needs an index on country."),
+            ],
+        },
+        {
+            "question": "When can reading the whole table be the cheaper plan?",
+            "choices": [
+                ("When the query needs a large share of the rows, such as half the table", True,
+                 "Reading pages in order beats one index lookup per matching row once most "
+                 "rows match, so both MySQL and MariaDB may choose the scan."),
+                ("Never, because an index is always faster", False,
+                 "The optimizer compares estimated costs, and a scan wins when an index "
+                 "would touch most of the table anyway."),
+                ("Only on tables without a primary key", False,
+                 "Every InnoDB table has a clustered index, and a full scan reads its leaf "
+                 "pages in order whether or not you declared a primary key."),
+            ],
+        },
+        {
+            "question": "Why does an index on users(country) help this query?",
+            "choices": [
+                ("It keeps entries sorted by country, so the engine can jump to 'US'", True,
+                 "A B+tree finds the first 'US' entry in a few page reads and stops after the "
+                 "last one, so it reads about 20,000 entries instead of 1,000,000 rows."),
+                ("It makes every row smaller", False,
+                 "Rows keep their size; the index is a separate sorted structure that lets "
+                 "the engine skip rows that cannot match."),
+                ("It stores the query's result for next time", False,
+                 "An index holds the indexed column and the primary key of every row, not "
+                 "the results of queries."),
+            ],
+        },
+    ],
+}
+
 
 def render() -> str:
     controls_html = """
@@ -45,6 +113,7 @@ def render() -> str:
             "Each row is read first, then predicate-tested. Green rows match; other rows were still read and then discarded.",
             "The result box (right) only gets matching rows, but storage work happened for every row.",
             "Readout and chart compare this O(n) path to indexed range access O(log n + k).",
+            "Next step reads one row at a time; the simplified code beside the drawing highlights the lines each step runs.",
         ],
     )
 
@@ -52,7 +121,7 @@ def render() -> str:
 <section class="stage">
   {query_card_html}
   {explainer_html}
-  {_html.stage_toolbar("Ready — press Play")}
+  {_html.stage_toolbar("Ready: press Next step, or Play to run it all")}
   <div class="stage-with-phases">
     <svg id="scan-svg" viewBox="0 0 800 460" xmlns="http://www.w3.org/2000/svg"></svg>
     {_html.phase_nav()}
@@ -94,7 +163,7 @@ def render() -> str:
 
     return _html.render_page(
         lesson_id="full_scan",
-        title="Full table scan — why MySQL reads every row",
+        title="Full table scan: why MySQL reads every row",
         subtitle=(
             "Understand what a full table scan really means: O(n) row reads, "
             "predicate filtering after the read, and why selective predicates "
@@ -106,5 +175,6 @@ def render() -> str:
         readout_html=readout_html,
         learn_more_html=learn_more_html,
         lesson_js=_LESSON_JS,
+        guide=GUIDE,
     )
 

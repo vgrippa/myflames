@@ -1,0 +1,11 @@
+{
+ "schema_version": "action-progress-1.0",
+ "phase": "sending",
+ "states": [
+  "sent"
+ ],
+ "status": null,
+ "elapsed_s": 1.0,
+ "waiting_s": 0.3,
+ "timeout_s": 120
+}

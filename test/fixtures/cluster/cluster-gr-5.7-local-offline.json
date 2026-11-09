@@ -1,0 +1,142 @@
+{
+ "server": "gr-5.7-local-offline",
+ "source": "live",
+ "args": [],
+ "calls": [
+  [
+   "/*myflames:cluster*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('group_replication_group_name', 'group_replication_group_seeds', 'group_replication_local_address', 'group_replication_single_primary_mode', 'hostname', 'performance_schema', 'port', 'pxc_maint_mode', 'pxc_strict_mode', 'report_host', 'report_port', 'server_uuid', 'userstat', 'version', 'version_comment', 'wsrep_cluster_address', 'wsrep_cluster_name', 'wsrep_desync', 'wsrep_node_address', 'wsrep_node_incoming_address', 'wsrep_node_name', 'wsrep_on', 'wsrep_provider')",
+   "group_replication_group_name\taaaaaaaa-5757-5757-5757-aaaaaaaaaaaa\ngroup_replication_group_seeds\tgr57-1:33061,gr57-2:33061,gr57-3:33061\ngroup_replication_local_address\tgr57-3:33061\ngroup_replication_single_primary_mode\tON\nhostname\tgr57-3\nperformance_schema\tON\nport\t3306\nreport_host\tgr57-3\nreport_port\t3306\nserver_uuid\tf06efac9-d52a-11f1-8eee-da08e33b5a84\nversion\t5.7.44-log\nversion_comment\tMySQL Community Server (GPL)\n"
+  ],
+  [
+   "/*myflames:cluster*/ SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime' OR Variable_name LIKE 'Performance\\_schema\\_%\\_lost'",
+   "Performance_schema_accounts_lost\t0\nPerformance_schema_cond_classes_lost\t0\nPerformance_schema_cond_instances_lost\t0\nPerformance_schema_digest_lost\t0\nPerformance_schema_file_classes_lost\t0\nPerformance_schema_file_handles_lost\t0\nPerformance_schema_file_instances_lost\t0\nPerformance_schema_hosts_lost\t0\nPerformance_schema_index_stat_lost\t0\nPerformance_schema_locker_lost\t0\nPerformance_schema_memory_classes_lost\t0\nPerformance_schema_metadata_lock_lost\t0\nPerformance_schema_mutex_classes_lost\t0\nPerformance_schema_mutex_instances_lost\t0\nPerformance_schema_nested_statement_lost\t0\nPerformance_schema_prepared_statements_lost\t0\nPerformance_schema_program_lost\t0\nPerformance_schema_rwlock_classes_lost\t0\nPerformance_schema_rwlock_instances_lost\t0\nPerformance_schema_session_connect_attrs_lost\t0\nPerformance_schema_socket_classes_lost\t0\nPerformance_schema_socket_instances_lost\t0\nPerformance_schema_stage_classes_lost\t0\nPerformance_schema_statement_classes_lost\t0\nPerformance_schema_table_handles_lost\t0\nPerformance_schema_table_instances_lost\t0\nPerformance_schema_table_lock_stat_lost\t0\nPerformance_schema_thread_classes_lost\t0\nPerformance_schema_thread_instances_lost\t0\nPerformance_schema_users_lost\t0\nUptime\t115\n"
+  ],
+  [
+   "/*myflames:cluster*/ SELECT CHANNEL_NAME, MEMBER_ID, MEMBER_HOST, MEMBER_PORT, MEMBER_STATE, NULL, NULL FROM performance_schema.replication_group_members",
+   "group_replication_applier\tf06efac9-d52a-11f1-8eee-da08e33b5a84\tgr57-3\t3306\tOFFLINE\tNULL\tNULL\n"
+  ],
+  [
+   "/*myflames:cluster*/ SHOW GLOBAL STATUS WHERE Variable_name = 'group_replication_primary_member'",
+   "group_replication_primary_member\t\n"
+  ],
+  [
+   "/*myflames:cluster*/ SELECT MEMBER_ID, VIEW_ID, COUNT_TRANSACTIONS_IN_QUEUE, COUNT_TRANSACTIONS_CHECKED, COUNT_CONFLICTS_DETECTED, COUNT_TRANSACTIONS_ROWS_VALIDATING, NULL, NULL, NULL, NULL FROM performance_schema.replication_group_member_stats",
+   "f06efac9-d52a-11f1-8eee-da08e33b5a84\t\t0\t0\t0\t0\tNULL\tNULL\tNULL\tNULL\n"
+  ],
+  [
+   "/*myflames:cluster*/ SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = 'mysql_innodb_cluster_metadata'",
+   ""
+  ]
+ ],
+ "report": {
+  "schema_version": "cluster-1.0",
+  "engine": "mysql",
+  "flavor": "mysql",
+  "server_product": "MySQL",
+  "server_version": "5.7.44-log",
+  "version_comment": "MySQL Community Server (GPL)",
+  "captured_at": "2026-10-31T13:01:45.887764+00:00",
+  "uptime_s": 115,
+  "performance_schema": true,
+  "available": true,
+  "message": null,
+  "kind": "group_replication",
+  "server": {
+   "hostname": "gr57-3",
+   "port": 3306,
+   "report_host": "gr57-3",
+   "server_uuid": "f06efac9-d52a-11f1-8eee-da08e33b5a84"
+  },
+  "cluster": {
+   "name": null,
+   "uuid": "aaaaaaaa-5757-5757-5757-aaaaaaaaaaaa",
+   "size": null,
+   "expected_size": null,
+   "expected_source": null,
+   "component": null,
+   "quorum": null,
+   "failures_tolerated": null,
+   "topology": "single_primary",
+   "provider": null
+  },
+  "status": "problem",
+  "status_why": [
+   "Group Replication is not running on this member. It cannot see the group from here, so connect to an ONLINE member to judge the cluster."
+  ],
+  "local": "member:f06efac9-d52a-11f1-8eee-da08e33b5a84",
+  "members": [
+   {
+    "key": "member:f06efac9-d52a-11f1-8eee-da08e33b5a84",
+    "name": "gr57-3",
+    "address": "gr57-3:3306",
+    "host": "gr57-3",
+    "port": 3306,
+    "uuid": "f06efac9-d52a-11f1-8eee-da08e33b5a84",
+    "state": "OFFLINE",
+    "state_source": "replication_group_members",
+    "role": null,
+    "version": "5.7.44",
+    "local": true,
+    "status": "problem",
+    "status_why": [
+     "Group Replication is not running on this member."
+    ],
+    "metrics": {
+     "transactions_in_queue": 0,
+     "transactions_checked": 0,
+     "conflicts_detected": 0,
+     "rows_validating": 0,
+     "applier_queue": null,
+     "remote_applied": null,
+     "local_proposed": null,
+     "local_rollback": null
+    }
+   }
+  ],
+  "galera": null,
+  "group_replication": {
+   "group_name": "aaaaaaaa-5757-5757-5757-aaaaaaaaaaaa",
+   "single_primary_mode": "ON",
+   "local_address": "gr57-3:33061",
+   "group_seeds": "gr57-1:33061,gr57-2:33061,gr57-3:33061",
+   "view_id": null
+  },
+  "metadata": {
+   "available": false,
+   "schema_version": null,
+   "cluster_id": null,
+   "cluster_name": null,
+   "primary_mode": null,
+   "instances": [],
+   "reason": "No mysql_innodb_cluster_metadata schema is visible to this account, so this is a Group Replication group without InnoDB Cluster metadata (or the account cannot read it).",
+   "local_copy": null
+  },
+  "routers": [],
+  "findings": [
+   {
+    "id": "local_not_in_group",
+    "status": "problem",
+    "title": "This member is OFFLINE",
+    "text": "Group Replication is not running on this member. It cannot see the group from here, so connect to an ONLINE member to judge the cluster.",
+    "member": "member:f06efac9-d52a-11f1-8eee-da08e33b5a84"
+   }
+  ],
+  "summary": {
+   "members": 1,
+   "ok": 0,
+   "watch": 0,
+   "problem": 1,
+   "unknown": 0
+  },
+  "statements": [
+   "SHOW GLOBAL VARIABLES",
+   "SELECT performance_schema.replication_group_members",
+   "SHOW GLOBAL STATUS group_replication_primary_member",
+   "SELECT performance_schema.replication_group_member_stats"
+  ],
+  "notes": [
+   "MySQL 5.7 has no MEMBER_ROLE or MEMBER_VERSION: roles come from group_replication_primary_member (the primary's UUID in single-primary mode), and only this member's version is known.",
+   "Queue lengths and rows validating are current; the other counts are cumulative. MySQL 5.7 reports them for this member only."
+  ]
+ }
+}

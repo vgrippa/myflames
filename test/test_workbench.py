@@ -21,6 +21,14 @@ def plan(op, inputs=None, **fields):
 
 
 class TestWorkbench(unittest.TestCase):
+    def test_accessible_title_uses_colon_and_preserves_plan_text(self):
+        root = plan('Table scan on t')
+        for title in ('Query plan', 'A < B & "quoted"', ''):
+            with self.subTest(title=title):
+                document = ET.fromstring(render_workbench(root, title=title))
+                expected = (title + ': ' if title else '') + 'Visual Explain'
+                self.assertEqual(document.find(SVG+'title').text, expected)
+
     def test_zoom_controls_are_labeled_and_have_feedback_styles(self):
         document = ET.fromstring(render_workbench(plan('Table scan on t')))
         controls = {item.attrib['data-action']: item
@@ -31,13 +39,86 @@ class TestWorkbench(unittest.TestCase):
         self.assertEqual(controls['reset'].attrib['aria-label'], 'Reset zoom to 100%')
         self.assertIn('wb-activated', document.find(SVG+'style').text)
 
+    def test_zoom_controls_read_out_readout_in_fit(self):
+        # The macOS order, as in the Database diagram: −, 100%, +, Fit.
+        document = ET.fromstring(render_workbench(plan('Table scan on t')))
+        actions = [item.attrib['data-action'] for item in document.iter() if 'data-action' in item.attrib]
+        self.assertEqual(actions, ['out', 'reset', 'in', 'fit'])
+        fit = next(item for item in document.iter() if item.attrib.get('data-action') == 'fit')
+        self.assertEqual((fit.text, fit.attrib['aria-label']), ('Fit', 'Fit plan'))
+        search = next(item for item in document.iter() if item.tag.endswith('input'))
+        self.assertEqual(search.attrib['placeholder'], 'Search operators')
+
+    def test_fit_keeps_the_smallest_text_at_eleven_pixels(self):
+        # Fit (on open, the Fit button, a double click) stops where the
+        # smallest text in the viewport would render below 11 px; the
+        # constant it scales must be the smallest font size the styles draw.
+        # The TypeScript twin (charts/workbench.ts + core/zoom.ts) follows
+        # the same rule; zoom.mjs and browser.mjs measure the rendered text.
+        import re
+        document = ET.fromstring(render_workbench(plan('Table scan on t')))
+        style = document.find(SVG+'style').text
+        smallest = min(int(size) for size in re.findall(r'font-size:(\d+)px', style))
+        self.assertEqual(smallest, 11)
+        script = (Path(__file__).resolve().parents[1] / 'myflames' / 'workbench.js').read_text(encoding='utf-8')
+        self.assertIn('var SMALLEST_TEXT_PX = %d;' % smallest, script)
+        self.assertIn('var MIN_TEXT_PX = 11;', script)
+        fit = script[script.index('function fit()'):script.index('function rescale()')]
+        self.assertIn('var readable = fittedScale * SMALLEST_TEXT_PX / MIN_TEXT_PX;', fit)
+        self.assertIn('Math.min(Math.max((graphWidth + 56) / width, (graphHeight + 56) / height), readable)', fit)
+        # The readable bound wins over the 500% zoom-in limit (zoom.mjs
+        # measures 11 px text in a 150 px wide embedding).
+        self.assertIn('width * readable)', fit)
+        # Refit when the page changes the SVG's screen scale while fitted;
+        # a deliberate zoom, pan or 100% ends the fitted state.
+        rescale = script[script.index('function rescale()'):script.index('function animateWheel')]
+        self.assertIn('if (fitted && Math.abs(screenScale() - fittedScale) > 1e-6) fit();', rescale)
+        self.assertIn('new ResizeObserver(rescale).observe(root)', script)
+        self.assertEqual(script.count('fitted = false;') - script.count('var fitted = false;'), 3)
+        charts = Path(__file__).resolve().parents[1] / 'apps' / 'workspace' / 'src' / 'charts'
+        if not charts.is_dir():
+            self.skipTest('TypeScript sources are not in this checkout')
+        workbench_ts = (charts / 'workbench.ts').read_text(encoding='utf-8')
+        styles_ts = (charts / 'core' / 'styles.ts').read_text(encoding='utf-8')
+        zoom_ts = (charts / 'core' / 'zoom.ts').read_text(encoding='utf-8')
+        css = styles_ts[styles_ts.index('export const WORKBENCH_CSS'):]
+        css = css[:css.index('].join("")')]
+        self.assertEqual(min(int(size) for size in re.findall(r'font-size:(\d+)px', css)), smallest)
+        self.assertIn('export const SMALLEST_TEXT_PX = %d;' % smallest, workbench_ts)
+        self.assertIn('smallestTextPx: SMALLEST_TEXT_PX', workbench_ts)
+        self.assertIn('export const MIN_TEXT_PX = 11;', zoom_ts)
+        self.assertIn('box.w = Math.min(clamp(width * Math.min(wanted, readable)), width * readable);', zoom_ts)
+        self.assertIn('new ResizeObserver(() => zoom.rescale())', workbench_ts)
+
+    def test_rows_label_sits_on_an_opaque_chip_wider_than_its_text(self):
+        root = plan('Nested loop inner join', [
+            {'operation': 'Table scan on a', 'table_name': 'a', 'actual_rows': 10000, 'actual_loops': 1,
+             'actual_last_row_ms': 1, 'estimated_rows': 9920},
+            {'operation': 'Table scan on b', 'table_name': 'b', 'actual_rows': 3, 'actual_loops': 10000,
+             'actual_last_row_ms': 1}])
+        document = ET.fromstring(render_workbench(root))
+        graph = next(g for g in document.iter(SVG+'g') if g.attrib.get('class') == 'wb-graph')
+        children = list(graph)
+        labels = [i for i, el in enumerate(children) if el.attrib.get('class') == 'wb-edge-label'
+                  and el.text.startswith('Rows/loop')]
+        self.assertEqual(len(labels), 2)
+        for index in labels:
+            chip, text = children[index - 1], children[index]
+            self.assertEqual(chip.attrib['class'], 'wb-edge-chip')
+            # Drawn after the edges, before its text, starting left of it and
+            # wide enough (11 px text is under 5.6 px per character).
+            self.assertLess(float(chip.attrib['x']), float(text.attrib['x']))
+            self.assertGreaterEqual(float(chip.attrib['width']), len(text.text) * 5.6)
+            self.assertLess(float(chip.attrib['y']), float(text.attrib['y']) - 11)
+        self.assertIn('.wb-edge-chip{fill:', document.find(SVG+'style').text)
+
     def test_every_operator_and_edge_survives_complex_plans(self):
         for filename in ('fixtures/explain-044-join-3t-products-category-reviews.json',
                          'fixtures/explain-065-complex-join-agg-sort.json',
                          'fixtures/explain-061-union-all-us-uk-users.json',
                          'mariadb-explain-complex.json', 'mariadb-explain-index-merge.json'):
             with self.subTest(filename=filename):
-                root = parse_explain((TEST / filename).read_text())
+                root = parse_explain((TEST / filename).read_text(encoding="utf-8"))
                 original = copy.deepcopy(root)
                 svg = ET.fromstring(render_workbench(root))
                 node_ids = [g.attrib['data-node-id'] for g in svg.iter(SVG+'g') if 'data-node-id' in g.attrib]
@@ -157,13 +238,13 @@ class TestWorkbench(unittest.TestCase):
     def test_real_left_and_inner_plans_have_correct_regions(self):
         for filename, expected in [('explain-040-left-join-products-reviews.json', 'left'),
                                    ('explain-044-join-3t-products-category-reviews.json', 'inner')]:
-            root = parse_explain((TEST / 'fixtures' / filename).read_text())
+            root = parse_explain((TEST / 'fixtures' / filename).read_text(encoding="utf-8"))
             joins = [node for node in flatten_nodes(root) if _kind(node) in ('nested_loop', 'hash', 'bka')]
             self.assertTrue(joins)
             self.assertTrue(all(_join_type(node) == expected for node in joins))
 
     def test_mariadb_synthetic_join_does_not_invent_inner_semantics(self):
-        root = parse_explain((TEST / 'mariadb-explain-complex.json').read_text())
+        root = parse_explain((TEST / 'mariadb-explain-complex.json').read_text(encoding="utf-8"))
         joins = [node for node in flatten_nodes(root) if node['details']['join_algorithm'] == 'nested_loop']
         self.assertTrue(joins)
         self.assertTrue(all(_join_type(node) == 'unknown' for node in joins))
@@ -181,7 +262,7 @@ class TestWorkbench(unittest.TestCase):
 
     def test_programmatic_render_alias_includes_same_analysis(self):
         from myflames.render import render_explain
-        raw = (TEST / 'fixtures' / 'explain-040-left-join-products-reviews.json').read_text()
+        raw = (TEST / 'fixtures' / 'explain-040-left-join-products-reviews.json').read_text(encoding="utf-8")
         diagram = render_explain(raw, output_type='diagram')
         self.assertEqual(diagram, render_explain(raw, output_type='workbench'))
         self.assertIn('data-join-type="left"', diagram)

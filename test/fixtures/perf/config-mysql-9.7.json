@@ -1,0 +1,505 @@
+{
+ "args": {},
+ "calls": [
+  [
+   "/*myflames:config*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('innodb_buffer_pool_size', 'innodb_buffer_pool_size_max', 'innodb_data_file_buffering', 'innodb_dedicated_server', 'innodb_flush_log_at_trx_commit', 'innodb_flush_method', 'innodb_io_capacity', 'innodb_io_capacity_max', 'innodb_log_file_buffering', 'innodb_log_file_size', 'innodb_log_files_in_group', 'innodb_redo_log_capacity', 'internal_tmp_mem_storage_engine', 'join_buffer_size', 'log_bin', 'log_output', 'log_slow_query', 'log_slow_query_time', 'long_query_time', 'max_connections', 'max_heap_table_size', 'open_files_limit', 'performance_schema', 'slow_query_log', 'sort_buffer_size', 'sync_binlog', 'table_open_cache', 'temptable_max_mmap', 'temptable_max_ram', 'temptable_use_mmap', 'thread_handling', 'thread_pool_size', 'tmp_disk_table_size', 'tmp_memory_table_size', 'tmp_table_size', 'userstat', 'version', 'version_comment')",
+   "innodb_buffer_pool_size\t134217728\ninnodb_dedicated_server\tOFF\ninnodb_flush_log_at_trx_commit\t1\ninnodb_flush_method\tO_DIRECT\ninnodb_io_capacity\t10000\ninnodb_io_capacity_max\t20000\ninnodb_redo_log_capacity\t104857600\ninternal_tmp_mem_storage_engine\tTempTable\njoin_buffer_size\t262144\nlog_bin\tON\nlog_output\tFILE\nlong_query_time\t10.000000\nmax_connections\t151\nmax_heap_table_size\t16777216\nopen_files_limit\t1048576\nperformance_schema\tON\nslow_query_log\tOFF\nsort_buffer_size\t262144\nsync_binlog\t1\ntable_open_cache\t4000\ntemptable_max_mmap\t0\ntemptable_max_ram\t1073741824\nthread_handling\tone-thread-per-connection\ntmp_table_size\t16777216\nversion\t9.7.2\nversion_comment\tMySQL Community Server - GPL\n"
+  ],
+  [
+   "/*myflames:config*/ SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime' OR Variable_name LIKE 'Performance\\_schema\\_%\\_lost'",
+   "Performance_schema_accounts_lost\t0\nPerformance_schema_cond_classes_lost\t0\nPerformance_schema_cond_instances_lost\t0\nPerformance_schema_digest_lost\t0\nPerformance_schema_file_classes_lost\t0\nPerformance_schema_file_handles_lost\t0\nPerformance_schema_file_instances_lost\t0\nPerformance_schema_hosts_lost\t0\nPerformance_schema_index_stat_lost\t0\nPerformance_schema_locker_lost\t0\nPerformance_schema_logger_lost\t0\nPerformance_schema_memory_classes_lost\t0\nPerformance_schema_metadata_lock_lost\t0\nPerformance_schema_meter_lost\t0\nPerformance_schema_metric_lost\t0\nPerformance_schema_mutex_classes_lost\t0\nPerformance_schema_mutex_instances_lost\t0\nPerformance_schema_nested_statement_lost\t0\nPerformance_schema_prepared_statements_lost\t0\nPerformance_schema_program_lost\t0\nPerformance_schema_rwlock_classes_lost\t0\nPerformance_schema_rwlock_instances_lost\t0\nPerformance_schema_session_connect_attrs_lost\t0\nPerformance_schema_socket_classes_lost\t0\nPerformance_schema_socket_instances_lost\t0\nPerformance_schema_stage_classes_lost\t0\nPerformance_schema_statement_classes_lost\t0\nPerformance_schema_table_handles_lost\t0\nPerformance_schema_table_instances_lost\t0\nPerformance_schema_table_lock_stat_lost\t0\nPerformance_schema_thread_classes_lost\t0\nPerformance_schema_thread_instances_lost\t0\nPerformance_schema_users_lost\t0\nUptime\t1973\n"
+  ],
+  [
+   "/*myflames:config*/ SHOW GLOBAL STATUS WHERE Variable_name IN ('Uptime', 'Max_used_connections', 'Connection_errors_max_connections', 'Opened_tables', 'Open_tables', 'Created_tmp_tables', 'Created_tmp_disk_tables', 'Innodb_os_log_written', 'Innodb_redo_log_capacity_resized', 'Innodb_redo_log_current_lsn', 'Innodb_redo_log_checkpoint_lsn', 'Innodb_checkpoint_age')",
+   "Connection_errors_max_connections\t0\nCreated_tmp_disk_tables\t0\nCreated_tmp_tables\t142\nInnodb_os_log_written\t34856960\nInnodb_redo_log_capacity_resized\t104857600\nInnodb_redo_log_checkpoint_lsn\t89025784\nInnodb_redo_log_current_lsn\t89025784\nMax_used_connections\t3\nOpen_tables\t332\nOpened_tables\t412\nUptime\t1973\n"
+  ],
+  [
+   "/*myflames:config*/ SELECT VARIABLE_NAME, VARIABLE_SOURCE, NULL FROM performance_schema.variables_info WHERE VARIABLE_NAME IN ('innodb_buffer_pool_size', 'innodb_buffer_pool_size_max', 'innodb_data_file_buffering', 'innodb_dedicated_server', 'innodb_flush_log_at_trx_commit', 'innodb_flush_method', 'innodb_io_capacity', 'innodb_io_capacity_max', 'innodb_log_file_buffering', 'innodb_log_file_size', 'innodb_log_files_in_group', 'innodb_redo_log_capacity', 'internal_tmp_mem_storage_engine', 'join_buffer_size', 'log_bin', 'log_output', 'log_slow_query', 'log_slow_query_time', 'long_query_time', 'max_connections', 'max_heap_table_size', 'open_files_limit', 'performance_schema', 'slow_query_log', 'sort_buffer_size', 'sync_binlog', 'table_open_cache', 'temptable_max_mmap', 'temptable_max_ram', 'temptable_use_mmap', 'thread_handling', 'thread_pool_size', 'tmp_disk_table_size', 'tmp_memory_table_size', 'tmp_table_size')",
+   "innodb_buffer_pool_size\tCOMPILED\tNULL\ninnodb_dedicated_server\tCOMPILED\tNULL\ninnodb_flush_log_at_trx_commit\tCOMPILED\tNULL\ninnodb_flush_method\tCOMPILED\tNULL\ninnodb_io_capacity\tCOMPILED\tNULL\ninnodb_io_capacity_max\tCOMPILED\tNULL\ninnodb_redo_log_capacity\tCOMPILED\tNULL\ninternal_tmp_mem_storage_engine\tCOMPILED\tNULL\njoin_buffer_size\tCOMPILED\tNULL\nlog_bin\tCOMPILED\tNULL\nlog_output\tCOMPILED\tNULL\nlong_query_time\tCOMPILED\tNULL\nmax_connections\tCOMPILED\tNULL\nmax_heap_table_size\tCOMPILED\tNULL\nopen_files_limit\tCOMPILED\tNULL\nperformance_schema\tCOMPILED\tNULL\nslow_query_log\tCOMPILED\tNULL\nsort_buffer_size\tCOMPILED\tNULL\nsync_binlog\tCOMPILED\tNULL\ntable_open_cache\tCOMPILED\tNULL\ntemptable_max_mmap\tCOMPILED\tNULL\ntemptable_max_ram\tCOMPILED\tNULL\nthread_handling\tCOMPILED\tNULL\ntmp_table_size\tCOMPILED\tNULL\n"
+  ],
+  [
+   "/*myflames:config*/ SELECT COALESCE(SUM(ALLOCATED_SIZE), 0), COUNT(*) FROM information_schema.INNODB_TABLESPACES WHERE SPACE_TYPE IN ('Single', 'General')",
+   "83243008\t6\n"
+  ]
+ ],
+ "report": {
+  "checks": [
+   {
+    "action": null,
+    "caveat": "The data on disk includes cold rows and free space; what matters is the hot set. Leave room for connections, the OS and other processes: a pool that makes the server swap is far worse than disk reads.",
+    "explain": "The memory InnoDB uses to cache data and index pages. Pages not in it are read from disk. Compared here with the size of the InnoDB tablespace files on disk (free space inside them included), because a pool much smaller than the data cannot hold much of it.",
+    "group": "memory",
+    "key": "buffer_pool",
+    "label": "Buffer pool size",
+    "rule": "watch when the buffer pool is less than half the InnoDB tablespace files; a pool smaller than the data is normal when the hot data fits, so check the hit ratio in Health",
+    "settings": [
+     {
+      "default": "128.0 MiB",
+      "display": "128.0 MiB",
+      "name": "innodb_buffer_pool_size",
+      "set_by": "default",
+      "value": "134217728"
+     },
+     {
+      "default": "OFF",
+      "display": "OFF",
+      "name": "innodb_dedicated_server",
+      "set_by": "default",
+      "value": "OFF"
+     }
+    ],
+    "sources": [
+     "innodb_buffer_pool_size",
+     "information_schema.INNODB_TABLESPACES"
+    ],
+    "status": "ok",
+    "value": "128.0 MiB",
+    "why": "128.0 MiB for 79.4 MiB of InnoDB tablespace files. Rule of thumb: watch when the buffer pool is less than half the InnoDB tablespace files; a pool smaller than the data is normal when the hot data fits, so check the hit ratio in Health."
+   },
+   {
+    "action": null,
+    "caveat": "A global change applies to new sessions only. Check first which queries sort or join large sets (Health shows sort merge passes).",
+    "explain": "Memory each session can allocate for each sort. It is a per-session limit, so a large global value is multiplied by the number of sessions doing that at once.",
+    "group": "memory",
+    "key": "sort_buffer_size",
+    "label": "Sort buffer",
+    "rule": "watch when the global value is 16.0 MiB or more",
+    "settings": [
+     {
+      "default": "256.0 KiB",
+      "display": "256.0 KiB",
+      "name": "sort_buffer_size",
+      "set_by": "default",
+      "value": "262144"
+     }
+    ],
+    "sources": [
+     "sort_buffer_size"
+    ],
+    "status": "ok",
+    "value": "256.0 KiB",
+    "why": "256.0 KiB (engine default 256.0 KiB). Rule of thumb: watch when the global value is 16.0 MiB or more."
+   },
+   {
+    "action": null,
+    "caveat": "A global change applies to new sessions only. Check first which queries sort or join large sets (Health shows sort merge passes).",
+    "explain": "Memory each session can allocate for each join that cannot use an index. It is a per-session limit, so a large global value is multiplied by the number of sessions doing that at once.",
+    "group": "memory",
+    "key": "join_buffer_size",
+    "label": "Join buffer",
+    "rule": "watch when the global value is 16.0 MiB or more",
+    "settings": [
+     {
+      "default": "256.0 KiB",
+      "display": "256.0 KiB",
+      "name": "join_buffer_size",
+      "set_by": "default",
+      "value": "262144"
+     }
+    ],
+    "sources": [
+     "join_buffer_size"
+    ],
+    "status": "ok",
+    "value": "256.0 KiB",
+    "why": "256.0 KiB (engine default 256.0 KiB). Rule of thumb: watch when the global value is 16.0 MiB or more."
+   },
+   {
+    "action": null,
+    "caveat": "Each concurrent temporary table can use up to the limit, so a large global value risks memory pressure. Tables too big for any sensible limit go to disk regardless.",
+    "explain": "Internal temporary tables (GROUP BY, DISTINCT, UNION, derived tables) start in memory and move to disk when they outgrow the limit. TempTable keeps each internal temporary table in memory up to tmp_table_size (16.0 MiB), and all of them up to temptable_max_ram (1.0 GiB) together.",
+    "group": "memory",
+    "key": "tmp_tables",
+    "label": "Temporary tables",
+    "rule": "watch when 25% or more of internal temporary tables since startup went to disk, with at least 100 of them",
+    "settings": [
+     {
+      "default": "TempTable",
+      "display": "TempTable",
+      "name": "internal_tmp_mem_storage_engine",
+      "set_by": "default",
+      "value": "TempTable"
+     },
+     {
+      "default": "16.0 MiB",
+      "display": "16.0 MiB",
+      "name": "tmp_table_size",
+      "set_by": "default",
+      "value": "16777216"
+     },
+     {
+      "default": null,
+      "display": "1.0 GiB",
+      "name": "temptable_max_ram",
+      "set_by": "default",
+      "value": "1073741824"
+     },
+     {
+      "default": null,
+      "display": "0 B",
+      "name": "temptable_max_mmap",
+      "set_by": "default",
+      "value": "0"
+     }
+    ],
+    "sources": [
+     "internal_tmp_mem_storage_engine",
+     "tmp_table_size",
+     "temptable_max_ram",
+     "temptable_max_mmap",
+     "Created_tmp_tables",
+     "Created_tmp_disk_tables"
+    ],
+    "status": "ok",
+    "value": "0.0% on disk",
+    "why": "0 of 142 internal temporary tables since startup went to disk (0.0%). Rule of thumb: watch when 25% or more of internal temporary tables since startup went to disk, with at least 100 of them."
+   },
+   {
+    "action": null,
+    "caveat": "",
+    "explain": "When InnoDB writes and syncs the redo log for a commit. 1 writes and syncs at every commit, so a committed transaction survives a crash or power loss.",
+    "group": "durability",
+    "key": "flush_log",
+    "label": "Redo flush at commit",
+    "rule": "ok at 1 (and MariaDB's 3), which make each commit durable; watch at 0 or 2",
+    "settings": [
+     {
+      "default": "1",
+      "display": "1",
+      "name": "innodb_flush_log_at_trx_commit",
+      "set_by": "default",
+      "value": "1"
+     }
+    ],
+    "sources": [
+     "innodb_flush_log_at_trx_commit"
+    ],
+    "status": "ok",
+    "value": "1",
+    "why": "innodb_flush_log_at_trx_commit=1. Rule of thumb: ok at 1 (and MariaDB's 3), which make each commit durable; watch at 0 or 2."
+   },
+   {
+    "action": null,
+    "caveat": "",
+    "explain": "How often the binary log is synced to disk. At 1 it is synced at each commit (group), so after an OS crash or power loss the binary log has every committed transaction and replicas stay consistent. MySQL's default is 1.",
+    "group": "durability",
+    "key": "sync_binlog",
+    "label": "Binary log sync",
+    "rule": "ok at 1 with the binary log on; watch at 0 or above 1",
+    "settings": [
+     {
+      "default": "1",
+      "display": "1",
+      "name": "sync_binlog",
+      "set_by": "default",
+      "value": "1"
+     }
+    ],
+    "sources": [
+     "sync_binlog",
+     "log_bin"
+    ],
+    "status": "ok",
+    "value": "1",
+    "why": "sync_binlog=1. Rule of thumb: ok at 1 with the binary log on; watch at 0 or above 1."
+   },
+   {
+    "action": null,
+    "caveat": "",
+    "explain": "How InnoDB opens and syncs its data files. O_DIRECT bypasses the OS file cache, so data is not cached twice. MySQL uses O_DIRECT by default when the file system supports it.",
+    "group": "durability",
+    "key": "flush_method",
+    "label": "File flush method",
+    "rule": null,
+    "settings": [
+     {
+      "default": "O_DIRECT when supported, else fsync",
+      "display": "O_DIRECT",
+      "name": "innodb_flush_method",
+      "set_by": "default",
+      "value": "O_DIRECT"
+     }
+    ],
+    "sources": [
+     "innodb_flush_method"
+    ],
+    "status": "info",
+    "value": "O_DIRECT",
+    "why": "innodb_flush_method=O_DIRECT. No rule: compare with your hardware and workload."
+   },
+   {
+    "action": null,
+    "caveat": "",
+    "explain": "The redo log holds changes not yet written to the data files. When it fills, InnoDB must flush dirty pages before more writes can proceed, so a small redo log for the write rate causes flushing bursts. A larger one means a longer crash recovery.",
+    "group": "redo",
+    "key": "redo",
+    "label": "Redo log size",
+    "rule": null,
+    "settings": [
+     {
+      "default": "100.0 MiB",
+      "display": "100.0 MiB",
+      "name": "innodb_redo_log_capacity",
+      "set_by": "default",
+      "value": "104857600"
+     }
+    ],
+    "sources": [
+     "innodb_redo_log_capacity",
+     "innodb_log_file_size",
+     "innodb_log_files_in_group",
+     "Innodb_redo_log_capacity_resized",
+     "Innodb_os_log_written"
+    ],
+    "status": "info",
+    "value": "100.0 MiB",
+    "why": "Redo capacity 100.0 MiB; the checkpoint age is 0 B now; too little uptime to judge the write rate. No rule: compare with your hardware and workload."
+   },
+   {
+    "action": null,
+    "caveat": "Every connection can allocate its own sort, join and temporary-table memory, so a higher limit raises the worst-case memory. MySQL may lower max_connections at startup to fit open_files_limit.",
+    "explain": "The most client connections the server accepts (one more is kept for an administrator). Compared with the peak since startup or the last status reset.",
+    "group": "connections",
+    "key": "max_connections",
+    "label": "Connection limit",
+    "rule": "watch when the peak since startup reached 80% of max_connections; problem when clients were refused (Connection_errors_max_connections above zero)",
+    "settings": [
+     {
+      "default": "151",
+      "display": "151",
+      "name": "max_connections",
+      "set_by": "default",
+      "value": "151"
+     }
+    ],
+    "sources": [
+     "max_connections",
+     "Max_used_connections",
+     "Connection_errors_max_connections"
+    ],
+    "status": "ok",
+    "value": "151",
+    "why": "Peak 3 of max_connections 151 (2%). Rule of thumb: watch when the peak since startup reached 80% of max_connections; problem when clients were refused (Connection_errors_max_connections above zero)."
+   },
+   {
+    "action": null,
+    "caveat": "Each open table uses a file descriptor and memory; the server needs open_files_limit to cover it. MySQL may lower table_open_cache at startup to fit open_files_limit.",
+    "explain": "How many open table instances the server keeps for reuse. When it is full, a table not in it must be opened again (Opened_tables).",
+    "group": "connections",
+    "key": "table_open_cache",
+    "label": "Table cache",
+    "rule": "watch when the cache is at least 95% full and tables were opened at 1 per second or more on average since startup",
+    "settings": [
+     {
+      "default": "4000",
+      "display": "4000",
+      "name": "table_open_cache",
+      "set_by": "default",
+      "value": "4000"
+     }
+    ],
+    "sources": [
+     "table_open_cache",
+     "Open_tables",
+     "Opened_tables"
+    ],
+    "status": "ok",
+    "value": "4,000",
+    "why": "332 of 4,000 in use; 0.21 tables opened per second on average since startup. Rule of thumb: watch when the cache is at least 95% full and tables were opened at 1 per second or more on average since startup."
+   },
+   {
+    "action": null,
+    "caveat": "",
+    "explain": "Performance Schema records statement digests, waits, and table and file I/O. myflames' Top statements, Waits, I/O and unused-index views need it. It is read-only at runtime.",
+    "group": "observability",
+    "key": "performance_schema",
+    "label": "Performance Schema",
+    "rule": "watch when off: Top statements, Waits, I/O and unused indexes need it",
+    "settings": [
+     {
+      "default": "ON",
+      "display": "ON",
+      "name": "performance_schema",
+      "set_by": "default",
+      "value": "ON"
+     }
+    ],
+    "sources": [
+     "performance_schema"
+    ],
+    "status": "ok",
+    "value": "ON",
+    "why": "ON. Rule of thumb: watch when off: Top statements, Waits, I/O and unused indexes need it."
+   },
+   {
+    "action": {
+     "config": "slow_query_log = ON\nlong_query_time = 1  # under [mysqld]",
+     "sql": "SET GLOBAL slow_query_log = ON; SET GLOBAL long_query_time = 1;"
+    },
+    "caveat": "A low threshold on a busy server writes a lot of log; log_output=TABLE costs more than FILE. A new long_query_time applies to new connections only.",
+    "explain": "The slow query log records statements that ran longer than long_query_time.",
+    "group": "observability",
+    "key": "slow_log",
+    "label": "Slow query log",
+    "rule": "watch when off; info when on with long_query_time at 10 s or more",
+    "settings": [
+     {
+      "default": "OFF",
+      "display": "OFF",
+      "name": "slow_query_log",
+      "set_by": "default",
+      "value": "OFF"
+     },
+     {
+      "default": "10 s",
+      "display": "10 s",
+      "name": "long_query_time",
+      "set_by": "default",
+      "value": "10.000000"
+     },
+     {
+      "default": null,
+      "display": "FILE",
+      "name": "log_output",
+      "set_by": "default",
+      "value": "FILE"
+     }
+    ],
+    "sources": [
+     "slow_query_log",
+     "long_query_time",
+     "log_output"
+    ],
+    "status": "watch",
+    "value": "OFF",
+    "why": "slow_query_log=OFF: slow statements are not logged. Rule of thumb: watch when off; info when on with long_query_time at 10 s or more."
+   },
+   {
+    "action": null,
+    "caveat": "",
+    "explain": "The background I/O rate InnoDB aims for when flushing pages. The engines' defaults differ a lot: MySQL 8.4 uses 10000, MariaDB 200.",
+    "group": "server",
+    "key": "io_capacity",
+    "label": "InnoDB I/O capacity",
+    "rule": null,
+    "settings": [
+     {
+      "default": "10000",
+      "display": "10000",
+      "name": "innodb_io_capacity",
+      "set_by": "default",
+      "value": "10000"
+     },
+     {
+      "default": null,
+      "display": "20000",
+      "name": "innodb_io_capacity_max",
+      "set_by": "default",
+      "value": "20000"
+     }
+    ],
+    "sources": [
+     "innodb_io_capacity",
+     "innodb_io_capacity_max"
+    ],
+    "status": "info",
+    "value": "10000",
+    "why": "innodb_io_capacity=10000. No rule: compare with your hardware and workload."
+   },
+   {
+    "action": null,
+    "caveat": "",
+    "explain": "With innodb_dedicated_server=ON, MySQL sizes the buffer pool from the machine's memory and, when innodb_redo_log_capacity is not set, the redo log from its CPU count.",
+    "group": "server",
+    "key": "dedicated_server",
+    "label": "Dedicated server mode",
+    "rule": null,
+    "settings": [
+     {
+      "default": "OFF",
+      "display": "OFF",
+      "name": "innodb_dedicated_server",
+      "set_by": "default",
+      "value": "OFF"
+     }
+    ],
+    "sources": [
+     "innodb_dedicated_server"
+    ],
+    "status": "info",
+    "value": "OFF",
+    "why": "innodb_dedicated_server=OFF. No rule: compare with your hardware and workload."
+   },
+   {
+    "action": null,
+    "caveat": "",
+    "explain": "How the server runs connections: a thread per connection, or a thread pool.",
+    "group": "server",
+    "key": "thread_handling",
+    "label": "Thread handling",
+    "rule": null,
+    "settings": [
+     {
+      "default": "one-thread-per-connection",
+      "display": "one-thread-per-connection",
+      "name": "thread_handling",
+      "set_by": "default",
+      "value": "one-thread-per-connection"
+     }
+    ],
+    "sources": [
+     "thread_handling"
+    ],
+    "status": "info",
+    "value": "one-thread-per-connection",
+    "why": "thread_handling=one-thread-per-connection. No rule: compare with your hardware and workload."
+   }
+  ],
+  "engine": "mysql",
+  "groups": [
+   {
+    "key": "memory",
+    "label": "Memory"
+   },
+   {
+    "key": "durability",
+    "label": "Durability"
+   },
+   {
+    "key": "redo",
+    "label": "Redo log"
+   },
+   {
+    "key": "connections",
+    "label": "Connections and caches"
+   },
+   {
+    "key": "observability",
+    "label": "Observability"
+   },
+   {
+    "key": "server",
+    "label": "Server facts"
+   }
+  ],
+  "notes": [
+   "The server started 32 min 53 s ago, so the counters since startup are still small.",
+   "Counters run from server start. The connection peak (Max_used_connections) also restarts with FLUSH STATUS on MySQL and MariaDB 11.4 or older, and with FLUSH GLOBAL STATUS on MariaDB 11.5 and later, which also resets the temporary-table and tables-opened counts.",
+   "Statuses are rules of thumb, not verdicts; each check says which rule it uses. myflames never changes a setting: run a suggested statement only after reading its caveat."
+  ],
+  "performance_schema": true,
+  "schema_version": "config-1.0",
+  "server_version": "9.7.2",
+  "summary": {
+   "info": 5,
+   "ok": 9,
+   "problem": 0,
+   "status": "watch",
+   "unknown": 0,
+   "watch": 1
+  },
+  "taken_at": "2026-10-13T17:33:34.980469+00:00",
+  "uptime_s": 1973
+ },
+ "server": "mysql-9.7"
+}

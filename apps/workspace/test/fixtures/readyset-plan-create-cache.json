@@ -1,0 +1,69 @@
+{
+ "schema_version": "readyset-action-1.0",
+ "action": "create_cache",
+ "target": null,
+ "value": {
+  "cache_type": "shallow",
+  "query_or_id": "q_3333cccc",
+  "name": "c_orders_status",
+  "ttl_seconds": 60,
+  "refresh_seconds": 30,
+  "coalesce_ms": 50,
+  "adaptive": true
+ },
+ "eyebrow": "CREATE CACHE",
+ "title": "Create shallow cache c_orders_status?",
+ "confirm_label": "Create shallow cache",
+ "description": "Caches full query results with TTL/refresh expiry on Readyset.",
+ "target_text": "Shallow cache (c_orders_status)",
+ "statements": [
+  "CREATE SHALLOW CACHE `c_orders_status` WITH (POLICY TTL 60 SECONDS REFRESH EVERY 30 SECONDS, COALESCE 50 MS, ADAPTIVE) FROM q_3333cccc;"
+ ],
+ "facts": [
+  [
+   "Readyset",
+   "stable-250605 (adapter port)"
+  ],
+  [
+   "Cache type",
+   "Shallow"
+  ],
+  [
+   "Options",
+   "POLICY TTL 60 SECONDS REFRESH EVERY 30 SECONDS, COALESCE 50 MS, ADAPTIVE"
+  ],
+  [
+   "From",
+   "q_3333cccc"
+  ]
+ ],
+ "warnings": [],
+ "changes": null,
+ "typed_guard": null,
+ "undo": "DROP CACHE `c_orders_status`;",
+ "next": null,
+ "verified": [
+  "Readyset identity (@@version_comment, SHOW READYSET VERSION)"
+ ],
+ "timeout_s": 30,
+ "checks": [
+  "Refresh the Readyset place to inspect the current caches, tables and status.",
+  "The Audit log keeps this attempt as Outcome unknown; nothing is sent again."
+ ],
+ "expect": {
+  "readyset_version": "stable-250605",
+  "cache_type": "shallow",
+  "name": "c_orders_status",
+  "target": "q_3333cccc",
+  "collisions": []
+ },
+ "policy": {
+  "action": "confirm",
+  "tone": "danger",
+  "title": "Risky write",
+  "text": "Connection Readyset lab is a Development connection. myflames asks only before risky writes, and this statement is one.",
+  "connection_type": "development",
+  "read_only": false
+ },
+ "review_token": "fixture-token-create_cache"
+}

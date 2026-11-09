@@ -100,7 +100,7 @@ def assert_svg_contract(
             + svg[max(0, idx - 30): idx + 30]
         )
 
-    # Table-name presence (bargraph/treemap semantic content).
+    # Table-name presence (bargraph semantic content).
     if require_table_names:
         for t in require_table_names:
             if t not in svg:

@@ -35,7 +35,6 @@ _REPO = Path(__file__).resolve().parents[1]
 _SUFFIX_TYPES = (
     ("-flamegraph", "flamegraph"),
     ("-bargraph", "bargraph"),
-    ("-treemap", "treemap"),
     ("-diagram", "diagram"),
     ("-tree", "tree"),
     ("-workbench", "workbench"),
@@ -53,7 +52,6 @@ _EXTRA_SVGS = (
 _INDEX_COMPLEX_SVGS = (
     ("mysql-query-complex-flamegraph", "flamegraph"),
     ("mysql-query-complex-bargraph", "bargraph"),
-    ("mysql-query-complex-treemap", "treemap"),
     ("mysql-query-complex-diagram", "diagram"),
     ("mysql-query-complex-tree", "tree"),
 )
@@ -95,6 +93,9 @@ def _run_myflames(view: str, out: Path, fixture: Path) -> None:
         view,
         "--output",
         str(out),
+        # Published demos link to the hosted lessons; don't write a teach/
+        # bundle into every demo folder.
+        "--no-teach-bundle",
         str(fixture),
     ]
     r = subprocess.run(cmd, cwd=str(_REPO))

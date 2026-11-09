@@ -11,6 +11,8 @@ import sys
 import tempfile
 import unittest
 
+from myflames.parser import parse_explain
+
 TEST_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(TEST_DIR)
 FIXTURE_DIR = os.path.join(TEST_DIR, "fixtures")
@@ -29,7 +31,7 @@ def run_cli(*args, **kwargs):
         input=stdin,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        universal_newlines=True,
+        universal_newlines=True, encoding="utf-8",
     )
     return proc
 
@@ -85,14 +87,18 @@ class TestOutputFlag(unittest.TestCase):
                 result = run_cli('--type', 'workbench', FULL_SCAN, '-o', str(output))
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout, '')
-                content = output.read_text()
-                self.assertIn('class="wb-plan"', content)
-                self.assertIn('data-node-id=', content)
+                content = output.read_text(encoding="utf-8")
                 if extension == 'svg':
+                    self.assertIn('class="wb-plan"', content)
+                    self.assertIn('data-node-id=', content)
                     ET.fromstring(content)
                 else:
+                    # The report mounts Visual Explain from chart data with
+                    # the inlined bundle (browser coverage: charts.mjs).
+                    self.assertIn('data-mfc-view="workbench"', content)
+                    self.assertIn('"id":"' + parse_explain(Path(FULL_SCAN).read_text(encoding="utf-8"))['node_id'] + '"', content)
                     self.assertIn('application/ld+json', content)
-                    sidecar = json.loads(output.with_suffix('.json').read_text())
+                    sidecar = json.loads(output.with_suffix('.json').read_text(encoding="utf-8"))
                     self.assertIn('plan_tree', sidecar)
 
     def test_digest_output_writes_file(self):
@@ -151,6 +157,50 @@ class TestStreamDiscipline(unittest.TestCase):
         proc = run_cli("check", FULL_SCAN, "--fail-on", "filesort", "-q")
         self.assertEqual(proc.stdout.strip(), "")
         self.assertEqual(proc.stderr.strip(), "")
+
+
+class TestUnicodeStreams(unittest.TestCase):
+    """Windows encodes a redirected stream with the ANSI code page (cp1252);
+    the CLI still writes and reads UTF-8 there. PYTHONIOENCODING gives any
+    platform that starting point."""
+
+    NAME = "café_日本"
+
+    def test_redirected_output_is_utf8_on_an_ansi_code_page(self):
+        with open(FULL_SCAN, encoding="utf-8") as handle:
+            plan = handle.read().replace('"table_name": "users"', '"table_name": "%s"' % self.NAME)
+        self.assertIn(self.NAME, plan)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "unicode-plan.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(plan)
+            env = dict(os.environ, PYTHONIOENCODING="cp1252")
+            proc = subprocess.run([sys.executable, "-m", "myflames", "digest", path], cwd=REPO_ROOT, env=env,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(proc.returncode, 0, proc.stderr.decode("utf-8", "replace"))
+        self.assertIn(self.NAME, proc.stdout.decode("utf-8"))
+
+    def test_piped_input_is_read_as_utf8(self):
+        import io
+        from unittest import mock
+        from myflames import cli
+        text = "SELECT '%s'" % self.NAME
+        streams = {name: io.TextIOWrapper(io.BytesIO(text.encode("utf-8") if name == "stdin" else b""),
+                                          encoding="cp1252", errors=errors)
+                   for name, errors in (("stdin", "strict"), ("stdout", "strict"), ("stderr", "backslashreplace"))}
+        with mock.patch.multiple(sys, **streams):
+            cli._utf8_standard_streams()
+            self.assertEqual(sys.stdin.read(), text)
+            self.assertEqual(sys.stdout.encoding, "utf-8")
+            self.assertEqual(sys.stderr.errors, "backslashreplace")
+
+    def test_streams_without_an_encoding_are_left_alone(self):
+        import io
+        from unittest import mock
+        from myflames import cli
+        with mock.patch.multiple(sys, stdin=io.StringIO("x"), stdout=io.StringIO(), stderr=io.StringIO()):
+            cli._utf8_standard_streams()
+            self.assertEqual(sys.stdin.read(), "x")
 
 
 class TestQuietFlagUniform(unittest.TestCase):
@@ -218,6 +268,81 @@ class TestDeprecatedAliases(unittest.TestCase):
         json.loads(proc.stdout)  # stdout stays pure JSON
 
 
+class CliDeprecationTests(unittest.TestCase):
+    """The command line is deprecated: one stderr line per command, never on
+    stdout, never for `ui` (the desktop app's backend), hidden by --quiet or
+    MYFLAMES_NO_DEPRECATION_WARNING=1; output and exit codes unchanged."""
+
+    def run_without_opt_out(self, *args, **env):
+        environ = {k: v for k, v in os.environ.items() if k != "MYFLAMES_NO_DEPRECATION_WARNING"}
+        environ.update(env)
+        return subprocess.run([sys.executable, "-m", "myflames"] + list(args), cwd=REPO_ROOT, env=environ,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, encoding="utf-8")
+
+    def test_every_command_prints_one_notice_on_stderr_only(self):
+        from myflames.cli import CLI_DEPRECATION
+        for args in (("advise", FULL_SCAN, "--json"), ("digest", FULL_SCAN), (FULL_SCAN,)):
+            with self.subTest(args=args[0]):
+                proc = self.run_without_opt_out(*args)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(proc.stderr.count(CLI_DEPRECATION), 1)
+                self.assertTrue(proc.stderr.startswith(CLI_DEPRECATION))
+                self.assertNotIn("deprecated", proc.stdout)
+        self.assertIn("desktop app", CLI_DEPRECATION)
+        json.loads(self.run_without_opt_out("advise", FULL_SCAN, "--json").stdout)
+
+    def test_exit_codes_are_unchanged(self):
+        proc = self.run_without_opt_out("check", FULL_SCAN, "--fail-on", "full_scan")
+        self.assertEqual(proc.returncode, 1)
+        proc = self.run_without_opt_out("check", "/nonexistent/plan.json", "--fail-on", "full_scan")
+        self.assertEqual(proc.returncode, 2)
+
+    def test_quiet_and_the_opt_out_hide_it(self):
+        for args, env in ((("digest", FULL_SCAN, "-q"), {}), (("digest", FULL_SCAN, "--quiet"), {}),
+                          (("digest", FULL_SCAN, "--qui"), {}),
+                          (("digest", FULL_SCAN), {"MYFLAMES_NO_DEPRECATION_WARNING": "1"})):
+            with self.subTest(args=args, env=env):
+                proc = self.run_without_opt_out(*args, **env)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertNotIn("deprecated", proc.stderr)
+                self.assertIn("myflames digest", proc.stdout)
+
+    def test_ui_never_prints_it(self):
+        proc = self.run_without_opt_out("ui", "--help")
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(proc.stderr, "")
+        from myflames.cli import _quiet_in
+        self.assertFalse(_quiet_in(["sql", "--", "-q"]), "a -q after -- is an argument, not the flag")
+        self.assertFalse(_quiet_in(["--qu"]), "--qu is ambiguous, so it is not --quiet")
+
+
+class UserDocsCarryNoCliTests(unittest.TestCase):
+    """The CLI and myflames-mcp are deprecated and documented only in
+    docs/DEVELOPER_REFERENCE.md: the README and the handbook the website
+    renders describe the desktop app only."""
+
+    def test_readme_and_handbook_have_no_cli_material(self):
+        import re
+        with open(os.path.join(REPO_ROOT, "README.md"), encoding="utf-8") as f:
+            readme = f.read()
+        handbook = os.path.join(REPO_ROOT, "docs", "handbook")
+        with open(os.path.join(handbook, "manifest.json"), encoding="utf-8") as f:
+            chapters = [c["file"] for c in json.load(f)]
+        self.assertNotIn("cli.md", chapters)
+        self.assertNotIn("agents.md", chapters)
+        texts = {"README.md": readme}
+        for name in chapters + ["README.md"]:
+            with open(os.path.join(handbook, name), encoding="utf-8") as f:
+                texts["docs/handbook/" + name] = f.read()
+        command = re.compile(r"(?m)^\s*(?:\$ )?(?:myflames|myflames-mcp|pipx|pip)\b")
+        for name, text in texts.items():
+            blocks = re.findall(r"(?s)```[a-z]*\n(.*?)```", text)
+            self.assertEqual([b for b in blocks if command.search(b)], [], name + ": CLI command block")
+            self.assertEqual(re.findall(r"`myflames [a-z-]+", text), [], name + ": inline CLI command")
+            self.assertEqual(re.findall(r"(?m)^#{1,4} .*\bCLI\b", text), [], name + ": CLI heading")
+        self.assertIn("deprecated", readme, "the README keeps its one deprecation sentence")
+
+
 class TestWorkspaceCommand(unittest.TestCase):
     def test_ui_is_discoverable_and_has_own_help(self):
         self.assertIn('myflames ui', run_cli('--help').stdout)
@@ -243,6 +368,112 @@ class TestWorkspaceCommand(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertIn('Try --port 0', result.stderr)
             self.assertEqual(result.stdout, '')
+
+
+class HideLiteralContractTests(unittest.TestCase):
+    def test_collected_ddl_redacted_after_cli_sidecar_is_complete(self):
+        from types import SimpleNamespace
+        from myflames.cli import _maybe_write_sidecar
+        from myflames.parser import analyze_plan
+        from myflames.collectors import parse_show_create_table
+        raw = json.dumps({'operation': 'Table scan on `42`', 'table_name': '42',
+                          'actual_last_row_ms': 12.5, 'actual_rows': 7, 'actual_loops': 1})
+        root = parse_explain(raw)
+        analysis = analyze_plan(root)
+        schema = parse_show_create_table("CREATE TABLE `42` (\n `123` varchar(20) DEFAULT 'CLI_DDL_SECRET'\n) ENGINE=InnoDB")
+        analysis['collected_schema'] = {'42': schema}
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, 'shared.json')
+            args = SimpleNamespace(no_sidecar=False, sidecar=path, input='plan.json',
+                                   output=None, hide_literals=True, quiet=True)
+            _maybe_write_sidecar(args, root, analysis, raw, None, '')
+            with open(path) as handle:
+                payload = json.load(handle)
+            self.assertNotIn('CLI_DDL_SECRET', json.dumps(payload))
+            table = payload['collected']['schema']['42']
+            self.assertEqual(table['table_name'], '42')
+            self.assertEqual(table['columns'][0]['name'], '123')
+            self.assertEqual(table['columns'][0]['type'], 'varchar(20)')
+            self.assertEqual(payload['plan_summary']['total_time_ms'], 12.5)
+            self.assertIn('CLI_DDL_SECRET', schema['ddl'])
+
+    def test_hidden_compare_keeps_predicate_matches_for_json_digest_and_html(self):
+        # Siblings need their original predicates for matching, even on export.
+        before = {'operation': 'Union all', 'actual_last_row_ms': 40,
+                  'actual_loops': 1, 'inputs': [
+                      {'operation': 'Filter: (id=12345)', 'condition': 'id=12345',
+                       'actual_last_row_ms': 10, 'actual_loops': 1},
+                      {'operation': 'Filter: (id=67890)', 'condition': 'id=67890',
+                       'actual_last_row_ms': 10, 'actual_loops': 1}]}
+        after = json.loads(json.dumps(before))
+        after['actual_last_row_ms'] = 50
+        after['inputs'][0]['actual_last_row_ms'] = 20
+        with tempfile.TemporaryDirectory() as directory:
+            paths = [os.path.join(directory, name) for name in ('before.json', 'after.json')]
+            for path, plan in zip(paths, (before, after)):
+                with open(path, 'w') as handle:
+                    json.dump(plan, handle)
+            plain = run_cli('compare', *paths, '--json')
+            self.assertEqual(plain.returncode, 0, plain.stderr)
+            expected = json.loads(plain.stdout)
+            self.assertEqual(expected['summary']['regressions'], 1)
+            for mode in ('--json', '--digest', '--title'):
+                args = [mode] if mode != '--title' else [mode, "SELECT 'CLI_TITLE_SECRET'"]
+                result = run_cli('compare', *paths, '--hide-literals', *args)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                for secret in ('12345', '67890', 'CLI_TITLE_SECRET'):
+                    self.assertNotIn(secret, result.stdout)
+                if mode == '--json':
+                    hidden = json.loads(result.stdout)
+                    self.assertEqual(hidden['summary'], expected['summary'])
+                    for old, new in zip(expected['deltas'], hidden['deltas']):
+                        self.assertEqual(new['matching'], old['matching'])
+                        self.assertEqual(new['self_time_ms'], old['self_time_ms'])
+                else:
+                    self.assertNotIn('Uncertain match', result.stdout)
+
+    def test_help_names_the_shared_modifier(self):
+        for command in ((), ('explore',), ('compare',)):
+            result = run_cli(*(command + ('--help',)))
+            self.assertEqual(result.returncode, 0)
+            self.assertIn('--hide-literals', result.stdout)
+            self.assertIn('Replace literal values with ?', result.stdout)
+
+    def test_html_sidecar_explore_and_compare_hide_literals(self):
+        plan = {"operation": "Index lookup on orders using idx (name='private-token')",
+                "table_name": "orders", "index_name": "idx", "access_type": "index",
+                "condition": "name='private-token'", "actual_last_row_ms": 2,
+                "actual_rows": 1, "actual_loops": 1,
+                "query": "SELECT * FROM orders WHERE name='private-token'"}
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, 'plan.json')
+            output = os.path.join(directory, 'shared.html')
+            with open(path, 'w') as handle:
+                json.dump(plan, handle)
+            result = run_cli(path, '--hide-literals', '--no-teach-bundle', '-q', '-o', output)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, '')
+            self.assertEqual(result.stderr, '')
+            with open(output) as handle:
+                html = handle.read()
+            self.assertIn('Literal values hidden', html)
+            self.assertNotIn('private-token', html)
+            with open(os.path.join(directory, 'plan.json')) as handle:
+                # Auto-sidecars use <output>.json, not the input path.
+                self.assertIn('private-token', handle.read())
+            with open(os.path.join(directory, 'shared.json')) as handle:
+                sidecar = handle.read()
+            self.assertNotIn('private-token', sidecar)
+            json.loads(sidecar)
+            for args in (('explore', path, '--hide-literals'), ('compare', path, path, '--hide-literals'),
+                         ('compare', path, path, '--hide-literals', '--json')):
+                result = run_cli(*args)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn('private-token', result.stdout)
+                if '--json' in args:
+                    json.loads(result.stdout)
+                else:
+                    self.assertIn('Literal values hidden', result.stdout)
 
 
 if __name__ == "__main__":

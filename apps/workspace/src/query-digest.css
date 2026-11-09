@@ -1,0 +1,503 @@
+/* Query digest uses the shared toolbar, table, inspector and export controls. */
+.qd-place,
+.qd-view {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+/* The toolbar (wrapped onto two rows in a narrow window), the summary line
+   and the status keep their height; only the table area shrinks and scrolls. */
+.qd-view > :not(.view-split) {
+  flex: none;
+}
+.qd-view .view-split {
+  min-height: 0;
+  align-items: stretch;
+  overflow: hidden;
+}
+.qd-view .view-main {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+}
+.qd-view .data-table-frame {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.qd-view .data-table-wrap {
+  max-height: none;
+  min-height: 0;
+}
+.qd-summary {
+  padding: var(--space-2) var(--space-3) 0 var(--space-4);
+}
+.qd-summary .summary-line {
+  margin-bottom: var(--space-1);
+}
+.qd-view .toolbar-field,
+.qd-view .toolbar-field .select {
+  min-width: 0;
+  max-width: 100%;
+}
+.qd-statement {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+.qd-share {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  font-variant-numeric: tabular-nums;
+}
+.qd-share progress {
+  appearance: none;
+  width: var(--space-7);
+  height: var(--space-1);
+  border: 0;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--line);
+  color: var(--accent);
+}
+.qd-share progress::-webkit-progress-bar { background: var(--line); }
+.qd-share progress::-webkit-progress-value { background: var(--accent); }
+.qd-share progress::-moz-progress-bar { background: var(--accent); }
+.qd-ratio-warn { color: var(--warn-text); }
+.qd-ratio-danger { color: var(--danger-text); }
+.qd-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.qd-code {
+  min-width: 0;
+  max-width: 100%;
+}
+.qd-code pre {
+  margin: 0 0 var(--space-1);
+  padding: var(--space-2);
+  background: var(--surface-pane);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.qd-feedback {
+  padding: var(--space-1) var(--space-4);
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+}
+.qd-view .view-inspector:not(.is-sheet) {
+  position: relative;
+  top: auto;
+  align-self: stretch;
+  min-height: 0;
+  max-height: 100%;
+}
+.qd-view.is-other-connection .qd-summary {
+  color: var(--ink-muted);
+}
+/* A statement first seen in the last 24 hours: the New badge before its text. */
+.qd-statement-cell {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  min-width: 0;
+}
+.qd-statement-cell > .pill {
+  flex: none;
+}
+.qd-statement-cell > .qd-statement {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* The digests the list does not hold: one closing row under the table,
+   attached to its frame, never selectable. */
+.qd-view .data-table-frame:has(+ .qd-others) {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.qd-others {
+  flex: none;
+  margin: 0;
+  padding: var(--space-1-5) var(--space-3);
+  border: 1px solid var(--line);
+  border-top: 0;
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+  background: var(--surface-subtle);
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+/* One label column and one value column for every fact list in the
+   inspector, so the Latency rows line up with the Statement rows above them.
+   Below 900 px the shared stacking rule applies. */
+.qd-view .view-inspector .inspector-fields {
+  grid-template-columns: minmax(0, 40%) minmax(0, 1fr);
+}
+@media (max-width: 900px) {
+  .qd-view .view-inspector .inspector-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+/* Full-width value rows: the digest hash on one middle-truncated line, and
+   the CPU consumer note on one muted line below "Not collected". */
+.qd-view .inspector-fields dt:empty {
+  display: none;
+}
+.qd-view .inspector-fields dd:has(> .qd-digest),
+.qd-view .inspector-fields dd:has(> .qd-cpu-note) {
+  grid-column: 1 / -1;
+}
+.qd-digest {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.qd-digest > code {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+.qd-digest > .text-button {
+  flex: none;
+}
+.qd-cpu-note {
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+}
+.qd-cpu-note .instr-link {
+  margin-left: 0;
+}
+/* At the 720 px window the controls get two rows of their own: Rank by,
+   Schema and Top on the first, the growing filter field and Export on the
+   second (the shared narrow rule starts the controls below the title). */
+.qd-toolbar-break {
+  display: block;
+  flex-basis: 100%;
+  height: 0;
+}
+@container view (max-width: 760px) {
+  .qd-toolbar-break {
+    display: block;
+    flex-basis: 100%;
+    height: 0;
+  }
+}
+/* Latency: percentiles, then the histogram on a log time axis. */
+.qd-latency {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.qd-hist {
+  margin: 0;
+  min-width: 0;
+}
+.qd-hist-plot {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+.qd-hist-plot svg {
+  display: block;
+}
+.qd-hist-bar {
+  fill: var(--accent);
+}
+.qd-hist-axis,
+.qd-hist-tick {
+  stroke: var(--line-strong);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+.qd-hist-label {
+  fill: var(--ink-muted);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+}
+.qd-hist-hit {
+  fill: transparent;
+}
+.qd-hist-hit:hover {
+  fill: var(--accent-soft);
+}
+.qd-hist-summary,
+.qd-hist-note {
+  margin: var(--space-1) 0 0;
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.qd-hist-buckets {
+  margin-top: var(--space-1);
+}
+.qd-hist-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+.qd-hist-table th,
+.qd-hist-table td {
+  padding: var(--space-1) var(--space-2) var(--space-1) 0;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+}
+.qd-hist-table th {
+  color: var(--ink-muted);
+  font-weight: 600;
+}
+.qd-hist-table .num {
+  text-align: right;
+}
+
+/* Statement-scoped metadata stays within the inspector at narrow widths. */
+.qd-tables,
+.qd-table-list,
+.qd-index-list {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.qd-table-list > li + li {
+  margin-top: var(--space-3);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--line);
+}
+.qd-table-name {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: var(--space-2) 0;
+  overflow-wrap: anywhere;
+}
+.qd-table-name > code,
+.qd-index-list code {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+.qd-index-list li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin-bottom: var(--space-1);
+}
+.qd-tables-note {
+  margin: var(--space-1) 0;
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+
+/* Source and time range (slow log sources and Performance Schema). */
+.qd-view .qd-source .select {
+  min-width: 0;
+}
+.qd-range-anchor {
+  min-width: 0;
+}
+.qd-range-button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  max-width: 340px;
+  min-width: 0;
+}
+.qd-range-button .qd-range-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.qd-range-button.is-active {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+.qd-range {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.qd-range .popover-title {
+  margin-bottom: 0;
+}
+.qd-range-quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+.qd-range-quick .button[aria-pressed="true"] {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+.qd-range-fields {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+.qd-range-fields label {
+  font-weight: 600;
+  font-size: var(--text-sm);
+}
+.qd-range-fields input {
+  min-width: 0;
+  width: 100%;
+  font-variant-numeric: tabular-nums;
+}
+.qd-range .hint,
+.qd-range .form-error {
+  margin: 0;
+}
+.qd-range-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+/* Performance Schema with a range: one sentence that the numbers are totals. */
+.qd-range-note {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0 var(--space-3) var(--space-1) var(--space-4);
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+/* Slow log file: the empty state with Choose file and the typed path. */
+.qd-file-empty {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-3);
+  padding: 0 var(--space-4) var(--space-4);
+  min-width: 0;
+}
+.qd-file-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  margin-top: var(--space-1);
+}
+.qd-path {
+  display: grid;
+  gap: var(--space-1);
+  width: min(560px, 100%);
+  min-width: 0;
+}
+.qd-path label {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+.qd-path-row {
+  display: flex;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.qd-path-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.qd-path p {
+  margin: 0;
+}
+.qd-file-line:not([data-phase="idle"]) {
+  padding: 0 var(--space-3) var(--space-1) var(--space-4);
+}
+.qd-file-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0 var(--space-4) var(--space-1);
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+.qd-file-progress progress {
+  appearance: none;
+  width: 160px;
+  max-width: 40%;
+  height: var(--space-1);
+  border: 0;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--line);
+  color: var(--accent);
+}
+.qd-file-progress progress::-webkit-progress-bar { background: var(--line); }
+.qd-file-progress progress::-webkit-progress-value { background: var(--accent); }
+.qd-file-progress progress::-moz-progress-bar { background: var(--accent); }
+.qd-sample-meta {
+  margin: 0 0 var(--space-1);
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+/* At the 720 px window the controls keep two rows: the labels before the
+   selects go (each select keeps its accessible name). */
+@container view (max-width: 760px) {
+  .qd-view .qd-field-word {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+  .qd-range-button {
+    max-width: 180px;
+  }
+}
+
+/* Keep the title and actions together; filters occupy their own predictable row. */
+.qd-view > .view-toolbar > .toolbar-controls {
+  order: 3;
+  flex: 1 0 100%;
+  justify-content: stretch;
+}
+.qd-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  width: 100%;
+  min-width: 0;
+  padding-block: var(--space-1);
+}
+.qd-filter-bar .toolbar-field { gap: var(--space-1-5); }
+.qd-filter-bar .toolbar-search { flex: 1 1 180px; max-width: none; }
+.qd-filter-bar .toolbar-search input { width: 100%; }
+@container view (max-width: 760px) {
+  .qd-filter-bar { gap: var(--space-2); }
+  .qd-filter-bar .toolbar-search { flex-basis: 160px; }
+}

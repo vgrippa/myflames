@@ -1,0 +1,498 @@
+{
+ "server": "mysql-5.7",
+ "source": "live",
+ "args": {
+  "parameters": true
+ },
+ "calls": [
+  [
+   "/*myflames:config*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('innodb_buffer_pool_size', 'innodb_buffer_pool_size_max', 'innodb_data_file_buffering', 'innodb_dedicated_server', 'innodb_flush_log_at_trx_commit', 'innodb_flush_method', 'innodb_io_capacity', 'innodb_io_capacity_max', 'innodb_log_file_buffering', 'innodb_log_file_size', 'innodb_log_files_in_group', 'innodb_redo_log_capacity', 'internal_tmp_mem_storage_engine', 'join_buffer_size', 'log_bin', 'log_output', 'log_slow_query', 'log_slow_query_time', 'long_query_time', 'max_connections', 'max_heap_table_size', 'open_files_limit', 'performance_schema', 'slow_query_log', 'sort_buffer_size', 'sync_binlog', 'table_open_cache', 'temptable_max_mmap', 'temptable_max_ram', 'temptable_use_mmap', 'thread_handling', 'thread_pool_size', 'tmp_disk_table_size', 'tmp_memory_table_size', 'tmp_table_size', 'userstat', 'version', 'version_comment')",
+   "innodb_buffer_pool_size\t134217728\ninnodb_flush_log_at_trx_commit\t1\ninnodb_flush_method\t\ninnodb_io_capacity\t200\ninnodb_io_capacity_max\t2000\ninnodb_log_file_size\t50331648\ninnodb_log_files_in_group\t2\njoin_buffer_size\t262144\nlog_bin\tON\nlog_output\tFILE\nlong_query_time\t0.200000\nmax_connections\t151\nmax_heap_table_size\t16777216\nopen_files_limit\t1048576\nperformance_schema\tON\nslow_query_log\tON\nsort_buffer_size\t262144\nsync_binlog\t1\ntable_open_cache\t2000\nthread_handling\tone-thread-per-connection\ntmp_table_size\t16777216\nversion\t5.7.44-log\nversion_comment\tMySQL Community Server (GPL)\n"
+  ],
+  [
+   "/*myflames:config*/ SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime' OR Variable_name LIKE 'Performance\\_schema\\_%\\_lost'",
+   "Performance_schema_accounts_lost\t0\nPerformance_schema_cond_classes_lost\t0\nPerformance_schema_cond_instances_lost\t0\nPerformance_schema_digest_lost\t0\nPerformance_schema_file_classes_lost\t0\nPerformance_schema_file_handles_lost\t0\nPerformance_schema_file_instances_lost\t2\nPerformance_schema_hosts_lost\t0\nPerformance_schema_index_stat_lost\t0\nPerformance_schema_locker_lost\t0\nPerformance_schema_memory_classes_lost\t0\nPerformance_schema_metadata_lock_lost\t0\nPerformance_schema_mutex_classes_lost\t0\nPerformance_schema_mutex_instances_lost\t0\nPerformance_schema_nested_statement_lost\t0\nPerformance_schema_prepared_statements_lost\t0\nPerformance_schema_program_lost\t0\nPerformance_schema_rwlock_classes_lost\t0\nPerformance_schema_rwlock_instances_lost\t0\nPerformance_schema_session_connect_attrs_lost\t0\nPerformance_schema_socket_classes_lost\t0\nPerformance_schema_socket_instances_lost\t0\nPerformance_schema_stage_classes_lost\t0\nPerformance_schema_statement_classes_lost\t0\nPerformance_schema_table_handles_lost\t0\nPerformance_schema_table_instances_lost\t0\nPerformance_schema_table_lock_stat_lost\t0\nPerformance_schema_thread_classes_lost\t0\nPerformance_schema_thread_instances_lost\t0\nPerformance_schema_users_lost\t0\nUptime\t1934\n"
+  ],
+  [
+   "/*myflames:config*/ SHOW GLOBAL STATUS WHERE Variable_name IN ('Uptime', 'Max_used_connections', 'Connection_errors_max_connections', 'Opened_tables', 'Open_tables', 'Created_tmp_tables', 'Created_tmp_disk_tables', 'Innodb_os_log_written', 'Innodb_redo_log_capacity_resized', 'Innodb_redo_log_current_lsn', 'Innodb_redo_log_checkpoint_lsn', 'Innodb_checkpoint_age')",
+   "Connection_errors_max_connections\t0\nCreated_tmp_disk_tables\t41\nCreated_tmp_tables\t762\nInnodb_os_log_written\t30059520\nMax_used_connections\t7\nOpen_tables\t492\nOpened_tables\t530\nUptime\t1934\n"
+  ],
+  [
+   "/*myflames:config*/ SELECT COALESCE(SUM(ALLOCATED_SIZE), 0), COUNT(*) FROM information_schema.INNODB_SYS_TABLESPACES WHERE SPACE_TYPE IN ('Single', 'General')",
+   "77365248\t34\n"
+  ],
+  [
+   "/*myflames:config*/ SHOW GLOBAL VARIABLES",
+   "auto_generate_certs\tON\nauto_increment_increment\t1\nauto_increment_offset\t1\nautocommit\tON\nautomatic_sp_privileges\tON\navoid_temporal_upgrade\tOFF\nback_log\t80\nbasedir\t/usr/\nbig_tables\tOFF\nbind_address\t*\nbinlog_cache_size\t32768\nbinlog_checksum\tCRC32\nbinlog_direct_non_transactional_updates\tOFF\nbinlog_error_action\tABORT_SERVER\nbinlog_format\tROW\nbinlog_group_commit_sync_delay\t0\nbinlog_group_commit_sync_no_delay_count\t0\nbinlog_gtid_simple_recovery\tON\nbinlog_max_flush_queue_time\t0\nbinlog_order_commits\tON\nbinlog_row_image\tFULL\nbinlog_rows_query_log_events\tOFF\nbinlog_stmt_cache_size\t32768\nbinlog_transaction_dependency_history_size\t25000\nbinlog_transaction_dependency_tracking\tCOMMIT_ORDER\nblock_encryption_mode\taes-128-ecb\nbulk_insert_buffer_size\t8388608\ncharacter_set_client\tlatin1\ncharacter_set_connection\tlatin1\ncharacter_set_database\tlatin1\ncharacter_set_filesystem\tbinary\ncharacter_set_results\tlatin1\ncharacter_set_server\tlatin1\ncharacter_set_system\tutf8\ncharacter_sets_dir\t/usr/share/mysql/charsets/\ncheck_proxy_users\tOFF\ncollation_connection\tlatin1_swedish_ci\ncollation_database\tlatin1_swedish_ci\ncollation_server\tlatin1_swedish_ci\ncompletion_type\tNO_CHAIN\nconcurrent_insert\tAUTO\nconnect_timeout\t10\ncore_file\tOFF\ndatadir\t/var/lib/mysql/\ndate_format\t%Y-%m-%d\ndatetime_format\t%Y-%m-%d %H:%i:%s\ndefault_authentication_plugin\tmysql_native_password\ndefault_password_lifetime\t0\ndefault_storage_engine\tInnoDB\ndefault_tmp_storage_engine\tInnoDB\ndefault_week_format\t0\ndelay_key_write\tON\ndelayed_insert_limit\t100\ndelayed_insert_timeout\t300\ndelayed_queue_size\t1000\ndisabled_storage_engines\t\ndisconnect_on_expired_password\tON\ndiv_precision_increment\t4\nend_markers_in_json\tOFF\nenforce_gtid_consistency\tOFF\neq_range_index_dive_limit\t200\nevent_scheduler\tOFF\nexpire_logs_days\t0\nexplicit_defaults_for_timestamp\tOFF\nflush\tOFF\nflush_time\t0\nforeign_key_checks\tON\nft_boolean_syntax\t+ -><()~*:\"\"&|\nft_max_word_len\t84\nft_min_word_len\t4\nft_query_expansion_limit\t20\nft_stopword_file\t(built-in)\ngeneral_log\tOFF\ngeneral_log_file\t/var/lib/mysql/ea1f5236dd69.log\ngroup_concat_max_len\t1024\ngtid_executed\t\ngtid_executed_compression_period\t1000\ngtid_mode\tOFF\ngtid_owned\t\ngtid_purged\t\nhave_compress\tYES\nhave_crypt\tYES\nhave_dynamic_loading\tYES\nhave_geometry\tYES\nhave_openssl\tYES\nhave_profiling\tYES\nhave_query_cache\tYES\nhave_rtree_keys\tYES\nhave_ssl\tYES\nhave_statement_timeout\tYES\nhave_symlink\tDISABLED\nhost_cache_size\t279\nhostname\tea1f5236dd69\nignore_builtin_innodb\tOFF\nignore_db_dirs\t\ninit_connect\t\ninit_file\t\ninit_slave\t\ninnodb_adaptive_flushing\tON\ninnodb_adaptive_flushing_lwm\t10\ninnodb_adaptive_hash_index\tON\ninnodb_adaptive_hash_index_parts\t8\ninnodb_adaptive_max_sleep_delay\t150000\ninnodb_api_bk_commit_interval\t5\ninnodb_api_disable_rowlock\tOFF\ninnodb_api_enable_binlog\tOFF\ninnodb_api_enable_mdl\tOFF\ninnodb_api_trx_level\t0\ninnodb_autoextend_increment\t64\ninnodb_autoinc_lock_mode\t1\ninnodb_buffer_pool_chunk_size\t134217728\ninnodb_buffer_pool_dump_at_shutdown\tON\ninnodb_buffer_pool_dump_now\tOFF\ninnodb_buffer_pool_dump_pct\t25\ninnodb_buffer_pool_filename\tib_buffer_pool\ninnodb_buffer_pool_instances\t1\ninnodb_buffer_pool_load_abort\tOFF\ninnodb_buffer_pool_load_at_startup\tON\ninnodb_buffer_pool_load_now\tOFF\ninnodb_buffer_pool_size\t134217728\ninnodb_change_buffer_max_size\t25\ninnodb_change_buffering\tall\ninnodb_checksum_algorithm\tcrc32\ninnodb_checksums\tON\ninnodb_cmp_per_index_enabled\tOFF\ninnodb_commit_concurrency\t0\ninnodb_compression_failure_threshold_pct\t5\ninnodb_compression_level\t6\ninnodb_compression_pad_pct_max\t50\ninnodb_concurrency_tickets\t5000\ninnodb_data_file_path\tibdata1:12M:autoextend\ninnodb_data_home_dir\t\ninnodb_deadlock_detect\tON\ninnodb_default_row_format\tdynamic\ninnodb_disable_sort_file_cache\tOFF\ninnodb_doublewrite\tON\ninnodb_fast_shutdown\t1\ninnodb_file_format\tBarracuda\ninnodb_file_format_check\tON\ninnodb_file_format_max\tBarracuda\ninnodb_file_per_table\tON\ninnodb_fill_factor\t100\ninnodb_flush_log_at_timeout\t1\ninnodb_flush_log_at_trx_commit\t1\ninnodb_flush_method\t\ninnodb_flush_neighbors\t1\ninnodb_flush_sync\tON\ninnodb_flushing_avg_loops\t30\ninnodb_force_load_corrupted\tOFF\ninnodb_force_recovery\t0\ninnodb_ft_aux_table\t\ninnodb_ft_cache_size\t8000000\ninnodb_ft_enable_diag_print\tOFF\ninnodb_ft_enable_stopword\tON\ninnodb_ft_max_token_size\t84\ninnodb_ft_min_token_size\t3\ninnodb_ft_num_word_optimize\t2000\ninnodb_ft_result_cache_limit\t2000000000\ninnodb_ft_server_stopword_table\t\ninnodb_ft_sort_pll_degree\t2\ninnodb_ft_total_cache_size\t640000000\ninnodb_ft_user_stopword_table\t\ninnodb_io_capacity\t200\ninnodb_io_capacity_max\t2000\ninnodb_large_prefix\tON\ninnodb_lock_wait_timeout\t50\ninnodb_locks_unsafe_for_binlog\tOFF\ninnodb_log_buffer_size\t16777216\ninnodb_log_checksums\tON\ninnodb_log_compressed_pages\tON\ninnodb_log_file_size\t50331648\ninnodb_log_files_in_group\t2\ninnodb_log_group_home_dir\t./\ninnodb_log_write_ahead_size\t8192\ninnodb_lru_scan_depth\t1024\ninnodb_max_dirty_pages_pct\t75.000000\ninnodb_max_dirty_pages_pct_lwm\t0.000000\ninnodb_max_purge_lag\t0\ninnodb_max_purge_lag_delay\t0\ninnodb_max_undo_log_size\t1073741824\ninnodb_monitor_disable\t\ninnodb_monitor_enable\t\ninnodb_monitor_reset\t\ninnodb_monitor_reset_all\t\ninnodb_numa_interleave\tOFF\ninnodb_old_blocks_pct\t37\ninnodb_old_blocks_time\t1000\ninnodb_online_alter_log_max_size\t134217728\ninnodb_open_files\t2000\ninnodb_optimize_fulltext_only\tOFF\ninnodb_page_cleaners\t1\ninnodb_page_size\t16384\ninnodb_print_all_deadlocks\tOFF\ninnodb_purge_batch_size\t300\ninnodb_purge_rseg_truncate_frequency\t128\ninnodb_purge_threads\t4\ninnodb_random_read_ahead\tOFF\ninnodb_read_ahead_threshold\t56\ninnodb_read_io_threads\t4\ninnodb_read_only\tOFF\ninnodb_replication_delay\t0\ninnodb_rollback_on_timeout\tOFF\ninnodb_rollback_segments\t128\ninnodb_sort_buffer_size\t1048576\ninnodb_spin_wait_delay\t6\ninnodb_stats_auto_recalc\tON\ninnodb_stats_include_delete_marked\tOFF\ninnodb_stats_method\tnulls_equal\ninnodb_stats_on_metadata\tOFF\ninnodb_stats_persistent\tON\ninnodb_stats_persistent_sample_pages\t20\ninnodb_stats_sample_pages\t8\ninnodb_stats_transient_sample_pages\t8\ninnodb_status_output\tOFF\ninnodb_status_output_locks\tOFF\ninnodb_strict_mode\tON\ninnodb_support_xa\tON\ninnodb_sync_array_size\t1\ninnodb_sync_spin_loops\t30\ninnodb_table_locks\tON\ninnodb_temp_data_file_path\tibtmp1:12M:autoextend\ninnodb_thread_concurrency\t0\ninnodb_thread_sleep_delay\t10000\ninnodb_tmpdir\t\ninnodb_undo_directory\t./\ninnodb_undo_log_truncate\tOFF\ninnodb_undo_logs\t128\ninnodb_undo_tablespaces\t0\ninnodb_use_native_aio\tON\ninnodb_version\t5.7.44\ninnodb_write_io_threads\t4\ninteractive_timeout\t28800\ninternal_tmp_disk_storage_engine\tInnoDB\njoin_buffer_size\t262144\nkeep_files_on_create\tOFF\nkey_buffer_size\t8388608\nkey_cache_age_threshold\t300\nkey_cache_block_size\t1024\nkey_cache_division_limit\t100\nkeyring_operations\tON\nlarge_files_support\tON\nlarge_page_size\t0\nlarge_pages\tOFF\nlc_messages\ten_US\nlc_messages_dir\t/usr/share/mysql/\nlc_time_names\ten_US\nlicense\tGPL\nlocal_infile\tON\nlock_wait_timeout\t31536000\nlocked_in_memory\tOFF\nlog_bin\tON\nlog_bin_basename\t/var/lib/mysql/mysql-bin\nlog_bin_index\t/var/lib/mysql/mysql-bin.index\nlog_bin_trust_function_creators\tOFF\nlog_bin_use_v1_row_events\tOFF\nlog_builtin_as_identified_by_password\tOFF\nlog_error\tstderr\nlog_error_verbosity\t3\nlog_output\tFILE\nlog_queries_not_using_indexes\tOFF\nlog_slave_updates\tOFF\nlog_slow_admin_statements\tOFF\nlog_slow_slave_statements\tOFF\nlog_statements_unsafe_for_binlog\tON\nlog_syslog\tOFF\nlog_syslog_facility\tdaemon\nlog_syslog_include_pid\tON\nlog_syslog_tag\t\nlog_throttle_queries_not_using_indexes\t0\nlog_timestamps\tUTC\nlog_warnings\t2\nlong_query_time\t0.200000\nlow_priority_updates\tOFF\nlower_case_file_system\tOFF\nlower_case_table_names\t0\nmaster_info_repository\tFILE\nmaster_verify_checksum\tOFF\nmax_allowed_packet\t4194304\nmax_binlog_cache_size\t18446744073709547520\nmax_binlog_size\t1073741824\nmax_binlog_stmt_cache_size\t18446744073709547520\nmax_connect_errors\t100\nmax_connections\t151\nmax_delayed_threads\t20\nmax_digest_length\t1024\nmax_error_count\t64\nmax_execution_time\t0\nmax_heap_table_size\t16777216\nmax_insert_delayed_threads\t20\nmax_join_size\t18446744073709551615\nmax_length_for_sort_data\t1024\nmax_points_in_geometry\t65536\nmax_prepared_stmt_count\t16382\nmax_relay_log_size\t0\nmax_seeks_for_key\t18446744073709551615\nmax_sort_length\t1024\nmax_sp_recursion_depth\t0\nmax_tmp_tables\t32\nmax_user_connections\t0\nmax_write_lock_count\t18446744073709551615\nmetadata_locks_cache_size\t1024\nmetadata_locks_hash_instances\t8\nmin_examined_row_limit\t0\nmulti_range_count\t256\nmyisam_data_pointer_size\t6\nmyisam_max_sort_file_size\t9223372036853727232\nmyisam_mmap_size\t18446744073709551615\nmyisam_recover_options\tOFF\nmyisam_sort_buffer_size\t8388608\nmyisam_stats_method\tnulls_unequal\nmyisam_use_mmap\tOFF\nmysql_native_password_proxy_users\tOFF\nnet_buffer_length\t16384\nnet_read_timeout\t30\nnet_retry_count\t10\nnet_write_timeout\t60\nnew\tOFF\nngram_token_size\t2\noffline_mode\tOFF\nold\tOFF\nold_alter_table\tOFF\nold_passwords\t0\nopen_files_limit\t1048576\noptimizer_prune_level\t1\noptimizer_search_depth\t62\noptimizer_switch\tindex_merge=on,index_merge_union=on,index_merge_sort_union=on,index_merge_intersection=on,engine_condition_pushdown=on,index_condition_pushdown=on,mrr=on,mrr_cost_based=on,block_nested_loop=on,batched_key_access=off,materialization=on,semijoin=on,loosescan=on,firstmatch=on,duplicateweedout=on,subquery_materialization_cost_based=on,use_index_extensions=on,condition_fanout_filter=on,derived_merge=on,prefer_ordering_index=on\noptimizer_trace\tenabled=off,one_line=off\noptimizer_trace_features\tgreedy_search=on,range_optimizer=on,dynamic_range=on,repeated_subselect=on\noptimizer_trace_limit\t1\noptimizer_trace_max_mem_size\t16384\noptimizer_trace_offset\t-1\nparser_max_mem_size\t18446744073709551615\nperformance_schema\tON\nperformance_schema_accounts_size\t-1\nperformance_schema_digests_size\t10000\nperformance_schema_events_stages_history_long_size\t10000\nperformance_schema_events_stages_history_size\t10\nperformance_schema_events_statements_history_long_size\t10000\nperformance_schema_events_statements_history_size\t10\nperformance_schema_events_transactions_history_long_size\t10000\nperformance_schema_events_transactions_history_size\t10\nperformance_schema_events_waits_history_long_size\t10000\nperformance_schema_events_waits_history_size\t10\nperformance_schema_hosts_size\t-1\nperformance_schema_max_cond_classes\t80\nperformance_schema_max_cond_instances\t-1\nperformance_schema_max_digest_length\t1024\nperformance_schema_max_file_classes\t80\nperformance_schema_max_file_handles\t32768\nperformance_schema_max_file_instances\t-1\nperformance_schema_max_index_stat\t-1\nperformance_schema_max_memory_classes\t320\nperformance_schema_max_metadata_locks\t-1\nperformance_schema_max_mutex_classes\t210\nperformance_schema_max_mutex_instances\t-1\nperformance_schema_max_prepared_statements_instances\t-1\nperformance_schema_max_program_instances\t-1\nperformance_schema_max_rwlock_classes\t50\nperformance_schema_max_rwlock_instances\t-1\nperformance_schema_max_socket_classes\t10\nperformance_schema_max_socket_instances\t-1\nperformance_schema_max_sql_text_length\t1024\nperformance_schema_max_stage_classes\t150\nperformance_schema_max_statement_classes\t193\nperformance_schema_max_statement_stack\t10\nperformance_schema_max_table_handles\t-1\nperformance_schema_max_table_instances\t-1\nperformance_schema_max_table_lock_stat\t-1\nperformance_schema_max_thread_classes\t50\nperformance_schema_max_thread_instances\t-1\nperformance_schema_session_connect_attrs_size\t512\nperformance_schema_setup_actors_size\t-1\nperformance_schema_setup_objects_size\t-1\nperformance_schema_show_processlist\tOFF\nperformance_schema_users_size\t-1\npid_file\t/var/run/mysqld/mysqld.pid\nplugin_dir\t/usr/lib64/mysql/plugin/\nport\t3306\npreload_buffer_size\t32768\nprofiling\tOFF\nprofiling_history_size\t15\nprotocol_version\t10\nquery_alloc_block_size\t8192\nquery_cache_limit\t1048576\nquery_cache_min_res_unit\t4096\nquery_cache_size\t1048576\nquery_cache_type\tOFF\nquery_cache_wlock_invalidate\tOFF\nquery_prealloc_size\t8192\nrange_alloc_block_size\t4096\nrange_optimizer_max_mem_size\t8388608\nrbr_exec_mode\tSTRICT\nread_buffer_size\t131072\nread_only\tOFF\nread_rnd_buffer_size\t262144\nrelay_log\t\nrelay_log_basename\t/var/lib/mysql/ea1f5236dd69-relay-bin\nrelay_log_index\t/var/lib/mysql/ea1f5236dd69-relay-bin.index\nrelay_log_info_file\trelay-log.info\nrelay_log_info_repository\tFILE\nrelay_log_purge\tON\nrelay_log_recovery\tOFF\nrelay_log_space_limit\t0\nreplication_optimize_for_static_plugin_config\tOFF\nreplication_sender_observe_commit_only\tOFF\nreport_host\t\nreport_password\t\nreport_port\t3306\nreport_user\t\nrequire_secure_transport\tOFF\nrpl_stop_slave_timeout\t31536000\nsecure_auth\tON\nsecure_file_priv\t/var/lib/mysql-files/\nserver_id\t116\nserver_id_bits\t32\nserver_uuid\tfef9a618-d526-11f1-ad2d-ca1ecc2ba104\nsession_track_gtids\tOFF\nsession_track_schema\tON\nsession_track_state_change\tOFF\nsession_track_system_variables\ttime_zone,autocommit,character_set_client,character_set_results,character_set_connection\nsession_track_transaction_info\tOFF\nsha256_password_auto_generate_rsa_keys\tON\nsha256_password_private_key_path\tprivate_key.pem\nsha256_password_proxy_users\tOFF\nsha256_password_public_key_path\tpublic_key.pem\nshow_compatibility_56\tOFF\nshow_create_table_verbosity\tOFF\nshow_old_temporals\tOFF\nskip_external_locking\tON\nskip_name_resolve\tON\nskip_networking\tOFF\nskip_show_database\tOFF\nslave_allow_batching\tOFF\nslave_checkpoint_group\t512\nslave_checkpoint_period\t300\nslave_compressed_protocol\tOFF\nslave_exec_mode\tSTRICT\nslave_load_tmpdir\t/tmp\nslave_max_allowed_packet\t1073741824\nslave_net_timeout\t60\nslave_parallel_type\tDATABASE\nslave_parallel_workers\t0\nslave_pending_jobs_size_max\t16777216\nslave_preserve_commit_order\tOFF\nslave_rows_search_algorithms\tTABLE_SCAN,INDEX_SCAN\nslave_skip_errors\tOFF\nslave_sql_verify_checksum\tON\nslave_transaction_retries\t10\nslave_type_conversions\t\nslow_launch_time\t2\nslow_query_log\tON\nslow_query_log_file\t/var/lib/mysql/slow.log\nsocket\t/var/run/mysqld/mysqld.sock\nsort_buffer_size\t262144\nsql_auto_is_null\tOFF\nsql_big_selects\tON\nsql_buffer_result\tOFF\nsql_log_off\tOFF\nsql_mode\tONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_AUTO_CREATE_USER,NO_ENGINE_SUBSTITUTION\nsql_notes\tON\nsql_quote_show_create\tON\nsql_safe_updates\tOFF\nsql_select_limit\t18446744073709551615\nsql_slave_skip_counter\t0\nsql_warnings\tOFF\nssl_ca\tca.pem\nssl_capath\t\nssl_cert\tserver-cert.pem\nssl_cipher\t\nssl_crl\t\nssl_crlpath\t\nssl_key\tserver-key.pem\nstored_program_cache\t256\nsuper_read_only\tOFF\nsync_binlog\t1\nsync_frm\tON\nsync_master_info\t10000\nsync_relay_log\t10000\nsync_relay_log_info\t10000\nsystem_time_zone\tUTC\ntable_definition_cache\t1400\ntable_open_cache\t2000\ntable_open_cache_instances\t16\nthread_cache_size\t9\nthread_handling\tone-thread-per-connection\nthread_stack\t262144\ntime_format\t%H:%i:%s\ntime_zone\tSYSTEM\ntls_version\tTLSv1,TLSv1.1,TLSv1.2\ntmp_table_size\t16777216\ntmpdir\t/tmp\ntransaction_alloc_block_size\t8192\ntransaction_isolation\tREPEATABLE-READ\ntransaction_prealloc_size\t4096\ntransaction_read_only\tOFF\ntransaction_write_set_extraction\tOFF\ntx_isolation\tREPEATABLE-READ\ntx_read_only\tOFF\nunique_checks\tON\nupdatable_views_with_limit\tYES\nversion\t5.7.44-log\nversion_comment\tMySQL Community Server (GPL)\nversion_compile_machine\tx86_64\nversion_compile_os\tLinux\nwait_timeout\t28800\n"
+  ]
+ ],
+ "report": {
+  "schema_version": "config-1.0",
+  "engine": "mysql",
+  "flavor": "mysql",
+  "server_product": "MySQL",
+  "server_version": "5.7.44-log",
+  "taken_at": "2026-10-31T13:03:50.586980+00:00",
+  "uptime_s": 1934,
+  "performance_schema": true,
+  "summary": {
+   "status": "ok",
+   "problem": 0,
+   "watch": 0,
+   "ok": 10,
+   "info": 4,
+   "unknown": 0
+  },
+  "groups": [
+   {
+    "key": "memory",
+    "label": "Memory"
+   },
+   {
+    "key": "durability",
+    "label": "Durability"
+   },
+   {
+    "key": "redo",
+    "label": "Redo log"
+   },
+   {
+    "key": "connections",
+    "label": "Connections and caches"
+   },
+   {
+    "key": "observability",
+    "label": "Observability"
+   },
+   {
+    "key": "server",
+    "label": "Server facts"
+   }
+  ],
+  "checks": [
+   {
+    "key": "buffer_pool",
+    "group": "memory",
+    "label": "Buffer pool size",
+    "explain": "The memory InnoDB uses to cache data and index pages. Pages not in it are read from disk. Compared here with the size of the InnoDB tablespace files on disk (free space inside them included), because a pool much smaller than the data cannot hold much of it.",
+    "value": "128.0 MiB",
+    "status": "ok",
+    "why": "128.0 MiB for 73.8 MiB of InnoDB tablespace files. Rule of thumb: watch when the buffer pool is less than half the InnoDB tablespace files; a pool smaller than the data is normal when the hot data fits, so check the hit ratio in Health.",
+    "rule": "watch when the buffer pool is less than half the InnoDB tablespace files; a pool smaller than the data is normal when the hot data fits, so check the hit ratio in Health",
+    "caveat": "The data on disk includes cold rows and free space; what matters is the hot set. Leave room for connections, the OS and other processes: a pool that makes the server swap is far worse than disk reads.",
+    "action": null,
+    "settings": [
+     {
+      "name": "innodb_buffer_pool_size",
+      "value": "134217728",
+      "display": "128.0 MiB",
+      "default": "128.0 MiB",
+      "set_by": null,
+      "dynamic": true
+     }
+    ],
+    "sources": [
+     "innodb_buffer_pool_size",
+     "information_schema.INNODB_SYS_TABLESPACES"
+    ]
+   },
+   {
+    "key": "sort_buffer_size",
+    "group": "memory",
+    "label": "Sort buffer",
+    "explain": "Memory each session can allocate for each sort. It is a per-session limit, so a large global value is multiplied by the number of sessions doing that at once.",
+    "value": "256.0 KiB",
+    "status": "ok",
+    "why": "256.0 KiB (engine default 256.0 KiB). Rule of thumb: watch when the global value is 16.0 MiB or more.",
+    "rule": "watch when the global value is 16.0 MiB or more",
+    "caveat": "A global change applies to new sessions only. Check first which queries sort or join large sets (Health shows sort merge passes).",
+    "action": null,
+    "settings": [
+     {
+      "name": "sort_buffer_size",
+      "value": "262144",
+      "display": "256.0 KiB",
+      "default": "256.0 KiB",
+      "set_by": null,
+      "dynamic": true
+     }
+    ],
+    "sources": [
+     "sort_buffer_size"
+    ]
+   },
+   {
+    "key": "join_buffer_size",
+    "group": "memory",
+    "label": "Join buffer",
+    "explain": "Memory each session can allocate for each join that cannot use an index. It is a per-session limit, so a large global value is multiplied by the number of sessions doing that at once.",
+    "value": "256.0 KiB",
+    "status": "ok",
+    "why": "256.0 KiB (engine default 256.0 KiB). Rule of thumb: watch when the global value is 16.0 MiB or more.",
+    "rule": "watch when the global value is 16.0 MiB or more",
+    "caveat": "A global change applies to new sessions only. Check first which queries sort or join large sets (Health shows sort merge passes).",
+    "action": null,
+    "settings": [
+     {
+      "name": "join_buffer_size",
+      "value": "262144",
+      "display": "256.0 KiB",
+      "default": "256.0 KiB",
+      "set_by": null,
+      "dynamic": true
+     }
+    ],
+    "sources": [
+     "join_buffer_size"
+    ]
+   },
+   {
+    "key": "tmp_tables",
+    "group": "memory",
+    "label": "Temporary tables",
+    "explain": "Internal temporary tables (GROUP BY, DISTINCT, UNION, derived tables) start in memory and move to disk when they outgrow the limit. The MEMORY engine keeps each internal temporary table in memory up to the smaller of tmp_table_size and max_heap_table_size (16.0 MiB).",
+    "value": "5.4% on disk",
+    "status": "ok",
+    "why": "41 of 762 internal temporary tables since startup went to disk (5.4%). Rule of thumb: watch when 25% or more of internal temporary tables since startup went to disk, with at least 100 of them.",
+    "rule": "watch when 25% or more of internal temporary tables since startup went to disk, with at least 100 of them",
+    "caveat": "Each concurrent temporary table can use up to the limit, so a large global value risks memory pressure. Tables too big for any sensible limit go to disk regardless.",
+    "action": null,
+    "settings": [
+     {
+      "name": "tmp_table_size",
+      "value": "16777216",
+      "display": "16.0 MiB",
+      "default": "16.0 MiB",
+      "set_by": null,
+      "dynamic": true
+     },
+     {
+      "name": "max_heap_table_size",
+      "value": "16777216",
+      "display": "16.0 MiB",
+      "default": "16.0 MiB",
+      "set_by": null,
+      "dynamic": true
+     }
+    ],
+    "sources": [
+     "internal_tmp_mem_storage_engine",
+     "tmp_table_size",
+     "max_heap_table_size",
+     "Created_tmp_tables",
+     "Created_tmp_disk_tables"
+    ]
+   },
+   {
+    "key": "flush_log",
+    "group": "durability",
+    "label": "Redo flush at commit",
+    "explain": "When InnoDB writes and syncs the redo log for a commit. 1 writes and syncs at every commit, so a committed transaction survives a crash or power loss.",
+    "value": "1",
+    "status": "ok",
+    "why": "innodb_flush_log_at_trx_commit=1. Rule of thumb: ok at 1 (and MariaDB's 3), which make each commit durable; watch at 0 or 2.",
+    "rule": "ok at 1 (and MariaDB's 3), which make each commit durable; watch at 0 or 2",
+    "caveat": "",
+    "action": null,
+    "settings": [
+     {
+      "name": "innodb_flush_log_at_trx_commit",
+      "value": "1",
+      "display": "1",
+      "default": "1",
+      "set_by": null,
+      "dynamic": true
+     }
+    ],
+    "sources": [
+     "innodb_flush_log_at_trx_commit"
+    ]
+   },
+   {
+    "key": "sync_binlog",
+    "group": "durability",
+    "label": "Binary log sync",
+    "explain": "How often the binary log is synced to disk. At 1 it is synced at each commit (group), so after an OS crash or power loss the binary log has every committed transaction and replicas stay consistent. MySQL's default is 1.",
+    "value": "1",
+    "status": "ok",
+    "why": "sync_binlog=1. Rule of thumb: ok at 1 with the binary log on; watch at 0 or above 1.",
+    "rule": "ok at 1 with the binary log on; watch at 0 or above 1",
+    "caveat": "",
+    "action": null,
+    "settings": [
+     {
+      "name": "sync_binlog",
+      "value": "1",
+      "display": "1",
+      "default": "1",
+      "set_by": null,
+      "dynamic": true
+     }
+    ],
+    "sources": [
+     "sync_binlog",
+     "log_bin"
+    ]
+   },
+   {
+    "key": "flush_method",
+    "group": "durability",
+    "label": "File flush method",
+    "explain": "How InnoDB opens and syncs its data files. O_DIRECT bypasses the OS file cache, so data is not cached twice. Unset, MySQL 5.7 shows an empty value and uses fsync on Linux and other Unix systems.",
+    "value": "",
+    "status": "info",
+    "why": "innodb_flush_method is not set, so InnoDB uses its default (fsync on Linux and other Unix systems). No rule: compare with your hardware and workload.",
+    "rule": null,
+    "caveat": "",
+    "action": null,
+    "settings": [
+     {
+      "name": "innodb_flush_method",
+      "value": "",
+      "display": "",
+      "default": "not set (fsync on Unix)",
+      "set_by": null,
+      "dynamic": false
+     }
+    ],
+    "sources": [
+     "innodb_flush_method"
+    ]
+   },
+   {
+    "key": "redo",
+    "group": "redo",
+    "label": "Redo log size",
+    "explain": "The redo log holds changes not yet written to the data files. When it fills, InnoDB must flush dirty pages before more writes can proceed, so a small redo log for the write rate causes flushing bursts. A larger one means a longer crash recovery.",
+    "value": "96.0 MiB",
+    "status": "info",
+    "why": "Redo capacity 96.0 MiB; too little uptime to judge the write rate. No rule: compare with your hardware and workload.",
+    "rule": null,
+    "caveat": "",
+    "action": null,
+    "settings": [
+     {
+      "name": "innodb_log_file_size",
+      "value": "50331648",
+      "display": "48.0 MiB",
+      "default": "48.0 MiB",
+      "set_by": null,
+      "dynamic": false
+     },
+     {
+      "name": "innodb_log_files_in_group",
+      "value": "2",
+      "display": "2",
+      "default": null,
+      "set_by": null,
+      "dynamic": false
+     }
+    ],
+    "sources": [
+     "innodb_redo_log_capacity",
+     "innodb_log_file_size",
+     "innodb_log_files_in_group",
+     "Innodb_redo_log_capacity_resized",
+     "Innodb_os_log_written"
+    ]
+   },
+   {
+    "key": "max_connections",
+    "group": "connections",
+    "label": "Connection limit",
+    "explain": "The most client connections the server accepts (one more is kept for an administrator). Compared with the peak since startup or the last status reset.",
+    "value": "151",
+    "status": "ok",
+    "why": "Peak 7 of max_connections 151 (5%). Rule of thumb: watch when the peak since startup reached 80% of max_connections; problem when clients were refused (Connection_errors_max_connections above zero).",
+    "rule": "watch when the peak since startup reached 80% of max_connections; problem when clients were refused (Connection_errors_max_connections above zero)",
+    "caveat": "Every connection can allocate its own sort, join and temporary-table memory, so a higher limit raises the worst-case memory. MySQL may lower max_connections at startup to fit open_files_limit.",
+    "action": null,
+    "settings": [
+     {
+      "name": "max_connections",
+      "value": "151",
+      "display": "151",
+      "default": "151",
+      "set_by": null,
+      "dynamic": true
+     }
+    ],
+    "sources": [
+     "max_connections",
+     "Max_used_connections",
+     "Connection_errors_max_connections"
+    ]
+   },
+   {
+    "key": "table_open_cache",
+    "group": "connections",
+    "label": "Table cache",
+    "explain": "How many open table instances the server keeps for reuse. When it is full, a table not in it must be opened again (Opened_tables).",
+    "value": "2,000",
+    "status": "ok",
+    "why": "492 of 2,000 in use; 0.27 tables opened per second on average since startup. Rule of thumb: watch when the cache is at least 95% full and tables were opened at 1 per second or more on average since startup.",
+    "rule": "watch when the cache is at least 95% full and tables were opened at 1 per second or more on average since startup",
+    "caveat": "Each open table uses a file descriptor and memory; the server needs open_files_limit to cover it. MySQL may lower table_open_cache at startup to fit open_files_limit.",
+    "action": null,
+    "settings": [
+     {
+      "name": "table_open_cache",
+      "value": "2000",
+      "display": "2000",
+      "default": "2000",
+      "set_by": null,
+      "dynamic": true
+     }
+    ],
+    "sources": [
+     "table_open_cache",
+     "Open_tables",
+     "Opened_tables"
+    ]
+   },
+   {
+    "key": "performance_schema",
+    "group": "observability",
+    "label": "Performance Schema",
+    "explain": "Performance Schema records statement digests, waits, and table and file I/O. myflames' Top statements, Waits, I/O and unused-index views need it. It is read-only at runtime.",
+    "value": "ON",
+    "status": "ok",
+    "why": "ON. Rule of thumb: watch when off: Top statements, Waits, I/O and unused indexes need it.",
+    "rule": "watch when off: Top statements, Waits, I/O and unused indexes need it",
+    "caveat": "",
+    "action": null,
+    "settings": [
+     {
+      "name": "performance_schema",
+      "value": "ON",
+      "display": "ON",
+      "default": "ON",
+      "set_by": null,
+      "dynamic": false
+     }
+    ],
+    "sources": [
+     "performance_schema"
+    ]
+   },
+   {
+    "key": "slow_log",
+    "group": "observability",
+    "label": "Slow query log",
+    "explain": "The slow query log records statements that ran longer than long_query_time.",
+    "value": "ON",
+    "status": "ok",
+    "why": "On, logging statements over 0.2 s. Rule of thumb: watch when off; info when on with long_query_time at 10 s or more.",
+    "rule": "watch when off; info when on with long_query_time at 10 s or more",
+    "caveat": "",
+    "action": null,
+    "settings": [
+     {
+      "name": "slow_query_log",
+      "value": "ON",
+      "display": "ON",
+      "default": "OFF",
+      "set_by": null,
+      "dynamic": true
+     },
+     {
+      "name": "long_query_time",
+      "value": "0.200000",
+      "display": "0.2 s",
+      "default": "10 s",
+      "set_by": null,
+      "dynamic": true
+     },
+     {
+      "name": "log_output",
+      "value": "FILE",
+      "display": "FILE",
+      "default": null,
+      "set_by": null,
+      "dynamic": true
+     }
+    ],
+    "sources": [
+     "slow_query_log",
+     "long_query_time",
+     "log_output"
+    ]
+   },
+   {
+    "key": "io_capacity",
+    "group": "server",
+    "label": "InnoDB I/O capacity",
+    "explain": "The background I/O rate InnoDB aims for when flushing pages. The engines' defaults differ a lot: MySQL 8.4 uses 10000, MariaDB 200.",
+    "value": "200",
+    "status": "info",
+    "why": "innodb_io_capacity=200. No rule: compare with your hardware and workload.",
+    "rule": null,
+    "caveat": "",
+    "action": null,
+    "settings": [
+     {
+      "name": "innodb_io_capacity",
+      "value": "200",
+      "display": "200",
+      "default": "200",
+      "set_by": null,
+      "dynamic": true
+     },
+     {
+      "name": "innodb_io_capacity_max",
+      "value": "2000",
+      "display": "2000",
+      "default": null,
+      "set_by": null,
+      "dynamic": true
+     }
+    ],
+    "sources": [
+     "innodb_io_capacity",
+     "innodb_io_capacity_max"
+    ]
+   },
+   {
+    "key": "thread_handling",
+    "group": "server",
+    "label": "Thread handling",
+    "explain": "How the server runs connections: a thread per connection, or a thread pool.",
+    "value": "one-thread-per-connection",
+    "status": "info",
+    "why": "thread_handling=one-thread-per-connection. No rule: compare with your hardware and workload.",
+    "rule": null,
+    "caveat": "",
+    "action": null,
+    "settings": [
+     {
+      "name": "thread_handling",
+      "value": "one-thread-per-connection",
+      "display": "one-thread-per-connection",
+      "default": "one-thread-per-connection",
+      "set_by": null,
+      "dynamic": false
+     }
+    ],
+    "sources": [
+     "thread_handling"
+    ]
+   }
+  ],
+  "notes": [
+   "MySQL 5.7 does not record where a value was set or when: performance_schema.variables_info and SET PERSIST arrived in MySQL 8.0. Sources are unknown here, and a change made with SET GLOBAL lasts until the server restarts unless you also add it to the option file.",
+   "The server started 32 min 14 s ago, so the counters since startup are still small.",
+   "Counters run from server start. The connection peak (Max_used_connections) also restarts with FLUSH STATUS on MySQL and MariaDB 11.4 or older, and with FLUSH GLOBAL STATUS on MariaDB 11.5 and later, which also resets the temporary-table and tables-opened counts.",
+   "Statuses are rules of thumb, not verdicts; each check says which rule it uses. The review never changes a setting: read a suggestion's caveat first, then change it yourself or with Change (myflames config set), which shows the exact statement and asks before sending it."
+  ],
+  "parameters": {
+   "schema_version": "parameters-1.0",
+   "complete": true,
+   "notes": [
+    "MySQL 5.7 does not record where a value was set or when: performance_schema.variables_info and SET PERSIST arrived in MySQL 8.0. Sources are unknown here, and a change made with SET GLOBAL lasts until the server restarts unless you also add it to the option file."
+   ],
+   "flavor": "mysql",
+   "items_recorded": 505,
+   "vendor_items": []
+  }
+ }
+}

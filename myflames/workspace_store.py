@@ -1,13 +1,219 @@
-"""Explicit local investigation/profile storage. Passwords never belong here."""
+"""Explicit local investigation/profile storage. Passwords never belong here.
+
+A profile may *remember* its password: the secret goes to the OS credential
+store or the encrypted vault (see secret_store.py). The SQLite record keeps
+only ``remember_password``, ``secret_backend`` and ``secret_ref``, the secret
+store key, which is ``<profile ID>.<endpoint fingerprint>.<random>``: a hash
+of the host, port, user and TLS settings the password was saved for, and a
+new random part on every save. The record and its reference are written in
+one transaction, so two concurrent saves can never pair one save's endpoint
+with the other's password, and a password is released only when the
+fingerprint in its key matches the profile's endpoint (see
+:meth:`WorkspaceStore.connection_with_saved_password`). Passwords saved before
+``secret_ref`` existed stay under the bare profile ID until the next save.
+"""
 import datetime
 from contextlib import closing
+import hashlib
+import hmac
 import json
+import math
 import os
 from pathlib import Path
+import re
 import sqlite3
 import uuid
+import zlib
 
-PROFILE_FIELDS = ('name', 'host', 'port', 'user', 'database', 'ssl_mode', 'ssl_ca')
+PROFILE_FIELDS = ('name', 'host', 'port', 'user', 'database', 'ssl_mode', 'ssl_ca', 'ssh_host', 'ssh_user',
+                  'ssh_port')
+# Write safety (dbops.py): Production confirms every write, Development only
+# risky ones, read-only refuses every write. New and existing profiles are
+# Production. Part of the connection identity reports are bound to.
+PROFILE_SAFETY_FIELDS = ('type', 'read_only')
+CONNECTION_TYPES = ('production', 'development')
+#: PRAGMA user_version of the workspace database. 1: profiles carry type and
+#: read_only (existing rows migrated to production, read-write). The audit
+#: table's ssh column (the SSH target) is added on demand, without a version.
+STORE_VERSION = 1
+# A saved password is released only to the endpoint and TLS settings it was
+# saved with, so a request can't redirect it or downgrade its transport. The
+# SSH target is part of the endpoint: the same database host and port behind
+# another SSH host (or none) is another server.
+ENDPOINT_FIELDS = ('host', 'port', 'user', 'ssl_mode', 'ssl_ca', 'ssh_host', 'ssh_user', 'ssh_port')
+#: The fields of the saved password's fingerprint before SSH existed; the SSH
+#: target is appended only when set, so existing fingerprints stay valid.
+_BASE_ENDPOINT_FIELDS = ('host', 'port', 'user', 'ssl_mode', 'ssl_ca')
+_SSH_ENDPOINT_FIELDS = ('ssh_host', 'ssh_user', 'ssh_port')
+
+# Session restore: one autosaved workspace snapshot (see validate_session_state).
+SESSION_MAX_BYTES = 64 * 1024 * 1024
+SESSION_MAX_DEPTH = 200
+SECRET_KEYS = ('password',)
+#: Records of the Query editor's run history (editor_session.py).
+HISTORY_KIND = 'editor_history'
+#: Records of the Query editor's saved queries (editor_session.py).
+SAVED_QUERY_KIND = 'saved_query'
+_RECORD_ID = re.compile(r'[0-9a-f]{32}')
+
+
+class SessionConflict(ValueError):
+    """The client saved over an older revision than the stored one."""
+
+    def __init__(self, revision):
+        super().__init__('Your workspace changed in another browser tab.')
+        self.revision = revision
+
+
+class SessionTooLarge(ValueError):
+    """The state exceeds SESSION_MAX_BYTES; the previous session is kept."""
+
+
+def validate_session_state(state):
+    """Return a password-free copy of *state* or raise ValueError.
+
+    The state is an opaque UI snapshot, but it must be a JSON object with
+    bounded nesting and finite numbers. Every ``password`` key is removed at
+    any depth. SQL/text fields also redact credential clauses before saving,
+    so editor restore does not persist CREATE USER or similar passwords.
+    """
+    if not isinstance(state, dict):
+        raise ValueError('The workspace session must be a JSON object.')
+    clean = {}
+    # Iterative copy: (source, destination container, depth).
+    stack = [(state, clean, 1)]
+    while stack:
+        source, target, depth = stack.pop()
+        if depth > SESSION_MAX_DEPTH:
+            raise ValueError('The workspace session is too deeply nested (maximum %d levels).'
+                             % SESSION_MAX_DEPTH)
+        if isinstance(source, dict):
+            items = []
+            for key, value in source.items():
+                if not isinstance(key, str):
+                    raise ValueError('Workspace session keys must be text.')
+                if key.lower() in SECRET_KEYS:
+                    continue
+                items.append((key, value))
+        else:
+            items = list(enumerate(source))
+        for key, value in items:
+            if isinstance(value, dict):
+                child = {}
+            elif isinstance(value, list):
+                child = []
+            else:
+                if isinstance(value, float) and not math.isfinite(value):
+                    raise ValueError('Workspace session numbers must be finite.')
+                if value is not None and not isinstance(value, (str, int, float, bool)):
+                    raise ValueError('The workspace session must contain only JSON values.')
+                child = value
+                if isinstance(value, str) and isinstance(key, str) and key.lower() in (
+                        'sql', 'text', 'query', 'statement', 'sql_text'):
+                    from .dbops import redact
+                    child = redact(value)
+            if isinstance(target, dict):
+                target[key] = child
+            else:
+                target.append(child)
+            if isinstance(child, (dict, list)):
+                stack.append((value, child, depth + 1))
+    return clean
+
+
+BUNDLE_MAX_BYTES = 10 * 1024 * 1024
+EVIDENCE_MAX_ITEMS = 30
+EVIDENCE_KINDS = ('sessions', 'innodb', 'locks', 'watch')
+EVIDENCE_ITEM_MAX_BYTES = 2 * 1024 * 1024
+EVIDENCE_DATA_TRIMMED_NOTE = ('The report data was left out to keep the investigation within its size '
+                              'limits (2 MiB per item, 10 MiB in all); the text is kept.')
+EVIDENCE_TEXT_TRIMMED_NOTE = 'The text was cut to keep the investigation within 10 MiB.'
+
+
+def _mark_data_trimmed(item):
+    item['data'] = None
+    item['data_trimmed'] = True
+    item['note'] = EVIDENCE_DATA_TRIMMED_NOTE
+    suffix = '\n[%s]\n' % EVIDENCE_DATA_TRIMMED_NOTE
+    if suffix.strip() not in item['text']:
+        item['text'] = (item['text'].rstrip('\n') + suffix) if item['text'] else suffix.lstrip('\n')
+
+
+def _mark_text_trimmed(item, budget_bytes):
+    suffix = '\n[%s]\n' % EVIDENCE_TEXT_TRIMMED_NOTE
+    suffix_bytes = len(suffix.encode('utf-8'))
+    allowed = max(0, budget_bytes - suffix_bytes)
+    raw_bytes = item['text'].encode('utf-8')
+    clipped = raw_bytes[:allowed].decode('utf-8', errors='ignore')
+    item['text'] = (clipped.rstrip('\n') + suffix) if clipped else suffix.lstrip('\n')
+    item['text_trimmed'] = True
+    if item.get('data_trimmed'):
+        item['note'] = '%s %s' % (EVIDENCE_DATA_TRIMMED_NOTE, EVIDENCE_TEXT_TRIMMED_NOTE)
+    else:
+        item['note'] = EVIDENCE_TEXT_TRIMMED_NOTE
+
+
+def _validate_evidence(raw_evidence):
+    if not isinstance(raw_evidence, list) or len(raw_evidence) > EVIDENCE_MAX_ITEMS:
+        raise ValueError('An investigation can contain up to %d evidence items.' % EVIDENCE_MAX_ITEMS)
+    from .dbops import redact, redact_value
+    from .watch import format_evidence_text
+    seen_ids = set()
+    items = []
+    for raw in raw_evidence:
+        if not isinstance(raw, dict):
+            raise ValueError('Every evidence item must be an object.')
+        item_id = raw.get('id')
+        if not isinstance(item_id, str) or not item_id or len(item_id) > 200 or item_id in seen_ids:
+            raise ValueError('Every evidence item needs a unique string ID of 1–200 characters.')
+        seen_ids.add(item_id)
+        kind = raw.get('kind')
+        if not isinstance(kind, str) or kind not in EVIDENCE_KINDS:
+            raise ValueError("Evidence kind must be 'sessions', 'innodb', 'locks', or 'watch'.")
+        captured_at = raw.get('captured_at')
+        if not isinstance(captured_at, str) or not captured_at.strip() or len(captured_at) > 100:
+            raise ValueError('Every evidence item needs a captured_at timestamp of 1–100 characters.')
+        title = raw.get('title')
+        if title is not None and not isinstance(title, str):
+            raise ValueError('Evidence title must be a string.')
+        title = redact((title.strip() if isinstance(title, str) and title.strip() else kind.capitalize())[:200])
+        data = raw.get('data')
+        if data is not None:
+            if not isinstance(data, dict):
+                raise ValueError('Evidence data must be a JSON object or null.')
+            # Statements in a processlist, a lock report or InnoDB status can
+            # carry credentials (ALTER USER ... IDENTIFIED BY 'x'): every
+            # string is redacted before it is stored, whatever its key.
+            data = redact_value(validate_session_state(data))
+        text = raw.get('text')
+        if text is not None and not isinstance(text, str):
+            raise ValueError('Evidence text must be a string.')
+        if not text and isinstance(data, dict):
+            # Formatted from the redacted data, so no secret reaches the text.
+            text = format_evidence_text(kind, data)
+        else:
+            text = redact(text or '')
+        text = text or ''
+        entry = {
+            'id': item_id,
+            'kind': kind,
+            'captured_at': captured_at.strip(),
+            'title': title,
+            'text': text,
+            'data': data,
+        }
+        if raw.get('data_trimmed'):
+            entry['data_trimmed'] = True
+        if raw.get('text_trimmed'):
+            entry['text_trimmed'] = True
+        if isinstance(raw.get('note'), str) and raw['note']:
+            entry['note'] = redact(raw['note'][:500])
+        if entry['data'] is not None:
+            encoded_data = json.dumps(entry['data'], allow_nan=False).encode('utf-8')
+            if len(encoded_data) > EVIDENCE_ITEM_MAX_BYTES:
+                _mark_data_trimmed(entry)
+        items.append(entry)
+    return items
 
 
 def validate_bundle(value):
@@ -23,7 +229,7 @@ def validate_bundle(value):
              'notes': str(value.get('notes') or '')[:100000],
              'tags': [t[:80] for t in tags[:30]],
              'baseline_id': str(value.get('baseline_id') or ''), 'plans': []}
-    from .ui import _plan
+    from .plan_input import _plan
     ids = set()
     for item in plans:
         if (not isinstance(item, dict) or not isinstance(item.get('id'), str)
@@ -39,10 +245,100 @@ def validate_bundle(value):
     from .live import normalize_capture
     for item in clean['plans']:
         item['capture'] = normalize_capture(item['capture'])
-    encoded = json.dumps(clean, allow_nan=False)
-    if len(encoded.encode('utf-8')) > 10 * 1024 * 1024:
+    if 'evidence' in value and value.get('evidence') is not None:
+        evidence = _validate_evidence(value.get('evidence'))
+        if evidence:
+            clean['evidence'] = evidence
+    encoded = json.dumps(clean, allow_nan=False).encode('utf-8')
+    if len(encoded) > BUNDLE_MAX_BYTES and clean.get('evidence'):
+        # Trim evidence data first (largest data payload first) before trimming text.
+        with_data = [
+            (len(json.dumps(e['data'], allow_nan=False).encode('utf-8')), idx)
+            for idx, e in enumerate(clean['evidence'])
+            if e.get('data') is not None
+        ]
+        with_data.sort(reverse=True)
+        for _size, idx in with_data:
+            _mark_data_trimmed(clean['evidence'][idx])
+            encoded = json.dumps(clean, allow_nan=False).encode('utf-8')
+            if len(encoded) <= BUNDLE_MAX_BYTES:
+                break
+    if len(encoded) > BUNDLE_MAX_BYTES and clean.get('evidence'):
+        # Still over 10 MiB after removing all evidence JSON data: trim evidence text.
+        for item in reversed(clean['evidence']):
+            excess = len(encoded) - BUNDLE_MAX_BYTES
+            if excess <= 0:
+                break
+            current_bytes = len(item['text'].encode('utf-8'))
+            target_bytes = max(256, current_bytes - excess - 512)
+            if current_bytes > target_bytes:
+                _mark_text_trimmed(item, target_bytes)
+                encoded = json.dumps(clean, allow_nan=False).encode('utf-8')
+    if len(encoded) > BUNDLE_MAX_BYTES:
         raise ValueError('Investigation exceeds 10 MiB. Split it into smaller bundles.')
     return clean
+
+
+#: Page size bounds of ``investigations/list`` (Home asks for 6, Library 25).
+INVESTIGATION_PAGE_SIZE = 25
+INVESTIGATION_PAGE_MAX = 50
+INVESTIGATION_SEARCH_MAX = 512
+
+
+def _investigation_summary(value):
+    """``investigation-summary-1.0``: what Home and Library show, never plans.
+
+    Name, notes and tags are kept whole because Library displays and searches
+    them; each plan keeps its ID, name and capture mode. The saved
+    ``investigation-1.0`` bundle stays the only source for opening, comparing
+    and exporting. Raises on a record that is not a bundle.
+    """
+    plans = []
+    for plan in value['plans']:
+        item = {'id': plan['id'], 'name': plan.get('name') or 'Plan'}
+        if isinstance(plan.get('capture'), dict):
+            item['capture'] = {'mode': plan['capture'].get('mode')}
+        plans.append(item)
+    tags = [str(tag) for tag in value.get('tags') or []]
+    summary = {'schema_version': 'investigation-summary-1.0',
+               'name': str(value.get('name') or 'Untitled investigation'),
+               'notes': str(value.get('notes') or ''), 'tags': tags,
+               'baseline_id': str(value.get('baseline_id') or ''), 'plans': plans}
+    if value.get('evidence'):
+        evidence = []
+        for item in value['evidence']:
+            ev = {
+                'id': item['id'],
+                'kind': item['kind'],
+                'captured_at': str(item.get('captured_at') or ''),
+                'title': str(item.get('title') or item['kind']),
+            }
+            if item.get('data_trimmed'):
+                ev['data_trimmed'] = True
+            if item.get('text_trimmed'):
+                ev['text_trimmed'] = True
+            if item.get('note'):
+                ev['note'] = str(item['note'])
+            evidence.append(ev)
+        summary['evidence'] = evidence
+    return summary
+
+
+def _save_investigation_summary(conn, key, updated, value):
+    summary = _investigation_summary(value)
+    # Library's own filter: name, tags and notes, lowercased.
+    search = ('%s %s %s' % (summary['name'], ' '.join(summary['tags']), summary['notes'])).lower()
+    conn.execute('INSERT OR REPLACE INTO investigation_summaries VALUES (?, ?, ?, ?)',
+                 (key, updated, json.dumps(summary, allow_nan=False), search))
+
+
+# A summary is current when it carries its record's ``updated`` stamp
+# (microsecond ISO time, new on every save). These read only the leading
+# columns of each record, never the payload's overflow pages.
+_STALE_SUMMARIES = ("SELECT r.id FROM records r LEFT JOIN investigation_summaries s ON s.id = r.id "
+                    "WHERE r.kind = 'investigation' AND (s.updated IS NULL OR s.updated <> r.updated)")
+_ORPHAN_SUMMARIES = ("SELECT s.id FROM investigation_summaries s LEFT JOIN records r "
+                     "ON r.id = s.id AND r.kind = 'investigation' WHERE r.id IS NULL")
 
 
 class WorkspaceStore:
@@ -50,47 +346,1512 @@ class WorkspaceStore:
         self.path = Path(path) if path else Path.home() / '.myflames' / 'workspace.sqlite3'
 
     def _connect(self):
-        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        # Exclusive creation avoids broad default permissions even briefly.
-        fd = os.open(str(self.path), os.O_CREAT | os.O_RDWR, 0o600)
+        from .secret_store import _ensure_private_directory, _open_private_file
+        directory = self.path.parent
+        _ensure_private_directory(directory)
+        fd, _created = _open_private_file(self.path, os.O_RDWR, create=True)
         os.close(fd)
+        self._protect_sidecars()
         conn = sqlite3.connect(str(self.path), timeout=10)
-        conn.execute('CREATE TABLE IF NOT EXISTS records (id TEXT PRIMARY KEY, kind TEXT NOT NULL, updated TEXT NOT NULL, payload TEXT NOT NULL)')
+        try:
+            conn.execute('CREATE TABLE IF NOT EXISTS records (id TEXT PRIMARY KEY, kind TEXT NOT NULL, updated TEXT NOT NULL, payload TEXT NOT NULL)')
+            conn.execute('CREATE TABLE IF NOT EXISTS session (id INTEGER PRIMARY KEY CHECK (id = 1), '
+                         'revision INTEGER NOT NULL, saved_at TEXT NOT NULL, state TEXT, '
+                         'restore INTEGER NOT NULL, writer TEXT NOT NULL, writer_seq INTEGER NOT NULL)')
+            # The audit trail of server writes (dbops.py). Never holds a password.
+            conn.execute('CREATE TABLE IF NOT EXISTS audit (id TEXT PRIMARY KEY, attempted_at TEXT NOT NULL, '
+                         'finished_at TEXT, status TEXT NOT NULL, outcome TEXT, surface TEXT NOT NULL, os_user TEXT, '
+                         'operation TEXT NOT NULL, profile_id TEXT, profile_name TEXT, connection_type TEXT, '
+                         'read_only INTEGER, host TEXT, port INTEGER, db_user TEXT, engine TEXT, server_version TEXT, '
+                         'statements TEXT NOT NULL, target TEXT, verified TEXT, policy TEXT, error_code INTEGER, '
+                         'message TEXT, rows_affected INTEGER, after TEXT, duration_ms REAL, ssh TEXT)')
+            conn.execute('CREATE INDEX IF NOT EXISTS audit_attempted_at ON audit (attempted_at)')
+            conn.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+            # A cache of investigation list metadata, derived from records and
+            # refreshed by list_investigations: an older myflames sharing this
+            # file writes records only, so no version bump or migration.
+            conn.execute('CREATE TABLE IF NOT EXISTS investigation_summaries (id TEXT PRIMARY KEY, '
+                         'updated TEXT NOT NULL, payload TEXT NOT NULL, search TEXT NOT NULL)')
+            conn.execute('CREATE INDEX IF NOT EXISTS investigation_summaries_recent '
+                         'ON investigation_summaries (updated, id)')
+            # Saved schema versions (schema_versions.py): the summary is what
+            # lists show; the snapshot is zlib-compressed JSON, decoded only
+            # when one version is opened. Created on demand like the summaries
+            # above, so older myflames sharing this file are unaffected.
+            conn.execute('CREATE TABLE IF NOT EXISTS schema_versions (id TEXT PRIMARY KEY, saved_at TEXT NOT NULL, '
+                         'source_key TEXT NOT NULL, database TEXT NOT NULL, number INTEGER NOT NULL, '
+                         'name TEXT NOT NULL, note TEXT NOT NULL, summary TEXT NOT NULL, payload BLOB NOT NULL)')
+            conn.execute('CREATE INDEX IF NOT EXISTS schema_versions_source '
+                         'ON schema_versions (source_key, number)')
+            conn.execute('CREATE INDEX IF NOT EXISTS schema_versions_recent ON schema_versions (saved_at)')
+            conn.execute('CREATE TABLE IF NOT EXISTS parameter_snapshots (id TEXT PRIMARY KEY, saved_at TEXT NOT NULL, '
+                         'source_key TEXT NOT NULL, number INTEGER NOT NULL, label TEXT NOT NULL, '
+                         'summary TEXT NOT NULL, payload BLOB NOT NULL, UNIQUE(source_key, number))')
+            conn.execute('CREATE INDEX IF NOT EXISTS parameter_snapshots_recent ON parameter_snapshots (saved_at)')
+            conn.commit()
+            if conn.execute('PRAGMA user_version').fetchone()[0] < STORE_VERSION:
+                self._migrate(conn)
+            if not getattr(self, '_audit_ssh_checked', False):
+                self._add_audit_ssh(conn)
+                self._audit_ssh_checked = True
+            self._protect_sidecars()
+        except BaseException:
+            conn.close()
+            raise
         return conn
+
+    def _add_audit_ssh(self, conn):
+        """Give an audit table made before SSH tunnels its ssh column (the SSH
+        target), once, under the write lock. Additive: an older myflames
+        names its columns, so it keeps reading and writing the table."""
+        if 'ssh' in [row[1] for row in conn.execute('PRAGMA table_info(audit)').fetchall()]:
+            return
+        conn.isolation_level = None
+        try:
+            conn.execute('BEGIN IMMEDIATE')
+            if 'ssh' not in [row[1] for row in conn.execute('PRAGMA table_info(audit)').fetchall()]:
+                conn.execute('ALTER TABLE audit ADD COLUMN ssh TEXT')
+            conn.execute('COMMIT')
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute('ROLLBACK')
+            raise
+        finally:
+            conn.isolation_level = ''
+
+    def _protect_sidecars(self):
+        for suffix in ('-wal', '-shm', '-journal'):
+            _owner_only(Path(str(self.path) + suffix), 0o600)
+
+    def _migrate(self, conn):
+        """Bring an older database up to STORE_VERSION, once, under the write lock."""
+        conn.isolation_level = None
+        try:
+            conn.execute('BEGIN IMMEDIATE')
+            if conn.execute('PRAGMA user_version').fetchone()[0] < 1:
+                for key, payload in conn.execute("SELECT id, payload FROM records WHERE kind='profile'").fetchall():
+                    try:
+                        value = json.loads(payload)
+                    except ValueError:
+                        continue
+                    if not isinstance(value, dict):
+                        continue
+                    value.update(_safety_fields(value, value))
+                    conn.execute('UPDATE records SET payload=? WHERE id=?', (json.dumps(value, allow_nan=False), key))
+                conn.execute('PRAGMA user_version = 1')
+            conn.execute('COMMIT')
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute('ROLLBACK')
+            raise
+        finally:
+            conn.isolation_level = ''
+
+    # -- Session restore --------------------------------------------------
+    # One row (id = 1). ``revision`` increases on every save, clear, and
+    # restore-setting change, so a page holding an older revision gets a
+    # SessionConflict instead of silently overwriting newer work. ``writer``
+    # and ``writer_seq`` let one page's own overlapping saves (an autosave
+    # still in flight when the page hides) land without a false conflict,
+    # and drop an older save from that page that arrives late.
+
+    def _session_row(self, conn):
+        conn.execute("INSERT OR IGNORE INTO session VALUES (1, 0, '', NULL, 1, '', 0)")
+        return conn.execute('SELECT revision, saved_at, state, restore, writer, writer_seq '
+                            'FROM session WHERE id = 1').fetchone()
+
+    def _session_transaction(self):
+        return self._transaction()
+
+    def _transaction(self):
+        conn = self._connect()
+        conn.isolation_level = None
+        # IMMEDIATE takes the write lock first, so the revision check and the
+        # write are atomic across server threads and processes.
+        try:
+            conn.execute('BEGIN IMMEDIATE')
+        except BaseException:
+            # A busy timeout raises here, before any caller owns the connection.
+            conn.close()
+            raise
+        return conn
+
+    def load_session(self):
+        """Stored session: revision, saved_at, state (dict or None), restore."""
+        if not self.path.exists():
+            return {'revision': 0, 'saved_at': '', 'state': None, 'restore': True}
+        with closing(self._connect()) as conn, conn:
+            revision, saved_at, state, restore, _, _ = self._session_row(conn)
+        return {'revision': revision, 'saved_at': saved_at,
+                'state': json.loads(state) if state else None, 'restore': bool(restore)}
+
+    def save_session(self, state, revision, client_id='', seq=None):
+        """Replace the stored state when *revision* is current. Returns the new
+        revision and saved_at. Raises SessionConflict, SessionTooLarge, or
+        ValueError; on any error the previous session stays intact."""
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+            raise ValueError('The session revision must be a nonnegative integer.')
+        if not isinstance(client_id, str) or len(client_id) > 100:
+            raise ValueError('The session client ID must be text of at most 100 characters.')
+        if seq is not None and (isinstance(seq, bool) or not isinstance(seq, int) or seq < 0):
+            raise ValueError('The session sequence number must be a nonnegative integer.')
+        clean = validate_session_state(state)
+        encoded = json.dumps(clean, allow_nan=False, separators=(',', ':'))
+        if len(encoded.encode('utf-8')) > SESSION_MAX_BYTES:
+            raise SessionTooLarge('The workspace is larger than 64 MiB. Remove some plans so it can be saved.')
+        conn = self._session_transaction()
+        try:
+            current, saved_at, _, restore, writer, writer_seq = self._session_row(conn)
+            own = bool(client_id) and client_id == writer
+            if own and seq is not None and seq <= writer_seq:
+                # An older save from this page arrived after a newer one.
+                conn.execute('ROLLBACK')
+                return {'revision': current, 'saved_at': saved_at, 'stale': True}
+            if revision != current and not own:
+                conn.execute('ROLLBACK')
+                raise SessionConflict(current)
+            if not restore:
+                conn.execute('ROLLBACK')
+                raise ValueError('Restore workspace on startup is off, so the workspace is not saved.')
+            saved_at = _now()
+            conn.execute('UPDATE session SET revision = ?, saved_at = ?, state = ?, writer = ?, writer_seq = ? '
+                         'WHERE id = 1', (current + 1, saved_at, encoded, client_id, seq or 0))
+            conn.execute('COMMIT')
+        except Exception:
+            if conn.in_transaction:
+                conn.execute('ROLLBACK')
+            raise
+        finally:
+            conn.close()
+        return {'revision': current + 1, 'saved_at': saved_at}
+
+    def clear_session(self, client_id='', seq=None):
+        """Forget the stored state (settings stay). Returns the new revision.
+
+        *seq* is the page's next save sequence number: any save from the same
+        page with a lower number (an autosave already in flight) is then
+        dropped as stale instead of bringing the cleared state back."""
+        return self._update_session(None, client_id, seq)
+
+    def set_session_restore(self, restore, client_id='', seq=None):
+        """Turn restore on startup on or off. Off also clears the stored state."""
+        if not isinstance(restore, bool):
+            raise ValueError('restore must be true or false.')
+        return self._update_session(restore, client_id, seq)
+
+    def _update_session(self, restore, client_id, seq=None):
+        if not isinstance(client_id, str) or len(client_id) > 100:
+            raise ValueError('The session client ID must be text of at most 100 characters.')
+        if seq is not None and (isinstance(seq, bool) or not isinstance(seq, int) or seq < 0):
+            raise ValueError('The session sequence number must be a nonnegative integer.')
+        conn = self._session_transaction()
+        try:
+            current, _, state, enabled, writer, writer_seq = self._session_row(conn)
+            if client_id and client_id == writer and seq is not None and seq <= writer_seq:
+                # A clear or settings change from this page that arrives after a
+                # newer request from it (a delayed or retried request): applying
+                # it would delete newer state and lower writer_seq, so a retried
+                # old save would then be accepted. Nothing changes.
+                conn.execute('ROLLBACK')
+                return {'revision': current, 'restore': bool(enabled), 'stale': True}
+            if seq is not None:
+                writer_seq = seq
+            elif writer != client_id:
+                writer_seq = 0
+            if restore is not None:
+                enabled = restore
+            if restore is None or not restore:
+                state = None
+            conn.execute('UPDATE session SET revision = ?, saved_at = ?, state = ?, restore = ?, writer = ?, '
+                         'writer_seq = ? WHERE id = 1',
+                         (current + 1, '' if state is None else _now(), state, int(bool(enabled)),
+                          client_id, writer_seq))
+            conn.execute('COMMIT')
+        except Exception:
+            if conn.in_transaction:
+                conn.execute('ROLLBACK')
+            raise
+        finally:
+            conn.close()
+        return {'revision': current + 1, 'restore': bool(enabled)}
 
     def list(self, kind):
         if not self.path.exists():
             return []
         with closing(self._connect()) as conn, conn:
             rows = conn.execute('SELECT id, updated, payload FROM records WHERE kind=? ORDER BY updated DESC', (kind,)).fetchall()
-        return [dict(id=key, updated_at=updated, **json.loads(payload)) for key, updated, payload in rows]
+        return [_present(kind, dict(id=key, updated_at=updated, **json.loads(payload)))
+                for key, updated, payload in rows]
 
-    def save(self, kind, payload, key=None):
+    def list_investigations(self, limit=INVESTIGATION_PAGE_SIZE, cursor=None, search=''):
+        """``investigation-list-1.0``: one page of summaries, newest first.
+
+        Pages are keyed on (updated, id), so a delete never skips a row and
+        ``next_cursor`` is null on the last page. *search* keeps the rows
+        whose name, tags or notes contain it, ignoring case (Library's filter).
+        Never decodes a saved bundle except to refresh a stale summary, one at
+        a time; get() returns the complete bundle.
+        """
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= INVESTIGATION_PAGE_MAX:
+            raise ValueError('Ask for 1 to %d investigations at a time.' % INVESTIGATION_PAGE_MAX)
+        if not isinstance(search, str) or len(search) > INVESTIGATION_SEARCH_MAX:
+            raise ValueError('Search text must be at most %d characters.' % INVESTIGATION_SEARCH_MAX)
+        if cursor is not None and (not isinstance(cursor, dict) or any(
+                not isinstance(cursor.get(k), str) or not cursor[k] or len(cursor[k]) > 200
+                for k in ('updated_at', 'id'))):
+            raise ValueError('That page of investigations is no longer valid. Reload the list.')
+        result = {'schema_version': 'investigation-list-1.0', 'items': [], 'next_cursor': None}
+        if not self.path.exists():
+            return result
+        where, args = [], []
+        if cursor is not None:
+            where.append('(updated < ? OR (updated = ? AND id < ?))')
+            args.extend((cursor['updated_at'], cursor['updated_at'], cursor['id']))
+        needle = search.strip().lower()
+        if needle:
+            where.append('instr(search, ?) > 0')
+            args.append(needle)
+        sql = "SELECT id, updated, payload FROM investigation_summaries WHERE payload <> 'null'"
+        for clause in where:
+            sql += ' AND ' + clause
+        sql += ' ORDER BY updated DESC, id DESC LIMIT ?'
+        args.append(limit + 1)
+        self._sync_investigation_summaries()
+        with closing(self._connect()) as conn, conn:
+            rows = conn.execute(sql, args).fetchall()
+        if len(rows) > limit:
+            rows = rows[:limit]
+            result['next_cursor'] = {'updated_at': rows[-1][1], 'id': rows[-1][0]}
+        result['items'] = [dict(id=key, updated_at=updated, **json.loads(payload)) for key, updated, payload in rows]
+        return result
+
+    def _sync_investigation_summaries(self):
+        """Bring the summary cache in line with the saved records.
+
+        This version writes both in one transaction; an older myflames using
+        the same file writes records only. Missing or outdated summaries are
+        rebuilt one bundle at a time, summaries of deleted records dropped. A
+        record that is not a readable bundle is marked (payload ``null``) and
+        left out of the list.
+        """
+        with closing(self._connect()) as conn:
+            if (conn.execute(_STALE_SUMMARIES + ' LIMIT 1').fetchone() is None
+                    and conn.execute(_ORPHAN_SUMMARIES + ' LIMIT 1').fetchone() is None):
+                return
+        conn = self._transaction()
+        try:
+            conn.execute('DELETE FROM investigation_summaries WHERE id IN (%s)' % _ORPHAN_SUMMARIES)
+            for (key,) in conn.execute(_STALE_SUMMARIES).fetchall():
+                updated, payload = conn.execute(
+                    "SELECT updated, payload FROM records WHERE id = ? AND kind = 'investigation'", (key,)).fetchone()
+                try:
+                    _save_investigation_summary(conn, key, updated, json.loads(payload))
+                except (ValueError, TypeError, KeyError, AttributeError):
+                    # Not listed, and not decoded again until it changes.
+                    conn.execute("INSERT OR REPLACE INTO investigation_summaries VALUES (?, ?, 'null', '')",
+                                 (key, updated))
+            conn.execute('COMMIT')
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute('ROLLBACK')
+            raise
+        finally:
+            conn.close()
+
+    def get(self, kind, key):
+        """One record by ID, or None. Never creates the database."""
+        if not self.path.exists() or not isinstance(key, str):
+            return None
+        with closing(self._connect()) as conn, conn:
+            row = conn.execute('SELECT id, updated, payload FROM records WHERE id=? AND kind=?', (key, kind)).fetchone()
+        return _present(kind, dict(id=row[0], updated_at=row[1], **json.loads(row[2]))) if row else None
+
+    def find_profile(self, name_or_id):
+        """Resolve a profile by ID, then by exact name. Raises ValueError if absent or ambiguous."""
+        profile = self.get('profile', name_or_id)
+        if profile is not None:
+            return profile
+        matches = [p for p in self.list('profile') if p.get('name') == name_or_id]
+        if len(matches) > 1:
+            raise ValueError('Several connection profiles are named %r; use the profile ID instead.' % name_or_id)
+        if not matches:
+            raise ValueError('No saved connection profile named %r. List them with: myflames profiles list' % name_or_id)
+        return matches[0]
+
+    def save(self, kind, payload, key=None, password=None, remember=None):
+        """Save a record. For profiles, *remember* True stores *password* in the
+        secret store, False forgets any stored one, None keeps the current state."""
+        if kind == 'profile':
+            return self._save_profile(payload, key, password, remember)
         if kind == 'investigation':
             value = validate_bundle(payload)
-        elif kind == 'profile':
-            from .live import connection_options
-            options = connection_options(payload)
-            name = payload.get('name') or options['host']
-            if not isinstance(name, str) or len(name) > 200:
-                raise ValueError('Connection names must be text of at most 200 characters.')
-            value = {field: options[field] for field in PROFILE_FIELDS if field in options}
-            value['name'] = name
         else:
             raise ValueError('Unknown record type.')
+        return self._write(kind, value, key)
+
+    def _write(self, kind, value, key):
         key = str(key or uuid.uuid4().hex)
         if len(key) > 200:
             raise ValueError('Invalid record ID.')
-        updated = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        updated = _now()
         with closing(self._connect()) as conn, conn:
             existing = conn.execute('SELECT kind FROM records WHERE id=?', (key,)).fetchone()
             if existing and existing[0] != kind:
                 raise ValueError('Record type does not match.')
             conn.execute('INSERT OR REPLACE INTO records VALUES (?, ?, ?, ?)', (key, kind, updated, json.dumps(value, allow_nan=False)))
-        return dict(id=key, updated_at=updated, **value)
+            if kind == 'investigation':
+                _save_investigation_summary(conn, key, updated, value)
+        return _present(kind, dict(id=key, updated_at=updated, **value))
+
+    def _save_profile(self, payload, key, password, remember):
+        from . import secret_store
+        from .live import connection_options
+        options = connection_options(payload)
+        name = payload.get('name')
+        if isinstance(name, str):
+            name = name.strip()
+        name = name or options['host']
+        if not isinstance(name, str) or len(name) > 200:
+            raise ValueError('Connection names must be text of at most 200 characters.')
+        if password is not None and not isinstance(password, str):
+            raise ValueError('Invalid connection field: password')
+        if remember not in (None, True, False):
+            raise ValueError('remember_password must be true or false.')
+        safety = _check_safety(payload.get('type'), payload.get('read_only'))
+        value = {field: options[field] for field in PROFILE_FIELDS if field in options}
+        value['name'] = name
+        key = str(key or uuid.uuid4().hex)
+        if len(key) > 200:
+            raise ValueError('Invalid record ID.')
+        before = self._profile(key)
+        if remember is None:
+            remember = bool(before and before.get('remember_password'))
+        if remember and not password and not (before and before.get('remember_password')):
+            raise ValueError('Enter the password to remember it.')
+        if not remember and before and before.get('remember_password'):
+            # Delete first: if that fails, the record still says what is saved.
+            secret_store.delete_secret(_stored_ref(key, before), before.get('secret_backend') or None)
+        ref = backend = None
+        if remember and password:
+            # A new key on every save: a concurrent save writes its own entry
+            # and the record committed last names the one that goes with it.
+            ref = _new_secret_ref(key, value)
+            backend = secret_store.save_secret(ref, password)
+        replaced = None
+        try:
+            conn = self._transaction()
+            try:
+                kind, existing = self._record(conn, key)
+                if kind not in (None, 'profile'):
+                    raise ValueError('Record type does not match.')
+                remembered = bool(existing and existing.get('remember_password'))
+                if ref:
+                    value.update(remember_password=True, secret_backend=backend, secret_ref=ref)
+                    replaced = existing if remembered else None
+                elif not remember:
+                    value.update(remember_password=False, secret_backend='')
+                    # Saved by another request since the delete above.
+                    replaced = existing if remembered else None
+                elif not remembered:
+                    raise ValueError('Enter the password to remember it.')
+                elif not _same_endpoint(value, existing):
+                    # A saved password is tied to the endpoint and TLS settings it was saved for.
+                    raise ValueError('The saved password belongs to the previous host, port, user, and TLS '
+                                     'settings (and SSH host). Enter the password again, or turn off Remember '
+                                     'password.')
+                else:
+                    value.update(remember_password=True, secret_backend=existing.get('secret_backend') or '')
+                    if existing.get('secret_ref'):
+                        value['secret_ref'] = existing['secret_ref']
+                        # The kept secret's key is fingerprinted with the
+                        # endpoint as first saved: a host or CA path saved
+                        # with pasted spaces keeps that spelling (every
+                        # request trims it), or _ref_matches would refuse it.
+                        for field in ('host', 'ssl_ca'):
+                            if existing.get(field) and endpoint_value(existing, field) == endpoint_value(value, field):
+                                value[field] = existing[field]
+                # Type and read-only are kept unless this save sets them; a
+                # save that points the profile at another endpoint without
+                # choosing a type makes it production again.
+                requested = dict(safety)
+                if requested['type'] is None and existing and not _same_endpoint(value, existing):
+                    requested['type'] = 'production'
+                value.update(_safety_fields(requested, existing or {}))
+                updated = _now()
+                conn.execute('INSERT OR REPLACE INTO records VALUES (?, ?, ?, ?)',
+                             (key, 'profile', updated, json.dumps(value, allow_nan=False)))
+                conn.execute('COMMIT')
+            except BaseException:
+                if conn.in_transaction:
+                    conn.execute('ROLLBACK')
+                raise
+            finally:
+                conn.close()
+        except BaseException:
+            if ref:
+                _delete_quietly(ref, backend)
+            raise
+        if replaced and _stored_ref(key, replaced) != ref:
+            _delete_quietly(_stored_ref(key, replaced), replaced.get('secret_backend'))
+        return _present('profile', dict(id=key, updated_at=updated, **value))
+
+    def _record(self, conn, key):
+        """(kind, payload dict) of one record inside an open transaction, or (None, None)."""
+        row = conn.execute('SELECT kind, payload FROM records WHERE id=?', (key,)).fetchone()
+        return (row[0], json.loads(row[1])) if row else (None, None)
+
+    def _profile(self, key, include_updated=False):
+        """A stored profile with its ``secret_ref``, or None. Never creates the database.
+
+        ``include_updated`` reads its save time in the same snapshot, for callers
+        that fingerprint the current settings and password reference together.
+        """
+        if not self.path.exists() or not isinstance(key, str):
+            return None
+        with closing(self._connect()) as conn, conn:
+            if include_updated:
+                row = conn.execute('SELECT updated, payload FROM records WHERE id=? AND kind=?',
+                                   (key, 'profile')).fetchone()
+                return dict(json.loads(row[1]), updated_at=row[0]) if row else None
+            kind, value = self._record(conn, key)
+        return value if kind == 'profile' else None
+
+    def _remove_profile_secret(self, key, delete_record):
+        """Forget a profile's saved password, or delete the profile with it.
+        Returns the stored record after the change (None when deleted)."""
+        from . import secret_store
+        before = self._profile(key)
+        if before is None:
+            if delete_record:
+                return None
+            raise ValueError('The connection profile no longer exists.')
+        deleted = _stored_ref(key, before) if before.get('remember_password') else None
+        if deleted:
+            secret_store.delete_secret(deleted, before.get('secret_backend') or None)
+        conn = self._transaction()
+        try:
+            kind, existing = self._record(conn, key)
+            if kind != 'profile':
+                conn.execute('ROLLBACK')
+                if delete_record:
+                    return None
+                raise ValueError('The connection profile no longer exists.')
+            value = None
+            if delete_record:
+                conn.execute("DELETE FROM records WHERE id=? AND kind='profile'", (key,))
+            else:
+                value = {field: existing[field] for field in PROFILE_FIELDS if field in existing}
+                value.update(_safety_fields(existing, existing))
+                value.update(remember_password=False, secret_backend='')
+                conn.execute('UPDATE records SET updated=?, payload=? WHERE id=?',
+                             (_now(), json.dumps(value, allow_nan=False), key))
+            conn.execute('COMMIT')
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute('ROLLBACK')
+            raise
+        finally:
+            conn.close()
+        if existing.get('remember_password') and _stored_ref(key, existing) != deleted:
+            # Saved by another request between the delete above and this transaction.
+            _delete_quietly(_stored_ref(key, existing), existing.get('secret_backend'))
+        return value
+
+    def set_profile_safety(self, key, connection_type=None, read_only=None):
+        """Change a profile's type ('production' or 'development') and/or
+        read-only flag; the saved password and endpoint stay as they are."""
+        safety = _check_safety(connection_type, read_only)
+        if connection_type is None and read_only is None:
+            raise ValueError('Choose a connection type or the read-only setting to change.')
+        if not isinstance(key, str) or not self.path.exists():
+            raise ValueError('The connection profile no longer exists.')
+        conn = self._transaction()
+        try:
+            kind, existing = self._record(conn, key)
+            if kind != 'profile':
+                raise ValueError('The connection profile no longer exists.')
+            existing.update(_safety_fields(safety, existing))
+            conn.execute('UPDATE records SET updated=?, payload=? WHERE id=?',
+                         (_now(), json.dumps(existing, allow_nan=False), key))
+            conn.execute('COMMIT')
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute('ROLLBACK')
+            raise
+        finally:
+            conn.close()
+        return self.get('profile', key)
+
+    def set_profile_ssh(self, key, ssh, connection_type=None, read_only=None):
+        """Point a saved profile through SSH (*ssh*: ``ssh_host`` and optional
+        ``ssh_user`` and ``ssh_port``) or, with *ssh* None, directly again.
+        Returns ``(profile, forgot_password)``. The SSH target is part of the
+        endpoint: a saved password belongs to the endpoint it was saved for,
+        so a change of SSH target forgets it, and the type becomes production
+        unless *connection_type* is given (as for every save that points a
+        profile at another endpoint)."""
+        from .live import connection_options
+        existing = self._profile(key) if isinstance(key, str) else None
+        if existing is None:
+            raise ValueError('The connection profile no longer exists.')
+        payload = {f: existing[f] for f in PROFILE_FIELDS if f in existing and f not in _SSH_ENDPOINT_FIELDS}
+        payload.update({k: v for k, v in (ssh or {}).items() if k in _SSH_ENDPOINT_FIELDS and v not in (None, '')})
+        if connection_type is not None:
+            payload['type'] = connection_type
+        if read_only is not None:
+            payload['read_only'] = read_only
+        options = connection_options(payload)
+        moved = not _same_endpoint(options, existing)
+        forget = bool(moved and existing.get('remember_password'))
+        saved = self._save_profile(payload, key, None, False if forget else None)
+        return saved, forget
+
+    def forget_password(self, key):
+        """Delete a profile's saved password and record that none is saved."""
+        self._remove_profile_secret(key, delete_record=False)
+        return self.get('profile', key)
 
     def delete(self, kind, key):
         if self.path.exists():
+            if kind == 'profile':
+                self._remove_profile_secret(str(key), delete_record=True)
+                return {'deleted': True}
             with closing(self._connect()) as conn, conn:
                 conn.execute('DELETE FROM records WHERE id=? AND kind=?', (str(key), kind))
+                if kind == 'investigation':
+                    conn.execute('DELETE FROM investigation_summaries WHERE id=?', (str(key),))
         return {'deleted': True}
+
+    # -- Application update checks (app_update.py) ----------------------------
+
+    def app_update_last_check(self):
+        """The stored result of the last update check (a dict), or None.
+        Never creates the database."""
+        if not self.path.exists():
+            return None
+        with closing(self._connect()) as conn, conn:
+            row = conn.execute("SELECT value FROM settings WHERE key = 'app_update_last_check'").fetchone()
+        value = _loads(row[0]) if row else None
+        return value if isinstance(value, dict) else None
+
+    def set_app_update_last_check(self, record):
+        """Keep *record* (app_update.last_check_record) as the last check."""
+        if not isinstance(record, dict) or not isinstance(record.get('checked_at'), str):
+            raise ValueError('Expected an update check record.')
+        text = json.dumps(record, allow_nan=False, sort_keys=True)
+        if len(text) > 4096:
+            raise ValueError('The update check record is too large.')
+        with closing(self._connect()) as conn, conn:
+            conn.execute("INSERT OR REPLACE INTO settings VALUES ('app_update_last_check', ?)", (text,))
+        return record
+
+    # -- Home news (news.py): Settings, "Show MySQL and MariaDB news on Home" --
+
+    def news_enabled(self):
+        """True unless the user turned news off (the default is on). Never creates the database."""
+        if not self.path.exists():
+            return True
+        with closing(self._connect()) as conn, conn:
+            row = conn.execute("SELECT value FROM settings WHERE key = 'home_news'").fetchone()
+        return not row or row[0] != 'off'
+
+    def set_news_enabled(self, enabled):
+        if not isinstance(enabled, bool):
+            raise ValueError('enabled must be true or false.')
+        with closing(self._connect()) as conn, conn:
+            conn.execute("INSERT OR REPLACE INTO settings VALUES ('home_news', ?)", ('on' if enabled else 'off',))
+        return enabled
+
+    # -- Audit trail of server writes (rows shaped by dbops.py) ----------------
+
+    def audit_retention_days(self):
+        """Days audit records are kept (default 90). Never creates the database."""
+        if not self.path.exists():
+            return AUDIT_DEFAULT_RETENTION_DAYS
+        with closing(self._connect()) as conn, conn:
+            return _retention(conn)
+
+    def set_audit_retention_days(self, days):
+        """Keep audit records for *days* (1 to 3650) and purge older ones now."""
+        if isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= AUDIT_MAX_RETENTION_DAYS:
+            raise ValueError('Keep audit records for 1 to %d days.' % AUDIT_MAX_RETENTION_DAYS)
+        conn = self._transaction()
+        try:
+            conn.execute("INSERT OR REPLACE INTO settings VALUES ('audit_retention_days', ?)", (str(days),))
+            conn.execute('DELETE FROM audit WHERE attempted_at < ?', (_cutoff(days),))
+            conn.execute('COMMIT')
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute('ROLLBACK')
+            raise
+        finally:
+            conn.close()
+        return days
+
+    def audit_insert(self, row):
+        """Insert one audit row, first purging rows older than the retention."""
+        columns = [c for c in AUDIT_COLUMNS if c in row]
+        conn = self._transaction()
+        try:
+            conn.execute('DELETE FROM audit WHERE attempted_at < ?', (_cutoff(_retention(conn)),))
+            conn.execute('INSERT INTO audit (%s) VALUES (%s)' % (', '.join(columns), ', '.join('?' * len(columns))),
+                         [row[c] for c in columns])
+            conn.execute('COMMIT')
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute('ROLLBACK')
+            raise
+        finally:
+            conn.close()
+        return row['id']
+
+    def audit_complete(self, audit_id, fields):
+        """Finish a pending row. Returns False when it is gone or already finished."""
+        columns = [c for c in AUDIT_COLUMNS if c in fields and c != 'id']
+        if not self.path.exists() or not columns:
+            return False
+        with closing(self._connect()) as conn, conn:
+            cursor = conn.execute('UPDATE audit SET %s WHERE id = ? AND status = ?'
+                                  % ', '.join('%s = ?' % c for c in columns),
+                                  [fields[c] for c in columns] + [audit_id, 'pending'])
+            return cursor.rowcount == 1
+
+    def audit_object_records(self, server, kind, key, ssh=None):
+        """One bounded local SELECT, five newest exact targets, no server I/O.
+
+        A Python predicate avoids requiring SQLite's optional JSON extension.
+        The progress budget bounds a scan of the retained local audit trail.
+        """
+        from .dbops import audit_object_matches
+        if not self.path.exists():
+            return []
+        import time
+        deadline = time.monotonic() + 0.25
+        budget = [200]
+
+        def stop():
+            budget[0] -= 1
+            return budget[0] <= 0 or time.monotonic() > deadline
+
+        with closing(self._connect()) as conn:
+            conn.create_function('audit_object_match', 3,
+                                 lambda operation, target, engine: audit_object_matches(operation, target, engine, kind, key))
+            conn.set_progress_handler(stop, 1000)
+            try:
+                rows = conn.execute(
+                    "SELECT %s FROM audit WHERE lower(host || ':' || port) = ? "
+                    "AND COALESCE(ssh, '') = ? AND status IN ('ok', 'unknown') "
+                    "AND audit_object_match(operation, target, engine) "
+                    "ORDER BY attempted_at DESC, rowid DESC LIMIT 5" % ', '.join(AUDIT_COLUMNS),
+                    (server.lower(), ssh or '')).fetchall()
+            except sqlite3.OperationalError as exc:
+                if str(exc) == 'interrupted':
+                    raise ValueError('Local change history took too long to read. Open the Audit log.')
+                raise
+        return [_audit_record(dict(zip(AUDIT_COLUMNS, row))) for row in rows]
+
+    def audit_records(self, since_days=None, server=None, limit=None, status=None, before=None, record_id=None):
+        """Audit records, newest first (audit-1.0 shape). *server* matches the
+        saved connection name, the host, or host:port, ignoring case. *status*
+        keeps one audit status; like every filter it applies before *limit*.
+        *before* is the id of a record already listed: only records older than
+        it are returned (the next page)."""
+        from .dbops import AUDIT_STATUSES
+        if record_id is not None and (not isinstance(record_id, str) or not _RECORD_ID.fullmatch(record_id)):
+            raise ValueError('id must be the id of an audit record.')
+        if status is not None and status not in AUDIT_STATUSES:
+            raise ValueError('status must be one of: %s.' % ', '.join(AUDIT_STATUSES))
+        if before is not None and (not isinstance(before, str) or not 0 < len(before) <= 64):
+            raise ValueError('before must be the id of an audit record.')
+        if since_days is not None and (isinstance(since_days, bool) or not isinstance(since_days, (int, float))
+                                       or not 0 < since_days <= 36500):
+            raise ValueError('since_days must be a number of days from 1 to 36500.')
+        if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100000):
+            raise ValueError('limit must be an integer from 1 to 100000.')
+        if server is not None and (not isinstance(server, str) or len(server) > 300):
+            raise ValueError('server must be text.')
+        if not self.path.exists():
+            return []
+        where, args = [], []
+        if record_id is not None:
+            where.append('id = ?')
+            args.append(record_id)
+        if since_days is not None:
+            where.append('attempted_at >= ?')
+            args.append(_cutoff(since_days))
+        if server:
+            where.append("(lower(profile_name) = ? OR lower(host) = ? OR lower(host || ':' || port) = ?)")
+            args.extend([server.lower()] * 3)
+        if status is not None:
+            where.append('status = ?')
+            args.append(status)
+        with closing(self._connect()) as conn, conn:
+            if before is not None:
+                # Keyset paging in the list's own order (attempted_at, then rowid).
+                mark = conn.execute('SELECT attempted_at, rowid FROM audit WHERE id = ?', (before,)).fetchone()
+                if mark is None:
+                    raise ValueError('That audit record is no longer kept. Refresh the list.')
+                where.append('(attempted_at < ? OR (attempted_at = ? AND rowid < ?))')
+                args.extend([mark[0], mark[0], mark[1]])
+            sql = 'SELECT %s FROM audit%s ORDER BY attempted_at DESC, rowid DESC' % (
+                ', '.join(AUDIT_COLUMNS), ' WHERE ' + ' AND '.join(where) if where else '')
+            if limit:
+                sql += ' LIMIT %d' % limit
+            rows = conn.execute(sql, args).fetchall()
+        return [_audit_record(dict(zip(AUDIT_COLUMNS, row))) for row in rows]
+
+    def audit_purge(self, older_than_days):
+        """Delete audit records older than *older_than_days* (0 deletes all). Returns the count."""
+        if isinstance(older_than_days, bool) or not isinstance(older_than_days, (int, float)) \
+                or not 0 <= older_than_days <= 36500:
+            raise ValueError('Choose a number of days from 0 to 36500.')
+        if not self.path.exists():
+            return 0
+        with closing(self._connect()) as conn, conn:
+            if older_than_days == 0:
+                return conn.execute('DELETE FROM audit').rowcount
+            return conn.execute('DELETE FROM audit WHERE attempted_at < ?', (_cutoff(older_than_days),)).rowcount
+
+    # -- Query editor history (records of kind 'editor_history', editor_session.py) ----
+
+    def history_add(self, entry, max_entries, max_bytes):
+        """Add one run to the Query editor history and drop the oldest runs
+        beyond *max_entries* or *max_bytes* (stored JSON). Returns its ID.
+        The entry is built by editor_session.history_entry: redacted SQL, the
+        connection's name, host and port, never a password."""
+        if not isinstance(entry, dict):
+            raise ValueError('A history entry must be an object.')
+        clean = {k: v for k, v in entry.items() if str(k).lower() not in SECRET_KEYS}
+        payload = json.dumps(clean, allow_nan=False, ensure_ascii=False)
+        key = uuid.uuid4().hex
+        conn = self._transaction()
+        try:
+            conn.execute('INSERT INTO records VALUES (?, ?, ?, ?)', (key, HISTORY_KIND, _now(), payload))
+            rows = conn.execute('SELECT id, length(payload) FROM records WHERE kind = ? '
+                                'ORDER BY updated DESC, rowid DESC', (HISTORY_KIND,)).fetchall()
+            total, drop = 0, []
+            for index, (record_id, size) in enumerate(rows):
+                total += size or 0
+                if index >= max_entries or (total > max_bytes and record_id != key):
+                    drop.append(record_id)
+            for start in range(0, len(drop), 500):
+                part = drop[start:start + 500]
+                conn.execute('DELETE FROM records WHERE kind = ? AND id IN (%s)' % ', '.join('?' * len(part)),
+                             [HISTORY_KIND] + part)
+            conn.execute('COMMIT')
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute('ROLLBACK')
+            raise
+        finally:
+            conn.close()
+        return key
+
+    def history_list(self, limit=200, profile_id=None):
+        """Query editor history, newest first; *profile_id* keeps one saved connection's runs."""
+        if not self.path.exists():
+            return []
+        with closing(self._connect()) as conn, conn:
+            rows = conn.execute('SELECT id, updated, payload FROM records WHERE kind = ? '
+                                'ORDER BY updated DESC, rowid DESC', (HISTORY_KIND,)).fetchall()
+        items = []
+        for key, updated, payload in rows:
+            try:
+                value = json.loads(payload)
+            except ValueError:
+                continue
+            if profile_id and (value.get('connection') or {}).get('profile_id') != profile_id:
+                continue
+            value['id'] = key
+            items.append(value)
+            if len(items) >= limit:
+                break
+        return items
+
+    def history_clear(self):
+        """Delete the whole Query editor history. Returns the count."""
+        if not self.path.exists():
+            return 0
+        with closing(self._connect()) as conn, conn:
+            return conn.execute('DELETE FROM records WHERE kind = ?', (HISTORY_KIND,)).rowcount
+
+    # -- Query editor saved queries (records of kind 'saved_query') ------------
+
+    def saved_query_save(self, entry, max_entries, max_bytes):
+        """Add one saved query and return its ID. Unlike the history, a
+        full store refuses (ValueError) rather than drop a query the user
+        chose to keep: at most *max_entries* records and *max_bytes* of
+        stored JSON. The entry is built by editor_session.saved_query_entry
+        (redacted SQL, never credentials)."""
+        if not isinstance(entry, dict):
+            raise ValueError('A saved query must be an object.')
+        clean = {k: v for k, v in entry.items() if str(k).lower() not in SECRET_KEYS and k != 'id'}
+        payload = json.dumps(clean, allow_nan=False, ensure_ascii=False)
+        key = uuid.uuid4().hex
+        conn = self._transaction()
+        try:
+            count, size = conn.execute('SELECT COUNT(*), COALESCE(SUM(length(payload)), 0) FROM records '
+                                       'WHERE kind = ?', (SAVED_QUERY_KIND,)).fetchone()
+            if count >= max_entries:
+                raise ValueError('This computer keeps at most {:,} saved queries. Delete some, then save again.'
+                                 .format(max_entries))
+            if size + len(payload) > max_bytes:
+                raise ValueError('Saved queries are limited to {:,} MB on this computer. Delete some, then save '
+                                 'again.'.format(max_bytes // (1024 * 1024)))
+            conn.execute('INSERT INTO records VALUES (?, ?, ?, ?)', (key, SAVED_QUERY_KIND, _now(), payload))
+            conn.execute('COMMIT')
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute('ROLLBACK')
+            raise
+        finally:
+            conn.close()
+        return key
+
+    def saved_query_list(self, limit=500):
+        """Saved queries, the most recently saved, renamed or moved first."""
+        if not self.path.exists():
+            return []
+        with closing(self._connect()) as conn, conn:
+            rows = conn.execute('SELECT id, updated, payload FROM records WHERE kind = ? '
+                                'ORDER BY updated DESC, rowid DESC', (SAVED_QUERY_KIND,)).fetchall()
+        items = []
+        for key, updated, payload in rows:
+            try:
+                value = json.loads(payload)
+            except ValueError:
+                continue
+            value['id'] = key
+            items.append(value)
+            if len(items) >= limit:
+                break
+        return items
+
+    def saved_query_rename(self, record_id, name):
+        """Rename one saved query. Returns the updated item."""
+        return self._saved_query_update(record_id, 'name', name)
+
+    def saved_query_move(self, record_id, folder):
+        """Move one saved query to *folder*. Returns the updated item."""
+        return self._saved_query_update(record_id, 'folder', folder)
+
+    def _saved_query_update(self, record_id, field, value):
+        if not isinstance(record_id, str) or not _RECORD_ID.fullmatch(record_id):
+            raise ValueError('That saved query is no longer kept.')
+        conn = self._transaction()
+        try:
+            row = conn.execute('SELECT payload FROM records WHERE kind = ? AND id = ?',
+                               (SAVED_QUERY_KIND, record_id)).fetchone()
+            if row is None:
+                raise ValueError('That saved query is no longer kept.')
+            value_obj = json.loads(row[0])
+            if not isinstance(value_obj, dict):
+                raise ValueError('That saved query could not be read.')
+            value_obj[field] = value
+            # The same form as the record's created time (editor_session._now).
+            value_obj['updated'] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='milliseconds')
+            conn.execute('UPDATE records SET updated = ?, payload = ? WHERE kind = ? AND id = ?',
+                         (_now(), json.dumps(value_obj, allow_nan=False, ensure_ascii=False),
+                          SAVED_QUERY_KIND, record_id))
+            conn.execute('COMMIT')
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute('ROLLBACK')
+            raise
+        finally:
+            conn.close()
+        value_obj['id'] = record_id
+        return value_obj
+
+    def saved_query_delete(self, record_id):
+        """Delete one saved query. Returns the count (0 when it is gone)."""
+        if not isinstance(record_id, str) or not _RECORD_ID.fullmatch(record_id):
+            raise ValueError('That saved query is no longer kept.')
+        if not self.path.exists():
+            return 0
+        with closing(self._connect()) as conn, conn:
+            return conn.execute('DELETE FROM records WHERE kind = ? AND id = ?',
+                                (SAVED_QUERY_KIND, record_id)).rowcount
+
+    # -- Schema versions (schema_versions.py) ----------------------------------
+
+    def schema_version_save(self, snapshot, name='', note=''):
+        """Save a snapshot as the next version of its database (numbered per
+        host, port and database). Returns its summary with ``same_as``: the
+        latest earlier version of that database when it has the same
+        checksum (nothing changed since), else null."""
+        from .schema_versions import encode_snapshot, source_key, version_summary, validate_snapshot
+        snapshot = validate_snapshot(snapshot)
+        name, note = _version_label(name, note)
+        key, payload, source = uuid.uuid4().hex, encode_snapshot(snapshot), source_key(snapshot)
+        conn = self._transaction()
+        try:
+            latest = conn.execute('SELECT id, number, name, summary FROM schema_versions WHERE source_key = ? '
+                                  'ORDER BY number DESC LIMIT 1', (source,)).fetchone()
+            number = latest[1] + 1 if latest else 1
+            summary = version_summary(snapshot)
+            saved_at = _now()
+            conn.execute('INSERT INTO schema_versions (id, saved_at, source_key, database, number, name, note, '
+                         'summary, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                         (key, saved_at, source, snapshot['database'], number, name, note,
+                          json.dumps(summary, allow_nan=False), payload))
+            conn.execute('COMMIT')
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute('ROLLBACK')
+            raise
+        finally:
+            conn.close()
+        item = _version_item(key, saved_at, source, number, name, note, summary)
+        item['same_as'] = None
+        if latest and json.loads(latest[3]).get('checksum') == summary['checksum']:
+            item['same_as'] = {'id': latest[0], 'number': latest[1], 'name': latest[2]}
+        return item
+
+    def schema_version_list(self, source=None, database=None, limit=1000):
+        """``schema-version-list-1.0``: summaries, newest first; never decodes
+        a snapshot. *source* keeps one database's history (source_key)."""
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 5000:
+            raise ValueError('Ask for 1 to 5000 schema versions at a time.')
+        result = {'schema_version': 'schema-version-list-1.0', 'items': []}
+        if not self.path.exists():
+            return result
+        where, args = [], []
+        if source is not None:
+            where.append('source_key = ?')
+            args.append(str(source))
+        if database is not None:
+            where.append('database = ?')
+            args.append(str(database))
+        result['items'] = self._versions(where, args, 'ORDER BY saved_at DESC, number DESC LIMIT %d' % limit)
+        return result
+
+    def _versions(self, where, args, tail=''):
+        """Summaries of the versions matching *where* (SQL with ? args)."""
+        if not self.path.exists():
+            return []
+        sql = 'SELECT id, saved_at, source_key, number, name, note, summary FROM schema_versions'
+        if where:
+            sql += ' WHERE ' + ' AND '.join(where)
+        with closing(self._connect()) as conn, conn:
+            rows = conn.execute(sql + ' ' + tail, args).fetchall()
+        return [_version_item(*row[:6], summary=json.loads(row[6])) for row in rows]
+
+    def schema_version_get(self, key):
+        """One saved version: its summary plus ``snapshot``, or None."""
+        from .schema_versions import decode_snapshot
+        if not self.path.exists() or not isinstance(key, str):
+            return None
+        with closing(self._connect()) as conn, conn:
+            row = conn.execute('SELECT id, saved_at, source_key, number, name, note, summary, payload '
+                               'FROM schema_versions WHERE id = ?', (key,)).fetchone()
+        if row is None:
+            return None
+        item = _version_item(*row[:6], summary=json.loads(row[6]))
+        item['snapshot'] = decode_snapshot(row[7])
+        return item
+
+    def schema_version_update(self, key, name=None, note=None):
+        """Rename a version or change its note; returns the summary."""
+        current = self.schema_version_list_item(key)
+        if current is None:
+            raise ValueError('No saved schema version with that ID.')
+        name, note = _version_label(current['name'] if name is None else name,
+                                    current['note'] if note is None else note)
+        with closing(self._connect()) as conn, conn:
+            conn.execute('UPDATE schema_versions SET name = ?, note = ? WHERE id = ?', (name, note, key))
+        return self.schema_version_list_item(key)
+
+    def schema_version_list_item(self, key):
+        if not self.path.exists() or not isinstance(key, str):
+            return None
+        with closing(self._connect()) as conn, conn:
+            row = conn.execute('SELECT id, saved_at, source_key, number, name, note, summary FROM schema_versions '
+                               'WHERE id = ?', (key,)).fetchone()
+        return _version_item(*row[:6], summary=json.loads(row[6])) if row else None
+
+    def schema_version_delete(self, key):
+        if self.path.exists():
+            with closing(self._connect()) as conn, conn:
+                conn.execute('DELETE FROM schema_versions WHERE id = ?', (str(key),))
+        return {'deleted': True}
+
+    def schema_version_find(self, ref, source=None):
+        """Resolve a version by ID, an ID prefix of at least 6 characters,
+        its exact name, or ``latest`` (of *source* when given). Raises
+        ValueError when nothing or more than one version matches."""
+        ref = str(ref or '').strip()
+        if not ref:
+            raise ValueError('Name a saved schema version.')
+        if ref == 'latest':
+            where, args = (['source_key = ?'], [str(source)]) if source is not None else ([], [])
+            items = self._versions(where, args, 'ORDER BY number DESC, saved_at DESC LIMIT 1' if source is not None
+                                   else 'ORDER BY saved_at DESC, number DESC LIMIT 1')
+            if not items:
+                raise ValueError('No saved schema version of %s yet. Save one with: myflames schema save'
+                                 % (source or 'this database'))
+            return items[0]
+        exact = self._versions(['id = ?'], [ref])
+        if exact:
+            return exact[0]
+        # IDs are lowercase hex (uuid4().hex), so a prefix needs no LIKE escaping.
+        matches = []
+        if 6 <= len(ref) <= 32 and all(c in '0123456789abcdef' for c in ref):
+            matches = self._versions(['id LIKE ?'], [ref + '%'], 'LIMIT 2')
+        if not matches:
+            matches = self._versions(['name = ?'], [ref], 'LIMIT 2')
+        if len(matches) > 1:
+            raise ValueError('%d saved schema versions match %r; use the ID instead (myflames schema list).'
+                             % (len(matches), ref))
+        if not matches:
+            raise ValueError('No saved schema version matches %r. List them with: myflames schema list' % ref)
+        return matches[0]
+
+    # -- Parameter snapshots (param_compare.py) -------------------------------
+
+    def parameter_snapshot_save(self, snapshot, label=''):
+        from .param_compare import validate_snapshot, source_key
+        snapshot = dict(snapshot, label=label or snapshot.get('label', ''))
+        snapshot = validate_snapshot(snapshot)
+        key, source, saved_at = uuid.uuid4().hex, source_key(snapshot), _now()
+        summary = {'server': snapshot['server'], 'captured_at': snapshot['captured_at'],
+                   'complete': snapshot['complete'], 'count': len(snapshot['items'])}
+        payload = zlib.compress(json.dumps(snapshot, ensure_ascii=False, allow_nan=False).encode('utf-8'))
+        conn = self._transaction()
+        try:
+            latest = conn.execute('SELECT MAX(number) FROM parameter_snapshots WHERE source_key = ?',
+                                  (source,)).fetchone()[0]
+            number = (latest or 0) + 1
+            conn.execute('INSERT INTO parameter_snapshots VALUES (?, ?, ?, ?, ?, ?, ?)',
+                         (key, saved_at, source, number, snapshot['label'], json.dumps(summary), payload))
+            conn.execute('COMMIT')
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute('ROLLBACK')
+            raise
+        finally:
+            conn.close()
+        return dict(summary, id=key, saved_at=saved_at, source_key=source, number=number, label=snapshot['label'])
+
+    def parameter_snapshot_list(self, source=None, limit=1000):
+        if type(limit) is not int or not 1 <= limit <= 5000:
+            raise ValueError('Ask for 1 to 5000 parameter snapshots at a time.')
+        if source is not None and (not isinstance(source, str) or len(source) > 2000):
+            raise ValueError('Invalid source_key.')
+        result = {'schema_version': 'parameter-snapshot-list-1.0', 'items': []}
+        if not self.path.exists():
+            return result
+        where, args = (' WHERE source_key = ?', [source]) if source is not None else ('', [])
+        with closing(self._connect()) as conn, conn:
+            rows = conn.execute('SELECT id, saved_at, source_key, number, label, summary FROM parameter_snapshots' +
+                                where + ' ORDER BY saved_at DESC, number DESC LIMIT ?', args + [limit]).fetchall()
+        result['items'] = [dict(json.loads(r[5]), id=r[0], saved_at=r[1], source_key=r[2], number=r[3], label=r[4])
+                           for r in rows]
+        return result
+
+    def parameter_snapshot_get(self, key):
+        from .param_compare import validate_snapshot, MAX_FILE_BYTES
+        if not self.path.exists() or not isinstance(key, str):
+            return None
+        with closing(self._connect()) as conn, conn:
+            row = conn.execute('SELECT id, saved_at, source_key, number, label, summary, payload '
+                               'FROM parameter_snapshots WHERE id = ?', (key,)).fetchone()
+        if row is None:
+            return None
+        decoder = zlib.decompressobj()
+        raw = decoder.decompress(row[6], MAX_FILE_BYTES + 1)
+        if len(raw) > MAX_FILE_BYTES or not decoder.eof or decoder.unused_data:
+            raise ValueError('Invalid or excessive saved parameter snapshot.')
+        snapshot = validate_snapshot(json.loads(raw.decode('utf-8')))
+        return dict(json.loads(row[5]), id=row[0], saved_at=row[1], source_key=row[2], number=row[3], label=row[4],
+                    snapshot=snapshot)
+
+    def parameter_snapshot_find(self, ref, source=None):
+        ref = str(ref or '').strip()
+        if not ref:
+            raise ValueError('Choose a parameter snapshot ID or latest.')
+        if not self.path.exists():
+            raise ValueError('No saved parameter snapshots. Save one with: myflames config snapshot save')
+        # Match IDs in SQLite, without imposing the list endpoint's page limit.
+        with closing(self._connect()) as conn, conn:
+            if ref == 'latest':
+                where, args = (' WHERE source_key = ?', [source]) if source is not None else ('', [])
+                row = conn.execute('SELECT id FROM parameter_snapshots' + where +
+                                   ' ORDER BY saved_at DESC, number DESC LIMIT 1', args).fetchone()
+            else:
+                row = conn.execute('SELECT id FROM parameter_snapshots WHERE id = ?', (ref,)).fetchone()
+        if row is None:
+            raise ValueError('No saved parameter snapshot matches this ID; use myflames config snapshot list.')
+        return self.parameter_snapshot_get(row[0])
+
+    def parameter_snapshot_delete(self, key):
+        if self.parameter_snapshot_get(key) is None:
+            raise ValueError('That parameter snapshot no longer exists.')
+        with closing(self._connect()) as conn, conn:
+            conn.execute('DELETE FROM parameter_snapshots WHERE id = ?', (key,))
+        return {'deleted': True, 'id': key}
+
+    # -- Baselines (baselines.py) ---------------------------------------------
+    # A Health reading or the Query digest totals of one server, kept to
+    # compare a later reading with. server_key names the server itself
+    # (baselines.server_key: server_uuid, else @@hostname and port), never the
+    # connection that read it. The table is created on first use, so an older
+    # myflames sharing this file is unaffected. Nothing is ever deleted to make
+    # room: a full server refuses the next save (BaselineLimit).
+
+    def _baseline_connection(self):
+        conn = self._connect()
+        try:
+            conn.execute(_BASELINE_TABLE)
+            conn.execute(_BASELINE_INDEX)
+            conn.commit()
+        except BaseException:
+            conn.close()
+            raise
+        return conn
+
+    def baseline_save(self, server_key, kind, name, summary, payload):
+        """Keep one baseline and return its list item. *payload* is the value
+        to keep (at most BASELINE_MAX_BYTES as JSON), *summary* what a list
+        shows. A server that already keeps BASELINE_MAX_PER_SERVER baselines
+        of *kind* refuses with BaselineLimit."""
+        kind, server_key, name = _baseline_fields(kind, server_key, name)
+        data = json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(',', ':')).encode('utf-8')
+        if len(data) > BASELINE_MAX_BYTES:
+            raise ValueError('Could not save the baseline: it would take %.1f MiB, and a baseline holds at most '
+                             '2 MiB. Load fewer statements, then save again.' % (len(data) / 1048576.0))
+        summary_text = json.dumps(summary, ensure_ascii=False, allow_nan=False)
+        key, created_at = uuid.uuid4().hex, _now()
+        conn = self._baseline_connection()
+        conn.isolation_level = None
+        try:
+            # IMMEDIATE takes the write lock first, so two saves cannot both
+            # pass the count.
+            conn.execute('BEGIN IMMEDIATE')
+            count = conn.execute('SELECT COUNT(*) FROM baselines WHERE server_key = ? AND kind = ?',
+                                 (server_key, kind)).fetchone()[0]
+            if count >= BASELINE_MAX_PER_SERVER:
+                raise BaselineLimit('Could not save the baseline: %d %s baselines of this server are already kept '
+                                    'on this computer, the most allowed. Delete one in Compare with baseline, then '
+                                    'save again.' % (BASELINE_MAX_PER_SERVER, BASELINE_KIND_NAMES[kind]))
+            conn.execute('INSERT INTO baselines (id, created_at, server_key, kind, name, summary, payload) '
+                         'VALUES (?, ?, ?, ?, ?, ?, ?)',
+                         (key, created_at, server_key, kind, name, summary_text, zlib.compress(data, 6)))
+            conn.execute('COMMIT')
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute('ROLLBACK')
+            raise
+        finally:
+            conn.close()
+        return _baseline_item(key, created_at, kind, name, summary, server_key)
+
+    def baseline_list(self, server_key, kind):
+        """The baselines of one server and kind, newest first (never decodes a payload)."""
+        kind, server_key, _name = _baseline_fields(kind, server_key, 'list')
+        if not self.path.exists():
+            return []
+        with closing(self._baseline_connection()) as conn, conn:
+            rows = conn.execute('SELECT id, created_at, kind, name, summary, server_key FROM baselines '
+                                'WHERE server_key = ? AND kind = ? ORDER BY created_at DESC, id LIMIT ?',
+                                (server_key, kind, BASELINE_MAX_PER_SERVER * 5)).fetchall()
+        return [_baseline_item(row[0], row[1], row[2], row[3], json.loads(row[4]), row[5]) for row in rows]
+
+    def baseline_get(self, key):
+        """One baseline with its ``payload``, or None."""
+        if not isinstance(key, str) or not _RECORD_ID.fullmatch(key) or not self.path.exists():
+            return None
+        with closing(self._baseline_connection()) as conn, conn:
+            row = conn.execute('SELECT id, created_at, kind, name, summary, payload, server_key FROM baselines '
+                               'WHERE id = ?', (key,)).fetchone()
+        if row is None:
+            return None
+        decoder = zlib.decompressobj()
+        raw = decoder.decompress(row[5], BASELINE_MAX_BYTES + 1)
+        if len(raw) > BASELINE_MAX_BYTES or not decoder.eof or decoder.unused_data:
+            raise ValueError('This saved baseline is damaged or larger than 2 MiB.')
+        item = _baseline_item(row[0], row[1], row[2], row[3], json.loads(row[4]), row[6])
+        item['payload'] = json.loads(raw.decode('utf-8'))
+        return item
+
+    def baseline_delete(self, key):
+        """Delete one baseline (only on the user's request); True when it existed."""
+        if not isinstance(key, str) or not _RECORD_ID.fullmatch(key) or not self.path.exists():
+            return False
+        with closing(self._baseline_connection()) as conn, conn:
+            return conn.execute('DELETE FROM baselines WHERE id = ?', (key,)).rowcount > 0
+
+    def connection_with_saved_password(self, value):
+        """Fill ``password`` from the profile named by ``value['profile_id']``.
+
+        Only when the request has no password, the profile remembers one, and
+        host, port, user, TLS mode, and CA path still match the profile, and
+        the endpoint fingerprint in the secret's key matches them too. Returns
+        a new dict; the caller uses it for one request and must not persist it.
+        """
+        from .live import connection_options
+        if not isinstance(value, dict):
+            raise ValueError('Enter connection settings.')
+        for field in ('binary', 'socket', 'ssl_cert', 'ssl_key', 'init_command', 'defaults_file', 'extra_flags'):
+            if field in value:
+                raise ValueError('Unsupported saved connection field: ' + field)
+        clean = connection_options(value)
+        safety = _check_safety(value.get('type'), value.get('read_only'))
+        for field in PROFILE_SAFETY_FIELDS:
+            if safety[field] is not None:
+                clean[field] = safety[field]
+        profile_id = value.get('profile_id')
+        if profile_id not in (None, ''):
+            if not isinstance(profile_id, str) or len(profile_id) > 200:
+                raise ValueError('Invalid connection field: profile_id')
+            clean['profile_id'] = profile_id
+        value = clean
+        if not profile_id:
+            return value
+        if value.get('password'):
+            return value
+        # One read: the endpoint and the secret reference come from the same
+        # committed record.
+        profile = self._profile(profile_id)
+        if profile is None:
+            raise ValueError('The saved connection profile no longer exists. Choose it again or enter the password.')
+        if not profile.get('remember_password'):
+            return value
+        from . import secret_store
+        name = profile.get('name') or profile_id
+        if not _same_endpoint(value, profile):
+            raise ValueError('The saved password for %r is only sent to its own host, port, user, and '
+                             'TLS settings (and SSH host). Save the profile or enter the password.' % name)
+        ref = profile.get('secret_ref')
+        if ref is not None and not _ref_matches(ref, profile_id, profile):
+            raise ValueError('The saved password for %r was saved for another host, port, user, or TLS '
+                             'settings (or SSH host). Enter the password and save the profile again.' % name)
+        backend = profile.get('secret_backend') or None
+        secret = secret_store.get_secret(ref or profile_id, backend)
+        if secret is None:
+            raise ValueError('The saved password for %r is missing from the %s. Enter it and save the profile again.'
+                             % (name, secret_store.backend_label(backend)))
+        result = dict(value)
+        result['password'] = secret
+        return result
+
+
+def _now():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def _version_label(name, note):
+    name, note = '' if name is None else name, '' if note is None else note
+    if not isinstance(name, str) or len(name) > 200 or '\x00' in name or '\n' in name:
+        raise ValueError('A schema version name is one line of at most 200 characters.')
+    if not isinstance(note, str) or len(note) > 10000 or '\x00' in note:
+        raise ValueError('A schema version note holds at most 10,000 characters.')
+    return name.strip(), note
+
+
+def _version_item(key, saved_at, source, number, name, note, summary):
+    """One ``schema-version-list-1.0`` item."""
+    item = {'id': key, 'saved_at': saved_at, 'source_key': source, 'number': number, 'name': name, 'note': note}
+    item.update(summary)
+    return item
+
+
+#: Baselines (baselines.py): what can be kept, and the limits of one server.
+BASELINE_KINDS = ('health', 'digest')
+BASELINE_KIND_NAMES = {'health': 'Health', 'digest': 'Query digest'}
+#: The largest baseline, measured as its JSON before compression.
+BASELINE_MAX_BYTES = 2 * 1024 * 1024
+#: Baselines of one kind kept per server; the next save is refused.
+BASELINE_MAX_PER_SERVER = 20
+BASELINE_NAME_MAX = 80
+_BASELINE_TABLE = ('CREATE TABLE IF NOT EXISTS baselines (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, '
+                   'server_key TEXT NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL, summary TEXT NOT NULL, '
+                   'payload BLOB NOT NULL)')
+_BASELINE_INDEX = 'CREATE INDEX IF NOT EXISTS baselines_server ON baselines (server_key, kind, created_at)'
+_CONTROL = re.compile(r'[\x00-\x1f\x7f]')
+
+
+class BaselineLimit(ValueError):
+    """The server already keeps BASELINE_MAX_PER_SERVER baselines of a kind."""
+
+
+def _baseline_fields(kind, server_key, name):
+    if kind not in BASELINE_KINDS:
+        raise ValueError('Could not save the baseline: it is a Health reading or Query digest totals.')
+    if not isinstance(server_key, str) or not server_key or len(server_key) > 400:
+        raise ValueError('Could not identify the server of this baseline.')
+    if not isinstance(name, str) or _CONTROL.search(name) or not name.strip() \
+            or len(name.strip()) > BASELINE_NAME_MAX:
+        raise ValueError('Could not save the baseline: name it with one line of 1 to %d characters.'
+                         % BASELINE_NAME_MAX)
+    return kind, server_key, name.strip()
+
+
+def _baseline_item(key, created_at, kind, name, summary, server_key):
+    """One ``baseline-list-1.0`` item: the summary's fields, then these
+    (``server_key`` names the server, so a reading is compared only with a
+    baseline of the server it came from)."""
+    item = dict(summary)
+    item.update({'id': key, 'created_at': created_at, 'kind': kind, 'name': name, 'server_key': server_key})
+    return item
+
+
+AUDIT_COLUMNS = ('id', 'attempted_at', 'finished_at', 'status', 'outcome', 'surface', 'os_user', 'operation',
+                 'profile_id', 'profile_name', 'connection_type', 'read_only', 'host', 'port', 'db_user', 'engine',
+                 'server_version', 'statements', 'target', 'verified', 'policy', 'error_code', 'message',
+                 'rows_affected', 'after', 'duration_ms', 'ssh')
+AUDIT_DEFAULT_RETENTION_DAYS = 90
+AUDIT_MAX_RETENTION_DAYS = 3650
+
+
+def _cutoff(days):
+    moment = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
+    return moment.isoformat(timespec='microseconds')
+
+
+def _retention(conn):
+    row = conn.execute("SELECT value FROM settings WHERE key = 'audit_retention_days'").fetchone()
+    try:
+        days = int(row[0]) if row else AUDIT_DEFAULT_RETENTION_DAYS
+    except (TypeError, ValueError):
+        days = AUDIT_DEFAULT_RETENTION_DAYS
+    return days if 1 <= days <= AUDIT_MAX_RETENTION_DAYS else AUDIT_DEFAULT_RETENTION_DAYS
+
+
+def _loads(text):
+    if text is None:
+        return None
+    try:
+        return json.loads(text)
+    except ValueError:
+        return text
+
+
+def _audit_record(row):
+    """One audit row in the audit-1.0 record shape; ``connection.ssh`` (the
+    SSH target) only for a connection through SSH."""
+    record = {
+        'id': row['id'], 'attempted_at': row['attempted_at'], 'finished_at': row['finished_at'],
+        'status': row['status'], 'outcome': row['outcome'],
+        # pending: myflames stopped before it could record the result; unknown:
+        # it was interrupted (or timed out) after the statement may have been
+        # sent. Either way, whether the server ran it is unknown.
+        'outcome_unknown': row['status'] in ('pending', 'unknown'),
+        'surface': row['surface'], 'os_user': row['os_user'], 'operation': row['operation'],
+        'connection': {'profile_id': row['profile_id'], 'profile_name': row['profile_name'],
+                       'type': row['connection_type'],
+                       'read_only': None if row['read_only'] is None else bool(row['read_only']),
+                       'host': row['host'], 'port': row['port'], 'user': row['db_user'],
+                       'engine': row['engine'], 'server_version': row['server_version']},
+        'statements': _loads(row['statements']) or [], 'target': _loads(row['target']),
+        'verified': _loads(row['verified']), 'policy': _loads(row['policy']),
+        'error_code': row['error_code'], 'message': row['message'], 'rows_affected': row['rows_affected'],
+        'after': _loads(row['after']), 'duration_ms': row['duration_ms'],
+    }
+    if row.get('ssh'):
+        record['connection']['ssh'] = row['ssh']
+    return record
+
+
+def _check_safety(connection_type, read_only):
+    """Validated {'type', 'read_only'} from a request; None where not given."""
+    if connection_type is not None and (not isinstance(connection_type, str)
+                                        or connection_type.lower() not in CONNECTION_TYPES):
+        raise ValueError("Choose connection type 'production' or 'development'.")
+    if read_only is not None and not isinstance(read_only, bool):
+        raise ValueError('read_only must be true or false.')
+    return {'type': connection_type.lower() if connection_type else None, 'read_only': read_only}
+
+
+def _safety_fields(requested, existing):
+    """type and read_only to store: the requested values, else the existing
+    ones, else production and read-write."""
+    ctype = requested.get('type') if requested.get('type') in CONNECTION_TYPES else existing.get('type')
+    read_only = requested.get('read_only')
+    if not isinstance(read_only, bool):
+        read_only = bool(existing.get('read_only'))
+    return {'type': ctype if ctype in CONNECTION_TYPES else 'production', 'read_only': read_only}
+
+
+def _owner_only(path, mode):
+    """Enforce owner-only storage on POSIX; Windows has no POSIX mode contract."""
+    if os.name != 'posix':
+        return
+    from .secret_store import _protect_private_path
+    _protect_private_path(path, mode, directory=mode == 0o700)
+
+
+def endpoint_value(value, field):
+    """One of ENDPOINT_FIELDS as live.connection_options sends it now: a host
+    or CA path saved with pasted spaces around it still matches its requests.
+    An unset SSH port is 0, a set one an integer, however it was sent."""
+    item = value.get(field) or ''
+    if field in ('host', 'ssl_ca', 'ssh_host', 'ssh_user') and isinstance(item, str):
+        from .live import trim
+        item = trim(item)
+    if field == 'ssh_port':
+        try:
+            item = int(item or 0)
+        except (TypeError, ValueError):
+            item = -1  # Never equal to a valid port.
+    return item
+
+
+def _same_endpoint(a, b):
+    return all(endpoint_value(a, f) == endpoint_value(b, f) for f in ENDPOINT_FIELDS)
+
+
+def _endpoint_fingerprint(value):
+    """Hash of the host, port, user and TLS settings, and of the SSH target
+    when there is one (ENDPOINT_FIELDS). Without SSH the text is the same as
+    before SSH existed, so passwords saved then still match."""
+    text = '\x00'.join(str(value.get(f) or '') for f in _BASE_ENDPOINT_FIELDS)
+    if endpoint_value(value, 'ssh_host'):
+        text += '\x00ssh\x00' + '\x00'.join(str(endpoint_value(value, f)) for f in _SSH_ENDPOINT_FIELDS)
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()[:24]
+
+
+def _ref_base(key):
+    # Secret store keys are at most 200 characters (secret_store.KEY_PATTERN).
+    return key if len(key) <= 150 else hashlib.sha256(key.encode('utf-8')).hexdigest()[:32]
+
+
+def _new_secret_ref(key, value):
+    """Secret store key for a password saved now for *value*'s endpoint."""
+    return '%s.%s.%s' % (_ref_base(key), _endpoint_fingerprint(value), uuid.uuid4().hex[:12])
+
+
+def _ref_matches(ref, key, value):
+    """True when *ref* belongs to profile *key* and was saved for *value*'s endpoint."""
+    parts = ref.rsplit('.', 2) if isinstance(ref, str) else []
+    return (len(parts) == 3 and parts[0] == _ref_base(key)
+            and hmac.compare_digest(parts[1], _endpoint_fingerprint(value)))
+
+
+def _stored_ref(key, record):
+    """Where a record's saved password is: its secret_ref, or the profile ID
+    for passwords saved before secret_ref existed."""
+    return record.get('secret_ref') or key
+
+
+def _delete_quietly(ref, backend):
+    """Remove a secret no record refers to any more; a failure leaves an
+    unreferenced entry, never a wrong pairing."""
+    from . import secret_store
+    try:
+        secret_store.delete_secret(ref, backend or None)
+    except ValueError:
+        pass
+
+
+def _present(kind, record):
+    """Derived, secret-free fields for API/CLI consumers."""
+    if kind == 'profile':
+        from .secret_store import backend_label
+        record.pop('secret_ref', None)
+        record.setdefault('remember_password', False)
+        record.setdefault('secret_backend', '')
+        record['has_saved_password'] = bool(record['remember_password'])
+        record['secret_backend_label'] = backend_label(record['secret_backend']) if record['secret_backend'] else ''
+        record.update(_safety_fields(record, record))
+    return record

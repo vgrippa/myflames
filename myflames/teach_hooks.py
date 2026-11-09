@@ -7,6 +7,7 @@ strings.
 from __future__ import annotations
 
 from .parser import flatten_nodes
+from .server_info import detect_flavor
 
 
 SUPPORTED_LESSONS = frozenset({
@@ -142,6 +143,26 @@ def _classify_lesson(node):
     return None
 
 
+def _tmp_engine_for_variables(variables):
+    """Pick the ``tmp`` lesson's engine from collected session variables.
+
+    The in-memory temp table limit differs per engine (see
+    ``teach._cost_model.tmp_table_cost``), so a lesson opened from a real
+    plan must start on the server's engine. Same detection as the advisor's
+    tmp_table_size rule. Returns None when the variables do not say, which
+    leaves the lesson on MySQL's TempTable default.
+    """
+    variables = variables or {}
+    if detect_flavor(variables.get("version"), variables.get("version_comment")) == "mariadb":
+        return "mariadb"
+    engine = str(variables.get("internal_tmp_mem_storage_engine") or "").strip().upper()
+    if engine == "MEMORY":
+        return "memory"
+    if engine == "TEMPTABLE":
+        return "temptable"
+    return None
+
+
 def _controls_for_lesson(lesson, node, variables):
     details = node.get("details") or {}
     children = node.get("children") or []
@@ -189,6 +210,9 @@ def _controls_for_lesson(lesson, node, variables):
             controls["tmp_size"] = tmp_size
         if max_heap:
             controls["max_heap"] = max_heap
+        tmp_engine = _tmp_engine_for_variables(variables)
+        if tmp_engine:
+            controls["engine"] = tmp_engine
     elif lesson == "icp":
         controls["index_rows"] = _eff_rows(node)
         controls["selectivity"] = 35
@@ -288,6 +312,10 @@ def _note_for_hook(node):
 def build_teach_hooks(root, query_sql=None, variables=None, stats=None):
     """Return deterministic teach hooks for nodes that map to a lesson.
 
+    ``query_sql`` is optional. Hosts that already carry the query at the
+    response root should omit it instead of repeating SQL for every hook.
+    Sidecar and digest callers keep supplying it for their existing contract.
+
     *stats* is an optional ``{table_name: {...}}`` dict from
     ``information_schema.tables`` collected by the advisor. When present,
     ``_row_size_for_lesson`` can compute ``data_length / table_rows``
@@ -338,4 +366,3 @@ def build_teach_index_maps(hooks):
         if short and short not in by_short:
             by_short[short] = i
     return {"by_folded_label": by_folded, "by_short_label": by_short}
-

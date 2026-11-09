@@ -1,0 +1,208 @@
+{
+ "schema_version": "replication-1.0",
+ "engine": "mysql",
+ "server_version": "8.4.11",
+ "captured_at": "2026-10-15T18:16:14.819697+00:00",
+ "uptime_s": 537,
+ "available": true,
+ "message": null,
+ "replica": true,
+ "statement": "SHOW REPLICA STATUS",
+ "gtid": {
+  "mode": "ON",
+  "enforce_consistency": "ON"
+ },
+ "settings": {
+  "read_only": "OFF",
+  "super_read_only": "OFF",
+  "parallel_workers": 4,
+  "preserve_commit_order": "ON"
+ },
+ "channels": [
+  {
+   "name": "",
+   "kind": "replication",
+   "judged": true,
+   "source": {
+    "host": "mf-ops-src",
+    "port": 3306,
+    "uuid": "e5572236-c8c2-11f1-b861-9a23772a56c6",
+    "server_id": 1
+   },
+   "io": {
+    "running": "Yes",
+    "state": "Waiting for source to send event",
+    "error": {
+     "errno": 0,
+     "message": null,
+     "timestamp": null
+    }
+   },
+   "sql": {
+    "running": "No",
+    "state": null,
+    "error": {
+     "errno": 3030,
+     "message": "Coordinator stopped because there were error(s) in the worker(s). The most recent failure being: Worker 2 failed executing transaction 'e5572236-c8c2-11f1-b861-9a23772a56c6:16' at source log binlog.000003, end_log_pos 3075. See error log and/or performance_schema.replication_applier_status_by_worker table for more details about this failure or others, if any.",
+     "timestamp": "261015 18:12:30",
+     "table": "shop.t",
+     "end_log_pos": 2793
+    },
+    "delay_s": 0,
+    "remaining_delay_s": null
+   },
+   "lag_s": null,
+   "lag_notes": [
+    "Seconds_Behind_Source is NULL because the SQL thread is not running.",
+    "Worker lag compares the source's commit timestamp with the replica's clock: the two servers' clocks must be in sync for it to be exact."
+   ],
+   "lag_signals": {
+    "applying_lag_s": null,
+    "last_apply_lag_s": 102.736,
+    "heartbeat_interval_s": 30.0,
+    "heartbeats_received": 16,
+    "heartbeat_age_s": 13.775,
+    "last_queued_age_s": 73.779,
+    "receiver_idle_s": 13.775
+   },
+   "position": {
+    "auto_position": true,
+    "retrieved_gtid_set": "e5572236-c8c2-11f1-b861-9a23772a56c6:1-16",
+    "executed_gtid_set": "e5572236-c8c2-11f1-b861-9a23772a56c6:1-14,\ne56d887e-c8c2-11f1-8ad0-862903b1d637:1-7",
+    "source_log_file": "binlog.000003",
+    "read_source_log_pos": 3106,
+    "exec_file": "binlog.000003",
+    "exec_pos": 2536,
+    "relay_log_file": "73bb7fec71b8-relay-bin.000003",
+    "relay_log_pos": 2747,
+    "skip_counter": 0
+   },
+   "worker": {
+    "workers": 4,
+    "error": {
+     "errno": 1062,
+     "message": "Worker 1 failed executing transaction 'e5572236-c8c2-11f1-b861-9a23772a56c6:15' at source log binlog.000003, end_log_pos 2793; Could not execute Write_rows event on table shop.t; Duplicate entry '30' for key 't.PRIMARY', Error_code: 1062; handler error HA_ERR_FOUND_DUPP_KEY; the event's source log binlog.000003, end_log_pos 2793",
+     "timestamp": "2026-10-15 18:12:30.263426"
+    },
+    "failing_worker_id": 1,
+    "failing_applying_transaction": "e5572236-c8c2-11f1-b861-9a23772a56c6:15",
+    "applying_transactions": [
+     "e5572236-c8c2-11f1-b861-9a23772a56c6:15",
+     "e5572236-c8c2-11f1-b861-9a23772a56c6:16"
+    ],
+    "last_applied_transaction": "e5572236-c8c2-11f1-b861-9a23772a56c6:14",
+    "last_applied_end_apply": "2026-10-15 18:07:02.824317"
+   },
+   "agat": "OFF",
+   "failing_gtid": "e5572236-c8c2-11f1-b861-9a23772a56c6:15",
+   "relay": {
+    "gtid": "e5572236-c8c2-11f1-b861-9a23772a56c6:15",
+    "anonymous": false,
+    "events": 5,
+    "end_log_pos": 2824,
+    "complete": true,
+    "event_end_positions": [
+     2615,
+     2686,
+     2741,
+     2793,
+     2824
+    ],
+    "tables": [
+     "shop.t"
+    ]
+   },
+   "status": "problem",
+   "status_why": [
+    "The applier (SQL thread) stopped with error 3030: Coordinator stopped because there were error(s) in the worker(s). The most recent failure being: Worker 2 failed executing transaction 'e5572236-c8c2-11f1-b861-9a23772a56c6:16' at source log binlog.000003, end_log_pos 3075. See error log and/or performance_schema.replication_applier_status_by_worker table for more details about this failure or others, if any."
+   ],
+   "receiver": {
+    "service_state": "ON",
+    "last_queued_transaction": "e5572236-c8c2-11f1-b861-9a23772a56c6:16"
+   },
+   "skip_plan": {
+    "channel": "",
+    "engine": "mysql",
+    "server_version": "8.4.11",
+    "available": true,
+    "message": null,
+    "method": "empty_gtid_transaction",
+    "statements": [
+     "SET GTID_NEXT = 'e5572236-c8c2-11f1-b861-9a23772a56c6:15'",
+     "BEGIN",
+     "COMMIT",
+     "SET GTID_NEXT = 'AUTOMATIC'",
+     "START REPLICA SQL_THREAD FOR CHANNEL ''"
+    ],
+    "identity": {
+     "channel": "",
+     "method": "empty_gtid_transaction",
+     "last_sql_errno": 3030,
+     "last_sql_error": "Coordinator stopped because there were error(s) in the worker(s). The most recent failure being: Worker 2 failed executing transaction 'e5572236-c8c2-11f1-b861-9a23772a56c6:16' at source log binlog.000003, end_log_pos 3075. See error log and/or performance_schema.replication_applier_status_by_worker table for more details about this failure or others, if any.",
+     "last_sql_error_timestamp": "261015 18:12:30",
+     "gtid": "e5572236-c8c2-11f1-b861-9a23772a56c6:15",
+     "position": {
+      "relay_log_file": "73bb7fec71b8-relay-bin.000003",
+      "relay_log_pos": 2747,
+      "exec_file": "binlog.000003",
+      "exec_pos": 2536
+     },
+     "source": {
+      "host": "mf-ops-src",
+      "port": 3306,
+      "uuid": "e5572236-c8c2-11f1-b861-9a23772a56c6"
+     }
+    },
+    "skip": {
+     "gtid": "e5572236-c8c2-11f1-b861-9a23772a56c6:15",
+     "exec_file": "binlog.000003",
+     "exec_pos": 2536,
+     "end_log_pos": 2824,
+     "error_end_log_pos": 2793,
+     "table": "shop.t",
+     "tables": [
+      "shop.t"
+     ],
+     "relay_checked": true
+    },
+    "error": {
+     "errno": 1062,
+     "message": "Worker 1 failed executing transaction 'e5572236-c8c2-11f1-b861-9a23772a56c6:15' at source log binlog.000003, end_log_pos 2793; Could not execute Write_rows event on table shop.t; Duplicate entry '30' for key 't.PRIMARY', Error_code: 1062; handler error HA_ERR_FOUND_DUPP_KEY; the event's source log binlog.000003, end_log_pos 2793",
+     "timestamp": "2026-10-15 18:12:30.263426",
+     "table": "shop.t",
+     "end_log_pos": 2793
+    },
+    "drift_warning": "A skipped transaction is missing on the replica. Rows it touched now differ from the source, and later transactions on those rows may fail or change different data silently.",
+    "after": [
+     "Find the cause: writes run directly on the replica (check read_only and super_read_only), non-deterministic statements, or a replica restored from an inconsistent backup.",
+     "Verify the affected tables with checksums computed on both sides over the same data (CHECKSUM TABLE on a quiet table, or a chunked checksum tool in the style of pt-table-checksum). myflames recommends this and never runs it for you.",
+     "Resync those tables or rebuild the replica (clone or backup restore)."
+    ],
+    "privileges": "SET GTID_NEXT needs SUPER, SYSTEM_VARIABLES_ADMIN, SESSION_VARIABLES_ADMIN or REPLICATION_APPLIER; START REPLICA needs REPLICATION_SLAVE_ADMIN or SUPER.",
+    "notes": [
+     "The status reports error 3030: a worker stopped because an earlier transaction failed, and rolled its own transaction back. myflames skips the earlier one (error 1062), never the one that stopped.",
+     "The empty transaction takes the failing transaction's GTID, so the applier treats it as already applied and continues with the next one."
+    ]
+   }
+  }
+ ],
+ "capabilities": {
+  "status": true,
+  "performance_schema": true,
+  "worker_timestamps": true,
+  "agat": true
+ },
+ "notes": [
+  "Seconds_Behind_Source compares the original timestamp of the event being applied with the replica's clock, adjusted by the clock difference measured when the receiver connected. A clock change on either server after that skews it, and one long transaction shows as a jump, so it is never the only lag signal."
+ ],
+ "summary": {
+  "channels": 1,
+  "judged": 1,
+  "ok": 0,
+  "watch": 0,
+  "problem": 1,
+  "unknown": 0,
+  "failed": 1,
+  "lag_max_s": null
+ }
+}

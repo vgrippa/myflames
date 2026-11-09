@@ -1,0 +1,150 @@
+{
+  "schema_version": "error-log-1.0",
+  "engine": "mariadb",
+  "server_version": "11.4.8-MariaDB",
+  "taken_at": "2026-10-19T20:30:00",
+  "uptime_s": 234,
+  "performance_schema": true,
+  "notes": [
+    "Only the last 1 MiB of the error log file was read. Older entries may be missing."
+  ],
+  "available": true,
+  "reason": null,
+  "reason_text": null,
+  "how_to_view": null,
+  "source": "file",
+  "settings": {
+    "log_error": "./host.err",
+    "log_error_verbosity": null,
+    "log_error_services": null,
+    "log_warnings": 2,
+    "datadir": "/opt/homebrew/var/mysql/"
+  },
+  "buffer": null,
+  "file": {
+    "path": "/opt/homebrew/var/mysql/host.err",
+    "size_bytes": 2097152,
+    "read_bytes": 1048576,
+    "truncated": true,
+    "banner_found": true
+  },
+  "server_started": "2026-10-19 20:26:06",
+  "counts": {
+    "system": 0,
+    "error": 1,
+    "warning": 1,
+    "note": 3
+  },
+  "counts_current_run": {
+    "system": 0,
+    "error": 1,
+    "warning": 1,
+    "note": 2
+  },
+  "codes": [
+    {
+      "error_code": null,
+      "prio": "Note",
+      "subsystem": "InnoDB",
+      "count": 1,
+      "first_logged": "2026-10-19 19:55:00",
+      "last_logged": "2026-10-19 19:55:00",
+      "sample": "InnoDB: Shutdown completed; log sequence number 285041"
+    },
+    {
+      "error_code": null,
+      "prio": "Note",
+      "subsystem": "InnoDB",
+      "count": 1,
+      "first_logged": "2026-10-19 20:26:11",
+      "last_logged": "2026-10-19 20:26:11",
+      "sample": "InnoDB: Completed initialization of buffer pool"
+    },
+    {
+      "error_code": null,
+      "prio": "Note",
+      "subsystem": null,
+      "count": 1,
+      "first_logged": "2026-10-19 20:26:15",
+      "last_logged": "2026-10-19 20:26:15",
+      "sample": "/opt/homebrew/opt/mariadb/bin/mariadbd: ready for connections.\nVersion: '11.4.8-MariaDB' socket: '/tmp/mysql.sock' port: 3306 Homebrew"
+    },
+    {
+      "error_code": null,
+      "prio": "Error",
+      "subsystem": "InnoDB",
+      "count": 1,
+      "first_logged": "2026-10-19 20:27:12",
+      "last_logged": "2026-10-19 20:27:12",
+      "sample": "InnoDB: Cannot open datafile for read-only: ./shop/archive.ibd"
+    },
+    {
+      "error_code": null,
+      "prio": "Warning",
+      "subsystem": null,
+      "count": 1,
+      "first_logged": "2026-10-19 20:28:10",
+      "last_logged": "2026-10-19 20:28:10",
+      "sample": "Aborted connection 20 to db: 'shop' user: 'app' host: 'localhost' (Got an error reading communication packets)"
+    }
+  ],
+  "entries": [
+    {
+      "logged": "2026-10-19 20:28:10",
+      "thread_id": 20,
+      "prio": "Warning",
+      "error_code": null,
+      "subsystem": null,
+      "message": "Aborted connection 20 to db: 'shop' user: 'app' host: 'localhost' (Got an error reading communication packets)",
+      "previous_run": false
+    },
+    {
+      "logged": "2026-10-19 20:27:12",
+      "thread_id": 14,
+      "prio": "Error",
+      "error_code": null,
+      "subsystem": "InnoDB",
+      "message": "InnoDB: Cannot open datafile for read-only: ./shop/archive.ibd",
+      "previous_run": false
+    },
+    {
+      "logged": "2026-10-19 20:26:15",
+      "thread_id": 0,
+      "prio": "Note",
+      "error_code": null,
+      "subsystem": null,
+      "message": "/opt/homebrew/opt/mariadb/bin/mariadbd: ready for connections.\nVersion: '11.4.8-MariaDB' socket: '/tmp/mysql.sock' port: 3306 Homebrew",
+      "previous_run": false
+    },
+    {
+      "logged": "2026-10-19 20:26:11",
+      "thread_id": 0,
+      "prio": "Note",
+      "error_code": null,
+      "subsystem": "InnoDB",
+      "message": "InnoDB: Completed initialization of buffer pool",
+      "previous_run": false
+    },
+    {
+      "logged": "2026-10-19 19:55:00",
+      "thread_id": 0,
+      "prio": "Note",
+      "error_code": null,
+      "subsystem": "InnoDB",
+      "message": "InnoDB: Shutdown completed; log sequence number 285041",
+      "previous_run": true
+    }
+  ],
+  "entries_total": 5,
+  "limit": 200,
+  "levels": [
+    "System",
+    "Error",
+    "Warning",
+    "Note"
+  ],
+  "summary": {
+    "status": "watch",
+    "text": "1 error and 1 warning since server start. Read the last 1 MiB of /opt/homebrew/var/mysql/host.err."
+  }
+}

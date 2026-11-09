@@ -24,7 +24,7 @@
     "schema_version": {
       "type": "string",
       "description": "Semver-lite version of this sidecar payload. See docs/schemas/ for version history.",
-      "enum": ["1.0", "1.1", "1.2", "1.3"]
+      "enum": ["1.0", "1.1", "1.2", "1.3", "1.4"]
     },
     "generated_at": {
       "type": "string",
@@ -45,7 +45,17 @@
         "fixture_path":  { "type": "string" }
       }
     },
-    "plan_summary":   { "type": "object" },
+    "plan_summary": {
+      "type": "object",
+      "description": "Plan vitals. Since 1.4 a measurement the plan does not carry is null, never 0: total_time_ms without measured time (EXPLAIN without ANALYZE), rows_sent when the root operator has no row counter (an estimated plan, or a MariaDB join), rows_examined_estimate when the plan has no row counters.",
+      "properties": {
+        "total_time_ms": { "type": ["number", "null"], "description": "Root operator time across loops, in milliseconds." },
+        "rows_sent": { "type": ["integer", "null"], "description": "Rows returned by the root operator (rows per loop times loops)." },
+        "rows_examined_estimate": { "type": ["integer", "null"], "description": "Sum of rows per loop times loops over leaf operators; approximates Handler_read_* totals." },
+        "operator_count": { "type": "integer" },
+        "max_depth": { "type": "integer" }
+      }
+    },
     "plan_tree": {
       "$ref": "#/$defs/planTreeNode",
       "description": "Identity graph of the parsed plan. Every node has a stable node_id; other sidecar fields reference those ids."
@@ -139,7 +149,7 @@
       "required": ["severity", "category", "source", "text"],
       "properties": {
         "severity": { "type": "string", "enum": ["error", "warn", "info"] },
-        "category": { "type": "string", "enum": ["full_scan","filesort","temp_table","hash_join","bnl","semijoin","index_merge","nonsargable_join","env","engine","durability","other"] },
+        "category": { "type": "string", "enum": ["full_scan","filesort","temp_table","hash_join","bnl","semijoin","index_merge","nonsargable_join","misestimate","env","engine","durability","redundant_index","cold_cache","other"] },
         "source":   { "type": "string", "enum": ["plan", "environment"] },
         "text":     { "type": "string" },
         "node_labels": { "type": "array", "items": { "type": "string" } }
@@ -150,7 +160,7 @@
       "required": ["severity", "category", "action"],
       "properties": {
         "severity": { "type": "string", "enum": ["high", "medium", "low"] },
-        "category": { "type": "string", "enum": ["tuning_variable","index","optimizer_switch","engine","durability","rewrite","other"] },
+        "category": { "type": "string", "enum": ["tuning_variable","index","optimizer_switch","engine","durability","rewrite","statistics","other"] },
         "action":   { "type": "string" },
         "why":      { "type": "string" }
       }

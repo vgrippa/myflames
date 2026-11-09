@@ -1,0 +1,58 @@
+{
+ "schema_version": "cluster-action-1.0",
+ "action": "switchover",
+ "status": "done",
+ "message": "Sent. The primary is now mf-ic-2:3306.",
+ "statements": [
+  "/*myflames:cluster_op*/ SELECT group_replication_set_as_primary('1062e681-cc92-11f1-83dd-b6daec340a27');"
+ ],
+ "sent": [
+  "/*myflames:cluster_op*/ SELECT group_replication_set_as_primary('1062e681-cc92-11f1-83dd-b6daec340a27');"
+ ],
+ "not_sent": [],
+ "error": null,
+ "after": {
+  "member": {
+   "key": "member:1062e681-cc92-11f1-83dd-b6daec340a27",
+   "uuid": "1062e681-cc92-11f1-83dd-b6daec340a27",
+   "name": "mf-ic-1:3306",
+   "role": "SECONDARY",
+   "state": "ONLINE"
+  },
+  "local": {
+   "key": "member:1062e681-cc92-11f1-83dd-b6daec340a27",
+   "uuid": "1062e681-cc92-11f1-83dd-b6daec340a27",
+   "name": "mf-ic-1:3306",
+   "role": "SECONDARY",
+   "state": "ONLINE"
+  },
+  "primary": {
+   "key": "member:10a527c5-cc92-11f1-956e-2a01c1402350",
+   "uuid": "10a527c5-cc92-11f1-956e-2a01c1402350",
+   "name": "mf-ic-2:3306",
+   "role": "PRIMARY",
+   "state": "ONLINE"
+  },
+  "component": null,
+  "topology": "single_primary",
+  "desync": null,
+  "local_state": null
+ },
+ "undo": "SELECT group_replication_set_as_primary('10a527c5-cc92-11f1-956e-2a01c1402350'); makes mf-ic-2:3306 the primary again.",
+ "next": null,
+ "audit_id": null,
+ "states": [
+  "done"
+ ],
+ "effect": [
+  [
+   "Primary",
+   "mf-ic-2:3306",
+   "mf-ic-2:3306"
+  ]
+ ],
+ "checks": [
+  "Refresh the Cluster place and see which member is PRIMARY now.",
+  "The Audit log keeps this attempt as Outcome unknown; nothing is sent again."
+ ]
+}

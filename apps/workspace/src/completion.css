@@ -1,0 +1,29 @@
+/* Compact, theme-aware editor suggestions. Focus stays in the native textarea. */
+.sql-completion {
+  position: fixed;
+  z-index: 140;
+  width: min(360px, calc(100vw - 16px));
+  max-height: min(300px, 50vh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  color: var(--ink);
+  box-shadow: var(--shadow-raised);
+  font-size: var(--text-sm);
+}
+.sql-completion-list { overflow-y: auto; min-height: 0; }
+.sql-completion-option {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0 var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  cursor: default;
+}
+.sql-completion-option[aria-selected="true"] { background: var(--accent-soft); }
+.sql-completion-label { font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sql-completion-kind { color: var(--ink-muted); }
+.sql-completion-detail { grid-column: 1 / -1; color: var(--ink-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sql-completion-hint { flex: none; padding: var(--space-2) var(--space-3); border-top: 1px solid var(--line); color: var(--ink-muted); }

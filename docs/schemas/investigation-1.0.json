@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://myflames.dev/schemas/investigation-1.0.json",
+  "title": "myflames investigation bundle 1.0",
+  "description": "Portable investigation bundle (myflames/workspace_store.py:validate_bundle) holding captured or imported EXPLAIN plans, notes, tags, and optional captured server evidence (sessions, InnoDB status, locks, and watch trigger snapshots). Evidence is stored with credentials redacted: every string in data, the text, the title and the note pass dbops.redact (IDENTIFIED BY / AS literals, PASSWORD('...'), SET PASSWORD and *PASSWORD = options); text left empty is formatted in Python from the redacted data (the report JSON when the module cannot format it). Up to 30 items; data over 2 MiB, or over 10 MiB for the bundle, is left out before any text is cut (data_trimmed, text_trimmed, note).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "name",
+    "notes",
+    "tags",
+    "baseline_id",
+    "plans"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "investigation-1.0"
+    },
+    "id": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string",
+      "maxLength": 200
+    },
+    "notes": {
+      "type": "string",
+      "maxLength": 100000
+    },
+    "tags": {
+      "type": "array",
+      "maxItems": 30,
+      "items": {
+        "type": "string",
+        "maxLength": 50
+      }
+    },
+    "baseline_id": {
+      "type": "string",
+      "maxLength": 80
+    },
+    "updated_at": {
+      "type": "string"
+    },
+    "plans": {
+      "type": "array",
+      "maxItems": 30,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "raw"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "raw": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 10000
+          },
+          "capture": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "maxItems": 30,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind", "captured_at", "title", "text", "data"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "kind": {
+            "type": "string",
+            "enum": ["sessions", "innodb", "locks", "watch"]
+          },
+          "captured_at": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "text": {
+            "type": "string"
+          },
+          "data": {
+            "type": ["object", "null"]
+          },
+          "data_trimmed": {
+            "type": "boolean"
+          },
+          "text_trimmed": {
+            "type": "boolean"
+          },
+          "note": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

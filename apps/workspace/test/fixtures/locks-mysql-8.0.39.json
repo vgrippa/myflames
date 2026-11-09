@@ -1,0 +1,1449 @@
+{
+  "schema_version": "locks-1.0",
+  "engine": "mysql",
+  "server_version": "8.0.39",
+  "captured_at": "2026-10-12T21:38:33.760039+00:00",
+  "scope": "all",
+  "limit": 500,
+  "capabilities": {
+    "performance_schema": true,
+    "process_privilege": true,
+    "transactions": true,
+    "row_locks": "all",
+    "lock_waits": true,
+    "metadata_locks": true,
+    "mdl_instrument": true,
+    "last_statement": true,
+    "deadlock": true,
+    "data_locks_global_latch": true
+  },
+  "notes": [
+    "Reading performance_schema.data_locks on MySQL 8.0.39 holds InnoDB's global lock-system latch while each batch of locks is copied, which stalls other sessions' locking on a busy server (fixed in 8.0.40, 8.4.3 and 9.1.0). Refresh by hand, prefer --waits-only, and avoid frequent automatic refresh.",
+    "Rows a transaction inserted or changed are protected by implicit locks, which InnoDB lists only after another session conflicts with them. A transaction can hold more locks than the list shows.",
+    "Metadata lock blockers follow the server's compatibility rules: a waiting request waits for conflicting locks other sessions hold on the same object, or queues behind a waiting request with priority over it (for example SELECTs queued behind a waiting ALTER TABLE). Their wait time is the waiting statement's running time.",
+    "myflames never ends sessions. To end a blocker yourself: KILL QUERY n stops only its running statement, and the transaction keeps its row locks until it commits or rolls back. KILL n closes the connection and rolls back its open transaction, which can take a while after many changes.",
+    "Each section comes from a separate query, so a lock can appear or disappear between sections."
+  ],
+  "summary": {
+    "transactions": 5,
+    "row_lock_waits": 3,
+    "metadata_lock_waits": 2,
+    "blocked_sessions": 5,
+    "root_blockers": 2,
+    "idle_in_transaction_blockers": 2,
+    "longest_wait_s": 437,
+    "oldest_transaction_s": 438,
+    "row_locks": 17,
+    "deadlock": true
+  },
+  "blocking_tree": [
+    {
+      "key": "c12",
+      "connection_id": 12,
+      "trx_id": "1842",
+      "user": "root",
+      "host": "localhost",
+      "db": "lk",
+      "command": "Sleep",
+      "state": null,
+      "time_s": 438.0,
+      "query": null,
+      "last_statement": "SELECT id FROM t WHERE k BETWEEN 50 AND 70 FOR UPDATE",
+      "idle_in_transaction": true,
+      "trx_state": "RUNNING",
+      "trx_age_s": 438,
+      "rows_locked": 9,
+      "root": true,
+      "cycle": false,
+      "blocked_count": 3,
+      "kill": {
+        "query": null,
+        "connection": "KILL 12"
+      },
+      "waits_for": null,
+      "blocked": [
+        {
+          "key": "c13",
+          "connection_id": 13,
+          "trx_id": "1843",
+          "user": "root",
+          "host": "localhost",
+          "db": "lk",
+          "command": "Query",
+          "state": "updating",
+          "time_s": 437.0,
+          "query": "UPDATE t SET v=1 WHERE id=1",
+          "last_statement": null,
+          "idle_in_transaction": false,
+          "trx_state": "LOCK WAIT",
+          "trx_age_s": 437,
+          "rows_locked": 2,
+          "root": false,
+          "cycle": false,
+          "blocked_count": 0,
+          "kill": null,
+          "waits_for": [
+            {
+              "kind": "row",
+              "reason": "granted",
+              "lock": {
+                "lock_type": "RECORD",
+                "mode": "X,REC_NOT_GAP",
+                "mode_label": "record only",
+                "schema": "lk",
+                "table": "t",
+                "index": "PRIMARY",
+                "lock_data": "1",
+                "lock_id": "281473278513152:2:4:2:281473164829080",
+                "status": "WAITING"
+              },
+              "blocking_lock": {
+                "lock_type": "RECORD",
+                "mode": "X,REC_NOT_GAP",
+                "mode_label": "record only",
+                "schema": "lk",
+                "table": "t",
+                "index": "PRIMARY",
+                "lock_data": "1",
+                "lock_id": "281473278512344:2:4:2:281473164822528",
+                "status": "GRANTED"
+              },
+              "wait_s": 437,
+              "statement_s": 437.0
+            }
+          ],
+          "blocked": [
+            {
+              "key": "c15",
+              "connection_id": 15,
+              "trx_id": "1844",
+              "user": "root",
+              "host": "localhost",
+              "db": "lk",
+              "command": "Query",
+              "state": "updating",
+              "time_s": 436.0,
+              "query": "UPDATE t SET v=2 WHERE id=2",
+              "last_statement": null,
+              "idle_in_transaction": false,
+              "trx_state": "LOCK WAIT",
+              "trx_age_s": 436,
+              "rows_locked": 1,
+              "root": false,
+              "cycle": false,
+              "blocked_count": 0,
+              "kill": null,
+              "waits_for": [
+                {
+                  "kind": "row",
+                  "reason": "granted",
+                  "lock": {
+                    "lock_type": "RECORD",
+                    "mode": "X,REC_NOT_GAP",
+                    "mode_label": "record only",
+                    "schema": "lk",
+                    "table": "t",
+                    "index": "PRIMARY",
+                    "lock_data": "2",
+                    "lock_id": "281473278513960:2:4:3:281473164834752",
+                    "status": "WAITING"
+                  },
+                  "blocking_lock": {
+                    "lock_type": "RECORD",
+                    "mode": "X,REC_NOT_GAP",
+                    "mode_label": "record only",
+                    "schema": "lk",
+                    "table": "t",
+                    "index": "PRIMARY",
+                    "lock_data": "2",
+                    "lock_id": "281473278513152:2:4:3:281473164828736",
+                    "status": "GRANTED"
+                  },
+                  "wait_s": 436,
+                  "statement_s": 436.0
+                }
+              ],
+              "blocked": []
+            }
+          ]
+        },
+        {
+          "key": "c16",
+          "connection_id": 16,
+          "trx_id": "1845",
+          "user": "root",
+          "host": "localhost",
+          "db": "lk",
+          "command": "Query",
+          "state": "update",
+          "time_s": 436.0,
+          "query": "INSERT INTO t VALUES (11,0,55)",
+          "last_statement": null,
+          "idle_in_transaction": false,
+          "trx_state": "LOCK WAIT",
+          "trx_age_s": 436,
+          "rows_locked": 1,
+          "root": false,
+          "cycle": false,
+          "blocked_count": 0,
+          "kill": null,
+          "waits_for": [
+            {
+              "kind": "row",
+              "reason": "granted",
+              "lock": {
+                "lock_type": "RECORD",
+                "mode": "X,GAP,INSERT_INTENTION",
+                "mode_label": "insert intention",
+                "schema": "lk",
+                "table": "t",
+                "index": "k",
+                "lock_data": "60, 6",
+                "lock_id": "281473278515576:2:5:7:281473164847072",
+                "status": "WAITING"
+              },
+              "blocking_lock": {
+                "lock_type": "RECORD",
+                "mode": "X",
+                "mode_label": "next-key",
+                "schema": "lk",
+                "table": "t",
+                "index": "k",
+                "lock_data": "60, 6",
+                "lock_id": "281473278512344:2:5:7:281473164822872",
+                "status": "GRANTED"
+              },
+              "wait_s": 436,
+              "statement_s": 436.0
+            }
+          ],
+          "blocked": []
+        }
+      ]
+    },
+    {
+      "key": "c14",
+      "connection_id": 14,
+      "trx_id": "562948255225424",
+      "user": "root",
+      "host": "localhost",
+      "db": "lk",
+      "command": "Sleep",
+      "state": null,
+      "time_s": 436.0,
+      "query": null,
+      "last_statement": "SELECT * FROM m",
+      "idle_in_transaction": true,
+      "trx_state": "RUNNING",
+      "trx_age_s": 436,
+      "rows_locked": 0,
+      "root": true,
+      "cycle": false,
+      "blocked_count": 2,
+      "kill": {
+        "query": null,
+        "connection": "KILL 14"
+      },
+      "waits_for": null,
+      "blocked": [
+        {
+          "key": "c17",
+          "connection_id": 17,
+          "trx_id": null,
+          "user": "root",
+          "host": "localhost",
+          "db": "lk",
+          "command": "Query",
+          "state": "Waiting for table metadata lock",
+          "time_s": 435.0,
+          "query": "ALTER TABLE m ADD COLUMN c INT",
+          "last_statement": null,
+          "idle_in_transaction": false,
+          "trx_state": null,
+          "trx_age_s": null,
+          "rows_locked": null,
+          "root": false,
+          "cycle": false,
+          "blocked_count": 0,
+          "kill": null,
+          "waits_for": [
+            {
+              "kind": "metadata",
+              "reason": "granted",
+              "lock": {
+                "lock_type": "EXCLUSIVE",
+                "mode": "X",
+                "object_type": "TABLE",
+                "schema": "lk",
+                "table": "m"
+              },
+              "blocking_lock": {
+                "lock_type": "SHARED_READ",
+                "mode": "SR",
+                "status": "GRANTED"
+              },
+              "wait_s": null,
+              "statement_s": 435.0,
+              "certain": true
+            }
+          ],
+          "blocked": [
+            {
+              "key": "c18",
+              "connection_id": 18,
+              "trx_id": null,
+              "user": "root",
+              "host": "localhost",
+              "db": "lk",
+              "command": "Query",
+              "state": "Waiting for table metadata lock",
+              "time_s": 434.0,
+              "query": "SELECT * FROM m",
+              "last_statement": null,
+              "idle_in_transaction": false,
+              "trx_state": null,
+              "trx_age_s": null,
+              "rows_locked": null,
+              "root": false,
+              "cycle": false,
+              "blocked_count": 0,
+              "kill": null,
+              "waits_for": [
+                {
+                  "kind": "metadata",
+                  "reason": "queued",
+                  "lock": {
+                    "lock_type": "SHARED_READ",
+                    "mode": "SR",
+                    "object_type": "TABLE",
+                    "schema": "lk",
+                    "table": "m"
+                  },
+                  "blocking_lock": {
+                    "lock_type": "EXCLUSIVE",
+                    "mode": "X",
+                    "status": "PENDING"
+                  },
+                  "wait_s": null,
+                  "statement_s": 434.0,
+                  "certain": true
+                }
+              ],
+              "blocked": []
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "transactions": [
+    {
+      "trx_id": "1842",
+      "state": "RUNNING",
+      "started": "2026-10-12 21:31:15",
+      "age_s": 438,
+      "connection_id": 12,
+      "requested_lock_id": null,
+      "wait_started": null,
+      "wait_s": null,
+      "query": null,
+      "query_truncated": false,
+      "operation_state": null,
+      "tables_in_use": 0,
+      "tables_locked": 1,
+      "lock_structs": 3,
+      "rows_locked": 9,
+      "rows_modified": 0,
+      "isolation_level": "REPEATABLE READ",
+      "read_only": false,
+      "user": "root",
+      "host": "localhost",
+      "db": "lk",
+      "command": "Sleep",
+      "time_s": 438.0,
+      "session_state": null,
+      "current_statement": null,
+      "last_statement": "SELECT id FROM t WHERE k BETWEEN 50 AND 70 FOR UPDATE",
+      "idle_in_transaction": true,
+      "blocking": [
+        "c13",
+        "c16"
+      ],
+      "blocked_by": [],
+      "kill": {
+        "query": null,
+        "connection": "KILL 12"
+      }
+    },
+    {
+      "trx_id": "1843",
+      "state": "LOCK WAIT",
+      "started": "2026-10-12 21:31:16",
+      "age_s": 437,
+      "connection_id": 13,
+      "requested_lock_id": "281473278513152:2:4:2:281473164829080",
+      "wait_started": "2026-10-12 21:31:16",
+      "wait_s": 437,
+      "query": "UPDATE t SET v=1 WHERE id=1",
+      "query_truncated": false,
+      "operation_state": "starting index read",
+      "tables_in_use": 1,
+      "tables_locked": 1,
+      "lock_structs": 3,
+      "rows_locked": 2,
+      "rows_modified": 1,
+      "isolation_level": "REPEATABLE READ",
+      "read_only": false,
+      "user": "root",
+      "host": "localhost",
+      "db": "lk",
+      "command": "Query",
+      "time_s": 437.0,
+      "session_state": "updating",
+      "current_statement": "UPDATE t SET v=1 WHERE id=1",
+      "last_statement": null,
+      "idle_in_transaction": false,
+      "blocking": [
+        "c15"
+      ],
+      "blocked_by": [
+        "c12"
+      ],
+      "kill": {
+        "query": "KILL QUERY 13",
+        "connection": "KILL 13"
+      }
+    },
+    {
+      "trx_id": "1844",
+      "state": "LOCK WAIT",
+      "started": "2026-10-12 21:31:17",
+      "age_s": 436,
+      "connection_id": 15,
+      "requested_lock_id": "281473278513960:2:4:3:281473164834752",
+      "wait_started": "2026-10-12 21:31:17",
+      "wait_s": 436,
+      "query": "UPDATE t SET v=2 WHERE id=2",
+      "query_truncated": false,
+      "operation_state": "starting index read",
+      "tables_in_use": 1,
+      "tables_locked": 1,
+      "lock_structs": 2,
+      "rows_locked": 1,
+      "rows_modified": 0,
+      "isolation_level": "REPEATABLE READ",
+      "read_only": false,
+      "user": "root",
+      "host": "localhost",
+      "db": "lk",
+      "command": "Query",
+      "time_s": 436.0,
+      "session_state": "updating",
+      "current_statement": "UPDATE t SET v=2 WHERE id=2",
+      "last_statement": null,
+      "idle_in_transaction": false,
+      "blocking": [],
+      "blocked_by": [
+        "c13"
+      ],
+      "kill": {
+        "query": "KILL QUERY 15",
+        "connection": "KILL 15"
+      }
+    },
+    {
+      "trx_id": "1845",
+      "state": "LOCK WAIT",
+      "started": "2026-10-12 21:31:17",
+      "age_s": 436,
+      "connection_id": 16,
+      "requested_lock_id": "281473278515576:2:5:7:281473164847072",
+      "wait_started": "2026-10-12 21:31:17",
+      "wait_s": 436,
+      "query": "INSERT INTO t VALUES (11,0,55)",
+      "query_truncated": false,
+      "operation_state": "inserting",
+      "tables_in_use": 1,
+      "tables_locked": 1,
+      "lock_structs": 2,
+      "rows_locked": 1,
+      "rows_modified": 1,
+      "isolation_level": "REPEATABLE READ",
+      "read_only": false,
+      "user": "root",
+      "host": "localhost",
+      "db": "lk",
+      "command": "Query",
+      "time_s": 436.0,
+      "session_state": "update",
+      "current_statement": "INSERT INTO t VALUES (11,0,55)",
+      "last_statement": null,
+      "idle_in_transaction": false,
+      "blocking": [],
+      "blocked_by": [
+        "c12"
+      ],
+      "kill": {
+        "query": "KILL QUERY 16",
+        "connection": "KILL 16"
+      }
+    },
+    {
+      "trx_id": "562948255225424",
+      "state": "RUNNING",
+      "started": "2026-10-12 21:31:17",
+      "age_s": 436,
+      "connection_id": 14,
+      "requested_lock_id": null,
+      "wait_started": null,
+      "wait_s": null,
+      "query": null,
+      "query_truncated": false,
+      "operation_state": null,
+      "tables_in_use": 0,
+      "tables_locked": 0,
+      "lock_structs": 0,
+      "rows_locked": 0,
+      "rows_modified": 0,
+      "isolation_level": "REPEATABLE READ",
+      "read_only": false,
+      "user": "root",
+      "host": "localhost",
+      "db": "lk",
+      "command": "Sleep",
+      "time_s": 436.0,
+      "session_state": null,
+      "current_statement": null,
+      "last_statement": "SELECT * FROM m",
+      "idle_in_transaction": true,
+      "blocking": [
+        "c17"
+      ],
+      "blocked_by": [],
+      "kill": {
+        "query": null,
+        "connection": "KILL 14"
+      }
+    }
+  ],
+  "row_locks": [
+    {
+      "lock_id": "281473278513152:2:4:2:281473164829080",
+      "trx_id": "1843",
+      "connection_id": 13,
+      "ps_thread_id": 52,
+      "schema": "lk",
+      "table": "t",
+      "partition": null,
+      "index": "PRIMARY",
+      "lock_type": "RECORD",
+      "mode": "X,REC_NOT_GAP",
+      "status": "WAITING",
+      "lock_data": "1",
+      "lock_data_truncated": false,
+      "lock_data_missing": false,
+      "mode_label": "record only",
+      "explain": "Locks only this index record (exclusive); the gap before it stays open."
+    },
+    {
+      "lock_id": "281473278513960:2:4:3:281473164834752",
+      "trx_id": "1844",
+      "connection_id": 15,
+      "ps_thread_id": 54,
+      "schema": "lk",
+      "table": "t",
+      "partition": null,
+      "index": "PRIMARY",
+      "lock_type": "RECORD",
+      "mode": "X,REC_NOT_GAP",
+      "status": "WAITING",
+      "lock_data": "2",
+      "lock_data_truncated": false,
+      "lock_data_missing": false,
+      "mode_label": "record only",
+      "explain": "Locks only this index record (exclusive); the gap before it stays open."
+    },
+    {
+      "lock_id": "281473278515576:2:5:7:281473164847072",
+      "trx_id": "1845",
+      "connection_id": 16,
+      "ps_thread_id": 55,
+      "schema": "lk",
+      "table": "t",
+      "partition": null,
+      "index": "k",
+      "lock_type": "RECORD",
+      "mode": "X,GAP,INSERT_INTENTION",
+      "status": "WAITING",
+      "lock_data": "60, 6",
+      "lock_data_truncated": false,
+      "lock_data_missing": false,
+      "mode_label": "insert intention",
+      "explain": "An INSERT waiting to add a row in the gap before this record. It waits only for gap or next-key locks other transactions hold there; inserts into the same gap do not block each other."
+    },
+    {
+      "lock_id": "281473278512344:1068:281473164825520",
+      "trx_id": "1842",
+      "connection_id": 12,
+      "ps_thread_id": 51,
+      "schema": "lk",
+      "table": "t",
+      "partition": null,
+      "index": null,
+      "lock_type": "TABLE",
+      "mode": "IX",
+      "status": "GRANTED",
+      "lock_data": null,
+      "lock_data_truncated": false,
+      "lock_data_missing": false,
+      "mode_label": "intention exclusive",
+      "explain": "The transaction is write-locking some rows of this table (UPDATE, DELETE, INSERT, SELECT ... FOR UPDATE). Intention locks never block each other; this one conflicts only with whole-table S and X locks."
+    },
+    {
+      "lock_id": "281473278513152:1068:281473164831648",
+      "trx_id": "1843",
+      "connection_id": 13,
+      "ps_thread_id": 52,
+      "schema": "lk",
+      "table": "t",
+      "partition": null,
+      "index": null,
+      "lock_type": "TABLE",
+      "mode": "IX",
+      "status": "GRANTED",
+      "lock_data": null,
+      "lock_data_truncated": false,
+      "lock_data_missing": false,
+      "mode_label": "intention exclusive",
+      "explain": "The transaction is write-locking some rows of this table (UPDATE, DELETE, INSERT, SELECT ... FOR UPDATE). Intention locks never block each other; this one conflicts only with whole-table S and X locks."
+    },
+    {
+      "lock_id": "281473278513960:1068:281473164837664",
+      "trx_id": "1844",
+      "connection_id": 15,
+      "ps_thread_id": 54,
+      "schema": "lk",
+      "table": "t",
+      "partition": null,
+      "index": null,
+      "lock_type": "TABLE",
+      "mode": "IX",
+      "status": "GRANTED",
+      "lock_data": null,
+      "lock_data_truncated": false,
+      "lock_data_missing": false,
+      "mode_label": "intention exclusive",
+      "explain": "The transaction is write-locking some rows of this table (UPDATE, DELETE, INSERT, SELECT ... FOR UPDATE). Intention locks never block each other; this one conflicts only with whole-table S and X locks."
+    },
+    {
+      "lock_id": "281473278515576:1068:281473164849984",
+      "trx_id": "1845",
+      "connection_id": 16,
+      "ps_thread_id": 55,
+      "schema": "lk",
+      "table": "t",
+      "partition": null,
+      "index": null,
+      "lock_type": "TABLE",
+      "mode": "IX",
+      "status": "GRANTED",
+      "lock_data": null,
+      "lock_data_truncated": false,
+      "lock_data_missing": false,
+      "mode_label": "intention exclusive",
+      "explain": "The transaction is write-locking some rows of this table (UPDATE, DELETE, INSERT, SELECT ... FOR UPDATE). Intention locks never block each other; this one conflicts only with whole-table S and X locks."
+    },
+    {
+      "lock_id": "281473278512344:2:4:2:281473164822528",
+      "trx_id": "1842",
+      "connection_id": 12,
+      "ps_thread_id": 51,
+      "schema": "lk",
+      "table": "t",
+      "partition": null,
+      "index": "PRIMARY",
+      "lock_type": "RECORD",
+      "mode": "X,REC_NOT_GAP",
+      "status": "GRANTED",
+      "lock_data": "1",
+      "lock_data_truncated": false,
+      "lock_data_missing": false,
+      "mode_label": "record only",
+      "explain": "Locks only this index record (exclusive); the gap before it stays open."
+    },
+    {
+      "lock_id": "281473278512344:2:4:6:281473164822528",
+      "trx_id": "1842",
+      "connection_id": 12,
+      "ps_thread_id": 51,
+      "schema": "lk",
+      "table": "t",
+      "partition": null,
+      "index": "PRIMARY",
+      "lock_type": "RECORD",
+      "mode": "X,REC_NOT_GAP",
+      "status": "GRANTED",
+      "lock_data": "5",
+      "lock_data_truncated": false,
+      "lock_data_missing": false,
+      "mode_label": "record only",
+      "explain": "Locks only this index record (exclusive); the gap before it stays open."
+    },
+    {
+      "lock_id": "281473278512344:2:4:7:281473164822528",
+      "trx_id": "1842",
+      "connection_id": 12,
+      "ps_thread_id": 51,
+      "schema": "lk",
+      "table": "t",
+      "partition": null,
+      "index": "PRIMARY",
+      "lock_type": "RECORD",
+      "mode": "X,REC_NOT_GAP",
+      "status": "GRANTED",
+      "lock_data": "6",
+      "lock_data_truncated": false,
+      "lock_data_missing": false,
+      "mode_label": "record only",
+      "explain": "Locks only this index record (exclusive); the gap before it stays open."
+    },
+    {
+      "lock_id": "281473278512344:2:4:8:281473164822528",
+      "trx_id": "1842",
+      "connection_id": 12,
+      "ps_thread_id": 51,
+      "schema": "lk",
+      "table": "t",
+      "partition": null,
+      "index": "PRIMARY",
+      "lock_type": "RECORD",
+      "mode": "X,REC_NOT_GAP",
+      "status": "GRANTED",
+      "lock_data": "7",
+      "lock_data_truncated": false,
+      "lock_data_missing": false,
+      "mode_label": "record only",
+      "explain": "Locks only this index record (exclusive); the gap before it stays open."
+    },
+    {
+      "lock_id": "281473278512344:2:4:9:281473164822528",
+      "trx_id": "1842",
+      "connection_id": 12,
+      "ps_thread_id": 51,
+      "schema": "lk",
+      "table": "t",
+      "partition": null,
+      "index": "PRIMARY",
+      "lock_type": "RECORD",
+      "mode": "X,REC_NOT_GAP",
+      "status": "GRANTED",
+      "lock_data": "8",
+      "lock_data_truncated": false,
+      "lock_data_missing": false,
+      "mode_label": "record only",
+      "explain": "Locks only this index record (exclusive); the gap before it stays open."
+    },
+    {
+      "lock_id": "281473278513152:2:4:3:281473164828736",
+      "trx_id": "1843",
+      "connection_id": 13,
+      "ps_thread_id": 52,
+      "schema": "lk",
+      "table": "t",
+      "partition": null,
+      "index": "PRIMARY",
+      "lock_type": "RECORD",
+      "mode": "X,REC_NOT_GAP",
+      "status": "GRANTED",
+      "lock_data": "2",
+      "lock_data_truncated": false,
+      "lock_data_missing": false,
+      "mode_label": "record only",
+      "explain": "Locks only this index record (exclusive); the gap before it stays open."
+    },
+    {
+      "lock_id": "281473278512344:2:5:6:281473164822872",
+      "trx_id": "1842",
+      "connection_id": 12,
+      "ps_thread_id": 51,
+      "schema": "lk",
+      "table": "t",
+      "partition": null,
+      "index": "k",
+      "lock_type": "RECORD",
+      "mode": "X",
+      "status": "GRANTED",
+      "lock_data": "50, 5",
+      "lock_data_truncated": false,
+      "lock_data_missing": false,
+      "mode_label": "next-key",
+      "explain": "Locks this index record (exclusive) and the gap before it, so no other transaction can change it or insert just before it. REPEATABLE READ uses these for locking reads and range scans."
+    },
+    {
+      "lock_id": "281473278512344:2:5:7:281473164822872",
+      "trx_id": "1842",
+      "connection_id": 12,
+      "ps_thread_id": 51,
+      "schema": "lk",
+      "table": "t",
+      "partition": null,
+      "index": "k",
+      "lock_type": "RECORD",
+      "mode": "X",
+      "status": "GRANTED",
+      "lock_data": "60, 6",
+      "lock_data_truncated": false,
+      "lock_data_missing": false,
+      "mode_label": "next-key",
+      "explain": "Locks this index record (exclusive) and the gap before it, so no other transaction can change it or insert just before it. REPEATABLE READ uses these for locking reads and range scans."
+    },
+    {
+      "lock_id": "281473278512344:2:5:8:281473164822872",
+      "trx_id": "1842",
+      "connection_id": 12,
+      "ps_thread_id": 51,
+      "schema": "lk",
+      "table": "t",
+      "partition": null,
+      "index": "k",
+      "lock_type": "RECORD",
+      "mode": "X",
+      "status": "GRANTED",
+      "lock_data": "70, 7",
+      "lock_data_truncated": false,
+      "lock_data_missing": false,
+      "mode_label": "next-key",
+      "explain": "Locks this index record (exclusive) and the gap before it, so no other transaction can change it or insert just before it. REPEATABLE READ uses these for locking reads and range scans."
+    },
+    {
+      "lock_id": "281473278512344:2:5:9:281473164822872",
+      "trx_id": "1842",
+      "connection_id": 12,
+      "ps_thread_id": 51,
+      "schema": "lk",
+      "table": "t",
+      "partition": null,
+      "index": "k",
+      "lock_type": "RECORD",
+      "mode": "X",
+      "status": "GRANTED",
+      "lock_data": "80, 8",
+      "lock_data_truncated": false,
+      "lock_data_missing": false,
+      "mode_label": "next-key",
+      "explain": "Locks this index record (exclusive) and the gap before it, so no other transaction can change it or insert just before it. REPEATABLE READ uses these for locking reads and range scans."
+    }
+  ],
+  "row_locks_truncated": false,
+  "waits": [
+    {
+      "requesting": {
+        "lock_id": "281473278513152:2:4:2:281473164829080",
+        "trx_id": "1843",
+        "connection_id": 13,
+        "ps_thread_id": 52,
+        "schema": "lk",
+        "table": "t",
+        "partition": null,
+        "index": "PRIMARY",
+        "lock_type": "RECORD",
+        "mode": "X,REC_NOT_GAP",
+        "status": "WAITING",
+        "lock_data": "1",
+        "lock_data_truncated": false,
+        "lock_data_missing": false,
+        "mode_label": "record only",
+        "explain": "Locks only this index record (exclusive); the gap before it stays open."
+      },
+      "blocking": {
+        "lock_id": "281473278512344:2:4:2:281473164822528",
+        "trx_id": "1842",
+        "connection_id": 12,
+        "ps_thread_id": 51,
+        "schema": "lk",
+        "table": "t",
+        "partition": null,
+        "index": "PRIMARY",
+        "lock_type": "RECORD",
+        "mode": "X,REC_NOT_GAP",
+        "status": "GRANTED",
+        "lock_data": "1",
+        "lock_data_truncated": false,
+        "lock_data_missing": false,
+        "mode_label": "record only",
+        "explain": "Locks only this index record (exclusive); the gap before it stays open."
+      },
+      "wait_s": 437,
+      "wait_started": "2026-10-12 21:31:16",
+      "statement": "UPDATE t SET v=1 WHERE id=1",
+      "statement_s": 437.0
+    },
+    {
+      "requesting": {
+        "lock_id": "281473278515576:2:5:7:281473164847072",
+        "trx_id": "1845",
+        "connection_id": 16,
+        "ps_thread_id": 55,
+        "schema": "lk",
+        "table": "t",
+        "partition": null,
+        "index": "k",
+        "lock_type": "RECORD",
+        "mode": "X,GAP,INSERT_INTENTION",
+        "status": "WAITING",
+        "lock_data": "60, 6",
+        "lock_data_truncated": false,
+        "lock_data_missing": false,
+        "mode_label": "insert intention",
+        "explain": "An INSERT waiting to add a row in the gap before this record. It waits only for gap or next-key locks other transactions hold there; inserts into the same gap do not block each other."
+      },
+      "blocking": {
+        "lock_id": "281473278512344:2:5:7:281473164822872",
+        "trx_id": "1842",
+        "connection_id": 12,
+        "ps_thread_id": 51,
+        "schema": "lk",
+        "table": "t",
+        "partition": null,
+        "index": "k",
+        "lock_type": "RECORD",
+        "mode": "X",
+        "status": "GRANTED",
+        "lock_data": "60, 6",
+        "lock_data_truncated": false,
+        "lock_data_missing": false,
+        "mode_label": "next-key",
+        "explain": "Locks this index record (exclusive) and the gap before it, so no other transaction can change it or insert just before it. REPEATABLE READ uses these for locking reads and range scans."
+      },
+      "wait_s": 436,
+      "wait_started": "2026-10-12 21:31:17",
+      "statement": "INSERT INTO t VALUES (11,0,55)",
+      "statement_s": 436.0
+    },
+    {
+      "requesting": {
+        "lock_id": "281473278513960:2:4:3:281473164834752",
+        "trx_id": "1844",
+        "connection_id": 15,
+        "ps_thread_id": 54,
+        "schema": "lk",
+        "table": "t",
+        "partition": null,
+        "index": "PRIMARY",
+        "lock_type": "RECORD",
+        "mode": "X,REC_NOT_GAP",
+        "status": "WAITING",
+        "lock_data": "2",
+        "lock_data_truncated": false,
+        "lock_data_missing": false,
+        "mode_label": "record only",
+        "explain": "Locks only this index record (exclusive); the gap before it stays open."
+      },
+      "blocking": {
+        "lock_id": "281473278513152:2:4:3:281473164828736",
+        "trx_id": "1843",
+        "connection_id": 13,
+        "ps_thread_id": 52,
+        "schema": "lk",
+        "table": "t",
+        "partition": null,
+        "index": "PRIMARY",
+        "lock_type": "RECORD",
+        "mode": "X,REC_NOT_GAP",
+        "status": "GRANTED",
+        "lock_data": "2",
+        "lock_data_truncated": false,
+        "lock_data_missing": false,
+        "mode_label": "record only",
+        "explain": "Locks only this index record (exclusive); the gap before it stays open."
+      },
+      "wait_s": 436,
+      "wait_started": "2026-10-12 21:31:17",
+      "statement": "UPDATE t SET v=2 WHERE id=2",
+      "statement_s": 436.0
+    }
+  ],
+  "waits_truncated": false,
+  "metadata_locks": {
+    "locks": [
+      {
+        "object_type": "TABLE",
+        "schema": "lk",
+        "name": "m",
+        "lock_type": "SHARED_READ",
+        "short": "SR",
+        "duration": "TRANSACTION",
+        "status": "PENDING",
+        "source": "sql_parse.cc:6142",
+        "ps_thread_id": 57,
+        "connection_id": 18,
+        "explain": "Shared read: a statement is reading the table (or a transaction read it and has not ended)."
+      },
+      {
+        "object_type": "TABLE",
+        "schema": "lk",
+        "name": "m",
+        "lock_type": "EXCLUSIVE",
+        "short": "X",
+        "duration": "TRANSACTION",
+        "status": "PENDING",
+        "source": "mdl.cc:3762",
+        "ps_thread_id": 56,
+        "connection_id": 17,
+        "explain": "Exclusive: DDL such as ALTER, DROP, RENAME or TRUNCATE needs the object to itself."
+      },
+      {
+        "object_type": "BACKUP LOCK",
+        "schema": null,
+        "name": null,
+        "lock_type": "INTENTION_EXCLUSIVE",
+        "short": "IX",
+        "duration": "TRANSACTION",
+        "status": "GRANTED",
+        "source": "sql_base.cc:5483",
+        "ps_thread_id": 56,
+        "connection_id": 17,
+        "explain": "Intention exclusive: a statement that may change data or metadata (scoped lock)."
+      },
+      {
+        "object_type": "GLOBAL",
+        "schema": null,
+        "name": null,
+        "lock_type": "INTENTION_EXCLUSIVE",
+        "short": "IX",
+        "duration": "STATEMENT",
+        "status": "GRANTED",
+        "source": "sql_base.cc:5476",
+        "ps_thread_id": 56,
+        "connection_id": 17,
+        "explain": "Intention exclusive: a statement that may change data or metadata (scoped lock)."
+      },
+      {
+        "object_type": "GLOBAL",
+        "schema": null,
+        "name": null,
+        "lock_type": "INTENTION_EXCLUSIVE",
+        "short": "IX",
+        "duration": "STATEMENT",
+        "status": "GRANTED",
+        "source": "sql_base.cc:3059",
+        "ps_thread_id": 55,
+        "connection_id": 16,
+        "explain": "Intention exclusive: a statement that may change data or metadata (scoped lock)."
+      },
+      {
+        "object_type": "GLOBAL",
+        "schema": null,
+        "name": null,
+        "lock_type": "INTENTION_EXCLUSIVE",
+        "short": "IX",
+        "duration": "STATEMENT",
+        "status": "GRANTED",
+        "source": "sql_base.cc:3059",
+        "ps_thread_id": 54,
+        "connection_id": 15,
+        "explain": "Intention exclusive: a statement that may change data or metadata (scoped lock)."
+      },
+      {
+        "object_type": "GLOBAL",
+        "schema": null,
+        "name": null,
+        "lock_type": "INTENTION_EXCLUSIVE",
+        "short": "IX",
+        "duration": "STATEMENT",
+        "status": "GRANTED",
+        "source": "sql_base.cc:3059",
+        "ps_thread_id": 52,
+        "connection_id": 13,
+        "explain": "Intention exclusive: a statement that may change data or metadata (scoped lock)."
+      },
+      {
+        "object_type": "SCHEMA",
+        "schema": "lk",
+        "name": null,
+        "lock_type": "INTENTION_EXCLUSIVE",
+        "short": "IX",
+        "duration": "TRANSACTION",
+        "status": "GRANTED",
+        "source": "sql_base.cc:5463",
+        "ps_thread_id": 56,
+        "connection_id": 17,
+        "explain": "Intention exclusive: a statement that may change data or metadata (scoped lock)."
+      },
+      {
+        "object_type": "TABLE",
+        "schema": "lk",
+        "name": "#sql-1_11",
+        "lock_type": "EXCLUSIVE",
+        "short": "X",
+        "duration": "STATEMENT",
+        "status": "GRANTED",
+        "source": "sql_table.cc:17098",
+        "ps_thread_id": 56,
+        "connection_id": 17,
+        "explain": "Exclusive: DDL such as ALTER, DROP, RENAME or TRUNCATE needs the object to itself."
+      },
+      {
+        "object_type": "TABLE",
+        "schema": "lk",
+        "name": "m",
+        "lock_type": "SHARED_UPGRADABLE",
+        "short": "SU",
+        "duration": "TRANSACTION",
+        "status": "GRANTED",
+        "source": "sql_parse.cc:6142",
+        "ps_thread_id": 56,
+        "connection_id": 17,
+        "explain": "Shared upgradable: ALTER TABLE and similar DDL take this first, then upgrade it."
+      },
+      {
+        "object_type": "TABLE",
+        "schema": "lk",
+        "name": "m",
+        "lock_type": "SHARED_READ",
+        "short": "SR",
+        "duration": "TRANSACTION",
+        "status": "GRANTED",
+        "source": "sql_parse.cc:6142",
+        "ps_thread_id": 53,
+        "connection_id": 14,
+        "explain": "Shared read: a statement is reading the table (or a transaction read it and has not ended)."
+      },
+      {
+        "object_type": "TABLE",
+        "schema": "lk",
+        "name": "t",
+        "lock_type": "SHARED_WRITE",
+        "short": "SW",
+        "duration": "TRANSACTION",
+        "status": "GRANTED",
+        "source": "sql_parse.cc:6142",
+        "ps_thread_id": 51,
+        "connection_id": 12,
+        "explain": "Shared write: a statement is changing rows (or a transaction changed them and has not ended)."
+      },
+      {
+        "object_type": "TABLE",
+        "schema": "lk",
+        "name": "t",
+        "lock_type": "SHARED_WRITE",
+        "short": "SW",
+        "duration": "TRANSACTION",
+        "status": "GRANTED",
+        "source": "sql_parse.cc:6142",
+        "ps_thread_id": 55,
+        "connection_id": 16,
+        "explain": "Shared write: a statement is changing rows (or a transaction changed them and has not ended)."
+      },
+      {
+        "object_type": "TABLE",
+        "schema": "lk",
+        "name": "t",
+        "lock_type": "SHARED_WRITE",
+        "short": "SW",
+        "duration": "TRANSACTION",
+        "status": "GRANTED",
+        "source": "sql_parse.cc:6142",
+        "ps_thread_id": 54,
+        "connection_id": 15,
+        "explain": "Shared write: a statement is changing rows (or a transaction changed them and has not ended)."
+      },
+      {
+        "object_type": "TABLE",
+        "schema": "lk",
+        "name": "t",
+        "lock_type": "SHARED_WRITE",
+        "short": "SW",
+        "duration": "TRANSACTION",
+        "status": "GRANTED",
+        "source": "sql_parse.cc:6142",
+        "ps_thread_id": 52,
+        "connection_id": 13,
+        "explain": "Shared write: a statement is changing rows (or a transaction changed them and has not ended)."
+      },
+      {
+        "object_type": "TABLESPACE",
+        "schema": null,
+        "name": "lk/m",
+        "lock_type": "INTENTION_EXCLUSIVE",
+        "short": "IX",
+        "duration": "TRANSACTION",
+        "status": "GRANTED",
+        "source": "lock.cc:807",
+        "ps_thread_id": 56,
+        "connection_id": 17,
+        "explain": "Intention exclusive: a statement that may change data or metadata (scoped lock)."
+      }
+    ],
+    "waits": [
+      {
+        "waiting": {
+          "object_type": "TABLE",
+          "schema": "lk",
+          "name": "m",
+          "lock_type": "SHARED_READ",
+          "short": "SR",
+          "duration": "TRANSACTION",
+          "status": "PENDING",
+          "source": "sql_parse.cc:6142",
+          "ps_thread_id": 57,
+          "connection_id": 18,
+          "explain": "Shared read: a statement is reading the table (or a transaction read it and has not ended)."
+        },
+        "statement": "SELECT * FROM m",
+        "state": "Waiting for table metadata lock",
+        "statement_s": 434.0,
+        "certain": true,
+        "blocked_by": [
+          {
+            "reason": "queued",
+            "lock": {
+              "object_type": "TABLE",
+              "schema": "lk",
+              "name": "m",
+              "lock_type": "EXCLUSIVE",
+              "short": "X",
+              "duration": "TRANSACTION",
+              "status": "PENDING",
+              "source": "mdl.cc:3762",
+              "ps_thread_id": 56,
+              "connection_id": 17,
+              "explain": "Exclusive: DDL such as ALTER, DROP, RENAME or TRUNCATE needs the object to itself."
+            },
+            "statement": "ALTER TABLE m ADD COLUMN c INT"
+          }
+        ]
+      },
+      {
+        "waiting": {
+          "object_type": "TABLE",
+          "schema": "lk",
+          "name": "m",
+          "lock_type": "EXCLUSIVE",
+          "short": "X",
+          "duration": "TRANSACTION",
+          "status": "PENDING",
+          "source": "mdl.cc:3762",
+          "ps_thread_id": 56,
+          "connection_id": 17,
+          "explain": "Exclusive: DDL such as ALTER, DROP, RENAME or TRUNCATE needs the object to itself."
+        },
+        "statement": "ALTER TABLE m ADD COLUMN c INT",
+        "state": "Waiting for table metadata lock",
+        "statement_s": 435.0,
+        "certain": true,
+        "blocked_by": [
+          {
+            "reason": "granted",
+            "lock": {
+              "object_type": "TABLE",
+              "schema": "lk",
+              "name": "m",
+              "lock_type": "SHARED_READ",
+              "short": "SR",
+              "duration": "TRANSACTION",
+              "status": "GRANTED",
+              "source": "sql_parse.cc:6142",
+              "ps_thread_id": 53,
+              "connection_id": 14,
+              "explain": "Shared read: a statement is reading the table (or a transaction read it and has not ended)."
+            },
+            "statement": null
+          }
+        ]
+      }
+    ],
+    "truncated": false
+  },
+  "deadlock": {
+    "detected_at": "2026-10-12 21:31:12",
+    "transactions": [
+      {
+        "n": 1,
+        "trx_id": "1839",
+        "active_s": 1,
+        "operation": "starting index read",
+        "connection_id": 10,
+        "query_id": 24,
+        "host": "localhost",
+        "user": "root",
+        "state": "updating",
+        "tables_in_use": 1,
+        "tables_locked": 1,
+        "lock_structs": 3,
+        "row_locks": 2,
+        "lock_wait": true,
+        "statement": "UPDATE d SET v=2 WHERE id=1",
+        "holds": [
+          {
+            "lock_type": "RECORD",
+            "schema": "lk",
+            "table": "d",
+            "partition": null,
+            "index": "PRIMARY",
+            "space_id": 3,
+            "page_no": 4,
+            "trx_id": "1839",
+            "mode": "X,REC_NOT_GAP",
+            "waiting": false,
+            "mode_label": "record only",
+            "explain": "Locks only this index record (exclusive); the gap before it stays open.",
+            "records": [
+              {
+                "heap_no": 3,
+                "fields": [
+                  {
+                    "hex": "80000002",
+                    "asc": "    "
+                  },
+                  {
+                    "hex": "00000000072f",
+                    "asc": "     /"
+                  },
+                  {
+                    "hex": "01000000860504",
+                    "asc": "       "
+                  }
+                ],
+                "supremum": false,
+                "as_signed_int": 2
+              }
+            ]
+          }
+        ],
+        "waiting_for": {
+          "lock_type": "RECORD",
+          "schema": "lk",
+          "table": "d",
+          "partition": null,
+          "index": "PRIMARY",
+          "space_id": 3,
+          "page_no": 4,
+          "trx_id": "1839",
+          "mode": "X,REC_NOT_GAP",
+          "waiting": true,
+          "mode_label": "record only",
+          "explain": "Locks only this index record (exclusive); the gap before it stays open.",
+          "records": [
+            {
+              "heap_no": 2,
+              "fields": [
+                {
+                  "hex": "80000001",
+                  "asc": "    "
+                },
+                {
+                  "hex": "00000000072e",
+                  "asc": "     ."
+                },
+                {
+                  "hex": "02000001120667",
+                  "asc": "      g"
+                }
+              ],
+              "supremum": false,
+              "as_signed_int": 1
+            }
+          ]
+        },
+        "conflicts_with": [],
+        "victim": false
+      },
+      {
+        "n": 2,
+        "trx_id": "1838",
+        "active_s": 2,
+        "operation": "starting index read",
+        "connection_id": 11,
+        "query_id": 25,
+        "host": "localhost",
+        "user": "root",
+        "state": "updating",
+        "tables_in_use": 1,
+        "tables_locked": 1,
+        "lock_structs": 3,
+        "row_locks": 2,
+        "lock_wait": true,
+        "statement": "UPDATE d SET v=1 WHERE id=2",
+        "holds": [
+          {
+            "lock_type": "RECORD",
+            "schema": "lk",
+            "table": "d",
+            "partition": null,
+            "index": "PRIMARY",
+            "space_id": 3,
+            "page_no": 4,
+            "trx_id": "1838",
+            "mode": "X,REC_NOT_GAP",
+            "waiting": false,
+            "mode_label": "record only",
+            "explain": "Locks only this index record (exclusive); the gap before it stays open.",
+            "records": [
+              {
+                "heap_no": 2,
+                "fields": [
+                  {
+                    "hex": "80000001",
+                    "asc": "    "
+                  },
+                  {
+                    "hex": "00000000072e",
+                    "asc": "     ."
+                  },
+                  {
+                    "hex": "02000001120667",
+                    "asc": "      g"
+                  }
+                ],
+                "supremum": false,
+                "as_signed_int": 1
+              }
+            ]
+          }
+        ],
+        "waiting_for": {
+          "lock_type": "RECORD",
+          "schema": "lk",
+          "table": "d",
+          "partition": null,
+          "index": "PRIMARY",
+          "space_id": 3,
+          "page_no": 4,
+          "trx_id": "1838",
+          "mode": "X,REC_NOT_GAP",
+          "waiting": true,
+          "mode_label": "record only",
+          "explain": "Locks only this index record (exclusive); the gap before it stays open.",
+          "records": [
+            {
+              "heap_no": 3,
+              "fields": [
+                {
+                  "hex": "80000002",
+                  "asc": "    "
+                },
+                {
+                  "hex": "00000000072f",
+                  "asc": "     /"
+                },
+                {
+                  "hex": "01000000860504",
+                  "asc": "       "
+                }
+              ],
+              "supremum": false,
+              "as_signed_int": 2
+            }
+          ]
+        },
+        "conflicts_with": [],
+        "victim": true
+      }
+    ],
+    "victim": 2,
+    "victim_trx_id": "1838",
+    "raw": "2026-10-12 21:31:12 281472817479424\n*** (1) TRANSACTION:\nTRANSACTION 1839, ACTIVE 1 sec starting index read\nmysql tables in use 1, locked 1\nLOCK WAIT 3 lock struct(s), heap size 1128, 2 row lock(s), undo log entries 1\nMySQL thread id 10, OS thread handle 281473100009216, query id 24 localhost root updating\nUPDATE d SET v=2 WHERE id=1\n\n*** (1) HOLDS THE LOCK(S):\nRECORD LOCKS space id 3 page no 4 n bits 72 index PRIMARY of table `lk`.`d` trx id 1839 lock_mode X locks rec but not gap\nRecord lock, heap no 3 PHYSICAL RECORD: n_fields 4; compact format; info bits 0\n 0: len 4; hex 80000002; asc     ;;\n 1: len 6; hex 00000000072f; asc      /;;\n 2: len 7; hex 01000000860504; asc        ;;\n 3: len 4; hex 80000002; asc     ;;\n\n\n*** (1) WAITING FOR THIS LOCK TO BE GRANTED:\nRECORD LOCKS space id 3 page no 4 n bits 72 index PRIMARY of table `lk`.`d` trx id 1839 lock_mode X locks rec but not gap waiting\nRecord lock, heap no 2 PHYSICAL RECORD: n_fields 4; compact format; info bits 0\n 0: len 4; hex 80000001; asc     ;;\n 1: len 6; hex 00000000072e; asc      .;;\n 2: len 7; hex 02000001120667; asc       g;;\n 3: len 4; hex 80000001; asc     ;;\n\n\n*** (2) TRANSACTION:\nTRANSACTION 1838, ACTIVE 2 sec starting index read\nmysql tables in use 1, locked 1\nLOCK WAIT 3 lock struct(s), heap size 1128, 2 row lock(s), undo log entries 1\nMySQL thread id 11, OS thread handle 281473098891008, query id 25 localhost root updating\nUPDATE d SET v=1 WHERE id=2\n\n*** (2) HOLDS THE LOCK(S):\nRECORD LOCKS space id 3 page no 4 n bits 72 index PRIMARY of table `lk`.`d` trx id 1838 lock_mode X locks rec but not gap\nRecord lock, heap no 2 PHYSICAL RECORD: n_fields 4; compact format; info bits 0\n 0: len 4; hex 80000001; asc     ;;\n 1: len 6; hex 00000000072e; asc      .;;\n 2: len 7; hex 02000001120667; asc       g;;\n 3: len 4; hex 80000001; asc     ;;\n\n\n*** (2) WAITING FOR THIS LOCK TO BE GRANTED:\nRECORD LOCKS space id 3 page no 4 n bits 72 index PRIMARY of table `lk`.`d` trx id 1838 lock_mode X locks rec but not gap waiting\nRecord lock, heap no 3 PHYSICAL RECORD: n_fields 4; compact format; info bits 0\n 0: len 4; hex 80000002; asc     ;;\n 1: len 6; hex 00000000072f; asc      /;;\n 2: len 7; hex 01000000860504; asc        ;;\n 3: len 4; hex 80000002; asc     ;;\n\n*** WE ROLL BACK TRANSACTION (2)",
+    "raw_truncated": false
+  }
+}

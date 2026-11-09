@@ -1,0 +1,26 @@
+{
+ "schema_version": "readyset-explain-1.0",
+ "version": "stable-250605",
+ "input_kind": "sql",
+ "target": "SELECT RAND(), id FROM orders",
+ "shallow": {
+  "cache_type": "shallow",
+  "supported": "unsupported",
+  "raw_support": "unsupported: non-deterministic function RAND",
+  "reason": "non-deterministic function RAND",
+  "query_id": "q_4444dddd",
+  "query": "SELECT RAND(), id FROM orders",
+  "statement": "EXPLAIN CREATE SHALLOW CACHE FROM SELECT RAND(), id FROM orders"
+ },
+ "deep": {
+  "cache_type": "deep",
+  "supported": "unsupported",
+  "raw_support": "unsupported: non-deterministic function RAND",
+  "reason": "non-deterministic function RAND",
+  "query_id": "q_4444dddd",
+  "query": "SELECT RAND(), id FROM orders",
+  "statement": "EXPLAIN CREATE DEEP CACHE FROM SELECT RAND(), id FROM orders"
+ },
+ "collisions": [],
+ "notes": []
+}

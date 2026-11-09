@@ -1,0 +1,815 @@
+{
+ "args": {
+  "interval": 5,
+  "limit": 20,
+  "schema": "mfshop"
+ },
+ "calls": [
+  [
+   "/*myflames:io*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('datadir', 'performance_schema', 'userstat', 'version', 'version_comment')",
+   "datadir\t/var/lib/mysql/\nperformance_schema\tON\nuserstat\tOFF\nversion\t11.4.13-MariaDB-ubu2404\nversion_comment\tmariadb.org binary distribution\n"
+  ],
+  [
+   "/*myflames:io*/ SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime' OR Variable_name LIKE 'Performance\\_schema\\_%\\_lost'",
+   "Performance_schema_accounts_lost\t0\nPerformance_schema_cond_classes_lost\t0\nPerformance_schema_cond_instances_lost\t0\nPerformance_schema_digest_lost\t0\nPerformance_schema_file_classes_lost\t0\nPerformance_schema_file_handles_lost\t0\nPerformance_schema_file_instances_lost\t0\nPerformance_schema_hosts_lost\t0\nPerformance_schema_index_stat_lost\t0\nPerformance_schema_locker_lost\t0\nPerformance_schema_memory_classes_lost\t0\nPerformance_schema_metadata_lock_lost\t0\nPerformance_schema_mutex_classes_lost\t0\nPerformance_schema_mutex_instances_lost\t0\nPerformance_schema_nested_statement_lost\t0\nPerformance_schema_prepared_statements_lost\t0\nPerformance_schema_program_lost\t0\nPerformance_schema_rwlock_classes_lost\t0\nPerformance_schema_rwlock_instances_lost\t0\nPerformance_schema_session_connect_attrs_lost\t0\nPerformance_schema_socket_classes_lost\t0\nPerformance_schema_socket_instances_lost\t0\nPerformance_schema_stage_classes_lost\t0\nPerformance_schema_statement_classes_lost\t0\nPerformance_schema_table_handles_lost\t0\nPerformance_schema_table_instances_lost\t0\nPerformance_schema_table_lock_stat_lost\t0\nPerformance_schema_thread_classes_lost\t0\nPerformance_schema_thread_instances_lost\t0\nPerformance_schema_users_lost\t0\nUptime\t2446\n"
+  ],
+  [
+   "/*myflames:io*/ SELECT SUM(NAME = 'wait/io/table/sql/handler' AND ENABLED = 'YES'), SUM(NAME LIKE 'wait/io/file/%' AND ENABLED = 'YES'), SUM(NAME LIKE 'wait/io/file/%') FROM performance_schema.setup_instruments WHERE NAME = 'wait/io/table/sql/handler' OR NAME LIKE 'wait/io/file/%'",
+   "1\t55\t55\n"
+  ],
+  [
+   "/*myflames:io*/ SELECT NAME, ENABLED FROM performance_schema.setup_consumers WHERE NAME IN ('global_instrumentation', 'thread_instrumentation')",
+   "global_instrumentation\tYES\nthread_instrumentation\tYES\n"
+  ],
+  [
+   "/*myflames:io*/ SHOW GLOBAL STATUS WHERE Variable_name IN ('Uptime', 'Innodb_data_read', 'Innodb_data_written', 'Innodb_data_reads', 'Innodb_data_writes', 'Innodb_data_fsyncs', 'Innodb_os_log_written', 'Innodb_buffer_pool_reads', 'Innodb_buffer_pool_read_ahead', 'Innodb_buffer_pool_read_requests')",
+   "Innodb_buffer_pool_read_ahead\t27\nInnodb_buffer_pool_read_requests\t1613334\nInnodb_buffer_pool_reads\t1262\nInnodb_data_fsyncs\t263\nInnodb_data_read\t20676608\nInnodb_data_reads\t1280\nInnodb_data_writes\t0\nInnodb_data_written\t0\nInnodb_os_log_written\t23839779\nUptime\t2446\n"
+  ],
+  [
+   "/*myflames:io*/ SELECT OBJECT_SCHEMA, OBJECT_NAME, COUNT_STAR, SUM_TIMER_WAIT, COUNT_FETCH, SUM_TIMER_FETCH, COUNT_INSERT, SUM_TIMER_INSERT, COUNT_UPDATE, SUM_TIMER_UPDATE, COUNT_DELETE, SUM_TIMER_DELETE FROM performance_schema.table_io_waits_summary_by_table WHERE OBJECT_TYPE = 'TABLE' AND COUNT_STAR > 0 AND OBJECT_SCHEMA = CONVERT(X'6d6673686f70' USING utf8mb4)",
+   "mfshop\torders\t32065242\t3567213189456\t31762742\t3114074493348\t60500\t288057712803\t242000\t165080983305\t0\t0\nmfshop\tcustomers\t484002\t49698442626\t484002\t49698442626\t0\t0\t0\t0\t0\t0\nmfshop\todd$name\t121\t477398607\t121\t477398607\t0\t0\t0\t0\t0\t0\n"
+  ],
+  [
+   "/*myflames:io*/ SELECT FILE_NAME, EVENT_NAME, COUNT_READ, SUM_NUMBER_OF_BYTES_READ, SUM_TIMER_READ, COUNT_WRITE, SUM_NUMBER_OF_BYTES_WRITE, SUM_TIMER_WRITE, COUNT_MISC, SUM_TIMER_MISC, SUM_TIMER_WAIT FROM performance_schema.file_summary_by_instance WHERE COUNT_STAR > 0",
+   "/usr/share/mariadb/charsets/Index.xml\twait/io/file/mysys/charset\t1\t24291\t6926682\t0\t0\t0\t2\t446228538\t453155220\n/var/lib/mysql/ddl_recovery.log\twait/io/file/sql/global_ddl_log\t0\t0\t0\t1\t9\t14145453\t2\t927549483\t941694936\n/var/lib/mysql/mysql/plugin.frm\twait/io/file/sql/FRM\t4\t3120\t3171252\t0\t0\t0\t6\t18526788\t21698040\n/var/lib/mysql/aria_log_control\twait/io/file/aria/control\t1\t52\t1001448\t0\t0\t0\t2\t4130973\t5132421\n/var/lib/mysql/aria_log.00000001\twait/io/file/aria/translog\t2\t8236\t11933922\t0\t0\t0\t6\t10264842\t22198764\n/var/lib/mysql/ibdata1\twait/io/file/innodb/innodb_data_file\t21\t2457600\t11669247639\t0\t0\t0\t3\t22115310\t11691362949\n/var/lib/mysql/undo001\twait/io/file/innodb/innodb_data_file\t47\t770048\t2383946964\t0\t0\t0\t1\t4840332\t2388787296\n/var/lib/mysql/undo002\twait/io/file/innodb/innodb_data_file\t46\t753664\t2021923512\t0\t0\t0\t1\t5424510\t2027348022\n/var/lib/mysql/undo003\twait/io/file/innodb/innodb_data_file\t46\t753664\t2477081628\t0\t0\t0\t1\t5466237\t2482547865\n/var/lib/mysql/ibtmp1\twait/io/file/innodb/innodb_data_file\t0\t0\t0\t0\t0\t0\t3\t19653417\t19653417\n/var/lib/mysql/mfshop/customers.ibd\twait/io/file/innodb/innodb_data_file\t204\t3342336\t269306058\t0\t0\t0\t3\t8971305\t278277363\n/var/lib/mysql/mfshop/idle_table.ibd\twait/io/file/innodb/innodb_data_file\t6\t98304\t137866008\t0\t0\t0\t3\t10223115\t148089123\n/var/lib/mysql/mfshop/odd@0024name.ibd\twait/io/file/innodb/innodb_data_file\t7\t114688\t54578916\t0\t0\t0\t3\t10473477\t65052393\n/var/lib/mysql/mfshop/orders.ibd\twait/io/file/innodb/innodb_data_file\t897\t14696448\t1881428703\t0\t0\t0\t17\t4675593804\t6557022507\n/var/lib/mysql/mysql/gtid_slave_pos.ibd\twait/io/file/innodb/innodb_data_file\t2\t32768\t24911019\t0\t0\t0\t3\t8220219\t33131238\n/var/lib/mysql/mysql/innodb_index_stats.ibd\twait/io/file/innodb/innodb_data_file\t2\t32768\t44021985\t0\t0\t0\t3\t8053311\t52075296\n/var/lib/mysql/mysql/innodb_table_stats.ibd\twait/io/file/innodb/innodb_data_file\t2\t32768\t84705810\t0\t0\t0\t3\t7177044\t91882854\n/var/lib/mysql/mysql/plugin.MAI\twait/io/file/aria/MAI\t2\t472\t1752534\t0\t0\t0\t3\t85456896\t87209430\n/var/lib/mysql/mysql/plugin.MAD\twait/io/file/aria/MAD\t1\t8192\t4840332\t0\t0\t0\t3\t112537719\t117378051\n/var/lib/mysql/tc.log\twait/io/file/sql/tclog\t0\t0\t0\t0\t0\t0\t2\t22532580\t22532580\n/var/lib/mysql/mysql/servers.frm\twait/io/file/sql/FRM\t2\t10279\t8178492\t0\t0\t0\t2\t8554035\t16732527\n/var/lib/mysql/mysql/servers.MAI\twait/io/file/aria/MAI\t2\t626\t1126629\t0\t0\t0\t1\t5549691\t6676320\n/var/lib/mysql/mysql/servers.MAD\twait/io/file/aria/MAD\t1\t8192\t1460445\t0\t0\t0\t1\t1710807\t3171252\n/run/mysqld/mysqld.pid\twait/io/file/sql/pid\t0\t0\t0\t1\t2\t9847572\t2\t47652234\t57499806\n/var/lib/mysql/mysql/db.frm\twait/io/file/sql/FRM\t2\t3489\t2044623\t0\t0\t0\t2\t8971305\t11015928\n/var/lib/mysql/mysql/db.MAI\twait/io/file/aria/MAI\t2\t1070\t2461893\t0\t0\t0\t1\t6425958\t8887851\n/var/lib/mysql/mysql/db.MAD\twait/io/file/aria/MAD\t1\t8192\t3838884\t0\t0\t0\t1\t2336712\t6175596\n/var/lib/mysql/mysql/proxies_priv.frm\twait/io/file/sql/FRM\t3\t5111\t2336712\t0\t0\t0\t4\t6300777\t8637489\n/var/lib/mysql/mysql/proxies_priv.MAI\twait/io/file/aria/MAI\t2\t726\t1126629\t0\t0\t0\t1\t5341056\t6467685\n/var/lib/mysql/mysql/proxies_priv.MAD\twait/io/file/aria/MAD\t2\t16384\t6718047\t0\t0\t0\t1\t2002896\t8720943\n/var/lib/mysql/mysql/roles_mapping.frm\twait/io/file/sql/FRM\t3\t2617\t1585626\t0\t0\t0\t4\t4840332\t6425958\n/var/lib/mysql/mysql/roles_mapping.MAI\twait/io/file/aria/MAI\t2\t576\t1293537\t0\t0\t0\t1\t4506516\t5800053\n/var/lib/mysql/mysql/roles_mapping.MAD\twait/io/file/aria/MAD\t1\t8192\t4506516\t0\t0\t0\t1\t2169804\t6676320\n/var/lib/mysql/mysql/global_priv.frm\twait/io/file/sql/FRM\t3\t2265\t1460445\t0\t0\t0\t4\t4089246\t5549691\n/var/lib/mysql/mysql/global_priv.MAI\twait/io/file/aria/MAI\t2\t524\t1210083\t0\t0\t0\t1\t4715151\t5925234\n/var/lib/mysql/mysql/global_priv.MAD\twait/io/file/aria/MAD\t2\t16384\t14312361\t0\t0\t0\t1\t2253258\t16565619\n/var/lib/mysql/mysql/time_zone_leap_second.frm\twait/io/file/sql/FRM\t2\t972\t1251810\t0\t0\t0\t2\t3880611\t5132421\n/var/lib/mysql/mysql/time_zone_leap_second.MAI\twait/io/file/aria/MAI\t2\t472\t1251810\t0\t0\t0\t3\t23617482\t24869292\n/var/lib/mysql/mysql/time_zone_leap_second.MAD\twait/io/file/aria/MAD\t0\t0\t0\t0\t0\t0\t3\t23075031\t23075031\n/var/lib/mysql/mysql/time_zone_name.frm\twait/io/file/sql/FRM\t2\t1147\t1168356\t0\t0\t0\t2\t3171252\t4339608\n/var/lib/mysql/mysql/time_zone_name.MAI\twait/io/file/aria/MAI\t2\t472\t1168356\t0\t0\t0\t3\t22532580\t23700936\n/var/lib/mysql/mysql/time_zone_name.MAD\twait/io/file/aria/MAD\t0\t0\t0\t0\t0\t0\t3\t23408847\t23408847\n/var/lib/mysql/mysql/time_zone.frm\twait/io/file/sql/FRM\t2\t974\t959721\t0\t0\t0\t2\t4089246\t5048967\n/var/lib/mysql/mysql/time_zone.MAI\twait/io/file/aria/MAI\t2\t472\t1001448\t0\t0\t0\t3\t22616034\t23617482\n/var/lib/mysql/mysql/time_zone.MAD\twait/io/file/aria/MAD\t0\t0\t0\t0\t0\t0\t3\t20446230\t20446230\n/var/lib/mysql/mysql/time_zone_transition_type.frm\twait/io/file/sql/FRM\t2\t1080\t1001448\t0\t0\t0\t2\t3171252\t4172700\n/var/lib/mysql/mysql/time_zone_transition_type.MAI\twait/io/file/aria/MAI\t2\t568\t5132421\t0\t0\t0\t3\t23033304\t28165725\n/var/lib/mysql/mysql/time_zone_transition_type.MAD\twait/io/file/aria/MAD\t0\t0\t0\t0\t0\t0\t3\t21864948\t21864948\n/var/lib/mysql/mysql/time_zone_transition.frm\twait/io/file/sql/FRM\t2\t1014\t1001448\t0\t0\t0\t2\t2837436\t3838884\n/var/lib/mysql/mysql/time_zone_transition.MAI\twait/io/file/aria/MAI\t2\t524\t1084902\t0\t0\t0\t3\t32254971\t33339873\n/var/lib/mysql/mysql/time_zone_transition.MAD\twait/io/file/aria/MAD\t0\t0\t0\t0\t0\t0\t3\t70059633\t70059633\n/var/lib/mysql/mysql/tables_priv.frm\twait/io/file/sql/FRM\t2\t4441\t2169804\t0\t0\t0\t2\t6676320\t8846124\n/var/lib/mysql/mysql/tables_priv.MAI\twait/io/file/aria/MAI\t3\t8940\t17942610\t0\t0\t0\t1\t5800053\t23742663\n/var/lib/mysql/mysql/tables_priv.MAD\twait/io/file/aria/MAD\t1\t8192\t9889299\t0\t0\t0\t1\t2211531\t12100830\n/var/lib/mysql/mysql/columns_priv.frm\twait/io/file/sql/FRM\t2\t2840\t1293537\t0\t0\t0\t2\t3087798\t4381335\n/var/lib/mysql/mysql/columns_priv.MAI\twait/io/file/aria/MAI\t2\t702\t876267\t0\t0\t0\t1\t4756878\t5633145\n/var/lib/mysql/mysql/columns_priv.MAD\twait/io/file/aria/MAD\t0\t0\t0\t0\t0\t0\t1\t1794261\t1794261\n/var/lib/mysql/mysql/procs_priv.frm\twait/io/file/sql/FRM\t3\t4458\t2336712\t0\t0\t0\t4\t4381335\t6718047\n/var/lib/mysql/mysql/procs_priv.MAI\twait/io/file/aria/MAI\t2\t778\t1293537\t0\t0\t0\t1\t5048967\t6342504\n/var/lib/mysql/mysql/procs_priv.MAD\twait/io/file/aria/MAD\t0\t0\t0\t0\t0\t0\t1\t1794261\t1794261\n/var/lib/mysql/mysql/func.frm\twait/io/file/sql/FRM\t2\t1583\t1168356\t0\t0\t0\t2\t4172700\t5341056\n/var/lib/mysql/mysql/func.MAI\twait/io/file/aria/MAI\t2\t516\t1084902\t0\t0\t0\t3\t30711072\t31795974\n/var/lib/mysql/mysql/func.MAD\twait/io/file/aria/MAD\t1\t8192\t6425958\t0\t0\t0\t3\t45398976\t51824934\n/var/lib/mysql/mysql/event.frm\twait/io/file/sql/FRM\t2\t4678\t1919442\t0\t0\t0\t2\t5299329\t7218771\n/var/lib/mysql/mysql/event.MAI\twait/io/file/aria/MAI\t2\t942\t1418718\t0\t0\t0\t1\t6092142\t7510860\n/var/lib/mysql/mysql/event.MAD\twait/io/file/aria/MAD\t1\t8192\t1585626\t0\t0\t0\t1\t2002896\t3588522\n/var/lib/mysql/mysql/gtid_slave_pos.frm\twait/io/file/sql/FRM\t2\t1027\t2294985\t0\t0\t0\t2\t8136765\t10431750\n/var/lib/mysql/mfshop/db.opt\twait/io/file/sql/dbopt\t1\t70\t21113862\t0\t0\t0\t5\t37303938\t58417800\n/var/lib/mysql/mfshop/orders.frm\twait/io/file/sql/FRM\t2\t3875\t6384231\t0\t0\t0\t2\t27665001\t34049232\n/var/lib/mysql/mysql/table_stats.frm\twait/io/file/sql/FRM\t2\t1375\t1502172\t0\t0\t0\t2\t27665001\t29167173\n/var/lib/mysql/mysql/table_stats.MAI\twait/io/file/aria/MAI\t2\t524\t1835988\t0\t0\t0\t1\t8554035\t10390023\n/var/lib/mysql/mysql/table_stats.MAD\twait/io/file/aria/MAD\t0\t0\t0\t0\t0\t0\t1\t2879163\t2879163\n/var/lib/mysql/mysql/column_stats.frm\twait/io/file/sql/FRM\t2\t2367\t2253258\t0\t0\t0\t2\t7594314\t9847572\n/var/lib/mysql/mysql/column_stats.MAI\twait/io/file/aria/MAI\t2\t730\t5674872\t0\t0\t0\t1\t10014480\t15689352\n/var/lib/mysql/mysql/column_stats.MAD\twait/io/file/aria/MAD\t0\t0\t0\t0\t0\t0\t1\t9179940\t9179940\n/var/lib/mysql/mysql/index_stats.frm\twait/io/file/sql/FRM\t2\t1630\t1460445\t0\t0\t0\t2\t9430302\t10890747\n/var/lib/mysql/mysql/index_stats.MAI\twait/io/file/aria/MAI\t2\t628\t1335264\t0\t0\t0\t1\t4715151\t6050415\n/var/lib/mysql/mysql/index_stats.MAD\twait/io/file/aria/MAD\t0\t0\t0\t0\t0\t0\t1\t1877715\t1877715\n/var/lib/mysql/mfshop/customers.frm\twait/io/file/sql/FRM\t2\t3375\t1210083\t0\t0\t0\t2\t9305121\t10515204\n/var/lib/mysql/mfshop/odd@0024name.frm\twait/io/file/sql/FRM\t2\t1951\t9305121\t0\t0\t0\t2\t12685008\t21990129\n/var/lib/mysql/performance_schema/db.opt\twait/io/file/sql/dbopt\t1\t67\t2086350\t0\t0\t0\t5\t18693696\t20780046\n/var/lib/mysql/mfshop/idle_table.frm\twait/io/file/sql/FRM\t2\t1438\t24452022\t0\t0\t0\t2\t63132951\t87584973\n"
+  ],
+  [
+   "/*myflames:io*/ SELECT EVENT_NAME, COUNT_READ, SUM_NUMBER_OF_BYTES_READ, SUM_TIMER_READ, COUNT_WRITE, SUM_NUMBER_OF_BYTES_WRITE, SUM_TIMER_WRITE, COUNT_MISC, SUM_TIMER_MISC, SUM_TIMER_WAIT FROM performance_schema.file_summary_by_event_name WHERE COUNT_STAR > 0",
+   "wait/io/file/sql/casetest\t0\t0\t0\t0\t0\t0\t5\t25578651\t25578651\nwait/io/file/sql/dbopt\t2\t137\t23200212\t0\t0\t0\t10\t55997634\t79197846\nwait/io/file/sql/FRM\t54\t67106\t81910101\t0\t0\t0\t69\t350089530\t431999631\nwait/io/file/sql/global_ddl_log\t0\t0\t0\t1\t9\t14145453\t3\t931346640\t945492093\nwait/io/file/sql/pid\t0\t0\t0\t1\t2\t9847572\t2\t47652234\t57499806\nwait/io/file/sql/tclog\t0\t0\t0\t0\t0\t0\t3\t24660657\t24660657\nwait/io/file/mysys/charset\t1\t24291\t6926682\t0\t0\t0\t2\t446228538\t453155220\nwait/io/file/aria/translog\t2\t8236\t11933922\t0\t0\t0\t7\t11015928\t22949850\nwait/io/file/aria/MAI\t49\t22572\t63967491\t40\t3005\t211347255\t68\t1470417753\t1745732499\nwait/io/file/aria/MAD\t11\t90112\t53577468\t0\t0\t0\t58\t574038339\t627615807\nwait/io/file/aria/control\t1\t52\t1001448\t0\t0\t0\t2\t4130973\t5132421\nwait/io/file/innodb/innodb_data_file\t1280\t23085056\t21049018242\t0\t0\t0\t47\t4790676870\t25839695112\n"
+  ],
+  [
+   "/*myflames:io*/ SHOW GLOBAL STATUS WHERE Variable_name IN ('Uptime', 'Innodb_data_read', 'Innodb_data_written', 'Innodb_data_reads', 'Innodb_data_writes', 'Innodb_data_fsyncs', 'Innodb_os_log_written', 'Innodb_buffer_pool_reads', 'Innodb_buffer_pool_read_ahead', 'Innodb_buffer_pool_read_requests')",
+   "Innodb_buffer_pool_read_ahead\t27\nInnodb_buffer_pool_read_requests\t2161052\nInnodb_buffer_pool_reads\t1262\nInnodb_data_fsyncs\t351\nInnodb_data_read\t20676608\nInnodb_data_reads\t1280\nInnodb_data_writes\t0\nInnodb_data_written\t0\nInnodb_os_log_written\t32023194\nUptime\t2451\n"
+  ],
+  [
+   "/*myflames:io*/ SELECT OBJECT_SCHEMA, OBJECT_NAME, COUNT_STAR, SUM_TIMER_WAIT, COUNT_FETCH, SUM_TIMER_FETCH, COUNT_INSERT, SUM_TIMER_INSERT, COUNT_UPDATE, SUM_TIMER_UPDATE, COUNT_DELETE, SUM_TIMER_DELETE FROM performance_schema.table_io_waits_summary_by_table WHERE OBJECT_TYPE = 'TABLE' AND COUNT_STAR > 0 AND OBJECT_SCHEMA = CONVERT(X'6d6673686f70' USING utf8mb4)",
+   "mfshop\torders\t45885322\t5037423809628\t45482822\t4429279823724\t80500\t389586972936\t322000\t218557012968\t0\t0\nmfshop\tcustomers\t644003\t66128699238\t644003\t66128699238\t0\t0\t0\t0\t0\t0\nmfshop\todd$name\t161\t600409803\t161\t600409803\t0\t0\t0\t0\t0\t0\n"
+  ],
+  [
+   "/*myflames:io*/ SELECT FILE_NAME, EVENT_NAME, COUNT_READ, SUM_NUMBER_OF_BYTES_READ, SUM_TIMER_READ, COUNT_WRITE, SUM_NUMBER_OF_BYTES_WRITE, SUM_TIMER_WRITE, COUNT_MISC, SUM_TIMER_MISC, SUM_TIMER_WAIT FROM performance_schema.file_summary_by_instance WHERE COUNT_STAR > 0",
+   "/usr/share/mariadb/charsets/Index.xml\twait/io/file/mysys/charset\t1\t24291\t6926682\t0\t0\t0\t2\t446228538\t453155220\n/var/lib/mysql/ddl_recovery.log\twait/io/file/sql/global_ddl_log\t0\t0\t0\t1\t9\t14145453\t2\t927549483\t941694936\n/var/lib/mysql/mysql/plugin.frm\twait/io/file/sql/FRM\t4\t3120\t3171252\t0\t0\t0\t6\t18526788\t21698040\n/var/lib/mysql/aria_log_control\twait/io/file/aria/control\t1\t52\t1001448\t0\t0\t0\t2\t4130973\t5132421\n/var/lib/mysql/aria_log.00000001\twait/io/file/aria/translog\t2\t8236\t11933922\t0\t0\t0\t6\t10264842\t22198764\n/var/lib/mysql/ibdata1\twait/io/file/innodb/innodb_data_file\t21\t2457600\t11669247639\t0\t0\t0\t3\t22115310\t11691362949\n/var/lib/mysql/undo001\twait/io/file/innodb/innodb_data_file\t47\t770048\t2383946964\t0\t0\t0\t1\t4840332\t2388787296\n/var/lib/mysql/undo002\twait/io/file/innodb/innodb_data_file\t46\t753664\t2021923512\t0\t0\t0\t1\t5424510\t2027348022\n/var/lib/mysql/undo003\twait/io/file/innodb/innodb_data_file\t46\t753664\t2477081628\t0\t0\t0\t1\t5466237\t2482547865\n/var/lib/mysql/ibtmp1\twait/io/file/innodb/innodb_data_file\t0\t0\t0\t0\t0\t0\t3\t19653417\t19653417\n/var/lib/mysql/mfshop/customers.ibd\twait/io/file/innodb/innodb_data_file\t204\t3342336\t269306058\t0\t0\t0\t3\t8971305\t278277363\n/var/lib/mysql/mfshop/idle_table.ibd\twait/io/file/innodb/innodb_data_file\t6\t98304\t137866008\t0\t0\t0\t3\t10223115\t148089123\n/var/lib/mysql/mfshop/odd@0024name.ibd\twait/io/file/innodb/innodb_data_file\t7\t114688\t54578916\t0\t0\t0\t3\t10473477\t65052393\n/var/lib/mysql/mfshop/orders.ibd\twait/io/file/innodb/innodb_data_file\t897\t14696448\t1881428703\t0\t0\t0\t23\t6128194128\t8009622831\n/var/lib/mysql/mysql/gtid_slave_pos.ibd\twait/io/file/innodb/innodb_data_file\t2\t32768\t24911019\t0\t0\t0\t3\t8220219\t33131238\n/var/lib/mysql/mysql/innodb_index_stats.ibd\twait/io/file/innodb/innodb_data_file\t2\t32768\t44021985\t0\t0\t0\t3\t8053311\t52075296\n/var/lib/mysql/mysql/innodb_table_stats.ibd\twait/io/file/innodb/innodb_data_file\t2\t32768\t84705810\t0\t0\t0\t3\t7177044\t91882854\n/var/lib/mysql/mysql/plugin.MAI\twait/io/file/aria/MAI\t2\t472\t1752534\t0\t0\t0\t3\t85456896\t87209430\n/var/lib/mysql/mysql/plugin.MAD\twait/io/file/aria/MAD\t1\t8192\t4840332\t0\t0\t0\t3\t112537719\t117378051\n/var/lib/mysql/tc.log\twait/io/file/sql/tclog\t0\t0\t0\t0\t0\t0\t2\t22532580\t22532580\n/var/lib/mysql/mysql/servers.frm\twait/io/file/sql/FRM\t2\t10279\t8178492\t0\t0\t0\t2\t8554035\t16732527\n/var/lib/mysql/mysql/servers.MAI\twait/io/file/aria/MAI\t2\t626\t1126629\t0\t0\t0\t1\t5549691\t6676320\n/var/lib/mysql/mysql/servers.MAD\twait/io/file/aria/MAD\t1\t8192\t1460445\t0\t0\t0\t1\t1710807\t3171252\n/run/mysqld/mysqld.pid\twait/io/file/sql/pid\t0\t0\t0\t1\t2\t9847572\t2\t47652234\t57499806\n/var/lib/mysql/mysql/db.frm\twait/io/file/sql/FRM\t2\t3489\t2044623\t0\t0\t0\t2\t8971305\t11015928\n/var/lib/mysql/mysql/db.MAI\twait/io/file/aria/MAI\t2\t1070\t2461893\t0\t0\t0\t1\t6425958\t8887851\n/var/lib/mysql/mysql/db.MAD\twait/io/file/aria/MAD\t1\t8192\t3838884\t0\t0\t0\t1\t2336712\t6175596\n/var/lib/mysql/mysql/proxies_priv.frm\twait/io/file/sql/FRM\t3\t5111\t2336712\t0\t0\t0\t4\t6300777\t8637489\n/var/lib/mysql/mysql/proxies_priv.MAI\twait/io/file/aria/MAI\t2\t726\t1126629\t0\t0\t0\t1\t5341056\t6467685\n/var/lib/mysql/mysql/proxies_priv.MAD\twait/io/file/aria/MAD\t2\t16384\t6718047\t0\t0\t0\t1\t2002896\t8720943\n/var/lib/mysql/mysql/roles_mapping.frm\twait/io/file/sql/FRM\t3\t2617\t1585626\t0\t0\t0\t4\t4840332\t6425958\n/var/lib/mysql/mysql/roles_mapping.MAI\twait/io/file/aria/MAI\t2\t576\t1293537\t0\t0\t0\t1\t4506516\t5800053\n/var/lib/mysql/mysql/roles_mapping.MAD\twait/io/file/aria/MAD\t1\t8192\t4506516\t0\t0\t0\t1\t2169804\t6676320\n/var/lib/mysql/mysql/global_priv.frm\twait/io/file/sql/FRM\t3\t2265\t1460445\t0\t0\t0\t4\t4089246\t5549691\n/var/lib/mysql/mysql/global_priv.MAI\twait/io/file/aria/MAI\t2\t524\t1210083\t0\t0\t0\t1\t4715151\t5925234\n/var/lib/mysql/mysql/global_priv.MAD\twait/io/file/aria/MAD\t2\t16384\t14312361\t0\t0\t0\t1\t2253258\t16565619\n/var/lib/mysql/mysql/time_zone_leap_second.frm\twait/io/file/sql/FRM\t2\t972\t1251810\t0\t0\t0\t2\t3880611\t5132421\n/var/lib/mysql/mysql/time_zone_leap_second.MAI\twait/io/file/aria/MAI\t2\t472\t1251810\t0\t0\t0\t3\t23617482\t24869292\n/var/lib/mysql/mysql/time_zone_leap_second.MAD\twait/io/file/aria/MAD\t0\t0\t0\t0\t0\t0\t3\t23075031\t23075031\n/var/lib/mysql/mysql/time_zone_name.frm\twait/io/file/sql/FRM\t2\t1147\t1168356\t0\t0\t0\t2\t3171252\t4339608\n/var/lib/mysql/mysql/time_zone_name.MAI\twait/io/file/aria/MAI\t2\t472\t1168356\t0\t0\t0\t3\t22532580\t23700936\n/var/lib/mysql/mysql/time_zone_name.MAD\twait/io/file/aria/MAD\t0\t0\t0\t0\t0\t0\t3\t23408847\t23408847\n/var/lib/mysql/mysql/time_zone.frm\twait/io/file/sql/FRM\t2\t974\t959721\t0\t0\t0\t2\t4089246\t5048967\n/var/lib/mysql/mysql/time_zone.MAI\twait/io/file/aria/MAI\t2\t472\t1001448\t0\t0\t0\t3\t22616034\t23617482\n/var/lib/mysql/mysql/time_zone.MAD\twait/io/file/aria/MAD\t0\t0\t0\t0\t0\t0\t3\t20446230\t20446230\n/var/lib/mysql/mysql/time_zone_transition_type.frm\twait/io/file/sql/FRM\t2\t1080\t1001448\t0\t0\t0\t2\t3171252\t4172700\n/var/lib/mysql/mysql/time_zone_transition_type.MAI\twait/io/file/aria/MAI\t2\t568\t5132421\t0\t0\t0\t3\t23033304\t28165725\n/var/lib/mysql/mysql/time_zone_transition_type.MAD\twait/io/file/aria/MAD\t0\t0\t0\t0\t0\t0\t3\t21864948\t21864948\n/var/lib/mysql/mysql/time_zone_transition.frm\twait/io/file/sql/FRM\t2\t1014\t1001448\t0\t0\t0\t2\t2837436\t3838884\n/var/lib/mysql/mysql/time_zone_transition.MAI\twait/io/file/aria/MAI\t2\t524\t1084902\t0\t0\t0\t3\t32254971\t33339873\n/var/lib/mysql/mysql/time_zone_transition.MAD\twait/io/file/aria/MAD\t0\t0\t0\t0\t0\t0\t3\t70059633\t70059633\n/var/lib/mysql/mysql/tables_priv.frm\twait/io/file/sql/FRM\t2\t4441\t2169804\t0\t0\t0\t2\t6676320\t8846124\n/var/lib/mysql/mysql/tables_priv.MAI\twait/io/file/aria/MAI\t3\t8940\t17942610\t0\t0\t0\t1\t5800053\t23742663\n/var/lib/mysql/mysql/tables_priv.MAD\twait/io/file/aria/MAD\t1\t8192\t9889299\t0\t0\t0\t1\t2211531\t12100830\n/var/lib/mysql/mysql/columns_priv.frm\twait/io/file/sql/FRM\t2\t2840\t1293537\t0\t0\t0\t2\t3087798\t4381335\n/var/lib/mysql/mysql/columns_priv.MAI\twait/io/file/aria/MAI\t2\t702\t876267\t0\t0\t0\t1\t4756878\t5633145\n/var/lib/mysql/mysql/columns_priv.MAD\twait/io/file/aria/MAD\t0\t0\t0\t0\t0\t0\t1\t1794261\t1794261\n/var/lib/mysql/mysql/procs_priv.frm\twait/io/file/sql/FRM\t3\t4458\t2336712\t0\t0\t0\t4\t4381335\t6718047\n/var/lib/mysql/mysql/procs_priv.MAI\twait/io/file/aria/MAI\t2\t778\t1293537\t0\t0\t0\t1\t5048967\t6342504\n/var/lib/mysql/mysql/procs_priv.MAD\twait/io/file/aria/MAD\t0\t0\t0\t0\t0\t0\t1\t1794261\t1794261\n/var/lib/mysql/mysql/func.frm\twait/io/file/sql/FRM\t2\t1583\t1168356\t0\t0\t0\t2\t4172700\t5341056\n/var/lib/mysql/mysql/func.MAI\twait/io/file/aria/MAI\t2\t516\t1084902\t0\t0\t0\t3\t30711072\t31795974\n/var/lib/mysql/mysql/func.MAD\twait/io/file/aria/MAD\t1\t8192\t6425958\t0\t0\t0\t3\t45398976\t51824934\n/var/lib/mysql/mysql/event.frm\twait/io/file/sql/FRM\t2\t4678\t1919442\t0\t0\t0\t2\t5299329\t7218771\n/var/lib/mysql/mysql/event.MAI\twait/io/file/aria/MAI\t2\t942\t1418718\t0\t0\t0\t1\t6092142\t7510860\n/var/lib/mysql/mysql/event.MAD\twait/io/file/aria/MAD\t1\t8192\t1585626\t0\t0\t0\t1\t2002896\t3588522\n/var/lib/mysql/mysql/gtid_slave_pos.frm\twait/io/file/sql/FRM\t2\t1027\t2294985\t0\t0\t0\t2\t8136765\t10431750\n/var/lib/mysql/mfshop/db.opt\twait/io/file/sql/dbopt\t1\t70\t21113862\t0\t0\t0\t5\t37303938\t58417800\n/var/lib/mysql/mfshop/orders.frm\twait/io/file/sql/FRM\t2\t3875\t6384231\t0\t0\t0\t2\t27665001\t34049232\n/var/lib/mysql/mysql/table_stats.frm\twait/io/file/sql/FRM\t2\t1375\t1502172\t0\t0\t0\t2\t27665001\t29167173\n/var/lib/mysql/mysql/table_stats.MAI\twait/io/file/aria/MAI\t2\t524\t1835988\t0\t0\t0\t1\t8554035\t10390023\n/var/lib/mysql/mysql/table_stats.MAD\twait/io/file/aria/MAD\t0\t0\t0\t0\t0\t0\t1\t2879163\t2879163\n/var/lib/mysql/mysql/column_stats.frm\twait/io/file/sql/FRM\t2\t2367\t2253258\t0\t0\t0\t2\t7594314\t9847572\n/var/lib/mysql/mysql/column_stats.MAI\twait/io/file/aria/MAI\t2\t730\t5674872\t0\t0\t0\t1\t10014480\t15689352\n/var/lib/mysql/mysql/column_stats.MAD\twait/io/file/aria/MAD\t0\t0\t0\t0\t0\t0\t1\t9179940\t9179940\n/var/lib/mysql/mysql/index_stats.frm\twait/io/file/sql/FRM\t2\t1630\t1460445\t0\t0\t0\t2\t9430302\t10890747\n/var/lib/mysql/mysql/index_stats.MAI\twait/io/file/aria/MAI\t2\t628\t1335264\t0\t0\t0\t1\t4715151\t6050415\n/var/lib/mysql/mysql/index_stats.MAD\twait/io/file/aria/MAD\t0\t0\t0\t0\t0\t0\t1\t1877715\t1877715\n/var/lib/mysql/mfshop/customers.frm\twait/io/file/sql/FRM\t2\t3375\t1210083\t0\t0\t0\t2\t9305121\t10515204\n/var/lib/mysql/mfshop/odd@0024name.frm\twait/io/file/sql/FRM\t2\t1951\t9305121\t0\t0\t0\t2\t12685008\t21990129\n/var/lib/mysql/performance_schema/db.opt\twait/io/file/sql/dbopt\t1\t67\t2086350\t0\t0\t0\t5\t18693696\t20780046\n/var/lib/mysql/mfshop/idle_table.frm\twait/io/file/sql/FRM\t2\t1438\t24452022\t0\t0\t0\t2\t63132951\t87584973\n"
+  ],
+  [
+   "/*myflames:io*/ SELECT EVENT_NAME, COUNT_READ, SUM_NUMBER_OF_BYTES_READ, SUM_TIMER_READ, COUNT_WRITE, SUM_NUMBER_OF_BYTES_WRITE, SUM_TIMER_WRITE, COUNT_MISC, SUM_TIMER_MISC, SUM_TIMER_WAIT FROM performance_schema.file_summary_by_event_name WHERE COUNT_STAR > 0",
+   "wait/io/file/sql/casetest\t0\t0\t0\t0\t0\t0\t5\t25578651\t25578651\nwait/io/file/sql/dbopt\t2\t137\t23200212\t0\t0\t0\t10\t55997634\t79197846\nwait/io/file/sql/FRM\t54\t67106\t81910101\t0\t0\t0\t69\t350089530\t431999631\nwait/io/file/sql/global_ddl_log\t0\t0\t0\t1\t9\t14145453\t3\t931346640\t945492093\nwait/io/file/sql/pid\t0\t0\t0\t1\t2\t9847572\t2\t47652234\t57499806\nwait/io/file/sql/tclog\t0\t0\t0\t0\t0\t0\t3\t24660657\t24660657\nwait/io/file/mysys/charset\t1\t24291\t6926682\t0\t0\t0\t2\t446228538\t453155220\nwait/io/file/aria/translog\t2\t8236\t11933922\t0\t0\t0\t7\t11015928\t22949850\nwait/io/file/aria/MAI\t49\t22572\t63967491\t40\t3005\t211347255\t68\t1470417753\t1745732499\nwait/io/file/aria/MAD\t11\t90112\t53577468\t0\t0\t0\t58\t574038339\t627615807\nwait/io/file/aria/control\t1\t52\t1001448\t0\t0\t0\t2\t4130973\t5132421\nwait/io/file/innodb/innodb_data_file\t1280\t23085056\t21049018242\t0\t0\t0\t53\t6243277194\t27292295436\n"
+  ]
+ ],
+ "report": {
+  "elapsed_s": 5.094,
+  "engine": "mariadb",
+  "global": [
+   {
+    "delta": 0,
+    "explain": "Bytes InnoDB read from its data files (Innodb_data_read).",
+    "key": "data_read",
+    "label": "Data read",
+    "rate": 0,
+    "sources": [
+     "Innodb_data_read"
+    ],
+    "unit": "B/s"
+   },
+   {
+    "delta": 0,
+    "explain": "Bytes InnoDB wrote (Innodb_data_written). On MariaDB redo log writes are not included; see Redo written.",
+    "key": "data_written",
+    "label": "Data written",
+    "rate": 0,
+    "sources": [
+     "Innodb_data_written"
+    ],
+    "unit": "B/s"
+   },
+   {
+    "delta": 0,
+    "explain": "Read operations on InnoDB data files (Innodb_data_reads); one can read several pages.",
+    "key": "data_reads",
+    "label": "Read operations",
+    "rate": 0,
+    "sources": [
+     "Innodb_data_reads"
+    ],
+    "unit": "/s"
+   },
+   {
+    "delta": 0,
+    "explain": "Write operations InnoDB issued (Innodb_data_writes).",
+    "key": "data_writes",
+    "label": "Write operations",
+    "rate": 0,
+    "sources": [
+     "Innodb_data_writes"
+    ],
+    "unit": "/s"
+   },
+   {
+    "delta": 88,
+    "explain": "fsync() calls InnoDB made (Innodb_data_fsyncs).",
+    "key": "data_fsyncs",
+    "label": "Fsyncs",
+    "rate": 17.27,
+    "sources": [
+     "Innodb_data_fsyncs"
+    ],
+    "unit": "/s"
+   },
+   {
+    "delta": 8183415,
+    "explain": "Redo log bytes (Innodb_os_log_written).",
+    "key": "redo_written",
+    "label": "Redo written",
+    "rate": 1606414.47,
+    "sources": [
+     "Innodb_os_log_written"
+    ],
+    "unit": "B/s"
+   },
+   {
+    "delta": 0,
+    "explain": "Buffer pool pages read from disk (Innodb_buffer_pool_reads, read-ahead included on MariaDB).",
+    "key": "pages_read",
+    "label": "Pages read from disk",
+    "rate": 0,
+    "sources": [
+     "Innodb_buffer_pool_reads"
+    ],
+    "unit": "pages/s"
+   }
+  ],
+  "interval": 5,
+  "notes": [
+   "Table figures are row operations through the storage engine (rows fetched, inserted, updated, deleted) and their time, which includes the file I/O inside each call. They are not bytes; the files show bytes.",
+   "Temporary and deleted files leave the per-file list when closed; their I/O stays in the file kinds, so check those for sort and temporary table spills.",
+   "InnoDB asynchronous I/O (read-ahead, page cleaner writes) is timed only for submitting the request: bytes are right, latency is understated.",
+   "MariaDB does not instrument the redo log file in Performance Schema; its redo I/O is in Redo written above.",
+   "Tables are limited to schema mfshop; files are server-wide.",
+   "Since server start covers 40 min 46 s of uptime."
+  ],
+  "performance_schema": true,
+  "restarted": false,
+  "schema_version": "io-1.0",
+  "scope": {
+   "schema": "mfshop"
+  },
+  "server_version": "11.4.13-MariaDB-ubu2404",
+  "since_start": {
+   "file_classes": [
+    {
+     "event": "wait/io/file/innodb/innodb_data_file",
+     "meaning": "InnoDB tablespaces: tables, the system tablespace and undo.",
+     "misc_ms": 6.243,
+     "misc_ops": 53,
+     "read_bytes": 23085056,
+     "read_ms": 21.049,
+     "read_ops": 1280,
+     "total_ms": 27.292,
+     "write_bytes": 0,
+     "write_ms": 0,
+     "write_ops": 0
+    },
+    {
+     "event": "wait/io/file/aria/MAI",
+     "meaning": "Aria index files.",
+     "misc_ms": 1.47,
+     "misc_ops": 68,
+     "read_bytes": 22572,
+     "read_ms": 0.064,
+     "read_ops": 49,
+     "total_ms": 1.746,
+     "write_bytes": 3005,
+     "write_ms": 0.211,
+     "write_ops": 40
+    },
+    {
+     "event": "wait/io/file/sql/global_ddl_log",
+     "meaning": "",
+     "misc_ms": 0.931,
+     "misc_ops": 3,
+     "read_bytes": 0,
+     "read_ms": 0,
+     "read_ops": 0,
+     "total_ms": 0.945,
+     "write_bytes": 9,
+     "write_ms": 0.014,
+     "write_ops": 1
+    },
+    {
+     "event": "wait/io/file/aria/MAD",
+     "meaning": "Aria data files (MariaDB system and on-disk temporary tables).",
+     "misc_ms": 0.574,
+     "misc_ops": 58,
+     "read_bytes": 90112,
+     "read_ms": 0.054,
+     "read_ops": 11,
+     "total_ms": 0.628,
+     "write_bytes": 0,
+     "write_ms": 0,
+     "write_ops": 0
+    },
+    {
+     "event": "wait/io/file/mysys/charset",
+     "meaning": "",
+     "misc_ms": 0.446,
+     "misc_ops": 2,
+     "read_bytes": 24291,
+     "read_ms": 0.007,
+     "read_ops": 1,
+     "total_ms": 0.453,
+     "write_bytes": 0,
+     "write_ms": 0,
+     "write_ops": 0
+    },
+    {
+     "event": "wait/io/file/sql/FRM",
+     "meaning": "",
+     "misc_ms": 0.35,
+     "misc_ops": 69,
+     "read_bytes": 67106,
+     "read_ms": 0.082,
+     "read_ops": 54,
+     "total_ms": 0.432,
+     "write_bytes": 0,
+     "write_ms": 0,
+     "write_ops": 0
+    },
+    {
+     "event": "wait/io/file/sql/dbopt",
+     "meaning": "",
+     "misc_ms": 0.056,
+     "misc_ops": 10,
+     "read_bytes": 137,
+     "read_ms": 0.023,
+     "read_ops": 2,
+     "total_ms": 0.079,
+     "write_bytes": 0,
+     "write_ms": 0,
+     "write_ops": 0
+    },
+    {
+     "event": "wait/io/file/sql/pid",
+     "meaning": "",
+     "misc_ms": 0.048,
+     "misc_ops": 2,
+     "read_bytes": 0,
+     "read_ms": 0,
+     "read_ops": 0,
+     "total_ms": 0.057,
+     "write_bytes": 2,
+     "write_ms": 0.01,
+     "write_ops": 1
+    },
+    {
+     "event": "wait/io/file/sql/casetest",
+     "meaning": "",
+     "misc_ms": 0.026,
+     "misc_ops": 5,
+     "read_bytes": 0,
+     "read_ms": 0,
+     "read_ops": 0,
+     "total_ms": 0.026,
+     "write_bytes": 0,
+     "write_ms": 0,
+     "write_ops": 0
+    },
+    {
+     "event": "wait/io/file/sql/tclog",
+     "meaning": "",
+     "misc_ms": 0.025,
+     "misc_ops": 3,
+     "read_bytes": 0,
+     "read_ms": 0,
+     "read_ops": 0,
+     "total_ms": 0.025,
+     "write_bytes": 0,
+     "write_ms": 0,
+     "write_ops": 0
+    },
+    {
+     "event": "wait/io/file/aria/translog",
+     "meaning": "",
+     "misc_ms": 0.011,
+     "misc_ops": 7,
+     "read_bytes": 8236,
+     "read_ms": 0.012,
+     "read_ops": 2,
+     "total_ms": 0.023,
+     "write_bytes": 0,
+     "write_ms": 0,
+     "write_ops": 0
+    },
+    {
+     "event": "wait/io/file/aria/control",
+     "meaning": "",
+     "misc_ms": 0.004,
+     "misc_ops": 2,
+     "read_bytes": 52,
+     "read_ms": 0.001,
+     "read_ops": 1,
+     "total_ms": 0.005,
+     "write_bytes": 0,
+     "write_ms": 0,
+     "write_ops": 0
+    }
+   ],
+   "files": [
+    {
+     "event": "wait/io/file/innodb/innodb_data_file",
+     "file": "/var/lib/mysql/ibdata1",
+     "kind": "system",
+     "label": "System tablespace",
+     "misc_ms": 0.022,
+     "misc_ops": 3,
+     "partition": null,
+     "read_bytes": 2457600,
+     "read_ms": 11.669,
+     "read_ops": 21,
+     "schema": null,
+     "table": null,
+     "total_ms": 11.691,
+     "write_bytes": 0,
+     "write_ms": 0,
+     "write_ops": 0
+    },
+    {
+     "event": "wait/io/file/innodb/innodb_data_file",
+     "file": "/var/lib/mysql/mfshop/orders.ibd",
+     "kind": "table",
+     "label": "Table data",
+     "misc_ms": 6.128,
+     "misc_ops": 23,
+     "partition": null,
+     "read_bytes": 14696448,
+     "read_ms": 1.881,
+     "read_ops": 897,
+     "schema": "mfshop",
+     "table": "orders",
+     "total_ms": 8.01,
+     "write_bytes": 0,
+     "write_ms": 0,
+     "write_ops": 0
+    },
+    {
+     "event": "wait/io/file/innodb/innodb_data_file",
+     "file": "/var/lib/mysql/undo003",
+     "kind": "undo",
+     "label": "Undo tablespace",
+     "misc_ms": 0.005,
+     "misc_ops": 1,
+     "partition": null,
+     "read_bytes": 753664,
+     "read_ms": 2.477,
+     "read_ops": 46,
+     "schema": null,
+     "table": null,
+     "total_ms": 2.483,
+     "write_bytes": 0,
+     "write_ms": 0,
+     "write_ops": 0
+    },
+    {
+     "event": "wait/io/file/innodb/innodb_data_file",
+     "file": "/var/lib/mysql/undo001",
+     "kind": "undo",
+     "label": "Undo tablespace",
+     "misc_ms": 0.005,
+     "misc_ops": 1,
+     "partition": null,
+     "read_bytes": 770048,
+     "read_ms": 2.384,
+     "read_ops": 47,
+     "schema": null,
+     "table": null,
+     "total_ms": 2.389,
+     "write_bytes": 0,
+     "write_ms": 0,
+     "write_ops": 0
+    },
+    {
+     "event": "wait/io/file/innodb/innodb_data_file",
+     "file": "/var/lib/mysql/undo002",
+     "kind": "undo",
+     "label": "Undo tablespace",
+     "misc_ms": 0.005,
+     "misc_ops": 1,
+     "partition": null,
+     "read_bytes": 753664,
+     "read_ms": 2.022,
+     "read_ops": 46,
+     "schema": null,
+     "table": null,
+     "total_ms": 2.027,
+     "write_bytes": 0,
+     "write_ms": 0,
+     "write_ops": 0
+    },
+    {
+     "event": "wait/io/file/sql/global_ddl_log",
+     "file": "/var/lib/mysql/ddl_recovery.log",
+     "kind": "other",
+     "label": "Other",
+     "misc_ms": 0.928,
+     "misc_ops": 2,
+     "partition": null,
+     "read_bytes": 0,
+     "read_ms": 0,
+     "read_ops": 0,
+     "schema": null,
+     "table": null,
+     "total_ms": 0.942,
+     "write_bytes": 9,
+     "write_ms": 0.014,
+     "write_ops": 1
+    },
+    {
+     "event": "wait/io/file/mysys/charset",
+     "file": "/usr/share/mariadb/charsets/Index.xml",
+     "kind": "other",
+     "label": "Other",
+     "misc_ms": 0.446,
+     "misc_ops": 2,
+     "partition": null,
+     "read_bytes": 24291,
+     "read_ms": 0.007,
+     "read_ops": 1,
+     "schema": null,
+     "table": null,
+     "total_ms": 0.453,
+     "write_bytes": 0,
+     "write_ms": 0,
+     "write_ops": 0
+    },
+    {
+     "event": "wait/io/file/innodb/innodb_data_file",
+     "file": "/var/lib/mysql/mfshop/customers.ibd",
+     "kind": "table",
+     "label": "Table data",
+     "misc_ms": 0.009,
+     "misc_ops": 3,
+     "partition": null,
+     "read_bytes": 3342336,
+     "read_ms": 0.269,
+     "read_ops": 204,
+     "schema": "mfshop",
+     "table": "customers",
+     "total_ms": 0.278,
+     "write_bytes": 0,
+     "write_ms": 0,
+     "write_ops": 0
+    },
+    {
+     "event": "wait/io/file/innodb/innodb_data_file",
+     "file": "/var/lib/mysql/mfshop/idle_table.ibd",
+     "kind": "table",
+     "label": "Table data",
+     "misc_ms": 0.01,
+     "misc_ops": 3,
+     "partition": null,
+     "read_bytes": 98304,
+     "read_ms": 0.138,
+     "read_ops": 6,
+     "schema": "mfshop",
+     "table": "idle_table",
+     "total_ms": 0.148,
+     "write_bytes": 0,
+     "write_ms": 0,
+     "write_ops": 0
+    },
+    {
+     "event": "wait/io/file/aria/MAD",
+     "file": "/var/lib/mysql/mysql/plugin.MAD",
+     "kind": "table",
+     "label": "Table data",
+     "misc_ms": 0.113,
+     "misc_ops": 3,
+     "partition": null,
+     "read_bytes": 8192,
+     "read_ms": 0.005,
+     "read_ops": 1,
+     "schema": "mysql",
+     "table": "plugin",
+     "total_ms": 0.117,
+     "write_bytes": 0,
+     "write_ms": 0,
+     "write_ops": 0
+    },
+    {
+     "event": "wait/io/file/innodb/innodb_data_file",
+     "file": "/var/lib/mysql/mysql/innodb_table_stats.ibd",
+     "kind": "table",
+     "label": "Table data",
+     "misc_ms": 0.007,
+     "misc_ops": 3,
+     "partition": null,
+     "read_bytes": 32768,
+     "read_ms": 0.085,
+     "read_ops": 2,
+     "schema": "mysql",
+     "table": "innodb_table_stats",
+     "total_ms": 0.092,
+     "write_bytes": 0,
+     "write_ms": 0,
+     "write_ops": 0
+    },
+    {
+     "event": "wait/io/file/sql/FRM",
+     "file": "/var/lib/mysql/mfshop/idle_table.frm",
+     "kind": "table",
+     "label": "Table data",
+     "misc_ms": 0.063,
+     "misc_ops": 2,
+     "partition": null,
+     "read_bytes": 1438,
+     "read_ms": 0.024,
+     "read_ops": 2,
+     "schema": "mfshop",
+     "table": "idle_table",
+     "total_ms": 0.088,
+     "write_bytes": 0,
+     "write_ms": 0,
+     "write_ops": 0
+    },
+    {
+     "event": "wait/io/file/aria/MAI",
+     "file": "/var/lib/mysql/mysql/plugin.MAI",
+     "kind": "table",
+     "label": "Table data",
+     "misc_ms": 0.085,
+     "misc_ops": 3,
+     "partition": null,
+     "read_bytes": 472,
+     "read_ms": 0.002,
+     "read_ops": 2,
+     "schema": "mysql",
+     "table": "plugin",
+     "total_ms": 0.087,
+     "write_bytes": 0,
+     "write_ms": 0,
+     "write_ops": 0
+    },
+    {
+     "event": "wait/io/file/aria/MAD",
+     "file": "/var/lib/mysql/mysql/time_zone_transition.MAD",
+     "kind": "table",
+     "label": "Table data",
+     "misc_ms": 0.07,
+     "misc_ops": 3,
+     "partition": null,
+     "read_bytes": 0,
+     "read_ms": 0,
+     "read_ops": 0,
+     "schema": "mysql",
+     "table": "time_zone_transition",
+     "total_ms": 0.07,
+     "write_bytes": 0,
+     "write_ms": 0,
+     "write_ops": 0
+    },
+    {
+     "event": "wait/io/file/innodb/innodb_data_file",
+     "file": "/var/lib/mysql/mfshop/odd@0024name.ibd",
+     "kind": "table",
+     "label": "Table data",
+     "misc_ms": 0.01,
+     "misc_ops": 3,
+     "partition": null,
+     "read_bytes": 114688,
+     "read_ms": 0.055,
+     "read_ops": 7,
+     "schema": "mfshop",
+     "table": "odd$name",
+     "total_ms": 0.065,
+     "write_bytes": 0,
+     "write_ms": 0,
+     "write_ops": 0
+    },
+    {
+     "event": "wait/io/file/sql/dbopt",
+     "file": "/var/lib/mysql/mfshop/db.opt",
+     "kind": "other",
+     "label": "Other",
+     "misc_ms": 0.037,
+     "misc_ops": 5,
+     "partition": null,
+     "read_bytes": 70,
+     "read_ms": 0.021,
+     "read_ops": 1,
+     "schema": null,
+     "table": null,
+     "total_ms": 0.058,
+     "write_bytes": 0,
+     "write_ms": 0,
+     "write_ops": 0
+    },
+    {
+     "event": "wait/io/file/sql/pid",
+     "file": "/run/mysqld/mysqld.pid",
+     "kind": "other",
+     "label": "Other",
+     "misc_ms": 0.048,
+     "misc_ops": 2,
+     "partition": null,
+     "read_bytes": 0,
+     "read_ms": 0,
+     "read_ops": 0,
+     "schema": null,
+     "table": null,
+     "total_ms": 0.057,
+     "write_bytes": 2,
+     "write_ms": 0.01,
+     "write_ops": 1
+    },
+    {
+     "event": "wait/io/file/aria/MAD",
+     "file": "/var/lib/mysql/mysql/func.MAD",
+     "kind": "table",
+     "label": "Table data",
+     "misc_ms": 0.045,
+     "misc_ops": 3,
+     "partition": null,
+     "read_bytes": 8192,
+     "read_ms": 0.006,
+     "read_ops": 1,
+     "schema": "mysql",
+     "table": "func",
+     "total_ms": 0.052,
+     "write_bytes": 0,
+     "write_ms": 0,
+     "write_ops": 0
+    },
+    {
+     "event": "wait/io/file/innodb/innodb_data_file",
+     "file": "/var/lib/mysql/mysql/innodb_index_stats.ibd",
+     "kind": "table",
+     "label": "Table data",
+     "misc_ms": 0.008,
+     "misc_ops": 3,
+     "partition": null,
+     "read_bytes": 32768,
+     "read_ms": 0.044,
+     "read_ops": 2,
+     "schema": "mysql",
+     "table": "innodb_index_stats",
+     "total_ms": 0.052,
+     "write_bytes": 0,
+     "write_ms": 0,
+     "write_ops": 0
+    },
+    {
+     "event": "wait/io/file/sql/FRM",
+     "file": "/var/lib/mysql/mfshop/orders.frm",
+     "kind": "table",
+     "label": "Table data",
+     "misc_ms": 0.028,
+     "misc_ops": 2,
+     "partition": null,
+     "read_bytes": 3875,
+     "read_ms": 0.006,
+     "read_ops": 2,
+     "schema": "mfshop",
+     "table": "orders",
+     "total_ms": 0.034,
+     "write_bytes": 0,
+     "write_ms": 0,
+     "write_ops": 0
+    }
+   ],
+   "more": {
+    "files": 62,
+    "tables": 0
+   },
+   "tables": [
+    {
+     "deletes": 0,
+     "inserts": 80500,
+     "ops": 45885322,
+     "read_ms": 4429.28,
+     "read_rows": 45482822,
+     "schema": "mfshop",
+     "table": "orders",
+     "total_ms": 5037.424,
+     "updates": 322000,
+     "write_ms": 608.144,
+     "write_rows": 402500
+    },
+    {
+     "deletes": 0,
+     "inserts": 0,
+     "ops": 644003,
+     "read_ms": 66.129,
+     "read_rows": 644003,
+     "schema": "mfshop",
+     "table": "customers",
+     "total_ms": 66.129,
+     "updates": 0,
+     "write_ms": 0,
+     "write_rows": 0
+    },
+    {
+     "deletes": 0,
+     "inserts": 0,
+     "ops": 161,
+     "read_ms": 0.6,
+     "read_rows": 161,
+     "schema": "mfshop",
+     "table": "odd$name",
+     "total_ms": 0.6,
+     "updates": 0,
+     "write_ms": 0,
+     "write_rows": 0
+    }
+   ],
+   "uptime_s": 2451
+  },
+  "source": "performance_schema",
+  "started_at": "2026-10-13T17:41:29.523314+00:00",
+  "taken_at": "2026-10-13T17:41:34.617507+00:00",
+  "uptime_s": 2446,
+  "window": {
+   "file_classes": [
+    {
+     "event": "wait/io/file/innodb/innodb_data_file",
+     "meaning": "InnoDB tablespaces: tables, the system tablespace and undo.",
+     "misc_ms": 1.453,
+     "misc_ops": 6,
+     "read_bytes": 0,
+     "read_ms": 0,
+     "read_ops": 0,
+     "total_ms": 1.453,
+     "write_bytes": 0,
+     "write_ms": 0,
+     "write_ops": 0
+    }
+   ],
+   "files": [
+    {
+     "event": "wait/io/file/innodb/innodb_data_file",
+     "file": "/var/lib/mysql/mfshop/orders.ibd",
+     "kind": "table",
+     "label": "Table data",
+     "misc_ms": 1.453,
+     "misc_ops": 6,
+     "partition": null,
+     "read_bytes": 0,
+     "read_ms": 0,
+     "read_ops": 0,
+     "schema": "mfshop",
+     "table": "orders",
+     "total_ms": 1.453,
+     "write_bytes": 0,
+     "write_ms": 0,
+     "write_ops": 0
+    }
+   ],
+   "more": {
+    "files": 0,
+    "tables": 0
+   },
+   "status": "ok",
+   "tables": [
+    {
+     "deletes": 0,
+     "inserts": 20000,
+     "ops": 13820080,
+     "read_ms": 1315.205,
+     "read_rows": 13720080,
+     "schema": "mfshop",
+     "table": "orders",
+     "total_ms": 1470.211,
+     "total_ms_per_s": 288.604,
+     "updates": 80000,
+     "write_ms": 155.005,
+     "write_rows": 100000
+    },
+    {
+     "deletes": 0,
+     "inserts": 0,
+     "ops": 160001,
+     "read_ms": 16.43,
+     "read_rows": 160001,
+     "schema": "mfshop",
+     "table": "customers",
+     "total_ms": 16.43,
+     "total_ms_per_s": 3.225,
+     "updates": 0,
+     "write_ms": 0,
+     "write_rows": 0
+    },
+    {
+     "deletes": 0,
+     "inserts": 0,
+     "ops": 40,
+     "read_ms": 0.123,
+     "read_rows": 40,
+     "schema": "mfshop",
+     "table": "odd$name",
+     "total_ms": 0.123,
+     "total_ms_per_s": 0.024,
+     "updates": 0,
+     "write_ms": 0,
+     "write_rows": 0
+    }
+   ]
+  }
+ },
+ "server": "mariadb-11.4"
+}

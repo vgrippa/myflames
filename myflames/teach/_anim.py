@@ -42,11 +42,58 @@ var anim = (function() {
   // --- Interpolation -----------------------------------------------------
   function lerp(a, b, t) { return a + (b - a) * t; }
 
+  // Read at use time: a palette must not retain the previous appearance.
+  function cssVar(name, fallback) {
+    var value = "";
+    if (typeof getComputedStyle === "function" && typeof document !== "undefined") {
+      value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    }
+    return _resolveCssColor(value || fallback || "#000000", 0);
+  }
+  function _resolveCssColor(color, depth) {
+    if (typeof color !== "string" || depth > 8) return "#000000";
+    color = color.trim();
+    var match = color.match(/^var\(\s*(--[\w-]+)\s*(?:,\s*(.*))?\)$/);
+    if (!match) return color;
+    var value = "";
+    if (typeof getComputedStyle === "function" && typeof document !== "undefined") {
+      value = getComputedStyle(document.documentElement).getPropertyValue(match[1]).trim();
+    }
+    return _resolveCssColor(value || match[2] || "#000000", depth + 1);
+  }
+  function palette(colors) {
+    var out = {};
+    Object.keys(colors).forEach(function(key) {
+      Object.defineProperty(out, key, {
+        enumerable: true,
+        get: function() { return _resolveCssColor(colors[key], 0); }
+      });
+    });
+    return out;
+  }
   function _parseHex(h) {
-    return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+    h = _resolveCssColor(h, 0);
+    if (/^#[0-9a-f]{3}$/i.test(h)) {
+      h = "#" + h[1] + h[1] + h[2] + h[2] + h[3] + h[3];
+    }
+    if (/^#[0-9a-f]{6}$/i.test(h)) {
+      return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+    }
+    // SVG attributes can contain the rgb() value from an earlier tween.
+    var rgb = h.match(/^rgba?\(([^)]+)\)$/i);
+    if (rgb) {
+      var parts = rgb[1].trim().split(/[\s,\/]+/).slice(0, 3);
+      if (parts.length === 3) {
+        var channels = parts.map(function(v) {
+          return v.indexOf("%") >= 0 ? parseFloat(v) / 100 * 255 : parseFloat(v);
+        });
+        if (channels.every(isFinite)) return channels;
+      }
+    }
+    return [0, 0, 0];
   }
   function _toHex(c) {
-    var h = Math.round(c).toString(16);
+    var h = Math.round(Math.max(0, Math.min(255, c))).toString(16);
     return h.length < 2 ? "0" + h : h;
   }
   function lerpColor(a, b, t) {
@@ -65,6 +112,12 @@ var anim = (function() {
   var _speed = 1;
   function setSpeed(s) { _speed = Math.max(0.1, s); }
   function getSpeed() { return _speed; }
+
+  // --- Instant application -----------------------------------------------
+  // Above zero while a timeline applies steps at once (a seek or a jump to a
+  // guided step): decorative pulses are skipped, so every page visited so
+  // far does not flash together.
+  var _instant = 0;
 
   // --- Global pause flag --------------------------------------------------
   // When paused, every running tween suspends at its current progress and
@@ -178,10 +231,31 @@ var anim = (function() {
     var playing = false;
     var onDoneCb = null;
     var marks = [];  // phase markers: [{name, ms}]
+    // Guided steps ("beats"): [{kind, ms, step}]. A beat starts at step
+    // index `step`; the lesson's guide maps its kind to simplified code.
+    var beats = [];
+    // Steps begun so far (applied, running or finished). The current beat
+    // is the last one whose first step has begun.
+    var cursor = 0;
+    // Held at a beat boundary: heldNext runs the next step when continued.
+    var held = false;
+    var heldNext = null;
+    var holdAt = -1;
+    var onHoldCb = null;
 
     // Tweens and delays share the same pause/speed-aware virtual clock.
     var virtualElapsed = 0;
     var stepVirtualStart = 0;
+
+    // Final state of one step, without animating it.
+    function applyStep(s) {
+      if (s._type === "tween") {
+        if (s.onUpdate) s.onUpdate(s.to);
+        if (s.onComplete) s.onComplete();
+      } else if (s._type === "call") {
+        s._fn();
+      }
+    }
 
     function runDelay(step, elapsed, next) {
       current = tween({
@@ -214,10 +288,20 @@ var anim = (function() {
       return tl;
     };
     tl.mark = function(name) {
-      marks.push({ name: name, ms: totalDuration });
+      marks.push({ name: name, ms: totalDuration, step: steps.length });
       return tl;
     };
     tl.getMarks = function() { return marks; };
+    // One guided step starts here; `kind` names the simplified-code lines it
+    // runs (the lesson's guide content maps kinds to lines).
+    tl.beat = function(kind) {
+      beats.push({ kind: String(kind), ms: totalDuration, step: steps.length });
+      return tl;
+    };
+    tl.getBeats = function() { return beats; };
+    tl.getStepCount = function() { return steps.length; };
+    tl.getCursor = function() { return cursor; };
+    tl.isHeld = function() { return held; };
     tl.getTotalDuration = function() { return totalDuration; };
     tl.getCurrentTime = function() {
       // If a tween is mid-flight, add its local elapsed to the step start.
@@ -235,37 +319,130 @@ var anim = (function() {
       tl.stop();
       virtualElapsed = 0;
       stepVirtualStart = 0;
-      for (var i = 0; i < steps.length; i++) {
-        var s = steps[i];
-        var stepEnd = s._start + s._duration;
-        if (stepEnd <= targetMs) {
-          // Fully elapsed — fire final state
-          if (s._type === "tween") {
-            if (s.onUpdate) s.onUpdate(s.to);
-            if (s.onComplete) s.onComplete();
-          } else if (s._type === "call") {
-            s._fn();
+      cursor = 0;
+      _instant++;
+      try {
+        for (var i = 0; i < steps.length; i++) {
+          var s = steps[i];
+          var stepEnd = s._start + s._duration;
+          if (stepEnd <= targetMs) {
+            // Fully elapsed — fire final state
+            applyStep(s);
+            virtualElapsed = stepEnd;
+            cursor = i + 1;
+          } else if (s._start < targetMs) {
+            // Step is currently running at targetMs
+            if (s._type === "tween") {
+              var progress = (targetMs - s._start) / s._duration;
+              var eased = (s.ease || easeOutCubic)(progress);
+              if (s.onUpdate) s.onUpdate(_interpolateValue(s.from, s.to, eased));
+            } else if (s._type === "call") {
+              s._fn();
+            }
+            virtualElapsed = targetMs;
+            stepVirtualStart = s._start;
+            cursor = i + 1;
+            return;
+          } else {
+            virtualElapsed = Math.min(targetMs, s._start);
+            return;
           }
-          virtualElapsed = stepEnd;
-        } else if (s._start < targetMs) {
-          // Step is currently running at targetMs
-          if (s._type === "tween") {
-            var progress = (targetMs - s._start) / s._duration;
-            var eased = (s.ease || easeOutCubic)(progress);
-            if (s.onUpdate) s.onUpdate(_interpolateValue(s.from, s.to, eased));
-          } else if (s._type === "call") {
-            s._fn();
-          }
-          virtualElapsed = targetMs;
-          stepVirtualStart = s._start;
-          return;
-        } else {
-          virtualElapsed = Math.min(targetMs, s._start);
+        }
+        virtualElapsed = targetMs;
+      } finally {
+        _instant--;
+      }
+    };
+
+    // Apply steps [0, n) at once and hold before step n, ready to continue
+    // live with continueTo(). Used to show the end of a guided step.
+    tl.fastForwardToStep = function(n) {
+      tl.stop();
+      n = Math.max(0, Math.min(steps.length, Math.floor(n) || 0));
+      _instant++;
+      try {
+        for (var k = 0; k < n; k++) applyStep(steps[k]);
+      } finally {
+        _instant--;
+      }
+      cursor = n;
+      virtualElapsed = n < steps.length ? steps[n]._start : totalDuration;
+      stepVirtualStart = virtualElapsed;
+      held = true;
+      heldNext = runner(n);
+      return tl;
+    };
+
+    // Continue live from a hold. Stops again before step `hold` (the next
+    // beat boundary; -1 runs to the end) and calls onHold, or calls onDone
+    // at the end. Returns false when the timeline is not held.
+    tl.continueTo = function(hold, onHold, onDone) {
+      if (!held || !heldNext) return false;
+      var go = heldNext;
+      held = false;
+      heldNext = null;
+      holdAt = (typeof hold === "number" && hold >= 0) ? hold : -1;
+      onHoldCb = onHold || null;
+      onDoneCb = onDone || null;
+      playing = true;
+      go();
+      return true;
+    };
+
+    // Plays steps live from index `start`, holding before `holdAt`.
+    function runner(start) {
+      var i = start;
+      function next() {
+        if (!playing) return;
+        if (i === holdAt && i < steps.length) {
+          playing = false;
+          held = true;
+          heldNext = next;
+          holdAt = -1;
+          virtualElapsed = steps[i]._start;
+          stepVirtualStart = virtualElapsed;
+          var cb = onHoldCb;
+          onHoldCb = null;
+          if (cb) cb();
           return;
         }
+        if (i >= steps.length) {
+          playing = false;
+          virtualElapsed = totalDuration;
+          cursor = steps.length;
+          if (onDoneCb) onDoneCb();
+          return;
+        }
+        var step = steps[i++];
+        cursor = i;
+        stepVirtualStart = step._start;
+        if (step._type === "delay") {
+          if (reducedMotion()) {
+            virtualElapsed = step._start + step._duration;
+            next();
+            return;
+          }
+          runDelay(step, 0, next);
+          return;
+        }
+        if (step._type === "call") {
+          step._fn();
+          virtualElapsed = step._start;
+          next();
+          return;
+        }
+        var origComplete = step.onComplete || function() {};
+        current = tween(Object.assign({}, step, {
+          onComplete: function() {
+            origComplete();
+            current = null;
+            virtualElapsed = step._start + step._duration;
+            next();
+          }
+        }));
       }
-      virtualElapsed = targetMs;
-    };
+      return next;
+    }
 
     tl.play = function(onDone) {
       tl.stop();
@@ -273,6 +450,7 @@ var anim = (function() {
       onDoneCb = onDone || null;
       virtualElapsed = 0;
       stepVirtualStart = 0;
+      cursor = 0;
       var i = 0;
 
       function next() {
@@ -280,10 +458,12 @@ var anim = (function() {
         if (i >= steps.length) {
           playing = false;
           virtualElapsed = totalDuration;
+          cursor = steps.length;
           if (onDoneCb) onDoneCb();
           return;
         }
         var step = steps[i++];
+        cursor = i;
         stepVirtualStart = step._start;
         if (step._type === "delay") {
           if (reducedMotion()) {
@@ -322,20 +502,22 @@ var anim = (function() {
       // Apply all steps up to fromMs synchronously
       virtualElapsed = 0;
       stepVirtualStart = 0;
-      for (var k = 0; k < steps.length; k++) {
-        var s = steps[k];
-        var stepEnd = s._start + s._duration;
-        if (stepEnd <= fromMs) {
-          if (s._type === "tween") {
-            if (s.onUpdate) s.onUpdate(s.to);
-            if (s.onComplete) s.onComplete();
-          } else if (s._type === "call") {
-            s._fn();
+      cursor = 0;
+      _instant++;
+      try {
+        for (var k = 0; k < steps.length; k++) {
+          var s = steps[k];
+          var stepEnd = s._start + s._duration;
+          if (stepEnd <= fromMs) {
+            applyStep(s);
+            virtualElapsed = stepEnd;
+            cursor = k + 1;
+          } else {
+            break;
           }
-          virtualElapsed = stepEnd;
-        } else {
-          break;
         }
+      } finally {
+        _instant--;
       }
       // Continue with the first unfinished step, preserving its elapsed
       // time so resuming a tween uses the original easing curve.
@@ -359,10 +541,12 @@ var anim = (function() {
         if (ri >= steps.length) {
           playing = false;
           virtualElapsed = totalDuration;
+          cursor = steps.length;
           if (onDoneCb) onDoneCb();
           return;
         }
         var step = steps[ri++];
+        cursor = Math.max(cursor, ri);
         stepVirtualStart = step._start;
         if (step._type === "delay") {
           if (reducedMotion()) { virtualElapsed = step._start + step._duration; next2(); return; }
@@ -404,6 +588,10 @@ var anim = (function() {
 
     tl.stop = function() {
       playing = false;
+      held = false;
+      heldNext = null;
+      holdAt = -1;
+      onHoldCb = null;
       if (current) {
         if (typeof current === "function") current();
         current = null;
@@ -425,7 +613,7 @@ var anim = (function() {
 
   // --- pulse: briefly grow an SVG element's stroke width ---------------
   function pulse(el, peakWidth, baseWidth, durationMs) {
-    if (!el) return;
+    if (!el || _instant > 0) return;
     var dur = (durationMs || 400) / 2;
     tween({
       from: baseWidth || 1,
@@ -543,12 +731,12 @@ var anim = (function() {
       var gridX = toSvg(gx, yMin).x;
       var gline = svgEl_create("line", {
         x1: gridX, y1: padT, x2: gridX, y2: padT + plotH,
-        stroke: "#e5e7eb", "stroke-width": 1
+        stroke: "var(--svg-line)", "stroke-width": 1
       });
       svgEl.appendChild(gline);
       var glbl = svgEl_create("text", {
         x: gridX, y: padT + plotH + 14,
-        "text-anchor": "middle", "font-size": 9, fill: "#9ca3af"
+        "text-anchor": "middle", "font-size": 9, fill: "var(--svg-ink-muted)"
       });
       glbl.textContent = formatLog(gx);
       svgEl.appendChild(glbl);
@@ -559,12 +747,12 @@ var anim = (function() {
       if (gridY < padT - 1 || gridY > padT + plotH + 1) continue;
       var gln = svgEl_create("line", {
         x1: padL, y1: gridY, x2: padL + plotW, y2: gridY,
-        stroke: "#e5e7eb", "stroke-width": 1
+        stroke: "var(--svg-line)", "stroke-width": 1
       });
       svgEl.appendChild(gln);
       var glb = svgEl_create("text", {
         x: padL - 6, y: gridY + 3,
-        "text-anchor": "end", "font-size": 9, fill: "#9ca3af"
+        "text-anchor": "end", "font-size": 9, fill: "var(--svg-ink-muted)"
       });
       glb.textContent = formatLog(gy);
       svgEl.appendChild(glb);
@@ -573,12 +761,12 @@ var anim = (function() {
     // Axis lines
     var axisX = svgEl_create("line", {
       x1: padL, y1: padT + plotH, x2: padL + plotW, y2: padT + plotH,
-      stroke: "#6b7280", "stroke-width": 1.5
+      stroke: "var(--svg-ink-muted)", "stroke-width": 1.5
     });
     svgEl.appendChild(axisX);
     var axisY = svgEl_create("line", {
       x1: padL, y1: padT, x2: padL, y2: padT + plotH,
-      stroke: "#6b7280", "stroke-width": 1.5
+      stroke: "var(--svg-ink-muted)", "stroke-width": 1.5
     });
     svgEl.appendChild(axisY);
 
@@ -586,7 +774,7 @@ var anim = (function() {
     if (opts.xLabel) {
       var xl = svgEl_create("text", {
         x: padL + plotW/2, y: H - 6,
-        "text-anchor": "middle", "font-size": 11, "font-weight": 600, fill: "#374151"
+        "text-anchor": "middle", "font-size": 11, "font-weight": 600, fill: "var(--svg-ink)"
       });
       xl.textContent = opts.xLabel;
       svgEl.appendChild(xl);
@@ -599,7 +787,7 @@ var anim = (function() {
       if (opts.lowerIsBetter) yLabelText += "  (lower = better ↓)";
       var yl = svgEl_create("text", {
         x: 12, y: padT + plotH/2,
-        "text-anchor": "middle", "font-size": 11, "font-weight": 600, fill: "#374151",
+        "text-anchor": "middle", "font-size": 11, "font-weight": 600, fill: "var(--svg-ink)",
         transform: "rotate(-90 12," + (padT + plotH/2) + ")"
       });
       yl.textContent = yLabelText;
@@ -616,7 +804,7 @@ var anim = (function() {
         d += (i === 0 ? "M " : " L ") + svg.x.toFixed(1) + "," + svg.y.toFixed(1);
       });
       var path = svgEl_create("path", {
-        d: d, fill: "none", stroke: c.color || "#1f2937", "stroke-width": 2.5,
+        d: d, fill: "none", stroke: c.color || "var(--svg-ink)", "stroke-width": 2.5,
         "stroke-linecap": "round", "stroke-linejoin": "round"
       });
       svgEl.appendChild(path);
@@ -627,11 +815,11 @@ var anim = (function() {
     var lx = padL;
     opts.curves.forEach(function(c, idx) {
       var sw = svgEl_create("rect", {
-        x: lx, y: legendY - 8, width: 12, height: 3, rx: 1, fill: c.color || "#1f2937"
+        x: lx, y: legendY - 8, width: 12, height: 3, rx: 1, fill: c.color || "var(--svg-ink)"
       });
       svgEl.appendChild(sw);
       var lt = svgEl_create("text", {
-        x: lx + 16, y: legendY - 4, "font-size": 10, "font-weight": 600, fill: c.color || "#1f2937"
+        x: lx + 16, y: legendY - 4, "font-size": 10, "font-weight": 600, fill: c.color || "var(--svg-ink)"
       });
       lt.textContent = c.label;
       svgEl.appendChild(lt);
@@ -653,7 +841,7 @@ var anim = (function() {
           var svg = toSvg(cx, e.cy);
           var dot = svgEl_create("circle", {
             cx: svg.x, cy: svg.y, r: 5,
-            fill: e.c.color || "#1f2937", stroke: "#ffffff", "stroke-width": 2
+            fill: "var(--svg-highlight)", stroke: e.c.color || "var(--svg-danger)", "stroke-width": 2
           });
           svgEl.appendChild(dot);
         });
@@ -662,7 +850,7 @@ var anim = (function() {
         var vx = toSvg(cx, yMin).x;
         var vline = svgEl_create("line", {
           x1: vx, y1: padT, x2: vx, y2: padT + plotH,
-          stroke: "#ff3d3d", "stroke-width": 1, "stroke-dasharray": "3 3"
+          stroke: "var(--svg-danger)", "stroke-width": 1, "stroke-dasharray": "3 3"
         });
         svgEl.appendChild(vline);
 
@@ -682,7 +870,7 @@ var anim = (function() {
           var check = svgEl_create("text", {
             x: winSvg.x + 9, y: winSvg.y + 4,
             "font-size": 14, "font-weight": 800,
-            fill: "#16a34a"
+            fill: "var(--svg-ok)"
           });
           check.textContent = "✓";
           svgEl.appendChild(check);
@@ -705,13 +893,13 @@ var anim = (function() {
             var pillBg = svgEl_create("rect", {
               x: pillX, y: pillY, width: approxW, height: 18,
               rx: 9, ry: 9,
-              fill: "rgba(22,163,74,0.12)",
-              stroke: "#16a34a", "stroke-width": 1
+              fill: "var(--svg-ok-soft)",
+              stroke: "var(--svg-ok)", "stroke-width": 1
             });
             svgEl.appendChild(pillBg);
             var pillTxt = svgEl_create("text", {
               x: pillX + 8, y: midY + 3,
-              "font-size": 10.5, "font-weight": 700, fill: "#15803d"
+              "font-size": 10.5, "font-weight": 700, fill: "var(--svg-ok)"
             });
             pillTxt.textContent = labelText;
             svgEl.appendChild(pillTxt);
@@ -734,23 +922,23 @@ var anim = (function() {
     var hoverGroup = svgEl_create("g", { "pointer-events": "none", opacity: 0 });
     var hoverLine = svgEl_create("line", {
       y1: padT, y2: padT + plotH,
-      stroke: "#1f2937", "stroke-width": 1, "stroke-dasharray": "2 2"
+      stroke: "var(--svg-ink)", "stroke-width": 1, "stroke-dasharray": "2 2"
     });
     hoverGroup.appendChild(hoverLine);
     var hoverDots = [];
     var hoverLabelBg = svgEl_create("rect", {
-      rx: 4, ry: 4, fill: "rgba(31,41,55,0.95)", stroke: "none"
+      rx: 4, ry: 4, fill: "var(--svg-counter-bg)", stroke: "none"
     });
     hoverGroup.appendChild(hoverLabelBg);
     var hoverLabelLines = [];
     opts.curves.forEach(function(c, idx) {
       var dot = svgEl_create("circle", {
-        r: 4, fill: c.color || "#1f2937", stroke: "#fff", "stroke-width": 1.5
+        r: 4, fill: c.color || "var(--svg-ink)", stroke: "var(--svg-node-bg)", "stroke-width": 1.5
       });
       hoverGroup.appendChild(dot);
       hoverDots.push(dot);
       var txt = svgEl_create("text", {
-        "font-size": 10, "font-weight": 600, fill: "#ffffff"
+        "font-size": 10, "font-weight": 600, fill: "var(--svg-counter-ink)"
       });
       hoverGroup.appendChild(txt);
       hoverLabelLines.push(txt);
@@ -806,7 +994,7 @@ var anim = (function() {
       var maxLineW = 0;
       for (var j = 0; j < labelLines.length; j++) {
         if (!hoverLabelLines[j]) {
-          var t = svgEl_create("text", { "font-size": 10, "font-weight": 600, fill: "#ffffff" });
+          var t = svgEl_create("text", { "font-size": 10, "font-weight": 600, fill: "var(--svg-counter-ink)" });
           hoverGroup.appendChild(t);
           hoverLabelLines[j] = t;
         }
@@ -883,6 +1071,8 @@ var anim = (function() {
     easeOutBack: easeOutBack,
     lerp: lerp,
     lerpColor: lerpColor,
+    cssVar: cssVar,
+    palette: palette,
     tween: tween,
     stagger: stagger,
     timeline: timeline,

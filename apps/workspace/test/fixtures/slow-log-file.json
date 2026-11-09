@@ -1,0 +1,1332 @@
+{
+ "schema_version": "slow-log-1.0",
+ "source": {
+  "kind": "file",
+  "name": "db1-slow.log",
+  "size_bytes": 14404,
+  "modified": "2026-10-31T12:55:49Z",
+  "file_id": "file-id-1"
+ },
+ "engine": "mariadb",
+ "flavor": "mariadb",
+ "server_product": "MariaDB",
+ "server_version": "11.4.13",
+ "clock": {
+  "kind": "local",
+  "label": "Server local time (UTC+05:30)",
+  "offsets": [
+   "+05:30"
+  ],
+  "text": "Times are the server's local time, as the log writes them. The log does not record the time zone; its SET timestamp values put it at UTC+05:30."
+ },
+ "time_meaning": {
+  "event": "start",
+  "text": "MariaDB writes the time a statement started, and writes # Time only when the second changes."
+ },
+ "range": {
+  "from": null,
+  "to": null,
+  "applied": false
+ },
+ "filters": {
+  "user": null,
+  "database": null
+ },
+ "order": "total",
+ "limit": 50,
+ "span": {
+  "first": "2026-10-31 18:24:11",
+  "last": "2026-10-31 18:24:14"
+ },
+ "anchor": "2026-10-31 18:24:14",
+ "totals": {
+  "statements": 16,
+  "executions": 22,
+  "total_ms": 105.486,
+  "in_range": 22,
+  "out_of_range": 0
+ },
+ "others": null,
+ "users": [
+  {
+   "name": "app",
+   "count": 16
+  },
+  {
+   "name": "report",
+   "count": 4
+  },
+  {
+   "name": "root",
+   "count": 2
+  }
+ ],
+ "databases": [
+  {
+   "name": "shop",
+   "count": 16
+  },
+  {
+   "name": "crm",
+   "count": 4
+  },
+  {
+   "name": "",
+   "count": 2
+  }
+ ],
+ "parse": {
+  "bytes": 14404,
+  "lines": 283,
+  "entries": 22,
+  "malformed": 0,
+  "problems": [],
+  "long_lines": 0,
+  "truncated_statements": 0,
+  "admin_commands": 0,
+  "excluded_own": 0,
+  "no_time": 0,
+  "inferred_times": 0
+ },
+ "notes": [
+  "MariaDB writes the Full_scan line only for statements with a full scan, a temporary table or a filesort, in sessions with log_slow_verbosity=query_plan: other statements count as No."
+ ],
+ "statements": [
+  {
+   "digest": null,
+   "fingerprint_id": "a86e95364af94174",
+   "digest_text": "SELECT SLEEP(?)",
+   "schema": "shop",
+   "count": 1,
+   "total_ms": 100.339,
+   "avg_ms": 100.339,
+   "min_ms": 100.339,
+   "max_ms": 100.339,
+   "p95_ms": 100.339,
+   "p99_ms": 100.339,
+   "p999_ms": 100.339,
+   "lock_time_ms": 0.0,
+   "rows_sent": 1,
+   "rows_examined": 0,
+   "examined_per_sent": 0.0,
+   "rows_affected": 0,
+   "bytes_sent": 67,
+   "no_index_used": null,
+   "no_good_index_used": null,
+   "tmp_tables": 0,
+   "tmp_disk_tables": 0,
+   "sort_merge_passes": 0,
+   "select_scan": 0,
+   "select_full_join": 0,
+   "select_range_check": null,
+   "filesort": 0,
+   "filesort_on_disk": 0,
+   "errors": null,
+   "killed": null,
+   "sample_text": "SELECT SLEEP(0.1)",
+   "sample_truncated": false,
+   "sample": {
+    "text": "SELECT SLEEP(0.1)",
+    "truncated": false,
+    "db": "shop",
+    "user": "app",
+    "host": "127.0.0.1",
+    "time": "2026-10-31 18:24:11",
+    "thread_id": 31,
+    "query_time_ms": 100.339,
+    "line": 181
+   },
+   "first_seen": "2026-10-31 18:24:11",
+   "last_seen": "2026-10-31 18:24:11",
+   "users": [
+    {
+     "name": "app",
+     "count": 1
+    }
+   ],
+   "hosts": [
+    {
+     "name": "127.0.0.1",
+     "count": 1
+    }
+   ],
+   "histogram": [
+    {
+     "bucket": 201,
+     "low_ms": 100.0,
+     "high_ms": 104.712855,
+     "count": 1
+    }
+   ],
+   "admin": false,
+   "flags": [],
+   "cpu_ms": null,
+   "new": false,
+   "capture_problem": "State-changing or waiting functions cannot be analyzed.",
+   "analysis_sql": null,
+   "analysis_warning": "",
+   "source": "slow_log_file"
+  },
+  {
+   "digest": null,
+   "fingerprint_id": "79663c1d3b43ceaf",
+   "digest_text": "COMMIT",
+   "schema": "shop",
+   "count": 1,
+   "total_ms": 1.259,
+   "avg_ms": 1.259,
+   "min_ms": 1.259,
+   "max_ms": 1.259,
+   "p95_ms": 1.259,
+   "p99_ms": 1.259,
+   "p999_ms": 1.259,
+   "lock_time_ms": 0.0,
+   "rows_sent": 0,
+   "rows_examined": 0,
+   "examined_per_sent": null,
+   "rows_affected": 0,
+   "bytes_sent": 11,
+   "no_index_used": null,
+   "no_good_index_used": null,
+   "tmp_tables": 0,
+   "tmp_disk_tables": 0,
+   "sort_merge_passes": 0,
+   "select_scan": 0,
+   "select_full_join": 0,
+   "select_range_check": null,
+   "filesort": 0,
+   "filesort_on_disk": 0,
+   "errors": null,
+   "killed": null,
+   "sample_text": "COMMIT",
+   "sample_truncated": false,
+   "sample": {
+    "text": "COMMIT",
+    "truncated": false,
+    "db": "shop",
+    "user": "app",
+    "host": "127.0.0.1",
+    "time": "2026-10-31 18:24:11",
+    "thread_id": 31,
+    "query_time_ms": 1.259,
+    "line": 138
+   },
+   "first_seen": "2026-10-31 18:24:11",
+   "last_seen": "2026-10-31 18:24:11",
+   "users": [
+    {
+     "name": "app",
+     "count": 1
+    }
+   ],
+   "hosts": [
+    {
+     "name": "127.0.0.1",
+     "count": 1
+    }
+   ],
+   "histogram": [
+    {
+     "bucket": 106,
+     "low_ms": 1.258925,
+     "high_ms": 1.318257,
+     "count": 1
+    }
+   ],
+   "admin": false,
+   "flags": [],
+   "cpu_ms": null,
+   "new": false,
+   "capture_problem": "This statement cannot be safely converted. Write a read-only SELECT explicitly; analysis is blocked.",
+   "analysis_sql": null,
+   "analysis_warning": "",
+   "source": "slow_log_file"
+  },
+  {
+   "digest": null,
+   "fingerprint_id": "f688a8fe0eb0681d",
+   "digest_text": "INSERT INTO items (order_id, sku, qty) VALUES (...)",
+   "schema": "shop",
+   "count": 2,
+   "total_ms": 0.886,
+   "avg_ms": 0.443,
+   "min_ms": 0.35,
+   "max_ms": 0.536,
+   "p95_ms": 0.536,
+   "p99_ms": 0.536,
+   "p999_ms": 0.536,
+   "lock_time_ms": 0.034,
+   "rows_sent": 0,
+   "rows_examined": 0,
+   "examined_per_sent": null,
+   "rows_affected": 4,
+   "bytes_sent": 61,
+   "no_index_used": null,
+   "no_good_index_used": null,
+   "tmp_tables": 0,
+   "tmp_disk_tables": 0,
+   "sort_merge_passes": 0,
+   "select_scan": 0,
+   "select_full_join": 0,
+   "select_range_check": null,
+   "filesort": 0,
+   "filesort_on_disk": 0,
+   "errors": null,
+   "killed": null,
+   "sample_text": "INSERT INTO items (order_id, sku, qty) VALUES (901, 'FX-1', 1), (902, 'FX-2', 2), (903, 'FX-3', 3)",
+   "sample_truncated": false,
+   "sample": {
+    "text": "INSERT INTO items (order_id, sku, qty) VALUES (901, 'FX-1', 1), (902, 'FX-2', 2), (903, 'FX-3', 3)",
+    "truncated": false,
+    "db": "shop",
+    "user": "app",
+    "host": "127.0.0.1",
+    "time": "2026-10-31 18:24:11",
+    "thread_id": 31,
+    "query_time_ms": 0.536,
+    "line": 84
+   },
+   "first_seen": "2026-10-31 18:24:11",
+   "last_seen": "2026-10-31 18:24:11",
+   "users": [
+    {
+     "name": "app",
+     "count": 2
+    }
+   ],
+   "hosts": [
+    {
+     "name": "127.0.0.1",
+     "count": 2
+    }
+   ],
+   "histogram": [
+    {
+     "bucket": 78,
+     "low_ms": 0.346737,
+     "high_ms": 0.363078,
+     "count": 1
+    },
+    {
+     "bucket": 87,
+     "low_ms": 0.524807,
+     "high_ms": 0.549541,
+     "count": 1
+    }
+   ],
+   "admin": false,
+   "flags": [],
+   "cpu_ms": null,
+   "new": false,
+   "capture_problem": "Only INSERT or REPLACE with a SELECT source can be converted.",
+   "analysis_sql": null,
+   "analysis_warning": "",
+   "source": "slow_log_file"
+  },
+  {
+   "digest": null,
+   "fingerprint_id": "87814eab3931107e",
+   "digest_text": "DELETE FROM items WHERE order_id >= ? AND order_id <= ?",
+   "schema": "shop",
+   "count": 1,
+   "total_ms": 0.542,
+   "avg_ms": 0.542,
+   "min_ms": 0.542,
+   "max_ms": 0.542,
+   "p95_ms": 0.542,
+   "p99_ms": 0.542,
+   "p999_ms": 0.542,
+   "lock_time_ms": 0.074,
+   "rows_sent": 0,
+   "rows_examined": 4,
+   "examined_per_sent": null,
+   "rows_affected": 4,
+   "bytes_sent": 11,
+   "no_index_used": null,
+   "no_good_index_used": null,
+   "tmp_tables": 0,
+   "tmp_disk_tables": 0,
+   "sort_merge_passes": 0,
+   "select_scan": 0,
+   "select_full_join": 0,
+   "select_range_check": null,
+   "filesort": 0,
+   "filesort_on_disk": 0,
+   "errors": null,
+   "killed": null,
+   "sample_text": "DELETE FROM items WHERE order_id >= 901 AND order_id <= 904",
+   "sample_truncated": false,
+   "sample": {
+    "text": "DELETE FROM items WHERE order_id >= 901 AND order_id <= 904",
+    "truncated": false,
+    "db": "shop",
+    "user": "app",
+    "host": "127.0.0.1",
+    "time": "2026-10-31 18:24:11",
+    "thread_id": 31,
+    "query_time_ms": 0.542,
+    "line": 191
+   },
+   "first_seen": "2026-10-31 18:24:11",
+   "last_seen": "2026-10-31 18:24:11",
+   "users": [
+    {
+     "name": "app",
+     "count": 1
+    }
+   ],
+   "hosts": [
+    {
+     "name": "127.0.0.1",
+     "count": 1
+    }
+   ],
+   "histogram": [
+    {
+     "bucket": 87,
+     "low_ms": 0.524807,
+     "high_ms": 0.549541,
+     "count": 1
+    }
+   ],
+   "admin": false,
+   "flags": [],
+   "cpu_ms": null,
+   "new": false,
+   "capture_problem": null,
+   "analysis_sql": "SELECT * FROM items WHERE order_id >= 901 AND order_id <= 904",
+   "analysis_warning": "The original statement can change data. Myflames converted it to a read-only SELECT for analysis. This is a different query plan: UPDATE and DELETE measure target-row selection only; UPDATE assignment expressions and their subqueries are omitted. INSERT and REPLACE measure their SELECT source only. Write cost, triggers, constraints and locking are not reproduced. Review the SELECT before running analysis.",
+   "source": "slow_log_file"
+  },
+  {
+   "digest": null,
+   "fingerprint_id": "5412dd7eb9364a83",
+   "digest_text": "SELECT id, STATUS, total FROM orders WHERE id = ?",
+   "schema": "shop",
+   "count": 3,
+   "total_ms": 0.424,
+   "avg_ms": 0.141,
+   "min_ms": 0.022,
+   "max_ms": 0.358,
+   "p95_ms": 0.358,
+   "p99_ms": 0.358,
+   "p999_ms": 0.358,
+   "lock_time_ms": 0.16,
+   "rows_sent": 3,
+   "rows_examined": 3,
+   "examined_per_sent": 1.0,
+   "rows_affected": 0,
+   "bytes_sent": 589,
+   "no_index_used": null,
+   "no_good_index_used": null,
+   "tmp_tables": 0,
+   "tmp_disk_tables": 0,
+   "sort_merge_passes": 0,
+   "select_scan": 0,
+   "select_full_join": 0,
+   "select_range_check": null,
+   "filesort": 0,
+   "filesort_on_disk": 0,
+   "errors": null,
+   "killed": null,
+   "sample_text": "SELECT id, status, total FROM orders WHERE id = 1",
+   "sample_truncated": false,
+   "sample": {
+    "text": "SELECT id, status, total FROM orders WHERE id = 1",
+    "truncated": false,
+    "db": "shop",
+    "user": "app",
+    "host": "127.0.0.1",
+    "time": "2026-10-31 18:24:11",
+    "thread_id": 31,
+    "query_time_ms": 0.358,
+    "line": 4
+   },
+   "first_seen": "2026-10-31 18:24:11",
+   "last_seen": "2026-10-31 18:24:11",
+   "users": [
+    {
+     "name": "app",
+     "count": 3
+    }
+   ],
+   "hosts": [
+    {
+     "name": "127.0.0.1",
+     "count": 3
+    }
+   ],
+   "histogram": [
+    {
+     "bucket": 18,
+     "low_ms": 0.021878,
+     "high_ms": 0.022909,
+     "count": 1
+    },
+    {
+     "bucket": 33,
+     "low_ms": 0.043652,
+     "high_ms": 0.045709,
+     "count": 1
+    },
+    {
+     "bucket": 78,
+     "low_ms": 0.346737,
+     "high_ms": 0.363078,
+     "count": 1
+    }
+   ],
+   "admin": false,
+   "flags": [],
+   "cpu_ms": null,
+   "new": false,
+   "capture_problem": null,
+   "analysis_sql": null,
+   "analysis_warning": "",
+   "source": "slow_log_file"
+  },
+  {
+   "digest": null,
+   "fingerprint_id": "1a31dc4c95b87a70",
+   "digest_text": "UPDATE orders SET STATUS = ? WHERE id = ?",
+   "schema": "shop",
+   "count": 1,
+   "total_ms": 0.407,
+   "avg_ms": 0.407,
+   "min_ms": 0.407,
+   "max_ms": 0.407,
+   "p95_ms": 0.407,
+   "p99_ms": 0.407,
+   "p999_ms": 0.407,
+   "lock_time_ms": 0.17,
+   "rows_sent": 0,
+   "rows_examined": 1,
+   "examined_per_sent": null,
+   "rows_affected": 1,
+   "bytes_sent": 52,
+   "no_index_used": null,
+   "no_good_index_used": null,
+   "tmp_tables": 0,
+   "tmp_disk_tables": 0,
+   "sort_merge_passes": 0,
+   "select_scan": 0,
+   "select_full_join": 0,
+   "select_range_check": null,
+   "filesort": 0,
+   "filesort_on_disk": 0,
+   "errors": null,
+   "killed": null,
+   "sample_text": "UPDATE orders SET status = 'paid' WHERE id = 5",
+   "sample_truncated": false,
+   "sample": {
+    "text": "UPDATE orders SET status = 'paid' WHERE id = 5",
+    "truncated": false,
+    "db": "shop",
+    "user": "app",
+    "host": "127.0.0.1",
+    "time": "2026-10-31 18:24:11",
+    "thread_id": 31,
+    "query_time_ms": 0.407,
+    "line": 108
+   },
+   "first_seen": "2026-10-31 18:24:11",
+   "last_seen": "2026-10-31 18:24:11",
+   "users": [
+    {
+     "name": "app",
+     "count": 1
+    }
+   ],
+   "hosts": [
+    {
+     "name": "127.0.0.1",
+     "count": 1
+    }
+   ],
+   "histogram": [
+    {
+     "bucket": 81,
+     "low_ms": 0.398107,
+     "high_ms": 0.416869,
+     "count": 1
+    }
+   ],
+   "admin": false,
+   "flags": [],
+   "cpu_ms": null,
+   "new": false,
+   "capture_problem": null,
+   "analysis_sql": "SELECT * FROM orders WHERE id = 5",
+   "analysis_warning": "The original statement can change data. Myflames converted it to a read-only SELECT for analysis. This is a different query plan: UPDATE and DELETE measure target-row selection only; UPDATE assignment expressions and their subqueries are omitted. INSERT and REPLACE measure their SELECT source only. Write cost, triggers, constraints and locking are not reproduced. Review the SELECT before running analysis.",
+   "source": "slow_log_file"
+  },
+  {
+   "digest": null,
+   "fingerprint_id": "9a30d6e56d4f3d5a",
+   "digest_text": "SELECT city, COUNT(*) FROM customers GROUP BY city ORDER BY COUNT(*) DESC",
+   "schema": "crm",
+   "count": 2,
+   "total_ms": 0.401,
+   "avg_ms": 0.201,
+   "min_ms": 0.086,
+   "max_ms": 0.315,
+   "p95_ms": 0.315,
+   "p99_ms": 0.315,
+   "p999_ms": 0.315,
+   "lock_time_ms": 0.086,
+   "rows_sent": 16,
+   "rows_examined": 432,
+   "examined_per_sent": 27.0,
+   "rows_affected": 0,
+   "bytes_sent": 438,
+   "no_index_used": null,
+   "no_good_index_used": null,
+   "tmp_tables": 2,
+   "tmp_disk_tables": 0,
+   "sort_merge_passes": 0,
+   "select_scan": 2,
+   "select_full_join": 0,
+   "select_range_check": null,
+   "filesort": 2,
+   "filesort_on_disk": 0,
+   "errors": null,
+   "killed": null,
+   "sample_text": "SELECT city, COUNT(*) FROM customers GROUP BY city ORDER BY COUNT(*) DESC",
+   "sample_truncated": false,
+   "sample": {
+    "text": "SELECT city, COUNT(*) FROM customers GROUP BY city ORDER BY COUNT(*) DESC",
+    "truncated": false,
+    "db": "crm",
+    "user": "report",
+    "host": "127.0.0.1",
+    "time": "2026-10-31 18:24:12",
+    "thread_id": 32,
+    "query_time_ms": 0.315,
+    "line": 203
+   },
+   "first_seen": "2026-10-31 18:24:12",
+   "last_seen": "2026-10-31 18:24:12",
+   "users": [
+    {
+     "name": "report",
+     "count": 2
+    }
+   ],
+   "hosts": [
+    {
+     "name": "127.0.0.1",
+     "count": 2
+    }
+   ],
+   "histogram": [
+    {
+     "bucket": 47,
+     "low_ms": 0.083176,
+     "high_ms": 0.087096,
+     "count": 1
+    },
+    {
+     "bucket": 75,
+     "low_ms": 0.301995,
+     "high_ms": 0.316228,
+     "count": 1
+    }
+   ],
+   "admin": false,
+   "flags": [],
+   "cpu_ms": null,
+   "new": false,
+   "capture_problem": null,
+   "analysis_sql": null,
+   "analysis_warning": "",
+   "source": "slow_log_file"
+  },
+  {
+   "digest": null,
+   "fingerprint_id": "59fe465bd995abf4",
+   "digest_text": "SELECT o.STATUS, COUNT(*) AS n, SUM(o.total) AS revenue FROM orders o JOIN crm.customers c ON c.id = o.customer_id WHERE c.city = ? GROUP BY o.STATUS",
+   "schema": "shop",
+   "count": 1,
+   "total_ms": 0.387,
+   "avg_ms": 0.387,
+   "min_ms": 0.387,
+   "max_ms": 0.387,
+   "p95_ms": 0.387,
+   "p99_ms": 0.387,
+   "p999_ms": 0.387,
+   "lock_time_ms": 0.056,
+   "rows_sent": 3,
+   "rows_examined": 326,
+   "examined_per_sent": 108.67,
+   "rows_affected": 0,
+   "bytes_sent": 199,
+   "no_index_used": null,
+   "no_good_index_used": null,
+   "tmp_tables": 1,
+   "tmp_disk_tables": 0,
+   "sort_merge_passes": 0,
+   "select_scan": 1,
+   "select_full_join": 0,
+   "select_range_check": null,
+   "filesort": 1,
+   "filesort_on_disk": 0,
+   "errors": null,
+   "killed": null,
+   "sample_text": "SELECT o.status,\n       COUNT(*) AS n,\n       SUM(o.total) AS revenue\n  FROM orders o\n  JOIN crm.customers c ON c.id = o.customer_id\n WHERE c.city = 'Recife'\n GROUP BY o.status",
+   "sample_truncated": false,
+   "sample": {
+    "text": "SELECT o.status,\n       COUNT(*) AS n,\n       SUM(o.total) AS revenue\n  FROM orders o\n  JOIN crm.customers c ON c.id = o.customer_id\n WHERE c.city = 'Recife'\n GROUP BY o.status",
+    "truncated": false,
+    "db": "shop",
+    "user": "app",
+    "host": "127.0.0.1",
+    "time": "2026-10-31 18:24:11",
+    "thread_id": 31,
+    "query_time_ms": 0.387,
+    "line": 144
+   },
+   "first_seen": "2026-10-31 18:24:11",
+   "last_seen": "2026-10-31 18:24:11",
+   "users": [
+    {
+     "name": "app",
+     "count": 1
+    }
+   ],
+   "hosts": [
+    {
+     "name": "127.0.0.1",
+     "count": 1
+    }
+   ],
+   "histogram": [
+    {
+     "bucket": 80,
+     "low_ms": 0.380189,
+     "high_ms": 0.398107,
+     "count": 1
+    }
+   ],
+   "admin": false,
+   "flags": [],
+   "cpu_ms": null,
+   "new": false,
+   "capture_problem": null,
+   "analysis_sql": null,
+   "analysis_warning": "",
+   "source": "slow_log_file"
+  },
+  {
+   "digest": null,
+   "fingerprint_id": "87d25fd765421385",
+   "digest_text": "SELECT * FROM orders WHERE customer_id IN (...) ORDER BY created DESC LIMIT ?",
+   "schema": "shop",
+   "count": 3,
+   "total_ms": 0.308,
+   "avg_ms": 0.103,
+   "min_ms": 0.059,
+   "max_ms": 0.176,
+   "p95_ms": 0.176,
+   "p99_ms": 0.176,
+   "p999_ms": 0.176,
+   "lock_time_ms": 0.034,
+   "rows_sent": 26,
+   "rows_examined": 84,
+   "examined_per_sent": 3.23,
+   "rows_affected": 0,
+   "bytes_sent": 2287,
+   "no_index_used": null,
+   "no_good_index_used": null,
+   "tmp_tables": 0,
+   "tmp_disk_tables": 0,
+   "sort_merge_passes": 0,
+   "select_scan": 0,
+   "select_full_join": 0,
+   "select_range_check": null,
+   "filesort": 3,
+   "filesort_on_disk": 0,
+   "errors": null,
+   "killed": null,
+   "sample_text": "SELECT * FROM orders WHERE customer_id IN (1) ORDER BY created DESC LIMIT 10",
+   "sample_truncated": false,
+   "sample": {
+    "text": "SELECT * FROM orders WHERE customer_id IN (1) ORDER BY created DESC LIMIT 10",
+    "truncated": false,
+    "db": "shop",
+    "user": "app",
+    "host": "127.0.0.1",
+    "time": "2026-10-31 18:24:11",
+    "thread_id": 31,
+    "query_time_ms": 0.176,
+    "line": 42
+   },
+   "first_seen": "2026-10-31 18:24:11",
+   "last_seen": "2026-10-31 18:24:11",
+   "users": [
+    {
+     "name": "app",
+     "count": 3
+    }
+   ],
+   "hosts": [
+    {
+     "name": "127.0.0.1",
+     "count": 3
+    }
+   ],
+   "histogram": [
+    {
+     "bucket": 39,
+     "low_ms": 0.057544,
+     "high_ms": 0.060256,
+     "count": 1
+    },
+    {
+     "bucket": 44,
+     "low_ms": 0.072444,
+     "high_ms": 0.075858,
+     "count": 1
+    },
+    {
+     "bucket": 63,
+     "low_ms": 0.17378,
+     "high_ms": 0.18197,
+     "count": 1
+    }
+   ],
+   "admin": false,
+   "flags": [],
+   "cpu_ms": null,
+   "new": false,
+   "capture_problem": null,
+   "analysis_sql": null,
+   "analysis_warning": "",
+   "source": "slow_log_file"
+  },
+  {
+   "digest": null,
+   "fingerprint_id": "27e978f5e8035ca6",
+   "digest_text": "SELECT COUNT(*) FROM shop.orders WHERE note IS NOT NULL AND total > ?",
+   "schema": "crm",
+   "count": 1,
+   "total_ms": 0.285,
+   "avg_ms": 0.285,
+   "min_ms": 0.285,
+   "max_ms": 0.285,
+   "p95_ms": 0.285,
+   "p99_ms": 0.285,
+   "p999_ms": 0.285,
+   "lock_time_ms": 0.058,
+   "rows_sent": 1,
+   "rows_examined": 1000,
+   "examined_per_sent": 1000.0,
+   "rows_affected": 0,
+   "bytes_sent": 67,
+   "no_index_used": null,
+   "no_good_index_used": null,
+   "tmp_tables": 0,
+   "tmp_disk_tables": 0,
+   "sort_merge_passes": 0,
+   "select_scan": 1,
+   "select_full_join": 0,
+   "select_range_check": null,
+   "filesort": 0,
+   "filesort_on_disk": 0,
+   "errors": null,
+   "killed": null,
+   "sample_text": "SELECT COUNT(*) FROM shop.orders WHERE note IS NOT NULL AND total > 100",
+   "sample_truncated": false,
+   "sample": {
+    "text": "SELECT COUNT(*) FROM shop.orders WHERE note IS NOT NULL AND total > 100",
+    "truncated": false,
+    "db": "crm",
+    "user": "report",
+    "host": "127.0.0.1",
+    "time": "2026-10-31 18:24:12",
+    "thread_id": 32,
+    "query_time_ms": 0.285,
+    "line": 249
+   },
+   "first_seen": "2026-10-31 18:24:12",
+   "last_seen": "2026-10-31 18:24:12",
+   "users": [
+    {
+     "name": "report",
+     "count": 1
+    }
+   ],
+   "hosts": [
+    {
+     "name": "127.0.0.1",
+     "count": 1
+    }
+   ],
+   "histogram": [
+    {
+     "bucket": 73,
+     "low_ms": 0.275423,
+     "high_ms": 0.288403,
+     "count": 1
+    }
+   ],
+   "admin": false,
+   "flags": [],
+   "cpu_ms": null,
+   "new": false,
+   "capture_problem": null,
+   "analysis_sql": null,
+   "analysis_warning": "",
+   "source": "slow_log_file"
+  },
+  {
+   "digest": null,
+   "fingerprint_id": "049be275852346a2",
+   "digest_text": "UPDATE orders SET total = total + ? WHERE id = ?",
+   "schema": "shop",
+   "count": 1,
+   "total_ms": 0.081,
+   "avg_ms": 0.081,
+   "min_ms": 0.081,
+   "max_ms": 0.081,
+   "p95_ms": 0.081,
+   "p99_ms": 0.081,
+   "p999_ms": 0.081,
+   "lock_time_ms": 0.024,
+   "rows_sent": 0,
+   "rows_examined": 1,
+   "examined_per_sent": null,
+   "rows_affected": 1,
+   "bytes_sent": 52,
+   "no_index_used": null,
+   "no_good_index_used": null,
+   "tmp_tables": 0,
+   "tmp_disk_tables": 0,
+   "sort_merge_passes": 0,
+   "select_scan": 0,
+   "select_full_join": 0,
+   "select_range_check": null,
+   "filesort": 0,
+   "filesort_on_disk": 0,
+   "errors": null,
+   "killed": null,
+   "sample_text": "UPDATE orders SET total = total + 1 WHERE id = 6",
+   "sample_truncated": false,
+   "sample": {
+    "text": "UPDATE orders SET total = total + 1 WHERE id = 6",
+    "truncated": false,
+    "db": "shop",
+    "user": "app",
+    "host": "127.0.0.1",
+    "time": "2026-10-31 18:24:11",
+    "thread_id": 31,
+    "query_time_ms": 0.081,
+    "line": 126
+   },
+   "first_seen": "2026-10-31 18:24:11",
+   "last_seen": "2026-10-31 18:24:11",
+   "users": [
+    {
+     "name": "app",
+     "count": 1
+    }
+   ],
+   "hosts": [
+    {
+     "name": "127.0.0.1",
+     "count": 1
+    }
+   ],
+   "histogram": [
+    {
+     "bucket": 46,
+     "low_ms": 0.079433,
+     "high_ms": 0.083176,
+     "count": 1
+    }
+   ],
+   "admin": false,
+   "flags": [],
+   "cpu_ms": null,
+   "new": false,
+   "capture_problem": null,
+   "analysis_sql": "SELECT * FROM orders WHERE id = 6",
+   "analysis_warning": "The original statement can change data. Myflames converted it to a read-only SELECT for analysis. This is a different query plan: UPDATE and DELETE measure target-row selection only; UPDATE assignment expressions and their subqueries are omitted. INSERT and REPLACE measure their SELECT source only. Write cost, triggers, constraints and locking are not reproduced. Review the SELECT before running analysis.",
+   "source": "slow_log_file"
+  },
+  {
+   "digest": null,
+   "fingerprint_id": "472a9cbf4c2ac038",
+   "digest_text": "SELECT name FROM customers WHERE name LIKE ?",
+   "schema": "crm",
+   "count": 1,
+   "total_ms": 0.067,
+   "avg_ms": 0.067,
+   "min_ms": 0.067,
+   "max_ms": 0.067,
+   "p95_ms": 0.067,
+   "p99_ms": 0.067,
+   "p999_ms": 0.067,
+   "lock_time_ms": 0.012,
+   "rows_sent": 111,
+   "rows_examined": 200,
+   "examined_per_sent": 1.8,
+   "rows_affected": 0,
+   "bytes_sent": 1955,
+   "no_index_used": null,
+   "no_good_index_used": null,
+   "tmp_tables": 0,
+   "tmp_disk_tables": 0,
+   "sort_merge_passes": 0,
+   "select_scan": 1,
+   "select_full_join": 0,
+   "select_range_check": null,
+   "filesort": 0,
+   "filesort_on_disk": 0,
+   "errors": null,
+   "killed": null,
+   "sample_text": "SELECT name FROM customers WHERE name LIKE 'customer 1%'",
+   "sample_truncated": false,
+   "sample": {
+    "text": "SELECT name FROM customers WHERE name LIKE 'customer 1%'",
+    "truncated": false,
+    "db": "crm",
+    "user": "report",
+    "host": "127.0.0.1",
+    "time": "2026-10-31 18:24:12",
+    "thread_id": 32,
+    "query_time_ms": 0.067,
+    "line": 235
+   },
+   "first_seen": "2026-10-31 18:24:12",
+   "last_seen": "2026-10-31 18:24:12",
+   "users": [
+    {
+     "name": "report",
+     "count": 1
+    }
+   ],
+   "hosts": [
+    {
+     "name": "127.0.0.1",
+     "count": 1
+    }
+   ],
+   "histogram": [
+    {
+     "bucket": 42,
+     "low_ms": 0.066069,
+     "high_ms": 0.069183,
+     "count": 1
+    }
+   ],
+   "admin": false,
+   "flags": [],
+   "cpu_ms": null,
+   "new": false,
+   "capture_problem": null,
+   "analysis_sql": null,
+   "analysis_warning": "",
+   "source": "slow_log_file"
+  },
+  {
+   "digest": null,
+   "fingerprint_id": "66cbb3a40d4bbd15",
+   "digest_text": "SELECT ?",
+   "schema": null,
+   "count": 1,
+   "total_ms": 0.044,
+   "avg_ms": 0.044,
+   "min_ms": 0.044,
+   "max_ms": 0.044,
+   "p95_ms": 0.044,
+   "p99_ms": 0.044,
+   "p999_ms": 0.044,
+   "lock_time_ms": 0.0,
+   "rows_sent": 1,
+   "rows_examined": 0,
+   "examined_per_sent": 0.0,
+   "rows_affected": 0,
+   "bytes_sent": 58,
+   "no_index_used": null,
+   "no_good_index_used": null,
+   "tmp_tables": 0,
+   "tmp_disk_tables": 0,
+   "sort_merge_passes": 0,
+   "select_scan": 0,
+   "select_full_join": 0,
+   "select_range_check": null,
+   "filesort": 0,
+   "filesort_on_disk": 0,
+   "errors": null,
+   "killed": null,
+   "sample_text": "SELECT 1",
+   "sample_truncated": false,
+   "sample": {
+    "text": "SELECT 1",
+    "truncated": false,
+    "db": null,
+    "user": "root",
+    "host": "127.0.0.1",
+    "time": "2026-10-31 18:24:14",
+    "thread_id": 33,
+    "query_time_ms": 0.044,
+    "line": 263
+   },
+   "first_seen": "2026-10-31 18:24:14",
+   "last_seen": "2026-10-31 18:24:14",
+   "users": [
+    {
+     "name": "root",
+     "count": 1
+    }
+   ],
+   "hosts": [
+    {
+     "name": "127.0.0.1",
+     "count": 1
+    }
+   ],
+   "histogram": [
+    {
+     "bucket": 33,
+     "low_ms": 0.043652,
+     "high_ms": 0.045709,
+     "count": 1
+    }
+   ],
+   "admin": false,
+   "flags": [],
+   "cpu_ms": null,
+   "new": false,
+   "capture_problem": null,
+   "analysis_sql": null,
+   "analysis_warning": "",
+   "source": "slow_log_file"
+  },
+  {
+   "digest": null,
+   "fingerprint_id": "065cf8e4c6cfc8b6",
+   "digest_text": "SELECT note FROM orders WHERE note = ? LIMIT ?",
+   "schema": "shop",
+   "count": 1,
+   "total_ms": 0.032,
+   "avg_ms": 0.032,
+   "min_ms": 0.032,
+   "max_ms": 0.032,
+   "p95_ms": 0.032,
+   "p99_ms": 0.032,
+   "p999_ms": 0.032,
+   "lock_time_ms": 0.012,
+   "rows_sent": 1,
+   "rows_examined": 1,
+   "examined_per_sent": 1.0,
+   "rows_affected": 0,
+   "bytes_sent": 97,
+   "no_index_used": null,
+   "no_good_index_used": null,
+   "tmp_tables": 0,
+   "tmp_disk_tables": 0,
+   "sort_merge_passes": 0,
+   "select_scan": 1,
+   "select_full_join": 0,
+   "select_range_check": null,
+   "filesort": 0,
+   "filesort_on_disk": 0,
+   "errors": null,
+   "killed": null,
+   "sample_text": "SELECT note FROM orders WHERE note = 'gift; wrap\nplease' LIMIT 1",
+   "sample_truncated": false,
+   "sample": {
+    "text": "SELECT note FROM orders WHERE note = 'gift; wrap\nplease' LIMIT 1",
+    "truncated": false,
+    "db": "shop",
+    "user": "app",
+    "host": "127.0.0.1",
+    "time": "2026-10-31 18:24:11",
+    "thread_id": 31,
+    "query_time_ms": 0.032,
+    "line": 166
+   },
+   "first_seen": "2026-10-31 18:24:11",
+   "last_seen": "2026-10-31 18:24:11",
+   "users": [
+    {
+     "name": "app",
+     "count": 1
+    }
+   ],
+   "hosts": [
+    {
+     "name": "127.0.0.1",
+     "count": 1
+    }
+   ],
+   "histogram": [
+    {
+     "bucket": 26,
+     "low_ms": 0.031623,
+     "high_ms": 0.033113,
+     "count": 1
+    }
+   ],
+   "admin": false,
+   "flags": [],
+   "cpu_ms": null,
+   "new": false,
+   "capture_problem": null,
+   "analysis_sql": null,
+   "analysis_warning": "",
+   "source": "slow_log_file"
+  },
+  {
+   "digest": null,
+   "fingerprint_id": "6bae2f6ec3f8d529",
+   "digest_text": "SELECT NOW()",
+   "schema": null,
+   "count": 1,
+   "total_ms": 0.019,
+   "avg_ms": 0.019,
+   "min_ms": 0.019,
+   "max_ms": 0.019,
+   "p95_ms": 0.019,
+   "p99_ms": 0.019,
+   "p999_ms": 0.019,
+   "lock_time_ms": 0.0,
+   "rows_sent": 1,
+   "rows_examined": 0,
+   "examined_per_sent": 0.0,
+   "rows_affected": 0,
+   "bytes_sent": 80,
+   "no_index_used": null,
+   "no_good_index_used": null,
+   "tmp_tables": 0,
+   "tmp_disk_tables": 0,
+   "sort_merge_passes": 0,
+   "select_scan": 0,
+   "select_full_join": 0,
+   "select_range_check": null,
+   "filesort": 0,
+   "filesort_on_disk": 0,
+   "errors": null,
+   "killed": null,
+   "sample_text": "SELECT NOW()",
+   "sample_truncated": false,
+   "sample": {
+    "text": "SELECT NOW()",
+    "truncated": false,
+    "db": null,
+    "user": "root",
+    "host": "127.0.0.1",
+    "time": "2026-10-31 18:24:14",
+    "thread_id": 33,
+    "query_time_ms": 0.019,
+    "line": 274
+   },
+   "first_seen": "2026-10-31 18:24:14",
+   "last_seen": "2026-10-31 18:24:14",
+   "users": [
+    {
+     "name": "root",
+     "count": 1
+    }
+   ],
+   "hosts": [
+    {
+     "name": "127.0.0.1",
+     "count": 1
+    }
+   ],
+   "histogram": [
+    {
+     "bucket": 14,
+     "low_ms": 0.018197,
+     "high_ms": 0.019055,
+     "count": 1
+    }
+   ],
+   "admin": false,
+   "flags": [],
+   "cpu_ms": null,
+   "new": false,
+   "capture_problem": null,
+   "analysis_sql": null,
+   "analysis_warning": "",
+   "source": "slow_log_file"
+  },
+  {
+   "digest": null,
+   "fingerprint_id": "a8402858d4f1e1d2",
+   "digest_text": "BEGIN",
+   "schema": "shop",
+   "count": 1,
+   "total_ms": 0.005,
+   "avg_ms": 0.005,
+   "min_ms": 0.005,
+   "max_ms": 0.005,
+   "p95_ms": 0.005,
+   "p99_ms": 0.005,
+   "p999_ms": 0.005,
+   "lock_time_ms": 0.0,
+   "rows_sent": 0,
+   "rows_examined": 0,
+   "examined_per_sent": null,
+   "rows_affected": 0,
+   "bytes_sent": 11,
+   "no_index_used": null,
+   "no_good_index_used": null,
+   "tmp_tables": 0,
+   "tmp_disk_tables": 0,
+   "sort_merge_passes": 0,
+   "select_scan": 0,
+   "select_full_join": 0,
+   "select_range_check": null,
+   "filesort": 0,
+   "filesort_on_disk": 0,
+   "errors": null,
+   "killed": null,
+   "sample_text": "BEGIN",
+   "sample_truncated": false,
+   "sample": {
+    "text": "BEGIN",
+    "truncated": false,
+    "db": "shop",
+    "user": "app",
+    "host": "127.0.0.1",
+    "time": "2026-10-31 18:24:11",
+    "thread_id": 31,
+    "query_time_ms": 0.005,
+    "line": 120
+   },
+   "first_seen": "2026-10-31 18:24:11",
+   "last_seen": "2026-10-31 18:24:11",
+   "users": [
+    {
+     "name": "app",
+     "count": 1
+    }
+   ],
+   "hosts": [
+    {
+     "name": "127.0.0.1",
+     "count": 1
+    }
+   ],
+   "histogram": [
+    {
+     "bucket": 0,
+     "low_ms": 0.0,
+     "high_ms": 0.01,
+     "count": 1
+    }
+   ],
+   "admin": false,
+   "flags": [],
+   "cpu_ms": null,
+   "new": false,
+   "capture_problem": "This statement cannot be safely converted. Write a read-only SELECT explicitly; analysis is blocked.",
+   "analysis_sql": null,
+   "analysis_warning": "",
+   "source": "slow_log_file"
+  }
+ ]
+}

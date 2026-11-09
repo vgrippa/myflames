@@ -3,608 +3,815 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Join-order search — why query planning is factorial</title>
+  <title>Join-order search: why query planning is factorial</title>
   <meta name="description" content="The greedy_search algorithm enumerates partial plans up to optimizer_search_depth tables ahead, costed by the optimizer, pruned by optimizer_prune_level.">
   <meta name="generator" content="myflames teach">
-  <style>
-:root {
-  --bg: #f6f8fc;
-  --panel: #ffffff;
-  --panel-soft: #f8faff;
-  --text: #111827;
-  --muted: #637083;
-  --border: #dbe4f0;
-  --accent: #1a73e8;
-  --accent-strong: #1557b0;
-  --focus: #8ab4f8;
-  --elev-1: 0 1px 2px rgba(15, 23, 42, 0.06), 0 1px 1px rgba(15, 23, 42, 0.04);
-  --elev-2: 0 6px 18px rgba(15, 23, 42, 0.08), 0 2px 6px rgba(15, 23, 42, 0.06);
-  --hot: #ff3d3d;
-  --cool: #21918c;
-  --warm: #fde725;
-  --warn: #f59e0b;
-  --ok: #10b981;
+  <style>:root { color-scheme: light;
+
+  --ink-secondary: #3c3c46;
+  --line-subtle: #efeff4;
+  --control-line-hover: #a8a8b3;
+  --shadow-popover: 0 8px 24px rgba(15, 15, 20, 0.12), 0 0 0 1px rgba(15, 15, 20, 0.08);
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --surface-muted: #f4f5f6;
+  --surface-hover: rgba(15, 17, 23, 0.045);
+  --surface-subtle: #fafbfc;
+  --ink: #202429;
+  --ink-muted: #59616b;
+  --ink-faint: #626a74;
+  --line: #d1d5da;
+  --line-strong: #a7afb9;
+  --control-line: #8c939b;
+  --accent-line: #8ebcab;
+  --accent: #16654e;
+  --accent-hover: #104d3b;
+  --accent-soft: rgba(22, 101, 78, 0.10);
+  --accent-ink: #ffffff;
+  --focus: var(--accent);
+  --ok: #157347;
+  --ok-soft: rgba(21, 115, 71, 0.10);
+  --warn: #945300;
+  --warn-soft: rgba(148, 83, 0, 0.12);
+  --warn-line: #efdfc1;
+  --danger: #c42b1c;
+  --danger-soft: rgba(196, 43, 28, 0.10);
+  --danger-line: rgba(196, 43, 28, 0.25);
+  --info: #005fb8;
+  --info-soft: rgba(0, 95, 184, 0.10);
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto,
+    sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --leading-sm: 18px;
+  --text-md: 13px;
+  --leading-md: 20px;
+  --text-lg: 15px;
+  --text-xl: 20px;
+  --radius-sm: 5px;
+  --radius-md: 7px;
+  --radius-lg: 10px;
+  --control-h: 28px;
+  --svg-node-bg: #ffffff;
+  --svg-node-muted: #f4f5f6;
+  --svg-node-stroke: #b8bfc7;
+  --svg-edge: #b8bfc7;
+  --svg-line: #e4e7eb;
+  --svg-ink: #17191c;
+  --svg-ink-muted: #636b75;
+  --svg-counter-bg: #17191c;
+  --svg-counter-ink: #ffffff;
+  --svg-on-solid: #ffffff;
+  --svg-build-ink: #85400b;
+  --svg-token-ink: #17598a;
+  --svg-token: #17598a;
+  --svg-token-soft: #eaf2f8;
+  --svg-highlight: #fef08a;
+  --svg-highlight-stroke: #d97706;
+  --svg-hop: #b45309;
+  --svg-hop-soft: #fdf3dc;
+  --svg-build: #b45309;
+  --svg-build-soft: #fdf3dc;
+  --svg-probe: #0f766e;
+  --svg-probe-soft: #e6f7f5;
+  --svg-ok: #146c43;
+  --svg-ok-soft: #e8f5ee;
+  --svg-danger: #b42318;
+  --svg-danger-soft: #fdeceb;
+  --svg-group: #6d28d9;
+  --svg-group-soft: #f3e8ff;
+  --svg-group-alt: #be185d;
+  --svg-group-alt-soft: #fce7f3;
+  --panel: var(--surface);
+  --panel-soft: var(--surface-muted);
+  --panel-muted: var(--surface-muted);
+  --text: var(--ink);
+  --muted: var(--ink-muted);
+  --border: var(--line);
+  --border-strong: var(--line-strong);
+  --code-bg: var(--surface-subtle);
+  --accent-strong: var(--accent-hover);
+  --hot: var(--danger);
+  --cool: var(--svg-probe);
+  --warm: var(--svg-highlight);
+  --problem: var(--danger);
+  --radius: var(--radius-md);
 }
-/* Lesson-family color grading (shared semantics, different accent ramps). */
-body[data-lesson="bka"],
-body[data-lesson="bnl"],
-body[data-lesson="hash"],
-body[data-lesson="join"],
-body[data-lesson="nested_loop"],
-body[data-lesson="semijoin_weedout"] {
-  --accent: #1a73e8;
-  --accent-strong: #1557b0;
-  --focus: #8ab4f8;
+@media (prefers-color-scheme: dark) {
+:root:not([data-theme="light"]) { color-scheme: dark;
+
+  --bg: #151719;
+  --surface: #151719;
+  --surface-raised: #25282c;
+  --surface-muted: #1c1e21;
+  --surface-hover: rgba(255, 255, 255, 0.06);
+  --surface-subtle: #191b1e;
+  --ink: #ededee;
+  --ink-secondary: #d0d0d6;
+  --ink-muted: #a5a9af;
+  --ink-faint: #989ea7;
+  --line: #34383d;
+  --line-subtle: #292c30;
+  --line-strong: #646c77;
+  --control-line: #656e79;
+  --control-line-hover: #6c6c74;
+  --accent: #a9e7d3;
+  --accent-hover: #c0eedf;
+  --accent-soft: rgba(169, 231, 211, 0.12);
+  --accent-line: #507b6e;
+  --accent-ink: #143b31;
+  --ok: #46c487;
+  --ok-soft: rgba(70, 196, 135, 0.16);
+  --warn: #e5a843;
+  --warn-soft: rgba(229, 168, 67, 0.16);
+  --warn-line: #5b4622;
+  --danger: #ff6b5e;
+  --danger-soft: rgba(255, 107, 94, 0.16);
+  --danger-line: rgba(255, 107, 94, 0.4);
+  --info: #63b3ff;
+  --info-soft: rgba(99, 179, 255, 0.16);
+  --shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  --svg-node-bg: #1c1e21;
+  --svg-node-muted: #23272b;
+  --svg-node-stroke: #454b52;
+  --svg-edge: #454b52;
+  --svg-line: #34383d;
+  --svg-ink: #f0f2f4;
+  --svg-ink-muted: #9ca3af;
+  --svg-counter-bg: #25292e;
+  --svg-counter-ink: #f0f2f4;
+  --svg-on-solid: #151719;
+  --svg-build-ink: #fcd38d;
+  --svg-token-ink: #93c5fd;
+  --svg-token: #60a5fa;
+  --svg-token-soft: #1e3a5f;
+  --svg-highlight: #713f12;
+  --svg-highlight-stroke: #facc15;
+  --svg-hop: #f59e0b;
+  --svg-hop-soft: #3b2a14;
+  --svg-build: #f59e0b;
+  --svg-build-soft: #382814;
+  --svg-probe: #2dd4bf;
+  --svg-probe-soft: #133633;
+  --svg-ok: #4ade80;
+  --svg-ok-soft: #163324;
+  --svg-danger: #f87171;
+  --svg-danger-soft: #3b1d1d;
+  --svg-group: #c4b5fd;
+  --svg-group-soft: #302044;
+  --svg-group-alt: #f9a8d4;
+  --svg-group-alt-soft: #431e34;
 }
-body[data-lesson="full_scan"],
-body[data-lesson="filter"],
-body[data-lesson="filesort"],
-body[data-lesson="tmp"],
-body[data-lesson="derived_table"] {
-  --accent: #ea580c;
-  --accent-strong: #c2410c;
-  --focus: #fdba74;
 }
-body[data-lesson="btree"],
-body[data-lesson="non_unique_lookup"],
-body[data-lesson="unique_lookup"],
-body[data-lesson="icp"],
-body[data-lesson="index_merge"],
-body[data-lesson="skip_scan"] {
-  --accent: #0f766e;
-  --accent-strong: #0f5f59;
-  --focus: #5eead4;
+:root[data-theme="dark"] { color-scheme: dark;
+
+  --bg: #151719;
+  --surface: #151719;
+  --surface-raised: #25282c;
+  --surface-muted: #1c1e21;
+  --surface-hover: rgba(255, 255, 255, 0.06);
+  --surface-subtle: #191b1e;
+  --ink: #ededee;
+  --ink-secondary: #d0d0d6;
+  --ink-muted: #a5a9af;
+  --ink-faint: #989ea7;
+  --line: #34383d;
+  --line-subtle: #292c30;
+  --line-strong: #646c77;
+  --control-line: #656e79;
+  --control-line-hover: #6c6c74;
+  --accent: #a9e7d3;
+  --accent-hover: #c0eedf;
+  --accent-soft: rgba(169, 231, 211, 0.12);
+  --accent-line: #507b6e;
+  --accent-ink: #143b31;
+  --ok: #46c487;
+  --ok-soft: rgba(70, 196, 135, 0.16);
+  --warn: #e5a843;
+  --warn-soft: rgba(229, 168, 67, 0.16);
+  --warn-line: #5b4622;
+  --danger: #ff6b5e;
+  --danger-soft: rgba(255, 107, 94, 0.16);
+  --danger-line: rgba(255, 107, 94, 0.4);
+  --info: #63b3ff;
+  --info-soft: rgba(99, 179, 255, 0.16);
+  --shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  --svg-node-bg: #1c1e21;
+  --svg-node-muted: #23272b;
+  --svg-node-stroke: #454b52;
+  --svg-edge: #454b52;
+  --svg-line: #34383d;
+  --svg-ink: #f0f2f4;
+  --svg-ink-muted: #9ca3af;
+  --svg-counter-bg: #25292e;
+  --svg-counter-ink: #f0f2f4;
+  --svg-on-solid: #151719;
+  --svg-build-ink: #fcd38d;
+  --svg-token-ink: #93c5fd;
+  --svg-token: #60a5fa;
+  --svg-token-soft: #1e3a5f;
+  --svg-highlight: #713f12;
+  --svg-highlight-stroke: #facc15;
+  --svg-hop: #f59e0b;
+  --svg-hop-soft: #3b2a14;
+  --svg-build: #f59e0b;
+  --svg-build-soft: #382814;
+  --svg-probe: #2dd4bf;
+  --svg-probe-soft: #133633;
+  --svg-ok: #4ade80;
+  --svg-ok-soft: #163324;
+  --svg-danger: #f87171;
+  --svg-danger-soft: #3b1d1d;
+  --svg-group: #c4b5fd;
+  --svg-group-soft: #302044;
+  --svg-group-alt: #f9a8d4;
+  --svg-group-alt-soft: #431e34;
 }
-body[data-lesson="lru"] {
-  --accent: #7c3aed;
-  --accent-strong: #6d28d9;
-  --focus: #c4b5fd;
+:root[data-theme="light"] { color-scheme: light; }
+
+* {
+
+  box-sizing: border-box;
+
 }
-* { box-sizing: border-box; }
 html, body {
   margin: 0; padding: 0;
-  background: var(--bg);
-  color: var(--text);
-  font-family: "Google Sans", Roboto, "Noto Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  line-height: 1.5;
+  background: var(--bg); color: var(--ink);
+  font-family: var(--font-sans); font-size: var(--text-md);
+  -webkit-font-smoothing: antialiased; line-height: 1.5;
 }
-main { max-width: 1100px; margin: 0 auto; padding: 24px 20px 48px; }
+main {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 16px 20px 32px;
+}
 header {
-  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
-  border-bottom: 1px solid #e7eef8;
-  padding: 20px;
-  box-shadow: var(--elev-1);
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--line);
 }
-header .inner { max-width: 1100px; margin: 0 auto; }
+header .inner {
+  max-width: 1080px;
+  margin: 0 auto;
+}
 header h1 {
-  margin: 0 0 6px;
-  font-size: 23px;
-  letter-spacing: -0.2px;
-  font-weight: 700;
+  margin: 0 0 4px;
+  font-size: var(--text-lg);
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
 header .subtitle {
-  color: var(--muted);
-  font-size: 14px;
   margin: 0;
+  color: var(--ink-secondary);
 }
 header .lesson-meta {
   margin-top: 8px;
   display: flex;
-  align-items: center;
   gap: 8px;
+  align-items: center;
   flex-wrap: wrap;
 }
 header .meta-label {
-  font-size: 11px;
-  color: var(--muted);
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.35px;
+  font-size: var(--text-xs);
+  color: var(--ink-muted);
 }
-header .family-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 10px;
-  border-radius: 999px;
-  font-size: 11.5px;
-  font-weight: 600;
-  background: color-mix(in srgb, var(--accent) 13%, #ffffff);
-  color: var(--accent-strong);
-  border: 1px solid color-mix(in srgb, var(--accent) 35%, #ffffff);
+header .family-chip, header .version-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  min-height: 19px; padding: 1px 6px;
+  border: 1px solid var(--line-subtle); border-radius: var(--radius-sm);
+  background: var(--surface-muted); color: var(--ink-secondary);
+  font-size: var(--text-xs); font-weight: 500; letter-spacing: 0;
 }
-header .family-chip .chip-dot {
-  width: 8px;
-  height: 8px;
+header .version-chip {
+  margin-left: 8px;
+  vertical-align: 1px;
+}
+header .chip-dot {
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: var(--accent);
 }
-header .version-chip {
-  display: inline-block;
-  margin-left: 8px;
-  padding: 3px 10px;
-  background: #e8f0fe;
-  color: #174ea6;
-  border: 1px solid #c6dafc;
-  border-radius: 999px;
-  font-size: 10.5px;
-  font-weight: 600;
-  vertical-align: 2px;
+html[data-embedded="true"] body > header,
+html[data-embedded="true"] body > footer {
+  display: none;
+}
+html[data-embedded="true"] main {
+  max-width: none;
+  padding: 12px 16px 20px;
 }
 .banner {
-  margin: 0 0 20px;
-  padding: 12px 16px;
-  border-left: 4px solid var(--warn);
-  background: #fffbeb;
-  color: #78350f;
-  border-radius: 4px;
-  font-size: 13.5px;
+  margin: 0 0 10px; padding: 8px 12px;
+  border: 1px solid var(--warn-line); border-radius: var(--radius-md);
+  background: var(--warn-soft); color: var(--ink); font-size: var(--text-sm);
 }
-.banner strong { color: #92400e; }
+.banner strong {
+  color: var(--warn);
+}
+/* Parameters: one compact row next to the drawing (render_page moves each
+   control's hint into the (?) beside its label), so a change shows on the
+   drawing without scrolling. */
 section.controls {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 18px 20px;
-  margin-bottom: 20px;
-  box-shadow: var(--elev-1);
+  padding: 6px 12px 8px; margin-bottom: 8px;
+  border: 1px solid var(--line); border-radius: var(--radius-md);
+  background: var(--surface-muted);
 }
-section.controls h2 { margin: 0 0 12px; font-size: 15px; font-weight: 600; }
+section.readout h2, section.about-example h2 {
+  margin: 0 0 8px;
+  font-size: var(--text-lg);
+  font-weight: 600;
+}
+section.controls h2 {
+  margin: 0 0 4px;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--ink-secondary);
+}
+.controls-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0 12px;
+  margin-bottom: 4px;
+}
+.controls-head h2 {
+  margin: 0;
+  min-width: 0;
+}
+.about-link {
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
 .control-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 16px 20px;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 6px 16px;
 }
 .control {
+  position: relative;
   display: flex;
   flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+/* The (?) sits right after the label, on its first line when a narrow
+   column wraps the label. It stays outside the label, so a click on it
+   never toggles or focuses the control. */
+.control-head {
+  display: flex;
+  align-items: baseline;
   gap: 4px;
+  min-width: 0;
+}
+.control-head label {
+  min-width: 0;
 }
 .control label {
-  font-size: 12px;
-  font-weight: 600;
-  color: #374151;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--ink-secondary);
 }
-.control .hint {
-  font-size: 11px;
-  color: var(--muted);
+.control .hint, section.controls > .hint {
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
 }
-.control input[type="range"] { width: 100%; }
-.control input[type="number"],
-.control select {
-  padding: 8px 10px;
-  border: 1px solid #cfd8e5;
-  border-radius: 10px;
-  font: inherit;
-  font-size: 13px;
-  background: #fff;
+section.controls > .hint {
+  margin: 0;
 }
-.control input[type="number"]:focus,
-.control select:focus,
-.control input[type="range"]:focus {
+/* A control's hint opens under the control, as wide as it, on hover of its
+   (?) or while the control has keyboard focus. Screen readers get it as the
+   control's description (aria-describedby). */
+.control .help-tip {
+  position: static;
+  flex: none;
+  margin-left: 0;
+}
+.control .help-tip .tip-text {
+  top: calc(100% + 4px);
+  bottom: auto;
+  left: 0;
+  right: 0;
+  width: auto;
+}
+.control:has(:focus-visible) .tip-text {
+  display: block;
+}
+.control input[type="number"], select {
+  min-width: 0; max-width: 100%; min-height: var(--control-h);
+  padding: 3px 8px; border: 1px solid var(--control-line); border-radius: var(--radius-sm);
+  font: inherit; font-size: var(--text-sm); font-weight: 500;
+  background-color: var(--surface); color: var(--ink);
+}
+select {
+  appearance: none; padding-right: 24px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--ink-muted) 50%),
+    linear-gradient(135deg, var(--ink-muted) 50%, transparent 50%);
+  background-position: calc(100% - 12px) 50%, calc(100% - 8px) 50%;
+  background-size: 4px 4px; background-repeat: no-repeat;
+}
+:focus-visible {
   outline: 2px solid var(--focus);
-  outline-offset: 1px;
+  outline-offset: 2px;
 }
 .value-pill {
-  display: inline-block;
-  padding: 2px 9px;
-  background: #eef4ff;
+  display: inline-block; padding: 1px 6px; border: 1px solid var(--line-subtle);
+  border-radius: var(--radius-sm); background: var(--surface); color: var(--ink);
+  font: 600 var(--text-sm) var(--font-mono); font-variant-numeric: tabular-nums;
+}
+input[type="range"] {
+  appearance: none;
+  height: 4px;
   border-radius: 999px;
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
-  font-size: 12px;
-  color: #1e3a8a;
+  background: var(--line);
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.control input[type="range"] {
+  width: 100%;
+  margin: 7px 0;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--line);
+}
+input[type="range"]::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--line);
+}
+input[type="range"]::-webkit-slider-thumb {
+  appearance: none; margin-top: -5px; width: 14px; height: 14px;
+  border-radius: 50%; border: 2px solid var(--surface); background: var(--accent); box-shadow: none;
+}
+input[type="range"]::-moz-range-thumb {
+  width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--surface);
+  background: var(--accent); box-shadow: none;
 }
 section.stage {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 16px;
-  margin-bottom: 20px;
-  box-shadow: var(--elev-1);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  margin-bottom: 10px;
 }
-.query-card {
-  margin-bottom: 14px;
-  padding: 12px 14px;
-  background: #f8fbff;
-  border: 1px solid var(--border);
-  border-left: 4px solid var(--accent);
-  border-radius: 8px;
+.query-card, .explainer-card, .explanation {
+  margin: 0 0 10px; padding: 8px 12px; background: var(--surface-subtle);
+  border: 1px solid var(--line); border-radius: var(--radius-md);
+  color: var(--ink-secondary); font-size: var(--text-sm);
 }
-.query-card .query-label {
-  margin: 0 0 6px;
-  font-size: 10.5px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--muted);
+.query-card .query-label, .explainer-card .explainer-title, .complexity-chart .chart-title {
+  margin: 0 0 3px; font-size: var(--text-xs); font-weight: 600; color: var(--ink-muted);
 }
 .query-card .query-sql {
   margin: 0;
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-  font-size: 12.5px;
-  line-height: 1.5;
-  color: #0f172a;
+  font: var(--text-sm)/1.45 var(--font-mono);
+  color: var(--ink);
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .query-card .query-note {
-  margin: 6px 0 0;
-  font-size: 11.5px;
-  color: var(--muted);
-  font-style: italic;
-}
-.explainer-card {
-  margin-bottom: 14px;
-  padding: 12px 16px;
-  background: #ecfdf5;
-  border: 1px solid #a7f3d0;
-  border-left: 4px solid #059669;
-  border-radius: 8px;
+  margin: 4px 0 0;
+  color: var(--ink-muted);
 }
 .explainer-card .explainer-title {
-  margin: 0 0 6px;
-  font-size: 11.5px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-  color: #065f46;
+  color: var(--ink);
+}
+.explainer-card .explainer-title::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-right: 6px;
+  vertical-align: 1px;
 }
 .explainer-card .explainer-list {
   margin: 0;
-  padding-left: 20px;
-  font-size: 12.5px;
-  color: #064e3b;
-  line-height: 1.55;
+  padding-left: 18px;
 }
-.explainer-card .explainer-list li {
+.explainer-card li {
   margin-bottom: 4px;
 }
-.explainer-card .explainer-list li:last-child {
+.explainer-card li:last-child {
   margin-bottom: 0;
 }
-section.stage .stage-toolbar {
-  display: flex;
-  gap: 10px;
-  align-items: center;
+/* About this example: the example query and what the drawing shows, right
+   under the stage (the stage comes first). Side by side when there is room. */
+section.about-example {
   margin-bottom: 10px;
-  padding: 10px 12px;
-  background: var(--panel-soft);
-  border: 1px solid #dbe6f3;
-  border-radius: 12px;
-  font-size: 13px;
-  transition: box-shadow 0.2s ease, border-color 0.2s ease;
 }
-section.stage .stage-toolbar:hover {
-  box-shadow: var(--elev-1);
-  border-color: #cddbef;
+.about-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr));
+  gap: 10px;
+}
+.about-grid > .query-card, .about-grid > .explainer-card {
+  margin: 0;
+  min-width: 0;
+}
+.stage-toolbar {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  min-height: 38px; padding: 5px 10px; background: var(--surface-muted);
+  border: 1px solid var(--line); border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  font-size: var(--text-sm);
 }
 .stage-toolbar .speed-label {
-  font-size: 11.5px;
-  font-weight: 600;
-  color: #374151;
-  margin-left: 2px;
-  letter-spacing: 0.2px;
+  color: var(--ink-secondary);
+  font-size: var(--text-sm);
 }
-.stage-toolbar select {
-  padding: 6px 10px;
-  border: 1px solid #cfd8e5;
-  border-radius: 10px;
-  font: inherit;
-  font-size: 12.5px;
-  background: #fff;
-  cursor: pointer;
-}
-.stage-toolbar select:focus {
-  outline: 2px solid var(--focus);
-  outline-offset: 1px;
+.phase-label {
+  font: var(--text-sm)/1.5 var(--font-mono); color: var(--ink-secondary);
+  background: var(--surface-subtle); border: 1px solid var(--line-subtle);
+  padding: 3px 8px; border-radius: var(--radius-sm); overflow-wrap: anywhere;
 }
 .stage-toolbar .phase-label {
   margin-left: auto;
-  font-size: 12px;
-  color: var(--muted);
-  font-weight: 600;
 }
 .stage-scrubber {
   display: flex;
   align-items: center;
   gap: 10px;
   margin-bottom: 12px;
-  padding: 8px 10px;
-  background: var(--panel-soft);
-  border: 1px solid #dbe6f3;
-  border-radius: 12px;
-  transition: box-shadow 0.2s ease, border-color 0.2s ease;
-}
-.stage-scrubber:hover {
-  box-shadow: var(--elev-1);
-  border-color: #cddbef;
+  padding: 5px 10px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--line);
+  border-top: 0;
 }
 .stage-scrubber input[type="range"] {
   flex: 1;
-  height: 6px;
-  border-radius: 999px;
-  background: linear-gradient(90deg, #c8ddff 0%, #dbeafe 100%);
-  accent-color: var(--accent);
-  cursor: pointer;
-}
-.stage-scrubber input[type="range"]:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
-}
-.stage-scrubber input[type="range"]::-webkit-slider-runnable-track {
-  height: 6px;
-  border-radius: 999px;
-  background: linear-gradient(90deg, #bed8ff 0%, #dbeafe 100%);
-}
-.stage-scrubber input[type="range"]::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  margin-top: -5px;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  border: 2px solid #ffffff;
-  background: var(--accent);
-  box-shadow: 0 1px 5px color-mix(in srgb, var(--accent) 45%, transparent);
-  transition: transform 0.14s ease, box-shadow 0.14s ease;
-}
-.stage-scrubber input[type="range"]::-webkit-slider-thumb:hover {
-  transform: scale(1.06);
-  box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 55%, transparent);
-}
-.stage-scrubber input[type="range"]::-moz-range-track {
-  height: 6px;
-  border-radius: 999px;
-  background: linear-gradient(90deg, #bed8ff 0%, #dbeafe 100%);
-}
-.stage-scrubber input[type="range"]::-moz-range-thumb {
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  border: 2px solid #ffffff;
-  background: var(--accent);
-  box-shadow: 0 1px 5px color-mix(in srgb, var(--accent) 45%, transparent);
-  transition: transform 0.14s ease, box-shadow 0.14s ease;
-}
-.stage-scrubber input[type="range"]::-moz-range-thumb:hover {
-  transform: scale(1.06);
-  box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 55%, transparent);
+  min-width: 0;
 }
 .stage-scrubber .scrubber-time {
-  font-family: "SFMono-Regular", Consolas, Menlo, monospace;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--muted);
+  font: var(--text-xs) var(--font-mono);
+  color: var(--ink-muted);
   min-width: 42px;
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
-.complexity-chart {
-  margin-top: 14px;
-  padding: 14px;
-  background: #f9fafb;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-}
-.complexity-chart .chart-title {
-  margin: 0 0 6px;
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--muted);
-}
-.complexity-chart svg {
-  width: 100%;
-  max-width: 600px;
-  height: auto;
-}
 button {
-  position: relative;
-  overflow: hidden;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 7px 12px;
-  border: 1px solid #cfd8e5;
-  border-radius: 999px;
-  background: #fff;
-  font: inherit;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+  display: inline-flex; align-items: center; gap: 6px; min-height: var(--control-h);
+  padding: 4px 10px; border: 1px solid var(--control-line); border-radius: var(--radius-sm);
+  background: var(--surface); color: var(--ink); font: inherit; font-size: var(--text-sm); font-weight: 500; cursor: pointer;
 }
-button:hover { background: #edf3ff; border-color: #9eb6d8; }
-button:active { transform: translateY(1px) scale(0.99); }
-button:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
+button:hover:not(:disabled) {
+  background: var(--surface-subtle);
+  border-color: var(--ink-muted);
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 button.primary {
   background: var(--accent);
-  color: #fff;
-  border-color: var(--accent-strong);
-  box-shadow: 0 1px 0 rgba(255,255,255,0.25) inset;
+  color: var(--accent-ink);
+  border-color: var(--accent);
+  font-weight: 600;
 }
-button.primary:hover { background: var(--accent-strong); border-color: #144a96; }
-button .btn-icon {
+button.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+button[aria-pressed="true"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: var(--accent-line);
+  font-weight: 600;
+}
+button .btn-icon, button .btn-icon svg {
   width: 16px;
   height: 16px;
   display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-button .btn-icon svg {
-  width: 16px;
-  height: 16px;
   fill: currentColor;
-  transition: transform 0.16s ease;
 }
 button .btn-label {
   line-height: 1;
   white-space: nowrap;
 }
-button[aria-pressed="true"] {
-  background: color-mix(in srgb, var(--accent) 14%, #ffffff);
-  color: var(--accent-strong);
-  border-color: color-mix(in srgb, var(--accent) 35%, #ffffff);
-}
-button#btn-reset {
-  background: #ffffff;
-}
-button#btn-reset:hover {
-  background: #eef2ff;
-}
-button#btn-play:hover .btn-icon svg {
-  transform: translateX(0.5px);
-}
-button#btn-loop[aria-pressed="true"] .btn-icon svg {
-  transform: rotate(12deg);
-}
-section.stage svg { width: 100%; height: auto; display: block; }
-section.readout {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 18px 20px;
-  margin-bottom: 20px;
-  box-shadow: var(--elev-1);
-}
-section.readout h2 { margin: 0 0 12px; font-size: 15px; font-weight: 600; }
-.readout-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 12px 18px;
-}
-.readout-grid .item {
-  padding: 12px 14px;
-  background: #f8fbff;
-  border-radius: 10px;
-  border: 1px solid var(--border);
-}
-.readout-grid .label {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-  color: var(--muted);
-  margin: 0 0 4px;
-  font-weight: 600;
-}
-.readout-grid .label .help-tip {
-  display: inline-block;
-  cursor: help;
-  font-size: 10px;
-  font-weight: 700;
-  color: #9ca3af;
-  border: 1px solid #d1d5db;
-  border-radius: 50%;
-  width: 15px;
-  height: 15px;
-  line-height: 14px;
-  text-align: center;
-  margin-left: 4px;
-  vertical-align: 1px;
-  text-transform: none;
-  letter-spacing: 0;
-  position: relative;
-}
-.readout-grid .label .help-tip:hover {
-  color: #374151;
-  border-color: #9ca3af;
-}
-.readout-grid .label .help-tip .tip-text {
-  display: none;
-  position: absolute;
-  bottom: 22px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 240px;
-  padding: 8px 10px;
-  background: #1f2937;
-  color: #f3f4f6;
-  font-size: 12px;
-  font-weight: 400;
-  line-height: 1.45;
-  border-radius: 6px;
-  text-transform: none;
-  letter-spacing: 0;
-  white-space: normal;
-  z-index: 10;
-  pointer-events: none;
-}
-.readout-grid .label .help-tip:hover .tip-text {
+section.stage svg {
+  width: 100%;
+  height: auto;
   display: block;
 }
-.readout-grid .value {
-  font-size: 19px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  color: #111827;
+/* Fit: a stage drawing is never taller than the window or frame showing it,
+   so scrolling to the stage shows the whole drawing under its toolbar. The
+   drawing keeps its proportions (preserveAspectRatio meet). teachFocus.fit()
+   measures --stage-chrome: the toolbar, scrubber and captions around it. */
+.stage-with-phases svg, section.stage > svg, .stage-wrap > svg {
+  max-height: max(160px, calc(100vh - var(--stage-chrome, 96px)));
+  max-height: max(160px, calc(100dvh - var(--stage-chrome, 96px)));
 }
-.readout-grid .value.warn { color: var(--warn); }
-.readout-grid .value.ok { color: var(--ok); }
-.readout-grid .value.hot { color: var(--hot); }
-details.learn-more {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 4px 20px;
-  box-shadow: var(--elev-1);
+section.stage button svg {
+  width: 16px;
+  height: 16px;
 }
-details.learn-more summary {
-  padding: 12px 0;
-  cursor: pointer;
-  font-size: 14px;
-  font-weight: 600;
-  color: #374151;
-  outline: none;
+/* Full screen (focus layout): only the animation, its controls, the caption
+   and the live numbers. Parameters, the query and the explainer open in the
+   Details panel beside the stage. */
+:root {
+  --focus-details-w: clamp(280px, 32vw, 420px);
 }
-details.learn-more[open] summary { color: #111827; }
-details.learn-more .body {
-  padding-bottom: 16px;
-  font-size: 13.5px;
-  color: #374151;
+html:not([data-focus="true"]) .focus-only,
+html[data-embedded="true"] #btn-fullscreen,
+#btn-fullscreen .icon-exit,
+html[data-focus="true"] #btn-fullscreen .icon-enter {
+  display: none;
 }
-details.learn-more .body p { margin: 0 0 10px; }
-details.learn-more .body code {
-  background: #f3f4f6;
-  padding: 1px 6px;
-  border-radius: 3px;
-  font-size: 12.5px;
+html[data-focus="true"] #btn-fullscreen .icon-exit {
+  display: inline;
 }
-abbr.glossary-chip {
-  text-decoration: underline dotted;
-  text-decoration-color: #9ca3af;
-  cursor: help;
+html[data-focus="true"],
+html[data-focus="true"] body {
+  height: 100%;
+  overflow: hidden;
 }
-.explanation {
-  padding: 10px 14px;
-  background: #f0f9ff;
-  border-left: 3px solid #0284c7;
-  border-radius: 4px;
-  font-size: 13px;
-  color: #0c4a6e;
-  margin-top: 10px;
+html[data-focus="true"] body > header,
+html[data-focus="true"] body > footer,
+html[data-focus="true"] main {
+  display: none;
 }
-footer {
-  max-width: 1100px;
-  margin: 24px auto 0;
-  padding: 16px 20px 32px;
-  font-size: 12px;
-  color: var(--muted);
-  text-align: center;
+html[data-focus="true"][data-focus-details="true"] main {
+  display: block;
+  position: fixed;
+  z-index: 2;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: var(--focus-details-w);
+  max-width: none;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  background: var(--surface);
+  border-left: 1px solid var(--line);
 }
-footer a { color: var(--muted); }
-@media (max-width: 640px) {
-  header h1 { font-size: 19px; }
-  .readout-grid .value { font-size: 17px; }
+html[data-focus="true"] main section.stage {
+  padding: 0;
+  border: 0;
+  background: none;
+}
+.focus-shell {
+  position: fixed;
+  z-index: 1;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--bg);
+}
+html[data-focus-details="true"] .focus-shell {
+  right: var(--focus-details-w);
+}
+.focus-top {
+  flex: none;
+}
+.focus-top .stage-scrubber {
+  margin-bottom: 0;
+}
+html[data-focus="true"] #btn-details {
+  margin-left: auto;
+}
+.focus-stage {
+  flex: 1 1 0;
+  display: flex;
+  min-height: 0;
+}
+html[data-focus="true"] .focus-stage > * {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+html[data-focus="true"] .focus-stage .stage-with-phases {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  overflow: hidden;
+}
+html[data-focus="true"] .focus-stage .phase-nav {
+  align-self: flex-start;
+  width: 168px;
+  max-height: 100%;
+  margin: 0;
+  overflow: auto;
+}
+html[data-focus="true"] .focus-stage .stage-with-phases > :not(.phase-nav):not(.stage-side) {
+  flex: 1 1 0;
+  align-self: stretch;
+  min-width: 0;
+  min-height: 0;
+}
+/* Wrappers around several drawings: a lesson's own grid keeps its columns
+   and gets one row that fills the height; other wrappers stack. */
+html[data-focus="true"] .focus-stage .stage-with-phases > div:not(.phase-nav) {
+  display: flex;
+  flex-direction: column;
+  grid-template-rows: minmax(0, 1fr);
+}
+html[data-focus="true"] .focus-stage .stage-with-phases > div:not(.phase-nav) > div {
+  display: flex;
+  flex-direction: column;
+  align-self: stretch;
+  min-width: 0;
+  min-height: 0;
+}
+html[data-focus="true"] .focus-stage svg {
+  flex: 1 1 0;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  max-height: none;
+}
+/* A drawing inside a panel keeps its own height (shrinking only when the
+   window is short), so it stays next to the panel's title and caption. */
+html[data-focus="true"] .focus-stage .stage-with-phases > div:not(.phase-nav),
+html[data-focus="true"] .focus-stage .stage-with-phases > div:not(.phase-nav) > div {
+  justify-content: center;
+}
+html[data-focus="true"] .focus-stage .stage-with-phases > div:not(.phase-nav) svg {
+  flex: 0 1 auto;
+  height: auto;
+  max-height: 100%;
+}
+html[data-focus="true"] .focus-stage .stage-with-phases > div:not(.phase-nav) > svg {
+  align-self: center;
+}
+.focus-strip {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.focus-caption .phase-label {
+  display: block;
+  margin: 0;
+  padding: 5px 10px;
+  font-size: var(--text-md);
+  line-height: 1.45;
+  color: var(--ink);
+}
+.focus-strip .readout-grid {
+  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+}
+.focus-strip .readout-grid .item {
+  padding: 4px 10px;
+}
+.focus-strip .readout-grid .value {
+  font-size: var(--text-md);
+  line-height: 1.4;
+}
+@media (max-width: 900px) {
+  html[data-focus="true"] .focus-stage .phase-nav {
+    display: none;
+  }
+}
+@media (max-height: 600px) {
+  .focus-shell {
+    gap: 4px;
+    padding: 4px 8px;
+  }
+  .focus-strip {
+    gap: 4px;
+  }
+  .focus-caption .phase-label {
+    padding: 3px 8px;
+    font-size: var(--text-sm);
+  }
+  /* Short windows: each number becomes one "label value" chip. */
+  .focus-strip .readout-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    background: none;
+    border: 0;
+  }
+  .focus-strip .readout-grid .item {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    padding: 2px 8px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+  }
+  .focus-strip .readout-grid .label {
+    margin: 0;
+    white-space: nowrap;
+  }
+  .focus-strip .readout-grid .value {
+    font-size: var(--text-sm);
+    line-height: 1.4;
+  }
 }
 .stage-with-phases {
   display: flex;
   gap: 14px;
   align-items: flex-start;
+  overflow-x: auto;
 }
 .stage-with-phases > svg {
   flex: 1;
@@ -613,86 +820,594 @@ footer a { color: var(--muted); }
 .phase-nav {
   width: 180px;
   flex-shrink: 0;
-  background: #f8fbff;
-  border: 1px solid var(--border);
-  border-radius: 10px;
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
   padding: 8px 0;
-  font-size: 11px;
-  box-shadow: var(--elev-1);
+  font-size: var(--text-sm);
 }
-.phase-nav .phase-nav-title {
+.phase-nav:empty,
+.phase-nav[hidden],
+.phase-nav:not(:has(.phase-item)) {
+  display: none;
+}
+.phase-nav-title {
   padding: 0 10px 6px;
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--muted);
-  border-bottom: 1px solid var(--border);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--ink-muted);
+  border-bottom: 1px solid var(--line);
   margin-bottom: 4px;
 }
-.phase-nav .phase-item {
+.phase-item {
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 5px 10px;
   cursor: pointer;
-  color: #6b7280;
-  font-weight: 500;
-  transition: background 0.15s, color 0.15s, transform 0.15s, border-color 0.15s;
+  color: var(--ink-secondary);
   border-left: 3px solid transparent;
 }
-.phase-nav .phase-item:hover {
-  background: #eef4ff;
-  color: #374151;
-  transform: translateX(1px);
+.phase-item:hover {
+  background: var(--surface-hover);
 }
-.phase-nav .phase-item.active {
-  background: color-mix(in srgb, var(--accent) 14%, #ffffff);
-  color: var(--accent-strong);
+.phase-item.active {
+  background: var(--accent-soft);
+  color: var(--accent);
   border-left-color: var(--accent);
-  font-weight: 700;
-  transform: translateX(2px);
+  font-weight: 600;
 }
-.phase-nav .phase-item.done {
-  color: #059669;
+.phase-item.done {
+  color: var(--ok);
 }
-.phase-nav .phase-item .phase-dot {
+.phase-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #d1d5db;
+  background: var(--line-strong);
   flex-shrink: 0;
 }
-.phase-nav .phase-item.active .phase-dot {
+.phase-item.active .phase-dot {
   background: var(--accent);
-  animation: phaseDotPulse 1.15s ease-in-out infinite;
 }
-.phase-nav .phase-item.done .phase-dot {
-  background: #059669;
+.phase-item.done .phase-dot {
+  background: var(--ok);
 }
-@keyframes phaseDotPulse {
-  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 38%, transparent); }
-  70% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 0%, transparent); }
-  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent); }
+section.readout {
+  margin-bottom: 10px;
+}
+.readout-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+.readout-grid .item {
+  background: var(--surface);
+  padding: 9px 12px;
+  min-width: 0;
+}
+.readout-grid .label {
+  margin: 0 0 2px;
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--ink-muted);
+}
+.readout-grid .value {
+  margin: 0;
+  font: 600 16px/1.5 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.readout-grid .value.warn {
+  color: var(--warn);
+}
+.readout-grid .value.ok {
+  color: var(--ok);
+}
+.readout-grid .value.hot {
+  color: var(--danger);
+}
+.help-tip {
+  display: inline-block;
+  position: relative;
+  cursor: help;
+  color: var(--ink-muted);
+  border: 1px solid var(--control-line);
+  border-radius: 50%;
+  width: 15px;
+  height: 15px;
+  font-size: var(--text-xs);
+  line-height: 14px;
+  text-align: center;
+  margin-left: 4px;
+}
+.help-tip .tip-text {
+  display: none;
+  position: absolute;
+  bottom: 22px;
+  left: -100px;
+  width: 220px;
+  padding: 8px 10px;
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  box-shadow: var(--shadow-popover);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+  border-radius: var(--radius-md);
+  text-align: left;
+  z-index: 10;
+  pointer-events: none;
+}
+.help-tip:hover .tip-text, .help-tip:focus .tip-text {
+  display: block;
+}
+.explanation {
+  margin-top: 10px;
+}
+.complexity-chart {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  overflow-x: auto;
+}
+.complexity-chart svg {
+  width: 100%;
+  max-width: 600px;
+  height: auto;
+}
+details.learn-more {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+details.learn-more summary {
+  min-height: 34px;
+  padding: 6px 12px;
+  cursor: pointer;
+  background: var(--surface-muted);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--ink);
+}
+details.learn-more .body {
+  padding: 12px;
+  font-size: var(--text-md);
+  color: var(--ink-secondary);
+  overflow-wrap: anywhere;
+}
+details.learn-more .body p {
+  margin: 0 0 10px;
+}
+code, pre {
+  font-family: var(--font-mono);
+}
+details.learn-more code {
+  background: var(--surface-muted);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+}
+abbr.glossary-chip {
+  text-decoration: underline dotted;
+  text-decoration-color: var(--ink-muted);
+  cursor: help;
+}
+footer {
+  max-width: 1120px;
+  margin: 16px auto 0;
+  padding: 12px 20px 24px;
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+}
+a {
+  color: var(--accent);
 }
 @media (max-width: 700px) {
-  .stage-with-phases { flex-direction: column; }
-  .phase-nav { width: 100%; }
-  section.stage .stage-toolbar {
+  .stage-with-phases {
+    display: block;
+  }
+  .phase-nav {
+    width: 100%;
+    margin-top: 8px;
+  }
+  .complexity-chart svg {
+    min-width: 560px;
+  }
+  .stage-toolbar .phase-label {
+    width: 100%;
+    margin-left: 0;
+  }
+}
+/* Narrow and tall (a phone): scroll drawings sideways at a readable scale and
+   keep the surrounding page narrow. A short window fits the drawing instead. */
+@media (max-width: 700px) and (min-height: 640px) {
+  .stage-with-phases > svg {
+    min-width: 760px;
+  }
+  .stage-with-phases > div:not(.phase-nav) {
+    min-width: 800px;
+  }
+}
+@media (max-width: 650px) {
+  :root {
+    --control-h: 32px;
+  }
+  main, html[data-embedded="true"] main {
+    padding: 12px;
+  }
+  header {
+    padding: 12px;
+  }
+  header .version-chip {
+    margin: 4px 0 0;
+  }
+  .control-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+/* Guided lessons (a lesson with guide content): a step bar under the
+   scrubber, simplified code beside the drawing (under it in a narrow window),
+   Check yourself and Explore. The side column never grows taller than the
+   drawing's own fit limit, so it cannot push the drawing off screen. */
+html[data-guided="true"] .stage-scrubber {
+  margin-bottom: 0;
+}
+.guide-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  padding: 5px 10px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--line);
+  border-top: 0;
+  font-size: var(--text-sm);
+}
+.focus-top .guide-bar {
+  margin-bottom: 0;
+}
+.guide-bar [hidden], .stage-side [hidden], .quiz-dialog [hidden] {
+  display: none !important;
+}
+.guide-count {
+  color: var(--ink-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.guide-end {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.guide-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.guide-explore-only {
+  display: none;
+}
+html[data-explore="true"] button.guide-explore-only {
+  display: inline-flex;
+}
+html[data-explore="true"] input.guide-explore-only {
+  display: inline-block;
+}
+html[data-explore="true"] .stage-scrubber {
+  display: none;
+}
+input.guide-beat {
+  flex: 1 1 160px;
+  min-width: 120px;
+}
+.guide-inputs {
+  flex: 1 0 100%;
+  min-width: 0;
+}
+.guide-inputs section.controls {
+  margin: 4px 0 0;
+  max-height: 40vh;
+  overflow: auto;
+  background: var(--surface);
+}
+.stage-side {
+  position: relative;
+  flex: 0 0 260px;
+  width: 260px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: max(160px, calc(100vh - var(--stage-chrome, 96px)));
+  max-height: max(160px, calc(100dvh - var(--stage-chrome, 96px)));
+  overflow: auto;
+}
+.stage-side.is-collapsed {
+  flex-basis: 180px;
+  width: 180px;
+}
+.stage-side .phase-nav {
+  width: auto;
+  flex-shrink: 0;
+}
+.code-panel {
+  flex-shrink: 0;
+  background: var(--surface-subtle);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+.code-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px 3px 3px;
+}
+.code-panel:not(.is-collapsed) .code-head {
+  border-bottom: 1px solid var(--line);
+}
+button.code-toggle {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 24px;
+  padding: 2px 6px;
+  border-color: transparent;
+  background: none;
+  font-weight: 600;
+  text-align: left;
+}
+button.code-toggle:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--surface-hover);
+}
+.code-chevron {
+  flex: none;
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid var(--ink-muted);
+  transition: transform 150ms ease-out;
+}
+.code-panel.is-collapsed .code-chevron {
+  transform: rotate(-90deg);
+}
+.code-tag {
+  flex: none;
+  padding: 0 5px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+.code-lines {
+  list-style: none;
+  margin: 0;
+  padding: 6px 0;
+  font: var(--text-sm)/1.45 var(--font-mono);
+  counter-reset: code-line;
+}
+.code-line {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  padding: 1px 8px 1px 0;
+  border-left: 3px solid transparent;
+  counter-increment: code-line;
+}
+.code-line::before {
+  content: counter(code-line);
+  padding-right: 8px;
+  text-align: right;
+  color: var(--ink-faint);
+}
+.code-text, .code-fn {
+  grid-column: 2;
+  padding-left: calc(var(--indent, 0) * 2ch);
+  overflow-wrap: anywhere;
+}
+.code-text {
+  color: var(--ink-secondary);
+}
+.code-fn {
+  font-size: var(--text-xs);
+  color: var(--ink-muted);
+}
+.code-fn-part {
+  display: inline-block;
+  max-width: 100%;
+}
+.code-line.is-active {
+  background: var(--accent-soft);
+  border-left-color: var(--accent);
+}
+.code-line.is-active .code-text {
+  color: var(--ink);
+  font-weight: 600;
+}
+.code-note {
+  margin: 0;
+  padding: 5px 10px 7px;
+  border-top: 1px solid var(--line-subtle);
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+.quiz-dialog {
+  width: min(560px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface-raised);
+  color: var(--ink);
+  box-shadow: var(--shadow-popover);
+}
+.quiz-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+.quiz-dialog::backdrop {
+  background: rgba(15, 17, 23, 0.45);
+}
+.quiz-head, .quiz-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 14px;
+}
+.quiz-head {
+  border-bottom: 1px solid var(--line);
+}
+.quiz-head h2 {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: 600;
+}
+.quiz-foot {
+  flex-wrap: wrap;
+  border-top: 1px solid var(--line);
+}
+.quiz-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 14px;
+}
+.quiz-intro {
+  margin: 0 0 10px;
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+}
+.quiz-q {
+  min-width: 0;
+  margin: 0 0 14px;
+  padding: 0;
+  border: 0;
+}
+.quiz-q legend {
+  margin-bottom: 6px;
+  padding: 0;
+  font-weight: 600;
+}
+.quiz-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  cursor: pointer;
+}
+.quiz-choice input {
+  flex: none;
+  margin: 3px 0 0;
+  accent-color: var(--accent);
+}
+.quiz-choice.is-right {
+  border-color: var(--ok);
+  background: var(--ok-soft);
+}
+.quiz-choice.is-wrong {
+  border-color: var(--danger-line);
+  background: var(--danger-soft);
+}
+.quiz-mark {
+  flex: none;
+  margin-left: auto;
+  font-weight: 700;
+}
+.quiz-choice.is-right .quiz-mark {
+  color: var(--ok);
+}
+.quiz-choice.is-wrong .quiz-mark {
+  color: var(--danger);
+}
+.quiz-feedback {
+  margin: 2px 0 0;
+  color: var(--ink-secondary);
+  font-size: var(--text-sm);
+}
+.quiz-feedback:empty {
+  display: none;
+}
+.quiz-feedback .verdict-right {
+  color: var(--ok);
+  font-weight: 600;
+}
+.quiz-feedback .verdict-wrong {
+  color: var(--danger);
+  font-weight: 600;
+}
+.quiz-tally {
+  margin: 0;
+  color: var(--ink-secondary);
+  font-size: var(--text-sm);
+}
+html[data-focus="true"] .focus-stage .stage-side {
+  flex: 0 0 auto;
+  align-self: stretch;
+  width: clamp(200px, 24vw, 280px);
+  max-height: 100%;
+}
+html[data-focus="true"] .focus-stage .stage-side.is-collapsed {
+  width: 168px;
+}
+html[data-focus="true"] .focus-stage .stage-side .phase-nav {
+  align-self: stretch;
+  width: auto;
+  max-height: none;
+}
+/* Narrow windows: the simplified code goes under the drawing, which keeps
+   the full width. */
+@media (max-width: 900px) {
+  html[data-guided="true"] .stage-with-phases {
     flex-wrap: wrap;
+  }
+  .stage-side, .stage-side.is-collapsed {
+    flex: 1 1 100%;
+    width: auto;
+    max-height: none;
+  }
+}
+@media (max-width: 700px) {
+  .stage-side, .stage-side.is-collapsed {
+    margin-top: 8px;
+  }
+  html[data-focus="true"] .focus-stage .stage-with-phases {
+    flex-direction: column;
+  }
+  html[data-focus="true"] .focus-stage .stage-side,
+  html[data-focus="true"] .focus-stage .stage-side.is-collapsed {
+    flex: none;
+    width: auto;
+    max-height: 38%;
+    margin-top: 0;
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .anim-tween { transition: none !important; animation: none !important; }
-  .phase-nav .phase-item,
-  .stage-scrubber input[type="range"]::-webkit-slider-thumb,
-  .stage-scrubber input[type="range"]::-moz-range-thumb,
-  button,
-  button .btn-icon svg {
+  .anim-tween {
     transition: none !important;
-  }
-  .phase-nav .phase-item.active .phase-dot {
     animation: none !important;
+  }
+  .code-chevron {
+    transition: none;
   }
 }
 
@@ -701,46 +1416,42 @@ footer a { color: var(--muted); }
 <body data-lesson="join_order">
   <header>
     <div class="inner">
-      <h1>Join-order search — why query planning is factorial<span class="version-chip">MySQL 8.4 • MariaDB 11.4</span></h1>
+      <h1>Join-order search: why query planning is factorial<span class="version-chip">MySQL 8.4 • MariaDB 11.4</span></h1>
       <p class="subtitle">The greedy_search algorithm enumerates partial plans up to optimizer_search_depth tables ahead, costed by the optimizer, pruned by optimizer_prune_level.</p>
       
     </div>
   </header>
-  <main>
+  <main id="lesson-main">
     
     
 <section class="controls" aria-labelledby="controls-h">
-  <h2 id="controls-h">Parameters</h2>
+  <div class="controls-head"><h2 id="controls-h">Parameters</h2><a class="about-link" href="#about-example">About this example <span aria-hidden="true">&#8595;</span></a></div>
   <div class="control-grid">
 
     <div class="control">
-      <label for="tables">Tables in query (N): <span class="value-pill" data-pill-for="tables">7</span></label>
-      <input type="range" id="tables" name="tables" min="2" max="10" step="1" value="7">
-      <div class="hint">Real OLTP joins rarely exceed 6 tables; warehouse queries can hit 15+.</div>
+      <div class="control-head"><label for="tables">Tables in query (N): <span class="value-pill" data-pill-for="tables">7</span></label><span class="help-tip" aria-hidden="true">?<span class="tip-text" id="hint-tables">Real OLTP joins rarely exceed 6 tables; warehouse queries can hit 15+.</span></span></div>
+      <input type="range" id="tables" name="tables" min="2" max="10" step="1" value="7" aria-describedby="hint-tables">
     </div>
 
     <div class="control">
-      <label for="search_depth">optimizer_search_depth: <span class="value-pill" data-pill-for="search_depth">62</span></label>
-      <input type="range" id="search_depth" name="search_depth" min="1" max="10" step="1" value="10">
-      <div class="hint">Default is MAX_TABLES+1 = 62 (effective exhaustive). 1 = pure greedy.</div>
+      <div class="control-head"><label for="search_depth">optimizer_search_depth: <span class="value-pill" data-pill-for="search_depth">62</span></label><span class="help-tip" aria-hidden="true">?<span class="tip-text" id="hint-search_depth">Default is MAX_TABLES+1 = 62 (effective exhaustive). 1 = pure greedy.</span></span></div>
+      <input type="range" id="search_depth" name="search_depth" min="1" max="10" step="1" value="10" aria-describedby="hint-search_depth">
     </div>
 
     <div class="control">
-      <label for="prune_level">optimizer_prune_level</label>
-      <select id="prune_level" name="prune_level">
-        <option value="1" selected>1 — cost-based pruning (default)</option>
-        <option value="0">0 — no pruning, exhaustive</option>
+      <div class="control-head"><label for="prune_level">optimizer_prune_level</label><span class="help-tip" aria-hidden="true">?<span class="tip-text" id="hint-prune_level">MariaDB defaults to 2. MySQL at 1 and MariaDB at 2 also add a chain of eq_ref joins as one group. Set 0 only when debugging; pruning is what keeps planning fast.</span></span></div>
+      <select id="prune_level" name="prune_level" aria-describedby="hint-prune_level">
+        <option value="1" selected>1: prune by rows and cost (MySQL default)</option>
+        <option value="0">0: no pruning heuristic</option>
       </select>
-      <div class="hint">Set 0 only when debugging; pruning is what keeps planning sub-millisecond.</div>
     </div>
 
     <div class="control">
-      <label for="algo">Search algorithm</label>
-      <select id="algo" name="algo">
+      <div class="control-head"><label for="algo">Search algorithm</label><span class="help-tip" aria-hidden="true">?<span class="tip-text" id="hint-algo">Hypergraph (DPhyp) is set-based with an <code>optimizer_max_subgraph_pairs</code> cap. MySQL builds before 9.7 include it only in debug builds by default; MariaDB has none.</span></span></div>
+      <select id="algo" name="algo" aria-describedby="hint-algo">
         <option value="greedy" selected>greedy_search (default optimizer)</option>
-        <option value="hypergraph">hypergraph optimizer (MySQL 8.0+)</option>
+        <option value="hypergraph">hypergraph optimizer (MySQL only, off by default)</option>
       </select>
-      <div class="hint">Hypergraph (DPhyp) is set-based with <code>optimizer_max_subgraph_pairs</code> cap.</div>
     </div>
 
   </div>
@@ -750,27 +1461,8 @@ footer a { color: var(--muted); }
 <section class="stage" aria-labelledby="stage-h">
   <h2 id="stage-h" class="sr-only" style="position:absolute;left:-9999px">Join-order search animation</h2>
   
-<div class="query-card">
-  <p class="query-label">Example query this animation executes</p>
-  <pre class="query-sql">-- Seven-table join: the planner must pick an order before execution
-SELECT u.name, SUM(li.qty * li.unit_price) AS revenue
-FROM   users      u
-JOIN   orders     o  ON o.user_id     = u.id
-JOIN   line_items li ON li.order_id   = o.id
-JOIN   products   p  ON p.id          = li.product_id
-JOIN   suppliers  s  ON s.id          = p.supplier_id
-JOIN   categories c  ON c.id          = p.category_id
-JOIN   warehouses w  ON w.id          = li.warehouse_id
-WHERE  u.country = &#x27;US&#x27; AND s.region = &#x27;EU&#x27;
-GROUP BY u.name;</pre>
-  <p class="query-note">7! = 5,040 possible left-deep orders. EXPLAIN shows the one MySQL picked; this lesson shows the search that picked it.</p>
-</div>
 
   
-<div class="explainer-card">
-  <p class="explainer-title">What you&#x27;ll see in the animation</p>
-  <ul class="explainer-list"><li>Top: the N tables as candidate roots — every search starts by picking one of them as the outermost loop.</li><li>Center: the search tree of partial plans. Each node is a (partial-order, cost) pair the planner evaluated.</li><li>Yellow pulses = a partial plan is being costed by best_extension_by_limited_search.</li><li>Grey-out = optimizer_prune_level=1 dropped this branch because its partial cost already exceeded the best complete plan found so far.</li><li>Bottom strip: the chosen final order — what EXPLAIN would print.</li><li>Counter (top-right of stage): how many partial plans were actually evaluated. Watch it explode when you raise search_depth and turn pruning off.</li></ul>
-</div>
 
   
 <div class="stage-toolbar">
@@ -800,7 +1492,19 @@ GROUP BY u.name;</pre>
     <option value="2">2×</option>
     <option value="4">4×</option>
   </select>
-  <span class="phase-label" id="phase-label">Adjust parameters, then press Play</span>
+  <button id="btn-details" type="button" class="focus-only" aria-expanded="false" aria-controls="lesson-main">
+    <span class="btn-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>
+    </span>
+    <span class="btn-label">Details</span>
+  </button>
+  <button id="btn-fullscreen" type="button" aria-label="Show the lesson animation full screen">
+    <span class="btn-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><path class="icon-enter" d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/><path class="icon-exit" d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/></svg>
+    </span>
+    <span class="btn-label">Full screen</span>
+  </button>
+  <span class="phase-label" id="phase-label">Ready: press Next step, or Play to run it all</span>
 </div>
 <div class="stage-scrubber">
   <span class="scrubber-time" id="scrubber-time-current">0.0s</span>
@@ -810,20 +1514,44 @@ GROUP BY u.name;</pre>
 </div>
 
   <div class="stage-with-phases">
-    <svg id="planner-svg" viewBox="0 0 820 460" xmlns="http://www.w3.org/2000/svg"></svg>
-    <div id="phase-nav" class="phase-nav"></div>
+    <svg id="planner-svg" viewBox="0 0 820 436" xmlns="http://www.w3.org/2000/svg"></svg>
+    <div id="phase-nav" class="phase-nav" hidden></div>
   </div>
 </section>
 
+    <section class="about-example" id="about-example" aria-labelledby="about-example-h">
+  <h2 id="about-example-h">About this example</h2>
+  <div class="about-grid">
+    <div class="query-card">
+  <p class="query-label">Example query this animation executes</p>
+  <pre class="query-sql">-- Seven-table join: the planner must pick an order before execution
+SELECT u.name, SUM(li.qty * li.unit_price) AS revenue
+FROM   users      u
+JOIN   orders     o  ON o.user_id     = u.id
+JOIN   line_items li ON li.order_id   = o.id
+JOIN   products   p  ON p.id          = li.product_id
+JOIN   suppliers  s  ON s.id          = p.supplier_id
+JOIN   categories c  ON c.id          = p.category_id
+JOIN   warehouses w  ON w.id          = li.warehouse_id
+WHERE  u.country = &#x27;US&#x27; AND s.region = &#x27;EU&#x27;
+GROUP BY u.name;</pre>
+  <p class="query-note">7! = 5,040 possible left-deep orders. EXPLAIN shows the one MySQL picked; this lesson shows the search that picked it.</p>
+</div>
+    <div class="explainer-card">
+  <p class="explainer-title">What you&#x27;ll see in the animation</p>
+  <ul class="explainer-list"><li>Top: the N tables (u = users, o = orders, li = line_items, p = products, s = suppliers, c = categories, w = warehouses) as candidate roots. Every search starts by picking one of them as the outermost loop.</li><li>Center: the search tree of partial plans, three levels of it. Each node is a partial join order the planner costed; the path from the top to a node is that order.</li><li>Orange pulses = a partial plan is being costed by best_extension_by_limited_search. Green = the cheapest order so far, which the search extends.</li><li>Grey, dashed branches = optimizer_prune_level=1 dropped them: an earlier candidate at the same step read no more rows and cost no more, so their extensions are never explored. With 0 every drawn branch is costed.</li><li>Bottom strip: the chosen final order, what EXPLAIN would print. Counter (top right): how many partial plans were costed; watch it explode when you raise search_depth and turn pruning off.</li><li>Next step plays one stage of the search at a time; the simplified code beside the drawing highlights the lines each step runs.</li></ul>
+</div>
+  </div>
+</section>
     
 <section class="readout">
   <h2>Cost readout (updates live)</h2>
   <div class="readout-grid">
-    <div class="item"><p class="label">N (tables) <span class="help-tip">?<span class="tip-text">Number of non-eq_ref tables plus eq_ref groups. const and eq_ref tables are pre-placed by the planner and do not enter greedy_search.</span></span></p><p class="value" id="out-n">—</p></div>
+    <div class="item"><p class="label">N (tables) <span class="help-tip">?<span class="tip-text">Tables the search must order. const tables are placed first and do not count, and with MySQL&#x27;s prune_level 1 or MariaDB&#x27;s 2 a chain of eq_ref joins is added as one group, so the source counts non-eq_ref tables plus eq_ref groups.</span></span></p><p class="value" id="out-n">—</p></div>
     <div class="item"><p class="label">effective_search_depth <span class="help-tip">?<span class="tip-text">min(optimizer_search_depth, N). When equal to N the search reduces to full exhaustive enumeration.</span></span></p><p class="value" id="out-depth">—</p></div>
     <div class="item"><p class="label">Plans evaluated <span class="help-tip">?<span class="tip-text">Concrete count for this N and depth. The number of times best_extension_by_limited_search is called.</span></span></p><p class="value" id="out-plans">—</p></div>
-    <div class="item"><p class="label">Worst-case complexity <span class="help-tip">?<span class="tip-text">From sql_planner.cc line 2311: when search_depth &gt;= N, greedy_search is O(N!). For smaller depth d: O(N * N^d / d).</span></span></p><p class="value" id="out-complexity">—</p></div>
-    <div class="item"><p class="label">Pruning ratio <span class="help-tip">?<span class="tip-text">Fraction of partial plans that optimizer_prune_level=1 dropped before evaluating their full subtree. 0% means pruning is off; real OLTP plans see 60-90%.</span></span></p><p class="value" id="out-prune">—</p></div>
+    <div class="item"><p class="label">Worst-case complexity <span class="help-tip">?<span class="tip-text">From the comment above greedy_search (sql_planner.cc in MySQL, sql_select.cc in MariaDB): when search_depth &gt;= N, greedy_search is O(N!). For smaller depth d: O(N * N^d / d).</span></span></p><p class="value" id="out-complexity">—</p></div>
+    <div class="item"><p class="label">Pruning ratio <span class="help-tip">?<span class="tip-text">Fraction of partial plans that optimizer_prune_level=1 dropped before evaluating their full subtree. 0% means pruning is off. This lesson assumes 75%; the real share depends on the query and its statistics.</span></span></p><p class="value" id="out-prune">—</p></div>
     <div class="item"><p class="label">Planning time estimate <span class="help-tip">?<span class="tip-text">At ~1 microsecond per partial plan on modern hardware. Compare to query execution: if planning approaches execution cost, raise optimizer_prune_level or lower optimizer_search_depth.</span></span></p><p class="value" id="out-time">—</p></div>
   </div>
   <div class="explanation" id="out-explanation"></div>
@@ -840,7 +1568,7 @@ GROUP BY u.name;</pre>
     <p>The algorithm is <code>Optimize_table_order::greedy_search</code>
     in <code>sql/sql_planner.cc</code>. The doxygen comment above its
     body documents the complexity directly:</p>
-    <pre style="background:#0f172a;color:#e2e8f0;padding:10px;border-radius:6px;font-size:11.5px;line-height:1.5;overflow-x:auto">
+    <pre style="background:var(--surface-subtle);color:var(--ink);padding:10px;border-radius:6px;font-size:11.5px;line-height:1.5;overflow-x:auto">
 procedure greedy_search
   input: remaining_tables
   output: pplan;
@@ -862,7 +1590,9 @@ procedure greedy_search
     <p><strong>Why N!, intuitively?</strong> A left-deep plan over N
     tables is an ordering — there are N! orderings. With
     <code>search_depth ≥ N</code> and pruning off, every ordering is
-    costed. With a depth limit <code>d</code>, only the next
+    considered; the only orders cut short are those already costlier
+    than the best complete order found so far, a bound both servers
+    always apply. With a depth limit <code>d</code>, only the next
     <code>d</code> tables are enumerated exhaustively before the search
     commits to a partial prefix, so the bound drops to
     O(N · N<sup>d</sup> / d).</p>
@@ -870,27 +1600,35 @@ procedure greedy_search
     <p><strong>Defaults you might tune (MySQL 8.4 / MariaDB 11.4):</strong></p>
     <ul>
       <li><code>optimizer_search_depth</code> = <strong>62</strong>
-      (MAX_TABLES + 1). Setting it to <code>0</code> tells the server to
-      pick a value automatically. Session-tunable, so you can drop it
+      (MAX_TABLES + 1) in both. Setting it to <code>0</code> tells the
+      server to pick a value automatically: the number of tables plus one
+      for up to 7 tables, otherwise 7. Session-tunable, so you can drop it
       per-query if planning is a bottleneck.</li>
-      <li><code>optimizer_prune_level</code> = <strong>1</strong>
-      (cost-based pruning enabled). Set <code>0</code> only when you
-      need to compare what the planner would have chosen without
-      heuristics — never in production.</li>
+      <li><code>optimizer_prune_level</code> = <strong>1</strong> on MySQL
+      (0 or 1): skip a partial order that reads no fewer rows and costs no
+      less than one already costed at the same step, and add a chain of
+      eq_ref joins as one group. MariaDB accepts 0 to 2 and defaults to
+      <strong>2</strong>, the level at which MariaDB groups eq_ref chains. Set <code>0</code> only when you need to compare what the
+      planner would have chosen without heuristics, never in production.</li>
       <li><code>optimizer_max_subgraph_pairs</code> = <strong>100000</strong>.
-      Only the hypergraph (DPhyp) optimizer respects this; it's the
-      modern set-based optimizer enabled per-query via
-      <code>SET optimizer_switch='hypergraph_optimizer=on'</code> on
-      MySQL 8.0+.</li>
+      Only MySQL's hypergraph (DPhyp) optimizer respects this. MySQL
+      builds before 9.7 include that optimizer only in debug builds by
+      default; from 9.7 the build includes it by default, and it stays off
+      until
+      <code>SET optimizer_switch='hypergraph_optimizer=on'</code>.
+      MariaDB has no hypergraph optimizer.</li>
     </ul>
 
     <p><strong>N is not always the table count in your FROM clause.</strong>
     The source comment is precise: <em>"N is the number of non-eq_ref
     tables + eq_ref groups, which normally are considerably less than
-    total numbers of tables in the query."</em> <code>const</code> and
-    <code>eq_ref</code> chains are placed before <code>greedy_search</code>
-    runs, so a 10-table join can have N=3 if seven of the joins are
-    primary-key equi-joins.</p>
+    total numbers of tables in the query."</em> <code>const</code>
+    tables are placed before <code>greedy_search</code> runs, and with
+    MySQL's <code>optimizer_prune_level=1</code> or MariaDB's
+    <code>2</code> a chain of <code>eq_ref</code> joins is added as one
+    group during the search, so a 10-table join can behave like N=4 (three
+    tables plus one eq_ref group) if the other seven tables form one chain
+    of primary-key equi-joins.</p>
 
     <p><strong>How is this different from the join algorithms?</strong>
     Hash join, BNL, nested loop are <em>execution</em> strategies — they
@@ -901,9 +1639,11 @@ procedure greedy_search
     output of this search.</p>
 
     <p>Sources: MySQL 8.4 Reference Manual §10.9.3 (Controlling
-    Switchable Optimizations); <code>sql/sql_planner.cc</code> lines
-    2275-2334 in mysql-server master. MariaDB Knowledge Base
-    "Optimizer Switch".</p>
+    Switchable Optimizations); <code>sql/sql_planner.cc</code>
+    (<code>greedy_search</code>, <code>best_extension_by_limited_search</code>)
+    in mysql-server 8.4 and 9.7; <code>sql/sql_select.cc</code> (the same
+    functions) and <code>sql/sys_vars.cc</code> in MariaDB. MariaDB
+    Knowledge Base "Optimizer Switch".</p>
   </div>
 </details>
 
@@ -912,6 +1652,7 @@ procedure greedy_search
     <p>Generated by <a href="https://github.com/vgrippa/myflames">myflames teach</a> —
     interactive database algorithm lessons. Offline-first, stdlib-only.</p>
   </footer>
+  <script type="application/json" id="lesson-guide">{"code":{"title":"Join order search (greedy_search)","lines":[{"id":"start","indent":0,"text":"plan = empty; all N tables remain","fn":""},{"id":"loop","indent":0,"text":"while tables remain (search search_depth ahead):","fn":"Optimize_table_order::greedy_search"},{"id":"each","indent":1,"text":"for each table t that can go next:","fn":"Optimize_table_order::best_extension_by_limited_search"},{"id":"cost","indent":2,"text":"cost plan + t: access path, rows, cost","fn":"Optimize_table_order::best_access_path"},{"id":"heur","indent":2,"text":"if prune_level and an earlier t had \u003c= rows and cost:","fn":""},{"id":"drop","indent":3,"text":"drop plan + t and every order after it","fn":""},{"id":"deeper","indent":2,"text":"else repeat for the tables after plan + t","fn":""},{"id":"pick","indent":1,"text":"plan += cheapest order's first table (or all)","fn":""},{"id":"done","indent":0,"text":"return plan: the order EXPLAIN shows","fn":""},{"id":"hg","indent":0,"text":"hypergraph (MySQL only): a plan per table set","fn":""},{"id":"hg-one","indent":1,"text":"each table alone: its cheapest access path","fn":""},{"id":"hg-pairs","indent":1,"text":"for two connected sets a predicate links:","fn":""},{"id":"hg-join","indent":2,"text":"keep the cheapest plans for their union","fn":""},{"id":"hg-done","indent":1,"text":"return the plan for all tables (may be bushy)","fn":""}]},"beats":{"problem":["start"],"cost-first":["loop","each","cost"],"go-deeper":["deeper"],"prune":["heur","drop"],"cost-next":["each","cost"],"done":["pick","done"],"hg-tables":["hg","hg-one"],"hg-pairs":["hg-pairs","hg-join"],"hg-grow":["hg-pairs","hg-join"],"hg-done":["hg-done"]},"quiz":[{"question":"Seven tables, optimizer_search_depth at its default of 62. How many left-deep join orders can greedy_search consider?","choices":[{"text":"All 7! = 5,040, because the search reaches every table","correct":true,"why":"When search_depth is at least the number of tables the search can cover every order, which the server source describes as factorial in the number of tables."},{"text":"7, one per table","correct":false,"why":"That would be a single greedy step; a depth of 62 looks ahead through all 7 tables."},{"text":"Only the order written in FROM","correct":false,"why":"MySQL and MariaDB both reorder inner joins by estimated cost unless you force the order with STRAIGHT_JOIN."}]},{"question":"What does optimizer_prune_level=1 do during the search?","choices":[{"text":"Drops a partial order when an earlier candidate at the same step read no more rows and cost no more, without exploring its extensions","correct":true,"why":"This heuristic shrinks the search a lot but can miss the cheapest order; MySQL's level 1 also adds a chain of eq_ref joins as one group, which MariaDB does at its default level 2."},{"text":"Stops planning after 1 millisecond","correct":false,"why":"The value is a level, not a time; it turns on a rule about which partial orders are worth exploring."},{"text":"Guarantees the cheapest order","correct":false,"why":"It is a heuristic, and the server source warns that it may miss the optimal plan; 0 turns it off."}]},{"question":"A 20-table report spends seconds choosing its join order. Which change trades plan quality for a faster choice?","choices":[{"text":"A lower optimizer_search_depth, such as 0, which picks 7 for this query","correct":true,"why":"A smaller depth looks fewer tables ahead before committing one, and 0 makes both servers use 7 when more than 7 tables are left to order."},{"text":"optimizer_prune_level=0","correct":false,"why":"That turns the pruning heuristic off, so the search explores more orders and takes longer."},{"text":"A larger join_buffer_size","correct":false,"why":"The join buffer holds rows while the query runs; its size does not shorten the search for a join order."}]}]}</script>
   <script>
 // ---------------------------------------------------------------------------
 // myflames teach animation runtime — vanilla JS, no deps, offline-first.
@@ -937,11 +1678,58 @@ var anim = (function() {
   // --- Interpolation -----------------------------------------------------
   function lerp(a, b, t) { return a + (b - a) * t; }
 
+  // Read at use time: a palette must not retain the previous appearance.
+  function cssVar(name, fallback) {
+    var value = "";
+    if (typeof getComputedStyle === "function" && typeof document !== "undefined") {
+      value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    }
+    return _resolveCssColor(value || fallback || "#000000", 0);
+  }
+  function _resolveCssColor(color, depth) {
+    if (typeof color !== "string" || depth > 8) return "#000000";
+    color = color.trim();
+    var match = color.match(/^var\(\s*(--[\w-]+)\s*(?:,\s*(.*))?\)$/);
+    if (!match) return color;
+    var value = "";
+    if (typeof getComputedStyle === "function" && typeof document !== "undefined") {
+      value = getComputedStyle(document.documentElement).getPropertyValue(match[1]).trim();
+    }
+    return _resolveCssColor(value || match[2] || "#000000", depth + 1);
+  }
+  function palette(colors) {
+    var out = {};
+    Object.keys(colors).forEach(function(key) {
+      Object.defineProperty(out, key, {
+        enumerable: true,
+        get: function() { return _resolveCssColor(colors[key], 0); }
+      });
+    });
+    return out;
+  }
   function _parseHex(h) {
-    return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+    h = _resolveCssColor(h, 0);
+    if (/^#[0-9a-f]{3}$/i.test(h)) {
+      h = "#" + h[1] + h[1] + h[2] + h[2] + h[3] + h[3];
+    }
+    if (/^#[0-9a-f]{6}$/i.test(h)) {
+      return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+    }
+    // SVG attributes can contain the rgb() value from an earlier tween.
+    var rgb = h.match(/^rgba?\(([^)]+)\)$/i);
+    if (rgb) {
+      var parts = rgb[1].trim().split(/[\s,\/]+/).slice(0, 3);
+      if (parts.length === 3) {
+        var channels = parts.map(function(v) {
+          return v.indexOf("%") >= 0 ? parseFloat(v) / 100 * 255 : parseFloat(v);
+        });
+        if (channels.every(isFinite)) return channels;
+      }
+    }
+    return [0, 0, 0];
   }
   function _toHex(c) {
-    var h = Math.round(c).toString(16);
+    var h = Math.round(Math.max(0, Math.min(255, c))).toString(16);
     return h.length < 2 ? "0" + h : h;
   }
   function lerpColor(a, b, t) {
@@ -960,6 +1748,12 @@ var anim = (function() {
   var _speed = 1;
   function setSpeed(s) { _speed = Math.max(0.1, s); }
   function getSpeed() { return _speed; }
+
+  // --- Instant application -----------------------------------------------
+  // Above zero while a timeline applies steps at once (a seek or a jump to a
+  // guided step): decorative pulses are skipped, so every page visited so
+  // far does not flash together.
+  var _instant = 0;
 
   // --- Global pause flag --------------------------------------------------
   // When paused, every running tween suspends at its current progress and
@@ -983,7 +1777,7 @@ var anim = (function() {
   function tween(opts) {
     var from = opts.from;
     var to = opts.to;
-    var baseDuration = opts.duration || 400;
+    var baseDuration = opts.duration == null ? 400 : Math.max(0, opts.duration);
     var ease = opts.ease || easeOutCubic;
     var onUpdate = opts.onUpdate || function() {};
     var onComplete = opts.onComplete || function() {};
@@ -997,7 +1791,7 @@ var anim = (function() {
       return out;
     }
 
-    var virtualElapsed = 0;  // accumulated virtual time inside this tween
+    var virtualElapsed = opts.elapsed || 0;  // virtual time, including a seek offset
     var lastFrame = null;
 
     // reduced-motion: skip to end state instantly
@@ -1023,7 +1817,7 @@ var anim = (function() {
       }
       var adjusted = virtualElapsed - delay;
       if (adjusted < 0) { requestAnimationFrame(frame); return; }
-      var t = Math.min(1, adjusted / baseDuration);
+      var t = baseDuration === 0 ? 1 : Math.min(1, adjusted / baseDuration);
       var eased = ease(t);
       onUpdate(interpolate(from, to, eased));
       if (t < 1) requestAnimationFrame(frame);
@@ -1072,23 +1866,49 @@ var anim = (function() {
     var current = null;
     var playing = false;
     var onDoneCb = null;
-    var pendingDelayTimer = null;
-    var pendingDelayRemaining = 0;
     var marks = [];  // phase markers: [{name, ms}]
+    // Guided steps ("beats"): [{kind, ms, step}]. A beat starts at step
+    // index `step`; the lesson's guide maps its kind to simplified code.
+    var beats = [];
+    // Steps begun so far (applied, running or finished). The current beat
+    // is the last one whose first step has begun.
+    var cursor = 0;
+    // Held at a beat boundary: heldNext runs the next step when continued.
+    var held = false;
+    var heldNext = null;
+    var holdAt = -1;
+    var onHoldCb = null;
 
-    // Virtual-time ticker state. ``virtualElapsed`` is the total ms we have
-    // "played" across all steps, pause-adjusted and speed-adjusted. The
-    // currently-running tween reports its own elapsed; we add that to
-    // ``stepVirtualStart`` to get the precise scrubber position.
+    // Tweens and delays share the same pause/speed-aware virtual clock.
     var virtualElapsed = 0;
     var stepVirtualStart = 0;
-    var tickerLastFrame = null;
+
+    // Final state of one step, without animating it.
+    function applyStep(s) {
+      if (s._type === "tween") {
+        if (s.onUpdate) s.onUpdate(s.to);
+        if (s.onComplete) s.onComplete();
+      } else if (s._type === "call") {
+        s._fn();
+      }
+    }
+
+    function runDelay(step, elapsed, next) {
+      current = tween({
+        from: 0, to: 0, duration: step._duration, elapsed: elapsed,
+        onComplete: function() {
+          current = null;
+          virtualElapsed = step._start + step._duration;
+          next();
+        }
+      });
+    }
 
     var tl = {};
     tl.add = function(step) {
       step._type = "tween";
       step._start = totalDuration;
-      step._duration = step.duration || 400;
+      step._duration = step.duration == null ? 400 : Math.max(0, step.duration);
       totalDuration += step._duration;
       steps.push(step);
       return tl;
@@ -1104,10 +1924,20 @@ var anim = (function() {
       return tl;
     };
     tl.mark = function(name) {
-      marks.push({ name: name, ms: totalDuration });
+      marks.push({ name: name, ms: totalDuration, step: steps.length });
       return tl;
     };
     tl.getMarks = function() { return marks; };
+    // One guided step starts here; `kind` names the simplified-code lines it
+    // runs (the lesson's guide content maps kinds to lines).
+    tl.beat = function(kind) {
+      beats.push({ kind: String(kind), ms: totalDuration, step: steps.length });
+      return tl;
+    };
+    tl.getBeats = function() { return beats; };
+    tl.getStepCount = function() { return steps.length; };
+    tl.getCursor = function() { return cursor; };
+    tl.isHeld = function() { return held; };
     tl.getTotalDuration = function() { return totalDuration; };
     tl.getCurrentTime = function() {
       // If a tween is mid-flight, add its local elapsed to the step start.
@@ -1125,88 +1955,102 @@ var anim = (function() {
       tl.stop();
       virtualElapsed = 0;
       stepVirtualStart = 0;
-      for (var i = 0; i < steps.length; i++) {
-        var s = steps[i];
-        var stepEnd = s._start + s._duration;
-        if (stepEnd <= targetMs) {
-          // Fully elapsed — fire final state
-          if (s._type === "tween") {
-            if (s.onUpdate) s.onUpdate(s.to);
-            if (s.onComplete) s.onComplete();
-          } else if (s._type === "call") {
-            s._fn();
+      cursor = 0;
+      _instant++;
+      try {
+        for (var i = 0; i < steps.length; i++) {
+          var s = steps[i];
+          var stepEnd = s._start + s._duration;
+          if (stepEnd <= targetMs) {
+            // Fully elapsed — fire final state
+            applyStep(s);
+            virtualElapsed = stepEnd;
+            cursor = i + 1;
+          } else if (s._start < targetMs) {
+            // Step is currently running at targetMs
+            if (s._type === "tween") {
+              var progress = (targetMs - s._start) / s._duration;
+              var eased = (s.ease || easeOutCubic)(progress);
+              if (s.onUpdate) s.onUpdate(_interpolateValue(s.from, s.to, eased));
+            } else if (s._type === "call") {
+              s._fn();
+            }
+            virtualElapsed = targetMs;
+            stepVirtualStart = s._start;
+            cursor = i + 1;
+            return;
+          } else {
+            virtualElapsed = Math.min(targetMs, s._start);
+            return;
           }
-          virtualElapsed = stepEnd;
-        } else if (s._start < targetMs) {
-          // Step is currently running at targetMs
-          if (s._type === "tween") {
-            var progress = (targetMs - s._start) / s._duration;
-            var eased = (s.ease || easeOutCubic)(progress);
-            if (s.onUpdate) s.onUpdate(_interpolateValue(s.from, s.to, eased));
-          } else if (s._type === "call") {
-            s._fn();
-          }
-          virtualElapsed = targetMs;
-          stepVirtualStart = s._start;
-          return;
-        } else {
-          virtualElapsed = Math.min(targetMs, s._start);
-          return;
         }
+        virtualElapsed = targetMs;
+      } finally {
+        _instant--;
       }
-      virtualElapsed = targetMs;
     };
 
-    tl.play = function(onDone) {
-      playing = true;
+    // Apply steps [0, n) at once and hold before step n, ready to continue
+    // live with continueTo(). Used to show the end of a guided step.
+    tl.fastForwardToStep = function(n) {
+      tl.stop();
+      n = Math.max(0, Math.min(steps.length, Math.floor(n) || 0));
+      _instant++;
+      try {
+        for (var k = 0; k < n; k++) applyStep(steps[k]);
+      } finally {
+        _instant--;
+      }
+      cursor = n;
+      virtualElapsed = n < steps.length ? steps[n]._start : totalDuration;
+      stepVirtualStart = virtualElapsed;
+      held = true;
+      heldNext = runner(n);
+      return tl;
+    };
+
+    // Continue live from a hold. Stops again before step `hold` (the next
+    // beat boundary; -1 runs to the end) and calls onHold, or calls onDone
+    // at the end. Returns false when the timeline is not held.
+    tl.continueTo = function(hold, onHold, onDone) {
+      if (!held || !heldNext) return false;
+      var go = heldNext;
+      held = false;
+      heldNext = null;
+      holdAt = (typeof hold === "number" && hold >= 0) ? hold : -1;
+      onHoldCb = onHold || null;
       onDoneCb = onDone || null;
-      virtualElapsed = 0;
-      stepVirtualStart = 0;
-      tickerLastFrame = null;
-      var i = 0;
+      playing = true;
+      go();
+      return true;
+    };
 
-      // Scrubber-tracking RAF loop. Runs while playing; updates
-      // virtualElapsed so getCurrentTime() reflects the current position
-      // even across delay gaps.
-      function ticker(now) {
-        if (!playing) return;
-        if (tickerLastFrame === null) tickerLastFrame = now;
-        var delta = now - tickerLastFrame;
-        tickerLastFrame = now;
-        if (!_paused && !current) {
-          // Only advance during delay windows; while a tween is running,
-          // getCurrentTime() reads the tween's own elapsed instead.
-          virtualElapsed += delta * _speed;
-        } else if (!_paused && current && typeof current.getElapsed === "function") {
-          // Keep virtualElapsed in sync with the running tween so
-          // getCurrentTime() is monotonic even if nothing queries it.
-          virtualElapsed = stepVirtualStart + current.getElapsed();
-        }
-        if (playing) requestAnimationFrame(ticker);
-      }
-      requestAnimationFrame(ticker);
-
-      function scheduleDelay(remaining, after) {
-        if (_paused) {
-          pendingDelayRemaining = remaining;
-          return;
-        }
-        pendingDelayRemaining = remaining;
-        pendingDelayTimer = setTimeout(function() {
-          pendingDelayTimer = null;
-          pendingDelayRemaining = 0;
-          after();
-        }, remaining / _speed);
-      }
+    // Plays steps live from index `start`, holding before `holdAt`.
+    function runner(start) {
+      var i = start;
       function next() {
         if (!playing) return;
+        if (i === holdAt && i < steps.length) {
+          playing = false;
+          held = true;
+          heldNext = next;
+          holdAt = -1;
+          virtualElapsed = steps[i]._start;
+          stepVirtualStart = virtualElapsed;
+          var cb = onHoldCb;
+          onHoldCb = null;
+          if (cb) cb();
+          return;
+        }
         if (i >= steps.length) {
           playing = false;
           virtualElapsed = totalDuration;
+          cursor = steps.length;
           if (onDoneCb) onDoneCb();
           return;
         }
         var step = steps[i++];
+        cursor = i;
         stepVirtualStart = step._start;
         if (step._type === "delay") {
           if (reducedMotion()) {
@@ -1214,10 +2058,56 @@ var anim = (function() {
             next();
             return;
           }
-          scheduleDelay(step._duration, function() {
+          runDelay(step, 0, next);
+          return;
+        }
+        if (step._type === "call") {
+          step._fn();
+          virtualElapsed = step._start;
+          next();
+          return;
+        }
+        var origComplete = step.onComplete || function() {};
+        current = tween(Object.assign({}, step, {
+          onComplete: function() {
+            origComplete();
+            current = null;
             virtualElapsed = step._start + step._duration;
             next();
-          });
+          }
+        }));
+      }
+      return next;
+    }
+
+    tl.play = function(onDone) {
+      tl.stop();
+      playing = true;
+      onDoneCb = onDone || null;
+      virtualElapsed = 0;
+      stepVirtualStart = 0;
+      cursor = 0;
+      var i = 0;
+
+      function next() {
+        if (!playing) return;
+        if (i >= steps.length) {
+          playing = false;
+          virtualElapsed = totalDuration;
+          cursor = steps.length;
+          if (onDoneCb) onDoneCb();
+          return;
+        }
+        var step = steps[i++];
+        cursor = i;
+        stepVirtualStart = step._start;
+        if (step._type === "delay") {
+          if (reducedMotion()) {
+            virtualElapsed = step._start + step._duration;
+            next();
+            return;
+          }
+          runDelay(step, 0, next);
           return;
         }
         if (step._type === "call") {
@@ -1237,12 +2127,6 @@ var anim = (function() {
           }
         }));
       }
-      var offPause = function(p) {
-        if (!p && pendingDelayRemaining > 0 && pendingDelayTimer === null && playing) {
-          scheduleDelay(pendingDelayRemaining, next);
-        }
-      };
-      onPauseChange(offPause);
       next();
       return tl;
     };
@@ -1254,28 +2138,27 @@ var anim = (function() {
       // Apply all steps up to fromMs synchronously
       virtualElapsed = 0;
       stepVirtualStart = 0;
-      for (var k = 0; k < steps.length; k++) {
-        var s = steps[k];
-        var stepEnd = s._start + s._duration;
-        if (stepEnd <= fromMs) {
-          if (s._type === "tween") {
-            if (s.onUpdate) s.onUpdate(s.to);
-            if (s.onComplete) s.onComplete();
-          } else if (s._type === "call") {
-            s._fn();
+      cursor = 0;
+      _instant++;
+      try {
+        for (var k = 0; k < steps.length; k++) {
+          var s = steps[k];
+          var stepEnd = s._start + s._duration;
+          if (stepEnd <= fromMs) {
+            applyStep(s);
+            virtualElapsed = stepEnd;
+            cursor = k + 1;
+          } else {
+            break;
           }
-          virtualElapsed = stepEnd;
-        } else {
-          break;
         }
+      } finally {
+        _instant--;
       }
-      // Now start live playback. The play() method will walk from step 0,
-      // but each step whose _start + _duration <= virtualElapsed will
-      // complete instantly because virtualElapsed is already past them.
-      // We override virtualElapsed inside play() to resume cleanly.
+      // Continue with the first unfinished step, preserving its elapsed
+      // time so resuming a tween uses the original easing curve.
       playing = true;
       onDoneCb = onDone || null;
-      tickerLastFrame = null;
       var resumeIdx = 0;
       // Find the first step that hasn't been fully applied yet
       for (var j = 0; j < steps.length; j++) {
@@ -1288,50 +2171,26 @@ var anim = (function() {
       virtualElapsed = fromMs;
       stepVirtualStart = (resumeIdx < steps.length) ? steps[resumeIdx]._start : totalDuration;
 
-      function ticker2(now) {
-        if (!playing) return;
-        if (tickerLastFrame === null) tickerLastFrame = now;
-        var delta = now - tickerLastFrame;
-        tickerLastFrame = now;
-        if (!_paused && !current) {
-          virtualElapsed += delta * _speed;
-        } else if (!_paused && current && typeof current.getElapsed === "function") {
-          virtualElapsed = stepVirtualStart + current.getElapsed();
-        }
-        if (playing) requestAnimationFrame(ticker2);
-      }
-      requestAnimationFrame(ticker2);
-
-      function scheduleDelay2(remaining, after) {
-        if (_paused) { pendingDelayRemaining = remaining; return; }
-        pendingDelayRemaining = remaining;
-        pendingDelayTimer = setTimeout(function() {
-          pendingDelayTimer = null;
-          pendingDelayRemaining = 0;
-          after();
-        }, remaining / _speed);
-      }
       var ri = resumeIdx;
       function next2() {
         if (!playing) return;
         if (ri >= steps.length) {
           playing = false;
           virtualElapsed = totalDuration;
+          cursor = steps.length;
           if (onDoneCb) onDoneCb();
           return;
         }
         var step = steps[ri++];
+        cursor = Math.max(cursor, ri);
         stepVirtualStart = step._start;
         if (step._type === "delay") {
           if (reducedMotion()) { virtualElapsed = step._start + step._duration; next2(); return; }
           // If we're resuming mid-delay, shorten it
-          var elapsed = fromMs - step._start;
+          var elapsed = Math.max(0, fromMs - step._start);
           var remaining = Math.max(0, step._duration - elapsed);
           if (remaining <= 0) { virtualElapsed = step._start + step._duration; next2(); return; }
-          scheduleDelay2(remaining, function() {
-            virtualElapsed = step._start + step._duration;
-            next2();
-          });
+          runDelay(step, elapsed, next2);
           return;
         }
         if (step._type === "call") {
@@ -1350,6 +2209,7 @@ var anim = (function() {
         }
         var origComplete = step.onComplete || function() {};
         current = tween(Object.assign({}, step, {
+          elapsed: Math.max(0, fromMs - step._start),
           onComplete: function() {
             origComplete();
             current = null;
@@ -1358,20 +2218,16 @@ var anim = (function() {
           }
         }));
       }
-      var offPause2 = function(p) {
-        if (!p && pendingDelayRemaining > 0 && pendingDelayTimer === null && playing) {
-          scheduleDelay2(pendingDelayRemaining, next2);
-        }
-      };
-      onPauseChange(offPause2);
       next2();
       return tl;
     };
 
     tl.stop = function() {
       playing = false;
-      if (pendingDelayTimer) { clearTimeout(pendingDelayTimer); pendingDelayTimer = null; }
-      pendingDelayRemaining = 0;
+      held = false;
+      heldNext = null;
+      holdAt = -1;
+      onHoldCb = null;
       if (current) {
         if (typeof current === "function") current();
         current = null;
@@ -1393,7 +2249,7 @@ var anim = (function() {
 
   // --- pulse: briefly grow an SVG element's stroke width ---------------
   function pulse(el, peakWidth, baseWidth, durationMs) {
-    if (!el) return;
+    if (!el || _instant > 0) return;
     var dur = (durationMs || 400) / 2;
     tween({
       from: baseWidth || 1,
@@ -1511,12 +2367,12 @@ var anim = (function() {
       var gridX = toSvg(gx, yMin).x;
       var gline = svgEl_create("line", {
         x1: gridX, y1: padT, x2: gridX, y2: padT + plotH,
-        stroke: "#e5e7eb", "stroke-width": 1
+        stroke: "var(--svg-line)", "stroke-width": 1
       });
       svgEl.appendChild(gline);
       var glbl = svgEl_create("text", {
         x: gridX, y: padT + plotH + 14,
-        "text-anchor": "middle", "font-size": 9, fill: "#9ca3af"
+        "text-anchor": "middle", "font-size": 9, fill: "var(--svg-ink-muted)"
       });
       glbl.textContent = formatLog(gx);
       svgEl.appendChild(glbl);
@@ -1527,12 +2383,12 @@ var anim = (function() {
       if (gridY < padT - 1 || gridY > padT + plotH + 1) continue;
       var gln = svgEl_create("line", {
         x1: padL, y1: gridY, x2: padL + plotW, y2: gridY,
-        stroke: "#e5e7eb", "stroke-width": 1
+        stroke: "var(--svg-line)", "stroke-width": 1
       });
       svgEl.appendChild(gln);
       var glb = svgEl_create("text", {
         x: padL - 6, y: gridY + 3,
-        "text-anchor": "end", "font-size": 9, fill: "#9ca3af"
+        "text-anchor": "end", "font-size": 9, fill: "var(--svg-ink-muted)"
       });
       glb.textContent = formatLog(gy);
       svgEl.appendChild(glb);
@@ -1541,12 +2397,12 @@ var anim = (function() {
     // Axis lines
     var axisX = svgEl_create("line", {
       x1: padL, y1: padT + plotH, x2: padL + plotW, y2: padT + plotH,
-      stroke: "#6b7280", "stroke-width": 1.5
+      stroke: "var(--svg-ink-muted)", "stroke-width": 1.5
     });
     svgEl.appendChild(axisX);
     var axisY = svgEl_create("line", {
       x1: padL, y1: padT, x2: padL, y2: padT + plotH,
-      stroke: "#6b7280", "stroke-width": 1.5
+      stroke: "var(--svg-ink-muted)", "stroke-width": 1.5
     });
     svgEl.appendChild(axisY);
 
@@ -1554,7 +2410,7 @@ var anim = (function() {
     if (opts.xLabel) {
       var xl = svgEl_create("text", {
         x: padL + plotW/2, y: H - 6,
-        "text-anchor": "middle", "font-size": 11, "font-weight": 600, fill: "#374151"
+        "text-anchor": "middle", "font-size": 11, "font-weight": 600, fill: "var(--svg-ink)"
       });
       xl.textContent = opts.xLabel;
       svgEl.appendChild(xl);
@@ -1567,7 +2423,7 @@ var anim = (function() {
       if (opts.lowerIsBetter) yLabelText += "  (lower = better ↓)";
       var yl = svgEl_create("text", {
         x: 12, y: padT + plotH/2,
-        "text-anchor": "middle", "font-size": 11, "font-weight": 600, fill: "#374151",
+        "text-anchor": "middle", "font-size": 11, "font-weight": 600, fill: "var(--svg-ink)",
         transform: "rotate(-90 12," + (padT + plotH/2) + ")"
       });
       yl.textContent = yLabelText;
@@ -1584,7 +2440,7 @@ var anim = (function() {
         d += (i === 0 ? "M " : " L ") + svg.x.toFixed(1) + "," + svg.y.toFixed(1);
       });
       var path = svgEl_create("path", {
-        d: d, fill: "none", stroke: c.color || "#1f2937", "stroke-width": 2.5,
+        d: d, fill: "none", stroke: c.color || "var(--svg-ink)", "stroke-width": 2.5,
         "stroke-linecap": "round", "stroke-linejoin": "round"
       });
       svgEl.appendChild(path);
@@ -1595,11 +2451,11 @@ var anim = (function() {
     var lx = padL;
     opts.curves.forEach(function(c, idx) {
       var sw = svgEl_create("rect", {
-        x: lx, y: legendY - 8, width: 12, height: 3, rx: 1, fill: c.color || "#1f2937"
+        x: lx, y: legendY - 8, width: 12, height: 3, rx: 1, fill: c.color || "var(--svg-ink)"
       });
       svgEl.appendChild(sw);
       var lt = svgEl_create("text", {
-        x: lx + 16, y: legendY - 4, "font-size": 10, "font-weight": 600, fill: c.color || "#1f2937"
+        x: lx + 16, y: legendY - 4, "font-size": 10, "font-weight": 600, fill: c.color || "var(--svg-ink)"
       });
       lt.textContent = c.label;
       svgEl.appendChild(lt);
@@ -1621,7 +2477,7 @@ var anim = (function() {
           var svg = toSvg(cx, e.cy);
           var dot = svgEl_create("circle", {
             cx: svg.x, cy: svg.y, r: 5,
-            fill: e.c.color || "#1f2937", stroke: "#ffffff", "stroke-width": 2
+            fill: "var(--svg-highlight)", stroke: e.c.color || "var(--svg-danger)", "stroke-width": 2
           });
           svgEl.appendChild(dot);
         });
@@ -1630,7 +2486,7 @@ var anim = (function() {
         var vx = toSvg(cx, yMin).x;
         var vline = svgEl_create("line", {
           x1: vx, y1: padT, x2: vx, y2: padT + plotH,
-          stroke: "#ff3d3d", "stroke-width": 1, "stroke-dasharray": "3 3"
+          stroke: "var(--svg-danger)", "stroke-width": 1, "stroke-dasharray": "3 3"
         });
         svgEl.appendChild(vline);
 
@@ -1650,7 +2506,7 @@ var anim = (function() {
           var check = svgEl_create("text", {
             x: winSvg.x + 9, y: winSvg.y + 4,
             "font-size": 14, "font-weight": 800,
-            fill: "#16a34a"
+            fill: "var(--svg-ok)"
           });
           check.textContent = "✓";
           svgEl.appendChild(check);
@@ -1673,13 +2529,13 @@ var anim = (function() {
             var pillBg = svgEl_create("rect", {
               x: pillX, y: pillY, width: approxW, height: 18,
               rx: 9, ry: 9,
-              fill: "rgba(22,163,74,0.12)",
-              stroke: "#16a34a", "stroke-width": 1
+              fill: "var(--svg-ok-soft)",
+              stroke: "var(--svg-ok)", "stroke-width": 1
             });
             svgEl.appendChild(pillBg);
             var pillTxt = svgEl_create("text", {
               x: pillX + 8, y: midY + 3,
-              "font-size": 10.5, "font-weight": 700, fill: "#15803d"
+              "font-size": 10.5, "font-weight": 700, fill: "var(--svg-ok)"
             });
             pillTxt.textContent = labelText;
             svgEl.appendChild(pillTxt);
@@ -1702,23 +2558,23 @@ var anim = (function() {
     var hoverGroup = svgEl_create("g", { "pointer-events": "none", opacity: 0 });
     var hoverLine = svgEl_create("line", {
       y1: padT, y2: padT + plotH,
-      stroke: "#1f2937", "stroke-width": 1, "stroke-dasharray": "2 2"
+      stroke: "var(--svg-ink)", "stroke-width": 1, "stroke-dasharray": "2 2"
     });
     hoverGroup.appendChild(hoverLine);
     var hoverDots = [];
     var hoverLabelBg = svgEl_create("rect", {
-      rx: 4, ry: 4, fill: "rgba(31,41,55,0.95)", stroke: "none"
+      rx: 4, ry: 4, fill: "var(--svg-counter-bg)", stroke: "none"
     });
     hoverGroup.appendChild(hoverLabelBg);
     var hoverLabelLines = [];
     opts.curves.forEach(function(c, idx) {
       var dot = svgEl_create("circle", {
-        r: 4, fill: c.color || "#1f2937", stroke: "#fff", "stroke-width": 1.5
+        r: 4, fill: c.color || "var(--svg-ink)", stroke: "var(--svg-node-bg)", "stroke-width": 1.5
       });
       hoverGroup.appendChild(dot);
       hoverDots.push(dot);
       var txt = svgEl_create("text", {
-        "font-size": 10, "font-weight": 600, fill: "#ffffff"
+        "font-size": 10, "font-weight": 600, fill: "var(--svg-counter-ink)"
       });
       hoverGroup.appendChild(txt);
       hoverLabelLines.push(txt);
@@ -1774,7 +2630,7 @@ var anim = (function() {
       var maxLineW = 0;
       for (var j = 0; j < labelLines.length; j++) {
         if (!hoverLabelLines[j]) {
-          var t = svgEl_create("text", { "font-size": 10, "font-weight": 600, fill: "#ffffff" });
+          var t = svgEl_create("text", { "font-size": 10, "font-weight": 600, fill: "var(--svg-counter-ink)" });
           hoverGroup.appendChild(t);
           hoverLabelLines[j] = t;
         }
@@ -1851,6 +2707,8 @@ var anim = (function() {
     easeOutBack: easeOutBack,
     lerp: lerp,
     lerpColor: lerpColor,
+    cssVar: cssVar,
+    palette: palette,
     tween: tween,
     stagger: stagger,
     timeline: timeline,
@@ -1884,6 +2742,17 @@ if (typeof window !== 'undefined') {
   window.MyflamesTier1 = MyflamesAnim;
 }
 
+
+(function() {
+  var params = new URLSearchParams(window.location.search);
+  var theme = params.get("theme");
+  if (theme === "light" || theme === "dark") {
+    document.documentElement.setAttribute("data-theme", theme);
+  }
+  if (params.get("embedded") === "1") {
+    document.documentElement.setAttribute("data-embedded", "true");
+  }
+})();
 
 var teachRuntime = (function() {
   function formatInt(n) {
@@ -1987,15 +2856,20 @@ var teachRuntime = (function() {
   //   PAUSED  → Play   → PLAYING  (restart from 0)
   //   *       → seek() → SEEKED   (paused at targetMs, Resume → PLAYING)
   //   *       → Reset  → IDLE
+  // Guided steps (lessons whose timeline marks beats with tl.beat):
+  //   *       → Next   → PLAYING one beat → HELD at the beat's end
+  //   *       → Back   → HELD at the end of the previous beat
+  //   HELD    → Play   → PLAYING  (continues from the held beat)
   // =====================================================================
   var _ctrl = {
     build: null,         // fn → returns fresh anim.timeline()
     reset: null,         // fn → clears stage to ready state
     legacyPlay: null,    // fn → old-style play callback
     tl: null,            // current anim.timeline()
-    phase: "idle",       // "idle" | "playing" | "paused" | "seeked"
+    phase: "idle",       // "idle" | "playing" | "paused" | "seeked" | "held"
     seekMs: 0,           // ms position we seeked to (valid when phase=seeked)
     loopEnabled: false,
+    autoplay: false,     // true when Play runs on; false while stepping
     rafId: 0,            // current RAF id (0 = none)
     dragging: false,     // true while scrubber thumb is held
     // Phase nav
@@ -2024,7 +2898,7 @@ var teachRuntime = (function() {
 
   function _syncUI() {
     // Button label
-    var label = _ctrl.phase === "idle" ? "Play"
+    var label = _ctrl.phase === "idle" || _ctrl.phase === "held" ? "Play"
               : _ctrl.phase === "playing" ? "Pause"
               : "Resume";
     _setBtnLabel(_dom.btnPlay, label);
@@ -2046,6 +2920,7 @@ var teachRuntime = (function() {
       _setBtnLabel(_dom.btnLoop, _ctrl.loopEnabled ? "Loop: On" : "Loop: Off");
       _dom.btnLoop.setAttribute("aria-pressed", _ctrl.loopEnabled ? "true" : "false");
     }
+    _notifyStep();
   }
 
   // --- Single RAF loop: runs only while phase = "playing" ---
@@ -2064,6 +2939,7 @@ var teachRuntime = (function() {
         _updatePhaseHighlight(cur);
       }
     }
+    _notifyStep();
     _ctrl.rafId = requestAnimationFrame(function() { _tick(gen); });
   }
   function _startTick() {
@@ -2116,6 +2992,7 @@ var teachRuntime = (function() {
     if (!_ctrl.build) return;
     _ctrl.tl = _ctrl.build();
     _ctrl.phase = "playing";
+    _ctrl.autoplay = true;
     _ctrl.seekMs = 0;
     anim.setPaused(false);
     _renderPhaseNav();
@@ -2129,7 +3006,7 @@ var teachRuntime = (function() {
   }
 
   function _onDone() {
-    if (_ctrl.loopEnabled) { _playFrom(0); return; }
+    if (_ctrl.loopEnabled && _ctrl.autoplay) { _playFrom(0); return; }
     _ctrl.phase = "idle";
     if (_ctrl.rafId) { cancelAnimationFrame(_ctrl.rafId); _ctrl.rafId = 0; }
     anim.setPaused(false);
@@ -2144,6 +3021,12 @@ var teachRuntime = (function() {
     var c = _ctrl.phaseContainer;
     if (!c || !_ctrl.tl || !_ctrl.tl.getMarks) return;
     _ctrl.marks = _ctrl.tl.getMarks();
+    if (!_ctrl.marks.length) {
+      c.innerHTML = "";
+      c.hidden = true;
+      return;
+    }
+    c.hidden = false;
     c.innerHTML = '<div class="phase-nav-title">Phases</div>';
     for (var i = 0; i < _ctrl.marks.length; i++) {
       (function(idx) {
@@ -2176,10 +3059,192 @@ var teachRuntime = (function() {
   function _updatePhaseHighlight(currentMs) {
     if (!_ctrl.marks.length) return;
     var active = 0;
-    for (var i = _ctrl.marks.length - 1; i >= 0; i--) {
-      if (currentMs >= _ctrl.marks[i].ms) { active = i; break; }
+    var tl = _ctrl.tl;
+    if (tl && tl.getCursor && typeof _ctrl.marks[0].step === "number") {
+      // By steps begun: held at a boundary, the next phase has not started.
+      var cursor = tl.getCursor();
+      for (var j = _ctrl.marks.length - 1; j > 0; j--) {
+        if (cursor > _ctrl.marks[j].step) { active = j; break; }
+      }
+    } else {
+      for (var i = _ctrl.marks.length - 1; i >= 0; i--) {
+        if (currentMs >= _ctrl.marks[i].ms) { active = i; break; }
+      }
     }
     _highlightPhaseIdx(active);
+  }
+
+  // --- Guided steps (beats) ---
+  // A lesson marks each step of its timeline with tl.beat(kind). Next plays
+  // one step and holds at its end; Back shows the end of the previous step;
+  // stepTo(k) shows the end of step k. Step -1 is the ready state.
+  var _steps = { listeners: [], cache: null, sig: "" };
+
+  // Beats of the current timeline, or of a fresh one when none is built yet
+  // (build() only resets the stage, so the ready state is unchanged).
+  function _beatList() {
+    if (_ctrl.tl && _ctrl.tl.getBeats) return _ctrl.tl.getBeats();
+    if (_steps.cache) return _steps.cache;
+    if (!_ctrl.build) return [];
+    var tl = _ctrl.build();
+    _steps.cache = tl.getBeats ? tl.getBeats() : [];
+    return _steps.cache;
+  }
+  // The last beat whose first step has begun; -1 before the first.
+  function _beatIndex() {
+    var tl = _ctrl.tl;
+    if (!tl || !tl.getCursor) return -1;
+    var beats = tl.getBeats();
+    var cursor = tl.getCursor();
+    var k = -1;
+    for (var i = 0; i < beats.length; i++) {
+      if (cursor > (i === 0 ? 0 : beats[i].step)) k = i;
+      else break;
+    }
+    return k;
+  }
+  function _finished() {
+    var tl = _ctrl.tl;
+    return !!tl && !!tl.getCursor && _ctrl.phase !== "playing" && _ctrl.phase !== "paused" &&
+      tl.getCursor() >= tl.getStepCount();
+  }
+  function stepState() {
+    var beats = _beatList();
+    var k = _beatIndex();
+    return {
+      beat: k,
+      count: beats.length,
+      kind: k >= 0 && beats[k] ? beats[k].kind : "",
+      phase: _ctrl.phase,
+      finished: _finished()
+    };
+  }
+  function _notifyStep() {
+    if (!_steps.listeners.length) return;
+    var state = stepState();
+    var sig = [state.beat, state.count, state.kind, state.phase, state.finished].join("|");
+    if (sig === _steps.sig) return;
+    _steps.sig = sig;
+    for (var i = 0; i < _steps.listeners.length; i++) {
+      try { _steps.listeners[i](state); } catch (e) {}
+    }
+  }
+  function onStep(fn) {
+    _steps.listeners.push(fn);
+    _steps.sig = "";
+    _notifyStep();
+  }
+
+  function _resetAll() {
+    _stopAll();
+    if (_ctrl.reset) _ctrl.reset();
+    if (_ctrl.phaseContainer) {
+      _ctrl.phaseContainer.innerHTML = "";
+      _ctrl.phaseContainer.hidden = true;
+    }
+    _syncUI();
+  }
+
+  // Rebuild and show the stage with steps [0, n) applied, held before step n.
+  // `n` may be a function of the new timeline: the inputs may have changed
+  // its steps since the last build.
+  function _holdAtStep(n) {
+    _stopAll();
+    if (_ctrl.reset) _ctrl.reset();
+    if (!_ctrl.build) return;
+    _ctrl.tl = _ctrl.build();
+    _steps.cache = null;
+    _ctrl.tl.fastForwardToStep(typeof n === "function" ? n(_ctrl.tl) : n);
+    _ctrl.phase = _ctrl.tl.getCursor() >= _ctrl.tl.getStepCount() ? "idle" : "held";
+    anim.setPaused(false);
+    _renderPhaseNav();
+    _syncUI();
+    _updatePhaseHighlight(_ctrl.tl.getCurrentTime());
+    if (_ctrl.phase === "idle" && _dom.scrubber) _dom.scrubber.value = "1000";
+  }
+  function stepTo(k) {
+    if (!_ctrl.build) return;
+    if (k < 0) { _resetAll(); return; }
+    _holdAtStep(function(tl) {
+      var beats = tl.getBeats();
+      if (!beats.length) return 0;
+      var last = Math.min(k, beats.length - 1);
+      return last + 1 < beats.length ? beats[last + 1].step : tl.getStepCount();
+    });
+  }
+  function _onHold() {
+    _ctrl.phase = "held";
+    _tickGen++;
+    if (_ctrl.rafId) { cancelAnimationFrame(_ctrl.rafId); _ctrl.rafId = 0; }
+    _syncUI();
+    if (_ctrl.tl) _updatePhaseHighlight(_ctrl.tl.getCurrentTime());
+  }
+  // Animate beat k live from the held end of beat k - 1, then hold.
+  function _playBeat(k) {
+    var tl = _ctrl.tl;
+    var beats = tl.getBeats();
+    var end = k + 1 < beats.length ? beats[k + 1].step : -1;
+    _ctrl.phase = "playing";
+    _ctrl.autoplay = false;
+    anim.setPaused(false);
+    if (!tl.continueTo(end, _onHold, _onDone)) {
+      stepTo(k);
+      return;
+    }
+    if (_ctrl.phase === "playing") {
+      _syncUI();
+      _startTick();
+    }
+  }
+  function stepNext() {
+    if (!_ctrl.build) return;
+    var beats = _beatList();
+    if (!beats.length) return;
+    var k = _beatIndex();
+    if (_ctrl.phase === "held" && _ctrl.tl && _ctrl.tl.isHeld()) {
+      if (k + 1 < beats.length) _playBeat(k + 1);
+      return;
+    }
+    if (_ctrl.phase === "idle" && !_ctrl.tl) {
+      _stopAll();
+      if (_ctrl.reset) _ctrl.reset();
+      _ctrl.tl = _ctrl.build();
+      _steps.cache = null;
+      _ctrl.tl.fastForwardToStep(0);
+      _renderPhaseNav();
+      _playBeat(0);
+      return;
+    }
+    if (_finished()) return;
+    // Playing, paused or scrubbed inside a step: finish that step at once.
+    stepTo(Math.max(0, k));
+  }
+  function stepBack() {
+    if (!_ctrl.build) return;
+    var k = _beatIndex();
+    if (k < 0) return;
+    stepTo(k - 1);
+  }
+  // Play step k again from its start.
+  function replayStep() {
+    if (!_ctrl.build) return;
+    var k = Math.max(0, _beatIndex());
+    if (k === 0) {
+      _resetAll();
+      stepNext();
+      return;
+    }
+    stepTo(k - 1);
+    if (_ctrl.phase === "held") _playBeat(k);
+  }
+  // The lesson's inputs changed (it already redrew its stage): rebuild the
+  // timeline with the new values and show the same step again.
+  function inputsChanged() {
+    _steps.cache = null;
+    if (!_ctrl.tl) { _syncUI(); return; }
+    var k = _beatIndex();
+    if (k < 0) { _resetAll(); return; }
+    stepTo(k);
   }
 
   // --- Public API: wireToolbar ---
@@ -2224,15 +3289,26 @@ var teachRuntime = (function() {
           // Resume from seeked position
           _playFrom(_ctrl.seekMs);
           break;
+        case "held":
+          // Run on from the end of the step shown (guided lessons).
+          if (_ctrl.tl && _ctrl.tl.isHeld && _ctrl.tl.isHeld()) {
+            _ctrl.phase = "playing";
+            _ctrl.autoplay = true;
+            anim.setPaused(false);
+            _ctrl.tl.continueTo(-1, null, _onDone);
+            if (_ctrl.phase === "playing") {
+              _syncUI();
+              _startTick();
+            }
+          } else {
+            _playFrom(_ctrl.tl ? _ctrl.tl.getCurrentTime() : 0);
+          }
+          break;
       }
     });
 
     // --- Reset button ---
-    if (_dom.btnReset) _dom.btnReset.addEventListener("click", function() {
-      _stopAll();
-      if (_ctrl.reset) _ctrl.reset();
-      _syncUI();
-    });
+    if (_dom.btnReset) _dom.btnReset.addEventListener("click", _resetAll);
 
     // --- Loop button ---
     if (_dom.btnLoop) _dom.btnLoop.addEventListener("click", function() {
@@ -2276,6 +3352,44 @@ var teachRuntime = (function() {
       _dom.scrubber.addEventListener("touchend", endDrag);
     }
 
+    // Static var() attributes follow CSS automatically. Replaying to the same
+    // playhead also refreshes colors materialized by an interpolation.
+    function redrawAppearance() {
+      var phase = _ctrl.phase;
+      if (phase === "held" && _ctrl.tl) {
+        _holdAtStep(_ctrl.tl.getCursor());
+        return;
+      }
+      var position = _ctrl.tl ? _ctrl.tl.getCurrentTime() : 0;
+      if (phase === "seeked") position = _ctrl.seekMs;
+      var completed = phase === "idle" && _ctrl.tl;
+      if (completed) position = _ctrl.tl.getTotalDuration();
+      if (phase === "playing") {
+        _playFrom(position);
+      } else if (phase === "paused" || phase === "seeked" || completed) {
+        _seek(position);
+        if (completed) {
+          _ctrl.phase = "idle";
+          anim.setPaused(false);
+          _syncUI();
+        }
+      } else {
+        _stopAll();
+        if (_ctrl.reset) _ctrl.reset();
+        _syncUI();
+      }
+    }
+    var appearance = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
+    if (appearance) {
+      if (appearance.addEventListener) appearance.addEventListener("change", redrawAppearance);
+      else if (appearance.addListener) appearance.addListener(redrawAppearance);
+    }
+    if (typeof MutationObserver === "function") {
+      new MutationObserver(redrawAppearance).observe(document.documentElement, {
+        attributes: true, attributeFilter: ["data-theme"]
+      });
+    }
+
     // Legacy done callback
     window._teachOnDone = function() { _onDone(); };
 
@@ -2291,7 +3405,8 @@ var teachRuntime = (function() {
     // kept for backward compat.
     if (opts && opts.build && !_ctrl.build) _ctrl.build = opts.build;
     if (opts && opts.reset && !_ctrl.reset) _ctrl.reset = opts.reset;
-    container.innerHTML = '<div class="phase-nav-title">Phases</div>';
+    container.innerHTML = "";
+    container.hidden = true;
   }
 
   // Backward-compat aliases used by older code paths
@@ -2311,10 +3426,298 @@ var teachRuntime = (function() {
     bootstrapFromObject: bootstrapFromObject,
     wireToolbar: wireToolbar,
     wirePhaseNav: wirePhaseNav,
+    onStep: onStep,
+    stepState: stepState,
+    stepNext: stepNext,
+    stepBack: stepBack,
+    stepTo: stepTo,
+    replayStep: replayStep,
+    inputsChanged: inputsChanged,
     _updatePhaseNav: _updatePhaseNav,
     _tickPhaseNav: _tickPhaseNav,
     animationDone: animationDone
   };
+})();
+
+var teachFocus = (function() {
+  var MESSAGE = "myflames-lesson-focus";
+  var root = document.documentElement;
+  var state = { on: false, native: false, moved: [], shell: null, hold: null };
+
+  function embedded() {
+    return root.getAttribute("data-embedded") === "true" && window.parent !== window;
+  }
+  function stageSvgs() {
+    var list = document.querySelectorAll(".stage-with-phases svg, section.stage > svg, .stage-wrap > svg");
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].getClientRects().length) out.push(list[i]);
+    }
+    return out;
+  }
+
+  // Room a drawing needs around it: everything from the top of the stage
+  // toolbar down to the drawing (scrubber, step bar, panel titles) plus
+  // captions under it inside the same panel. None of it depends on the
+  // drawing's height. What sits above the toolbar (the page's top margin, a
+  // banner, the one-row parameters) counts too while it takes at most a
+  // quarter of the window and costs the drawings at most 15% of their
+  // scale: the lesson then opens with its parameters, toolbar and whole
+  // drawing on screen, so a change shows on the drawing without scrolling.
+  // Otherwise (a narrow window wraps the parameters, a short one) the
+  // drawing keeps its scale and fits under its toolbar.
+  function natural(svg) {
+    var vb = svg.viewBox && svg.viewBox.baseVal;
+    if (!vb || !vb.width || !vb.height) return 0;
+    return svg.getBoundingClientRect().width * vb.height / vb.width;
+  }
+  function fit() {
+    if (state.on) return;
+    var toolbar = document.querySelector(".stage-toolbar");
+    var svgs = stageSvgs();
+    if (!toolbar || !svgs.length) return;
+    var top = toolbar.getBoundingClientRect().top;
+    var room = 0;
+    for (var i = 0; i < svgs.length; i++) {
+      var box = svgs[i].getBoundingClientRect();
+      var extra = Math.max(0, box.top - top);
+      var cell = svgs[i].parentElement;
+      if (cell && !cell.classList.contains("stage-with-phases") &&
+          window.getComputedStyle(cell).display === "block") {
+        extra += Math.max(0, cell.getBoundingClientRect().bottom - box.bottom);
+      }
+      room = Math.max(room, extra);
+    }
+    // A little slack for a phase label that wraps onto one more line.
+    room += 24;
+    var above = top + (window.pageYOffset || 0);
+    if (above > 0 && above <= window.innerHeight / 4) {
+      var cap = window.innerHeight - room;
+      var cheap = true;
+      for (var j = 0; j < svgs.length && cheap; j++) {
+        var want = natural(svgs[j]);
+        if (!want) continue;
+        var kept = Math.min(want, Math.max(160, cap));
+        cheap = Math.min(want, Math.max(160, cap - above)) >= 0.85 * kept;
+      }
+      if (cheap) room += above;
+    }
+    root.style.setProperty("--stage-chrome", Math.ceil(room) + "px");
+  }
+  var fitFrame = 0;
+  function refit() {
+    if (state.hold) state.hold.reset();
+    if (fitFrame) return;
+    fitFrame = window.requestAnimationFrame(function() { fitFrame = 0; fit(); });
+  }
+  // The caption and the numbers change while the animation runs; a longer
+  // caption may wrap. The strip keeps its tallest height so the stage never
+  // grows and shrinks with the narration (at most it shrinks once).
+  function holdHeight(el) {
+    if (typeof ResizeObserver !== "function") return null;
+    var tallest = 0;
+    var observer = new ResizeObserver(function() {
+      var height = el.getBoundingClientRect().height;
+      if (height > tallest + 0.5) {
+        tallest = height;
+        el.style.minHeight = Math.ceil(height) + "px";
+      }
+    });
+    observer.observe(el);
+    return {
+      reset: function() { tallest = 0; el.style.minHeight = ""; },
+      stop: function() { observer.disconnect(); }
+    };
+  }
+
+  function move(node, into) {
+    if (!node || !node.parentNode) return;
+    var mark = document.createComment("lesson focus");
+    node.parentNode.insertBefore(mark, node);
+    state.moved.push([node, mark]);
+    into.appendChild(node);
+  }
+  function part(name) {
+    var el = document.createElement("div");
+    el.className = name;
+    return el;
+  }
+  function syncButton() {
+    var button = document.getElementById("btn-fullscreen");
+    if (!button) return;
+    var label = button.querySelector(".btn-label");
+    if (label) label.textContent = state.on ? "Exit full screen" : "Full screen";
+    button.setAttribute("aria-label", state.on ? "Leave full screen" : "Show the lesson animation full screen");
+  }
+  function setDetails(open) {
+    if (open) root.setAttribute("data-focus-details", "true");
+    else root.removeAttribute("data-focus-details");
+    // The stage changes width with Details: measure the strip again.
+    if (state.hold) state.hold.reset();
+    var button = document.getElementById("btn-details");
+    if (button) button.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+  // Moving a node blurs it; give focus back to the control that had it, but
+  // only while the reader is in this page: when the workspace has taken focus
+  // back (its Full screen button), focusing here would pull it into the frame.
+  // A control that the layout change hides (Details) hands focus to Full
+  // screen, the control that toggles the layout.
+  function keepFocus(run) {
+    var active = document.hasFocus() ? document.activeElement : null;
+    run();
+    if (!active || active === document.body || document.activeElement === active) return;
+    var target = active.isConnected && active.getClientRects().length ? active : document.getElementById("btn-fullscreen");
+    if (target && target.getClientRects().length && typeof target.focus === "function") {
+      target.focus({ preventScroll: true });
+    }
+  }
+
+  function enter() {
+    if (state.on) return;
+    var toolbar = document.querySelector(".stage-toolbar");
+    var svgs = stageSvgs();
+    var stage = document.querySelector(".stage-with-phases") || (svgs[0] && svgs[0].parentElement);
+    if (!toolbar || !stage) return;
+    keepFocus(function() {
+      state.on = true;
+      var shell = part("focus-shell");
+      var top = part("focus-top");
+      var scene = part("focus-stage");
+      var strip = part("focus-strip");
+      var caption = part("focus-caption");
+      shell.setAttribute("role", "region");
+      shell.setAttribute("aria-label", "Lesson animation");
+      move(toolbar, top);
+      move(document.querySelector(".stage-scrubber"), top);
+      // Guided lessons: Back, Next step, Explore and Check yourself.
+      move(document.querySelector(".guide-bar"), top);
+      move(stage, scene);
+      var label = toolbar.querySelector(".phase-label");
+      if (label) {
+        move(label, caption);
+        strip.appendChild(caption);
+      }
+      move(document.querySelector("section.readout .readout-grid") || document.querySelector(".readout-grid"), strip);
+      shell.appendChild(top);
+      shell.appendChild(scene);
+      if (strip.firstChild) shell.appendChild(strip);
+      document.body.insertBefore(shell, document.body.firstChild);
+      state.shell = shell;
+      if (strip.parentNode) state.hold = holdHeight(strip);
+      root.setAttribute("data-focus", "true");
+      syncButton();
+    });
+  }
+  function leave() {
+    if (!state.on) return;
+    keepFocus(function() {
+      state.on = false;
+      setDetails(false);
+      if (state.hold) state.hold.stop();
+      state.hold = null;
+      for (var i = state.moved.length - 1; i >= 0; i--) {
+        var node = state.moved[i][0];
+        var mark = state.moved[i][1];
+        if (mark.parentNode) {
+          mark.parentNode.insertBefore(node, mark);
+          mark.parentNode.removeChild(mark);
+        }
+      }
+      state.moved = [];
+      if (state.shell && state.shell.parentNode) state.shell.parentNode.removeChild(state.shell);
+      state.shell = null;
+      root.removeAttribute("data-focus");
+      syncButton();
+    });
+    fit();
+  }
+  // Leaving at the reader's request: the workspace owns full screen for an
+  // embedded lesson; a standalone page leaves the browser's full screen.
+  function exit() {
+    if (embedded()) {
+      leave();
+      window.parent.postMessage({ type: MESSAGE, focus: false }, "*");
+      return;
+    }
+    var wasNative = state.native;
+    state.native = false;
+    leave();
+    if (wasNative && document.fullscreenElement && document.exitFullscreen) {
+      document.exitFullscreen().catch(function() {});
+    }
+  }
+  // Standalone: the browser's full screen when allowed, else the same layout
+  // filling the window.
+  function request() {
+    if (state.on) {
+      exit();
+      return;
+    }
+    if (!embedded() && document.fullscreenEnabled && root.requestFullscreen) {
+      root.requestFullscreen().then(function() {
+        state.native = true;
+        enter();
+      }, function() {
+        enter();
+      });
+    } else {
+      enter();
+    }
+  }
+
+  var fullButton = document.getElementById("btn-fullscreen");
+  if (fullButton) fullButton.addEventListener("click", request);
+  var detailsButton = document.getElementById("btn-details");
+  if (detailsButton) detailsButton.addEventListener("click", function() {
+    setDetails(root.getAttribute("data-focus-details") !== "true");
+  });
+  document.addEventListener("fullscreenchange", function() {
+    if (!document.fullscreenElement && state.native) {
+      state.native = false;
+      leave();
+    }
+  });
+  // Escape closes Details first, then leaves full screen. Keys reach this
+  // document only while focus is inside the lesson.
+  document.addEventListener("keydown", function(event) {
+    if (event.key !== "Escape" || !state.on || event.defaultPrevented) return;
+    event.preventDefault();
+    if (root.getAttribute("data-focus-details") === "true") {
+      setDetails(false);
+      if (detailsButton) detailsButton.focus({ preventScroll: true });
+      return;
+    }
+    exit();
+  });
+  window.addEventListener("message", function(event) {
+    var data = event.data;
+    if (window.parent === window || event.source !== window.parent) return;
+    if (!data || data.type !== MESSAGE || typeof data.focus !== "boolean") return;
+    if (data.focus) enter();
+    else leave();
+  });
+  window.addEventListener("resize", refit);
+  window.addEventListener("load", refit);
+  // In-page links (About this example) scroll this page and move focus to
+  // the section's heading. In the workspace a lesson is an srcdoc frame whose
+  // base address is the workspace's own, so a plain "#id" link would load
+  // that address in the frame instead.
+  document.addEventListener("click", function(event) {
+    var link = event.target && event.target.closest ? event.target.closest('a[href^="#"]') : null;
+    if (!link || event.defaultPrevented) return;
+    var target = document.getElementById(link.getAttribute("href").slice(1));
+    if (!target) return;
+    event.preventDefault();
+    var heading = target.querySelector("h2") || target;
+    if (!heading.hasAttribute("tabindex")) heading.setAttribute("tabindex", "-1");
+    heading.focus({ preventScroll: true });
+    var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    target.scrollIntoView({ block: "start", behavior: reduce ? "auto" : "smooth" });
+  });
+  fit();
+  syncButton();
+
+  return { enter: enter, leave: leave, fit: fit, refit: refit, isOn: function() { return state.on; } };
 })();
 
 // =============================================================================
@@ -2361,9 +3764,52 @@ function joinEdgesFor(N) {
 }
 
 // Stage geometry.
-var W = 820, H = 460;
+var W = 820, H = 436;
 var TABLE_ROW_Y = 56;
 var FINAL_PLAN_Y = 408;
+
+// Guided steps: each kind names the simplified-code lines it runs (GUIDE in
+// join_order.py). Kinds come from this table so each appears as a literal.
+var BEAT_KINDS = {
+  problem: "problem",
+  costFirst: "cost-first",
+  goDeeper: "go-deeper",
+  prune: "prune",
+  costNext: "cost-next",
+  done: "done",
+  hgTables: "hg-tables",
+  hgPairs: "hg-pairs",
+  hgGrow: "hg-grow",
+  hgDone: "hg-done"
+};
+
+// The controls as the lesson uses them. readControls() gives a select's
+// value as text (prune_level "0" or "1") and writes the raw slider value to
+// every pill, so normalise here and put the "62 (max)" pill back.
+function plannerControls() {
+  var c = teachRuntime.readControls();
+  var rawDepth = Math.round(c.search_depth);
+  var pillDepth = document.querySelector('[data-pill-for="search_depth"]');
+  if (pillDepth) pillDepth.textContent = (rawDepth >= 10) ? "62 (max)" : String(rawDepth);
+  return {
+    tables: Math.round(c.tables),
+    rawDepth: rawDepth,
+    search_depth: (rawDepth >= 10) ? 62 : rawDepth,
+    prune_level: Number(c.prune_level),
+    algo: c.algo
+  };
+}
+
+// Whole numbers with thousands separators: "5,040 orders", not "5.0K".
+function fullInt(n) {
+  return Math.round(n).toLocaleString("en-US");
+}
+
+var ORDINALS = ["first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth"];
+
+function orderText(names) {
+  return names.join(" \u25b6 ");
+}
 
 // ---- Factorial / permutation helpers (greedy_search cost) ----
 function fact(n) {
@@ -2413,16 +3859,16 @@ function bigOLabel(N, d) {
 // Hypergraph (DPhyp) cost model
 // =============================================================================
 // DPhyp enumerates connected subgraphs (CSGs) of the query graph plus
-// complement-pairs. Worst case is O(3^N) for clique queries; for
-// tree-shaped queries (our example) it's O(N^3). Capped at
+// complement-pairs. Worst case is O(3^N) for clique queries; for a chain
+// of joins it is (N^3 - N) / 6 pairs. Branching trees fall in between (the
+// 7-table example query has 98 pairs). Capped at
 // optimizer_max_subgraph_pairs (default 100,000).
 var OPTIMIZER_MAX_SUBGRAPH_PAIRS = 100000;
 
 function dphypTreePairs(N) {
-  // Empirical: for a tree-shaped query graph, DPhyp examines roughly
-  // C(N, 2) + (N-2)*(N-1)/2 + ... ≈ N^3 / 6 pairs. Use N^3 / 6 as the
-  // teaching approximation — same order of magnitude as the real algo,
-  // and the lesson is about regimes not exact counts.
+  // A chain of N joins has (N^3 - N) / 6 csg-cmp pairs. Use N^3 / 6 as the
+  // teaching approximation: the same order of magnitude for this query
+  // (98 pairs at N = 7), and the lesson is about regimes not exact counts.
   return Math.max(N, Math.round((N * N * N) / 6));
 }
 
@@ -2432,7 +3878,7 @@ function dphypClique(N) {
 }
 
 function bigOLabelDPhyp() {
-  return "O(3^N) worst case, O(N³) on tree query (current example)";
+  return "O(3^N) worst case (every table joined to every other), O(N³) for a chain of joins";
 }
 
 // =============================================================================
@@ -2488,12 +3934,12 @@ function clearStage() {
 function drawTablesStrip(svg, N) {
   var stripBg = anim.svgEl("rect", {
     x: 20, y: TABLE_ROW_Y - 22, width: W - 40, height: 40,
-    rx: 8, fill: "#eef4ff", stroke: "#c7d8f0"
+    rx: 8, fill: "var(--svg-node-muted)", stroke: "var(--svg-node-stroke)"
   });
   svg.appendChild(stripBg);
   var stripLabel = anim.svgEl("text", {
     x: 28, y: TABLE_ROW_Y - 5, "font-size": 10, "font-weight": 700,
-    fill: "#1e3a8a", "letter-spacing": "0.4"
+    fill: "var(--svg-token-ink)", "letter-spacing": "0.4"
   });
   stripLabel.textContent = "TABLES IN QUERY (FROM-list)";
   svg.appendChild(stripLabel);
@@ -2507,13 +3953,13 @@ function drawTablesStrip(svg, N) {
     var x = startX + i * (cardW + 6);
     var rect = anim.svgEl("rect", {
       x: x, y: TABLE_ROW_Y, width: cardW, height: 22, rx: 5,
-      fill: "#ffffff", stroke: "#3b82f6", "stroke-width": 1.5
+      fill: "var(--svg-node-bg)", stroke: "var(--svg-token)", "stroke-width": 1.5
     });
     svg.appendChild(rect);
     var t = anim.svgEl("text", {
       x: x + cardW / 2, y: TABLE_ROW_Y + 15,
       "text-anchor": "middle", "font-size": 11,
-      "font-weight": 700, fill: "#1e3a8a",
+      "font-weight": 700, fill: "var(--svg-token-ink)",
       "font-family": "ui-monospace, Menlo, monospace"
     });
     t.textContent = tables[i];
@@ -2525,17 +3971,17 @@ function drawTablesStrip(svg, N) {
 function drawCounter(svg, title) {
   var counterBg = anim.svgEl("rect", {
     x: W - 220, y: 12, width: 200, height: 32, rx: 8,
-    fill: "#0f172a", stroke: "#1e293b"
+    fill: "var(--svg-counter-bg)", stroke: "var(--svg-node-stroke)"
   });
   svg.appendChild(counterBg);
   var counterLbl = anim.svgEl("text", {
-    x: W - 212, y: 26, "font-size": 9, fill: "#94a3b8",
+    x: W - 212, y: 26, "font-size": 9, fill: "var(--svg-counter-ink)",
     "font-weight": 700, "letter-spacing": "0.5"
   });
   counterLbl.textContent = title;
   svg.appendChild(counterLbl);
   var counterVal = anim.svgEl("text", {
-    x: W - 212, y: 39, "font-size": 14, fill: "#fde725",
+    x: W - 212, y: 39, "font-size": 14, fill: "var(--svg-counter-ink)",
     "font-weight": 700,
     "font-family": "ui-monospace, Menlo, monospace"
   });
@@ -2547,18 +3993,18 @@ function drawCounter(svg, title) {
 function drawFinalPlanStrip(svg, label) {
   var finalBg = anim.svgEl("rect", {
     x: 20, y: FINAL_PLAN_Y - 18, width: W - 40, height: 36, rx: 8,
-    fill: "#f0fdf4", stroke: "#86efac"
+    fill: "var(--svg-ok-soft)", stroke: "var(--svg-ok-soft)"
   });
   svg.appendChild(finalBg);
   var finalLbl = anim.svgEl("text", {
     x: 28, y: FINAL_PLAN_Y - 3, "font-size": 10, "font-weight": 700,
-    fill: "#065f46", "letter-spacing": "0.4"
+    fill: "var(--svg-ok)", "letter-spacing": "0.4"
   });
   finalLbl.textContent = label;
   svg.appendChild(finalLbl);
   var finalText = anim.svgEl("text", {
     x: W / 2, y: FINAL_PLAN_Y + 13, "text-anchor": "middle",
-    "font-size": 13, "font-weight": 700, fill: "#065f46",
+    "font-size": 13, "font-weight": 700, fill: "var(--svg-ok)",
     "font-family": "ui-monospace, Menlo, monospace", opacity: 0.35
   });
   finalText.textContent = "— (run search to see) —";
@@ -2639,7 +4085,7 @@ function drawTreeSkeleton(svg, tree) {
       var line = anim.svgEl("line", {
         x1: parent.x, y1: parent.y + 8,
         x2: node.x, y2: node.y - 8,
-        stroke: "#cbd5e1", "stroke-width": 1, opacity: 0.6
+        stroke: "var(--svg-node-stroke)", "stroke-width": 1, opacity: 0.6
       });
       g.appendChild(line);
       node.edge = line;
@@ -2649,12 +4095,12 @@ function drawTreeSkeleton(svg, tree) {
     var nd = tree.allNodes[n];
     var circle = anim.svgEl("circle", {
       cx: nd.x, cy: nd.y, r: 11,
-      fill: "#f1f5f9", stroke: "#94a3b8", "stroke-width": 1.5
+      fill: "var(--svg-node-muted)", stroke: "var(--svg-node-stroke)", "stroke-width": 1.5
     });
     g.appendChild(circle);
     var lbl = anim.svgEl("text", {
       x: nd.x, y: nd.y + 3, "text-anchor": "middle",
-      "font-size": 9, "font-weight": 700, fill: "#334155",
+      "font-size": 9, "font-weight": 700, fill: "var(--svg-ink)",
       "font-family": "ui-monospace, Menlo, monospace"
     });
     lbl.textContent = nd.label;
@@ -2671,7 +4117,7 @@ function buildGreedyStage(N, depth) {
 
   var treeTitle = anim.svgEl("text", {
     x: 28, y: TREE_TOP_Y - 16,
-    "font-size": 10, "font-weight": 700, fill: "#6b7280",
+    "font-size": 10, "font-weight": 700, fill: "var(--svg-ink-muted)",
     "letter-spacing": "0.4"
   });
   treeTitle.textContent = "SEARCH TREE OF PARTIAL PLANS (left-deep order)";
@@ -2686,14 +4132,16 @@ function resetGreedyColors() {
   if (!stageState.tree) return;
   for (var i = 0; i < stageState.tree.allNodes.length; i++) {
     var nd = stageState.tree.allNodes[i];
-    nd.circle.setAttribute("fill", "#f1f5f9");
-    nd.circle.setAttribute("stroke", "#94a3b8");
+    nd.circle.setAttribute("fill", "var(--svg-node-muted)");
+    nd.circle.setAttribute("stroke", "var(--svg-node-stroke)");
     nd.circle.setAttribute("stroke-width", 1.5);
-    nd.labelEl.setAttribute("fill", "#334155");
+    nd.circle.removeAttribute("stroke-dasharray");
+    nd.labelEl.setAttribute("fill", "var(--svg-ink)");
     if (nd.edge) {
-      nd.edge.setAttribute("stroke", "#cbd5e1");
+      nd.edge.setAttribute("stroke", "var(--svg-node-stroke)");
       nd.edge.setAttribute("stroke-width", 1);
       nd.edge.setAttribute("opacity", 0.6);
+      nd.edge.removeAttribute("stroke-dasharray");
     }
   }
 }
@@ -2703,7 +4151,7 @@ function buildGreedyTimeline(controls) {
   var phaseLabel = document.getElementById("phase-label");
   var N = controls.tables;
   var depth = controls.search_depth;
-  var prune = controls.prune_level;
+  var prune = controls.prune_level === 0 ? 0 : 1;
   var tree = stageState.tree;
   if (!tree) return tl;
 
@@ -2721,15 +4169,27 @@ function buildGreedyTimeline(controls) {
     }
   }
 
+  var tables = TABLE_NAMES.slice(0, N);
+  function pathPrefix(levelIdx) {
+    var out = [];
+    for (var li = 0; li <= levelIdx && li < tree.levels.length; li++) {
+      var on = tree.levels[li].find(function(n) { return n.onPath; });
+      if (on) out.push(on.label);
+    }
+    return out;
+  }
+
   tl.mark("Problem: pick an order for " + N + " tables");
+  tl.beat(BEAT_KINDS.problem);
   tl.call(function() {
-    phaseLabel.textContent = "Problem: " + N + " tables, " + teachRuntime.formatInt(fact(N)) + " possible left-deep orderings.";
+    phaseLabel.textContent = "Problem: " + N + " tables (" + tables.join(", ") + ") can be joined in " +
+      fullInt(fact(N)) + " left-deep orders; greedy_search must pick one before the query runs";
   });
   for (var i = 0; i < stageState.tableCards.length; i++) {
     (function(idx) {
       tl.call(function() {
         var c = stageState.tableCards[idx];
-        animColor(c.rect, "fill", "#dbeafe", 200);
+        animColor(c.rect, "fill", "var(--svg-token-soft)", 200);
         anim.pulse(c.rect, 3, 1, 200);
       });
       tl.delay(60);
@@ -2738,16 +4198,19 @@ function buildGreedyTimeline(controls) {
   tl.delay(200);
 
   tl.mark("Step 1: evaluate each candidate first table");
-  tl.call(function() {
-    phaseLabel.textContent = "Step 1 — best_extension_by_limited_search costs each candidate root";
-  });
   var lvl0 = tree.levels[0];
+  tl.beat(BEAT_KINDS.costFirst);
+  tl.call(function() {
+    phaseLabel.textContent = "Step 1: best_extension_by_limited_search costs each table as the first table: " +
+      lvl0.map(function(n) { return n.label; }).join(", ") + " (" + lvl0.length + " of " + N +
+      " drawn), each with its best access path, rows and cost";
+  });
   for (var k = 0; k < lvl0.length; k++) {
     (function(idx) {
       var nd = lvl0[idx];
       tl.call(function() {
-        animColor(nd.circle, "fill", "#fef3c7", 200);
-        animColor(nd.circle, "stroke", "#d97706", 200);
+        animColor(nd.circle, "fill", "var(--svg-build-soft)", 200);
+        animColor(nd.circle, "stroke", "var(--svg-build)", 200);
         anim.pulse(nd.circle, 4, 1, 240);
         bumpCounter(Math.max(1, Math.round(finalPlanCount / (lvl0.length * (tree.levels.length + 1)))));
       });
@@ -2757,14 +4220,18 @@ function buildGreedyTimeline(controls) {
 
   tl.delay(150);
   tl.mark("Pick lowest-cost partial plan");
+  tl.beat(BEAT_KINDS.goDeeper);
   tl.call(function() {
-    phaseLabel.textContent = "Greedy commit — lowest-cost candidate becomes the outer loop";
     var winner = lvl0.find(function(n) { return n.onPath; });
+    var first = winner ? winner.label : "The first candidate";
+    phaseLabel.textContent = prune === 0
+      ? first + " is the cheapest first table so far; with prune_level=0 the search goes deeper from every first table, not only " + first
+      : first + " is the cheapest first table so far, so the search goes deeper from it; it becomes the outer loop unless a cheaper order turns up";
     if (winner) {
-      animColor(winner.circle, "fill", "#34d399", 300, anim.easeOutBack);
-      animColor(winner.circle, "stroke", "#047857", 300);
+      animColor(winner.circle, "fill", "var(--svg-ok-soft)", 300, anim.easeOutBack);
+      animColor(winner.circle, "stroke", "var(--svg-ok)", 300);
       winner.circle.setAttribute("stroke-width", 2.5);
-      animColor(winner.labelEl, "fill", "#064e3b", 300);
+      animColor(winner.labelEl, "fill", "var(--svg-ok)", 300);
       anim.arrival(winner.circle);
     }
   });
@@ -2796,20 +4263,32 @@ function buildGreedyTimeline(controls) {
   // only the surviving path.
   if (prune === 1) {
     tl.delay(120);
-    tl.mark("optimizer_prune_level=1 — prune unreachable subtrees up-front");
+    tl.mark("optimizer_prune_level=1: drop the beaten first tables");
+    tl.beat(BEAT_KINDS.prune);
     tl.call(function() {
+      var winner = lvl0.find(function(n) { return n.onPath; });
+      var beaten = lvl0.filter(function(n) { return !n.onPath; }).map(function(n) { return n.label; });
       phaseLabel.textContent =
-        "optimizer_prune_level=1 — partial plans whose ancestor was already beaten are dropped without exploring their subtree";
+        "optimizer_prune_level=1: " + beaten.join(", ") + " read no fewer rows and cost no less than " +
+        (winner ? winner.label : "the winner") + ", so " + (beaten.length === 1 ? "it is" : "they are") +
+        " dropped and no order starting with " + (beaten.length === 1 ? "it" : "them") + " is explored (grey)";
       for (var ai = 0; ai < tree.allNodes.length; ai++) {
         var nd = tree.allNodes[ai];
-        if (nd.parentId === null) continue;
+        if (nd.parentId === null) {
+          // A beaten first table was costed, then dropped: dashed outline.
+          if (!nd.onPath) {
+            animColor(nd.circle, "fill", "var(--svg-node-muted)", 260, anim.easeInCubic);
+            nd.circle.setAttribute("stroke-dasharray", "3 2");
+          }
+          continue;
+        }
         if (!isReachable(nd)) {
-          animColor(nd.circle, "fill", "#e2e8f0", 260, anim.easeInCubic);
-          animColor(nd.circle, "stroke", "#cbd5e1", 260, anim.easeInCubic);
+          animColor(nd.circle, "fill", "var(--svg-node-muted)", 260, anim.easeInCubic);
+          animColor(nd.circle, "stroke", "var(--svg-node-stroke)", 260, anim.easeInCubic);
           nd.circle.setAttribute("stroke-width", 1);
-          animColor(nd.labelEl, "fill", "#94a3b8", 260, anim.easeInCubic);
+          animColor(nd.labelEl, "fill", "var(--svg-ink-muted)", 260, anim.easeInCubic);
           if (nd.edge) {
-            animColor(nd.edge, "stroke", "#e2e8f0", 260, anim.easeInCubic);
+            animColor(nd.edge, "stroke", "var(--svg-node-stroke)", 260, anim.easeInCubic);
             nd.edge.setAttribute("opacity", 0.25);
             nd.edge.setAttribute("stroke-dasharray", "3 3");
           }
@@ -2828,12 +4307,18 @@ function buildGreedyTimeline(controls) {
 
       tl.mark("Step " + (levelIdx + 1) +
               (prune === 0
-                ? ": exhaustive — every partial plan costed"
+                ? ": no pruning, every drawn partial plan costed"
                 : ": cost only the surviving prefix's extensions"));
+      tl.beat(BEAT_KINDS.costNext);
       tl.call(function() {
+        var prefix = orderText(pathPrefix(levelIdx - 1));
         phaseLabel.textContent = (prune === 0
-          ? "Step " + (levelIdx + 1) + " (prune_level=0) — costing all " + levelNodes.length + " partial plans at this level"
-          : "Step " + (levelIdx + 1) + " (prune_level=1) — only the " + visited.length + " of " + levelNodes.length + " plans whose prefix survived are extended");
+          ? "Step " + (levelIdx + 1) + " (prune_level=0): cost a " + ORDINALS[levelIdx] + " table after every drawn " +
+            levelIdx + "-table order: all " + levelNodes.length + " drawn " + (levelIdx + 1) +
+            "-table orders, not only those after " + prefix
+          : "Step " + (levelIdx + 1) + " (prune_level=1): cost each next table after " + prefix + ": " +
+            visited.map(function(n) { return prefix + " \u25b6 " + n.label; }).join(", ") +
+            " (" + visited.length + " of the " + levelNodes.length + " drawn)");
       });
 
       // Walk the visited set. With prune=0 this is the full level (every
@@ -2842,10 +4327,10 @@ function buildGreedyTimeline(controls) {
       for (var s = 0; s < visited.length; s++) {
         (function(nd) {
           tl.call(function() {
-            animColor(nd.circle, "fill", "#fef3c7", 180);
-            animColor(nd.circle, "stroke", "#d97706", 180);
+            animColor(nd.circle, "fill", "var(--svg-build-soft)", 180);
+            animColor(nd.circle, "stroke", "var(--svg-build)", 180);
             if (nd.edge) {
-              animColor(nd.edge, "stroke", "#fbbf24", 180);
+              animColor(nd.edge, "stroke", "var(--svg-build)", 180);
               nd.edge.setAttribute("stroke-width", 1.5);
               nd.edge.setAttribute("opacity", 1);
             }
@@ -2857,15 +4342,25 @@ function buildGreedyTimeline(controls) {
       }
       tl.delay(120);
 
-      // Commit the winning extension at this level.
+      // Keep the winning extension at this level and go deeper from it.
+      tl.beat(levelIdx === tree.levels.length - 1 ? BEAT_KINDS.done : BEAT_KINDS.goDeeper);
       tl.call(function() {
+        var kept = orderText(pathPrefix(levelIdx));
+        if (levelIdx === tree.levels.length - 1) {
+          phaseLabel.textContent = kept + " is the cheapest " + (levelIdx + 1) + "-table prefix drawn; " +
+            "the search finishes the remaining " + Math.max(0, N - levelIdx - 1) + " tables the same way";
+        } else {
+          phaseLabel.textContent = kept + " is the cheapest " + (levelIdx + 1) + "-table order so far, " +
+            "so the search goes deeper from it" +
+            (prune === 0 ? "; with prune_level=0 the others are explored too" : "");
+        }
         for (var w = 0; w < onPath.length; w++) {
-          animColor(onPath[w].circle, "fill", "#34d399", 300, anim.easeOutBack);
-          animColor(onPath[w].circle, "stroke", "#047857", 300);
+          animColor(onPath[w].circle, "fill", "var(--svg-ok-soft)", 300, anim.easeOutBack);
+          animColor(onPath[w].circle, "stroke", "var(--svg-ok)", 300);
           onPath[w].circle.setAttribute("stroke-width", 2.5);
-          animColor(onPath[w].labelEl, "fill", "#064e3b", 300);
+          animColor(onPath[w].labelEl, "fill", "var(--svg-ok)", 300);
           if (onPath[w].edge) {
-            animColor(onPath[w].edge, "stroke", "#10b981", 300);
+            animColor(onPath[w].edge, "stroke", "var(--svg-ok)", 300);
             onPath[w].edge.setAttribute("stroke-width", 2);
           }
           anim.arrival(onPath[w].circle);
@@ -2877,12 +4372,9 @@ function buildGreedyTimeline(controls) {
 
   tl.mark("Final plan locked");
   tl.call(function() {
-    phaseLabel.textContent = "✓ greedy_search complete — " +
-      teachRuntime.formatInt(finalPlanCount) + " partial plans evaluated";
     if (stageState.plansCounter) {
       stageState.plansCounter.textContent = teachRuntime.formatInt(finalPlanCount);
     }
-    var tables = TABLE_NAMES.slice(0, N);
     var chosenPrefix = [];
     for (var lv3 = 0; lv3 < tree.levels.length; lv3++) {
       var onPath = tree.levels[lv3].find(function(n) { return n.onPath; });
@@ -2890,6 +4382,10 @@ function buildGreedyTimeline(controls) {
     }
     var rest = tables.filter(function(t) { return chosenPrefix.indexOf(t) < 0; });
     var finalOrder = chosenPrefix.concat(rest);
+    phaseLabel.textContent = "\u2713 greedy_search done: " + orderText(finalOrder) + " is the join order EXPLAIN shows; " +
+      fullInt(finalPlanCount) + (finalPlanCount === 1 ? " partial plan" : " partial plans") +
+      " costed (the tree draws " + tree.levels.length +
+      " of " + N + " levels)";
     if (stageState.finalPlanText) {
       stageState.finalPlanText.textContent = finalOrder.join(" ▶ ");
       stageState.finalPlanText.setAttribute("opacity", 1);
@@ -2933,7 +4429,7 @@ function buildHypergraphStage(N) {
 
   var graphTitle = anim.svgEl("text", {
     x: 28, y: 95,
-    "font-size": 10, "font-weight": 700, fill: "#6b7280",
+    "font-size": 10, "font-weight": 700, fill: "var(--svg-ink-muted)",
     "letter-spacing": "0.4"
   });
   graphTitle.textContent = "QUERY GRAPH — vertices = tables, edges = join predicates";
@@ -2953,7 +4449,7 @@ function buildHypergraphStage(N) {
     if (!a || !b) continue;
     var line = anim.svgEl("line", {
       x1: a.x, y1: a.y, x2: b.x, y2: b.y,
-      stroke: "#cbd5e1", "stroke-width": 2, opacity: 0.6
+      stroke: "var(--svg-node-stroke)", "stroke-width": 2, opacity: 0.6
     });
     g.appendChild(line);
     edgeEls.push({ from: edges[e][0], to: edges[e][1], line: line });
@@ -2968,12 +4464,12 @@ function buildHypergraphStage(N) {
     if (!pos) continue;
     var circle = anim.svgEl("circle", {
       cx: pos.x, cy: pos.y, r: 18,
-      fill: "#f1f5f9", stroke: "#94a3b8", "stroke-width": 2
+      fill: "var(--svg-node-muted)", stroke: "var(--svg-node-stroke)", "stroke-width": 2
     });
     g.appendChild(circle);
     var lbl = anim.svgEl("text", {
       x: pos.x, y: pos.y + 4, "text-anchor": "middle",
-      "font-size": 11, "font-weight": 700, fill: "#1e293b",
+      "font-size": 11, "font-weight": 700, fill: "var(--svg-ink)",
       "font-family": "ui-monospace, Menlo, monospace"
     });
     lbl.textContent = name;
@@ -2984,29 +4480,29 @@ function buildHypergraphStage(N) {
   // CSG box (right side panel for showing current subgraph)
   var csgBoxBg = anim.svgEl("rect", {
     x: W - 200, y: 100, width: 180, height: 90, rx: 8,
-    fill: "#fef3c7", stroke: "#f59e0b", "stroke-width": 1.5, opacity: 0.4
+    fill: "var(--svg-build-soft)", stroke: "var(--svg-build)", "stroke-width": 1.5, opacity: 0.4
   });
   svg.appendChild(csgBoxBg);
   var csgLbl = anim.svgEl("text", {
     x: W - 192, y: 116, "font-size": 9, "font-weight": 700,
-    fill: "#92400e", "letter-spacing": "0.4"
+    fill: "var(--svg-build-ink)", "letter-spacing": "0.4"
   });
   csgLbl.textContent = "CURRENT SUBGRAPH (CSG)";
   svg.appendChild(csgLbl);
   var csgContent = anim.svgEl("text", {
     x: W - 192, y: 140, "font-size": 13, "font-weight": 700,
-    fill: "#7c2d12",
+    fill: "var(--svg-build-ink)",
     "font-family": "ui-monospace, Menlo, monospace"
   });
   csgContent.textContent = "—";
   svg.appendChild(csgContent);
   var csgSize = anim.svgEl("text", {
-    x: W - 192, y: 168, "font-size": 10, fill: "#a16207"
+    x: W - 192, y: 168, "font-size": 10, fill: "var(--svg-build-ink)"
   });
   csgSize.textContent = "size: 0";
   svg.appendChild(csgSize);
   var csgPair = anim.svgEl("text", {
-    x: W - 192, y: 182, "font-size": 9, fill: "#a16207"
+    x: W - 192, y: 182, "font-size": 9, fill: "var(--svg-build-ink)"
   });
   csgPair.textContent = "";
   svg.appendChild(csgPair);
@@ -3028,14 +4524,14 @@ function resetHypergraphColors() {
   var v = stageState.graph.vertices;
   for (var k in v) {
     if (Object.prototype.hasOwnProperty.call(v, k)) {
-      v[k].circle.setAttribute("fill", "#f1f5f9");
-      v[k].circle.setAttribute("stroke", "#94a3b8");
+      v[k].circle.setAttribute("fill", "var(--svg-node-muted)");
+      v[k].circle.setAttribute("stroke", "var(--svg-node-stroke)");
       v[k].circle.setAttribute("stroke-width", 2);
-      v[k].label.setAttribute("fill", "#1e293b");
+      v[k].label.setAttribute("fill", "var(--svg-ink)");
     }
   }
   for (var i = 0; i < stageState.graph.edges.length; i++) {
-    stageState.graph.edges[i].line.setAttribute("stroke", "#cbd5e1");
+    stageState.graph.edges[i].line.setAttribute("stroke", "var(--svg-node-stroke)");
     stageState.graph.edges[i].line.setAttribute("stroke-width", 2);
     stageState.graph.edges[i].line.setAttribute("opacity", 0.6);
   }
@@ -3093,14 +4589,16 @@ function buildHypergraphTimeline(controls) {
 
   // ---- Phase 1: vertex enumeration (size-1 CSGs) ----
   tl.mark("Phase 1: enumerate vertices (size-1 CSGs)");
-  tl.call(function() {
-    phaseLabel.textContent = "Phase 1 — each table is a size-1 connected subgraph (CSG)";
-  });
   var tables = TABLE_NAMES.slice(0, N);
+  tl.beat(BEAT_KINDS.hgTables);
+  tl.call(function() {
+    phaseLabel.textContent = "Phase 1: each table alone (" + tables.join(", ") +
+      ") is a connected set; its best plan is its cheapest access path";
+  });
   for (var i = 0; i < tables.length; i++) {
     (function(name, idx) {
       tl.call(function() {
-        highlightVertex(name, "#fef3c7", "#d97706");
+        highlightVertex(name, "var(--svg-build-soft)", "var(--svg-build)");
         setCsgLabel([name], "size: 1 of " + N, "DPhyp builds best plan for { " + name + " } (= just scan)");
         bumpCounter(1);
       });
@@ -3111,16 +4609,19 @@ function buildHypergraphTimeline(controls) {
 
   // ---- Phase 2: enumerate pairs along edges (CSG + CMP pairs of size 2) ----
   tl.mark("Phase 2: enumerate edge-induced pairs (CSG-CMP, size 2)");
-  tl.call(function() {
-    phaseLabel.textContent = "Phase 2 — each join edge is a candidate 2-table CSG-CMP pair";
-  });
   var edges = stageState.graph.edges;
+  tl.beat(BEAT_KINDS.hgPairs);
+  tl.call(function() {
+    phaseLabel.textContent = "Phase 2: each join predicate links two tables: " +
+      edges.map(function(e) { return e.from + " \u22c8 " + e.to; }).join(", ") +
+      "; the cheapest plan for each pair is kept";
+  });
   for (var e = 0; e < edges.length; e++) {
     (function(edgeRec) {
       tl.call(function() {
-        highlightEdge([edgeRec.from, edgeRec.to], "#fbbf24", 4);
-        highlightVertex(edgeRec.from, "#fcd34d", "#d97706");
-        highlightVertex(edgeRec.to,   "#fcd34d", "#d97706");
+        highlightEdge([edgeRec.from, edgeRec.to], "var(--svg-build)", 4);
+        highlightVertex(edgeRec.from, "var(--svg-build-soft)", "var(--svg-build)");
+        highlightVertex(edgeRec.to,   "var(--svg-build-soft)", "var(--svg-build)");
         setCsgLabel(
           [edgeRec.from, edgeRec.to],
           "pair: { " + edgeRec.from + " } ⋈ { " + edgeRec.to + " }",
@@ -3135,9 +4636,6 @@ function buildHypergraphTimeline(controls) {
 
   // ---- Phase 3: grow CSGs by adjacent vertex (size 3, 4, ...) ----
   tl.mark("Phase 3: grow CSGs by adjacent vertex");
-  tl.call(function() {
-    phaseLabel.textContent = "Phase 3 — extend each CSG with adjacent vertices via EnumerateCsgRec";
-  });
   // Demonstrate growing from one seed (u) outward.
   var seed = tables[0];
   var grown = [seed];
@@ -3152,6 +4650,7 @@ function buildHypergraphTimeline(controls) {
   var growthSteps = Math.min(N, 5);
   for (var step = 1; step < growthSteps; step++) {
     (function(stepIdx) {
+      tl.beat(BEAT_KINDS.hgGrow);
       tl.call(function() {
         // Find a neighbor not yet in CSG.
         var candidates = [];
@@ -3165,14 +4664,17 @@ function buildHypergraphTimeline(controls) {
         }
         if (candidates.length === 0) return;
         var next = candidates[0];
+        phaseLabel.textContent = "Phase 3: join the set { " + grown.join(", ") + " } with " + next +
+          ", linked by a join predicate, giving { " + grown.concat([next]).join(", ") +
+          " }; its cheapest plans are kept";
         grown.push(next);
         for (var v = 0; v < grown.length; v++) {
-          highlightVertex(grown[v], "#a7f3d0", "#059669");
+          highlightVertex(grown[v], "var(--svg-ok-soft)", "var(--svg-ok)");
         }
         // Highlight all edges within the CSG.
         for (var x = 0; x < grown.length; x++) {
           for (var y = x + 1; y < grown.length; y++) {
-            highlightEdge([grown[x], grown[y]], "#34d399", 3);
+            highlightEdge([grown[x], grown[y]], "var(--svg-ok-soft)", 3);
           }
         }
         setCsgLabel(
@@ -3189,6 +4691,7 @@ function buildHypergraphTimeline(controls) {
 
   // ---- Phase 4: final plan (bushy possible) ----
   tl.mark("Phase 4: lock in plan (DPhyp may emit a bushy tree)");
+  tl.beat(BEAT_KINDS.hgDone);
   tl.call(function() {
     phaseLabel.textContent = "✓ DPhyp complete — " + teachRuntime.formatInt(totalPairs) + " subgraph pairs evaluated; plan can be bushy";
     if (stageState.plansCounter) {
@@ -3196,10 +4699,10 @@ function buildHypergraphTimeline(controls) {
     }
     // Color every vertex green to indicate it's in the final plan.
     for (var t = 0; t < tables.length; t++) {
-      highlightVertex(tables[t], "#bbf7d0", "#047857");
+      highlightVertex(tables[t], "var(--svg-ok-soft)", "var(--svg-ok)");
     }
     for (var ei2 = 0; ei2 < edges.length; ei2++) {
-      highlightEdge([edges[ei2].from, edges[ei2].to], "#10b981", 3);
+      highlightEdge([edges[ei2].from, edges[ei2].to], "var(--svg-ok)", 3);
     }
     setCsgLabel(tables.slice(), "size: " + N + " of " + N + " (final)", "DP table now has best plan for { all tables }");
     if (stageState.finalPlanText) {
@@ -3239,8 +4742,8 @@ function resetStageColors() {
     stageState.finalPlanText.setAttribute("opacity", 0.35);
   }
   for (var j = 0; j < stageState.tableCards.length; j++) {
-    stageState.tableCards[j].rect.setAttribute("fill", "#ffffff");
-    stageState.tableCards[j].rect.setAttribute("stroke", "#3b82f6");
+    stageState.tableCards[j].rect.setAttribute("fill", "var(--svg-node-bg)");
+    stageState.tableCards[j].rect.setAttribute("stroke", "var(--svg-token)");
   }
 }
 
@@ -3258,7 +4761,8 @@ function buildSearchTimeline(controls) {
 
 function renderChart(currentN, depth, prune, algo) {
   function greedyCurve(d) {
-    return function(n) {
+    return function(x) {
+      var n = Math.max(2, Math.round(x));
       var p = plansEvaluated(n, Math.min(d, n));
       var pr = applyPruning(p, prune).plans;
       return Math.max(1, pr);
@@ -3267,26 +4771,27 @@ function renderChart(currentN, depth, prune, algo) {
   var curves = [
     {
       label: "Greedy d=1: O(N²)",
-      color: "#10b981",
+      color: "var(--svg-ok)",
       fn: greedyCurve(1)
     },
     {
       label: "Greedy d=" + Math.min(depth, currentN) + " (current setting)",
-      color: "#3b82f6",
+      color: "var(--svg-token)",
       fn: greedyCurve(depth)
     },
     {
       label: "Greedy exhaustive: O(N!)",
-      color: "#dc2626",
-      fn: function(n) {
+      color: "var(--svg-danger)",
+      fn: function(x) {
+        var n = Math.max(2, Math.round(x));
         var p = plansEvaluated(n, n);
         var pr = applyPruning(p, prune).plans;
         return Math.max(1, pr);
       }
     },
     {
-      label: "Hypergraph DPhyp (tree query): O(N³)",
-      color: "#ec4899",
+      label: "Hypergraph DPhyp (chain of joins): O(N³)",
+      color: "var(--svg-group-alt)",
       fn: function(n) {
         return Math.min(dphypTreePairs(n), OPTIMIZER_MAX_SUBGRAPH_PAIRS);
       }
@@ -3315,13 +4820,11 @@ function renderChart(currentN, depth, prune, algo) {
 // =============================================================================
 
 function recompute() {
-  var c = teachRuntime.readControls();
-  var N = Math.round(c.tables);
-  var rawDepth = Math.round(c.search_depth);
-  var pillDepth = document.querySelector('[data-pill-for="search_depth"]');
-  if (pillDepth) pillDepth.textContent = (rawDepth >= 10) ? "62 (max)" : String(rawDepth);
-  var depth = (rawDepth >= 10) ? 62 : rawDepth;
-  var prune = Number(c.prune_level);
+  var c = plannerControls();
+  var N = c.tables;
+  var rawDepth = c.rawDepth;
+  var depth = c.search_depth;
+  var prune = c.prune_level;
   var algo = c.algo;
 
   var pillN = document.querySelector('[data-pill-for="tables"]');
@@ -3337,9 +4840,9 @@ function recompute() {
     document.getElementById("out-prune").textContent = "n/a (DP, no prune_level)";
     document.getElementById("out-time").textContent = teachRuntime.formatMs(pairs * 0.001);
     document.getElementById("out-explanation").textContent =
-      "Hypergraph optimizer (DPhyp, Moerkotte & Neumann 2006). Treats the query as a graph: vertices = tables, edges = join predicates. Enumerates connected subgraphs bottom-up via the DP recurrence: for each CSG, find a non-overlapping CMP whose connecting edge merges them. Capped by optimizer_max_subgraph_pairs = " +
+      "Hypergraph optimizer (MySQL only, DPhyp, Moerkotte & Neumann 2006). Treats the query as a graph: vertices = tables, edges = join predicates. Enumerates connected subgraphs bottom-up via the DP recurrence: for each CSG, find a non-overlapping CMP whose connecting edge merges them. Capped by optimizer_max_subgraph_pairs = " +
       teachRuntime.formatInt(OPTIMIZER_MAX_SUBGRAPH_PAIRS) +
-      ". For our 7-table tree query, ~57 pairs vs greedy's worst-case 5,040 orderings — and DPhyp can emit a bushy plan tree.";
+      ". The count here is N\u00b3/6, the number of pairs for a chain of joins (57 for 7 tables; the branching 7-table query drawn here has 98), against greedy's worst case of 5,040 orders, and DPhyp can emit a bushy plan tree.";
   } else {
     var effDepth = Math.min(depth, N);
     var raw = plansEvaluated(N, effDepth);
@@ -3355,10 +4858,10 @@ function recompute() {
     var explanation;
     if (effDepth >= N && prune === 0) {
       explanation =
-        "Exhaustive enumeration: every one of N! left-deep orders is costed. At N=" + N + " that's " + teachRuntime.formatInt(fact(N)) + " plans. Beyond N≈12 this is what tanks query compilation time on giant analytical queries.";
+        "Exhaustive enumeration: every one of N! left-deep orders is considered; only orders already costlier than the best complete order found so far are cut short. At N=" + N + " that's " + teachRuntime.formatInt(fact(N)) + " orders. Beyond N≈12 this is what tanks query compilation time on giant analytical queries.";
     } else if (effDepth >= N && prune === 1) {
       explanation =
-        "Exhaustive but pruned: optimizer_prune_level=1 cuts branches whose partial cost already exceeds the best complete plan found so far. The shape is still O(N!), the constant is ~4-10× smaller.";
+        "Exhaustive but pruned: optimizer_prune_level=1 drops a partial order when an earlier candidate at the same step read no more rows and cost no more, so far fewer orders are costed. It is a heuristic that can miss the cheapest order, and the worst case is still O(N!).";
     } else if (effDepth === 1) {
       explanation =
         "Pure greedy: at each step pick the locally-cheapest next table. O(N²) plans. Fast but can miss the globally-optimal order — that is why MySQL's default lookahead is much larger.";
@@ -3376,22 +4879,413 @@ function recompute() {
 
 function resetAnim() {
   resetStageColors();
-  document.getElementById("phase-label").textContent = "Ready — press Play";
+  document.getElementById("phase-label").textContent = "Ready: press Next step, or Play to run it all";
 }
 
 teachRuntime.wire(recompute);
 teachRuntime.wireToolbar({
   build: function() {
-    return buildSearchTimeline(teachRuntime.readControls());
+    return buildSearchTimeline(plannerControls());
   },
   reset: resetAnim
 });
 teachRuntime.wirePhaseNav("phase-nav", {
   build: function() {
-    return buildSearchTimeline(teachRuntime.readControls());
+    return buildSearchTimeline(plannerControls());
   },
   reset: resetAnim
 });
+
+
+var teachGuide = (function() {
+  var source = document.getElementById("lesson-guide");
+  if (!source || typeof teachRuntime === "undefined" || !teachRuntime.onStep) return null;
+  var guide;
+  try { guide = JSON.parse(source.textContent); } catch (e) { return null; }
+  var toolbar = document.querySelector(".stage-toolbar");
+  var stageRow = document.querySelector(".stage-with-phases");
+  if (!guide || !toolbar || !stageRow) return null;
+  var root = document.documentElement;
+  var beatLines = guide.beats || {};
+  var questions = guide.quiz || [];
+  var state = { beat: -1, count: 0, kind: "", phase: "idle", finished: false };
+  var complete = false;
+  var exploring = false;
+  root.setAttribute("data-guided", "true");
+
+  function node(tag, cls, text) {
+    var el = document.createElement(tag);
+    if (cls) el.className = cls;
+    if (text != null) el.textContent = text;
+    return el;
+  }
+  function button(text, cls, label) {
+    var el = node("button", cls || "");
+    el.type = "button";
+    el.appendChild(node("span", "btn-label", text));
+    if (label) el.setAttribute("aria-label", label);
+    return el;
+  }
+  function refit() {
+    if (typeof teachFocus !== "undefined" && teachFocus) teachFocus.fit();
+  }
+
+  // --- Step bar: Back, Next step, the step count, Check yourself, Explore.
+  // Explore adds a slider over every step, Replay step and the inputs.
+  var bar = node("div", "guide-bar");
+  bar.setAttribute("role", "group");
+  bar.setAttribute("aria-label", "Lesson steps");
+  var back = button("Back", "guide-back", "Back one step");
+  var next = button("Next step", "guide-next primary");
+  var range = node("input", "guide-beat guide-explore-only");
+  range.type = "range";
+  range.min = "0";
+  range.max = "0";
+  range.step = "1";
+  range.value = "0";
+  range.setAttribute("aria-label", "Step");
+  var count = node("span", "guide-count");
+  var replay = button("Replay step", "guide-replay guide-explore-only");
+  var ends = node("span", "guide-end");
+  var check = questions.length ? button("Check yourself", "guide-check") : null;
+  if (check) check.hidden = true;
+  var explore = button("Explore", "guide-explore");
+  explore.setAttribute("aria-pressed", "false");
+  explore.title = "Step freely through the lesson and change its inputs";
+  var live = node("span", "guide-live");
+  live.setAttribute("aria-live", "polite");
+  bar.appendChild(back);
+  bar.appendChild(next);
+  bar.appendChild(range);
+  bar.appendChild(count);
+  bar.appendChild(replay);
+
+  var controls = document.querySelector("section.controls");
+  var inputsButton = null;
+  var inputsBox = null;
+  var inputsMark = null;
+  if (controls && controls.querySelector("input, select")) {
+    inputsButton = button("Inputs", "guide-inputs-toggle guide-explore-only");
+    inputsButton.setAttribute("aria-expanded", "false");
+    inputsButton.setAttribute("aria-controls", "guide-inputs");
+    inputsBox = node("div", "guide-inputs");
+    inputsBox.id = "guide-inputs";
+    inputsBox.hidden = true;
+    bar.appendChild(inputsButton);
+    // The lesson's own listeners on each input redraw its stage first; this
+    // one (bubbling to the section) then shows the same step again with the
+    // new values.
+    var changed = function() { teachRuntime.inputsChanged(); };
+    controls.addEventListener("input", changed);
+    controls.addEventListener("change", changed);
+  }
+  if (check) ends.appendChild(check);
+  ends.appendChild(explore);
+  bar.appendChild(ends);
+  bar.appendChild(live);
+  if (inputsBox) bar.appendChild(inputsBox);
+  var scrubber = document.querySelector(".stage-scrubber");
+  var anchor = scrubber && scrubber.parentNode ? scrubber : toolbar;
+  anchor.parentNode.insertBefore(bar, anchor.nextSibling);
+  // Guided first: Next step is the main action, Play runs the rest.
+  var play = document.getElementById("btn-play");
+  if (play) play.classList.remove("primary");
+
+  // --- Side column: the simplified code, then the lesson's phases.
+  var side = node("aside", "stage-side");
+  side.setAttribute("aria-label", "Lesson guide");
+  var lineEls = [];
+  var code = guide.code;
+  if (code && code.lines && code.lines.length) {
+    var panel = node("section", "code-panel");
+    var head = node("div", "code-head");
+    var toggle = node("button", "code-toggle");
+    toggle.type = "button";
+    toggle.setAttribute("aria-expanded", "true");
+    toggle.setAttribute("aria-controls", "code-body");
+    var chevron = node("span", "code-chevron");
+    chevron.setAttribute("aria-hidden", "true");
+    toggle.appendChild(chevron);
+    var title = node("span", "", code.title);
+    title.id = "code-title";
+    toggle.appendChild(title);
+    head.appendChild(toggle);
+    head.appendChild(node("span", "code-tag", "Simplified"));
+    panel.setAttribute("aria-labelledby", "code-title");
+    var body = node("div", "code-body");
+    body.id = "code-body";
+    var list = node("ol", "code-lines");
+    var named = false;
+    for (var i = 0; i < code.lines.length; i++) {
+      var line = code.lines[i];
+      var li = node("li", "code-line");
+      li.setAttribute("data-line", line.id);
+      li.style.setProperty("--indent", String(line.indent || 0));
+      li.appendChild(node("span", "code-text", line.text));
+      if (line.fn) {
+        // A long Class::method name wraps after "::" first; a part still
+        // wider than the column then wraps after an underscore, never
+        // inside a word.
+        var fn = node("span", "code-fn");
+        var parts = String(line.fn).split("::");
+        for (var p = 0; p < parts.length; p++) {
+          var part = node("span", "code-fn-part");
+          var words = (parts[p] + (p < parts.length - 1 ? "::" : "")).split("_");
+          for (var w = 0; w < words.length; w++) {
+            if (w) {
+              part.appendChild(document.createTextNode("_"));
+              part.appendChild(document.createElement("wbr"));
+            }
+            part.appendChild(document.createTextNode(words[w]));
+          }
+          fn.appendChild(part);
+        }
+        li.appendChild(fn);
+        named = true;
+      }
+      list.appendChild(li);
+      lineEls.push(li);
+    }
+    body.appendChild(list);
+    if (named) {
+      body.appendChild(node("p", "code-note",
+        "Grey names are the MySQL source functions that do the step."));
+    }
+    panel.appendChild(head);
+    panel.appendChild(body);
+    toggle.addEventListener("click", function() {
+      var open = toggle.getAttribute("aria-expanded") !== "true";
+      toggle.setAttribute("aria-expanded", open ? "true" : "false");
+      body.hidden = !open;
+      panel.classList.toggle("is-collapsed", !open);
+      side.classList.toggle("is-collapsed", !open);
+      refit();
+    });
+    side.appendChild(panel);
+  }
+  var phaseNav = stageRow.querySelector(".phase-nav");
+  if (phaseNav) side.appendChild(phaseNav);
+  stageRow.appendChild(side);
+
+  function highlight(kind) {
+    var ids = (kind && beatLines[kind]) || [];
+    var first = null;
+    for (var i = 0; i < lineEls.length; i++) {
+      var on = ids.indexOf(lineEls[i].getAttribute("data-line")) >= 0;
+      lineEls[i].classList.toggle("is-active", on);
+      if (on) {
+        lineEls[i].setAttribute("aria-current", "step");
+        if (!first) first = lineEls[i];
+      } else {
+        lineEls[i].removeAttribute("aria-current");
+      }
+    }
+    // Keep the line in view inside the side column, never scrolling the page.
+    if (first && side.scrollHeight > side.clientHeight + 1) {
+      var top = first.offsetTop;
+      var bottom = top + first.offsetHeight;
+      if (top < side.scrollTop) side.scrollTop = Math.max(0, top - 8);
+      else if (bottom > side.scrollTop + side.clientHeight) side.scrollTop = bottom - side.clientHeight + 8;
+    }
+  }
+  function describe(s) {
+    if (!s.count) return "";
+    if (s.beat < 0) return s.count + " steps";
+    if (s.finished && s.beat >= s.count - 1) return "Step " + s.count + " of " + s.count + ", done";
+    return "Step " + (s.beat + 1) + " of " + s.count;
+  }
+  var phaseLabel = document.getElementById("phase-label");
+  var said = "";
+  function announce(text) {
+    if (!text || text === said) return;
+    said = text;
+    live.textContent = text;
+  }
+  // Disabling the focused button would drop focus to the page: hand it on.
+  function disable(el, off, fallback) {
+    if (off && document.activeElement === el && fallback && !fallback.hidden && !fallback.disabled) {
+      fallback.focus();
+    }
+    el.disabled = off;
+  }
+  function update(s) {
+    state = s;
+    highlight(s.beat >= 0 ? s.kind : "");
+    var text = describe(s);
+    count.textContent = text;
+    var done = s.finished && s.beat >= s.count - 1;
+    if (done && !complete) {
+      complete = true;
+      if (check) check.hidden = false;
+      announce("End of the lesson. " + (check ? "Check yourself, or explore freely." : "Explore freely."));
+    } else if (s.phase === "held" || (s.finished && s.beat >= 0)) {
+      announce(text + ". " + (phaseLabel ? phaseLabel.textContent : ""));
+    }
+    disable(back, s.beat < 0, next);
+    disable(next, !s.count || done, check || explore);
+    range.max = String(s.count);
+    range.value = String(Math.max(0, s.beat + 1));
+    range.setAttribute("aria-valuetext", text || "Ready");
+    replay.disabled = s.beat < 0;
+  }
+
+  function setInputs(open) {
+    if (!inputsButton || !controls) return;
+    if (open && !inputsMark && controls.parentNode) {
+      inputsMark = document.createComment("lesson inputs");
+      controls.parentNode.insertBefore(inputsMark, controls);
+      inputsBox.appendChild(controls);
+    } else if (!open && inputsMark) {
+      if (inputsMark.parentNode) {
+        inputsMark.parentNode.insertBefore(controls, inputsMark);
+        inputsMark.parentNode.removeChild(inputsMark);
+      }
+      inputsMark = null;
+    }
+    inputsBox.hidden = !open;
+    inputsButton.setAttribute("aria-expanded", open ? "true" : "false");
+    refit();
+  }
+  // Explore: the slider over every step replaces the time scrubber, with
+  // Replay step and the inputs. Leaving keeps the step that is shown, so the
+  // guided steps continue from there.
+  function setExplore(on) {
+    exploring = !!on;
+    if (exploring) root.setAttribute("data-explore", "true");
+    else root.removeAttribute("data-explore");
+    explore.setAttribute("aria-pressed", exploring ? "true" : "false");
+    if (!exploring) setInputs(false);
+    refit();
+  }
+
+  back.addEventListener("click", function() { teachRuntime.stepBack(); });
+  next.addEventListener("click", function() { teachRuntime.stepNext(); });
+  replay.addEventListener("click", function() { teachRuntime.replayStep(); });
+  range.addEventListener("input", function() { teachRuntime.stepTo(Number(range.value) - 1); });
+  explore.addEventListener("click", function() { setExplore(!exploring); });
+  if (inputsButton) inputsButton.addEventListener("click", function() {
+    setInputs(inputsButton.getAttribute("aria-expanded") !== "true");
+  });
+
+  // --- Check yourself: multiple choice with an answer and its reason at
+  // once. Answers live only in this page; nothing is saved or sent.
+  var dialog = null;
+  function closeQuiz() {
+    if (!dialog || !dialog.open) return;
+    if (typeof dialog.close === "function") dialog.close();
+    else dialog.removeAttribute("open");
+  }
+  function openQuiz() {
+    if (!dialog) return;
+    if (!dialog.open) {
+      if (typeof dialog.showModal === "function") dialog.showModal();
+      else dialog.setAttribute("open", "");
+    }
+    var first = dialog.querySelector("input:checked") || dialog.querySelector("input");
+    if (first) first.focus();
+  }
+  if (questions.length) {
+    dialog = node("dialog", "quiz-dialog");
+    dialog.setAttribute("aria-labelledby", "quiz-title");
+    var qhead = node("div", "quiz-head");
+    var qtitle = node("h2", "", "Check yourself");
+    qtitle.id = "quiz-title";
+    var close = button("Close", "quiz-close");
+    qhead.appendChild(qtitle);
+    qhead.appendChild(close);
+    var qbody = node("div", "quiz-body");
+    qbody.appendChild(node("p", "quiz-intro", questions.length +
+      " questions about this lesson. Pick an answer to see whether it is right and why. Nothing is saved."));
+    var results = [];
+    var tally = node("p", "quiz-tally");
+    tally.setAttribute("aria-live", "polite");
+    var updateTally = function() {
+      var answered = 0, right = 0;
+      for (var r = 0; r < questions.length; r++) {
+        if (results[r] === undefined) continue;
+        answered++;
+        if (results[r]) right++;
+      }
+      tally.textContent = answered ? right + " of " + questions.length + " right" : "";
+    };
+    questions.forEach(function(q, qi) {
+      var set = node("fieldset", "quiz-q");
+      set.appendChild(node("legend", "", (qi + 1) + ". " + q.question));
+      var feedback = node("p", "quiz-feedback");
+      feedback.setAttribute("aria-live", "polite");
+      feedback.id = "quiz-feedback-" + qi;
+      var choices = [];
+      q.choices.forEach(function(choice, ci) {
+        var label = node("label", "quiz-choice");
+        var input = node("input");
+        input.type = "radio";
+        input.name = "quiz-" + qi;
+        input.value = String(ci);
+        input.setAttribute("aria-describedby", feedback.id);
+        var mark = node("span", "quiz-mark");
+        mark.setAttribute("aria-hidden", "true");
+        label.appendChild(input);
+        label.appendChild(node("span", "quiz-text", choice.text));
+        label.appendChild(mark);
+        input.addEventListener("change", function() {
+          for (var c = 0; c < choices.length; c++) {
+            choices[c].label.classList.remove("is-right", "is-wrong");
+            choices[c].mark.textContent = "";
+          }
+          label.classList.add(choice.correct ? "is-right" : "is-wrong");
+          mark.textContent = choice.correct ? "\u2713" : "\u2717";
+          feedback.textContent = "";
+          feedback.appendChild(node("span", choice.correct ? "verdict-right" : "verdict-wrong",
+            choice.correct ? "Right. " : "Not quite. "));
+          feedback.appendChild(document.createTextNode(choice.why));
+          results[qi] = !!choice.correct;
+          updateTally();
+        });
+        choices.push({ label: label, mark: mark });
+        set.appendChild(label);
+      });
+      set.appendChild(feedback);
+      qbody.appendChild(set);
+    });
+    var qfoot = node("div", "quiz-foot");
+    var freely = button("Explore freely", "quiz-explore");
+    qfoot.appendChild(tally);
+    qfoot.appendChild(freely);
+    dialog.appendChild(qhead);
+    dialog.appendChild(qbody);
+    dialog.appendChild(qfoot);
+    document.body.appendChild(dialog);
+    close.addEventListener("click", closeQuiz);
+    freely.addEventListener("click", function() {
+      closeQuiz();
+      setExplore(true);
+      explore.focus();
+    });
+    // Escape closes the quiz only, not the lesson's full screen.
+    dialog.addEventListener("keydown", function(event) {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      closeQuiz();
+    });
+    dialog.addEventListener("cancel", function(event) {
+      event.preventDefault();
+      closeQuiz();
+    });
+    if (check) check.addEventListener("click", openQuiz);
+  }
+
+  if (typeof ResizeObserver === "function") new ResizeObserver(refit).observe(bar);
+  teachRuntime.onStep(update);
+  refit();
+  return {
+    setExplore: setExplore,
+    isExploring: function() { return exploring; },
+    openQuiz: openQuiz,
+    closeQuiz: closeQuiz,
+    state: function() { return state; }
+  };
+})();
 
   </script>
 </body>

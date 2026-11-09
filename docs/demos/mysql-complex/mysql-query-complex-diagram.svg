@@ -1,334 +1,448 @@
-<?xml version="1.0" standalone="no"?>
-<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
-<svg version="1.1" width="1200" height="1103" onload="init(evt)" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1200 1103" style="max-width: 100%; height: auto;">
-<defs><marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#2d3748"/></marker><clipPath id="diagram-clip"><rect x="0" y="0" width="1200" height="584"/></clipPath></defs>
-<style>
-  text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; font-size: 11px; -webkit-font-smoothing: antialiased; }
-  .title { font-size: 19px; font-weight: 650; letter-spacing: -0.2px; fill: #1a1a1a; }
-  .subtitle { font-size: 11px; fill: #6b7280; letter-spacing: 0.1px; }
-  .cost { font-size: 11px; font-weight: 600; }
-  .node-label { font-weight: 700; font-size: 12px; letter-spacing: -0.1px; }
-  .node-sublabel { font-size: 10px; font-weight: 500; }
-  .row-count { font-size: 10.5px; font-weight: 600; }
-  .arrow-label { font-size: 9px; fill: #4b5563; }
-  .legend-label { font-size: 9px; fill: #555; }
-  .diagram-node { cursor: pointer; }
-  .diagram-node:hover rect, .diagram-node:hover polygon { stroke-width: 2.5; }
-  .badge-covering { font-size: 8px; fill: #1b5e20; font-weight: bold; }
-  .loops-line { font-size: 9.5px; font-weight: 500; }
-  .details-line { font-size: 12px; fill: #222; user-select: text; -webkit-user-select: text; cursor: text; }
-  .details-line.dim { fill: #999; }
-  #search { font-size: 12px; fill: #666; cursor: pointer; }
-  #search:hover { fill: #000; }
-  .diagram-node.dim { opacity: 0.25; }
-  .diagram-node.hotspot rect, .diagram-node.hotspot polygon { stroke: #ff3d3d; stroke-width: 3.5; }
-  .diagram-node.pinned rect, .diagram-node.pinned polygon { stroke: #e600e6 !important; stroke-width: 3; }
-  .hotspot-badge rect { fill: #ff3d3d; }
-  .hotspot-badge text { fill: #fff; font-size: 8px; font-weight: 700; letter-spacing: 0.6px; }
-  .zoom-controls { cursor: pointer; }
-  .zoom-btn rect { fill: #fff; stroke: #bbb; stroke-width: 1; rx: 4; }
-  .zoom-btn:hover rect { fill: #f0f0f0; stroke: #888; }
-  .zoom-btn text { font-size: 18px; font-weight: bold; fill: #444; user-select: none; pointer-events: none; }
-  .zoom-btn:hover text { fill: #111; }
-</style>
-<rect width="100%" height="100%" fill="#fafafa"/>
-<text x="600.0" y="30" text-anchor="middle" class="title">MySQL Query Plan</text>
-<text x="600.0" y="48" text-anchor="middle" class="subtitle">Execution plan (left → right)  ·  Total: 6.36 s  ·  Yellow → Purple = faster → slower  ·  Red SLOWEST badge = fix first</text>
-<g id="diagram-legend">
-<text x="428.0" y="67" class="legend-label">Fast</text>
-<rect x="458.0" y="58" width="18" height="10" fill="#fde725" stroke="#999" stroke-width="0.5"/>
-<rect x="476.0" y="58" width="18" height="10" fill="#addc30" stroke="#999" stroke-width="0.5"/>
-<rect x="494.0" y="58" width="18" height="10" fill="#5ec962" stroke="#999" stroke-width="0.5"/>
-<rect x="512.0" y="58" width="18" height="10" fill="#21918c" stroke="#999" stroke-width="0.5"/>
-<rect x="530.0" y="58" width="18" height="10" fill="#3b528b" stroke="#999" stroke-width="0.5"/>
-<rect x="548.0" y="58" width="18" height="10" fill="#472d7b" stroke="#999" stroke-width="0.5"/>
-<rect x="566.0" y="58" width="18" height="10" fill="#440154" stroke="#999" stroke-width="0.5"/>
-<text x="588.0" y="67" class="legend-label">Slow</text>
-<rect x="622.0" y="58" width="18" height="10" fill="#ff3d3d" stroke="#999" stroke-width="0.5"/>
-<text x="646.0" y="67" class="legend-label">SLOWEST = contention point</text>
-</g>
-<line x1="20" y1="514" x2="1180" y2="514" stroke="#e0e0e0" stroke-width="1"/>
-<rect x="20" y="518" width="1160" height="112" fill="#f5f5f5" rx="4"/>
-<text id="search" x="1172" y="526" text-anchor="end">Search</text>
-<text id="details-l0" x="30" y="526" text-anchor="start" class="details-line">Click a node to pin details  ·  +/− to zoom  ·  Drag to pan  ·  Dbl-click to reset  ·  Ctrl+F to search</text>
-<text id="details-l1" x="30" y="542" text-anchor="start" class="details-line"></text>
-<text id="details-l2" x="30" y="558" text-anchor="start" class="details-line"></text>
-<text id="details-l3" x="30" y="574" text-anchor="start" class="details-line"></text>
-<text id="details-l4" x="30" y="590" text-anchor="start" class="details-line"></text>
-<text id="details-l5" x="30" y="606" text-anchor="start" class="details-line"></text>
-<g id="diagram-content" clip-path="url(#diagram-clip)">
-<g class="diagram-node hotspot" data-info="Table scan on de  ·  Total: 211 ms  ·  Cost: 33298.55  ·  Rows: 331.60K  ·  Loops: 1  ·  Table: dept_emp  ·  Est.rows: 331143  ·  ⚠ In Query Analysis: Full table scan: &lt;temporary&gt; (9 rows), dept_emp (331603 rows)" data-analysis-msg="Full table scan: &lt;temporary&gt; (9 rows), dept_emp (331603 rows)" data-teach-index="5">
-<title>Table scan on de  ·  Total: 211 ms  ·  Cost: 33298.55  ·  Rows: 331.60K  ·  Loops: 1  ·  Table: dept_emp  ·  Est.rows: 331143  ·  ⚠ In Query Analysis: Full table scan: &lt;temporary&gt; (9 rows), dept_emp (331603 rows)</title>
-<defs><clipPath id="clipbox-0"><rect x="20" y="182" width="240" height="112" rx="6" ry="6"/></clipPath></defs>
-<g clip-path="url(#clipbox-0)">
-<rect x="20" y="182" width="240" height="112" fill="#39568b" stroke="#2d3748" stroke-width="1" rx="6" ry="6"/>
-<text x="140.0" y="198" text-anchor="middle" class="cost" fill="#ffffff">211 ms</text>
-<text x="140.0" y="216" text-anchor="middle" class="node-label" fill="#ffffff">Full Table Scan</text>
-<text x="140.0" y="234" text-anchor="middle" class="node-sublabel" fill="#ffffff">dept_emp</text>
-<text x="140.0" y="284" text-anchor="middle" class="row-count" fill="#ffffff">331.60K rows</text>
-</g>
-<g class="hotspot-badge">
-<rect x="194" y="175.0" width="60" height="14" rx="7" ry="7"/>
-<text x="224.0" y="186.0" text-anchor="middle">SLOWEST</text>
-</g>
-</g>
-<line x1="260" y1="238.0" x2="310" y2="238.0" stroke="#2d3748" stroke-width="2" marker-end="url(#arrowhead)"/>
-<text x="285.0" y="232.0" text-anchor="middle" class="arrow-label">331.60K rows</text>
-<g class="diagram-node" data-info="Nested loop inner join  ·  Total: 4.38 s  ·  Self: 88.86 ms  ·  Cost: 49571.30  ·  Rows: 240.12K  ·  Loops: 1  ·  Est.rows: 3311" data-teach-index="3">
-<title>Nested loop inner join  ·  Total: 4.38 s  ·  Self: 88.86 ms  ·  Cost: 49571.30  ·  Rows: 240.12K  ·  Loops: 1  ·  Est.rows: 3311</title>
-<text x="366" y="176.0" text-anchor="middle" class="cost">88.86 ms</text>
-<polygon points="366,182.0 422,238.0 366,294.0 310,238.0" fill="#287e8b" stroke="#2d3748" stroke-width="1"/>
-<text x="366" y="234.0" text-anchor="middle" class="node-label" fill="#ffffff">inner join</text>
-<text x="366" y="250.0" text-anchor="middle" class="node-sublabel" fill="#ffffff">240.12K rows</text>
-</g>
-<g class="diagram-node" data-info="Ran 240.1K times (e.g. inner side of nested loop).  ·  —  ·  Index lookup on s using PRIMARY (emp_no=de.emp_no)  ·  Total: 3.57 s  ·  Cost: 0.39  ·  Rows: 11  ·  Loops: 240124  ·  Table: salaries  ·  Index: PRIMARY  ·  Est.rows: 1  ·  Covering: no" data-teach-index="7">
-<title>Ran 240.1K times (e.g. inner side of nested loop).  ·  —  ·  Index lookup on s using PRIMARY (emp_no=de.emp_no)  ·  Total: 3.57 s  ·  Cost: 0.39  ·  Rows: 11  ·  Loops: 240124  ·  Table: salaries  ·  Index: PRIMARY  ·  Est.rows: 1  ·  Covering: no</title>
-<defs><clipPath id="clipbox-1"><rect x="246.0" y="344" width="240" height="112" rx="6" ry="6"/></clipPath></defs>
-<g clip-path="url(#clipbox-1)">
-<rect x="246.0" y="344" width="240" height="112" fill="#440154" stroke="#2d3748" stroke-width="1" rx="6" ry="6"/>
-<text x="366.0" y="360" text-anchor="middle" class="cost" fill="#ffffff">3.57 s</text>
-<text x="366.0" y="378" text-anchor="middle" class="node-label" fill="#ffffff">Non-Unique Key Lookup</text>
-<text x="366.0" y="396" text-anchor="middle" class="node-sublabel" fill="#ffffff">salaries</text>
-<text x="366.0" y="412" text-anchor="middle" class="node-sublabel" fill="#ffffff">PRIMARY</text>
-<text x="366.0" y="432" text-anchor="middle" class="loops-line" fill="#ffffff">↻ 240.1K loops</text>
-<text x="366.0" y="446" text-anchor="middle" class="row-count" fill="#ffffff">11 rows</text>
-</g>
-</g>
-<line x1="366" y1="344" x2="366" y2="294.0" stroke="#2d3748" stroke-width="2" marker-end="url(#arrowhead)"/>
-<text x="380" y="319.0" text-anchor="start" class="arrow-label">11 rows</text>
-<line x1="422" y1="238.0" x2="600" y2="238.0" stroke="#2d3748" stroke-width="2" marker-end="url(#arrowhead)"/>
-<text x="511.0" y="232.0" text-anchor="middle" class="arrow-label">240.12K rows</text>
-<g class="diagram-node" data-info="Nested loop inner join  ·  Total: 5.62 s  ·  Self: 94.01 ms  ·  Cost: 53213.88  ·  Rows: 240.12K  ·  Loops: 1  ·  Est.rows: 3311" data-teach-index="3">
-<title>Nested loop inner join  ·  Total: 5.62 s  ·  Self: 94.01 ms  ·  Cost: 53213.88  ·  Rows: 240.12K  ·  Loops: 1  ·  Est.rows: 3311</title>
-<text x="656" y="176.0" text-anchor="middle" class="cost">94.01 ms</text>
-<polygon points="656,182.0 712,238.0 656,294.0 600,238.0" fill="#297b8b" stroke="#2d3748" stroke-width="1"/>
-<text x="656" y="234.0" text-anchor="middle" class="node-label" fill="#ffffff">inner join</text>
-<text x="656" y="250.0" text-anchor="middle" class="node-sublabel" fill="#ffffff">240.12K rows</text>
-</g>
-<g class="diagram-node" data-info="Ran 240.1K times (e.g. inner side of nested loop).  ·  —  ·  Single-row index lookup on d using PRIMARY (dept_no=de.dept_no)  ·  Total: 1.15 s  ·  Cost: 1.00  ·  Rows: 1  ·  Loops: 240124  ·  Table: departments  ·  Index: PRIMARY  ·  Est.rows: 1  ·  Covering: no" data-teach-index="8">
-<title>Ran 240.1K times (e.g. inner side of nested loop).  ·  —  ·  Single-row index lookup on d using PRIMARY (dept_no=de.dept_no)  ·  Total: 1.15 s  ·  Cost: 1.00  ·  Rows: 1  ·  Loops: 240124  ·  Table: departments  ·  Index: PRIMARY  ·  Est.rows: 1  ·  Covering: no</title>
-<defs><clipPath id="clipbox-2"><rect x="536.0" y="344" width="240" height="112" rx="6" ry="6"/></clipPath></defs>
-<g clip-path="url(#clipbox-2)">
-<rect x="536.0" y="344" width="240" height="112" fill="#462574" stroke="#2d3748" stroke-width="1" rx="6" ry="6"/>
-<text x="656.0" y="360" text-anchor="middle" class="cost" fill="#ffffff">1.15 s</text>
-<text x="656.0" y="378" text-anchor="middle" class="node-label" fill="#ffffff">Unique Key Lookup</text>
-<text x="656.0" y="396" text-anchor="middle" class="node-sublabel" fill="#ffffff">departments</text>
-<text x="656.0" y="412" text-anchor="middle" class="node-sublabel" fill="#ffffff">PRIMARY</text>
-<text x="656.0" y="432" text-anchor="middle" class="loops-line" fill="#ffffff">↻ 240.1K loops</text>
-<text x="656.0" y="446" text-anchor="middle" class="row-count" fill="#ffffff">1 rows</text>
-</g>
-</g>
-<line x1="656" y1="344" x2="656" y2="294.0" stroke="#2d3748" stroke-width="2" marker-end="url(#arrowhead)"/>
-<text x="670" y="319.0" text-anchor="start" class="arrow-label">1 rows</text>
-<line x1="712" y1="238.0" x2="890" y2="238.0" stroke="#2d3748" stroke-width="2" marker-end="url(#arrowhead)"/>
-<text x="801.0" y="232.0" text-anchor="middle" class="arrow-label">240.12K rows</text>
-<g class="diagram-node" data-info="Total: 6.36 s">
-<title>Total: 6.36 s</title>
-<rect x="890" y="210.0" width="160" height="56" fill="#f9e625" stroke="#2d3748" stroke-width="1" rx="6"/>
-<text x="970.0" y="230.0" text-anchor="middle" class="node-label" fill="#111111">query_block #1</text>
-<text x="970.0" y="248.0" text-anchor="middle" class="cost" fill="#111111">66.6 µs</text>
-</g>
-</g>
-<g class="zoom-controls">
-<g class="zoom-btn" id="zoom-in"><rect x="1138" y="438" width="30" height="30"/><text x="1153.0" y="459.0" text-anchor="middle">+</text></g>
-<g class="zoom-btn" id="zoom-out"><rect x="1138" y="472" width="30" height="30"/><text x="1153.0" y="493.0" text-anchor="middle">−</text></g>
-<g class="zoom-btn" id="zoom-reset"><rect x="1138" y="506" width="30" height="30"/><text x="1153.0" y="527.0" text-anchor="middle">↺</text></g>
-</g>
-<script type="text/javascript"><![CDATA[
-(function() {
-  var N_LINES = 6;
-  var detailLines = [];
-  var searchBtn, content, svgEl;
-  var diagramBottom = 584;
-  var defaultHint = "Click a node to pin details  ·  +/− to zoom  ·  Drag to pan  ·  Dbl-click to reset  ·  Ctrl+F to search";
-  var pinned = false, searchActive = false;
-  var vx = 0, vy = 0, vs = 1;
-  var dragging = false, dragStart = {x:0,y:0}, dragOrigin = {x:0,y:0};
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xhtml="http://www.w3.org/1999/xhtml" width="1200" height="1621" viewBox="0 0 1200 1621" class="wb-plan" role="group" aria-label="Visual Explain" style="max-width: 100%; height: auto;">
+<title>MySQL Query Plan — Visual Explain</title>
+<style>.wb-plan{font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;background:#f8fafb;color:#243341}.wb-plan text{fill:#243341;font-size:12px}.wb-plan .wb-heading{font-size:19px;font-weight:650}.wb-plan .wb-caption{fill:#596a79;font-size:11px}.wb-plan .wb-title{font-size:13px;font-weight:650}.wb-plan .wb-node{cursor:pointer;outline:none}.wb-plan .wb-node:hover .wb-box,.wb-plan .wb-node:focus .wb-box,.wb-plan .wb-node.selected .wb-box{stroke:#176aa8;stroke-width:3}.wb-plan .wb-node.dim{opacity:.25}.wb-plan .wb-controls{display:flex;align-items:center;height:100%}.wb-plan .wb-controls button,.wb-plan .wb-controls input{box-sizing:border-box;height:28px;margin:0;font:12px -apple-system,BlinkMacSystemFont,system-ui,sans-serif;color:#1d1d1f}.wb-plan .wb-controls button{cursor:pointer;min-width:30px;padding:0 10px;border:1px solid #8e8e98;border-left-width:0;border-radius:0;background:#f2f2f4}.wb-plan .wb-controls [data-action="fit"]{border-left-width:1px;border-radius:6px 0 0 6px}.wb-plan .wb-controls [data-action="reset"]{min-width:56px;border-radius:0 6px 6px 0;font-variant-numeric:tabular-nums}.wb-plan .wb-controls button:hover:not(:disabled){background:#e9e9ed}.wb-plan .wb-controls button:active:not(:disabled),.wb-plan .wb-controls button.wb-activated:not(:disabled){background:#fff;color:#176aa8}.wb-plan .wb-controls button:disabled{opacity:.4;cursor:default}.wb-plan .wb-controls input{width:180px;margin-left:8px;padding:0 8px;border:1px solid #8e8e98;border-radius:4px;background:#fff}.wb-plan .wb-search-status{margin-left:8px;font:12px -apple-system,BlinkMacSystemFont,system-ui,sans-serif;color:#5c5c66}.wb-plan button:focus-visible,.wb-plan input:focus-visible{position:relative;z-index:1;outline:2px solid #176aa8}.wb-plan .wb-details{user-select:text;font:12px/1.6 system-ui;color:#243341;white-space:pre-wrap;overflow:auto;height:100%;box-sizing:border-box;padding:12px;border:1px solid #d8e0e5;border-radius:6px;background:#fff}.wb-plan .wb-edge-label{font-size:11px;paint-order:stroke;stroke:#f8fafb;stroke-width:4px;stroke-linejoin:round}</style>
+<rect width="100%" height="100%" fill="#f8fafb"/>
+<text x="20" y="29" class="wb-heading">MySQL Query Plan</text>
+<text x="20" y="50" class="wb-caption">Data flows downward · Colors identify operators · Arrow width = estimated rows (log scale)</text>
+<foreignObject x="20" y="61" width="1160" height="42"><div xmlns="http://www.w3.org/1999/xhtml" class="wb-controls"><button type="button" data-action="fit">Fit plan</button><button type="button" data-action="in" aria-label="Zoom in">+</button><button type="button" data-action="out" aria-label="Zoom out">−</button><button type="button" data-action="reset" aria-label="Reset zoom to 100%" title="Reset zoom to 100%">100%</button><input type="search" aria-label="Search plan nodes" placeholder="Search plan nodes"/><span class="wb-search-status" aria-live="polite"></span></div></foreignObject>
+<rect x="20.0" y="112" width="10" height="10" fill="#db9292"/><text x="35.0" y="121" class="wb-caption">Table scan</text>
+<rect x="165.0" y="112" width="10" height="10" fill="#9ac59d"/><text x="180.0" y="121" class="wb-caption">Index lookup</text>
+<rect x="310.0" y="112" width="10" height="10" fill="#e3ca83"/><text x="325.0" y="121" class="wb-caption">Index range</text>
+<rect x="455.0" y="112" width="10" height="10" fill="#e4b181"/><text x="470.0" y="121" class="wb-caption">Index scan</text>
+<rect x="600.0" y="112" width="10" height="10" fill="#c998b3"/><text x="615.0" y="121" class="wb-caption">Join</text>
+<rect x="745.0" y="112" width="10" height="10" fill="#9ecbcb"/><text x="760.0" y="121" class="wb-caption">Hash</text>
+<rect x="890.0" y="112" width="10" height="10" fill="#d1cfad"/><text x="905.0" y="121" class="wb-caption">Operation</text>
+<rect x="1035.0" y="112" width="10" height="10" fill="#b4a4d8"/><text x="1050.0" y="121" class="wb-caption">Materialize</text>
+<svg x="0" y="136" width="1200" height="660" viewBox="0 0 1200 660" class="wb-viewport" style="touch-action:none;cursor:grab;overflow:hidden" data-graph-width="920" data-graph-height="1632">
+<defs><marker id="wb-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L8 4 L0 8 Z" fill="#8795a1"/></marker></defs>
+<rect x="-100000" y="-100000" width="200000" height="200000" fill="#f8fafb"/>
+<g class="wb-graph">
+<path class="wb-edge" data-from="n:f594e5f3a9f7" data-to="n:9e86647097af" d="M128.0 126.0 V182.7 H128.0 V211.0" fill="none" stroke="#8795a1" stroke-width="16" marker-end="url(#wb-arrow)"/>
+<text x="8.0" y="149.0" class="wb-edge-label">Rows/loop: 331.60K actual · 331.14K est.</text>
+<path class="wb-edge" data-from="n:9e86647097af" data-to="n:3f3b42eaef83" d="M128.0 342.0 V398.7 H460.0 V427.0" fill="none" stroke="#8795a1" stroke-width="16" marker-end="url(#wb-arrow)"/>
+<text x="8.0" y="365.0" class="wb-edge-label">Rows/loop: 240.12K actual · 33.11K est.</text>
+<text x="8.0" y="383.0" class="wb-edge-label">outer</text>
+<path class="wb-edge" data-from="n:9d8125b7e0a1" data-to="n:d0f7a733b6e0" d="M460.0 126.0 V182.7 H460.0 V211.0" fill="none" stroke="#8795a1" stroke-width="1" marker-end="url(#wb-arrow)"/>
+<text x="340.0" y="149.0" class="wb-edge-label">Rows/loop: 10.5 actual · 1 est.</text>
+<path class="wb-edge" data-from="n:d0f7a733b6e0" data-to="n:3f3b42eaef83" d="M460.0 342.0 V398.7 H460.0 V427.0" fill="none" stroke="#8795a1" stroke-width="1" marker-end="url(#wb-arrow)"/>
+<text x="340.0" y="365.0" class="wb-edge-label">Rows/loop: 1 actual · 0.1 est.</text>
+<text x="340.0" y="383.0" class="wb-edge-label">inner</text>
+<path class="wb-edge" data-from="n:3f3b42eaef83" data-to="n:62bcf2b0e81f" d="M460.0 618.0 V674.7 H792.0 V703.0" fill="none" stroke="#8795a1" stroke-width="12" marker-end="url(#wb-arrow)"/>
+<text x="340.0" y="641.0" class="wb-edge-label">Rows/loop: 240.12K actual · 3.31K est.</text>
+<text x="340.0" y="659.0" class="wb-edge-label">outer</text>
+<path class="wb-edge" data-from="n:661c6ab5d2c3" data-to="n:62bcf2b0e81f" d="M792.0 618.0 V674.7 H792.0 V703.0" fill="none" stroke="#8795a1" stroke-width="1" marker-end="url(#wb-arrow)"/>
+<text x="672.0" y="641.0" class="wb-edge-label">Rows/loop: 1 actual · 1 est.</text>
+<text x="672.0" y="659.0" class="wb-edge-label">inner</text>
+<path class="wb-edge" data-from="n:62bcf2b0e81f" data-to="n:36c719443bc0" d="M792.0 894.0 V950.7 H792.0 V979.0" fill="none" stroke="#8795a1" stroke-width="12" marker-end="url(#wb-arrow)"/>
+<text x="672.0" y="917.0" class="wb-edge-label">Rows/loop: 240.12K actual · 3.31K est.</text>
+<path class="wb-edge" data-from="n:36c719443bc0" data-to="n:d2dccead858b" d="M792.0 1110.0 V1166.7 H792.0 V1195.0" fill="none" stroke="#8795a1" stroke-width="1" marker-end="url(#wb-arrow)"/>
+<text x="672.0" y="1133.0" class="wb-edge-label">Rows/loop: 9 actual · n/a est.</text>
+<path class="wb-edge" data-from="n:d2dccead858b" data-to="n:4b310806699e" d="M792.0 1326.0 V1382.7 H792.0 V1411.0" fill="none" stroke="#8795a1" stroke-width="1" marker-end="url(#wb-arrow)"/>
+<text x="672.0" y="1349.0" class="wb-edge-label">Rows/loop: 9 actual · n/a est.</text>
+<g class="wb-node" role="button" tabindex="0" aria-label="Sort" data-node-id="n:4b310806699e" data-details="Operation: Sort: avg_salary DESC&#10;Actual rows / loop: 9.0&#10;Actual loops: 1&#10;Actual first row (ms / loop): 6357.2297180000005&#10;Actual last row (ms / loop): 6357.2305&#10;Total across loops (ms): 6357.2305&#10;Self time across loops (ms): 0.06655099999898084&#10;Access type: sort" data-label="Sort" data-kind="operation" transform="translate(664.0 1416.0)" data-teach-index="0"><title>Operation: Sort: avg_salary DESC
+Actual rows / loop: 9.0
+Actual loops: 1
+Actual first row (ms / loop): 6357.2297180000005
+Actual last row (ms / loop): 6357.2305
+Total across loops (ms): 6357.2305
+Self time across loops (ms): 0.06655099999898084
+Access type: sort</title>
+<rect class="wb-box" width="256" height="126" rx="7" fill="white" stroke="#c4cfd6"/>
+<path d="M7 0 H249 Q256 0 256 7 V34 H0 V7 Q0 0 7 0" fill="#d1cfad"/>
+<text x="12" y="23" class="wb-title">Sort</text>
+<text x="12" y="57">Sort: avg_salary DESC</text>
+<text x="12" y="91" class="wb-caption">Self 66.6 µs · total 6.36 s</text>
+<text x="12" y="112" class="wb-caption">Est. cost n/a · loops 1</text></g>
+<g class="wb-node" role="button" tabindex="0" aria-label="Table scan [&lt;temporary&gt;]" data-node-id="n:d2dccead858b" data-details="Operation: Table scan on &lt;temporary&gt;&#10;Actual rows / loop: 9.0&#10;Actual loops: 1&#10;Actual first row (ms / loop): 6357.1620219999995&#10;Actual last row (ms / loop): 6357.163949000001&#10;Total across loops (ms): 6357.163949000001&#10;Self time across loops (ms): 0.003612000000430271&#10;Table: &lt;temporary&gt;&#10;Access type: table" data-label="Table scan [&lt;temporary&gt;]" data-kind="table" transform="translate(664.0 1200.0)" data-teach-index="1"><title>Operation: Table scan on &lt;temporary&gt;
+Actual rows / loop: 9.0
+Actual loops: 1
+Actual first row (ms / loop): 6357.1620219999995
+Actual last row (ms / loop): 6357.163949000001
+Total across loops (ms): 6357.163949000001
+Self time across loops (ms): 0.003612000000430271
+Table: &lt;temporary&gt;
+Access type: table</title>
+<rect class="wb-box" width="256" height="126" rx="7" fill="white" stroke="#c4cfd6"/>
+<path d="M7 0 H249 Q256 0 256 7 V34 H0 V7 Q0 0 7 0" fill="#db9292"/>
+<text x="12" y="23" class="wb-title">Table scan [&lt;temporary&gt;]</text>
+<text x="12" y="57">&lt;temporary&gt;</text>
+<text x="12" y="91" class="wb-caption">Self 3.6 µs · total 6.36 s</text>
+<text x="12" y="112" class="wb-caption">Est. cost n/a · loops 1</text></g>
+<g class="wb-node" role="button" tabindex="0" aria-label="Aggregate" data-node-id="n:36c719443bc0" data-details="Operation: Aggregate using temporary table&#10;Actual rows / loop: 9.0&#10;Actual loops: 1&#10;Actual first row (ms / loop): 6357.160337&#10;Actual last row (ms / loop): 6357.160337&#10;Total across loops (ms): 6357.160337&#10;Self time across loops (ms): 732.3099730000004&#10;Access type: temp_table_aggregate" data-label="Aggregate" data-kind="operation" transform="translate(664.0 984.0)" data-teach-index="2"><title>Operation: Aggregate using temporary table
+Actual rows / loop: 9.0
+Actual loops: 1
+Actual first row (ms / loop): 6357.160337
+Actual last row (ms / loop): 6357.160337
+Total across loops (ms): 6357.160337
+Self time across loops (ms): 732.3099730000004
+Access type: temp_table_aggregate</title>
+<rect class="wb-box" width="256" height="126" rx="7" fill="white" stroke="#c4cfd6"/>
+<path d="M7 0 H249 Q256 0 256 7 V34 H0 V7 Q0 0 7 0" fill="#d1cfad"/>
+<text x="12" y="23" class="wb-title">Aggregate</text>
+<text x="12" y="57">Aggregate using temporary table</text>
+<text x="12" y="91" class="wb-caption">Self 732.31 ms · total 6.36 s</text>
+<text x="12" y="112" class="wb-caption">Est. cost n/a · loops 1</text></g>
+<g class="wb-node" role="button" tabindex="0" aria-label="Nested loop inner join" data-node-id="n:62bcf2b0e81f" data-details="Operation: Nested loop inner join&#10;Actual rows / loop: 240124.0&#10;Estimated rows / loop: 3311.430098688305&#10;Actual loops: 1&#10;Actual first row (ms / loop): 22.857639&#10;Actual last row (ms / loop): 5624.850364&#10;Total across loops (ms): 5624.850364&#10;Self time across loops (ms): 94.00564500000019&#10;Estimated optimizer cost: 53213.87610523551&#10;Access type: join&#10;Join algorithm: nested_loop&#10;Join type: Inner join&#10;Highlighted region: Matching row combinations&#10;Join symbol: Logical join semantics, not row counts or duplicates. L/R refer to this plan operator, not SQL text order." data-label="Nested loop inner join" data-kind="nested_loop" transform="translate(664.0 708.0)" data-teach-index="3"><title>Operation: Nested loop inner join
+Actual rows / loop: 240124.0
+Estimated rows / loop: 3311.430098688305
+Actual loops: 1
+Actual first row (ms / loop): 22.857639
+Actual last row (ms / loop): 5624.850364
+Total across loops (ms): 5624.850364
+Self time across loops (ms): 94.00564500000019
+Estimated optimizer cost: 53213.87610523551
+Access type: join
+Join algorithm: nested_loop
+Join type: Inner join
+Highlighted region: Matching row combinations
+Join symbol: Logical join semantics, not row counts or duplicates. L/R refer to this plan operator, not SQL text order.</title>
+<rect class="wb-box" width="256" height="186" rx="7" fill="white" stroke="#c4cfd6"/>
+<rect x="8" width="240" height="3" rx="1.5" fill="#c998b3"/>
+<g class="wb-venn" role="img" aria-label="Inner join: Matching row combinations" data-join-type="inner"><circle cx="96" cy="60" r="44" fill="#f5f5f7"/><circle cx="160" cy="60" r="44" fill="#f5f5f7"/><path class="wb-join-highlight" data-region="overlap" d="M128 29.801 A44 44 0 0 1 128 90.199 A44 44 0 0 1 128 29.801 Z" fill="#b7d9ff"/><circle cx="96" cy="60" r="44" fill="none" stroke="#6e7d8c" stroke-width="1.5"/><circle cx="160" cy="60" r="44" fill="none" stroke="#6e7d8c" stroke-width="1.5"/><text x="78" y="64" text-anchor="middle" class="wb-side">L</text><text x="178" y="64" text-anchor="middle" class="wb-side">R</text></g>
+<text x="128" y="124" text-anchor="middle" class="wb-title">Inner join · Nested loop</text>
+<text x="12" y="151" class="wb-caption">Self 94.01 ms · total 5.62 s</text>
+<text x="12" y="172" class="wb-caption">Est. cost 53.21K · loops 1</text></g>
+<g class="wb-node" role="button" tabindex="0" aria-label="Nested loop inner join" data-node-id="n:3f3b42eaef83" data-details="Operation: Nested loop inner join&#10;Actual rows / loop: 240124.0&#10;Estimated rows / loop: 3311.430098688305&#10;Actual loops: 1&#10;Actual first row (ms / loop): 3.32607&#10;Actual last row (ms / loop): 4377.821271&#10;Total across loops (ms): 4377.821271&#10;Self time across loops (ms): 88.85738499999934&#10;Estimated optimizer cost: 49571.30299667838&#10;Access type: join&#10;Join algorithm: nested_loop&#10;Join type: Inner join&#10;Highlighted region: Matching row combinations&#10;Join symbol: Logical join semantics, not row counts or duplicates. L/R refer to this plan operator, not SQL text order." data-label="Nested loop inner join" data-kind="nested_loop" transform="translate(332.0 432.0)" data-teach-index="3"><title>Operation: Nested loop inner join
+Actual rows / loop: 240124.0
+Estimated rows / loop: 3311.430098688305
+Actual loops: 1
+Actual first row (ms / loop): 3.32607
+Actual last row (ms / loop): 4377.821271
+Total across loops (ms): 4377.821271
+Self time across loops (ms): 88.85738499999934
+Estimated optimizer cost: 49571.30299667838
+Access type: join
+Join algorithm: nested_loop
+Join type: Inner join
+Highlighted region: Matching row combinations
+Join symbol: Logical join semantics, not row counts or duplicates. L/R refer to this plan operator, not SQL text order.</title>
+<rect class="wb-box" width="256" height="186" rx="7" fill="white" stroke="#c4cfd6"/>
+<rect x="8" width="240" height="3" rx="1.5" fill="#c998b3"/>
+<g class="wb-venn" role="img" aria-label="Inner join: Matching row combinations" data-join-type="inner"><circle cx="96" cy="60" r="44" fill="#f5f5f7"/><circle cx="160" cy="60" r="44" fill="#f5f5f7"/><path class="wb-join-highlight" data-region="overlap" d="M128 29.801 A44 44 0 0 1 128 90.199 A44 44 0 0 1 128 29.801 Z" fill="#b7d9ff"/><circle cx="96" cy="60" r="44" fill="none" stroke="#6e7d8c" stroke-width="1.5"/><circle cx="160" cy="60" r="44" fill="none" stroke="#6e7d8c" stroke-width="1.5"/><text x="78" y="64" text-anchor="middle" class="wb-side">L</text><text x="178" y="64" text-anchor="middle" class="wb-side">R</text></g>
+<text x="128" y="124" text-anchor="middle" class="wb-title">Inner join · Nested loop</text>
+<text x="12" y="151" class="wb-caption">Self 88.86 ms · total 4.38 s</text>
+<text x="12" y="172" class="wb-caption">Est. cost 49.57K · loops 1</text></g>
+<g class="wb-node" role="button" tabindex="0" aria-label="Filter: ((de.to_date = DATE&#39;9999-01-01&#39;))" data-node-id="n:9e86647097af" data-details="Operation: Filter: (de.to_date = 9999-01-01)&#10;Actual rows / loop: 240124.0&#10;Estimated rows / loop: 33114.30049344152&#10;Actual loops: 1&#10;Actual first row (ms / loop): 2.732052&#10;Actual last row (ms / loop): 319.156004&#10;Total across loops (ms): 319.156004&#10;Self time across loops (ms): 108.17827399999999&#10;Estimated optimizer cost: 33298.55&#10;Access type: filter&#10;Condition: (de.to_date = DATE&#39;9999-01-01&#39;)" data-label="Filter: ((de.to_date = DATE&#39;9999-01-01&#39;))" data-kind="operation" transform="translate(0.0 216.0)" data-teach-index="4"><title>Operation: Filter: (de.to_date = 9999-01-01)
+Actual rows / loop: 240124.0
+Estimated rows / loop: 33114.30049344152
+Actual loops: 1
+Actual first row (ms / loop): 2.732052
+Actual last row (ms / loop): 319.156004
+Total across loops (ms): 319.156004
+Self time across loops (ms): 108.17827399999999
+Estimated optimizer cost: 33298.55
+Access type: filter
+Condition: (de.to_date = DATE'9999-01-01')</title>
+<rect class="wb-box" width="256" height="126" rx="7" fill="white" stroke="#c4cfd6"/>
+<path d="M7 0 H249 Q256 0 256 7 V34 H0 V7 Q0 0 7 0" fill="#d1cfad"/>
+<text x="12" y="23" class="wb-title">Filter: ((de.…TE'9999-01-01'))</text>
+<text x="12" y="57">(de.to_date = DATE'9999-01-01')</text>
+<text x="12" y="91" class="wb-caption">Self 108.18 ms · total 319.16 ms</text>
+<text x="12" y="112" class="wb-caption">Est. cost 33.30K · loops 1</text></g>
+<g class="wb-node" role="button" tabindex="0" aria-label="Table scan [dept_emp]" data-node-id="n:f594e5f3a9f7" data-details="Operation: Table scan on de&#10;Actual rows / loop: 331603.0&#10;Estimated rows / loop: 331143.0&#10;Actual loops: 1&#10;Actual first row (ms / loop): 2.7282830000000002&#10;Actual last row (ms / loop): 210.97773&#10;Total across loops (ms): 210.97773&#10;Self time across loops (ms): 210.97773&#10;Estimated optimizer cost: 33298.55&#10;Table: dept_emp&#10;Access type: table" data-label="Table scan [dept_emp]" data-kind="table" transform="translate(0.0 0.0)" data-teach-index="5"><title>Operation: Table scan on de
+Actual rows / loop: 331603.0
+Estimated rows / loop: 331143.0
+Actual loops: 1
+Actual first row (ms / loop): 2.7282830000000002
+Actual last row (ms / loop): 210.97773
+Total across loops (ms): 210.97773
+Self time across loops (ms): 210.97773
+Estimated optimizer cost: 33298.55
+Table: dept_emp
+Access type: table</title>
+<rect class="wb-box" width="256" height="126" rx="7" fill="white" stroke="#c4cfd6"/>
+<path d="M7 0 H249 Q256 0 256 7 V34 H0 V7 Q0 0 7 0" fill="#db9292"/>
+<text x="12" y="23" class="wb-title">Table scan [dept_emp]</text>
+<text x="12" y="57">dept_emp</text>
+<text x="12" y="91" class="wb-caption">Self 210.98 ms · total 210.98 ms</text>
+<text x="12" y="112" class="wb-caption">Est. cost 33.30K · loops 1</text></g>
+<g class="wb-node" role="button" tabindex="0" aria-label="Filter: ((s.to_date = DATE&#39;9999-01-01&#39;))" data-node-id="n:d0f7a733b6e0" data-details="Operation: Filter: (s.to_date = 9999-01-01)&#10;Actual rows / loop: 1.0&#10;Estimated rows / loop: 0.10000000149011612&#10;Actual loops: 240124&#10;Actual first row (ms / loop): 0.014534164186003899&#10;Actual last row (ms / loop): 0.016532324474021757&#10;Total across loops (ms): 3969.8078820000005&#10;Self time across loops (ms): 402.27324700000054&#10;Estimated optimizer cost: 0.39141195055294725&#10;Access type: filter&#10;Condition: (s.to_date = DATE&#39;9999-01-01&#39;)" data-label="Filter: ((s.to_date = DATE&#39;9999-01-01&#39;))" data-kind="operation" transform="translate(332.0 216.0)" data-teach-index="6"><title>Operation: Filter: (s.to_date = 9999-01-01)
+Actual rows / loop: 1.0
+Estimated rows / loop: 0.10000000149011612
+Actual loops: 240124
+Actual first row (ms / loop): 0.014534164186003899
+Actual last row (ms / loop): 0.016532324474021757
+Total across loops (ms): 3969.8078820000005
+Self time across loops (ms): 402.27324700000054
+Estimated optimizer cost: 0.39141195055294725
+Access type: filter
+Condition: (s.to_date = DATE'9999-01-01')</title>
+<rect class="wb-box" width="256" height="126" rx="7" fill="white" stroke="#c4cfd6"/>
+<path d="M7 0 H249 Q256 0 256 7 V34 H0 V7 Q0 0 7 0" fill="#d1cfad"/>
+<text x="12" y="23" class="wb-title">Filter: ((s.…ATE'9999-01-01'))</text>
+<text x="12" y="57">(s.to_date = DATE'9999-01-01')</text>
+<text x="12" y="91" class="wb-caption">Self 402.27 ms · total 3.97 s</text>
+<text x="12" y="112" class="wb-caption">Est. cost 0.391 · loops 240.12K</text></g>
+<g class="wb-node" role="button" tabindex="0" aria-label="Index lookup [salaries.PRIMARY]" data-node-id="n:9d8125b7e0a1" data-details="Operation: Index lookup on s using PRIMARY (emp_no=de.emp_no)&#10;Actual rows / loop: 10.514305109027003&#10;Estimated rows / loop: 1.0&#10;Actual loops: 240124&#10;Actual first row (ms / loop): 0.009003923418733654&#10;Actual last row (ms / loop): 0.014857051502557013&#10;Total across loops (ms): 3567.534635&#10;Self time across loops (ms): 3567.534635&#10;Estimated optimizer cost: 0.39141195055294725&#10;Table: salaries&#10;Index: PRIMARY&#10;Access type: index&#10;Index access: index_lookup&#10;Covering index: False" data-label="Index lookup [salaries.PRIMARY]" data-kind="lookup" transform="translate(332.0 0.0)" data-teach-index="7"><title>Operation: Index lookup on s using PRIMARY (emp_no=de.emp_no)
+Actual rows / loop: 10.514305109027003
+Estimated rows / loop: 1.0
+Actual loops: 240124
+Actual first row (ms / loop): 0.009003923418733654
+Actual last row (ms / loop): 0.014857051502557013
+Total across loops (ms): 3567.534635
+Self time across loops (ms): 3567.534635
+Estimated optimizer cost: 0.39141195055294725
+Table: salaries
+Index: PRIMARY
+Access type: index
+Index access: index_lookup
+Covering index: False</title>
+<rect class="wb-box" width="256" height="126" rx="7" fill="white" stroke="#c4cfd6"/>
+<path d="M7 0 H249 Q256 0 256 7 V34 H0 V7 Q0 0 7 0" fill="#9ac59d"/>
+<text x="12" y="23" class="wb-title">Index lookup [salaries.…IMARY]</text>
+<text x="12" y="57">salaries · PRIMARY</text>
+<text x="12" y="91" class="wb-caption">Self 3.57 s · total 3.57 s</text>
+<text x="12" y="112" class="wb-caption">Est. cost 0.391 · loops 240.12K</text></g>
+<g class="wb-node" role="button" tabindex="0" aria-label="Single-row lookup [departments.PRIMARY]" data-node-id="n:661c6ab5d2c3" data-details="Operation: Single-row index lookup on d using PRIMARY (dept_no=de.dept_no)&#10;Actual rows / loop: 1.0&#10;Estimated rows / loop: 1.0&#10;Actual loops: 240124&#10;Actual first row (ms / loop): 0.004752575032066766&#10;Actual last row (ms / loop): 0.004801783445219969&#10;Total across loops (ms): 1153.023448&#10;Self time across loops (ms): 1153.023448&#10;Estimated optimizer cost: 1.000030198433009&#10;Table: departments&#10;Index: PRIMARY&#10;Access type: index&#10;Index access: index_lookup&#10;Covering index: False" data-label="Single-row lookup [departments.PRIMARY]" data-kind="lookup" transform="translate(664.0 492.0)" data-teach-index="8"><title>Operation: Single-row index lookup on d using PRIMARY (dept_no=de.dept_no)
+Actual rows / loop: 1.0
+Estimated rows / loop: 1.0
+Actual loops: 240124
+Actual first row (ms / loop): 0.004752575032066766
+Actual last row (ms / loop): 0.004801783445219969
+Total across loops (ms): 1153.023448
+Self time across loops (ms): 1153.023448
+Estimated optimizer cost: 1.000030198433009
+Table: departments
+Index: PRIMARY
+Access type: index
+Index access: index_lookup
+Covering index: False</title>
+<rect class="wb-box" width="256" height="126" rx="7" fill="white" stroke="#c4cfd6"/>
+<path d="M7 0 H249 Q256 0 256 7 V34 H0 V7 Q0 0 7 0" fill="#9ac59d"/>
+<text x="12" y="23" class="wb-title">Single-row loo…tments.PRIMARY]</text>
+<text x="12" y="57">departments · PRIMARY</text>
+<text x="12" y="91" class="wb-caption">Self 1.15 s · total 1.15 s</text>
+<text x="12" y="112" class="wb-caption">Est. cost 1 · loops 240.12K</text></g>
+<path d="M792.0 1542.0 v40" stroke="#8795a1" stroke-width="2" marker-end="url(#wb-arrow)"/>
+<rect x="712.0" y="1588.0" width="160" height="32" rx="5" fill="#dbe3e8"/><text x="792.0" y="1609.0" text-anchor="middle">Plan output</text>
+</g></svg>
+<foreignObject x="20" y="804" width="1160" height="150"><div xmlns="http://www.w3.org/1999/xhtml" class="wb-details" tabindex="0" role="status">Select a node to inspect its details. Drag to pan; scroll gently to zoom. Timings are across loops; optimizer cost is a separate estimate.</div></foreignObject>
+<text x="20" y="972" class="wb-caption">Visual conventions: MySQL Workbench 26.7 · Data and analysis: myflames</text>
+<rect x="20" y="996" width="1160" height="613" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
+<rect x="20" y="1006" width="1160" height="30" fill="#e8eaf6" rx="6"/>
+<rect x="20" y="1012" width="1160" height="24" fill="#e8eaf6"/>
+<text x="36" y="1025" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#283593">How to read · Query Analysis</text>
+<rect x="24" y="1044" width="1152" height="22" fill="#f5f5f5" rx="4"/>
+<text x="36" y="1059" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#37474f">Query</text>
+<text x="46" y="1083" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">select d.dept_name AS dept_name,round(AVG(s.salary),2) AS avg_salary</text>
+<text x="46" y="1100" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">from employees.salaries s</text>
+<text x="46" y="1117" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">  join employees.dept_emp de</text>
+<text x="46" y="1134" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">  join employees.departments d</text>
+<text x="46" y="1151" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">where ((s.emp_no = de.emp_no) and (d.dept_no = de.dept_no) and (de.to_date = DATE'9999-01-01') and (s.to_date = DATE'9999-01-01'))</text>
+<text x="46" y="1168" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">group by employees.d.dept_name</text>
+<text x="46" y="1185" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">order by avg_salary desc</text>
+<rect x="24" y="1195" width="1152" height="22" fill="#f1f8e9" rx="4"/>
+<text x="36" y="1210" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#33691e">How to read</text>
+<text x="46" y="1234" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Data flows downward. Colors identify operators; arrow width represents estimated rows on a log scale.</text>
+<text x="46" y="1251" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Join circles show the reported join type: left joins include the whole left circle; inner joins highlight the overlap.</text>
+<text x="46" y="1268" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Select a node for details. Drag to pan, scroll gently to zoom, or use Fit plan and the zoom buttons.</text>
+<rect x="24" y="1278" width="1152" height="22" fill="#e3f2fd" rx="4"/>
+<text x="36" y="1293" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
+<text x="46" y="1317" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">nested loop join</text>
+<rect x="24" y="1327" width="1152" height="22" fill="#fff3f3" rx="4"/>
+<text x="36" y="1342" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
+<text x="46" y="1366" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Row estimate off by 10× or more: salaries (estimated 1, actual 11 rows per loop, 11× under)</text>
+<text x="46" y="1383" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Index lookup [salaries.PRIMARY]”</text>
+<text x="46" y="1400" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: dept_emp (331603 rows)</text>
+<text x="46" y="1417" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [dept_emp]”</text>
+<text x="46" y="1434" font-family="Arial,sans-serif" font-size="11" fill="#c62828">1 sort operation(s) — 9 rows; may use disk-based filesort</text>
+<text x="46" y="1451" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Sort”</text>
+<rect x="24" y="1461" width="1152" height="22" fill="#e8f5e9" rx="4"/>
+<text x="36" y="1476" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">Suggestions</text>
+<text x="46" y="1500" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Refresh statistics with ANALYZE TABLE salaries. If a filter on a non-indexed column stays misestimated, add a histogram: on MySQL 8.0+, ANALYZE TABLE salaries UPDATE</text>
+<text x="46" y="1517" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">HISTOGRAM ON &lt;column&gt; WITH 100 BUCKETS; on MariaDB, ANALYZE TABLE salaries PERSISTENT FOR COLUMNS (&lt;column&gt;) INDEXES (). Why: the optimizer picks join order and access methods</text>
+<text x="46" y="1534" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">from these estimates. InnoDB recalculates persistent statistics on its own only after about 10% of a table's rows change, and on MariaDB, under the default</text>
+<text x="46" y="1551" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">use_stat_tables=PREFERABLY_FOR_QUERIES, ANALYZE TABLE collects column statistics and histograms only when you add PERSISTENT FOR.</text>
+<text x="46" y="1568" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes on filter/join columns to avoid full table scans</text>
+<text x="46" y="1585" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Increase sort_buffer_size or add an ordered index to avoid filesort</text>
+<script type="text/ecmascript"><![CDATA[
+// Workbench-style SVG interaction; scoped to its SVG for embedded reports.
+(function () {
+  var script = document.currentScript;
+  var root = script && script.closest('svg.wb-plan');
+  if (!root) {
+    var candidates = document.querySelectorAll('svg.wb-plan');
+    root = candidates[candidates.length - 1];
+  }
+  if (!root || root.dataset.wired) return;
+  root.dataset.wired = 'true';
+  var viewport = root.querySelector('.wb-viewport');
+  var detail = root.querySelector('.wb-details');
+  var nodes = Array.prototype.slice.call(root.querySelectorAll('.wb-node'));
+  var width = Number(viewport.getAttribute('width'));
+  var height = Number(viewport.getAttribute('height'));
+  var graphWidth = Number(viewport.dataset.graphWidth);
+  var graphHeight = Number(viewport.dataset.graphHeight);
+  var box = {x: 0, y: 0, w: width, h: height};
+  var drag = null;
+  var moved = false;
+  var selected = null;
+  var wheelFrame = null;
+  var wheelDelta = 0;
+  var wheelPoint = null;
+  var wheelTime = null;
+  var zoomIn = root.querySelector('[data-action="in"]');
+  var zoomOut = root.querySelector('[data-action="out"]');
+  var zoomLevel = root.querySelector('[data-action="reset"]');
+  var minimum = width / 5;
+  var maximum = Math.max(width * 8, graphWidth * 2, graphHeight * width / height * 2);
 
-  function svgYFromEvent(e) {
-    var rect = svgEl.getBoundingClientRect();
-    var svgH = parseFloat(svgEl.getAttribute('height')) || rect.height;
-    var scale = rect.height > 0 ? svgH / rect.height : 1;
-    return (e.clientY - rect.top) * scale;
+  function stopWheel() {
+    if (wheelFrame !== null) window.cancelAnimationFrame(wheelFrame);
+    wheelFrame = null;
+    wheelDelta = 0;
+    wheelTime = null;
   }
 
-  function setDetailsText(parts) {
-    for (var i = 0; i < N_LINES; i++) {
-      if (!detailLines[i]) continue;
-      detailLines[i].textContent = (i < parts.length) ? parts[i] : "";
-    }
+  function paint() {
+    viewport.setAttribute('viewBox', [box.x, box.y, box.w, box.h].join(' '));
+    var percent = Math.round(width / box.w * 100) + '%';
+    zoomLevel.textContent = percent;
+    zoomLevel.setAttribute('aria-label', 'Zoom ' + percent + '. Reset to 100%');
+    zoomLevel.setAttribute('title', 'Current zoom: ' + percent + '. Click to reset to 100%');
+    zoomIn.disabled = box.w <= minimum + .00001;
+    zoomOut.disabled = box.w >= maximum - .00001;
   }
-
-  function clearDetails() {
-    if (detailLines[0]) detailLines[0].textContent = defaultHint;
-    for (var i = 1; i < N_LINES; i++) {
-      if (detailLines[i]) detailLines[i].textContent = "";
-    }
+  function fit() {
+    stopWheel();
+    var ratio = Math.max((graphWidth + 56) / width, (graphHeight + 56) / height);
+    box.w = width * ratio;
+    box.h = height * ratio;
+    box.x = (graphWidth - box.w) / 2;
+    box.y = (graphHeight - box.h) / 2;
+    paint();
   }
-
-  function setDetailsForNode(infoStr) {
-    if (!infoStr) { clearDetails(); return; }
-    var sep = "  ·  ";
-    var parts = infoStr.split(sep);
-    setDetailsText(parts);
-  }
-
-  function init(evt) {
-    svgEl = document.querySelector("svg");
-    content = document.getElementById("diagram-content");
-    searchBtn = document.getElementById("search");
-    for (var i = 0; i < N_LINES; i++) {
-      var el = document.getElementById("details-l" + i);
-      if (el) detailLines.push(el);
-    }
-    if (!content) return;
-
-    // Zoom via +/- buttons (zoom toward center of diagram area)
-    function zoomBy(factor) {
-      var rect = svgEl.getBoundingClientRect();
-      var svgW = parseFloat(svgEl.getAttribute('width')) || rect.width;
-      var cx = svgW / 2, cy = diagramBottom / 2;
-      vx = cx + (vx - cx) * factor;
-      vy = cy + (vy - cy) * factor;
-      vs *= factor;
-      applyTransform();
-    }
-    var zoomInBtn = document.getElementById("zoom-in");
-    var zoomOutBtn = document.getElementById("zoom-out");
-    var zoomResetBtn = document.getElementById("zoom-reset");
-    if (zoomInBtn) zoomInBtn.addEventListener("click", function() { zoomBy(1.25); });
-    if (zoomOutBtn) zoomOutBtn.addEventListener("click", function() { zoomBy(0.8); });
-    if (zoomResetBtn) zoomResetBtn.addEventListener("click", function() { vx = 0; vy = 0; vs = 1; applyTransform(); });
-
-    // Drag: only in diagram area, not on text and not on nodes
-    svgEl.addEventListener("mousedown", function(e) {
-      var tag = e.target.tagName ? e.target.tagName.toLowerCase() : '';
-      if (tag === 'text' || tag === 'tspan') return;
-      if (e.target.closest && e.target.closest(".diagram-node")) return;
-      if (svgYFromEvent(e) > diagramBottom) return;
-      dragging = true;
-      dragStart = {x: e.clientX, y: e.clientY};
-      dragOrigin = {x: vx, y: vy};
-      svgEl.style.cursor = "grabbing";
-      e.preventDefault();
-    });
-    document.addEventListener("mousemove", function(e) {
-      if (!dragging) return;
-      vx = dragOrigin.x + (e.clientX - dragStart.x);
-      vy = dragOrigin.y + (e.clientY - dragStart.y);
-      applyTransform();
-    });
-    document.addEventListener("mouseup", function() {
-      if (dragging) { dragging = false; svgEl.style.cursor = ""; }
-    });
-    svgEl.addEventListener("dblclick", function(e) {
-      if (e.target.closest && e.target.closest(".diagram-node")) return;
-      if (svgYFromEvent(e) > diagramBottom) return;
-      vx = 0; vy = 0; vs = 1;
-      applyTransform();
-    });
-
-    // Hover and click-to-pin on nodes
-    var nodes = document.querySelectorAll(".diagram-node");
-    for (var i = 0; i < nodes.length; i++) {
-      nodes[i].addEventListener("mouseover", onHover);
-      nodes[i].addEventListener("mouseout", onOut);
-      nodes[i].addEventListener("click", onNodeClick);
-    }
-    svgEl.addEventListener("click", function(e) {
-      if (pinned && !(e.target.closest && e.target.closest(".diagram-node"))) unpinAll();
-    });
-
-    if (searchBtn) searchBtn.addEventListener("click", searchPrompt);
-    document.addEventListener("keydown", function(e) {
-      if (e.ctrlKey && e.key === "f") { e.preventDefault(); searchPrompt(); }
-    });
-  }
-
-  function applyTransform() {
-    content.setAttribute("transform", "translate(" + vx + "," + vy + ") scale(" + vs + ")");
-  }
-
-  function onHover(e) {
-    if (!pinned) setDetailsForNode(e.currentTarget.getAttribute("data-info") || "");
-  }
-  function onOut() {
-    if (!pinned) clearDetails();
-  }
-  function onNodeClick(e) {
-    var g = e.currentTarget;
-    if (g.classList.contains("pinned")) {
-      unpinAll();
+  function animateWheel(time) {
+    // A bounded logarithmic target avoids a backlog from macOS momentum events.
+    // Limit elapsed time too, so returning to a background tab cannot jump.
+    var elapsed = wheelTime === null ? 16 : Math.min(32, Math.max(1, time - wheelTime));
+    wheelTime = time;
+    var step = wheelDelta * (1 - Math.exp(-elapsed / 55));
+    step = Math.max(-elapsed * .0006, Math.min(elapsed * .0006, step));
+    wheelDelta -= step;
+    var matrix = viewport.getScreenCTM();
+    if (!matrix) { stopWheel(); return; }
+    var point = viewport.createSVGPoint();
+    point.x = wheelPoint.x;
+    point.y = wheelPoint.y;
+    point = point.matrixTransform(matrix.inverse());
+    zoom(Math.exp(step), (point.x - box.x) / box.w, (point.y - box.y) / box.h);
+    if (Math.abs(wheelDelta) > .00001) {
+      wheelFrame = window.requestAnimationFrame(animateWheel);
     } else {
-      unpinAll();
-      g.classList.add("pinned");
-      pinned = true;
-      setDetailsForNode(g.getAttribute("data-info") || "");
+      stopWheel();
     }
-    e.stopPropagation();
   }
-  function unpinAll() {
-    var prev = document.querySelectorAll(".diagram-node.pinned");
-    for (var i = 0; i < prev.length; i++) prev[i].classList.remove("pinned");
-    pinned = false;
-    clearDetails();
+  function zoom(factor, px, py) {
+    var next = Math.min(maximum, Math.max(minimum, box.w * factor));
+    var ratio = next / box.w;
+    box.x += box.w * px * (1 - ratio);
+    box.y += box.h * py * (1 - ratio);
+    box.w = next;
+    box.h *= ratio;
+    paint();
   }
-
-  function searchPrompt() {
-    if (searchActive) {
-      var all = document.querySelectorAll(".diagram-node");
-      for (var i = 0; i < all.length; i++) all[i].classList.remove("dim");
-      searchBtn.textContent = "Search";
-      searchActive = false;
-      clearDetails();
-      return;
+  function choose(node, notify) {
+    if (selected) selected.classList.remove('selected');
+    selected = node;
+    node.classList.add('selected');
+    detail.textContent = node.dataset.details;
+    if (notify !== false && window.parent !== window) {
+      window.parent.postMessage({type: 'myflames-node', node_id: node.dataset.nodeId}, '*');
     }
-    var term = prompt("Search (regex):");
-    if (term == null) return;
-    var re;
-    try { re = new RegExp(term, "i"); } catch (err) { alert("Invalid regex"); return; }
-    var all = document.querySelectorAll(".diagram-node");
-    for (var i = 0; i < all.length; i++) {
-      var info = all[i].getAttribute("data-info") || "";
-      all[i].classList.toggle("dim", !re.test(info));
-    }
-    searchBtn.textContent = "Reset Search";
-    searchActive = true;
-    setDetailsText(["Matches: " + term + "  ·  Click ‘Reset Search’ to clear"]);
   }
-
-  window.init = init;
+  nodes.forEach(function (node) {
+    node.addEventListener('click', function (event) {
+      if (!moved) choose(node); else event.preventDefault();
+    });
+    node.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault(); choose(node);
+      }
+    });
+  });
+  window.addEventListener('message', function (event) {
+    if (event.source !== window.parent || !event.data || event.data.type !== 'myflames-select') return;
+    var node = nodes.find(function (item) { return item.dataset.nodeId === event.data.node_id; });
+    if (node) choose(node, false);
+  });
+  root.querySelectorAll('[data-action]').forEach(function (button) {
+    var feedbackTimer;
+    button.addEventListener('click', function () {
+      if (button.disabled) return;
+      window.clearTimeout(feedbackTimer);
+      button.classList.add('wb-activated');
+      feedbackTimer = window.setTimeout(function () {
+        button.classList.remove('wb-activated');
+      }, 450);
+      stopWheel();
+      switch (button.dataset.action) {
+        case 'fit': fit(); break;
+        case 'in': zoom(.8, .5, .5); break;
+        case 'out': zoom(1.25, .5, .5); break;
+        case 'reset':
+          box = {x: (graphWidth - width) / 2, y: -28, w: width, h: height};
+          paint(); break;
+      }
+    });
+  });
+  var search = root.querySelector('input[type="search"]');
+  search.addEventListener('input', function () {
+    var query = search.value.toLowerCase().trim();
+    var matches = 0;
+    nodes.forEach(function (node) {
+      var match = !query || node.dataset.details.toLowerCase().indexOf(query) !== -1;
+      node.classList.toggle('dim', !match);
+      if (match) matches++;
+    });
+    root.querySelector('.wb-search-status').textContent = query ? matches + ' / ' + nodes.length : '';
+  });
+  viewport.addEventListener('wheel', function (event) {
+    // Pixel deltas from a Magic Mouse/trackpad must not be treated as full
+    // wheel notches. Normalize line/page devices, then scale actual distance.
+    if (!isFinite(event.deltaY) || Math.abs(event.deltaY) < .01 ||
+        Math.abs(event.deltaX) > Math.abs(event.deltaY) || drag) return;
+    event.preventDefault();
+    // Nested SVG bounds include the oversized pan background. Use the visible
+    // viewport height, converted by its parent's screen scale, for page units.
+    var parentMatrix = root.getScreenCTM();
+    var pageHeight = height * (parentMatrix ? Math.abs(parentMatrix.d) : 1);
+    var unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? pageHeight : 1;
+    var delta = Math.max(-100, Math.min(100, event.deltaY * unit)) * .001;
+    // Reversing a gesture should respond immediately, without old momentum.
+    if (wheelDelta * delta < 0) wheelDelta = 0;
+    wheelDelta = Math.max(-.16, Math.min(.16, wheelDelta + delta));
+    wheelPoint = {x: event.clientX, y: event.clientY};
+    if (wheelFrame === null) wheelFrame = window.requestAnimationFrame(animateWheel);
+  }, {passive: false});
+  viewport.addEventListener('pointerdown', function (event) {
+    if (event.button !== 0) return;
+    stopWheel();
+    moved = false;
+    drag = {x: event.clientX, y: event.clientY, bx: box.x, by: box.y};
+  });
+  viewport.addEventListener('pointermove', function (event) {
+    if (!drag) return;
+    var dx = event.clientX - drag.x, dy = event.clientY - drag.y;
+    if (Math.abs(dx) + Math.abs(dy) > 4) {
+      moved = true;
+      viewport.setPointerCapture(event.pointerId);
+      var matrix = viewport.getScreenCTM();
+      box.x = drag.bx - dx / matrix.a;
+      box.y = drag.by - dy / matrix.d;
+      paint();
+    }
+  });
+  function release(event) {
+    drag = null;
+    if (viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
+  }
+  viewport.addEventListener('pointerup', release);
+  viewport.addEventListener('pointercancel', release);
+  viewport.addEventListener('pointerleave', function () { if (!moved) drag = null; });
+  viewport.addEventListener('dblclick', fit);
+  fit();
 })();
+
 ]]></script>
-<rect x="20" y="592" width="1160" height="511" fill="#f8f9fc" stroke="#c5cae9" stroke-width="1.5" rx="8"/>
-<rect x="20" y="602" width="1160" height="30" fill="#e8eaf6" rx="6"/>
-<rect x="20" y="608" width="1160" height="24" fill="#e8eaf6"/>
-<text x="36" y="621" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="#283593">How to read · Query Analysis</text>
-<rect x="24" y="640" width="1152" height="22" fill="#f5f5f5" rx="4"/>
-<text x="36" y="655" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#37474f">Query</text>
-<text x="46" y="679" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">select d.dept_name AS dept_name,round(AVG(s.salary),2) AS avg_salary</text>
-<text x="46" y="696" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">from employees.salaries s</text>
-<text x="46" y="713" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">  join employees.dept_emp de</text>
-<text x="46" y="730" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">  join employees.departments d</text>
-<text x="46" y="747" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">where ((s.emp_no = de.emp_no) and (d.dept_no = de.dept_no) and (de.to_date = DATE'9999-01-01') and (s.to_date = DATE'9999-01-01'))</text>
-<text x="46" y="764" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">group by employees.d.dept_name</text>
-<text x="46" y="781" font-family="Courier New,Courier,monospace" font-size="11" fill="#263238">order by avg_salary desc</text>
-<rect x="24" y="791" width="1152" height="22" fill="#f1f8e9" rx="4"/>
-<text x="36" y="806" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#33691e">How to read</text>
-<text x="46" y="830" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Left→right = execution order. Heat scale (yellow = fast → purple = slow) encodes self-time.</text>
-<text x="46" y="847" font-family="Arial,sans-serif" font-size="11" fill="#455a64">The red SLOWEST badge + red border mark the contention point — the single operator to optimize first.</text>
-<text x="46" y="864" font-family="Arial,sans-serif" font-size="11" fill="#455a64">Click any node to pin its details. Ctrl+F to search. Dbl-click the background to reset zoom.</text>
-<rect x="24" y="874" width="1152" height="22" fill="#e3f2fd" rx="4"/>
-<text x="36" y="889" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#0d47a1">Optimizer features in this plan</text>
-<text x="46" y="913" font-family="Arial,sans-serif" font-size="11" fill="#1565c0">nested loop join</text>
-<rect x="24" y="923" width="1152" height="22" fill="#fff3f3" rx="4"/>
-<text x="36" y="938" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#b71c1c">⚠  Warnings</text>
-<text x="46" y="962" font-family="Arial,sans-serif" font-size="11" fill="#c62828">Full table scan: &lt;temporary&gt; (9 rows), dept_emp (331603 rows)</text>
-<text x="46" y="979" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Table scan [&lt;temporary&gt;]”, “Table scan [dept_emp]”</text>
-<text x="46" y="996" font-family="Arial,sans-serif" font-size="11" fill="#c62828">1 sort operation(s) — 9 rows; may use disk-based filesort</text>
-<text x="46" y="1013" font-family="Arial,sans-serif" font-size="11" fill="#c62828">→ Labeled: “Sort”</text>
-<rect x="24" y="1023" width="1152" height="22" fill="#e8f5e9" rx="4"/>
-<text x="36" y="1038" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20">Suggestions</text>
-<text x="46" y="1062" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Add indexes on filter/join columns to avoid full table scans</text>
-<text x="46" y="1079" font-family="Arial,sans-serif" font-size="11" fill="#2e7d32">•  Increase sort_buffer_size or add an ordered index to avoid filesort</text>
 </svg>

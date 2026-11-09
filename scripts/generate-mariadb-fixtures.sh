@@ -273,8 +273,9 @@ run_queries() {
 
 mkdir -p "$OUTPUT_DIR"
 
-# Remove old MariaDB fixtures
-rm -f "$OUTPUT_DIR"/mariadb-*.json
+# Remove only the fixtures this script generates (mariadb-<version>-NNN-*.json).
+# Hand-captured MariaDB fixtures (no three-digit index) are kept.
+rm -f "$OUTPUT_DIR"/mariadb-11.4-[0-9][0-9][0-9]-*.json "$OUTPUT_DIR"/mariadb-10.11-[0-9][0-9][0-9]-*.json
 
 # --- MariaDB 11.4 ---
 CONTAINER_11="myflames-fixture-mdb114"

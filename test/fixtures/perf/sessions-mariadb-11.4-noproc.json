@@ -1,0 +1,187 @@
+{
+ "args": {},
+ "calls": [
+  [
+   "/*myflames:sessions*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('max_connections', 'performance_schema', 'version', 'version_comment')",
+   "max_connections\t151\nperformance_schema\tOFF\nversion\t11.4.13-MariaDB-ubu2404\nversion_comment\tmariadb.org binary distribution\n"
+  ],
+  [
+   "/*myflames:sessions*/ SHOW GLOBAL STATUS WHERE Variable_name IN ('Threads_connected', 'Threads_running', 'Max_used_connections', 'Uptime', 'Innodb_history_list_length')",
+   "Innodb_history_list_length\t15447\nMax_used_connections\t12\nThreads_connected\t12\nThreads_running\t8\nUptime\t2619\n"
+  ],
+  [
+   "/*myflames:sessions*/ SELECT ID, USER, HOST, DB, COMMAND, TIME_MS / 1000, STATE, LEFT(INFO, 16384), LENGTH(INFO), STAGE, MAX_STAGE, PROGRESS, MEMORY_USED, EXAMINED_ROWS FROM information_schema.PROCESSLIST WHERE ID <> CONNECTION_ID() ORDER BY TIME_MS DESC LIMIT 10001",
+   "89\tnoproc\t172.17.0.1:57354\tmf\tQuery\t1249.5167740\tUser sleep\tSELECT SLEEP(3000)\t18\t0\t0\t0.000\t86648\t0\n"
+  ],
+  [
+   "/*myflames:sessions*/ SET SESSION time_zone = 'SYSTEM'; /*myflames:sessions*/ SELECT trx_mysql_thread_id, trx_id, trx_state, trx_started, TIMESTAMPDIFF(SECOND, trx_started, NOW()), trx_wait_started, TIMESTAMPDIFF(SECOND, trx_wait_started, NOW()), trx_rows_locked, trx_rows_modified, trx_lock_structs, trx_tables_locked, trx_isolation_level, trx_is_read_only, trx_operation_state FROM information_schema.INNODB_TRX WHERE trx_mysql_thread_id <> CONNECTION_ID() ORDER BY trx_started, trx_id LIMIT 10001",
+   null,
+   "mysql client exited 1: ERROR 1227 (42000) at line 1: Access denied; you need (at least one of) the PROCESS privilege(s) for this operation"
+  ]
+ ],
+ "report": {
+  "attention": {
+   "idle_in_trx": [],
+   "lock_wait": [],
+   "long_running": [
+    {
+     "id": 89,
+     "seconds": 1249.517,
+     "status": "problem"
+    }
+   ]
+  },
+  "capabilities": {
+   "history_list_length": true,
+   "process_privilege": false,
+   "transactions": false
+  },
+  "engine": "mariadb",
+  "filters": {
+   "active_only": true,
+   "db": null,
+   "host": null,
+   "min_seconds": 0,
+   "user": null
+  },
+  "limit": 1000,
+  "links": {
+   "innodb": {
+    "label": "Open InnoDB",
+    "view": "innodb"
+   },
+   "locks": {
+    "label": "Open Locks",
+    "view": "locks"
+   }
+  },
+  "matched": 1,
+  "notes": [
+   "Without the PROCESS privilege only your own user's sessions are listed, and open InnoDB transactions (information_schema.INNODB_TRX) cannot be read, so idle-in-transaction sessions, row lock waits and the oldest transaction are not detected. Grant it with: GRANT PROCESS ON *.* TO <user>;",
+   "Statuses are rules of thumb, not verdicts. The summary counts every session this account can see; the filters narrow only the list. This tool's own session is left out."
+  ],
+  "performance_schema": false,
+  "rules": {
+   "connections": "watch at 75% of max_connections, problem at 90% (Threads_connected)",
+   "idle_in_trx": "a session idle (Sleep) inside an open InnoDB transaction keeps its row locks; under REPEATABLE READ it also keeps the read view from its first consistent read, which holds back purge; watched when the transaction is 10 s old, a problem at 60 s (rules of thumb)",
+   "lock_wait": "a session waiting for an InnoDB lock (INNODB_TRX trx_state LOCK WAIT: a row lock or an InnoDB table lock such as AUTO-INC), a metadata lock, or a table-level lock is watched; the long-running rule raises it to a problem",
+   "long_running": "a statement running for 10 s or more is watched, 60 s or more is a problem (rules of thumb for OLTP; reports and batch jobs can run longer by design)",
+   "oldest_transaction": "the oldest open transaction is watched at 10 s and a problem at 60 s; under REPEATABLE READ (or while a statement runs) its read view also holds back purge, so the history list length grows behind it"
+  },
+  "schema_version": "sessions-1.0",
+  "server_version": "11.4.13-MariaDB-ubu2404",
+  "sessions": [
+   {
+    "active": true,
+    "client_host": "172.17.0.1",
+    "client_port": 57354,
+    "command": "Query",
+    "db": "mf",
+    "explainable": true,
+    "flags": [
+     "long_running"
+    ],
+    "host": "172.17.0.1:57354",
+    "id": 89,
+    "info": "SELECT SLEEP(3000)",
+    "info_short": "SELECT SLEEP(3000)",
+    "info_truncated": false,
+    "last_statement": null,
+    "lock_wait": null,
+    "memory_used": 86648,
+    "progress": null,
+    "rows_examined": 0,
+    "state": "User sleep",
+    "status": "problem",
+    "thread_kind": "client",
+    "time_s": 1249.517,
+    "trx": null,
+    "user": "noproc",
+    "why": "Running a statement for 20 min 49 s."
+   }
+  ],
+  "source": "information_schema.PROCESSLIST",
+  "summary": {
+   "active": 1,
+   "by_command": [
+    {
+     "count": 1,
+     "key": "Query"
+    }
+   ],
+   "by_db": [
+    {
+     "count": 1,
+     "key": "mf"
+    }
+   ],
+   "by_host": [
+    {
+     "count": 1,
+     "key": "172.17.0.1"
+    }
+   ],
+   "by_state": [
+    {
+     "count": 1,
+     "key": "User sleep"
+    }
+   ],
+   "by_user": [
+    {
+     "count": 1,
+     "key": "noproc"
+    }
+   ],
+   "connections": {
+    "current": 12,
+    "listed": 1,
+    "max": 151,
+    "max_used": 12,
+    "peak_pct": 7.9,
+    "rule": "watch at 75% of max_connections, problem at 90% (Threads_connected)",
+    "running": 8,
+    "status": "ok",
+    "used_pct": 7.9
+   },
+   "history_list_length": {
+    "rule": "a rule of thumb without a trend: watch at 100,000 committed transactions whose undo logs purge has not processed yet, problem at 1,000,000. The size alone says little; a list that keeps growing across refreshes means purge is falling behind, most often because an old read view (a REPEATABLE READ transaction or a long statement) is still open",
+    "source": "Innodb_history_list_length",
+    "status": "ok",
+    "value": 15447
+   },
+   "idle": 0,
+   "idle_in_trx": 0,
+   "lock_wait": {
+    "innodb": 0,
+    "metadata": 0,
+    "table": 0,
+    "total": 0
+   },
+   "long_running": {
+    "problem": 1,
+    "watch": 0
+   },
+   "oldest_transaction": null,
+   "running_statements": 1,
+   "status": "problem",
+   "system": 0,
+   "text": "12 connections of 151 · 1 active · 1 running 10 s or more",
+   "total": 1
+  },
+  "taken_at": "2026-10-14T18:21:46.211530+00:00",
+  "thresholds": {
+   "long_running_s": [
+    10,
+    60
+   ],
+   "trx_age_s": [
+    10,
+    60
+   ]
+  },
+  "truncated": false,
+  "uptime_s": 2619
+ },
+ "server": "mariadb-11.4-noproc"
+}

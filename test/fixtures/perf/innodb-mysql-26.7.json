@@ -1,0 +1,1342 @@
+{
+ "args": {},
+ "calls": [
+  [
+   "/*myflames:innodb*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('innodb_adaptive_hash_index', 'innodb_buffer_pool_instances', 'innodb_change_buffering', 'innodb_log_file_size', 'innodb_log_files_in_group', 'innodb_max_dirty_pages_pct', 'innodb_native_foreign_keys', 'innodb_page_size', 'innodb_redo_log_capacity', 'innodb_thread_concurrency', 'performance_schema', 'version', 'version_comment')",
+   "innodb_adaptive_hash_index\tON\ninnodb_buffer_pool_instances\t1\ninnodb_change_buffering\tall\ninnodb_max_dirty_pages_pct\t90.000000\ninnodb_native_foreign_keys\tOFF\ninnodb_page_size\t16384\ninnodb_redo_log_capacity\t104857600\ninnodb_thread_concurrency\t0\nperformance_schema\tON\nversion\t26.7.0\nversion_comment\tMySQL Community Server - GPL\n"
+  ],
+  [
+   "/*myflames:innodb*/ SHOW GLOBAL STATUS WHERE Variable_name IN ('Uptime', 'Innodb_redo_log_capacity_resized', 'Innodb_checkpoint_age', 'Innodb_checkpoint_max_age', 'Innodb_deadlocks', 'Innodb_truncated_status_writes')",
+   "Innodb_redo_log_capacity_resized\t104857600\nInnodb_truncated_status_writes\t0\nUptime\t2616\n"
+  ],
+  [
+   "/*myflames:innodb*/ SHOW ENGINE INNODB STATUS",
+   "InnoDB\t\t\\n=====================================\\n2026-10-14 18:21:45 281472093687488 INNODB MONITOR OUTPUT\\n=====================================\\nPer second averages calculated from the last 35 seconds\\n-----------------\\nBACKGROUND THREAD\\n-----------------\\nsrv_master_thread loops: 1731 srv_active, 0 srv_shutdown, 870 srv_idle\\nsrv_master_thread log flush and writes: 0\\n----------\\nSEMAPHORES\\n----------\\nOS WAIT ARRAY INFO: reservation count 1682971\\n--Thread 281472428916416 has waited at row0upd.cc line 3047 for 0 seconds the semaphore:\\nX-lock (wait_ex) on RW-latch at 0xffff5ff15b88 created in file buf0buf.cc line 852\\na writer (thread id 281472428916416) has reserved it in mode wait exclusive\\nnumber of readers 1 (thread id 281471838973632), waiters flag 1, lock_word: ffffffffffffffff\\nLast time read locked in file row0sel.cc line 3426\\nLast time write locked in file /var/lib/pb2/sb_1-23141611-1783687103.5250537/rpm/BUILD/mysql-26.7.0/mysql-26.7.0/storage/innobase/row/row0upd.cc line 3047\\n--Thread 281472431152832 has waited at btr0pcur.cc line 331 for 0 seconds the semaphore:\\nS-lock on RW-latch at 0xffff5ff15b88 created in file buf0buf.cc line 852\\na writer (thread id 281472428916416) has reserved it in mode wait exclusive\\nnumber of readers 1 (thread id 281471838973632), waiters flag 1, lock_word: ffffffffffffffff\\nLast time read locked in file row0sel.cc line 3426\\nLast time write locked in file /var/lib/pb2/sb_1-23141611-1783687103.5250537/rpm/BUILD/mysql-26.7.0/mysql-26.7.0/storage/innobase/row/row0upd.cc line 3047\\n--Thread 281472092569280 has waited at row0sel.cc line 3169 for 0 seconds the semaphore:\\nS-lock on RW-latch at 0xffff5ff15b88 created in file buf0buf.cc line 852\\na writer (thread id 281472428916416) has reserved it in mode wait exclusive\\nnumber of readers 1 (thread id 281471838973632), waiters flag 1, lock_word: ffffffffffffffff\\nLast time read locked in file row0sel.cc line 3426\\nLast time write locked in file /var/lib/pb2/sb_1-23141611-1783687103.5250537/rpm/BUILD/mysql-26.7.0/mysql-26.7.0/storage/innobase/row/row0upd.cc line 3047\\nOS WAIT ARRAY INFO: signal count 1585103\\nRW-shared spins 0, rounds 0, OS waits 0\\nRW-excl spins 0, rounds 0, OS waits 0\\nRW-sx spins 0, rounds 0, OS waits 0\\nSpin rounds per wait: 0.00 RW-shared, 0.00 RW-excl, 0.00 RW-sx\\n------------------------\\nLATEST DETECTED DEADLOCK\\n------------------------\\n2026-10-14 17:39:05 281472105496256\\n*** (1) TRANSACTION:\\nTRANSACTION 2124, ACTIVE 2 sec starting index read\\nmysql tables in use 1, locked 1\\nLOCK WAIT 3 lock struct(s), heap size 1128, 2 row lock(s), undo log entries 1\\nMySQL thread id 28, OS thread handle 281472430034624, query id 73 172.17.0.1 root updating\\nUPDATE t SET v=v+1 WHERE id=1\\n\\n*** (1) HOLDS THE LOCK(S):\\nRECORD LOCKS space id 4 page no 6 n bits 136 index PRIMARY of table `mf`.`t` trx id 2124 lock_mode X locks rec but not gap\\nRecord lock, heap no 3 PHYSICAL RECORD: n_fields 5; compact format; info bits 0\\n 0: len 4; hex 80000002; asc     ;;\\n 1: len 6; hex 00000000084c; asc      L;;\\n 2: len 7; hex 02000000880151; asc       Q;;\\n 3: len 4; hex 80000003; asc     ;;\\n 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);\\n\\n\\n*** (1) WAITING FOR THIS LOCK TO BE GRANTED:\\nRECORD LOCKS space id 4 page no 6 n bits 136 index PRIMARY of table `mf`.`t` trx id 2124 lock_mode X locks rec but not gap waiting\\nRecord lock, heap no 2 PHYSICAL RECORD: n_fields 5; compact format; info bits 0\\n 0: len 4; hex 80000001; asc     ;;\\n 1: len 6; hex 00000000084b; asc      K;;\\n 2: len 7; hex 010000012c0151; asc     , Q;;\\n 3: len 4; hex 80000002; asc     ;;\\n 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);\\n\\n\\n*** (2) TRANSACTION:\\nTRANSACTION 2123, ACTIVE 2 sec starting index read\\nmysql tables in use 1, locked 1\\nLOCK WAIT 3 lock struct(s), heap size 1128, 2 row lock(s), undo log entries 1\\nMySQL thread id 27, OS thread handle 281472431152832, query id 74 172.17.0.1 root updating\\nUPDATE t SET v=v+1 WHERE id=2\\n\\n*** (2) HOLDS THE LOCK(S):\\nRECORD LOCKS space id 4 page no 6 n bits 136 index PRIMARY of table `mf`.`t` trx id 2123 lock_mode X locks rec but not gap\\nRecord lock, heap no 2 PHYSICAL RECORD: n_fields 5; compact format; info bits 0\\n 0: len 4; hex 80000001; asc     ;;\\n 1: len 6; hex 00000000084b; asc      K;;\\n 2: len 7; hex 010000012c0151; asc     , Q;;\\n 3: len 4; hex 80000002; asc     ;;\\n 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);\\n\\n\\n*** (2) WAITING FOR THIS LOCK TO BE GRANTED:\\nRECORD LOCKS space id 4 page no 6 n bits 136 index PRIMARY of table `mf`.`t` trx id 2123 lock_mode X locks rec but not gap waiting\\nRecord lock, heap no 3 PHYSICAL RECORD: n_fields 5; compact format; info bits 0\\n 0: len 4; hex 80000002; asc     ;;\\n 1: len 6; hex 00000000084c; asc      L;;\\n 2: len 7; hex 02000000880151; asc       Q;;\\n 3: len 4; hex 80000003; asc     ;;\\n 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);\\n\\n*** WE ROLL BACK TRANSACTION (2)\\n------------\\nTRANSACTIONS\\n------------\\nTrx id counter 39955\\nPurge done for trx's n:o < 2587 undo n:o < 0 state: running\\nHistory list length 5079\\nLIST OF TRANSACTIONS FOR EACH SESSION:\\n---TRANSACTION 562947560167848, not started\\n0 lock struct(s), heap size 1128, 0 row lock(s)\\n---TRANSACTION 562947560166216, not started\\n0 lock struct(s), heap size 1128, 0 row lock(s)\\n---TRANSACTION 562947560164584, not started\\n0 lock struct(s), heap size 1128, 0 row lock(s)\\n---TRANSACTION 562947560162136, not started\\n0 lock struct(s), heap size 1128, 0 row lock(s)\\n---TRANSACTION 562947560159688, not started\\n0 lock struct(s), heap size 1128, 0 row lock(s)\\n---TRANSACTION 562947560158872, not started\\n0 lock struct(s), heap size 1128, 0 row lock(s)\\n---TRANSACTION 39938, ACTIVE 2 sec updating or deleting\\nmysql tables in use 1, locked 1\\n9 lock struct(s), heap size 1128, 417 row lock(s), undo log entries 410\\nMySQL thread id 78, OS thread handle 281472428916416, query id 249471 172.17.0.1 root updating\\nUPDATE t SET v = v + 1 WHERE id BETWEEN 20000 AND 20500\\n---TRANSACTION 25340, ACTIVE 1251 sec starting index read\\nmysql tables in use 1, locked 1\\nLOCK WAIT 2 lock struct(s), heap size 1128, 1 row lock(s)\\nMySQL thread id 72, OS thread handle 281472427798208, query id 127473 172.17.0.1 root updating\\nUPDATE t SET v = 0 WHERE id = 10\\n------- TRX HAS BEEN WAITING 1251 SEC FOR THIS LOCK TO BE GRANTED:\\nRECORD LOCKS space id 4 page no 6 n bits 136 index PRIMARY of table `mf`.`t` trx id 25340 lock_mode X locks rec but not gap waiting\\nRecord lock, heap no 11 PHYSICAL RECORD: n_fields 5; compact format; info bits 0\\n 0: len 4; hex 8000000a; asc     ;;\\n 1: len 6; hex 0000000062fb; asc     b ;;\\n 2: len 7; hex 010000119c0151; asc       Q;;\\n 3: len 4; hex 8000000b; asc     ;;\\n 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);\\n\\n------------------\\n---TRANSACTION 25339, ACTIVE 1252 sec\\n2 lock struct(s), heap size 1128, 1 row lock(s), undo log entries 1\\nMySQL thread id 71, OS thread handle 281471830519488, query id 127469 172.17.0.1 root\\nTrx read view will not see trx with id >= 25340, sees < 25340\\n--------\\nFILE I/O\\n--------\\nI/O thread 0 state: waiting for completed aio requests (insert buffer thread)\\nI/O thread 1 state: waiting for completed aio requests (read thread)\\nI/O thread 2 state: waiting for completed aio requests (read thread)\\nI/O thread 3 state: waiting for completed aio requests (read thread)\\nI/O thread 4 state: waiting for completed aio requests (read thread)\\nI/O thread 5 state: waiting for completed aio requests (read thread)\\nI/O thread 6 state: waiting for completed aio requests (read thread)\\nI/O thread 7 state: waiting for completed aio requests (read thread)\\nI/O thread 8 state: waiting for completed aio requests (read thread)\\nI/O thread 9 state: waiting for completed aio requests (write thread)\\nI/O thread 10 state: waiting for completed aio requests (write thread)\\nI/O thread 11 state: waiting for completed aio requests (write thread)\\nI/O thread 12 state: waiting for completed aio requests (write thread)\\nPending normal aio reads: [0, 0, 0, 0, 0, 0, 0, 0] , aio writes: [0, 0, 0, 0] ,\\n ibuf aio reads:\\nPending flushes (fsync) log: 0; buffer pool: 0\\n51962069 OS file reads, 443721 OS file writes, 46351 OS fsyncs\\n1 pending preads, 0 pending pwrites\\n19993.08 reads/s, 16384 avg bytes/read, 52.98 writes/s, 9.69 fsyncs/s\\n-------------------------------------\\nINSERT BUFFER AND ADAPTIVE HASH INDEX\\n-------------------------------------\\nIbuf: size 1, free list len 72, seg size 74, 157929 merges\\nmerged operations:\\n insert 901513, delete mark 900822, delete 0\\ndiscarded operations:\\n insert 0, delete mark 0, delete 0\\nHash table size 17393, node heap has 0 buffer(s)\\nHash table size 17393, node heap has 1 buffer(s)\\nHash table size 17393, node heap has 1 buffer(s)\\nHash table size 17393, node heap has 0 buffer(s)\\nHash table size 17393, node heap has 2 buffer(s)\\nHash table size 17393, node heap has 0 buffer(s)\\nHash table size 17393, node heap has 0 buffer(s)\\nHash table size 17393, node heap has 0 buffer(s)\\n1177.22 hash searches/s, 550.58 non-hash searches/s\\n---\\nLOG\\n---\\nLog capacity                 104857600\\nLog capacity used            104857600\\nLog sequence number          924073682\\nLog buffer assigned up to    924073682\\nLog buffer completed up to   924073682\\nLog written up to            924072267\\nLog flushed up to            924072267\\nAdded dirty pages up to      924073682\\nPages flushed up to          921811503\\nLast checkpoint at           921811503\\nLog minimum file id is       261\\nLog maximum file id is       282\\n129178 log i/o's done, 7.72 log i/o's/second\\n----------------------\\nBUFFER POOL AND MEMORY\\n----------------------\\nTotal large memory allocated 0\\nDictionary memory allocated 892060\\nBuffer pool size   4096\\nFree buffers       0\\nDatabase pages     4092\\nOld database pages 1491\\nModified db pages  14\\nPending reads      1\\nPending writes: LRU 0, flush list 0, single page 0\\nPages made young 1758663, not young 173046858\\n587.47 youngs/s, 47284.83 non-youngs/s\\nPages read 51962387, created 36998, written 294929\\n19993.17 reads/s, 0.37 creates/s, 41.52 writes/s\\nBuffer pool hit rate 795 / 1000, young-making rate 6 / 1000 not 485 / 1000\\nPages read ahead 13795.84/s, evicted without access 23.85/s, Random read ahead 0.00/s\\nLRU len: 4092, unzip_LRU len: 0\\nI/O sum[326302]:cur[3417], unzip sum[0]:cur[0]\\n--------------\\nROW OPERATIONS\\n--------------\\n0 queries inside InnoDB, 0 queries in queue\\n4 read views open inside InnoDB\\nProcess ID=1, Main thread ID=281471872790208 , state=sleeping\\nNumber of rows inserted 2400012, updated 2502411, deleted 0, read 2631065050\\n0.00 inserts/s, 88.05 updates/s, 0.00 deletes/s, 997133.60 reads/s\\nNumber of system rows inserted 3298, updated 452, deleted 3192, read 8821\\n0.17 inserts/s, 0.00 updates/s, 0.00 deletes/s, 0.00 reads/s\\n----------------------------\\nEND OF INNODB MONITOR OUTPUT\\n============================\\n\n"
+  ],
+  [
+   "/*myflames:innodb*/ SET SESSION time_zone = 'SYSTEM'; /*myflames:innodb*/ SELECT trx_mysql_thread_id, TIMESTAMPDIFF(SECOND, trx_started, NOW()), trx_state, trx_is_read_only, trx_id FROM information_schema.INNODB_TRX WHERE trx_mysql_thread_id <> CONNECTION_ID() ORDER BY trx_started, trx_id LIMIT 1",
+   "71\t1252\tRUNNING\t0\t25339\n"
+  ],
+  [
+   "/*myflames:innodb*/ SELECT COUNT, STATUS FROM information_schema.INNODB_METRICS WHERE NAME = 'lock_deadlocks'",
+   "2\tenabled\n"
+  ]
+ ],
+ "report": {
+  "available": true,
+  "engine": "mysql",
+  "error": null,
+  "header": {
+   "printed_at": "2026-10-14 18:21:45",
+   "window_s": 35
+  },
+  "notes": [
+   "Each read of SHOW ENGINE INNODB STATUS restarts InnoDB's per-second averages for every reader. Statuses are rules of thumb from one snapshot, not verdicts; values that stay high across refreshes matter more than one reading."
+  ],
+  "parse": {
+   "complete": true,
+   "sections_found": [
+    "background",
+    "semaphores",
+    "deadlock",
+    "transactions",
+    "file_io",
+    "insert_buffer_ahi",
+    "log",
+    "buffer_pool",
+    "row_operations"
+   ],
+   "truncated_by_server": false,
+   "unknown_sections": []
+  },
+  "performance_schema": true,
+  "raw": null,
+  "rules": {
+   "dirty": "watch at innodb_max_dirty_pages_pct (90 by default); a high share alone is not a stall, waits for a free page and a nearly full redo log are",
+   "history_list": "a rule of thumb without a trend: watch at 100,000 committed transactions whose undo logs purge has not processed yet, problem at 1,000,000. The size alone says little; a list that keeps growing across refreshes means purge is falling behind, most often because an old read view (a REPEATABLE READ transaction or a long statement) is still open",
+   "hit_rate": "watch below 99%, problem below 95% with at least 10 pages read from disk per second; judged only with about 10,000 page requests or more in the window",
+   "lock_wait": "watch when any transaction is waiting for a lock",
+   "pending_io": "watch when reads or fsyncs are pending in this snapshot (pending writes are shown but not judged: the page cleaner always has some in flight). One snapshot cannot tell a burst from a backlog: pending reads on every refresh mean queries wait for the storage",
+   "purge_state": "watch when purge is not running (stopped or disabled)",
+   "queue": "watch when statements wait in the InnoDB queue, which happens only when innodb_thread_concurrency is above 0 and that many threads are already inside InnoDB",
+   "redo_mariadb": "watch when the checkpoint age reaches 7/8 of Innodb_checkpoint_max_age (InnoDB flushes ahead, about 71% of innodb_log_file_size), problem at Innodb_checkpoint_max_age (writes wait, about 81%)",
+   "redo_mysql": "watch when the checkpoint age reaches about 73% of the redo capacity (adaptive flushing at its age limit), problem at about 79% (forced flushing); user writes wait near 84%",
+   "semaphore": "watch when a thread has waited 10 s for an InnoDB latch, problem at 240 s, where InnoDB logs a long semaphore wait (MySQL stops the server once a wait passes 600 s; that limit is fixed in release builds)",
+   "trx_age": "the oldest active transaction is watched at 10 s and a problem at 60 s (as in Sessions)"
+  },
+  "schema_version": "innodb-1.0",
+  "sections": [
+   {
+    "data": {
+     "empty": false,
+     "reservation_count": 1682971,
+     "signal_count": 1585103,
+     "spin_counters_note": "MySQL no longer counts RW-latch spins and prints them as 0, so they are not shown.",
+     "spin_rounds_per_wait": {
+      "RW-excl": 0.0,
+      "RW-shared": 0.0,
+      "RW-sx": 0.0
+     },
+     "spins": {
+      "RW-excl": {
+       "os_waits": 0,
+       "rounds": 0,
+       "spins": 0
+      },
+      "RW-shared": {
+       "os_waits": 0,
+       "rounds": 0,
+       "spins": 0
+      },
+      "RW-sx": {
+       "os_waits": 0,
+       "rounds": 0,
+       "spins": 0
+      }
+     },
+     "waits": [
+      {
+       "created_at": "buf0buf.cc line 852",
+       "ended": false,
+       "file": "row0upd.cc",
+       "latch": "X-lock (wait_ex) on an RW-latch",
+       "line": 3047,
+       "readers": 1,
+       "seconds": 0.0,
+       "thread": "281472428916416",
+       "waiters_flag": 1,
+       "writer": "thread 281472428916416 (wait exclusive)"
+      },
+      {
+       "created_at": "buf0buf.cc line 852",
+       "ended": false,
+       "file": "btr0pcur.cc",
+       "latch": "S-lock on an RW-latch",
+       "line": 331,
+       "readers": 1,
+       "seconds": 0.0,
+       "thread": "281472431152832",
+       "waiters_flag": 1,
+       "writer": "thread 281472428916416 (wait exclusive)"
+      },
+      {
+       "created_at": "buf0buf.cc line 852",
+       "ended": false,
+       "file": "row0sel.cc",
+       "latch": "S-lock on an RW-latch",
+       "line": 3169,
+       "readers": 1,
+       "seconds": 0.0,
+       "thread": "281472092569280",
+       "waiters_flag": 1,
+       "writer": "thread 281472428916416 (wait exclusive)"
+      }
+     ]
+    },
+    "items": [
+     {
+      "key": "latch_waits",
+      "label": "Threads waiting for a latch",
+      "rule": "watch when a thread has waited 10 s for an InnoDB latch, problem at 240 s, where InnoDB logs a long semaphore wait (MySQL stops the server once a wait passes 600 s; that limit is fixed in release builds)",
+      "status": "ok",
+      "text": "3, longest 0 s",
+      "unit": "",
+      "value": 3
+     },
+     {
+      "key": "reservation_count",
+      "label": "OS wait array reservations (since startup)",
+      "rule": null,
+      "status": null,
+      "text": "1,682,971",
+      "unit": "",
+      "value": 1682971
+     },
+     {
+      "key": "signal_count",
+      "label": "OS wait array signals (since startup)",
+      "rule": null,
+      "status": null,
+      "text": "1,585,103",
+      "unit": "",
+      "value": 1585103
+     }
+    ],
+    "key": "semaphores",
+    "links": [
+     {
+      "label": "Open Health",
+      "view": "health"
+     }
+    ],
+    "present": true,
+    "status": "ok",
+    "summary": "3 threads waiting for an InnoDB latch, the longest for 0 s.",
+    "title": "Semaphores"
+   },
+   {
+    "data": {
+     "active": 3,
+     "history_list_length": 5079,
+     "list_note": "MySQL lists read-write transactions and sessions' not-started ones; a read-only transaction with an old read view is not listed (oldest_any comes from information_schema.INNODB_TRX and includes it).",
+     "list_seen": true,
+     "listed": 9,
+     "lock_waits": 1,
+     "not_started": 6,
+     "oldest": {
+      "active_s": 1252,
+      "committing": false,
+      "connection_id": 71,
+      "heap_size": 1128,
+      "host": "172.17.0.1",
+      "lock_structs": 2,
+      "lock_wait": false,
+      "operation": null,
+      "query_id": 127469,
+      "read_view": {
+       "low_limit": 25340,
+       "up_limit": 25340
+      },
+      "recovered": false,
+      "rolling_back": false,
+      "row_locks": 1,
+      "state": "ACTIVE",
+      "statement": null,
+      "statement_truncated": false,
+      "tables_in_use": null,
+      "tables_locked": null,
+      "thread_state": null,
+      "trx_id": "25339",
+      "undo_entries": 1,
+      "user": "root",
+      "wait_s": null,
+      "waiting_for": null
+     },
+     "oldest_age_s": 1252,
+     "oldest_any": {
+      "age_s": 1252,
+      "connection_id": 71,
+      "read_only": false,
+      "source": "information_schema.INNODB_TRX",
+      "state": "RUNNING",
+      "trx_id": "25339"
+     },
+     "oldest_connection_id": 71,
+     "oldest_read_view": {
+      "active_s": 1252,
+      "connection_id": 71,
+      "trx_id": "25339"
+     },
+     "prepared": 0,
+     "purge": {
+      "state": "running",
+      "trx_no": 2587,
+      "undo_no": 0
+     },
+     "rolling_back": 0,
+     "transactions": [
+      {
+       "active_s": 1252,
+       "committing": false,
+       "connection_id": 71,
+       "heap_size": 1128,
+       "host": "172.17.0.1",
+       "lock_structs": 2,
+       "lock_wait": false,
+       "operation": null,
+       "query_id": 127469,
+       "read_view": {
+        "low_limit": 25340,
+        "up_limit": 25340
+       },
+       "recovered": false,
+       "rolling_back": false,
+       "row_locks": 1,
+       "state": "ACTIVE",
+       "statement": null,
+       "statement_truncated": false,
+       "tables_in_use": null,
+       "tables_locked": null,
+       "thread_state": null,
+       "trx_id": "25339",
+       "undo_entries": 1,
+       "user": "root",
+       "wait_s": null,
+       "waiting_for": null
+      },
+      {
+       "active_s": 1251,
+       "committing": false,
+       "connection_id": 72,
+       "heap_size": 1128,
+       "host": "172.17.0.1",
+       "lock_structs": 2,
+       "lock_wait": true,
+       "operation": "starting index read",
+       "query_id": 127473,
+       "read_view": null,
+       "recovered": false,
+       "rolling_back": false,
+       "row_locks": 1,
+       "state": "ACTIVE",
+       "statement": "UPDATE t SET v = 0 WHERE id = 10",
+       "statement_truncated": false,
+       "tables_in_use": 1,
+       "tables_locked": 1,
+       "thread_state": "updating",
+       "trx_id": "25340",
+       "undo_entries": null,
+       "user": "root",
+       "wait_s": 1251,
+       "waiting_for": {
+        "explain": "Locks only this index record (exclusive); the gap before it stays open.",
+        "index": "PRIMARY",
+        "lock_type": "RECORD",
+        "mode": "X,REC_NOT_GAP",
+        "mode_label": "record only",
+        "page_no": 6,
+        "partition": null,
+        "schema": "mf",
+        "space_id": 4,
+        "table": "t",
+        "trx_id": "25340",
+        "waiting": true
+       }
+      },
+      {
+       "active_s": 2,
+       "committing": false,
+       "connection_id": 78,
+       "heap_size": 1128,
+       "host": "172.17.0.1",
+       "lock_structs": 9,
+       "lock_wait": false,
+       "operation": "updating or deleting",
+       "query_id": 249471,
+       "read_view": null,
+       "recovered": false,
+       "rolling_back": false,
+       "row_locks": 417,
+       "state": "ACTIVE",
+       "statement": "UPDATE t SET v = v + 1 WHERE id BETWEEN 20000 AND 20500",
+       "statement_truncated": false,
+       "tables_in_use": 1,
+       "tables_locked": 1,
+       "thread_state": "updating",
+       "trx_id": "39938",
+       "undo_entries": 410,
+       "user": "root",
+       "wait_s": null,
+       "waiting_for": null
+      }
+     ],
+     "transactions_truncated": false,
+     "truncated_by_server": false,
+     "trx_id_counter": 39955
+    },
+    "items": [
+     {
+      "key": "history_list_length",
+      "label": "History list length",
+      "rule": "a rule of thumb without a trend: watch at 100,000 committed transactions whose undo logs purge has not processed yet, problem at 1,000,000. The size alone says little; a list that keeps growing across refreshes means purge is falling behind, most often because an old read view (a REPEATABLE READ transaction or a long statement) is still open",
+      "status": "ok",
+      "text": "5,079",
+      "unit": "",
+      "value": 5079
+     },
+     {
+      "key": "oldest_trx",
+      "label": "Oldest active transaction",
+      "rule": "the oldest active transaction is watched at 10 s and a problem at 60 s (as in Sessions)",
+      "status": "problem",
+      "text": "20 min 52 s (connection 71)",
+      "unit": "s",
+      "value": 1252
+     },
+     {
+      "key": "lock_waits",
+      "label": "Transactions waiting for a lock",
+      "rule": "watch when any transaction is waiting for a lock",
+      "status": "watch",
+      "text": "1",
+      "unit": "",
+      "value": 1
+     },
+     {
+      "key": "active",
+      "label": "Active transactions listed",
+      "rule": null,
+      "status": null,
+      "text": "3",
+      "unit": "",
+      "value": 3
+     },
+     {
+      "key": "purge_state",
+      "label": "Purge",
+      "rule": "watch when purge is not running (stopped or disabled)",
+      "status": "ok",
+      "text": "running",
+      "unit": "",
+      "value": "running"
+     },
+     {
+      "key": "trx_id_counter",
+      "label": "Trx id counter",
+      "rule": null,
+      "status": null,
+      "text": "39,955",
+      "unit": "",
+      "value": 39955
+     }
+    ],
+    "key": "transactions",
+    "links": [
+     {
+      "label": "Open Sessions",
+      "view": "sessions"
+     },
+     {
+      "label": "Open Locks",
+      "view": "locks"
+     }
+    ],
+    "present": true,
+    "status": "problem",
+    "summary": "3 active transactions; history list length 5,079, oldest transaction open 20 min 52 s, 1 waiting for a lock.",
+    "title": "Transactions and purge"
+   },
+   {
+    "data": {
+     "detected_at": "2026-10-14 17:39:05",
+     "transactions": [
+      {
+       "active_s": 2,
+       "conflicts_with": [],
+       "connection_id": 28,
+       "holds": [
+        {
+         "explain": "Locks only this index record (exclusive); the gap before it stays open.",
+         "index": "PRIMARY",
+         "lock_type": "RECORD",
+         "mode": "X,REC_NOT_GAP",
+         "mode_label": "record only",
+         "page_no": 6,
+         "partition": null,
+         "records": [
+          {
+           "as_signed_int": 2,
+           "fields": [
+            {
+             "asc": "    ",
+             "hex": "80000002"
+            },
+            {
+             "asc": "     L",
+             "hex": "00000000084c"
+            },
+            {
+             "asc": "      Q",
+             "hex": "02000000880151"
+            }
+           ],
+           "heap_no": 3,
+           "supremum": false
+          }
+         ],
+         "schema": "mf",
+         "space_id": 4,
+         "table": "t",
+         "trx_id": "2124",
+         "waiting": false
+        }
+       ],
+       "host": "172.17.0.1",
+       "lock_structs": 3,
+       "lock_wait": true,
+       "n": 1,
+       "operation": "starting index read",
+       "query_id": 73,
+       "row_locks": 2,
+       "state": "updating",
+       "statement": "UPDATE t SET v=v+1 WHERE id=1",
+       "tables_in_use": 1,
+       "tables_locked": 1,
+       "trx_id": "2124",
+       "user": "root",
+       "victim": false,
+       "waiting_for": {
+        "explain": "Locks only this index record (exclusive); the gap before it stays open.",
+        "index": "PRIMARY",
+        "lock_type": "RECORD",
+        "mode": "X,REC_NOT_GAP",
+        "mode_label": "record only",
+        "page_no": 6,
+        "partition": null,
+        "records": [
+         {
+          "as_signed_int": 1,
+          "fields": [
+           {
+            "asc": "    ",
+            "hex": "80000001"
+           },
+           {
+            "asc": "     K",
+            "hex": "00000000084b"
+           },
+           {
+            "asc": "    , Q",
+            "hex": "010000012c0151"
+           }
+          ],
+          "heap_no": 2,
+          "supremum": false
+         }
+        ],
+        "schema": "mf",
+        "space_id": 4,
+        "table": "t",
+        "trx_id": "2124",
+        "waiting": true
+       }
+      },
+      {
+       "active_s": 2,
+       "conflicts_with": [],
+       "connection_id": 27,
+       "holds": [
+        {
+         "explain": "Locks only this index record (exclusive); the gap before it stays open.",
+         "index": "PRIMARY",
+         "lock_type": "RECORD",
+         "mode": "X,REC_NOT_GAP",
+         "mode_label": "record only",
+         "page_no": 6,
+         "partition": null,
+         "records": [
+          {
+           "as_signed_int": 1,
+           "fields": [
+            {
+             "asc": "    ",
+             "hex": "80000001"
+            },
+            {
+             "asc": "     K",
+             "hex": "00000000084b"
+            },
+            {
+             "asc": "    , Q",
+             "hex": "010000012c0151"
+            }
+           ],
+           "heap_no": 2,
+           "supremum": false
+          }
+         ],
+         "schema": "mf",
+         "space_id": 4,
+         "table": "t",
+         "trx_id": "2123",
+         "waiting": false
+        }
+       ],
+       "host": "172.17.0.1",
+       "lock_structs": 3,
+       "lock_wait": true,
+       "n": 2,
+       "operation": "starting index read",
+       "query_id": 74,
+       "row_locks": 2,
+       "state": "updating",
+       "statement": "UPDATE t SET v=v+1 WHERE id=2",
+       "tables_in_use": 1,
+       "tables_locked": 1,
+       "trx_id": "2123",
+       "user": "root",
+       "victim": true,
+       "waiting_for": {
+        "explain": "Locks only this index record (exclusive); the gap before it stays open.",
+        "index": "PRIMARY",
+        "lock_type": "RECORD",
+        "mode": "X,REC_NOT_GAP",
+        "mode_label": "record only",
+        "page_no": 6,
+        "partition": null,
+        "records": [
+         {
+          "as_signed_int": 2,
+          "fields": [
+           {
+            "asc": "    ",
+            "hex": "80000002"
+           },
+           {
+            "asc": "     L",
+            "hex": "00000000084c"
+           },
+           {
+            "asc": "      Q",
+            "hex": "02000000880151"
+           }
+          ],
+          "heap_no": 3,
+          "supremum": false
+         }
+        ],
+        "schema": "mf",
+        "space_id": 4,
+        "table": "t",
+        "trx_id": "2123",
+        "waiting": true
+       }
+      }
+     ],
+     "victim": 2,
+     "victim_trx_id": "2123"
+    },
+    "items": [
+     {
+      "key": "detected_at",
+      "label": "When (server time)",
+      "rule": null,
+      "status": null,
+      "text": "2026-10-14 17:39:05",
+      "unit": "",
+      "value": "2026-10-14 17:39:05"
+     },
+     {
+      "key": "transactions",
+      "label": "Transactions in the cycle",
+      "rule": null,
+      "status": null,
+      "text": "2",
+      "unit": "",
+      "value": 2
+     },
+     {
+      "key": "tables",
+      "label": "Tables",
+      "rule": null,
+      "status": null,
+      "text": "mf.t",
+      "unit": "",
+      "value": 1
+     },
+     {
+      "key": "victim",
+      "label": "Rolled back",
+      "rule": null,
+      "status": null,
+      "text": "transaction 2123, connection 27",
+      "unit": "",
+      "value": 2
+     },
+     {
+      "key": "deadlocks",
+      "label": "Deadlocks since startup",
+      "rule": null,
+      "status": null,
+      "text": "2",
+      "unit": "",
+      "value": 2
+     }
+    ],
+    "key": "deadlock",
+    "links": [
+     {
+      "label": "Open Locks",
+      "view": "locks"
+     }
+    ],
+    "present": true,
+    "status": "info",
+    "summary": "2026-10-14 17:39:05: 2 transactions on mf.t; InnoDB rolled back transaction 2123 (connection 27).",
+    "title": "Latest deadlock"
+   },
+   {
+    "data": null,
+    "items": [],
+    "key": "foreign_key_error",
+    "links": [],
+    "present": false,
+    "status": "info",
+    "summary": "MySQL 9.6 and later check foreign keys in the SQL layer by default (innodb_native_foreign_keys=OFF), so InnoDB does not record foreign key errors here.",
+    "title": "Latest foreign key error"
+   },
+   {
+    "data": {
+     "io_threads": [
+      {
+       "purpose": "insert buffer thread",
+       "states": {
+        "waiting for completed aio requests": 1
+       },
+       "threads": 1
+      },
+      {
+       "purpose": "read thread",
+       "states": {
+        "waiting for completed aio requests": 8
+       },
+       "threads": 8
+      },
+      {
+       "purpose": "write thread",
+       "states": {
+        "waiting for completed aio requests": 4
+       },
+       "threads": 4
+      }
+     ],
+     "os": {
+      "fsyncs": 46351,
+      "reads": 51962069,
+      "writes": 443721
+     },
+     "pending": {
+      "aio_writes": 0,
+      "fsync": null,
+      "fsync_buffer_pool": 0,
+      "fsync_log": 0,
+      "ibuf_aio_reads": null,
+      "log_ios": null,
+      "normal_aio_reads": 0,
+      "reads": 1,
+      "sync_ios": null,
+      "writes": 0
+     },
+     "pending_judged": 1,
+     "pending_total": 1,
+     "rates": {
+      "avg_bytes_per_read": 16384,
+      "fsyncs_per_s": 9.69,
+      "reads_per_s": 19993.08,
+      "writes_per_s": 52.98
+     }
+    },
+    "items": [
+     {
+      "key": "pending",
+      "label": "Pending I/O now",
+      "rule": "watch when reads or fsyncs are pending in this snapshot (pending writes are shown but not judged: the page cleaner always has some in flight). One snapshot cannot tell a burst from a backlog: pending reads on every refresh mean queries wait for the storage",
+      "status": "watch",
+      "text": "reads: 1",
+      "unit": "",
+      "value": 1
+     },
+     {
+      "key": "reads_per_s",
+      "label": "OS file reads per second",
+      "rule": null,
+      "status": null,
+      "text": "19,993",
+      "unit": "/s",
+      "value": 19993.08
+     },
+     {
+      "key": "writes_per_s",
+      "label": "OS file writes per second",
+      "rule": null,
+      "status": null,
+      "text": "53.0",
+      "unit": "/s",
+      "value": 52.98
+     },
+     {
+      "key": "fsyncs_per_s",
+      "label": "OS fsyncs per second",
+      "rule": null,
+      "status": null,
+      "text": "9.69",
+      "unit": "/s",
+      "value": 9.69
+     },
+     {
+      "key": "avg_bytes_per_read",
+      "label": "Average bytes per read",
+      "rule": null,
+      "status": null,
+      "text": "16.0 KiB",
+      "unit": "B",
+      "value": 16384
+     },
+     {
+      "key": "os_totals",
+      "label": "OS reads / writes / fsyncs (since startup)",
+      "rule": null,
+      "status": null,
+      "text": "51,962,069 / 443,721 / 46,351",
+      "unit": "",
+      "value": 51962069
+     }
+    ],
+    "key": "file_io",
+    "links": [
+     {
+      "label": "Open I/O",
+      "view": "io"
+     }
+    ],
+    "present": true,
+    "status": "watch",
+    "summary": "1 pending I/O request; 19,993 reads/s, 53.0 writes/s, 9.69 fsyncs/s.",
+    "title": "File I/O"
+   },
+   {
+    "data": {
+     "default": "all",
+     "discarded": {
+      "delete": 0,
+      "delete_mark": 0,
+      "insert": 0
+     },
+     "free_list_len": 72,
+     "merged": {
+      "delete": 0,
+      "delete_mark": 900822,
+      "insert": 901513
+     },
+     "merges": 157929,
+     "seg_size": 74,
+     "setting": "all",
+     "size_pages": 1
+    },
+    "items": [
+     {
+      "key": "setting",
+      "label": "innodb_change_buffering",
+      "rule": null,
+      "status": null,
+      "text": "all (default all)",
+      "unit": "",
+      "value": "all"
+     },
+     {
+      "key": "size",
+      "label": "Size (pages)",
+      "rule": null,
+      "status": null,
+      "text": "1",
+      "unit": "",
+      "value": 1
+     },
+     {
+      "key": "free_list",
+      "label": "Free list length (pages)",
+      "rule": null,
+      "status": null,
+      "text": "72",
+      "unit": "",
+      "value": 72
+     },
+     {
+      "key": "merges",
+      "label": "Merges (since startup)",
+      "rule": null,
+      "status": null,
+      "text": "157,929",
+      "unit": "",
+      "value": 157929
+     },
+     {
+      "key": "merged_ops",
+      "label": "Merged inserts / delete marks / deletes",
+      "rule": null,
+      "status": null,
+      "text": "901,513 / 900,822 / 0",
+      "unit": "",
+      "value": 901513
+     }
+    ],
+    "key": "insert_buffer",
+    "links": [],
+    "present": true,
+    "status": "info",
+    "summary": "1 page, 157,929 merges since startup; innodb_change_buffering=all (default all on this version).",
+    "title": "Change buffer"
+   },
+   {
+    "data": {
+     "cells": 139144,
+     "default": "OFF",
+     "hash_searches_per_s": 1177.22,
+     "hit_pct": 68.1,
+     "node_heap_buffers": 4,
+     "non_hash_searches_per_s": 550.58,
+     "parts": 8,
+     "setting": "ON"
+    },
+    "items": [
+     {
+      "key": "setting",
+      "label": "innodb_adaptive_hash_index",
+      "rule": null,
+      "status": null,
+      "text": "ON (default OFF)",
+      "unit": "",
+      "value": "ON"
+     },
+     {
+      "key": "hit_pct",
+      "label": "Searches using the hash index",
+      "rule": null,
+      "status": null,
+      "text": "68.1%",
+      "unit": "%",
+      "value": 68.1
+     },
+     {
+      "key": "hash_per_s",
+      "label": "Hash searches per second",
+      "rule": null,
+      "status": null,
+      "text": "1,177",
+      "unit": "/s",
+      "value": 1177.22
+     },
+     {
+      "key": "non_hash_per_s",
+      "label": "Other index searches per second",
+      "rule": null,
+      "status": null,
+      "text": "551",
+      "unit": "/s",
+      "value": 550.58
+     },
+     {
+      "key": "cells",
+      "label": "Hash table cells (all parts)",
+      "rule": null,
+      "status": null,
+      "text": "139,144",
+      "unit": "",
+      "value": 139144
+     },
+     {
+      "key": "buffers",
+      "label": "Node heap buffers (pages)",
+      "rule": null,
+      "status": null,
+      "text": "4",
+      "unit": "",
+      "value": 4
+     }
+    ],
+    "key": "adaptive_hash_index",
+    "links": [],
+    "present": true,
+    "status": "info",
+    "summary": "On: 68.1% of index searches in the window used the hash index (1,177 hash, 551 other per second).",
+    "title": "Adaptive hash index"
+   },
+   {
+    "data": {
+     "buffer_assigned": 924073682,
+     "buffer_completed": 924073682,
+     "capacity": 104857600,
+     "capacity_bytes": 104857600,
+     "capacity_source": "Innodb_redo_log_capacity_resized",
+     "capacity_used": 104857600,
+     "checkpoint_age": 2262179,
+     "checkpoint_age_pct": 2.2,
+     "checkpoint_age_printed": null,
+     "checkpoint_age_target": null,
+     "dirty_age": 2262179,
+     "dirty_pages_added_up_to": 924073682,
+     "file_max_id": 282,
+     "file_min_id": 261,
+     "flushed_up_to": 924072267,
+     "last_checkpoint": 921811503,
+     "log_ios": 129178,
+     "log_ios_per_s": 7.72,
+     "lsn": 924073682,
+     "max_checkpoint_age": null,
+     "modified_age": null,
+     "pages_flushed_up_to": 921811503,
+     "pending_checkpoint_writes": null,
+     "pending_log_flushes": null,
+     "problem_at_bytes": 82837504,
+     "unflushed": 1415,
+     "watch_at_bytes": 76546048,
+     "written_up_to": 924072267
+    },
+    "items": [
+     {
+      "key": "checkpoint_age",
+      "label": "Checkpoint age",
+      "rule": "watch when the checkpoint age reaches about 73% of the redo capacity (adaptive flushing at its age limit), problem at about 79% (forced flushing); user writes wait near 84%",
+      "status": "ok",
+      "text": "2.2 MiB (2% of capacity)",
+      "unit": "B",
+      "value": 2262179
+     },
+     {
+      "key": "capacity",
+      "label": "Redo capacity",
+      "rule": null,
+      "status": null,
+      "text": "100.0 MiB (Innodb_redo_log_capacity_resized)",
+      "unit": "B",
+      "value": 104857600
+     },
+     {
+      "key": "unflushed",
+      "label": "Redo not yet flushed to disk",
+      "rule": null,
+      "status": null,
+      "text": "1.4 KiB",
+      "unit": "B",
+      "value": 1415
+     },
+     {
+      "key": "lsn",
+      "label": "Log sequence number",
+      "rule": null,
+      "status": null,
+      "text": "924,073,682",
+      "unit": "",
+      "value": 924073682
+     },
+     {
+      "key": "last_checkpoint",
+      "label": "Last checkpoint at",
+      "rule": null,
+      "status": null,
+      "text": "921,811,503",
+      "unit": "",
+      "value": 921811503
+     },
+     {
+      "key": "log_ios_per_s",
+      "label": "Log I/O per second",
+      "rule": null,
+      "status": null,
+      "text": "7.72",
+      "unit": "/s",
+      "value": 7.72
+     }
+    ],
+    "key": "log",
+    "links": [
+     {
+      "label": "Open Health",
+      "view": "health"
+     },
+     {
+      "label": "Open Parameters",
+      "view": "config"
+     }
+    ],
+    "present": true,
+    "status": "ok",
+    "summary": "Checkpoint age 2.2 MiB, 2% of the 100.0 MiB redo capacity.",
+    "title": "Redo log and checkpoint"
+   },
+   {
+    "data": {
+     "dictionary_memory": 892060,
+     "instances": [],
+     "pool": {
+      "creates_per_s": 0.37,
+      "database_pages": 4092,
+      "dirty_pct": 0.3,
+      "dirty_pct_printed": null,
+      "estimated_page_requests": 3413468,
+      "evicted_without_access_per_s": 23.85,
+      "free_pages": 0,
+      "free_pct": 0,
+      "hit_pct": 79.5,
+      "hit_rate_per_1000": 795,
+      "io_cur": 3417,
+      "io_sum": 326302,
+      "lru_len": 4092,
+      "made_young": 1758663,
+      "max_dirty_pct": null,
+      "modified_pages": 14,
+      "no_page_gets": false,
+      "non_youngs_per_s": 47284.83,
+      "not_young": 173046858,
+      "not_young_per_1000": 485,
+      "old_database_pages": 1491,
+      "pages_created": 36998,
+      "pages_read": 51962387,
+      "pages_written": 294929,
+      "pending_reads": 1,
+      "pending_writes": {
+       "flush_list": 0,
+       "lru": 0,
+       "single_page": 0
+      },
+      "pool_size_bytes": null,
+      "pool_size_pages": 4096,
+      "random_read_ahead_per_s": 0.0,
+      "read_ahead_per_s": 13795.84,
+      "reads_per_s": 19993.17,
+      "size_bytes": 67108864,
+      "unzip_cur": 0,
+      "unzip_lru_len": 0,
+      "unzip_sum": 0,
+      "writes_per_s": 41.52,
+      "young_per_1000": 6,
+      "youngs_per_s": 587.47
+     },
+     "total_large_memory": 0
+    },
+    "items": [
+     {
+      "key": "hit_pct",
+      "label": "Hit rate (this window)",
+      "rule": "watch below 99%, problem below 95% with at least 10 pages read from disk per second; judged only with about 10,000 page requests or more in the window",
+      "status": "problem",
+      "text": "79.5%",
+      "unit": "%",
+      "value": 79.5
+     },
+     {
+      "key": "dirty_pct",
+      "label": "Dirty pages",
+      "rule": "watch at innodb_max_dirty_pages_pct (90 by default); a high share alone is not a stall, waits for a free page and a nearly full redo log are",
+      "status": "ok",
+      "text": "0.3% (14 pages)",
+      "unit": "%",
+      "value": 0.3
+     },
+     {
+      "key": "free_pct",
+      "label": "Free pages",
+      "rule": null,
+      "status": null,
+      "text": "0% (0 pages)",
+      "unit": "%",
+      "value": 0
+     },
+     {
+      "key": "size",
+      "label": "Buffer pool size",
+      "rule": null,
+      "status": null,
+      "text": "64.0 MiB (4,096 pages)",
+      "unit": "B",
+      "value": 67108864
+     },
+     {
+      "key": "reads_per_s",
+      "label": "Pages read from disk per second",
+      "rule": null,
+      "status": null,
+      "text": "19,993",
+      "unit": "/s",
+      "value": 19993.17
+     },
+     {
+      "key": "writes_per_s",
+      "label": "Pages written per second",
+      "rule": null,
+      "status": null,
+      "text": "41.5",
+      "unit": "/s",
+      "value": 41.52
+     },
+     {
+      "key": "young",
+      "label": "Made young / not young per 1000 requests",
+      "rule": null,
+      "status": null,
+      "text": "6 / 485",
+      "unit": "",
+      "value": 6
+     },
+     {
+      "key": "read_ahead",
+      "label": "Read ahead / evicted unused per second",
+      "rule": null,
+      "status": null,
+      "text": "13,796 / 23.9",
+      "unit": "/s",
+      "value": 13795.84
+     },
+     {
+      "key": "pending",
+      "label": "Pending reads / writes (LRU, flush list)",
+      "rule": null,
+      "status": null,
+      "text": "1 / 0, 0",
+      "unit": "",
+      "value": 1
+     },
+     {
+      "key": "dictionary_memory",
+      "label": "Dictionary memory",
+      "rule": null,
+      "status": null,
+      "text": "871.2 KiB",
+      "unit": "B",
+      "value": 892060
+     },
+     {
+      "key": "instances",
+      "label": "Buffer pool instances",
+      "rule": null,
+      "status": null,
+      "text": "1",
+      "unit": "",
+      "value": 1
+     }
+    ],
+    "key": "buffer_pool",
+    "links": [
+     {
+      "label": "Open Health",
+      "view": "health"
+     }
+    ],
+    "present": true,
+    "status": "problem",
+    "summary": "64.0 MiB pool, 0% free, 0.3% dirty; hit rate 79.5%; 19,993 pages read/s from disk.",
+    "title": "Buffer pool and memory"
+   },
+   {
+    "data": {
+     "main_thread_state": "sleeping",
+     "process_id": 1,
+     "queries_in_queue": 0,
+     "queries_inside": 0,
+     "read_views": 4,
+     "reserved_extents": null,
+     "rows": {
+      "deleted": 0,
+      "inserted": 2400012,
+      "read": 2631065050,
+      "updated": 2502411
+     },
+     "rows_per_s": {
+      "deleted": 0.0,
+      "inserted": 0.0,
+      "read": 997133.6,
+      "updated": 88.05
+     },
+     "system_rows": {
+      "deleted": 3192,
+      "inserted": 3298,
+      "read": 8821,
+      "updated": 452
+     },
+     "system_rows_per_s": {
+      "deleted": 0.0,
+      "inserted": 0.17,
+      "read": 0.0,
+      "updated": 0.0
+     }
+    },
+    "items": [
+     {
+      "key": "queue",
+      "label": "Queries inside InnoDB / in queue",
+      "rule": "watch when statements wait in the InnoDB queue, which happens only when innodb_thread_concurrency is above 0 and that many threads are already inside InnoDB",
+      "status": "ok",
+      "text": "0 / 0",
+      "unit": "",
+      "value": 0
+     },
+     {
+      "key": "read_views",
+      "label": "Read views open",
+      "rule": null,
+      "status": null,
+      "text": "4",
+      "unit": "",
+      "value": 4
+     },
+     {
+      "key": "rows_read",
+      "label": "Rows read per second",
+      "rule": null,
+      "status": null,
+      "text": "997,134",
+      "unit": "/s",
+      "value": 997133.6
+     },
+     {
+      "key": "rows_changed",
+      "label": "Rows inserted / updated / deleted per second",
+      "rule": null,
+      "status": null,
+      "text": "0 / 88.0 / 0",
+      "unit": "/s",
+      "value": 0.0
+     },
+     {
+      "key": "main_thread",
+      "label": "Main thread state",
+      "rule": null,
+      "status": null,
+      "text": "sleeping",
+      "unit": "",
+      "value": "sleeping"
+     }
+    ],
+    "key": "row_operations",
+    "links": [
+     {
+      "label": "Open Health",
+      "view": "health"
+     }
+    ],
+    "present": true,
+    "status": "ok",
+    "summary": "997,134 rows read, 0 inserted, 88.0 updated, 0 deleted per second; 4 read views open.",
+    "title": "Row operations"
+   },
+   {
+    "data": {
+     "active_loops": 1731,
+     "idle_loops": 870,
+     "log_flush_and_writes": 0,
+     "shutdown_loops": 0
+    },
+    "items": [
+     {
+      "key": "active_loops",
+      "label": "Active loops",
+      "rule": null,
+      "status": null,
+      "text": "1,731",
+      "unit": "",
+      "value": 1731
+     },
+     {
+      "key": "idle_loops",
+      "label": "Idle loops",
+      "rule": null,
+      "status": null,
+      "text": "870",
+      "unit": "",
+      "value": 870
+     }
+    ],
+    "key": "background",
+    "links": [],
+    "present": true,
+    "status": "info",
+    "summary": "The master thread ran 1,731 active and 870 idle loops since startup.",
+    "title": "Background thread"
+   }
+  ],
+  "server_version": "26.7.0",
+  "status": "problem",
+  "summary": {
+   "info": 5,
+   "ok": 3,
+   "problem": 2,
+   "status": "problem",
+   "text": "3 need attention: Transactions and purge, oldest active transaction 20 min 52 s (connection 71); Buffer pool and memory, hit rate (this window) 79.5%; File I/O, pending I/O now reads: 1.",
+   "unknown": 0,
+   "watch": 1
+  },
+  "taken_at": "2026-10-14T18:21:45.092223+00:00",
+  "uptime_s": 2616
+ },
+ "server": "mysql-26.7"
+}

@@ -1,0 +1,269 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/vgrippa/myflames/docs/schemas/csv-inspect-1.0.json",
+  "title": "myflames Import CSV file inspection (csv-inspect-1.0)",
+  "description": "What myflames read from a CSV file: the detected and the effective format, the columns with an inferred type for a new table, the first 50 rows (null where the format makes a NULL), the row count (exact, or estimated from the first 64 MiB), and problems with their line numbers. Lines are physical lines of the file, 1-based. Nothing here touches a server; the file is named by a file_id, never a path.",
+  "$defs": {
+    "format": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "encoding",
+        "separator",
+        "quote",
+        "escape",
+        "header",
+        "line_ending",
+        "skip_lines",
+        "empty",
+        "null_markers"
+      ],
+      "properties": {
+        "encoding": {
+          "enum": [
+            "utf-8",
+            "utf-8-sig",
+            "utf-16-le",
+            "utf-16-be",
+            "cp1252"
+          ]
+        },
+        "separator": {
+          "type": "string",
+          "pattern": "^[^\\r\\n\\u0000]$"
+        },
+        "quote": {
+          "enum": [
+            "\"",
+            "'",
+            ""
+          ]
+        },
+        "escape": {
+          "enum": [
+            "",
+            "\\"
+          ]
+        },
+        "header": {
+          "type": "boolean"
+        },
+        "line_ending": {
+          "enum": [
+            "\n",
+            "\r\n",
+            "\r"
+          ]
+        },
+        "skip_lines": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000
+        },
+        "empty": {
+          "enum": [
+            "null",
+            "empty"
+          ]
+        },
+        "null_markers": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "\\N",
+              "NULL"
+            ]
+          },
+          "maxItems": 2
+        }
+      }
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "file",
+    "detected",
+    "format",
+    "columns",
+    "preview",
+    "rows",
+    "rows_estimate",
+    "rows_counted",
+    "problems",
+    "problems_total",
+    "notes"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "csv-inspect-1.0"
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "file_id",
+        "name",
+        "size",
+        "modified"
+      ],
+      "properties": {
+        "file_id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "modified": {
+          "type": "string"
+        }
+      }
+    },
+    "detected": {
+      "$ref": "#/$defs/format"
+    },
+    "format": {
+      "$ref": "#/$defs/format"
+    },
+    "columns": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "index",
+          "header",
+          "name",
+          "inferred",
+          "samples"
+        ],
+        "properties": {
+          "index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "header": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "inferred": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "sql_type",
+              "nullable",
+              "max_length"
+            ],
+            "properties": {
+              "sql_type": {
+                "type": "string"
+              },
+              "nullable": {
+                "type": "boolean"
+              },
+              "max_length": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "samples": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 5
+          }
+        }
+      }
+    },
+    "preview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rows",
+        "lines",
+        "truncated"
+      ],
+      "properties": {
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "maxItems": 50
+        },
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "maxItems": 50
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      }
+    },
+    "rows": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "rows_estimate": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "rows_counted": {
+      "type": "boolean"
+    },
+    "problems": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "line",
+          "message"
+        ],
+        "properties": {
+          "line": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "maxItems": 100
+    },
+    "problems_total": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

@@ -1,0 +1,71 @@
+{
+ "args": {},
+ "calls": [
+  [
+   "/*myflames:schemas*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('performance_schema', 'userstat', 'version', 'version_comment')",
+   "performance_schema\tOFF\nuserstat\tOFF\nversion\t13.0.2-MariaDB-ubu2604\nversion_comment\tmariadb.org binary distribution\n"
+  ],
+  [
+   "/*myflames:schemas*/ SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime' OR Variable_name LIKE 'Performance\\_schema\\_%\\_lost'",
+   "Performance_schema_accounts_lost\t0\nPerformance_schema_cond_classes_lost\t0\nPerformance_schema_cond_instances_lost\t0\nPerformance_schema_digest_lost\t0\nPerformance_schema_file_classes_lost\t0\nPerformance_schema_file_handles_lost\t0\nPerformance_schema_file_instances_lost\t0\nPerformance_schema_hosts_lost\t0\nPerformance_schema_index_stat_lost\t0\nPerformance_schema_locker_lost\t0\nPerformance_schema_memory_classes_lost\t0\nPerformance_schema_metadata_lock_lost\t0\nPerformance_schema_mutex_classes_lost\t0\nPerformance_schema_mutex_instances_lost\t0\nPerformance_schema_nested_statement_lost\t0\nPerformance_schema_prepared_statements_lost\t0\nPerformance_schema_program_lost\t0\nPerformance_schema_rwlock_classes_lost\t0\nPerformance_schema_rwlock_instances_lost\t0\nPerformance_schema_session_connect_attrs_lost\t0\nPerformance_schema_socket_classes_lost\t0\nPerformance_schema_socket_instances_lost\t0\nPerformance_schema_stage_classes_lost\t0\nPerformance_schema_statement_classes_lost\t0\nPerformance_schema_table_handles_lost\t0\nPerformance_schema_table_instances_lost\t0\nPerformance_schema_table_lock_stat_lost\t0\nPerformance_schema_thread_classes_lost\t0\nPerformance_schema_thread_instances_lost\t0\nPerformance_schema_users_lost\t0\nUptime\t2273\n"
+  ],
+  [
+   "/*myflames:schemas*/ SELECT SCHEMA_NAME FROM information_schema.SCHEMATA",
+   "information_schema\nmftab\nmfother\nsys\nperformance_schema\nmysql\n"
+  ],
+  [
+   "/*myflames:schemas*/ SELECT TABLE_SCHEMA, COUNT(*) FROM information_schema.TABLES GROUP BY TABLE_SCHEMA",
+   "information_schema\t88\nmfother\t1\nmftab\t18\nmysql\t31\nperformance_schema\t80\nsys\t102\n"
+  ]
+ ],
+ "report": {
+  "all_limit": 2000,
+  "all_note": "Reading every user schema is the default up to 2,000 tables. Above that, choose schemas: the read costs time per table (Performance Schema walks every table and open handle for each index row, and MariaDB opens every table for information_schema.STATISTICS); 2,000 matches MySQL's default table_definition_cache.",
+  "engine": "mariadb",
+  "performance_schema": false,
+  "schema_version": "schemas-1.0",
+  "schemas": [
+   {
+    "name": "mfother",
+    "system": false,
+    "tables": 1
+   },
+   {
+    "name": "mftab",
+    "system": false,
+    "tables": 18
+   },
+   {
+    "name": "information_schema",
+    "system": true,
+    "tables": 88
+   },
+   {
+    "name": "mysql",
+    "system": true,
+    "tables": 31
+   },
+   {
+    "name": "performance_schema",
+    "system": true,
+    "tables": 80
+   },
+   {
+    "name": "sys",
+    "system": true,
+    "tables": 102
+   }
+  ],
+  "server_version": "13.0.2-MariaDB-ubu2604",
+  "system": [
+   "mysql",
+   "performance_schema",
+   "information_schema",
+   "sys"
+  ],
+  "taken_at": "2026-10-14T16:43:43.637910+00:00",
+  "uptime_s": 2273,
+  "user_tables": 19
+ },
+ "server": "mariadb-13.0"
+}

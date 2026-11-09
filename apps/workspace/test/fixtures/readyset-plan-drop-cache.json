@@ -1,0 +1,68 @@
+{
+ "schema_version": "readyset-action-1.0",
+ "action": "drop_cache",
+ "target": {
+  "kind": "cache",
+  "name": "c_orders_deep",
+  "query_id": "q_1111aaaa"
+ },
+ "value": null,
+ "eyebrow": "DROP CACHE",
+ "title": "Drop deep cache c_orders_deep?",
+ "confirm_label": "Drop cache",
+ "description": "Removes cache c_orders_deep so matching queries run directly on the upstream database.",
+ "target_text": "Deep cache c_orders_deep",
+ "statements": [
+  "DROP CACHE `c_orders_deep`;"
+ ],
+ "facts": [
+  [
+   "Readyset",
+   "stable-250605 (adapter port)"
+  ],
+  [
+   "Cache",
+   "c_orders_deep (deep)"
+  ],
+  [
+   "Query ID",
+   "q_1111aaaa"
+  ],
+  [
+   "Query",
+   "SELECT id, total FROM orders WHERE customer_id = $1"
+  ]
+ ],
+ "warnings": [],
+ "changes": null,
+ "typed_guard": "c_orders_deep",
+ "undo": "Re-create from query q_1111aaaa.",
+ "next": null,
+ "verified": [
+  "Readyset identity (@@version_comment, SHOW READYSET VERSION)",
+  "cache c_orders_deep unchanged since review"
+ ],
+ "timeout_s": 30,
+ "checks": [
+  "Refresh the Readyset place to inspect the current caches, tables and status.",
+  "The Audit log keeps this attempt as Outcome unknown; nothing is sent again."
+ ],
+ "expect": {
+  "readyset_version": "stable-250605",
+  "cache": {
+   "name": "c_orders_deep",
+   "query_id": "q_1111aaaa",
+   "cache_type": "deep",
+   "properties": "deep"
+  }
+ },
+ "policy": {
+  "action": "confirm",
+  "tone": "danger",
+  "title": "Risky write",
+  "text": "Connection Readyset lab is a Development connection. myflames asks only before risky writes, and this statement is one.",
+  "connection_type": "development",
+  "read_only": false
+ },
+ "review_token": "fixture-token-drop_cache"
+}

@@ -1,0 +1,209 @@
+{
+ "schema_version": "indexes-1.0",
+ "engine": "mysql",
+ "flavor": "percona",
+ "server_product": "Percona Server",
+ "server_version": "8.4.11-11",
+ "taken_at": "2026-10-21T19:07:32.104626+00:00",
+ "uptime_s": 84,
+ "performance_schema": false,
+ "scope": {
+  "schema": "review",
+  "schemas": [
+   "review"
+  ],
+  "server_wide": false
+ },
+ "source": "userstat",
+ "available": true,
+ "userstat": {
+  "enabled": true,
+  "read": true,
+  "role": "source"
+ },
+ "unused": [
+  {
+   "schema": "review",
+   "table": "plain_pk",
+   "index": "kz",
+   "columns": "w, v",
+   "visible": true,
+   "foreign_keys": [],
+   "verdict": "candidate",
+   "keep_reason": null,
+   "userstat_rows_read": null,
+   "why": "No use since userstat was turned on, the server started, or the last FLUSH INDEX_STATISTICS (no row in information_schema.INDEX_STATISTICS).",
+   "test_sql": "ALTER TABLE `review`.`plain_pk` ALTER INDEX `kz` INVISIBLE;",
+   "drop_sql": "ALTER TABLE `review`.`plain_pk` DROP INDEX `kz`;",
+   "caveat": "Make it invisible first and run a full business cycle (month-end jobs, reports, replicas) before dropping it: an invisible index is still maintained on writes, but the optimizer stops using it, and making it visible again is instant. Queries with an index hint that names it fail while it is invisible."
+  }
+ ],
+ "redundant": [
+  {
+   "schema": "review",
+   "table": "parted_pk",
+   "index": "kw",
+   "columns": "w",
+   "unique": false,
+   "visible": true,
+   "dominant": "kz",
+   "dominant_columns": "w, v",
+   "reason": "is a leftmost prefix of",
+   "foreign_keys": [],
+   "why": "kw (w) is a leftmost prefix of kz (w, v), so kz serves every lookup kw serves. Each extra index slows writes and uses buffer pool memory.",
+   "test_sql": "ALTER TABLE `review`.`parted_pk` ALTER INDEX `kw` INVISIBLE;",
+   "drop_sql": "ALTER TABLE `review`.`parted_pk` DROP INDEX `kw`;",
+   "caveat": "Check for FORCE INDEX or USE INDEX hints that name it. Make it invisible first and run a full business cycle (month-end jobs, reports, replicas) before dropping it: an invisible index is still maintained on writes, but the optimizer stops using it, and making it visible again is instant. Queries with an index hint that names it fail while it is invisible."
+  },
+  {
+   "schema": "review",
+   "table": "plain_pk",
+   "index": "kw",
+   "columns": "w",
+   "unique": false,
+   "visible": true,
+   "dominant": "kz",
+   "dominant_columns": "w, v",
+   "reason": "is a leftmost prefix of",
+   "foreign_keys": [],
+   "why": "kw (w) is a leftmost prefix of kz (w, v), so kz serves every lookup kw serves. Each extra index slows writes and uses buffer pool memory.",
+   "test_sql": "ALTER TABLE `review`.`plain_pk` ALTER INDEX `kw` INVISIBLE;",
+   "drop_sql": "ALTER TABLE `review`.`plain_pk` DROP INDEX `kw`;",
+   "caveat": "Check for FORCE INDEX or USE INDEX hints that name it. Make it invisible first and run a full business cycle (month-end jobs, reports, replicas) before dropping it: an invisible index is still maintained on writes, but the optimizer stops using it, and making it visible again is instant. Queries with an index hint that names it fail while it is invisible."
+  }
+ ],
+ "full_scans": [],
+ "no_data": [
+  {
+   "schema": "review",
+   "table": "parted_nopk",
+   "indexes": 1,
+   "reason": "partitioned"
+  },
+  {
+   "schema": "review",
+   "table": "parted_pk",
+   "indexes": 4,
+   "reason": "partitioned"
+  }
+ ],
+ "foreign_keys": 0,
+ "notes": [
+  "Using Percona Server user statistics (userstat=ON) because Performance Schema is off. They count reads only, from when userstat was turned on or the last FLUSH INDEX_STATISTICS; there is no start time to show. Tables with no reads or changes since then are under No data.",
+  "Percona Server's user statistics do not support partitioned tables, so the indexes of the 2 partitioned tables in scope are under No data.",
+  "PRIMARY and UNIQUE indexes are never listed as unused: they enforce constraints even when no query reads them. Indexes that back a foreign key are marked keep: InnoDB checks foreign keys without going through the usage counters.",
+  "Foreign keys declared in other schemas that reference review are not checked; a non-unique parent index they use could look unused.",
+  "Counts are per server: reads on replicas are not included."
+ ],
+ "summary": {
+  "tables": 4,
+  "indexes": 10,
+  "unused": 1,
+  "unused_candidates": 1,
+  "keep_foreign_key": 0,
+  "keep_userstat": 0,
+  "redundant": 2,
+  "full_scans": 0,
+  "mostly_full_scans": 0,
+  "no_data": 2
+ },
+ "indexes": [
+  {
+   "schema": "review",
+   "table": "parted_nopk",
+   "index": "kv",
+   "columns": "v",
+   "unique": false,
+   "type": "BTREE",
+   "visible": true
+  },
+  {
+   "schema": "review",
+   "table": "parted_pk",
+   "index": "PRIMARY",
+   "columns": "id",
+   "unique": true,
+   "type": "BTREE",
+   "visible": true
+  },
+  {
+   "schema": "review",
+   "table": "parted_pk",
+   "index": "kv",
+   "columns": "v",
+   "unique": false,
+   "type": "BTREE",
+   "visible": true
+  },
+  {
+   "schema": "review",
+   "table": "parted_pk",
+   "index": "kw",
+   "columns": "w",
+   "unique": false,
+   "type": "BTREE",
+   "visible": true
+  },
+  {
+   "schema": "review",
+   "table": "parted_pk",
+   "index": "kz",
+   "columns": "w, v",
+   "unique": false,
+   "type": "BTREE",
+   "visible": true
+  },
+  {
+   "schema": "review",
+   "table": "plain_nopk",
+   "index": "kv",
+   "columns": "v",
+   "unique": false,
+   "type": "BTREE",
+   "visible": true
+  },
+  {
+   "schema": "review",
+   "table": "plain_pk",
+   "index": "PRIMARY",
+   "columns": "id",
+   "unique": true,
+   "type": "BTREE",
+   "visible": true
+  },
+  {
+   "schema": "review",
+   "table": "plain_pk",
+   "index": "kv",
+   "columns": "v",
+   "unique": false,
+   "type": "BTREE",
+   "visible": true
+  },
+  {
+   "schema": "review",
+   "table": "plain_pk",
+   "index": "kw",
+   "columns": "w",
+   "unique": false,
+   "type": "BTREE",
+   "visible": true
+  },
+  {
+   "schema": "review",
+   "table": "plain_pk",
+   "index": "kz",
+   "columns": "w, v",
+   "unique": false,
+   "type": "BTREE",
+   "visible": true
+  }
+ ],
+ "more": {
+  "indexes": 0,
+  "unused": 0,
+  "redundant": 0,
+  "full_scans": 0,
+  "no_data": 0
+ }
+}

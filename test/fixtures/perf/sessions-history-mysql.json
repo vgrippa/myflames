@@ -1,0 +1,26 @@
+{
+  "provenance": "Synthetic contract rows, not a live recording",
+  "version": "8.4.11",
+  "rows": [
+    [
+      "92",
+      "UPDATE `t` SET v=2 WHERE id=1",
+      "1234000000000",
+      "5",
+      "0",
+      "1",
+      "1205",
+      "Lock wait timeout exceeded"
+    ],
+    [
+      "90",
+      "SELECT '</script><img src=x onerror=alert(1)> אבג'",
+      null,
+      "0",
+      "1",
+      "0",
+      "0",
+      null
+    ]
+  ]
+}

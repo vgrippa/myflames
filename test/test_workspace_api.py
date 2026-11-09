@@ -1,6 +1,7 @@
 """Authenticated workspace persistence and capture routes over real HTTP."""
 import http.client
 import json
+import os
 from pathlib import Path
 import tempfile
 import threading
@@ -10,12 +11,18 @@ from unittest.mock import MagicMock, patch
 from myflames.connector import ConnectorError
 from myflames.ui import ASSET_DIR, WorkspaceServer, api_response
 
-PLAN = (Path(__file__).parent / 'mysql-explain-json-sample.json').read_text()
+PLAN = (Path(__file__).parent / 'mysql-explain-json-sample.json').read_text(encoding="utf-8")
 
 
 class TestWorkspaceAPI(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        env = patch.dict(os.environ, {'HOME': self.temp.name, 'USERPROFILE': self.temp.name,
+                                     'MYFLAMES_SECRET_BACKEND': 'vault'})
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop('MYFLAMES_VAULT_PASSPHRASE', None)
         self.path = Path(self.temp.name) / 'private' / 'workspace.sqlite3'
         self.server = WorkspaceServer(0, store_path=self.path)
         self.thread = threading.Thread(target=self.server.serve_forever,
@@ -26,11 +33,12 @@ class TestWorkspaceAPI(unittest.TestCase):
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=5)
-        self.temp.cleanup()
 
     def request(self, path, payload=None, headers=None, method='POST'):
         conn = http.client.HTTPConnection(*self.server.server_address, timeout=5)
-        default = {'Content-Type': 'application/json', 'X-Myflames-Token': self.server.token}
+        default = {'Content-Type': 'application/json', 'X-Myflames-Token': self.server.token,
+                    'Origin': self.server.origin,
+                    'Cookie': self.server.cookie_name + '=' + self.server.session_secret}
         default.update(headers or {})
         try:
             conn.request(method, path, json.dumps(payload or {}) if method == 'POST' else None, default)
@@ -45,7 +53,10 @@ class TestWorkspaceAPI(unittest.TestCase):
         for kind in ('investigations', 'profiles'):
             status, body, headers = self.request('/api/' + kind + '/list')
             self.assertEqual(status, 200)
-            self.assertEqual(body, {'items': []})
+            self.assertEqual(body['items'], [])
+            if kind == 'profiles':
+                # Where a remembered password would go; never a secret.
+                self.assertEqual(set(body['secret_store']) - {'error'}, {'backend', 'label', 'available'})
             self.assertEqual(headers['Cache-Control'], 'no-store')
         self.assertFalse(self.path.exists())
 
@@ -60,11 +71,21 @@ class TestWorkspaceAPI(unittest.TestCase):
         self.assertEqual(status, 200)
         status, listed, _ = self.request('/api/investigations/list')
         self.assertEqual(status, 200)
-        self.assertEqual(listed['items'], [changed])
+        # A summary page; the complete bundle comes from investigations/get.
+        self.assertEqual(listed, {'schema_version': 'investigation-list-1.0', 'next_cursor': None, 'items': [{
+            'id': first['id'], 'updated_at': changed['updated_at'], 'schema_version': 'investigation-summary-1.0',
+            'name': 'After index', 'notes': '', 'tags': [], 'baseline_id': 'base',
+            'plans': [{'id': 'base', 'name': 'Original'}]}]})
+        status, bundle, _ = self.request('/api/investigations/get', {'id': first['id']})
+        self.assertEqual((status, bundle), (200, changed))
         self.assertEqual(changed['name'], 'After index')
         status, body, _ = self.request('/api/investigations/delete', {'id': first['id']})
         self.assertEqual((status, body), (200, {'deleted': True}))
-        self.assertEqual(self.request('/api/investigations/list')[1], {'items': []})
+        self.assertEqual(self.request('/api/investigations/list')[1],
+                         {'schema_version': 'investigation-list-1.0', 'items': [], 'next_cursor': None})
+        status, body, _ = self.request('/api/investigations/get', {'id': first['id']})
+        self.assertEqual(status, 400)
+        self.assertIn('no longer exists', body['error'])
 
     def test_profile_save_drops_secrets_and_kind_isolation_holds(self):
         value = {'name': 'Reporting', 'host': 'db.example', 'port': '3307', 'user': 'reader',
@@ -78,10 +99,10 @@ class TestWorkspaceAPI(unittest.TestCase):
         self.request('/api/investigations/delete', {'id': saved['id']})
         self.assertEqual(self.request('/api/profiles/list')[1]['items'], [saved])
         self.request('/api/profiles/delete', {'id': saved['id']})
-        self.assertEqual(self.request('/api/profiles/list')[1], {'items': []})
+        self.assertEqual(self.request('/api/profiles/list')[1]['items'], [])
 
     def test_workspace_routes_require_current_token_and_same_origin(self):
-        routes = ('/api/investigations/list', '/api/investigations/save', '/api/profiles/save',
+        routes = ('/api/investigations/list', '/api/investigations/get', '/api/investigations/save', '/api/profiles/save',
                   '/api/live/start', '/api/live/status', '/api/live/cancel', '/api/connection/test')
         with patch.object(self.server.jobs, 'start') as start, \
                 patch('myflames.connector.MySQLConnection') as connect:
@@ -131,10 +152,15 @@ class TestWorkspaceAPI(unittest.TestCase):
         with patch('myflames.connector.MySQLConnection') as connection:
             conn = connection.return_value.__enter__.return_value
             conn.server_version.return_value = '9.7.0'
+            conn.is_mariadb.return_value = False
+            conn.server_version_comment.return_value = 'MySQL Community Server - GPL'
             conn.query_rows.return_value = [['inventory'], [], ['reporting']]
             status, body, _ = self.request('/api/connection/test', {'connection': {
                 'host': 'localhost', 'port': '3307', 'password': 'secret-for-test'}})
-            self.assertEqual((status, body), (200, {'version': '9.7.0', 'schemas': ['inventory', 'reporting']}))
+            self.assertEqual((status, body), (200, {'version': '9.7.0', 'engine': 'mysql', 'flavor': 'mysql',
+                                                    'product': 'MySQL', 'schemas': ['inventory', 'reporting'],
+                                                    'databases': ['inventory', 'reporting'],
+                                                    'databases_truncated': False}))
             self.assertEqual(connection.call_args[1]['port'], 3307)
             self.assertEqual(connection.call_args[1]['password'], 'secret-for-test')
             conn.query_rows.assert_called_once_with('SHOW DATABASES')
@@ -164,25 +190,22 @@ class TestWorkspaceAPI(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(headers['Content-Type'].split(';')[0], 'image/png')
         self.assertEqual(body, logos[0].read_bytes())
-        self.assertEqual(body, (Path(__file__).resolve().parents[1] / 'docs/brand/myflames-icon-v2.png').read_bytes())
+        self.assertEqual(body, (Path(__file__).resolve().parents[1] / 'docs/brand/myflames-app-logo.png').read_bytes())
         self.assertTrue(body.startswith(b'\x89PNG\r\n\x1a\n'))
         self.assertEqual(headers['X-Content-Type-Options'], 'nosniff')
 
-    def test_logo_urls_from_open_older_tabs_still_work(self):
-        expected = (ASSET_DIR / 'assets' / 'myflames-logo.png').read_bytes()
+    def test_earlier_hashed_logo_urls_are_gone(self):
+        # The workspace is not GA: logo URLs of earlier bundles are not kept.
         for name in ('myflames-BpuTIrWf.jpeg', 'logo-BpuTIrWf.jpeg',
                      'myflames-icon-v2-CFba5YPm.png'):
             with self.subTest(name=name):
-                status, body, headers = self.request('/assets/' + name, method='GET')
-                self.assertEqual(status, 200)
-                self.assertEqual(body, expected)
-                self.assertEqual(headers['Content-Type'].split(';')[0], 'image/png')
-                self.assertEqual(headers['Cache-Control'], 'no-store')
+                status, unused, unused_headers = self.request('/assets/' + name, method='GET')
+                self.assertEqual(status, 404)
 
     def test_page_favicon_versions_stable_logo_url(self):
         status, body, _ = self.request('/', method='GET')
         self.assertEqual(status, 200)
-        self.assertIn(b'href="/assets/myflames-logo.png?v=2"', body)
+        self.assertIn(b'href="/assets/myflames-logo.png?v=4"', body)
         status, icon, headers = self.request('/assets/myflames-logo.png?v=2', method='GET')
         self.assertEqual(status, 200)
         self.assertEqual(icon, (ASSET_DIR / 'assets' / 'myflames-logo.png').read_bytes())

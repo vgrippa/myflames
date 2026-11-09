@@ -1,0 +1,44 @@
+/* Shared DDL progress in Processlist and the running Query editor. */
+.ddl-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  max-width: 100%;
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.ddl-meter progress {
+  appearance: none;
+  width: 64px;
+  min-width: 24px;
+  max-width: 100%;
+  height: 6px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+  accent-color: var(--accent);
+}
+.ddl-meter progress::-webkit-progress-bar { background: var(--surface-muted); border-radius: var(--radius-sm); }
+.ddl-meter progress::-webkit-progress-value { background: var(--accent); border-radius: var(--radius-sm); }
+.ddl-meter progress::-moz-progress-bar { background: var(--accent); border-radius: var(--radius-sm); }
+.ddl-details { display: grid; gap: var(--space-2); min-width: 0; }
+.ddl-details p { margin: 0; }
+.ddl-stage, .ddl-unavailable { overflow-wrap: anywhere; }
+.ddl-stage { font-size: var(--text-sm); color: var(--ink-muted); }
+.ddl-editor { flex: none; display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-1) var(--space-3); }
+.ddl-editor .ddl-unavailable { margin: 0; }
+.session-ddl-state { position: relative; display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.session-ddl-state > .cell-truncate { min-width: 0; flex: 0 1 auto; }
+/* In a table row the stage name and percent share the line and the bar runs
+   under them, so a narrow State column never cuts the stage to one letter. */
+.session-ddl-state .ddl-meter { flex: none; }
+.session-ddl-state .ddl-meter progress {
+  position: absolute;
+  left: 0;
+  bottom: calc(-1 * var(--space-1));
+  width: 100%;
+  min-width: 0;
+  height: 3px;
+}

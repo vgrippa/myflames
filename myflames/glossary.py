@@ -314,12 +314,14 @@ GLOSSARY = {
     "materialization": {
         "short": "Subquery/derived table is computed once, stored in a temp table.",
         "technical": (
-            "The subquery result is materialized into an internal temp table "
-            "(MEMORY or on-disk InnoDB depending on size). The outer query "
-            "reads from the temp table. Controlled by ``tmp_table_size`` and "
-            "``max_heap_table_size`` — MySQL always uses the smaller of the "
-            "two. If the temp table exceeds that limit, MySQL converts to "
-            "an on-disk temp table and performance drops sharply."
+            "The subquery result is materialized into an internal temp table, "
+            "and the outer query reads from it. On MySQL the default "
+            "TempTable engine (``internal_tmp_mem_storage_engine``) limits "
+            "each in-memory temp table by ``tmp_table_size``; the MEMORY "
+            "engine, and MariaDB, use the smaller of ``tmp_table_size`` and "
+            "``max_heap_table_size``. Past that limit the table moves to disk "
+            "(InnoDB on MySQL, Aria or MyISAM on MariaDB) and reads get much "
+            "slower."
         ),
         "newcomer": (
             "MySQL ran your subquery or derived table once, stored the "
@@ -350,10 +352,12 @@ GLOSSARY = {
         "short": "MySQL built an internal temporary table.",
         "technical": (
             "Used for materialized subqueries, GROUP BY with no suitable "
-            "index, DISTINCT, and some ORDER BY cases. MEMORY/TempTable "
-            "engine while it fits in ``min(tmp_table_size, max_heap_table_size)``, "
-            "converted to on-disk InnoDB when it doesn't. The on-disk "
-            "version is typically 10–100× slower."
+            "index, DISTINCT, and some ORDER BY cases. It stays in memory "
+            "while it fits: ``tmp_table_size`` per table with MySQL's default "
+            "TempTable engine, or the smaller of ``tmp_table_size`` and "
+            "``max_heap_table_size`` with the MEMORY engine and on MariaDB. "
+            "Otherwise it is converted to an on-disk table (InnoDB on MySQL, "
+            "Aria or MyISAM on MariaDB), which is typically much slower."
         ),
         "newcomer": (
             "MySQL built a scratch table in memory to help process your "
@@ -504,21 +508,23 @@ GLOSSARY = {
         "aliases": ["join_buffer_size", "join buffer"],
     },
     "tmp_table_size": {
-        "short": "Maximum in-memory temp table size (half of the pair with max_heap_table_size).",
+        "short": "Maximum size of one in-memory internal temporary table.",
         "technical": (
-            "The effective limit is ``min(tmp_table_size, max_heap_table_size)``. "
             "Internal temp tables (from materialized subqueries, GROUP BY, "
-            "DISTINCT, etc.) are MEMORY-engine until they exceed this, at "
-            "which point MySQL converts them to on-disk InnoDB temp tables "
-            "(10–100× slower for scans). Both variables must be raised "
-            "together — raising only one has no effect."
+            "DISTINCT, etc.) stay in memory until they exceed their limit, "
+            "then move to disk (InnoDB on MySQL, Aria or MyISAM on MariaDB). "
+            "With MySQL's default TempTable engine "
+            "(``internal_tmp_mem_storage_engine=TempTable``) the per-table "
+            "limit is ``tmp_table_size`` alone; ``max_heap_table_size`` does "
+            "not apply. With the MEMORY engine, and on MariaDB, the limit is "
+            "the smaller of ``tmp_table_size`` and ``max_heap_table_size``, "
+            "so both must be raised together."
         ),
         "newcomer": (
             "How big MySQL's scratch tables can get before they move from "
             "RAM to disk. If your query builds bigger scratch tables than "
-            "this, expect a big slowdown — and you have to raise "
-            "``max_heap_table_size`` at the same time, otherwise it does "
-            "nothing."
+            "this, expect a slowdown. On MariaDB, or with the MEMORY engine, "
+            "``max_heap_table_size`` caps it too, so raise both."
         ),
         "aliases": ["tmp_table_size", "max_heap_table_size", "tmp table size"],
     },
@@ -754,15 +760,34 @@ def _pick_primary_issue(analysis):
             hint.get("table") or "the filter column",
         ))
 
-    # Sort spilling (filesort + small sort_buffer_size env warning)
+    # Sort spilling. A spill is claimed only from measured merge passes
+    # (advisor._sort_merge_passes: every merge pass of a sort that did not
+    # fit in sort_buffer_size increments Sort_merge_passes, filesort.cc).
+    # A small buffer alone does not show one.
+    for w in env_warnings:
+        m = re.match(r"Filesort merged sorted runs from disk: ([\d,]+) sort merge pass", w)
+        if m:
+            return ("sort_spill", "the sort did not fit in the sort buffer and merged sorted "
+                                  "runs from disk ({} merge passes)".format(m.group(1)))
     for w in env_warnings:
         if "sort_buffer_size" in w:
-            return ("sort_spill", "the sort will likely spill to disk because sort_buffer_size is too small")
+            m = re.search(r"sort_buffer_size=(.+?)\. Whether", w)
+            size = "sort_buffer_size is {}".format(m.group(1)) if m else "sort_buffer_size is small"
+            return ("sort_spill", "the plan sorts rows and {}; the plan does not show "
+                                  "whether the sort spilled to disk".format(size))
 
-    # Temp table spilling
+    # Temp table next to a small in-memory limit. Configuration size alone
+    # does not prove a spill, and neither plan format reports one: MariaDB's
+    # "temporary_table" carries no counters (Explain_aggr_tmp_table,
+    # sql/sql_explain.h) and MySQL's MATERIALIZE JSON has no disk field
+    # (sql/join_optimizer/explain_access_path.cc). The on-disk engine also
+    # differs (MariaDB Aria or MyISAM, MySQL InnoDB), so name neither.
     for w in env_warnings:
         if "tmp_table_size" in w:
-            return ("tmp_spill", "the temp table will spill to on-disk InnoDB because tmp_table_size is too small")
+            m = re.search(r"; (.+?) is (\S+ \S+)\. This limit", w)
+            limit = "{} is {}".format(m.group(1), m.group(2)) if m else "the in-memory limit is small"
+            return ("tmp_spill", "a temporary table is materialized and {}; the plan "
+                                 "does not show whether it spilled to disk".format(limit))
 
     # Join-strategy findings come first when present: a Block Nested-Loop
     # (repeated full inner scans, ~O(outer × inner)) and then a hash join are
@@ -782,13 +807,21 @@ def _pick_primary_issue(analysis):
     candidates = []  # (weight, tie_rank, kind, text)
     if full_scans:
         biggest = max(full_scans, key=lambda s: (s.get("rows") or 0) * (s.get("loops") or 1))
-        rows = int(biggest.get("rows") or 0)
-        weight = rows * (biggest.get("loops") or 1)
-        candidates.append((weight, 0, "full_scan", "full scan of {} ({} row{})".format(
-            biggest.get("table") or "a table",
-            "{:,}".format(rows),
-            "" if rows == 1 else "s",
-        )))
+        rows = int(round(biggest.get("rows") or 0))
+        weight = (biggest.get("rows") or 0) * (biggest.get("loops") or 1)
+        table = biggest.get("table") or "a table"
+        if biggest.get("estimated"):
+            # An estimated plan (EXPLAIN without ANALYZE): the optimizer's
+            # estimate, never presented as rows read.
+            if biggest.get("rows") is None:
+                text = "full scan of {} (rows not estimated)".format(table)
+            else:
+                text = "full scan of {} (about {:,} row{}, estimated)".format(
+                    table, rows, "" if rows == 1 else "s")
+        else:
+            text = "full scan of {} ({} row{})".format(
+                table, "{:,}".format(rows), "" if rows == 1 else "s")
+        candidates.append((weight, 0, "full_scan", text))
     if filesorts:
         w = max((f.get("rows") or 0) for f in filesorts)
         candidates.append((w, 1, "filesort", "result is sorted without using an index"))
@@ -844,10 +877,14 @@ def _describe_shape(root, analysis, plan_summary):
 
 
 def _format_size_time(plan_summary):
-    """Format '<examined/sent rows> in <time>' using human-friendly units."""
+    """Format '<examined/sent rows> in <time>' using human-friendly units.
+
+    A measurement the plan does not carry is null in ``plan_summary`` and
+    reads "not measured", never as zero rows or zero time.
+    """
     time_ms = plan_summary.get("total_time_ms") or 0
-    rows_sent = plan_summary.get("rows_sent") or 0
-    rows_examined = plan_summary.get("rows_examined_estimate") or 0
+    rows_sent = plan_summary.get("rows_sent")
+    rows_examined = plan_summary.get("rows_examined_estimate")
 
     if time_ms >= 10:
         time_str = "{:.0f} ms".format(time_ms)
@@ -858,8 +895,15 @@ def _format_size_time(plan_summary):
     else:
         time_str = None
 
-    # Call out the examined:sent ratio when it's wasteful (10×+).
-    if rows_examined > max(rows_sent, 1) * 10 and rows_examined >= 100:
+    suffix = ""
+    if rows_sent is None:
+        if rows_examined is None:
+            size_str = "rows not measured"
+        else:
+            size_str = "examines ~{:,} rows".format(rows_examined)
+            suffix = "; rows returned not measured"
+    elif rows_examined is not None and rows_examined > max(rows_sent, 1) * 10 and rows_examined >= 100:
+        # Call out the examined:sent ratio when it's wasteful (10×+).
         size_str = "examines ~{:,} rows to return {:,}".format(
             rows_examined, rows_sent,
         )
@@ -869,8 +913,8 @@ def _format_size_time(plan_summary):
         )
 
     if time_str:
-        return size_str + " in " + time_str
-    return size_str
+        return size_str + " in " + time_str + suffix
+    return size_str + suffix
 
 
 def generate_executive_summary(root, analysis, plan_summary=None):
@@ -907,34 +951,18 @@ def generate_executive_summary(root, analysis, plan_summary=None):
 
     _, issue_text = _pick_primary_issue(analysis)
     if issue_text:
-        return "Query {}; {}. Main finding: {}.".format(shape, size_time, issue_text)
+        # Some findings are whole sentences already; one period, not two.
+        return "Query {}; {}. Main finding: {}.".format(shape, size_time, issue_text.rstrip(". "))
     return "Query {}; {}. No warnings.".format(shape, size_time)
 
 
 def _compute_plan_summary_local(root):
-    """Local duplicate of output_sidecar._compute_plan_summary.
+    """The sidecar's ``plan_summary`` for *root*
+    (:func:`myflames.output_sidecar._compute_plan_summary`).
 
-    Kept here (rather than importing) so glossary.py has no dependency on
-    output_sidecar.py — avoids a circular import and lets tests import
-    just glossary without pulling in the sidecar surface.
+    Imported when called, not at module load: output_sidecar imports this
+    module lazily too, so neither import is circular and glossary can still
+    be imported on its own.
     """
-    stats = {"op_count": 0, "max_depth": 0, "rows_examined": 0}
-
-    def _walk(node, depth):
-        stats["op_count"] += 1
-        if depth > stats["max_depth"]:
-            stats["max_depth"] = depth
-        children = node.get("children") or []
-        if not children:
-            stats["rows_examined"] += int(node.get("rows") or 0)
-        for c in children:
-            _walk(c, depth + 1)
-
-    _walk(root, 1)
-    return {
-        "total_time_ms": round(float(root.get("total_time") or 0), 3),
-        "rows_sent": int(root.get("rows") or 0),
-        "rows_examined_estimate": stats["rows_examined"],
-        "operator_count": stats["op_count"],
-        "max_depth": stats["max_depth"],
-    }
+    from .output_sidecar import _compute_plan_summary
+    return _compute_plan_summary(root)

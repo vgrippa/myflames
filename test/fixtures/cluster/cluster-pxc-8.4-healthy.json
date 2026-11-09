@@ -1,0 +1,217 @@
+{
+ "server": "pxc-8.4-healthy",
+ "source": "live",
+ "args": [],
+ "calls": [
+  [
+   "/*myflames:cluster*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('group_replication_group_name', 'group_replication_group_seeds', 'group_replication_local_address', 'group_replication_single_primary_mode', 'hostname', 'performance_schema', 'port', 'pxc_maint_mode', 'pxc_strict_mode', 'report_host', 'report_port', 'server_uuid', 'userstat', 'version', 'version_comment', 'wsrep_cluster_address', 'wsrep_cluster_name', 'wsrep_desync', 'wsrep_node_address', 'wsrep_node_incoming_address', 'wsrep_node_name', 'wsrep_on', 'wsrep_provider')",
+   "hostname\tmf-pxc-1\nperformance_schema\tON\nport\t3306\npxc_maint_mode\tDISABLED\npxc_strict_mode\tENFORCING\nreport_host\t\nreport_port\t3306\nserver_uuid\tf225b7a6-cc94-11f1-9570-ba3c05ff270b\nuserstat\tOFF\nversion\t8.4.11-11.1\nversion_comment\tPercona XtraDB Cluster (GPL), Release rel11, Revision 33f7510, WSREP version 26.1.4.3\nwsrep_cluster_address\tgcomm://mf-pxc-1,mf-pxc-2,mf-pxc-3\nwsrep_cluster_name\tmf_pxc\nwsrep_desync\tOFF\nwsrep_node_address\t192.168.96.2\nwsrep_node_incoming_address\tmf-pxc-1:3306\nwsrep_node_name\tpxc-1\nwsrep_provider\t/usr/lib64/galera4/libgalera_smm.so\n"
+  ],
+  [
+   "/*myflames:cluster*/ SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime' OR Variable_name LIKE 'Performance\\_schema\\_%\\_lost'",
+   "Performance_schema_accounts_lost\t0\nPerformance_schema_cond_classes_lost\t0\nPerformance_schema_cond_instances_lost\t0\nPerformance_schema_digest_lost\t0\nPerformance_schema_file_classes_lost\t0\nPerformance_schema_file_handles_lost\t0\nPerformance_schema_file_instances_lost\t0\nPerformance_schema_hosts_lost\t0\nPerformance_schema_index_stat_lost\t0\nPerformance_schema_locker_lost\t0\nPerformance_schema_logger_lost\t0\nPerformance_schema_memory_classes_lost\t0\nPerformance_schema_metadata_lock_lost\t0\nPerformance_schema_meter_lost\t0\nPerformance_schema_metric_lost\t0\nPerformance_schema_mutex_classes_lost\t0\nPerformance_schema_mutex_instances_lost\t0\nPerformance_schema_nested_statement_lost\t0\nPerformance_schema_prepared_statements_lost\t0\nPerformance_schema_program_lost\t0\nPerformance_schema_rwlock_classes_lost\t0\nPerformance_schema_rwlock_instances_lost\t0\nPerformance_schema_session_connect_attrs_lost\t0\nPerformance_schema_socket_classes_lost\t0\nPerformance_schema_socket_instances_lost\t0\nPerformance_schema_stage_classes_lost\t0\nPerformance_schema_statement_classes_lost\t0\nPerformance_schema_table_handles_lost\t0\nPerformance_schema_table_instances_lost\t0\nPerformance_schema_table_lock_stat_lost\t0\nPerformance_schema_thread_classes_lost\t0\nPerformance_schema_thread_instances_lost\t0\nPerformance_schema_users_lost\t0\nUptime\t33\n"
+  ],
+  [
+   "/*myflames:cluster*/ SHOW GLOBAL STATUS WHERE Variable_name LIKE 'wsrep\\_%'",
+   "wsrep_local_state_uuid\tf3a8ecbe-cc94-11f1-8fe5-7724b6726eeb\nwsrep_protocol_version\t11\nwsrep_last_applied\t41\nwsrep_protocol_application\t7\nwsrep_protocol_replicator\t11\nwsrep_protocol_GCS\t6\nwsrep_last_committed\t41\nwsrep_monitor_status (L/A/C)\t[ (11, 11), (41, 41), (41, 41) ]\nwsrep_replicated\t4\nwsrep_replicated_bytes\t1088\nwsrep_repl_keys\t4\nwsrep_repl_keys_bytes\t128\nwsrep_repl_data_bytes\t684\nwsrep_repl_other_bytes\t0\nwsrep_received\t7\nwsrep_received_bytes\t755\nwsrep_local_commits\t0\nwsrep_local_cert_failures\t0\nwsrep_local_replays\t0\nwsrep_local_send_queue\t0\nwsrep_local_send_queue_max\t1\nwsrep_local_send_queue_min\t0\nwsrep_local_send_queue_avg\t0\nwsrep_local_recv_queue\t0\nwsrep_local_recv_queue_max\t2\nwsrep_local_recv_queue_min\t0\nwsrep_local_recv_queue_avg\t0.142857\nwsrep_local_cached_downto\t1\nwsrep_flow_control_paused_ns\t0\nwsrep_flow_control_paused\t0\nwsrep_flow_control_sent\t0\nwsrep_flow_control_recv\t0\nwsrep_flow_control_active\tfalse\nwsrep_flow_control_requested\tfalse\nwsrep_flow_control_interval\t[ 173, 173 ]\nwsrep_flow_control_interval_low\t173\nwsrep_flow_control_interval_high\t173\nwsrep_flow_control_status\tOFF\nwsrep_cert_deps_distance\t1\nwsrep_apply_oooe\t0\nwsrep_apply_oool\t0\nwsrep_apply_window\t1\nwsrep_apply_waits\t0\nwsrep_commit_oooe\t0\nwsrep_commit_oool\t0\nwsrep_commit_window\t1\nwsrep_local_state\t4\nwsrep_local_state_comment\tSynced\nwsrep_cert_index_size\t1\nwsrep_cert_bucket_count\t13\nwsrep_gcache_pool_size\t4050000\nwsrep_causal_reads\t0\nwsrep_cert_interval\t0\nwsrep_open_transactions\t0\nwsrep_open_connections\t0\nwsrep_ist_receive_status\t\nwsrep_ist_receive_seqno_start\t0\nwsrep_ist_receive_seqno_current\t0\nwsrep_ist_receive_seqno_end\t0\nwsrep_incoming_addresses\tmf-pxc-3:3306,mf-pxc-1:3306,mf-pxc-2:3306\nwsrep_cluster_weight\t3\nwsrep_desync_count\t0\nwsrep_evs_delayed\t\nwsrep_evs_evict_list\t\nwsrep_evs_repl_latency\t7.25e-05/0.000204917/0.000337334/0.000132417/2\nwsrep_evs_state\tOPERATIONAL\nwsrep_gcomm_uuid\tfbfa0b80-cc94-11f1-a429-3a43a27786f1\nwsrep_gmcast_segment\t0\nwsrep_cluster_capabilities\t\nwsrep_cluster_conf_id\t3\nwsrep_cluster_size\t3\nwsrep_cluster_state_uuid\tf3a8ecbe-cc94-11f1-8fe5-7724b6726eeb\nwsrep_cluster_status\tPrimary\nwsrep_connected\tON\nwsrep_local_bf_aborts\t0\nwsrep_local_index\t1\nwsrep_provider_capabilities\t:MULTI_MASTER:CERTIFICATION:PARALLEL_APPLYING:TRX_REPLAY:ISOLATION:PAUSE:CAUSAL_READS:INCREMENTAL_WRITESET:UNORDERED:PREORDERED:STREAMING:NBO:\nwsrep_provider_name\tGalera\nwsrep_provider_vendor\tCodership Oy <info@codership.com> (modified by Percona <https://percona.com/>)\nwsrep_provider_version\t4.27(13ff9ed)\nwsrep_ready\tON\nwsrep_thread_count\t3\n"
+  ],
+  [
+   "/*myflames:cluster*/ SELECT node_uuid, node_name, node_incoming_address FROM mysql.wsrep_cluster_members",
+   "09cb6d51-cc95-11f1-80bc-a34fe0b347dd\tpxc-3\tmf-pxc-3:3306\nfbfa0b80-cc94-11f1-a429-3a43a27786f1\tpxc-1\tmf-pxc-1:3306\nfd611f54-cc94-11f1-88ba-437fb5ee3fb9\tpxc-2\tmf-pxc-2:3306\n"
+  ],
+  [
+   "/*myflames:cluster*/ SELECT HOST_NAME, UUID, STATUS, LOCAL_INDEX, SEGMENT FROM performance_schema.pxc_cluster_view",
+   "pxc-3\t09cb6d51-cc95-11f1-80bc-a34fe0b347dd\tSYNCED\t0\t0\npxc-1\tfbfa0b80-cc94-11f1-a429-3a43a27786f1\tSYNCED\t1\t0\npxc-2\tfd611f54-cc94-11f1-88ba-437fb5ee3fb9\tSYNCED\t2\t0\n"
+  ]
+ ],
+ "report": {
+  "schema_version": "cluster-1.0",
+  "engine": "mysql",
+  "flavor": "percona",
+  "server_product": "Percona XtraDB Cluster",
+  "server_version": "8.4.11-11.1",
+  "version_comment": "Percona XtraDB Cluster (GPL), Release rel11, Revision 33f7510, WSREP version 26.1.4.3",
+  "captured_at": "2026-10-20T14:48:53.936775+00:00",
+  "uptime_s": 33,
+  "performance_schema": true,
+  "available": true,
+  "message": null,
+  "kind": "pxc",
+  "server": {
+   "hostname": "mf-pxc-1",
+   "port": 3306,
+   "report_host": null,
+   "server_uuid": "f225b7a6-cc94-11f1-9570-ba3c05ff270b"
+  },
+  "cluster": {
+   "name": "mf_pxc",
+   "uuid": "f3a8ecbe-cc94-11f1-8fe5-7724b6726eeb",
+   "size": 3,
+   "expected_size": 3,
+   "expected_source": "wsrep_cluster_address",
+   "component": "Primary",
+   "quorum": true,
+   "failures_tolerated": 1,
+   "topology": null,
+   "provider": {
+    "name": "Galera",
+    "version": "4.27(13ff9ed)",
+    "vendor": "Codership Oy <info@codership.com> (modified by Percona <https://percona.com/>)"
+   }
+  },
+  "status": "ok",
+  "status_why": [
+   "Every judged member is healthy and the cluster has quorum."
+  ],
+  "local": "node:fbfa0b80-cc94-11f1-a429-3a43a27786f1",
+  "members": [
+   {
+    "key": "node:fbfa0b80-cc94-11f1-a429-3a43a27786f1",
+    "name": "pxc-1",
+    "address": "mf-pxc-1:3306",
+    "host": "mf-pxc-1",
+    "port": 3306,
+    "uuid": "fbfa0b80-cc94-11f1-a429-3a43a27786f1",
+    "state": "Synced",
+    "state_source": "wsrep_local_state_comment",
+    "role": null,
+    "version": null,
+    "local": true,
+    "status": "ok",
+    "status_why": [
+     "A full member, applying and accepting writes."
+    ],
+    "metrics": {
+     "local_state": 4,
+     "local_state_comment": "Synced",
+     "ready": true,
+     "connected": true,
+     "evs_state": "OPERATIONAL",
+     "local_recv_queue": 0,
+     "local_recv_queue_avg": 0.142857,
+     "local_send_queue": 0,
+     "local_send_queue_avg": 0,
+     "flow_control_paused": 0,
+     "flow_control_active": false,
+     "flow_control_sent": 0,
+     "flow_control_recv": 0,
+     "cert_deps_distance": 1,
+     "local_cert_failures": 0,
+     "local_bf_aborts": 0,
+     "desync_count": 0,
+     "last_committed": 41,
+     "local_index": 1,
+     "cluster_conf_id": 3,
+     "cluster_weight": 3
+    },
+    "pxc_status": "SYNCED",
+    "segment": 0
+   },
+   {
+    "key": "node:fd611f54-cc94-11f1-88ba-437fb5ee3fb9",
+    "name": "pxc-2",
+    "address": "mf-pxc-2:3306",
+    "host": "mf-pxc-2",
+    "port": 3306,
+    "uuid": "fd611f54-cc94-11f1-88ba-437fb5ee3fb9",
+    "state": "Synced",
+    "state_source": "pxc_cluster_view",
+    "role": null,
+    "version": null,
+    "local": false,
+    "status": "ok",
+    "status_why": [
+     "A full member, applying and accepting writes."
+    ],
+    "metrics": {},
+    "pxc_status": "SYNCED",
+    "segment": 0
+   },
+   {
+    "key": "node:09cb6d51-cc95-11f1-80bc-a34fe0b347dd",
+    "name": "pxc-3",
+    "address": "mf-pxc-3:3306",
+    "host": "mf-pxc-3",
+    "port": 3306,
+    "uuid": "09cb6d51-cc95-11f1-80bc-a34fe0b347dd",
+    "state": "Synced",
+    "state_source": "pxc_cluster_view",
+    "role": null,
+    "version": null,
+    "local": false,
+    "status": "ok",
+    "status_why": [
+     "A full member, applying and accepting writes."
+    ],
+    "metrics": {},
+    "pxc_status": "SYNCED",
+    "segment": 0
+   }
+  ],
+  "galera": {
+   "node_name": "pxc-1",
+   "node_address": "192.168.96.2",
+   "cluster_address": "gcomm://mf-pxc-1,mf-pxc-2,mf-pxc-3",
+   "incoming_addresses": [
+    "mf-pxc-3:3306",
+    "mf-pxc-1:3306",
+    "mf-pxc-2:3306"
+   ],
+   "gcomm_uuid": "fbfa0b80-cc94-11f1-a429-3a43a27786f1",
+   "desync": "OFF",
+   "pxc_strict_mode": "ENFORCING",
+   "pxc_maint_mode": "DISABLED",
+   "wsrep_on": null,
+   "members_source": "wsrep_cluster_members",
+   "address_nodes": 3,
+   "address_names_this_node": true,
+   "missing": [],
+   "metrics": {
+    "local_state": 4,
+    "local_state_comment": "Synced",
+    "ready": true,
+    "connected": true,
+    "evs_state": "OPERATIONAL",
+    "local_recv_queue": 0,
+    "local_recv_queue_avg": 0.142857,
+    "local_send_queue": 0,
+    "local_send_queue_avg": 0,
+    "flow_control_paused": 0,
+    "flow_control_active": false,
+    "flow_control_sent": 0,
+    "flow_control_recv": 0,
+    "cert_deps_distance": 1,
+    "local_cert_failures": 0,
+    "local_bf_aborts": 0,
+    "desync_count": 0,
+    "last_committed": 41,
+    "local_index": 1,
+    "cluster_conf_id": 3,
+    "cluster_weight": 3
+   },
+   "incomplete": []
+  },
+  "group_replication": null,
+  "metadata": null,
+  "routers": [],
+  "findings": [],
+  "summary": {
+   "members": 3,
+   "ok": 3,
+   "watch": 0,
+   "problem": 0,
+   "unknown": 0
+  },
+  "statements": [
+   "SHOW GLOBAL VARIABLES",
+   "SHOW GLOBAL STATUS (wsrep_%)",
+   "SELECT mysql.wsrep_cluster_members",
+   "SELECT performance_schema.pxc_cluster_view"
+  ],
+  "notes": [
+   "Failures tolerated assumes equal pc.weight on every node (the default): a Primary component needs more than half of the total weight.",
+   "wsrep_flow_control_paused and the queue averages cover the time since the provider's statistics were last reset (FLUSH STATUS) or since start.",
+   "The other nodes' states come from performance_schema.pxc_cluster_view on this node; this node's own from wsrep_local_state_comment."
+  ]
+ }
+}

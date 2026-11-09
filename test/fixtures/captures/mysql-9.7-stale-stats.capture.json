@@ -1,0 +1,227 @@
+{
+  "schema_version": "capture-1.0",
+  "raw": "{\n  \"query\": \"/* select#1 */ select `c`.`region` AS `region`,count(0) AS `orders`,sum(`o`.`total`) AS `revenue` from `myflames_w2c_stale`.`customers` `c` join `myflames_w2c_stale`.`orders` `o` where ((`o`.`customer_id` = `c`.`id`) and (`c`.`id` <= 40)) group by `myflames_w2c_stale`.`c`.`region`\",\n  \"query_plan\": {\n    \"inputs\": [\n      {\n        \"inputs\": [\n          {\n            \"inputs\": [\n              {\n                \"inputs\": [\n                  {\n                    \"alias\": \"c\",\n                    \"ranges\": [\n                      \"(id <= 40)\"\n                    ],\n                    \"covering\": false,\n                    \"operation\": \"Index range scan on c using PRIMARY over (id <= 40)\",\n                    \"index_name\": \"PRIMARY\",\n                    \"table_name\": \"customers\",\n                    \"access_type\": \"index\",\n                    \"actual_rows\": 40.0,\n                    \"key_columns\": [\n                      \"id\"\n                    ],\n                    \"schema_name\": \"myflames_w2c_stale\",\n                    \"actual_loops\": 1,\n                    \"used_columns\": [\n                      \"id\",\n                      \"region\"\n                    ],\n                    \"estimated_rows\": 40.0,\n                    \"index_access_type\": \"index_range_scan\",\n                    \"actual_last_row_ms\": 0.020706000000000002,\n                    \"actual_first_row_ms\": 0.015208000000000001,\n                    \"estimated_total_cost\": 8.273617092961226\n                  }\n                ],\n                \"condition\": \"(c.id <= 40)\",\n                \"operation\": \"Filter: (c.id <= 40)\",\n                \"access_type\": \"filter\",\n                \"actual_rows\": 40.0,\n                \"actual_loops\": 1,\n                \"estimated_rows\": 40.0,\n                \"filter_columns\": [\n                  \"c.id\"\n                ],\n                \"actual_last_row_ms\": 0.026208000000000002,\n                \"actual_first_row_ms\": 0.017249999999999998,\n                \"estimated_total_cost\": 8.273617092961226\n              },\n              {\n                \"alias\": \"o\",\n                \"covering\": false,\n                \"operation\": \"Index lookup on o using idx_customer (customer_id = c.id)\",\n                \"index_name\": \"idx_customer\",\n                \"table_name\": \"orders\",\n                \"access_type\": \"index\",\n                \"actual_rows\": 451.0,\n                \"key_columns\": [\n                  \"customer_id\"\n                ],\n                \"schema_name\": \"myflames_w2c_stale\",\n                \"actual_loops\": 40,\n                \"used_columns\": [\n                  \"id\",\n                  \"customer_id\",\n                  \"total\"\n                ],\n                \"estimated_rows\": 1.0,\n                \"lookup_condition\": \"customer_id = c.id\",\n                \"index_access_type\": \"index_lookup\",\n                \"lookup_references\": [\n                  \"myflames_w2c_stale.c.id\"\n                ],\n                \"actual_last_row_ms\": 0.18215062499999998,\n                \"actual_first_row_ms\": 0.0027708,\n                \"estimated_total_cost\": 0.2525\n              }\n            ],\n            \"join_type\": \"inner join\",\n            \"operation\": \"Nested loop inner join\",\n            \"access_type\": \"join\",\n            \"actual_rows\": 18040.0,\n            \"actual_loops\": 1,\n            \"estimated_rows\": 40.0,\n            \"join_algorithm\": \"nested_loop\",\n            \"actual_last_row_ms\": 7.961506,\n            \"actual_first_row_ms\": 0.038917,\n            \"estimated_total_cost\": 22.273617092961224\n          }\n        ],\n        \"operation\": \"Aggregate using temporary table\",\n        \"access_type\": \"temp_table_aggregate\",\n        \"actual_rows\": 4.0,\n        \"actual_loops\": 1,\n        \"actual_last_row_ms\": 17.008375,\n        \"actual_first_row_ms\": 17.008375\n      }\n    ],\n    \"operation\": \"Table scan on <temporary>\",\n    \"table_name\": \"<temporary>\",\n    \"access_type\": \"table\",\n    \"actual_rows\": 4.0,\n    \"actual_loops\": 1,\n    \"actual_last_row_ms\": 17.01421,\n    \"actual_first_row_ms\": 17.013459\n  },\n  \"query_type\": \"select\",\n  \"json_schema_version\": \"2.0\"\n}",
+  "query": "SELECT c.region, COUNT(*) AS orders, SUM(o.total) AS revenue\nFROM myflames_w2c_stale.customers c\nJOIN myflames_w2c_stale.orders o ON o.customer_id = c.id\nWHERE c.id <= 40\nGROUP BY c.region",
+  "mode": "analyze",
+  "engine": "mysql",
+  "server_version": "9.7.2",
+  "captured_at": "2026-11-08T22:11:37.005024+00:00",
+  "runs": [
+    {
+      "total_time_ms": 17.01421,
+      "statistics": {
+        "rows_sent": 1,
+        "sort_rows": 0,
+        "tmp_tables": 1,
+        "no_index_used": 0,
+        "rows_examined": 18080,
+        "timer_wait_ps": 17573875000,
+        "tmp_disk_tables": 0,
+        "sort_merge_passes": 0
+      },
+      "session_status_delta": {
+        "Created_tmp_disk_tables": 0,
+        "Created_tmp_tables": 1,
+        "Handler_commit": 1,
+        "Handler_delete": 0,
+        "Handler_discover": 0,
+        "Handler_external_lock": 4,
+        "Handler_mrr_init": 0,
+        "Handler_prepare": 0,
+        "Handler_read_first": 1,
+        "Handler_read_key": 18081,
+        "Handler_read_last": 0,
+        "Handler_read_next": 18080,
+        "Handler_read_prev": 0,
+        "Handler_read_rnd": 0,
+        "Handler_read_rnd_next": 5,
+        "Handler_rollback": 0,
+        "Handler_savepoint": 0,
+        "Handler_savepoint_rollback": 0,
+        "Handler_update": 18036,
+        "Handler_write": 4,
+        "Innodb_buffer_pool_read_ahead": 0,
+        "Innodb_buffer_pool_read_requests": 54282,
+        "Innodb_buffer_pool_reads": 0,
+        "Select_scan": 0,
+        "Sort_merge_passes": 0,
+        "Sort_rows": 0
+      },
+      "plan": "{\n  \"query\": \"/* select#1 */ select `c`.`region` AS `region`,count(0) AS `orders`,sum(`o`.`total`) AS `revenue` from `myflames_w2c_stale`.`customers` `c` join `myflames_w2c_stale`.`orders` `o` where ((`o`.`customer_id` = `c`.`id`) and (`c`.`id` <= 40)) group by `myflames_w2c_stale`.`c`.`region`\",\n  \"query_plan\": {\n    \"inputs\": [\n      {\n        \"inputs\": [\n          {\n            \"inputs\": [\n              {\n                \"inputs\": [\n                  {\n                    \"alias\": \"c\",\n                    \"ranges\": [\n                      \"(id <= 40)\"\n                    ],\n                    \"covering\": false,\n                    \"operation\": \"Index range scan on c using PRIMARY over (id <= 40)\",\n                    \"index_name\": \"PRIMARY\",\n                    \"table_name\": \"customers\",\n                    \"access_type\": \"index\",\n                    \"actual_rows\": 40.0,\n                    \"key_columns\": [\n                      \"id\"\n                    ],\n                    \"schema_name\": \"myflames_w2c_stale\",\n                    \"actual_loops\": 1,\n                    \"used_columns\": [\n                      \"id\",\n                      \"region\"\n                    ],\n                    \"estimated_rows\": 40.0,\n                    \"index_access_type\": \"index_range_scan\",\n                    \"actual_last_row_ms\": 0.020706000000000002,\n                    \"actual_first_row_ms\": 0.015208000000000001,\n                    \"estimated_total_cost\": 8.273617092961226\n                  }\n                ],\n                \"condition\": \"(c.id <= 40)\",\n                \"operation\": \"Filter: (c.id <= 40)\",\n                \"access_type\": \"filter\",\n                \"actual_rows\": 40.0,\n                \"actual_loops\": 1,\n                \"estimated_rows\": 40.0,\n                \"filter_columns\": [\n                  \"c.id\"\n                ],\n                \"actual_last_row_ms\": 0.026208000000000002,\n                \"actual_first_row_ms\": 0.017249999999999998,\n                \"estimated_total_cost\": 8.273617092961226\n              },\n              {\n                \"alias\": \"o\",\n                \"covering\": false,\n                \"operation\": \"Index lookup on o using idx_customer (customer_id = c.id)\",\n                \"index_name\": \"idx_customer\",\n                \"table_name\": \"orders\",\n                \"access_type\": \"index\",\n                \"actual_rows\": 451.0,\n                \"key_columns\": [\n                  \"customer_id\"\n                ],\n                \"schema_name\": \"myflames_w2c_stale\",\n                \"actual_loops\": 40,\n                \"used_columns\": [\n                  \"id\",\n                  \"customer_id\",\n                  \"total\"\n                ],\n                \"estimated_rows\": 1.0,\n                \"lookup_condition\": \"customer_id = c.id\",\n                \"index_access_type\": \"index_lookup\",\n                \"lookup_references\": [\n                  \"myflames_w2c_stale.c.id\"\n                ],\n                \"actual_last_row_ms\": 0.18215062499999998,\n                \"actual_first_row_ms\": 0.0027708,\n                \"estimated_total_cost\": 0.2525\n              }\n            ],\n            \"join_type\": \"inner join\",\n            \"operation\": \"Nested loop inner join\",\n            \"access_type\": \"join\",\n            \"actual_rows\": 18040.0,\n            \"actual_loops\": 1,\n            \"estimated_rows\": 40.0,\n            \"join_algorithm\": \"nested_loop\",\n            \"actual_last_row_ms\": 7.961506,\n            \"actual_first_row_ms\": 0.038917,\n            \"estimated_total_cost\": 22.273617092961224\n          }\n        ],\n        \"operation\": \"Aggregate using temporary table\",\n        \"access_type\": \"temp_table_aggregate\",\n        \"actual_rows\": 4.0,\n        \"actual_loops\": 1,\n        \"actual_last_row_ms\": 17.008375,\n        \"actual_first_row_ms\": 17.008375\n      }\n    ],\n    \"operation\": \"Table scan on <temporary>\",\n    \"table_name\": \"<temporary>\",\n    \"access_type\": \"table\",\n    \"actual_rows\": 4.0,\n    \"actual_loops\": 1,\n    \"actual_last_row_ms\": 17.01421,\n    \"actual_first_row_ms\": 17.013459\n  },\n  \"query_type\": \"select\",\n  \"json_schema_version\": \"2.0\"\n}"
+    }
+  ],
+  "measurements": {
+    "count": 1,
+    "median_ms": 17.01421,
+    "min_ms": 17.01421,
+    "max_ms": 17.01421,
+    "stdev_ms": 0
+  },
+  "trace": null,
+  "conditions": "Lab fixture: InnoDB statistics deliberately stale (STATS_AUTO_RECALC=0, then 18,000 orders moved onto 20 customers).",
+  "warnings": [],
+  "schema": {
+    "myflames_w2c_stale.customers": {
+      "ddl": "CREATE TABLE `customers` (\n  `id` int NOT NULL,\n  `region` varchar(10) NOT NULL,\n  PRIMARY KEY (`id`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci STATS_PERSISTENT=1 STATS_AUTO_RECALC=0",
+      "table_name": "customers",
+      "columns": [
+        {
+          "name": "id",
+          "type": "int",
+          "rest": "NOT NULL"
+        },
+        {
+          "name": "region",
+          "type": "varchar(10)",
+          "rest": "NOT NULL"
+        }
+      ],
+      "indexes": [
+        {
+          "kind": "PRIMARY KEY",
+          "name": null,
+          "columns": [
+            "id"
+          ],
+          "parts": [
+            {
+              "name": "id",
+              "length": null,
+              "desc": false,
+              "expression": false
+            }
+          ],
+          "using": null
+        }
+      ],
+      "engine": "InnoDB",
+      "charset": "utf8mb4"
+    },
+    "myflames_w2c_stale.orders": {
+      "ddl": "CREATE TABLE `orders` (\n  `id` int NOT NULL,\n  `customer_id` int NOT NULL,\n  `total` decimal(10,2) NOT NULL,\n  PRIMARY KEY (`id`),\n  KEY `idx_customer` (`customer_id`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci STATS_PERSISTENT=1 STATS_AUTO_RECALC=0",
+      "table_name": "orders",
+      "columns": [
+        {
+          "name": "id",
+          "type": "int",
+          "rest": "NOT NULL"
+        },
+        {
+          "name": "customer_id",
+          "type": "int",
+          "rest": "NOT NULL"
+        },
+        {
+          "name": "total",
+          "type": "decimal(10,2)",
+          "rest": "NOT NULL"
+        }
+      ],
+      "indexes": [
+        {
+          "kind": "PRIMARY KEY",
+          "name": null,
+          "columns": [
+            "id"
+          ],
+          "parts": [
+            {
+              "name": "id",
+              "length": null,
+              "desc": false,
+              "expression": false
+            }
+          ],
+          "using": null
+        },
+        {
+          "kind": "KEY",
+          "name": "idx_customer",
+          "columns": [
+            "customer_id"
+          ],
+          "parts": [
+            {
+              "name": "customer_id",
+              "length": null,
+              "desc": false,
+              "expression": false
+            }
+          ],
+          "using": null
+        }
+      ],
+      "engine": "InnoDB",
+      "charset": "utf8mb4"
+    }
+  },
+  "table_stats": {
+    "myflames_w2c_stale.customers": {
+      "table_schema": "myflames_w2c_stale",
+      "table_name": "customers",
+      "table_rows": 9847,
+      "data_length": 1589248,
+      "index_length": 0,
+      "data_free": 4194304,
+      "auto_increment": 0,
+      "engine": "InnoDB",
+      "row_format": "Dynamic"
+    },
+    "myflames_w2c_stale.orders": {
+      "table_schema": "myflames_w2c_stale",
+      "table_name": "orders",
+      "table_rows": 6852,
+      "data_length": 3686400,
+      "index_length": 1589248,
+      "data_free": 4194304,
+      "auto_increment": 0,
+      "engine": "InnoDB",
+      "row_format": "Dynamic"
+    }
+  },
+  "stats_freshness": {
+    "myflames_w2c_stale.customers": {
+      "last_update": "2026-11-08 22:10:20",
+      "n_rows": 9847,
+      "histograms": []
+    },
+    "myflames_w2c_stale.orders": {
+      "last_update": "2026-11-08 22:10:20",
+      "n_rows": 6852,
+      "histograms": []
+    }
+  },
+  "variables": {
+    "bulk_insert_buffer_size": "8388608",
+    "character_set_connection": "utf8mb4",
+    "character_set_server": "utf8mb4",
+    "collation_connection": "utf8mb4_0900_ai_ci",
+    "collation_server": "utf8mb4_0900_ai_ci",
+    "eq_range_index_dive_limit": "200",
+    "innodb_buffer_pool_instances": "1",
+    "innodb_buffer_pool_size": "134217728",
+    "innodb_file_per_table": "ON",
+    "innodb_flush_log_at_trx_commit": "1",
+    "innodb_flush_method": "O_DIRECT",
+    "innodb_io_capacity": "10000",
+    "innodb_log_buffer_size": "67108864",
+    "internal_tmp_mem_storage_engine": "TempTable",
+    "join_buffer_size": "262144",
+    "max_allowed_packet": "67108864",
+    "max_connections": "151",
+    "max_heap_table_size": "16777216",
+    "optimizer_prune_level": "1",
+    "optimizer_search_depth": "62",
+    "optimizer_switch": "index_merge=on,index_merge_union=on,index_merge_sort_union=on,index_merge_intersection=on,engine_condition_pushdown=on,index_condition_pushdown=on,mrr=on,mrr_cost_based=on,block_nested_loop=on,batched_key_access=off,materialization=on,semijoin=on,loosescan=on,firstmatch=on,duplicateweedout=on,subquery_materialization_cost_based=on,use_index_extensions=on,condition_fanout_filter=on,derived_merge=on,use_invisible_indexes=off,skip_scan=on,hash_join=on,subquery_to_derived=off,prefer_ordering_index=on,hypergraph_optimizer=off,derived_condition_pushdown=on,hash_set_operations=on",
+    "range_optimizer_max_mem_size": "8388608",
+    "read_buffer_size": "131072",
+    "read_rnd_buffer_size": "262144",
+    "sort_buffer_size": "262144",
+    "table_open_cache": "4000",
+    "thread_cache_size": "9",
+    "tmp_table_size": "16777216",
+    "version": "9.7.2",
+    "version_comment": "MySQL Community Server - GPL",
+    "version_compile_os": "Linux"
+  }
+}

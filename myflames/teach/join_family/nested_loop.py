@@ -30,6 +30,73 @@ from .. import _html
 
 _LESSON_JS = _html.load_lesson_js(__file__)
 
+# Guided steps (see _html.normalize_guide). nested_loop.js marks reading each
+# outer row, its probe of orders, and the summary with tl.beat(kind). The
+# function name was checked in mysql-server (8.4.9 and 9.7.0).
+GUIDE = {
+    "code": {
+        "title": "Nested loop join",
+        "lines": [
+            ("outer", 0, "for each row c from customers (the outer input):",
+             "NestedLoopIterator::Read"),
+            ("probe", 1, "start a probe of orders where customer_id = c.customer_id"),
+            ("inner", 1, "for each matching row o from orders:"),
+            ("emit", 2, "return the joined row (c.customer_id, o.order_id)"),
+            ("end", 0, "no customers left: the join is done"),
+        ],
+    },
+    "beats": {
+        "outer-row": ["outer"],
+        "probe": ["probe", "inner", "emit"],
+        "done": ["end"],
+    },
+    "quiz": [
+        {
+            "question": ("The outer input returns 5 customers and each has about 2 orders. How "
+                         "many times does the nested loop start a probe of orders?"),
+            "choices": [
+                ("5 times, once per customer", True,
+                 "A nested loop starts a new probe of the inner input for every row the "
+                 "outer input returns."),
+                ("Once, for all customers together", False,
+                 "Reading the inner input once for many outer rows is what a hash join or "
+                 "a block nested loop does; a plain nested loop probes once per outer row."),
+                ("10 times, once per order", False,
+                 "Orders are what each probe returns; the probes are counted per customer."),
+            ],
+        },
+        {
+            "question": "Why does an index on orders(customer_id) matter so much here?",
+            "choices": [
+                ("Each probe becomes a short index lookup instead of a read of all orders", True,
+                 "Without it a plain nested loop would read every order for each customer, "
+                 "which is why MySQL then uses a hash join and MariaDB a block nested loop "
+                 "by default."),
+                ("It sorts customers so the outer loop runs fewer times", False,
+                 "The outer loop still runs once per customer; the index only makes each "
+                 "probe cheaper."),
+                ("It removes the need to read customers", False,
+                 "The customers rows still drive the loop; the index only speeds up "
+                 "finding their orders."),
+            ],
+        },
+        {
+            "question": ("Both tables have the join column indexed. Which table should usually "
+                         "drive the loop?"),
+            "choices": [
+                ("The one with fewer rows left after its WHERE filter", True,
+                 "Every driving row costs one probe, so fewer driving rows means fewer "
+                 "probes, and both optimizers estimate this for you."),
+                ("Always the first table written in FROM", False,
+                 "MySQL and MariaDB reorder inner joins by estimated cost unless you force "
+                 "the order, for example with STRAIGHT_JOIN."),
+                ("The larger table, so each probe finds more rows", False,
+                 "More driving rows means more probes, and the probes are the cost that grows."),
+            ],
+        },
+    ],
+}
+
 
 def render() -> str:
     controls_html = """
@@ -79,6 +146,8 @@ def render() -> str:
             "Cost scales with outer_rows × inner_rows_per_probe. "
             "Indexed inner = tiny per-probe cost; un-indexed inner = "
             "full-scan per driver and cost explodes.",
+            "Next step shows one outer row, then its probe; the simplified "
+            "code beside the drawing highlights the lines each step runs.",
         ],
     )
 
@@ -86,7 +155,7 @@ def render() -> str:
 <section class="stage">
   {query_card_html}
   {explainer_html}
-  {_html.stage_toolbar("Ready — press Play")}
+  {_html.stage_toolbar("Ready: press Next step, or Play to run it all")}
   <div class="stage-with-phases">
     <svg id="nlj-svg" viewBox="0 0 800 380" xmlns="http://www.w3.org/2000/svg"></svg>
     {_html.phase_nav()}
@@ -149,7 +218,7 @@ def render() -> str:
 
     return _html.render_page(
         lesson_id="nested_loop",
-        title="Nested Loop Join — outer row drives inner probe",
+        title="Nested loop join: outer row drives inner probe",
         subtitle=(
             "Dedicated operator view for EXPLAIN's Nested loop nodes. "
             "Watch each driver fire match pills into the probe panel — "
@@ -160,4 +229,5 @@ def render() -> str:
         readout_html=readout_html,
         learn_more_html=learn_more_html,
         lesson_js=_LESSON_JS,
+        guide=GUIDE,
     )

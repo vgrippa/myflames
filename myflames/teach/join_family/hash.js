@@ -47,12 +47,12 @@ function buildStage() {
   // Build input (left) — actual department rows
   var buildRect = anim.svgEl("rect", {
     x: 12, y: 44, width: 140, height: DEPTS.length * 22 + 10, rx: 8, ry: 8,
-    fill: "#fef3c7", stroke: "#d97706", "stroke-width": 1.5
+    fill: "var(--svg-build-soft)", stroke: "var(--svg-build)", "stroke-width": 1.5
   });
   svg.appendChild(buildRect);
   var buildLbl = anim.svgEl("text", {
     x: 82, y: 36, "text-anchor": "middle",
-    "font-size": 12, "font-weight": 700, fill: "#92400e"
+    "font-size": 12, "font-weight": 700, fill: "var(--svg-build-ink)"
   });
   buildLbl.textContent = "departments (build side)";
   svg.appendChild(buildLbl);
@@ -61,7 +61,7 @@ function buildStage() {
     var by = 54 + b * 22;
     var rowLbl = anim.svgEl("text", {
       x: 82, y: by + 14, "text-anchor": "middle",
-      "font-size": 10, "font-weight": 600, fill: "#78350f"
+      "font-size": 10, "font-weight": 600, fill: "var(--svg-build-ink)"
     });
     rowLbl.textContent = "id=" + DEPTS[b].id + " " + DEPTS[b].name;
     svg.appendChild(rowLbl);
@@ -72,12 +72,12 @@ function buildStage() {
   var htX = 280, htY = 24, htW = 210, htH = NUM_BUCKETS * 46 + 20;
   var htRect = anim.svgEl("rect", {
     x: htX, y: htY, width: htW, height: htH, rx: 10, ry: 10,
-    fill: "#f3f4f6", stroke: "#6b7280", "stroke-width": 1.5
+    fill: "var(--svg-node-muted)", stroke: "var(--svg-node-stroke)", "stroke-width": 1.5
   });
   svg.appendChild(htRect);
   var htLbl = anim.svgEl("text", {
     x: htX + htW/2, y: htY - 8, "text-anchor": "middle",
-    "font-size": 12, "font-weight": 700, fill: "#1f2937"
+    "font-size": 12, "font-weight": 700, fill: "var(--svg-ink)"
   });
   htLbl.textContent = "Hash table — hash(dept.id) %% " + NUM_BUCKETS;
   svg.appendChild(htLbl);
@@ -90,23 +90,23 @@ function buildStage() {
     var byB = bucketY0 + i * (bucketH + bucketGap);
     var br = anim.svgEl("rect", {
       x: htX + 10, y: byB, width: htW - 20, height: bucketH, rx: 4, ry: 4,
-      fill: "#ffffff", stroke: "#d1d5db", "stroke-width": 1
+      fill: "var(--svg-node-bg)", stroke: "var(--svg-node-stroke)", "stroke-width": 1
     });
     svg.appendChild(br);
     var bIdx = anim.svgEl("text", {
-      x: htX + 16, y: byB + 14, "font-size": 9, "font-weight": 700, fill: "#9ca3af"
+      x: htX + 16, y: byB + 14, "font-size": 9, "font-weight": 700, fill: "var(--svg-ink-muted)"
     });
     bIdx.textContent = "[" + i + "]";
     svg.appendChild(bIdx);
     var bContent = anim.svgEl("text", {
       x: htX + htW/2, y: byB + 22, "text-anchor": "middle",
-      "font-size": 10, "font-weight": 600, fill: "#6b7280"
+      "font-size": 10, "font-weight": 600, fill: "var(--svg-ink-muted)"
     });
     bContent.textContent = "(empty)";
     svg.appendChild(bContent);
     var matchLbl = anim.svgEl("text", {
       x: htX + htW - 16, y: byB + 14, "text-anchor": "end",
-      "font-size": 10, "font-weight": 700, fill: "#059669", opacity: 0
+      "font-size": 10, "font-weight": 700, fill: "var(--svg-ok)", opacity: 0
     });
     matchLbl.textContent = "MATCH \u2713";
     svg.appendChild(matchLbl);
@@ -120,12 +120,12 @@ function buildStage() {
   // Probe input (right) — named employees
   var probeRect = anim.svgEl("rect", {
     x: W - 170, y: 44, width: 156, height: EMPLOYEES.length * 22 + 10, rx: 8, ry: 8,
-    fill: "#ccfbf1", stroke: "#0d9488", "stroke-width": 1.5
+    fill: "var(--svg-probe-soft)", stroke: "var(--svg-probe)", "stroke-width": 1.5
   });
   svg.appendChild(probeRect);
   var probeLbl = anim.svgEl("text", {
     x: W - 92, y: 36, "text-anchor": "middle",
-    "font-size": 12, "font-weight": 700, fill: "#115e59"
+    "font-size": 12, "font-weight": 700, fill: "var(--svg-probe)"
   });
   probeLbl.textContent = "employees (probe side)";
   svg.appendChild(probeLbl);
@@ -134,7 +134,7 @@ function buildStage() {
     var py = 54 + p * 22;
     var pLbl = anim.svgEl("text", {
       x: W - 92, y: py + 14, "text-anchor": "middle",
-      "font-size": 10, "font-weight": 600, fill: "#134e4a"
+      "font-size": 10, "font-weight": 600, fill: "var(--svg-probe)"
     });
     pLbl.textContent = EMPLOYEES[p].name + " dept=" + EMPLOYEES[p].dept;
     svg.appendChild(pLbl);
@@ -143,14 +143,14 @@ function buildStage() {
 
   var statusLbl = anim.svgEl("text", {
     x: W/2, y: H - 32, "text-anchor": "middle",
-    "font-size": 13, "font-weight": 600, fill: "#1f2937"
+    "font-size": 13, "font-weight": 600, fill: "var(--svg-ink)"
   });
   statusLbl.textContent = "";
   svg.appendChild(statusLbl);
 
   var spillLbl = anim.svgEl("text", {
     x: W/2, y: H - 10, "text-anchor": "middle",
-    "font-size": 12, "font-weight": 600, fill: "#991b1b", opacity: 0
+    "font-size": 12, "font-weight": 600, fill: "var(--svg-danger)", opacity: 0
   });
   svg.appendChild(spillLbl);
 
@@ -164,14 +164,16 @@ function buildStage() {
 function resetStage() {
   if (!stage) return;
   stage.buckets.forEach(function(b) {
-    b.rect.setAttribute("fill", "#ffffff");
-    b.rect.setAttribute("stroke", "#d1d5db");
+    b.rect.setAttribute("fill", "var(--svg-node-bg)");
+    b.rect.setAttribute("stroke", "var(--svg-node-stroke)");
     b.rect.setAttribute("stroke-width", 1);
     b.contentLbl.textContent = "(empty)";
-    b.contentLbl.setAttribute("fill", "#6b7280");
+    b.contentLbl.setAttribute("fill", "var(--svg-ink-muted)");
     b.matchLbl.setAttribute("opacity", 0);
     b.contents = [];
   });
+  stage.buildRows.forEach(function(r) { r.lbl.setAttribute("opacity", 1); });
+  stage.probeRows.forEach(function(r) { r.lbl.setAttribute("opacity", 1); });
   stage.statusLbl.textContent = "";
   stage.spillLbl.setAttribute("opacity", 0);
   stage.tuples.forEach(function(t) { if (t.parentNode) t.parentNode.removeChild(t); });
@@ -182,12 +184,12 @@ function spawnLabeledTuple(text, color, cx, cy) {
   var g = anim.svgEl("g", { opacity: 0, transform: "translate(" + cx + "," + cy + ")" });
   var bg = anim.svgEl("rect", {
     x: -42, y: -9, width: 84, height: 18, rx: 9, ry: 9,
-    fill: color, stroke: "#1f2937", "stroke-width": 1
+    fill: color, stroke: "var(--svg-ink)", "stroke-width": 1
   });
   g.appendChild(bg);
   var lbl = anim.svgEl("text", {
     x: 0, y: 4, "text-anchor": "middle",
-    "font-size": 9, "font-weight": 700, fill: "#ffffff"
+    "font-size": 9, "font-weight": 700, fill: "var(--svg-on-solid)"
   });
   lbl.textContent = text;
   g.appendChild(lbl);
@@ -196,138 +198,184 @@ function spawnLabeledTuple(text, color, cx, cy) {
   return g;
 }
 
-function flyGroupToBucket(group, fromCx, fromCy, targetBucket, onArrive) {
-  var toX = targetBucket.cx;
-  var toY = targetBucket.cy;
-  var midX = (fromCx + toX) / 2;
-  var midY = Math.min(fromCy, toY) - 30;
-  var pathFn = anim.path(fromCx, fromCy, midX, midY, toX, toY);
-
-  anim.tween({
-    from: 0, to: 1, duration: 200, ease: anim.easeOutCubic,
-    onUpdate: function(v) { group.setAttribute("opacity", v); }
-  });
-  anim.tween({
-    from: 0, to: 1, duration: 720, ease: anim.easeInOutQuad,
+// One labelled pill arcs from its input row into a bucket, then fades into
+// it. Built from timeline steps (not free-running tweens) so Next step, Back,
+// Explore and the scrubber all show the same picture at every step.
+function flyPill(tl, text, color, from, bucket, onLand) {
+  var g = null;
+  var x0 = from.cx, y0 = from.cy, x1 = bucket.cx, y1 = bucket.cy;
+  var pathFn = anim.path(x0, y0, (x0 + x1) / 2, Math.min(y0, y1) - 30, x1, y1);
+  tl.add({
+    from: 0, to: 1, duration: 460, ease: anim.easeInOutQuad,
     onUpdate: function(t) {
+      if (!g) g = spawnLabeledTuple(text, color, x0, y0);
       var p = pathFn(t);
-      group.setAttribute("transform", "translate(" + p.x + "," + p.y + ")");
+      g.setAttribute("transform", "translate(" + p.x.toFixed(1) + "," + p.y.toFixed(1) + ")");
+      g.setAttribute("opacity", Math.min(1, t * 5).toFixed(2));
     },
+    onComplete: function() { if (onLand) onLand(); }
+  });
+  tl.add({
+    from: 1, to: 0, duration: 120, ease: anim.easeInCubic,
+    onUpdate: function(v) { if (g) g.setAttribute("opacity", v.toFixed(2)); },
     onComplete: function() {
-      anim.tween({
-        from: 1, to: 0, duration: 260, ease: anim.easeInCubic,
-        onUpdate: function(v) { group.setAttribute("opacity", v); }
-      });
-      if (onArrive) onArrive();
+      if (g && g.parentNode) g.parentNode.removeChild(g);
+      g = null;
     }
   });
+}
+
+// The green MATCH flash of a probe stays up while the step is held, and
+// fades back at the start of the next step.
+function clearMatch(tl, bucket) {
+  tl.add({
+    from: 0, to: 1, duration: 140, ease: anim.easeInCubic,
+    onUpdate: function(t) {
+      bucket.rect.setAttribute("fill", anim.lerpColor("var(--svg-ok-soft)", "var(--svg-build-soft)", t));
+      bucket.rect.setAttribute("stroke", anim.lerpColor("var(--svg-ok)", "var(--svg-build)", t));
+      bucket.rect.setAttribute("stroke-width", (2.5 - 1.5 * t).toFixed(2));
+      bucket.matchLbl.setAttribute("opacity", (1 - t).toFixed(2));
+    },
+    onComplete: function() {
+      bucket.rect.setAttribute("fill", "var(--svg-build-soft)");
+      bucket.rect.setAttribute("stroke", "var(--svg-build)");
+      bucket.rect.setAttribute("stroke-width", 1);
+      bucket.matchLbl.setAttribute("opacity", 0);
+    }
+  });
+}
+
+// Departments in each bucket, in build order (the bucket labels after the
+// build). Computed from the data so captions never depend on timing.
+function bucketNames() {
+  var names = [];
+  for (var i = 0; i < NUM_BUCKETS; i++) names.push([]);
+  for (var d = 0; d < DEPTS.length; d++) names[deptBucket(DEPTS[d].id)].push(DEPTS[d].name);
+  return names;
 }
 
 function buildTimeline(spilled, partitions) {
   resetStage();
   var tl = anim.timeline();
   var phase = document.getElementById("phase-label");
+  var names = bucketNames();
+  var used = [];
+  for (var u = 0; u < NUM_BUCKETS; u++) if (names[u].length) used.push("[" + u + "]");
 
-  // ---- Phase 1: Build — hash each dept row into a bucket ----
+  // ---- Phase 1: Build: one step per departments row ----
   tl.mark("Build: hash departments");
-  tl.call(function() {
-    phase.textContent = "Phase 1/2 — hashing each department row into a bucket";
-    stage.statusLbl.textContent = "hash(dept.id) %% " + NUM_BUCKETS + " decides which bucket";
-  });
   for (var i = 0; i < DEPTS.length; i++) {
     (function(idx) {
       var dept = DEPTS[idx];
       var bucketIdx = deptBucket(dept.id);
       var bucket = stage.buckets[bucketIdx];
+      // Guided steps: kinds map to the simplified code (GUIDE in hash.py).
+      tl.beat("build-row");
       tl.call(function() {
-        phase.textContent = "Build: dept id=" + dept.id + " \u201c" + dept.name +
-          "\u201d \u2192 hash(" + dept.id + ") %% " + NUM_BUCKETS + " = bucket [" + bucketIdx + "]";
-        var label = "id=" + dept.id + " " + dept.name;
-        var tuple = spawnLabeledTuple(label, "#d97706",
-          stage.buildRows[idx].cx, stage.buildRows[idx].cy);
-        flyGroupToBucket(tuple,
-          stage.buildRows[idx].cx, stage.buildRows[idx].cy, bucket,
-          function() {
-            bucket.contents.push(dept.name);
-            bucket.contentLbl.textContent = bucket.contents.join(", ");
-            bucket.contentLbl.setAttribute("fill", "#1f2937");
-            bucket.rect.setAttribute("fill", "#fef3c7");
-            bucket.rect.setAttribute("stroke", "#d97706");
-            anim.pulse(bucket.rect, 2.5, 1, 280);
-          });
+        phase.textContent = "Build row " + (idx + 1) + " of " + DEPTS.length + ": departments id=" +
+          dept.id + " “" + dept.name + "” → hash(" + dept.id + ") %% " + NUM_BUCKETS +
+          " = bucket [" + bucketIdx + "]";
+        stage.statusLbl.textContent = "Reading departments: id=" + dept.id + " " + dept.name +
+          " goes into bucket [" + bucketIdx + "]";
+        stage.buildRows[idx].lbl.setAttribute("opacity", 0.45);
       });
-      tl.delay(320);
+      flyPill(tl, "id=" + dept.id + " " + dept.name, "var(--svg-build)",
+        stage.buildRows[idx], bucket,
+        function() {
+          bucket.contents.push(dept.name);
+          bucket.contentLbl.textContent = bucket.contents.join(", ");
+          bucket.contentLbl.setAttribute("fill", "var(--svg-ink)");
+          bucket.rect.setAttribute("fill", "var(--svg-build-soft)");
+          bucket.rect.setAttribute("stroke", "var(--svg-build)");
+          anim.pulse(bucket.rect, 2.5, 1, 280);
+        });
+      tl.delay(60);
     })(i);
   }
-  tl.delay(800);
+  // Act boundary: what just happened and what comes next.
   tl.call(function() {
-    phase.textContent = "Build complete \u2014 each bucket shows the dept rows it holds. Now probing employees\u2026";
-    stage.statusLbl.textContent = "For each employee: hash(dept_id) \u2192 bucket \u2192 check if dept.id matches";
+    phase.textContent = "Build done: all " + DEPTS.length + " departments rows are in memory, in buckets " +
+      used.join(", ") + ". Next, each employee probes one bucket";
+    stage.statusLbl.textContent = "For each employee: hash(dept_id) → one bucket → check the ids in it";
   });
-  tl.delay(1000);
+  tl.delay(700);
 
-  // ---- Phase 2: Probe — each employee finds its dept in one bucket ----
+  // ---- Phase 2: Probe: one step per employees row ----
   tl.mark("Probe: match employees");
+  var lastBucket = null;
   for (var j = 0; j < EMPLOYEES.length; j++) {
-    (function(jdx) {
+    (function(jdx, prevBucket) {
       var emp = EMPLOYEES[jdx];
       var bucketIdx = deptBucket(emp.dept);
       var bucket = stage.buckets[bucketIdx];
       var matchDept = null;
       for (var d = 0; d < DEPTS.length; d++) {
-        if (DEPTS[d].id === emp.dept) { matchDept = DEPTS[d].name; break; }
+        if (DEPTS[d].id === emp.dept) { matchDept = DEPTS[d]; break; }
       }
+      var others = [];
+      for (var o = 0; o < DEPTS.length; o++) {
+        if (deptBucket(DEPTS[o].id) === bucketIdx && DEPTS[o].id !== emp.dept) {
+          others.push(DEPTS[o].name + " (id=" + DEPTS[o].id + ")");
+        }
+      }
+      tl.beat("probe-row");
+      if (prevBucket) clearMatch(tl, prevBucket);
       tl.call(function() {
-        phase.textContent = "Probe: " + emp.name + " (dept_id=" + emp.dept +
-          ") \u2192 hash(" + emp.dept + ") %% " + NUM_BUCKETS + " = bucket [" + bucketIdx +
-          "] \u2014 bucket holds: " + (bucket.contents.length ? bucket.contents.join(", ") : "empty");
-        var label = emp.name + " dept=" + emp.dept;
-        var tuple = spawnLabeledTuple(label, "#0d9488",
-          stage.probeRows[jdx].cx, stage.probeRows[jdx].cy);
-        flyGroupToBucket(tuple,
-          stage.probeRows[jdx].cx, stage.probeRows[jdx].cy, bucket,
-          function() {
-            if (matchDept && bucket.contents.indexOf(matchDept) >= 0) {
-              bucket.rect.setAttribute("fill", "#d1fae5");
-              bucket.rect.setAttribute("stroke", "#059669");
-              bucket.rect.setAttribute("stroke-width", 2.5);
-              bucket.matchLbl.setAttribute("opacity", 1);
-              stage.statusLbl.textContent = "\u2713 " + emp.name + " matched \u201c" +
-                matchDept + "\u201d (both have dept_id=" + emp.dept +
-                " \u2192 same bucket [" + bucketIdx + "])";
-              setTimeout(function() {
-                bucket.rect.setAttribute("fill", "#fef3c7");
-                bucket.rect.setAttribute("stroke", "#d97706");
-                bucket.rect.setAttribute("stroke-width", 1);
-                bucket.matchLbl.setAttribute("opacity", 0);
-              }, 700);
-            }
-          });
+        phase.textContent = "Probe row " + (jdx + 1) + " of " + EMPLOYEES.length + ": " + emp.name +
+          " (dept_id=" + emp.dept + ") → hash(" + emp.dept + ") %% " + NUM_BUCKETS +
+          " = bucket [" + bucketIdx + "], which holds " +
+          (names[bucketIdx].length ? names[bucketIdx].join(", ") : "nothing");
+        stage.statusLbl.textContent = emp.name + " looks only in bucket [" + bucketIdx + "]";
+        stage.probeRows[jdx].lbl.setAttribute("opacity", 0.45);
       });
-      tl.delay(400);
-    })(j);
+      flyPill(tl, emp.name + " dept=" + emp.dept, "var(--svg-probe)",
+        stage.probeRows[jdx], bucket,
+        function() {
+          if (!matchDept) {
+            stage.statusLbl.textContent = "✗ " + emp.name + ": no department has id=" + emp.dept;
+            return;
+          }
+          bucket.rect.setAttribute("fill", "var(--svg-ok-soft)");
+          bucket.rect.setAttribute("stroke", "var(--svg-ok)");
+          bucket.rect.setAttribute("stroke-width", 2.5);
+          bucket.matchLbl.setAttribute("opacity", 1);
+          stage.statusLbl.textContent = "✓ " + emp.name + " matches " + matchDept.name +
+            " (id=" + emp.dept + ")" +
+            (others.length ? "; " + others.join(", ") + " shares the bucket but not the id" : "");
+        });
+      tl.delay(280);
+    })(j, lastBucket);
+    lastBucket = stage.buckets[deptBucket(EMPLOYEES[j].dept)];
   }
-  tl.delay(600);
 
   if (spilled) {
     tl.mark("Grace-hash spill");
+    tl.beat("spill");
+    clearMatch(tl, lastBucket);
     tl.call(function() {
-      phase.textContent = "\u26a0 Spill! departments was too big for join_buffer_size";
-      stage.spillLbl.textContent = "Partitioned into " + partitions +
-        " chunks on disk \u2014 each re-built and re-probed (I/O \u2248 2\u00d7)";
+      phase.textContent = "At your settings departments does not fit in join_buffer_size: MySQL joins what fits in " +
+        "memory and writes the rest of both inputs to " + partitions + " pairs of chunk files on disk";
+      stage.statusLbl.textContent = "Every employee was still probed once; the rows on disk are joined chunk by chunk";
+      stage.spillLbl.textContent = "Spilled to " + partitions +
+        " chunk files on disk, each pair built and probed again (I/O ≈ 2×)";
     });
     tl.add({
       from: 0, to: 1, duration: 400, ease: anim.easeOutCubic,
       onUpdate: function(v) { stage.spillLbl.setAttribute("opacity", v); }
     });
+    tl.delay(600);
   } else {
     tl.mark("Done");
+    tl.beat("done");
+    clearMatch(tl, lastBucket);
     tl.call(function() {
-      phase.textContent = "\u2713 Complete \u2014 every employee found its department in one bucket lookup";
+      phase.textContent = "✓ Done: every employee found its department with one bucket lookup. " +
+        "departments was read once and employees once";
       stage.statusLbl.textContent = "Total: " + DEPTS.length + " build + " +
         EMPLOYEES.length + " probe = " + (DEPTS.length + EMPLOYEES.length) +
         " row reads. That is O(n + m).";
     });
+    tl.delay(600);
   }
 
   return tl;
@@ -340,7 +388,7 @@ function buildCurrentTimeline() {
 }
 function resetAnim() {
   resetStage();
-  document.getElementById("phase-label").textContent = "Ready \u2014 press Play";
+  document.getElementById("phase-label").textContent = "Ready: press Next step, or Play to run it all";
 }
 
 function renderChart(buildRows, rowSize, jbs, currentProbe) {
@@ -356,9 +404,9 @@ function renderChart(buildRows, rowSize, jbs, currentProbe) {
     // default "higher = better" eye bias).
     lowerIsBetter: true,
     curves: [
-      { label: "Hash: O(depts+emps) = O(n+m)", color: "#0d9488",
+      { label: "Hash: O(depts+emps) = O(n+m)", color: "var(--svg-probe)",
         fn: function(n) { return hashJoinCost(buildRows, n, rowSize, jbs).cmp; } },
-      { label: "BNL: O(depts\u00b7emps/buf) = O(n\u00b7m/b)", color: "#ca8a04",
+      { label: "BNL: O(depts\u00b7emps/buf) = O(n\u00b7m/b)", color: "var(--svg-build)",
         fn: function(n) {
           var rpb = Math.max(1, Math.floor(jbs / rowSize));
           var blocks = Math.max(1, Math.ceil(buildRows / rpb));

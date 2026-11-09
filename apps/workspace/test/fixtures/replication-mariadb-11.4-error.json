@@ -1,0 +1,198 @@
+{
+ "schema_version": "replication-1.0",
+ "engine": "mariadb",
+ "server_version": "11.4.13-MariaDB-ubu2404-log",
+ "captured_at": "2026-10-15T18:16:14.818370+00:00",
+ "uptime_s": 682,
+ "available": true,
+ "message": null,
+ "replica": true,
+ "statement": "SHOW ALL SLAVES STATUS",
+ "gtid": {
+  "slave_pos": "0-11-6",
+  "current_pos": "0-12-7",
+  "slave_pos_domains": [
+   {
+    "domain": 0,
+    "server": 11,
+    "seq": 6
+   }
+  ],
+  "current_pos_domains": [
+   {
+    "domain": 0,
+    "server": 12,
+    "seq": 7
+   }
+  ],
+  "domain_id": 0,
+  "strict_mode": "OFF"
+ },
+ "settings": {
+  "read_only": "OFF",
+  "parallel_threads": 0
+ },
+ "channels": [
+  {
+   "name": "src1",
+   "kind": "replication",
+   "judged": true,
+   "source": {
+    "host": "mf-repl-m-src",
+    "port": 3306,
+    "uuid": null,
+    "server_id": 11
+   },
+   "io": {
+    "running": "Yes",
+    "state": "Waiting for master to send event",
+    "error": {
+     "errno": 0,
+     "message": null,
+     "timestamp": null
+    }
+   },
+   "sql": {
+    "running": "No",
+    "state": null,
+    "error": {
+     "errno": 1062,
+     "message": "Could not execute Write_rows_v1 event on table shop.t; Duplicate entry '20' for key 'PRIMARY', Error_code: 1062; handler error HA_ERR_FOUND_DUPP_KEY; the event's master log mariadb-bin.000002, end_log_pos 0",
+     "timestamp": null,
+     "table": "shop.t",
+     "end_log_pos": null
+    },
+    "delay_s": 0,
+    "remaining_delay_s": null
+   },
+   "lag_s": null,
+   "lag_notes": [
+    "Seconds_Behind_Master is NULL unless the IO thread is connected and reading and the SQL thread runs.",
+    "Slave_received_heartbeats grows between two reads on a healthy, idle link; read the view again after the heartbeat period to tell an idle source from a broken link."
+   ],
+   "lag_signals": {
+    "heartbeat_period_s": 30.0,
+    "heartbeats_received": 10
+   },
+   "position": {
+    "using_gtid": "Slave_Pos",
+    "gtid_io_pos": "0-11-7",
+    "gtid_io_domains": [
+     {
+      "domain": 0,
+      "server": 11,
+      "seq": 7
+     }
+    ],
+    "gtid_current_pos": "0-12-7",
+    "source_log_file": "mariadb-bin.000002",
+    "read_source_log_pos": 1656,
+    "exec_file": "mariadb-bin.000002",
+    "exec_pos": 1419,
+    "relay_log_file": "mysqld-relay-bin-src1.000002",
+    "relay_log_pos": 1590,
+    "skip_counter": 0,
+    "parallel_mode": "optimistic"
+   },
+   "worker": {},
+   "agat": null,
+   "failing_gtid": "0-11-7",
+   "relay": {
+    "gtid": "0-11-7",
+    "anonymous": false,
+    "events": 4,
+    "end_log_pos": 1656,
+    "complete": true,
+    "event_end_positions": [
+     1461,
+     1656
+    ],
+    "tables": [
+     "shop.t"
+    ]
+   },
+   "status": "problem",
+   "status_why": [
+    "The applier (SQL thread) stopped with error 1062: Could not execute Write_rows_v1 event on table shop.t; Duplicate entry '20' for key 'PRIMARY', Error_code: 1062; handler error HA_ERR_FOUND_DUPP_KEY; the event's master log mariadb-bin.000002, end_log_pos 0"
+   ],
+   "skip_plan": {
+    "channel": "src1",
+    "engine": "mariadb",
+    "server_version": "11.4.13-MariaDB-ubu2404-log",
+    "available": true,
+    "message": null,
+    "method": "skip_counter",
+    "statements": [
+     "SET default_master_connection = 'src1'",
+     "SET GLOBAL sql_slave_skip_counter = 1",
+     "START SLAVE 'src1' SQL_THREAD"
+    ],
+    "identity": {
+     "channel": "src1",
+     "method": "skip_counter",
+     "last_sql_errno": 1062,
+     "last_sql_error": "Could not execute Write_rows_v1 event on table shop.t; Duplicate entry '20' for key 'PRIMARY', Error_code: 1062; handler error HA_ERR_FOUND_DUPP_KEY; the event's master log mariadb-bin.000002, end_log_pos 0",
+     "last_sql_error_timestamp": null,
+     "gtid": "0-11-7",
+     "position": {
+      "relay_log_file": "mysqld-relay-bin-src1.000002",
+      "relay_log_pos": 1590,
+      "exec_file": "mariadb-bin.000002",
+      "exec_pos": 1419
+     },
+     "source": {
+      "host": "mf-repl-m-src",
+      "port": 3306,
+      "uuid": null
+     }
+    },
+    "skip": {
+     "gtid": "0-11-7",
+     "exec_file": "mariadb-bin.000002",
+     "exec_pos": 1419,
+     "end_log_pos": 1656,
+     "error_end_log_pos": null,
+     "table": "shop.t",
+     "tables": [
+      "shop.t"
+     ],
+     "relay_checked": true
+    },
+    "error": {
+     "errno": 1062,
+     "message": "Could not execute Write_rows_v1 event on table shop.t; Duplicate entry '20' for key 'PRIMARY', Error_code: 1062; handler error HA_ERR_FOUND_DUPP_KEY; the event's master log mariadb-bin.000002, end_log_pos 0",
+     "timestamp": null
+    },
+    "drift_warning": "A skipped transaction is missing on the replica. Rows it touched now differ from the source, and later transactions on those rows may fail or change different data silently.",
+    "after": [
+     "Find the cause: writes run directly on the replica (check read_only and super_read_only), non-deterministic statements, or a replica restored from an inconsistent backup.",
+     "Verify the affected tables with checksums computed on both sides over the same data (CHECKSUM TABLE on a quiet table, or a chunked checksum tool in the style of pt-table-checksum). myflames recommends this and never runs it for you.",
+     "Resync those tables or rebuild the replica (clone or backup restore)."
+    ],
+    "privileges": "SET GLOBAL sql_slave_skip_counter needs SUPER; START SLAVE needs REPLICATION SLAVE ADMIN.",
+    "notes": [
+     "The counter counts events and finishes the current group; a GTID event opens a group, so 1 skips one transaction. It applies to the connection named by default_master_connection, and the SQL thread must be stopped when it is set (error 1198 otherwise)."
+    ]
+   }
+  }
+ ],
+ "capabilities": {
+  "status": true,
+  "performance_schema": false,
+  "worker_timestamps": false,
+  "agat": false
+ },
+ "notes": [
+  "Seconds_Behind_Master compares the original timestamp of the event being applied with the replica's clock, adjusted by the clock difference measured when the receiver connected. A clock change on either server after that skews it, and one long transaction shows as a jump, so it is never the only lag signal."
+ ],
+ "summary": {
+  "channels": 1,
+  "judged": 1,
+  "ok": 0,
+  "watch": 0,
+  "problem": 1,
+  "unknown": 0,
+  "failed": 1,
+  "lag_max_s": null
+ }
+}

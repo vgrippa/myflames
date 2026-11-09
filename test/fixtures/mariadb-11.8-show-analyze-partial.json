@@ -1,0 +1,58 @@
+{
+  "r_query_time_in_progress_ms": 2253,
+  "query_optimization": {
+    "r_total_time_ms": 0.136118136
+  },
+  "query_block": {
+    "select_id": 1,
+    "cost": 0.78322572,
+    "r_loops": 1,
+    "nested_loop": [
+      {
+        "table": {
+          "table_name": "f",
+          "access_type": "index",
+          "possible_keys": ["idx_fk_language_id"],
+          "key": "idx_fk_language_id",
+          "key_length": "1",
+          "used_key_parts": ["language_id"],
+          "loops": 1,
+          "r_loops": 1,
+          "rows": 1000,
+          "r_rows": 1000,
+          "cost": 0.15333092,
+          "filtered": 100,
+          "r_total_filtered": 100,
+          "r_filtered": 100,
+          "using_index": true
+        }
+      },
+      {
+        "block-nl-join": {
+          "table": {
+            "table_name": "l",
+            "access_type": "ALL",
+            "possible_keys": ["PRIMARY"],
+            "loops": 1000,
+            "r_loops": 1,
+            "rows": 6,
+            "r_rows": 1,
+            "cost": 0.6298948,
+            "filtered": 16.66666603,
+            "r_total_filtered": 100,
+            "r_filtered": 100
+          },
+          "buffer_type": "flat",
+          "buffer_size": "4KiB",
+          "join_type": "BNL",
+          "attached_condition": "l.language_id = f.language_id",
+          "r_loops": 1000,
+          "r_filtered": 100,
+          "r_unpack_time_ms": 0,
+          "r_other_time_ms": 0,
+          "r_effective_rows": 0.102
+        }
+      }
+    ]
+  }
+}

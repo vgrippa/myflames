@@ -1,0 +1,53 @@
+{
+ "schema_version": "readyset-action-1.0",
+ "action": "flush_cache",
+ "status": "done",
+ "message": "Applied on Readyset.",
+ "statements": [
+  "FLUSH CACHE `c_recent_shallow`;"
+ ],
+ "sent": [
+  "FLUSH CACHE `c_recent_shallow`;"
+ ],
+ "not_sent": [],
+ "error": null,
+ "after": {
+  "status": "Online",
+  "replication_status": "Running",
+  "max_offset": "aaaa:1-100",
+  "cache_count": 2,
+  "caches": {
+   "c_orders_deep": "q_1111aaaa",
+   "c_recent_shallow": "q_2222bbbb"
+  },
+  "shallow_entries_hits": 540,
+  "proxied_count": 2,
+  "tables": {
+   "`shop`.`orders`": "Snapshotted",
+   "`shop`.`audit_blob`": "Ignored"
+  },
+  "allowlists": {
+   "functions": [
+    "NOW",
+    "UNIX_TIMESTAMP"
+   ],
+   "variables": [
+    "time_zone"
+   ],
+   "schemas": [
+    "shop"
+   ]
+  }
+ },
+ "undo": "Entries repopulate automatically on the next matching read.",
+ "next": null,
+ "audit_id": null,
+ "states": [
+  "done"
+ ],
+ "effect": [],
+ "checks": [
+  "Refresh the Readyset place to inspect the current caches, tables and status.",
+  "The Audit log keeps this attempt as Outcome unknown; nothing is sent again."
+ ]
+}

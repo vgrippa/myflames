@@ -3,7 +3,6 @@
 /query.sql
 /query.svg
 /query-bar.svg
-/query-treemap.svg
 /query-diagram.svg
 /test.svg
 /before.svg
@@ -19,6 +18,8 @@ build/
 # OS and editors
 .DS_Store
 *.log
+# Recorded slow query logs the slow log tests read.
+!test/fixtures/slowlog/*.log
 *.swp
 *~
 
@@ -27,10 +28,17 @@ build/
 
 # Agent skills — kept local only, not part of the distributed package
 .claude/skills/
-.agents/skills/
+# .agents/skills is a symlink to .claude/skills (Codex and Antigravity read it)
+.agents/skills
 
 # Claude Code agent memory — private, machine-local, never committed
 .claude/projects/
 
 # Local database labs and credentials (never distribute)
 /local/
+# Signing and notarization secrets: App Store Connect API keys, certificates
+*.p8
+*.p12
+
+# Screenshots written by the Files browser suites (files-browser.mjs, files-connections.mjs).
+apps/workspace/test/shots-*/

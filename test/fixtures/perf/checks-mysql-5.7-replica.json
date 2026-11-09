@@ -1,0 +1,469 @@
+{
+ "server": "mysql-5.7-replica",
+ "source": "live",
+ "args": {},
+ "calls": [
+  [
+   "/*myflames:checks*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('aria_block_size', 'aria_pagecache_buffer_size', 'binlog_cache_size', 'binlog_expire_logs_auto_purge', 'binlog_expire_logs_seconds', 'binlog_space_limit', 'binlog_stmt_cache_size', 'expire_logs_days', 'have_query_cache', 'innodb_buffer_pool_size', 'innodb_log_buffer_size', 'internal_tmp_mem_storage_engine', 'join_buffer_size', 'key_buffer_size', 'key_cache_block_size', 'log_bin', 'max_binlog_total_size', 'max_connections', 'max_heap_table_size', 'net_buffer_length', 'performance_schema', 'query_cache_size', 'query_cache_type', 'read_buffer_size', 'read_only', 'read_rnd_buffer_size', 'sort_buffer_size', 'super_read_only', 'temptable_max_mmap', 'temptable_max_ram', 'thread_stack', 'tmp_table_size', 'userstat', 'version', 'version_comment', 'wsrep_on', 'wsrep_provider')",
+   "binlog_cache_size\t32768\nbinlog_stmt_cache_size\t32768\nexpire_logs_days\t0\nhave_query_cache\tYES\ninnodb_buffer_pool_size\t134217728\ninnodb_log_buffer_size\t16777216\njoin_buffer_size\t262144\nkey_buffer_size\t8388608\nkey_cache_block_size\t1024\nlog_bin\tON\nmax_connections\t151\nmax_heap_table_size\t16777216\nnet_buffer_length\t16384\nperformance_schema\tON\nquery_cache_size\t1048576\nquery_cache_type\tOFF\nread_buffer_size\t131072\nread_only\tOFF\nread_rnd_buffer_size\t262144\nsort_buffer_size\t262144\nsuper_read_only\tOFF\nthread_stack\t262144\ntmp_table_size\t16777216\nversion\t5.7.44-log\nversion_comment\tMySQL Community Server (GPL)\n"
+  ],
+  [
+   "/*myflames:checks*/ SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime' OR Variable_name LIKE 'Performance\\_schema\\_%\\_lost'",
+   "Performance_schema_accounts_lost\t0\nPerformance_schema_cond_classes_lost\t0\nPerformance_schema_cond_instances_lost\t0\nPerformance_schema_digest_lost\t0\nPerformance_schema_file_classes_lost\t0\nPerformance_schema_file_handles_lost\t0\nPerformance_schema_file_instances_lost\t2\nPerformance_schema_hosts_lost\t0\nPerformance_schema_index_stat_lost\t0\nPerformance_schema_locker_lost\t0\nPerformance_schema_memory_classes_lost\t0\nPerformance_schema_metadata_lock_lost\t0\nPerformance_schema_mutex_classes_lost\t0\nPerformance_schema_mutex_instances_lost\t0\nPerformance_schema_nested_statement_lost\t0\nPerformance_schema_prepared_statements_lost\t0\nPerformance_schema_program_lost\t0\nPerformance_schema_rwlock_classes_lost\t0\nPerformance_schema_rwlock_instances_lost\t0\nPerformance_schema_session_connect_attrs_lost\t0\nPerformance_schema_socket_classes_lost\t0\nPerformance_schema_socket_instances_lost\t0\nPerformance_schema_stage_classes_lost\t0\nPerformance_schema_statement_classes_lost\t0\nPerformance_schema_table_handles_lost\t0\nPerformance_schema_table_instances_lost\t0\nPerformance_schema_table_lock_stat_lost\t0\nPerformance_schema_thread_classes_lost\t0\nPerformance_schema_thread_instances_lost\t0\nPerformance_schema_users_lost\t0\nUptime\t1137\n"
+  ],
+  [
+   "/*myflames:checks*/ SHOW GLOBAL STATUS WHERE Variable_name IN ('Qcache_hits', 'Qcache_inserts', 'Qcache_not_cached', 'Qcache_lowmem_prunes', 'Qcache_queries_in_cache', 'Qcache_free_memory', 'Com_select', 'Key_blocks_used', 'Key_blocks_unused', 'Key_read_requests', 'Key_reads', 'Aria_pagecache_blocks_used', 'Aria_pagecache_blocks_unused', 'Aria_pagecache_read_requests', 'Aria_pagecache_reads', 'wsrep_cluster_size', 'wsrep_cluster_status', 'wsrep_connected', 'wsrep_ready', 'wsrep_local_state', 'wsrep_local_state_comment', 'wsrep_flow_control_paused', 'wsrep_local_cert_failures', 'Max_used_connections')",
+   "Com_select\t62\nKey_blocks_unused\t6691\nKey_blocks_used\t7\nKey_read_requests\t36\nKey_reads\t7\nMax_used_connections\t1\nQcache_free_memory\t1031832\nQcache_hits\t0\nQcache_inserts\t0\nQcache_lowmem_prunes\t0\nQcache_not_cached\t60\nQcache_queries_in_cache\t0\n"
+  ],
+  [
+   "/*myflames:checks*/ SELECT SUM(CURRENT_NUMBER_OF_BYTES_USED) FROM performance_schema.memory_summary_global_by_event_name WHERE EVENT_NAME LIKE 'memory/performance_schema/%'",
+   "148553544\n"
+  ],
+  [
+   "/*myflames:checks*/ SHOW SLAVE STATUS",
+   "<?xml version=\"1.0\"?>\n\n<resultset statement=\"/*myflames:checks*/ SHOW SLAVE STATUS\n\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n  <row>\n\t<field name=\"Slave_IO_State\">Waiting for master to send event</field>\n\t<field name=\"Master_Host\">myflames-my57a-k3x9-mysql-5-7</field>\n\t<field name=\"Master_User\">repl</field>\n\t<field name=\"Master_Port\">3306</field>\n\t<field name=\"Connect_Retry\">60</field>\n\t<field name=\"Master_Log_File\">mysql-bin.000003</field>\n\t<field name=\"Read_Master_Log_Pos\">58362094</field>\n\t<field name=\"Relay_Log_File\">ee5d03bf07aa-relay-bin.000004</field>\n\t<field name=\"Relay_Log_Pos\">15938310</field>\n\t<field name=\"Relay_Master_Log_File\">mysql-bin.000003</field>\n\t<field name=\"Slave_IO_Running\">Yes</field>\n\t<field name=\"Slave_SQL_Running\">No</field>\n\t<field name=\"Replicate_Do_DB\"></field>\n\t<field name=\"Replicate_Ignore_DB\"></field>\n\t<field name=\"Replicate_Do_Table\"></field>\n\t<field name=\"Replicate_Ignore_Table\"></field>\n\t<field name=\"Replicate_Wild_Do_Table\"></field>\n\t<field name=\"Replicate_Wild_Ignore_Table\"></field>\n\t<field name=\"Last_Errno\">1062</field>\n\t<field name=\"Last_Error\">Could not execute Write_rows event on table review.repl_probe; Duplicate entry '7' for key 'PRIMARY', Error_code: 1062; handler error HA_ERR_FOUND_DUPP_KEY; the event's master log mysql-bin.000003, end_log_pos 15938341</field>\n\t<field name=\"Skip_Counter\">0</field>\n\t<field name=\"Exec_Master_Log_Pos\">15938097</field>\n\t<field name=\"Relay_Log_Space\">61310351</field>\n\t<field name=\"Until_Condition\">None</field>\n\t<field name=\"Until_Log_File\"></field>\n\t<field name=\"Until_Log_Pos\">0</field>\n\t<field name=\"Master_SSL_Allowed\">No</field>\n\t<field name=\"Master_SSL_CA_File\"></field>\n\t<field name=\"Master_SSL_CA_Path\"></field>\n\t<field name=\"Master_SSL_Cert\"></field>\n\t<field name=\"Master_SSL_Cipher\"></field>\n\t<field name=\"Master_SSL_Key\"></field>\n\t<field name=\"Seconds_Behind_Master\" xsi:nil=\"true\" />\n\t<field name=\"Master_SSL_Verify_Server_Cert\">No</field>\n\t<field name=\"Last_IO_Errno\">0</field>\n\t<field name=\"Last_IO_Error\"></field>\n\t<field name=\"Last_SQL_Errno\">1062</field>\n\t<field name=\"Last_SQL_Error\">Could not execute Write_rows event on table review.repl_probe; Duplicate entry '7' for key 'PRIMARY', Error_code: 1062; handler error HA_ERR_FOUND_DUPP_KEY; the event's master log mysql-bin.000003, end_log_pos 15938341</field>\n\t<field name=\"Replicate_Ignore_Server_Ids\"></field>\n\t<field name=\"Master_Server_Id\">116</field>\n\t<field name=\"Master_UUID\">fef9a618-d526-11f1-ad2d-ca1ecc2ba104</field>\n\t<field name=\"Master_Info_File\">/var/lib/mysql/master.info</field>\n\t<field name=\"SQL_Delay\">0</field>\n\t<field name=\"SQL_Remaining_Delay\" xsi:nil=\"true\" />\n\t<field name=\"Slave_SQL_Running_State\"></field>\n\t<field name=\"Master_Retry_Count\">86400</field>\n\t<field name=\"Master_Bind\"></field>\n\t<field name=\"Last_IO_Error_Timestamp\"></field>\n\t<field name=\"Last_SQL_Error_Timestamp\">261031 13:02:22</field>\n\t<field name=\"Master_SSL_Crl\"></field>\n\t<field name=\"Master_SSL_Crlpath\"></field>\n\t<field name=\"Retrieved_Gtid_Set\"></field>\n\t<field name=\"Executed_Gtid_Set\"></field>\n\t<field name=\"Auto_Position\">0</field>\n\t<field name=\"Replicate_Rewrite_DB\"></field>\n\t<field name=\"Channel_Name\"></field>\n\t<field name=\"Master_TLS_Version\"></field>\n  </row>\n</resultset>\n"
+  ],
+  [
+   "/*myflames:checks*/ SELECT User, Host, plugin, authentication_string = '', account_locked, 'N' FROM mysql.user",
+   "root\tlocalhost\tmysql_native_password\t0\tN\tN\nmysql.session\tlocalhost\tmysql_native_password\t0\tY\tN\nmysql.sys\tlocalhost\tmysql_native_password\t0\tY\tN\nroot\t%\tmysql_native_password\t0\tN\tN\nmf_admin\t%\tmysql_native_password\t0\tN\tN\nmf_read\t%\tmysql_native_password\t0\tN\tN\nrepl\t%\tmysql_native_password\t0\tN\tN\n"
+  ]
+ ],
+ "report": {
+  "schema_version": "checks-1.0",
+  "engine": "mysql",
+  "flavor": "mysql",
+  "server_product": "MySQL",
+  "server_version": "5.7.44-log",
+  "taken_at": "2026-10-31T13:15:03.540073+00:00",
+  "uptime_s": 1137,
+  "performance_schema": true,
+  "summary": {
+   "status": "problem",
+   "problem": 2,
+   "watch": 3,
+   "ok": 3,
+   "info": 0,
+   "unknown": 1
+  },
+  "checks": [
+   {
+    "key": "replication",
+    "section": "replication",
+    "label": "Replication",
+    "explain": "Replication threads on this server: the receiver (IO thread) that copies the source's binary log and the applier (SQL thread) that runs it. Read with SHOW SLAVE STATUS; nothing is started or stopped.",
+    "value": "1 channel",
+    "status": "problem",
+    "why": "1 replication channel; default channel: receiver Yes, applier No; applier error 1062: Could not execute Write_rows event on table review.repl_probe; Duplicate entry '7' for key 'PRIMARY', Error_code: 1062; handler error HA_ERR_FOUND_DUPP_KEY; the event's master log mysql-bin.000003, end_log_pos 15938341; lag unknown (NULL). Rule of thumb: problem when a replication thread is stopped or reports an error; watch while the receiver is still connecting, or when the lag reaches 60 s; problem at 600 s.",
+    "rule": "problem when a replication thread is stopped or reports an error; watch while the receiver is still connecting, or when the lag reaches 60 s; problem at 600 s",
+    "caveat": "Seconds_Behind_Master is NULL while the applier is stopped and while the receiver is not connected (on MySQL once the applier has caught up), 0 when the applier caught up with what the receiver has (even when the receiver is behind the source), and skewed by a clock change on either server, so a 0 is not proof that the replica is current.",
+    "action": {
+     "text": "Read the error and the applier state in the Replication view or with SHOW SLAVE STATUS; fix the cause before restarting a thread. Skipping a failed transaction leaves this replica different from its source."
+    },
+    "numbers": [
+     {
+      "label": "Default channel",
+      "text": "receiver Yes, applier No; applier error 1062: Could not execute Write_rows event on table review.repl_probe; Duplicate entry '7' for key 'PRIMARY', Error_code: 1062; handler error HA_ERR_FOUND_DUPP_KEY; the event's master log mysql-bin.000003, end_log_pos 15938341; lag unknown (NULL)",
+      "value": null
+     }
+    ],
+    "settings": [],
+    "sources": [
+     "SHOW SLAVE STATUS",
+     "Seconds_Behind_Master"
+    ],
+    "link": null
+   },
+   {
+    "key": "replica_read_only",
+    "section": "replication",
+    "label": "Writable replica",
+    "explain": "Writes made on a replica are not on its source; they make the replica differ and can stop replication when the source later changes the same rows.",
+    "value": "OFF",
+    "status": "watch",
+    "why": "This server is a replica and read_only is OFF, so any user can write to it. Rule of thumb: watch when a replica accepts writes (read_only=OFF).",
+    "rule": "watch when a replica accepts writes (read_only=OFF)",
+    "caveat": "Some setups write to a replica on purpose (a reporting schema, a multi-source aggregator). read_only=ON still lets users with SUPER write; super_read_only=ON stops them too.",
+    "action": {
+     "text": "Make the replica read-only unless writes are intended; the setting is global and needs the db-operations confirmation.",
+     "sql": "SET GLOBAL super_read_only = ON;",
+     "config": "super_read_only = ON  # under [mysqld]"
+    },
+    "numbers": [],
+    "settings": [
+     {
+      "name": "read_only",
+      "value": "OFF",
+      "display": "OFF"
+     },
+     {
+      "name": "super_read_only",
+      "value": "OFF",
+      "display": "OFF"
+     }
+    ],
+    "sources": [
+     "read_only",
+     "super_read_only"
+    ],
+    "link": null
+   },
+   {
+    "key": "no_password",
+    "section": "security",
+    "label": "Accounts without a password",
+    "explain": "Account basics from mysql.user: accounts that accept a login without a password, anonymous accounts, and root allowed from any host. Only account names are read; password hashes never leave the server.",
+    "value": "0",
+    "status": "ok",
+    "why": "No unlocked account has an empty password. Rule of thumb: problem when an unlocked account with a password plugin has an empty authentication string.",
+    "rule": "problem when an unlocked account with a password plugin has an empty authentication string",
+    "caveat": "Find the applications that use the account first: a new password or a lock breaks their logins.",
+    "action": null,
+    "numbers": [],
+    "settings": [],
+    "sources": [
+     "mysql.user"
+    ],
+    "link": null
+   },
+   {
+    "key": "anonymous",
+    "section": "security",
+    "label": "Anonymous accounts",
+    "explain": "Account basics from mysql.user: accounts that accept a login without a password, anonymous accounts, and root allowed from any host. Only account names are read; password hashes never leave the server.",
+    "value": "0",
+    "status": "ok",
+    "why": "No unlocked anonymous account. Rule of thumb: watch when an unlocked account has an empty user name.",
+    "rule": "watch when an unlocked account has an empty user name",
+    "caveat": "Some old installations rely on an anonymous account for local tools; check before dropping it.",
+    "action": null,
+    "numbers": [],
+    "settings": [],
+    "sources": [
+     "mysql.user"
+    ],
+    "link": null
+   },
+   {
+    "key": "root_any_host",
+    "section": "security",
+    "label": "root from any host",
+    "explain": "Account basics from mysql.user: accounts that accept a login without a password, anonymous accounts, and root allowed from any host. Only account names are read; password hashes never leave the server.",
+    "value": "1",
+    "status": "watch",
+    "why": "'root'@'%' exists and is not locked: the most privileged account accepts logins from every host, so only its password protects it. Rule of thumb: watch when 'root'@'%' exists and is not locked.",
+    "rule": "watch when 'root'@'%' exists and is not locked",
+    "caveat": "Container images often create 'root'@'%' by default. Create root (or a named administrator) for the hosts administrators connect from and check that it works before dropping 'root'@'%', or you can lock yourself out.",
+    "action": {
+     "text": "Limit root to the hosts that administer the server; each statement needs the db-operations confirmation.",
+     "sql": "CREATE USER 'root'@'<admin host>' IDENTIFIED BY '<password>';\nGRANT ALL ON *.* TO 'root'@'<admin host>' WITH GRANT OPTION;\n-- after checking the new account works:\nDROP USER 'root'@'%';"
+    },
+    "numbers": [
+     {
+      "label": "Account",
+      "text": "'root'@'%'",
+      "value": null
+     }
+    ],
+    "settings": [],
+    "sources": [
+     "mysql.user"
+    ],
+    "link": null
+   },
+   {
+    "key": "query_cache",
+    "section": "query_cache",
+    "label": "Query cache",
+    "explain": "The query cache keeps the result of a SELECT and returns it for the same statement text. Every lookup and every invalidation takes one global mutex, and any change to a table drops every cached result that read it.",
+    "value": "off",
+    "status": "ok",
+    "why": "Off (query_cache_type=OFF, query_cache_size=1,048,576). Rule of thumb: ok when off; watch when on (query_cache_type ON or DEMAND with query_cache_size above 0).",
+    "rule": "ok when off; watch when on (query_cache_type ON or DEMAND with query_cache_size above 0)",
+    "caveat": null,
+    "action": null,
+    "numbers": [],
+    "settings": [
+     {
+      "name": "query_cache_type",
+      "value": "OFF",
+      "display": "OFF"
+     },
+     {
+      "name": "query_cache_size",
+      "value": "1048576",
+      "display": "1048576"
+     },
+     {
+      "name": "have_query_cache",
+      "value": "YES",
+      "display": "YES"
+     }
+    ],
+    "sources": [
+     "query_cache_type",
+     "query_cache_size",
+     "Qcache_hits",
+     "Qcache_inserts",
+     "Qcache_lowmem_prunes",
+     "Com_select"
+    ],
+    "link": null
+   },
+   {
+    "key": "binlog_expiry",
+    "section": "redo",
+    "label": "Binary log expiry",
+    "explain": "Binary logs are kept until they expire or someone purges them; expiry runs at startup and when the server rotates to a new binary log.",
+    "value": "never",
+    "status": "watch",
+    "why": "The binary log is on and does not expire (expire_logs_days is 0), so it grows until the disk fills unless something purges it. Rule of thumb: watch when the binary log is on and nothing purges it automatically (no expiry period and no total size limit).",
+    "rule": "watch when the binary log is on and nothing purges it automatically (no expiry period and no total size limit)",
+    "caveat": "Replicas and point-in-time recovery need the binary logs since their last position or backup: keep them longer than a replica may be down and longer than your backup interval. A job that runs PURGE BINARY LOGS also counts.",
+    "action": {
+     "text": "Set an expiry in whole days that covers your replicas and backups; the setting is global and needs the db-operations confirmation. MySQL 5.7 has no SET PERSIST, so also add the line to the option file.",
+     "sql": "SET GLOBAL expire_logs_days = <days>;",
+     "config": "expire_logs_days = <days>  # under [mysqld]"
+    },
+    "numbers": [],
+    "settings": [
+     {
+      "name": "log_bin",
+      "value": "ON",
+      "display": "ON"
+     },
+     {
+      "name": "expire_logs_days",
+      "value": "0",
+      "display": "0"
+     }
+    ],
+    "sources": [
+     "log_bin",
+     "expire_logs_days"
+    ],
+    "link": null
+   },
+   {
+    "key": "memory_budget",
+    "section": "memory",
+    "label": "Total memory budget",
+    "explain": "",
+    "value": "modeled budget",
+    "status": "unknown",
+    "why": "Computed configured global capacities plus per-connection scenario times each connection count; physical RAM is unknown over SQL (never inferred from buffer settings)",
+    "rule": "unknown without physical RAM or complete inputs; watch when the modeled connection budget exceeds RAM; problem when configured global capacities alone exceed RAM",
+    "caveat": "Both net_buffer_length buffers (network and result) are allocated at connect; thread_stack at thread creation. Other session buffers are allocated on demand, some per table or per join. Both binlog caches are created together on a session's first binlog write; this scenario counts binlog_cache_size and binlog_stmt_cache_size only with log_bin ON; unknown logging leaves a partial subtotal. MariaDB counts two redo buffers of innodb_log_buffer_size; memory-mapped redo can bypass these allocations. The scenario can overstate use when sessions do not need all buffers together. It uses one sort/join/read buffer per connection and one MEMORY temporary table, not a hard upper bound: joins and queries can allocate several buffers/tables; network buffers grow. TempTable thread-local blocks, allocator overhead, other engines, the OS, other processes and container limits are not included; mmap limits are file-backed capacity, not added as RAM. P_S includes only its own internal buffers to avoid double counting other buffers. Global defaults may differ from existing session settings; a peak connection count is not measured peak memory. A budget below RAM does not establish safety.",
+    "action": {
+     "text": "Compare with server/container memory and measured peak use before changing limits."
+    },
+    "numbers": [
+     {
+      "label": "innodb_buffer_pool_size",
+      "text": "128.0 MiB",
+      "value": 134217728
+     },
+     {
+      "label": "innodb_log_buffer_size",
+      "text": "16.0 MiB",
+      "value": 16777216
+     },
+     {
+      "label": "key_buffer_size",
+      "text": "8.0 MiB",
+      "value": 8388608
+     },
+     {
+      "label": "sort_buffer_size",
+      "text": "256.0 KiB",
+      "value": 262144
+     },
+     {
+      "label": "join_buffer_size",
+      "text": "256.0 KiB",
+      "value": 262144
+     },
+     {
+      "label": "read_buffer_size",
+      "text": "128.0 KiB",
+      "value": 131072
+     },
+     {
+      "label": "read_rnd_buffer_size",
+      "text": "256.0 KiB",
+      "value": 262144
+     },
+     {
+      "label": "thread_stack",
+      "text": "256.0 KiB",
+      "value": 262144
+     },
+     {
+      "label": "binlog_cache_size",
+      "text": "32.0 KiB",
+      "value": 32768
+     },
+     {
+      "label": "binlog_stmt_cache_size",
+      "text": "32.0 KiB",
+      "value": 32768
+     },
+     {
+      "label": "net_buffer_length",
+      "text": "16.0 KiB",
+      "value": 16384
+     },
+     {
+      "label": "tmp_table_size",
+      "text": "16.0 MiB",
+      "value": 16777216
+     },
+     {
+      "label": "max_heap_table_size",
+      "text": "16.0 MiB",
+      "value": 16777216
+     },
+     {
+      "label": "One internal MEMORY table per connection",
+      "text": "16.0 MiB",
+      "value": 16777216
+     },
+     {
+      "label": "P_S internal memory bytes",
+      "text": "141.7 MiB",
+      "value": 148553544
+     },
+     {
+      "label": "Known global capacity bytes",
+      "text": "293.7 MiB",
+      "value": 307937096
+     },
+     {
+      "label": "Per-connection scenario bytes",
+      "text": "17.2 MiB",
+      "value": 18055168
+     },
+     {
+      "label": "max_connections",
+      "text": "151",
+      "value": 151
+     },
+     {
+      "label": "Max_used_connections",
+      "text": "1",
+      "value": 1
+     },
+     {
+      "label": "Budget at max_connections",
+      "text": "2.8 GiB",
+      "value": 3034267464
+     },
+     {
+      "label": "Budget at Max_used_connections",
+      "text": "310.9 MiB",
+      "value": 325992264
+     },
+     {
+      "label": "Physical memory bytes",
+      "text": "unknown",
+      "value": null
+     }
+    ],
+    "settings": [],
+    "sources": [
+     "innodb_buffer_pool_size",
+     "innodb_log_buffer_size",
+     "key_buffer_size",
+     "sort_buffer_size",
+     "join_buffer_size",
+     "read_buffer_size",
+     "read_rnd_buffer_size",
+     "thread_stack",
+     "binlog_cache_size",
+     "binlog_stmt_cache_size",
+     "net_buffer_length",
+     "log_bin",
+     "Max_used_connections",
+     "memory_summary_global_by_event_name"
+    ],
+    "link": null
+   },
+   {
+    "key": "version_support",
+    "section": "observability",
+    "label": "Version support",
+    "explain": "",
+    "value": "past end of life",
+    "status": "problem",
+    "why": "MySQL 5.7.44-log: past end of life (maintenance), maintenance ends 2023-10-25. Rule of thumb: problem from the listed end of maintenance; watch within 180 days before it; unknown for an unlisted series or an unproved end date.",
+    "rule": "problem from the listed end of maintenance; watch within 180 days before it; unknown for an unlisted series or an unproved end date",
+    "caveat": "Static series-level maintenance dates, not a check of installed patches or vulnerabilities. MySQL dates include Extended Support, exclude Sustaining Support; MariaDB dates describe Community binary maintenance, not Enterprise contracts. Current means the reviewed current LTS line, not the latest patch or Innovation release. Fork/distributor support can differ. Listed end dates come from vendor policy/release pages, not server source or tag timestamps. Month-only dates use the first day after the final maintenance month. Verify vendor policy before scheduling an upgrade; this table can become stale.",
+    "action": {
+     "text": "Check the vendor lifecycle and test an upgrade to a maintained series."
+    },
+    "numbers": [
+     {
+      "label": "Lifecycle last reviewed",
+      "text": "2026-10-15",
+      "value": "2026-10-15"
+     },
+     {
+      "label": "Evaluation date",
+      "text": "2026-10-31",
+      "value": "2026-10-31"
+     },
+     {
+      "label": "Maintenance ends",
+      "text": "2023-10-25",
+      "value": "2023-10-25"
+     },
+     {
+      "label": "Days until maintenance ends",
+      "text": "-1102",
+      "value": -1102
+     }
+    ],
+    "settings": [],
+    "sources": [
+     "version",
+     "version_comment"
+    ],
+    "link": null
+   }
+  ],
+  "rules": {
+   "memory_budget": "unknown without physical RAM or complete inputs; watch when the modeled connection budget exceeds RAM; problem when configured global capacities alone exceed RAM",
+   "version_support": "problem from the listed end of maintenance; watch within 180 days before it; unknown for an unlisted series or an unproved end date",
+   "engine_cache": "watch at 5% cache misses with at least 1000 read requests; unknown without readable inventory and counters; skip efficiency when no engine tables are visible",
+   "wsrep": "the Cluster place's Galera rules (cluster.py): problem when disconnected, not ready, non-Primary or not replicating (wsrep_on OFF); watch while not Synced, with fewer nodes than wsrep_cluster_address names (when this node is identified there), when one more failure would lose the majority (a singleton or two nodes), for any certification failures, maintenance mode, or flow-control paused >= 10%",
+   "replication": "problem when a replication thread is stopped or reports an error; watch while the receiver is still connecting, or when the lag reaches 60 s; problem at 600 s",
+   "replica_read_only": "watch when a replica accepts writes (read_only=OFF)",
+   "no_password": "problem when an unlocked account with a password plugin has an empty authentication string",
+   "anonymous": "watch when an unlocked account has an empty user name",
+   "root_any_host": "watch when 'root'@'%' exists and is not locked",
+   "query_cache": "ok when off; watch when on (query_cache_type ON or DEMAND with query_cache_size above 0)",
+   "binlog_expiry": "watch when the binary log is on and nothing purges it automatically (no expiry period and no total size limit)"
+  },
+  "notes": [
+   "MySQL 8.0 and later have no query cache, so there is nothing to check for it."
+  ],
+  "cache_evidence": {
+   "variables": {
+    "key_buffer_size": "8388608",
+    "key_cache_block_size": "1024",
+    "aria_pagecache_buffer_size": null,
+    "aria_block_size": null
+   },
+   "status": {
+    "Key_blocks_used": "7",
+    "Key_blocks_unused": "6691",
+    "Key_read_requests": "36",
+    "Key_reads": "7",
+    "Aria_pagecache_blocks_used": null,
+    "Aria_pagecache_blocks_unused": null,
+    "Aria_pagecache_read_requests": null,
+    "Aria_pagecache_reads": null
+   },
+   "status_error": null
+  }
+ }
+}

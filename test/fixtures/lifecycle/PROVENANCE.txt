@@ -1,0 +1,65 @@
+Lifecycle fixtures: where each file came from.
+
+Recorded live on 2026-10-15 from throwaway Docker containers (removed after):
+mysql:8.0 (8.0.46, started with --default-authentication-plugin=mysql_native_password),
+mysql:8.4 (8.4.11, three servers on one Docker network), mysql:9.7 (9.7.2),
+mariadb:11.4 (11.4.13). Clients on the machine running myflames: MySQL Shell 9.6.0,
+mysql and mysqldump 8.0.45 (and 8.4.8 under /opt/homebrew/bin). No MariaDB client
+tools (mariadb, mariadb-dump, mariadb-backup, mariadb-upgrade) were installed, so
+MariaDB dump, restore and physical backup were NOT run live; only the MariaDB
+upgrade guidance, the "no mariadb-dump" refusal and the CLONE guidance were.
+
+The 8.0.46 server was seeded with: a utf8mb3 table (app.t3), a table named
+parallel with a column named qualify, a column named rank, a DATETIME column with
+a zero date default (sql_mode ''), and an account 'legacy'@'%' using
+mysql_native_password.
+
+shell-upgrade-8.0.46-to-8.4.0.json
+  Raw stdout of: mysqlsh --defaults-extra-file=<0600 file> --js -- util
+  check-for-server-upgrade --target-version=8.4.0 --output-format=JSON
+  (Shell 9.6.0 exit code 0 with errorCount 2). Note: Shell 9.6 does not report
+  the qualify column; its reservedKeywords list stops at 8.0.31.
+
+native-8.0.46-to-8.4.0.json, native-8.0.46-to-9.7.0.json
+  Every statement the native subset sent and the mysql --batch text it got back
+  ({server, target, calls[{sql, result}]}), replayed exactly by StrictReplay.
+
+keywords-reserved.json
+  SELECT WORD FROM information_schema.KEYWORDS WHERE RESERVED = 1 on 8.0.46,
+  8.4.11 and 9.7.2. 8.0.46 -> 8.4.11 adds QUALIFY and TABLESAMPLE (MANUAL and
+  PARALLEL are keywords but not reserved; CREATE TABLE ... (qualify INT) fails on
+  8.4.11). 8.4.11 -> 9.7.2 adds EXTERNAL and LIBRARY. The version each word became
+  reserved in (lifecycle.RESERVED_SINCE) comes from the <lexer.keyword> token
+  declarations in mysql-server sql/sql_yacc.yy at each release tag, which is what
+  sql/gen_keyword_list.cc turns into KEYWORDS.
+
+Hand-authored (no live server):
+  mysqlsh-upgrade-schema.json: synthetic Shell JSON (mixed-case levels, a
+    CONFIGURATION_ERROR check without detectedProblems, manualChecks), checked
+    against mysql-shell modules/util/upgrade_checker/upgrade_check_formatter.cc.
+  native-replay.json: a MySQL 5.7.44 -> 8.0.40 metadata replay for the 5.7-only
+    gates (partition engines, running removed variables, 8.0 reserved words). No
+    5.7 server was run.
+
+Also verified live (outputs not stored as files; see test_lifecycle.py docstrings):
+  - mysqldump and MySQL Shell dumps of an 8.4 source, restored into another 8.4
+    with exact row counts matching; Shell loadDump refused at preflight while the
+    target had local_infile=OFF.
+  - No password in any tool argv (ps sampled during dump, restore and clone);
+    option files 0600 in a 0700 directory, removed after each run.
+  - Cancel mid-dump and mid-restore: the process group ended, the restore session
+    got KILL QUERY, audit rows finished as unknown/cancelled, the partial dump
+    kept a manifest marked incomplete.
+  - CLONE preflight failures: plugin missing (both sides), BACKUP_ADMIN missing on
+    the donor account, clone_valid_donor_list without the donor, relative and
+    in-datadir DATA DIRECTORY; the server refused an existing DATA DIRECTORY with
+    1007. A DATA DIRECTORY clone (467 MB) and two in-place clones: the client got
+    ERROR 3707, the server shut down, Docker's restart policy started it, and the
+    recipient then matched the donor (row counts, CHECKSUM TABLE, gtid_executed),
+    kept its own server_uuid, and had the donor's accounts. A throttled clone
+    cancelled mid-copy ended with clone_status Failed 1317.
+  - caching_sha2_password without TLS: mysqldump fails with 2061 after FLUSH
+    PRIVILEGES unless the option file has get-server-public-key.
+
+Bugs these recordings exposed and the tests that pin them: see the
+"regressions found on live servers" section of test/test_lifecycle.py.

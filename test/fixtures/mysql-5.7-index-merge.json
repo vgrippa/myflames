@@ -1,0 +1,35 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "7.75"
+    },
+    "table": {
+      "table_name": "customers",
+      "access_type": "index_merge",
+      "possible_keys": [
+        "PRIMARY",
+        "idx_country"
+      ],
+      "key": "union(idx_country,PRIMARY)",
+      "key_length": "9,4",
+      "rows_examined_per_scan": 4,
+      "rows_produced_per_join": 4,
+      "filtered": "100.00",
+      "cost_info": {
+        "read_cost": "6.96",
+        "eval_cost": "0.80",
+        "prefix_cost": "7.76",
+        "data_read_per_join": "3K"
+      },
+      "used_columns": [
+        "id",
+        "name",
+        "email",
+        "country",
+        "created_at"
+      ],
+      "attached_condition": "((`shop`.`customers`.`country` = 'US') or (`shop`.`customers`.`id` < 3))"
+    }
+  }
+}

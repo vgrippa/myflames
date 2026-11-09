@@ -1,0 +1,59 @@
+{
+ "schema_version": "proxysql-action-1.0",
+ "action": "servers_save",
+ "target": null,
+ "value": null,
+ "facts": [
+  [
+   "ProxySQL",
+   "3.0.11-797-g7c91137"
+  ],
+  [
+   "Applies",
+   "Every table of the servers module, not one row"
+  ]
+ ],
+ "warnings": [],
+ "typed_guard": null,
+ "undo": "Cannot be undone: the disk copy before this save is replaced.",
+ "next": null,
+ "verified": [
+  "ProxySQL Admin identity (admin-version)"
+ ],
+ "timeout_s": 60,
+ "eyebrow": "SAVE",
+ "title": "Save the servers configuration to disk?",
+ "confirm_label": "Save servers to disk",
+ "target_text": "ProxySQL disk database (servers)",
+ "description": "Copies the servers configuration in memory to the disk database, which ProxySQL loads at its next start. Runtime does not change.",
+ "changes": [
+  "hostgroup 30, mf-ic-2:3306: status ONLINE → OFFLINE_SOFT"
+ ],
+ "expect": {
+  "proxysql_version": "3.0.11-797-g7c91137",
+  "fingerprints": {
+   "servers_memory": "b38458e2eb289a9112c22a51c2bee11f33c7b92879afd9775a4a8f69d914392a",
+   "servers_disk": "422a2600d6dae80e0c02c0e174b6887b68de0edb9d4742d999ac61f4fd07bc65"
+  },
+  "pending_runtime": [],
+  "pending_disk": [
+   "hostgroup 30, mf-ic-2:3306: status ONLINE → OFFLINE_SOFT"
+  ]
+ },
+ "statements": [
+  "SAVE MYSQL SERVERS TO DISK;"
+ ],
+ "checks": [
+  "Refresh this place: the Configuration line says whether memory matches disk now.",
+  "The Audit log keeps this attempt as Outcome unknown; nothing is sent again."
+ ],
+ "policy": {
+  "action": "confirm",
+  "tone": "danger",
+  "title": "Risky write",
+  "text": "Connection ProxySQL lab is a Development connection. myflames asks only before risky writes, and this statement is one.",
+  "connection_type": "development",
+  "read_only": false
+ },
+ "review_token": "fixture-token-servers_save"
+}

@@ -1,0 +1,72 @@
+{
+ "server": "MariaDB 11.4.13 replica, account without SLAVE MONITOR (live, 2026-10-15)",
+ "args": {},
+ "calls": [
+  [
+   "/*myflames:replication*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('enforce_gtid_consistency', 'gtid_current_pos', 'gtid_domain_id', 'gtid_mode', 'gtid_slave_pos', 'gtid_strict_mode', 'performance_schema', 'read_only', 'replica_parallel_workers', 'replica_preserve_commit_order', 'slave_parallel_threads', 'slave_parallel_workers', 'slave_preserve_commit_order', 'super_read_only', 'userstat', 'version', 'version_comment')",
+   "gtid_current_pos\t0-12-12\ngtid_domain_id\t0\ngtid_slave_pos\t0-11-11\ngtid_strict_mode\tOFF\nperformance_schema\tOFF\nread_only\tOFF\nslave_parallel_threads\t0\nslave_parallel_workers\t0\nuserstat\tOFF\nversion\t11.4.13-MariaDB-ubu2404-log\nversion_comment\tmariadb.org binary distribution\n"
+  ],
+  [
+   "/*myflames:replication*/ SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime' OR Variable_name LIKE 'Performance\\_schema\\_%\\_lost'",
+   "Performance_schema_accounts_lost\t0\nPerformance_schema_cond_classes_lost\t0\nPerformance_schema_cond_instances_lost\t0\nPerformance_schema_digest_lost\t0\nPerformance_schema_file_classes_lost\t0\nPerformance_schema_file_handles_lost\t0\nPerformance_schema_file_instances_lost\t0\nPerformance_schema_hosts_lost\t0\nPerformance_schema_index_stat_lost\t0\nPerformance_schema_locker_lost\t0\nPerformance_schema_memory_classes_lost\t0\nPerformance_schema_metadata_lock_lost\t0\nPerformance_schema_mutex_classes_lost\t0\nPerformance_schema_mutex_instances_lost\t0\nPerformance_schema_nested_statement_lost\t0\nPerformance_schema_prepared_statements_lost\t0\nPerformance_schema_program_lost\t0\nPerformance_schema_rwlock_classes_lost\t0\nPerformance_schema_rwlock_instances_lost\t0\nPerformance_schema_session_connect_attrs_lost\t0\nPerformance_schema_socket_classes_lost\t0\nPerformance_schema_socket_instances_lost\t0\nPerformance_schema_stage_classes_lost\t0\nPerformance_schema_statement_classes_lost\t0\nPerformance_schema_table_handles_lost\t0\nPerformance_schema_table_instances_lost\t0\nPerformance_schema_table_lock_stat_lost\t0\nPerformance_schema_thread_classes_lost\t0\nPerformance_schema_thread_instances_lost\t0\nPerformance_schema_users_lost\t0\nUptime\t847\n"
+  ],
+  [
+   "/*myflames:replication*/ SHOW ALL SLAVES STATUS",
+   null,
+   "mysql client exited 1: ERROR 1227 (42000) at line 1: Access denied; you need (at least one of) the SLAVE MONITOR privilege(s) for this operation"
+  ]
+ ],
+ "report": {
+  "schema_version": "replication-1.0",
+  "engine": "mariadb",
+  "server_version": "11.4.13-MariaDB-ubu2404-log",
+  "captured_at": "2026-10-15T16:34:49.289215+00:00",
+  "uptime_s": 847,
+  "available": false,
+  "message": "This account cannot read replication status: SHOW ALL SLAVES STATUS needs the SLAVE MONITOR privilege (the server said: ERROR 1227 (42000) at line 1: Access denied; you need (at least one of) the SLAVE MONITOR privilege(s) for this operation).",
+  "replica": false,
+  "statement": "SHOW ALL SLAVES STATUS",
+  "gtid": {
+   "slave_pos": "0-11-11",
+   "current_pos": "0-12-12",
+   "slave_pos_domains": [
+    {
+     "domain": 0,
+     "server": 11,
+     "seq": 11
+    }
+   ],
+   "current_pos_domains": [
+    {
+     "domain": 0,
+     "server": 12,
+     "seq": 12
+    }
+   ],
+   "domain_id": 0,
+   "strict_mode": "OFF"
+  },
+  "settings": {
+   "read_only": "OFF",
+   "parallel_threads": 0
+  },
+  "channels": [],
+  "capabilities": {
+   "status": false,
+   "performance_schema": false,
+   "worker_timestamps": false,
+   "agat": false
+  },
+  "notes": [],
+  "summary": {
+   "channels": 0,
+   "judged": 0,
+   "ok": 0,
+   "watch": 0,
+   "problem": 0,
+   "unknown": 0,
+   "failed": 0,
+   "lag_max_s": null
+  }
+ }
+}

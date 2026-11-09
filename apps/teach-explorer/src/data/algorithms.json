@@ -454,8 +454,8 @@
       "family": "scan_family",
       "familyLabel": "Scan / Sort / Temp",
       "familyAccent": "#ef4444",
-      "title": "Temporary tables \u2014 MEMORY to on-disk conversion",
-      "summary": "Watch GROUP BY hit the tmp_table_size limit and convert to on-disk InnoDB.",
+      "title": "Temporary tables \u2014 in-memory to on-disk conversion",
+      "summary": "Watch GROUP BY hit the in-memory temp table limit and convert to on-disk InnoDB (Aria on MariaDB).",
       "complexity": {
         "best": "O(n)",
         "avg": "O(n)",

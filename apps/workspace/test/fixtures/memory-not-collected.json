@@ -1,0 +1,99 @@
+{
+  "schema_version": "memory-1.0",
+  "engine": "mysql",
+  "flavor": "mysql",
+  "server_product": "MySQL",
+  "server_version": "5.7.44",
+  "taken_at": "2026-11-08T18:00:00+00:00",
+  "uptime_s": 1000,
+  "performance_schema": true,
+  "available": true,
+  "source": "performance_schema",
+  "interval": 5,
+  "elapsed_s": 5,
+  "window_status": "ok",
+  "coverage": {
+    "enabled": 79,
+    "total": 400
+  },
+  "consumers": {
+    "global_instrumentation": true,
+    "thread_instrumentation": true
+  },
+  "gate": "Most memory instruments are off; open Server > Instruments to review coverage.",
+  "gate_row": "group:memory",
+  "thread_coverage": {
+    "uninstrumented": 0,
+    "foreground": 4
+  },
+  "status": "not_judged",
+  "current_bytes": 134217728,
+  "high_bytes": 209715200,
+  "growth_bytes_per_s": 0,
+  "innodb_buffer_pool_size": 1073741824,
+  "buffer_pool_share_pct": null,
+  "categories": [
+    {
+      "key": "performance_schema",
+      "label": "Performance Schema",
+      "current_bytes": 134217728,
+      "high_bytes": 209715200,
+      "source": "performance_schema.memory_summary_global_by_event_name",
+      "elapsed_s": 5,
+      "growth_bytes_per_s": 0,
+      "share_pct": 100
+    }
+  ],
+  "events": [
+    {
+      "event": "memory/performance_schema/accounts",
+      "category": "performance_schema",
+      "current_bytes": 134217728,
+      "high_bytes": 209715200,
+      "source": "performance_schema.memory_summary_global_by_event_name"
+    }
+  ],
+  "sessions": [
+    {
+      "thread_id": 52,
+      "processlist_id": 42,
+      "user": "app",
+      "host": "localhost",
+      "current_bytes": null,
+      "high_bytes": null,
+      "source": "performance_schema.memory_summary_by_thread_by_event_name",
+      "collection_reason": "Attribution instruments are disabled; open Server > Instruments to review coverage."
+    }
+  ],
+  "accounts": [
+    {
+      "user": "app",
+      "host": "localhost",
+      "current_bytes": null,
+      "high_bytes": null,
+      "source": "performance_schema.memory_summary_by_account_by_event_name",
+      "collection_reason": "Attribution instruments are disabled; open Server > Instruments to review coverage."
+    }
+  ],
+  "collection": {
+    "events": true,
+    "sessions": true,
+    "accounts": true
+  },
+  "findings": [
+    {
+      "key": "coverage",
+      "status": "not_judged",
+      "rule": "Rule of thumb: judge only a comparable window with known collection coverage.",
+      "reason": "Most memory instruments are off; open Server > Instruments to review coverage."
+    }
+  ],
+  "notes": [
+    "Tracked allocations are not process RSS or machine RAM; no RAM capacity is inferred.",
+    "Each event high is an upper bound (current bytes plus per-thread, account and host headroom), not a recorded peak; their sum is not a server peak.",
+    "Enabled instruments do not recover earlier allocations; session/account totals need not add up to the global total.",
+    "Categories use known event-name prefixes; unmatched allocations stay in Other, and TempTable may include mapped files.",
+    "Reads are sequential, not an atomic snapshot; the collection itself can allocate memory.",
+    "Performance Schema on this server charges a free to the thread that makes it, so the session or account that allocated the memory can be overstated and the one that freed it can drop below 0."
+  ]
+}

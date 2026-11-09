@@ -1,0 +1,673 @@
+{
+ "schema_version": "error-log-1.0",
+ "engine": "mysql",
+ "server_version": "8.4.11",
+ "taken_at": "2026-10-19T21:04:00.534807+00:00",
+ "uptime_s": 2066,
+ "performance_schema": true,
+ "available": true,
+ "reason": null,
+ "reason_text": null,
+ "how_to_view": null,
+ "source": "performance_schema.error_log",
+ "settings": {
+  "log_error": "/var/lib/mysql/mysqld.err",
+  "log_error_verbosity": 2,
+  "log_error_services": "log_filter_internal; log_sink_internal",
+  "log_warnings": null,
+  "datadir": null
+ },
+ "buffer": {
+  "bytes": 7824,
+  "events": 48,
+  "expired_events": 0,
+  "latest_write": "2026-10-19 20:29:24Z",
+  "capacity_bytes": 5242880
+ },
+ "file": null,
+ "server_started": "2026-10-19 20:29:23",
+ "counts": {
+  "system": 33,
+  "error": 4,
+  "warning": 11,
+  "note": 0
+ },
+ "counts_current_run": {
+  "system": 9,
+  "error": 1,
+  "warning": 4,
+  "note": 0
+ },
+ "codes": [
+  {
+   "error_code": "MY-010584",
+   "prio": "Error",
+   "subsystem": "Repl",
+   "count": 4,
+   "first_logged": "2026-10-19 20:29:17.145710",
+   "last_logged": "2026-10-19 20:29:24.279123",
+   "sample": "Replica I/O for channel '': Error connecting to source 'x@no-such-host.invalid:3306'. This was attempt 3/3, with a delay of 1 seconds between attempts. Message: Unknown MySQL server host 'no-such-host.invalid' (-2), Error_code: MY-002005"
+  },
+  {
+   "error_code": "MY-013576",
+   "prio": "System",
+   "subsystem": "InnoDB",
+   "count": 4,
+   "first_logged": "2026-10-19 20:29:12.102063",
+   "last_logged": "2026-10-19 20:29:23.900642",
+   "sample": "InnoDB initialization has started."
+  },
+  {
+   "error_code": "MY-013577",
+   "prio": "System",
+   "subsystem": "InnoDB",
+   "count": 4,
+   "first_logged": "2026-10-19 20:29:12.216872",
+   "last_logged": "2026-10-19 20:29:24.039205",
+   "sample": "InnoDB initialization has ended."
+  },
+  {
+   "error_code": "MY-011810",
+   "prio": "Warning",
+   "subsystem": "Server",
+   "count": 3,
+   "first_logged": "2026-10-19 20:29:14.524615",
+   "last_logged": "2026-10-19 20:29:24.215430",
+   "sample": "Insecure configuration for --pid-file: Location '/var/run/mysqld' in the path is accessible to all OS users. Consider choosing a different directory."
+  },
+  {
+   "error_code": "MY-010931",
+   "prio": "System",
+   "subsystem": "Server",
+   "count": 3,
+   "first_logged": "2026-10-19 20:29:14.553745",
+   "last_logged": "2026-10-19 20:29:24.277862",
+   "sample": "/usr/sbin/mysqld: ready for connections. Version: '8.4.11'  socket: '/var/run/mysqld/mysqld.sock'  port: 3306  MySQL Community Server - GPL."
+  },
+  {
+   "error_code": "MY-011323",
+   "prio": "System",
+   "subsystem": "Server",
+   "count": 3,
+   "first_logged": "2026-10-19 20:29:14.553643",
+   "last_logged": "2026-10-19 20:29:24.277817",
+   "sample": "X Plugin ready for connections. Socket: /var/run/mysqld/mysqlx.sock"
+  },
+  {
+   "error_code": "MY-013602",
+   "prio": "System",
+   "subsystem": "Server",
+   "count": 3,
+   "first_logged": "2026-10-19 20:29:14.520510",
+   "last_logged": "2026-10-19 20:29:24.212223",
+   "sample": "Channel mysql_main configured to support TLS. Encrypted connections are now supported for this channel."
+  },
+  {
+   "error_code": "MY-010068",
+   "prio": "Warning",
+   "subsystem": "Server",
+   "count": 3,
+   "first_logged": "2026-10-19 20:29:14.520479",
+   "last_logged": "2026-10-19 20:29:24.212204",
+   "sample": "CA certificate ca.pem is self signed."
+  },
+  {
+   "error_code": "MY-010116",
+   "prio": "System",
+   "subsystem": "Server",
+   "count": 3,
+   "first_logged": "2026-10-19 20:29:14.262735",
+   "last_logged": "2026-10-19 20:29:23.897651",
+   "sample": "/usr/sbin/mysqld (mysqld 8.4.11) starting as process 125"
+  },
+  {
+   "error_code": "MY-015015",
+   "prio": "System",
+   "subsystem": "Server",
+   "count": 3,
+   "first_logged": "2026-10-19 20:29:14.123343",
+   "last_logged": "2026-10-19 20:29:23.754851",
+   "sample": "MySQL Server - start."
+  },
+  {
+   "error_code": "MY-013172",
+   "prio": "System",
+   "subsystem": "Server",
+   "count": 2,
+   "first_logged": "2026-10-19 20:29:15.397865",
+   "last_logged": "2026-10-19 20:29:22.250924",
+   "sample": "Received SHUTDOWN from user root. Shutting down mysqld (Version: 8.4.11)."
+  },
+  {
+   "error_code": "MY-010910",
+   "prio": "System",
+   "subsystem": "Server",
+   "count": 2,
+   "first_logged": "2026-10-19 20:29:16.009744",
+   "last_logged": "2026-10-19 20:29:23.243885",
+   "sample": "/usr/sbin/mysqld: Shutdown complete (mysqld 8.4.11)  MySQL Community Server - GPL."
+  },
+  {
+   "error_code": "MY-015016",
+   "prio": "System",
+   "subsystem": "Server",
+   "count": 2,
+   "first_logged": "2026-10-19 20:29:16.009759",
+   "last_logged": "2026-10-19 20:29:23.243899",
+   "sample": "MySQL Server - end."
+  },
+  {
+   "error_code": "MY-010604",
+   "prio": "Warning",
+   "subsystem": "Repl",
+   "count": 2,
+   "first_logged": "2026-10-19 20:29:17.094548",
+   "last_logged": "2026-10-19 20:29:24.252777",
+   "sample": "Neither --relay-log nor --relay-log-index were used; so replication may break when this MySQL server acts as a replica and has his hostname changed!! Please use '--relay-log=f1f5efe23d86-relay-bin' to avoid this problem."
+  },
+  {
+   "error_code": "MY-010897",
+   "prio": "Warning",
+   "subsystem": "Repl",
+   "count": 2,
+   "first_logged": "2026-10-19 20:29:17.106589",
+   "last_logged": "2026-10-19 20:29:24.273668",
+   "sample": "Storing MySQL user name or password information in the connection metadata repository is not secure and is therefore not recommended. Please consider using the USER and PASSWORD connection options for START REPLICA; see the 'START REPLICA Syntax' in the MySQL Manual for more information."
+  },
+  {
+   "error_code": "MY-015017",
+   "prio": "System",
+   "subsystem": "Server",
+   "count": 1,
+   "first_logged": "2026-10-19 20:29:12.098328",
+   "last_logged": "2026-10-19 20:29:12.098328",
+   "sample": "MySQL Server Initialization - start."
+  },
+  {
+   "error_code": "MY-015018",
+   "prio": "System",
+   "subsystem": "Server",
+   "count": 1,
+   "first_logged": "2026-10-19 20:29:14.082705",
+   "last_logged": "2026-10-19 20:29:14.082705",
+   "sample": "MySQL Server Initialization - end."
+  },
+  {
+   "error_code": "MY-010453",
+   "prio": "Warning",
+   "subsystem": "Server",
+   "count": 1,
+   "first_logged": "2026-10-19 20:29:12.743172",
+   "last_logged": "2026-10-19 20:29:12.743172",
+   "sample": "root@localhost is created with an empty password ! Please consider switching off the --initialize-insecure option."
+  },
+  {
+   "error_code": "MY-010597",
+   "prio": "System",
+   "subsystem": "Repl",
+   "count": 1,
+   "first_logged": "2026-10-19 20:29:17.099430",
+   "last_logged": "2026-10-19 20:29:17.099430",
+   "sample": "'CHANGE REPLICATION SOURCE TO FOR CHANNEL '' executed'. Previous state source_host='', source_port= 3306, source_log_file='', source_log_pos= 4, source_bind=''. New state source_host='no-such-host.invalid', source_port= 3306, source_log_file='', source_log_pos= 4, source_bind=''."
+  },
+  {
+   "error_code": "MY-013169",
+   "prio": "System",
+   "subsystem": "Server",
+   "count": 1,
+   "first_logged": "2026-10-19 20:29:12.098876",
+   "last_logged": "2026-10-19 20:29:12.098876",
+   "sample": "/usr/sbin/mysqld (mysqld 8.4.11) initializing of server in progress as process 80"
+  }
+ ],
+ "entries": [
+  {
+   "logged": "2026-10-19 20:29:24.279123",
+   "thread_id": 5,
+   "prio": "Error",
+   "error_code": "MY-010584",
+   "subsystem": "Repl",
+   "message": "Replica I/O for channel '': Error connecting to source 'x@no-such-host.invalid:3306'. This was attempt 1/3, with a delay of 1 seconds between attempts. Message: Unknown MySQL server host 'no-such-host.invalid' (-2), Error_code: MY-002005",
+   "previous_run": false
+  },
+  {
+   "logged": "2026-10-19 20:29:24.277862",
+   "thread_id": 0,
+   "prio": "System",
+   "error_code": "MY-010931",
+   "subsystem": "Server",
+   "message": "/usr/sbin/mysqld: ready for connections. Version: '8.4.11'  socket: '/var/run/mysqld/mysqld.sock'  port: 3306  MySQL Community Server - GPL.",
+   "previous_run": false
+  },
+  {
+   "logged": "2026-10-19 20:29:24.277817",
+   "thread_id": 0,
+   "prio": "System",
+   "error_code": "MY-011323",
+   "subsystem": "Server",
+   "message": "X Plugin ready for connections. Bind-address: '::' port: 33060, socket: /var/run/mysqld/mysqlx.sock",
+   "previous_run": false
+  },
+  {
+   "logged": "2026-10-19 20:29:24.273668",
+   "thread_id": 5,
+   "prio": "Warning",
+   "error_code": "MY-010897",
+   "subsystem": "Repl",
+   "message": "Storing MySQL user name or password information in the connection metadata repository is not secure and is therefore not recommended. Please consider using the USER and PASSWORD connection options for START REPLICA; see the 'START REPLICA Syntax' in the MySQL Manual for more information.",
+   "previous_run": false
+  },
+  {
+   "logged": "2026-10-19 20:29:24.252777",
+   "thread_id": 0,
+   "prio": "Warning",
+   "error_code": "MY-010604",
+   "subsystem": "Repl",
+   "message": "Neither --relay-log nor --relay-log-index were used; so replication may break when this MySQL server acts as a replica and has his hostname changed!! Please use '--relay-log=f1f5efe23d86-relay-bin' to avoid this problem.",
+   "previous_run": false
+  },
+  {
+   "logged": "2026-10-19 20:29:24.215430",
+   "thread_id": 0,
+   "prio": "Warning",
+   "error_code": "MY-011810",
+   "subsystem": "Server",
+   "message": "Insecure configuration for --pid-file: Location '/var/run/mysqld' in the path is accessible to all OS users. Consider choosing a different directory.",
+   "previous_run": false
+  },
+  {
+   "logged": "2026-10-19 20:29:24.212223",
+   "thread_id": 0,
+   "prio": "System",
+   "error_code": "MY-013602",
+   "subsystem": "Server",
+   "message": "Channel mysql_main configured to support TLS. Encrypted connections are now supported for this channel.",
+   "previous_run": false
+  },
+  {
+   "logged": "2026-10-19 20:29:24.212204",
+   "thread_id": 0,
+   "prio": "Warning",
+   "error_code": "MY-010068",
+   "subsystem": "Server",
+   "message": "CA certificate ca.pem is self signed.",
+   "previous_run": false
+  },
+  {
+   "logged": "2026-10-19 20:29:24.039205",
+   "thread_id": 1,
+   "prio": "System",
+   "error_code": "MY-013577",
+   "subsystem": "InnoDB",
+   "message": "InnoDB initialization has ended.",
+   "previous_run": false
+  },
+  {
+   "logged": "2026-10-19 20:29:23.900642",
+   "thread_id": 1,
+   "prio": "System",
+   "error_code": "MY-013576",
+   "subsystem": "InnoDB",
+   "message": "InnoDB initialization has started.",
+   "previous_run": false
+  },
+  {
+   "logged": "2026-10-19 20:29:23.897651",
+   "thread_id": 0,
+   "prio": "System",
+   "error_code": "MY-010116",
+   "subsystem": "Server",
+   "message": "/usr/sbin/mysqld (mysqld 8.4.11) starting as process 1",
+   "previous_run": false
+  },
+  {
+   "logged": "2026-10-19 20:29:23.754851",
+   "thread_id": 0,
+   "prio": "System",
+   "error_code": "MY-015015",
+   "subsystem": "Server",
+   "message": "MySQL Server - start.",
+   "previous_run": false
+  },
+  {
+   "logged": "2026-10-19 20:29:23.243899",
+   "thread_id": 0,
+   "prio": "System",
+   "error_code": "MY-015016",
+   "subsystem": "Server",
+   "message": "MySQL Server - end.",
+   "previous_run": false
+  },
+  {
+   "logged": "2026-10-19 20:29:23.243885",
+   "thread_id": 0,
+   "prio": "System",
+   "error_code": "MY-010910",
+   "subsystem": "Server",
+   "message": "/usr/sbin/mysqld: Shutdown complete (mysqld 8.4.11)  MySQL Community Server - GPL.",
+   "previous_run": false
+  },
+  {
+   "logged": "2026-10-19 20:29:22.250924",
+   "thread_id": 0,
+   "prio": "System",
+   "error_code": "MY-013172",
+   "subsystem": "Server",
+   "message": "Received SHUTDOWN from user <via user signal>. Shutting down mysqld (Version: 8.4.11).",
+   "previous_run": true
+  },
+  {
+   "logged": "2026-10-19 20:29:19.159726",
+   "thread_id": 10,
+   "prio": "Error",
+   "error_code": "MY-010584",
+   "subsystem": "Repl",
+   "message": "Replica I/O for channel '': Error connecting to source 'x@no-such-host.invalid:3306'. This was attempt 3/3, with a delay of 1 seconds between attempts. Message: Unknown MySQL server host 'no-such-host.invalid' (-2), Error_code: MY-002005",
+   "previous_run": true
+  },
+  {
+   "logged": "2026-10-19 20:29:18.150212",
+   "thread_id": 10,
+   "prio": "Error",
+   "error_code": "MY-010584",
+   "subsystem": "Repl",
+   "message": "Replica I/O for channel '': Error connecting to source 'x@no-such-host.invalid:3306'. This was attempt 2/3, with a delay of 1 seconds between attempts. Message: Unknown MySQL server host 'no-such-host.invalid' (-2), Error_code: MY-002005",
+   "previous_run": true
+  },
+  {
+   "logged": "2026-10-19 20:29:17.145710",
+   "thread_id": 10,
+   "prio": "Error",
+   "error_code": "MY-010584",
+   "subsystem": "Repl",
+   "message": "Replica I/O for channel '': Error connecting to source 'x@no-such-host.invalid:3306'. This was attempt 1/3, with a delay of 1 seconds between attempts. Message: Unknown MySQL server host 'no-such-host.invalid' (-2), Error_code: MY-002005",
+   "previous_run": true
+  },
+  {
+   "logged": "2026-10-19 20:29:17.106589",
+   "thread_id": 10,
+   "prio": "Warning",
+   "error_code": "MY-010897",
+   "subsystem": "Repl",
+   "message": "Storing MySQL user name or password information in the connection metadata repository is not secure and is therefore not recommended. Please consider using the USER and PASSWORD connection options for START REPLICA; see the 'START REPLICA Syntax' in the MySQL Manual for more information.",
+   "previous_run": true
+  },
+  {
+   "logged": "2026-10-19 20:29:17.099430",
+   "thread_id": 9,
+   "prio": "System",
+   "error_code": "MY-010597",
+   "subsystem": "Repl",
+   "message": "'CHANGE REPLICATION SOURCE TO FOR CHANNEL '' executed'. Previous state source_host='', source_port= 3306, source_log_file='', source_log_pos= 4, source_bind=''. New state source_host='no-such-host.invalid', source_port= 3306, source_log_file='', source_log_pos= 4, source_bind=''.",
+   "previous_run": true
+  },
+  {
+   "logged": "2026-10-19 20:29:17.094548",
+   "thread_id": 9,
+   "prio": "Warning",
+   "error_code": "MY-010604",
+   "subsystem": "Repl",
+   "message": "Neither --relay-log nor --relay-log-index were used; so replication may break when this MySQL server acts as a replica and has his hostname changed!! Please use '--relay-log=f1f5efe23d86-relay-bin' to avoid this problem.",
+   "previous_run": true
+  },
+  {
+   "logged": "2026-10-19 20:29:16.799115",
+   "thread_id": 0,
+   "prio": "System",
+   "error_code": "MY-010931",
+   "subsystem": "Server",
+   "message": "/usr/sbin/mysqld: ready for connections. Version: '8.4.11'  socket: '/var/run/mysqld/mysqld.sock'  port: 3306  MySQL Community Server - GPL.",
+   "previous_run": true
+  },
+  {
+   "logged": "2026-10-19 20:29:16.799067",
+   "thread_id": 0,
+   "prio": "System",
+   "error_code": "MY-011323",
+   "subsystem": "Server",
+   "message": "X Plugin ready for connections. Bind-address: '::' port: 33060, socket: /var/run/mysqld/mysqlx.sock",
+   "previous_run": true
+  },
+  {
+   "logged": "2026-10-19 20:29:16.788156",
+   "thread_id": 0,
+   "prio": "Warning",
+   "error_code": "MY-011810",
+   "subsystem": "Server",
+   "message": "Insecure configuration for --pid-file: Location '/var/run/mysqld' in the path is accessible to all OS users. Consider choosing a different directory.",
+   "previous_run": true
+  },
+  {
+   "logged": "2026-10-19 20:29:16.787162",
+   "thread_id": 0,
+   "prio": "System",
+   "error_code": "MY-013602",
+   "subsystem": "Server",
+   "message": "Channel mysql_main configured to support TLS. Encrypted connections are now supported for this channel.",
+   "previous_run": true
+  },
+  {
+   "logged": "2026-10-19 20:29:16.787142",
+   "thread_id": 0,
+   "prio": "Warning",
+   "error_code": "MY-010068",
+   "subsystem": "Server",
+   "message": "CA certificate ca.pem is self signed.",
+   "previous_run": true
+  },
+  {
+   "logged": "2026-10-19 20:29:16.656445",
+   "thread_id": 1,
+   "prio": "System",
+   "error_code": "MY-013577",
+   "subsystem": "InnoDB",
+   "message": "InnoDB initialization has ended.",
+   "previous_run": true
+  },
+  {
+   "logged": "2026-10-19 20:29:16.569488",
+   "thread_id": 1,
+   "prio": "System",
+   "error_code": "MY-013576",
+   "subsystem": "InnoDB",
+   "message": "InnoDB initialization has started.",
+   "previous_run": true
+  },
+  {
+   "logged": "2026-10-19 20:29:16.566610",
+   "thread_id": 0,
+   "prio": "System",
+   "error_code": "MY-010116",
+   "subsystem": "Server",
+   "message": "/usr/sbin/mysqld (mysqld 8.4.11) starting as process 1",
+   "previous_run": true
+  },
+  {
+   "logged": "2026-10-19 20:29:16.415517",
+   "thread_id": 0,
+   "prio": "System",
+   "error_code": "MY-015015",
+   "subsystem": "Server",
+   "message": "MySQL Server - start.",
+   "previous_run": true
+  },
+  {
+   "logged": "2026-10-19 20:29:16.009759",
+   "thread_id": 0,
+   "prio": "System",
+   "error_code": "MY-015016",
+   "subsystem": "Server",
+   "message": "MySQL Server - end.",
+   "previous_run": true
+  },
+  {
+   "logged": "2026-10-19 20:29:16.009744",
+   "thread_id": 0,
+   "prio": "System",
+   "error_code": "MY-010910",
+   "subsystem": "Server",
+   "message": "/usr/sbin/mysqld: Shutdown complete (mysqld 8.4.11)  MySQL Community Server - GPL.",
+   "previous_run": true
+  },
+  {
+   "logged": "2026-10-19 20:29:15.397865",
+   "thread_id": 10,
+   "prio": "System",
+   "error_code": "MY-013172",
+   "subsystem": "Server",
+   "message": "Received SHUTDOWN from user root. Shutting down mysqld (Version: 8.4.11).",
+   "previous_run": true
+  },
+  {
+   "logged": "2026-10-19 20:29:14.553745",
+   "thread_id": 0,
+   "prio": "System",
+   "error_code": "MY-010931",
+   "subsystem": "Server",
+   "message": "/usr/sbin/mysqld: ready for connections. Version: '8.4.11'  socket: '/var/run/mysqld/mysqld.sock'  port: 0  MySQL Community Server - GPL.",
+   "previous_run": true
+  },
+  {
+   "logged": "2026-10-19 20:29:14.553643",
+   "thread_id": 0,
+   "prio": "System",
+   "error_code": "MY-011323",
+   "subsystem": "Server",
+   "message": "X Plugin ready for connections. Socket: /var/run/mysqld/mysqlx.sock",
+   "previous_run": true
+  },
+  {
+   "logged": "2026-10-19 20:29:14.524615",
+   "thread_id": 0,
+   "prio": "Warning",
+   "error_code": "MY-011810",
+   "subsystem": "Server",
+   "message": "Insecure configuration for --pid-file: Location '/var/run/mysqld' in the path is accessible to all OS users. Consider choosing a different directory.",
+   "previous_run": true
+  },
+  {
+   "logged": "2026-10-19 20:29:14.520510",
+   "thread_id": 0,
+   "prio": "System",
+   "error_code": "MY-013602",
+   "subsystem": "Server",
+   "message": "Channel mysql_main configured to support TLS. Encrypted connections are now supported for this channel.",
+   "previous_run": true
+  },
+  {
+   "logged": "2026-10-19 20:29:14.520479",
+   "thread_id": 0,
+   "prio": "Warning",
+   "error_code": "MY-010068",
+   "subsystem": "Server",
+   "message": "CA certificate ca.pem is self signed.",
+   "previous_run": true
+  },
+  {
+   "logged": "2026-10-19 20:29:14.373412",
+   "thread_id": 1,
+   "prio": "System",
+   "error_code": "MY-013577",
+   "subsystem": "InnoDB",
+   "message": "InnoDB initialization has ended.",
+   "previous_run": true
+  },
+  {
+   "logged": "2026-10-19 20:29:14.269775",
+   "thread_id": 1,
+   "prio": "System",
+   "error_code": "MY-013576",
+   "subsystem": "InnoDB",
+   "message": "InnoDB initialization has started.",
+   "previous_run": true
+  },
+  {
+   "logged": "2026-10-19 20:29:14.262735",
+   "thread_id": 0,
+   "prio": "System",
+   "error_code": "MY-010116",
+   "subsystem": "Server",
+   "message": "/usr/sbin/mysqld (mysqld 8.4.11) starting as process 125",
+   "previous_run": true
+  },
+  {
+   "logged": "2026-10-19 20:29:14.123343",
+   "thread_id": 0,
+   "prio": "System",
+   "error_code": "MY-015015",
+   "subsystem": "Server",
+   "message": "MySQL Server - start.",
+   "previous_run": true
+  },
+  {
+   "logged": "2026-10-19 20:29:14.082705",
+   "thread_id": 0,
+   "prio": "System",
+   "error_code": "MY-015018",
+   "subsystem": "Server",
+   "message": "MySQL Server Initialization - end.",
+   "previous_run": true
+  },
+  {
+   "logged": "2026-10-19 20:29:12.743172",
+   "thread_id": 6,
+   "prio": "Warning",
+   "error_code": "MY-010453",
+   "subsystem": "Server",
+   "message": "root@localhost is created with an empty password ! Please consider switching off the --initialize-insecure option.",
+   "previous_run": true
+  },
+  {
+   "logged": "2026-10-19 20:29:12.216872",
+   "thread_id": 1,
+   "prio": "System",
+   "error_code": "MY-013577",
+   "subsystem": "InnoDB",
+   "message": "InnoDB initialization has ended.",
+   "previous_run": true
+  },
+  {
+   "logged": "2026-10-19 20:29:12.102063",
+   "thread_id": 1,
+   "prio": "System",
+   "error_code": "MY-013576",
+   "subsystem": "InnoDB",
+   "message": "InnoDB initialization has started.",
+   "previous_run": true
+  },
+  {
+   "logged": "2026-10-19 20:29:12.098876",
+   "thread_id": 0,
+   "prio": "System",
+   "error_code": "MY-013169",
+   "subsystem": "Server",
+   "message": "/usr/sbin/mysqld (mysqld 8.4.11) initializing of server in progress as process 80",
+   "previous_run": true
+  },
+  {
+   "logged": "2026-10-19 20:29:12.098328",
+   "thread_id": 0,
+   "prio": "System",
+   "error_code": "MY-015017",
+   "subsystem": "Server",
+   "message": "MySQL Server Initialization - start.",
+   "previous_run": true
+  }
+ ],
+ "entries_total": 48,
+ "limit": 200,
+ "levels": [
+  "System",
+  "Error",
+  "Warning",
+  "Note"
+ ],
+ "summary": {
+  "status": "watch",
+  "text": "1 error and 4 warnings recorded since the server started at 2026-10-19 20:29:23."
+ },
+ "notes": [
+  "Note events are not recorded by the built-in filter at log_error_verbosity=2; zero does not mean none happened.",
+  "Counts, code groups and entries are separate reads of a changing buffer and may differ slightly."
+ ]
+}

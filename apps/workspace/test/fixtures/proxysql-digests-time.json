@@ -1,0 +1,533 @@
+{
+ "schema_version": "proxysql-digests-1.0",
+ "captured_at": "2026-10-20T14:40:00+00:00",
+ "available": true,
+ "is_proxysql": true,
+ "version": "3.0.11-797-g7c91137",
+ "message": null,
+ "filters": {
+  "order": "time",
+  "limit": 10,
+  "hostgroup": null,
+  "schema": null,
+  "user": null,
+  "text": null,
+  "digest": null,
+  "rule_id": null
+ },
+ "orders": [
+  {
+   "id": "slowest",
+   "label": "Slowest",
+   "available": true,
+   "why": null
+  },
+  {
+   "id": "time",
+   "label": "Most time",
+   "available": true,
+   "why": null
+  },
+  {
+   "id": "frequent",
+   "label": "Most frequent",
+   "available": true,
+   "why": null
+  },
+  {
+   "id": "rate",
+   "label": "Highest rate",
+   "available": true,
+   "why": null
+  },
+  {
+   "id": "rows",
+   "label": "Most rows sent",
+   "available": true,
+   "why": null
+  }
+ ],
+ "limits": [
+  10,
+  25,
+  50,
+  100
+ ],
+ "digests": [
+  {
+   "hostgroup": 30,
+   "schemaname": "information_schema",
+   "username": "mf_admin",
+   "client_address": "",
+   "digest": "0x48BE884F70034786",
+   "digest_text": "SHOW GLOBAL VARIABLES LIKE ?",
+   "count_star": 5,
+   "sum_time_us": 16763,
+   "min_time_us": 787,
+   "max_time_us": 6343,
+   "avg_time_us": 3352,
+   "first_seen": 1792537332,
+   "last_seen": 1792543106,
+   "seen_span_s": 5774,
+   "rate_qps": 0.0008659508139937652,
+   "rows_sent": 5,
+   "rows_affected": 0,
+   "key": "dg[30,\"information_schema\",\"mf_admin\",\"\",\"0x48BE884F70034786\"]",
+   "routing": {
+    "observed": 30,
+    "expected": 30,
+    "source": "default",
+    "rules": [],
+    "decisive": null,
+    "approximate": false,
+    "possible": [],
+    "unknown_rules": [],
+    "default_hostgroup": 30,
+    "verdict": "match",
+    "text": "No active rule sets a hostgroup, so it goes to mf_admin's default hostgroup 30, where it ran.",
+    "why": []
+   }
+  },
+  {
+   "hostgroup": 32,
+   "schemaname": "information_schema",
+   "username": "mf_admin",
+   "client_address": "",
+   "digest": "0xA8027DF9CE26E2FF",
+   "digest_text": "SELECT @@hostname",
+   "count_star": 5,
+   "sum_time_us": 13162,
+   "min_time_us": 192,
+   "max_time_us": 6686,
+   "avg_time_us": 2632,
+   "first_seen": 1792537332,
+   "last_seen": 1792543106,
+   "seen_span_s": 5774,
+   "rate_qps": 0.0008659508139937652,
+   "rows_sent": 5,
+   "rows_affected": 0,
+   "key": "dg[32,\"information_schema\",\"mf_admin\",\"\",\"0xA8027DF9CE26E2FF\"]",
+   "routing": {
+    "observed": 32,
+    "expected": 32,
+    "source": "rule",
+    "rules": [
+     30
+    ],
+    "decisive": 30,
+    "approximate": false,
+    "possible": [],
+    "unknown_rules": [],
+    "default_hostgroup": 30,
+    "verdict": "match",
+    "text": "Rule 30 sends it to hostgroup 32, where it ran.",
+    "why": []
+   }
+  },
+  {
+   "hostgroup": 32,
+   "schemaname": "information_schema",
+   "username": "mf_admin",
+   "client_address": "",
+   "digest": "0x9C012E222EE5AA4E",
+   "digest_text": "SELECT COUNT(*) FROM testdb.orders WHERE status = ? AND customer_id = ?",
+   "count_star": 20,
+   "sum_time_us": 7706,
+   "min_time_us": 78,
+   "max_time_us": 5974,
+   "avg_time_us": 385,
+   "first_seen": 1792537331,
+   "last_seen": 1792537331,
+   "seen_span_s": 0,
+   "rate_qps": 20.0,
+   "rows_sent": 20,
+   "rows_affected": 0,
+   "key": "dg[32,\"information_schema\",\"mf_admin\",\"\",\"0x9C012E222EE5AA4E\"]",
+   "routing": {
+    "observed": 32,
+    "expected": 32,
+    "source": "rule",
+    "rules": [
+     30
+    ],
+    "decisive": 30,
+    "approximate": false,
+    "possible": [],
+    "unknown_rules": [],
+    "default_hostgroup": 30,
+    "verdict": "match",
+    "text": "Rule 30 sends it to hostgroup 32, where it ran.",
+    "why": []
+   }
+  },
+  {
+   "hostgroup": 32,
+   "schemaname": "information_schema",
+   "username": "mf_admin",
+   "client_address": "",
+   "digest": "0xC54E85FD66BA43DA",
+   "digest_text": "SELECT name,country FROM testdb.customers WHERE id = ?",
+   "count_star": 20,
+   "sum_time_us": 6889,
+   "min_time_us": 69,
+   "max_time_us": 5369,
+   "avg_time_us": 344,
+   "first_seen": 1792537331,
+   "last_seen": 1792537331,
+   "seen_span_s": 0,
+   "rate_qps": 20.0,
+   "rows_sent": 20,
+   "rows_affected": 0,
+   "key": "dg[32,\"information_schema\",\"mf_admin\",\"\",\"0xC54E85FD66BA43DA\"]",
+   "routing": {
+    "observed": 32,
+    "expected": 32,
+    "source": "rule",
+    "rules": [
+     30
+    ],
+    "decisive": 30,
+    "approximate": false,
+    "possible": [],
+    "unknown_rules": [],
+    "default_hostgroup": 30,
+    "verdict": "match",
+    "text": "Rule 30 sends it to hostgroup 32, where it ran.",
+    "why": []
+   }
+  },
+  {
+   "hostgroup": 30,
+   "schemaname": "information_schema",
+   "username": "mf_admin",
+   "client_address": "",
+   "digest": "0xA64D4A3B64005014",
+   "digest_text": "START TRANSACTION",
+   "count_star": 5,
+   "sum_time_us": 5194,
+   "min_time_us": 52,
+   "max_time_us": 4947,
+   "avg_time_us": 1038,
+   "first_seen": 1792537331,
+   "last_seen": 1792537331,
+   "seen_span_s": 0,
+   "rate_qps": 5.0,
+   "rows_sent": 0,
+   "rows_affected": 0,
+   "key": "dg[30,\"information_schema\",\"mf_admin\",\"\",\"0xA64D4A3B64005014\"]",
+   "routing": {
+    "observed": 30,
+    "expected": 30,
+    "source": "default",
+    "rules": [],
+    "decisive": null,
+    "approximate": false,
+    "possible": [],
+    "unknown_rules": [],
+    "default_hostgroup": 30,
+    "verdict": "match",
+    "text": "No active rule sets a hostgroup, so it goes to mf_admin's default hostgroup 30, where it ran.",
+    "why": []
+   }
+  },
+  {
+   "hostgroup": 10,
+   "schemaname": "information_schema",
+   "username": "mf_admin",
+   "client_address": "",
+   "digest": "0xA8027DF9CE26E2FF",
+   "digest_text": "SELECT @@hostname",
+   "count_star": 5,
+   "sum_time_us": 1888,
+   "min_time_us": 203,
+   "max_time_us": 650,
+   "avg_time_us": 377,
+   "first_seen": 1792537332,
+   "last_seen": 1792543106,
+   "seen_span_s": 5774,
+   "rate_qps": 0.0008659508139937652,
+   "rows_sent": 5,
+   "rows_affected": 0,
+   "key": "dg[10,\"information_schema\",\"mf_admin\",\"\",\"0xA8027DF9CE26E2FF\"]",
+   "routing": {
+    "observed": 10,
+    "expected": 32,
+    "source": "rule",
+    "rules": [
+     30
+    ],
+    "decisive": 30,
+    "approximate": false,
+    "possible": [
+     10
+    ],
+    "unknown_rules": [],
+    "default_hostgroup": 30,
+    "verdict": "possible",
+    "text": "Rule 30 sends it to hostgroup 32 here; it ran on hostgroup 10, where rule 10 may have sent it.",
+    "why": [
+     "Rule 10 tests the query text (match_pattern), which the digest does not keep, so it may have matched these executions."
+    ]
+   }
+  },
+  {
+   "hostgroup": 30,
+   "schemaname": "information_schema",
+   "username": "mf_admin",
+   "client_address": "",
+   "digest": "0xABB02DE3FAD6872B",
+   "digest_text": "SHOW GLOBAL STATUS LIKE ?",
+   "count_star": 5,
+   "sum_time_us": 1329,
+   "min_time_us": 198,
+   "max_time_us": 462,
+   "avg_time_us": 265,
+   "first_seen": 1792537331,
+   "last_seen": 1792537331,
+   "seen_span_s": 0,
+   "rate_qps": 5.0,
+   "rows_sent": 5,
+   "rows_affected": 0,
+   "key": "dg[30,\"information_schema\",\"mf_admin\",\"\",\"0xABB02DE3FAD6872B\"]",
+   "routing": {
+    "observed": 30,
+    "expected": 30,
+    "source": "default",
+    "rules": [],
+    "decisive": null,
+    "approximate": false,
+    "possible": [],
+    "unknown_rules": [],
+    "default_hostgroup": 30,
+    "verdict": "match",
+    "text": "No active rule sets a hostgroup, so it goes to mf_admin's default hostgroup 30, where it ran.",
+    "why": []
+   }
+  },
+  {
+   "hostgroup": 10,
+   "schemaname": "information_schema",
+   "username": "mf_admin",
+   "client_address": "",
+   "digest": "0x4A8BCC5DA1E63EFB",
+   "digest_text": "SELECT COUNT(*) FROM testdb.orders WHERE product_id = ?",
+   "count_star": 5,
+   "sum_time_us": 1315,
+   "min_time_us": 136,
+   "max_time_us": 553,
+   "avg_time_us": 263,
+   "first_seen": 1792537331,
+   "last_seen": 1792537331,
+   "seen_span_s": 0,
+   "rate_qps": 5.0,
+   "rows_sent": 5,
+   "rows_affected": 0,
+   "key": "dg[10,\"information_schema\",\"mf_admin\",\"\",\"0x4A8BCC5DA1E63EFB\"]",
+   "routing": {
+    "observed": 10,
+    "expected": 32,
+    "source": "rule",
+    "rules": [
+     30
+    ],
+    "decisive": 30,
+    "approximate": false,
+    "possible": [
+     10
+    ],
+    "unknown_rules": [],
+    "default_hostgroup": 30,
+    "verdict": "possible",
+    "text": "Rule 30 sends it to hostgroup 32 here; it ran on hostgroup 10, where rule 10 may have sent it.",
+    "why": [
+     "Rule 10 tests the query text (match_pattern), which the digest does not keep, so it may have matched these executions."
+    ]
+   }
+  },
+  {
+   "hostgroup": 30,
+   "schemaname": "information_schema",
+   "username": "mf_admin",
+   "client_address": "",
+   "digest": "0x7499BD50A3EBE746",
+   "digest_text": "SELECT id,status FROM testdb.orders WHERE id = ? FOR UPDATE",
+   "count_star": 5,
+   "sum_time_us": 505,
+   "min_time_us": 86,
+   "max_time_us": 141,
+   "avg_time_us": 101,
+   "first_seen": 1792537331,
+   "last_seen": 1792537331,
+   "seen_span_s": 0,
+   "rate_qps": 5.0,
+   "rows_sent": 5,
+   "rows_affected": 0,
+   "key": "dg[30,\"information_schema\",\"mf_admin\",\"\",\"0x7499BD50A3EBE746\"]",
+   "routing": {
+    "observed": 30,
+    "expected": 30,
+    "source": "rule",
+    "rules": [
+     20
+    ],
+    "decisive": 20,
+    "approximate": false,
+    "possible": [],
+    "unknown_rules": [],
+    "default_hostgroup": 30,
+    "verdict": "match",
+    "text": "Rule 20 sends it to hostgroup 30, where it ran.",
+    "why": []
+   }
+  },
+  {
+   "hostgroup": 30,
+   "schemaname": "information_schema",
+   "username": "mf_admin",
+   "client_address": "",
+   "digest": "0x49474B60312C20A7",
+   "digest_text": "ROLLBACK",
+   "count_star": 5,
+   "sum_time_us": 362,
+   "min_time_us": 62,
+   "max_time_us": 86,
+   "avg_time_us": 72,
+   "first_seen": 1792537331,
+   "last_seen": 1792537331,
+   "seen_span_s": 0,
+   "rate_qps": 5.0,
+   "rows_sent": 0,
+   "rows_affected": 0,
+   "key": "dg[30,\"information_schema\",\"mf_admin\",\"\",\"0x49474B60312C20A7\"]",
+   "routing": {
+    "observed": 30,
+    "expected": 30,
+    "source": "default",
+    "rules": [],
+    "decisive": null,
+    "approximate": false,
+    "possible": [],
+    "unknown_rules": [],
+    "default_hostgroup": 30,
+    "verdict": "match",
+    "text": "No active rule sets a hostgroup, so it goes to mf_admin's default hostgroup 30, where it ran.",
+    "why": []
+   }
+  }
+ ],
+ "more": false,
+ "scanned": null,
+ "facets": {
+  "hostgroups": [
+   {
+    "value": 32,
+    "digests": 3,
+    "executions": 45
+   },
+   {
+    "value": 30,
+    "digests": 5,
+    "executions": 25
+   },
+   {
+    "value": 10,
+    "digests": 2,
+    "executions": 10
+   }
+  ],
+  "schemas": [
+   {
+    "value": "information_schema",
+    "digests": 10,
+    "executions": 80
+   }
+  ],
+  "users": [
+   {
+    "value": "mf_admin",
+    "digests": 10,
+    "executions": 80
+   }
+  ],
+  "complete": true
+ },
+ "totals": {
+  "digests": 10,
+  "executions": 80,
+  "sum_time_us": 55113
+ },
+ "window": {
+  "first_seen": 1792537331,
+  "last_seen": 1792543106
+ },
+ "rules": [
+  {
+   "rule_id": 10,
+   "destination_hostgroup": 10,
+   "apply": true,
+   "flagIN": 0,
+   "flagOUT": null,
+   "username": null,
+   "schemaname": null,
+   "match_digest": null,
+   "match_pattern": "^/\\* galera \\*/",
+   "negate_match_pattern": false,
+   "caseless": true,
+   "comment": "galera"
+  },
+  {
+   "rule_id": 20,
+   "destination_hostgroup": 30,
+   "apply": true,
+   "flagIN": 0,
+   "flagOUT": null,
+   "username": null,
+   "schemaname": null,
+   "match_digest": "^SELECT .* FOR UPDATE",
+   "match_pattern": null,
+   "negate_match_pattern": false,
+   "caseless": true,
+   "comment": "locking reads"
+  },
+  {
+   "rule_id": 30,
+   "destination_hostgroup": 32,
+   "apply": true,
+   "flagIN": 0,
+   "flagOUT": null,
+   "username": null,
+   "schemaname": null,
+   "match_digest": "^SELECT",
+   "match_pattern": null,
+   "negate_match_pattern": false,
+   "caseless": true,
+   "comment": "reads"
+  }
+ ],
+ "rule_hits": {
+  "10": 6,
+  "20": 5,
+  "30": 41
+ },
+ "routing": {
+  "evaluated": true,
+  "regex_engine": "PCRE",
+  "regex_variable": "1",
+  "iterations": 0,
+  "fast_routing_read": true,
+  "users_read": true,
+  "track_hostname": false,
+  "active_rules": 3,
+  "note": null
+ },
+ "notes": [],
+ "statements": [
+  "SELECT variable_name, variable_value FROM runtime_global_variables WHERE variable_name IN ('mysql-query_processor_regex', 'mysql-query_processor_iterations', 'mysql-query_digests', 'mysql-query_digests_track_hostname', 'mysql-select_version_forwarding')",
+  "SELECT * FROM runtime_mysql_query_rules",
+  "SELECT * FROM runtime_mysql_query_rules_fast_routing",
+  "SELECT username, active, default_hostgroup, transaction_persistent, frontend FROM runtime_mysql_users",
+  "SELECT * FROM stats_mysql_query_rules",
+  "SELECT hostgroup, schemaname, username, COUNT(*) AS digests, SUM(count_star) AS executions, SUM(sum_time) AS sum_time, MIN(first_seen) AS first_seen, MAX(last_seen) AS last_seen FROM stats_mysql_query_digest GROUP BY hostgroup, schemaname, username ORDER BY executions DESC LIMIT 201",
+  "SELECT * FROM stats_mysql_query_digest ORDER BY sum_time DESC, sum_time DESC, count_star DESC, digest LIMIT 11"
+ ]
+}

@@ -1,8 +1,8 @@
 {
   "$schema": "https://myflames.dev/schemas/sidecar-v1.json",
   "schema_version": "1.3",
-  "generated_at": "2026-04-25T12:51:26Z",
-  "myflames_version": "1.5.0",
+  "generated_at": "2026-10-15T19:53:26Z",
+  "myflames_version": "2.3.0",
   "source": {
     "type": "file",
     "engine": "mysql",
@@ -44,6 +44,15 @@
   "warnings": [
     {
       "severity": "warn",
+      "category": "misestimate",
+      "text": "Row estimate off by 10× or more: t1 (estimated 50, actual 12,475 rows per loop, 250× under)",
+      "source": "plan",
+      "node_labels": [
+        "Multi-range index lookup on t1 using idx_a (a=t2.x)"
+      ]
+    },
+    {
+      "severity": "warn",
       "category": "full_scan",
       "text": "Full table scan: t2 (2000 rows)",
       "source": "plan",
@@ -53,6 +62,13 @@
     }
   ],
   "suggestions": [
+    {
+      "severity": "medium",
+      "category": "statistics",
+      "action": "Refresh statistics with ANALYZE TABLE t1. If a filter on a non-indexed column stays misestimated, add a histogram: on MySQL 8.0+, ANALYZE TABLE t1 UPDATE HISTOGRAM ON <column> WITH 100 BUCKETS; on MariaDB, ANALYZE TABLE t1 PERSISTENT FOR COLUMNS (<column>) INDEXES ().",
+      "source": "plan",
+      "why": "the optimizer picks join order and access methods from these estimates. InnoDB recalculates persistent statistics on its own only after about 10% of a table's rows change, and on MariaDB, under the default use_stat_tables=PREFERABLY_FOR_QUERIES, ANALYZE TABLE collects column statistics and histograms only when you add PERSISTENT FOR."
+    },
     {
       "severity": "high",
       "category": "index",
@@ -103,7 +119,7 @@
     }
   ],
   "primary_action": {
-    "ref": "suggestions[0]"
+    "ref": "suggestions[1]"
   },
   "teach_hooks": [
     {

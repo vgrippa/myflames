@@ -1,0 +1,60 @@
+.editor-insights {
+  flex: none;
+  max-block-size: calc(var(--row-h) * 3);
+  overflow: auto;
+}
+.editor-insight {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-1) var(--space-3);
+  border-block-end: calc(var(--space-1) / 4) solid var(--line);
+  color: var(--ink-muted);
+  background: var(--surface);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+/* One capped line; the ⓘ popover carries the counters and the verdict
+   rules, and the tooltip repeats the full facts. A zero flex basis keeps the
+   Explain analyze button on the same line: the text takes what is left. */
+.editor-insight-text {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Short windows (the 720x520 minimum): the line takes less height, like the
+   one-line notes and the result bar in editor.css. */
+@media (max-height: 600px) {
+  .editor-insight {
+    padding-block: 2px;
+  }
+}
+.editor-insight-missing { color: var(--ink-muted); }
+.editor-insight-counters { margin: var(--space-2) 0; }
+.editor-insight-counters > div { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.editor-insight-counters dt { color: var(--ink-muted); }
+.editor-insight-counters dd { margin-inline-start: auto; overflow-wrap: anywhere; }
+.tx-state:has(.editor-transaction-popover) { min-width: 0; max-width: 100%; }
+.editor-transaction-popover { display: inline-flex; min-width: 0; max-width: 100%; }
+/* One line, capped with an ellipsis: the full meter text is the trigger's
+   tooltip and the popover it opens. */
+.editor-transaction-trigger {
+  max-width: 100%;
+  min-height: var(--control-h);
+  overflow: hidden;
+  white-space: nowrap;
+}
+.editor-transaction-trigger .status-pill {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.editor-transaction-trigger .status-pill .status-dot { margin-inline-end: var(--space-1); }
+.editor-transaction-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-block-start: var(--space-2); }

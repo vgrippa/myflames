@@ -1,0 +1,52 @@
+{
+ "schema_version": "cluster-1.0",
+ "engine": "mysql",
+ "server_version": "8.4.11",
+ "version_comment": "MySQL Community Server - GPL",
+ "captured_at": "2026-10-20T14:40:00+00:00",
+ "uptime_s": 3600,
+ "performance_schema": true,
+ "available": false,
+ "message": "This account cannot read performance_schema.replication_group_members (it needs SELECT on performance_schema): ERROR 1142 (42000) at line 1: SELECT command denied to user 'app'@'%' for table 'replication_group_members'",
+ "kind": "group_replication",
+ "server": {
+  "hostname": "mf-ic-1",
+  "port": 3306,
+  "report_host": "mf-ic-1",
+  "server_uuid": "11111111-1111-11f0-8a00-0242ac130002"
+ },
+ "cluster": {
+  "name": null,
+  "uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+  "size": null,
+  "expected_size": null,
+  "expected_source": null,
+  "component": null,
+  "quorum": null,
+  "failures_tolerated": null,
+  "topology": null,
+  "provider": null
+ },
+ "status": "unknown",
+ "status_why": [
+  "This account cannot read performance_schema.replication_group_members (it needs SELECT on performance_schema): ERROR 1142 (42000) at line 1: SELECT command denied to user 'app'@'%' for table 'replication_group_members'"
+ ],
+ "local": null,
+ "members": [],
+ "galera": null,
+ "group_replication": null,
+ "metadata": null,
+ "routers": [],
+ "findings": [],
+ "summary": {
+  "members": 0,
+  "ok": 0,
+  "watch": 0,
+  "problem": 0,
+  "unknown": 0
+ },
+ "statements": [
+  "SHOW GLOBAL VARIABLES"
+ ],
+ "notes": []
+}

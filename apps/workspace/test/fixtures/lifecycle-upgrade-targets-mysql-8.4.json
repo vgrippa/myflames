@@ -1,0 +1,289 @@
+{
+ "schema_version": "upgrade-targets-1.0",
+ "server": {
+  "engine": "mysql",
+  "flavor": "mysql",
+  "product": "MySQL",
+  "version": "8.4.3"
+ },
+ "install": {
+  "method": "rpm",
+  "label": "RPM packages",
+  "confidence": "high",
+  "evidence": [
+   "basedir is /usr/",
+   "plugin_dir is /usr/lib64/mysql/plugin/",
+   "build_id 5f1b0e0c8a2d4e6f identifies this exact build (no public index maps it to a package)",
+   "lib64/mysql/plugin under /usr is the RPM layout"
+  ],
+  "package": null,
+  "build_id": "5f1b0e0c8a2d4e6f7a8b9c0d1e2f3a4b5c6d7e8f",
+  "container": false
+ },
+ "targets": [
+  {
+   "version": "8.4.4",
+   "date": "2025-01-21",
+   "url": "https://dev.mysql.com/doc/relnotes/mysql/8.4/en/news-8-4-4.html",
+   "series": "8.4",
+   "check_version": "8.4.4",
+   "path": "patch",
+   "path_label": "same series",
+   "shell": {
+    "ok": true,
+    "needs": null
+   }
+  },
+  {
+   "version": "8.4.5",
+   "date": "2025-04-15",
+   "url": "https://dev.mysql.com/doc/relnotes/mysql/8.4/en/news-8-4-5.html",
+   "series": "8.4",
+   "check_version": "8.4.5",
+   "path": "patch",
+   "path_label": "same series",
+   "shell": {
+    "ok": true,
+    "needs": null
+   }
+  },
+  {
+   "version": "8.4.6",
+   "date": "2025-07-22",
+   "url": "https://dev.mysql.com/doc/relnotes/mysql/8.4/en/news-8-4-6.html",
+   "series": "8.4",
+   "check_version": "8.4.6",
+   "path": "patch",
+   "path_label": "same series",
+   "shell": {
+    "ok": true,
+    "needs": null
+   }
+  },
+  {
+   "version": "8.4.7",
+   "date": "2025-10-21",
+   "url": "https://dev.mysql.com/doc/relnotes/mysql/8.4/en/news-8-4-7.html",
+   "series": "8.4",
+   "check_version": "8.4.7",
+   "path": "patch",
+   "path_label": "same series",
+   "shell": {
+    "ok": true,
+    "needs": null
+   }
+  },
+  {
+   "version": "8.4.8",
+   "date": "2026-01-20",
+   "url": "https://dev.mysql.com/doc/relnotes/mysql/8.4/en/news-8-4-8.html",
+   "series": "8.4",
+   "check_version": "8.4.8",
+   "path": "patch",
+   "path_label": "same series",
+   "shell": {
+    "ok": true,
+    "needs": null
+   }
+  },
+  {
+   "version": "8.4.9",
+   "date": "2026-04-21",
+   "url": "https://dev.mysql.com/doc/relnotes/mysql/8.4/en/news-8-4-9.html",
+   "series": "8.4",
+   "check_version": "8.4.9",
+   "path": "patch",
+   "path_label": "same series",
+   "shell": {
+    "ok": true,
+    "needs": null
+   }
+  },
+  {
+   "version": "8.4.10",
+   "date": "2026-06-16",
+   "url": "https://dev.mysql.com/doc/relnotes/mysql/8.4/en/news-8-4-10.html",
+   "series": "8.4",
+   "check_version": "8.4.10",
+   "path": "patch",
+   "path_label": "same series",
+   "shell": {
+    "ok": true,
+    "needs": null
+   }
+  },
+  {
+   "version": "8.4.11",
+   "date": "2026-07-28",
+   "url": "https://dev.mysql.com/doc/relnotes/mysql/8.4/en/news-8-4-11.html",
+   "series": "8.4",
+   "check_version": "8.4.11",
+   "path": "patch",
+   "path_label": "same series",
+   "shell": {
+    "ok": true,
+    "needs": null
+   }
+  },
+  {
+   "version": "8.4.12",
+   "date": "2026-08-18",
+   "url": "https://dev.mysql.com/doc/relnotes/mysql/8.4/en/news-8-4-12.html",
+   "series": "8.4",
+   "check_version": "8.4.12",
+   "path": "patch",
+   "path_label": "same series",
+   "shell": {
+    "ok": true,
+    "needs": null
+   }
+  },
+  {
+   "version": "8.4.13",
+   "date": "2026-10-20",
+   "url": "https://dev.mysql.com/doc/relnotes/mysql/8.4/en/news-8-4-13.html",
+   "series": "8.4",
+   "check_version": "8.4.13",
+   "path": "patch",
+   "path_label": "same series",
+   "shell": {
+    "ok": true,
+    "needs": null
+   }
+  },
+  {
+   "version": "9.7.0",
+   "date": "2026-04-21",
+   "url": "https://dev.mysql.com/doc/relnotes/mysql/9.7/en/news-9-7-0.html",
+   "series": "9.7",
+   "check_version": "9.7.0",
+   "path": "next_lts",
+   "path_label": "next LTS",
+   "shell": {
+    "ok": false,
+    "needs": "9.7"
+   }
+  },
+  {
+   "version": "9.7.1",
+   "date": "2026-06-16",
+   "url": "https://dev.mysql.com/doc/relnotes/mysql/9.7/en/news-9-7-1.html",
+   "series": "9.7",
+   "check_version": "9.7.1",
+   "path": "next_lts",
+   "path_label": "next LTS",
+   "shell": {
+    "ok": false,
+    "needs": "9.7"
+   }
+  },
+  {
+   "version": "9.7.2",
+   "date": "2026-07-28",
+   "url": "https://dev.mysql.com/doc/relnotes/mysql/9.7/en/news-9-7-2.html",
+   "series": "9.7",
+   "check_version": "9.7.2",
+   "path": "next_lts",
+   "path_label": "next LTS",
+   "shell": {
+    "ok": false,
+    "needs": "9.7"
+   }
+  },
+  {
+   "version": "9.7.3",
+   "date": "2026-08-18",
+   "url": "https://dev.mysql.com/doc/relnotes/mysql/9.7/en/news-9-7-3.html",
+   "series": "9.7",
+   "check_version": "9.7.3",
+   "path": "next_lts",
+   "path_label": "next LTS",
+   "shell": {
+    "ok": false,
+    "needs": "9.7"
+   }
+  },
+  {
+   "version": "9.7.4",
+   "date": "2026-10-20",
+   "url": "https://dev.mysql.com/doc/relnotes/mysql/9.7/en/news-9-7-4.html",
+   "series": "9.7",
+   "check_version": "9.7.4",
+   "path": "next_lts",
+   "path_label": "next LTS",
+   "shell": {
+    "ok": false,
+    "needs": "9.7"
+   }
+  }
+ ],
+ "recommended": "9.7.4",
+ "not_direct": [
+  {
+   "series": "9.0",
+   "newest": "9.0.1",
+   "reason": "Still a supported upgrade path (MySQL manual, Table 3.1), but superseded: an Innovation release is supported only until the next release, and the 9.7 LTS series, a direct target, has shipped."
+  },
+  {
+   "series": "9.1",
+   "newest": "9.1.0",
+   "reason": "Still a supported upgrade path (MySQL manual, Table 3.1), but superseded: an Innovation release is supported only until the next release, and the 9.7 LTS series, a direct target, has shipped."
+  },
+  {
+   "series": "9.2",
+   "newest": "9.2.0",
+   "reason": "Still a supported upgrade path (MySQL manual, Table 3.1), but superseded: an Innovation release is supported only until the next release, and the 9.7 LTS series, a direct target, has shipped."
+  },
+  {
+   "series": "9.3",
+   "newest": "9.3.0",
+   "reason": "Still a supported upgrade path (MySQL manual, Table 3.1), but superseded: an Innovation release is supported only until the next release, and the 9.7 LTS series, a direct target, has shipped."
+  },
+  {
+   "series": "9.4",
+   "newest": "9.4.0",
+   "reason": "Still a supported upgrade path (MySQL manual, Table 3.1), but superseded: an Innovation release is supported only until the next release, and the 9.7 LTS series, a direct target, has shipped."
+  },
+  {
+   "series": "9.5",
+   "newest": "9.5.0",
+   "reason": "Still a supported upgrade path (MySQL manual, Table 3.1), but superseded: an Innovation release is supported only until the next release, and the 9.7 LTS series, a direct target, has shipped."
+  },
+  {
+   "series": "9.6",
+   "newest": "9.6.0",
+   "reason": "Still a supported upgrade path (MySQL manual, Table 3.1), but superseded: an Innovation release is supported only until the next release, and the 9.7 LTS series, a direct target, has shipped."
+  },
+  {
+   "series": "26.7",
+   "newest": "26.7.1",
+   "reason": "Not a direct upgrade: go to 9.7 first (an LTS or bugfix series cannot be skipped)."
+  },
+  {
+   "series": "26.10",
+   "newest": "26.10.0",
+   "reason": "Not a direct upgrade: go to 9.7 first (an LTS or bugfix series cannot be skipped)."
+  }
+ ],
+ "unclassified": [],
+ "unavailable": [],
+ "notes": [],
+ "source": {
+  "kind": "release_notes",
+  "label": "MySQL release notes",
+  "urls": [
+   "https://dev.mysql.com/doc/",
+   "https://dev.mysql.com/doc/relnotes/mysql/26.10/en/",
+   "https://dev.mysql.com/doc/relnotes/mysql/9.7/en/",
+   "https://dev.mysql.com/doc/relnotes/mysql/8.4/en/",
+   "https://dev.mysql.com/doc/relnotes/mysql/8.0/en/"
+  ],
+  "checked_at": "2026-11-08T21:20:00Z",
+  "error": null
+ },
+ "guidance": {
+  "text": "The MySQL Yum repository publishes the releases below; to move to another series, enable that series in the repository first.",
+  "command": null,
+  "url": "https://dev.mysql.com/doc/mysql-yum-repo-quick-guide/en/"
+ }
+}

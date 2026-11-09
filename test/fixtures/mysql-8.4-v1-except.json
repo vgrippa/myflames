@@ -1,0 +1,76 @@
+{
+  "query_block": {
+    "except_result": {
+      "using_temporary_table": true,
+      "select_id": 3,
+      "table_name": "<except1,2>",
+      "access_type": "ALL",
+      "query_specifications": [
+        {
+          "dependent": false,
+          "cacheable": true,
+          "query_block": {
+            "select_id": 1,
+            "cost_info": {
+              "query_cost": "103.00"
+            },
+            "table": {
+              "table_name": "film",
+              "access_type": "index",
+              "key": "idx_fk_language_id",
+              "used_key_parts": [
+                "language_id"
+              ],
+              "key_length": "1",
+              "rows_examined_per_scan": 1000,
+              "rows_produced_per_join": 1000,
+              "filtered": "100.00",
+              "using_index": true,
+              "cost_info": {
+                "read_cost": "3.00",
+                "eval_cost": "100.00",
+                "prefix_cost": "103.00",
+                "data_read_per_join": "539K"
+              },
+              "used_columns": [
+                "film_id"
+              ]
+            }
+          }
+        },
+        {
+          "dependent": false,
+          "cacheable": true,
+          "query_block": {
+            "select_id": 2,
+            "cost_info": {
+              "query_cost": "460.85"
+            },
+            "table": {
+              "table_name": "inventory",
+              "access_type": "index",
+              "key": "idx_fk_film_id",
+              "used_key_parts": [
+                "film_id"
+              ],
+              "key_length": "2",
+              "rows_examined_per_scan": 4581,
+              "rows_produced_per_join": 4581,
+              "filtered": "100.00",
+              "using_index": true,
+              "cost_info": {
+                "read_cost": "2.75",
+                "eval_cost": "458.10",
+                "prefix_cost": "460.85",
+                "data_read_per_join": "71K"
+              },
+              "used_columns": [
+                "film_id"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

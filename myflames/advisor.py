@@ -21,6 +21,10 @@ The advisor never mutates the plan tree; it only augments the analysis dict
 produced by :func:`analyze_plan`.
 """
 
+import re
+
+from .server_info import detect_flavor
+
 
 # ---------------------------------------------------------------------------
 # Unit helpers
@@ -66,6 +70,21 @@ def _human_bytes(n):
 # Rules
 # ---------------------------------------------------------------------------
 
+def buffer_pool_coverage(buffer_pool_bytes, data_bytes):
+    """How the buffer pool compares with *data_bytes*: ``"much smaller than"``
+    below a quarter, ``"smaller than"`` below half, else None (or when either
+    size is unknown). Shared with config_review's server-wide check.
+    """
+    if buffer_pool_bytes <= 0 or data_bytes <= 0:
+        return None
+    ratio = float(buffer_pool_bytes) / data_bytes
+    if ratio < 0.25:
+        return "much smaller than"
+    if ratio < 0.5:
+        return "smaller than"
+    return None
+
+
 def _rule_buffer_pool_vs_data_size(analysis, schema, stats, variables):
     """Compare the buffer pool with table allocation, not measured hot pages."""
     if not variables or not stats:
@@ -77,16 +96,8 @@ def _rule_buffer_pool_vs_data_size(analysis, schema, stats, variables):
         _to_int(s.get("data_length")) + _to_int(s.get("index_length"))
         for s in stats.values()
     )
-    if total <= 0:
-        return (None, None)
-    ratio = bp / total
-    if ratio >= 1.0:
-        return (None, None)  # already fits
-    if ratio < 0.25:
-        severity = "much smaller than"
-    elif ratio < 0.5:
-        severity = "smaller than"
-    else:
+    severity = buffer_pool_coverage(bp, total)
+    if severity is None:
         return (None, None)
     warn = (
         "innodb_buffer_pool_size ({}) is {} the combined data and index "
@@ -103,13 +114,77 @@ def _rule_buffer_pool_vs_data_size(analysis, schema, stats, variables):
     return (warn, sug)
 
 
-def _rule_sort_buffer_vs_filesort(analysis, schema, stats, variables):
-    """Identify a small sort buffer as a tuning candidate, not a proven spill."""
-    if not analysis or not variables:
+def _captured_sort_merge_passes(context):
+    """Sort merge passes a capture measured for the statement, or None:
+    ``statistics.sort_merge_passes`` (events_statements_history), else the
+    ``Sort_merge_passes`` session status delta; the largest over its runs."""
+    capture = (context or {}).get("capture") or {}
+    # An estimated capture (EXPLAIN) never runs the statement: its status
+    # deltas are the EXPLAIN's own, so they prove nothing about the sorts.
+    if capture.get("mode") != "analyze":
+        return None
+    measured = []
+    for run in capture.get("runs") or []:
+        if not isinstance(run, dict):
+            continue
+        value = (run.get("statistics") or {}).get("sort_merge_passes")
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            value = (run.get("session_status_delta") or {}).get("Sort_merge_passes")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            measured.append(value)
+    return max(measured) if measured else None
+
+
+def _sort_merge_passes(analysis, context):
+    """Merge passes measured for this query's sorts, or None when unknown.
+
+    A sort that does not fit in sort_buffer_size writes sorted chunks to a
+    temporary file and merges them; every merge pass increments
+    Sort_merge_passes (MySQL filesort.cc merge_buffers; MariaDB
+    filesort.cc), and a sort that fits in memory makes none (MySQL
+    filesort.cc: "The whole set is in memory"). Evidence, in order: the
+    capture's per-statement Performance Schema counter
+    (``statistics.sort_merge_passes``), its session status delta, then
+    MariaDB ANALYZE ``r_sort_passes`` kept on the plan's sorts.
+    """
+    captured = _captured_sort_merge_passes(context)
+    if captured is not None:
+        return captured
+    plan = [f.get("merge_passes") for f in (analysis or {}).get("filesorts") or []]
+    if plan and all(isinstance(p, (int, float)) for p in plan):
+        return sum(plan)
+    return None
+
+
+def _rule_sort_buffer_vs_filesort(analysis, schema, stats, variables, context=None):
+    """A small sort buffer is a tuning candidate, not a proven spill.
+
+    With measured merge passes (:func:`_sort_merge_passes`) the rule says
+    what happened: passes mean the sort merged runs from disk; none mean it
+    fit in memory, so there is nothing to tune. Without them it only notes
+    the buffer size.
+    """
+    if not analysis or not analysis.get("filesorts"):
         return (None, None)
-    if not analysis.get("filesorts"):
+    passes = _sort_merge_passes(analysis, context)
+    sb = _to_int((variables or {}).get("sort_buffer_size"))
+    if passes is not None and passes > 0:
+        warn = (
+            "Filesort merged sorted runs from disk: {:,} sort merge pass(es) "
+            "for this query{}."
+        ).format(int(passes), "; sort_buffer_size is {}".format(_human_bytes(sb)) if sb > 0 else "")
+        sug = (
+            "Test a larger sort_buffer_size for this session and compare "
+            "Sort_merge_passes, or add an index that returns rows in ORDER BY "
+            "order. Why: the rows to sort did not fit in the sort buffer, so "
+            "the server wrote sorted runs to a temporary file and merged them "
+            "back. Account for concurrent sorting sessions before changing the "
+            "global default."
+        )
+        return (warn, sug)
+    if passes == 0 or not variables:
+        # Measured: the sort fit in memory. Or nothing to compare against.
         return (None, None)
-    sb = _to_int(variables.get("sort_buffer_size"))
     if sb <= 0 or sb >= 2 * 1024 * 1024:
         return (None, None)
     warn = (
@@ -140,6 +215,25 @@ def _rule_join_buffer_vs_hash_or_bnl(analysis, schema, stats, variables):
     if jb <= 0 or jb >= 2 * 1024 * 1024:
         return (None, None)
     kind = "Hash join" if has_hash else "Block Nested-Loop"
+    if detect_flavor(variables.get("version"), variables.get("version_comment")) == "mariadb":
+        # MariaDB BNL and BNLH keep the join buffer in memory: when it is
+        # full the inner table is read for the buffered rows and the buffer
+        # is refilled (one r_scans per refill, join_matching_records in
+        # sql/sql_join_cache.cc). Nothing spills to tmpdir.
+        warn = (
+            "{} detected with join_buffer_size={}. MariaDB reads the inner "
+            "table once per join-buffer refill."
+        ).format(kind, _human_bytes(jb))
+        sug = (
+            "Raise join_buffer_size per-session to 2M–8M "
+            "(SET SESSION join_buffer_size = 8*1024*1024) if the inner "
+            "table's r_loops shows many refills. Why: MariaDB fills the join "
+            "buffer with outer rows (hashed for BNLH) and reads the inner "
+            "table once per refill, so a larger buffer means fewer reads of "
+            "the inner table. Bigger win: add an index on the join column so "
+            "the join becomes an indexed lookup."
+        )
+        return (warn, sug)
     warn = (
         "{} detected but join_buffer_size is only {}. Build/batch phase may "
         "spill to tmpdir."
@@ -180,13 +274,16 @@ def _rule_tmp_table_size_vs_materialize(analysis, schema, stats, variables):
     tmp = _to_int(variables.get("tmp_table_size"))
     heap = _to_int(variables.get("max_heap_table_size"))
     engine = (variables.get("internal_tmp_mem_storage_engine") or "").upper()
-    is_mariadb = "mariadb" in (variables.get("version") or "").lower()
+    is_mariadb = detect_flavor(variables.get("version"), variables.get("version_comment")) == "mariadb"
     uses_memory = engine == "MEMORY" or is_mariadb
     present = [v for v in (tmp, heap) if v > 0] if uses_memory else [tmp]
     limit = min(present) if present else 0
     if limit <= 0 or limit >= 32 * 1024 * 1024:
         return (None, None)
-    setting = "tmp_table_size/max_heap_table_size" if uses_memory else "tmp_table_size"
+    # MEMORY (and MariaDB's in-memory internal tables) use the smaller of
+    # the two limits; MySQL TempTable uses tmp_table_size only.
+    setting = ("the smaller of tmp_table_size and max_heap_table_size" if uses_memory
+               else "tmp_table_size")
     warn = (
         "Query materializes {} temp table(s); {} is {}. "
         "This limit alone does not show whether a table spilled to disk."
@@ -393,6 +490,37 @@ def _rule_engine_innodb(analysis, schema, stats, variables):
     return out
 
 
+def flush_log_durability(value):
+    """What a non-durable ``innodb_flush_log_at_trx_commit`` loses on a crash,
+    or None for 1 and MariaDB's 3, which make each commit durable (MariaDB
+    syncs at prepare for both; 3 also syncs at commit when the binary log is
+    on). Shared with config_review's durability check.
+    """
+    # Durability semantics (verified in storage/innobase/handler/ha_innodb.cc
+    # around line 5896 and trx/trx0trx.cc): with value 2 the redo log is
+    # written to the OS file at each commit but only fsynced once per
+    # second, so a mysqld crash keeps the last-second commits (the OS
+    # buffer cache still holds them) while an OS crash or power loss
+    # drops them. With value 0 the redo log is NOT even written at
+    # commit — the background thread writes+fsyncs once per second, so
+    # a mysqld crash drops the last ~1s of transactions, too.
+    if value == 2:
+        return (
+            "writes go to the OS file at each COMMIT but are only "
+            "fsynced once per second. A mysqld crash is survivable "
+            "(the OS buffer cache still holds the last-second "
+            "commits), but an OS crash or power loss drops them."
+        )
+    if value == 0:
+        return (
+            "writes are neither flushed nor fsynced at COMMIT: the "
+            "background thread writes and fsyncs once per second, so ANY "
+            "crash, even a plain mysqld crash, drops about the last "
+            "second of transactions."
+        )
+    return None
+
+
 def _rule_flush_log_durability(analysis, schema, stats, variables):
     """Not directly query-related but commonly misconfigured: warn if
     ``innodb_flush_log_at_trx_commit`` is not 1 — the query plan may look
@@ -411,32 +539,10 @@ def _rule_flush_log_durability(analysis, schema, stats, variables):
     if not is_write:
         return (None, None)
     val = _to_int(variables.get("innodb_flush_log_at_trx_commit"), default=1)
-    if val == 1:
+    durability = flush_log_durability(val)
+    if durability is None:
         return (None, None)
-    # Durability semantics (verified in storage/innobase/handler/ha_innodb.cc
-    # around line 5896 and trx/trx0trx.cc): with value 2 the redo log is
-    # written to the OS file at each commit but only fsynced once per
-    # second, so a mysqld crash keeps the last-second commits (the OS
-    # buffer cache still holds them) while an OS crash or power loss
-    # drops them. With value 0 the redo log is NOT even written at
-    # commit — the background thread writes+fsyncs once per second, so
-    # a mysqld crash drops the last ~1s of transactions, too.
-    if val == 2:
-        rule_id = "FLUSH_LOG_COMMIT_2"
-        durability = (
-            "writes go to the OS file at each COMMIT but are only "
-            "fsynced once per second. A mysqld crash is survivable "
-            "(the OS buffer cache still holds the last-second "
-            "commits) but OS crash / power loss drops them."
-        )
-    else:
-        rule_id = "FLUSH_LOG_COMMIT_0"
-        durability = (
-            "writes are neither flushed nor fsynced at COMMIT — the "
-            "background thread writes+fsyncs once per second, so ANY "
-            "crash (including a plain mysqld crash) drops the last "
-            "~1s of transactions."
-        )
+    rule_id = "FLUSH_LOG_COMMIT_2" if val == 2 else "FLUSH_LOG_COMMIT_0"
     return (
         rule_id,
         "high",
@@ -452,6 +558,402 @@ def _rule_flush_log_durability(analysis, schema, stats, variables):
     )
 
 
+def _lookup(mapping, table):
+    """Find *table* (bare or ``schema.table``) in a ``{fq: value}`` map."""
+    for key, value in (mapping or {}).items():
+        if key == table or key.endswith("." + table):
+            return key, value
+    return None, None
+
+
+def _freshness_facts(entry):
+    """The STALE_STATS facts of one freshness entry, as text parts."""
+    facts = []
+    if entry.get("last_update"):
+        facts.append("InnoDB statistics last updated {}{}".format(
+            entry["last_update"],
+            " (n_rows {:,})".format(entry["n_rows"]) if isinstance(entry.get("n_rows"), int) else ""))
+    histograms = entry.get("histograms") or []
+    if not isinstance(histograms, list):
+        histograms = []
+    facts.append("histograms on " + ", ".join(histograms) if histograms
+                 else "no column histograms")
+    return facts
+
+
+def _captured_base_tables(capture):
+    """Proven unaliased MariaDB names from one flat captured SELECT.
+
+    This deliberately refuses CTEs, subqueries, set operations, table
+    functions and table hints rather than resolving SQL scopes or aliases.
+    Schema identity comes from the captured query, never from the set of
+    statistics entries that happened to be readable. A digest's source
+    schema need not be the connection's effective default schema.
+    """
+    capture = capture or {}
+    query = capture.get("query")
+    if capture.get("engine") != "mariadb" or not isinstance(query, str) or len(query) > 200000:
+        return {}
+    # Executable comments have SQL semantics that masking would discard.
+    if re.search(r"/\*(?:!|M!)", query, re.I):
+        return {}
+    from .collectors import _strip_comments_and_literals
+    tokens = re.findall(r"`(?:``|[^`])*`|[\w$]+|[^\s]", _strip_comments_and_literals(query))
+    words = [t.upper() for t in tokens]
+    if (not words or words[0] != "SELECT" or words.count("SELECT") != 1
+            or any(t in words for t in ("WITH", "UNION", "EXCEPT", "INTERSECT", "FOR", "LOCK",
+                                       "PARTITION", "USE", "FORCE", "IGNORE", "'", '"', "`", "\\"))
+            or ";" in tokens[:-1]):
+        return {}
+    stops = {"WHERE", "GROUP", "HAVING", "ORDER", "LIMIT", "FOR", "LOCK", "WINDOW", ";"}
+    reserved = stops | {"JOIN", "STRAIGHT_JOIN", "INNER", "OUTER", "LEFT", "RIGHT", "CROSS", "NATURAL", "ON", "USING"}
+
+    def identifier(pos):
+        if pos >= len(tokens):
+            return None
+        token = tokens[pos]
+        if token.startswith("`") and token.endswith("`"):
+            return token[1:-1].replace("``", "`") or None
+        return token if re.fullmatch(r"[\w$]+", token) and not token.isdigit() else None
+
+    names = {}
+    pos, depth, in_sources, expecting = 0, 0, False, False
+    while pos < len(tokens):
+        token, word = tokens[pos], words[pos]
+        if expecting:
+            first = identifier(pos)
+            if first is None:
+                return {}
+            schema, table = None, first
+            pos += 1
+            if pos < len(tokens) and tokens[pos] == ".":
+                table = identifier(pos + 1)
+                if not table:
+                    return {}
+                schema = first
+                pos += 2
+            # Parenthesized sources, functions and hints need SQL resolution.
+            if pos < len(tokens) and words[pos] in ("(", "PARTITION", "USE", "FORCE", "IGNORE"):
+                return {}
+            alias = None
+            if pos < len(tokens) and words[pos] == "AS":
+                alias = identifier(pos + 1)
+                if not alias:
+                    return {}
+                pos += 2
+            elif pos < len(tokens) and words[pos] not in reserved and identifier(pos):
+                alias = identifier(pos)
+                pos += 1
+            name = alias if alias is not None else table
+            # Keep every occurrence: a duplicate name cannot identify one access.
+            key = (schema + "." + table if isinstance(schema, str) and schema
+                   and "." not in schema and "." not in table else None)
+            names.setdefault(name, []).append(key if alias is None else None)
+            expecting = False
+            continue
+        if token == "(":
+            depth += 1
+        elif token == ")":
+            depth -= 1
+            if depth < 0:
+                return {}
+        elif depth == 0:
+            if word == "FROM" or in_sources and (word in ("JOIN", "STRAIGHT_JOIN") or token == ","):
+                in_sources, expecting = True, True
+            elif word in stops:
+                in_sources = False
+        pos += 1
+    if depth or expecting:
+        return {}
+    return {name: keys[0] for name, keys in names.items() if len(keys) == 1 and keys[0]}
+
+
+def _stale_entries(analysis, freshness, capture=None):
+    """``[(plan table, fq table, entry), ...]`` for each misestimated table
+    with a freshness entry, in misestimate order (worst first)."""
+    out = []
+    base_tables = _captured_base_tables(capture)
+    for miss in (analysis or {}).get("misestimates") or []:
+        table = miss.get("table") or ""
+        # MySQL's schema-qualified plan identity is exact. MariaDB prints
+        # aliases, so even a unique suffix (or an alias containing a dot)
+        # cannot establish which base table supplied the access.
+        schema = miss.get("schema")
+        # Freshness keys and _qualified use one schema/table separator.
+        # Dots inside either identifier cannot be represented unambiguously.
+        qualified = (isinstance(schema, str) and schema and "." not in schema
+                     and table.startswith(schema + ".") and "." not in table[len(schema) + 1:])
+        key = (table if qualified
+               else base_tables.get(table))
+        entry = (freshness or {}).get(key)
+        if entry and isinstance(entry, dict):
+            out.append((table, key, entry))
+    return out
+
+
+def _rule_stale_statistics(analysis, schema, stats, variables, context):
+    """Add statistics freshness evidence to each misestimated table.
+
+    The plan-level row-estimate warning already suggests ANALYZE TABLE; this
+    rule reports when InnoDB persistent statistics were last recalculated
+    (``mysql.innodb_table_stats.last_update``) and which columns have
+    histograms, so the reader can tell stale statistics from a missing
+    histogram. Timestamps are server-local; no age is computed.
+    """
+    freshness = context.get("freshness") or {}
+    if not freshness:
+        return []
+    out = []
+    seen = set()
+    for _table, key, entry in _stale_entries(analysis, freshness, context.get("capture")):
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(("STALE_STATS", "medium",
+                     "Statistics for misestimated table {}: {}.".format(key, "; ".join(_freshness_facts(entry))),
+                     ""))
+    return out
+
+
+def statistics_evidence(analysis, freshness, capture=None):
+    """The STALE_STATS evidence per misestimated table, for the plan views.
+
+    ``{plan table identity: {table, last_update, n_rows, histograms, text,
+    statement}}``: ``table`` is the server's ``schema.table`` the freshness
+    entry belongs to, ``text`` the same facts the STALE_STATS finding states,
+    and ``statement`` the ``ANALYZE TABLE`` the plan's statistics suggestion
+    names, quoted for copy and paste. myflames never runs it. A table the
+    advisor cannot identify (an alias, an unknown schema, or statistics not
+    readable) has no entry. MariaDB requires an unaliased base table and a
+    known schema in the capture query context. ANALYZE TABLE recalculates InnoDB persistent statistics on both
+    engines (ha_innobase::analyze calls info_low with the ANALYZE flag).
+    """
+    out = {}
+    for table, key, entry in _stale_entries(analysis, freshness or {}, capture):
+        if table in out:
+            continue
+        histograms = entry.get("histograms") if isinstance(entry.get("histograms"), list) else []
+        last_update = entry.get("last_update")
+        out[table] = {
+            "table": key,
+            "last_update": last_update if isinstance(last_update, str) else None,
+            "n_rows": entry["n_rows"] if isinstance(entry.get("n_rows"), int)
+            and not isinstance(entry.get("n_rows"), bool) else None,
+            "histograms": [h for h in histograms if isinstance(h, str)],
+            "text": "; ".join(_freshness_facts(entry)),
+            "statement": "ANALYZE TABLE {};".format(_qualified(key)),
+        }
+    return out
+
+
+_DROPPABLE_KINDS = ("KEY", "INDEX")
+_BTREE_KINDS = ("KEY", "INDEX", "UNIQUE KEY", "UNIQUE", "UNIQUE INDEX", "PRIMARY KEY")
+
+
+def _index_signature(index):
+    """``((name, length, desc), ...)`` for a plain BTREE index, else None.
+
+    FULLTEXT, SPATIAL, HASH, and functional key parts are excluded, matching
+    sys.schema_redundant_indexes (BTREE only). Unlike sys, prefix lengths and
+    sort direction are compared, so ``a(10)`` never stands in for ``a``.
+    """
+    if (index.get("kind") or "").upper() not in _BTREE_KINDS or index.get("using") == "HASH":
+        return None
+    parts = index.get("parts")
+    if parts is None:
+        parts = [{"name": c, "length": None, "desc": False, "expression": False}
+                 for c in index.get("columns") or []]
+    if not parts or any(part.get("expression") for part in parts):
+        return None
+    return tuple(((part["name"] or "").lower(), part.get("length"), bool(part.get("desc")))
+                 for part in parts)
+
+
+def _ident(name):
+    """Backquote an identifier for copy-paste SQL."""
+    return "`" + (name or "").replace("`", "``") + "`"
+
+
+def _qualified(fq):
+    return ".".join(_ident(part) for part in fq.split(".", 1))
+
+
+def _index_text(index):
+    name = index.get("name") or ("PRIMARY" if "PRIMARY" in (index.get("kind") or "") else "?")
+    cols = []
+    for part in index.get("parts") or [{"name": c} for c in index.get("columns") or []]:
+        col = part["name"]
+        if part.get("length"):
+            col += "({})".format(part["length"])
+        if part.get("desc"):
+            col += " DESC"
+        cols.append(col)
+    return "{} ({})".format(name, ", ".join(cols))
+
+
+def find_redundant_indexes(indexes):
+    """``[(index, dominant, reason), ...]`` for one table's *indexes*.
+
+    *indexes* use the ``parse_show_create_table`` shape (``kind``, ``name``,
+    ``parts`` or ``columns``, ``using``) in table order; the order decides
+    which of two identical indexes is reported. *reason* is
+    ``"duplicates"`` or ``"is a leftmost prefix of"``. The rules (BTREE key
+    parts only; prefix lengths and direction compared; PRIMARY KEY never
+    flagged; UNIQUE only as an exact duplicate of another unique index) are
+    the ones :func:`_rule_redundant_indexes` and ``myflames indexes`` share.
+    """
+    out = []
+    indexes = [(i, _index_signature(i)) for i in indexes]
+    indexes = [(i, sig) for i, sig in indexes if sig]
+    for pos, (index, sig) in enumerate(indexes):
+        kind = (index.get("kind") or "").upper()
+        if "PRIMARY" in kind:
+            continue
+        unique = kind.startswith("UNIQUE")
+        match = None
+        # An exact duplicate is the clearer explanation, so look for one
+        # before falling back to a longer index that starts the same way.
+        for want_duplicate in (True, False):
+            for other_pos, (other, other_sig) in enumerate(indexes):
+                if other is index:
+                    continue
+                other_unique = "UNIQUE" in (other.get("kind") or "").upper() \
+                    or "PRIMARY" in (other.get("kind") or "").upper()
+                if want_duplicate and other_sig == sig and (
+                        (other_unique and not unique)
+                        or (other_unique == unique and other_pos < pos)):
+                    match = (other, "duplicates")
+                elif not want_duplicate and not unique and len(other_sig) > len(sig) \
+                        and other_sig[:len(sig)] == sig:
+                    match = (other, "is a leftmost prefix of")
+                if match:
+                    break
+            if match:
+                break
+        if match:
+            out.append((index, match[0], match[1]))
+    return out
+
+
+def _rule_redundant_indexes(analysis, schema, stats, variables, context):
+    """Flag indexes made redundant by another index on the same table.
+
+    A non-unique index is redundant when its key parts are a leftmost prefix
+    of another BTREE index, or when another index has the same key parts and
+    is unique (or appears first). PRIMARY KEY is never flagged, and a UNIQUE
+    index is flagged only as an exact duplicate of another unique index,
+    because it also enforces a constraint. Also reports when the advisor's
+    own CREATE INDEX suggestion would make an existing index redundant.
+    """
+    if not schema:
+        return []
+    out = []
+    for fq, parsed in sorted(schema.items()):
+        # MySQL prints USING HASH only when it was explicit, so a MEMORY
+        # table's default HASH index would look like BTREE here.
+        if (parsed.get("engine") or "").upper() in ("MEMORY", "HEAP"):
+            continue
+        for index, other, reason in find_redundant_indexes(parsed.get("indexes") or []):
+            table = _qualified(fq)
+            out.append((
+                "REDUNDANT_INDEX", "medium",
+                "Redundant index on {}: {} {} {}.".format(
+                    fq, _index_text(index), reason, _index_text(other)),
+                "ALTER TABLE {} DROP INDEX {}. Why: {} serves every lookup "
+                "that {} serves, and each extra index slows writes and uses "
+                "buffer pool memory. First check for FORCE INDEX or USE INDEX "
+                "hints that name it, or test without it by making it "
+                "invisible (MySQL 8.0+: ALTER TABLE {} ALTER INDEX {} "
+                "INVISIBLE; MariaDB 10.6+: ALTER TABLE {} ALTER INDEX {} "
+                "IGNORED).".format(
+                    table, _ident(index.get("name")), other.get("name") or "PRIMARY",
+                    index.get("name"), table, _ident(index.get("name")), table,
+                    _ident(index.get("name"))),
+            ))
+    for hint in analysis.get("index_suggestions") or []:
+        key, parsed = _lookup(schema, hint.get("table") or "")
+        cols = tuple(c.lower() for c in hint.get("columns") or [])
+        if not parsed or len(cols) < 2:
+            continue
+        for index, sig in ((i, _index_signature(i)) for i in parsed.get("indexes") or []):
+            if not sig or (index.get("kind") or "").upper() not in _DROPPABLE_KINDS:
+                continue
+            plain = tuple(name for name, length, desc in sig if length is None and not desc)
+            if len(plain) == len(sig) and len(sig) < len(cols) and cols[:len(sig)] == plain:
+                out.append((
+                    "REDUNDANT_INDEX", "low", "",
+                    "After you create the suggested index on {} ({}), drop {}: "
+                    "ALTER TABLE {} DROP INDEX {}. Why: the new index starts with "
+                    "the same columns, so {} would add write cost without serving "
+                    "any lookup the new index cannot.".format(
+                        hint["table"], ", ".join(hint["columns"]), _index_text(index),
+                        _qualified(key), _ident(index.get("name")), index.get("name")),
+                ))
+    return out
+
+
+#: Fewest pages run 1 must read from disk before a cold buffer pool is
+#: worth mentioning (100 pages = 1.6 MB with 16 KB pages).
+COLD_CACHE_MIN_PAGES = 100
+
+
+def _rule_cold_cache(analysis, schema, stats, variables, context):
+    """Report when run 1 of a repeated capture read many pages from disk and
+    later runs did not, which is consistent with a cold buffer pool.
+
+    ``Innodb_buffer_pool_reads`` is server-wide (on MariaDB it also counts
+    read-ahead pages; on MySQL ``Innodb_buffer_pool_read_ahead`` is added),
+    so the wording stays at "consistent with", never proof.
+    """
+    capture = context.get("capture") or {}
+    runs = [r for r in capture.get("runs") or [] if isinstance(r, dict)]
+    if capture.get("mode") != "analyze" or len(runs) < 2:
+        return []
+
+    mysql = (capture.get("engine") or "mysql") != "mariadb"
+
+    def reads(run):
+        delta = run.get("session_status_delta") or {}
+        value = delta.get("Innodb_buffer_pool_reads")
+        if not isinstance(value, (int, float)):
+            return None
+        # MySQL counts linear read-ahead pages only in
+        # Innodb_buffer_pool_read_ahead (buf0rea.cc), so a cold sequential
+        # scan looks almost free without it. MariaDB's reads counter already
+        # includes read-ahead, so adding it there would double count.
+        ahead = delta.get("Innodb_buffer_pool_read_ahead")
+        if mysql and isinstance(ahead, (int, float)):
+            value += ahead
+        return value
+
+    def median(values):
+        values = sorted(values)
+        mid = len(values) // 2
+        return values[mid] if len(values) % 2 else (values[mid - 1] + values[mid]) / 2.0
+
+    first_reads = reads(runs[0])
+    later_reads = [reads(r) for r in runs[1:]]
+    first_ms = runs[0].get("total_time_ms")
+    later_ms = [r.get("total_time_ms") for r in runs[1:]]
+    if first_reads is None or None in later_reads or first_ms is None \
+            or any(not isinstance(ms, (int, float)) for ms in later_ms):
+        return []
+    warm_reads, warm_ms = median(later_reads), median(later_ms)
+    if first_reads < COLD_CACHE_MIN_PAGES or warm_reads > first_reads * 0.1 \
+            or first_ms < warm_ms * 1.5:
+        return []
+    return [("COLD_CACHE", "low",
+             "Run 1 read {:,} pages from disk in {:,.1f} ms; runs 2\u2013{} read "
+             "about {:,.0f} pages in {:,.1f} ms. This is consistent with a cold "
+             "buffer pool on run 1. The counters are server-wide, so other "
+             "sessions and background page reads can add to them.".format(
+                 int(first_reads), first_ms, len(runs), warm_reads, warm_ms),
+             "Judge the plan by the warm runs, or run the query once before "
+             "measuring. Why: a run that reads from disk measures storage "
+             "latency as much as the plan. If production also starts cold, "
+             "check whether the buffer pool holds this working set.")]
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -461,7 +963,6 @@ def _rule_flush_log_durability(analysis, schema, stats, variables):
 #: both shapes.
 _RULES = (
     _rule_buffer_pool_vs_data_size,
-    _rule_sort_buffer_vs_filesort,
     _rule_join_buffer_vs_hash_or_bnl,
     _rule_tmp_table_size_vs_materialize,
     _rule_optimizer_switch_disables,
@@ -469,6 +970,22 @@ _RULES = (
     _rule_engine_innodb,
     _rule_flush_log_durability,
 )
+
+#: Rules that also read live-capture context (``freshness``, ``capture``).
+_CONTEXT_RULES = (
+    _rule_sort_buffer_vs_filesort,
+    _rule_stale_statistics,
+    _rule_redundant_indexes,
+    _rule_cold_cache,
+)
+
+#: Sidecar category for environment findings whose rule has its own entry in
+#: the rule catalog (findings.RULES). Other environment rules stay ``env``.
+RULE_CATEGORIES = {
+    "STALE_STATS": ("misestimate", "warn", "statistics"),
+    "REDUNDANT_INDEX": ("redundant_index", "warn", "index"),
+    "COLD_CACHE": ("cold_cache", "info", "other"),
+}
 
 
 def _normalize_rule_output(result):
@@ -503,7 +1020,7 @@ def _normalize_rule_output(result):
     return out
 
 
-def advise(analysis, schema=None, stats=None, variables=None):
+def advise(analysis, schema=None, stats=None, variables=None, freshness=None, capture=None):
     """Run all rules and extend *analysis* in-place.
 
     Adds:
@@ -515,12 +1032,37 @@ def advise(analysis, schema=None, stats=None, variables=None):
         golden test (Slice 1 / P2).
       * ``analysis["collected_variables"]`` — the filtered session variables
         (echoed so the renderer can show them in the info panel).
+
+    *freshness* is :func:`myflames.collectors.collect_stats_freshness`
+    output; *capture* is a ``capture-1.0`` dict whose repeated runs feed the
+    cold-cache rule.
     """
     warnings = []
     suggestions = []
     findings = []
-    for rule in _RULES:
-        result = rule(analysis, schema, stats, variables)
+    context = {"freshness": freshness or {}, "capture": capture or {}}
+    results = [rule(analysis, schema, stats, variables) for rule in _RULES]
+    results += [rule(analysis, schema, stats, variables, context) for rule in _CONTEXT_RULES]
+    # Sort merge passes the capture measured restate the plan's sort warning
+    # and advice (0: sorted in memory; more: the advisor's advice replaces
+    # the plan's).
+    from .parser import restate_sorts
+    restate_sorts(analysis, _captured_sort_merge_passes(context))
+    sort_result = results[len(_RULES) + _CONTEXT_RULES.index(_rule_sort_buffer_vs_filesort)]
+    if analysis is not None and isinstance(sort_result, tuple) and len(sort_result) == 2 \
+            and sort_result[1] and sort_result[0] and sort_result[0].startswith("Filesort merged"):
+        # Measured merge passes: the advisor's sort advice replaces the plan's.
+        from .parser import SORT_SUGGESTION
+        analysis["suggestions"] = [s for s in analysis.get("suggestions") or []
+                                   if s != SORT_SUGGESTION]
+    tmp = results[_RULES.index(_rule_tmp_table_size_vs_materialize)]
+    if analysis is not None and isinstance(tmp, tuple) and len(tmp) == 2 and tmp[1]:
+        # The server-aware temporary-table advice replaces the plan-only one.
+        from .parser import TEMP_TABLE_SUGGESTION_MARIADB, TEMP_TABLE_SUGGESTION_MYSQL
+        plan_only = (TEMP_TABLE_SUGGESTION_MARIADB, TEMP_TABLE_SUGGESTION_MYSQL)
+        analysis["suggestions"] = [s for s in analysis.get("suggestions") or []
+                                   if s not in plan_only]
+    for result in results:
         for rule_id, severity, w, s in _normalize_rule_output(result):
             if w:
                 warnings.append(w)
@@ -536,6 +1078,9 @@ def advise(analysis, schema=None, stats=None, variables=None):
     analysis["environment_warnings"] = warnings
     analysis["environment_suggestions"] = suggestions
     analysis["environment_findings"] = findings
+    # The same freshness facts per misestimated table, for the plan views'
+    # markers, tooltips and the workspace inspector (chart_data).
+    analysis["statistics_evidence"] = statistics_evidence(analysis, context["freshness"], context["capture"])
     analysis["collected_variables"] = dict(variables or {})
     analysis["collected_schema"] = dict(schema or {})
     analysis["collected_stats"] = dict(stats or {})

@@ -31,7 +31,7 @@ import { join } from "node:path";
 
 const ALL_LESSONS = [
   "full_scan", "btree", "unique_lookup", "non_unique_lookup", "icp",
-  "covering_index", "nested_loop", "hash", "bnl", "bka_join",
+  "covering_index", "nested_loop", "hash", "bnl", "join", "bka_join",
   "semijoin_firstmatch", "semijoin_weedout", "derived_table", "lru", "buffer_pool_warmup",
   "filesort", "tmp", "filter", "skip_scan", "index_merge",
   "rowid_filter", "join_order",

@@ -1,0 +1,1 @@
+{"variables":{"version":"8.4.3","version_comment":"MySQL Community Server - GPL","read_only":"OFF","super_read_only":"OFF","performance_schema":"ON","partial_revokes":"OFF"},"grants":["GRANT PROCESS, REPLICATION CLIENT ON *.* TO `reader`@`%`", "GRANT CONNECTION_ADMIN ON *.* TO `reader`@`%`"]}

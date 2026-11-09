@@ -1,0 +1,2407 @@
+
+=====================================
+2026-10-14 18:09:00 281472163827456 INNODB MONITOR OUTPUT
+=====================================
+Per second averages calculated from the last 36 seconds
+-----------------
+BACKGROUND THREAD
+-----------------
+srv_master_thread loops: 1131 srv_active, 0 srv_shutdown, 718 srv_idle
+srv_master_thread log flush and writes: 0
+----------
+SEMAPHORES
+----------
+OS WAIT ARRAY INFO: reservation count 870910
+--Thread 281471762292480 has waited at row0upd.cc line 3070 for 0 seconds the semaphore:
+X-lock (wait_ex) on RW-latch at 0xffff6bf42d28 created in file buf0buf.cc line 857
+a writer (thread id 281471762292480) has reserved it in mode wait exclusive
+number of readers 1 (thread id 281471805681408), waiters flag 1, lock_word: ffffffffffffffff
+Last time read locked in file row0sel.cc line 3151
+Last time write locked in file /var/lib/pb2/sb_1-23035487-1782844012.453729/rpm/BUILD/mysql-8.4.11/mysql-8.4.11/storage/innobase/buf/buf0flu.cc line 1367
+--Thread 281472295022336 has waited at row0sel.cc line 3151 for 0 seconds the semaphore:
+S-lock on RW-latch at 0xffff6bf42d28 created in file buf0buf.cc line 857
+a writer (thread id 281471762292480) has reserved it in mode wait exclusive
+number of readers 1 (thread id 281471805681408), waiters flag 1, lock_word: ffffffffffffffff
+Last time read locked in file row0sel.cc line 3151
+Last time write locked in file /var/lib/pb2/sb_1-23035487-1782844012.453729/rpm/BUILD/mysql-8.4.11/mysql-8.4.11/storage/innobase/buf/buf0flu.cc line 1367
+OS WAIT ARRAY INFO: signal count 921393
+RW-shared spins 0, rounds 0, OS waits 0
+RW-excl spins 0, rounds 0, OS waits 0
+RW-sx spins 0, rounds 0, OS waits 0
+Spin rounds per wait: 0.00 RW-shared, 0.00 RW-excl, 0.00 RW-sx
+------------------------
+LATEST FOREIGN KEY ERROR
+------------------------
+2026-10-14 17:38:53 281472293904128 Transaction:
+TRANSACTION 1853, ACTIVE 0 sec inserting
+mysql tables in use 1, locked 1
+3 lock struct(s), heap size 1128, 1 row lock(s), undo log entries 1
+MySQL thread id 23, OS thread handle 281472293904128, query id 56 172.17.0.1 root update
+INSERT INTO child VALUES (1, 999)
+Foreign key constraint fails for table `mf`.`child`:
+,
+  CONSTRAINT `fk_child_parent` FOREIGN KEY (`parent_id`) REFERENCES `parent` (`id`)
+Trying to add in child table, in index fk_child_parent tuple:
+DATA TUPLE: 2 fields;
+ 0: len 4; hex 800003e7; asc     ;;
+ 1: len 4; hex 80000001; asc     ;;
+
+But in parent table `mf`.`parent`, in index PRIMARY,
+the closest match we can find is record:
+PHYSICAL RECORD: n_fields 3; compact format; info bits 0
+ 0: len 4; hex 80000003; asc     ;;
+ 1: len 6; hex 00000000071b; asc       ;;
+ 2: len 7; hex 8100000120012a; asc       *;;
+
+------------------------
+LATEST DETECTED DEADLOCK
+------------------------
+2026-10-14 17:38:46 281472216788736
+*** (1) TRANSACTION:
+TRANSACTION 1846, ACTIVE 2 sec starting index read
+mysql tables in use 1, locked 1
+LOCK WAIT 3 lock struct(s), heap size 1128, 2 row lock(s), undo log entries 1
+MySQL thread id 21, OS thread handle 281472295022336, query id 50 172.17.0.1 root updating
+UPDATE t SET v = v + 1 WHERE id = 2
+
+*** (1) HOLDS THE LOCK(S):
+RECORD LOCKS space id 4 page no 6 n bits 136 index PRIMARY of table `mf`.`t` trx id 1846 lock_mode X locks rec but not gap
+Record lock, heap no 2 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80000001; asc     ;;
+ 1: len 6; hex 000000000736; asc      6;;
+ 2: len 7; hex 0100000115050f; asc        ;;
+ 3: len 4; hex 80000002; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+
+*** (1) WAITING FOR THIS LOCK TO BE GRANTED:
+RECORD LOCKS space id 4 page no 6 n bits 136 index PRIMARY of table `mf`.`t` trx id 1846 lock_mode X locks rec but not gap waiting
+Record lock, heap no 3 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80000002; asc     ;;
+ 1: len 6; hex 000000000737; asc      7;;
+ 2: len 7; hex 02000000890237; asc       7;;
+ 3: len 4; hex 80000003; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+
+*** (2) TRANSACTION:
+TRANSACTION 1847, ACTIVE 2 sec starting index read
+mysql tables in use 1, locked 1
+LOCK WAIT 3 lock struct(s), heap size 1128, 2 row lock(s), undo log entries 1
+MySQL thread id 22, OS thread handle 281472293904128, query id 51 172.17.0.1 root updating
+UPDATE t SET v = v + 1 WHERE id = 1
+
+*** (2) HOLDS THE LOCK(S):
+RECORD LOCKS space id 4 page no 6 n bits 136 index PRIMARY of table `mf`.`t` trx id 1847 lock_mode X locks rec but not gap
+Record lock, heap no 3 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80000002; asc     ;;
+ 1: len 6; hex 000000000737; asc      7;;
+ 2: len 7; hex 02000000890237; asc       7;;
+ 3: len 4; hex 80000003; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+
+*** (2) WAITING FOR THIS LOCK TO BE GRANTED:
+RECORD LOCKS space id 4 page no 6 n bits 136 index PRIMARY of table `mf`.`t` trx id 1847 lock_mode X locks rec but not gap waiting
+Record lock, heap no 2 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80000001; asc     ;;
+ 1: len 6; hex 000000000736; asc      6;;
+ 2: len 7; hex 0100000115050f; asc        ;;
+ 3: len 4; hex 80000002; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+*** WE ROLL BACK TRANSACTION (2)
+------------
+TRANSACTIONS
+------------
+Trx id counter 27772
+Purge done for trx's n:o < 2233 undo n:o < 324 state: running
+History list length 4437
+LIST OF TRANSACTIONS FOR EACH SESSION:
+---TRANSACTION 562947667532096, not started
+0 lock struct(s), heap size 1128, 0 row lock(s)
+---TRANSACTION 562947667531288, not started
+0 lock struct(s), heap size 1128, 0 row lock(s)
+---TRANSACTION 562947667530480, not started
+0 lock struct(s), heap size 1128, 0 row lock(s)
+---TRANSACTION 562947667526440, not started
+0 lock struct(s), heap size 1128, 0 row lock(s)
+---TRANSACTION 562947667524016, not started
+0 lock struct(s), heap size 1128, 0 row lock(s)
+---TRANSACTION 562947667523208, not started
+0 lock struct(s), heap size 1128, 0 row lock(s)
+---TRANSACTION 27649, ACTIVE 13 sec updating or deleting
+mysql tables in use 1, locked 1
+8 lock struct(s), heap size 1128, 356 row lock(s), undo log entries 350
+MySQL thread id 102, OS thread handle 281471762292480, query id 174277 172.17.0.1 root updating
+UPDATE t SET v = v + 1 WHERE id BETWEEN 20000 AND 20500
+TABLE LOCK table `mf`.`t` trx id 27649 lock mode IX
+RECORD LOCKS space id 4 page no 399 n bits 136 index PRIMARY of table `mf`.`t` trx id 27649 lock_mode X locks rec but not gap
+Record lock, heap no 36 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e20; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390151; asc     9 Q;;
+ 3: len 4; hex 80001142; asc    B;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+RECORD LOCKS space id 4 page no 399 n bits 136 index PRIMARY of table `mf`.`t` trx id 27649 lock_mode X
+Record lock, heap no 1 PHYSICAL RECORD: n_fields 1; compact format; info bits 0
+ 0: len 8; hex 73757072656d756d; asc supremum;;
+
+Record lock, heap no 37 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e21; asc   N!;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390181; asc     9  ;;
+ 3: len 4; hex 80001143; asc    C;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 38 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e22; asc   N";;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123901b1; asc     9  ;;
+ 3: len 4; hex 80001144; asc    D;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 39 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e23; asc   N#;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123901e1; asc     9  ;;
+ 3: len 4; hex 80001145; asc    E;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 40 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e24; asc   N$;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390211; asc     9  ;;
+ 3: len 4; hex 80001146; asc    F;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 41 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e25; asc   N%;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390241; asc     9 A;;
+ 3: len 4; hex 80001147; asc    G;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 42 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e26; asc   N&;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390271; asc     9 q;;
+ 3: len 4; hex 80001148; asc    H;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 43 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e27; asc   N';;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123902a1; asc     9  ;;
+ 3: len 4; hex 80001149; asc    I;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 44 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e28; asc   N(;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123902d1; asc     9  ;;
+ 3: len 4; hex 8000114a; asc    J;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 45 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e29; asc   N);;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390301; asc     9  ;;
+ 3: len 4; hex 8000114b; asc    K;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 46 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e2a; asc   N*;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390331; asc     9 1;;
+ 3: len 4; hex 8000114c; asc    L;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 47 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e2b; asc   N+;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390361; asc     9 a;;
+ 3: len 4; hex 8000114d; asc    M;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 48 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e2c; asc   N,;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390391; asc     9  ;;
+ 3: len 4; hex 8000114e; asc    N;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 49 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e2d; asc   N-;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123903c1; asc     9  ;;
+ 3: len 4; hex 8000114f; asc    O;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 50 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e2e; asc   N.;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123903f1; asc     9  ;;
+ 3: len 4; hex 80001150; asc    P;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 51 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e2f; asc   N/;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390421; asc     9 !;;
+ 3: len 4; hex 80001151; asc    Q;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 52 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e30; asc   N0;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390451; asc     9 Q;;
+ 3: len 4; hex 80001152; asc    R;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 53 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e31; asc   N1;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390481; asc     9  ;;
+ 3: len 4; hex 80001153; asc    S;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 54 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e32; asc   N2;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123904b1; asc     9  ;;
+ 3: len 4; hex 80001154; asc    T;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 55 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e33; asc   N3;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123904e1; asc     9  ;;
+ 3: len 4; hex 80001155; asc    U;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 56 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e34; asc   N4;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390511; asc     9  ;;
+ 3: len 4; hex 80001156; asc    V;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 57 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e35; asc   N5;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390541; asc     9 A;;
+ 3: len 4; hex 80001157; asc    W;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 58 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e36; asc   N6;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390571; asc     9 q;;
+ 3: len 4; hex 80001158; asc    X;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 59 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e37; asc   N7;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123905a1; asc     9  ;;
+ 3: len 4; hex 80001159; asc    Y;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 60 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e38; asc   N8;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123905d1; asc     9  ;;
+ 3: len 4; hex 8000115a; asc    Z;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 61 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e39; asc   N9;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390601; asc     9  ;;
+ 3: len 4; hex 8000115b; asc    [;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 62 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e3a; asc   N:;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390631; asc     9 1;;
+ 3: len 4; hex 8000115c; asc    \;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 63 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e3b; asc   N;;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390661; asc     9 a;;
+ 3: len 4; hex 8000115d; asc    ];;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 64 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e3c; asc   N<;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390691; asc     9  ;;
+ 3: len 4; hex 8000115e; asc    ^;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 65 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e3d; asc   N=;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123906c1; asc     9  ;;
+ 3: len 4; hex 8000115f; asc    _;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 66 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e3e; asc   N>;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123906f1; asc     9  ;;
+ 3: len 4; hex 80001160; asc    `;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 67 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e3f; asc   N?;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390721; asc     9 !;;
+ 3: len 4; hex 80001161; asc    a;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+RECORD LOCKS space id 4 page no 400 n bits 136 index PRIMARY of table `mf`.`t` trx id 27649 lock_mode X
+Record lock, heap no 1 PHYSICAL RECORD: n_fields 1; compact format; info bits 0
+ 0: len 8; hex 73757072656d756d; asc supremum;;
+
+Record lock, heap no 2 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e40; asc   N@;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390751; asc     9 Q;;
+ 3: len 4; hex 80001162; asc    b;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 3 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e41; asc   NA;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390781; asc     9  ;;
+ 3: len 4; hex 80001163; asc    c;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 4 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e42; asc   NB;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123907b1; asc     9  ;;
+ 3: len 4; hex 80001164; asc    d;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 5 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e43; asc   NC;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123907e1; asc     9  ;;
+ 3: len 4; hex 80001165; asc    e;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 6 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e44; asc   ND;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390811; asc     9  ;;
+ 3: len 4; hex 80001166; asc    f;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 7 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e45; asc   NE;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390841; asc     9 A;;
+ 3: len 4; hex 80001167; asc    g;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 8 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e46; asc   NF;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390871; asc     9 q;;
+ 3: len 4; hex 80001168; asc    h;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 9 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e47; asc   NG;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123908a1; asc     9  ;;
+ 3: len 4; hex 80001169; asc    i;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 10 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e48; asc   NH;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123908d1; asc     9  ;;
+ 3: len 4; hex 8000116a; asc    j;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 11 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e49; asc   NI;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390901; asc     9  ;;
+ 3: len 4; hex 8000116b; asc    k;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 12 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e4a; asc   NJ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390931; asc     9 1;;
+ 3: len 4; hex 8000116c; asc    l;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 13 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e4b; asc   NK;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390961; asc     9 a;;
+ 3: len 4; hex 8000116d; asc    m;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 14 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e4c; asc   NL;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390991; asc     9  ;;
+ 3: len 4; hex 8000116e; asc    n;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 15 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e4d; asc   NM;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123909c1; asc     9  ;;
+ 3: len 4; hex 8000116f; asc    o;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 16 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e4e; asc   NN;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123909f1; asc     9  ;;
+ 3: len 4; hex 80001170; asc    p;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 17 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e4f; asc   NO;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390a21; asc     9 !;;
+ 3: len 4; hex 80001171; asc    q;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 18 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e50; asc   NP;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390a51; asc     9 Q;;
+ 3: len 4; hex 80001172; asc    r;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 19 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e51; asc   NQ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390a81; asc     9  ;;
+ 3: len 4; hex 80001173; asc    s;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 20 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e52; asc   NR;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390ab1; asc     9  ;;
+ 3: len 4; hex 80001174; asc    t;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 21 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e53; asc   NS;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390ae1; asc     9  ;;
+ 3: len 4; hex 80001175; asc    u;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 22 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e54; asc   NT;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390b11; asc     9  ;;
+ 3: len 4; hex 80001176; asc    v;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 23 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e55; asc   NU;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390b41; asc     9 A;;
+ 3: len 4; hex 80001177; asc    w;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 24 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e56; asc   NV;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390b71; asc     9 q;;
+ 3: len 4; hex 80001178; asc    x;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 25 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e57; asc   NW;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390ba1; asc     9  ;;
+ 3: len 4; hex 80001179; asc    y;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 26 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e58; asc   NX;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390bd1; asc     9  ;;
+ 3: len 4; hex 8000117a; asc    z;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 27 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e59; asc   NY;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390c01; asc     9  ;;
+ 3: len 4; hex 8000117b; asc    {;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 28 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e5a; asc   NZ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390c31; asc     9 1;;
+ 3: len 4; hex 8000117c; asc    |;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 29 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e5b; asc   N[;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390c61; asc     9 a;;
+ 3: len 4; hex 8000117d; asc    };;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 30 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e5c; asc   N\;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390c91; asc     9  ;;
+ 3: len 4; hex 8000117e; asc    ~;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 31 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e5d; asc   N];;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390cc1; asc     9  ;;
+ 3: len 4; hex 8000117f; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 32 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e5e; asc   N^;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390cf1; asc     9  ;;
+ 3: len 4; hex 80001180; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 33 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e5f; asc   N_;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390d21; asc     9 !;;
+ 3: len 4; hex 80001181; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 34 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e60; asc   N`;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390d51; asc     9 Q;;
+ 3: len 4; hex 80001182; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 35 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e61; asc   Na;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390d81; asc     9  ;;
+ 3: len 4; hex 80001183; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 36 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e62; asc   Nb;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390db1; asc     9  ;;
+ 3: len 4; hex 80001184; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 37 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e63; asc   Nc;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390de1; asc     9  ;;
+ 3: len 4; hex 80001185; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 38 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e64; asc   Nd;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390e11; asc     9  ;;
+ 3: len 4; hex 80001186; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 39 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e65; asc   Ne;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390e41; asc     9 A;;
+ 3: len 4; hex 80001187; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 40 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e66; asc   Nf;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390e71; asc     9 q;;
+ 3: len 4; hex 80001188; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 41 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e67; asc   Ng;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390ea1; asc     9  ;;
+ 3: len 4; hex 80001189; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 42 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e68; asc   Nh;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390ed1; asc     9  ;;
+ 3: len 4; hex 8000118a; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 43 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e69; asc   Ni;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390f01; asc     9  ;;
+ 3: len 4; hex 8000118b; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 44 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e6a; asc   Nj;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390f31; asc     9 1;;
+ 3: len 4; hex 8000118c; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 45 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e6b; asc   Nk;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390f61; asc     9 a;;
+ 3: len 4; hex 8000118d; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 46 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e6c; asc   Nl;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390f91; asc     9  ;;
+ 3: len 4; hex 8000118e; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 47 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e6d; asc   Nm;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390fc1; asc     9  ;;
+ 3: len 4; hex 8000118f; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 48 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e6e; asc   Nn;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012390ff1; asc     9  ;;
+ 3: len 4; hex 80001190; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 49 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e6f; asc   No;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391021; asc     9 !;;
+ 3: len 4; hex 80001191; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 50 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e70; asc   Np;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391051; asc     9 Q;;
+ 3: len 4; hex 80001192; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 51 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e71; asc   Nq;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391081; asc     9  ;;
+ 3: len 4; hex 80001193; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 52 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e72; asc   Nr;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123910b1; asc     9  ;;
+ 3: len 4; hex 80001194; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 53 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e73; asc   Ns;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123910e1; asc     9  ;;
+ 3: len 4; hex 80001195; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 54 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e74; asc   Nt;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391111; asc     9  ;;
+ 3: len 4; hex 80001196; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 55 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e75; asc   Nu;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391141; asc     9 A;;
+ 3: len 4; hex 80001197; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 56 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e76; asc   Nv;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391171; asc     9 q;;
+ 3: len 4; hex 80001198; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 57 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e77; asc   Nw;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123911a1; asc     9  ;;
+ 3: len 4; hex 80001199; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 58 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e78; asc   Nx;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123911d1; asc     9  ;;
+ 3: len 4; hex 8000119a; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 59 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e79; asc   Ny;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391201; asc     9  ;;
+ 3: len 4; hex 8000119b; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 60 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e7a; asc   Nz;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391231; asc     9 1;;
+ 3: len 4; hex 8000119c; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 61 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e7b; asc   N{;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391261; asc     9 a;;
+ 3: len 4; hex 8000119d; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 62 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e7c; asc   N|;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391291; asc     9  ;;
+ 3: len 4; hex 8000119e; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 63 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e7d; asc   N};;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123912c1; asc     9  ;;
+ 3: len 4; hex 8000119f; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 64 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e7e; asc   N~;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123912f1; asc     9  ;;
+ 3: len 4; hex 800011a0; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 65 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e7f; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391321; asc     9 !;;
+ 3: len 4; hex 800011a1; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 66 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e80; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391351; asc     9 Q;;
+ 3: len 4; hex 800011a2; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 67 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e81; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391381; asc     9  ;;
+ 3: len 4; hex 800011a3; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+RECORD LOCKS space id 4 page no 401 n bits 136 index PRIMARY of table `mf`.`t` trx id 27649 lock_mode X
+Record lock, heap no 1 PHYSICAL RECORD: n_fields 1; compact format; info bits 0
+ 0: len 8; hex 73757072656d756d; asc supremum;;
+
+Record lock, heap no 2 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e82; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123913b1; asc     9  ;;
+ 3: len 4; hex 800011a4; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 3 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e83; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123913e1; asc     9  ;;
+ 3: len 4; hex 800011a5; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 4 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e84; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391411; asc     9  ;;
+ 3: len 4; hex 800011a6; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 5 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e85; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391441; asc     9 A;;
+ 3: len 4; hex 800011a7; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 6 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e86; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391471; asc     9 q;;
+ 3: len 4; hex 800011a8; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 7 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e87; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123914a1; asc     9  ;;
+ 3: len 4; hex 800011a9; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 8 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e88; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123914d1; asc     9  ;;
+ 3: len 4; hex 800011aa; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 9 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e89; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391501; asc     9  ;;
+ 3: len 4; hex 800011ab; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 10 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e8a; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391531; asc     9 1;;
+ 3: len 4; hex 800011ac; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 11 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e8b; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391561; asc     9 a;;
+ 3: len 4; hex 800011ad; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 12 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e8c; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391591; asc     9  ;;
+ 3: len 4; hex 800011ae; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 13 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e8d; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123915c1; asc     9  ;;
+ 3: len 4; hex 800011af; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 14 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e8e; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123915f1; asc     9  ;;
+ 3: len 4; hex 800011b0; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 15 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e8f; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391621; asc     9 !;;
+ 3: len 4; hex 800011b1; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 16 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e90; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391651; asc     9 Q;;
+ 3: len 4; hex 800011b2; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 17 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e91; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391681; asc     9  ;;
+ 3: len 4; hex 800011b3; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 18 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e92; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123916b1; asc     9  ;;
+ 3: len 4; hex 800011b4; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 19 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e93; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123916e1; asc     9  ;;
+ 3: len 4; hex 800011b5; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 20 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e94; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391711; asc     9  ;;
+ 3: len 4; hex 800011b6; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 21 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e95; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391741; asc     9 A;;
+ 3: len 4; hex 800011b7; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 22 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e96; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391771; asc     9 q;;
+ 3: len 4; hex 800011b8; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 23 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e97; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123917a1; asc     9  ;;
+ 3: len 4; hex 800011b9; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 24 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e98; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123917d1; asc     9  ;;
+ 3: len 4; hex 800011ba; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 25 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e99; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391801; asc     9  ;;
+ 3: len 4; hex 800011bb; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 26 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e9a; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391831; asc     9 1;;
+ 3: len 4; hex 800011bc; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 27 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e9b; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391861; asc     9 a;;
+ 3: len 4; hex 800011bd; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 28 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e9c; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391891; asc     9  ;;
+ 3: len 4; hex 800011be; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 29 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e9d; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123918c1; asc     9  ;;
+ 3: len 4; hex 800011bf; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 30 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e9e; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123918f1; asc     9  ;;
+ 3: len 4; hex 800011c0; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 31 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004e9f; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391921; asc     9 !;;
+ 3: len 4; hex 800011c1; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 32 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ea0; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391951; asc     9 Q;;
+ 3: len 4; hex 800011c2; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 33 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ea1; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391982; asc     9  ;;
+ 3: len 4; hex 800011c3; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 34 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ea2; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123919b3; asc     9  ;;
+ 3: len 4; hex 800011c4; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 35 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ea3; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123919e4; asc     9  ;;
+ 3: len 4; hex 800011c5; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 36 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ea4; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391a15; asc     9  ;;
+ 3: len 4; hex 800011c6; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 37 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ea5; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391a46; asc     9 F;;
+ 3: len 4; hex 800011c7; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 38 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ea6; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391a77; asc     9 w;;
+ 3: len 4; hex 800011c8; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 39 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ea7; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391aa8; asc     9  ;;
+ 3: len 4; hex 800011c9; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 40 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ea8; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391ad9; asc     9  ;;
+ 3: len 4; hex 800011ca; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 41 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ea9; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391b0a; asc     9  ;;
+ 3: len 4; hex 800011cb; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 42 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004eaa; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391b3b; asc     9 ;;;
+ 3: len 4; hex 800011cc; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 43 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004eab; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391b6c; asc     9 l;;
+ 3: len 4; hex 800011cd; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 44 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004eac; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391b9d; asc     9  ;;
+ 3: len 4; hex 800011ce; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 45 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ead; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391bce; asc     9  ;;
+ 3: len 4; hex 800011cf; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 46 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004eae; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391bff; asc     9  ;;
+ 3: len 4; hex 800011d0; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 47 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004eaf; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391c30; asc     9 0;;
+ 3: len 4; hex 800011d1; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 48 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004eb0; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391c61; asc     9 a;;
+ 3: len 4; hex 800011d2; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 49 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004eb1; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391c92; asc     9  ;;
+ 3: len 4; hex 800011d3; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 50 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004eb2; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391cc3; asc     9  ;;
+ 3: len 4; hex 800011d4; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 51 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004eb3; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391cf4; asc     9  ;;
+ 3: len 4; hex 800011d5; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 52 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004eb4; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391d25; asc     9 %;;
+ 3: len 4; hex 800011d6; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 53 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004eb5; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391d56; asc     9 V;;
+ 3: len 4; hex 800011d7; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 54 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004eb6; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391d87; asc     9  ;;
+ 3: len 4; hex 800011d8; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 55 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004eb7; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391db8; asc     9  ;;
+ 3: len 4; hex 800011d9; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 56 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004eb8; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391de9; asc     9  ;;
+ 3: len 4; hex 800011da; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 57 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004eb9; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391e1a; asc     9  ;;
+ 3: len 4; hex 800011db; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 58 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004eba; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391e4b; asc     9 K;;
+ 3: len 4; hex 800011dc; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 59 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ebb; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391e7c; asc     9 |;;
+ 3: len 4; hex 800011dd; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 60 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ebc; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391ead; asc     9  ;;
+ 3: len 4; hex 800011de; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 61 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ebd; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391ede; asc     9  ;;
+ 3: len 4; hex 800011df; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 62 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ebe; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391f0f; asc     9  ;;
+ 3: len 4; hex 800011e0; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 63 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ebf; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391f40; asc     9 @;;
+ 3: len 4; hex 800011e1; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 64 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ec0; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391f71; asc     9 q;;
+ 3: len 4; hex 800011e2; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 65 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ec1; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391fa2; asc     9  ;;
+ 3: len 4; hex 800011e3; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 66 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ec2; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012391fd3; asc     9  ;;
+ 3: len 4; hex 800011e4; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 67 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ec3; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392004; asc     9  ;;
+ 3: len 4; hex 800011e5; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+RECORD LOCKS space id 4 page no 402 n bits 136 index PRIMARY of table `mf`.`t` trx id 27649 lock_mode X
+Record lock, heap no 1 PHYSICAL RECORD: n_fields 1; compact format; info bits 0
+ 0: len 8; hex 73757072656d756d; asc supremum;;
+
+Record lock, heap no 2 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ec4; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392035; asc     9 5;;
+ 3: len 4; hex 800011e6; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 3 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ec5; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392066; asc     9 f;;
+ 3: len 4; hex 800011e7; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 4 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ec6; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392097; asc     9  ;;
+ 3: len 4; hex 800011e8; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 5 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ec7; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123920c8; asc     9  ;;
+ 3: len 4; hex 800011e9; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 6 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ec8; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123920f9; asc     9  ;;
+ 3: len 4; hex 800011ea; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 7 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ec9; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 0200001239212a; asc     9!*;;
+ 3: len 4; hex 800011eb; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 8 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004eca; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 0200001239215b; asc     9![;;
+ 3: len 4; hex 800011ec; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 9 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ecb; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 0200001239218c; asc     9! ;;
+ 3: len 4; hex 800011ed; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 10 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ecc; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123921bd; asc     9! ;;
+ 3: len 4; hex 800011ee; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 11 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ecd; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123921ee; asc     9! ;;
+ 3: len 4; hex 800011ef; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 12 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ece; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 0200001239221f; asc     9" ;;
+ 3: len 4; hex 800011f0; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 13 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ecf; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392250; asc     9"P;;
+ 3: len 4; hex 800011f1; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 14 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ed0; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392281; asc     9" ;;
+ 3: len 4; hex 800011f2; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 15 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ed1; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123922b2; asc     9" ;;
+ 3: len 4; hex 800011f3; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 16 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ed2; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123922e3; asc     9" ;;
+ 3: len 4; hex 800011f4; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 17 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ed3; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392314; asc     9# ;;
+ 3: len 4; hex 800011f5; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 18 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ed4; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392345; asc     9#E;;
+ 3: len 4; hex 800011f6; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 19 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ed5; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392376; asc     9#v;;
+ 3: len 4; hex 800011f7; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 20 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ed6; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123923a7; asc     9# ;;
+ 3: len 4; hex 800011f8; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 21 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ed7; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123923d8; asc     9# ;;
+ 3: len 4; hex 800011f9; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 22 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ed8; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392409; asc     9$ ;;
+ 3: len 4; hex 800011fa; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 23 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ed9; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 0200001239243a; asc     9$:;;
+ 3: len 4; hex 800011fb; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 24 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004eda; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 0200001239246b; asc     9$k;;
+ 3: len 4; hex 800011fc; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 25 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004edb; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 0200001239249c; asc     9$ ;;
+ 3: len 4; hex 800011fd; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 26 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004edc; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123924cd; asc     9$ ;;
+ 3: len 4; hex 800011fe; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 27 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004edd; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123924fe; asc     9$ ;;
+ 3: len 4; hex 800011ff; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 28 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ede; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 0200001239252f; asc     9%/;;
+ 3: len 4; hex 80001200; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 29 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004edf; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392560; asc     9%`;;
+ 3: len 4; hex 80001201; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 30 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ee0; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392591; asc     9% ;;
+ 3: len 4; hex 80001202; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 31 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ee1; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123925c2; asc     9% ;;
+ 3: len 4; hex 80001203; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 32 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ee2; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123925f3; asc     9% ;;
+ 3: len 4; hex 80001204; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 33 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ee3; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392624; asc     9&$;;
+ 3: len 4; hex 80001205; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 34 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ee4; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392655; asc     9&U;;
+ 3: len 4; hex 80001206; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 35 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ee5; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392686; asc     9& ;;
+ 3: len 4; hex 80001207; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 36 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ee6; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123926b7; asc     9& ;;
+ 3: len 4; hex 80001208; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 37 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ee7; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123926e8; asc     9& ;;
+ 3: len 4; hex 80001209; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 38 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ee8; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392719; asc     9' ;;
+ 3: len 4; hex 8000120a; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 39 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ee9; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 0200001239274a; asc     9'J;;
+ 3: len 4; hex 8000120b; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 40 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004eea; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 0200001239277b; asc     9'{;;
+ 3: len 4; hex 8000120c; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 41 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004eeb; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123927ac; asc     9' ;;
+ 3: len 4; hex 8000120d; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 42 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004eec; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123927dd; asc     9' ;;
+ 3: len 4; hex 8000120e; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 43 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004eed; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 0200001239280e; asc     9( ;;
+ 3: len 4; hex 8000120f; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 44 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004eee; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 0200001239283f; asc     9(?;;
+ 3: len 4; hex 80001210; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 45 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004eef; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392870; asc     9(p;;
+ 3: len 4; hex 80001211; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 46 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ef0; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123928a1; asc     9( ;;
+ 3: len 4; hex 80001212; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 47 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ef1; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123928d2; asc     9( ;;
+ 3: len 4; hex 80001213; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 48 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ef2; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392903; asc     9) ;;
+ 3: len 4; hex 80001214; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 49 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ef3; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392934; asc     9)4;;
+ 3: len 4; hex 80001215; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 50 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ef4; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392965; asc     9)e;;
+ 3: len 4; hex 80001216; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 51 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ef5; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392996; asc     9) ;;
+ 3: len 4; hex 80001217; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 52 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ef6; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123929c7; asc     9) ;;
+ 3: len 4; hex 80001218; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 53 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ef7; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123929f8; asc     9) ;;
+ 3: len 4; hex 80001219; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 54 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ef8; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392a29; asc     9*);;
+ 3: len 4; hex 8000121a; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 55 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004ef9; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392a5a; asc     9*Z;;
+ 3: len 4; hex 8000121b; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 56 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004efa; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392a8b; asc     9* ;;
+ 3: len 4; hex 8000121c; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 57 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004efb; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392abc; asc     9* ;;
+ 3: len 4; hex 8000121d; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 58 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004efc; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392aed; asc     9* ;;
+ 3: len 4; hex 8000121e; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 59 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004efd; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392b1e; asc     9+ ;;
+ 3: len 4; hex 8000121f; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 60 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004efe; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392b4f; asc     9+O;;
+ 3: len 4; hex 80001220; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 61 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004eff; asc   N ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392b80; asc     9+ ;;
+ 3: len 4; hex 80001221; asc    !;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 62 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f00; asc   O ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392bb1; asc     9+ ;;
+ 3: len 4; hex 80001222; asc    ";;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 63 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f01; asc   O ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392be2; asc     9+ ;;
+ 3: len 4; hex 80001223; asc    #;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 64 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f02; asc   O ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392c13; asc     9, ;;
+ 3: len 4; hex 80001224; asc    $;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 65 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f03; asc   O ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392c44; asc     9,D;;
+ 3: len 4; hex 80001225; asc    %;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 66 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f04; asc   O ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392c75; asc     9,u;;
+ 3: len 4; hex 80001226; asc    &;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 67 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f05; asc   O ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392ca6; asc     9, ;;
+ 3: len 4; hex 80001227; asc    ';;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+RECORD LOCKS space id 4 page no 403 n bits 136 index PRIMARY of table `mf`.`t` trx id 27649 lock_mode X
+Record lock, heap no 1 PHYSICAL RECORD: n_fields 1; compact format; info bits 0
+ 0: len 8; hex 73757072656d756d; asc supremum;;
+
+Record lock, heap no 2 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f06; asc   O ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392cd7; asc     9, ;;
+ 3: len 4; hex 80001228; asc    (;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 3 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f07; asc   O ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392d08; asc     9- ;;
+ 3: len 4; hex 80001229; asc    );;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 4 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f08; asc   O ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392d39; asc     9-9;;
+ 3: len 4; hex 8000122a; asc    *;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 5 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f09; asc   O ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392d6a; asc     9-j;;
+ 3: len 4; hex 8000122b; asc    +;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 6 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f0a; asc   O ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392d9b; asc     9- ;;
+ 3: len 4; hex 8000122c; asc    ,;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 7 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f0b; asc   O ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392dcc; asc     9- ;;
+ 3: len 4; hex 8000122d; asc    -;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 8 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f0c; asc   O ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392dfd; asc     9- ;;
+ 3: len 4; hex 8000122e; asc    .;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 9 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f0d; asc   O ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392e2e; asc     9..;;
+ 3: len 4; hex 8000122f; asc    /;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 10 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f0e; asc   O ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392e5f; asc     9._;;
+ 3: len 4; hex 80001230; asc    0;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 11 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f0f; asc   O ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392e90; asc     9. ;;
+ 3: len 4; hex 80001231; asc    1;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 12 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f10; asc   O ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392ec1; asc     9. ;;
+ 3: len 4; hex 80001232; asc    2;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 13 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f11; asc   O ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392ef2; asc     9. ;;
+ 3: len 4; hex 80001233; asc    3;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 14 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f12; asc   O ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392f23; asc     9/#;;
+ 3: len 4; hex 80001234; asc    4;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 15 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f13; asc   O ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392f54; asc     9/T;;
+ 3: len 4; hex 80001235; asc    5;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 16 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f14; asc   O ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392f85; asc     9/ ;;
+ 3: len 4; hex 80001236; asc    6;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 17 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f15; asc   O ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392fb6; asc     9/ ;;
+ 3: len 4; hex 80001237; asc    7;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 18 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f16; asc   O ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012392fe7; asc     9/ ;;
+ 3: len 4; hex 80001238; asc    8;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 19 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f17; asc   O ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012393018; asc     90 ;;
+ 3: len 4; hex 80001239; asc    9;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 20 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f18; asc   O ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012393049; asc     90I;;
+ 3: len 4; hex 8000123a; asc    :;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 21 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f19; asc   O ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 0200001239307a; asc     90z;;
+ 3: len 4; hex 8000123b; asc    ;;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 22 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f1a; asc   O ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123930ab; asc     90 ;;
+ 3: len 4; hex 8000123c; asc    <;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 23 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f1b; asc   O ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123930dc; asc     90 ;;
+ 3: len 4; hex 8000123d; asc    =;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 24 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f1c; asc   O ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 0200001239310d; asc     91 ;;
+ 3: len 4; hex 8000123e; asc    >;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 25 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f1d; asc   O ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 0200001239313e; asc     91>;;
+ 3: len 4; hex 8000123f; asc    ?;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 26 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f1e; asc   O ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 0200001239316f; asc     91o;;
+ 3: len 4; hex 80001240; asc    @;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 27 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f1f; asc   O ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123931a0; asc     91 ;;
+ 3: len 4; hex 80001241; asc    A;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 28 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f20; asc   O ;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123931d1; asc     91 ;;
+ 3: len 4; hex 80001242; asc    B;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 29 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f21; asc   O!;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012393202; asc     92 ;;
+ 3: len 4; hex 80001243; asc    C;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 30 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f22; asc   O";;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012393233; asc     923;;
+ 3: len 4; hex 80001244; asc    D;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 31 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f23; asc   O#;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012393264; asc     92d;;
+ 3: len 4; hex 80001245; asc    E;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 32 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f24; asc   O$;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012393295; asc     92 ;;
+ 3: len 4; hex 80001246; asc    F;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 33 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f25; asc   O%;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123932c6; asc     92 ;;
+ 3: len 4; hex 80001247; asc    G;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 34 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f26; asc   O&;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123932f7; asc     92 ;;
+ 3: len 4; hex 80001248; asc    H;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 35 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f27; asc   O';;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012393328; asc     93(;;
+ 3: len 4; hex 80001249; asc    I;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 36 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f28; asc   O(;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012393359; asc     93Y;;
+ 3: len 4; hex 8000124a; asc    J;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 37 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f29; asc   O);;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 0200001239338a; asc     93 ;;
+ 3: len 4; hex 8000124b; asc    K;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 38 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f2a; asc   O*;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123933bb; asc     93 ;;
+ 3: len 4; hex 8000124c; asc    L;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 39 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f2b; asc   O+;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123933ec; asc     93 ;;
+ 3: len 4; hex 8000124d; asc    M;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 40 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f2c; asc   O,;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 0200001239341d; asc     94 ;;
+ 3: len 4; hex 8000124e; asc    N;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 41 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f2d; asc   O-;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 0200001239344e; asc     94N;;
+ 3: len 4; hex 8000124f; asc    O;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 42 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f2e; asc   O.;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 0200001239347f; asc     94 ;;
+ 3: len 4; hex 80001250; asc    P;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 43 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f2f; asc   O/;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123934b0; asc     94 ;;
+ 3: len 4; hex 80001251; asc    Q;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 44 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f30; asc   O0;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123934e1; asc     94 ;;
+ 3: len 4; hex 80001252; asc    R;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 45 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f31; asc   O1;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012393512; asc     95 ;;
+ 3: len 4; hex 80001253; asc    S;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 46 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f32; asc   O2;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012393543; asc     95C;;
+ 3: len 4; hex 80001254; asc    T;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 47 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f33; asc   O3;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012393574; asc     95t;;
+ 3: len 4; hex 80001255; asc    U;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 48 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f34; asc   O4;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123935a5; asc     95 ;;
+ 3: len 4; hex 80001256; asc    V;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 49 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f35; asc   O5;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123935d6; asc     95 ;;
+ 3: len 4; hex 80001257; asc    W;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 50 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f36; asc   O6;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012393607; asc     96 ;;
+ 3: len 4; hex 80001258; asc    X;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 51 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f37; asc   O7;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012393638; asc     968;;
+ 3: len 4; hex 80001259; asc    Y;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 52 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f38; asc   O8;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012393669; asc     96i;;
+ 3: len 4; hex 8000125a; asc    Z;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 53 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f39; asc   O9;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 0200001239369a; asc     96 ;;
+ 3: len 4; hex 8000125b; asc    [;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 54 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f3a; asc   O:;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123936cb; asc     96 ;;
+ 3: len 4; hex 8000125c; asc    \;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 55 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f3b; asc   O;;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123936fc; asc     96 ;;
+ 3: len 4; hex 8000125d; asc    ];;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 56 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f3c; asc   O<;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 0200001239372d; asc     97-;;
+ 3: len 4; hex 8000125e; asc    ^;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 57 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f3d; asc   O=;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 0200001239375e; asc     97^;;
+ 3: len 4; hex 8000125f; asc    _;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 58 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f3e; asc   O>;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 0200001239378f; asc     97 ;;
+ 3: len 4; hex 80001260; asc    `;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 59 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f3f; asc   O?;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123937c0; asc     97 ;;
+ 3: len 4; hex 80001261; asc    a;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 60 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f40; asc   O@;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123937f1; asc     97 ;;
+ 3: len 4; hex 80001262; asc    b;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 61 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f41; asc   OA;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012393822; asc     98";;
+ 3: len 4; hex 80001263; asc    c;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 62 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f42; asc   OB;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012393853; asc     98S;;
+ 3: len 4; hex 80001264; asc    d;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 63 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f43; asc   OC;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012393884; asc     98 ;;
+ 3: len 4; hex 80001265; asc    e;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 64 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f44; asc   OD;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123938b5; asc     98 ;;
+ 3: len 4; hex 80001266; asc    f;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 65 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f45; asc   OE;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 020000123938e6; asc     98 ;;
+ 3: len 4; hex 80001267; asc    g;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 66 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f46; asc   OF;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012393917; asc     99 ;;
+ 3: len 4; hex 80001268; asc    h;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+Record lock, heap no 67 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 80004f47; asc   OG;;
+ 1: len 6; hex 000000006c01; asc     l ;;
+ 2: len 7; hex 02000012393948; asc     99H;;
+ 3: len 4; hex 80001269; asc    i;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+RECORD LOCKS space id 4 page no 404 n bits 136 index PRIMARY of table `mf`.`t` trx id 27649 lock_mode X
+Record lock, heap no 2
+Record lock, heap no 3
+Record lock, heap no 4
+Record lock, heap no 5
+Record lock, heap no 6
+Record lock, heap no 7
+Record lock, heap no 8
+Record lock, heap no 9
+Record lock, heap no 10
+Record lock, heap no 11
+Record lock, heap no 12
+Record lock, heap no 13
+Record lock, heap no 14
+Record lock, heap no 15
+Record lock, heap no 16
+Record lock, heap no 17
+Record lock, heap no 18
+Record lock, heap no 19
+Record lock, heap no 20
+Record lock, heap no 21
+Record lock, heap no 22
+Record lock, heap no 23
+Record lock, heap no 24
+Record lock, heap no 25
+Record lock, heap no 26
+Record lock, heap no 27
+Record lock, heap no 28
+Record lock, heap no 29
+Record lock, heap no 30
+Record lock, heap no 31
+Record lock, heap no 32
+Record lock, heap no 33
+Record lock, heap no 34
+Record lock, heap no 35
+Record lock, heap no 36
+Record lock, heap no 37
+Record lock, heap no 38
+Record lock, heap no 39
+Record lock, heap no 40
+Record lock, heap no 41
+Record lock, heap no 42
+Record lock, heap no 43
+Record lock, heap no 44
+Record lock, heap no 45
+Record lock, heap no 46
+Record lock, heap no 47
+Record lock, heap no 48
+Record lock, heap no 49
+Record lock, heap no 50
+Record lock, heap no 51
+Record lock, heap no 52
+Record lock, heap no 53
+Record lock, heap no 54
+Record lock, heap no 55
+Record lock, heap no 56
+---TRANSACTION 21537, ACTIVE 486 sec starting index read
+mysql tables in use 1, locked 1
+LOCK WAIT 2 lock struct(s), heap size 1128, 1 row lock(s)
+MySQL thread id 94, OS thread handle 281472164945664, query id 127057 172.17.0.1 root updating
+UPDATE t SET v = 0 WHERE id = 10
+------- TRX HAS BEEN WAITING 486 SEC FOR THIS LOCK TO BE GRANTED:
+RECORD LOCKS space id 4 page no 6 n bits 136 index PRIMARY of table `mf`.`t` trx id 21537 lock_mode X locks rec but not gap waiting
+Record lock, heap no 11
+------------------
+TABLE LOCK table `mf`.`t` trx id 21537 lock mode IX
+RECORD LOCKS space id 4 page no 6 n bits 136 index PRIMARY of table `mf`.`t` trx id 21537 lock_mode X locks rec but not gap waiting
+Record lock, heap no 11 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 8000000a; asc     ;;
+ 1: len 6; hex 000000005420; asc     T ;;
+ 2: len 7; hex 0200000f4f0151; asc     O Q;;
+ 3: len 4; hex 8000000b; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+---TRANSACTION 21536, ACTIVE 487 sec
+2 lock struct(s), heap size 1128, 1 row lock(s), undo log entries 1
+MySQL thread id 93, OS thread handle 281471763410688, query id 127053 172.17.0.1 root
+Trx read view will not see trx with id >= 21537, sees < 21537
+TABLE LOCK table `mf`.`t` trx id 21536 lock mode IX
+RECORD LOCKS space id 4 page no 6 n bits 136 index PRIMARY of table `mf`.`t` trx id 21536 lock_mode X locks rec but not gap
+Record lock, heap no 11 PHYSICAL RECORD: n_fields 5; compact format; info bits 0
+ 0: len 4; hex 8000000a; asc     ;;
+ 1: len 6; hex 000000005420; asc     T ;;
+ 2: len 7; hex 0200000f4f0151; asc     O Q;;
+ 3: len 4; hex 8000000b; asc     ;;
+ 4: len 30; hex 787878787878787878787878787878787878787878787878787878787878; asc xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; (total 200 bytes);
+
+--------
+FILE I/O
+--------
+I/O thread 0 state: waiting for completed aio requests (insert buffer thread)
+I/O thread 1 state: waiting for completed aio requests (read thread)
+I/O thread 2 state: waiting for completed aio requests (read thread)
+I/O thread 3 state: waiting for completed aio requests (read thread)
+I/O thread 4 state: waiting for completed aio requests (read thread)
+I/O thread 5 state: waiting for completed aio requests (read thread)
+I/O thread 6 state: waiting for completed aio requests (read thread)
+I/O thread 7 state: waiting for completed aio requests (read thread)
+I/O thread 8 state: waiting for completed aio requests (read thread)
+I/O thread 9 state: waiting for completed aio requests (write thread)
+I/O thread 10 state: waiting for completed aio requests (write thread)
+I/O thread 11 state: waiting for completed aio requests (write thread)
+I/O thread 12 state: waiting for completed aio requests (write thread)
+Pending normal aio reads: [0, 0, 0, 0, 0, 0, 0, 0] , aio writes: [0, 0, 0, 0] ,
+ ibuf aio reads:
+Pending flushes (fsync) log: 0; buffer pool: 0
+34992610 OS file reads, 456057 OS file writes, 104082 OS fsyncs
+2 pending preads, 0 pending pwrites
+20768.32 reads/s, 16384 avg bytes/read, 240.34 writes/s, 57.18 fsyncs/s
+-------------------------------------
+INSERT BUFFER AND ADAPTIVE HASH INDEX
+-------------------------------------
+Ibuf: size 1, free list len 0, seg size 2, 0 merges
+merged operations:
+ insert 0, delete mark 0, delete 0
+discarded operations:
+ insert 0, delete mark 0, delete 0
+Hash table size 17393, node heap has 0 buffer(s)
+Hash table size 17393, node heap has 0 buffer(s)
+Hash table size 17393, node heap has 0 buffer(s)
+Hash table size 17393, node heap has 0 buffer(s)
+Hash table size 17393, node heap has 0 buffer(s)
+Hash table size 17393, node heap has 0 buffer(s)
+Hash table size 17393, node heap has 0 buffer(s)
+Hash table size 17393, node heap has 0 buffer(s)
+0.00 hash searches/s, 5552.46 non-hash searches/s
+---
+LOG
+---
+Log capacity                 104857600
+Log capacity used            104857600
+Log sequence number          712336797
+Log buffer assigned up to    712336797
+Log buffer completed up to   712336797
+Log written up to            712336797
+Log flushed up to            712336797
+Added dirty pages up to      712336797
+Pages flushed up to          710238816
+Last checkpoint at           710238816
+Log minimum file id is       207
+Log maximum file id is       217
+189624 log i/o's done, 70.00 log i/o's/second
+----------------------
+BUFFER POOL AND MEMORY
+----------------------
+Total large memory allocated 0
+Dictionary memory allocated 582180
+Buffer pool size   4096
+Free buffers       0
+Database pages     4096
+Old database pages 1526
+Modified db pages  2
+Pending reads      2
+Pending writes: LRU 0, flush list 0, single page 0
+Pages made young 581410, not young 130349743
+1177.63 youngs/s, 96363.41 non-youngs/s
+Pages read 34992668, created 35423, written 252586
+20768.91 reads/s, 2.36 creates/s, 164.14 writes/s
+Buffer pool hit rate 931 / 1000, young-making rate 3 / 1000 not 323 / 1000
+Pages read ahead 14726.99/s, evicted without access 19.22/s, Random read ahead 0.00/s
+LRU len: 4096, unzip_LRU len: 0
+I/O sum[323399]:cur[2417], unzip sum[0]:cur[0]
+--------------
+ROW OPERATIONS
+--------------
+0 queries inside InnoDB, 0 queries in queue
+4 read views open inside InnoDB
+Process ID=1, Main thread ID=281472182972160 , state=sleeping
+Number of rows inserted 2400028, updated 2214273, deleted 0, read 1795500349
+0.00 inserts/s, 467.85 updates/s, 0.00 deletes/s, 1058285.69 reads/s
+Number of system rows inserted 76, updated 387, deleted 8, read 5355
+0.00 inserts/s, 0.00 updates/s, 0.00 deletes/s, 0.00 reads/s
+----------------------------
+END OF INNODB MONITOR OUTPUT
+============================
+

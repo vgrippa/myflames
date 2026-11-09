@@ -1,0 +1,81 @@
+{
+ "schema_version": "proxysql-action-1.0",
+ "action": "server_offline_soft",
+ "status": "done",
+ "message": "Changed and loaded to runtime. Not saved to disk yet: ProxySQL loads the previous configuration at its next start unless you save. The Group Replication monitor may move the server between its hostgroups within seconds; Refresh shows where it runs.",
+ "statements": [
+  "/*myflames:proxysql_op*/ UPDATE mysql_servers SET status = 'OFFLINE_SOFT' WHERE hostgroup_id = 30 AND hostname = 'mf-ic-2' AND port = 3306;",
+  "LOAD MYSQL SERVERS TO RUNTIME;"
+ ],
+ "sent": [
+  "/*myflames:proxysql_op*/ UPDATE mysql_servers SET status = 'OFFLINE_SOFT' WHERE hostgroup_id = 30 AND hostname = 'mf-ic-2' AND port = 3306;",
+  "LOAD MYSQL SERVERS TO RUNTIME;"
+ ],
+ "not_sent": [],
+ "error": null,
+ "after": {
+  "pending_runtime": [],
+  "pending_disk": [
+   "hostgroup 30, mf-ic-2:3306: status ONLINE → OFFLINE_SOFT"
+  ],
+  "config": {
+   "hostgroup_id": 30,
+   "hostname": "mf-ic-2",
+   "port": 3306,
+   "status": "OFFLINE_SOFT",
+   "weight": 100,
+   "max_connections": 1000,
+   "max_replication_lag": 0,
+   "use_ssl": 1,
+   "max_latency_ms": 0,
+   "compression": 0,
+   "gtid_port": 0,
+   "comment": "ic-2"
+  },
+  "runtime": [
+   {
+    "hostgroup_id": 32,
+    "status": "OFFLINE_SOFT",
+    "weight": 100
+   }
+  ],
+  "monitor": "group_replication"
+ },
+ "undo": "UPDATE mysql_servers SET status = 'ONLINE' WHERE hostgroup_id = 30 AND hostname = 'mf-ic-2' AND port = 3306; then LOAD MYSQL SERVERS TO RUNTIME;",
+ "next": {
+  "action": "servers_save",
+  "label": "Save servers to disk…"
+ },
+ "audit_id": null,
+ "states": [
+  "done",
+  "done"
+ ],
+ "effect": [
+  [
+   "Status in memory",
+   "ONLINE",
+   "OFFLINE_SOFT"
+  ],
+  [
+   "Runtime",
+   "hostgroup 32 ONLINE, weight 100",
+   "hostgroup 32 OFFLINE_SOFT, weight 100"
+  ],
+  [
+   "Memory versus runtime",
+   "Match",
+   "Match"
+  ],
+  [
+   "Memory versus disk",
+   "Match",
+   "1 difference"
+  ]
+ ],
+ "checks": [
+  "Refresh this place. Servers shows mf-ic-2:3306 as ProxySQL runs it, and its inspector shows the configuration row in memory.",
+  "If memory changed and runtime did not, the UPDATE ran and LOAD MYSQL SERVERS TO RUNTIME did not: the Configuration line then says a change is not loaded to runtime. Load servers to runtime, or undo.",
+  "The Audit log keeps this attempt as Outcome unknown; nothing is sent again."
+ ]
+}

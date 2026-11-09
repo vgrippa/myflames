@@ -1,0 +1,300 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/vgrippa/myflames/docs/schemas/csv-import-result-1.0.json",
+  "title": "myflames Import CSV result (csv-import-result-1.0)",
+  "description": "What one import did. failed_at.line is the refused row when known (the server named it, or myflames found it by sending the rows of a refused statement one at a time on a transactional table), else the first line of the refused statement; first_line and last_line are that statement's range. outcome: done; failed (the server or a check refused; all or nothing rolled back, commit every N kept rows.committed); stopped (Stop: rolled back to the last commit); unknown (the connection was lost, or no reply came, after a data statement, a COMMIT or a CREATE TABLE was sent; never retried). next_line is the first CSV line not committed, last_committed_line the last one that was. drop_hint is the DROP TABLE text (never sent) when this import created the table and kept no row. warnings are the server's (LOAD DATA: count and the first 20). problems are the rows skipped with Skip and report. No row data beyond 80-character problem values; no credentials.",
+  "$defs": {
+    "problem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "line",
+        "column",
+        "value",
+        "message"
+      ],
+      "properties": {
+        "line": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "column": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "value": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "outcome",
+    "message",
+    "rows",
+    "failed_at",
+    "next_line",
+    "last_committed_line",
+    "server_error",
+    "warnings",
+    "problems",
+    "problems_total",
+    "duration_ms",
+    "table_created",
+    "table_rows_after",
+    "drop_hint",
+    "audit",
+    "method",
+    "transaction"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "csv-import-result-1.0"
+    },
+    "outcome": {
+      "enum": [
+        "done",
+        "failed",
+        "stopped",
+        "unknown"
+      ]
+    },
+    "message": {
+      "type": "string"
+    },
+    "rows": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total",
+        "sent",
+        "committed",
+        "skipped"
+      ],
+      "properties": {
+        "total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sent": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "committed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "skipped": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "failed_at": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "line",
+            "first_line",
+            "last_line",
+            "message"
+          ],
+          "properties": {
+            "line": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "first_line": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "last_line": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "message": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "next_line": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "last_committed_line": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "server_error": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "code",
+            "message"
+          ],
+          "properties": {
+            "code": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "message": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "warnings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "count",
+        "items"
+      ],
+      "properties": {
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "level",
+              "code",
+              "message"
+            ],
+            "properties": {
+              "level": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "code": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "message": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          },
+          "maxItems": 20
+        }
+      }
+    },
+    "problems": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/problem"
+      },
+      "maxItems": 100
+    },
+    "problems_total": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "duration_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "table_created": {
+      "type": "boolean"
+    },
+    "table_rows_after": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "drop_hint": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "audit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "method": {
+      "enum": [
+        "insert",
+        "load_data"
+      ]
+    },
+    "transaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "every"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "all",
+            "every"
+          ]
+        },
+        "every": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

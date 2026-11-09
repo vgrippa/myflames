@@ -1,0 +1,252 @@
+/* Server > Health. Layout comes from kit.css (summary line, grouped list,
+   tiles, inspector); this file holds the few Health-only details. */
+.summary-muted {
+  color: var(--ink-muted);
+  font-weight: 400;
+}
+.health-estimate {
+  margin-left: var(--space-1);
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+}
+.health-why-flag {
+  color: var(--ink);
+  font-weight: 500;
+}
+.health-caveat,
+.health-sources {
+  margin-top: var(--space-2);
+}
+.health-sources {
+  margin-top: var(--space-4);
+  overflow-wrap: anywhere;
+}
+.tile-section .tile-grid {
+  margin-top: 0;
+}
+/* Three compact lines fit the label, value and status with a sparkline. */
+.health-panel .metric-tile {
+  height: 76px;
+  min-height: 76px;
+  max-height: 76px;
+  gap: 0;
+  padding-block: var(--space-1);
+}
+.health-panel .tile-value {
+  line-height: var(--leading-lg);
+}
+
+/* Live charts above Diagnostics: one series each, tokens only. */
+.health-live-charts-note,
+.health-live-charts-count {
+  margin-left: auto;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+}
+/* Four charts in a row, two on a narrow view, one on a phone: never an
+   orphan card. */
+.health-live-charts {
+  container: health-live / inline-size;
+}
+.health-live-charts-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+@container health-live (max-width: 820px) {
+  .health-live-charts-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@container health-live (max-width: 400px) {
+  .health-live-charts-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+/* Each card takes four rows of the grid (title, value, chart, range), so a
+   title that wraps to two lines keeps the cards beside it aligned. */
+.health-live-chart {
+  display: grid;
+  grid-row: span 4;
+  grid-template-rows: subgrid;
+  row-gap: var(--space-1);
+  align-content: start;
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+/* One reading so far: each card holds its title and value (two rows), no
+   chart and no Min or Max; the section's note says when the chart starts. */
+.health-live-charts.is-pending .health-live-chart {
+  grid-row: span 2;
+}
+/* The title above the latest value, like a metric tile; a long title wraps. */
+.health-chart-head {
+  display: contents;
+}
+.health-chart-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+}
+.health-chart-current {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-lg);
+  line-height: var(--leading-lg);
+  font-weight: 600;
+  color: var(--ink);
+}
+.health-chart-svg {
+  display: block;
+  width: 100%;
+  height: 40px;
+  overflow: visible;
+}
+.health-chart-base {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+.health-chart-area {
+  fill: var(--accent);
+  opacity: 0.1;
+}
+.health-chart-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+/* Zero-length paths with round caps: a dot that keeps its size however the
+   chart is stretched, on a ring of the card's color. */
+.health-chart-ring {
+  fill: none;
+  stroke: var(--surface);
+  stroke-width: 12;
+  stroke-linecap: round;
+}
+.health-chart-dot {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 8;
+  stroke-linecap: round;
+}
+.health-chart-hit {
+  fill: transparent;
+}
+.health-chart-hit:hover {
+  fill: var(--accent-soft);
+  opacity: 0.6;
+}
+.health-chart-range {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0 var(--space-2);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-muted);
+}
+.health-chart-range > span {
+  white-space: nowrap;
+}
+/* The inspector's trend before the second reading: the value and one muted
+   line; with every reading equal, Steady below the sparkline. */
+.health-trend-pending {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-2);
+  margin: 0;
+}
+.health-trend-value {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.health-trend-steady {
+  margin: var(--space-1) 0 0;
+}
+
+/* Capture when…: the form in its popover and the status line in the view. */
+.capture-when-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.capture-when-title {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.capture-when-title .hint {
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.capture-when-conditions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.capture-when-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--text-sm);
+}
+/* A long condition wraps beside its field instead of pushing the field past
+   the popover's edge, so the three fields line up. */
+.capture-when-row > .checkbox {
+  min-width: 0;
+  white-space: normal;
+}
+.capture-when-row .number-field {
+  flex: none;
+  width: 80px;
+}
+.capture-when-error {
+  margin: 0;
+}
+.capture-when-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+.health-watch-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  min-width: 0;
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--line);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.health-watch-line {
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.health-watch-note {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--ink-muted);
+}
+.health-watch-status .action-status {
+  min-width: 0;
+}

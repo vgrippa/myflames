@@ -29,7 +29,7 @@ Claim review:
 ```
 
 1. **Restate the claim** atomically. "hash_join default is on in 8.4." "filesort spills to tmpdir above sort_buffer_size." One assertion per line; a paragraph is many claims.
-2. **Grep the source.** The working dirs include `/Users/viniciusgrippa/Downloads/git/mysql-server` and `/Users/viniciusgrippa/Downloads/git/mariadb-server`. Search them for the default, threshold, switch behavior, or symbol. Defaults live in `sys_vars.cc` / `mysqld.cc` / `sql/sys_vars.cc`; optimizer behavior in `sql/sql_optimizer.cc`, `sql/sql_select.cc`, `sql/opt_*.cc`.
+2. **Grep the source.** The working dirs include the local `mysql-server` and `mariadb-server` checkouts at `/Users/viniciusgrippa/Downloads/git/mysql-server` and `/Users/viniciusgrippa/Downloads/git/mariadb-server` (sibling clones of this repo under `~/Downloads/git/`; locate them with `ls -d ~/Downloads/git/mysql-server ~/Downloads/git/mariadb-server`, or clone github.com/mysql/mysql-server and github.com/MariaDB/server next to the myflames checkout). Search them for the default, threshold, switch behavior, or symbol. Defaults live in `sys_vars.cc` / `mysqld.cc` / `sql/sys_vars.cc`; optimizer behavior in `sql/sql_optimizer.cc`, `sql/sql_select.cc`, `sql/opt_*.cc`.
 3. **Verdict + evidence.** CONFIRMED needs a file:line. WRONG needs the corrected value AND its file:line. UNVERIFIABLE means not found in source (say so plainly; do not upgrade a guess to a fact).
 4. **Scope it.** State which engine and version. MariaDB is not "old MySQL"; verify it separately in mariadb-server/.
 

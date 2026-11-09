@@ -1,0 +1,49 @@
+{
+ "server": "mysql-5.7",
+ "source": "live",
+ "args": {
+  "connection_ids": [
+   1285
+  ]
+ },
+ "calls": [
+  [
+   "/*myflames:ddl-progress*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('performance_schema', 'version', 'version_comment')",
+   "performance_schema\tON\nversion\t5.7.44-log\nversion_comment\tMySQL Community Server (GPL)\n"
+  ],
+  [
+   "/*myflames:ddl-progress*/ SELECT 'consumer', NULL, NAME, ENABLED, NULL, NULL, NULL, NULL, NULL FROM performance_schema.setup_consumers WHERE NAME IN ('global_instrumentation', 'thread_instrumentation', 'events_stages_current') UNION ALL SELECT 'instrument', NULL, NAME, ENABLED, TIMED, NULL, NULL, NULL, NULL FROM performance_schema.setup_instruments WHERE NAME IN ('stage/sql/copy to tmp table', 'stage/innodb/alter table (read PK and internal sort)', 'stage/innodb/alter table (merge sort)', 'stage/innodb/alter table (insert)', 'stage/innodb/alter table (log apply index)', 'stage/innodb/alter table (log apply table)', 'stage/innodb/alter table (flush)', 'stage/innodb/alter table (end)') UNION ALL SELECT 'stage', t.PROCESSLIST_ID, s.EVENT_NAME, s.WORK_COMPLETED, s.WORK_ESTIMATED, t.PROCESSLIST_TIME, LEFT(t.PROCESSLIST_INFO, 16384), NULL, NULL FROM performance_schema.events_stages_current s JOIN performance_schema.threads t ON t.THREAD_ID = s.THREAD_ID WHERE s.END_EVENT_ID IS NULL AND s.EVENT_NAME IN ('stage/sql/copy to tmp table', 'stage/innodb/alter table (read PK and internal sort)', 'stage/innodb/alter table (merge sort)', 'stage/innodb/alter table (insert)', 'stage/innodb/alter table (log apply index)', 'stage/innodb/alter table (log apply table)', 'stage/innodb/alter table (flush)', 'stage/innodb/alter table (end)') AND t.PROCESSLIST_ID IS NOT NULL AND t.PROCESSLIST_COMMAND <> 'Sleep' AND t.PROCESSLIST_ID IN (1285) LIMIT 10011",
+   "consumer\tNULL\tevents_stages_current\tYES\tNULL\tNULL\tNULL\tNULL\tNULL\nconsumer\tNULL\tglobal_instrumentation\tYES\tNULL\tNULL\tNULL\tNULL\tNULL\nconsumer\tNULL\tthread_instrumentation\tYES\tNULL\tNULL\tNULL\tNULL\tNULL\ninstrument\tNULL\tstage/sql/copy to tmp table\tYES\tYES\tNULL\tNULL\tNULL\tNULL\ninstrument\tNULL\tstage/innodb/alter table (end)\tYES\tYES\tNULL\tNULL\tNULL\tNULL\ninstrument\tNULL\tstage/innodb/alter table (flush)\tYES\tYES\tNULL\tNULL\tNULL\tNULL\ninstrument\tNULL\tstage/innodb/alter table (insert)\tYES\tYES\tNULL\tNULL\tNULL\tNULL\ninstrument\tNULL\tstage/innodb/alter table (log apply index)\tYES\tYES\tNULL\tNULL\tNULL\tNULL\ninstrument\tNULL\tstage/innodb/alter table (log apply table)\tYES\tYES\tNULL\tNULL\tNULL\tNULL\ninstrument\tNULL\tstage/innodb/alter table (merge sort)\tYES\tYES\tNULL\tNULL\tNULL\tNULL\ninstrument\tNULL\tstage/innodb/alter table (read PK and internal sort)\tYES\tYES\tNULL\tNULL\tNULL\tNULL\nstage\t1285\tstage/innodb/alter table (merge sort)\t15859\t37244\t4\tALTER TABLE testdb.big_items FORCE\tNULL\tNULL\n"
+  ]
+ ],
+ "report": {
+  "schema_version": "ddl-progress-1.0",
+  "engine": "mysql",
+  "flavor": "mysql",
+  "server_product": "MySQL",
+  "server_version": "5.7.44-log",
+  "taken_at": "2026-10-31T13:07:06.128626+00:00",
+  "uptime_s": null,
+  "performance_schema": true,
+  "available": true,
+  "reason": null,
+  "missing": [],
+  "source": "performance_schema",
+  "items": [
+   {
+    "id": 1285,
+    "stage": "stage/innodb/alter table (merge sort)",
+    "stage_label": "Merging sorted data",
+    "percent": 42.6,
+    "completed": 15859,
+    "estimated": 37244,
+    "elapsed_s": 4,
+    "left_s": 5.4,
+    "statement_kind": "ALTER",
+    "source": "performance_schema",
+    "note": null,
+    "units": "work_units"
+   }
+  ]
+ }
+}

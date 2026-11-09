@@ -1,0 +1,190 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://myflames.dev/schemas/watch-1.0.json",
+  "title": "myflames watch report 1.0",
+  "description": "Payload returned by /api/live/watch (myflames/watch.py:watch_report) for lightweight condition polling while Health is on screen. A source that could not be read is named in errors (and notes) for the field it feeds; the field is null when nothing else fed it. longest_lock_wait.seconds is how long an InnoDB transaction has waited for its row lock, from INNODB_TRX.trx_wait_started, the only wait time the server records; it is never a statement's or a transaction's running time, and without INNODB_TRX (no PROCESS) row lock waits are not judged (performance_schema.data_lock_waits is never read). longest_waiting_statement is a statement waiting for a metadata or table lock with how long the statement has run (process list TIME, from its start), reported apart and never judged as a lock wait. Without PROCESS the process list shows only the account's own sessions, so longest_statement and longest_waiting_statement are partial and say so.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "threads_running",
+    "longest_statement",
+    "longest_lock_wait",
+    "read_at",
+    "errors",
+    "notes"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "watch-1.0"
+    },
+    "engine": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "mysql",
+        "mariadb",
+        null
+      ]
+    },
+    "server_version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "server_product": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "threads_running": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "longest_statement": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "seconds",
+            "user",
+            "db"
+          ],
+          "properties": {
+            "id": {
+              "type": "integer"
+            },
+            "seconds": {
+              "type": "number"
+            },
+            "user": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "db": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "longest_lock_wait": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "seconds"
+          ],
+          "properties": {
+            "id": {
+              "type": "integer"
+            },
+            "seconds": {
+              "type": "number",
+              "description": "Seconds the transaction has waited for its row lock (INNODB_TRX.trx_wait_started)."
+            }
+          }
+        }
+      ]
+    },
+    "read_at": {
+      "type": "string"
+    },
+    "reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "errors": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "threads_running",
+        "longest_statement",
+        "longest_lock_wait"
+      ],
+      "properties": {
+        "threads_running": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "longest_statement": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "longest_lock_wait": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "longest_waiting_statement": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "longest_waiting_statement": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "seconds",
+            "state"
+          ],
+          "properties": {
+            "id": {
+              "type": "integer"
+            },
+            "seconds": {
+              "type": "number",
+              "description": "How long the waiting statement has run, not how long it has waited."
+            },
+            "state": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

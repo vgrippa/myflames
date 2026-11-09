@@ -1,0 +1,172 @@
+{
+ "schema_version": "cluster-1.0",
+ "engine": "mysql",
+ "server_version": "8.4.11",
+ "version_comment": "MySQL Community Server - GPL",
+ "captured_at": "2026-10-20T14:40:00+00:00",
+ "uptime_s": 3600,
+ "performance_schema": true,
+ "available": true,
+ "message": null,
+ "kind": "group_replication",
+ "server": {
+  "hostname": "mf-ic-1",
+  "port": 3306,
+  "report_host": "mf-ic-1",
+  "server_uuid": "11111111-1111-11f0-8a00-0242ac130002"
+ },
+ "cluster": {
+  "name": null,
+  "uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+  "size": 3,
+  "expected_size": null,
+  "expected_source": null,
+  "component": null,
+  "quorum": true,
+  "failures_tolerated": 1,
+  "topology": "multi_primary",
+  "provider": null
+ },
+ "status": "ok",
+ "status_why": [
+  "Every judged member is healthy and the cluster has quorum."
+ ],
+ "local": "member:11111111-1111-11f0-8a00-0242ac130002",
+ "members": [
+  {
+   "key": "member:11111111-1111-11f0-8a00-0242ac130002",
+   "name": "mf-ic-1",
+   "address": "mf-ic-1:3306",
+   "host": "mf-ic-1",
+   "port": 3306,
+   "uuid": "11111111-1111-11f0-8a00-0242ac130002",
+   "state": "ONLINE",
+   "state_source": "replication_group_members",
+   "role": "PRIMARY",
+   "version": "8.4.11",
+   "local": true,
+   "status": "ok",
+   "status_why": [
+    "A full member of the group."
+   ],
+   "metrics": {
+    "transactions_in_queue": 0,
+    "transactions_checked": 120,
+    "conflicts_detected": 0,
+    "rows_validating": 0,
+    "applier_queue": 0,
+    "remote_applied": 80,
+    "local_proposed": 40,
+    "local_rollback": 0
+   },
+   "communication_stack": "MySQL",
+   "actions": [
+    {
+     "id": "stop_member",
+     "label": "Stop Group Replication…",
+     "danger": true,
+     "description": "This member leaves the group and becomes read-only (super_read_only ON)."
+    },
+    {
+     "id": "switch_to_single_primary",
+     "label": "Switch the group to single-primary…",
+     "danger": true,
+     "description": "The group elects one primary; the others become read-only."
+    }
+   ]
+  },
+  {
+   "key": "member:22222222-2222-11f0-8a00-0242ac130003",
+   "name": "mf-ic-2",
+   "address": "mf-ic-2:3306",
+   "host": "mf-ic-2",
+   "port": 3306,
+   "uuid": "22222222-2222-11f0-8a00-0242ac130003",
+   "state": "ONLINE",
+   "state_source": "replication_group_members",
+   "role": "PRIMARY",
+   "version": "8.4.11",
+   "local": false,
+   "status": "ok",
+   "status_why": [
+    "A full member of the group."
+   ],
+   "metrics": {
+    "transactions_in_queue": 0,
+    "transactions_checked": 120,
+    "conflicts_detected": 0,
+    "rows_validating": 0,
+    "applier_queue": 0,
+    "remote_applied": 80,
+    "local_proposed": 40,
+    "local_rollback": 0
+   },
+   "communication_stack": "MySQL",
+   "actions": []
+  },
+  {
+   "key": "member:33333333-3333-11f0-8a00-0242ac130004",
+   "name": "mf-ic-3",
+   "address": "mf-ic-3:3306",
+   "host": "mf-ic-3",
+   "port": 3306,
+   "uuid": "33333333-3333-11f0-8a00-0242ac130004",
+   "state": "ONLINE",
+   "state_source": "replication_group_members",
+   "role": "PRIMARY",
+   "version": "8.4.11",
+   "local": false,
+   "status": "ok",
+   "status_why": [
+    "A full member of the group."
+   ],
+   "metrics": {
+    "transactions_in_queue": 0,
+    "transactions_checked": 120,
+    "conflicts_detected": 0,
+    "rows_validating": 0,
+    "applier_queue": 0,
+    "remote_applied": 80,
+    "local_proposed": 40,
+    "local_rollback": 0
+   },
+   "communication_stack": "MySQL",
+   "actions": []
+  }
+ ],
+ "galera": null,
+ "group_replication": {
+  "group_name": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+  "single_primary_mode": "OFF",
+  "local_address": "mf-ic-1:3306",
+  "group_seeds": "mf-ic-2:3306,mf-ic-3:3306",
+  "view_id": "17608000000000000:3"
+ },
+ "metadata": {
+  "available": false,
+  "schema_version": null,
+  "cluster_id": null,
+  "cluster_name": null,
+  "primary_mode": null,
+  "instances": [],
+  "reason": "No mysql_innodb_cluster_metadata schema is visible to this account, so this is a Group Replication group without InnoDB Cluster metadata (or the account cannot read it).",
+  "local_copy": null
+ },
+ "routers": [],
+ "findings": [],
+ "summary": {
+  "members": 3,
+  "ok": 3,
+  "watch": 0,
+  "problem": 0,
+  "unknown": 0
+ },
+ "statements": [
+  "SHOW GLOBAL VARIABLES",
+  "SELECT performance_schema.replication_group_members",
+  "SELECT performance_schema.replication_group_member_stats"
+ ],
+ "notes": [
+  "Queue lengths and rows validating are current; the other counts are cumulative. Another member's numbers are the ones it last sent to this member."
+ ]
+}

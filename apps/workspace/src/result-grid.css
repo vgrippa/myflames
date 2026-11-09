@@ -1,0 +1,413 @@
+/* Query editor result grid: the selected cells, the totals footer and the
+   row panel ("Show row"). Tokens only (style.css); the grid's frame
+   (.result-grid, .result-table) starts in editor.css, imported before this
+   file (styles.ts), so these rules extend it. */
+
+/* The grid, the row panel beside it, then the totals footer. */
+.result-grid {
+  flex-direction: column;
+  min-width: 0;
+}
+.result-grid-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+}
+.result-grid .data-table-frame {
+  min-width: 0;
+}
+
+/* Selection: the cells of the selected rectangle, the focused cell, and the
+   headers of the selected columns. The table's whole-row tint gives way to
+   the cells (the focused row keeps its outline when focused). */
+.result-table .data-table tbody tr.is-selected td,
+.result-table .data-table tbody tr.is-selected:hover td {
+  background: none;
+}
+.result-table .data-table tbody tr.is-selected:hover td {
+  background: var(--surface-subtle);
+}
+.result-table .data-table tbody tr[data-sel] td.is-sel-col,
+.result-table .data-table tbody tr[data-sel]:hover td.is-sel-col {
+  background: var(--accent-soft);
+}
+.result-table .data-table tbody tr[data-focus] td.is-focus-col {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.result-table .data-table th.is-sel-col,
+.result-table .data-table th.is-sel-col .sort-button {
+  color: var(--accent-text);
+}
+.result-table .data-table td.cell-rownum {
+  cursor: pointer;
+}
+
+/* Totals of the selected cells, one line under the table. */
+.result-grid-footer {
+  flex: none;
+  min-height: 24px;
+  margin: 0;
+  padding: var(--space-1) 0 0;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.result-grid-footer.is-empty {
+  color: var(--ink-faint);
+}
+
+/* The row panel: one entry per column of the row. */
+.row-panel {
+  flex: none;
+  width: 300px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin-left: var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  font-size: var(--text-sm);
+}
+.row-panel-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: 35px;
+  padding: 0 var(--space-1) 0 var(--space-3);
+  border-bottom: 1px solid var(--line);
+}
+.row-panel-title {
+  margin: 0;
+  font-size: var(--section-size);
+  line-height: var(--section-leading);
+  font-weight: var(--section-weight);
+  color: var(--section-ink);
+  white-space: nowrap;
+}
+.row-panel-pos {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.row-panel-step.is-up svg {
+  transform: rotate(-90deg);
+}
+.row-panel-step.is-down svg {
+  transform: rotate(90deg);
+}
+.row-panel-step[aria-disabled="true"] {
+  color: var(--ink-faint);
+}
+.row-panel-fields {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: 0 0 var(--space-2);
+}
+.row-panel-fields:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.row-panel-field {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--line);
+}
+.row-panel-field dt {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin-bottom: 2px;
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+.row-panel-type {
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+}
+.row-panel-field dd {
+  margin: 0;
+  min-width: 0;
+}
+.row-panel-text {
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+}
+.row-panel-empty {
+  color: var(--ink-muted);
+  font-style: italic;
+}
+.row-panel-hex {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.row-panel-size {
+  color: var(--ink-muted);
+}
+.row-panel-json {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  padding: var(--space-2);
+  background: var(--surface-subtle);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  white-space: pre;
+  color: var(--ink);
+}
+.row-panel-copy {
+  margin-top: var(--space-1);
+}
+
+/* The 720 px window (the app's minimum): the row panel becomes a bottom
+   sheet, like the schema browser and the history (editor.css). */
+@media (max-width: 720px) {
+  .row-panel {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 20;
+    width: auto;
+    max-height: min(60dvh, 480px);
+    margin: 0;
+    border: 0;
+    border-top: 1px solid var(--line);
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    box-shadow: var(--shadow-dialog);
+    background: var(--surface-raised);
+  }
+}
+
+/* ---- Result toolbar: filter field, column chips, pin and compare --------- */
+
+.result-toolbar {
+  gap: var(--space-1-5) var(--space-3);
+  padding: var(--space-1-5) var(--space-3);
+  min-width: 0;
+}
+/* The short-window trim of editor.css must reach this toolbar too (this file
+   loads after editor.css, so the tie is won here). */
+@media (max-height: 600px) {
+  .result-toolbar {
+    padding-block: 2px;
+  }
+}
+.result-filter-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1-5);
+  min-width: 0;
+}
+.result-filter-field input[type="search"] {
+  width: 180px;
+  min-height: 26px;
+  height: 26px;
+  padding-left: 26px;
+  padding-right: var(--space-2);
+  font-size: var(--text-sm);
+}
+.result-filter-field input[type="search"]::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  display: none;
+}
+.result-filter-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.result-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: 24px;
+  max-width: 280px;
+  padding: 0 2px 0 var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+  color: var(--ink);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+}
+.result-filter-chip.is-hide {
+  border-color: var(--warn-line);
+  background: var(--warn-soft);
+}
+.result-chip-col {
+  color: var(--ink-muted);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.result-filter-chip.is-hide .result-chip-col {
+  color: var(--warn-text);
+}
+.result-chip-val {
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 160px;
+}
+.result-chip-empty {
+  color: var(--ink-muted);
+  font-style: italic;
+  white-space: nowrap;
+}
+.result-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink-muted);
+  cursor: pointer;
+  flex: none;
+}
+.result-chip-remove:hover,
+.result-chip-remove:focus-visible {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+.result-filter-summary,
+.result-compare-summary {
+  color: var(--ink);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.result-actions {
+  align-items: center;
+  flex-wrap: wrap;
+}
+.result-pin-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--info-soft);
+  color: var(--info-text);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.result-compare-key {
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+}
+/* Compare with pinned is a toggle: pressed takes the kit's soft accent
+   state, never the primary fill (one primary per region). */
+.result-actions .button[data-action="compare-pinned"][aria-pressed="true"],
+.result-actions .button[data-action="compare-pinned"][aria-pressed="true"]:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+.result-compare-key .select {
+  min-height: 26px;
+  height: 26px;
+  padding-block: 0;
+  font-size: var(--text-sm);
+}
+
+/* ---- Compare with pinned view -------------------------------------------- */
+
+.result-compare-view {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0 var(--space-3) var(--space-2);
+  gap: var(--space-1-5);
+}
+.result-compare-note {
+  margin: 0;
+}
+.result-compare-table td.cell-status {
+  white-space: nowrap;
+}
+.result-compare-table th.is-key-col {
+  color: var(--accent-text);
+}
+.compare-key-tag {
+  display: inline-block;
+  margin-left: var(--space-1);
+  padding: 0 4px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.compare-diff-row.is-added td {
+  background: var(--ok-soft);
+}
+.compare-diff-row.is-removed td {
+  background: var(--danger-soft);
+}
+.compare-diff-row.is-changed .is-changed-cell {
+  align-items: center;
+  height: var(--row-h);
+  margin: 0 calc(-1 * var(--space-3));
+  padding: 0 var(--space-3);
+  background: var(--warn-soft);
+  box-shadow: inset 2px 0 0 var(--warn);
+}
+.compare-cell-diff {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1);
+}
+.compare-cell-before {
+  color: var(--ink-muted);
+  text-decoration: line-through;
+}
+.compare-cell-arrow {
+  color: var(--warn-text);
+  font-family: var(--font-sans);
+  font-weight: 600;
+}
+.compare-cell-after {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+@media (max-width: 720px) {
+  .result-filter-field input[type="search"] {
+    width: 148px;
+  }
+  .result-actions {
+    margin-left: 0;
+  }
+}

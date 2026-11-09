@@ -1,0 +1,304 @@
+{
+ "server": "percona-8.4-partitioned",
+ "source": "live",
+ "args": {
+  "schema": "review"
+ },
+ "calls": [
+  [
+   "/*myflames:indexes*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('performance_schema', 'userstat', 'version', 'version_comment')",
+   "performance_schema\tON\nuserstat\tON\nversion\t8.4.11-11\nversion_comment\tPercona Server (GPL), Release 11, Revision 57878ff8\n"
+  ],
+  [
+   "/*myflames:indexes*/ SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime' OR Variable_name LIKE 'Performance\\_schema\\_%\\_lost'",
+   "Performance_schema_accounts_lost\t0\nPerformance_schema_cond_classes_lost\t0\nPerformance_schema_cond_instances_lost\t0\nPerformance_schema_digest_lost\t0\nPerformance_schema_file_classes_lost\t0\nPerformance_schema_file_handles_lost\t0\nPerformance_schema_file_instances_lost\t0\nPerformance_schema_hosts_lost\t0\nPerformance_schema_index_stat_lost\t0\nPerformance_schema_locker_lost\t0\nPerformance_schema_logger_lost\t0\nPerformance_schema_memory_classes_lost\t0\nPerformance_schema_metadata_lock_lost\t0\nPerformance_schema_meter_lost\t0\nPerformance_schema_metric_lost\t0\nPerformance_schema_mutex_classes_lost\t0\nPerformance_schema_mutex_instances_lost\t0\nPerformance_schema_nested_statement_lost\t0\nPerformance_schema_prepared_statements_lost\t0\nPerformance_schema_program_lost\t0\nPerformance_schema_rwlock_classes_lost\t0\nPerformance_schema_rwlock_instances_lost\t0\nPerformance_schema_session_connect_attrs_lost\t0\nPerformance_schema_socket_classes_lost\t0\nPerformance_schema_socket_instances_lost\t0\nPerformance_schema_stage_classes_lost\t0\nPerformance_schema_statement_classes_lost\t0\nPerformance_schema_table_handles_lost\t0\nPerformance_schema_table_instances_lost\t0\nPerformance_schema_table_lock_stat_lost\t0\nPerformance_schema_thread_classes_lost\t0\nPerformance_schema_thread_instances_lost\t0\nPerformance_schema_users_lost\t0\nUptime\t489\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_TYPE IN ('BASE TABLE', 'SYSTEM VERSIONED') AND TABLE_SCHEMA = CONVERT(X'726576696577' USING utf8mb4)",
+   "4\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT NAME, ENABLED FROM performance_schema.setup_instruments WHERE NAME = 'wait/io/table/sql/handler'",
+   "wait/io/table/sql/handler\tYES\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT NAME, ENABLED FROM performance_schema.setup_consumers WHERE NAME IN ('global_instrumentation', 'thread_instrumentation')",
+   "global_instrumentation\tYES\nthread_instrumentation\tYES\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT HOST, USER, ROLE, ENABLED FROM performance_schema.setup_actors",
+   "%\t%\t%\tYES\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT OBJECT_SCHEMA, OBJECT_NAME, ENABLED FROM performance_schema.setup_objects WHERE OBJECT_TYPE = 'TABLE'",
+   "mysql\t%\tNO\nperformance_schema\t%\tNO\ninformation_schema\t%\tNO\n%\t%\tYES\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT OBJECT_SCHEMA, OBJECT_NAME, INDEX_NAME, COUNT_STAR, COUNT_FETCH, SUM_TIMER_FETCH FROM performance_schema.table_io_waits_summary_by_index_usage WHERE OBJECT_TYPE = 'TABLE' AND OBJECT_SCHEMA = CONVERT(X'726576696577' USING utf8mb4)",
+   "review\tparted_nopk\tkv\t4\t4\t2795709\nreview\tparted_nopk\tNULL\t11\t4\t15897987\nreview\tparted_pk\tPRIMARY\t0\t0\t0\nreview\tparted_pk\tkv\t0\t0\t0\nreview\tparted_pk\tkw\t0\t0\t0\nreview\tparted_pk\tkz\t0\t0\t0\nreview\tplain_nopk\tkv\t3\t3\t2044623\nreview\tplain_nopk\tNULL\t8\t4\t6843228\nreview\tplain_pk\tPRIMARY\t0\t0\t0\nreview\tplain_pk\tkv\t0\t0\t0\nreview\tplain_pk\tkw\t3\t3\t3880611\nreview\tplain_pk\tkz\t0\t0\t0\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT TABLE_SCHEMA, TABLE_NAME, INDEX_NAME, ROWS_READ FROM information_schema.INDEX_STATISTICS WHERE TABLE_SCHEMA = CONVERT(X'726576696577' USING utf8mb4)",
+   "review\tplain_pk\tkv\t3\nreview\tparted_pk\tkv\t3\nreview\tparted_nopk\tkv\t6\nreview\tplain_nopk\tkv\t6\nreview\tplain_pk\tkw\t3\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT TABLE_SCHEMA, TABLE_NAME, ROWS_READ FROM information_schema.TABLE_STATISTICS WHERE TABLE_SCHEMA = CONVERT(X'726576696577' USING utf8mb4)",
+   "review\tplain_pk\t6\nreview\tplain_nopk\t6\nreview\tparted_nopk\t6\nreview\tparted_pk\t3\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT TABLE_SCHEMA, TABLE_NAME FROM information_schema.TABLES WHERE TABLE_TYPE = 'BASE TABLE' AND CREATE_OPTIONS LIKE '%partitioned%' AND TABLE_SCHEMA = CONVERT(X'726576696577' USING utf8mb4)",
+   "review\tparted_nopk\nreview\tparted_pk\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT TABLE_SCHEMA, TABLE_NAME, INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX, COLUMN_NAME, SUB_PART, COLLATION, INDEX_TYPE, IS_VISIBLE, EXPRESSION FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = CONVERT(X'726576696577' USING utf8mb4)",
+   "review\tparted_nopk\tkv\t1\t1\tv\tNULL\tA\tBTREE\tYES\tNULL\nreview\tplain_nopk\tkv\t1\t1\tv\tNULL\tA\tBTREE\tYES\tNULL\nreview\tparted_pk\tPRIMARY\t0\t1\tid\tNULL\tA\tBTREE\tYES\tNULL\nreview\tparted_pk\tkv\t1\t1\tv\tNULL\tA\tBTREE\tYES\tNULL\nreview\tparted_pk\tkw\t1\t1\tw\tNULL\tA\tBTREE\tYES\tNULL\nreview\tparted_pk\tkz\t1\t1\tw\tNULL\tA\tBTREE\tYES\tNULL\nreview\tparted_pk\tkz\t1\t2\tv\tNULL\tA\tBTREE\tYES\tNULL\nreview\tplain_pk\tPRIMARY\t0\t1\tid\tNULL\tA\tBTREE\tYES\tNULL\nreview\tplain_pk\tkv\t1\t1\tv\tNULL\tA\tBTREE\tYES\tNULL\nreview\tplain_pk\tkw\t1\t1\tw\tNULL\tA\tBTREE\tYES\tNULL\nreview\tplain_pk\tkz\t1\t1\tw\tNULL\tA\tBTREE\tYES\tNULL\nreview\tplain_pk\tkz\t1\t2\tv\tNULL\tA\tBTREE\tYES\tNULL\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT TABLE_SCHEMA, TABLE_NAME, CONSTRAINT_NAME, COLUMN_NAME, ORDINAL_POSITION, REFERENCED_TABLE_SCHEMA, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE REFERENCED_TABLE_NAME IS NOT NULL AND TABLE_SCHEMA = CONVERT(X'726576696577' USING utf8mb4)",
+   ""
+  ]
+ ],
+ "report": {
+  "schema_version": "indexes-1.0",
+  "engine": "mysql",
+  "flavor": "percona",
+  "server_product": "Percona Server",
+  "server_version": "8.4.11-11",
+  "taken_at": "2026-10-21T19:07:31.832899+00:00",
+  "uptime_s": 489,
+  "performance_schema": true,
+  "scope": {
+   "schema": "review",
+   "schemas": [
+    "review"
+   ],
+   "server_wide": false
+  },
+  "source": "performance_schema",
+  "available": true,
+  "userstat": {
+   "enabled": true,
+   "read": true,
+   "role": "evidence"
+  },
+  "unused": [
+   {
+    "schema": "review",
+    "table": "plain_pk",
+    "index": "kz",
+    "columns": "w, v",
+    "visible": true,
+    "foreign_keys": [],
+    "verdict": "candidate",
+    "keep_reason": null,
+    "userstat_rows_read": 0,
+    "why": "No use since server start or the last change to this table's indexes (COUNT_STAR = 0 in performance_schema.table_io_waits_summary_by_index_usage).",
+    "test_sql": "ALTER TABLE `review`.`plain_pk` ALTER INDEX `kz` INVISIBLE;",
+    "drop_sql": "ALTER TABLE `review`.`plain_pk` DROP INDEX `kz`;",
+    "caveat": "Make it invisible first and run a full business cycle (month-end jobs, reports, replicas) before dropping it: an invisible index is still maintained on writes, but the optimizer stops using it, and making it visible again is instant. Queries with an index hint that names it fail while it is invisible."
+   },
+   {
+    "schema": "review",
+    "table": "plain_pk",
+    "index": "kv",
+    "columns": "v",
+    "visible": true,
+    "foreign_keys": [],
+    "verdict": "keep",
+    "keep_reason": "userstat",
+    "userstat_rows_read": 3,
+    "why": "Performance Schema shows no use since server start or the last change to this table's indexes, but user statistics (information_schema.INDEX_STATISTICS) count 3 rows read through it since userstat was turned on or the last FLUSH INDEX_STATISTICS, so it is in use. User statistics count every session, including sessions setup_actors does not instrument, and keep their counts when the table is rebuilt; keep it."
+   }
+  ],
+  "redundant": [
+   {
+    "schema": "review",
+    "table": "parted_pk",
+    "index": "kw",
+    "columns": "w",
+    "unique": false,
+    "visible": true,
+    "dominant": "kz",
+    "dominant_columns": "w, v",
+    "reason": "is a leftmost prefix of",
+    "foreign_keys": [],
+    "why": "kw (w) is a leftmost prefix of kz (w, v), so kz serves every lookup kw serves. Each extra index slows writes and uses buffer pool memory.",
+    "test_sql": "ALTER TABLE `review`.`parted_pk` ALTER INDEX `kw` INVISIBLE;",
+    "drop_sql": "ALTER TABLE `review`.`parted_pk` DROP INDEX `kw`;",
+    "caveat": "Check for FORCE INDEX or USE INDEX hints that name it. Make it invisible first and run a full business cycle (month-end jobs, reports, replicas) before dropping it: an invisible index is still maintained on writes, but the optimizer stops using it, and making it visible again is instant. Queries with an index hint that names it fail while it is invisible."
+   },
+   {
+    "schema": "review",
+    "table": "plain_pk",
+    "index": "kw",
+    "columns": "w",
+    "unique": false,
+    "visible": true,
+    "dominant": "kz",
+    "dominant_columns": "w, v",
+    "reason": "is a leftmost prefix of",
+    "foreign_keys": [],
+    "why": "kw (w) is a leftmost prefix of kz (w, v), so kz serves every lookup kw serves. Each extra index slows writes and uses buffer pool memory.",
+    "test_sql": "ALTER TABLE `review`.`plain_pk` ALTER INDEX `kw` INVISIBLE;",
+    "drop_sql": "ALTER TABLE `review`.`plain_pk` DROP INDEX `kw`;",
+    "caveat": "Check for FORCE INDEX or USE INDEX hints that name it. Make it invisible first and run a full business cycle (month-end jobs, reports, replicas) before dropping it: an invisible index is still maintained on writes, but the optimizer stops using it, and making it visible again is instant. Queries with an index hint that names it fail while it is invisible."
+   }
+  ],
+  "full_scans": [
+   {
+    "schema": "review",
+    "table": "parted_nopk",
+    "rows_without_index": 4,
+    "rows_with_index": 4,
+    "share_rows": 0.5,
+    "fetch_ms_without_index": 0.016,
+    "fetch_ms_with_index": 0.003,
+    "share_time": 0.8504,
+    "mostly": true,
+    "why": "4 rows read without an index, 4 through indexes; 16 µs of read time without an index (85% of this table's read time). Rows read without an index are table scans and row-position reads (for example after a sort). A scan of a small lookup table is normal; look at the time and at the statements in Top statements for this schema."
+   },
+   {
+    "schema": "review",
+    "table": "plain_nopk",
+    "rows_without_index": 4,
+    "rows_with_index": 3,
+    "share_rows": 0.5714,
+    "fetch_ms_without_index": 0.007,
+    "fetch_ms_with_index": 0.002,
+    "share_time": 0.77,
+    "mostly": true,
+    "why": "4 rows read without an index, 3 through indexes; 7 µs of read time without an index (77% of this table's read time). Rows read without an index are table scans and row-position reads (for example after a sort). A scan of a small lookup table is normal; look at the time and at the statements in Top statements for this schema."
+   }
+  ],
+  "no_data": [
+   {
+    "schema": "review",
+    "table": "parted_pk",
+    "indexes": 4,
+    "reason": "no_activity"
+   }
+  ],
+  "foreign_keys": 0,
+  "notes": [
+   "Unused means no row read, written or looked up through the index since the server started (8 min 9 s ago), or since an index on that table was added, dropped or renamed, or the table was renamed or rebuilt by copying, any of which restarts its counts. An index used only by a weekly or monthly job looks unused until the job runs.",
+   "Tables with no row read or written since the counts started (never opened, or opened only to read their definition) are listed under No data, never as unused. A TRUNCATE of a Performance Schema summary table also resets the counts.",
+   "User statistics are on (userstat=ON), so an index that Performance Schema shows unused but information_schema.INDEX_STATISTICS shows read is marked keep. They count from when userstat was turned on or the last FLUSH INDEX_STATISTICS.",
+   "Percona Server's user statistics do not support partitioned tables, so for the 2 partitioned tables in scope they can show that an index was read, never that it was not.",
+   "The server has been up only 8 min 9 s, so infrequent jobs may not have run yet.",
+   "PRIMARY and UNIQUE indexes are never listed as unused: they enforce constraints even when no query reads them. Indexes that back a foreign key are marked keep: InnoDB checks foreign keys without going through the usage counters.",
+   "Foreign keys declared in other schemas that reference review are not checked; a non-unique parent index they use could look unused.",
+   "Counts are per server: reads on replicas are not included."
+  ],
+  "summary": {
+   "tables": 4,
+   "indexes": 10,
+   "unused": 2,
+   "unused_candidates": 1,
+   "keep_foreign_key": 0,
+   "keep_userstat": 1,
+   "redundant": 2,
+   "full_scans": 2,
+   "mostly_full_scans": 2,
+   "no_data": 1
+  },
+  "indexes": [
+   {
+    "schema": "review",
+    "table": "parted_nopk",
+    "index": "kv",
+    "columns": "v",
+    "unique": false,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "review",
+    "table": "parted_pk",
+    "index": "PRIMARY",
+    "columns": "id",
+    "unique": true,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "review",
+    "table": "parted_pk",
+    "index": "kv",
+    "columns": "v",
+    "unique": false,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "review",
+    "table": "parted_pk",
+    "index": "kw",
+    "columns": "w",
+    "unique": false,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "review",
+    "table": "parted_pk",
+    "index": "kz",
+    "columns": "w, v",
+    "unique": false,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "review",
+    "table": "plain_nopk",
+    "index": "kv",
+    "columns": "v",
+    "unique": false,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "review",
+    "table": "plain_pk",
+    "index": "PRIMARY",
+    "columns": "id",
+    "unique": true,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "review",
+    "table": "plain_pk",
+    "index": "kv",
+    "columns": "v",
+    "unique": false,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "review",
+    "table": "plain_pk",
+    "index": "kw",
+    "columns": "w",
+    "unique": false,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "review",
+    "table": "plain_pk",
+    "index": "kz",
+    "columns": "w, v",
+    "unique": false,
+    "type": "BTREE",
+    "visible": true
+   }
+  ],
+  "more": {
+   "indexes": 0,
+   "unused": 0,
+   "redundant": 0,
+   "full_scans": 0,
+   "no_data": 0
+  }
+ }
+}

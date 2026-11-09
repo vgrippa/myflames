@@ -11,7 +11,7 @@ from . import join_order
 
 LESSONS = {
     "join_order": {
-        "title": "Join-order search — why query planning is factorial",
+        "title": "Join-order search: why query planning is factorial",
         "summary": (
             "MySQL's greedy_search picks the join order one table at a time; "
             "with deep lookahead and pruning off, the search space is O(N!)."

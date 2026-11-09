@@ -1,0 +1,49 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "3.20"
+    },
+    "nested_loop": [
+      {
+        "table": {
+          "table_name": "a",
+          "access_type": "ALL",
+          "rows_examined_per_scan": 2,
+          "rows_produced_per_join": 2,
+          "filtered": "100.00",
+          "cost_info": {
+            "read_cost": "1.00",
+            "eval_cost": "0.40",
+            "prefix_cost": "1.40",
+            "data_read_per_join": "96"
+          },
+          "used_columns": [
+            "a",
+            "b"
+          ]
+        }
+      },
+      {
+        "table": {
+          "table_name": "b",
+          "access_type": "ALL",
+          "rows_examined_per_scan": 2,
+          "rows_produced_per_join": 2,
+          "filtered": "50.00",
+          "using_join_buffer": "Block Nested Loop",
+          "cost_info": {
+            "read_cost": "1.00",
+            "eval_cost": "0.40",
+            "prefix_cost": "3.20",
+            "data_read_per_join": "96"
+          },
+          "used_columns": [
+            "b"
+          ],
+          "attached_condition": "(`shop`.`b`.`b` = `shop`.`a`.`b`)"
+        }
+      }
+    ]
+  }
+}

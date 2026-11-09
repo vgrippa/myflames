@@ -1,0 +1,890 @@
+/* The File transfer browser (FileBrowser.tsx, FilePane.tsx, Transfers.tsx): a
+   toolbar, two flush panes divided by a hairline (stacked when the browser
+   is narrower than 760 px), and the Transfers panel at the bottom. Each pane
+   scrolls inside its own grid under a sticky header. Tokens only; the
+   controls come from style.css and kit.css. */
+.files-browser {
+  container: files-browser / inline-size;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+}
+
+/* ---- Toolbar ------------------------------------------------------------------- */
+.files-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-3);
+  min-height: var(--toolbar-h);
+  padding: var(--space-1) var(--space-3) var(--space-1) var(--space-4);
+  border-bottom: 1px solid var(--line);
+}
+.files-identity {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.files-identity-name {
+  margin: 0;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-title);
+  line-height: var(--leading-title);
+  font-weight: var(--weight-title);
+}
+.files-endpoint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+.files-toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.files-notes {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4) 0;
+}
+.files-notes:empty {
+  display: none;
+}
+.files-notes > :is(.notice, .error) {
+  margin: 0;
+}
+
+/* ---- Panes ---------------------------------------------------------------------- */
+.files-panes {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.files-pane {
+  container: files-pane / inline-size;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--surface);
+}
+.files-pane + .files-pane {
+  border-left: 1px solid var(--line);
+}
+.files-pane.is-local .files-grid {
+  --files-cols: minmax(0, 1fr) 80px 136px 28px;
+}
+.files-pane.is-remote .files-grid {
+  --files-cols: minmax(0, 1fr) 80px 136px 92px 28px;
+}
+/* A drag from the other pane, or files from the system, can land here. */
+.files-pane.is-drop::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  border: 2px solid var(--accent);
+  background: var(--accent-subtle);
+  pointer-events: none;
+}
+.files-pane-head {
+  display: grid;
+  gap: var(--space-1-5);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--line);
+}
+.files-pane-titlebar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-1-5) var(--space-2);
+  min-width: 0;
+}
+.files-pane-titlebar-actions {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: var(--space-1-5);
+  min-width: 0;
+  margin-inline-start: auto;
+}
+.files-pane-title {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-md);
+  line-height: var(--leading-md);
+  font-weight: 600;
+}
+.files-pane-titlebar .toolbar-search {
+  flex: 0 1 180px;
+  min-width: 96px;
+}
+.files-pane-titlebar .toolbar-search input {
+  width: 100%;
+  max-width: none;
+}
+.files-pane-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.files-nav-buttons {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+}
+.files-nav-buttons .action-button {
+  margin-inline-start: var(--space-1);
+}
+.files-pane-nav .icon-button:disabled {
+  opacity: 0.35;
+}
+.files-pane-nav .icon-button[data-action="refresh"][aria-busy="true"] svg {
+  animation: spin 0.8s linear infinite;
+}
+
+/* The path bar: breadcrumb segments, the empty end and Edit path; it turns
+   into one input (Cmd/Ctrl+L). */
+.files-path {
+  display: flex;
+  flex: 1 1 160px;
+  align-items: center;
+  min-width: 0;
+  height: var(--control-h);
+  padding-inline-start: var(--space-1);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+.files-path.is-editing {
+  padding: 0;
+  border: 0;
+}
+.files-path-input {
+  width: 100%;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+.files-crumbs {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  align-self: stretch;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  white-space: nowrap;
+}
+.files-crumbs::-webkit-scrollbar {
+  display: none;
+}
+.files-crumb {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+}
+.files-crumb.is-current {
+  max-width: 100%;
+}
+.files-crumb-sep {
+  display: inline-flex;
+  flex: none;
+  color: var(--ink-faint);
+}
+.files-crumb-button {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 1px var(--space-1);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.files-crumb.is-current .files-crumb-button {
+  min-width: 0;
+  max-width: 100%;
+}
+.files-crumb-button:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+.files-crumb-button[aria-current] {
+  color: var(--ink);
+  font-weight: 600;
+}
+.files-crumb:first-child .files-crumb-button {
+  font-family: var(--font-mono);
+}
+.files-path-end {
+  flex: 1 1 var(--space-4);
+  align-self: stretch;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: text;
+}
+.files-path > .icon-button {
+  flex: none;
+  min-width: calc(var(--control-h) - 2px);
+  min-height: calc(var(--control-h) - 2px);
+  color: var(--ink-muted);
+}
+
+/* ---- The listing ---------------------------------------------------------------- */
+.files-pane > .files-pane-action-status:not([data-phase="idle"]) {
+  display: flex;
+  padding: var(--space-1-5) var(--space-3);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-subtle);
+}
+.files-pane-error .view-status {
+  padding: var(--space-2) var(--space-3) 0;
+}
+.files-pane-error .view-status.is-idle {
+  padding: 0;
+}
+.files-pane-error .error {
+  margin: 0;
+}
+.files-grid-wrap {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.files-grid {
+  --files-row-h: var(--control-h);
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scroll-padding-block-start: var(--files-row-h);
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+.files-grid.is-loading {
+  cursor: progress;
+}
+/* Focus is drawn on the active row (aria-activedescendant), or on the
+   listing itself when it has none. */
+.files-grid:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.files-grid[aria-activedescendant]:focus-visible {
+  outline: none;
+}
+.files-grid:is(:focus-visible, [data-keyboard]:focus) .files-row.is-active {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.files-grid-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+.files-row {
+  display: grid;
+  grid-template-columns: var(--files-cols);
+  align-items: center;
+  height: var(--files-row-h);
+  padding: 0 var(--space-1) 0 var(--space-3);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.files-row.is-head {
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-subtle);
+  color: var(--ink-muted);
+  font-weight: 600;
+}
+.files-row.is-head > [role="columnheader"] {
+  min-width: 0;
+}
+.files-row.is-head .files-cell-size {
+  display: flex;
+  justify-content: flex-end;
+}
+.files-row.is-head .files-cell-size .sort-button {
+  flex-direction: row-reverse;
+}
+.files-grid-body {
+  box-sizing: border-box;
+}
+.files-grid-body > .files-row:hover {
+  background: var(--surface-subtle);
+}
+.files-grid-body > .files-row.is-selected {
+  background: var(--accent-soft);
+}
+.files-grid:focus .files-grid-body > .files-row.is-selected {
+  background: var(--selection-fill);
+}
+.files-grid.is-stale .files-grid-body {
+  opacity: 0.45;
+}
+.files-cell-name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.files-entry-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--ink-muted);
+}
+.files-row.is-dir .files-entry-icon {
+  color: var(--accent-text);
+}
+.files-name-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.files-cell-size,
+.files-cell-mtime,
+.files-cell-perm {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+.files-cell-size {
+  padding-inline-end: var(--space-3);
+  text-align: right;
+}
+.files-grid-body .files-cell-perm {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+.files-cell-more {
+  display: flex;
+  justify-content: center;
+}
+/* The row button: shown on hover, on the selected rows and on the active
+   row of a focused listing (opacity, so it keeps its place). */
+.files-row-more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--space-5);
+  height: var(--space-5);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--ink-muted);
+  opacity: 0;
+}
+.files-row:hover .files-row-more,
+.files-row.is-selected .files-row-more,
+.files-grid:focus .files-row.is-active .files-row-more {
+  opacity: 1;
+}
+.files-row-more:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+/* Beside the grid (only rows belong in it), under its header row; clicks
+   fall through to the listing (its menu, clearing the selection). */
+.files-empty {
+  position: absolute;
+  inset: calc(var(--control-h) + 1px) 0 auto;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-6) var(--space-4);
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  text-align: center;
+}
+/* A listing on its way: a thin bar at the top edge, shown only when the
+   answer takes longer than a blink. */
+.files-loading-bar {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 3;
+  height: 2px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+.files-loading-bar.is-on {
+  opacity: 1;
+  transition: opacity var(--duration-normal) 120ms;
+}
+.files-loading-bar.is-on::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 30%;
+  background: var(--accent);
+  animation: files-sweep 1.1s var(--ease-out) infinite;
+}
+@keyframes files-sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(340%); }
+}
+.files-drag-ghost {
+  position: fixed;
+  top: -100px;
+  left: -100px;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--accent-fill);
+  color: var(--accent-ink);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+/* ---- Pane footer ---------------------------------------------------------------- */
+.files-pane-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-height: calc(var(--control-h) + var(--space-3));
+  padding: var(--space-1-5) var(--space-3);
+  border-top: 1px solid var(--line);
+  background: var(--surface-subtle);
+}
+.files-pane-status {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+}
+.files-pane-status .view-status,
+.files-pane-status .view-status.is-idle {
+  padding: 0;
+}
+.files-pane-status .capture-status {
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-1-5);
+  margin: 0;
+}
+.files-pane-summary {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.files-transfer-button {
+  flex: none;
+}
+.button.files-transfer-button[aria-disabled="true"]:not(.is-pending),
+.button.files-transfer-button[aria-disabled="true"]:not(.is-pending):hover,
+.button.files-transfer-button[aria-disabled="true"]:not(.is-pending):active {
+  border-color: var(--line);
+  background: var(--surface-pane);
+  color: var(--ink-faint);
+  cursor: default;
+}
+
+/* Narrow panes drop Modified, then Permissions. */
+@container files-pane (max-width: 460px) {
+  .files-grid .files-cell-mtime {
+    display: none;
+  }
+  .files-pane.is-local .files-grid {
+    --files-cols: minmax(0, 1fr) 80px 28px;
+  }
+  .files-pane.is-remote .files-grid {
+    --files-cols: minmax(0, 1fr) 72px 92px 28px;
+  }
+}
+@container files-pane (max-width: 340px) {
+  .files-grid .files-cell-perm {
+    display: none;
+  }
+  .files-pane.is-remote .files-grid {
+    --files-cols: minmax(0, 1fr) 72px 28px;
+  }
+}
+
+/* ---- Transfers ------------------------------------------------------------------ */
+.files-transfers {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 42%;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+.files-transfers-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  min-height: var(--toolbar-h);
+  padding: var(--space-1) var(--space-3) var(--space-1) var(--space-2);
+}
+.files-transfers.is-open .files-transfers-head {
+  border-bottom: 1px solid var(--line);
+}
+.files-transfers-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  font-size: var(--text-md);
+  line-height: var(--leading-md);
+}
+.files-transfers-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 100%;
+  min-height: var(--control-h);
+  padding: 0 var(--space-2) 0 var(--space-1);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--ink);
+  font-weight: 600;
+}
+.files-transfers-toggle:hover {
+  background: var(--surface-hover);
+}
+.files-chevron {
+  display: inline-flex;
+  color: var(--ink-muted);
+  transition: transform var(--motion-hover);
+}
+.files-transfers-toggle[aria-expanded="true"] .files-chevron,
+.files-job-expand.is-open svg {
+  transform: rotate(90deg);
+}
+.files-transfers-counts {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-muted);
+  font-weight: 400;
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+.files-transfers-head .button.action-button[aria-disabled="true"]:not(.is-pending) {
+  border-color: var(--line);
+  color: var(--ink-faint);
+  cursor: default;
+}
+.files-transfers-head .button.action-button[aria-disabled="true"]:not(.is-pending):hover {
+  background: var(--surface);
+}
+.files-transfers-body {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--space-1) 0;
+}
+.files-transfers-body > .action-status:not([data-phase="idle"]) {
+  display: flex;
+  padding: var(--space-1) var(--space-4);
+}
+.files-transfers-empty {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+}
+.files-jobs {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.files-job {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-4);
+}
+.files-job + .files-job {
+  border-top: 1px solid var(--line);
+}
+.files-job-main {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.files-job-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--ink-muted);
+}
+.files-job-label {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--text-md);
+  line-height: var(--leading-md);
+}
+.files-job-label > bdi {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.files-job-label > .files-job-conn {
+  flex: none;
+  max-width: 40%;
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+}
+.files-job-main > .status-pill {
+  flex: none;
+}
+.files-job-actions {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-1);
+}
+.files-job-expand {
+  color: var(--ink-muted);
+}
+.files-job-expand svg {
+  transition: transform var(--motion-hover);
+}
+.files-progress {
+  position: relative;
+  height: 4px;
+  margin-inline-start: calc(16px + var(--space-2));
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+}
+.files-progress > span {
+  position: absolute;
+  inset: 0;
+  background: var(--accent);
+  transform-origin: left center;
+  transition: transform var(--motion-panel);
+}
+.files-job.is-finished .files-progress > span {
+  background: var(--ok);
+}
+.files-job.is-failed .files-progress > span {
+  background: var(--danger);
+}
+.files-job.is-cancelled .files-progress > span {
+  background: var(--ink-faint);
+}
+.files-progress.is-indeterminate > span {
+  right: auto;
+  width: 30%;
+  transition: none;
+  animation: files-sweep 1.2s var(--ease-out) infinite;
+}
+.files-job-stats,
+.files-job-error,
+.files-job .action-status,
+.files-job-details {
+  margin: 0 0 0 calc(16px + var(--space-2));
+}
+.files-job-stats {
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.files-job-error {
+  color: var(--danger-text);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  overflow-wrap: anywhere;
+}
+.files-job-details {
+  padding-top: var(--space-1);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.files-job-current,
+.files-items-more {
+  margin: 0 0 var(--space-1);
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+.files-items-heading {
+  margin: var(--space-2) 0 var(--space-1);
+  color: var(--danger-text);
+  font-size: var(--text-sm);
+}
+.files-items {
+  display: grid;
+  margin: 0 0 var(--space-1);
+  padding: 0;
+  list-style: none;
+}
+.files-item {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) auto;
+  gap: 0 var(--space-3);
+  padding: 2px 0;
+}
+.files-item-state {
+  color: var(--ink-muted);
+}
+.files-item.is-failed .files-item-state {
+  color: var(--danger-text);
+}
+.files-item.is-skipped .files-item-state {
+  color: var(--warn-text);
+}
+.files-item-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.files-item-bytes {
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.files-item-error {
+  grid-column: 2 / -1;
+  color: var(--danger-text);
+  overflow-wrap: anywhere;
+}
+
+/* ---- Sheets --------------------------------------------------------------------- */
+.files-sheet-names,
+.files-conflicts {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0 0 var(--space-3);
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.files-sheet-names > li {
+  overflow-wrap: anywhere;
+}
+.files-sheet-more {
+  margin: calc(-1 * var(--space-2)) 0 var(--space-3);
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+}
+.files-conflicts > li {
+  display: grid;
+  gap: 2px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+.files-conflict-name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.files-conflict-name > svg {
+  flex: none;
+  color: var(--ink-muted);
+}
+.files-conflict-meta {
+  padding-inline-start: calc(16px + var(--space-2));
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+.files-name-sheet .form-row {
+  grid-template-columns: minmax(0, 1fr);
+}
+.files-name-sheet input {
+  width: 100%;
+  font-family: var(--font-mono);
+}
+
+/* ---- Narrow: the panes stack (This computer above the server) -------------------- */
+@container files-browser (max-width: 760px) {
+  .files-panes {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: none;
+    flex: none;
+  }
+  /* Tall enough for about six rows in the 720x520 window; the place
+     scrolls to the second pane. */
+  .files-pane {
+    height: clamp(320px, 62dvh, 520px);
+  }
+  .files-pane + .files-pane {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+  .files-transfers {
+    max-height: none;
+  }
+  .files-transfers-body {
+    max-height: 50dvh;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .files-pane-nav .icon-button[data-action="refresh"][aria-busy="true"] svg {
+    animation: none;
+  }
+  .files-loading-bar.is-on::before,
+  .files-progress.is-indeterminate > span {
+    animation-duration: 3s;
+  }
+  .files-progress > span,
+  .files-chevron,
+  .files-job-expand svg {
+    transition: none;
+  }
+}
+@media (forced-colors: active) {
+  .files-grid-body > .files-row.is-selected {
+    outline: 1px solid Highlight;
+    outline-offset: -1px;
+  }
+}

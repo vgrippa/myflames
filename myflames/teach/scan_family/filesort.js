@@ -1,27 +1,57 @@
-var SORT_BUFFER_SIZE_DEFAULT = %d;
+var SORT_BUFFER_SIZE_DEFAULT = %d;          // MySQL: 256 KiB
+var MARIADB_SORT_BUFFER_SIZE_DEFAULT = %d;  // MariaDB: 2 MiB (MAX_SORT_MEMORY)
+// ORDER BY order_date sorts on a DATE, a 3-byte sort key in both servers.
+// The row size decides how many rows fit in the buffer, never this length.
+var SORT_KEY_BYTES = 3;
 
-function filesortCost(rows, rowSize, sbs, limitRows) {
+// Which in-memory sort runs (checked in the server source):
+//   MySQL 8.4 / 9.x  Filesort_buffer::sort_buffer (sql/filesort_utils.cc):
+//                    std::sort up to 100 rows or for variable-length keys,
+//                    std::stable_sort above that. MySQL has no radix sort.
+//   MariaDB          Filesort_buffer::sort_buffer: radix sort when the SORT
+//                    KEY is at most 20 bytes and the buffer holds 1,000 to
+//                    99,999 rows (radixsort_is_applicable(count,
+//                    param->sort_length), sql/filesort_utils.cc and
+//                    mysys/mf_radix.c) and the keys are not packed (a
+//                    fixed-size key such as a DATE never is, filesort.cc
+//                    try_to_pack_sortkeys), else its own quicksort
+//                    (my_qsort2). Every buffer is checked on its own, so
+//                    each spilled run of 1,000 to 99,999 rows is radix sorted.
+//   Both             a bounded priority queue for a small ORDER BY ... LIMIT
+//                    (MySQL check_if_pq_applicable; MariaDB by cost in
+//                    filesort(); both sql/filesort.cc).
+function radixApplies(server, bufferRows) {
+  return server === "mariadb" && SORT_KEY_BYTES <= 20 &&
+         bufferRows >= 1000 && bufferRows < 100000;
+}
+
+function filesortCost(rows, rowSize, sbs, limitRows, server) {
   var rpr = Math.max(1, Math.floor(sbs / rowSize));
   var usePQ = (limitRows > 0 && limitRows < rows && limitRows * rowSize * 2 < sbs);
   if (usePQ) {
     // Priority queue: only limitRows kept in memory, no spill possible
     return {rpr: rpr, runs: 1, merges: 0, ioRows: rows, spill: false,
-            sortAlg: "priority_queue", pqSize: limitRows};
+            sortAlg: "priority_queue", pqSize: limitRows, bufferRows: limitRows};
   }
   var runs = Math.max(1, Math.ceil(rows / rpr));
-  // Radix sort: fixed-length key ≤ 16 B → O(n·k) no comparisons
-  var useRadix = (rowSize <= 16);
-  var alg = useRadix ? "radix" : "introsort";
   if (runs <= 1) return {rpr: rpr, runs: 1, merges: 0, ioRows: rows, spill: false,
-                         sortAlg: alg, pqSize: 0};
+                         sortAlg: radixApplies(server, rows) ? "radix" : "comparison",
+                         pqSize: 0, bufferRows: rows};
   var fanIn = 15;
   var merges = Math.max(1, Math.ceil(Math.log(runs) / Math.log(fanIn)));
   var ioRows = rows + merges * rows * 2;
+  // Each full buffer (one run) is sorted before it is written.
   return {rpr: rpr, runs: runs, merges: merges, ioRows: ioRows, spill: true,
-          sortAlg: alg, pqSize: 0};
+          sortAlg: radixApplies(server, rpr) ? "radix" : "comparison",
+          pqSize: 0, bufferRows: rpr};
 }
 
+function serverName(server) { return server === "mariadb" ? "MariaDB" : "MySQL"; }
+// Whole numbers with separators for captions ("10,000 rows", never "10.0K").
+function fmtN(n) { return Math.round(n).toLocaleString("en-US"); }
+
 var W = 800, H = 440;
+var RUN_ROWS = 3;   // sample rows drawn per sorted run
 var stage = null;
 
 // Named orders so the user can track rows through the sort
@@ -42,6 +72,12 @@ var ORDERS = [
 
 // Numeric sort keys for ORDER BY order_date (month*100 + day)
 var DATE_KEYS = [115, 322, 210, 103, 418, 301, 128, 214, 505, 411, 228, 317];
+
+function orderLabel(i) { return ORDERS[i].customer + " " + ORDERS[i].date; }
+
+function translate(g, x, y) {
+  g.setAttribute("transform", "translate(" + x.toFixed(1) + "," + y.toFixed(1) + ")");
+}
 
 // ---- Quicksort step recorder (runs at timeline-build time) ----
 // Returns an array of ops: {type:'pivot'|'cmp'|'swap'|'placed'|'done', ...}
@@ -70,7 +106,7 @@ function recordQsOps(orderIndices) {
     }
     if (i !== hi) {
       ops.push({type:"swap", a:i, b:hi, orderA:pos[i], orderB:pos[hi]});
-      var tmp = pos[i]; pos[i] = pos[hi]; pos[hi] = tmp;
+      var tmp2 = pos[i]; pos[i] = pos[hi]; pos[hi] = tmp2;
     }
     ops.push({type:"placed", pos:i, order:pos[i]});
     qs(lo, i - 1);
@@ -99,32 +135,44 @@ function createQsPointer(label, color) {
 // ---- Animate recorded quicksort ops on the timeline ----
 // slotGs/slotXs: arrays indexed by position. slotGs[i] is the SVG <g> at
 // position i; swaps permute slotGs in sync with the algorithm so closures
-// always resolve the correct element at play-time.
+// always resolve the correct element at play-time. Swaps are timeline-owned
+// tweens, so jumping to a step lands every pill in its final slot.
+// In the slow (in-memory) mode each partition is one guided step.
 function addQsToTimeline(tl, slotGs, slotXs, orderIndices, fast) {
   var ops = recordQsOps(orderIndices);
-  var n = slotGs.length;
+  var n = orderIndices.length;  // slotGs is filled while the timeline plays
   var dur  = fast ? 200 : 350;
   var dly  = fast ? 120 : 200;
   var cmpD = fast ? 80  : 140;
-  var UNSORTED    = "#7c3aed";
-  var PIVOT_CLR   = "#ea580c";
-  var LESS_CLR    = "#16a34a";
-  var GREATER_CLR = "#dc2626";
-  var PLACED_CLR  = "#059669";
+  var UNSORTED    = "var(--svg-group)";
+  var PIVOT_CLR   = "var(--svg-build)";
+  var LESS_CLR    = "var(--svg-ok)";
+  var GREATER_CLR = "var(--svg-danger)";
+  var PLACED_CLR  = "var(--svg-ok)";
+  var phase = document.getElementById("phase-label");
+  var partitions = 0;
+  for (var pc = 0; pc < ops.length; pc++) if (ops[pc].type === "pivot") partitions++;
 
-  var ptrI = createQsPointer("i", "#2563eb");
-  var ptrJ = createQsPointer("j", "#d97706");
-  var bracket = anim.svgEl("line", {
-    x1:0, y1:0, x2:0, y2:0,
-    stroke:"#9ca3af", "stroke-width":1, "stroke-dasharray":"3,3", opacity:0
+  var ptrI = null, ptrJ = null, bracket = null;
+  tl.call(function() {
+    ptrI = createQsPointer("i", "var(--svg-token)");
+    ptrJ = createQsPointer("j", "var(--svg-build)");
+    bracket = anim.svgEl("line", {
+      x1:0, y1:0, x2:0, y2:0,
+      stroke:"var(--svg-node-stroke)", "stroke-width":1, "stroke-dasharray":"3,3", opacity:0
+    });
+    stage.svg.appendChild(bracket);
+    stage.tuples.push(bracket);
   });
-  stage.svg.appendChild(bracket);
-  stage.tuples.push(bracket);
   var placed = {};
+  var partition = 0;
 
   for (var oi = 0; oi < ops.length; oi++) {
     (function(op) {
       if (op.type === "pivot") {
+        partition += 1;
+        var pNum = partition;
+        if (!fast) tl.beat("partition");
         tl.call(function() {
           slotGs[op.pos].firstChild.setAttribute("fill", PIVOT_CLR);
           stage.bufContent.textContent = "Pivot: " + ORDERS[op.order].customer +
@@ -134,51 +182,51 @@ function addQsToTimeline(tl, slotGs, slotXs, orderIndices, fast) {
           bracket.setAttribute("x2", slotXs[op.hi] + 30);
           bracket.setAttribute("y2", 92);
           bracket.setAttribute("opacity", 0.5);
-          ptrI.setAttribute("transform", "translate(" + slotXs[op.lo] + ",98)");
+          translate(ptrI, slotXs[op.lo], 98);
           ptrI.setAttribute("opacity", 1);
           ptrJ.setAttribute("opacity", 0);
+          if (!fast) {
+            phase.textContent = "Phase 2/2, partition " + pNum + " of " + partitions + ": pivot " +
+              ORDERS[op.order].customer + " (" + ORDERS[op.order].date + "); earlier dates move left of it, " +
+              "later dates stay right";
+          }
         });
         tl.delay(dly * 2);
       }
       else if (op.type === "cmp") {
         tl.call(function() {
-          ptrJ.setAttribute("transform", "translate(" + slotXs[op.j] + ",98)");
+          translate(ptrJ, slotXs[op.j], 98);
           ptrJ.setAttribute("opacity", 1);
-          ptrI.setAttribute("transform", "translate(" + slotXs[op.i] + ",98)");
+          translate(ptrI, slotXs[op.i], 98);
           if (!placed[op.j]) {
             slotGs[op.j].firstChild.setAttribute("fill",
               op.leq ? LESS_CLR : GREATER_CLR);
           }
-          var sym = op.leq ? " \u2264 " : " > ";
+          var sym = op.leq ? " ≤ " : " > ";
           stage.bufContent.textContent = ORDERS[op.orderJ].date + sym +
             ORDERS[op.orderP].date +
-            (op.leq ? " \u2192 swap zone grows" : "");
+            (op.leq ? " → moves left of the pivot" : "");
         });
         tl.delay(cmpD);
       }
       else if (op.type === "swap") {
+        var pair = {ga: null, gb: null};
+        var xa = slotXs[op.a], xb = slotXs[op.b];
         tl.call(function() {
-          var ga = slotGs[op.a], gb = slotGs[op.b];
-          var xa = slotXs[op.a],  xb = slotXs[op.b];
-          anim.tween({from: 0, to: 1, duration: dur,
-            ease: anim.easeInOutCubic,
-            onUpdate: function(t) {
-              var ax = xa + (xb - xa) * t;
-              var ay = 75 - Math.sin(t * Math.PI) * 16;
-              ga.setAttribute("transform", "translate(" + ax + "," + ay + ")");
-              var bx = xb + (xa - xb) * t;
-              var by = 75 + Math.sin(t * Math.PI) * 16;
-              gb.setAttribute("transform", "translate(" + bx + "," + by + ")");
-            }
-          });
+          pair.ga = slotGs[op.a];
+          pair.gb = slotGs[op.b];
           stage.bufContent.textContent = "Swap: " + ORDERS[op.orderA].customer +
-            " \u2194 " + ORDERS[op.orderB].customer;
+            " ↔ " + ORDERS[op.orderB].customer;
           // Permute tracking array to stay in sync with algorithm
-          var tmpG = slotGs[op.a];
-          slotGs[op.a] = slotGs[op.b];
-          slotGs[op.b] = tmpG;
+          slotGs[op.a] = pair.gb;
+          slotGs[op.b] = pair.ga;
         });
-        tl.delay(dur + 60);
+        tl.add({from: 0, to: 1, duration: dur, ease: anim.easeInOutCubic,
+          onUpdate: function(t) {
+            translate(pair.ga, xa + (xb - xa) * t, 75 - Math.sin(t * Math.PI) * 16);
+            translate(pair.gb, xb + (xa - xb) * t, 75 + Math.sin(t * Math.PI) * 16);
+          }});
+        tl.delay(60);
       }
       else if (op.type === "placed") {
         tl.call(function() {
@@ -189,7 +237,7 @@ function addQsToTimeline(tl, slotGs, slotXs, orderIndices, fast) {
             if (!placed[k]) slotGs[k].firstChild.setAttribute("fill", UNSORTED);
           }
           stage.bufContent.textContent = ORDERS[op.order].customer +
-            " (" + ORDERS[op.order].date + ") \u2192 final position";
+            " (" + ORDERS[op.order].date + ") → final position";
         });
         tl.delay(dly);
       }
@@ -208,63 +256,88 @@ function addQsToTimeline(tl, slotGs, slotXs, orderIndices, fast) {
     ptrJ.setAttribute("opacity", 0);
     bracket.setAttribute("opacity", 0);
     stage.bufContent.textContent = fast
-      ? "Chunk sorted \u2714" : "Sorted by order_date \u2714";
+      ? "Buffer sorted ✔" : "Sorted by order_date ✔";
   });
   tl.delay(fast ? 150 : 300);
 }
 
-// ---- Radix sort animation ----
-// Simple and reliable: color each pill by its month group (pass 1),
-// then slide all pills to their sorted positions (pass 2).
-// No external bucket DOM — everything stays in the buffer zone.
+// ---- MariaDB radix sort of one spilled run ----
+// The full drawing (buckets, passes) is buildRadixTimeline; inside a run the
+// rows simply go to their places by key, with no compare or swap steps.
+function addRunRadixToTimeline(tl, slotGs, slotXs, orderIndices) {
+  var n = orderIndices.length;
+  var byKey = [];
+  for (var i = 0; i < n; i++) byKey.push({i: i, key: DATE_KEYS[orderIndices[i]]});
+  byKey.sort(function(a, b) { return a.key - b.key; });
+  var rank = [];
+  for (var r = 0; r < byKey.length; r++) rank[byKey[r].i] = r;
+  var first = ORDERS[orderIndices[byKey[0].i]];
+  tl.call(function() {
+    stage.bufContent.textContent = "Radix sort: rows counted into place by key byte, 0 comparisons";
+  });
+  tl.add({from: 0, to: 1, duration: 450, ease: anim.easeInOutCubic,
+    onUpdate: function(t) {
+      for (var k = 0; k < n; k++) {
+        var g = slotGs[k];
+        if (!g) continue;
+        var from = slotXs[k], to = slotXs[rank[k]];
+        var lift = from === to ? 0 : Math.sin(t * Math.PI) * 16 * (k %% 2 ? 1 : -1);
+        translate(g, from + (to - from) * t, 75 - lift);
+        g.firstChild.setAttribute("fill", t < 0.5 ? "var(--svg-group)" : "var(--svg-ok)");
+      }
+    }});
+  tl.call(function() {
+    stage.bufContent.textContent = "Buffer sorted ✔ (radix, 0 comparisons; " +
+      first.customer + " " + first.date + " first)";
+  });
+  tl.delay(150);
+}
+
+// ---- MariaDB radix sort, drawn in the main stage ----
+// radixsort_for_str_ptr makes one counting pass per key byte, least
+// significant first. The drawing shows two passes: the day, then the month.
 var MONTH_NAMES = ["", "Jan", "Feb", "Mar", "Apr", "May"];
-var BUCKET_CLRS = ["#2563eb", "#7c3aed", "#db2777", "#ea580c", "#ca8a04", "#059669"];
+var BUCKET_CLRS = ["var(--svg-token)", "var(--svg-group)", "var(--svg-group-alt)", "var(--svg-build)", "var(--svg-probe)", "var(--svg-ok)"];
 
-// Radix sort uses its own dedicated SVG (radix-svg) so it doesn't
-// fight with the filesort stage's zones/arrows/z-order.
-var radixPills = [];  // tracks pill elements inside radix-svg
-
-function buildRadixTimeline(orderIndices, fast) {
-  var rsvg = document.getElementById("radix-svg");
-  var fsvg = document.getElementById("filesort-svg");
-  // Show radix SVG, hide filesort SVG
-  fsvg.style.display = "none";
-  rsvg.style.display = "";
-  while (rsvg.firstChild) rsvg.removeChild(rsvg.firstChild);
-  radixPills = [];
+function buildRadixTimeline(orderIndices, fast, c) {
+  var totalRows = fmtN(c.rows);
+  // Drawn detached and attached by the first step, so building the
+  // timeline (the guide does it to count steps) leaves the stage as it is.
+  var rg = anim.svgEl("g", {});
+  stage.tuples.push(rg);
 
   var n = Math.min(orderIndices.length, 8);
   var RW = 800, RH = 340;
   var dur = fast ? 250 : 420;
   var dly = fast ? 80 : 160;
-  var PLACED = "#059669";
+  var PLACED = "var(--svg-ok)";
   var ROW_Y = 40;       // unsorted row at top
   var BUCKET_Y = 140;   // bucket boxes in middle
-  var BUCKET_H = 54;
-  var RESULT_Y = 260;   // sorted result row at bottom
+  var BUCKET_H = 72;
+  var RESULT_Y = 280;   // sorted result row at bottom
 
-  // Pre-compute months and sorted order
+  // Pre-compute months, the day order (after pass 1) and the sorted order
   var monthSet = {};
+  var items = [];
   for (var mi = 0; mi < n; mi++) {
-    var mk = Math.floor(DATE_KEYS[orderIndices[mi]] / 100);
-    monthSet[mk] = true;
+    var key = DATE_KEYS[orderIndices[mi]];
+    monthSet[Math.floor(key / 100)] = true;
+    items.push({idx: mi, oi: orderIndices[mi], key: key, day: key %% 100, month: Math.floor(key / 100)});
   }
   var months = [];
   for (var mm in monthSet) months.push(Number(mm));
   months.sort(function(a, b) { return a - b; });
   var numB = months.length;
-
-  var sorted = [];
-  for (var si = 0; si < n; si++) {
-    sorted.push({idx: si, oi: orderIndices[si], key: DATE_KEYS[orderIndices[si]],
-                 month: Math.floor(DATE_KEYS[orderIndices[si]] / 100)});
-  }
-  sorted.sort(function(a, b) { return a.key - b.key; });
+  var byDay = items.slice().sort(function(a, b) { return a.day - b.day; });
+  var dayRank = {};
+  for (var dr = 0; dr < byDay.length; dr++) dayRank[byDay[dr].idx] = dr;
+  var sorted = items.slice().sort(function(a, b) { return a.key - b.key; });
 
   // Pill X positions
-  var pillGap = (RW - 80) / (n - 1 || 1);
+  // Keep whole pills (about 80 px wide) inside the 20..780 row boxes.
+  var pillGap = (RW - 160) / (n - 1 || 1);
   var pillXs = [];
-  for (var px = 0; px < n; px++) pillXs.push(40 + px * pillGap);
+  for (var px = 0; px < n; px++) pillXs.push(80 + px * pillGap);
 
   // Bucket positions
   var bGap = 10;
@@ -277,507 +350,467 @@ function buildRadixTimeline(orderIndices, fast) {
   }
 
   // ---- Draw static layout ----
-  // Title: unsorted array
-  var titleTop = anim.svgEl("text", {x: 20, y: 24, "font-size": 13, "font-weight": 700, fill: "#7c3aed"});
-  titleTop.textContent = "\u2460 Unsorted rows (sort key \u2264 16 B \u2192 radix sort)";
-  rsvg.appendChild(titleTop);
+  var titleTop = anim.svgEl("text", {x: 20, y: 24, "font-size": 13, "font-weight": 700, fill: "var(--svg-group)"});
+  titleTop.textContent = "① Rows in the sort buffer (MariaDB: 3-byte order_date key → radix sort)";
+  rg.appendChild(titleTop);
 
-  // Unsorted row background
   var topBg = anim.svgEl("rect", {x: 20, y: ROW_Y - 12, width: RW - 40, height: 36, rx: 8,
-    fill: "#f5f3ff", stroke: "#8b5cf6", "stroke-width": 1.5});
-  rsvg.appendChild(topBg);
+    fill: "var(--svg-group-soft)", stroke: "var(--svg-group)", "stroke-width": 1.5});
+  rg.appendChild(topBg);
 
-  // Arrow down
   var arrowD = anim.svgEl("text", {x: RW / 2, y: BUCKET_Y - 18, "text-anchor": "middle",
-    "font-size": 11, "font-weight": 600, fill: "#9ca3af"});
-  arrowD.textContent = "\u2193 distribute by month digit (zero comparisons)";
-  rsvg.appendChild(arrowD);
+    "font-size": 11, "font-weight": 600, fill: "var(--svg-ink-muted)"});
+  arrowD.textContent = "↓ count into buckets by one key byte (zero comparisons)";
+  rg.appendChild(arrowD);
 
-  // Title: buckets
-  var titleMid = anim.svgEl("text", {x: 20, y: BUCKET_Y - 4, "font-size": 13, "font-weight": 700, fill: "#0369a1"});
-  titleMid.textContent = "\u2461 Month buckets";
-  rsvg.appendChild(titleMid);
+  var titleMid = anim.svgEl("text", {x: 20, y: BUCKET_Y - 4, "font-size": 13, "font-weight": 700, fill: "var(--svg-token-ink)"});
+  titleMid.textContent = "② Month buckets";
+  rg.appendChild(titleMid);
 
-  // Draw bucket boxes — initially at opacity 0 for staggered reveal
   var bucketRects = {};
-  var bucketCounts = {};
   var bucketCountLbls = {};
   var bucketGroups = {};
+  var arrivals = {};   // month -> rows already in that bucket (build time)
+  var bucketTotal = {};
+  for (var bt = 0; bt < items.length; bt++) bucketTotal[items[bt].month] = (bucketTotal[items[bt].month] || 0) + 1;
+  // Pills sit side by side in their bucket, centred, in arrival order.
+  function bucketSlotX(month, slot) {
+    var count = bucketTotal[month];
+    var step = Math.min(86, (bw - 10) / Math.max(1, count));
+    return bucketXs[month].cx + (slot - (count - 1) / 2) * step;
+  }
   for (var bk = 0; bk < numB; bk++) {
     var m = months[bk];
     var bp = bucketXs[m];
     var clr = BUCKET_CLRS[bk %% BUCKET_CLRS.length];
     var bgrp = anim.svgEl("g", {opacity: 0});
     var br = anim.svgEl("rect", {x: bp.x, y: BUCKET_Y, width: bw, height: BUCKET_H, rx: 8,
-      fill: "#f0f9ff", stroke: clr, "stroke-width": 2});
+      fill: "var(--svg-token-soft)", stroke: clr, "stroke-width": 2});
     bgrp.appendChild(br);
     var blbl = anim.svgEl("text", {x: bp.cx, y: BUCKET_Y + 20, "text-anchor": "middle",
       "font-size": 13, "font-weight": 700, fill: clr});
     blbl.textContent = MONTH_NAMES[m] || ("M" + m);
     bgrp.appendChild(blbl);
-    var bcnt = anim.svgEl("text", {x: bp.cx, y: BUCKET_Y + BUCKET_H - 8, "text-anchor": "middle",
-      "font-size": 10, "font-weight": 600, fill: "#64748b"});
+    var bcnt = anim.svgEl("text", {x: bp.cx, y: BUCKET_Y + BUCKET_H - 7, "text-anchor": "middle",
+      "font-size": 10, "font-weight": 600, fill: "var(--svg-ink-muted)"});
     bcnt.textContent = "0 rows";
     bgrp.appendChild(bcnt);
-    rsvg.appendChild(bgrp);
+    rg.appendChild(bgrp);
     bucketRects[m] = br;
-    bucketCounts[m] = 0;
     bucketCountLbls[m] = bcnt;
     bucketGroups[m] = bgrp;
+    arrivals[m] = 0;
   }
 
-  // Comparison counter (always shows 0 — the visual punchline of radix)
-  var cmpCounter = anim.svgEl("text", {x: RW - 24, y: BUCKET_Y + BUCKET_H / 2 + 4,
-    "text-anchor": "end", "font-size": 12, "font-weight": 700, fill: "#059669", opacity: 0});
+  var cmpCounter = anim.svgEl("text", {x: RW - 24, y: BUCKET_Y - 4,
+    "text-anchor": "end", "font-size": 12, "font-weight": 700, fill: "var(--svg-ok)", opacity: 0});
   cmpCounter.textContent = "Comparisons: 0";
-  rsvg.appendChild(cmpCounter);
+  rg.appendChild(cmpCounter);
 
-  // Arrow down
   var arrowD2 = anim.svgEl("text", {x: RW / 2, y: RESULT_Y - 18, "text-anchor": "middle",
-    "font-size": 11, "font-weight": 600, fill: "#9ca3af"});
-  arrowD2.textContent = "\u2193 gather left-to-right into sorted order";
-  rsvg.appendChild(arrowD2);
+    "font-size": 11, "font-weight": 600, fill: "var(--svg-ink-muted)"});
+  arrowD2.textContent = "↓ gather buckets left to right";
+  rg.appendChild(arrowD2);
 
-  // Title: sorted result
-  var titleBot = anim.svgEl("text", {x: 20, y: RESULT_Y - 4, "font-size": 13, "font-weight": 700, fill: "#047857"});
-  titleBot.textContent = "\u2462 Sorted result";
-  rsvg.appendChild(titleBot);
+  var titleBot = anim.svgEl("text", {x: 20, y: RESULT_Y - 4, "font-size": 13, "font-weight": 700, fill: "var(--svg-ok)"});
+  titleBot.textContent = "③ Sorted result";
+  rg.appendChild(titleBot);
 
-  // Sorted row background
   var botBg = anim.svgEl("rect", {x: 20, y: RESULT_Y, width: RW - 40, height: 36, rx: 8,
-    fill: "#ecfdf5", stroke: "#059669", "stroke-width": 1.5, opacity: 0.3});
-  rsvg.appendChild(botBg);
+    fill: "var(--svg-ok-soft)", stroke: "var(--svg-ok)", "stroke-width": 1.5, opacity: 0.3});
+  rg.appendChild(botBg);
 
-  // Status label
-  var statusLbl = anim.svgEl("text", {x: RW / 2, y: RH - 8, "text-anchor": "middle",
-    "font-size": 12, "font-weight": 600, fill: "#1f2937"});
+  var statusLbl = anim.svgEl("text", {x: RW / 2, y: RH + 40, "text-anchor": "middle",
+    "font-size": 12, "font-weight": 600, fill: "var(--svg-ink)"});
   statusLbl.textContent = "";
-  rsvg.appendChild(statusLbl);
+  rg.appendChild(statusLbl);
 
   // ---- Build timeline ----
   var tl = anim.timeline();
   var phase = document.getElementById("phase-label");
-
-  // Phase 1: spawn pills in unsorted row (show customer + date for tracking)
-  tl.mark("Load rows");
-  tl.call(function() { phase.textContent = "Phase 1/3 \u2014 loading unsorted rows"; });
   var pills = [];
+
+  // Phase 1: the rows in the buffer, in read order
+  tl.mark("Load rows");
+  tl.beat("fill");
+  tl.call(function() {
+    stage.svg.appendChild(rg);
+    stage.baseGroup.setAttribute("display", "none");
+    phase.textContent = "Phase 1/3: all " + totalRows + " orders rows fit in the sort buffer (" + n +
+      " drawn), in the order they are read. The sort key is order_date, 3 bytes, so MariaDB radix sorts";
+  });
   for (var pi = 0; pi < n; pi++) {
     (function(idx) {
       tl.call(function() {
-        var o = ORDERS[orderIndices[idx]];
-        var label = o.customer + " " + o.date;
+        var label = orderLabel(orderIndices[idx]);
         var tw = Math.max(70, label.length * 5.5 + 14);
-        var g = anim.svgEl("g", {opacity: 0, transform: "translate(" + pillXs[idx] + "," + ROW_Y + ")"});
+        var g = anim.svgEl("g", {opacity: 0});
+        translate(g, pillXs[idx], ROW_Y);
         var bg = anim.svgEl("rect", {x: -tw/2, y: -10, width: tw, height: 20, rx: 10,
-          fill: "#7c3aed", stroke: "#1f2937", "stroke-width": 1});
+          fill: "var(--svg-group)", stroke: "var(--svg-ink)", "stroke-width": 1});
         g.appendChild(bg);
         var txt = anim.svgEl("text", {x: 0, y: 4, "text-anchor": "middle",
-          "font-size": 7.5, "font-weight": 700, fill: "#fff"});
+          "font-size": 7.5, "font-weight": 700, fill: "var(--svg-on-solid)"});
         txt.textContent = label;
         g.appendChild(txt);
-        rsvg.appendChild(g);
+        rg.appendChild(g);
         pills[idx] = g;
-        radixPills.push(g);
-        // Staggered fade-in with slight scale feel via easeOutBack
-        anim.tween({from: 0, to: 1, duration: 220, ease: anim.easeOutCubic,
-          onUpdate: function(v) { g.setAttribute("opacity", v); }});
-        statusLbl.textContent = (idx + 1) + "/" + n + " rows loaded";
+        statusLbl.textContent = (idx + 1) + "/" + n + " rows in the buffer";
       });
-      tl.delay(fast ? 60 : 100);
+      tl.add({from: 0, to: 1, duration: 200, ease: anim.easeOutCubic,
+        onUpdate: function(v) { pills[idx].setAttribute("opacity", v.toFixed(2)); }});
+      tl.delay(fast ? 40 : 60);
     })(pi);
   }
   tl.delay(250);
 
-  // Phase 2a: reveal bucket containers with stagger (Bostock: show container before filling)
-  tl.mark("Distribute to buckets");
+  // Pass 1: the day byte (least significant). Rows come back in day order.
+  tl.mark("Pass 1: day");
+  tl.beat("radix-pass");
   tl.call(function() {
-    phase.textContent = "Phase 2/3 \u2014 distribute by month digit (no comparisons)";
-    anim.tween({from: 0, to: 1, duration: 300, ease: anim.easeOutCubic,
-      onUpdate: function(v) { cmpCounter.setAttribute("opacity", v); }});
+    phase.textContent = "Radix pass 1 (the least significant part of the key, the day): rows are counted " +
+      "into buckets by day and written back in day order, with no comparisons";
+    statusLbl.textContent = "Day order: " + byDay.map(function(it) { return ORDERS[it.oi].customer + " (" +
+      ORDERS[it.oi].date.slice(4) + ")"; }).join(", ");
   });
+  tl.add({from: 0, to: 1, duration: 700, ease: anim.easeInOutCubic,
+    onUpdate: function(t) {
+      for (var k = 0; k < n; k++) {
+        var from = pillXs[k], to = pillXs[dayRank[k]];
+        translate(pills[k], from + (to - from) * t, ROW_Y - Math.sin(t * Math.PI) * 14 * (k %% 2 ? 1 : -1));
+      }
+    }});
+  tl.delay(250);
+
+  // Pass 2: the month byte. Buckets appear first (show the container
+  // before filling it), then rows drop in, in day order (stable).
+  tl.mark("Pass 2: month buckets");
   for (var rv = 0; rv < numB; rv++) {
     (function(rvIdx) {
       var rvM = months[rvIdx];
-      tl.call(function() {
-        anim.tween({from: 0, to: 1, duration: 280, ease: anim.easeOutCubic,
-          onUpdate: function(v) { bucketGroups[rvM].setAttribute("opacity", v); }});
-      });
-      tl.delay(fast ? 50 : 80);
+      tl.add({from: 0, to: 1, duration: 120, ease: anim.easeOutCubic,
+        onUpdate: function(v) { bucketGroups[rvM].setAttribute("opacity", v.toFixed(2)); }});
     })(rv);
   }
-  tl.delay(fast ? 150 : 250);
 
-  for (var di = 0; di < n; di++) {
-    (function(idx) {
-      var oi = orderIndices[idx];
-      var month = Math.floor(DATE_KEYS[oi] / 100);
+  for (var di = 0; di < byDay.length; di++) {
+    (function(item) {
+      var idx = item.idx;
+      var oi = item.oi;
+      var month = item.month;
       var bp = bucketXs[month];
       var bkIdx = months.indexOf(month);
       var clr = BUCKET_CLRS[bkIdx >= 0 ? bkIdx %% BUCKET_CLRS.length : 0];
+      var slotInBucket = arrivals[month];
+      arrivals[month] += 1;
+      var countAfter = arrivals[month];
+      var startX = pillXs[dayRank[idx]];
+      var endX = bucketSlotX(month, slotInBucket);
+      var endY = BUCKET_Y + 40;
 
-      // Staging: highlight pill before it moves (anticipation)
+      tl.beat("radix-bucket");
       tl.call(function() {
-        var g = pills[idx];
-        g.firstChild.setAttribute("fill", "#fbbf24");  // flash yellow = "I'm being classified"
-        statusLbl.textContent = ORDERS[oi].customer + ": extracting month digit \u2192 " +
-          (MONTH_NAMES[month] || month);
+        cmpCounter.setAttribute("opacity", 1);
+        pills[idx].firstChild.setAttribute("fill", "var(--svg-build)");
+        phase.textContent = "Radix pass 2 (the month): " + ORDERS[oi].customer + " (" + ORDERS[oi].date +
+          ") goes to the " + (MONTH_NAMES[month] || month) + " bucket by its month alone; comparisons so far: 0";
+        statusLbl.textContent = ORDERS[oi].customer + ": month byte → " + (MONTH_NAMES[month] || month);
       });
       tl.delay(fast ? 60 : 140);
-
-      // Arc into bucket with easeOutBack (overshoot landing)
-      tl.call(function() {
-        var g = pills[idx];
-        g.firstChild.setAttribute("fill", clr);  // take bucket's color
-        var startX = pillXs[idx];
-        var endX = bp.cx + bucketCounts[month] * 14 - 7;
-        var endY = BUCKET_Y + 32;
-        anim.tween({from: 0, to: 1, duration: dur, ease: anim.easeOutBack,
-          onUpdate: function(t) {
-            var x = startX + (endX - startX) * t;
-            var y = ROW_Y + (endY - ROW_Y) * t - Math.sin(t * Math.PI) * 35;
-            g.setAttribute("transform", "translate(" + x + "," + y + ")");
-          }
-        });
-        // Pulse bucket border + tint fill on receive
-        var br = bucketRects[month];
-        anim.tween({from: 2, to: 4.5, duration: 120, ease: anim.easeOutCubic,
-          onUpdate: function(v) { br.setAttribute("stroke-width", v); },
-          onComplete: function() {
-            anim.tween({from: 4.5, to: 2, duration: 200, ease: anim.easeInCubic,
-              onUpdate: function(v) { br.setAttribute("stroke-width", v); }});
-          }
-        });
-        // Tint bucket background slightly darker as it fills
-        var fillIntensity = Math.min(0.3, bucketCounts[month] * 0.08);
-        br.setAttribute("fill", anim.lerpColor("#f0f9ff", "#dbeafe", fillIntensity));
-        bucketCounts[month]++;
-        bucketCountLbls[month].textContent = bucketCounts[month] +
-          " row" + (bucketCounts[month] === 1 ? "" : "s");
-        statusLbl.textContent = ORDERS[oi].customer + " (" + ORDERS[oi].date +
-          ") \u2192 " + (MONTH_NAMES[month] || month) + " bucket  \u2022  Comparisons: 0";
-      });
+      tl.add({from: 0, to: 1, duration: dur, ease: anim.easeOutBack,
+        onUpdate: function(t) {
+          pills[idx].firstChild.setAttribute("fill", clr);
+          translate(pills[idx], startX + (endX - startX) * t, ROW_Y + (endY - ROW_Y) * t - Math.sin(t * Math.PI) * 35);
+        },
+        onComplete: function() {
+          anim.arrival(bucketRects[month], {peakWidth: 4.5, baseWidth: 2});
+          bucketCountLbls[month].textContent = countAfter + " row" + (countAfter === 1 ? "" : "s");
+          statusLbl.textContent = ORDERS[oi].customer + " (" + ORDERS[oi].date +
+            ") → " + (MONTH_NAMES[month] || month) + " bucket  •  Comparisons: 0";
+        }});
       tl.delay(fast ? dly : dly + 50);
-    })(di);
+    })(byDay[di]);
   }
   tl.delay(300);
 
-  // Phase 3: gather from buckets into sorted result — sweep left to right
+  // Gather from buckets into sorted order, left to right
   tl.mark("Gather sorted");
+  tl.beat("radix-gather");
   tl.call(function() {
-    phase.textContent = "Phase 3/3 \u2014 gather from buckets left\u2192right into sorted order";
-    // Reveal result row
-    anim.tween({from: 0.3, to: 1, duration: 300, ease: anim.easeOutCubic,
-      onUpdate: function(v) { botBg.setAttribute("opacity", v); }});
+    phase.textContent = "Radix: gather the buckets left to right. Inside each month the rows are " +
+      "already in day order from pass 1, so the result is sorted by order_date";
+    botBg.setAttribute("opacity", 1);
   });
-  tl.delay(fast ? dly : 250);
-
   for (var gi = 0; gi < sorted.length; gi++) {
     (function(pos, item) {
       var targetX = pillXs[pos];
-      tl.call(function() {
-        var g = pills[item.idx];
-        var curTransform = g.getAttribute("transform") || "";
-        var match = curTransform.match(/translate\(([^,]+),([^)]+)\)/);
-        var fromX = match ? parseFloat(match[1]) : pillXs[item.idx];
-        var fromY = match ? parseFloat(match[2]) : BUCKET_Y + 32;
-        // Arc up slightly then down to result row with easeOutBack (settle)
-        anim.tween({from: 0, to: 1, duration: dur, ease: anim.easeOutBack,
-          onUpdate: function(t) {
-            var x = fromX + (targetX - fromX) * t;
-            var y = fromY + (RESULT_Y + 10 - fromY) * t + Math.sin(t * Math.PI) * 22;
-            g.setAttribute("transform", "translate(" + x + "," + y + ")");
-          }
-        });
-        g.firstChild.setAttribute("fill", PLACED);
-        statusLbl.textContent = ORDERS[item.oi].customer + " (" + ORDERS[item.oi].date +
-          ") \u2192 sorted position " + (pos + 1) + "/" + sorted.length;
-      });
-      tl.delay(fast ? dly : dly + 30);
+      var bp = bucketXs[item.month];
+      var slotInBucket = 0;
+      for (var q = 0; q < byDay.length && byDay[q].idx !== item.idx; q++) {
+        if (byDay[q].month === item.month) slotInBucket++;
+      }
+      var fromX = bucketSlotX(item.month, slotInBucket);
+      var fromY = BUCKET_Y + 40;
+      tl.add({from: 0, to: 1, duration: dur, ease: anim.easeOutBack,
+        onUpdate: function(t) {
+          pills[item.idx].firstChild.setAttribute("fill", PLACED);
+          translate(pills[item.idx], fromX + (targetX - fromX) * t,
+            fromY + (RESULT_Y + 18 - fromY) * t + Math.sin(t * Math.PI) * 22);
+        },
+        onComplete: function() {
+          statusLbl.textContent = ORDERS[item.oi].customer + " (" + ORDERS[item.oi].date +
+            ") → sorted position " + (pos + 1) + "/" + sorted.length;
+        }});
+      tl.delay(fast ? 40 : 60);
     })(gi, sorted[gi]);
   }
   tl.delay(200);
 
   tl.mark("Done");
+  tl.beat("done-mem");
   tl.call(function() {
-    phase.textContent = "\u2713 Radix sort complete \u2014 zero comparisons, pure digit bucketing";
-    statusLbl.textContent = "Sorted by order_date \u2714 (radix: " + n + " rows, 0 comparisons)";
+    phase.textContent = "✓ " + totalRows + " rows sorted in memory by MariaDB's radix sort: 0 comparisons, " +
+      "no tmpdir. MySQL has no radix sort and sorts the same buffer with a comparison sort";
+    statusLbl.textContent = "Sorted by order_date ✔ (radix: " + n + " rows, 0 comparisons)";
   });
+  tl.delay(300);
 
   return tl;
 }
 
-function cleanupRadix() {
-  var rsvg = document.getElementById("radix-svg");
-  var fsvg = document.getElementById("filesort-svg");
-  if (rsvg) { rsvg.style.display = "none"; while (rsvg.firstChild) rsvg.removeChild(rsvg.firstChild); }
-  if (fsvg) fsvg.style.display = "";
-  radixPills = [];
-}
-
-
 // ---- Priority queue (bounded heap) with visible seat boxes ----
-// Visual: k "seat" boxes rendered below the array. Elements try to enter.
-// If heap not full → element arcs into an empty seat.
-// If heap full → compare to max (flashes). Smaller wins the seat, max
-// is evicted and slides out. Larger is turned away (fades right).
+// k "seat" boxes below the buffer. Each arriving row takes a free seat; once
+// the seats are full it is compared with the latest date seated (the heap's
+// top): an earlier date evicts it, a later one is turned away. The heap is
+// simulated at build time so every move is a timeline tween and a jump to
+// any step shows the seats exactly as they are after that row.
 function addPQToTimeline(tl, slotGs, slotXs, orderIndices, limitK) {
-  var n = slotGs.length;
-  var dur  = 320;
-  var HEAP_CLR    = "#2563eb";
-  var EVICT_CLR   = "#dc2626";
-  var KEEP_CLR    = "#059669";
-  var INCOMING    = "#7c3aed";
-  var MAX_FLASH   = "#f59e0b";
-  var SEAT_EMPTY  = "#f1f5f9";
-  var SEAT_BORDER = "#94a3b8";
+  // slotGs is filled while the timeline plays, so count from the indices
+  // and look pills up inside the steps.
+  var n = orderIndices.length;
+  var dur = 320;
+  var HEAP_CLR    = "var(--svg-token)";
+  var EVICT_CLR   = "var(--svg-danger)";
+  var KEEP_CLR    = "var(--svg-ok)";
+  var INCOMING    = "var(--svg-group)";
+  var SEAT_EMPTY  = "var(--svg-node-muted)";
+  var SEAT_BORDER = "var(--svg-ink-muted)";
+  var phase = document.getElementById("phase-label");
 
-  // ---- Draw k seat boxes below the buffer ----
-  var seatY = 115;
+  var seatY = 150;
   var seatH = 32;
   var seatGap = 10;
   var totalSW = Math.min(W - 80, limitK * 110);
   var sw = (totalSW - seatGap * (limitK - 1)) / limitK;
   var seatStartX = (W - totalSW) / 2;
-  var seatEls = []; // {rect, lbl, cx, cy, occupant: null}
+  var seatEls = [];
+  var seatCx = [];
+  for (var sc = 0; sc < limitK; sc++) seatCx.push(seatStartX + sc * (sw + seatGap) + sw / 2);
+  var seatCy = seatY + seatH / 2;
+
+  // Simulate the bounded heap at build time.
+  var seats = [];
+  for (var s0 = 0; s0 < limitK; s0++) seats.push(null);
+  var plan = [];
+  for (var p = 0; p < n; p++) {
+    var key = DATE_KEYS[orderIndices[p]];
+    var free = seats.indexOf(null);
+    if (free >= 0) {
+      seats[free] = {pos: p, key: key};
+      plan.push({type: "seat", seat: free, filled: limitK - seats.filter(function(x) { return x === null; }).length});
+      continue;
+    }
+    var maxSeat = 0;
+    for (var h = 1; h < limitK; h++) if (seats[h].key > seats[maxSeat].key) maxSeat = h;
+    if (key < seats[maxSeat].key) {
+      plan.push({type: "evict", seat: maxSeat, evicted: seats[maxSeat].pos});
+      seats[maxSeat] = {pos: p, key: key};
+    } else {
+      plan.push({type: "reject", seat: maxSeat, maxPos: seats[maxSeat].pos});
+    }
+  }
 
   tl.call(function() {
-    // Header for the heap section
     var hdr = anim.svgEl("text", {
       x: W / 2, y: seatY - 6, "text-anchor": "middle",
-      "font-size": 10, "font-weight": 700, fill: "#475569"
+      "font-size": 10, "font-weight": 700, fill: "var(--svg-ink-muted)"
     });
-    hdr.textContent = "Max-heap seats (" + limitK + " slots) \u2014 only smallest rows survive";
+    hdr.textContent = "Priority queue: " + limitK + " seats, only the earliest dates stay";
     stage.svg.appendChild(hdr);
     stage.tuples.push(hdr);
-
-    // Render empty seats
     for (var si = 0; si < limitK; si++) {
       var sx = seatStartX + si * (sw + seatGap);
       var rect = anim.svgEl("rect", {
         x: sx, y: seatY, width: sw, height: seatH, rx: 6, ry: 6,
         fill: SEAT_EMPTY, stroke: SEAT_BORDER, "stroke-width": 1.5, opacity: 0
       });
-      stage.svg.appendChild(rect);
+      // Under the pills, so a seated row stays visible.
+      stage.svg.insertBefore(rect, stage.svg.firstChild);
       stage.tuples.push(rect);
       var lbl = anim.svgEl("text", {
-        x: sx + sw / 2, y: seatY + seatH / 2 + 4, "text-anchor": "middle",
-        "font-size": 8, "font-weight": 600, fill: "#94a3b8", opacity: 0
+        x: sx + sw / 2, y: seatY + seatH + 12, "text-anchor": "middle",
+        "font-size": 8, "font-weight": 600, fill: "var(--svg-ink-muted)", opacity: 0
       });
       lbl.textContent = "empty";
       stage.svg.appendChild(lbl);
       stage.tuples.push(lbl);
-      seatEls.push({rect: rect, lbl: lbl, cx: sx + sw / 2, cy: seatY + seatH / 2,
-                     occupant: null, key: Infinity});
+      seatEls.push({rect: rect, lbl: lbl});
     }
     stage.bufContent.textContent = "Priority queue: " + limitK + " empty seats waiting";
   });
-
-  // Staggered fade-in of seats
-  for (var fi2 = 0; fi2 < limitK; fi2++) {
-    (function(idx) {
-      tl.call(function() {
-        anim.tween({from: 0, to: 1, duration: 150, ease: anim.easeOutCubic,
-          onUpdate: function(v) {
-            seatEls[idx].rect.setAttribute("opacity", v);
-            seatEls[idx].lbl.setAttribute("opacity", v);
-          }
-        });
-      });
-      tl.delay(40);
-    })(fi2);
-  }
+  tl.add({from: 0, to: 1, duration: 300, ease: anim.easeOutCubic,
+    onUpdate: function(v) {
+      for (var i = 0; i < seatEls.length; i++) {
+        seatEls[i].rect.setAttribute("opacity", v.toFixed(2));
+        seatEls[i].lbl.setAttribute("opacity", v.toFixed(2));
+      }
+    }});
   tl.delay(200);
 
-  // Track heap state
-  var heapCount = 0;
-
   for (var pi = 0; pi < n; pi++) {
-    (function(p) {
-      var key = DATE_KEYS[orderIndices[p]];
+    (function(p, step) {
       var order = ORDERS[orderIndices[p]];
+      var g = null;
+      var sx = slotXs[p];
+      var seatX = seatCx[step.seat];
 
+      tl.beat("pq-row");
       tl.call(function() {
-        slotGs[p].firstChild.setAttribute("fill", INCOMING);
-        anim.tween({from: 0, to: 1, duration: 180, ease: anim.easeOutCubic,
-          onUpdate: function(v) { slotGs[p].setAttribute("opacity", v); }});
-        stage.bufContent.textContent = order.customer + " (" + order.date +
-          ") arrives\u2026";
+        g = slotGs[p];
+        g.firstChild.setAttribute("fill", INCOMING);
+        g.setAttribute("opacity", 1);
+        stage.bufContent.textContent = order.customer + " (" + order.date + ") arrives…";
       });
       tl.delay(100);
 
-      tl.call(function() {
-        if (heapCount < limitK) {
-          // Heap not full — find first empty seat and arc into it
-          var seatIdx = -1;
-          for (var si2 = 0; si2 < limitK; si2++) {
-            if (seatEls[si2].occupant === null) { seatIdx = si2; break; }
-          }
-          if (seatIdx < 0) seatIdx = 0;
-          var seat = seatEls[seatIdx];
-
-          // Arc-tween element to seat
-          var startX = slotXs[p], startY = 75;
-          var endX = seat.cx, endY = seat.cy;
-          var g = slotGs[p];
-          anim.tween({from: 0, to: 1, duration: dur, ease: anim.easeOutBack,
-            onUpdate: function(t) {
-              var x = startX + (endX - startX) * t;
-              var y = startY + (endY - startY) * t - Math.sin(t * Math.PI) * 20;
-              g.setAttribute("transform", "translate(" + x + "," + y + ")");
-            }
-          });
-          g.firstChild.setAttribute("fill", HEAP_CLR);
-          seat.rect.setAttribute("fill", "#dbeafe");
-          seat.lbl.textContent = order.customer.substring(0, 5);
-          seat.lbl.setAttribute("fill", "#1e40af");
-          seat.occupant = {pos: p, key: key, oi: orderIndices[p]};
-          seat.key = key;
-          heapCount++;
-          stage.bufContent.textContent = order.customer + " \u2192 seat " +
-            (seatIdx + 1) + " (" + heapCount + "/" + limitK + " filled)";
-        } else {
-          // Find max in heap (the one to potentially evict)
-          var maxSeatIdx = 0;
-          for (var hi2 = 1; hi2 < limitK; hi2++) {
-            if (seatEls[hi2].key > seatEls[maxSeatIdx].key) maxSeatIdx = hi2;
-          }
-          var maxSeat = seatEls[maxSeatIdx];
-          // Flash the max seat to show the comparison target
-          anim.tween({from: 0, to: 1, duration: 150, ease: anim.easeOutCubic,
-            onUpdate: function(t) {
-              maxSeat.rect.setAttribute("fill", anim.lerpColor("#dbeafe", MAX_FLASH, t));
-            },
-            onComplete: function() {
-              anim.tween({from: 0, to: 1, duration: 200, ease: anim.easeInCubic,
-                onUpdate: function(t) {
-                  maxSeat.rect.setAttribute("fill", anim.lerpColor(MAX_FLASH, "#dbeafe", t));
-                }
-              });
-            }
-          });
-
-          if (key < maxSeat.key) {
-            // New element wins — evict the max, take its seat
-            var evicted = maxSeat.occupant;
-            // Slide evicted element out to the right and fade
-            var evG = slotGs[evicted.pos];
-            anim.tween({from: 0, to: 1, duration: 250, ease: anim.easeInCubic,
-              onUpdate: function(t) {
-                var cx = maxSeat.cx + t * 60;
-                evG.setAttribute("transform", "translate(" + cx + "," + maxSeat.cy + ")");
-                evG.setAttribute("opacity", String(1 - t * 0.8));
-              }
-            });
+      if (step.type === "seat") {
+        tl.call(function() {
+          phase.textContent = "Row " + (p + 1) + " of " + n + ": " + order.customer + " (" + order.date +
+            ") takes free seat " + (step.seat + 1) + "; " + step.filled + " of " + limitK + " seats filled";
+          stage.bufContent.textContent = order.customer + " → seat " + (step.seat + 1) +
+            " (" + step.filled + "/" + limitK + " filled)";
+        });
+        tl.add({from: 0, to: 1, duration: dur, ease: anim.easeOutBack,
+          onUpdate: function(t) {
+            translate(g, sx + (seatX - sx) * t, 75 + (seatCy - 75) * t - Math.sin(t * Math.PI) * 20);
+          },
+          onComplete: function() {
+            g.firstChild.setAttribute("fill", HEAP_CLR);
+            seatEls[step.seat].rect.setAttribute("fill", "var(--svg-token-soft)");
+            seatEls[step.seat].lbl.textContent = order.customer;
+            seatEls[step.seat].lbl.setAttribute("fill", "var(--svg-token)");
+          }});
+      } else if (step.type === "evict") {
+        var out = ORDERS[orderIndices[step.evicted]];
+        var evG = null;
+        tl.call(function() {
+          evG = slotGs[step.evicted];
+          seatEls[step.seat].rect.setAttribute("fill", "var(--svg-highlight)");
+          phase.textContent = "Row " + (p + 1) + " of " + n + ": " + order.customer + " (" + order.date +
+            ") is earlier than the latest seated date, " + out.date + " (" + out.customer + "), so " +
+            out.customer + " is evicted";
+          stage.bufContent.textContent = order.customer + " (" + order.date + ") < heap max " + out.date +
+            " → evicts " + out.customer;
+        });
+        tl.add({from: 0, to: 1, duration: 250, ease: anim.easeInCubic,
+          onUpdate: function(t) {
             evG.firstChild.setAttribute("fill", EVICT_CLR);
-
-            // Arc new element into the freed seat
-            var g2 = slotGs[p];
-            var sx2 = slotXs[p], sy2 = 75;
-            anim.tween({from: 0, to: 1, duration: dur, ease: anim.easeOutBack, delay: 100,
-              onUpdate: function(t) {
-                var x = sx2 + (maxSeat.cx - sx2) * t;
-                var y = sy2 + (maxSeat.cy - sy2) * t - Math.sin(t * Math.PI) * 18;
-                g2.setAttribute("transform", "translate(" + x + "," + y + ")");
-              }
-            });
-            g2.firstChild.setAttribute("fill", KEEP_CLR);
-            maxSeat.rect.setAttribute("fill", "#dcfce7");
-            maxSeat.lbl.textContent = order.customer.substring(0, 5);
-            maxSeat.lbl.setAttribute("fill", "#166534");
-            maxSeat.occupant = {pos: p, key: key, oi: orderIndices[p]};
-            maxSeat.key = key;
-            stage.bufContent.textContent = order.customer + " (" + order.date +
-              ") < heap max " + ORDERS[evicted.oi].date +
-              " \u2192 evicts " + ORDERS[evicted.oi].customer;
-          } else {
-            // New element is larger — turned away
-            var gReject = slotGs[p];
-            anim.tween({from: 0, to: 1, duration: 250, ease: anim.easeInCubic,
-              onUpdate: function(t) {
-                var cx = slotXs[p] + t * 50;
-                gReject.setAttribute("transform", "translate(" + cx + ",75)");
-                gReject.setAttribute("opacity", String(1 - t * 0.8));
-              }
-            });
-            gReject.firstChild.setAttribute("fill", EVICT_CLR);
-            stage.bufContent.textContent = order.customer + " (" + order.date +
-              ") \u2265 heap max \u2192 turned away";
-          }
-        }
-      });
-      tl.delay(dur + 60);
-    })(pi);
+            translate(evG, seatX + t * 60, seatCy);
+            evG.setAttribute("opacity", (1 - t).toFixed(2));
+          }});
+        tl.add({from: 0, to: 1, duration: dur, ease: anim.easeOutBack,
+          onUpdate: function(t) {
+            translate(g, sx + (seatX - sx) * t, 75 + (seatCy - 75) * t - Math.sin(t * Math.PI) * 18);
+          },
+          onComplete: function() {
+            g.firstChild.setAttribute("fill", KEEP_CLR);
+            seatEls[step.seat].rect.setAttribute("fill", "var(--svg-ok-soft)");
+            seatEls[step.seat].lbl.textContent = order.customer;
+            seatEls[step.seat].lbl.setAttribute("fill", "var(--svg-ok)");
+          }});
+      } else {
+        var top = ORDERS[orderIndices[step.maxPos]];
+        tl.call(function() {
+          seatEls[step.seat].rect.setAttribute("fill", "var(--svg-highlight)");
+          phase.textContent = "Row " + (p + 1) + " of " + n + ": " + order.customer + " (" + order.date +
+            ") is not earlier than the latest seated date, " + top.date + " (" + top.customer +
+            "), so it is turned away";
+          stage.bufContent.textContent = order.customer + " (" + order.date + ") ≥ heap max → turned away";
+        });
+        tl.add({from: 0, to: 1, duration: 250, ease: anim.easeInCubic,
+          onUpdate: function(t) {
+            g.firstChild.setAttribute("fill", EVICT_CLR);
+            translate(g, sx, 75 - 6 * t);
+            g.setAttribute("opacity", (1 - t * 0.8).toFixed(2));
+          },
+          onComplete: function() {
+            seatEls[step.seat].rect.setAttribute("fill", "var(--svg-token-soft)");
+          }});
+      }
+      tl.delay(120);
+    })(pi, plan[pi]);
   }
 
   tl.delay(200);
-  // Final: highlight all surviving seats green
-  tl.call(function() {
-    for (var fsi = 0; fsi < limitK; fsi++) {
-      if (seatEls[fsi].occupant) {
-        seatEls[fsi].rect.setAttribute("fill", "#bbf7d0");
-        seatEls[fsi].rect.setAttribute("stroke", KEEP_CLR);
-        var surv = slotGs[seatEls[fsi].occupant.pos];
-        surv.firstChild.setAttribute("fill", KEEP_CLR);
-        surv.setAttribute("opacity", "1");
-      }
-    }
-    stage.bufContent.textContent = "Heap complete: " + limitK +
-      " smallest rows survive, rest discarded \u2714";
-  });
-  tl.delay(300);
 }
 
 function buildStage(numRuns) {
   var svg = document.getElementById("filesort-svg");
   while (svg.firstChild) svg.removeChild(svg.firstChild);
 
+  // Everything but the status line sits in baseGroup, so the radix sort can
+  // hide it and draw its buckets in the same SVG.
+  var baseGroup = anim.svgEl("g", {});
+  svg.appendChild(baseGroup);
+
   // ---- Zone 1: Sort buffer (top) ----
   var bufLbl = anim.svgEl("text", {
-    x: 20, y: 28, "font-size": 13, "font-weight": 700, fill: "#7c3aed"
+    x: 20, y: 28, "font-size": 13, "font-weight": 700, fill: "var(--svg-group)"
   });
-  bufLbl.textContent = "\u2460 sort_buffer_size \u2014 in-memory sort area";
-  svg.appendChild(bufLbl);
+  bufLbl.textContent = "① sort buffer (sort_buffer_size)";
+  baseGroup.appendChild(bufLbl);
 
   var bufRect = anim.svgEl("rect", {
     x: 20, y: 40, width: W - 40, height: 70, rx: 8, ry: 8,
-    fill: "#f5f3ff", stroke: "#8b5cf6", "stroke-width": 1.5
+    fill: "var(--svg-group-soft)", stroke: "var(--svg-group)", "stroke-width": 1.5
   });
-  svg.appendChild(bufRect);
+  baseGroup.appendChild(bufRect);
 
   var bufContent = anim.svgEl("text", {
-    x: W / 2, y: 80, "text-anchor": "middle",
-    "font-size": 11, "font-weight": 600, fill: "#5b21b6"
+    x: W - 20, y: 28, "text-anchor": "end",
+    "font-size": 11, "font-weight": 600, fill: "var(--svg-group)"
   });
   bufContent.textContent = "(rows fill here, get sorted, then spill to disk)";
-  svg.appendChild(bufContent);
+  baseGroup.appendChild(bufContent);
 
-  // Wrap all spill-path visuals in a group so radix sort can hide them
   var spillGroup = anim.svgEl("g", {});
-  svg.appendChild(spillGroup);
+  baseGroup.appendChild(spillGroup);
+  // The tmpdir part (arrows, title, run boxes): hidden by the priority queue.
+  var diskGroup = anim.svgEl("g", {});
+  spillGroup.appendChild(diskGroup);
 
-  // ---- Arrow: buffer \u2192 tmpdir ----
+  // ---- Arrow: buffer → tmpdir ----
   var arrow1Y = 118;
   var arrow1 = anim.svgEl("path", {
     d: "M" + (W/2) + "," + arrow1Y + " L" + (W/2) + "," + (arrow1Y + 24) +
        " M" + (W/2 - 6) + "," + (arrow1Y + 18) + " L" + (W/2) + "," + (arrow1Y + 24) +
        " L" + (W/2 + 6) + "," + (arrow1Y + 18),
-    stroke: "#9ca3af", "stroke-width": 2, fill: "none"
+    stroke: "var(--svg-node-stroke)", "stroke-width": 2, fill: "none"
   });
-  spillGroup.appendChild(arrow1);
+  diskGroup.appendChild(arrow1);
   var arrow1Lbl = anim.svgEl("text", {
-    x: W/2 + 16, y: arrow1Y + 16, "font-size": 10, fill: "#9ca3af", "font-weight": 600
+    x: W/2 + 16, y: arrow1Y + 16, "font-size": 10, fill: "var(--svg-ink-muted)", "font-weight": 600
   });
-  arrow1Lbl.textContent = "spill sorted run";
-  spillGroup.appendChild(arrow1Lbl);
+  arrow1Lbl.textContent = "write sorted run";
+  diskGroup.appendChild(arrow1Lbl);
 
   // ---- Zone 2: Sorted runs on disk (middle) ----
   var diskY = 152;
   var diskLbl = anim.svgEl("text", {
-    x: 20, y: diskY, "font-size": 13, "font-weight": 700, fill: "#b45309"
+    x: 20, y: diskY, "font-size": 13, "font-weight": 700, fill: "var(--svg-build-ink)"
   });
-  diskLbl.textContent = "\u2461 tmpdir \u2014 sorted runs on disk";
-  spillGroup.appendChild(diskLbl);
+  diskLbl.textContent = "② tmpdir: sorted runs on disk";
+  diskGroup.appendChild(diskLbl);
 
   // Show max 4 run boxes so there is always room for the overflow label
   var cap = Math.min(numRuns, 4);
@@ -793,91 +826,95 @@ function buildStage(numRuns) {
     var x = startX + i * (rw + gap);
     var rect = anim.svgEl("rect", {
       x: x, y: diskY + 12, width: rw, height: 50, rx: 6, ry: 6,
-      fill: "#fffbeb", stroke: "#d1d5db", "stroke-width": 1.5, opacity: 0.3
+      fill: "var(--svg-build-soft)", stroke: "var(--svg-node-stroke)", "stroke-width": 1.5, opacity: 0.3
     });
-    spillGroup.appendChild(rect);
+    diskGroup.appendChild(rect);
     var lbl = anim.svgEl("text", {
       x: x + rw / 2, y: diskY + 42, "text-anchor": "middle",
-      "font-size": 10, "font-weight": 700, fill: "#92400e", opacity: 0.3
+      "font-size": 10, "font-weight": 700, fill: "var(--svg-build-ink)", opacity: 0.3
     });
     lbl.textContent = "Run " + (i + 1);
-    spillGroup.appendChild(lbl);
+    diskGroup.appendChild(lbl);
     runRects.push({rect: rect, label: lbl});
   }
   if (hasMore) {
     var moreX = startX + cap * (rw + gap) + 8;
     var more = anim.svgEl("text", {
       x: moreX, y: diskY + 32, "font-size": 12, "font-weight": 600,
-      fill: "#92400e", "font-style": "italic"
+      fill: "var(--svg-build-ink)", "font-style": "italic"
     });
-    more.textContent = "\u2026 + " + (numRuns - cap) + " more run" + (numRuns - cap === 1 ? "" : "s");
-    spillGroup.appendChild(more);
+    more.textContent = "… + " + (numRuns - cap) + " more run" + (numRuns - cap === 1 ? "" : "s");
+    diskGroup.appendChild(more);
     var moreSub = anim.svgEl("text", {
-      x: moreX, y: diskY + 48, "font-size": 10, fill: "#9ca3af"
+      x: moreX, y: diskY + 48, "font-size": 10, fill: "var(--svg-ink-muted)"
     });
-    moreSub.textContent = "(each is another buffer-fill \u2192 sort \u2192 flush cycle)";
-    spillGroup.appendChild(moreSub);
+    moreSub.textContent = "(each: fill, sort, write)";
+    diskGroup.appendChild(moreSub);
   }
 
-  // ---- Arrow: tmpdir \u2192 merge ----
+  // ---- Arrow: tmpdir → merge ----
   var arrow2Y = diskY + 70;
   var arrow2 = anim.svgEl("path", {
     d: "M" + (W/2) + "," + arrow2Y + " L" + (W/2) + "," + (arrow2Y + 24) +
        " M" + (W/2 - 6) + "," + (arrow2Y + 18) + " L" + (W/2) + "," + (arrow2Y + 24) +
        " L" + (W/2 + 6) + "," + (arrow2Y + 18),
-    stroke: "#9ca3af", "stroke-width": 2, fill: "none"
+    stroke: "var(--svg-node-stroke)", "stroke-width": 2, fill: "none"
   });
-  spillGroup.appendChild(arrow2);
+  diskGroup.appendChild(arrow2);
   var arrow2Lbl = anim.svgEl("text", {
-    x: W/2 + 16, y: arrow2Y + 16, "font-size": 10, fill: "#9ca3af", "font-weight": 600
+    x: W/2 + 16, y: arrow2Y + 16, "font-size": 10, fill: "var(--svg-ink-muted)", "font-weight": 600
   });
-  arrow2Lbl.textContent = "k-way merge";
-  spillGroup.appendChild(arrow2Lbl);
+  arrow2Lbl.textContent = "merge: smallest head first";
+  diskGroup.appendChild(arrow2Lbl);
 
   // ---- Zone 3: Merge output (bottom) ----
   var mergeY = arrow2Y + 32;
   var mergeLbl = anim.svgEl("text", {
-    x: 20, y: mergeY, "font-size": 13, "font-weight": 700, fill: "#047857"
+    x: 20, y: mergeY, "font-size": 13, "font-weight": 700, fill: "var(--svg-ok)"
   });
-  mergeLbl.textContent = "\u2462 final sorted output";
+  mergeLbl.textContent = "③ final sorted output";
   spillGroup.appendChild(mergeLbl);
 
   var mergeRect = anim.svgEl("rect", {
     x: 20, y: mergeY + 12, width: W - 40, height: 50, rx: 8, ry: 8,
-    fill: "#ecfdf5", stroke: "#059669", "stroke-width": 1.5, opacity: 0.3
+    fill: "var(--svg-ok-soft)", stroke: "var(--svg-ok)", "stroke-width": 1.5, opacity: 0.3
   });
   spillGroup.appendChild(mergeRect);
 
   var mergeContent = anim.svgEl("text", {
-    x: W / 2, y: mergeY + 42, "text-anchor": "middle",
-    "font-size": 11, "font-weight": 600, fill: "#065f46", opacity: 0.3
+    x: W - 20, y: mergeY, "text-anchor": "end",
+    "font-size": 11, "font-weight": 600, fill: "var(--svg-ok)", opacity: 0.3
   });
   mergeContent.textContent = "";
   spillGroup.appendChild(mergeContent);
 
   var statusLbl = anim.svgEl("text", {
     x: W / 2, y: H - 16, "text-anchor": "middle",
-    "font-size": 13, "font-weight": 600, fill: "#1f2937"
+    "font-size": 13, "font-weight": 600, fill: "var(--svg-ink)"
   });
   statusLbl.textContent = "";
   svg.appendChild(statusLbl);
 
   stage = {
-    svg: svg, bufRect: bufRect, bufContent: bufContent,
+    svg: svg, baseGroup: baseGroup, bufRect: bufRect, bufContent: bufContent,
     runRects: runRects, totalRuns: numRuns,
     mergeRect: mergeRect, mergeContent: mergeContent, mergeLbl: mergeLbl,
-    statusLbl: statusLbl, spillGroup: spillGroup, tuples: []
+    statusLbl: statusLbl, spillGroup: spillGroup, diskGroup: diskGroup, tuples: []
   };
 }
 
 function resetStage() {
   if (!stage) return;
-  stage.bufRect.setAttribute("fill", "#f5f3ff");
+  stage.baseGroup.removeAttribute("display");
+  stage.diskGroup.removeAttribute("display");
+  stage.bufRect.setAttribute("fill", "var(--svg-group-soft)");
   stage.bufContent.textContent = "(rows fill here, get sorted, then spill to disk)";
   stage.spillGroup.setAttribute("opacity", "1");
   stage.runRects.forEach(function(r) {
     r.rect.setAttribute("opacity", 0.3);
-    r.rect.setAttribute("fill", "#fffbeb");
+    r.rect.setAttribute("fill", "var(--svg-build-soft)");
+    r.rect.setAttribute("stroke", "var(--svg-node-stroke)");
+    r.rect.setAttribute("stroke-width", "1.5");
     r.label.setAttribute("opacity", 0.3);
   });
   stage.mergeRect.setAttribute("opacity", 0.3);
@@ -893,12 +930,12 @@ function spawnTuple(text, color, cx, cy) {
   var tw = Math.max(70, text.length * 5.5 + 14);
   var bg = anim.svgEl("rect", {
     x: -tw/2, y: -9, width: tw, height: 18, rx: 9, ry: 9,
-    fill: color, stroke: "#1f2937", "stroke-width": 1
+    fill: color, stroke: "var(--svg-ink)", "stroke-width": 1
   });
   g.appendChild(bg);
   var lbl = anim.svgEl("text", {
     x: 0, y: 4, "text-anchor": "middle",
-    "font-size": 8, "font-weight": 700, fill: "#ffffff"
+    "font-size": 8, "font-weight": 700, fill: "var(--svg-on-solid)"
   });
   lbl.textContent = text;
   g.appendChild(lbl);
@@ -907,24 +944,44 @@ function spawnTuple(text, color, cx, cy) {
   return g;
 }
 
-function buildTimeline(numRuns, spill, sortAlg, pqSize) {
-  cleanupRadix();  // ensure radix SVG is hidden if switching from radix
-  resetStage();
+// Spawn pills one by one into the buffer (timeline-owned fade-in).
+function addFill(tl, gs, xs, indices, stepMs, onEach) {
+  for (var k = 0; k < indices.length; k++) {
+    (function(idx) {
+      tl.call(function() {
+        gs[idx] = spawnTuple(orderLabel(indices[idx]), "var(--svg-group)", xs[idx], 75);
+        if (onEach) onEach(idx);
+      });
+      tl.add({from: 0, to: 1, duration: 150, ease: anim.easeOutCubic,
+        onUpdate: function(v) { gs[idx].setAttribute("opacity", v.toFixed(2)); }});
+      tl.delay(stepMs);
+    })(k);
+  }
+}
 
-  // Radix sort gets its own dedicated SVG — completely separate rendering
+function buildTimeline(numRuns, spill, sortAlg, pqSize, c, cost) {
+  resetStage();
+  var mariadb = c.server === "mariadb";
+
+  // MariaDB's radix sort draws its own buckets in this SVG.
   if (sortAlg === "radix" && !spill) {
     var radixIndices = [];
     for (var ri2 = 0; ri2 < 6; ri2++) radixIndices.push(ri2);
-    return buildRadixTimeline(radixIndices, false);
+    return buildRadixTimeline(radixIndices, false, c);
   }
 
   var tl = anim.timeline();
   var phase = document.getElementById("phase-label");
   var shown = stage.runRects.length;
 
+  // Guided steps: in-memory paths step through filling, each partition
+  // (or radix pass, or heap row) and the end; the spill path steps through
+  // fill, sort and write for each run, then the merge. Kinds map to the
+  // simplified-code lines (GUIDE in filesort.py).
   if (sortAlg === "priority_queue") {
     // Priority queue path: ORDER BY … LIMIT k
     var PQ_N = 8;
+    var seatsK = Math.min(pqSize, PQ_N - 1);
     var pqXs = [];
     for (var pqi = 0; pqi < PQ_N; pqi++) pqXs.push(60 + pqi * 95);
     var pqGs = [];
@@ -932,45 +989,36 @@ function buildTimeline(numRuns, spill, sortAlg, pqSize) {
     for (var pqi2 = 0; pqi2 < PQ_N; pqi2++) pqIndices.push(pqi2);
 
     tl.mark("Load rows");
+    tl.beat("pq-start");
     tl.call(function() {
-      phase.textContent = "Priority queue \u2014 ORDER BY \u2026 LIMIT " + pqSize + " (bounded max-heap)";
-      stage.bufRect.setAttribute("fill", "#dbeafe");
+      stage.diskGroup.setAttribute("display", "none");
+      phase.textContent = "ORDER BY order_date LIMIT " + pqSize + ": only the " + pqSize + " earliest dates are " +
+        "needed, so the server keeps a priority queue (a bounded heap) instead of sorting every row" +
+        (seatsK < pqSize ? " (" + seatsK + " seats drawn)" : "");
+      stage.bufRect.setAttribute("fill", "var(--svg-token-soft)");
     });
-    for (var pr = 0; pr < PQ_N; pr++) {
-      (function(idx) {
-        tl.call(function() {
-          var o = ORDERS[idx];
-          var label = o.customer + " " + o.date;
-          var tuple = spawnTuple(label, "#7c3aed", pqXs[idx], 75);
-          pqGs[idx] = tuple;
-          anim.tween({from: 0, to: 1, duration: 150, ease: anim.easeOutCubic,
-            onUpdate: function(v) { tuple.setAttribute("opacity", v); }});
-        });
-        tl.delay(100);
-      })(pr);
-    }
-    tl.delay(300);
+    addFill(tl, pqGs, pqXs, pqIndices, 60);
+    tl.delay(200);
 
     tl.mark("Heap push/pop");
-    tl.call(function() {
-      phase.textContent = "Push each row into max-heap of size " + pqSize + " \u2014 evict largest if full";
-      stage.bufRect.setAttribute("fill", "#bfdbfe");
-    });
-    addPQToTimeline(tl, pqGs, pqXs, pqIndices, Math.min(pqSize, PQ_N - 1));
+    addPQToTimeline(tl, pqGs, pqXs, pqIndices, seatsK);
 
     tl.mark("Done");
+    tl.beat("pq-done");
     tl.call(function() {
-      phase.textContent = "\u2713 Priority queue done \u2014 only " + pqSize + " rows kept, no full sort needed";
+      phase.textContent = "✓ Priority queue done: every row was seen once, only " + pqSize +
+        " were kept, and they are sent in order. Nothing went to tmpdir";
       stage.mergeRect.setAttribute("opacity", 1);
       stage.mergeContent.setAttribute("opacity", 1);
-      stage.mergeContent.textContent = "Top " + pqSize + " rows streamed from heap";
-      stage.statusLbl.textContent = "Priority queue: O(n \u00b7 log k) — scanned all rows but only kept " + pqSize + " in memory.";
+      stage.mergeContent.textContent = "Top " + pqSize + " rows sent from the heap, earliest date first";
+      stage.statusLbl.textContent = "Priority queue: O(n · log k), all rows read, only " + pqSize + " kept in memory.";
     });
+    tl.delay(300);
     return tl;
   }
 
   if (!spill) {
-    // All rows fit in memory — choose radix or introsort
+    // All rows fit in memory: one comparison sort of the buffer
     var QS_N = 6;
     var qsXs = [];
     for (var qi = 0; qi < QS_N; qi++) qsXs.push(100 + qi * 120);
@@ -979,116 +1027,98 @@ function buildTimeline(numRuns, spill, sortAlg, pqSize) {
     for (var qi2 = 0; qi2 < QS_N; qi2++) qsIndices.push(qi2);
 
     tl.mark("Fill sort buffer");
+    tl.beat("fill");
     tl.call(function() {
-      phase.textContent = "Phase 1/2 \u2014 loading rows into sort_buffer";
-      stage.bufRect.setAttribute("fill", "#ddd6fe");
+      phase.textContent = "Phase 1/2: each orders row is copied into the sort buffer with its order_date key; " +
+        "all " + fmtN(c.rows) + " rows fit, so nothing is written to tmpdir";
+      stage.bufRect.setAttribute("fill", "var(--svg-group-soft)");
     });
-    for (var r = 0; r < QS_N; r++) {
-      (function(idx) {
-        tl.call(function() {
-          var o = ORDERS[idx];
-          var label = o.customer + " " + o.date;
-          var tuple = spawnTuple(label, "#7c3aed", qsXs[idx], 75);
-          qsGs[idx] = tuple;
-          anim.tween({from: 0, to: 1, duration: 200, ease: anim.easeOutCubic,
-            onUpdate: function(v) { tuple.setAttribute("opacity", v); }});
-          stage.bufContent.textContent = (idx + 1) + " rows loaded";
-        });
-        tl.delay(150);
-      })(r);
-    }
-    tl.delay(400);
+    addFill(tl, qsGs, qsXs, qsIndices, 120, function(idx) {
+      stage.bufContent.textContent = (idx + 1) + " rows in the buffer";
+    });
+    tl.delay(300);
 
-    tl.mark("Introsort: partitioning");
+    tl.mark("Sort the buffer");
     tl.call(function() {
-      phase.textContent = "Phase 2/2 \u2014 introsort (quicksort + heapsort fallback after O(log n) depth)";
-      stage.bufRect.setAttribute("fill", "#c4b5fd");
+      stage.bufContent.textContent = "Sorting by order_date…";
     });
-    tl.delay(200);
     addQsToTimeline(tl, qsGs, qsXs, qsIndices, false);
 
-    tl.mark("Sorted \u2014 done");
+    tl.mark("Sorted: done");
+    tl.beat("done-mem");
     tl.call(function() {
-      phase.textContent = "\u2713 Sorted in memory via introsort \u2014 no disk I/O!";
-      // Restore spill group to show merge result
+      phase.textContent = mariadb
+        ? "✓ Sorted in memory, no disk I/O. MariaDB used its own quicksort: the buffer holds " +
+          fmtN(c.rows) + " rows, outside radix sort's 1,000 to 99,999"
+        : "✓ Sorted in memory, no disk I/O. The drawing uses quicksort; MySQL sorts the buffer " +
+          "with std::sort (100 rows or fewer) or std::stable_sort, both comparison sorts";
       stage.spillGroup.setAttribute("opacity", "1");
       stage.mergeRect.setAttribute("opacity", 1);
       stage.mergeContent.setAttribute("opacity", 1);
-      stage.mergeContent.textContent = "Result streamed directly from memory";
-      stage.statusLbl.textContent = "In-memory " + algName + ": 0 disk spills, 0 merge passes.";
+      stage.mergeContent.textContent = "Result sent directly from memory";
+      stage.statusLbl.textContent = "In-memory sort: 0 sorted runs written, 0 merge passes.";
     });
+    tl.delay(300);
     return tl;
   }
 
-  // Spill path: fill buffer, quicksort, flush to disk runs, then merge
+  // Spill path: fill buffer, sort, write each run to tmpdir, then merge
   var animRuns = Math.min(shown, numRuns);
   for (var ri = 0; ri < animRuns; ri++) {
     (function(runIdx) {
-      var chunkStart = (runIdx * 4) %% ORDERS.length;
-      var chunkXs = [80, 260, 440, 620];
+      // Three rows per drawn run: four runs use all 12 sample rows once.
+      var chunkStart = (runIdx * RUN_ROWS) %% ORDERS.length;
+      var chunkXs = [140, 400, 660];
       var chunkGs = [];
       var chunkIndices = [];
-      for (var ck = 0; ck < 4; ck++) {
+      for (var ck = 0; ck < RUN_ROWS; ck++) {
         chunkIndices.push((chunkStart + ck) %% ORDERS.length);
       }
+      var names = chunkIndices.map(function(o) { return ORDERS[o].customer; }).join(", ");
 
       tl.mark("Run " + (runIdx + 1) + ": fill");
+      tl.beat("fill");
       tl.call(function() {
-        phase.textContent = "Phase 1/" + (numRuns > 1 ? "2" : "1") +
-          " \u2014 filling sort_buffer, run " + (runIdx + 1) + " of " + numRuns;
-        stage.bufRect.setAttribute("fill", "#ddd6fe");
-        stage.bufContent.textContent = "Filling with rows\u2026";
+        phase.textContent = "Run " + (runIdx + 1) + " of " + numRuns + ": the sort buffer fills with the next rows (" +
+          names + ", ...) until sort_buffer_size is used up";
+        stage.bufRect.setAttribute("fill", "var(--svg-group-soft)");
+        stage.bufContent.textContent = "Filling with rows…";
       });
-      for (var ci = 0; ci < 4; ci++) {
-        (function(c) {
-          tl.call(function() {
-            var order = ORDERS[chunkIndices[c]];
-            var label = order.customer + " " + order.date;
-            var tuple = spawnTuple(label, "#7c3aed", chunkXs[c], 75);
-            chunkGs[c] = tuple;
-            anim.tween({from: 0, to: 1, duration: 150, ease: anim.easeOutCubic,
-              onUpdate: function(v) { tuple.setAttribute("opacity", v); }});
-          });
-          tl.delay(100);
-        })(ci);
-      }
-      tl.delay(200);
+      addFill(tl, chunkGs, chunkXs, chunkIndices, 80);
+      tl.delay(150);
 
-      // Sort animation (fast mode for spill path — always introsort here,
-      // radix in-memory path is handled by buildRadixTimeline above)
-      tl.mark("Run " + (runIdx + 1) + ": introsort");
+      tl.mark("Run " + (runIdx + 1) + ": sort");
+      tl.beat("run-sort");
+      var bufRows = fmtN(cost.rpr);
       tl.call(function() {
-        stage.bufRect.setAttribute("fill", "#c4b5fd");
+        phase.textContent = "Run " + (runIdx + 1) + " of " + numRuns + ": the buffer is full (" + bufRows +
+          " rows), so " + (sortAlg === "radix"
+            ? "MariaDB radix sorts them by the 3-byte order_date key, with no comparisons"
+            : serverName(c.server) + " sorts them by order_date with a comparison sort");
+        stage.bufRect.setAttribute("fill", "var(--svg-group-soft)");
       });
-      addQsToTimeline(tl, chunkGs, chunkXs, chunkIndices, true);
+      if (sortAlg === "radix") addRunRadixToTimeline(tl, chunkGs, chunkXs, chunkIndices);
+      else addQsToTimeline(tl, chunkGs, chunkXs, chunkIndices, true);
 
-      // Flush sorted run to disk
-      tl.mark("Run " + (runIdx + 1) + ": flush");
+      tl.mark("Run " + (runIdx + 1) + ": write");
+      tl.beat("run-write");
       tl.call(function() {
-        stage.bufContent.textContent = "Flushing sorted run to tmpdir\u2026";
-        stage.bufRect.setAttribute("fill", "#fde68a");
-        if (runIdx < shown) {
-          stage.runRects[runIdx].rect.setAttribute("opacity", 1);
-          stage.runRects[runIdx].rect.setAttribute("fill", "#fde68a");
-          stage.runRects[runIdx].label.setAttribute("opacity", 1);
-          anim.tween({
-            from: 0, to: 1, duration: 400, ease: anim.easeOutCubic,
-            onUpdate: function(v) {
-              stage.runRects[runIdx].rect.setAttribute("fill",
-                anim.lerpColor("#fde68a", "#fbbf24", v));
-            }
-          });
-        }
-        // Fade out buffer tuples + QS pointers
-        stage.tuples.forEach(function(t) {
-          anim.tween({from: 1, to: 0, duration: 300, ease: anim.easeInCubic,
-            onUpdate: function(v) { t.setAttribute("opacity", v); }});
-        });
+        phase.textContent = "Run " + (runIdx + 1) + " of " + numRuns + ": the sorted buffer is written to tmpdir as " +
+          "run " + (runIdx + 1) + ", and the buffer is emptied for the next rows";
+        stage.bufContent.textContent = "Writing sorted run " + (runIdx + 1) + " to tmpdir…";
+        stage.bufRect.setAttribute("fill", "var(--svg-highlight)");
+        stage.runRects[runIdx].rect.setAttribute("opacity", 1);
+        stage.runRects[runIdx].label.setAttribute("opacity", 1);
       });
-      tl.delay(500);
+      tl.add({from: 0, to: 1, duration: 400, ease: anim.easeOutCubic,
+        onUpdate: function(v) {
+          stage.runRects[runIdx].rect.setAttribute("fill",
+            anim.lerpColor("var(--svg-highlight)", "var(--svg-build-soft)", v));
+          for (var t = 0; t < chunkGs.length; t++) chunkGs[t].setAttribute("opacity", (1 - v).toFixed(2));
+        }});
       tl.call(function() {
-        stage.bufRect.setAttribute("fill", "#f5f3ff");
-        stage.bufContent.textContent = "(buffer cleared for next chunk)";
+        stage.bufRect.setAttribute("fill", "var(--svg-group-soft)");
+        stage.bufContent.textContent = "(buffer emptied for the next rows)";
         stage.tuples.forEach(function(t) { if (t.parentNode) t.parentNode.removeChild(t); });
         stage.tuples = [];
       });
@@ -1096,36 +1126,33 @@ function buildTimeline(numRuns, spill, sortAlg, pqSize) {
     })(ri);
   }
 
-  // Merge phase — animate labeled tuples flowing from run boxes into the
-  // merge output area, showing the k-way merge picking the smallest key
-  // from each run head in sorted order.
-  tl.mark("K-way merge");
+  // Merge phase: labelled rows flow from the run boxes into the output,
+  // always the smallest key among the run heads.
+  tl.mark("Merge runs");
+  tl.beat("merge");
   tl.call(function() {
-    phase.textContent = "Phase 2/2 \u2014 k-way merge: pick the smallest key across " + numRuns + " run heads";
+    phase.textContent = "Merge: read the " + numRuns + " sorted runs back and repeatedly take the earliest " +
+      "order_date among the run heads";
     stage.mergeRect.setAttribute("opacity", 1);
     stage.mergeContent.setAttribute("opacity", 1);
-    stage.mergeContent.textContent = "Merging runs\u2026";
+    stage.mergeContent.textContent = "Merging runs…";
   });
   tl.delay(300);
 
-  // Build a per-run queue of sorted order indices so we know which rows
-  // belong to each run (same chunking logic used during the spill phase).
   var runQueues = [];
   for (var rq = 0; rq < animRuns; rq++) {
     var chunk = [];
-    for (var ci2 = 0; ci2 < 4; ci2++) {
-      chunk.push(((rq * 4) + ci2) %% ORDERS.length);
+    for (var ci2 = 0; ci2 < RUN_ROWS; ci2++) {
+      chunk.push(((rq * RUN_ROWS) + ci2) %% ORDERS.length);
     }
     chunk.sort(function(a, b) { return DATE_KEYS[a] - DATE_KEYS[b]; });
     runQueues.push(chunk);
   }
 
-  // Flatten via simulated k-way merge: always pick the run whose head
-  // has the smallest DATE_KEY.
   var mergeOrder = [];
   var heads = [];
   for (var h = 0; h < runQueues.length; h++) heads.push(0);
-  var totalMerge = animRuns * 4;
+  var totalMerge = animRuns * RUN_ROWS;
   for (var mp = 0; mp < totalMerge; mp++) {
     var bestRun = -1, bestKey = Infinity;
     for (var r2 = 0; r2 < runQueues.length; r2++) {
@@ -1139,20 +1166,15 @@ function buildTimeline(numRuns, spill, sortAlg, pqSize) {
     heads[bestRun]++;
   }
 
-  // Animate each merge pick: spawn a pill at the source run, arc it down
-  // to its landing position in the merge output area.
-  var mergeSlotW = Math.min(90, (W - 60) / Math.max(1, mergeOrder.length));
+  // Two rows so each labelled pill has room.
+  var perRow = Math.max(1, Math.ceil(mergeOrder.length / 2));
+  var mergeSlotW = Math.min(92, (W - 60) / perRow);
   var mergeBaseX = 30;
-  var mergeBaseY = parseFloat(stage.mergeRect.getAttribute("y")) + 28;
-  var placed = 0;
+  var mergeTop = parseFloat(stage.mergeRect.getAttribute("y"));
 
-  // Pre-compute pill data at build time so tl.add() closures can reference
-  // stable values.  Each pick creates: call (spawn pill + narrate) → add
-  // (arc tween owned by timeline) → call (de-highlight).
   for (var mi2 = 0; mi2 < mergeOrder.length; mi2++) {
     (function(pick, slot) {
-      var order = ORDERS[pick.orderIdx];
-      var label = order.customer + " " + order.date;
+      var label = orderLabel(pick.orderIdx);
       var runRect = (pick.run < shown) ? stage.runRects[pick.run] : null;
       var srcX, srcY;
       if (runRect) {
@@ -1163,43 +1185,38 @@ function buildTimeline(numRuns, spill, sortAlg, pqSize) {
         srcX = W / 2;
         srcY = parseFloat(stage.mergeRect.getAttribute("y")) - 20;
       }
-      var dstX = mergeBaseX + slot * mergeSlotW + mergeSlotW / 2;
-      var dstY = mergeBaseY;
+      var dstX = mergeBaseX + (slot %% perRow) * mergeSlotW + mergeSlotW / 2;
+      var dstY = mergeTop + (slot < perRow ? 14 : 36);
       var ctrlY = (srcY + dstY) / 2 - 10;
       var pathFn = anim.path(srcX, srcY, (srcX + dstX) / 2, ctrlY, dstX, dstY);
-
-      // Pill reference — created in the call, animated by the tl.add tween
       var pill = null;
 
       tl.call(function() {
-        stage.mergeContent.textContent = "Pick: " + label + " (smallest head across runs)";
+        stage.mergeContent.textContent = "Pick: " + label + " (earliest head across runs)";
         if (runRect) {
-          runRect.rect.setAttribute("stroke", "#f59e0b");
+          runRect.rect.setAttribute("stroke", "var(--svg-build)");
           runRect.rect.setAttribute("stroke-width", "2.5");
         }
-        pill = spawnTuple(label, "#059669", srcX, srcY);
+        pill = spawnTuple(label, "var(--svg-ok)", srcX, srcY);
         pill.setAttribute("opacity", "1");
       });
-      // Timeline-owned tween — scrubbable, no standalone RAF
       tl.add({
         from: 0, to: 1, duration: 420, ease: anim.easeInOutCubic,
         onUpdate: function(t) {
           if (!pill) return;
           var p = pathFn(t);
-          pill.setAttribute("transform", "translate(" + p.x + "," + p.y + ")");
+          translate(pill, p.x, p.y);
         },
         onComplete: function() {
           if (runRect) {
-            runRect.rect.setAttribute("stroke", "#d1d5db");
+            runRect.rect.setAttribute("stroke", "var(--svg-node-stroke)");
             runRect.rect.setAttribute("stroke-width", "1.5");
           }
         }
       });
-    })(mergeOrder[mi2], placed);
-    placed++;
+    })(mergeOrder[mi2], mi2);
   }
 
-  // Fade out run boxes — also timeline-owned
   tl.add({
     from: 1, to: 0.25, duration: 400, ease: anim.easeInCubic,
     onUpdate: function(v) {
@@ -1211,12 +1228,15 @@ function buildTimeline(numRuns, spill, sortAlg, pqSize) {
   });
 
   tl.mark("Done");
+  tl.beat("done-merge");
   tl.call(function() {
-    stage.mergeRect.setAttribute("fill", "#a7f3d0");
-    stage.mergeContent.textContent = "All " + numRuns + " runs merged \u2192 final sorted result";
-    phase.textContent = "\u2713 Filesort complete \u2014 " + numRuns + " sorted runs merged via k-way merge";
-    stage.statusLbl.textContent = numRuns + " disk spills + merge = significant I/O. Bigger sort_buffer_size would help.";
+    stage.mergeRect.setAttribute("fill", "var(--svg-ok-soft)");
+    stage.mergeContent.textContent = "All " + numRuns + " runs merged → final sorted result";
+    phase.textContent = "✓ Filesort done: " + numRuns + " sorted runs were written to tmpdir and merged" +
+      " (the drawing shows " + animRuns + "). A bigger sort_buffer_size means fewer runs";
+    stage.statusLbl.textContent = numRuns + " runs written + read back by the merge = extra disk I/O.";
   });
+  tl.delay(300);
 
   return tl;
 }
@@ -1224,13 +1244,12 @@ function buildTimeline(numRuns, spill, sortAlg, pqSize) {
 function buildCurrentTimeline() {
   var c = teachRuntime.readControls();
   var limitVal = c.limit_rows || 0;
-  var cost = filesortCost(c.rows, c.row_size, c.sbs, limitVal);
-  return buildTimeline(cost.runs, cost.spill, cost.sortAlg, cost.pqSize);
+  var cost = filesortCost(c.rows, c.row_size, c.sbs, limitVal, c.server);
+  return buildTimeline(cost.runs, cost.spill, cost.sortAlg, cost.pqSize, c, cost);
 }
 function resetAnim() {
-  cleanupRadix();
   resetStage();
-  document.getElementById("phase-label").textContent = "Ready \u2014 press Play";
+  document.getElementById("phase-label").textContent = "Ready: press Next step, or Play to run it all";
 }
 
 function renderChart(rowSize, sbs, currentRows) {
@@ -1240,9 +1259,9 @@ function renderChart(rowSize, sbs, currentRows) {
     xMin: 100, xMax: 1e7,
     xLabel: "Row count to sort", yLabel: "Total I/O rows (read+write)",
     curves: [
-      { label: "Filesort (this algorithm)", color: "#7c3aed",
+      { label: "Filesort (this algorithm)", color: "var(--svg-group)",
         fn: function(n) { return filesortCost(n, rowSize, sbs).ioRows; } },
-      { label: "Index-ordered scan (0 I/O)", color: "#059669",
+      { label: "Index-ordered scan (no sort)", color: "var(--svg-ok)",
         fn: function(n) { return n; } }
     ],
     current: { x: currentRows },
@@ -1251,49 +1270,73 @@ function renderChart(rowSize, sbs, currentRows) {
   });
 }
 
-function algDisplayName(alg) {
-  if (alg === "radix") return "Radix sort";
+function algDisplayName(alg, spill) {
+  if (alg === "radix") return spill ? "Radix sort per run (MariaDB)" : "Radix sort (MariaDB)";
   if (alg === "priority_queue") return "Priority queue";
-  return "Introsort (std::sort)";
+  return "Comparison sort";
 }
-function algReason(alg, rowSize, limitRows, rows) {
-  if (alg === "priority_queue")
-    return "LIMIT " + limitRows + " is small and fits in buffer \u2192 bounded max-heap of " +
-           limitRows + " elements. Scans all " + rows + " rows but never fully sorts them.";
-  if (alg === "radix")
-    return "Sort key is " + rowSize + " B (\u2264 16 B fixed-length) \u2192 radix sort. " +
-           "O(n\u00b7k) with zero comparisons \u2014 distributes into digit buckets.";
-  return "Sort key is " + rowSize + " B (> 16 B or variable-length) \u2192 introsort " +
-         "(quicksort + heapsort fallback after O(log n) depth). " +
-         "Guaranteed O(n log n) worst case.";
+function algReason(cost, c, limitRows) {
+  var rows = fmtN(c.rows);
+  var inBuffer = fmtN(cost.bufferRows);
+  if (cost.sortAlg === "priority_queue")
+    return "LIMIT " + limitRows + " is small and fits in the buffer → a bounded heap of " +
+           limitRows + " rows. Every one of the " + rows + " rows is seen, but they are never fully sorted.";
+  if (cost.sortAlg === "radix")
+    return "The sort key is order_date, " + SORT_KEY_BYTES + " B (20 B or less, and a fixed-size key is never " +
+           "packed), and each buffer holds " + inBuffer + " rows (1,000 to 99,999): MariaDB radix sorts " +
+           (cost.spill ? "every full run" : "it") + ", one counting pass per key byte with no comparisons. " +
+           "The " + c.row_size + " B row size only decides how many rows fit. MySQL has no radix sort.";
+  if (c.server === "mariadb")
+    return "MariaDB sorts the buffer with its own quicksort, O(n log n) comparisons: radix sort needs " +
+           "1,000 to 99,999 rows in the buffer, and this one holds " + inBuffer + ".";
+  return "Comparison sort of the buffer: MySQL uses std::sort (up to 100 rows, or variable-length keys) " +
+         "or std::stable_sort, O(n log n) comparisons. MySQL has no radix sort; MariaDB would radix sort " +
+         "a buffer of 1,000 to 99,999 rows here, since order_date is a " + SORT_KEY_BYTES + "-byte key.";
 }
 
 function recompute() {
   var c = teachRuntime.readControls();
   var limitVal = c.limit_rows || 0;
-  var cost = filesortCost(c.rows, c.row_size, c.sbs, limitVal);
+  var cost = filesortCost(c.rows, c.row_size, c.sbs, limitVal, c.server);
   document.getElementById("out-rpr").textContent = teachRuntime.formatInt(cost.rpr);
   document.getElementById("out-runs").textContent = teachRuntime.formatInt(cost.runs);
   document.getElementById("out-merges").textContent = String(cost.merges);
   document.getElementById("out-io").textContent = teachRuntime.formatInt(cost.ioRows);
-  document.getElementById("out-spill").textContent = cost.spill ? "Yes \u2014 disk I/O" : "No \u2014 in-memory";
+  document.getElementById("out-spill").textContent = cost.spill ? "Yes — disk I/O" : "No — in-memory";
   document.getElementById("out-spill").className = "value " + (cost.spill ? "hot" : "ok");
-  document.getElementById("out-alg").textContent = algDisplayName(cost.sortAlg);
+  document.getElementById("out-alg").textContent = algDisplayName(cost.sortAlg, cost.spill);
   document.getElementById("out-alg").className = "value " +
     (cost.sortAlg === "radix" ? "ok" : cost.sortAlg === "priority_queue" ? "ok" : "");
   document.getElementById("out-explanation").textContent =
-    algReason(cost.sortAlg, c.row_size, limitVal, c.rows) +
+    algReason(cost, c, limitVal) +
     (cost.spill
-      ? " Buffer holds " + cost.rpr + " rows \u2192 " + cost.runs +
-        " sorted runs spilled to tmpdir. K-way merge needs " + cost.merges +
-        " pass(es). Bigger sort_buffer_size \u2192 fewer runs \u2192 less I/O."
+      ? " The buffer holds " + fmtN(cost.rpr) + " rows → " +
+        fmtN(cost.runs) + " sorted runs spilled to tmpdir. K-way merge needs " +
+        cost.merges + " pass(es). Bigger sort_buffer_size → fewer runs → less I/O."
       : (cost.sortAlg !== "priority_queue"
-         ? " All rows fit in sort_buffer_size \u2014 no disk spill."
+         ? " All rows fit in sort_buffer_size — no disk spill."
          : ""));
   buildStage(cost.runs);
   resetStage();
   renderChart(c.row_size, c.sbs, c.rows);
 }
+
+// Choosing a server moves sort_buffer_size to that server's default (256 KiB
+// on MySQL, 2 MiB on MariaDB) while it is still at the other server's
+// default; a value you set yourself stays. Registered before wire(), so the
+// lesson and Explore redraw with the new value.
+(function() {
+  var sel = document.getElementById("server");
+  var sbs = document.getElementById("sbs");
+  if (!sel || !sbs) return;
+  function followDefault() {
+    var mine = sel.value === "mariadb" ? MARIADB_SORT_BUFFER_SIZE_DEFAULT : SORT_BUFFER_SIZE_DEFAULT;
+    var other = sel.value === "mariadb" ? SORT_BUFFER_SIZE_DEFAULT : MARIADB_SORT_BUFFER_SIZE_DEFAULT;
+    if (Number(sbs.value) === other) sbs.value = String(mine);
+  }
+  sel.addEventListener("input", followDefault);
+  sel.addEventListener("change", followDefault);
+})();
 
 teachRuntime.wire(recompute);
 teachRuntime.wireToolbar({

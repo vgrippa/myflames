@@ -1,0 +1,17 @@
+{
+  "recorded": "2026-11-08",
+  "image": "ubuntu:24.04+apt mysql-server-8.0",
+  "variables": {
+    "basedir": "/usr/",
+    "build_id": "a1033b08b94bc6f8438bba16cb41997ad55db40e",
+    "character_sets_dir": "/usr/share/mysql/charsets/",
+    "hostname": "3775fbbb2dcf",
+    "lc_messages_dir": "/usr/share/mysql/",
+    "plugin_dir": "/usr/lib/mysql/plugin/",
+    "socket": "/var/run/mysqld/mysqld.sock",
+    "version": "8.0.46-0ubuntu0.24.04.4",
+    "version_comment": "(Ubuntu)",
+    "version_compile_machine": "aarch64",
+    "version_compile_os": "Linux"
+  }
+}

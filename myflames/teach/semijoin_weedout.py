@@ -14,6 +14,76 @@ from . import _html
 
 _LESSON_JS_TEMPLATE = _html.load_lesson_js(__file__)
 
+# Guided steps (see _html.normalize_guide). semijoin_weedout.js marks the
+# join, each weedout check (new or duplicate) and the summary with
+# tl.beat(kind). Function names are on _html.VERIFIED_SERVER_FUNCTIONS
+# (checked in mysql-server 8.4.9 and 9.7.0).
+GUIDE = {
+    "code": {
+        "title": "Semijoin DuplicateWeedout",
+        "lines": [
+            ("loop", 0, "for each row of customers c JOIN orders o (o.total > 1000):",
+             "WeedoutIterator::Read"),
+            ("key", 1, "take c's rowid (for InnoDB, its primary key)"),
+            ("insert", 1, "insert the rowid into the weedout temporary table",
+             "do_sj_dups_weedout"),
+            ("new", 1, "inserted: first time c appears, return the row"),
+            ("dup", 1, "duplicate key: c was already returned, discard the row"),
+            ("end", 0, "no join rows left: each customer was returned once"),
+        ],
+    },
+    "beats": {
+        "join": ["loop"],
+        "weed-new": ["key", "insert", "new"],
+        "weed-dup": ["key", "insert", "dup"],
+        "done": ["end"],
+    },
+    "quiz": [
+        {
+            "question": ("Alice matches 2 orders over $1000. How many times does the weedout "
+                         "temporary table see her rowid?"),
+            "choices": [
+                ("Twice: the first insert succeeds, the second fails as a duplicate", True,
+                 "Every join row tries an insert, and the unique key on the rowid rejects the "
+                 "second one, so Alice is returned once."),
+                ("Once, because the join skips her second order", False,
+                 "Skipping the rest of a customer's orders is FirstMatch; DuplicateWeedout lets "
+                 "the join produce every pair and removes the repeats."),
+                ("Never, because the temporary table stores orders", False,
+                 "The table stores rowids of the rows being de-duplicated, customers here, not "
+                 "the orders rows."),
+            ],
+        },
+        {
+            "question": "When is DuplicateWeedout expensive?",
+            "choices": [
+                ("When each customer matches many orders", True,
+                 "The join still produces outer_rows × matches rows and each one costs an insert "
+                 "attempt, so a high fan-out means a lot of discarded work."),
+                ("When customers is small", False,
+                 "Few customers means few join rows and a tiny temporary table."),
+                ("When no orders are over $1000", False,
+                 "With no matching orders the join returns nothing, so there is nothing to insert "
+                 "or discard."),
+            ],
+        },
+        {
+            "question": ("The weedout temporary table outgrows its in-memory size limit. What "
+                         "happens?"),
+            "choices": [
+                ("It is converted to an on-disk table and the query goes on", True,
+                 "MySQL and MariaDB both turn the in-memory table into an on-disk one when an "
+                 "insert finds it full, then keep checking for duplicates there."),
+                ("The query fails", False,
+                 "A full in-memory temporary table is converted, not reported as an error."),
+                ("Duplicates are let through", False,
+                 "The on-disk table keeps the unique key on the rowid, so repeats are still "
+                 "rejected."),
+            ],
+        },
+    ],
+}
+
 
 def render():
     # type: () -> str
@@ -73,15 +143,19 @@ def render():
             "unique key. If the insert succeeds (\u2713 green), the row is new "
             "\u2014 emit it. If it fails (\u2717 red), the rowid was already seen "
             "\u2014 discard the duplicate.",
-            "The temp table is keyed on the outer-table rowid (8 bytes). If "
-            "unique_rows \u00d7 8 fits in tmp_table_size, the temp table stays "
-            "in memory. Otherwise it spills to disk.",
+            "The temp table is keyed on the outer-table rowid (for InnoDB, the "
+            "primary key; this model counts 8 bytes). If unique_rows \u00d7 8 "
+            "fits in tmp_table_size, the temp table stays in memory. Otherwise "
+            "it is converted to an on-disk table.",
             "The duplicate counter on the right tracks how many rows were "
             "discarded. The deduplicated result set at the bottom shows only "
             "the unique customers that survived.",
             "Total work = join_rows = outer_rows \u00d7 inner_matches. Every "
             "row must be checked against the temp table. Higher fan-out "
             "means more wasted work on duplicates.",
+            "Next step shows the join, then one weedout check per join row; "
+            "the simplified code beside the drawing highlights the lines each "
+            "step runs.",
         ],
     )
 
@@ -99,7 +173,7 @@ def render():
     ) % (
         query_card_html,
         explainer_html,
-        _html.stage_toolbar("Ready \u2014 press Play"),
+        _html.stage_toolbar("Ready: press Next step, or Play to run it all"),
         _html.phase_nav(),
     )
 
@@ -182,7 +256,7 @@ def render():
 
     return _html.render_page(
         lesson_id="semijoin_weedout",
-        title="Semijoin Duplicate Weedout \u2014 dedup via temp table",
+        title="Semijoin duplicate weedout: dedup via temp table",
         subtitle=(
             "MySQL rewrites IN/EXISTS subqueries as inner joins, then uses "
             "a temporary table keyed on the outer rowid to remove duplicates. "
@@ -194,4 +268,5 @@ def render():
         readout_html=readout_html,
         learn_more_html=learn_more_html,
         lesson_js=lesson_js,
+        guide=GUIDE,
     )

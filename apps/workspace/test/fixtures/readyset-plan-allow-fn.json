@@ -1,0 +1,57 @@
+{
+ "schema_version": "readyset-action-1.0",
+ "action": "add_shallow_allowed",
+ "target": {
+  "allow_kind": "function"
+ },
+ "value": {
+  "allow_kind": "function",
+  "name": "COALESCE"
+ },
+ "eyebrow": "SHALLOW ALLOWLIST",
+ "title": "Add shallow cache allowed function COALESCE?",
+ "confirm_label": "Allow COALESCE",
+ "description": "Allows shallow caches to cache queries referencing function COALESCE.",
+ "target_text": "Shallow cache allowed functions",
+ "statements": [
+  "ALTER READYSET ADD SHALLOW CACHE ALLOWED FUNCTION `COALESCE`;"
+ ],
+ "facts": [
+  [
+   "Readyset",
+   "stable-250605 (adapter port)"
+  ],
+  [
+   "Function",
+   "COALESCE"
+  ]
+ ],
+ "warnings": [],
+ "changes": null,
+ "typed_guard": null,
+ "undo": "ALTER READYSET DROP SHALLOW CACHE ALLOWED FUNCTION `COALESCE`;",
+ "next": null,
+ "verified": [
+  "Readyset identity (@@version_comment, SHOW READYSET VERSION)"
+ ],
+ "timeout_s": 30,
+ "checks": [
+  "Refresh the Readyset place to inspect the current caches, tables and status.",
+  "The Audit log keeps this attempt as Outcome unknown; nothing is sent again."
+ ],
+ "expect": {
+  "readyset_version": "stable-250605",
+  "kind": "function",
+  "item": "COALESCE",
+  "allowlists_fp": "7520570c0cae3bc2"
+ },
+ "policy": {
+  "action": "confirm",
+  "tone": "danger",
+  "title": "Risky write",
+  "text": "Connection Readyset lab is a Development connection. myflames asks only before risky writes, and this statement is one.",
+  "connection_type": "development",
+  "read_only": false
+ },
+ "review_token": "fixture-token-add_shallow_allowed"
+}

@@ -1,0 +1,20 @@
+.table-data-panel { flex: 1; min-height: 0; min-width: 0; overflow: hidden; display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4); background: var(--bg); color: var(--ink); }
+.table-data-panel > header, .table-data-panel > footer, .table-data-actions { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); flex-wrap: wrap; }
+.table-data-panel h2 { margin: 0; font-size: var(--text-lg); }
+.table-data-panel header p { margin: var(--space-1) 0 0; color: var(--ink-muted); font-size: var(--text-sm); }
+.table-data-actions { justify-content: flex-start; }
+.table-data-scroll { flex: 1; overflow: auto; min-height: 100px; border: 1px solid var(--line); border-radius: var(--radius-md); }
+.table-data-scroll table { width: max-content; min-width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
+.table-data-scroll th { position: sticky; top: 0; background: var(--surface-pane); z-index: 1; text-align: left; }
+.table-data-scroll th, .table-data-scroll td { border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); padding: var(--space-2); min-width: 180px; vertical-align: top; }
+.table-data-scroll th:first-child, .table-data-scroll td:first-child { min-width: 100px; }
+.table-data-scroll small { display: block; color: var(--ink-muted); font-weight: normal; }
+.table-data-scroll select { width: 72px; min-height: 28px; font-size: var(--text-xs); margin: 0 var(--space-1) 0 0; vertical-align: middle; }
+.table-data-scroll input { display: inline-block; width: 180px; min-width: 140px; vertical-align: middle; }
+.table-data-scroll td > .text-button { display: block; }
+.table-data-null { display: inline-block; color: var(--ink-muted); font-style: italic; }
+.table-data-deleted { opacity: .6; text-decoration: line-through; }
+.table-data-sql { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 45vh; overflow: auto; }
+@media (max-width: 720px) { .table-data-panel { padding: var(--space-2); } }
+
+.table-data-panel h2:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }

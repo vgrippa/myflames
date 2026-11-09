@@ -1,0 +1,338 @@
+{
+ "variable": {
+  "schema_version": "variable-1.0",
+  "engine": "mysql",
+  "server_version": "8.4.11",
+  "name": "max_connections",
+  "exists": true,
+  "scope": "global",
+  "scope_source": "myflames map (sys_vars.cc)",
+  "dynamic": true,
+  "type": "integer",
+  "values": null,
+  "min": 1,
+  "max": 100000,
+  "block_size": null,
+  "global_value": "151",
+  "session_value": null,
+  "default": "151",
+  "set_by": "default",
+  "source": "COMPILED",
+  "source_path": null,
+  "set_time": null,
+  "set_user": null,
+  "set_host": null,
+  "persisted": {
+   "supported": true,
+   "value": null,
+   "present": false,
+   "load": true
+  },
+  "non_persistent": false,
+  "persist_as_read_only": false,
+  "session_read_only": false,
+  "description": null,
+  "notes": [],
+  "modes": {
+   "global": {
+    "available": true,
+    "reason": null,
+    "recommended": false
+   },
+   "persist": {
+    "available": true,
+    "reason": null,
+    "recommended": false
+   },
+   "persist_only": {
+    "available": true,
+    "reason": null,
+    "recommended": false
+   },
+   "reset_persist": {
+    "available": false,
+    "reason": "mysqld-auto.cnf has no value for max_connections.",
+    "recommended": false
+   },
+   "session": {
+    "available": false,
+    "reason": "max_connections has only a global value.",
+    "recommended": false
+   }
+  }
+ },
+ "plan": {
+  "schema_version": "variable-plan-1.0",
+  "engine": "mysql",
+  "server_version": "8.4.11",
+  "name": "max_connections",
+  "mode": "global",
+  "mode_label": "Now only",
+  "requested": "300",
+  "value": "300",
+  "display": "300",
+  "status": "ready",
+  "problems": [],
+  "statement": "SET GLOBAL max_connections = 300",
+  "config_line": "max_connections = 300",
+  "before": {
+   "global": "151",
+   "session": null,
+   "persisted": null
+  },
+  "undo": [
+   "SET GLOBAL max_connections = 151;"
+  ],
+  "effect": {
+   "now": true,
+   "after_restart": false,
+   "needs_restart": false,
+   "text": "Changes the running value now, until the server restarts."
+  },
+  "caveats": [
+   "Every connection can allocate its own sort, join and temporary-table memory, so a higher limit raises the worst-case memory."
+  ],
+  "privileges": {
+   "checked": true,
+   "available": true,
+   "allowed": true,
+   "via": "SYSTEM_VARIABLES_ADMIN",
+   "need": "SYSTEM_VARIABLES_ADMIN or SUPER",
+   "note": "",
+   "operation": "set_global"
+  },
+  "classification": {
+   "kind": "risky",
+   "category": "global",
+   "reasons": [
+    "SET GLOBAL changes max_connections for the whole server until it restarts."
+   ]
+  },
+  "expect": {
+   "name": "max_connections",
+   "mode": "global",
+   "statement": "SET GLOBAL max_connections = 300",
+   "global_value": "151",
+   "session_value": null,
+   "persisted_value": null
+  },
+  "variable": {
+   "schema_version": "variable-1.0",
+   "engine": "mysql",
+   "server_version": "8.4.11",
+   "name": "max_connections",
+   "exists": true,
+   "scope": "global",
+   "scope_source": "myflames map (sys_vars.cc)",
+   "dynamic": true,
+   "type": "integer",
+   "values": null,
+   "min": 1,
+   "max": 100000,
+   "block_size": null,
+   "global_value": "151",
+   "session_value": null,
+   "default": "151",
+   "set_by": "default",
+   "source": "COMPILED",
+   "source_path": null,
+   "set_time": null,
+   "set_user": null,
+   "set_host": null,
+   "persisted": {
+    "supported": true,
+    "value": null,
+    "present": false,
+    "load": true
+   },
+   "non_persistent": false,
+   "persist_as_read_only": false,
+   "session_read_only": false,
+   "description": null,
+   "notes": [],
+   "modes": {
+    "global": {
+     "available": true,
+     "reason": null,
+     "recommended": false
+    },
+    "persist": {
+     "available": true,
+     "reason": null,
+     "recommended": false
+    },
+    "persist_only": {
+     "available": true,
+     "reason": null,
+     "recommended": false
+    },
+    "reset_persist": {
+     "available": false,
+     "reason": "mysqld-auto.cnf has no value for max_connections.",
+     "recommended": false
+    },
+    "session": {
+     "available": false,
+     "reason": "max_connections has only a global value.",
+     "recommended": false
+    }
+   }
+  },
+  "alternative": null,
+  "policy": {
+   "action": "confirm",
+   "tone": "danger",
+   "title": "Production connection",
+   "text": "This is a Production connection, so myflames asks before every write.",
+   "connection_type": "production",
+   "read_only": false
+  }
+ },
+ "change": {
+  "schema_version": "variable-change-1.0",
+  "engine": "mysql",
+  "server_version": "8.4.11",
+  "name": "max_connections",
+  "mode": "global",
+  "statement": "SET GLOBAL max_connections = 300",
+  "status": "changed",
+  "message": "Set max_connections globally: 151 -> 300.",
+  "requested": "300",
+  "value": "300",
+  "before": {
+   "global": "151",
+   "session": null,
+   "persisted": null
+  },
+  "after": {
+   "global": "300",
+   "persisted": null,
+   "session": null
+  },
+  "adjusted": false,
+  "verified": [
+   "statement",
+   "global value",
+   "persisted value"
+  ],
+  "plan": {
+   "schema_version": "variable-plan-1.0",
+   "engine": "mysql",
+   "server_version": "8.4.11",
+   "name": "max_connections",
+   "mode": "global",
+   "mode_label": "Now only",
+   "requested": "300",
+   "value": "300",
+   "display": "300",
+   "status": "ready",
+   "problems": [],
+   "statement": "SET GLOBAL max_connections = 300",
+   "config_line": "max_connections = 300",
+   "before": {
+    "global": "151",
+    "session": null,
+    "persisted": null
+   },
+   "undo": [
+    "SET GLOBAL max_connections = 151;"
+   ],
+   "effect": {
+    "now": true,
+    "after_restart": false,
+    "needs_restart": false,
+    "text": "Changes the running value now, until the server restarts."
+   },
+   "caveats": [
+    "Every connection can allocate its own sort, join and temporary-table memory, so a higher limit raises the worst-case memory."
+   ],
+   "privileges": {
+    "checked": false,
+    "available": true,
+    "allowed": null,
+    "via": null,
+    "need": "SYSTEM_VARIABLES_ADMIN or SUPER",
+    "note": "",
+    "operation": "set_global"
+   },
+   "classification": {
+    "kind": "risky",
+    "category": "global",
+    "reasons": [
+     "SET GLOBAL changes max_connections for the whole server until it restarts."
+    ]
+   },
+   "expect": {
+    "name": "max_connections",
+    "mode": "global",
+    "statement": "SET GLOBAL max_connections = 300",
+    "global_value": "151",
+    "session_value": null,
+    "persisted_value": null
+   },
+   "variable": {
+    "schema_version": "variable-1.0",
+    "engine": "mysql",
+    "server_version": "8.4.11",
+    "name": "max_connections",
+    "exists": true,
+    "scope": "global",
+    "scope_source": "myflames map (sys_vars.cc)",
+    "dynamic": true,
+    "type": "integer",
+    "values": null,
+    "min": 1,
+    "max": 100000,
+    "block_size": null,
+    "global_value": "151",
+    "session_value": null,
+    "default": "151",
+    "set_by": "default",
+    "source": "COMPILED",
+    "source_path": null,
+    "set_time": null,
+    "set_user": null,
+    "set_host": null,
+    "persisted": {
+     "supported": true,
+     "value": null,
+     "present": false,
+     "load": true
+    },
+    "non_persistent": false,
+    "persist_as_read_only": false,
+    "session_read_only": false,
+    "description": null,
+    "notes": [],
+    "modes": {
+     "global": {
+      "available": true,
+      "reason": null,
+      "recommended": false
+     },
+     "persist": {
+      "available": true,
+      "reason": null,
+      "recommended": false
+     },
+     "persist_only": {
+      "available": true,
+      "reason": null,
+      "recommended": false
+     },
+     "reset_persist": {
+      "available": false,
+      "reason": "mysqld-auto.cnf has no value for max_connections.",
+      "recommended": false
+     },
+     "session": {
+      "available": false,
+      "reason": "max_connections has only a global value.",
+      "recommended": false
+     }
+    }
+   },
+   "alternative": null
+  }
+ }
+}

@@ -1,0 +1,10 @@
+import { api, type Connection } from './api';
+export type Cell = { kind: 'text' | 'hex' | 'null'; value: string | null };
+export type TableColumn = { name: string; type: string; kind: 'text' | 'hex'; nullable: boolean; auto_increment: boolean };
+export type TablePage = { snapshot_id: string; schema: string; table: string; columns: TableColumn[]; rows: { id: string; values: Cell[] }[];
+  editable: boolean; reason: string; key: string[]; offset: number; limit: number; has_more: boolean; expires_in: number };
+export type Change = { kind: 'insert' | 'update' | 'delete'; row_id?: string; values?: Record<string, Cell> };
+export type TableReview = { snapshot_id: string; review_token: string; statements: string[]; connection_type: string;
+  connection: { name: string; host: string; port: number; user: string }; warnings: string[]; privileges: { state: string; reason: string }[] };
+export type TableOutcome = { snapshot_id: string; status: 'ready' | 'review' | 'running' | 'complete' | 'error' | 'unknown' | 'cancelled' | 'closed'; message: string; audit_id: string | null; affected_rows: number };
+export const tableData = <T,>(operation: string, connection: Connection, body: object = {}) => api<T>(`table-data/${operation}`, { connection, ...body });

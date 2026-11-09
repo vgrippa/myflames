@@ -13,6 +13,7 @@ Both read the dict produced by :func:`myflames.output_sidecar.build_sidecar`.
 No new data is invented here — confidence is derived from the category/severity
 the advisor already assigned (one source, several projections).
 """
+import re
 
 # Lower number sorts first (most urgent).
 _SEVERITY_RANK = {
@@ -100,6 +101,9 @@ def build_findings(payload):
             "node_labels": list(w.get("node_labels") or []),
             "confidence": _confidence(w.get("category", "other"), w.get("severity", "warn")),
         })
+        docs = _docs_for(w, payload)
+        if docs:
+            findings[-1]["docs"] = docs
     for s in payload.get("suggestions") or []:
         entry = {
             "kind": "suggestion",
@@ -120,6 +124,188 @@ def build_findings(payload):
     # warnings-before-suggestions, original-order ordering.
     findings.sort(key=lambda f: _rank_key(f["severity"], f["category"]))
     return findings
+
+
+#: The rule catalog: one entry per warning category, in display order.
+#: ``myflames check --list-rules`` / ``advise --list-rules`` print it, and
+#: ``advise --json`` attaches the matching ``docs`` link to each finding.
+#: Modeled on MySQL Shell's upgrade checker, where every check has a stable
+#: ID, a title, and a documentation link.
+RULES = (
+    ("nonsargable_join", "error",
+     "A function wraps a join column, so no index on it can be used.",
+     "https://dev.mysql.com/doc/refman/8.4/en/mysql-indexes.html"),
+    ("full_scan", "warn",
+     "A base table is read in full instead of through an index.",
+     "https://dev.mysql.com/doc/refman/8.4/en/table-scan-avoidance.html"),
+    ("misestimate", "warn",
+     "The optimizer's row estimate is far from the rows actually read.",
+     "https://dev.mysql.com/doc/refman/8.4/en/innodb-persistent-stats.html"),
+    ("filesort", "warn",
+     "Rows are sorted after they are read instead of read in index order.",
+     "https://dev.mysql.com/doc/refman/8.4/en/order-by-optimization.html"),
+    ("temp_table", "warn",
+     "An intermediate result is materialized into an internal temporary table.",
+     "https://dev.mysql.com/doc/refman/8.4/en/internal-temporary-tables.html"),
+    ("hash_join", "warn",
+     "A join is executed as a hash join, buffered by join_buffer_size.",
+     "https://dev.mysql.com/doc/refman/8.4/en/hash-joins.html"),
+    ("bnl", "warn",
+     "A Block Nested-Loop join buffer is in use.",
+     "https://dev.mysql.com/doc/refman/8.4/en/nested-loop-joins.html"),
+    ("redundant_index", "warn",
+     "An index duplicates the leading columns of another index on the same table.",
+     "https://dev.mysql.com/doc/refman/8.4/en/sys-schema-redundant-indexes.html"),
+    ("cold_cache", "info",
+     "The first run read pages from disk that later runs found in the buffer pool.",
+     "https://dev.mysql.com/doc/refman/8.4/en/innodb-buffer-pool.html"),
+    ("semijoin", "info",
+     "A subquery is executed with a semijoin strategy.",
+     "https://dev.mysql.com/doc/refman/8.4/en/semijoins-antijoins.html"),
+    ("index_merge", "info",
+     "Several indexes on one table are scanned and merged.",
+     "https://dev.mysql.com/doc/refman/8.4/en/index-merge-optimization.html"),
+    ("env", "warn",
+     "A server setting collected from a live connection limits this plan.",
+     "https://dev.mysql.com/doc/refman/8.4/en/server-system-variables.html"),
+    ("engine", "warn",
+     "A table uses a storage engine other than InnoDB.",
+     "https://dev.mysql.com/doc/refman/8.4/en/storage-engines.html"),
+    ("durability", "warn",
+     "The redo log flush setting trades crash durability for speed.",
+     "https://dev.mysql.com/doc/refman/8.4/en/innodb-parameters.html"
+     "#sysvar_innodb_flush_log_at_trx_commit"),
+    ("other", "warn",
+     "A plan warning that does not fit a more specific category.",
+     None),
+)
+
+_RULE_DOCS = dict((r[0], r[3]) for r in RULES)
+
+#: MySQL Reference Manual versions with these pages (checked 2026-10-19:
+#: dev.mysql.com/doc/refman/<v>/en/ answers for each; an unknown version
+#: redirects away). Other MySQL servers get the version-neutral
+#: ``refman/en/`` path, which redirects to the current manual.
+_REFMAN_VERSIONS = frozenset({"8.0", "8.4", "9.7", "26.7"})
+_REFMAN_PREFIX = "https://dev.mysql.com/doc/refman/8.4/en/"
+#: Pages the 8.0 manual names differently (8.4+ split semijoins.html into
+#: semijoins-antijoins.html; the old name redirects to 8.0).
+_REFMAN_80_PAGES = {"semijoins-antijoins.html": "semijoins.html"}
+
+#: The advisor's missing-index environment warning
+#: (advisor._rule_missing_indexes) is about indexes, not server variables.
+_MISSING_INDEX_DOCS = "https://dev.mysql.com/doc/refman/8.4/en/mysql-indexes.html"
+
+
+_MARIADB_DOCS_BASE = "https://mariadb.com/docs/server/"
+#: MariaDB documentation pages for the findings that have a MariaDB
+#: equivalent (each checked 2026-10-19: 200 with a matching title; a missing
+#: page answers 404). Findings without one get no link rather than a MySQL
+#: page that describes different behavior (for example MySQL hash joins
+#: spilling to disk, which MariaDB BNLH does not do).
+_QO = "ha-and-performance/optimization-and-tuning/"
+_MARIADB_DOCS = {
+    "full_scan": _QO + "optimization-and-indexes/building-the-best-index-for-a-given-select",
+    "missing_index": _QO + "optimization-and-indexes/building-the-best-index-for-a-given-select",
+    "filesort": _QO + "optimization-and-indexes/building-the-best-index-for-a-given-select",
+    "misestimate": _QO + "query-optimizations/statistics-for-optimizing-queries",
+    "hash_join": _QO + "query-optimizer/block-based-join-algorithms",
+    "bnl": _QO + "query-optimizer/block-based-join-algorithms",
+    "redundant_index": _QO + "optimization-and-indexes/compound-composite-indexes",
+    "semijoin": _QO + "query-optimizations/subquery-optimizations/semi-join-subquery-optimizations",
+    "index_merge": _QO + "mariadb-internal-optimizations/fair-choice-between-range-and-index_merge-optimizations",
+    "cold_cache": "server-usage/storage-engines/innodb/innodb-buffer-pool",
+    "env": "server-management/variables-and-modes/server-system-variables",
+    "engine": "server-usage/storage-engines",
+    "durability": "server-usage/storage-engines/innodb/innodb-system-variables#innodb_flush_log_at_trx_commit",
+}
+
+
+def _docs_for(warning, payload):
+    """Docs link for one warning: its category's catalog page, in the
+    manual of the plan's MySQL version when the source names one; for a
+    MariaDB plan the MariaDB page, or no link when none fits."""
+    category = warning.get("category")
+    url = _RULE_DOCS.get(category)
+    text = warning.get("text") or ""
+    key = category
+    if category == "env" and text.startswith("Table ") and " has no index covering (" in text:
+        url = _MISSING_INDEX_DOCS
+        key = "missing_index"
+    if ((payload or {}).get("source") or {}).get("engine") == "mariadb":
+        page = _MARIADB_DOCS.get(key)
+        return _MARIADB_DOCS_BASE + page if page else None
+    if not url or not url.startswith(_REFMAN_PREFIX):
+        return url
+    source = (payload or {}).get("source") or {}
+    version = source.get("engine_version")
+    if source.get("engine") != "mysql" or not isinstance(version, str) or not version:
+        return url
+    match = re.match(r"(\d+)\.(\d+)", version)
+    series = "{}.{}".format(match.group(1), match.group(2)) if match else ""
+    rest = url[len(_REFMAN_PREFIX):]
+    if series == "8.0":
+        page, sep, anchor = rest.partition("#")
+        rest = _REFMAN_80_PAGES.get(page, page) + sep + anchor
+    if series in _REFMAN_VERSIONS:
+        return "https://dev.mysql.com/doc/refman/{}/en/{}".format(series, rest)
+    return "https://dev.mysql.com/doc/refman/en/" + rest
+
+
+def rule_catalog():
+    """The rule catalog as a list of dicts (stable keys: ``category``,
+    ``default_severity``, ``description``, ``docs``)."""
+    return [{"category": c, "default_severity": s, "description": d, "docs": u}
+            for c, s, d, u in RULES]
+
+
+def format_rule_catalog():
+    """Human-readable rule catalog for ``--list-rules``."""
+    width = max(len(r[0]) for r in RULES)
+    lines = []
+    for category, severity, description, docs in RULES:
+        lines.append("{}  {:<5}  {}".format(category.ljust(width), severity, description))
+        if docs:
+            lines.append("{}         {}".format(" " * width, docs))
+    return "\n".join(lines) + "\n"
+
+
+def known_ignores():
+    """Every token ``--ignore`` accepts: warning and suggestion categories."""
+    from . import output_sidecar
+    return set(output_sidecar._WARNING_CATEGORIES) | set(output_sidecar._SUGGESTION_CATEGORIES)
+
+
+def unknown_ignores(ignore):
+    """Sorted *ignore* tokens that are not categories (empty == all valid)."""
+    known = known_ignores()
+    return sorted(set(t.strip() for t in ignore
+                      if t and t.strip() and t.strip().lower() not in known))
+
+
+def apply_ignore(payload, ignore):
+    """Return a shallow copy of *payload* without warnings or suggestions whose
+    category is in *ignore*. The caller's payload is never mutated, and the
+    ``primary_action`` pick is left to be recomputed from what remains."""
+    drop = set(t.strip().lower() for t in ignore if t and t.strip())
+    if not drop:
+        return payload
+    out = dict(payload)
+    out["warnings"] = [w for w in payload.get("warnings") or []
+                       if w.get("category") not in drop]
+    out["suggestions"] = [s for s in payload.get("suggestions") or []
+                          if s.get("category") not in drop]
+    return out
+
+
+def summarize(findings):
+    """Counts by kind and severity, like the upgrade checker's summary."""
+    counts = {}
+    for f in findings:
+        key = f["kind"] + "s"
+        counts.setdefault(key, {})
+        counts[key][f["severity"]] = counts[key].get(f["severity"], 0) + 1
+    return counts
 
 
 def available_triggers(payload):

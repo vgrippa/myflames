@@ -1,0 +1,71 @@
+{
+ "args": {},
+ "calls": [
+  [
+   "/*myflames:schemas*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('performance_schema', 'userstat', 'version', 'version_comment')",
+   "performance_schema\tON\nversion\t26.7.0\nversion_comment\tMySQL Community Server - GPL\n"
+  ],
+  [
+   "/*myflames:schemas*/ SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime' OR Variable_name LIKE 'Performance\\_schema\\_%\\_lost'",
+   "Performance_schema_accounts_lost\t0\nPerformance_schema_cond_classes_lost\t0\nPerformance_schema_cond_instances_lost\t0\nPerformance_schema_digest_lost\t0\nPerformance_schema_file_classes_lost\t0\nPerformance_schema_file_handles_lost\t0\nPerformance_schema_file_instances_lost\t0\nPerformance_schema_hosts_lost\t0\nPerformance_schema_index_stat_lost\t0\nPerformance_schema_locker_lost\t0\nPerformance_schema_logger_lost\t0\nPerformance_schema_memory_classes_lost\t0\nPerformance_schema_metadata_lock_lost\t0\nPerformance_schema_meter_lost\t0\nPerformance_schema_metric_lost\t0\nPerformance_schema_mutex_classes_lost\t0\nPerformance_schema_mutex_instances_lost\t0\nPerformance_schema_nested_statement_lost\t0\nPerformance_schema_prepared_statements_lost\t0\nPerformance_schema_program_lost\t0\nPerformance_schema_rwlock_classes_lost\t0\nPerformance_schema_rwlock_instances_lost\t0\nPerformance_schema_session_connect_attrs_lost\t0\nPerformance_schema_socket_classes_lost\t0\nPerformance_schema_socket_instances_lost\t0\nPerformance_schema_stage_classes_lost\t0\nPerformance_schema_statement_classes_lost\t0\nPerformance_schema_table_handles_lost\t0\nPerformance_schema_table_instances_lost\t0\nPerformance_schema_table_lock_stat_lost\t0\nPerformance_schema_thread_classes_lost\t0\nPerformance_schema_thread_instances_lost\t0\nPerformance_schema_users_lost\t0\nUptime\t2271\n"
+  ],
+  [
+   "/*myflames:schemas*/ SELECT SCHEMA_NAME FROM information_schema.SCHEMATA",
+   "mysql\ninformation_schema\nperformance_schema\nsys\nmftab\nmfother\n"
+  ],
+  [
+   "/*myflames:schemas*/ SELECT TABLE_SCHEMA, COUNT(*) FROM information_schema.TABLES WHERE TABLE_TYPE IN ('BASE TABLE', 'SYSTEM VERSIONED') GROUP BY TABLE_SCHEMA",
+   "mfother\t1\nmftab\t18\nmysql\t38\nperformance_schema\t117\nsys\t1\n"
+  ]
+ ],
+ "report": {
+  "all_limit": 2000,
+  "all_note": "Reading every user schema is the default up to 2,000 tables. Above that, choose schemas: the read costs time per table (Performance Schema walks every table and open handle for each index row, and MariaDB opens every table for information_schema.STATISTICS); 2,000 matches MySQL's default table_definition_cache.",
+  "engine": "mysql",
+  "performance_schema": true,
+  "schema_version": "schemas-1.0",
+  "schemas": [
+   {
+    "name": "mfother",
+    "system": false,
+    "tables": 1
+   },
+   {
+    "name": "mftab",
+    "system": false,
+    "tables": 18
+   },
+   {
+    "name": "information_schema",
+    "system": true,
+    "tables": 0
+   },
+   {
+    "name": "mysql",
+    "system": true,
+    "tables": 38
+   },
+   {
+    "name": "performance_schema",
+    "system": true,
+    "tables": 117
+   },
+   {
+    "name": "sys",
+    "system": true,
+    "tables": 1
+   }
+  ],
+  "server_version": "26.7.0",
+  "system": [
+   "mysql",
+   "performance_schema",
+   "information_schema",
+   "sys"
+  ],
+  "taken_at": "2026-10-14T16:43:43.089929+00:00",
+  "uptime_s": 2271,
+  "user_tables": 19
+ },
+ "server": "mysql-26.7"
+}

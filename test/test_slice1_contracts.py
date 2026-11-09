@@ -280,7 +280,7 @@ class TestSidecarSchemaBackbone(unittest.TestCase):
     def test_payload_has_schema_url(self):
         s = self._build_sidecar_for(
             "explain-011-index-range-scan-users-created.json")
-        self.assertEqual(s.get("schema_version"), "1.3")
+        self.assertEqual(s.get("schema_version"), "1.4")
         self.assertIn("$schema", s)
         self.assertTrue(s["$schema"].startswith("https://"))
 

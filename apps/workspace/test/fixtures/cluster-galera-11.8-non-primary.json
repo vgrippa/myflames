@@ -1,0 +1,158 @@
+{
+ "schema_version": "cluster-1.0",
+ "engine": "mariadb",
+ "server_version": "11.8.9-MariaDB-ubu2404-log",
+ "version_comment": "mariadb.org binary distribution",
+ "captured_at": "2026-10-20T14:40:00+00:00",
+ "uptime_s": 792,
+ "performance_schema": true,
+ "available": true,
+ "message": null,
+ "kind": "galera",
+ "server": {
+  "hostname": "mf-galera-3",
+  "port": 3306,
+  "report_host": null,
+  "server_uuid": null
+ },
+ "cluster": {
+  "name": "mf_galera",
+  "uuid": "58fabe80-cc92-11f1-baa6-0b645d2f9239",
+  "size": 1,
+  "expected_size": 3,
+  "expected_source": "wsrep_cluster_address",
+  "component": "non-Primary",
+  "quorum": false,
+  "failures_tolerated": null,
+  "topology": null,
+  "provider": {
+   "name": "Galera",
+   "version": "26.4.27(rf032a460)",
+   "vendor": "Codership Oy <info@codership.com>"
+  }
+ },
+ "status": "problem",
+ "status_why": [
+  "wsrep_cluster_status is non-Primary: this node lost quorum or is not connected. Until it rejoins a Primary component it refuses most queries (SET, SHOW, SELECT without tables, reads of only information_schema or performance_schema tables, and reads with wsrep_dirty_reads still run)."
+ ],
+ "local": "node:a57a5d64-cc92-11f1-9569-7fa5350ac23b",
+ "members": [
+  {
+   "key": "node:a57a5d64-cc92-11f1-9569-7fa5350ac23b",
+   "name": "galera-3",
+   "address": "192.168.80.4:0",
+   "host": "192.168.80.4",
+   "port": null,
+   "uuid": "a57a5d64-cc92-11f1-9569-7fa5350ac23b",
+   "state": "Initialized",
+   "state_source": "wsrep_local_state_comment",
+   "role": null,
+   "version": null,
+   "local": true,
+   "status": "problem",
+   "status_why": [
+    "In a non-Primary component. Not in a Primary component (non-Primary or disconnected); it does not apply or accept writes."
+   ],
+   "metrics": {
+    "local_state": 0,
+    "local_state_comment": "Initialized",
+    "ready": false,
+    "connected": true,
+    "evs_state": "OPERATIONAL",
+    "local_recv_queue": 0,
+    "local_recv_queue_avg": 0.0555556,
+    "local_send_queue": 0,
+    "local_send_queue_avg": 0.333333,
+    "flow_control_paused": 0,
+    "flow_control_active": false,
+    "flow_control_sent": 0,
+    "flow_control_recv": 0,
+    "cert_deps_distance": 1,
+    "local_cert_failures": 0,
+    "local_bf_aborts": 0,
+    "desync_count": 0,
+    "last_committed": 25,
+    "local_index": 0,
+    "cluster_conf_id": -1,
+    "cluster_weight": 0
+   },
+   "actions": [
+    {
+     "id": "bootstrap_pc",
+     "label": "Bootstrap a Primary component…",
+     "danger": true,
+     "description": "Makes this node, and the nodes it reaches, a Primary component that accepts writes."
+    }
+   ]
+  }
+ ],
+ "galera": {
+  "node_name": "galera-3",
+  "node_address": null,
+  "cluster_address": "gcomm://mf-galera-1,mf-galera-2,mf-galera-3",
+  "incoming_addresses": [
+   "192.168.80.4:0"
+  ],
+  "gcomm_uuid": "a57a5d64-cc92-11f1-9569-7fa5350ac23b",
+  "desync": "OFF",
+  "pxc_strict_mode": null,
+  "pxc_maint_mode": null,
+  "wsrep_on": "ON",
+  "members_source": "wsrep_incoming_addresses",
+  "address_nodes": 3,
+  "address_names_this_node": true,
+  "missing": [],
+  "metrics": {
+   "local_state": 0,
+   "local_state_comment": "Initialized",
+   "ready": false,
+   "connected": true,
+   "evs_state": "OPERATIONAL",
+   "local_recv_queue": 0,
+   "local_recv_queue_avg": 0.0555556,
+   "local_send_queue": 0,
+   "local_send_queue_avg": 0.333333,
+   "flow_control_paused": 0,
+   "flow_control_active": false,
+   "flow_control_sent": 0,
+   "flow_control_recv": 0,
+   "cert_deps_distance": 1,
+   "local_cert_failures": 0,
+   "local_bf_aborts": 0,
+   "desync_count": 0,
+   "last_committed": 25,
+   "local_index": 0,
+   "cluster_conf_id": -1,
+   "cluster_weight": 0
+  },
+  "incomplete": []
+ },
+ "group_replication": null,
+ "metadata": null,
+ "routers": [],
+ "findings": [
+  {
+   "id": "non_primary",
+   "status": "problem",
+   "title": "Not in a Primary component",
+   "text": "wsrep_cluster_status is non-Primary: this node lost quorum or is not connected. Until it rejoins a Primary component it refuses most queries (SET, SHOW, SELECT without tables, reads of only information_schema or performance_schema tables, and reads with wsrep_dirty_reads still run)."
+  }
+ ],
+ "summary": {
+  "members": 1,
+  "ok": 0,
+  "watch": 0,
+  "problem": 1,
+  "unknown": 0
+ },
+ "statements": [
+  "SHOW GLOBAL VARIABLES",
+  "SHOW GLOBAL STATUS (wsrep_%)",
+  "SELECT mysql.wsrep_cluster_members"
+ ],
+ "notes": [
+  "mysql.wsrep_cluster_members is written only for a Primary component, so on this node it lists the last Primary view; the members shown come from wsrep_incoming_addresses.",
+  "wsrep_incoming_addresses reports port 0 for galera-3, so only the host is shown: with wsrep_node_incoming_address AUTO the node takes the port mysqld had when wsrep started. Set wsrep_node_incoming_address to host:port to report the client port.",
+  "wsrep_flow_control_paused and the queue averages cover the time since the provider's statistics were last reset (FLUSH GLOBAL STATUS) or since start."
+ ]
+}

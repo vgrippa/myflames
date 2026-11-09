@@ -1,0 +1,50 @@
+{
+  "schema_version": "error-log-1.0",
+  "engine": "mysql",
+  "server_version": "8.4.11",
+  "taken_at": "2026-10-19T20:30:00",
+  "uptime_s": 234,
+  "performance_schema": true,
+  "notes": [],
+  "available": false,
+  "reason": "denied",
+  "reason_text": "Reading performance_schema.error_log needs the SELECT privilege on that table.",
+  "how_to_view": null,
+  "source": null,
+  "settings": {
+    "log_error": "/var/log/mysql/error.log",
+    "log_error_verbosity": 3,
+    "log_error_services": "log_filter_internal; log_sink_internal",
+    "log_warnings": null,
+    "datadir": null
+  },
+  "buffer": null,
+  "file": null,
+  "server_started": "2026-10-19 20:26:06",
+  "counts": {
+    "system": 0,
+    "error": 0,
+    "warning": 0,
+    "note": 0
+  },
+  "counts_current_run": {
+    "system": 0,
+    "error": 0,
+    "warning": 0,
+    "note": 0
+  },
+  "codes": [],
+  "entries": [],
+  "entries_total": 0,
+  "limit": 200,
+  "levels": [
+    "System",
+    "Error",
+    "Warning",
+    "Note"
+  ],
+  "summary": {
+    "status": "unknown",
+    "text": "Error log not available with this account."
+  }
+}
