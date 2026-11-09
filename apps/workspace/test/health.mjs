@@ -1093,6 +1093,19 @@ async function automaticHealth(fixture) {
     // stays live, so pressing it supersedes that read.
     assert.equal(await page.$eval(`${view} [data-action=refresh]`, (e) => e.getAttribute("aria-busy")), null,
       "Refresh is not busy during an automatic read");
+    // Pressing it supersedes that read: Refresh is busy for its own read, also
+    // after the older read would have answered, then clears.
+    const failedBefore = failedRequests.length;
+    await a.refresh();
+    await until(() => seen() === slowBefore + 2, "Refresh starts its own read");
+    await pause(500);
+    assert.equal(await page.$eval(`${view} [data-action=refresh]`, (e) => e.getAttribute("aria-busy")), "true",
+      "Refresh is busy for the read it started");
+    await page.waitForFunction((v) => !document.querySelector(`${v} [data-action=refresh][aria-busy=true]`), {}, view);
+    // The superseded read may be cancelled in flight; nothing else may fail.
+    const superseded = failedRequests.splice(failedBefore);
+    assert.ok(superseded.every((f) => f.url.endsWith("/api/live/health") && /ABORTED/.test(f.error || "")),
+      `only the superseded read is cancelled: ${JSON.stringify(superseded)}`);
     await selectAuto("0");
     await settle();
     state.delay = 0;
