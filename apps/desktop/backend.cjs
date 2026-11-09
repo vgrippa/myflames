@@ -148,7 +148,10 @@ function backendEnvironment(dataDirectory, inherited = process.env, platform = p
   const env = {};
   // Preserve tool discovery and OS necessities, never inherited MySQL defaults,
   // Python injection paths, profile overrides or vault secrets.
-  for (const key of ['PATH', 'SystemRoot', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT', 'TEMP', 'TMP', 'TMPDIR', 'LANG', 'LC_ALL']) {
+  // ProgramFiles* and LOCALAPPDATA: where a database client chosen in the
+  // workspace may live on Windows (connector._check_client_trust).
+  for (const key of ['PATH', 'SystemRoot', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT', 'TEMP', 'TMP', 'TMPDIR', 'LANG', 'LC_ALL',
+    'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'LOCALAPPDATA']) {
     if (inherited[key] != null) env[key] = inherited[key];
   }
   // The bundled client is searched last, after PATH and every installed

@@ -95,6 +95,32 @@ export class ApiError extends Error {
     this.data = data;
   }
 }
+/** True when a request was refused because no MySQL or MariaDB command-line
+ * client is available (connector.py ClientMissingError); the workspace answers
+ * it with the ClientMissingNotice and the Database client dialog. */
+export function isClientMissing(error: unknown): boolean {
+  return error instanceof ApiError && error.code === "client-missing";
+}
+
+// ---- Database client (which mysql/mariadb binary runs statements) ------------
+
+/** client-settings-1.0: the answer of client/settings and client/detect. */
+export type ClientSettings = {
+  schema_version: "client-settings-1.0";
+  /** The stored choice (client/settings with a path), null for automatic. */
+  path: string | null;
+  /** The client statements run through: the choice, or the first on PATH. */
+  active: { path: string; version: string; source: "chosen" | "path" } | null;
+  /** Clients found on PATH (source "path") and in common install folders. */
+  detected: { path: string; name: string; version: string; source: "path" | "common" }[];
+  /** Why the stored choice cannot run, when it cannot. */
+  error?: string;
+};
+/** No argument reads; a path validates and stores the choice; null clears it. */
+export const clientSettings = (path?: string | null) =>
+  api<ClientSettings>("client/settings", path === undefined ? {} : { path });
+/** The clients found on this computer (the same answer shape as settings). */
+export const detectClients = (signal?: AbortSignal) => api<ClientSettings>("client/detect", {}, signal);
 // Capture and erase the fragment as soon as this module loads. It is never
 // written to storage, the DOM, a request URL, or the saved workspace.
 let launchSecret = "";

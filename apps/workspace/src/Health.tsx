@@ -1333,6 +1333,7 @@ export function HealthView({
           <ViewStatus
             loading={reads.loading}
             error={error}
+            errorCode={reads.errorCode}
             onStop={reads.stop}
             onRetry={error ? () => void load() : undefined}
             doneAt={reads.doneAt}

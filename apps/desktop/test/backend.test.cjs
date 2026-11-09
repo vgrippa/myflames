@@ -565,3 +565,21 @@ test('the packaged backend never receives the update test hooks', () => {
     assert.equal(env.MYFLAMES_UPDATES_DIR, undefined, 'main.cjs sets it, never the inherited environment');
   }
 });
+
+test('Windows passes the folders a chosen database client may live in to the backend', () => {
+  // connector._check_client_trust accepts a chosen client only under these
+  // roots; without them every real client would be refused (security re-review R1).
+  const env = backendEnvironment('C:\\desktop', { PATH: 'C:\\Windows\\System32', ProgramFiles: 'C:\\Program Files',
+    'ProgramFiles(x86)': 'C:\\Program Files (x86)', ProgramW6432: 'C:\\Program Files', LOCALAPPDATA: 'C:\\Users\\a\\AppData\\Local',
+    USERPROFILE: 'C:\\Users\\a' }, 'win32', { readdirSync() { throw new Error('none'); } });
+  assert.equal(env.ProgramFiles, 'C:\\Program Files');
+  assert.equal(env['ProgramFiles(x86)'], 'C:\\Program Files (x86)');
+  assert.equal(env.ProgramW6432, 'C:\\Program Files');
+  assert.equal(env.LOCALAPPDATA, 'C:\\Users\\a\\AppData\\Local');
+  assert.notEqual(env.USERPROFILE, 'C:\\Users\\a', 'the backend profile stays isolated');
+});
+
+test('main.cjs names the real profile for the backend (a chosen client may live under it)', () => {
+  const main = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.cjs'), 'utf8');
+  assert.match(main, /env\.MYFLAMES_USER_PROFILE = os\.homedir\(\);/);
+});

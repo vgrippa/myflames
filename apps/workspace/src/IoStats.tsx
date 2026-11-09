@@ -324,7 +324,7 @@ export function IoView({
       otherConnection={other}
       inspector={inspector}
       inspectorEmpty={<p>Select a rate, a table or a file to see its numbers and related views.</p>}
-      status={<ViewStatus loading={reads.loading} error={error} onStop={reads.stop} onRetry={error ? () => void load() : undefined}
+      status={<ViewStatus loading={reads.loading} error={error} errorCode={reads.errorCode} onStop={reads.stop} onRetry={error ? () => void load() : undefined}
         doneAt={reads.doneAt} slowAfter={(interval + 20) * 1000} />}
     >
       {!report && !loading && !error && (

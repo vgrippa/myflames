@@ -6,6 +6,7 @@ import { Fragment, useEffect, useRef, useState, type KeyboardEvent } from "react
 import type { ReactNode } from "react";
 import { AboutDialog } from "./About";
 import { time, type Plan } from "./api";
+import { DatabaseClientDialog } from "./ClientMissing";
 import { Icon, type IconName } from "./components";
 import { Checkbox, CountBadge, Popover, closePopovers, useFocusScope } from "./kit";
 import { NewsSetting } from "./HomeNews";
@@ -107,6 +108,7 @@ export function Sidebar({
   };
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [clientOpen, setClientOpen] = useState(false);
   const sidebar = useRef<HTMLElement>(null);
   const menuButton = useRef<HTMLButtonElement>(null);
   const drawer = useRef<HTMLDivElement>(null);
@@ -188,6 +190,11 @@ export function Sidebar({
   function openAbout() {
     setSettingsOpen(false);
     setAboutOpen(true);
+  }
+  function openClientSettings() {
+    setSettingsOpen(false);
+    setDrawerOpen(false);
+    setClientOpen(true);
   }
   function go(next: Place) {
     setDrawerOpen(false);
@@ -451,6 +458,10 @@ export function Sidebar({
                 aria-haspopup="dialog" onClick={() => { setSettingsOpen(false); setDrawerOpen(false); onStartFresh(); }}>
                 <Icon name="plus" size={16} />Start fresh
               </button>}
+              <button type="button" className="settings-item" aria-haspopup="dialog" onClick={openClientSettings}>
+                <Icon name="wrench" size={16} />
+                Database client…
+              </button>
               <button
                 type="button"
                 className="settings-item"
@@ -475,6 +486,12 @@ export function Sidebar({
             logo={logo}
             returnFocus={settingsButton}
             onClose={() => setAboutOpen(false)}
+          />
+        )}
+        {clientOpen && (
+          <DatabaseClientDialog
+            returnFocus={settingsButton}
+            onClose={() => setClientOpen(false)}
           />
         )}
       </div>

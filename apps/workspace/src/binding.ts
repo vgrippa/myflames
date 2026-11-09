@@ -7,7 +7,7 @@
 // from another connection stays on screen, greyed, with every action on it
 // turned off until it is refreshed on the connection in use.
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Connection } from "./api";
+import { ApiError, type Connection } from "./api";
 
 /** A report and the connection it was read from. */
 export type Bound<T> = {
@@ -229,7 +229,7 @@ export function useConnectionReads(connection: Connection) {
   const current = useRef<Ticket | null>(null);
   const seq = useRef(0);
   const [pending, setPending] = useState<Ticket | null>(null);
-  const [failure, setFailure] = useState<{ key: string; message: string } | null>(null);
+  const [failure, setFailure] = useState<{ key: string; message: string; code: string } | null>(null);
   // When the last read for a connection was shown (ViewStatus announces it).
   const [done, setDone] = useState<{ key: string; at: number } | null>(null);
 
@@ -315,7 +315,7 @@ export function useConnectionReads(connection: Connection) {
       } catch (e) {
         if (live(t)) {
           const text = (e as Error).message;
-          setFailure({ key: t.key, message: text });
+          setFailure({ key: t.key, message: text, code: e instanceof ApiError ? e.code : "" });
           options.onError?.(text);
         }
         return null;
@@ -338,6 +338,8 @@ export function useConnectionReads(connection: Connection) {
     loading: pending && pending.key === key ? pending.message : "",
     /** The last error of a read for the connection in use. */
     error: failure && failure.key === key ? failure.message : "",
+    /** Its machine-readable reason (ApiError.code, "" when the server sent none). */
+    errorCode: failure && failure.key === key ? failure.code : "",
     /** When the last read for the connection in use was shown (Date.now()), or 0. */
     doneAt: done && done.key === key ? done.at : 0,
     /** Stop waiting for the read running now: nothing is shown from it, the

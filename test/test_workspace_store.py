@@ -33,6 +33,33 @@ class TestWorkspaceStore(unittest.TestCase):
         self.path = Path(self.temp.name) / 'private' / 'workspace.sqlite3'
         self.store = WorkspaceStore(self.path)
 
+    def test_client_choice_read_and_clear_do_not_create_a_database(self):
+        self.assertIsNone(self.store.client_binary())
+        self.assertIsNone(self.store.set_client_binary(None))
+        self.assertFalse(self.path.exists())
+
+    def test_client_choice_round_trip_and_clear(self):
+        value = str(Path(self.temp.name) / 'client' / 'mysql')
+        self.assertEqual(self.store.set_client_binary(value), value)
+        self.assertEqual(WorkspaceStore(self.path).client_binary(), value)
+        replacement = str(Path(self.temp.name) / 'mariadb')
+        self.store.set_client_binary(replacement)
+        self.assertEqual(WorkspaceStore(self.path).client_binary(), replacement)
+        self.store.set_client_binary(None)
+        self.assertIsNone(WorkspaceStore(self.path).client_binary())
+
+    def test_client_choice_refuses_invalid_types_without_changing_setting(self):
+        self.store.set_client_binary('/chosen/mysql')
+        for value in ('', 3, True, {}, []):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.store.set_client_binary(value)
+        self.assertEqual(self.store.client_binary(), '/chosen/mysql')
+
+    def test_client_choice_does_not_allow_per_connection_binary_fields(self):
+        self.store.set_client_binary('/chosen/mysql')
+        with self.assertRaises(ValueError):
+            self.store.connection_with_saved_password({'host': 'localhost', 'binary': '/other/mysql'})
+
     def test_app_update_last_check_survives_a_restart(self):
         self.assertIsNone(self.store.app_update_last_check())
         self.assertFalse(self.path.exists(), 'reading the last check never creates the store')

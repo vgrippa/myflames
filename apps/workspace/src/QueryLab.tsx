@@ -21,6 +21,7 @@ import {
   ddlProgress,
   type DdlProgress,
   ApiError,
+  isClientMissing,
   type Capture,
   type Connection,
   type EditorClose,
@@ -62,6 +63,7 @@ import { connectionKey, connectionLabel } from "./binding";
 import { Icon } from "./components";
 import { ActionButton, ActionStatus, IDLE_ACTION, writeFailure, type ActionState, Checkbox, ConfirmSheet, EmptyState, IconButton, InfoPopover, Notice, NumberField, Popover, Segmented, StatusPill, useFocusScope, useWindowStatus, type Tone } from "./kit";
 import { ConnectionTypeBand, useWritePolicy, TYPE_LABEL } from "./Connections";
+import { ClientMissingNotice } from "./ClientMissing";
 import { SqlEditor, type Range } from "./SqlEditor";
 import { ResultsPane, rowResults, duration as resultDuration } from "./ResultsPane";
 import { SchemaBrowser, type SchemaReveal } from "./SchemaBrowser";
@@ -607,6 +609,10 @@ export const QueryLab = forwardRef<
   const [status, setStatus] = useState("");
   const [analysisWarning, setAnalysisWarning] = useState<{ tab: string; text: string } | null>(null);
   const [error, setError] = useState("");
+  // A Run or Explain refused for a missing database client keeps the failed
+  // request here, so the notice's Try again sends that same request again.
+  /** A Run or Explain refused for a missing client, with the connection it was for (Try again resends only to it). */
+  const [runClientMissing, setRunClientMissing] = useState<{ tabId: string; connection: string; retry: () => void } | null>(null);
   // When a fresh-connection capture fails because the query names a table
   // the server does not have (a TEMPORARY table lives only in the tab's
   // session), the error notice offers one retry inside that session.
@@ -1599,6 +1605,7 @@ export const QueryLab = forwardRef<
    */
   function runSql(all: boolean, text?: string, caret?: number, explain = false, runTab = tab) {
     setSessionFallback(null);
+    setRunClientMissing(null);
     setError("");
     setStatus("");
     const t = runTab;
@@ -1691,7 +1698,9 @@ export const QueryLab = forwardRef<
         patchRuntime(id, { sessionFeedback: { ...failure, message: failure.phase === "unknown" ? `Outcome unknown. ${failure.message}` : failure.message,
           startedAt: null, endedAt: Date.now() } });
       } else {
-        if (!isRun) patchRuntime(id, { sessionFeedback: { phase: "failed", message: err.message, startedAt: null, endedAt: Date.now() } });
+        if (!isRun) patchRuntime(id, { sessionFeedback: { phase: "failed", message: err.message, code: isClientMissing(e) ? "client-missing" : undefined, startedAt: null, endedAt: Date.now() } });
+        else if (isClientMissing(e)) setRunClientMissing({ tabId: id, connection: connectionKey(payload.connection as Connection),
+          retry: () => void send(id, path, payload, meta) });
         else setError(err.message);
       }
       return;
@@ -1922,6 +1931,7 @@ export const QueryLab = forwardRef<
   function reconnect(id = tab.id) {
     const now = runtimeRef.current[id] || blankRuntime();
     if (now.running || now.operation || now.stopping) return;
+    setRunClientMissing(null);
     setError("");
     // Keep the ended-session banner (and its focused button) until the reply.
     void send(id, "editor/open", { tab_id: id, connection: connectionFor(tab), ...(now.safe === true ? { safe_updates: true } : {}) }, { runSql: "" });
@@ -3102,7 +3112,11 @@ export const QueryLab = forwardRef<
                 </ActionButton>
               </div>
             )}
-            <ActionStatus className="editor-session-status" state={rt.sessionFeedback} />
+            {rt.sessionFeedback.phase === "failed" && rt.sessionFeedback.code === "client-missing" ? (
+              <ClientMissingNotice className="editor-session-status" onRetry={() => reconnect()} />
+            ) : (
+              <ActionStatus className="editor-session-status" state={rt.sessionFeedback} />
+            )}
             {importCsv.element}
             {batchRunning && (
               <p className="hint">
@@ -3115,7 +3129,14 @@ export const QueryLab = forwardRef<
             {status && (
               <Notice variant="note">{status}</Notice>
             )}
-            {error && (
+            {runClientMissing && runClientMissing.tabId === tab.id && runClientMissing.connection === connectionKey(connection) ? (
+              <ClientMissingNotice onRetry={() => {
+                const retry = runClientMissing.retry;
+                setRunClientMissing(null);
+                // The tab still uses the connection the run was for (checked above).
+                retry();
+              }} />
+            ) : error && (
               <Notice variant="error" noticeKey={error}>
                 {error}
                 {sessionFallback && sessionFallback.tabId === tab.id && (

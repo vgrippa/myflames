@@ -282,7 +282,8 @@ zip over the 200 MiB in-app update download limit (`myflames/app_update.py`;
 3.3.3 and older stop at 150 MiB), and writes `<name>.sha256` beside both in
 `dist/`. Attach the DMG, the zip and both `.sha256` files to the GitHub release,
 uploading the DMG before the zip: 3.3.3 and older pick the first matching `.zip`
-or `.dmg` in the release's asset order for Download.
+or `.dmg` in the release's asset order for Download (AGENTS.md "Release sync" has
+the full steps).
 
 Notarization uploads the build to Apple and usually takes a few minutes per
 submission. When Apple rejects one, `xcrun notarytool log <id> --keychain-profile

@@ -123,7 +123,7 @@ try {
     });
     server.on("error", reject);
   });
-  browser = await puppeteer.launch({ headless: "shell" });
+  browser = await puppeteer.launch({ headless: "shell", args: (process.env.MYFLAMES_BROWSER_ARGS || "").split(" ").filter(Boolean) });
   const page = await browser.newPage();
   const downloads = await page.createCDPSession();
   await downloads.send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: directory });
@@ -420,6 +420,8 @@ try {
 
   await page.keyboard.press("Tab");
   assert.equal(await focused(), "Start fresh");
+  await page.keyboard.press("Tab");
+  assert.equal(await focused(), "Database client…");
   await page.keyboard.press("Tab");
   assert.equal(await focused(), "Audit log");
   await page.keyboard.press("Tab");

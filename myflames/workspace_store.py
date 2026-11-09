@@ -960,6 +960,29 @@ class WorkspaceStore:
             conn.execute("INSERT OR REPLACE INTO settings VALUES ('app_update_auto', ?)", ('on' if enabled else 'off',))
         return enabled
 
+    # -- Application database client ----------------------------------------
+
+    def client_binary(self):
+        """The chosen client path, or None. Reading never creates the database."""
+        if not self.path.exists():
+            return None
+        with closing(self._connect()) as conn, conn:
+            row = conn.execute("SELECT value FROM settings WHERE key = 'client_binary'").fetchone()
+        return row[0] if row and row[0] else None
+
+    def set_client_binary(self, path_or_None):
+        """Store a path validated by the client settings API, or clear it."""
+        if path_or_None is not None and (not isinstance(path_or_None, str) or not path_or_None):
+            raise ValueError('The database client path must be a nonempty string or null.')
+        if path_or_None is None and not self.path.exists():
+            return None
+        with closing(self._connect()) as conn, conn:
+            if path_or_None is None:
+                conn.execute("DELETE FROM settings WHERE key = 'client_binary'")
+            else:
+                conn.execute("INSERT OR REPLACE INTO settings VALUES ('client_binary', ?)", (path_or_None,))
+        return path_or_None
+
     # -- Home news (news.py): Settings, "Show MySQL and MariaDB news on Home" --
 
     def news_enabled(self):

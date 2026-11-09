@@ -351,6 +351,67 @@ class ControlTransportTests(unittest.TestCase):
             self.assertNotIn('protocol=TCP', content)
 
 
+class MissingClientToolsTests(unittest.TestCase):
+    def setUp(self):
+        from myflames import connector
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        env = mock.patch.dict(os.environ, {'HOME': self.temp.name, 'USERPROFILE': self.temp.name,
+                                         'PATH': '', 'MYFLAMES_SECRET_BACKEND': 'vault'})
+        env.start()
+        self.addCleanup(env.stop)
+        previous = connector.default_binary()
+        connector.set_default_binary(None)
+        self.addCleanup(connector.set_default_binary, previous)
+        folders = mock.patch.object(lc, 'COMMON_BIN_DIRS', ())
+        folders.start()
+        self.addCleanup(folders.stop)
+        self.workspace = types.SimpleNamespace(store=WorkspaceStore(Path(self.temp.name) / 'workspace.sqlite3'))
+
+    def test_tools_survive_missing_client_and_keep_official_download_links(self):
+        from myflames import ui, tool_updates
+        from myflames.connector import ClientMissingError
+        report = ui.api_response('/api/lifecycle/tools', {'connection': {'host': 'localhost'}}, self.workspace)
+        self.assertEqual(report['schema_version'], 'lifecycle-tools-1.0')
+        self.assertEqual(report['server'], {})
+        self.assertEqual(report['offered'], {})
+        self.assertEqual(report['server_error'], {'code': 'client-missing', 'error': ClientMissingError.MESSAGE})
+        self.assertEqual(set(report['tools']), set(lc.TOOLS))
+        self.assertTrue(all(not entry['available'] for entry in report['tools'].values()))
+        self.assertEqual(report['tools']['mysql']['download_url'], tool_updates.MYSQL_DOWNLOAD)
+        self.assertEqual(report['tools']['mariadb']['download_url'], tool_updates.MARIA_DOWNLOAD)
+        self.assertEqual(report['tools']['mysqlsh']['download_url'], tool_updates.SHELL_DOWNLOAD)
+
+    def test_tools_without_connection_keep_existing_shape(self):
+        from myflames import ui
+        report = ui.api_response('/api/lifecycle/tools', {}, self.workspace)
+        self.assertNotIn('server_error', report)
+        self.assertNotIn('server', report)
+        self.assertEqual(set(report['tools']), set(lc.TOOLS))
+
+    def test_wrapped_missing_client_preserves_tools_and_redacts_server_error(self):
+        from myflames import ui
+        from myflames.connector import ClientMissingError
+        def wrapped(*args, **kwargs):
+            try:
+                raise ClientMissingError()
+            except ClientMissingError:
+                raise ValueError('Could not read status: secret-value') from None
+        with mock.patch.object(lc, 'read_server', side_effect=wrapped):
+            report = ui.api_response('/api/lifecycle/tools',
+                                     {'connection': {'host': 'localhost', 'password': 'secret-value'}}, self.workspace)
+        self.assertEqual(report['server_error']['code'], 'client-missing')
+        self.assertNotIn('secret-value', report['server_error']['error'])
+        self.assertEqual(set(report['tools']), set(lc.TOOLS))
+
+    def test_other_server_errors_still_fail(self):
+        from myflames import ui
+        from myflames.connector import ConnectorError
+        with mock.patch.object(lc.LifecycleConnection, 'run', side_effect=ConnectorError('access denied')):
+            with self.assertRaisesRegex(ConnectorError, 'access denied'):
+                ui.api_response('/api/lifecycle/tools', {'connection': {'host': 'localhost'}}, self.workspace)
+
+
 class LifecycleTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='lc-')

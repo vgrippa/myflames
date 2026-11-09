@@ -6,6 +6,7 @@ This is the detailed contract per feature; [AGENTS.md](../AGENTS.md) has the rul
 
 - [Commands Reference](#commands-reference)
   - [Local UI](#local-ui)
+  - [Release sync](#release-sync)
   - [Shared view presentation](#shared-view-presentation)
   - [Chart runtime](#chart-runtime)
   - [Bundle and lazy loading](#bundle-and-lazy-loading)
@@ -208,6 +209,53 @@ the SHA-256) and updates NOTICE. Tests: `apps/desktop/test` (PATH order,
 extraResources, lock) and `test/test_fetch_mysql_client.py`,
 `test_connector.TestBundledClientResolution`.
 Packaged app data is separate from development and CLI data.
+When no client is found, `connector.ClientMissingError` (a `ConnectorError`,
+`code = "client-missing"`) carries "myflames could not find the MySQL or MariaDB
+command-line client (mysql or mariadb)." (with the bundled client, when no
+client can be used at all, or for a broken chosen client). `connector.client_missing_error`
+finds it through `__cause__`, and through `__context__` only for myflames' own
+wrapper types (`ConnectorError`, `ValueError`, which suppress context with
+`from None` only to redact secrets); such a failure answers 400 with the client
+error's own text and `"code": "client-missing"`. Other types never inherit it,
+and unexpected exceptions still answer with a generic 500. The CLI alone adds "Install it or pass
+--mysql-binary /path/to/mysql.". The workspace shows `ClientMissingNotice`
+(`ClientMissing.tsx`) for that code in every Server view's `ViewStatus`, Test
+connection, the Query editor tab and Maintenance > Tools, which keeps its tools
+and download links (`server: {}`, `offered: {}`, `server_error: {code, error}`).
+A client chosen in the workspace (`POST /api/client/settings`: `{}` reads,
+`{"path": <absolute>}` stores after `<path> --version` exits 0 within 5 s, 16 KiB
+per stream, in `client_environment()`, naming mysql or mariadb, for a regular file
+named `mysql`, `mariadb`, `mysql.exe` or `mariadb.exe`; `{"path": null}` clears;
+the workspace store keeps it) is `connector.set_default_binary` at server start
+and after each change, and `_resolve_binary` uses it after a per-connection
+`binary=` override and before PATH, probing it again when the file changes. The
+chosen client serves server reads, the Query editor, reviewed writes and CSV
+import. Restore and clone use the client found by `lifecycle.detect_tools`.
+Because the chosen client receives every connection's password (the option
+file), `connector._check_client_trust` runs before each use and in the probe:
+on macOS and Linux the file and every folder above both the chosen path and its
+real path must be owned by the user or root with no group or other write, except
+a root-owned sticky folder and, on macOS only, group write by the admin group
+(gid 80: its members can already act as root, and `/opt/homebrew/bin` and
+`/Applications` give it write access); on Windows only a local `mysql.exe` or
+`mariadb.exe` (no UNC or device path) under `ProgramFiles`, `ProgramFiles(x86)`,
+`ProgramW6432`, `LOCALAPPDATA` or the real profile (`MYFLAMES_USER_PROFILE`, which
+`main.cjs` sets because the backend's `USERPROFILE` is isolated; `backendEnvironment`
+passes the other four) is accepted, and an ACL check is still to come. The client
+runs by its fully resolved path, so no link on the way can redirect it after the
+check; the dialog shows the chosen path. `--no-defaults --version` runs in its own
+process group (killed with its children at the deadline) outside the selection
+lock. Detection offers only clients that pass the check; the automatic PATH client
+is described as PATH finds it, because the connector uses it so (the same check
+for PATH discovery is an open lead).
+A broken stored choice raises `ClientMissingError` ("The chosen database client is
+unavailable…") instead of falling back. `POST /api/client/detect` lists usable
+clients on PATH and, on macOS and Linux, in `lifecycle.COMMON_BIN_DIRS`
+(deduplicated by real path, at most ten probed). Both answer `client-settings-1.0`
+(`path`, `active` {`path`, `version`, `source` `chosen`|`path`} or null,
+`detected` [{`path`, `name`, `version`, `source` `path`|`common`}], `error` for a
+broken stored choice). Tests: `test/test_connector.py`, `test/test_ui.py`,
+`apps/workspace/test/database-client.mjs`.
 `package:win` builds the unsigned Windows x64 NSIS installer
 (`myflames-<version>-windows-x64-setup.exe`, per user). PyInstaller does not
 cross-compile, so `.github/workflows/windows-desktop.yml` builds the backend on a
@@ -681,6 +729,92 @@ the window-open handler always denies a new app window. Tests:
   accessible; verify open/error states at desktop and narrow, short viewports.
   Use `docs/UI_TESTING.md` for the interaction matrix. Check contextual Learn
   links after navigating to a different lesson and returning to the plan.
+
+### Release sync
+
+A release is one commit in which the versions, the CHANGELOG, the README
+screenshots and the handbook agree, and one GitHub release whose notes and
+files come from that commit. AGENTS.md "Release sync" lists the steps; these
+are the contracts of the tools that check them.
+
+- **Versions.** `apps/desktop/package.json` `version`, `myflames/__init__.py`
+  `__version__` and `pyproject.toml` `[project] version` are equal.
+- **Release notes.** `scripts/release_notes.py X.Y.Z` (or `vX.Y.Z`) prints the
+  body of `CHANGELOG.md`'s `## [X.Y.Z] - YYYY-MM-DD` section (the older
+  `## [X.Y.Z] (YYYY-MM-DD)` form is read too): everything up to the next
+  level-two heading outside a code fence (a fence closes only on its own
+  character, at least as long), without the heading and without leading or
+  trailing blank lines, as UTF-8. A missing, undated, duplicated or empty
+  section (subsection headings with no entry under them), or one with a fence
+  that never closes, prints why on stderr and exits 1. The GitHub release notes are this text verbatim, so a
+  summary paragraph for the release goes at the top of the section.
+- **README screenshots.** `npm run docs:screenshots` in `apps/workspace`
+  (`test/readme-screenshots.mjs`) builds nothing: it opens the built
+  workspace in `myflames/ui_assets` through the perf harness (`open()` with
+  `seed`, `beforeGoto`, `viewport`, `refuse`, `offline` and `launchArgs`), with the real Python server on
+  a throwaway HOME, store and vault, two saved connections (Dev MySQL,
+  Prod MySQL) and every database read answered from fixtures
+  (`health-mysql-8.4-full.json`, `schemas-mysql-8.4.json`, a 24-row editor
+  result, readiness, the editor's privileges preview, offline news). The page
+  clock is frozen at 2026-10-14T16:26:00Z, the time zone is UTC, the locale
+  en-US, the theme light, motion reduced, transitions and the caret hidden, and
+  the window 1440x900 at scale 1. Chromium runs with `--disable-partial-raster`
+  and `--force-color-profile=srgb` (without them a rounded corner's
+  anti-aliasing changed between runs), and each image is written once two
+  captures in a row agree. It writes `docs/screenshots/home.png`,
+  `plan-visual-explain.png` (the sample plan), `query-editor.png` and
+  `server-health.png`, then `manifest.json` (`version` from
+  `apps/desktop/package.json`, `commit` from the checkout's HEAD,
+  `captured_at` in UTC). Every request that is not for the local server is
+  aborted from the first navigation on, and the script fails when one was made
+  or on a page error; `--out DIR` writes elsewhere. Two runs of one build on one machine
+  write identical PNGs (only `manifest.json` changes); fonts differ between
+  systems, so capture on macOS, where the README's app runs. Run it after
+  `npm run build` at the release commit.
+- **`scripts/check_release_sync.py X.Y.Z`** exits 0 only when the three
+  versions equal X.Y.Z, `CHANGELOG.md` has the dated, non-empty section,
+  `docs/screenshots/manifest.json` `version` is X.Y.Z with the four README
+  images present, and `docs/handbook/manifest.json` parses with every listed
+  chapter file present; otherwise it lists every problem and exits 1.
+- **Release files.** A release carries `myflames-X.Y.Z-macos-arm64.dmg` (new
+  installs), `myflames-X.Y.Z-macos-arm64.zip` (the in-app update file) and
+  `myflames-X.Y.Z-windows-x64-setup.exe`, each with its `.sha256`. The DMG is
+  uploaded before the zip (a lower asset id): an installed myflames up to
+  3.3.3 takes the first macOS asset GitHub lists
+  (`app_update.match_asset_for_platform`), which must stay the DMG.
+  `gh release create` uploads its files in parallel, so the zip and its
+  `.sha256` go up with a separate `gh release upload` after the create ends.
+  `scripts/check_release_assets.py X.Y.Z RELEASE_JSON` (the
+  `gh api repos/vgrippa/myflames/releases/tags/vX.Y.Z` answer, or for a draft,
+  which has no tag yet, `gh release view vX.Y.Z --json assets`, whose node ids
+  it reads the number from `apiUrl` for; `-` reads stdin) checks the names,
+  that every file finished uploading, the id order, and that the first macOS
+  file in GitHub's list, by the 3.3.3 rule (`legacy_macos_choice`), is the DMG.
+- **`.github/workflows/docs-sync.yml`** (`contents: read`; `contents: write`
+  only in the release job). On a pull request to master (also when its labels
+  change): a change under `apps/workspace/src/`, `apps/desktop/` (not
+  `test/`) or `myflames/` (not `ui_assets/`, `tests/` or `test_*.py`; both
+  sides of a rename count, and names are compared whole, so a name holding a
+  newline cannot pass for `CHANGELOG.md`) without a
+  `CHANGELOG.md` change fails unless the PR has the `no-changelog` label, and a
+  change of the `apps/desktop/package.json` version runs
+  `check_release_sync.py` for the new version. When a release is published, or
+  by hand for a tag (Actions > Docs and release sync > Run workflow), it checks
+  out the tag (the whole value must match `vX.Y.Z`; it is never echoed),
+  replaces the release notes with `release_notes.py`'s text when they differ
+  (ignoring line endings and outer blank lines), fails when the section is
+  missing, and runs `check_release_assets.py`.
+- **Website.** myflames.io is built from the separate `vgrippa/myflames-website`
+  repository. Its `sync.yml` workflow (every 6 hours and on demand) checks this
+  repository out at its latest release tag (the peeled commit of an annotated
+  tag; never master, so the site describes the released app) beside it, runs `sync_releases.py` (the latest
+  release's DMG and Windows `-setup.exe` with their `.sha256`, never the update
+  zip), `build_docs.py --source` (the handbook, the reference documents and the
+  raster images in `docs/screenshots`; links and SVG files are not copied) and
+  its QA without the CLI examples (no code from this repository runs in that
+  job, which can push), and commits to its default branch when something
+  changed. The site goes live only when someone clicks Publish
+  in Lovable.
 
 ### Shared view presentation
 
@@ -5254,14 +5388,21 @@ Read-only refuses before any connection opens. The review token
 file's size, mtime and SHA-256, the format, the target and its metadata
 fingerprint (table type, engine, every column, primary key, triggers,
 foreign keys, CHECK constraints), the mapping, the new columns, the method,
-the transaction mode, the NO_BACKSLASH_ESCAPES state and the statements; one
+the transaction mode, the NO_BACKSLASH_ESCAPES state, the resolved client path,
+its `client_limits_files` policy and the statements; one
 apply per plan, at most two imports at once. Apply re-checks, in order, the
 policy, the token, the file (size and mtime, then a full SHA-256), the saved
-password, the private session (the local-file capability only for LOAD DATA: a
+password, the client path and file policy, then the private session. A changed
+client path or file policy refuses the import and requires another review. Each
+plan or apply resolves the client once and uses that same path for the capability
+check and session start. A client or capability check failure refuses the import;
+it never falls back to `--local-infile=1`. Capability results are cached by file
+identity (`st_dev`, `st_ino`, `st_size`, `st_mtime_ns`), so a replacement at the
+same path is checked again. The local-file capability is only for LOAD DATA: a
 MySQL client gets `--local-infile=0 --load-data-local-dir=<private folder>`,
 so it sends no file outside that folder; the MariaDB client has only
 `--local-infile`, reported in `method.client_limits_files` with a plan
-warning), the
+warning. After the session opens, apply re-checks the
 target's metadata, the NO_BACKSLASH_ESCAPES state, `@@GLOBAL.local_infile`
 for LOAD DATA, the privileges and the saved policy again, consumes the
 token and writes the pending audit record before anything is sent; every
