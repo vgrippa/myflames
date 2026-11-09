@@ -30,6 +30,7 @@ import {
 import { Icon, isIconName, type IconName } from "./components";
 import { createPortal } from "react-dom";
 import { shortcut } from "./platform";
+import { ClientMissingNotice } from "./ClientMissing";
 import "./kit.css";
 
 // Only the innermost open surface owns keyboard navigation. A drawer may
@@ -696,6 +697,8 @@ export type ActionState = {
   phase: ActionPhase;
   /** What is happening ("Testing the connection…") or what happened. */
   message: string;
+  /** The server's machine-readable reason (ApiError.code), when it sent one. */
+  code?: string;
   /** Date.now() when the request was sent (pending only). */
   startedAt: number | null;
   /** Date.now() when it ended (done, failed, unknown). */
@@ -3544,6 +3547,7 @@ export function ViewLayout({
 export function ViewStatus({
   loading,
   error,
+  errorCode = "",
   children,
   onStop,
   onRetry,
@@ -3556,6 +3560,10 @@ export function ViewStatus({
   /** What the read does, the same text from its start to its end. */
   loading?: string;
   error?: string;
+  /** The error's machine-readable reason (reads.errorCode). "client-missing"
+   * shows the ClientMissingNotice (Choose client…, Try again) instead of the
+   * bare text. */
+  errorCode?: string;
   children?: ReactNode;
   /** Stop waiting for the read (reads.stop), offered once it is slow. */
   onStop?: () => void;
@@ -3625,14 +3633,20 @@ export function ViewStatus({
       {showError && (
         // The alert holds the error alone; Try again sits beside it in the same box.
         <div className={`error view-status-error${onRetry ? " has-retry" : ""}`}>
-          <p role="alert">
-            {error}
-            {children}
-          </p>
-          {onRetry && (
-            <button type="button" className="text-button view-status-retry" onClick={() => { onRetry(); refocus(); }}>
-              Try again
-            </button>
+          {errorCode === "client-missing" ? (
+            <ClientMissingNotice onRetry={onRetry ? () => { onRetry(); refocus(); } : undefined} />
+          ) : (
+            <>
+              <p role="alert">
+                {error}
+                {children}
+              </p>
+              {onRetry && (
+                <button type="button" className="text-button view-status-retry" onClick={() => { onRetry(); refocus(); }}>
+                  Try again
+                </button>
+              )}
+            </>
           )}
           <IconButton
             icon="close"

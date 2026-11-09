@@ -25,9 +25,12 @@ to a mode-0600 temp file, point the client at it, and unlink it afterwards
 single source of truth.
 """
 from contextlib import contextmanager
+import ntpath
 import os
 import re
 import shutil
+import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -130,7 +133,8 @@ def _client_text(data):
     return text.replace("\r\n", "\n") if os.name == "nt" else text
 
 
-def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail_start=None):
+def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail_start=None,
+                 stdout_limit=None, stderr_limit=None, kill_tree=False):
     """Drain both pipes concurrently on POSIX and Windows with fixed byte caps.
 
     A separate stdin writer prevents a large script from blocking output
@@ -140,12 +144,23 @@ def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail
     once that complete row arrives. Only that mode retains stdout on timeout.
     Its optional on_tail_start callback runs once in the stdout reader at
     that boundary, before waiting for the tail; it must not block.
+    Probes opt into a private process group so descendants holding a pipe
+    cannot extend the deadline after the original process exits.
     """
+    stdout_limit = MAX_STDOUT_BYTES if stdout_limit is None else stdout_limit
+    stderr_limit = MAX_STDERR_BYTES if stderr_limit is None else stderr_limit
     tail_marker = (re.compile(rb'(?:^|\n)' + re.escape(tail_timeout[0].encode('ascii')) + rb'\r?\n')
                    if tail_timeout is not None else None)
     deadline = time.monotonic() + timeout
+    process_options = {}
+    if kill_tree:
+        if os.name == 'nt':
+            process_options['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            process_options['start_new_session'] = True
     proc = subprocess.Popen(argv, stdin=subprocess.PIPE if input is not None else None,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, bufsize=0)
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, bufsize=0,
+                            **process_options)
     changed = threading.Event()
     failed = []
     buffers = [bytearray(), bytearray()]
@@ -201,8 +216,8 @@ def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail
             changed.set()
 
     try:
-        for args in ((proc.stdout, 0, MAX_STDOUT_BYTES, "stdout"),
-                     (proc.stderr, 1, MAX_STDERR_BYTES, "stderr")):
+        for args in ((proc.stdout, 0, stdout_limit, "stdout"),
+                     (proc.stderr, 1, stderr_limit, "stderr")):
             worker = threading.Thread(target=drain, args=args)
             worker.start()
             workers.append(worker)
@@ -226,6 +241,24 @@ def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail
         timed_out = exc
         raise
     finally:
+        if kill_tree:
+            # Kill even when the leader exited: its descendants can still
+            # hold stdout/stderr open and keep the pipe workers blocked.
+            if os.name == 'nt':
+                command = [ntpath.join(os.environ.get('SYSTEMROOT', r'C:\Windows'),
+                                       'System32', 'taskkill.exe'),
+                           '/PID', str(proc.pid), '/T', '/F']
+                try:
+                    subprocess.run(command, stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   timeout=1, env=env)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass  # Still kill/reap the direct child below.
+            else:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
         if proc.poll() is None:
             proc.kill()
         proc.wait()
@@ -266,6 +299,243 @@ class ConnectorError(RuntimeError):
     """Raised when the CLI binary returns a non-zero exit code or malformed
     output. Read errors preserve stderr for connection diagnostics; write
     errors redact credentials before exposing the client's message."""
+
+
+class ClientMissingError(ConnectorError):
+    """A missing or unusable application client selection can be corrected."""
+
+    code = "client-missing"
+    MESSAGE = "myflames could not find the MySQL or MariaDB command-line client (mysql or mariadb)."
+
+    def __init__(self, message=None):
+        super().__init__(self.MESSAGE if message is None else message)
+
+
+def client_missing_error(exc):
+    """Find the typed cause through redaction/prefix wrappers, without text matching.
+
+    An unrelated cleanup failure must not inherit a missing-client diagnosis:
+    only myflames' wrapper types (ConnectorError, ValueError) pass on their
+    context, suppressed or not, because they suppress it only to redact.
+    """
+    pending, seen = [exc], set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, ClientMissingError):
+            return current
+        if isinstance(current, BaseException):
+            if current.__cause__ is not None:
+                pending.append(current.__cause__)
+            elif isinstance(current, (ConnectorError, ValueError)) and current.__context__ is not None:
+                # myflames' own wrappers re-raise with "from None" to keep
+                # secrets out of tracebacks (ui._lifecycle_reraise, _redact),
+                # not to change the cause; other types never inherit it.
+                pending.append(current.__context__)
+    return None
+
+
+_DEFAULT_BINARY = None
+_DEFAULT_BINARY_LOCK = threading.RLock()
+_DEFAULT_BINARY_PROBE = None
+_DEFAULT_BINARY_GENERATION = 0
+
+
+def set_default_binary(path_or_None):
+    """Set the process-wide workspace choice; None restores PATH discovery.
+
+    The settings endpoint validates before storing. Resolution revalidates a
+    replaced or removed file, including a stale choice restored at startup.
+    """
+    global _DEFAULT_BINARY, _DEFAULT_BINARY_PROBE, _DEFAULT_BINARY_GENERATION
+    with _DEFAULT_BINARY_LOCK:
+        _DEFAULT_BINARY_GENERATION += 1
+        _DEFAULT_BINARY_PROBE = None
+        _DEFAULT_BINARY = path_or_None
+
+
+def default_binary():
+    """Return the workspace's choice, or None for automatic PATH discovery."""
+    with _DEFAULT_BINARY_LOCK:
+        return _DEFAULT_BINARY
+
+
+_MACOS_ADMIN_GID = 80
+
+
+def _check_client_trust(path):
+    """Refuse chosen clients whose file or containing folders are untrusted."""
+    message = "The database client or a folder above it can be changed by other users."
+    if os.name == 'nt':
+        # Do not even resolve a UNC/device path: that can contact a server.
+        def local_path(value):
+            return not value.replace('/', '\\').startswith('\\\\')
+
+        if (not local_path(path) or
+                ntpath.basename(path).lower() not in ('mysql.exe', 'mariadb.exe')):
+            raise ValueError("Choose a local client named mysql.exe or mariadb.exe.")
+        resolved = os.path.realpath(path)
+        if not local_path(resolved):
+            raise ValueError("Choose a local client named mysql.exe or mariadb.exe.")
+        resolved = ntpath.normcase(ntpath.normpath(resolved))
+        # This location restriction is a minimum Windows trust check. An
+        # ACL check via ctypes is a later improvement, not a version check.
+        # The desktop app runs the backend with an isolated USERPROFILE and
+        # names the real one in MYFLAMES_USER_PROFILE.
+        for key in ('ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432',
+                    'LOCALAPPDATA', 'MYFLAMES_USER_PROFILE', 'USERPROFILE'):
+            root = os.environ.get(key)
+            if not root or not ntpath.isabs(root) or not local_path(root):
+                continue
+            root = os.path.realpath(root)
+            if not local_path(root):
+                continue
+            root = ntpath.normcase(ntpath.normpath(root))
+            try:
+                if ntpath.commonpath((root, resolved)) == root:
+                    return
+            except ValueError:
+                continue  # Different drive letters cannot share a root.
+        raise ValueError("Choose a database client in Program Files or your user profile.")
+
+    seen = set()
+    if not os.path.lexists(path):
+        raise ValueError("The database client must be an existing regular file.")
+    try:
+        for current in (path, os.path.realpath(path)):
+            while current and current not in seen:
+                seen.add(current)
+                info = os.lstat(current)
+                if info.st_uid not in (0, os.geteuid()):
+                    raise ValueError(message)
+                # Symlink modes do not govern replacement; their owner and
+                # parent do. Check the resolved file and its parents as well.
+                if not stat.S_ISLNK(info.st_mode) and info.st_mode & 0o022:
+                    # macOS: the admin group (gid 80) can already act as root,
+                    # and Homebrew (/opt/homebrew/bin) and /Applications give it
+                    # write access; any write for others is still refused.
+                    admin_only = (sys.platform == 'darwin' and info.st_gid == _MACOS_ADMIN_GID and
+                                  not info.st_mode & 0o002)
+                    if not admin_only and not (stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and
+                                               info.st_mode & stat.S_ISVTX):
+                        raise ValueError(message)
+                parent = os.path.dirname(current)
+                if parent == current:
+                    break
+                current = parent
+    except OSError as exc:
+        raise ValueError(message) from exc
+
+
+def probe_client(path, check_trust=True, chosen=None):
+    """Validate one absolute client path and return its bounded version banner.
+
+    *check_trust* False only describes the automatic PATH client, which the
+    connector uses as PATH finds it; a client chosen in the workspace is
+    always checked. *chosen* is the path the person chose when *path* is its
+    resolved file: the name rule applies to that choice (a ``mysql`` link to
+    ``mysql-8.4`` is valid), and the resolved file is the one probed."""
+    if (not isinstance(path, str) or not path or len(path) > 4096 or
+            any(c in path for c in '\0\r\n') or not os.path.isabs(path)):
+        raise ValueError("Choose an absolute path to the database client.")
+    name = os.path.basename(chosen or path)
+    if (name.lower() if os.name == 'nt' else name) not in ('mysql', 'mariadb', 'mysql.exe', 'mariadb.exe'):
+        raise ValueError("Choose a client named mysql, mariadb, mysql.exe or mariadb.exe.")
+    if check_trust:
+        _check_client_trust(path)
+    if not os.path.isfile(path):
+        raise ValueError("The database client must be an existing regular file.")
+    try:
+        with client_environment() as env:
+            result = _run_bounded([path, '--no-defaults', '--version'], timeout=5, input=b'', env=env,
+                                  stdout_limit=16384, stderr_limit=16384, kill_tree=True)
+    except subprocess.TimeoutExpired:
+        raise ValueError("The database client version check timed out after 5 seconds.") from None
+    except (OSError, ConnectorError):
+        raise ValueError("Could not run the database client version check.") from None
+    version = (result.stdout + b'\n' + result.stderr).decode('utf-8', 'replace').strip()
+    if result.returncode != 0:
+        raise ValueError("The database client version check exited unsuccessfully.")
+    if re.search(r'\b(?:mysql|mariadb)\b', version, re.I) is None:
+        raise ValueError("The database client version output must name MySQL or MariaDB.")
+    return {'path': path, 'name': name, 'version': version[:4096]}
+
+
+def _default_client_path():
+    """Recheck changed selections before they can receive connection secrets."""
+    global _DEFAULT_BINARY_PROBE
+    while True:
+        with _DEFAULT_BINARY_LOCK:
+            path, generation = _DEFAULT_BINARY, _DEFAULT_BINARY_GENERATION
+            previous = _DEFAULT_BINARY_PROBE
+        if path is None:
+            return None
+        try:
+            # Run the fully resolved file, never through the chosen alias: a
+            # link anywhere on the way (even an intermediate hop) cannot then
+            # redirect the client after this check. Its real folders are
+            # checked on every call (a folder chmod does not change identity).
+            real = os.path.realpath(path)
+            _check_client_trust(path)
+            _check_client_trust(real)
+            info = os.stat(real)
+            identity = (path, real, info.st_dev, info.st_ino,
+                        info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_mode)
+            if identity != previous:
+                probe_client(real, chosen=path)
+                _check_client_trust(real)
+        except (OSError, ValueError) as exc:
+            with _DEFAULT_BINARY_LOCK:
+                if generation != _DEFAULT_BINARY_GENERATION:
+                    continue  # Ignore a failure for a choice no longer active.
+                _DEFAULT_BINARY_PROBE = None
+                raise ClientMissingError("The chosen database client is unavailable. "
+                                         "Choose another database client in Settings or clear the choice.") from exc
+        with _DEFAULT_BINARY_LOCK:
+            if generation != _DEFAULT_BINARY_GENERATION:
+                continue
+            _DEFAULT_BINARY_PROBE = identity
+            return real
+
+
+def detect_clients(path=None, common_dirs=None):
+    """List usable PATH clients, then common install folders (POSIX only).
+
+    Real paths deduplicate aliases. At most ten candidate processes run, each
+    for at most five seconds with bounded output and no inherited credentials.
+    """
+    from .lifecycle import COMMON_BIN_DIRS
+    search_path = os.environ.get('PATH', os.defpath) if path is None else path
+    folders = [folder or os.curdir for folder in search_path.split(os.pathsep)]
+    names = ('mysql.exe', 'mariadb.exe') if os.name == 'nt' else ('mysql', 'mariadb')
+    candidates = ((os.path.join(folder, name), 'path') for name in names for folder in folders)
+    common = () if os.name == 'nt' else (COMMON_BIN_DIRS if common_dirs is None else common_dirs)
+    from itertools import chain
+    candidates = chain(candidates, ((os.path.join(folder, name), 'common')
+                                   for name in names for folder in common))
+    seen, found = set(), []
+    for candidate, source in candidates:
+        candidate = os.path.abspath(candidate)
+        try:
+            _check_client_trust(candidate)
+        except ValueError:
+            continue
+        if not os.path.isfile(candidate):
+            continue
+        real = os.path.normcase(os.path.realpath(candidate))
+        if real in seen:
+            continue
+        if len(seen) >= 10:
+            break
+        seen.add(real)
+        try:
+            entry = probe_client(candidate)
+        except ValueError:
+            continue
+        found.append(dict(entry, source=source))
+    return found
 
 
 class PartialReadError(ConnectorError):
@@ -334,6 +604,7 @@ class MySQLConnection:
         # constructor can be unit-tested without the binary installed.
         self._binary_override = binary
         self._binary_cached = None
+        self._binary_generation = None
         self._defaults_file_path = None
         self._version_cache = None
         self._version_comment_cache = None
@@ -349,32 +620,47 @@ class MySQLConnection:
     def _resolve_binary(self):
         """Return the path to the mysql or mariadb client binary.
 
-        Prefers an explicit override, then ``mysql`` (which MariaDB also
-        ships under that name on most distros), then ``mariadb``. The
-        desktop app's bundled MySQL client (``MYFLAMES_BUNDLED_CLIENT_DIR``,
-        the last PATH entry) comes after both, so an installed ``mariadb``
-        is still preferred to it.
+        Prefers an explicit override, the workspace choice, then PATH:
+        ``mysql`` (which MariaDB also ships under that name on most distros),
+        then ``mariadb``. The desktop app's bundled MySQL client
+        (``MYFLAMES_BUNDLED_CLIENT_DIR``, the last PATH entry) comes after
+        both, so an installed ``mariadb`` is still preferred to it. Existing
+        connection objects follow setting changes on their next call.
         """
-        if self._binary_cached:
-            return self._binary_cached
         if self._binary_override:
             self._binary_cached = self._binary_override
             return self._binary_cached
-        bundled = bundled_client_dir()
-        search = installed_search_path(bundled) if bundled else None
-        for name in ("mysql", "mariadb"):
-            path = self._which(name, search) if bundled else self._which(name)
-            if path:
-                self._binary_cached = path
-                return path
-        path = bundled_program(bundled, "mysql") if bundled else None
-        if path:
-            self._binary_cached = path
-            return path
-        raise ConnectorError(
-            "Cannot find 'mysql' or 'mariadb' on PATH. Install the client "
-            "binary or pass --mysql-binary /path/to/mysql."
-        )
+        while True:
+            with _DEFAULT_BINARY_LOCK:
+                generation = _DEFAULT_BINARY_GENERATION
+            chosen = _default_client_path()
+            with _DEFAULT_BINARY_LOCK:
+                if generation != _DEFAULT_BINARY_GENERATION:
+                    continue
+                if self._binary_generation != generation:
+                    self._binary_cached = None
+                    self._binary_generation = generation
+                if chosen is not None:
+                    return chosen
+                if self._binary_cached:
+                    return self._binary_cached
+            # Installed clients first; the desktop's bundled MySQL client last.
+            bundled = bundled_client_dir()
+            search = installed_search_path(bundled) if bundled else None
+            path = None
+            for name in ("mysql", "mariadb"):
+                path = self._which(name, search) if bundled else self._which(name)
+                if path:
+                    break
+            if not path and bundled:
+                path = bundled_program(bundled, "mysql")
+            with _DEFAULT_BINARY_LOCK:
+                if generation != _DEFAULT_BINARY_GENERATION:
+                    continue
+                if path:
+                    self._binary_cached = path
+                    return path
+                raise ClientMissingError()
 
     def _build_defaults_file_content(self, endpoint=None):
         """Build the text that goes into the defaults-file.

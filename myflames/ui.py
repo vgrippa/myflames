@@ -17,7 +17,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import __version__
-from .connector import ConnectorError
+from .connector import ConnectorError, client_missing_error
 from .parser import analyze_plan
 # Compatibility exports for one release; validation is independent of HTTP.
 from .plan_input import MAX_PLAN, _plan
@@ -913,8 +913,14 @@ def _lifecycle_response(path, payload, workspace):
         options = _lifecycle_connection(payload.get("connection"), safety)
         if path == "/api/lifecycle/tools":
             tools = _dump_tool_capabilities(lc.detect_tools(check_updates=payload.get("check_updates") is True))
-            with lc._connect(lc.LifecycleConnection, options) as conn:
-                server = lc.read_server(conn, options)
+            try:
+                with lc._connect(lc.LifecycleConnection, options) as conn:
+                    server = lc.read_server(conn, options)
+            except Exception as exc:
+                if client_missing_error(exc) is None:
+                    raise
+                return dict(tools, server={}, offered={}, server_error={
+                    "code": "client-missing", "error": lc._safe(str(exc), passwords)})
             return dict(tools, server={k: server[k] for k in ("engine", "version")},
                         offered=lc.offered_tools(server, tools))
         if path == "/api/lifecycle/upgrade-targets":
@@ -1386,6 +1392,57 @@ def _action_progress(workspace):
 #: workspace asks (the Check for updates button) and keeps the outcome in the
 #: workspace store; status reads that stored outcome and never the network.
 _APP_UPDATE_PATHS = ('/api/app/update/check', '/api/app/update/download', '/api/app/update/status')
+# Application client selection is separate from saved connection credentials.
+_CLIENT_PATHS = ('/api/client/settings', '/api/client/detect')
+_CLIENT_SETTINGS_LOCK = threading.Lock()
+
+
+def _client_settings_response(path, payload, workspace):
+    from . import connector
+    if workspace is None:
+        raise ValueError("This operation requires a running workspace.")
+    allowed = {'path'} if path == '/api/client/settings' else set()
+    if set(payload) - allowed:
+        raise ValueError("Unexpected database client setting.")
+    # Serialize validation, persistence and publication of the process choice.
+    # A refused candidate leaves both the stored and active choices intact.
+    with _CLIENT_SETTINGS_LOCK:
+        if 'path' in payload:
+            chosen = payload['path']
+            if chosen is not None:
+                connector.probe_client(chosen)
+            workspace.store.set_client_binary(chosen)
+        stored = workspace.store.client_binary()
+        connector.set_default_binary(stored)
+        result = {'schema_version': 'client-settings-1.0', 'path': stored,
+                  'active': None, 'detected': connector.detect_clients()}
+        if stored is not None:
+            try:
+                active = connector.probe_client(stored)
+            except ValueError as exc:
+                result['error'] = str(exc)
+                return result
+            source = 'chosen'
+        else:
+            # Common install folders are suggestions only. The automatic
+            # client is the connector's own: installed mysql, then mariadb,
+            # then the desktop's bundled MySQL client.
+            try:
+                automatic = connector.MySQLConnection(host='localhost')._resolve_binary()
+            except connector.ClientMissingError:
+                return result
+            try:
+                # Described as PATH finds it: the connector uses it without the chosen-client trust rule.
+                active = connector.probe_client(os.path.abspath(automatic), check_trust=False)
+            except ValueError as exc:
+                result['error'] = str(exc)
+                return result
+            source = 'path'
+        result['active'] = {key: active[key] for key in ('path', 'version')}
+        result['active']['source'] = source
+        return result
+
+
 # Home news (news.py): fixed official feeds, read only while Home is shown
 # and the Settings switch is on. No connection, no password.
 _NEWS_PATHS = ('/api/news', '/api/news/settings')
@@ -1848,6 +1905,8 @@ def api_response(path, payload, workspace=None):
         # no ssh run; ssh-hosts-1.0).
         from .ssh_tunnel import hosts_response
         return hosts_response()
+    if path in _CLIENT_PATHS:
+        return _client_settings_response(path, payload, workspace)
     if path == "/api/app/update/check":
         from . import app_update
         result = app_update.check_for_updates(force=payload.get("force") is True)
@@ -2100,6 +2159,14 @@ class WorkspaceServer(ThreadingHTTPServer):
         from .workspace_store import WorkspaceStore
         from .live import LiveJobs
         self.store = WorkspaceStore(store_path)
+        from . import connector
+        connector.set_default_binary(self.store.client_binary())
+        # Do not prevent the workspace from opening when a saved client moved.
+        # Keep the choice so Settings can report it and offer recovery.
+        try:
+            connector._default_client_path()
+        except connector.ClientMissingError:
+            pass
         # --no-restore: start clean for this launch and leave the stored
         # session untouched (no restore, no autosave).
         self.no_restore = bool(no_restore)
@@ -2568,7 +2635,7 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                              "/api/editor/saved/move", "/api/editor/saved/delete",
                              "/api/analysis/prepare-query") + _LIFECYCLE_PATHS \
                 + _REPLICATION_PATHS + _CATALOG_PATHS + _OBJECT_SEARCH_PATHS + _VARIABLE_PATHS + _ACTION_PATHS + _ACCOUNT_PATHS + _DIAGRAM_PATHS + _SCHEMA_VERSION_PATHS + _COMPARE_PATHS + _APP_UPDATE_PATHS \
-                + _NEWS_PATHS + _PARAM_VERSION_PATHS + _CSV_IMPORT_PATHS + _SLOW_LOG_PATHS \
+                + _CLIENT_PATHS + _NEWS_PATHS + _PARAM_VERSION_PATHS + _CSV_IMPORT_PATHS + _SLOW_LOG_PATHS \
                 + _SSH_CONNECTION_PATHS + _FILES_PATHS + ("/api/live/readiness", "/api/connections/import") \
                 + _BASELINE_PATHS \
                 + (_ACTION_PROGRESS_PATH, "/api/live/proxysql/digests", "/api/live/readyset",
@@ -2605,7 +2672,12 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
             # SSH failures (sftp.py) name their reason; other exceptions with a
             # reason attribute (UnicodeError, SSLError, URLError) are not codes.
             reason = getattr(exc, "reason", None) if isinstance(exc, ConnectorError) else None
-            if isinstance(reason, str) and reason:
+            missing = (client_missing_error(exc) if isinstance(
+                exc, (ConnectorError, ValueError, TypeError, KeyError, AttributeError, RecursionError, OverflowError))
+                else None)
+            if missing is not None:
+                self._send(400, {"error": str(missing), "code": "client-missing"})
+            elif isinstance(reason, str) and reason:
                 self._send(400, {"error": request_error_text(exc, prefix=False), "code": reason})
             elif isinstance(exc, (ValueError, TypeError, KeyError, AttributeError, RecursionError, OverflowError)):
                 self._send(400, {"error": request_error_text(exc)})

@@ -1259,7 +1259,7 @@ function ConfigListView({ connection, disabled, onBack, selection, report: bound
     </>}</>}
     onRefresh={() => void load()} refreshDisabled={disabled} loading={loading} otherConnection={other}
     inspector={inspector} inspectorEmpty={<p>Select a parameter to inspect its source, allowed values and recommendations.</p>}
-    status={<><ViewStatus loading={reads.loading} error={reads.error}
+    status={<><ViewStatus loading={reads.loading} error={reads.error} errorCode={reads.errorCode}
       onStop={reads.loading ? reads.stop : undefined} onRetry={reads.error ? () => void load() : undefined} doneAt={reads.doneAt} />
       {change && changeLeft !== null && <div className="view-status variable-pending"><ActionStatus state={{ phase: "pending", startedAt: changeLeft,
         message: `Waiting for the reply to the change to ${change.name}${change.via.key !== reads.key ? ` on ${change.via.label}` : ""}. Its outcome shows here.` }} /></div>}

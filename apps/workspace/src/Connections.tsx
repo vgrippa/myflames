@@ -3,7 +3,8 @@
 // keep the `profiles/*` endpoints and `profile_id`.
 import { lazy, Suspense, createContext, useContext, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { api, type Connection, type ConnectionType, type Profile, type SecretStore } from "./api";
+import { api, isClientMissing, type Connection, type ConnectionType, type Profile, type SecretStore } from "./api";
+import { ClientMissingNotice } from "./ClientMissing";
 import { Icon } from "./components";
 import { ReadinessFacts, checkReadiness, copyReadiness, readinessHint, readinessLine } from "./readiness";
 import { connectionKey, connectionLabel, hostHasSpace, sshKey, trimPasted, trimPastedEnd } from "./binding";
@@ -353,7 +354,7 @@ export function recordConnectionUse(id: string) {
   if (id) lastUsed.set(id, new Date().toISOString());
 }
 
-type RowTest = { identity: string; seq: number } & ({ state: "testing" } | { state: "ok" | "failed"; text: string });
+type RowTest = { identity: string; seq: number } & ({ state: "testing" } | { state: "ok" | "failed"; text: string; /** The test was refused for a missing database client. */ missing?: boolean });
 
 /**
  * The Connections section of Home: saved connections as rows, and a form to
@@ -403,6 +404,8 @@ export function Connections({
   const nameEditedRef = useRef(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
+  /** The shown error was a refused read for a missing database client. */
+  const [errorMissing, setErrorMissing] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testSince, setTestSince] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
@@ -648,6 +651,7 @@ export function Connections({
       );
     } catch (e) {
       setError((e as Error).message);
+      setErrorMissing(false);
     } finally {
       savingRef.current = false;
       setSaving(false);
@@ -696,8 +700,10 @@ export function Connections({
       if (tested.editing && !savedPassword && tested.password && canRemember)
         setOfferSave(true);
     } catch (e) {
-      if (draftGen.current === gen && testSeq.current === seq)
+      if (draftGen.current === gen && testSeq.current === seq) {
         setError((e as Error).message);
+        setErrorMissing(isClientMissing(e));
+      }
     } finally {
       if (testSeq.current === seq) setTesting(false);
     }
@@ -720,6 +726,7 @@ export function Connections({
       setStatus("Saved password forgotten. Enter the password to connect.");
     } catch (e) {
       setError(`Could not forget the saved password: ${(e as Error).message}`);
+      setErrorMissing(false);
     } finally {
       setForgetting(false);
     }
@@ -760,7 +767,7 @@ export function Connections({
     setDeleteErrors(failures);
     setStatus(removed.length ? `${removed.length} ${removed.length === 1 ? "connection removed" : "connections removed"}.` : "");
     try { await refresh(); }
-    catch (e) { setError(`Could not refresh connections: ${(e as Error).message}`); }
+    catch (e) { setError(`Could not refresh connections: ${(e as Error).message}`); setErrorMissing(false); }
     finally {
       deletingRef.current = false;
       setDeleting(false);
@@ -794,7 +801,7 @@ export function Connections({
       const r = test.value;
       put({ state: "ok", text: testedText(r), identity, seq });
     } catch (e) {
-      put({ state: "failed", text: (e as Error).message, identity, seq });
+      put({ state: "failed", text: (e as Error).message, identity, seq, missing: isClientMissing(e) });
     }
   }
   function use(id: string, fields: SessionConnection, password: string) {
@@ -1139,7 +1146,7 @@ export function Connections({
                 // The server refuses these too (Test, Save); Use must not
                 // quietly connect to another port or host instead.
                 const ssh = sshProblem(draft);
-                if (hostProblem || portProblem || ssh) { setError(hostProblem || portProblem || ssh); return; }
+                if (hostProblem || portProblem || ssh) { setError(hostProblem || portProblem || ssh); setErrorMissing(false); return; }
                 const resolvedName = (draft.name || "").trim() || defaultConnectionName(draft.user || "", draft.host || "", draft.port || 3306);
                 use(editingId || "", connectionFields({ ...draft, name: resolvedName }), draft.password || "");
               }}
@@ -1246,9 +1253,20 @@ export function Connections({
               </p>
             )}
           </div>
-          {error && <p role="alert" className="error">{error}</p>}
+          {error && (errorMissing ? (
+            <ClientMissingNotice onRetry={() => void testForm()} />
+          ) : (
+            <p role="alert" className="error">{error}</p>
+          ))}
           {editingId && rowTests[editingId] && rowTests[editingId].identity === connectionKey(formConnection) && rowTests[editingId].state === "failed" && (
-            <p className="row-test" role="alert">{(rowTests[editingId] as { text: string }).text}</p>
+            (rowTests[editingId] as { missing?: boolean }).missing ? (
+              <ClientMissingNotice onRetry={() => {
+                if (profile) void testRow(editingId, { ...connectionFields(profile), type: profile.type, profile_id: profile.id,
+                  password: editingId === active.id && sameEndpoint(connectionFields(profile), active.fields) ? active.password : "" });
+              }} />
+            ) : (
+              <p className="row-test" role="alert">{(rowTests[editingId] as { text: string }).text}</p>
+            )
           )}
           <p className="hint">
             Connections store server settings. {storeSentence} Requires a local
@@ -1277,7 +1295,7 @@ export function Connections({
           <span className="connections-count">{rows.length} {rows.length === 1 ? "connection" : "connections"}</span>
         </div>
         {loading && <p role="status">Loading connections…</p>}
-        {loadError && <p role="alert" className="error">{loadError} <button className="text-button" onClick={() => void refresh().catch(e => setError((e as Error).message))}>Retry connections</button></p>}
+        {loadError && <p role="alert" className="error">{loadError} <button className="text-button" onClick={() => void refresh().catch(e => { setError((e as Error).message); setErrorMissing(false); })}>Retry connections</button></p>}
         <div ref={tableRef} id="connections-table" tabIndex={-1} aria-label="Connections table" data-compact={phone || editingId !== null || undefined} onKeyDown={e => {
           if ((e.target as HTMLElement).closest('input:not([type="checkbox"]), select, textarea, button, [role=menu], [role=dialog]')) return;
           if (e.key === "Delete" || e.key === "Backspace") {

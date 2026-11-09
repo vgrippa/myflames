@@ -1,0 +1,80 @@
+/* The missing-client notice (ClientMissingNotice) and the Database client
+ * dialog (DatabaseClientDialog), both from ClientMissing.tsx. */
+.client-missing {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+}
+.client-missing-text {
+  margin: 0;
+}
+.client-missing-hint {
+  margin: 0;
+}
+.client-missing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+.client-dialog {
+  max-width: 560px;
+  width: 92vw;
+}
+.client-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+}
+.client-in-use {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.client-path {
+  overflow-wrap: anywhere;
+}
+.client-detected-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.client-detected {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.client-detected-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  background: var(--surface-subtle);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+.client-detected-name {
+  font-weight: 600;
+}
+.client-detected-path {
+  flex: 1 1 100%;
+}
+.client-path-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: var(--space-2);
+}
+.client-path-field {
+  flex: 1 1 260px;
+}
+.client-dialog .action-spacer {
+  flex: 1;
+}

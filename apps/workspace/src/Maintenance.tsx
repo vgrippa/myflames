@@ -6,6 +6,7 @@
 // process, which lists them again after a reload or a lost Start reply.
 import { useEffect, useRef, useState, type ComponentProps, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { deletedConnectionLabel } from "./savedConnections";
+import { ClientMissingNotice } from "./ClientMissing";
 import { privilegeResult, targetPrivilege, usePrivilege, usePrivileges } from "./privileges";
 import { download, recordDeclined, type Connection, type Profile } from "./api";
 import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "./binding";
@@ -399,7 +400,18 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   const loadedTables = new Set(schemaTables.tables.map((t) => t.name));
   const unknownTables = tables.filter((name) => !loadedTables.has(name));
   const tableScope = !!oneSchema && tables.length > 0;
-  const tools = memory.tools?.key === key ? memory.tools.report : null;
+  const rawTools = memory.tools?.key === key ? memory.tools.report : null;
+  // The client-missing answer still lists the tools and their download links
+  // but leaves server and offered empty; guard every offered read.
+  const toolsMissing = rawTools?.server_error?.code === "client-missing";
+  const rawOffered = rawTools?.offered;
+  const tools = rawTools ? { ...rawTools, offered: {
+    dump: rawOffered?.dump || [],
+    upgrade: rawOffered?.upgrade || "",
+    clone: rawOffered?.clone === true,
+    physical_backup: rawOffered?.physical_backup === true,
+    physical_backup_requires_local_files: rawOffered?.physical_backup_requires_local_files === true,
+  } } : null;
   const targetReport = memory.targets?.key === key ? memory.targets.report : null;
   // Percona targets are "8.4.11-11"; the checker takes the upstream version.
   const chosenTarget: UpgradeTarget | undefined = targetReport?.targets.find((t) => t.version === target);
@@ -846,14 +858,14 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
         upgrade.method === "mariadb_upgrade_guidance" ? "" : [plural(counts?.error || 0, "error"), plural(counts?.warning || 0, "warning"), plural(counts?.notice || 0, "notice")].join(", "),
       ].filter(Boolean).join(" · ")
     : tools
-      ? `${engineName(tools.server.engine, tools.server.version, tools.server.product)} · ${SECTION_LABEL[section]}`
+      ? `${toolsMissing ? "Server unreadable" : engineName(tools.server.engine, tools.server.version, tools.server.product)} · ${SECTION_LABEL[section]}`
       : "";
   const upgradeNotes = section === "upgrade" && upgrade ? upgrade.limitations : undefined;
   return <>
     <ViewLayout id="maintenance" title="Maintenance" className="ops-view" onBack={onBack} controls={controls} onRefresh={section === "tools" ? () => { void loadTools(); } : undefined} refreshLabel="Detect again" refreshDisabled={disabled || busy || !!reads.loading} loading={!!reads.loading} inspector={inspector} otherConnection={other}
       inspectorEmpty={<p>Select a tool, a finding or a check to see its details here.</p>}
       info={<><p>Detect the MySQL and MariaDB tools on this computer, check an upgrade, or dump, restore or clone the connection in use.</p><p>The upgrade check and every preflight only read. A dump, restore or clone starts only after you review its exact commands and confirm (restore and clone also ask you to type the target), and it is recorded in the Audit log.</p></>}
-      status={<><ViewStatus loading={readKind === "tools" && tools && !checkingUpdates ? reads.loading : ""} error={statusError}
+      status={<><ViewStatus loading={readKind === "tools" && tools && !checkingUpdates ? reads.loading : ""} error={statusError} errorCode={failure?.key === key || readKind === "preflight" ? "" : reads.errorCode}
         onStop={reads.loading ? reads.stop : undefined} onRetry={reads.error && readKind !== "preflight" && failure?.key !== key ? retryRead : undefined} doneAt={reads.doneAt}>{failure?.key === key && failure.poll && <button className="text-button" type="button" onClick={() => { setFailure(null); setPollRetry((n) => n + 1); }}>Retry status</button>}</ViewStatus>
         {startLeft && busy && sheet && <section className="ops-job" aria-label={`${SECTION_LABEL[sheet.report.operation]} start on ${sheet.label}`}>
           <strong>{SECTION_LABEL[sheet.report.operation]} · {sheet.label}</strong>
@@ -871,7 +883,11 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
         <div className="ops-actions"><ActionButton busy={detecting && checkingUpdates} busyLabel="Checking…" disabled={disabled || busy || (!!reads.loading && !checkingUpdates)} onClick={() => { void loadTools(true); }}>Check for updates</ActionButton>{tools && <ActionStatus keepLine state={{ phase: detecting && checkingUpdates ? "pending" : "idle", message: reads.loading, startedAt: readSince }} onStop={reads.stop} stopLabel="Stop waiting" />}</div>
         {!!availableUpdates.length && <div className="ops-tool-updates" role="status">Updates available for {availableUpdates.map(t => t.name).join(", ")}.</div>}
         <DataTable id="maintenance.tools" label="Detected tools" rows={toolRows} columns={toolColumns} rowKey={(r) => `tool:${r.name}`} selection={selection} />
+        {toolsMissing ? (
+          <ClientMissingNotice className="ops-offered" onRetry={() => { void loadTools(); }} />
+        ) : (
         <div className="ops-offered"><Fields label="Offered for this server" rows={[["Dump", memory.tools.report.offered.dump.join(", ") || "No dump tool for this engine"], ["Upgrade check", memory.tools.report.offered.upgrade === "mysqlsh" ? "MySQL Shell (full check)" : memory.tools.report.offered.upgrade === "native_subset" ? "Partial check (native subset)" : "mariadb-upgrade steps to run on the server host"], ["Clone", memory.tools.report.offered.clone ? "Offered after its preflight" : "Not offered"], ["Physical backup", memory.tools.report.offered.physical_backup ? "Detected; runs on the server host" : "Not available"]]} /></div>
+        )}
       </>}
       {section === "upgrade" && tools && <>
         {form(<>

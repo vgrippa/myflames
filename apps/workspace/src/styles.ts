@@ -5,6 +5,7 @@
 // imports find it already loaded. A new stylesheet is added here too, at the
 // position its importer has in this list (test/styles-order.mjs checks).
 import "./kit.css";
+import "./client-missing.css";
 import "./command-palette.css";
 import "./completion.css";
 import "./perf.css";

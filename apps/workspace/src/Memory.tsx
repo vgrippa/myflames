@@ -142,7 +142,7 @@ export function MemoryView({ connection, disabled, onBack, selection, interval, 
       <p>Event highs are upper bounds, not recorded peaks. Instruments enabled later miss earlier allocations; unknown prefixes remain in Other.</p></>}
     controls={<WindowSelect value={interval} options={WINDOW_INTERVALS} onChange={onIntervalChange} disabled={!!reads.loading} />}
     onRefresh={() => void load()} refreshDisabled={disabled} loading={!!reads.loading} otherConnection={other}
-    status={<ViewStatus loading={reads.loading} error={reads.error} onStop={reads.stop} onRetry={reads.error ? () => void load() : undefined}
+    status={<ViewStatus loading={reads.loading} error={reads.error} errorCode={reads.errorCode} onStop={reads.stop} onRetry={reads.error ? () => void load() : undefined}
       doneAt={reads.doneAt} slowAfter={(interval + 30) * 1000} />}>
     {report && <>
       <SummaryLine tone={report.status === "not_judged" ? "unknown" : report.status} toneLabel={report.status === "not_judged" ? "Not judged" : undefined}

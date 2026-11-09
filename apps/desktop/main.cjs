@@ -46,6 +46,9 @@ async function start() {
   env.USERPROFILE = env.HOME;
   // ssh reads ~/.ssh from the user's real home (see backendEnvironment).
   env.MYFLAMES_SSH_HOME = os.homedir();
+  // The real profile (USERPROFILE is the isolated one): a chosen database
+  // client may live under it on Windows (connector._check_client_trust).
+  env.MYFLAMES_USER_PROFILE = os.homedir();
   // A downloaded update goes to the user's real Downloads folder, not the isolated HOME.
   env.MYFLAMES_DOWNLOADS_DIR = app.getPath('downloads');
   // The packaged backend entry stops itself if this process dies uncleanly.

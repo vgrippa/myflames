@@ -1417,7 +1417,7 @@ export function LocksView({
       otherConnection={other}
       inspector={inspector}
       inspectorEmpty={<p>Select a session, a transaction or a lock to see its details, its plan, and Kill.</p>}
-      status={<><ViewStatus loading={loading} error={error} onStop={reads.loading ? reads.stop : undefined}
+      status={<><ViewStatus loading={loading} error={error} errorCode={reads.error ? reads.errorCode : ""} onStop={reads.loading ? reads.stop : undefined}
         onRetry={reads.error ? () => void load() : undefined} doneAt={reads.doneAt} />
         {/* A KILL whose sheet was closed, and its answer, name their connection once another is in use. */}
         {killLeft && <div className="view-status"><ActionStatus state={{ phase: "pending", startedAt: killLeft.startedAt,

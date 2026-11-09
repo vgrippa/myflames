@@ -818,7 +818,7 @@ export function TablesView({
           {report && <p>{whyButton}</p>}
         </>
       }
-      status={<><ViewStatus loading={reads.loading} error={error} onStop={reads.stop} onRetry={reads.error ? () => void load() : undefined} doneAt={reads.doneAt} slowAfter={45_000} /><ReviewedSqlStatus />{importCsv.element}</>}
+      status={<><ViewStatus loading={reads.loading} error={error} errorCode={reads.errorCode} onStop={reads.stop} onRetry={reads.error ? () => void load() : undefined} doneAt={reads.doneAt} slowAfter={45_000} /><ReviewedSqlStatus />{importCsv.element}</>}
     >
       {gated && (
         <PrerequisiteGate action={

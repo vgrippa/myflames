@@ -192,6 +192,53 @@ the SHA-256) and updates NOTICE. Tests: `apps/desktop/test` (PATH order,
 extraResources, lock) and `test/test_fetch_mysql_client.py`,
 `test_connector.TestBundledClientResolution`.
 Packaged app data is separate from development and CLI data.
+When no client is found, `connector.ClientMissingError` (a `ConnectorError`,
+`code = "client-missing"`) carries "myflames could not find the MySQL or MariaDB
+command-line client (mysql or mariadb)." (with the bundled client, when no
+client can be used at all, or for a broken chosen client). `connector.client_missing_error`
+finds it through `__cause__`, and through `__context__` only for myflames' own
+wrapper types (`ConnectorError`, `ValueError`, which suppress context with
+`from None` only to redact secrets); such a failure answers 400 with the client
+error's own text and `"code": "client-missing"`. Other types never inherit it,
+and unexpected exceptions still answer with a generic 500. The CLI alone adds "Install it or pass
+--mysql-binary /path/to/mysql.". The workspace shows `ClientMissingNotice`
+(`ClientMissing.tsx`) for that code in every Server view's `ViewStatus`, Test
+connection, the Query editor tab and Maintenance > Tools, which keeps its tools
+and download links (`server: {}`, `offered: {}`, `server_error: {code, error}`).
+A client chosen in the workspace (`POST /api/client/settings`: `{}` reads,
+`{"path": <absolute>}` stores after `<path> --version` exits 0 within 5 s, 16 KiB
+per stream, in `client_environment()`, naming mysql or mariadb, for a regular file
+named `mysql`, `mariadb`, `mysql.exe` or `mariadb.exe`; `{"path": null}` clears;
+the workspace store keeps it) is `connector.set_default_binary` at server start
+and after each change, and `_resolve_binary` uses it after a per-connection
+`binary=` override and before PATH, probing it again when the file changes. The
+chosen client serves server reads, the Query editor, reviewed writes and CSV
+import. Restore and clone use the client found by `lifecycle.detect_tools`.
+Because the chosen client receives every connection's password (the option
+file), `connector._check_client_trust` runs before each use and in the probe:
+on macOS and Linux the file and every folder above both the chosen path and its
+real path must be owned by the user or root with no group or other write, except
+a root-owned sticky folder and, on macOS only, group write by the admin group
+(gid 80: its members can already act as root, and `/opt/homebrew/bin` and
+`/Applications` give it write access); on Windows only a local `mysql.exe` or
+`mariadb.exe` (no UNC or device path) under `ProgramFiles`, `ProgramFiles(x86)`,
+`ProgramW6432`, `LOCALAPPDATA` or the real profile (`MYFLAMES_USER_PROFILE`, which
+`main.cjs` sets because the backend's `USERPROFILE` is isolated; `backendEnvironment`
+passes the other four) is accepted, and an ACL check is still to come. The client
+runs by its fully resolved path, so no link on the way can redirect it after the
+check; the dialog shows the chosen path. `--no-defaults --version` runs in its own
+process group (killed with its children at the deadline) outside the selection
+lock. Detection offers only clients that pass the check; the automatic PATH client
+is described as PATH finds it, because the connector uses it so (the same check
+for PATH discovery is an open lead).
+A broken stored choice raises `ClientMissingError` ("The chosen database client is
+unavailable…") instead of falling back. `POST /api/client/detect` lists usable
+clients on PATH and, on macOS and Linux, in `lifecycle.COMMON_BIN_DIRS`
+(deduplicated by real path, at most ten probed). Both answer `client-settings-1.0`
+(`path`, `active` {`path`, `version`, `source` `chosen`|`path`} or null,
+`detected` [{`path`, `name`, `version`, `source` `path`|`common`}], `error` for a
+broken stored choice). Tests: `test/test_connector.py`, `test/test_ui.py`,
+`apps/workspace/test/database-client.mjs`.
 `package:win` builds the unsigned Windows x64 NSIS installer
 (`myflames-<version>-windows-x64-setup.exe`, per user). PyInstaller does not
 cross-compile, so `.github/workflows/windows-desktop.yml` builds the backend on a
@@ -5222,14 +5269,21 @@ Read-only refuses before any connection opens. The review token
 file's size, mtime and SHA-256, the format, the target and its metadata
 fingerprint (table type, engine, every column, primary key, triggers,
 foreign keys, CHECK constraints), the mapping, the new columns, the method,
-the transaction mode, the NO_BACKSLASH_ESCAPES state and the statements; one
+the transaction mode, the NO_BACKSLASH_ESCAPES state, the resolved client path,
+its `client_limits_files` policy and the statements; one
 apply per plan, at most two imports at once. Apply re-checks, in order, the
 policy, the token, the file (size and mtime, then a full SHA-256), the saved
-password, the private session (the local-file capability only for LOAD DATA: a
+password, the client path and file policy, then the private session. A changed
+client path or file policy refuses the import and requires another review. Each
+plan or apply resolves the client once and uses that same path for the capability
+check and session start. A client or capability check failure refuses the import;
+it never falls back to `--local-infile=1`. Capability results are cached by file
+identity (`st_dev`, `st_ino`, `st_size`, `st_mtime_ns`), so a replacement at the
+same path is checked again. The local-file capability is only for LOAD DATA: a
 MySQL client gets `--local-infile=0 --load-data-local-dir=<private folder>`,
 so it sends no file outside that folder; the MariaDB client has only
 `--local-infile`, reported in `method.client_limits_files` with a plan
-warning), the
+warning. After the session opens, apply re-checks the
 target's metadata, the NO_BACKSLASH_ESCAPES state, `@@GLOBAL.local_infile`
 for LOAD DATA, the privileges and the saved policy again, consumes the
 token and writes the pending audit record before anything is sent; every

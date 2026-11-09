@@ -293,6 +293,260 @@ class TestLiveJobOwnership(unittest.TestCase):
         self.assertTrue(job.cancelled.is_set())
 
 
+class TestDatabaseClientAPI(unittest.TestCase):
+    """Dispatch through the real handler without requiring a loopback socket."""
+
+    def setUp(self):
+        import types
+        from myflames import connector, lifecycle
+        from myflames.workspace_store import WorkspaceStore
+        from myflames.editor_session import EditorSessions
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        env = mock.patch.dict(os.environ, {'HOME': self.temp.name, 'USERPROFILE': self.temp.name,
+                                         'PATH': '', 'MYFLAMES_SECRET_BACKEND': 'vault'})
+        env.start()
+        self.addCleanup(env.stop)
+        folders = mock.patch.object(lifecycle, 'COMMON_BIN_DIRS', ())
+        folders.start()
+        self.addCleanup(folders.stop)
+        previous = connector.default_binary()
+        connector.set_default_binary(None)
+        self.addCleanup(connector.set_default_binary, previous)
+        self.workspace = types.SimpleNamespace(store=WorkspaceStore(Path(self.temp.name) / 'workspace.sqlite3'),
+                                               token='test-token', editor=EditorSessions())
+        self.addCleanup(self.workspace.editor.close)
+
+    def binary(self, body='print("mysql Ver 8.4.0")', name='mysql', folder='bin'):
+        import sys
+        # The real temp path (macOS /var is a link): a chosen client runs by its real path.
+        directory = Path(os.path.realpath(self.temp.name)) / folder
+        directory.mkdir(exist_ok=True)
+        path = directory / name
+        path.write_text('#!' + sys.executable + '\n' + body + '\n')
+        path.chmod(0o700)
+        return str(path)
+
+    def post(self, path, payload, authenticated=True):
+        from email.message import Message
+        handler = object.__new__(WorkspaceHandler)
+        handler.path, handler.server = path, self.workspace
+        handler.headers = Message()
+        body = json.dumps(payload).encode('utf-8')
+        handler.headers['Content-Type'] = 'application/json'
+        handler.headers['Content-Length'] = str(len(body))
+        handler.headers['X-Myflames-Token'] = self.workspace.token
+        handler._local_request = lambda: True
+        handler._authenticated = lambda: authenticated
+        handler._read_body = lambda size: body
+        handler._send = mock.Mock()
+        handler.do_POST()
+        return handler._send.call_args[0][:2]
+
+    def test_missing_client_code_through_direct_health_and_editor_paths(self):
+        from myflames.connector import ClientMissingError
+        for route, extra in (('/api/connection/test', {}), ('/api/live/health', {'interval': 1}),
+                             ('/api/editor/open', {'tab_id': 'client-recovery'})):
+            with self.subTest(route=route):
+                status, body = self.post(route, dict(extra, connection={'host': 'localhost'}))
+                self.assertEqual(status, 400, body)
+                self.assertEqual(body['code'], 'client-missing')
+                self.assertIn(ClientMissingError.MESSAGE, body['error'])
+                self.assertNotIn('--mysql-binary', body['error'])
+                self.assertEqual(body['error'], ClientMissingError.MESSAGE)
+        self.assertEqual(self.workspace.editor.sessions, {})
+
+    def test_client_missing_wrappers_return_only_the_typed_cause(self):
+        from myflames import ui
+        from myflames.connector import ClientMissingError, ConnectorError
+        # myflames' redaction wrappers keep the typed cause; other types never inherit it.
+        for error_type in (ConnectorError, ValueError, TypeError, KeyError, AttributeError, RecursionError,
+                           OverflowError):
+            with self.subTest(error_type=error_type.__name__):
+                try:
+                    try:
+                        raise ClientMissingError('The chosen database client is unavailable.')
+                    except ClientMissingError:
+                        raise error_type('wrapper details must not reach the response') from None
+                except error_type as error:
+                    with mock.patch.object(ui, 'api_response', side_effect=error):
+                        status, body = self.post('/api/connection/test', {})
+                    if error_type in (ConnectorError, ValueError):
+                        self.assertEqual((status, body), (400, {'error': 'The chosen database client is unavailable.',
+                                                                'code': 'client-missing'}))
+                    else:
+                        self.assertNotIn('code', body)
+
+    def test_unexpected_errors_with_client_missing_context_stay_generic_500(self):
+        import io
+        from myflames import ui
+        from myflames.connector import ClientMissingError
+        for error_type in (RuntimeError, OSError):
+            with self.subTest(error_type=error_type.__name__):
+                try:
+                    try:
+                        raise ClientMissingError()
+                    except ClientMissingError:
+                        raise error_type('internal detail with secret-password')
+                except error_type as error:
+                    stderr = io.StringIO()
+                    with mock.patch.object(ui, 'api_response', side_effect=error), \
+                            mock.patch.object(ui.sys, 'stderr', stderr):
+                        status, body = self.post('/api/connection/test',
+                                                 {'connection': {'password': 'secret-password'}})
+                self.assertEqual(status, 500)
+                self.assertEqual(body, {'error': ui._unexpected_error_message('/api/connection/test')})
+                self.assertNotIn('internal detail', body['error'])
+                self.assertNotIn('client-missing', body)
+                self.assertIn('Traceback (most recent call last)', stderr.getvalue())
+                self.assertIn(error_type.__name__ + ': internal detail with [redacted]', stderr.getvalue())
+                self.assertNotIn('secret-password', stderr.getvalue())
+
+    def test_other_refused_error_payloads_stay_unchanged(self):
+        from myflames import ui
+        from myflames.connector import ConnectorError, ClientMissingError
+        from myflames.editor_session import EditorError
+        for error, expected in ((ValueError('bad input'), {'error': 'Could not complete the request: bad input'}),
+                                (ConnectorError('client error'), {'error': 'client error'}),
+                                (ValueError(ClientMissingError.MESSAGE),
+                                 {'error': 'Could not complete the request: ' + ClientMissingError.MESSAGE}),
+                                (EditorError('busy message', 'busy'), {'error': 'busy message', 'code': 'busy'})):
+            with self.subTest(error=error), mock.patch.object(ui, 'api_response', side_effect=error):
+                status, body = self.post('/api/connection/test', {})
+                self.assertEqual(body, expected)
+                self.assertEqual(status, 409 if isinstance(error, EditorError) else 400)
+        ssh = ConnectorError('SSH failed')
+        ssh.reason = 'ssh-failed'
+        with mock.patch.object(ui, 'api_response', side_effect=ssh):
+            self.assertEqual(self.post('/api/connection/test', {}),
+                             (400, {'error': 'SSH failed', 'code': 'ssh-failed'}))
+
+    def test_settings_and_detection_without_clients_do_not_create_store(self):
+        expected = {'schema_version': 'client-settings-1.0', 'path': None, 'active': None, 'detected': []}
+        for route in ('/api/client/settings', '/api/client/detect'):
+            self.assertEqual(self.post(route, {}), (200, expected))
+        self.assertFalse(self.workspace.store.path.exists())
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX executable fixture')
+    def test_settings_round_trip_clear_and_automatic_active_client(self):
+        from myflames import connector
+        path = self.binary(folder='chosen')
+        status, result = self.post('/api/client/settings', {'path': path})
+        self.assertEqual(status, 200, result)
+        self.assertEqual(result['path'], path)
+        self.assertEqual(result['active'], {'path': path, 'version': 'mysql Ver 8.4.0', 'source': 'chosen'})
+        self.assertEqual(self.post('/api/client/settings', {})[1], result)
+        self.assertEqual(connector.default_binary(), path)
+        self.assertEqual(connector.MySQLConnection(host='localhost')._resolve_binary(), path)
+        automatic = self.binary(folder='automatic')
+        with mock.patch.dict(os.environ, {'PATH': str(Path(automatic).parent)}):
+            status, cleared = self.post('/api/client/settings', {'path': None})
+        self.assertEqual(status, 200, cleared)
+        self.assertIsNone(cleared['path'])
+        self.assertIsNone(connector.default_binary())
+        self.assertEqual(cleared['active']['path'], automatic)
+        self.assertEqual(cleared['active']['source'], 'path')
+        self.assertEqual(cleared['detected'][0]['path'], automatic)
+        # An automatic PATH client in a shared folder is described as PATH finds it
+        # (the connector uses it so), but never offered as a choice (security re-review R2).
+        shared = self.binary(folder='shared')
+        os.chmod(str(Path(shared).parent), 0o777)
+        self.addCleanup(os.chmod, str(Path(shared).parent), 0o755)
+        with mock.patch.dict(os.environ, {'PATH': str(Path(shared).parent)}):
+            status, described = self.post('/api/client/settings', {})
+        self.assertEqual(status, 200, described)
+        self.assertNotIn('error', described)
+        self.assertEqual((described['active']['path'], described['active']['source']), (shared, 'path'))
+        self.assertEqual(described['detected'], [])
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX executable fixture')
+    def test_every_invalid_choice_is_refused_without_replacing_saved_choice(self):
+        from myflames import connector
+        good = self.binary(folder='good')
+        self.assertEqual(self.post('/api/client/settings', {'path': good})[0], 200)
+        directory = Path(self.temp.name) / 'mysql'
+        directory.mkdir()
+        link = Path(self.temp.name) / 'mariadb'
+        link.symlink_to(directory)
+        bad = ['relative/mysql', str(Path(self.temp.name) / 'missing' / 'mysql'), str(directory), str(link),
+               self.binary(name='not-a-client', folder='wrong'),
+               self.binary(body='print("mysql"); raise SystemExit(1)', folder='nonzero'),
+               self.binary(body='print("not a database client")', folder='banner'),
+               self.binary(body='import time; time.sleep(30)', folder='timeout'), '', False, {}, 1]
+        for candidate in bad:
+            with self.subTest(candidate=candidate):
+                status, error = self.post('/api/client/settings', {'path': candidate})
+                self.assertEqual(status, 400, error)
+                self.assertEqual(self.workspace.store.client_binary(), good)
+                self.assertEqual(connector.default_binary(), good)
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX executable fixture')
+    def test_changed_stored_client_is_reported_unavailable_and_can_be_replaced(self):
+        from myflames import connector
+        good = self.binary()
+        self.assertEqual(self.post('/api/client/settings', {'path': good})[0], 200)
+        conn = connector.MySQLConnection(host='localhost')
+        self.assertEqual(conn._resolve_binary(), good)
+        self.binary(body='raise SystemExit(1)')
+        status, result = self.post('/api/client/settings', {})
+        self.assertEqual(status, 200)
+        self.assertIsNone(result['active'])
+        self.assertEqual(result['path'], good)
+        self.assertIn('unsuccessfully', result['error'])
+        with self.assertRaises(connector.ClientMissingError):
+            conn._resolve_binary()
+        replacement = self.binary(folder='replacement')
+        status, result = self.post('/api/client/settings', {'path': replacement})
+        self.assertEqual(status, 200, result)
+        self.assertEqual(conn._resolve_binary(), replacement)
+
+    def test_settings_are_authenticated_and_detection_cannot_write(self):
+        for route in ('/api/client/settings', '/api/client/detect'):
+            self.assertEqual(self.post(route, {'path': '/bad/mysql'}, authenticated=False)[0], 403)
+        self.assertEqual(self.post('/api/client/detect', {'path': None})[0], 400)
+        self.assertEqual(self.post('/api/client/settings', {'binary': '/bad/mysql'})[0], 400)
+        self.assertFalse(self.workspace.store.path.exists())
+
+    def test_stored_broken_path_is_reported_and_not_used(self):
+        from myflames import connector
+        path = str(Path(self.temp.name) / 'missing' / 'mysql')
+        self.workspace.store.set_client_binary(path)
+        status, result = self.post('/api/client/settings', {})
+        self.assertEqual(status, 200, result)
+        self.assertEqual(result['path'], path)
+        self.assertIsNone(result['active'])
+        self.assertIn('regular file', result['error'])
+        with self.assertRaises(connector.ClientMissingError):
+            connector.MySQLConnection(host='localhost')._resolve_binary()
+        self.assertIsNone(self.post('/api/client/settings', {'path': None})[1]['path'])
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX executable fixture')
+    def test_server_start_restores_and_validates_choice_without_blocking_recovery(self):
+        from myflames import connector, ui
+        path = self.binary()
+        self.workspace.store.set_client_binary(path)
+        # Stop immediately before socket creation. Everything up to the
+        # server bind is real; no worker thread or client session is started.
+        for broken in (False, True):
+            if broken:
+                Path(path).unlink()
+            connector.set_default_binary(None)
+            server = object.__new__(WorkspaceServer)
+            try:
+                with mock.patch.object(ui.ThreadingHTTPServer, '__init__', side_effect=OSError('test bind boundary')):
+                    with self.assertRaisesRegex(OSError, 'test bind boundary'):
+                        server.__init__(store_path=self.workspace.store.path)
+            finally:
+                with mock.patch.object(ui.ThreadingHTTPServer, 'server_close'):
+                    server.server_close()
+            self.assertEqual(connector.default_binary(), path)
+            if broken:
+                with self.assertRaises(connector.ClientMissingError):
+                    connector.MySQLConnection(host='localhost')._resolve_binary()
+            else:
+                self.assertEqual(connector.MySQLConnection(host='localhost')._resolve_binary(), path)
+
+
 class TestWorkspaceAnalysis(unittest.TestCase):
     def test_analysis_uses_canonical_engine_and_node_ids(self):
         for raw, engine in ((PLAN, 'mysql'), (MARIA, 'mariadb')):
