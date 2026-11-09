@@ -83,6 +83,14 @@ class TestAppUpdate(unittest.TestCase):
                 self.assertIsNone(result['asset_checksum_url'])
         self.assertIsNotNone(app_update._update_asset(
             [{'name': 'MYFLAMES-99.0.0-MACOS-UNIVERSAL.ZIP'}], 'darwin', 'arm64', '99.0.0'))
+        # The update file must be served from this release's own tag (security review H2).
+        name = 'myflames-99.0.0-macos-arm64.zip'
+        here = app_update.GITHUB_RELEASES_URL + '/download/v99.0.0/' + name
+        elsewhere = app_update.GITHUB_RELEASES_URL + '/download/v98.0.0/' + name
+        self.assertIsNotNone(app_update._update_asset(
+            [{'name': name, 'browser_download_url': here}], 'darwin', 'arm64', '99.0.0', 'v99.0.0'))
+        self.assertIsNone(app_update._update_asset(
+            [{'name': name, 'browser_download_url': elsewhere}], 'darwin', 'arm64', '99.0.0', 'v99.0.0'))
 
     def test_failed_and_simulated_checks_include_all_new_fields(self):
         keys = ('asset_checksum_url', 'update_asset_name', 'update_asset_url',
@@ -1138,6 +1146,7 @@ class TestUpdateStaging(unittest.TestCase):
         self.root = Path(temp.name)
         self.updates, self.downloads = self.root / 'updates', self.root / 'downloads'
         self.updates.mkdir()
+        os.chmod(str(self.updates), 0o700)  # as the desktop app creates it
         self.downloads.mkdir()
         self.start_patch(patch.dict(os.environ, {
             'HOME': temp.name, 'USERPROFILE': temp.name, 'MYFLAMES_SECRET_BACKEND': 'vault',
@@ -1186,8 +1195,14 @@ class TestUpdateStaging(unittest.TestCase):
         return app_update.staging_state()
 
     def test_stage_success_publishes_manifest_and_cleans_only_regular_files(self):
-        older = self.updates / 'old.zip'
+        older = self.updates / 'myflames-98.0.0-macos-arm64.zip'
         older.write_bytes(b'old')
+        partial = self.updates / '.myflames-stage-abc.part'
+        partial.write_bytes(b'part')
+        # Files the updater did not write stay, whatever their names (security review S2).
+        notes, other_zip = self.updates / 'notes.txt', self.updates / 'old.zip'
+        notes.write_bytes(b'mine')
+        other_zip.write_bytes(b'mine too')
         keep = self.updates / 'directory'
         keep.mkdir()
         target = self.root / 'untouched'
@@ -1209,6 +1224,8 @@ class TestUpdateStaging(unittest.TestCase):
         self.assertEqual(app_update.staged_update(), {'version': self.VERSION, 'file': self.NAME,
                          'size': len(self.BODY), 'sha256': hashlib.sha256(self.BODY).hexdigest()})
         self.assertFalse(older.exists())
+        self.assertFalse(partial.exists())
+        self.assertEqual((notes.read_bytes(), other_zip.read_bytes()), (b'mine', b'mine too'))
         self.assertTrue(keep.is_dir())
         self.assertTrue(symlink.is_symlink())
         self.assertEqual(target.read_bytes(), b'original')
@@ -1238,6 +1255,37 @@ class TestUpdateStaging(unittest.TestCase):
                 responses[1].length = remaining
                 self.assertEqual(self.finish()['state'], 'failed')
                 self.assertEqual(list(self.updates.iterdir()), [])
+
+    def test_stage_refuses_a_linked_or_shared_updates_folder(self):
+        # Security review S1/S2: another user's folder, or a link to the user's
+        # files, is never staged into, listed or emptied.
+        self.replies(declared=len(self.BODY))
+        app_update._CACHE['result'] = dict(self.checked)
+        documents = self.root / 'Documents'
+        documents.mkdir(mode=0o700)
+        (documents / 'notes.txt').write_bytes(b'mine')
+        link = self.root / 'linked-updates'
+        link.symlink_to(documents)
+        shared = self.root / 'shared-updates'
+        shared.mkdir()
+        os.chmod(str(shared), 0o777)
+        for directory, reason in ((str(link), 'not a plain folder'), (str(shared), 'not private')):
+            with self.subTest(directory=directory), patch.dict(os.environ, {'MYFLAMES_UPDATES_DIR': directory}):
+                with self.assertRaisesRegex(ValueError, reason):
+                    app_update.stage_update()
+                self.assertIsNone(app_update.staged_update())
+        self.assertEqual([p.name for p in documents.iterdir()], ['notes.txt'])
+        self.opener.open.assert_not_called()
+
+    def test_test_hook_is_ignored_by_the_packaged_backend(self):
+        local = self.root / 'next.zip'
+        local.write_bytes(self.BODY)
+        app_update._CACHE['result'] = dict(self.checked)
+        self.replies(declared=len(self.BODY))
+        with patch.dict(os.environ, {'MYFLAMES_TEST_UPDATE': self.VERSION, 'MYFLAMES_TEST_UPDATE_FILE': str(local)}), \
+                patch.object(app_update.sys, 'frozen', True, create=True):
+            self.assertEqual(self.finish()['state'], 'done')
+        self.opener.open.assert_called()  # the real download path ran, not the local file
 
     def test_stage_requires_desktop_directory_and_cached_compatible_update(self):
         self.assertIsNone(app_update.staging_state())

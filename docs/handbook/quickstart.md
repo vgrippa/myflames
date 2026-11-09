@@ -16,6 +16,10 @@ Download the Windows setup `.exe` from [official downloads](https://github.com/v
 
 The Windows build is a preview tested on Windows 11 x64. A crash can leave a statement that was already running on the server until it finishes. Read the [desktop reference](../DESKTOP.md) before using maintenance operations.
 
+## Updates
+
+myflames checks for a newer release when it starts and once a day while **Settings > Check for updates automatically** is on (the default); **Check for updates** in Home's footer and About myflames checks on demand. When an update is available, a badge beside the logo at the top of the sidebar follows the download until the update is ready. Choose **Update**, then **Restart to update**, or let the update install when you next quit the app. On macOS, keep `myflames.app` in your Applications folder so it can update in place. On Windows the update installs silently after the app quits.
+
 ## Start with an exported plan
 
 Open Plans in the desktop app and import your exported JSON plan. Select Visual Explain, Flame graph, Tree or Bar chart, then select an operator to inspect its measurements and findings.

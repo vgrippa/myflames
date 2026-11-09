@@ -64,7 +64,7 @@ The sidebar separates where you go from what you have open:
 
 | Place | What it holds |
 | --- | --- |
-| **Home** | Connections in a table beside one Recent work list of open plans, saved investigations and query tabs. **Add connection** is the primary action in the Connections toolbar. **Import plan** appears once, in the top bar, whether or not anything is open; the empty Recent work list offers **Explore sample plan**. Passwords show **Saved** or **Not saved**, and a connection without a default schema shows a dash. **News**, under Recent work (below it on a narrow window), lists up to six MySQL and MariaDB headlines with their source and age; each opens in your browser, **Refresh news** reads again, and one line says when news is loading, unavailable offline (with when it was last updated) or empty. The version line sits at the bottom of Home with **Check for updates**, which asks GitHub only when clicked and shows the outcome with the time of the last check (Not checked yet, Up to date, a newer version with **Download…**, or why it could not check; a result older than a day reads as the last result). About myflames has the same status and button. Dropping a plan file anywhere on Home imports it. **New query tab** belongs to the Query editor |
+| **Home** | Connections in a table beside one Recent work list of open plans, saved investigations and query tabs. **Add connection** is the primary action in the Connections toolbar. **Import plan** appears once, in the top bar, whether or not anything is open; the empty Recent work list offers **Explore sample plan**. Passwords show **Saved** or **Not saved**, and a connection without a default schema shows a dash. **News**, under Recent work (below it on a narrow window), lists up to six MySQL and MariaDB headlines with their source and age; each opens in your browser, **Refresh news** reads again, and one line says when news is loading, unavailable offline (with when it was last updated) or empty. The version line sits at the bottom of Home with **Check for updates**, which checks on demand (the app also checks at start and once a day while **Settings > Check for updates automatically** is on) and shows the outcome with the time of the last check (Not checked yet, Up to date, a newer version with **Download…**, or why it could not check; a result older than a day reads as the last result). When a current check finds a newer version, a round badge beside the flame logo at the top of the sidebar shows the update available, the download's progress, preparing or ready, and while an update is pending the Settings popover lists **Update available…**, **Update progress…** or **Restart to update…**; either opens the Software update dialog, whose **Update** stages the verified update file and **Restart to update** installs it in place. About myflames has the same status and button. Dropping a plan file anywhere on Home imports it. **New query tab** belongs to the Query editor |
 | **Plans** | The open plan with its charts, findings, and inspector. **Explore** and **Compare**, in the top bar beside the place name, switch between one plan and two plans side by side; **Import plan** is at the end of the top bar. One plan header holds the plan's name, the stats (time, rows examined, rows returned, findings), **Plan summary** (or **Investigate first** when a finding leads), **SQL** with **Copy SQL**, and **Export**; Plan summary and SQL each open a panel over the chart with one click (a click elsewhere or Escape closes it). The chart with its own toolbar and the inspector fill the rest of the window; findings and execution context follow below. **Save investigation** opens a sheet with the notebook (investigation name, plan name, baseline, tags, notes and conclusions, Export investigation bundle) and saves with **Save**; **Close** keeps edits as unsaved changes; while Save is running it continues and reports its outcome in the window |
 | **Query editor** | SQL tabs that run any SQL in a session of their own (Run, Run all, Stop, results per result set, Messages, export, transactions), Explain and Run analysis, the schema browser, the run history, and the connection in use |
 | **Query digest** | Right below the Query editor: statement rankings with a named source, totals, a sortable table and a shared inspector. **Open in Query editor** and **Explain** are in the inspector and row menu; **Export** offers Text report and CSV. See [Query digest](#query-digest) |
@@ -1090,7 +1090,8 @@ every news read; its hint says the headlines come from Planet MySQL and the
 MariaDB Foundation, read over HTTPS while Home is open), the **Audit log** (see
 [Audit log](#audit-log)), and **About myflames**, a window
 with the version, the license, one privacy line (myflames contacts only your
-database servers, official release pages when you check for updates,
+database servers, official release pages when it checks for updates (at start
+and once a day while that setting is on, or when you ask),
 and news feeds when shown and turned on), and the credits (Brendan Gregg's
 FlameGraph and Tanel Poder's SQL Plan FlameGraphs). Close is its default button, and in a
 short window its text scrolls while Close stays in view. The
@@ -1792,8 +1793,10 @@ Running queries tab open on Sessions). Choose **Start fresh** to clear it, turn 
 `myflames ui --no-restore` to start clean once without deleting it. Save
 investigations to keep named copies in the library. Downloads are saved through your browser. Your session and
 saved investigations stay on this computer. Apart from your database servers,
-myflames contacts only official release pages when you check for updates
-(**Check for updates** on Home, About or Maintenance's Tools) and the two news
+myflames contacts only official release pages when it checks for updates (at
+start and once a day while **Settings > Check for updates automatically** is
+on, or when you ask with **Check for updates** on Home, About or Maintenance's
+Tools) and the two news
 feeds described below, while Home is shown and news is turned on.
 
 Home news only reads: while Home is on screen and **Settings > Show MySQL and

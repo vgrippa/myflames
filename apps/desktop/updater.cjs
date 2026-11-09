@@ -18,6 +18,8 @@ const MANIFEST = 'staged-update.json';
 const MAX_MANIFEST_BYTES = 4096;
 const FEED_LIFETIME = 120000; // Squirrel.Mac reads the feed and the zip within this
 const FILE_NAME = /^myflames-([0-9]+\.[0-9]+\.[0-9]+)-(macos|windows)-(arm64|x64|universal)(-setup)?\.(zip|exe)$/i;
+// The backend's partial downloads (app_update.stage_update).
+const PART_NAME = /^\.myflames-stage-[^/\\]*\.part$/;
 const PLATFORM_FILE = { darwin: name => /-macos-[^-]+\.zip$/i.test(name), win32: name => /-windows-[^-]+-setup\.exe$/i.test(name) };
 
 function versionParts(value) {
@@ -43,8 +45,23 @@ function openPlain(file) {
   return { fd, size: after.size };
 }
 
+// The updates folder must be a real folder, not a link, and on macOS and
+// Linux owned by this user with no access for anyone else: its files are
+// installed without another check of who put them there.
+function checkFolder(folder, platform = process.platform) {
+  let stat;
+  try { stat = fs.lstatSync(folder); } catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+  if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error('The updates folder is not a plain folder.');
+  if (platform !== 'win32' && typeof process.getuid === 'function' &&
+      (stat.uid !== process.getuid() || (stat.mode & 0o077) !== 0)) {
+    throw new Error('The updates folder is not private to this user.');
+  }
+  return true;
+}
+
 // staged-update-1.0, as app_update.stage_update writes it; null when absent.
 function readManifest(folder, platform = process.platform) {
+  if (!checkFolder(folder, platform)) return null;
   const file = path.join(folder, MANIFEST);
   try { fs.lstatSync(file); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
   const { fd, size } = openPlain(file);
@@ -97,29 +114,36 @@ function isWorkspaceSender(event, contents, origin) {
 }
 
 // Remove a staged update that is no longer newer (it was installed, or a newer
-// version was installed by hand) or whose record cannot be read.
+// version was installed by hand) or whose record cannot be read. Only the
+// names the updater writes are removed, and never in a folder that fails
+// checkFolder (a link or a shared folder is left alone).
 function removeStale(folder, currentVersion, platform = process.platform) {
+  try { if (!checkFolder(folder, platform)) return false; } catch { return false; }
   let record = null;
   try { record = readManifest(folder, platform); } catch { /* unreadable: remove below */ }
   if (record && isNewer(record.version, currentVersion)) return false;
   let names;
   try { names = fs.readdirSync(folder); } catch { return false; }
+  let removed = 0;
   for (const name of names) {
+    if (name !== MANIFEST && !FILE_NAME.test(name) && !PART_NAME.test(name)) continue;
     const file = path.join(folder, name);
-    try { if (!fs.lstatSync(file).isDirectory()) fs.unlinkSync(file); } catch { /* already gone */ }
+    try { if (!fs.lstatSync(file).isDirectory()) { fs.unlinkSync(file); removed += 1; } } catch { /* already gone */ }
   }
-  return names.length > 0;
+  return removed > 0;
 }
 
-// Why this copy cannot update itself in place, or null when it can.
-function unsupportedReason({ platform, packaged, inApplications, bundleWritable }) {
+// Why this copy cannot update itself in place, or null when it can. On
+// Windows a data folder chosen with MYFLAMES_DESKTOP_DATA may be shared with
+// other users, and its owner cannot be checked here: no silent installs then.
+function unsupportedReason({ platform, packaged, inApplications, bundleWritable, customDataFolder = false }) {
   if (!packaged) return 'Development builds do not update in place.';
   if (platform === 'darwin') {
     if (!inApplications) return 'Move myflames to the Applications folder to update it in place.';
     if (!bundleWritable) return 'myflames cannot replace itself in this folder.';
     return null;
   }
-  if (platform === 'win32') return null;
+  if (platform === 'win32') return customDataFolder ? 'myflames does not update in place when MYFLAMES_DESKTOP_DATA chooses its data folder.' : null;
   return 'This system does not update in place.';
 }
 
@@ -128,21 +152,27 @@ function unsupportedReason({ platform, packaged, inApplications, bundleWritable 
 function serveOnce(file, size, { lifetime = FEED_LIFETIME } = {}) {
   const token = crypto.randomBytes(32).toString('hex');
   let served = false;
+  // Exact request lines and Host only: nothing is parsed, so no request can throw here.
   const server = http.createServer((request, response) => {
-    const { pathname } = new URL(request.url, 'http://127.0.0.1');
-    if (request.method === 'GET' && pathname === `/${token}/feed.json`) {
+    try {
       const { port } = server.address();
-      const body = JSON.stringify({ url: `http://127.0.0.1:${port}/${token}/update.zip` });
-      response.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) });
-      response.end(body); return;
+      if (request.headers.host !== `127.0.0.1:${port}`) { response.writeHead(400); response.end(); return; }
+      if (request.method === 'GET' && request.url === `/${token}/feed.json`) {
+        const body = JSON.stringify({ url: `http://127.0.0.1:${port}/${token}/update.zip` });
+        response.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) });
+        response.end(body); return;
+      }
+      if (request.method === 'GET' && request.url === `/${token}/update.zip` && !served) {
+        served = true;
+        response.writeHead(200, { 'Content-Type': 'application/zip', 'Content-Length': size });
+        fs.createReadStream(file).on('error', () => response.destroy()).pipe(response); return;
+      }
+      response.writeHead(404); response.end();
+    } catch {
+      try { response.writeHead(400); response.end(); } catch { response.destroy(); }
     }
-    if (request.method === 'GET' && pathname === `/${token}/update.zip` && !served) {
-      served = true;
-      response.writeHead(200, { 'Content-Type': 'application/zip', 'Content-Length': size });
-      fs.createReadStream(file).on('error', () => response.destroy()).pipe(response); return;
-    }
-    response.writeHead(404); response.end();
   });
+  server.on('clientError', (_error, socket) => { try { socket.end('HTTP/1.1 400 Bad Request\r\n\r\n'); } catch { socket.destroy(); } });
   const timer = setTimeout(() => close(), lifetime);
   timer.unref?.();
   function close() { clearTimeout(timer); server.close(); server.closeAllConnections?.(); }
@@ -193,10 +223,11 @@ function windowsInstallerArgs(relaunch) {
   return ['--updated', '/S', ...(relaunch ? ['--force-run'] : [])];
 }
 function launchWindowsInstaller(file, relaunch, run = spawn) {
-  const child = run(file, windowsInstallerArgs(relaunch), { detached: true, stdio: 'ignore', windowsHide: true, shell: false });
+  // Started from its own folder, never the install folder it replaces.
+  const child = run(file, windowsInstallerArgs(relaunch), { cwd: path.dirname(file), detached: true, stdio: 'ignore', windowsHide: true, shell: false });
   child.unref();
   return child;
 }
 
-module.exports = { MANIFEST, FILE_NAME, isNewer, readManifest, verifyStaged, removeStale, unsupportedReason, isWorkspaceSender,
+module.exports = { MANIFEST, FILE_NAME, isNewer, checkFolder, readManifest, verifyStaged, removeStale, unsupportedReason, isWorkspaceSender,
   serveOnce, prepareMac, windowsInstallerArgs, launchWindowsInstaller };

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **myflames updates itself.** **Settings > Check for updates automatically** (on by default) checks 10 seconds after the app opens when the last check is stale or missing and once a day after that, and **Check for updates** in Home's footer and About myflames still checks on demand. When a newer release is found, a badge beside the logo shows the update, its download progress and when it is ready; **Update** downloads the release's update file, verifies it against the SHA-256 published in the release and stages it, and **Restart to update** installs it in place (choosing **Later** installs it when you next quit; on macOS the app must be in an Applications folder). On Windows the unsigned installer runs silently after the app quits: the update is trusted through HTTPS from GitHub's release hosts and the release's SHA-256 until Windows code signing lands.
+
+### Changed
+
+- **README screenshots show myflames 3.3.3.** Home, Visual Explain, Query editor and Server Health were captured again from the 3.3.3 workspace (they showed 3.1.1). The website's documentation and homepage copy them from `docs/screenshots/`.
+
 ## [3.3.3] - 2026-11-09
 
 ### Added

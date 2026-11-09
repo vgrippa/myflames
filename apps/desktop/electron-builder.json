@@ -22,7 +22,8 @@
     "icon": "../../docs/brand/myflames-app-icon.icns",
     "identity": null, "notarize": false,
     "hardenedRuntime": true, "entitlements": "entitlements.mac.plist", "entitlementsInherit": "entitlements.mac.plist",
-    "artifactName": "${productName}-${version}-macos-${arch}.${ext}"
+    "artifactName": "${productName}-${version}-macos-${arch}.${ext}",
+    "extendInfo": { "ElectronSquirrelPreventDowngrades": true }
   },
   "dmg": { "artifactName": "${productName}-${version}-macos-${arch}.${ext}", "writeUpdateInfo": false },
   "win": { "target": [{ "target": "nsis", "arch": ["x64"] }], "icon": "../../docs/brand/myflames-app-icon.png" },

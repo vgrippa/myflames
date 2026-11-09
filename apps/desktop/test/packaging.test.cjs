@@ -59,6 +59,8 @@ test('the release zip, which the app installs in place, keeps the update file na
   assert.match(script, /shasum -a 256 "\$zipname" > "\$zipname.sha256"/);
   assert.match(script, /codesign --verify --deep --strict "\$unzipped\/myflames.app"/);
   assert.ok(config.files.includes('updater.cjs'), 'updater.cjs is packaged');
+  // Squirrel.Mac refuses a lower version even when it is signed by the same team.
+  assert.equal(config.mac.extendInfo.ElectronSquirrelPreventDowngrades, true);
 });
 
 test('the desktop, Python and package versions match, so an installed update is not offered again', () => {

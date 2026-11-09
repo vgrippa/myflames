@@ -45,7 +45,11 @@ The launch URL is captured privately from the owned Python process. Its one-use
 secret becomes the existing HttpOnly session cookie and origin-bound proof.
 Reload keeps that session; restarting launches a new backend and authenticates
 again. The window starts with no renderer Node integration, a sandbox, context
-isolation and no preload or renderer IPC bridge. Network requests stay on the
+isolation and no preload bridge beyond the updater's narrow one: `preload.cjs`
+exposes `window.myflamesDesktop.update` (`support()`, `prepare()` and
+`restart()` over the IPC channels `myflames:update-support`,
+`myflames:update-prepare` and `myflames:update-restart`, with no arguments),
+and the main process answers only the workspace origin's top frame. Network requests stay on the
 owned loopback origin. External HTTPS links to the supported documentation,
 download and inspiration sites open in the normal browser. Other navigation,
 popups and permission requests are denied. Native Edit menu copy/paste remains
@@ -118,7 +122,7 @@ copies that directory into the app resources, and a packaged app uses that
 backend rather than a system Python. Build on each target OS and architecture.
 The package directory is scaffolding; the signed, notarized DMG comes from
 `package:mac:release` ([Build the signed release](#build-the-signed-release)).
-Updater trust, platform icons, dependency licensing, Windows process supervision
+Platform icons, dependency licensing, Windows process supervision
 and packaged platform validation remain release work.
 Database clients are not bundled. On macOS the launcher appends standard
 Homebrew, Oracle MySQL and MacPorts client locations to the backend PATH so
@@ -127,7 +131,13 @@ On Windows it appends the `bin` folders the MySQL and MariaDB installers create
 under Program Files (`MySQL\MySQL Server 8.4`, `MariaDB 11.8`, `MySQL\MySQL Shell 8.4`
 and other versions, newest first), which they do not add to PATH; PATH keeps
 precedence.
-No automatic application updates or install actions are enabled.
+In-place application updates are enabled: with **Check for updates
+automatically** on (the default), the workspace checks at start and once a day;
+**Update** stages the release's update file into the app's private updates
+folder after checking it against the release's SHA-256, and **Restart to
+update** installs it (macOS: through Squirrel.Mac, in place only while the app
+sits in an Applications folder; Windows: the installer runs silently after the
+app quits).
 
 ## Build an unsigned macOS app
 
@@ -178,9 +188,12 @@ not enter it.
 
 ## Build the signed release
 
-Releases ship `myflames-<version>-macos-arm64.dmg`, signed with a Developer ID
+Releases ship `myflames-<version>-macos-arm64.dmg` and the update zip
+`myflames-<version>-macos-arm64.zip`, signed with a Developer ID
 and notarized by Apple, so it opens from Finder without Control-click or
-`xattr`. You need a Developer ID Application certificate in the login keychain
+`xattr`. The first release with in-place updates must be installed by hand
+once. Packaging tests keep the desktop `package.json` version equal to
+`myflames.__version__` and `pyproject.toml`. You need a Developer ID Application certificate in the login keychain
 (`security find-identity -v -p codesigning` lists it) and a notarytool profile:
 
 ```sh
@@ -206,11 +219,19 @@ predecessor from the keychain). It overrides
 the unsigned configuration for this build only: electron-builder signs every
 binary, the PyInstaller backend included, under the hardened runtime with
 `entitlements.mac.plist` (only `com.apple.security.cs.allow-jit`), notarizes and
-staples the app, and builds the DMG. The script then runs the packaged smoke,
-signs, notarizes and staples the DMG, checks that Gatekeeper accepts the app,
-the DMG and the app inside the mounted DMG as notarized, refuses a DMG over the
+staples the app, and builds the DMG and the update zip
+(`electron-builder --mac dmg zip --arm64`; `mac.artifactName`
+`myflames-${version}-macos-${arch}.${ext}`). The script then runs the packaged
+smoke, signs, notarizes and staples the DMG, checks that Gatekeeper accepts the app,
+the DMG and the app inside the mounted DMG as notarized, extracts the zip and
+checks the app inside it the same way (`codesign --verify --deep --strict`,
+Gatekeeper source Notarized Developer ID, stapler validate), refuses a DMG or a
+zip over the
 150 MiB in-app update download limit (`myflames/app_update.py`), and writes
-`<name>.sha256` beside it in `dist/`. Attach both to the GitHub release.
+`<name>.sha256` beside both in `dist/`. Attach the DMG, the zip and both
+`.sha256` files to the GitHub release, uploading the DMG before the zip:
+3.3.3 and older pick the first matching `.zip` or `.dmg` in the release's
+asset order for Download.
 
 Notarization uploads the build to Apple and usually takes a few minutes per
 submission. When Apple rejects one, `xcrun notarytool log <id> --keychain-profile
@@ -267,7 +288,7 @@ administrator prompt, under `%LOCALAPPDATA%\Programs\myflames-desktop`, with Sta
 and desktop shortcuts and an uninstaller in Settings > Apps. Its data lives in
 `%APPDATA%\myflames-desktop`, separate from the command-line workspace.
 
-Releases attach this installer and its `.sha256` from the workflow run of the release commit, as an unsigned preview. Known gaps:
+Releases attach this installer and its `.sha256` from the workflow run of the release commit, as an unsigned preview. In-place updates stage that installer after checking it against the release's SHA-256; when the app quits, after the backend stopped, it runs the installer from the updates folder detached, without a shell (`<setup>.exe --updated /S`, silent, keeping the app's data, plus `--force-run` after **Restart to update** so the new version opens). Because the installer is unsigned, the update is trusted through HTTPS from GitHub's release hosts and the SHA-256 published in the same release; an Authenticode publisher check is to be added when Windows signing lands. Known gaps:
 
 - Quitting stops the backend with `taskkill /T /F`, so a dump, restore or clone
   in progress is not stopped and audited as cancelled first.

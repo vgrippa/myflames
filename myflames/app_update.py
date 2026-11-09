@@ -122,9 +122,20 @@ def _valid_update_name(name, version, platform):
                 and match.group(4) is not None))
 
 
-def _update_asset(assets, platform, machine, version):
+def _update_asset(assets, platform, machine, version, tag=None):
+    """The release file the desktop app installs: named for this version and
+    platform, and (with *tag*) served from this release's own download path."""
+    def in_release(asset):
+        if tag is None:
+            return True
+        url = asset.get("browser_download_url")
+        try:
+            path = urllib.parse.unquote(urllib.parse.urlsplit(url).path) if isinstance(url, str) else ""
+        except ValueError:
+            return False
+        return path == "%s/download/%s/%s" % (urllib.parse.urlsplit(GITHUB_RELEASES_URL).path, tag, asset.get("name"))
     candidates = [asset for asset in assets if isinstance(asset, dict)
-                  and _valid_update_name(asset.get("name"), version, platform)] if isinstance(assets, list) else []
+                  and _valid_update_name(asset.get("name"), version, platform) and in_release(asset)] if isinstance(assets, list) else []
     return match_asset_for_platform(candidates, platform, machine)
 
 
@@ -255,7 +266,7 @@ def check_for_updates(force=False):
     is_newer = is_newer_version(tag_name, __version__)
     plat, mach = detect_system_target()
     matched = match_asset_for_platform(data.get("assets", []), plat, mach)
-    update = _update_asset(data.get("assets"), plat, mach, tag_name)
+    update = _update_asset(data.get("assets"), plat, mach, tag_name, tag.strip())
 
     def text(key):
         value = data.get(key)
@@ -603,10 +614,29 @@ def _read_checksum(url, filename, watchdog, deadline):
 
 
 def _updates_directory():
+    """MYFLAMES_UPDATES_DIR, which the desktop app creates for this user. Its
+    files are installed without asking who put them there, so it must be a
+    plain folder (not a link) and, on macOS and Linux, owned by this user with
+    no access for anyone else (as desktop/updater.cjs checkFolder requires)."""
     named = os.environ.get("MYFLAMES_UPDATES_DIR", "")
-    if not named or not os.path.isabs(named) or not os.path.isdir(named):
+    if not named or not os.path.isabs(named):
         raise ValueError("Updating in place is available only in the desktop app.")
-    return Path(named).resolve()
+    try:
+        info = os.lstat(named)
+    except OSError:
+        raise ValueError("Updating in place is available only in the desktop app.")
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise ValueError("The updates folder is not a plain folder.")
+    if hasattr(os, "getuid") and (info.st_uid != os.getuid() or info.st_mode & 0o077):
+        raise ValueError("The updates folder is not private to this user.")
+    return Path(named)
+
+
+def _owned_update_file(name):
+    """A name the updater writes in its folder: the record, a staged release
+    file or a partial download. Nothing else there is ever removed."""
+    return (name == "staged-update.json" or _UPDATE_ASSET_REGEX.fullmatch(name) is not None
+            or (name.startswith(".myflames-stage-") and name.endswith(".part")))
 
 
 def _open_regular(path):
@@ -692,8 +722,9 @@ def stage_update():
         size = size if isinstance(size, int) and not isinstance(size, bool) and size > 0 else None
         _STAGING = {"schema_version": "app-update-stage-1.0", "state": "running",
                     "version": result["latest_version"], "received": 0, "total": size, "reason": None}
+        # Development and tests only: the packaged backend never honors it.
         test_file = (os.environ.get("MYFLAMES_TEST_UPDATE_FILE")
-                     if os.environ.get("MYFLAMES_TEST_UPDATE") else None)
+                     if os.environ.get("MYFLAMES_TEST_UPDATE") and not getattr(sys, "frozen", False) else None)
         _STAGE_WORKER = threading.Thread(target=_stage_into, args=(result, directory, size, test_file),
                                          name="myflames-update-stage", daemon=True)
         try:
@@ -760,7 +791,8 @@ def _stage_into(result, directory, expected_size, test_file):
         # symlinks while removing files from older stages.
         with os.scandir(str(directory)) as entries:
             for entry in entries:
-                if entry.name not in (filename, "staged-update.json") and entry.is_file(follow_symlinks=False):
+                if (entry.name not in (filename, "staged-update.json") and _owned_update_file(entry.name)
+                        and entry.is_file(follow_symlinks=False)):
                     os.unlink(entry.path)
         manifest = {"schema_version": "staged-update-1.0", "version": result["latest_version"],
                     "platform": sys.platform, "file": filename, "size": received,

@@ -14,7 +14,7 @@ const updater = require('../updater.cjs');
 
 const bytes = Buffer.from('signed update bytes');
 const digest = crypto.createHash('sha256').update(bytes).digest('hex');
-function folder() { return fs.mkdtempSync(path.join(os.tmpdir(), 'myflames-updates-')); }
+function folder() { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myflames-updates-')); fs.chmodSync(dir, 0o700); return dir; }
 function stage(dir, overrides = {}, platform = 'darwin') {
   const name = platform === 'darwin' ? 'myflames-3.4.0-macos-arm64.zip' : 'myflames-3.4.0-windows-x64-setup.exe';
   const record = { schema_version: 'staged-update-1.0', version: '3.4.0', platform, file: name,
@@ -87,6 +87,30 @@ test('links in the updates folder are never followed', () => {
   assert.throws(() => updater.readManifest(big, 'darwin'), /too large/);
 });
 
+test('a shared or linked updates folder is never read or emptied', { skip: process.platform === 'win32' }, () => {
+  // Security review S1/S2: files another user can plant are never installed,
+  // and a link to the user's own files is never emptied.
+  const shared = folder(); stage(shared); fs.chmodSync(shared, 0o777);
+  assert.throws(() => updater.verifyStaged(shared, '3.3.3', 'darwin'), /not private/);
+  assert.equal(updater.removeStale(shared, '3.5.0', 'darwin'), false);
+  assert.equal(fs.readdirSync(shared).length, 2);
+  const documents = folder(); fs.writeFileSync(path.join(documents, 'notes.txt'), 'mine');
+  fs.writeFileSync(path.join(documents, updater.MANIFEST), '{');
+  const link = path.join(folder(), 'updates'); fs.symlinkSync(documents, link);
+  assert.throws(() => updater.readManifest(link, 'darwin'), /not a plain folder/);
+  assert.equal(updater.removeStale(link, '3.3.3', 'darwin'), false);
+  assert.deepEqual(fs.readdirSync(documents).sort(), ['notes.txt', updater.MANIFEST].sort());
+  assert.equal(updater.readManifest(path.join(folder(), 'absent'), 'darwin'), null);
+});
+
+test('cleanup removes only the files the updater writes', () => {
+  const dir = folder(); stage(dir);
+  fs.writeFileSync(path.join(dir, '.myflames-stage-1.part'), 'x');
+  fs.writeFileSync(path.join(dir, 'notes.txt'), 'mine');
+  assert.equal(updater.removeStale(dir, '3.4.0', 'darwin'), true);
+  assert.deepEqual(fs.readdirSync(dir), ['notes.txt']);
+});
+
 test('an installed or unreadable staged update is removed at start; a newer one stays', () => {
   let dir = folder(); stage(dir);
   assert.equal(updater.removeStale(dir, '3.3.3', 'darwin'), false);
@@ -106,6 +130,9 @@ test('only packaged apps update in place, and on macOS only from Applications', 
   assert.match(updater.unsupportedReason({ ...base, inApplications: false }), /Applications folder/);
   assert.match(updater.unsupportedReason({ ...base, bundleWritable: false }), /cannot replace itself/);
   assert.equal(updater.unsupportedReason({ platform: 'win32', packaged: true }), null);
+  // A data folder chosen with MYFLAMES_DESKTOP_DATA may be shared, and Windows owners are not checked.
+  assert.match(updater.unsupportedReason({ platform: 'win32', packaged: true, customDataFolder: true }), /MYFLAMES_DESKTOP_DATA/);
+  assert.equal(updater.unsupportedReason({ ...base, customDataFolder: true }), null, 'macOS checks the folder owner instead');
   assert.match(updater.unsupportedReason({ platform: 'linux', packaged: true }), /does not update in place/);
 });
 
@@ -136,6 +163,38 @@ test('the loopback feed serves its zip once under an unguessable path, then clos
     assert.equal((await fetch(answer.url.replace(/[0-9a-f]{64}/, '0'.repeat(64)))).status, 404);
   } finally { feed.close(); }
   await assert.rejects(fetch(feed.url));
+});
+
+function raw(port, text) {
+  const net = require('node:net');
+  return new Promise((resolve) => {
+    const socket = net.connect(port, '127.0.0.1', () => socket.end(text));
+    let data = '';
+    socket.on('data', (chunk) => { data += chunk; });
+    socket.on('close', () => resolve(data));
+    socket.on('error', () => resolve(data));
+  });
+}
+
+test('malformed requests and other Host names get 400, and the zip is still served once', async () => {
+  // Security review S3: a request target URL cannot parse must not throw in the main process.
+  const dir = folder(); const file = stage(dir);
+  const feed = await updater.serveOnce(file, bytes.length);
+  const thrown = [];
+  const onError = (error) => thrown.push(error);
+  process.on('uncaughtException', onError);
+  try {
+    const port = Number(new URL(feed.url).port);
+    for (const target of ['//', 'http://[', 'http://a:99999/']) {
+      const answer = await raw(port, `GET ${target} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nConnection: close\r\n\r\n`);
+      assert.match(answer, /^HTTP\/1\.1 (400|404)/, target);
+    }
+    const rebound = await raw(port, `GET ${new URL(feed.url).pathname} HTTP/1.1\r\nHost: evil.test:${port}\r\nConnection: close\r\n\r\n`);
+    assert.match(rebound, /^HTTP\/1\.1 400/, 'a rebound Host name is refused');
+    const answer = await (await fetch(feed.url)).json();
+    assert.equal(Buffer.compare(Buffer.from(await (await fetch(answer.url)).arrayBuffer()), bytes), 0);
+    assert.deepEqual(thrown, []);
+  } finally { process.off('uncaughtException', onError); feed.close(); }
 });
 
 function fakeUpdater(behaviour) {
@@ -188,6 +247,6 @@ test('Windows runs the installer silently with fixed arguments and no shell', ()
     (...args) => { calls.push(args); return { unref() { calls.push('unref'); } }; });
   assert.ok(child);
   assert.deepEqual(calls[0], ['C:\\data\\updates\\myflames-3.4.0-windows-x64-setup.exe', ['--updated', '/S', '--force-run'],
-    { detached: true, stdio: 'ignore', windowsHide: true, shell: false }]);
+    { cwd: path.dirname('C:\\data\\updates\\myflames-3.4.0-windows-x64-setup.exe'), detached: true, stdio: 'ignore', windowsHide: true, shell: false }]);
   assert.equal(calls[1], 'unref');
 });

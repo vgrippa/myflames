@@ -20,19 +20,27 @@ app.setPath('sessionData', path.join(dataDirectory, 'chromium'));
 // updater.cjs reads it back from this fixed folder only.
 const updatesDirectory = path.join(dataDirectory, 'updates');
 fs.mkdirSync(updatesDirectory, { recursive: true, mode: 0o700 });
-updater.removeStale(updatesDirectory, app.getVersion());
-let backend, launching, window, quitting = false, fatal = false, blockedSmokeRequests = 0;
+// mkdir leaves an existing folder's mode alone; updater.checkFolder refuses
+// one that is shared, owned by someone else or a link.
+try { if (!fs.lstatSync(updatesDirectory).isSymbolicLink()) fs.chmodSync(updatesDirectory, 0o700); } catch { /* checked before use */ }
+let backend, launching, window, quitting = false, exiting = false, fatal = false, blockedSmokeRequests = 0;
 // The update the person chose to install ({ version, relaunch }), and the
 // macOS restart that lets Squirrel.Mac quit the app itself.
 let preparedUpdate = null, preparing = null, restartingForUpdate = false;
 const smoke = process.argv.includes('--smoke') && (!app.isPackaged || process.env.MYFLAMES_DESKTOP_SMOKE === '1');
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
+  // After the lock: a second launch must not remove an update being staged.
+  updater.removeStale(updatesDirectory, app.getVersion());
   app.on('second-instance', () => { if (window) { if (window.isMinimized()) window.restore(); window.focus(); } });
   app.on('window-all-closed', () => { if (!restartingForUpdate) app.quit(); });
+  // Every quit waits for the backend and its tools to stop: a second Quit
+  // while it waits is held too. Only Squirrel.Mac's own quit (exiting) passes.
   app.on('before-quit', event => {
+    if (exiting) return;
+    event.preventDefault();
     if (quitting) return;
-    event.preventDefault(); quitting = true;
+    quitting = true;
     stopBackend().finally(() => { installOnQuit(); app.exit(fatal ? 1 : 0); });
   });
   app.whenReady().then(start).catch(fail);
@@ -50,7 +58,8 @@ function bundleWritable() {
 }
 function updateSupport() {
   const reason = updater.unsupportedReason({ platform: process.platform, packaged: app.isPackaged,
-    inApplications: process.platform === 'darwin' && app.isInApplicationsFolder(), bundleWritable: bundleWritable() });
+    inApplications: process.platform === 'darwin' && app.isInApplicationsFolder(), bundleWritable: bundleWritable(),
+    customDataFolder: !!process.env.MYFLAMES_DESKTOP_DATA });
   return { ok: true, supported: !reason, reason, ready: preparedUpdate ? preparedUpdate.version : null };
 }
 // Check the staged update again and give it to the platform installer. The
@@ -75,6 +84,7 @@ async function restartToUpdate() {
   if (fatal) { app.exit(1); return { ok: false, reason: 'The backend did not stop.' }; }
   autoUpdater.once('error', () => app.exit(0)); // installed at the next start instead
   setTimeout(() => app.exit(0), 15000).unref();
+  exiting = true;
   autoUpdater.quitAndInstall();
   return { ok: true };
 }
