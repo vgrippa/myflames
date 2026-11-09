@@ -4,7 +4,7 @@
 // the rest of the API), with one live endpoint mocked from fixtures captured
 // on throwaway MySQL and MariaDB servers.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -70,11 +70,29 @@ export const DOCK_KEY = "myflames.serverNavCollapsed";
  * (body, request) returning one, or null when it answers the request itself
  * later (request.respond). *list* "docked" starts with the list of views
  * docked, as a person who docked it would (suites that assert the list's
- * markers and keys directly); the default is the floating list. Returns
- * helpers; call close() in a finally block. */
-export async function open(endpoint, name, extra = {}, { fallback = null, list = "floating" } = {}) {
+ * markers and keys directly); the default is the floating list. *seed* is
+ * Python code run with the new store's path as sys.argv[1] before the server
+ * starts (its stdout, JSON, is returned as helpers.seeded); *beforeGoto(page)*
+ * runs before the first navigation (clock, time zone, media features);
+ * *viewport* is the first window size; *refuse* (a RegExp of paths) records
+ * and refuses more requests the way unmocked live reads are refused; *offline*
+ * aborts every request that is not for the local server (kept in
+ * state.blocked); *launchArgs* are extra Chromium switches. Returns helpers;
+ * call close() in a finally block. */
+export async function open(endpoint, name, extra = {}, {
+  fallback = null, list = "floating", seed = "", beforeGoto = null, viewport = { width: 1440, height: 1000 }, refuse = null,
+  offline = false, launchArgs = [],
+} = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), `myflames-${name}-`));
   const store = path.join(directory, "workspace.sqlite3");
+  let seeded = null;
+  if (seed) {
+    const result = spawnSync(process.env.PYTHON || "python3", ["-c", seed, store], {
+      cwd: root, encoding: "utf8", env: { ...process.env, HOME: directory, USERPROFILE: directory, MYFLAMES_SECRET_BACKEND: "vault" },
+    });
+    if (result.status !== 0) throw new Error(`seed failed: ${result.stderr}`);
+    seeded = JSON.parse(result.stdout || "null");
+  }
   const proc = spawn(
     process.env.PYTHON || "python3",
     ["-c", "import os,sys; from pathlib import Path; import myflames.ui as u; u.ASSET_DIR=Path(os.environ.get('MYFLAMES_TEST_ASSETS',u.ASSET_DIR)); s=u.WorkspaceServer(store_path=sys.argv[1]); print(s.launch_url,file=sys.stderr,flush=True); s.serve_forever()", store],
@@ -94,15 +112,21 @@ export async function open(endpoint, name, extra = {}, { fallback = null, list =
     });
     proc.on("error", reject);
   });
-  const browser = await puppeteer.launch({ headless: "shell" });
+  const browser = await puppeteer.launch({ headless: "shell", args: launchArgs });
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
   // slowAssets (a RegExp of paths) holds matching static files back by slowAssetsMs (a lazy chunk that loads late).
-  const state = { queue: [], fallback, delay: 0, slowAssets: null, slowAssetsMs: 1500, seen: [], other: [], privilegeReads: [], privileges: { schema_version: "privileges-1.0", account: "root@localhost", actions: {} } };
+  const state = { queue: [], fallback, delay: 0, slowAssets: null, slowAssetsMs: 1500, seen: [], other: [], blocked: [], privilegeReads: [], privileges: { schema_version: "privileges-1.0", account: "root@localhost", actions: {} } };
+  const server = new URL(url).origin;
   await page.setRequestInterception(true);
   page.on("request", (request) => {
-    const pathname = new URL(request.url()).pathname;
+    const target = new URL(request.url());
+    if (offline && target.origin !== server && !["data:", "blob:"].includes(target.protocol)) {
+      state.blocked.push(target.href);
+      return request.abort("blockedbyclient");
+    }
+    const pathname = target.pathname;
     if (pathname !== endpoint && extra[pathname]) {
       const body = JSON.parse(request.postData() || "{}");
       state.other.push({ path: pathname, body });
@@ -121,7 +145,7 @@ export async function open(endpoint, name, extra = {}, { fallback = null, list =
     if (pathname !== endpoint) {
       // Other live views are recorded and refused, so a test never reaches a real server.
       if ((pathname.startsWith("/api/live/") && pathname !== "/api/live/kill/prepare") || pathname.startsWith("/api/connection/") ||
-          ["/api/lifecycle/tools", "/api/accounts/list", "/api/schema-diagram/read"].includes(pathname)) {
+          ["/api/lifecycle/tools", "/api/accounts/list", "/api/schema-diagram/read"].includes(pathname) || (refuse && refuse.test(pathname))) {
         state.other.push({ path: pathname, body: JSON.parse(request.postData() || "{}") });
         return request.respond({ status: 400, contentType: "application/json",
           body: JSON.stringify({ error: "Not mocked in this suite." }) });
@@ -142,7 +166,8 @@ export async function open(endpoint, name, extra = {}, { fallback = null, list =
       try { if (localStorage.getItem(key) === null) localStorage.setItem(key, "false"); } catch {}
     }, DOCK_KEY);
   }
-  await page.setViewport({ width: 1440, height: 1000 });
+  await page.setViewport(viewport);
+  if (beforeGoto) await beforeGoto(page);
   await page.goto(url, { waitUntil: "networkidle0" });
   /** The element is on screen (not in a hidden place, view or list). */
   const shown = (selector) => page.$eval(selector, (e) => !e.closest("[hidden]") && e.offsetParent !== null).catch(() => false);
@@ -152,6 +177,7 @@ export async function open(endpoint, name, extra = {}, { fallback = null, list =
     state,
     errors,
     shots,
+    seeded,
     async setPrivileges(actions) {
       state.privileges = { ...state.privileges, actions };
       const before = state.privilegeReads.length;
