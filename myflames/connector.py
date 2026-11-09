@@ -86,7 +86,8 @@ def _client_text(data):
     return text.replace("\r\n", "\n") if os.name == "nt" else text
 
 
-def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail_start=None):
+def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail_start=None,
+                 stdout_limit=None, stderr_limit=None):
     """Drain both pipes concurrently on POSIX and Windows with fixed byte caps.
 
     A separate stdin writer prevents a large script from blocking output
@@ -97,6 +98,8 @@ def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail
     Its optional on_tail_start callback runs once in the stdout reader at
     that boundary, before waiting for the tail; it must not block.
     """
+    stdout_limit = MAX_STDOUT_BYTES if stdout_limit is None else stdout_limit
+    stderr_limit = MAX_STDERR_BYTES if stderr_limit is None else stderr_limit
     tail_marker = (re.compile(rb'(?:^|\n)' + re.escape(tail_timeout[0].encode('ascii')) + rb'\r?\n')
                    if tail_timeout is not None else None)
     deadline = time.monotonic() + timeout
@@ -157,8 +160,8 @@ def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail
             changed.set()
 
     try:
-        for args in ((proc.stdout, 0, MAX_STDOUT_BYTES, "stdout"),
-                     (proc.stderr, 1, MAX_STDERR_BYTES, "stderr")):
+        for args in ((proc.stdout, 0, stdout_limit, "stdout"),
+                     (proc.stderr, 1, stderr_limit, "stderr")):
             worker = threading.Thread(target=drain, args=args)
             worker.start()
             workers.append(worker)
@@ -222,6 +225,139 @@ class ConnectorError(RuntimeError):
     """Raised when the CLI binary returns a non-zero exit code or malformed
     output. Read errors preserve stderr for connection diagnostics; write
     errors redact credentials before exposing the client's message."""
+
+
+class ClientMissingError(ConnectorError):
+    """A missing or unusable application client selection can be corrected."""
+
+    code = "client-missing"
+    MESSAGE = "myflames could not find the MySQL or MariaDB command-line client (mysql or mariadb)."
+
+    def __init__(self, message=None):
+        super().__init__(self.MESSAGE if message is None else message)
+
+
+def client_missing_error(exc):
+    """Find the typed cause through redaction/prefix wrappers, without text matching.
+
+    Some wrappers deliberately suppress traceback context with ``from None``;
+    that still retains the original exception for this machine-readable code.
+    """
+    pending, seen = [exc], set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, ClientMissingError):
+            return current
+        if isinstance(current, BaseException):
+            pending.extend(e for e in (current.__cause__, current.__context__) if e is not None)
+    return None
+
+
+_DEFAULT_BINARY = None
+_DEFAULT_BINARY_LOCK = threading.RLock()
+_DEFAULT_BINARY_PROBE = None
+
+
+def set_default_binary(path_or_None):
+    """Set the process-wide workspace choice; None restores PATH discovery.
+
+    The settings endpoint validates before storing. Resolution revalidates a
+    replaced or removed file, including a stale choice restored at startup.
+    """
+    global _DEFAULT_BINARY, _DEFAULT_BINARY_PROBE
+    with _DEFAULT_BINARY_LOCK:
+        _DEFAULT_BINARY_PROBE = None
+        _DEFAULT_BINARY = path_or_None
+
+
+def default_binary():
+    """Return the workspace's choice, or None for automatic PATH discovery."""
+    with _DEFAULT_BINARY_LOCK:
+        return _DEFAULT_BINARY
+
+
+def probe_client(path):
+    """Validate one absolute client path and return its bounded version banner."""
+    if (not isinstance(path, str) or not path or len(path) > 4096 or
+            any(c in path for c in '\0\r\n') or not os.path.isabs(path)):
+        raise ValueError("Choose an absolute path to the database client.")
+    name = os.path.basename(path)
+    if (name.lower() if os.name == 'nt' else name) not in ('mysql', 'mariadb', 'mysql.exe', 'mariadb.exe'):
+        raise ValueError("Choose a client named mysql, mariadb, mysql.exe or mariadb.exe.")
+    if not os.path.isfile(path):
+        raise ValueError("The database client must be an existing regular file.")
+    try:
+        with client_environment() as env:
+            result = _run_bounded([path, '--version'], timeout=5, input=b'', env=env,
+                                  stdout_limit=16384, stderr_limit=16384)
+    except subprocess.TimeoutExpired:
+        raise ValueError("The database client version check timed out after 5 seconds.") from None
+    except (OSError, ConnectorError):
+        raise ValueError("Could not run the database client version check.") from None
+    version = (result.stdout + b'\n' + result.stderr).decode('utf-8', 'replace').strip()
+    if result.returncode != 0:
+        raise ValueError("The database client version check exited unsuccessfully.")
+    if re.search(r'\b(?:mysql|mariadb)\b', version, re.I) is None:
+        raise ValueError("The database client version output must name MySQL or MariaDB.")
+    return {'path': path, 'name': name, 'version': version[:4096]}
+
+
+def _default_client_path():
+    """Recheck changed selections before they can receive connection secrets."""
+    global _DEFAULT_BINARY_PROBE
+    with _DEFAULT_BINARY_LOCK:
+        path = _DEFAULT_BINARY
+        if path is None:
+            return None
+        try:
+            info = os.stat(path)
+            identity = (path, os.path.realpath(path), info.st_dev, info.st_ino,
+                        info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_mode)
+            if identity != _DEFAULT_BINARY_PROBE:
+                probe_client(path)
+                _DEFAULT_BINARY_PROBE = identity
+        except (OSError, ValueError) as exc:
+            _DEFAULT_BINARY_PROBE = None
+            raise ClientMissingError("The chosen database client is unavailable. "
+                                     "Choose another database client in Settings or clear the choice.") from exc
+        return path
+
+
+def detect_clients(path=None, common_dirs=None):
+    """List usable PATH clients, then common install folders (POSIX only).
+
+    Real paths deduplicate aliases. At most ten candidate processes run, each
+    for at most five seconds with bounded output and no inherited credentials.
+    """
+    from .lifecycle import COMMON_BIN_DIRS
+    search_path = os.environ.get('PATH', os.defpath) if path is None else path
+    folders = [folder or os.curdir for folder in search_path.split(os.pathsep)]
+    names = ('mysql.exe', 'mariadb.exe', 'mysql', 'mariadb') if os.name == 'nt' else ('mysql', 'mariadb')
+    candidates = ((os.path.join(folder, name), 'path') for name in names for folder in folders)
+    common = () if os.name == 'nt' else (COMMON_BIN_DIRS if common_dirs is None else common_dirs)
+    from itertools import chain
+    candidates = chain(candidates, ((os.path.join(folder, name), 'common')
+                                   for name in names for folder in common))
+    seen, found = set(), []
+    for candidate, source in candidates:
+        candidate = os.path.abspath(candidate)
+        if not os.path.isfile(candidate):
+            continue
+        real = os.path.normcase(os.path.realpath(candidate))
+        if real in seen:
+            continue
+        if len(seen) >= 10:
+            break
+        seen.add(real)
+        try:
+            entry = probe_client(candidate)
+        except ValueError:
+            continue
+        found.append(dict(entry, source=source))
+    return found
 
 
 class PartialReadError(ConnectorError):
@@ -305,23 +441,23 @@ class MySQLConnection:
     def _resolve_binary(self):
         """Return the path to the mysql or mariadb client binary.
 
-        Prefers an explicit override, then ``mysql`` (which MariaDB also
-        ships under that name on most distros), then ``mariadb``.
+        Prefers an explicit override, the workspace choice, then PATH.
+        Existing connection objects follow setting changes on their next call.
         """
-        if self._binary_cached:
-            return self._binary_cached
         if self._binary_override:
             self._binary_cached = self._binary_override
+            return self._binary_cached
+        chosen = _default_client_path()
+        if chosen is not None:
+            return chosen
+        if self._binary_cached:
             return self._binary_cached
         for name in ("mysql", "mariadb"):
             path = self._which(name)
             if path:
                 self._binary_cached = path
                 return path
-        raise ConnectorError(
-            "Cannot find 'mysql' or 'mariadb' on PATH. Install the client "
-            "binary or pass --mysql-binary /path/to/mysql."
-        )
+        raise ClientMissingError()
 
     def _build_defaults_file_content(self, endpoint=None):
         """Build the text that goes into the defaults-file.

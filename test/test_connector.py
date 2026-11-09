@@ -342,6 +342,191 @@ class TestBinaryResolution(unittest.TestCase):
                 c._resolve_binary()
 
 
+@unittest.skipIf(os.name == 'nt', 'POSIX executable fixtures; Windows names tested separately')
+class TestClientSelection(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.old_default = connector.default_binary()
+        connector.set_default_binary(None)
+        self.addCleanup(connector.set_default_binary, self.old_default)
+        env = mock.patch.dict(os.environ, {'HOME': self.temp.name, 'USERPROFILE': self.temp.name,
+                                         'PATH': '', 'MYFLAMES_SECRET_BACKEND': 'vault',
+                                         'MYSQL_PWD': 'must-not-leak', 'AWS_SECRET_ACCESS_KEY': 'must-not-leak'})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def binary(self, name='mysql', body='print("mysql Ver 8.4.0")', folder='bin'):
+        directory = os.path.join(self.temp.name, folder)
+        os.makedirs(directory, exist_ok=True)
+        path = os.path.join(directory, name)
+        with open(path, 'w') as stream:
+            stream.write('#!' + sys.executable + '\n' + body + '\n')
+        os.chmod(path, 0o700)
+        return path
+
+    def test_missing_error_is_typed_and_has_exact_workspace_message(self):
+        with self.assertRaises(connector.ClientMissingError) as caught:
+            MySQLConnection(host="localhost")._resolve_binary()
+        self.assertIsInstance(caught.exception, ConnectorError)
+        self.assertEqual(caught.exception.code, 'client-missing')
+        self.assertEqual(str(caught.exception),
+                         'myflames could not find the MySQL or MariaDB command-line client (mysql or mariadb).')
+        self.assertNotIn('--mysql-binary', str(caught.exception))
+
+    def test_default_precedence_and_existing_connection_changes(self):
+        automatic = self.binary(folder='automatic')
+        chosen = self.binary(folder='chosen')
+        replacement = self.binary('mariadb', folder='replacement')
+        with mock.patch.dict(os.environ, {'PATH': os.path.dirname(automatic)}):
+            conn = MySQLConnection(host="localhost")
+            self.assertEqual(conn._resolve_binary(), automatic)
+            connector.set_default_binary(chosen)
+            self.assertEqual(connector.default_binary(), chosen)
+            self.assertEqual(conn._resolve_binary(), chosen)
+            self.assertEqual(MySQLConnection(host="localhost", binary='/explicit/mysql')._resolve_binary(), '/explicit/mysql')
+            connector.set_default_binary(replacement)
+            self.assertEqual(conn._resolve_binary(), replacement)
+            connector.set_default_binary(None)
+            self.assertEqual(conn._resolve_binary(), automatic)
+
+    def test_removed_or_replaced_choice_never_falls_back(self):
+        path = self.binary()
+        connector.set_default_binary(path)
+        conn = MySQLConnection(host="localhost")
+        self.assertEqual(conn._resolve_binary(), path)
+        self.binary(body='raise SystemExit(1)')
+        with self.assertRaises(connector.ClientMissingError):
+            conn._resolve_binary()
+        os.unlink(path)
+        with mock.patch.object(MySQLConnection, '_which') as which:
+            with self.assertRaises(connector.ClientMissingError):
+                conn._resolve_binary()
+            which.assert_not_called()
+
+    def test_probe_checks_argv_and_isolates_credentials_and_login_files(self):
+        body = ("import os, sys\n"
+                "assert sys.argv[1:] == ['--version']\n"
+                "assert 'MYSQL_PWD' not in os.environ and 'AWS_SECRET_ACCESS_KEY' not in os.environ\n"
+                "assert os.environ['HOME'] == os.environ['USERPROFILE']\n"
+                "assert not os.path.exists(os.environ['MYSQL_TEST_LOGIN_FILE'])\n"
+                "assert not os.listdir(os.environ['HOME'])\n"
+                "print('mysql Ver 8.4.0')")
+        path = self.binary(body=body, folder='has spaces')
+        self.assertEqual(connector.probe_client(path), {'path': path, 'name': 'mysql', 'version': 'mysql Ver 8.4.0'})
+
+    def test_probe_refuses_relative_missing_directory_wrong_name_and_directory_symlink(self):
+        path = self.binary()
+        directory = os.path.join(self.temp.name, 'directory', 'mysql')
+        os.makedirs(directory)
+        link = os.path.join(self.temp.name, 'mariadb')
+        os.symlink(directory, link)
+        for candidate in ('mysql', os.path.join(self.temp.name, 'mysql'), directory, link,
+                          self.binary('other'), None, 42, '', path + '\0'):
+            with self.subTest(candidate=candidate), self.assertRaises(ValueError):
+                connector.probe_client(candidate)
+
+    def test_probe_refuses_nonzero_unrecognized_and_oversized_output(self):
+        for body in ('print("mysql 8.4"); raise SystemExit(2)', 'print("unrelated 8.4.0")',
+                     'print("mysql " + "x" * 20000)'):
+            with self.subTest(body=body), self.assertRaises(ValueError):
+                connector.probe_client(self.binary(body=body))
+
+    def test_file_symlink_and_stderr_banner_are_usable(self):
+        path = self.binary(body='import sys; print("MariaDB 11.4", file=sys.stderr)', folder='target')
+        link = os.path.join(self.temp.name, 'mariadb')
+        os.symlink(path, link)
+        self.assertEqual(connector.probe_client(link)['version'], 'MariaDB 11.4')
+
+    def test_non_executable_client_is_refused(self):
+        path = self.binary()
+        os.chmod(path, 0o600)
+        with self.assertRaisesRegex(ValueError, 'Could not run'):
+            connector.probe_client(path)
+
+    def test_real_probe_timeout_kills_and_reaps_the_process(self):
+        import time
+        path = self.binary(body='import time; time.sleep(30)')
+        children = []
+        original = subprocess.Popen
+        def start(*args, **kwargs):
+            child = original(*args, **kwargs)
+            children.append(child)
+            return child
+        before = time.monotonic()
+        with mock.patch.object(connector.subprocess, 'Popen', side_effect=start):
+            with self.assertRaisesRegex(ValueError, 'timed out after 5 seconds'):
+                connector.probe_client(path)
+        self.assertLess(time.monotonic() - before, 8)
+        self.assertEqual(len(children), 1)
+        self.assertIsNotNone(children[0].poll())
+
+    def test_detection_lists_usable_clients_deduplicates_and_searches_common_folders(self):
+        path = self.binary()
+        os.symlink(path, os.path.join(os.path.dirname(path), 'mariadb'))
+        other = self.binary('mariadb', 'print("mariadb Ver 11.4.0")', folder='common')
+        bad = self.binary(body='print("unrelated")', folder='bad')
+        detected = connector.detect_clients(path=os.pathsep.join((os.path.dirname(path), os.path.dirname(path),
+                                                                  os.path.dirname(bad))),
+                                            common_dirs=(os.path.dirname(other),))
+        self.assertEqual([item['path'] for item in detected], [path, other])
+        self.assertEqual([item['source'] for item in detected], ['path', 'common'])
+
+    def test_detection_caps_probes_at_ten(self):
+        paths = [self.binary(folder='bin%d' % n) for n in range(12)]
+        with mock.patch.object(connector, 'probe_client', wraps=connector.probe_client) as probe:
+            detected = connector.detect_clients(path=os.pathsep.join(os.path.dirname(p) for p in paths), common_dirs=())
+        self.assertEqual(len(detected), 10)
+        self.assertEqual(probe.call_count, 10)
+
+    def test_windows_names_are_case_insensitive_and_common_folders_are_skipped(self):
+        path = self.binary('MYSQL.EXE')
+        with mock.patch.object(connector.os, 'name', 'nt'):
+            self.assertEqual(connector.probe_client(path)['name'], 'MYSQL.EXE')
+            self.assertEqual(connector.detect_clients(path='', common_dirs=(os.path.dirname(path),)), [])
+
+    def test_wrapped_missing_errors_are_found_without_matching_text(self):
+        try:
+            raise connector.ClientMissingError()
+        except ConnectorError:
+            try:
+                raise ValueError('a redacted wrapper') from None
+            except ValueError as wrapped:
+                self.assertIsInstance(connector.client_missing_error(wrapped), connector.ClientMissingError)
+                wrapped.__context__.__context__ = wrapped
+                self.assertIsInstance(connector.client_missing_error(wrapped), connector.ClientMissingError)
+        unrelated = ValueError('no client')
+        unrelated.__context__ = unrelated
+        self.assertIsNone(connector.client_missing_error(unrelated))
+        self.assertIsNone(connector.client_missing_error(ValueError(connector.ClientMissingError.MESSAGE)))
+
+    def test_cli_hint_for_shared_failure_and_health_prefix_only(self):
+        import io
+        from myflames import cli
+        for error in (connector.ClientMissingError(), ValueError('another problem')):
+            stream = io.StringIO()
+            with mock.patch.object(sys, 'stderr', stream), self.assertRaises(SystemExit) as caught:
+                cli._fail(error)
+            self.assertEqual(caught.exception.code, 2)
+            hint = ' Install it or pass --mysql-binary /path/to/mysql.'
+            self.assertEqual(stream.getvalue(), 'myflames: ' + str(error) +
+                             (hint if isinstance(error, connector.ClientMissingError) else '') + '\n')
+        from myflames.health import health_report
+        try:
+            health_report(MySQLConnection(host="localhost"), interval=1)
+        except ValueError as exc:
+            self.assertIn('--mysql-binary /path/to/mysql', cli._client_error_text(exc))
+        else:
+            self.fail('health should fail without a client')
+
+    def test_real_cli_missing_client_keeps_hint_and_exit_code(self):
+        result = subprocess.run([sys.executable, '-m', 'myflames', '-e', 'SELECT 1'],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(result.stdout, b'')
+        self.assertIn(b' Install it or pass --mysql-binary /path/to/mysql.', result.stderr)
+
+
 class TestArgvConstruction(unittest.TestCase):
     """The assembled argv must match the mysql CLI's expected ordering."""
 

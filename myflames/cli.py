@@ -126,6 +126,16 @@ def _make_svg_responsive(svg_text):
     return _re_local.sub(r'<svg\b[^>]*>', _inject, svg_text, count=1)
 
 
+def _client_error_text(message):
+    """Keep command-line recovery advice out of the workspace's error text."""
+    from .connector import ClientMissingError, client_missing_error
+    text = str(message)
+    # Background capture jobs retain error text after their exception is gone.
+    if client_missing_error(message) or ClientMissingError.MESSAGE in text:
+        text += " Install it or pass --mysql-binary /path/to/mysql."
+    return text
+
+
 def _fail(message, password=None):
     """Report an expected failure on stderr and exit 2, even under --json.
 
@@ -134,7 +144,7 @@ def _fail(message, password=None):
     credential redaction and terminal escaping have the same error contract.
     """
     from .connector import terminal_text
-    text = str(message)
+    text = _client_error_text(message)
     if password:
         text = text.replace(password, '[redacted]')
     sys.stderr.write('myflames: %s\n' % terminal_text(' '.join(text.splitlines())))
@@ -416,7 +426,7 @@ def _run_live_explain(args):
         sys.stderr.write("\nAborted.\n")
         sys.exit(2)
     except (ConnectorError, ValueError, OSError) as exc:
-        sys.stderr.write("Connection failed: {}\n".format(terminal_text(redact(exc, password))))
+        sys.stderr.write("Connection failed: {}\n".format(terminal_text(redact(_client_error_text(exc), password))))
         sys.exit(2)
 
     artifacts = {"schema": {}, "stats": {}, "variables": {}, "freshness": {}}
@@ -444,25 +454,25 @@ def _run_live_explain(args):
                 try:
                     artifacts["schema"] = collect_schema(conn, tables)
                 except ConnectorError as e:
-                    sys.stderr.write("Schema collection failed: {}\n".format(terminal_text(redact(e, password))))
+                    sys.stderr.write("Schema collection failed: {}\n".format(terminal_text(redact(_client_error_text(e), password))))
             if not args.no_collect_stats and tables:
                 try:
                     artifacts["stats"] = collect_stats(conn, tables)
                 except ConnectorError as e:
-                    sys.stderr.write("Stats collection failed: {}\n".format(terminal_text(redact(e, password))))
+                    sys.stderr.write("Stats collection failed: {}\n".format(terminal_text(redact(_client_error_text(e), password))))
                 try:
                     from .collectors import collect_stats_freshness
                     artifacts["freshness"] = collect_stats_freshness(
                         conn, tables, mariadb=conn.is_mariadb())
                 except ConnectorError as e:
-                    sys.stderr.write("Statistics freshness collection failed: {}\n".format(terminal_text(redact(e, password))))
+                    sys.stderr.write("Statistics freshness collection failed: {}\n".format(terminal_text(redact(_client_error_text(e), password))))
             if not args.no_collect_variables:
                 try:
                     artifacts["variables"] = collect_session_variables(conn)
                 except ConnectorError as e:
-                    sys.stderr.write("Variables collection failed: {}\n".format(terminal_text(redact(e, password))))
+                    sys.stderr.write("Variables collection failed: {}\n".format(terminal_text(redact(_client_error_text(e), password))))
     except (ConnectorError, ValueError, OSError) as exc:
-        sys.stderr.write("EXPLAIN ANALYZE failed: {}\n".format(terminal_text(redact(exc, password))))
+        sys.stderr.write("EXPLAIN ANALYZE failed: {}\n".format(terminal_text(redact(_client_error_text(exc), password))))
         sys.exit(2)
 
     return json_text, artifacts
