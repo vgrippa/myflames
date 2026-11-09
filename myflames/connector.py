@@ -429,16 +429,18 @@ def _check_client_trust(path):
         raise ValueError(message) from exc
 
 
-def probe_client(path, check_trust=True):
+def probe_client(path, check_trust=True, chosen=None):
     """Validate one absolute client path and return its bounded version banner.
 
     *check_trust* False only describes the automatic PATH client, which the
     connector uses as PATH finds it; a client chosen in the workspace is
-    always checked."""
+    always checked. *chosen* is the path the person chose when *path* is its
+    resolved file: the name rule applies to that choice (a ``mysql`` link to
+    ``mysql-8.4`` is valid), and the resolved file is the one probed."""
     if (not isinstance(path, str) or not path or len(path) > 4096 or
             any(c in path for c in '\0\r\n') or not os.path.isabs(path)):
         raise ValueError("Choose an absolute path to the database client.")
-    name = os.path.basename(path)
+    name = os.path.basename(chosen or path)
     if (name.lower() if os.name == 'nt' else name) not in ('mysql', 'mariadb', 'mysql.exe', 'mariadb.exe'):
         raise ValueError("Choose a client named mysql, mariadb, mysql.exe or mariadb.exe.")
     if check_trust:
@@ -482,7 +484,7 @@ def _default_client_path():
             identity = (path, real, info.st_dev, info.st_ino,
                         info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_mode)
             if identity != previous:
-                probe_client(real)
+                probe_client(real, chosen=path)
                 _check_client_trust(real)
         except (OSError, ValueError) as exc:
             with _DEFAULT_BINARY_LOCK:

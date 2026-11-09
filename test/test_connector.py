@@ -517,6 +517,20 @@ class TestClientSelection(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, 'can be changed by other users'):
                         connector.probe_client(path)
 
+    def test_a_mysql_link_to_a_versioned_file_is_a_valid_choice(self):
+        # Code review D7: the name rule applies to the chosen path; the resolved
+        # (versioned) file is probed and run.
+        real = self.binary(name='mysql-8.4')
+        alias_folder = os.path.join(os.path.realpath(self.temp.name), 'links')
+        os.makedirs(alias_folder)
+        alias = os.path.join(alias_folder, 'mysql')
+        os.symlink(real, alias)
+        self.assertEqual(connector.probe_client(alias)['name'], 'mysql')
+        connector.set_default_binary(alias)
+        self.addCleanup(connector.set_default_binary, None)
+        self.assertEqual(connector._default_client_path(), real)
+        self.assertEqual(MySQLConnection(host='localhost')._resolve_binary(), real)
+
     def test_chosen_client_runs_its_resolved_file_not_the_alias_chain(self):
         # Code review D6: /safe/mysql -> /hop/mysql -> real file. The client is
         # run by its real path, so a swapped intermediate link cannot redirect it.
@@ -643,7 +657,7 @@ class TestClientSelection(unittest.TestCase):
                 entered, release = threading.Event(), threading.Event()
                 calls = []
                 original = connector.probe_client
-                def probe(path):
+                def probe(path, **kwargs):
                     calls.append(path)
                     if len(calls) == 1:
                         entered.set()
@@ -651,7 +665,7 @@ class TestClientSelection(unittest.TestCase):
                             raise ValueError('test probe was not released')
                         if failed:
                             raise ValueError('the old selection failed')
-                    return original(path)
+                    return original(path, **kwargs)
                 with self.subTest(replacement=replacement, failed=failed), \
                         mock.patch.object(connector, 'probe_client', side_effect=probe), \
                         concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
