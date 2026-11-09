@@ -65,10 +65,13 @@ function isolatedBackendHome(directory, home) {
 // The MySQL and MariaDB installers for Windows put their clients in versioned
 // folders under Program Files and do not add them to PATH. Searched in this
 // order (MySQL first, as on macOS), newest version first within each.
+// MySQL Workbench ships mysql.exe in its own folder, not in bin, and its client
+// is often older than the server: searched last, only when mysql.exe is there.
 const WINDOWS_CLIENT_FOLDERS = [
-  ['MySQL', /^MySQL Server (\d+(?:\.\d+)*)$/i],
-  ['', /^MariaDB (\d+(?:\.\d+)*)$/i],
-  ['MySQL', /^MySQL Shell (\d+(?:\.\d+)*)$/i],
+  ['MySQL', /^MySQL Server (\d+(?:\.\d+)*)$/i, 'bin'],
+  ['', /^MariaDB (\d+(?:\.\d+)*)$/i, 'bin'],
+  ['MySQL', /^MySQL Shell (\d+(?:\.\d+)*)$/i, 'bin'],
+  ['MySQL', /^MySQL Workbench (\d+(?:\.\d+)*)(?: CE)?$/i, '', 'mysql.exe'],
 ];
 function newerFirst(a, b) {
   const x = a.split('.').map(Number), y = b.split('.').map(Number);
@@ -94,7 +97,7 @@ function windowsClientDirectories(inherited, fileSystem = fs) {
   };
   const roots = uniqueWindowsPaths(['ProgramW6432', 'ProgramFiles', 'ProgramFiles(x86)'].map(variable).filter(Boolean));
   const found = [];
-  for (const [parent, pattern] of WINDOWS_CLIENT_FOLDERS) {
+  for (const [parent, pattern, sub, client] of WINDOWS_CLIENT_FOLDERS) {
     const group = [];
     for (const root of roots) {
       const base = parent ? path.win32.join(root, parent) : root;
@@ -103,8 +106,11 @@ function windowsClientDirectories(inherited, fileSystem = fs) {
       for (const name of names) {
         const match = pattern.exec(name);
         if (!match) continue;
-        const bin = path.win32.join(base, name, 'bin');
-        try { if (fileSystem.statSync(bin).isDirectory()) group.push({ bin, version: match[1] }); } catch { /* not installed */ }
+        const bin = path.win32.join(base, name, sub);
+        try {
+          const found = client ? fileSystem.statSync(path.win32.join(bin, client)).isFile() : fileSystem.statSync(bin).isDirectory();
+          if (found) group.push({ bin, version: match[1] });
+        } catch { /* not installed */ }
       }
     }
     group.sort((a, b) => newerFirst(a.version, b.version));
@@ -112,25 +118,69 @@ function windowsClientDirectories(inherited, fileSystem = fs) {
   }
   return found;
 }
-function backendEnvironment(dataDirectory, inherited = process.env, platform = process.platform, fileSystem = fs) {
+// Versioned Homebrew formulae (mysql-client@8.4, mysql@8.0, mariadb@11.4...) are
+// keg-only: never linked into bin, only reachable through opt. Newest first.
+const HOMEBREW_VERSIONED_CLIENT = /^(?:mysql-client|mysql|mariadb)@(\d+(?:\.\d+)*)$/;
+function homebrewVersionedClientDirectories(fileSystem = fs) {
+  const found = [];
+  for (const opt of ['/opt/homebrew/opt', '/usr/local/opt']) {
+    let names;
+    try { names = fileSystem.readdirSync(opt); } catch { continue; }
+    const group = [];
+    for (const name of names) {
+      const match = HOMEBREW_VERSIONED_CLIENT.exec(name);
+      if (match) group.push({ bin: path.posix.join(opt, name, 'bin'), version: match[1] });
+    }
+    group.sort((a, b) => newerFirst(a.version, b.version));
+    found.push(...group.map(item => item.bin));
+  }
+  return found;
+}
+// The packaged app bundles the official MySQL client (mysql and mysqldump,
+// scripts/fetch-mysql-client.py) in <resources>/mysql-client/bin. Only a
+// packaged app passes its resources folder; development builds bundle nothing.
+function bundledClientDirectory(resources, platform) {
+  if (typeof resources !== 'string' || (platform !== 'darwin' && platform !== 'win32')) return null;
+  const paths = platform === 'win32' ? path.win32 : path.posix;
+  return paths.isAbsolute(resources) ? paths.join(resources, 'mysql-client', 'bin') : null;
+}
+function backendEnvironment(dataDirectory, inherited = process.env, platform = process.platform, fileSystem = fs, resources = null) {
   const env = {};
   // Preserve tool discovery and OS necessities, never inherited MySQL defaults,
   // Python injection paths, profile overrides or vault secrets.
   for (const key of ['PATH', 'SystemRoot', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT', 'TEMP', 'TMP', 'TMPDIR', 'LANG', 'LC_ALL']) {
     if (inherited[key] != null) env[key] = inherited[key];
   }
+  // The bundled client is searched last, after PATH and every installed
+  // client folder below, so an installed client always wins. The backend also
+  // gets the folder by name: it prefers an installed mariadb found anywhere on
+  // PATH to the bundled mysql (connector.py), and it can still use the bundled
+  // client when the folder name holds the PATH separator.
+  const bundled = bundledClientDirectory(resources, platform);
+  const delimiter = platform === 'win32' ? ';' : ':';
+  const last = bundled && !bundled.includes(delimiter) ? [bundled] : [];
+  if (bundled) env.MYFLAMES_BUNDLED_CLIENT_DIR = bundled;
   // Finder does not load shell startup files. Append fixed client installation
   // locations, preserving an explicitly configured PATH's search precedence.
   if (platform === 'darwin') {
-    env.PATH = [...new Set((env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin').split(':').filter(Boolean).concat([
+    env.PATH = [...new Set((env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin').split(':').filter(value => value && !(bundled && path.posix.normalize(value + '/') === path.posix.normalize(bundled + '/'))).concat([
       '/opt/homebrew/bin', '/usr/local/bin', '/usr/local/mysql/bin',
       '/opt/homebrew/opt/mysql-client/bin', '/usr/local/opt/mysql-client/bin',
       '/opt/homebrew/opt/mysql-shell/bin', '/usr/local/opt/mysql-shell/bin',
       '/opt/homebrew/opt/mariadb/bin', '/usr/local/opt/mariadb/bin', '/opt/local/bin',
-    ]))].join(':');
+    ], homebrewVersionedClientDirectories(fileSystem), [
+      // Laravel Herd links its MySQL client here and adds it to PATH only in ~/.zshrc.
+      // A HOME with ':' would split into two PATH entries, one of them relative.
+      ...(path.posix.isAbsolute(inherited.HOME || '') && !inherited.HOME.includes(':')
+        ? [path.posix.join(inherited.HOME, 'Library/Application Support/Herd/bin')] : []),
+      // MySQL Workbench bundles mysql and mysqldump, often older than the server: last.
+      '/Applications/MySQLWorkbench.app/Contents/MacOS',
+    ], last))].join(':');
   } else if (platform === 'win32') {
-    env.PATH = uniqueWindowsPaths((env.PATH || '').split(';').filter(Boolean)
-      .concat(windowsClientDirectories(inherited, fileSystem))).join(';');
+    // The same folder in another case, with forward slashes or a trailing separator.
+    const key = value => path.win32.normalize(value + '\\').toLowerCase();
+    env.PATH = uniqueWindowsPaths((env.PATH || '').split(';').filter(value => value && !(bundled && key(value) === key(bundled)))
+      .concat(windowsClientDirectories(inherited, fileSystem), last)).join(';');
   }
   env.HOME = path.join(dataDirectory, 'backend-home');
   env.USERPROFILE = env.HOME;

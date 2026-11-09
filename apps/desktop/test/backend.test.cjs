@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
 const path = require('node:path');
+const fs = require('node:fs');
 const { parseLaunchLine, sameOrigin, externalLink, backendEnvironment, startBackend } = require('../backend.cjs');
 const url = 'http://127.0.0.1:54321/#launch=' + 'S'.repeat(43);
 function fixture() {
@@ -94,6 +95,25 @@ test('Finder client discovery appends fixed locations without shell execution or
   assert.ok(env.PATH.split(':').includes('/usr/local/mysql/bin'));
   assert.ok(env.PATH.split(':').includes('/opt/homebrew/opt/mysql-client/bin'));
   assert.ok(backendEnvironment('/desktop', {}, 'darwin').PATH.startsWith('/usr/bin:/bin:'));
+  assert.ok(backendEnvironment('/desktop', { HOME: '/Users/jane' }, 'darwin').PATH.split(':')
+    .includes('/Users/jane/Library/Application Support/Herd/bin'));
+  assert.ok(!backendEnvironment('/desktop', { HOME: 'relative' }, 'darwin').PATH.includes('Herd'));
+  // A ':' in HOME must not add a relative entry to PATH.
+  const split = backendEnvironment('/desktop', { HOME: '/Users/a:relative' }, 'darwin').PATH.split(':');
+  assert.ok(!split.some(entry => entry.includes('Herd')), 'no Herd entry for a HOME with a colon');
+  assert.ok(split.every(entry => entry.startsWith('/')), 'every PATH entry stays absolute');
+  assert.ok(backendEnvironment('/desktop', {}, 'darwin').PATH.endsWith(':/Applications/MySQLWorkbench.app/Contents/MacOS'));
+});
+test('Finder client discovery finds keg-only versioned Homebrew clients, newest first', () => {
+  const fileSystem = { readdirSync(dir) {
+    if (dir === '/opt/homebrew/opt') return ['mysql-client@8.0', 'mysql@8.4', 'mysql-client@8.4', 'mariadb@11.4', 'mysql@10.0-rc', 'node@22'];
+    throw new Error('ENOENT');
+  } };
+  const parts = backendEnvironment('/desktop', { PATH: '/usr/bin' }, 'darwin', fileSystem).PATH.split(':');
+  const versioned = parts.filter(value => value.includes('@'));
+  assert.deepEqual(versioned, ['/opt/homebrew/opt/mariadb@11.4/bin', '/opt/homebrew/opt/mysql@8.4/bin',
+    '/opt/homebrew/opt/mysql-client@8.4/bin', '/opt/homebrew/opt/mysql-client@8.0/bin']);
+  assert.ok(parts.indexOf('/opt/homebrew/opt/mysql-client/bin') < parts.indexOf(versioned[0]));
   assert.equal(backendEnvironment('/desktop', { PATH: '/custom' }, 'linux').PATH, '/custom');
 });
 test('Windows client discovery appends installer folders after PATH, newest first', () => {
@@ -135,6 +155,100 @@ test('Windows client discovery appends installer folders after PATH, newest firs
     ProgramW6432: 'C:\\PROGRAM FILES' }, 'win32', fileSystem);
   assert.equal(dup.PATH.split(';').filter(value => value.toLowerCase().startsWith('c:\\program files\\mariadb 11.8')).length, 1);
   assert.ok(dup.PATH.startsWith('c:\\program files\\mariadb 11.8\\bin\\;'));
+});
+test('Windows client discovery falls back to the mysql.exe bundled with MySQL Workbench, last', () => {
+  // A server with only Workbench installed: mysql.exe sits in the Workbench folder itself, not in bin.
+  const files = new Set(['c:\\program files\\mysql\\mysql workbench 8.0 ce\\mysql.exe']);
+  const fileSystem = {
+    readdirSync: dir => {
+      if (dir.toLowerCase() === 'c:\\program files\\mysql') return ['MySQL Workbench 8.0 CE', 'MySQL Workbench 6.3 CE', 'MySQL Server 8.4'];
+      throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+    },
+    statSync: file => {
+      if (file.toLowerCase() === 'c:\\program files\\mysql\\mysql server 8.4\\bin') return { isDirectory: () => true, isFile: () => false };
+      if (files.has(file.toLowerCase())) return { isDirectory: () => false, isFile: () => true };
+      throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+    },
+  };
+  const env = backendEnvironment('C:\\desktop', { PATH: 'C:\\Windows\\System32', ProgramFiles: 'C:\\Program Files' }, 'win32', fileSystem);
+  // Server first; Workbench 6.3 CE has no mysql.exe here, so it is not added.
+  assert.deepEqual(env.PATH.split(';'), ['C:\\Windows\\System32', 'C:\\Program Files\\MySQL\\MySQL Server 8.4\\bin',
+    'C:\\Program Files\\MySQL\\MySQL Workbench 8.0 CE']);
+});
+test('macOS: the bundled MySQL client is searched last, after PATH and every installed client folder', () => {
+  const resources = '/Applications/myflames.app/Contents/Resources';
+  const bundled = resources + '/mysql-client/bin';
+  const fileSystem = { readdirSync(dir) {
+    if (dir === '/opt/homebrew/opt') return ['mysql-client@8.4', 'mariadb@11.4'];
+    throw new Error('ENOENT');
+  } };
+  const env = backendEnvironment('/desktop', { HOME: '/Users/jane', PATH: '/usr/bin:/opt/homebrew/bin' }, 'darwin', fileSystem, resources);
+  const parts = env.PATH.split(':');
+  assert.equal(parts.at(-1), bundled);
+  assert.equal(parts.filter(value => value === bundled).length, 1);
+  assert.equal(env.MYFLAMES_BUNDLED_CLIENT_DIR, bundled);
+  // Inherited PATH, the standard folders, keg-only Homebrew, Herd and Workbench (PR #16) all come first.
+  for (const installed of ['/usr/bin', '/opt/homebrew/bin', '/usr/local/mysql/bin', '/opt/homebrew/opt/mysql-client/bin',
+    '/opt/homebrew/opt/mariadb@11.4/bin', '/opt/homebrew/opt/mysql-client@8.4/bin',
+    '/Users/jane/Library/Application Support/Herd/bin', '/Applications/MySQLWorkbench.app/Contents/MacOS']) {
+    assert.ok(parts.indexOf(installed) >= 0 && parts.indexOf(installed) < parts.indexOf(bundled), installed);
+  }
+  assert.equal(parts.at(-2), '/Applications/MySQLWorkbench.app/Contents/MacOS');
+  // Already on the inherited PATH: moved to the end, never searched earlier.
+  for (const alias of [bundled, bundled + '/', bundled + '//', resources + '/mysql-client/./bin']) {
+    const moved = backendEnvironment('/desktop', { PATH: alias + ':/usr/bin' }, 'darwin', fileSystem, resources).PATH.split(':');
+    assert.equal(moved[0], '/usr/bin', alias);
+    assert.equal(moved.at(-1), bundled);
+    assert.equal(moved.filter(value => value.startsWith(resources)).length, 1, alias);
+  }
+});
+test('the bundled client is added only for a packaged app with an absolute resources folder', () => {
+  for (const env of [backendEnvironment('/desktop', { PATH: '/usr/bin' }, 'darwin'),
+    backendEnvironment('/desktop', { PATH: '/usr/bin' }, 'darwin', fs, null),
+    backendEnvironment('/desktop', { PATH: '/usr/bin' }, 'darwin', fs, 'relative/Resources')]) {
+    assert.ok(env.PATH.endsWith(':/Applications/MySQLWorkbench.app/Contents/MacOS'));
+    assert.ok(!env.PATH.includes('Resources'));
+    assert.equal(env.MYFLAMES_BUNDLED_CLIENT_DIR, undefined);
+  }
+  // Linux is not a packaged target: its PATH stays exactly as inherited.
+  const linux = backendEnvironment('/desktop', { PATH: '/custom' }, 'linux', fs, '/opt/myflames/resources');
+  assert.equal(linux.PATH, '/custom');
+  assert.equal(linux.MYFLAMES_BUNDLED_CLIENT_DIR, undefined);
+  // A folder name holding the PATH separator cannot go on PATH; the backend still gets it by name.
+  const colon = backendEnvironment('/desktop', { PATH: '/usr/bin' }, 'darwin', fs, '/Users/jane/a:b/myflames.app/Contents/Resources');
+  assert.ok(!colon.PATH.includes('a:b'));
+  assert.equal(colon.MYFLAMES_BUNDLED_CLIENT_DIR, '/Users/jane/a:b/myflames.app/Contents/Resources/mysql-client/bin');
+});
+test('Windows: the bundled MySQL client is searched last, after PATH, the installer folders and Workbench', () => {
+  const files = new Set(['c:\\program files\\mysql\\mysql workbench 8.0 ce\\mysql.exe']);
+  const fileSystem = {
+    readdirSync: dir => {
+      if (dir.toLowerCase() === 'c:\\program files\\mysql') return ['MySQL Workbench 8.0 CE', 'MySQL Server 8.4'];
+      if (dir.toLowerCase() === 'c:\\program files') return ['MariaDB 11.8', 'MySQL'];
+      throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+    },
+    statSync: file => {
+      const lower = file.toLowerCase();
+      if (lower === 'c:\\program files\\mysql\\mysql server 8.4\\bin' || lower === 'c:\\program files\\mariadb 11.8\\bin') return { isDirectory: () => true, isFile: () => false };
+      if (files.has(lower)) return { isDirectory: () => false, isFile: () => true };
+      throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+    },
+  };
+  const resources = 'C:\\Users\\jane\\AppData\\Local\\Programs\\myflames-desktop\\resources';
+  const bundled = resources + '\\mysql-client\\bin';
+  const env = backendEnvironment('C:\\desktop', { PATH: 'C:\\Windows\\System32;C:\\tools\\mysql\\bin', ProgramFiles: 'C:\\Program Files' }, 'win32', fileSystem, resources);
+  assert.deepEqual(env.PATH.split(';'), ['C:\\Windows\\System32', 'C:\\tools\\mysql\\bin',
+    'C:\\Program Files\\MySQL\\MySQL Server 8.4\\bin', 'C:\\Program Files\\MariaDB 11.8\\bin',
+    'C:\\Program Files\\MySQL\\MySQL Workbench 8.0 CE', bundled]);
+  assert.equal(env.MYFLAMES_BUNDLED_CLIENT_DIR, bundled);
+  // On the inherited PATH in another case or with a trailing backslash: moved to the end once.
+  for (const alias of [bundled.toUpperCase() + '\\', bundled.replace(/\\/g, '/'), bundled.replace(/\\/g, '/') + '/']) {
+    const moved = backendEnvironment('C:\\desktop', { PATH: alias + ';C:\\Windows\\System32', ProgramFiles: 'C:\\Program Files' }, 'win32', fileSystem, resources);
+    const parts = moved.PATH.split(';');
+    assert.equal(parts[0], 'C:\\Windows\\System32', alias);
+    assert.equal(parts.at(-1), bundled);
+    assert.equal(parts.filter(value => value.toLowerCase().includes('myflames-desktop')).length, 1, alias);
+  }
 });
 test('startup tolerates fragmented output and shutdown owns only its child process group', async () => {
   const f = fixture(), ready = startBackend(settings, f.dependencies);

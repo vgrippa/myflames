@@ -28,7 +28,7 @@ To share it, choose **Export** in Plans for a standalone HTML report or JSON. **
 
 ## Connect to a server
 
-Live features need a local `mysql` or `mariadb` client, reachable through PATH or standard vendor installation folders. Maintenance may also need `mysqlsh`, `mysqldump` or `mariadb-dump`.
+Live features need a `mysql` or `mariadb` client. The desktop app includes the official MySQL 8.4 LTS client (`mysql` and `mysqldump`), so you can connect without installing one. A client you installed, reachable through PATH or standard vendor installation folders, is always preferred to the included one. MariaDB accounts that use `ed25519` or `parsec` authentication need an installed MariaDB client. Maintenance may also need `mysqlsh` or, for MariaDB servers, `mariadb-dump`.
 
 Add a connection on Home, choose a connection policy, and test it. Start with **Read-only** for inspection. Use SSH tunneling when your connection requires a bastion. Credentials and SSH configuration remain on your computer.
 

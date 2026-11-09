@@ -106,3 +106,42 @@ test('the release script refuses to start without an identity and notary credent
     assert.equal(run.stdout, '');
   }
 });
+
+test('the app bundles the MySQL client the lock pins, with its license', () => {
+  const resources = config.extraResources.map(({ from, to }) => from + ' -> ' + to);
+  assert.ok(resources.includes('build/mysql-client -> mysql-client'));
+  assert.ok(resources.includes('build/mysql-client/LICENSE -> licenses/MySQL-Client-LICENSE'));
+  const lock = JSON.parse(fs.readFileSync(path.join(desktop, 'mysql-client.lock.json'), 'utf8'));
+  assert.equal(lock.schema_version, 'mysql-client-lock-1.0');
+  assert.match(lock.version, /^8\.4\.\d+$/, 'an 8.4 LTS release');
+  assert.deepEqual(lock.programs, ['mysql', 'mysqldump']);
+  assert.equal(lock.license, 'GPL-2.0-only WITH Universal-FOSS-exception-1.0');
+  assert.equal(lock.source.tag, 'https://github.com/mysql/mysql-server/tree/mysql-' + lock.version);
+  assert.match(lock.comment.join(' '), /gpg --verify/);
+  const names = { 'darwin-arm64': `mysql-${lock.version}-macos15-arm64.tar.gz`, 'win32-x64': `mysql-${lock.version}-winx64.zip` };
+  assert.deepEqual(Object.keys(lock.archives).sort(), Object.keys(names));
+  for (const [platform, entry] of Object.entries(lock.archives)) {
+    assert.equal(entry.url, 'https://cdn.mysql.com/Downloads/MySQL-8.4/' + names[platform]);
+    assert.equal(entry.root + (platform === 'win32-x64' ? '.zip' : '.tar.gz'), names[platform]);
+    assert.ok(Number.isSafeInteger(entry.size) && entry.size > 0);
+    assert.match(entry.sha256, /^[0-9a-f]{64}$/);
+    assert.match(entry.md5, /^[0-9a-f]{32}$/);
+  }
+  // NOTICE names the same release and where its source is.
+  const notice = fs.readFileSync(path.join(desktop, '..', '..', 'NOTICE'), 'utf8');
+  assert.ok(notice.includes('MySQL ' + lock.version), 'NOTICE names the bundled MySQL release');
+  assert.ok(notice.includes(lock.source.tag), 'NOTICE links the source tag');
+});
+
+test('every packaging path fetches the bundled client before electron-builder runs', () => {
+  assert.match(pkg.scripts['package:mac'], /^python3 scripts\/fetch-mysql-client\.py --platform darwin-arm64 && electron-builder /);
+  const release = fs.readFileSync(path.join(desktop, 'scripts', 'package-mac-release.sh'), 'utf8');
+  const fetchAt = release.indexOf('scripts/fetch-mysql-client.py --platform darwin-arm64');
+  assert.ok(fetchAt > 0 && fetchAt < release.indexOf('electron-builder --mac dmg'));
+  assert.match(release, /"\$client\/bin\/mysql" --version/);
+  const workflow = fs.readFileSync(path.join(desktop, '..', '..', '.github', 'workflows', 'windows-desktop.yml'), 'utf8');
+  const step = workflow.indexOf('apps/desktop/scripts/fetch-mysql-client.py --platform win32-x64');
+  assert.ok(step > 0 && step < workflow.indexOf('npm run package:win'));
+  assert.match(workflow, /key: mysql-client-win32-x64-\$\{\{ steps\.mysql-client\.outputs\.sha256 \}\}/);
+  assert.match(workflow, /path: apps\/desktop\/build\/mysql-client-cache/);
+});

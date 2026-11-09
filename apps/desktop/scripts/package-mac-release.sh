@@ -63,6 +63,10 @@ count=$(printf '%s\n' "$matches" | grep -c . || true)
 identity=$(printf '%s\n' "$matches" | awk '{print $2}')
 notary history >/dev/null || die "notarytool could not sign in with the $notary_name; $locked_hint"
 
+# The bundled MySQL client: the archive pinned in mysql-client.lock.json,
+# verified against its SHA-256 before anything is extracted.
+python3 scripts/fetch-mysql-client.py --platform darwin-arm64 || die "could not fetch the bundled MySQL client (output above)"
+
 version=$(node -p 'require("./package.json").version')
 app=dist/mac-arm64/myflames.app
 name=myflames-$version-macos-arm64.dmg
@@ -80,13 +84,19 @@ npx --no-install electron-builder --mac dmg zip --arm64 --config electron-builde
 # electron-builder hands the signer the certificate's name, not its hash, and
 # the signer takes the first certificate with that name; refuse another one.
 certs=$(mktemp -d)
-for signed in "$app" "$app/Contents/Resources/backend/myflames-backend"; do
+client=$app/Contents/Resources/mysql-client
+for signed in "$app" "$app/Contents/Resources/backend/myflames-backend" \
+  "$client/bin/mysql" "$client/bin/mysqldump" "$client"/lib/*.dylib; do
   rm -f "$certs"/c*
   codesign -d --extract-certificates="$certs/c" "$signed" 2>/dev/null
   used=$(shasum -a 1 "$certs/c0" | awk '{print toupper($1)}')
   [ "$used" = "$identity" ] || die "$signed was signed with certificate $used, not $identity: another Developer ID Application certificate has the same name; remove the one you do not use from the keychain"
 done
 rm -rf "$certs"
+# Re-signed with the hardened runtime, the client must still load its own
+# libraries (library validation): run it with nothing else on PATH.
+env -i PATH=/usr/bin:/bin "$client/bin/mysql" --version >/dev/null || die "the signed bundled mysql does not start"
+env -i PATH=/usr/bin:/bin "$client/bin/mysqldump" --version >/dev/null || die "the signed bundled mysqldump does not start"
 
 node scripts/smoke.cjs "$app"
 

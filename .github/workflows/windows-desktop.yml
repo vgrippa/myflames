@@ -53,6 +53,18 @@ jobs:
       - name: Launcher tests
         working-directory: apps/desktop
         run: npm test
+      # The bundled MySQL client: the archive pinned in mysql-client.lock.json,
+      # cached by its SHA-256 and verified again before anything is extracted.
+      # The Visual C++ runtime DLLs come from this runner's Visual Studio.
+      - name: MySQL client archive digest
+        id: mysql-client
+        run: echo "sha256=$(node -p "require('./apps/desktop/mysql-client.lock.json').archives['win32-x64'].sha256")" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        with:
+          path: apps/desktop/build/mysql-client-cache
+          key: mysql-client-win32-x64-${{ steps.mysql-client.outputs.sha256 }}
+      - name: Fetch the MySQL client
+        run: python apps/desktop/scripts/fetch-mysql-client.py --platform win32-x64
       - name: Build the installer
         working-directory: apps/desktop
         run: npm run package:win
@@ -62,7 +74,7 @@ jobs:
         run: npm run smoke -- dist/win-unpacked
       - name: Checksum
         working-directory: apps/desktop/dist
-        run: for file in *-setup.exe; do sha256sum "$file" > "$file.sha256"; cat "$file.sha256"; done
+        run: for file in *-setup.exe; do sha256sum "$file" > "$file.sha256"; cat "$file.sha256"; ls -l "$file"; done
       - uses: actions/upload-artifact@v7
         with:
           name: myflames-windows-x64

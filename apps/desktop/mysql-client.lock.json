@@ -1,0 +1,34 @@
+{
+  "schema_version": "mysql-client-lock-1.0",
+  "comment": [
+    "The MySQL command-line client the desktop app bundles: mysql and mysqldump with the shared libraries they load, taken unmodified from Oracle's MySQL Community Server archives by scripts/fetch-mysql-client.py.",
+    "Verified on 2026-11-09 before the SHA-256 values were recorded: each archive's size matched cdn.mysql.com's Content-Length; its MD5 matched Oracle's published <archive>.md5 file on cdn.mysql.com; and gpg --verify accepted Oracle's detached <archive>.asc signature (VALIDSIG BCA43417C3B485DD128EC6D4B7B3B788A8D3785C, made 2026-10-01) with the MySQL Release Engineering key <mysql-build@oss.oracle.com> imported from the MySQL 8.4 manual (Signature Checking Using GnuPG), whose fingerprint matches the same key on keyserver.ubuntu.com. The SHA-256 values were computed only after those checks passed.",
+    "8.4.13 was the newest MySQL 8.4 LTS release on cdn.mysql.com for both archives on that date (HEAD requests: 8.4.12 and 8.4.14 return 404). To move to another release, repeat every check above and replace version, url, size, md5 and sha256 together."
+  ],
+  "product": "MySQL Community Server",
+  "version": "8.4.13",
+  "license": "GPL-2.0-only WITH Universal-FOSS-exception-1.0",
+  "source": {
+    "tag": "https://github.com/mysql/mysql-server/tree/mysql-8.4.13",
+    "archive": "https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.13.tar.gz",
+    "downloads": "https://dev.mysql.com/downloads/mysql/8.4.html"
+  },
+  "signing_key": "BCA43417C3B485DD128EC6D4B7B3B788A8D3785C",
+  "programs": ["mysql", "mysqldump"],
+  "archives": {
+    "darwin-arm64": {
+      "url": "https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.13-macos15-arm64.tar.gz",
+      "size": 165362783,
+      "md5": "73926da59774274b5cdfe78cd2150840",
+      "sha256": "f324f8950e24d4147470bbc6a6ef0b90ef93b91d3fc74154b3d2ba085b44912a",
+      "root": "mysql-8.4.13-macos15-arm64"
+    },
+    "win32-x64": {
+      "url": "https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.13-winx64.zip",
+      "size": 281154912,
+      "md5": "7b94489d5524dea9b27097068bea25a8",
+      "sha256": "e9cd98b1d23f122987b1afca26ad942efec5891481103d48ae3cde237fa3ea54",
+      "root": "mysql-8.4.13-winx64"
+    }
+  }
+}
