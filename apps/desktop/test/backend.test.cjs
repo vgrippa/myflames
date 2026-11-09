@@ -94,6 +94,25 @@ test('Finder client discovery appends fixed locations without shell execution or
   assert.ok(env.PATH.split(':').includes('/usr/local/mysql/bin'));
   assert.ok(env.PATH.split(':').includes('/opt/homebrew/opt/mysql-client/bin'));
   assert.ok(backendEnvironment('/desktop', {}, 'darwin').PATH.startsWith('/usr/bin:/bin:'));
+  assert.ok(backendEnvironment('/desktop', { HOME: '/Users/jane' }, 'darwin').PATH.split(':')
+    .includes('/Users/jane/Library/Application Support/Herd/bin'));
+  assert.ok(!backendEnvironment('/desktop', { HOME: 'relative' }, 'darwin').PATH.includes('Herd'));
+  // A ':' in HOME must not add a relative entry to PATH.
+  const split = backendEnvironment('/desktop', { HOME: '/Users/a:relative' }, 'darwin').PATH.split(':');
+  assert.ok(!split.some(entry => entry.includes('Herd')), 'no Herd entry for a HOME with a colon');
+  assert.ok(split.every(entry => entry.startsWith('/')), 'every PATH entry stays absolute');
+  assert.ok(backendEnvironment('/desktop', {}, 'darwin').PATH.endsWith(':/Applications/MySQLWorkbench.app/Contents/MacOS'));
+});
+test('Finder client discovery finds keg-only versioned Homebrew clients, newest first', () => {
+  const fileSystem = { readdirSync(dir) {
+    if (dir === '/opt/homebrew/opt') return ['mysql-client@8.0', 'mysql@8.4', 'mysql-client@8.4', 'mariadb@11.4', 'mysql@10.0-rc', 'node@22'];
+    throw new Error('ENOENT');
+  } };
+  const parts = backendEnvironment('/desktop', { PATH: '/usr/bin' }, 'darwin', fileSystem).PATH.split(':');
+  const versioned = parts.filter(value => value.includes('@'));
+  assert.deepEqual(versioned, ['/opt/homebrew/opt/mariadb@11.4/bin', '/opt/homebrew/opt/mysql@8.4/bin',
+    '/opt/homebrew/opt/mysql-client@8.4/bin', '/opt/homebrew/opt/mysql-client@8.0/bin']);
+  assert.ok(parts.indexOf('/opt/homebrew/opt/mysql-client/bin') < parts.indexOf(versioned[0]));
   assert.equal(backendEnvironment('/desktop', { PATH: '/custom' }, 'linux').PATH, '/custom');
 });
 test('Windows client discovery appends installer folders after PATH, newest first', () => {
@@ -135,6 +154,25 @@ test('Windows client discovery appends installer folders after PATH, newest firs
     ProgramW6432: 'C:\\PROGRAM FILES' }, 'win32', fileSystem);
   assert.equal(dup.PATH.split(';').filter(value => value.toLowerCase().startsWith('c:\\program files\\mariadb 11.8')).length, 1);
   assert.ok(dup.PATH.startsWith('c:\\program files\\mariadb 11.8\\bin\\;'));
+});
+test('Windows client discovery falls back to the mysql.exe bundled with MySQL Workbench, last', () => {
+  // A server with only Workbench installed: mysql.exe sits in the Workbench folder itself, not in bin.
+  const files = new Set(['c:\\program files\\mysql\\mysql workbench 8.0 ce\\mysql.exe']);
+  const fileSystem = {
+    readdirSync: dir => {
+      if (dir.toLowerCase() === 'c:\\program files\\mysql') return ['MySQL Workbench 8.0 CE', 'MySQL Workbench 6.3 CE', 'MySQL Server 8.4'];
+      throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+    },
+    statSync: file => {
+      if (file.toLowerCase() === 'c:\\program files\\mysql\\mysql server 8.4\\bin') return { isDirectory: () => true, isFile: () => false };
+      if (files.has(file.toLowerCase())) return { isDirectory: () => false, isFile: () => true };
+      throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+    },
+  };
+  const env = backendEnvironment('C:\\desktop', { PATH: 'C:\\Windows\\System32', ProgramFiles: 'C:\\Program Files' }, 'win32', fileSystem);
+  // Server first; Workbench 6.3 CE has no mysql.exe here, so it is not added.
+  assert.deepEqual(env.PATH.split(';'), ['C:\\Windows\\System32', 'C:\\Program Files\\MySQL\\MySQL Server 8.4\\bin',
+    'C:\\Program Files\\MySQL\\MySQL Workbench 8.0 CE']);
 });
 test('startup tolerates fragmented output and shutdown owns only its child process group', async () => {
   const f = fixture(), ready = startBackend(settings, f.dependencies);
