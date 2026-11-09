@@ -211,21 +211,30 @@ def discover(path=None, common_dirs=None, bundled=None, refresh=False, job=None)
     available=False and error (also reason); presence records are deprecated.
     """
     groups, shells, skipped = {}, [], []
+    copies = []
     probes = 0
     for candidate in snapshot(path, common_dirs, bundled):
         if job:
             job.check_cancel()
         name, binary = candidate['name'], candidate['path']
+        folder = os.path.dirname(candidate['realpath'])
+        origin, label = _origin(folder, candidate['bundled'])
+        entry = dict(name=name, path=binary, realpath=candidate['realpath'],
+                     installation=None, origin=origin, origin_label=label, reason=None,
+                     warning=None, available=False, deprecated=name == 'mysqlpump')
+        copies.append(entry)
         try:
             if candidate['source'] == 'common':
                 connector._check_client_trust(binary)
         except ValueError as exc:
+            entry['error'] = str(exc)
             skipped.append(dict(candidate, available=False, error=str(exc), reason=str(exc)))
             continue
         if name == 'mysqlpump':
             fields = dict(available=True, version_tuple=[0, 0, 0], engine='mysql')
         else:
             if probes >= 32:
+                entry['error'] = 'probe limit'
                 skipped.append(dict(candidate, available=False, error='probe limit', reason='probe limit'))
                 continue
             probes += 1
@@ -235,6 +244,7 @@ def discover(path=None, common_dirs=None, bundled=None, refresh=False, job=None)
                 if fields['version_tuple'] == [0, 0, 0]:
                     fields.update(available=False,
                                   error='Version probe failed or returned an unrecognized version.')
+        entry.update(copy.deepcopy(fields))
         if not fields['available']:
             skipped.append(dict(candidate, reason=fields.get('error'), **fields))
             continue
@@ -248,6 +258,7 @@ def discover(path=None, common_dirs=None, bundled=None, refresh=False, job=None)
                                order=candidate['order']))
             continue
         key = fields['engine'] + ':' + folder
+        entry['installation'] = key
         if key not in groups:
             groups[key] = dict(key=key, engine=fields['engine'], folder=folder,
                                found_in=candidate['found_in'], origin=origin, origin_label=label,
@@ -266,7 +277,7 @@ def discover(path=None, common_dirs=None, bundled=None, refresh=False, job=None)
         group['series'] = '%s.%s' % group['version_tuple'][:2]
     return dict(installations=sorted(groups.values(), key=lambda g: (g['order'], g['key'])),
                 shells=sorted(shells, key=lambda s: (tuple(-v for v in s['version_tuple']),
-                                                    s['order'], s['realpath'], s['path'])), skipped=skipped)
+                                                    s['order'], s['realpath'], s['path'])), skipped=skipped, copies=copies)
 
 
 def _server(server):
@@ -380,6 +391,22 @@ def select(discovered, server=None, choice=None):
             result['load'] = dict(result['client'], role='load')
         else:
             missing('load', defaults['load'], bool(chosen_key))
+    # Loading must stay with the selected dump installation. An incomplete
+    # installation is a missing load, never authority to use another client.
+    if result['dump'] and source and not _program(source, 'client'):
+        result['load'] = None
+        if not any(m['role'] == 'load' for m in result['missing']):
+            missing('load', defaults['load'], bool(chosen_key))
+    if result['load']:
+        load = result['load']
+        if load['reason'] != 'chosen':
+            load_series = server_info.parse_version_tuple(load['version'])[:2]
+            load['reason'] = ('series' if load_series == series else
+                              'newer' if load_series > series else 'older')
+        if load['reason'] == 'older':
+            load['warning'] = '%s %s is older than this server (%s %s.%s).' % (
+                load['program'], load['version'], 'MySQL' if engine == 'mysql' else 'MariaDB',
+                series[0], series[1])
     if engine == 'mysql' and discovered.get('shells'):
         shell = min(discovered['shells'], key=lambda s: (tuple(-n for n in s['version_tuple']),
                                                        s['order'], s['realpath'], s['path']))
@@ -540,3 +567,90 @@ def discover_choices(choices, refresh=False):
             if not any(s['path'] == skipped['path'] for s in discovered['skipped']):
                 discovered['skipped'].append(skipped)
     return discovered
+
+
+def discover_lifecycle(path=None, common_dirs=None, choices=None, refresh=False, job=None):
+    """Lifecycle inventory, including trusted Settings folders outside PATH.
+
+    Explicit search paths retain the historical PATH-only test/caller seam.
+    Copies keep search order and probe banners; installations drive selection.
+    """
+    discovered = discover(path=path, common_dirs=common_dirs,
+                          bundled=None if path is None else False, refresh=refresh, job=job)
+    for engine in ('mysql', 'mariadb'):
+        value = (choices or {}).get(engine)
+        if not value or value == 'bundled':
+            continue
+        try:
+            program = _choice_program(engine, value)
+            connector._check_client_trust(program)
+            connector._check_client_trust(os.path.realpath(program))
+        except (ValueError, OSError):
+            continue
+        folder = value if os.path.isdir(value) else os.path.dirname(value)
+        # Avoid probing known files a second time, particularly on refresh.
+        positions = {c['realpath']: i for i, c in enumerate(discovered['copies'])}
+        known = {c['realpath'] for c in discovered['copies'] if c.get('error') != 'probe limit'}
+        candidates = snapshot(path='', common_dirs=(folder,), bundled=False) if os.name != 'nt' else (
+            snapshot(path='', common_dirs=(), bundled=folder))
+        if all(c['realpath'] in known for c in candidates):
+            continue
+        extra = (discover(path='', common_dirs=(folder,), bundled=False, refresh=refresh, job=job)
+                 if os.name != 'nt' else discover(path='', common_dirs=(), bundled=folder, refresh=refresh, job=job))
+        for group in extra['installations']:
+            old = next((g for g in discovered['installations'] if g['key'] == group['key']), None)
+            if old:
+                old['programs'].update({n: p for n, p in group['programs'].items() if n not in old['programs']})
+            else:
+                group['order'] += len(discovered['copies'])
+                group['bundled'] = False
+                group['origin'], group['origin_label'] = _origin(group['folder'], False)
+                if group['origin'] == 'path':
+                    group.update(origin='folder', origin_label='Chosen folder')
+                discovered['installations'].append(group)
+        for entry in extra['copies']:
+            if entry['realpath'] not in known:
+                group = next((g for g in discovered['installations'] if g['key'] == entry['installation']), None)
+                if group:
+                    entry.update(origin=group['origin'], origin_label=group['origin_label'])
+                else:
+                    origin, label = _origin(os.path.dirname(entry['realpath']), False)
+                    entry.update(origin='folder' if origin == 'path' else origin,
+                                 origin_label='Chosen folder' if origin == 'path' else label)
+                position = positions.get(entry['realpath'])
+                if position is None:
+                    discovered['copies'].append(entry)
+                else:
+                    discovered['copies'][position] = entry
+                    discovered['skipped'] = [s for s in discovered['skipped']
+                                             if s['realpath'] != entry['realpath']]
+                known.add(entry['realpath'])
+        for shell in extra['shells']:
+            if not any(s['realpath'] == shell['realpath'] for s in discovered['shells']):
+                origin, label = _origin(os.path.dirname(shell['realpath']), False)
+                shell.update(origin='folder' if origin == 'path' else origin,
+                             origin_label='Chosen folder' if origin == 'path' else label)
+                discovered['shells'].append(shell)
+        for skipped in extra['skipped']:
+            if not any(s['path'] == skipped['path'] for s in discovered['skipped']):
+                discovered['skipped'].append(skipped)
+    return discovered
+
+
+def select_program(discovered, server, name, choice=None):
+    """Rank an auxiliary program with the same engine/series/choice policy.
+
+    Reuse the dump role on an independent projection, so future ranking fixes
+    also apply to maintenance-only programs such as mariadb-upgrade.
+    """
+    projected = dict(installations=[], shells=[])
+    program = 'mariadb-dump' if server['engine'] == 'mariadb' else 'mysqldump'
+    for group in discovered.get('installations', []):
+        projected['installations'].append(dict(group, programs=(
+            {program: group['programs'][name]} if name in group['programs'] else {})))
+    used = select(projected, server, choice)['dump']
+    if used:
+        used['program'] = name
+        if used.get('warning'):
+            used['warning'] = used['warning'].replace(program, name, 1).split(' Install ', 1)[0]
+    return used

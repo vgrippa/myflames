@@ -8,7 +8,7 @@ profile safety from dbops.connection_safety, not a policy supplied by a client.
 No CLI, HTTP endpoint, global registry, or process starts on import.
 
 Wire contracts:
-  lifecycle-tools-1.0: tools[name] {available, path, version, engine, deprecated}
+  lifecycle-tools-2.0: tools[name] {available, path, version, engine, deprecated}
   upgrade-check-1.0: server, target_version, method, partial, checks[], counts,
     manual_checks[], limitations[], status (findings are NOT a process failure).
   lifecycle-plan-1.0: operation, request, server, connection_key, tool, target,
@@ -224,41 +224,76 @@ def _report_safe(value, passwords=(), field=''):
     return value
 
 
-def detect_tools(path=None, common_dirs=None, job=None, check_updates=False, refresh=False):
-    """Discover each external tool, including deprecated mysqlpump (never offered).
+def detect_tools(path=None, common_dirs=None, job=None, check_updates=False, refresh=False, server=None):
+    """Describe every copy; select per server using the Settings client policy.
 
-    common_dirs=() makes PATH-only discovery deterministic for callers/tests.
-    An unrecognized or failing version probe is unavailable, never guessed.
-    Completed probes are memoized by binary identity without expiry; discovery
-    still runs every time. refresh=True bypasses the cache. Failures to launch
-    and timeouts are never cached. No network check runs unless requested.
+    Without server facts, preserve the first copy in search order. Selection
+    never substitutes another installation for a missing explicit choice.
     """
-    found = {}
-    # The desktop app's bundled mysql and mysqldump come after every installed
-    # tool, the common folders included (connector.bundled_client_dir).
-    bundled = bundled_client_dir() if path is None else None
-    search = installed_search_path(bundled) if bundled else path
-    for name in TOOLS:
-        if job:
-            job.check_cancel()
-        binary = shutil.which(name, path=search)
-        if not binary:
-            for folder in COMMON_BIN_DIRS if common_dirs is None else common_dirs:
-                candidate = os.path.join(folder, name)
-                if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-                    binary = candidate
-                    break
-        if not binary and bundled:
-            binary = bundled_program(bundled, name)
-        entry = {'available': False, 'deprecated': name == 'mysqlpump'}
-        if binary:
-            entry['path'] = os.path.abspath(binary)
-            from .client_tools import probe
-            entry.update(probe(name, binary, refresh=refresh, job=job))
-        found[name] = entry
+    from . import client_tools, connector
     from .tool_updates import enrich_tools
-    return enrich_tools({'schema_version': 'lifecycle-tools-1.0', 'tools': found},
-                        check_updates=check_updates)
+    choices = connector.client_choices()
+    discovered = client_tools.discover_lifecycle(path, common_dirs, choices, refresh, job)
+    keys, errors = client_tools.choice_keys(discovered, choices)
+    used = client_tools.select(discovered, server, keys) if server is not None else None
+    if used and errors.get(server['engine']):
+        # A stale choice is not Automatic. Keep the inventory visible but make
+        # every engine-bound role unavailable rather than silently falling back.
+        text = errors[server['engine']]
+        for role in ('client', 'dump', 'load', 'backup'):
+            selected = used.get(role)
+            program = selected['program'] if selected else {
+                'client': 'mysql' if server['engine'] == 'mysql' else 'mariadb',
+                'dump': 'mysqldump' if server['engine'] == 'mysql' else 'mariadb-dump',
+                'load': 'mysql' if server['engine'] == 'mysql' else 'mariadb',
+                'backup': 'mariadb-backup'}[role]
+            used[role] = None
+            used['missing'] = [m for m in used['missing'] if m['role'] != role]
+            used['missing'].append(dict(role=role, program=program, text=text))
+    copies = copy.deepcopy(discovered['copies'])
+    found = {}
+    roles = {'mysql': 'load', 'mariadb': 'load', 'mysqldump': 'dump',
+             'mariadb-dump': 'dump', 'mariadb-backup': 'backup', 'mysqlsh': 'shell'}
+    for name in TOOLS:
+        entry = dict(available=False, deprecated=name == 'mysqlpump', realpath=None,
+                     installation=None, origin=None, origin_label=None, reason=None, warning=None)
+        first = next((c for c in copies if c['name'] == name), None)
+        if server is None or name == 'mysqlpump':
+            if first:
+                entry.update({k: v for k, v in first.items() if k != 'name'})
+        else:
+            role = roles.get(name)
+            selected = used.get(role) if role else client_tools.select_program(discovered, server, name, keys)
+            if not role and errors.get(server['engine']):
+                selected = None
+            if selected and selected['program'] == name:
+                chosen = next(c for c in copies if c['realpath'] == selected['realpath'])
+                entry.update({k: v for k, v in chosen.items() if k != 'name'})
+                entry.update(reason=selected['reason'], warning=selected['warning'])
+            else:
+                missing = next((m for m in used['missing'] if m['role'] == role), None)
+                entry['error'] = (missing['text'] if missing else errors.get(server['engine']) or
+                                  ('The installation chosen in Settings > Client tools has no %s.' % name
+                                   if keys.get(server['engine']) else
+                                   'No usable %s was selected for this server.' % name))
+        found[name] = entry
+    for entry in copies:
+        selected = found.get(entry['name'], {})
+        entry['used'] = bool(selected.get('path') == entry['path'])
+        if entry['used']:
+            entry.update(reason=selected['reason'], warning=selected['warning'])
+    report = dict(schema_version='lifecycle-tools-2.0', tools=found, copies=copies)
+    if used is not None:
+        # Match the public client-tools Use shape, not selector-only facts.
+        used.pop('server', None)
+        for role in ('client', 'dump', 'load', 'backup', 'shell'):
+            if used[role] is not None:
+                used[role] = {k: v for k, v in used[role].items()
+                              if k not in ('realpath', 'version_tuple', 'order')}
+                if role == 'shell':
+                    used[role]['installation'] = None
+        report['used'] = used
+    return enrich_tools(report, check_updates=check_updates)
 
 
 def _tool(tools, name):
@@ -269,13 +304,31 @@ def _pick(tools, names, engine=None):
     for name in names:
         entry = _tool(tools, name)
         if entry.get('available') and not entry.get('deprecated') and (not engine or entry.get('engine') == engine):
-            return dict(entry, name=name)
+            fields = ('path', 'realpath', 'version', 'version_tuple', 'engine', 'installation',
+                      'origin', 'origin_label', 'reason', 'warning', 'available', 'deprecated')
+            return dict({key: copy.deepcopy(entry[key]) for key in fields if key in entry}, name=name)
+    missing = next((_tool(tools, name).get('error') for name in names
+                    if 'Settings > Client tools' in (_tool(tools, name).get('error') or '')), None)
+    if missing:
+        raise Refused(missing)
     other = [name for name in names if _tool(tools, name).get('available')]
     note = (' (%s here is from %s, which this %s server does not use)' % (
         ' and '.join(other), 'MariaDB' if engine == 'mysql' else 'MySQL', 'MySQL' if engine == 'mysql' else 'MariaDB')
         if other and engine else '')
     raise Refused('No usable %s on this machine%s. Install %s client tools and run it again.' % (
         ' or '.join(names), note, 'MariaDB' if engine == 'mariadb' else 'MySQL'))
+
+
+def _load_tool(tools, engine):
+    """Use the selector's load role, tied to the selected dump installation."""
+    used = tools.get('used')
+    if used is not None:
+        load = used.get('load')
+        if load and load['engine'] == engine:
+            name = load['program']
+            entry = dict(_tool(tools, name), reason=load['reason'], warning=load['warning'])
+            return _pick({'tools': {name: entry}}, (name,), engine)
+    return _pick(tools, ('mariadb', 'mysql') if engine == 'mariadb' else ('mysql',), engine)
 
 
 def offered_tools(server, tools):
@@ -1298,7 +1351,7 @@ def upgrade_check(conn, target_version, connection=None, tools=None, config_path
     if source < (5, 7, 0) or source >= target or target < (8, 0, 0):
         raise Refused('MySQL upgrade checks require source >=5.7, target >=8.0 and source older than target.')
     if prefer_shell:
-        tools = detect_tools() if tools is None else tools
+        tools = detect_tools(server=server, job=job) if tools is None else tools
     shell = _tool(tools, 'mysqlsh') if prefer_shell else {}
     if shell.get('available'):
         shell_version = version_tuple(shell.get('version', ''))
@@ -1387,6 +1440,12 @@ def _plan_binding(plan, binding_extra=None):
 
 
 def _plan(operation, server, connection, request, tool, target, commands, checks, warnings, binding_extra=None):
+    fields = ('name', 'path', 'realpath', 'version', 'version_tuple', 'engine', 'installation',
+              'origin', 'origin_label', 'reason', 'warning', 'available', 'deprecated')
+    tool = {key: copy.deepcopy(tool[key]) for key in fields if key in tool}
+    warnings = list(warnings)
+    if tool.get('reason') == 'older' and tool.get('warning') and tool['warning'] not in warnings:
+        warnings.append(tool['warning'])
     plan = {'schema_version': 'lifecycle-plan-1.0', 'operation': operation, 'request': request,
             'server': server, 'connection_key': dbops.connection_identity(connection), 'tool': tool,
             'target': target, 'commands': commands, 'checks': checks, 'warnings': warnings,
@@ -1516,7 +1575,7 @@ def prepare_dump(conn, connection, directory, schemas=None, tables=None, threads
         raise ValueError('Table dumps require exactly one schema.')
     if isinstance(threads, bool) or not isinstance(threads, int) or not 1 <= threads <= 64:
         raise ValueError('Threads must be 1..64.')
-    tools = detect_tools() if tools is None else tools
+    tools = detect_tools(server=server, job=job) if tools is None else tools
     offers = offered_tools(server, tools)['dump']
     if not prefer_shell:
         offers = [name for name in offers if name != 'mysqlsh']
@@ -1869,6 +1928,9 @@ def _write_job(operation, connection, plan, rebuild, action, confirmed, typed_ta
                     refuse('Server identity changed before preflight; nothing was sent.')
                 stack.enter_context(_RESERVATIONS.hold(job.id, _resources(plan, identity)))
                 fresh = rebuild(conn, job)
+                if fresh['tool'] != plan.get('tool'):
+                    refuse('The tool for this server changed since the review (Settings > Client tools or an installed '
+                           'program changed). Review it again; nothing was run.')
                 if (fresh['binding'] != plan.get('binding') or fresh['target'] != plan.get('target')
                         or fresh['commands'] != plan.get('commands')):
                     refuse('Server identity, tool, backup or request changed; nothing was sent.')
@@ -1929,7 +1991,7 @@ def dump_job(connection, plan, confirmed=False, typed_target=None, audit=None, s
     connection = copy.deepcopy(connection)
     request = copy.deepcopy(plan.get('request', {}))
     def rebuild(conn, job):
-        return prepare_dump(conn, connection, tools=detect_tools(job=job), job=job, **request)
+        return prepare_dump(conn, connection, tools=None, job=job, **request)
     def action(job, conn, fresh):
         return _perform_dump(job, conn, fresh, connection)
     return _write_job('dump', connection, plan, rebuild, action, confirmed, typed_target, audit, safety, factory, start)
@@ -2105,7 +2167,7 @@ def prepare_restore(conn, connection, directory, schema=None, tools=None, allow_
         raise ValueError('Choose refuse, ignore or drop existing objects explicitly.')
     if isinstance(threads, bool) or not isinstance(threads, int) or not 1 <= threads <= 64:
         raise ValueError('Threads must be 1..64.')
-    tools = detect_tools() if tools is None else tools
+    tools = detect_tools(server=server, job=job) if tools is None else tools
     shell_dump = manifest['tool']['name'] == 'mysqlsh'
     checks = [_staging_check(manifest, staging_directory)]
     warnings = ['Restore executes DDL and DML and can overwrite data. It cannot be undone.',
@@ -2132,7 +2194,7 @@ def prepare_restore(conn, connection, directory, schema=None, tools=None, allow_
     else:
         if not any(r['path'] == 'dump.sql' for r in manifest['files']):
             raise Refused('SQL backup manifest has no dump.sql file.')
-        tool = _pick(tools, ('mariadb', 'mysql') if server['engine'] == 'mariadb' else ('mysql',), server['engine'])
+        tool = _load_tool(tools, server['engine'])
         if existing_objects == 'ignore':
             raise Refused('Ignoring existing objects is supported only by Shell loads; SQL dumps include DROP TABLE.')
     instance_sql = not shell_dump and not scope['schemas']
@@ -2196,7 +2258,7 @@ def restore_job(connection, plan, confirmed=False, typed_target=None, audit=None
     request = copy.deepcopy(plan.get('request', {}))
     prepare_request = {k: v for k, v in request.items() if k != 'progress_file'}
     def rebuild(conn, job):
-        return prepare_restore(conn, connection, tools=detect_tools(job=job), job=job, **prepare_request)
+        return prepare_restore(conn, connection, tools=None, job=job, **prepare_request)
     def action(job, conn, fresh):
         manifest = fresh['manifest']
         _check_reviewed_manifest(request['directory'], fresh['manifest_hash'], job)
@@ -2529,7 +2591,7 @@ def refuse_clone_through_ssh(donor_connection, recipient_connection):
 
 
 def prepare_clone(donor_conn, recipient_conn, donor_connection, recipient_connection, data_directory=None,
-                  require_ssl=True, directory_probe=None, tools=None, donor_address=None):
+                  require_ssl=True, directory_probe=None, tools=None, donor_address=None, job=None):
     refuse_clone_through_ssh(donor_connection, recipient_connection)
     if donor_connection.get('ssl_mode') in ('REQUIRED', 'VERIFY_CA', 'VERIFY_IDENTITY') and require_ssl is False:
         raise Refused('The donor requires TLS; clone must use REQUIRE SSL.')
@@ -2553,7 +2615,8 @@ def prepare_clone(donor_conn, recipient_conn, donor_connection, recipient_connec
                         'Without a restart supervisor the recipient can shut down and require a manual start. This cannot be undone.')
         warnings.append("After it, the recipient has the donor's accounts and passwords (the mysql schema is cloned): "
                         'connect to it with an account from the donor.')
-    tool = _pick(detect_tools() if tools is None else tools, ('mysql',), 'mysql')
+    tools = detect_tools(server=recipient['server'], job=job) if tools is None else tools
+    tool = _load_tool(tools, 'mysql')
     expect = _clone_expect(donor_connection, recipient_connection, require_ssl, donor_address)
     plan = _plan('clone', recipient['server'], recipient_connection, request, tool, target,
                  [clone_statement(donor_connection, data_directory, require_ssl, donor_address=donor_address)],
@@ -2601,7 +2664,7 @@ def clone_job(donor_connection, recipient_connection, plan, confirmed=False, typ
         with _connect(factory, donor_connection) as donor:
             return prepare_clone(_BoundedConnection(donor, job), conn, donor_connection, recipient_connection,
                                  request.get('data_directory'), request.get('require_ssl', True), directory_probe,
-                                 tools=detect_tools(job=job), donor_address=donor_address)
+                                 tools=None, donor_address=donor_address, job=job)
     def action(job, conn, fresh):
         require_clone_recipient_tls(donor_connection, recipient_connection,
                                     saved=request.get('saved_donor_password') is True)
@@ -2736,7 +2799,7 @@ def _gtid_text(value):
     return re.sub(r'\s+', '', str(value or '')).lower()
 
 
-def prepare_physical_backup(conn, connection, directory, tools=None, same_host_confirmed=False):
+def prepare_physical_backup(conn, connection, directory, tools=None, same_host_confirmed=False, job=None):
     """Prepare MariaDB backup+prepare as one explicitly confirmed host operation.
 
     Locality requires an explicitly selected, matching live Unix socket and
@@ -2746,7 +2809,8 @@ def prepare_physical_backup(conn, connection, directory, tools=None, same_host_c
     guidance = physical_backup_guidance(conn, connection, directory)
     server, directory = guidance['server'], _output_path(directory)
     _empty_directory(directory)
-    tool = _pick(detect_tools() if tools is None else tools, ('mariadb-backup',), 'mariadb')
+    tools = detect_tools(server=server, job=job) if tools is None else tools
+    tool = _pick(tools, ('mariadb-backup',), 'mariadb')
     checks = [_verification('engine', 'passed' if server['engine'] == 'mariadb' else 'failed', 'mariadb-backup requires MariaDB.'),
               _verification('local_files', 'passed' if guidance['local_files_detected'] and not connection.get('ssh_host') and
                             connection.get('host') in ('localhost', '127.0.0.1', '::1') and same_host_confirmed is True else 'failed',
@@ -2773,7 +2837,7 @@ def physical_backup_job(connection, plan, confirmed=False, typed_target=None, au
     connection = copy.deepcopy(connection)
     request = copy.deepcopy(plan.get('request', {}))
     def rebuild(conn, job):
-        return prepare_physical_backup(conn, connection, tools=detect_tools(job=job), **request)
+        return prepare_physical_backup(conn, connection, tools=None, job=job, **request)
     def action(job, conn, fresh):
         directory, tool = request['directory'], fresh['tool']
         _empty_directory(directory)

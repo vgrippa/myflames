@@ -979,6 +979,50 @@ class TestWindowsClientTrust(unittest.TestCase):
             self.windows_os.path.isfile.assert_not_called()
         self.run.assert_not_called()
 
+    def test_lifecycle_executable_allowlist_accepts_every_installation_root(self):
+        names = ('mysql.exe', 'mariadb.exe', 'mysqldump.exe', 'mariadb-dump.exe',
+                 'mariadb-backup.exe', 'mysqlsh.exe')
+        for key in ('ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'LOCALAPPDATA',
+                    'MYFLAMES_USER_PROFILE', 'USERPROFILE'):
+            self.windows_os.environ = {key: r'C:\Allowed'}
+            for name in names:
+                path = ntpath.join(r'C:\Allowed\bin', name.upper())
+                with self.subTest(root=key, name=name):
+                    connector._check_client_trust(path)
+        # Trust validation itself never starts an executable.
+        self.run.assert_not_called()
+
+    def test_lifecycle_executable_allowlist_rejects_other_programs_before_resolution(self):
+        for name in ('cmd.exe', 'mysqladmin.exe'):
+            self.windows_os.path.realpath.reset_mock()
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                connector._check_client_trust(ntpath.join(r'C:\Program Files\MySQL\bin', name))
+            self.windows_os.path.realpath.assert_not_called()
+        self.run.assert_not_called()
+
+    def test_lifecycle_executables_still_require_safe_local_roots(self):
+        for name in ('mysqldump.exe', 'mariadb-dump.exe', 'mariadb-backup.exe', 'mysqlsh.exe'):
+            for root in (r'C:\untrusted', r'C:\Program FilesOther', r'C:\Users\tester-other',
+                         r'D:\Program Files', r'C:\Program Files\..\untrusted'):
+                with self.subTest(name=name, root=root), self.assertRaises(ValueError):
+                    connector._check_client_trust(ntpath.join(root, name))
+            for root in (r'\\server\share', r'\\?\C:\Program Files', r'\\.\C:\Program Files', '//server/share'):
+                self.windows_os.path.realpath.reset_mock()
+                with self.subTest(name=name, root=root), self.assertRaises(ValueError):
+                    connector._check_client_trust(ntpath.join(root, name))
+                self.windows_os.path.realpath.assert_not_called()
+        self.run.assert_not_called()
+
+    def test_lifecycle_executable_resolved_targets_cannot_escape_trusted_roots(self):
+        for name in ('mysqldump.exe', 'mariadb-dump.exe', 'mariadb-backup.exe', 'mysqlsh.exe'):
+            path = ntpath.join(r'C:\Program Files\MySQL\bin', name)
+            for root in (r'C:\outside', r'\\server\share'):
+                destination = ntpath.join(root, name)
+                self.windows_os.path.realpath.side_effect = lambda value: destination if value == path else value
+                with self.subTest(name=name, root=root), self.assertRaises(ValueError):
+                    connector._check_client_trust(path)
+        self.run.assert_not_called()
+
     def test_choice_skips_network_locations_before_filesystem_access(self):
         from myflames import client_tools
         with mock.patch.object(client_tools, 'os', self.windows_os):

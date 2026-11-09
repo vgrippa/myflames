@@ -295,6 +295,54 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(report['installations'], [])
         self.assertEqual([s['version'] for s in report['shells']], ['9.6.0', '8.4.13'])
 
+    def test_inventory_copies_keep_banners_metadata_and_failed_probes(self):
+        mysql = self.make(self.root / 'first', banner='mysql Ver 8.4.13 for test')
+        failed = self.make(self.root / 'second', 'mysqldump', banner='unknown', exit_code=2)
+        self.make(mysql.parent, 'mysqlpump', exit_code=99)
+        report = self.discover(mysql.parent, failed.parent)
+        self.assertEqual(len(report['copies']), 3)
+        entries = {c['name']: c for c in report['copies']}
+        self.assertEqual(entries['mysql']['version'], 'mysql Ver 8.4.13 for test')
+        self.assertEqual(entries['mysql']['realpath'], str(mysql))
+        self.assertEqual(entries['mysql']['installation'], 'mysql:' + str(mysql.parent))
+        self.assertEqual(entries['mysql']['origin'], 'path')
+        self.assertFalse(entries['mysqldump']['available'])
+        self.assertIn('Version probe failed', entries['mysqldump']['error'])
+        self.assertTrue(entries['mysqlpump']['available'])
+        self.assertTrue(entries['mysqlpump']['deprecated'])
+        self.assertNotIn('version', entries['mysqlpump'])
+
+    def test_lifecycle_inventory_includes_and_checks_chosen_offpath_folder(self):
+        mysql = self.make(self.root / 'chosen')
+        self.make(mysql.parent, 'mysqldump')
+        with mock.patch.object(ct.connector, 'bundled_client_dir', return_value=None):
+            report = ct.discover_lifecycle(path='', common_dirs=(), choices={'mysql': str(mysql)})
+            self.assertEqual(len(report['copies']), 2)
+            self.assertEqual(report['installations'][0]['origin_label'], 'Chosen folder')
+            self.assertTrue(all(c['origin'] == 'folder' for c in report['copies']))
+            mysql.chmod(0o777)
+            report = ct.discover_lifecycle(path='', common_dirs=(), choices={'mysql': str(mysql)})
+            self.assertEqual(report['copies'], [])
+            self.assertEqual(report['installations'], [])
+
+    def test_lifecycle_chosen_installation_beyond_probe_limit_is_not_stale(self):
+        folders = [self.root / str(i) for i in range(32)]
+        for folder in folders:
+            self.make(folder)
+        chosen = self.make(self.root / 'chosen')
+        self.make(chosen.parent, 'mysqldump')
+        with mock.patch.object(ct.connector, 'bundled_client_dir', return_value=None):
+            report = ct.discover_lifecycle(path=os.pathsep.join(str(f) for f in folders + [chosen.parent]),
+                                          common_dirs=(), choices={'mysql': str(chosen)})
+        self.assertEqual(len(report['copies']), 34)
+        self.assertEqual(report['skipped'], [])
+        self.assertTrue(all(c['available'] for c in report['copies']))
+        keys, errors = ct.choice_keys(report, {'mysql': str(chosen)})
+        self.assertIsNone(errors['mysql'])
+        selected = ct.select(report, {'engine': 'mysql', 'version': '8.4.3'}, keys)
+        self.assertEqual(selected['dump']['path'], str(chosen.parent / 'mysqldump'))
+        self.assertEqual(selected['dump']['reason'], 'chosen')
+
     def test_clean_environment_and_probe_arguments(self):
         binary = self.make(self.root)
         with mock.patch.dict(os.environ, {'MYSQL_PWD': 'secret', 'API_KEY': 'secret'}), \
@@ -432,10 +480,38 @@ class SelectionTests(unittest.TestCase):
         self.groups[2]['programs'].pop('mysql')
         result = self.choose()
         self.assertNotEqual(result['client']['installation'], result['dump']['installation'])
-        self.assertEqual(result['load']['installation'], result['client']['installation'])
+        self.assertIsNone(result['load'])
+        self.assertIn('No usable mysql was found.', [m['text'] for m in result['missing'] if m['role'] == 'load'])
         self.groups[2]['programs']['mysql'] = dict(self.groups[0]['programs']['mysql'], version='8.0.1')
         result = self.choose()
         self.assertEqual(result['load']['installation'], result['dump']['installation'])
+
+    def test_load_reason_and_warning_use_client_version_in_mixed_folder(self):
+        self.groups[2]['programs']['mysql']['version'] = '8.0.45'
+        result = self.choose()
+        self.assertEqual(result['dump']['reason'], 'series')
+        self.assertEqual(result['load']['reason'], 'older')
+        self.assertEqual(result['load']['warning'], 'mysql 8.0.45 is older than this server (MySQL 8.4).')
+        self.groups[2]['programs']['mysql']['version'] = '9.7.2'
+        result = self.choose('9.7.2')
+        self.assertEqual(result['dump']['reason'], 'older')
+        self.assertEqual(result['load']['reason'], 'series')
+        self.assertIsNone(result['load']['warning'])
+
+    def test_auxiliary_program_ranks_with_server_series_and_choice(self):
+        groups = [self.group(v, i, engine='mariadb', names=('mariadb-upgrade',))
+                  for i, v in enumerate(('11.4.2', '10.11.10', '11.4.5'))]
+        discovered = dict(installations=groups, shells=[])
+        for version, index, reason in (('11.4.3', 2, 'series'), ('10.11.9', 1, 'series'), ('11.8.0', 2, 'older')):
+            used = ct.select_program(discovered, {'engine': 'mariadb', 'version': version}, 'mariadb-upgrade')
+            self.assertEqual(used['installation'], groups[index]['key'])
+            self.assertEqual(used['program'], 'mariadb-upgrade')
+            self.assertEqual(used['reason'], reason)
+        used = ct.select_program(discovered, {'engine': 'mariadb', 'version': '11.4.3'},
+                                 'mariadb-upgrade', {'mariadb': groups[1]['key']})
+        self.assertEqual(used['installation'], groups[1]['key'])
+        self.assertEqual(used['reason'], 'chosen')
+        self.assertEqual(discovered['installations'], groups)
 
     def test_determinism_shuffled_inputs_and_no_mutation(self):
         self.discovered['shells'].append(dict(self.shell, path='/a/mysqlsh', realpath='/a/mysqlsh'))

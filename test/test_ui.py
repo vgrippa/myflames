@@ -293,6 +293,97 @@ class TestLiveJobOwnership(unittest.TestCase):
         self.assertTrue(job.cancelled.is_set())
 
 
+class TestLifecycleToolsAPI(unittest.TestCase):
+    """Exercise lifecycle dispatch directly, without binding a loopback socket."""
+
+    def setUp(self):
+        import types
+        from myflames import client_tools, connector
+        from myflames.workspace_store import WorkspaceStore
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.workspace = types.SimpleNamespace(
+            store=WorkspaceStore(Path(self.temp.name) / 'workspace.sqlite3'))
+        # Keep discovery deterministic while using the real schema, selector,
+        # capability descriptors and connection policy in these route tests.
+        discovered = dict(installations=[], shells=[], skipped=[], copies=[])
+        for patch in (mock.patch.object(client_tools, 'discover_lifecycle', return_value=discovered),
+                      mock.patch.object(connector, 'client_choices', return_value=dict(mysql=None, mariadb=None))):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def test_lifecycle_tools_without_connection_publishes_inventory_schema(self):
+        from myflames import lifecycle
+        with mock.patch.object(lifecycle, '_connect') as connect, \
+                mock.patch.object(lifecycle, 'read_server') as read:
+            result = api_response('/api/lifecycle/tools', {}, self.workspace)
+        self.assertEqual(result['schema_version'], 'lifecycle-tools-2.0')
+        self.assertEqual(set(result), {'schema_version', 'tools', 'copies'})
+        self.assertEqual(set(result['tools']), set(lifecycle.TOOLS))
+        self.assertEqual(result['copies'], [])
+        self.assertTrue(all(not entry['available'] for entry in result['tools'].values()))
+        connect.assert_not_called()
+        read.assert_not_called()
+
+    def test_lifecycle_tools_reads_server_before_detecting_for_that_server(self):
+        from myflames import lifecycle
+        server = dict(engine='mysql', version='8.4.13', product='MySQL', identity={'server_uuid': 'test'})
+        events = []
+        real_detect = lifecycle.detect_tools
+
+        def read_server(conn, options):
+            events.append('read')
+            self.assertEqual(options['host'], 'db.example')
+            return server
+
+        def detect_tools(*args, **kwargs):
+            events.append('detect')
+            self.assertIs(kwargs['server'], server)
+            self.assertFalse(kwargs['check_updates'])
+            return real_detect(*args, **kwargs)
+
+        with mock.patch.object(lifecycle, '_connect') as connect, \
+                mock.patch.object(lifecycle, 'read_server', side_effect=read_server) as read, \
+                mock.patch.object(lifecycle, 'detect_tools', side_effect=detect_tools) as detect:
+            result = api_response('/api/lifecycle/tools', {'connection': {'host': 'db.example'}}, self.workspace)
+        self.assertEqual(events, ['read', 'detect'])
+        read.assert_called_once()
+        self.assertIs(read.call_args[0][0], connect.return_value.__enter__.return_value)
+        detect.assert_called_once_with(server=server, check_updates=False)
+        self.assertEqual(result['schema_version'], 'lifecycle-tools-2.0')
+        self.assertEqual(result['server'], dict(engine='mysql', version='8.4.13'))
+        self.assertEqual(result['copies'], [])
+        self.assertEqual(set(result['used']), {'client', 'dump', 'load', 'backup', 'shell', 'missing', 'notes'})
+        self.assertEqual(result['offered']['dump'], [])
+        self.assertTrue(all(result['used'][role] is None for role in ('client', 'dump', 'load', 'backup', 'shell')))
+
+    def test_dump_capabilities_use_selected_entry_version_for_both_scopes(self):
+        from myflames import dump_options, ui
+        # First in discovery order can be a different Shell than the one the
+        # server selector picked. Compression levels follow the selected one.
+        for selected, first, has_levels in (('8.0.40', '8.4.13', False), ('8.4.13', '8.0.40', True)):
+            with self.subTest(selected=selected):
+                copies = [dict(name='mysqlsh', version=first, path='/first/mysqlsh')]
+                report = dict(schema_version='lifecycle-tools-2.0', copies=copies,
+                              tools={'mysqlsh': dict(available=True, version=selected, path='/chosen/mysqlsh'),
+                                     'mysqldump': dict(available=True, version='8.4.13'),
+                                     'mariadb-dump': dict(available=True, version='11.4.5'),
+                                     'mysql': dict(available=True, version='8.4.13')})
+                with mock.patch.object(dump_options, 'capability_catalog', wraps=dump_options.capability_catalog) as catalog:
+                    result = ui._dump_tool_capabilities(report)
+                self.assertIs(result, report)
+                self.assertEqual(catalog.call_count, 6)
+                for name in ('mysqlsh', 'mysqldump', 'mariadb-dump'):
+                    version = report['tools'][name]['version']
+                    self.assertIn(mock.call(name, tool_version=version), catalog.call_args_list)
+                    self.assertIn(mock.call(name, table_scope=True, tool_version=version), catalog.call_args_list)
+                for scope in ('dump_capabilities', 'dump_table_capabilities'):
+                    keys = {option['key'] for option in result['tools']['mysqlsh'][scope]['options']}
+                    self.assertEqual('compression_level' in keys, has_levels)
+                self.assertEqual(copies, [dict(name='mysqlsh', version=first, path='/first/mysqlsh')])
+                self.assertNotIn('dump_capabilities', result['tools']['mysql'])
+
+
 class TestClientToolsAPI(unittest.TestCase):
     """Dispatch through the real handler without requiring a loopback socket."""
 

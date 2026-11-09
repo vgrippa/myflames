@@ -45,9 +45,16 @@ class SQLTests(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, {
             'HOME': self.temp.name, 'USERPROFILE': self.temp.name,
             'MYFLAMES_SECRET_BACKEND': 'vault', 'FAKE_ENGINE': 'mysql',
-            'FAKE_STATE': str(self.state), 'PATH': str(bindir) + os.pathsep + os.environ.get('PATH', '')})
+            # The fake is the only client: installed and bundled clients would
+            # make client_tools read the server's version first.
+            'FAKE_STATE': str(self.state), 'PATH': str(bindir), 'MYFLAMES_BUNDLED_CLIENT_DIR': ''})
         patcher.start()
         self.addCleanup(patcher.stop)
+        from myflames import client_tools, lifecycle
+        folders = mock.patch.object(lifecycle, 'COMMON_BIN_DIRS', ())
+        folders.start()
+        self.addCleanup(folders.stop)
+        client_tools._FACTS.clear()
         for name in ('MYFLAMES_VAULT_PASSPHRASE', 'FAKE_DENY', 'FAKE_PS', 'FAKE_COMMANDS'):
             os.environ.pop(name, None)
         # The engine deliberately scrubs arbitrary environment variables. Inject

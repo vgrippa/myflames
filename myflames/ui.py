@@ -912,15 +912,17 @@ def _lifecycle_response(path, payload, workspace):
         passwords.append((payload.get("connection") or {}).get("password"))
         options = _lifecycle_connection(payload.get("connection"), safety)
         if path == "/api/lifecycle/tools":
-            tools = _dump_tool_capabilities(lc.detect_tools(check_updates=payload.get("check_updates") is True))
             try:
                 with lc._connect(lc.LifecycleConnection, options) as conn:
                     server = lc.read_server(conn, options)
             except Exception as exc:
                 if client_missing_error(exc) is None:
                     raise
+                tools = _dump_tool_capabilities(lc.detect_tools(check_updates=payload.get("check_updates") is True))
                 return dict(tools, server={}, offered={}, server_error={
                     "code": "client-missing", "error": lc._safe(str(exc), passwords)})
+            tools = _dump_tool_capabilities(lc.detect_tools(server=server,
+                check_updates=payload.get("check_updates") is True))
             return dict(tools, server={k: server[k] for k in ("engine", "version")},
                         offered=lc.offered_tools(server, tools))
         if path == "/api/lifecycle/upgrade-targets":

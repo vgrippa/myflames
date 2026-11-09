@@ -420,7 +420,8 @@ def _check_client_trust(path):
             return not value.replace('/', '\\').startswith('\\\\')
 
         if (not local_path(path) or
-                ntpath.basename(path).lower() not in ('mysql.exe', 'mariadb.exe')):
+                ntpath.basename(path).lower() not in ('mysql.exe', 'mariadb.exe', 'mysqldump.exe',
+                                                       'mariadb-dump.exe', 'mariadb-backup.exe', 'mysqlsh.exe')):
             raise ValueError("Choose a local client named mysql.exe or mariadb.exe.")
         resolved = os.path.realpath(path)
         if not local_path(resolved):

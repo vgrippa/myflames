@@ -372,7 +372,7 @@ class MissingClientToolsTests(unittest.TestCase):
         from myflames import ui, tool_updates
         from myflames.connector import ClientMissingError
         report = ui.api_response('/api/lifecycle/tools', {'connection': {'host': 'localhost'}}, self.workspace)
-        self.assertEqual(report['schema_version'], 'lifecycle-tools-1.0')
+        self.assertEqual(report['schema_version'], 'lifecycle-tools-2.0')
         self.assertEqual(report['server'], {})
         self.assertEqual(report['offered'], {})
         self.assertEqual(report['server_error'], {'code': 'client-missing', 'error': ClientMissingError.MESSAGE})
@@ -520,17 +520,18 @@ class LifecycleTests(unittest.TestCase):
             lc.detect_tools(path=str(self.bin), common_dirs=())
             self.assertEqual(run.call_count, 0)
             lc.detect_tools(path=str(self.bin), common_dirs=(), refresh=True)
-            self.assertEqual(run.call_count, len(lc.TOOLS))
+            self.assertEqual(run.call_count, len(lc.TOOLS) - 1, 'mysqlpump is presence-only')
             binary = self.bin / 'mysqlsh'
             info = binary.stat()
             os.utime(str(binary), ns=(info.st_atime_ns, info.st_mtime_ns + 1000000))
             lc.detect_tools(path=str(self.bin), common_dirs=())
-            self.assertEqual(run.call_count, len(lc.TOOLS) + 1)
+            self.assertEqual(run.call_count, len(lc.TOOLS))
 
     def test_probe_cache_never_remembers_timeouts_or_missing_tools(self):
         self.stop_detect()
         (self.bin / 'mysqlsh').write_text('#!' + sys.executable + '\nprint("mysqlsh 9.6.1")\n')
-        with mock.patch.object(lc, 'TOOLS', ('mysqlsh',)), \
+        with mock.patch('myflames.client_tools.PROGRAMS', ('mysqlsh',)), \
+                mock.patch.object(lc, 'TOOLS', ('mysqlsh',)), \
                 mock.patch.object(lc.subprocess, 'run', side_effect=subprocess.TimeoutExpired('mysqlsh', 8)) as run:
             for _ in range(2):
                 report = lc.detect_tools(path=str(self.bin), common_dirs=())
@@ -565,6 +566,179 @@ class LifecycleTests(unittest.TestCase):
             self.assertTrue(all(r['tools']['mysqlsh']['available'] for r in reports))
         from myflames import client_tools
         self.assertLessEqual(len(client_tools._PROBE_CACHE), client_tools._PROBE_LIMIT)
+
+    def version_layout(self):
+        """Owner's symlinked Homebrew, keg-only and packaged client layout."""
+        self.stop_detect()
+        previous = connector.client_choices()
+        connector.set_client_choices({})
+        self.addCleanup(connector.set_client_choices, previous)
+        links = self.root / 'prefix/bin'
+        links.mkdir(parents=True)
+        folders = [self.root / 'prefix/Cellar/mysql/8.4.8/bin',
+                   self.root / 'prefix/Cellar/mysql@8.0/8.0.45/bin', self.root / 'app/bin']
+        for folder, version in zip(folders, ('8.4.8', '8.0.45', '8.4.13')):
+            folder.mkdir(parents=True)
+            for name in ('mysql', 'mysqldump'):
+                binary = folder / name
+                source = FAKE_TOOL.replace("'mysql':'mysql Ver 8.4.3'", "'mysql':'mysql Ver " + version + "'")
+                source = source.replace("'mysqldump':'mysqldump Ver 8.4.3'", "'mysqldump':'mysqldump Ver " + version + "'")
+                binary.write_text('#!' + sys.executable + '\n' + source)
+                binary.chmod(0o700)
+        for name in ('mysql', 'mysqldump'):
+            (links / name).symlink_to(folders[0] / name)
+        shell = links / 'mysqlsh'
+        shell.write_text('#!' + sys.executable + '\nprint("mysqlsh Ver 9.6.0")\n')
+        shell.chmod(0o700)
+        patches = [mock.patch.dict(os.environ, {'PATH': str(links), 'MYFLAMES_BUNDLED_CLIENT_DIR': str(folders[2])}),
+                   mock.patch.object(lc, 'COMMON_BIN_DIRS', (str(folders[1]),))]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        return folders
+
+    def test_per_server_tools_rank_versions_and_list_all_copies(self):
+        brew, old, bundle = self.version_layout()
+        first = lc.detect_tools()
+        self.assertEqual(first['schema_version'], 'lifecycle-tools-2.0')
+        self.assertNotIn('used', first)
+        self.assertEqual(first['tools']['mysqldump']['realpath'], str(brew / 'mysqldump'))
+        for version, folder, reason in (('8.4.3', bundle, 'series'), ('8.0.36', old, 'series'),
+                                        ('9.7.2', bundle, 'older')):
+            with self.subTest(server=version):
+                server = lc.read_server(ReplayConnection(server_variables(version=version)))
+                report = lc.detect_tools(server=server)
+                for name in ('mysqldump', 'mysql'):
+                    tool = report['tools'][name]
+                    self.assertEqual(tool['path'], str(folder / name))
+                    self.assertEqual(tool['reason'], reason)
+                    self.assertEqual(tool['origin'], 'bundled' if folder == bundle else 'homebrew')
+                self.assertEqual(len(report['copies']), 7)
+                self.assertEqual({c['path'] for c in report['copies'] if c['used']},
+                                 {str(folder / 'mysql'), str(folder / 'mysqldump'), str(self.root / 'prefix/bin/mysqlsh')})
+                self.assertEqual(report['used']['load']['installation'], report['used']['dump']['installation'])
+                self.assertIsNone(report['used']['shell']['installation'])
+                self.assertNotIn('server', report['used'])
+                self.assertNotIn('realpath', report['used']['dump'])
+        plan = lc.prepare_dump(ReplayConnection(server_variables(version='9.7.2')), CONNECTION,
+                               self.output, schemas=['app'], prefer_shell=False)
+        self.assertIn(plan['tool']['warning'], plan['warnings'])
+        self.assertEqual(plan['tool']['reason'], 'older')
+
+    def test_explicit_choice_missing_dump_and_stale_choice_never_fall_back(self):
+        brew, old, bundle = self.version_layout()
+        connector.set_client_choices({'mysql': str(old)})
+        (old / 'mysqldump').unlink()
+        report = lc.detect_tools(server=lc.read_server(self.conn))
+        self.assertFalse(report['tools']['mysqldump']['available'])
+        text = 'The installation chosen in Settings > Client tools has no mysqldump.'
+        self.assertEqual(report['tools']['mysqldump']['error'], text)
+        with self.assertRaisesRegex(lc.Refused, 'chosen in Settings > Client tools has no mysqldump'):
+            lc.prepare_dump(self.conn, CONNECTION, self.output, prefer_shell=False)
+        connector.set_client_choices({'mysql': str(old / 'gone/mysql')})
+        report = lc.detect_tools(server=lc.read_server(self.conn))
+        self.assertFalse(report['tools']['mysql']['available'])
+        self.assertFalse(report['tools']['mysqldump']['available'])
+        self.assertIn('no longer at', report['tools']['mysqldump']['error'])
+
+    def test_per_server_mariadb_refuses_mysql_only_dump(self):
+        self.version_layout()
+        maria = ReplayConnection(server_variables('mariadb'))
+        with self.assertRaisesRegex(lc.Refused, 'Install MariaDB client tools'):
+            lc.prepare_dump(maria, CONNECTION, self.output, prefer_shell=False)
+
+    def test_review_binding_stable_despite_update_metadata_and_settings_change_refused(self):
+        brew, old, bundle = self.version_layout()
+        plan = lc.prepare_dump(self.conn, CONNECTION, self.output, schemas=['app'], prefer_shell=False)
+        allowed = {'name', 'path', 'realpath', 'version', 'version_tuple', 'engine', 'installation',
+                   'origin', 'origin_label', 'reason', 'warning', 'available', 'deprecated'}
+        self.assertEqual(set(plan['tool']), allowed)
+        # JSON round trips and online metadata never change what the user reviews.
+        report = lc.detect_tools(server=lc.read_server(self.conn))
+        report['tools']['mysqldump'].update(update={'checked_at': 'different'}, copies=[{}], anything='ignored')
+        again = lc.prepare_dump(self.conn, CONNECTION, self.output, schemas=['app'], prefer_shell=False, tools=report)
+        self.assertEqual(plan['binding'], again['binding'])
+        self.assertEqual(plan['tool'], json.loads(json.dumps(plan['tool'])))
+        connector.set_client_choices({'mysql': str(old)})
+        job = lc.dump_job(CONNECTION, plan, True, plan['target'], self.audit('dump'),
+                          factory=lambda **kw: self.conn, start=False)
+        result = job.run()
+        self.assertEqual(result['state'], 'refused', result)
+        self.assertIn('The tool for this server changed since the review', result['error'])
+        self.assertIn('Review it again; nothing was run.', result['error'])
+        self.assertFalse(os.path.exists(self.output))
+        self.assertFalse((old / 'calls.jsonl').exists())
+        self.assertFalse((bundle / 'calls.jsonl').exists())
+
+    def test_per_server_dump_rebuild_keeps_binding_and_executes_selected_program(self):
+        brew, old, bundle = self.version_layout()
+        plan = lc.prepare_dump(self.conn, CONNECTION, self.output, schemas=['app'], prefer_shell=False)
+        original = lc.prepare_dump
+        rebuilt = []
+        def prepare(*args, **kwargs):
+            value = original(*args, **kwargs)
+            rebuilt.append(value)
+            return value
+        with mock.patch.object(lc, 'prepare_dump', side_effect=prepare):
+            result = lc.dump_job(CONNECTION, plan, True, plan['target'], self.audit('dump'),
+                                 factory=lambda **kw: self.conn, start=False).run()
+        self.assertEqual(result['state'], 'done', result)
+        self.assertEqual(plan['binding'], rebuilt[0]['binding'])
+        calls = [json.loads(line) for line in (bundle / 'calls.jsonl').read_text().splitlines()]
+        self.assertEqual(calls[-1]['argv'][0], str(bundle / 'mysqldump'))
+        self.assertFalse((brew / 'calls.jsonl').exists())
+
+    def test_sql_restore_and_clone_use_load_from_dump_installation(self):
+        # Client ranks Homebrew first, while its missing dump forces the bundled
+        # dump. The SQL loader and CLONE must follow the latter installation.
+        self.make_dump()
+        brew, old, bundle = self.version_layout()
+        (brew / 'mysqldump').unlink()
+        for name in ('mysql', 'mysqldump'):
+            binary = brew / name
+            if binary.exists():
+                binary.write_text(binary.read_text().replace('8.4.8', '8.4.13'))
+        target = self.target()
+        target.restored_marker = str(bundle / 'restored')
+        tools = lc.detect_tools(server=lc.read_server(target))
+        self.assertEqual(tools['used']['client']['installation'], 'mysql:' + str(brew))
+        self.assertEqual(tools['used']['load']['installation'], 'mysql:' + str(bundle))
+        plan = lc.prepare_restore(target, CONNECTION, self.output)
+        self.assertEqual(plan['tool']['path'], str(bundle / 'mysql'))
+        result = lc.restore_job(CONNECTION, plan, True, plan['target'], self.audit(),
+                                factory=lambda **kw: target, start=False).run()
+        self.assertEqual(result['state'], 'done', result)
+        calls = [json.loads(line) for line in (bundle / 'calls.jsonl').read_text().splitlines()]
+        self.assertEqual(calls[-1]['argv'][0], str(bundle / 'mysql'))
+        clone = lc.prepare_clone(ReplayConnection(), self.target(), CONNECTION, CONNECTION, tools=tools)
+        self.assertEqual(clone['tool']['path'], str(bundle / 'mysql'))
+        donor, recipient = ReplayConnection(), self.target()
+        clone = lc.prepare_clone(donor, recipient, CONNECTION, CONNECTION)
+        connections = iter([recipient, donor])
+        result = lc.clone_job(CONNECTION, CONNECTION, clone, True, clone['target'], self.audit('clone'),
+                              factory=lambda **kw: next(connections), start=False).run()
+        self.assertEqual(result['state'], 'done', result)
+        calls = [json.loads(line) for line in (bundle / 'calls.jsonl').read_text().splitlines()]
+        self.assertEqual(calls[-1]['argv'][0], str(bundle / 'mysql'))
+        older_target = ReplayConnection(server_variables(identity='new', version='9.7.2'), catalog=[])
+        older = lc.prepare_restore(older_target, CONNECTION, self.output)
+        self.assertEqual(older['tool']['reason'], 'older')
+        self.assertIn(older['tool']['warning'], older['warnings'])
+
+    def test_maintenance_preparations_pass_server_facts_and_job_to_detection(self):
+        runner = lc.LifecycleJob('preflight', lambda job: None, CONNECTION)
+        with mock.patch.object(lc, 'detect_tools', return_value=self.tools) as detect:
+            source = ReplayConnection(server_variables(version='8.0.36'))
+            lc.upgrade_check(source, '8.4.0', CONNECTION, job=runner)
+            self.assertEqual(detect.call_args[1]['server']['version'], '8.0.36')
+            self.assertIs(detect.call_args[1]['job'], runner)
+            lc.prepare_clone(ReplayConnection(), self.target(), CONNECTION, CONNECTION, job=runner)
+            self.assertEqual(detect.call_args[1]['server']['identity']['server_uuid'], 'recipient')
+            self.assertIs(detect.call_args[1]['job'], runner)
+            lc.prepare_physical_backup(ReplayConnection(server_variables('mariadb')), CONNECTION,
+                                       self.output, job=runner)
+            self.assertEqual(detect.call_args[1]['server']['engine'], 'mariadb')
+            self.assertIs(detect.call_args[1]['job'], runner)
 
     def test_option_file_escaping_and_permissions(self):
         password = 'a"b\\c\nd\r\t#;='
