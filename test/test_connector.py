@@ -320,6 +320,12 @@ class TestDefaultsFile(unittest.TestCase):
 class TestBinaryResolution(unittest.TestCase):
     """Binary lookup order: override → mysql → mariadb."""
 
+    def setUp(self):
+        from myflames import client_tools
+        patch = mock.patch.object(client_tools, 'snapshot', return_value=[])
+        patch.start()
+        self.addCleanup(patch.stop)
+
     def test_explicit_binary_override(self):
         c = MySQLConnection(host="h", binary="/opt/mysql/bin/mysql")
         self.assertEqual(c._resolve_binary(), "/opt/mysql/bin/mysql")
@@ -351,14 +357,20 @@ class TestClientSelection(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.old_default = connector.default_binary()
-        connector.set_default_binary(None)
-        self.addCleanup(connector.set_default_binary, self.old_default)
+        self.old_default = connector.client_choices()
+        connector.set_client_choices({})
+        self.addCleanup(connector.set_client_choices, self.old_default)
         env = mock.patch.dict(os.environ, {'HOME': self.temp.name, 'USERPROFILE': self.temp.name,
                                          'PATH': '', 'MYFLAMES_SECRET_BACKEND': 'vault',
-                                         'MYSQL_PWD': 'must-not-leak', 'AWS_SECRET_ACCESS_KEY': 'must-not-leak'})
+                                         'MYFLAMES_BUNDLED_CLIENT_DIR': '', 'MYSQL_PWD': 'must-not-leak', 'AWS_SECRET_ACCESS_KEY': 'must-not-leak'})
         env.start()
         self.addCleanup(env.stop)
+        from myflames import lifecycle, client_tools
+        patch = mock.patch.object(lifecycle, 'COMMON_BIN_DIRS', ())
+        patch.start()
+        self.addCleanup(patch.stop)
+        client_tools._FACTS.clear()
+        client_tools._PROBE_CACHE.clear()
 
     def binary(self, name='mysql', body='print("mysql Ver 8.4.0")', folder='bin'):
         # The real temp path (macOS /var is a link): a chosen client runs by its real path.
@@ -379,35 +391,7 @@ class TestClientSelection(unittest.TestCase):
                          'myflames could not find the MySQL or MariaDB command-line client (mysql or mariadb).')
         self.assertNotIn('--mysql-binary', str(caught.exception))
 
-    def test_default_precedence_and_existing_connection_changes(self):
-        automatic = self.binary(folder='automatic')
-        chosen = self.binary(folder='chosen')
-        replacement = self.binary('mariadb', folder='replacement')
-        with mock.patch.dict(os.environ, {'PATH': os.path.dirname(automatic)}):
-            conn = MySQLConnection(host="localhost")
-            self.assertEqual(conn._resolve_binary(), automatic)
-            connector.set_default_binary(chosen)
-            self.assertEqual(connector.default_binary(), chosen)
-            self.assertEqual(conn._resolve_binary(), chosen)
-            self.assertEqual(MySQLConnection(host="localhost", binary='/explicit/mysql')._resolve_binary(), '/explicit/mysql')
-            connector.set_default_binary(replacement)
-            self.assertEqual(conn._resolve_binary(), replacement)
-            connector.set_default_binary(None)
-            self.assertEqual(conn._resolve_binary(), automatic)
 
-    def test_removed_or_replaced_choice_never_falls_back(self):
-        path = self.binary()
-        connector.set_default_binary(path)
-        conn = MySQLConnection(host="localhost")
-        self.assertEqual(conn._resolve_binary(), path)
-        self.binary(body='raise SystemExit(1)')
-        with self.assertRaises(connector.ClientMissingError):
-            conn._resolve_binary()
-        os.unlink(path)
-        with mock.patch.object(MySQLConnection, '_which') as which:
-            with self.assertRaises(connector.ClientMissingError):
-                conn._resolve_binary()
-            which.assert_not_called()
 
     def test_probe_checks_argv_and_isolates_credentials_and_login_files(self):
         body = ("import os, sys\n"
@@ -526,9 +510,9 @@ class TestClientSelection(unittest.TestCase):
         alias = os.path.join(alias_folder, 'mysql')
         os.symlink(real, alias)
         self.assertEqual(connector.probe_client(alias)['name'], 'mysql')
-        connector.set_default_binary(alias)
-        self.addCleanup(connector.set_default_binary, None)
-        self.assertEqual(connector._default_client_path(), real)
+        connector.set_client_choices({'mysql': alias})
+        self.addCleanup(connector.set_client_choices, {})
+        self.assertEqual(MySQLConnection(host='localhost')._resolve_binary(), real)
         self.assertEqual(MySQLConnection(host='localhost')._resolve_binary(), real)
 
     def test_chosen_client_runs_its_resolved_file_not_the_alias_chain(self):
@@ -543,9 +527,9 @@ class TestClientSelection(unittest.TestCase):
         os.chmod(alias_folder, 0o700)
         alias = os.path.join(alias_folder, 'mysql')
         os.symlink(hop, alias)
-        connector.set_default_binary(alias)
-        self.addCleanup(connector.set_default_binary, None)
-        self.assertEqual(connector._default_client_path(), os.path.realpath(real))
+        connector.set_client_choices({'mysql': alias})
+        self.addCleanup(connector.set_client_choices, {})
+        self.assertEqual(MySQLConnection(host='localhost')._resolve_binary(), os.path.realpath(real))
 
     def test_other_users_client_is_refused(self):
         path = self.binary()
@@ -563,10 +547,10 @@ class TestClientSelection(unittest.TestCase):
         marker = os.path.join(self.temp.name, 'ran-with-credentials')
         path = self.binary(body=('import sys\n'
                                  'if "--version" in sys.argv:\n'
-                                 ' print("mysql 8.4")\n'
+                                 ' print("mysql Ver 8.4.0")\n'
                                  'else:\n'
                                  ' open(%r, "w").close()' % marker))
-        connector.set_default_binary(path)
+        connector.set_client_choices({'mysql': path})
         with MySQLConnection(host='localhost', password='private-secret') as conn:
             self.assertEqual(conn._resolve_binary(), path)
             os.chmod(os.path.dirname(path), 0o777)
@@ -598,86 +582,10 @@ class TestClientSelection(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'can be changed by other users'):
                 connector.probe_client(link)
 
-    def test_detection_skips_untrusted_clients(self):
-        bad_file = self.binary(folder='bad-file')
-        bad_folder = self.binary(folder='bad-folder')
-        good = self.binary(folder='good')
-        os.chmod(bad_file, 0o777)
-        os.chmod(os.path.dirname(bad_folder), 0o777)
-        found = connector.detect_clients(path=os.pathsep.join(os.path.dirname(p)
-                                                               for p in (bad_file, bad_folder, good)),
-                                          common_dirs=())
-        self.assertEqual([entry['path'] for entry in found], [good])
 
-    def test_clearing_selection_discards_stale_path_cache(self):
-        automatic = self.binary(folder='automatic')
-        chosen = self.binary(folder='chosen')
-        replacement = self.binary(folder='replacement')
-        conn = MySQLConnection(host='localhost')
-        with mock.patch.dict(os.environ, {'PATH': os.path.dirname(automatic)}):
-            self.assertEqual(conn._resolve_binary(), automatic)
-        connector.set_default_binary(chosen)
-        self.assertEqual(conn._resolve_binary(), chosen)
-        os.unlink(automatic)
-        connector.set_default_binary(None)
-        with mock.patch.dict(os.environ, {'PATH': os.path.dirname(replacement)}):
-            self.assertEqual(conn._resolve_binary(), replacement)
 
-    def test_clearing_selection_invalidates_cache_even_without_an_intervening_resolution(self):
-        path = self.binary()
-        conn = MySQLConnection(host='localhost')
-        with mock.patch.dict(os.environ, {'PATH': os.path.dirname(path)}):
-            self.assertEqual(conn._resolve_binary(), path)
-        connector.set_default_binary(self.binary(folder='chosen'))
-        connector.set_default_binary(None)
-        with self.assertRaises(connector.ClientMissingError):
-            conn._resolve_binary()
 
-    def test_probe_does_not_hold_selection_lock(self):
-        marker = os.path.join(self.temp.name, 'probe-started')
-        path = self.binary(body='import time\nopen(%r, "w").close()\ntime.sleep(1)\nprint("mysql 8.4")' % marker)
-        connector.set_default_binary(path)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-            resolving = pool.submit(connector._default_client_path)
-            deadline = time.monotonic() + 3
-            while not os.path.exists(marker) and time.monotonic() < deadline:
-                time.sleep(0.01)
-            self.assertTrue(os.path.exists(marker), 'the real version probe must be in flight')
-            reading = pool.submit(connector.default_binary)
-            self.assertEqual(reading.result(timeout=0.5), path)
-            self.assertFalse(resolving.done())
-            self.assertEqual(resolving.result(timeout=5), path)
 
-    def test_inflight_probe_cannot_publish_a_stale_selection_or_failure(self):
-        first = self.binary(folder='first')
-        second = self.binary('mariadb', folder='second')
-        for replacement in (second, None, first):
-            for failed in (False, True):
-                connector.set_default_binary(first)
-                entered, release = threading.Event(), threading.Event()
-                calls = []
-                original = connector.probe_client
-                def probe(path, **kwargs):
-                    calls.append(path)
-                    if len(calls) == 1:
-                        entered.set()
-                        if not release.wait(3):
-                            raise ValueError('test probe was not released')
-                        if failed:
-                            raise ValueError('the old selection failed')
-                    return original(path, **kwargs)
-                with self.subTest(replacement=replacement, failed=failed), \
-                        mock.patch.object(connector, 'probe_client', side_effect=probe), \
-                        concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    resolving = pool.submit(connector._default_client_path)
-                    try:
-                        self.assertTrue(entered.wait(2))
-                        # A -> A still needs a fresh probe after the new choice.
-                        connector.set_default_binary(replacement)
-                    finally:
-                        release.set()
-                    self.assertEqual(resolving.result(timeout=5), replacement)
-                    self.assertEqual(calls, [first] if replacement is None else [first, replacement])
 
     def test_real_probe_timeout_kills_and_reaps_the_process(self):
         import time
@@ -730,31 +638,8 @@ class TestClientSelection(unittest.TestCase):
                     pass
                 leader.wait(timeout=2)
 
-    def test_detection_lists_usable_clients_deduplicates_and_searches_common_folders(self):
-        path = self.binary()
-        os.symlink(path, os.path.join(os.path.dirname(path), 'mariadb'))
-        other = self.binary('mariadb', 'print("mariadb Ver 11.4.0")', folder='common')
-        bad = self.binary(body='print("unrelated")', folder='bad')
-        detected = connector.detect_clients(path=os.pathsep.join((os.path.dirname(path), os.path.dirname(path),
-                                                                  os.path.dirname(bad))),
-                                            common_dirs=(os.path.dirname(other),))
-        self.assertEqual([item['path'] for item in detected], [path, other])
-        self.assertEqual([item['source'] for item in detected], ['path', 'common'])
 
-    def test_detection_caps_probes_at_ten(self):
-        paths = [self.binary(folder='bin%d' % n) for n in range(12)]
-        with mock.patch.object(connector, 'probe_client', wraps=connector.probe_client) as probe:
-            detected = connector.detect_clients(path=os.pathsep.join(os.path.dirname(p) for p in paths), common_dirs=())
-        self.assertEqual(len(detected), 10)
-        self.assertEqual(probe.call_count, 10)
 
-    def test_windows_names_are_case_insensitive_and_common_folders_are_skipped(self):
-        path = self.binary('MYSQL.EXE')
-        with mock.patch.object(connector.os, 'name', 'nt'), \
-                mock.patch.object(connector, '_run_bounded', return_value=_fake_completed(b'MySQL 8.4')), \
-                mock.patch.object(connector.ntpath, 'isabs', return_value=True):
-            self.assertEqual(connector.probe_client(path)['name'], 'MYSQL.EXE')
-            self.assertEqual(connector.detect_clients(path='', common_dirs=(os.path.dirname(path),)), [])
 
     def test_wrapped_missing_errors_are_found_without_matching_text(self):
         try:
@@ -839,11 +724,209 @@ class TestClientSelection(unittest.TestCase):
             self.fail('health should fail without a client')
 
     def test_real_cli_missing_client_keeps_hint_and_exit_code(self):
-        result = subprocess.run([sys.executable, '-m', 'myflames', '-e', 'SELECT 1'],
+        result = subprocess.run([sys.executable, '-c', 'from myflames import lifecycle; lifecycle.COMMON_BIN_DIRS=(); from myflames.cli import main; main()', '-e', 'SELECT 1'],
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertEqual(result.stdout, b'')
         self.assertIn(b' Install it or pass --mysql-binary /path/to/mysql.', result.stderr)
+
+
+class TestVersionAwareClients(unittest.TestCase):
+    setUp = TestClientSelection.setUp
+    binary = TestClientSelection.binary
+    def layout(self):
+        latest = self.binary(folder='Cellar/mysql/9.7.0/bin', body='print("mysql Ver 9.7.0")')
+        old = self.binary(folder='Cellar/mysql@8.0/8.0.45/bin', body='print("mysql Ver 8.0.45")')
+        bundle = self.binary(folder='app/mysql-client/bin', body='print("mysql Ver 8.4.13")')
+        os.environ['PATH'] = os.pathsep.join(map(os.path.dirname, (latest, old, bundle)))
+        os.environ['MYFLAMES_BUNDLED_CLIENT_DIR'] = os.path.dirname(bundle)
+        return latest, old, bundle
+
+    def test_one_candidate_fast_path_has_no_probe(self):
+        from myflames import client_tools as ct
+        path = self.binary()
+        os.environ['PATH'] = os.path.dirname(path)
+        with mock.patch.object(ct, 'probe', side_effect=AssertionError('must not probe')):
+            self.assertEqual(MySQLConnection(host='fast')._resolve_binary(), path)
+
+    def test_owner_mac_layout_first_contact_matches_series(self):
+        from myflames import client_tools as ct
+        latest, old, bundle = self.layout()
+        for version, expected in (('8.4.14', bundle), ('8.0.46', old)):
+            with self.subTest(version=version), mock.patch.object(connector, '_run_bounded',
+                    return_value=_fake_completed((version + '\tMySQL Community Server\n').encode())) as run:
+                conn = MySQLConnection(host='server-' + version, port=4444, ssl_mode='REQUIRED')
+                self.assertEqual(conn._resolve_binary(), expected)
+                self.assertEqual(run.call_count, 1)
+                self.assertEqual(run.call_args[0][0][0], latest)
+                self.assertEqual(ct.server_facts(conn._endpoint_key())['version'], version)
+
+    def test_chosen_installation_wins_and_removal_has_no_fallback(self):
+        from myflames import client_tools as ct
+        latest, old, bundle = self.layout()
+        conn = MySQLConnection(host='chosen')
+        ct.remember_server(conn._endpoint_key(), 'mysql', '8.4.14')
+        self.assertEqual(conn._resolve_binary(), bundle)
+        connector.set_client_choices({'mysql': old})
+        self.assertEqual(conn._resolve_binary(), old)
+        self.binary(folder='Cellar/mysql@8.0/8.0.45/bin', body='raise SystemExit(1)')
+        with self.assertRaises(connector.ClientMissingError):
+            conn._resolve_binary()
+        self.binary(folder='Cellar/mysql@8.0/8.0.45/bin', body='print("mysql Ver 8.0.45")')
+        self.assertEqual(conn._resolve_binary(), old)
+        os.unlink(old)
+        with self.assertRaisesRegex(connector.ClientMissingError, re.escape(
+                'The client tools chosen in Settings > Client tools are no longer at ' + old + '.')):
+            conn._resolve_binary()
+        connector.set_client_choices({})
+        self.assertEqual(conn._resolve_binary(), bundle)
+
+    def test_off_path_choice_counts_as_a_first_contact_candidate(self):
+        mysql = self.binary(folder='offpath')
+        maria = self.binary('mariadb', body='print("mariadb Ver 11.4.2-MariaDB")', folder='path')
+        os.environ['PATH'] = os.path.dirname(maria)
+        connector.set_client_choices({'mysql': mysql})
+        with mock.patch.object(connector, '_run_bounded', return_value=_fake_completed(
+                b'8.4.14\tMySQL Community Server\n')) as run:
+            self.assertEqual(MySQLConnection(host='offpath-choice')._resolve_binary(), mysql)
+            self.assertEqual(run.call_count, 1)
+
+    def test_generation_discards_cache_even_without_intervening_resolution(self):
+        first = self.binary(folder='first')
+        second = self.binary(folder='second')
+        os.environ['PATH'] = os.path.dirname(first)
+        conn = MySQLConnection(host='generation')
+        self.assertEqual(conn._resolve_binary(), first)
+        connector.set_client_choices({'mysql': second})
+        connector.set_client_choices({})
+        os.environ['PATH'] = os.path.dirname(second)
+        self.assertEqual(conn._resolve_binary(), second)
+
+    def test_first_contact_is_single_flight_and_preserves_transport(self):
+        self.layout()
+        entered, release = threading.Event(), threading.Event()
+        paths = []
+        def read(argv, **kwargs):
+            paths.append(argv[0])
+            with open(argv[1].split('=', 1)[1]) as handle:
+                content = handle.read()
+            self.assertIn('host="remote"', content)
+            self.assertIn('port=4410', content)
+            self.assertIn('ssl-mode="REQUIRED"', content)
+            entered.set()
+            self.assertTrue(release.wait(5))
+            return _fake_completed(b'8.4.14\tMySQL\n')
+        with mock.patch.object(connector, '_run_bounded', side_effect=read), \
+                concurrent.futures.ThreadPoolExecutor(2) as pool:
+            first = pool.submit(MySQLConnection(host='remote', port=4410, ssl_mode='REQUIRED')._resolve_binary)
+            self.assertTrue(entered.wait(5))
+            second = pool.submit(MySQLConnection(host='remote', port=4410, ssl_mode='REQUIRED')._resolve_binary)
+            time.sleep(0.1)
+            release.set()
+            self.assertEqual(first.result(5), second.result(5))
+        self.assertEqual(len(paths), 1)
+
+    def test_first_contact_connection_error_is_not_retried(self):
+        self.layout()
+        with mock.patch.object(connector, '_run_bounded', return_value=_fake_completed(
+                stderr=b"ERROR 2003 (HY000): Can't connect", returncode=1)) as run:
+            with self.assertRaisesRegex(ConnectorError, 'ERROR 2003'):
+                MySQLConnection(host='failed')._resolve_binary()
+        self.assertEqual(run.call_count, 1)
+
+    def test_first_contact_server_login_failure_is_not_treated_as_sql_error(self):
+        self.layout()
+        for error in (b'ERROR 1040 (HY000): Too many connections',
+                      b'ERROR 2013 (HY000) at line 1: Lost connection'):
+            with mock.patch.object(connector, '_run_bounded', return_value=_fake_completed(
+                    stderr=error, returncode=1)) as run:
+                with self.assertRaises(ConnectorError):
+                    MySQLConnection(host='failed-login')._resolve_binary()
+                self.assertEqual(run.call_count, 1)
+
+    def test_sql_error_and_proxysql_version_are_not_cached(self):
+        from myflames import client_tools as ct
+        latest, _, _ = self.layout()
+        for response in (_fake_completed(b'2.7.3\tProxySQL\n'), _fake_completed(
+                stderr=b'ERROR 1064 (42000) at line 1: syntax', returncode=1)):
+            with mock.patch.object(connector, '_run_bounded', return_value=response) as run:
+                conn = MySQLConnection(host='proxy')
+                self.assertEqual(conn._resolve_binary(), latest)
+                self.assertIsNone(ct.server_facts(conn._endpoint_key()))
+                self.assertEqual(run.call_count, 1)
+
+    def test_2059_retries_other_engine_only_during_first_contact(self):
+        from myflames import client_tools as ct
+        mysql = self.binary()
+        maria = self.binary('mariadb', body='print("mariadb Ver 11.4.2-MariaDB")', folder='maria')
+        os.environ['PATH'] = os.pathsep.join(map(os.path.dirname, (mysql, maria)))
+        failure = _fake_completed(stderr=b"ERROR 2059 (HY000): Authentication plugin 'client_ed25519' cannot be loaded", returncode=1)
+        with mock.patch.object(connector, '_run_bounded', side_effect=[failure,
+                _fake_completed(b'11.4.2-MariaDB\tMariaDB Server\n')]) as run:
+            conn = MySQLConnection(host='maria')
+            self.assertEqual(conn._resolve_binary(), maria)
+            self.assertEqual([c.args[0][0] for c in run.call_args_list], [mysql, maria])
+        with mock.patch.object(connector, '_run_bounded', return_value=failure) as run:
+            with self.assertRaises(connector.ClientAuthPluginError) as caught:
+                conn.run('SELECT 1')
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual(caught.exception.code, 'client-auth-plugin')
+            self.assertIn('mariadb 11.4.2 (On PATH)', str(caught.exception))
+            self.assertIn('client_ed25519 plugin', str(caught.exception))
+            self.assertIs(connector.client_missing_error(ValueError('wrapped', caught.exception)), None)
+
+    def test_first_contact_uses_socket_and_ssh_lease(self):
+        from myflames.lifecycle import LifecycleConnection
+        self.layout()
+        for socket_path in ('/tmp/test-client.sock', None):
+            conn = LifecycleConnection(host='through-ssh' if socket_path is None else 'socket',
+                                       socket=socket_path, ssh_host='jump' if socket_path is None else None,
+                                       ssl_mode='REQUIRED')
+            lease = mock.Mock(port=45678)
+            def read(argv, **kwargs):
+                with open(argv[1].split('=', 1)[1]) as handle:
+                    content = handle.read()
+                self.assertIn('ssl-mode="REQUIRED"', content)
+                if socket_path:
+                    self.assertIn('protocol=SOCKET', content)
+                    self.assertIn('socket="' + socket_path + '"', content)
+                else:
+                    self.assertIn('host="127.0.0.1"', content)
+                    self.assertIn('port=45678', content)
+                return _fake_completed(b'8.4.13\tMySQL\n')
+            with mock.patch.object(conn, '_acquire_tunnel', return_value=lease), \
+                    mock.patch.object(connector, '_run_bounded', side_effect=read):
+                conn._resolve_binary()
+            if socket_path is None:
+                lease.release.assert_called_once()
+
+    def test_fast_path_and_lifecycle_2059_have_full_client_metadata(self):
+        from myflames.lifecycle import LifecycleConnection
+        path = self.binary(body=("import sys\n"
+            "if '--version' in sys.argv:\n print('mysql Ver 8.4.13')\n"
+            "else:\n sys.stderr.write(\"ERROR 2059 (HY000): Authentication plugin 'authentication_ldap_sasl_client' cannot be loaded\"); sys.exit(1)"))
+        os.environ['PATH'] = os.path.dirname(path)
+        for cls in (MySQLConnection, LifecycleConnection):
+            with self.subTest(cls=cls), self.assertRaises(connector.ClientAuthPluginError) as caught:
+                cls(host='auth').run('SELECT 1')
+            self.assertEqual(str(caught.exception), 'mysql 8.4.13 (On PATH) cannot sign in to this server: '
+                'the account uses the authentication_ldap_sasl_client plugin, which these client tools do not include. '
+                'Choose client tools that include it in Settings > Client tools.')
+
+    def test_choice_replacement_while_discovering_cannot_publish_stale_binary(self):
+        from myflames import client_tools as ct
+        first = self.binary(folder='first')
+        second = self.binary(folder='second')
+        connector.set_client_choices({'mysql': first})
+        real = ct.discover_choices
+        def discover(choices):
+            found = real(choices)
+            if os.path.exists(first):
+                os.unlink(first)
+            connector.set_client_choices({'mysql': second})
+            return found
+        with mock.patch.object(ct, 'discover_choices', side_effect=discover):
+            self.assertEqual(MySQLConnection(host='race')._resolve_binary(), second)
 
 
 class TestWindowsClientTrust(unittest.TestCase):
@@ -896,8 +979,11 @@ class TestWindowsClientTrust(unittest.TestCase):
             self.windows_os.path.isfile.assert_not_called()
         self.run.assert_not_called()
 
-    def test_detection_skips_network_locations_before_filesystem_access(self):
-        self.assertEqual(connector.detect_clients(path=r'\\server\share', common_dirs=()), [])
+    def test_choice_skips_network_locations_before_filesystem_access(self):
+        from myflames import client_tools
+        with mock.patch.object(client_tools, 'os', self.windows_os):
+            with self.assertRaises(ValueError):
+                client_tools.validate_choice('mysql', r'\\server\share\mysql.exe')
         self.windows_os.path.realpath.assert_not_called()
         self.windows_os.path.isfile.assert_not_called()
         self.run.assert_not_called()
@@ -948,11 +1034,15 @@ class TestWindowsClientTrust(unittest.TestCase):
 
 
 class TestBundledClientResolution(unittest.TestCase):
-    """The desktop app's bundled mysql (MYFLAMES_BUNDLED_CLIENT_DIR, last on
-    PATH) is used only when no installed mysql or mariadb is found. Real
-    files and the real PATH search, no mocks."""
+    """Bundled stat-only discovery edge cases and unchanged lifecycle jobs."""
 
     def setUp(self):
+        from myflames import lifecycle, client_tools
+        patch = mock.patch.object(lifecycle, 'COMMON_BIN_DIRS', ())
+        patch.start()
+        self.addCleanup(patch.stop)
+        connector.set_client_choices({})
+        client_tools._FACTS.clear()
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.bundled = os.path.join(self.tmp.name, "resources", "mysql-client", "bin")
@@ -978,27 +1068,8 @@ class TestBundledClientResolution(unittest.TestCase):
     def same(self, a, b):
         self.assertEqual(os.path.normcase(os.path.realpath(a)), os.path.normcase(os.path.realpath(b)))
 
-    def test_installed_mysql_comes_before_the_bundled_one(self):
-        installed = self.make(self.installed, "mysql")
-        self.same(self.resolve(self.installed, self.bundled), installed)
 
-    def test_installed_mariadb_wins_over_the_bundled_mysql(self):
-        # For example Debian's MariaDB 11 without mariadb-client-compat: no mysql.
-        mariadb = self.make(self.installed, "mariadb")
-        self.same(self.resolve(self.installed, self.bundled), mariadb)
-        self.same(self.resolve(self.bundled, self.installed), mariadb)
 
-    def test_an_alias_of_the_bundled_folder_never_beats_an_installed_client(self):
-        installed = self.make(self.installed, "mysql")
-        self.same(self.resolve(self.bundled + os.sep, self.installed), installed)
-        if hasattr(os, "symlink") and os.name != "nt":
-            alias = os.path.join(self.tmp.name, "alias")
-            os.symlink(self.bundled, alias)
-            self.same(self.resolve(alias, self.installed), installed)
-        # Another case on a case-insensitive volume (the macOS and Windows default).
-        upper = self.bundled.replace("mysql-client", "MYSQL-CLIENT")
-        if os.path.isdir(upper):
-            self.same(self.resolve(upper, self.installed), installed)
 
     def test_bundled_mysql_is_the_last_resort(self):
         self.same(self.resolve(self.installed, self.bundled), self.program)
@@ -1021,11 +1092,6 @@ class TestBundledClientResolution(unittest.TestCase):
             with self.assertRaises(ConnectorError):
                 MySQLConnection(host="h")._resolve_binary()
 
-    def test_no_bundled_client_keeps_the_old_order(self):
-        mysql = self.make(self.installed, "mysql")
-        self.make(self.installed, "mariadb")
-        with mock.patch.dict(os.environ, {"PATH": self.installed, "MYFLAMES_BUNDLED_CLIENT_DIR": ""}):
-            self.same(MySQLConnection(host="h")._resolve_binary(), mysql)
 
     def test_lifecycle_tools_find_installed_ones_first_then_the_bundled_ones(self):
         from myflames import lifecycle

@@ -422,3 +422,121 @@ def server_facts(key):
             _FACTS.move_to_end(key)
             return dict(facts)
     return None
+
+
+def choice_keys(discovered, choices):
+    """Resolve stored spellings without silently replacing unavailable choices."""
+    keys = dict(mysql=None, mariadb=None)
+    errors = dict(mysql=None, mariadb=None)
+    for engine in keys:
+        value = (choices or {}).get(engine)
+        if value is None:
+            continue
+        if os.name == 'nt' and value.replace('/', '\\').startswith('\\\\'):
+            errors[engine] = 'Choose a local client named mysql.exe or mariadb.exe.'
+            continue
+        folder = None if value == 'bundled' else os.path.realpath(
+            value if os.path.isdir(value) else os.path.dirname(os.path.realpath(value)))
+        group = next((g for g in discovered.get('installations', [])
+                      if g['engine'] == engine and
+                      (g['bundled'] if value == 'bundled' else connector._same_dir(g['folder'], folder))
+                      and _program(g, 'client')), None)
+        try:
+            if group is None:
+                raise ValueError('The installation is unavailable.')
+            program = (group['programs'][_program(group, 'client')]['path'] if value == 'bundled'
+                       else _choice_program(engine, value))
+            connector._check_client_trust(program)
+            connector._check_client_trust(os.path.realpath(program))
+        except (OSError, ValueError):
+            errors[engine] = ('The client tools chosen in Settings > Client tools are no longer at %s.' % value)
+        else:
+            keys[engine] = group['key']
+    return keys, errors
+
+
+def _choice_program(engine, value):
+    """Find one client in a stored folder without splitting PATH separators."""
+    if (not isinstance(value, str) or not os.path.isabs(value) or
+            any(c in value for c in '\0\r\n')):
+        raise ValueError('Choose an absolute path to the client tools.')
+    if os.name == 'nt' and value.replace('/', '\\').startswith('\\\\'):
+        raise ValueError('Choose a local client named mysql.exe or mariadb.exe.')
+    program = value
+    if os.path.isdir(value):
+        names = ('mariadb', 'mysql') if engine == 'mariadb' else ('mysql', 'mariadb')
+        program = next((os.path.join(value, n + ('.exe' if os.name == 'nt' else ''))
+                        for n in names if os.path.isfile(os.path.join(
+                            value, n + ('.exe' if os.name == 'nt' else '')))), None)
+        if program is None:
+            raise ValueError('Choose a folder holding a mysql or mariadb client program.')
+    name = os.path.basename(program)
+    allowed = ('mysql.exe', 'mariadb.exe') if os.name == 'nt' else ('mysql', 'mariadb')
+    if (name.lower() if os.name == 'nt' else name) not in allowed:
+        raise ValueError('Choose a mysql or mariadb client program.')
+    return program
+
+
+def validate_choice(engine, path):
+    """Validate a client or its folder before it can receive server credentials."""
+    if engine not in ('mysql', 'mariadb'):
+        raise ValueError('Choose engine mysql or mariadb.')
+    if path is None:
+        return None
+    bundled = path == 'bundled'
+    value = connector.bundled_client_dir() if bundled else path
+    if (not isinstance(value, str) or not value or len(value) > 4096 or
+            any(c in value for c in '\0\r\n') or not os.path.isabs(value)):
+        raise ValueError('Choose an absolute path to the client tools.')
+    # Refuse network/device paths before any stat can contact a remote host.
+    if os.name == 'nt' and value.replace('/', '\\').startswith('\\\\'):
+        raise ValueError('Choose a local client named mysql.exe or mariadb.exe.')
+    program = _choice_program(engine, value)
+    connector._check_client_trust(program)
+    connector._check_client_trust(os.path.realpath(program))
+    banner = connector.probe_client(os.path.realpath(program), chosen=program)['version']
+    if server_info.detect_flavor(banner) != engine:
+        raise ValueError('The chosen client tools are for %s, not %s.' % (
+            server_info.detect_flavor(banner), engine))
+    if connector.bundled_client_dir() and connector._same_dir(
+            os.path.dirname(program), connector.bundled_client_dir()):
+        return 'bundled'
+    # Keep the person's folder or stable symlink spelling across upgrades.
+    return path
+
+
+def discover_choices(choices, refresh=False):
+    """Include trusted Settings folders even when they are outside PATH.
+
+    A stale or newly untrusted selection is retained by choice_keys as an error,
+    and is never executed merely to describe Settings.
+    """
+    discovered = discover(refresh=refresh)
+    for engine in ('mysql', 'mariadb'):
+        value = (choices or {}).get(engine)
+        if not value or value == 'bundled':
+            continue
+        try:
+            program = _choice_program(engine, value)
+            connector._check_client_trust(program)
+            connector._check_client_trust(os.path.realpath(program))
+        except (ValueError, OSError):
+            continue
+        folder = value if os.path.isdir(value) else os.path.dirname(value)
+        extra = (discover(path='', common_dirs=(folder,), bundled=False, refresh=refresh)
+                 if os.name != 'nt' else discover(path='', common_dirs=(), bundled=folder, refresh=refresh))
+        for group in extra['installations']:
+            if not any(g['key'] == group['key'] for g in discovered['installations']):
+                group['order'] += len(discovered['installations'])
+                group['bundled'] = False
+                group['origin'], group['origin_label'] = _origin(group['folder'], False)
+                if group['origin'] == 'path':
+                    group.update(origin='folder', origin_label='Chosen folder')
+                discovered['installations'].append(group)
+        for shell in extra['shells']:
+            if not any(s['realpath'] == shell['realpath'] for s in discovered['shells']):
+                discovered['shells'].append(shell)
+        for skipped in extra['skipped']:
+            if not any(s['path'] == skipped['path'] for s in discovered['skipped']):
+                discovered['skipped'].append(skipped)
+    return discovered

@@ -962,26 +962,58 @@ class WorkspaceStore:
 
     # -- Application database client ----------------------------------------
 
-    def client_binary(self):
-        """The chosen client path, or None. Reading never creates the database."""
+    def client_choice(self, engine):
+        """Stored tools for one engine; reading never creates the database."""
+        if engine not in ('mysql', 'mariadb'):
+            raise ValueError('Choose engine mysql or mariadb.')
         if not self.path.exists():
             return None
         with closing(self._connect()) as conn, conn:
-            row = conn.execute("SELECT value FROM settings WHERE key = 'client_binary'").fetchone()
+            row = conn.execute("SELECT value FROM settings WHERE key = ?",
+                               ('client_choice_' + engine,)).fetchone()
         return row[0] if row and row[0] else None
 
-    def set_client_binary(self, path_or_None):
-        """Store a path validated by the client settings API, or clear it."""
-        if path_or_None is not None and (not isinstance(path_or_None, str) or not path_or_None):
-            raise ValueError('The database client path must be a nonempty string or null.')
-        if path_or_None is None and not self.path.exists():
+    def set_client_choice(self, engine, value):
+        """Store the chosen spelling (including stable installer symlinks)."""
+        if engine not in ('mysql', 'mariadb'):
+            raise ValueError('Choose engine mysql or mariadb.')
+        if value is not None and (not isinstance(value, str) or not value or
+                                  (value != 'bundled' and not os.path.isabs(value)) or
+                                  len(value) > 4096 or any(c in value for c in '\0\r\n')):
+            raise ValueError('The client tools path must be absolute, bundled, or null.')
+        if value is None and not self.path.exists():
             return None
         with closing(self._connect()) as conn, conn:
-            if path_or_None is None:
-                conn.execute("DELETE FROM settings WHERE key = 'client_binary'")
+            key = 'client_choice_' + engine
+            if value is None:
+                conn.execute("DELETE FROM settings WHERE key = ?", (key,))
             else:
-                conn.execute("INSERT OR REPLACE INTO settings VALUES ('client_binary', ?)", (path_or_None,))
-        return path_or_None
+                conn.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (key, value))
+        return value
+
+    def migrate_client_choices(self):
+        """Move the former single client choice once, preserving broken choices."""
+        if not self.path.exists():
+            return
+        from . import connector, server_info
+        with closing(self._connect()) as conn, conn:
+            row = conn.execute("SELECT value FROM settings WHERE key = 'client_binary'").fetchone()
+            if row is None:
+                return
+            value = row[0]
+            if value:
+                engine = 'mariadb' if os.path.basename(value).lower().startswith('mariadb') else 'mysql'
+                try:
+                    engine = server_info.detect_flavor(connector.probe_client(value)['version'])
+                except (ValueError, OSError):
+                    pass
+                bundle = connector.bundled_client_dir()
+                if bundle and connector._same_dir(os.path.dirname(value), bundle):
+                    value = 'bundled'
+                # A newer per-engine choice takes precedence over a legacy key.
+                conn.execute("INSERT OR IGNORE INTO settings VALUES (?, ?)",
+                             ('client_choice_' + engine, value))
+            conn.execute("DELETE FROM settings WHERE key = 'client_binary'")
 
     # -- Home news (news.py): Settings, "Show MySQL and MariaDB news on Home" --
 

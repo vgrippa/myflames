@@ -606,6 +606,7 @@ class EditorSession(EditorInsights):
             conn.hold_transport()
             defaults = credentials.enter_context(conn._invocation_defaults())
             binary = conn._resolve_binary()
+            self._resolved_binary = binary
             self._client_home = tempfile.TemporaryDirectory(prefix="myflames-editor-")
             env = _clean_env(self._client_home.name)
             from .connector import CLIENT_CHARSET_FLAGS
@@ -638,7 +639,12 @@ class EditorSession(EditorInsights):
                                  timeout=float(options.get("connect_timeout") or 10) + HELPER_TIMEOUT)
             row = self._helper_row(hello)
             if row is None:
-                raise ConnectorError(self._helper_problem(hello) or "The MySQL client did not start a session.")
+                problem = self._helper_problem(hello) or "The MySQL client did not start a session."
+                from .connector import _client_auth_error
+                auth = _client_auth_error(problem, binary, getattr(conn, '_client_use', None))
+                if auth is not None:
+                    raise auth
+                raise ConnectorError(problem)
             self.connection_id = _int(row.get("connection_id"))
             self.server_version = row.get("version") or ""
             # @@version_comment decides, as everywhere else: a MariaDB server whose
@@ -647,6 +653,8 @@ class EditorSession(EditorInsights):
             identity = (product_identity(self.server_version, comment) if comment
                         else identity_from_version(self.server_version))
             self.engine = identity["engine"]
+            from . import client_tools
+            client_tools.remember_server(client_tools.endpoint_key(options), self.engine, self.server_version)
             self.server_product = identity["product"]
             self.server_identity = self._identity_row(row)
             if self.server_identity is None:
@@ -1201,6 +1209,7 @@ class EditorSession(EditorInsights):
             try:
                 kill_options = dict(options)
                 kill_options["query_timeout"] = KILL_TIMEOUT
+                kill_options["binary"] = self._resolved_binary
                 with MySQLConnection(**kill_options) as control:
                     control.run(TAG + "KILL QUERY %d" % connection_id, extra_flags=list(_write_flags()),
                                 timeout=KILL_TIMEOUT)
@@ -1421,7 +1430,7 @@ class EditorSession(EditorInsights):
             options = {key: getattr(self._conn, key) for key in (
                 "host", "port", "user", "password", "database", "ssl_mode", "ssl_ca", "ssl_cert", "ssl_key",
                 "ssl_cipher", "connect_timeout", "query_timeout", "ssh_host", "ssh_user", "ssh_port")}
-            options["binary"] = self._conn._binary_override
+            options["binary"] = self._resolved_binary
             run = Run(units, 1, options, statement, Offsets(statement), "statement", kind="plan")
             with self.lock:
                 previous, self.run = self.run, run
@@ -1872,6 +1881,7 @@ class EditorSession(EditorInsights):
             try:
                 kill = dict(kill_options)
                 kill["query_timeout"] = KILL_TIMEOUT
+                kill["binary"] = self._resolved_binary
                 with MySQLConnection(**kill) as control:
                     control.run(TAG + "KILL QUERY %d" % self.connection_id, extra_flags=list(_write_flags()),
                                 timeout=KILL_TIMEOUT)

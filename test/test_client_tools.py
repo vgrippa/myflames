@@ -34,6 +34,61 @@ class DiscoveryTests(unittest.TestCase):
     def discover(self, *folders, **kwargs):
         return ct.discover(path=os.pathsep.join(str(p) for p in folders), common_dirs=(), bundled=False, **kwargs)
 
+    def test_choice_keys_engines_alias_bundle_and_missing(self):
+        mysql = self.make(self.root / 'mysql')
+        maria = self.make(self.root / 'maria', 'mariadb', banner='mariadb Ver 11.4.2-MariaDB')
+        report = ct.discover(path=str(maria.parent), common_dirs=(), bundled=str(mysql.parent))
+        link = self.root / 'stable'
+        link.symlink_to(mysql.parent, target_is_directory=True)
+        for value in ('bundled', str(link / 'mysql'), str(link)):
+            keys, errors = ct.choice_keys(report, dict(mysql=value, mariadb=str(maria)))
+            self.assertTrue(keys['mysql'].startswith('mysql:'))
+            self.assertTrue(keys['mariadb'].startswith('mariadb:'))
+            self.assertEqual(errors, dict(mysql=None, mariadb=None))
+        keys, errors = ct.choice_keys(report, dict(mysql='/missing/mysql'))
+        self.assertIsNone(keys['mysql'])
+        self.assertEqual(errors['mysql'], 'The client tools chosen in Settings > Client tools are no longer at /missing/mysql.')
+
+    def test_validate_choice_preserves_spelling_and_refuses_wrong_engine(self):
+        mysql = self.make(self.root / 'mysql')
+        maria = self.make(self.root / 'maria', 'mariadb', banner='mariadb Ver 11.4.2-MariaDB')
+        link = self.root / 'stable'
+        link.symlink_to(mysql.parent, target_is_directory=True)
+        self.assertEqual(ct.validate_choice('mysql', str(link / 'mysql')), str(link / 'mysql'))
+        self.assertEqual(ct.validate_choice('mysql', str(link)), str(link))
+        self.assertEqual(ct.validate_choice('mariadb', str(maria)), str(maria))
+        with mock.patch.dict(os.environ, {'MYFLAMES_BUNDLED_CLIENT_DIR': str(mysql.parent)}):
+            self.assertEqual(ct.validate_choice('mysql', str(link / 'mysql')), 'bundled')
+            self.assertEqual(ct.validate_choice('mysql', 'bundled'), 'bundled')
+        for engine, path in (('mariadb', str(mysql)), ('mysql', str(maria)), ('other', str(mysql)),
+                             ('mysql', 'relative/mysql'), ('mysql', str(self.root / 'missing'))):
+            with self.subTest(engine=engine, path=path), self.assertRaises(ValueError):
+                ct.validate_choice(engine, path)
+        mysql.chmod(0o777)
+        with self.assertRaisesRegex(ValueError, 'changed by other users'):
+            ct.validate_choice('mysql', str(mysql))
+
+    def test_discover_choices_includes_off_path_folder_and_rejects_untrusted(self):
+        mysql = self.make(self.root / 'offpath')
+        self.make(mysql.parent, 'mysqldump')
+        with mock.patch.dict(os.environ, {'PATH': '', 'MYFLAMES_BUNDLED_CLIENT_DIR': ''}), \
+                mock.patch.object(ct.connector, 'bundled_client_dir', return_value=None), \
+                mock.patch('myflames.lifecycle.COMMON_BIN_DIRS', ()):
+            report = ct.discover_choices({'mysql': str(mysql)})
+            self.assertEqual(set(report['installations'][0]['programs']), {'mysql', 'mysqldump'})
+            mysql.chmod(0o777)
+            report = ct.discover_choices({'mysql': str(mysql)})
+            self.assertEqual(report['installations'], [])
+
+    def test_chosen_folder_with_path_separator_is_scanned_as_one_folder(self):
+        mysql = self.make(self.root / ('x' + os.pathsep + 'y'))
+        self.make(self.root / 'x', banner='mysql Ver 9.7.0')
+        with mock.patch.dict(os.environ, {'PATH': '', 'MYFLAMES_BUNDLED_CLIENT_DIR': ''}), \
+                mock.patch('myflames.lifecycle.COMMON_BIN_DIRS', ()):
+            report = ct.discover_choices({'mysql': str(mysql)})
+        self.assertEqual(len(report['installations']), 1)
+        self.assertEqual(report['installations'][0]['programs']['mysql']['path'], str(mysql))
+
     def test_homebrew_kegs_bundle_and_aliases(self):
         brew = self.root / 'prefix'
         keg = brew / 'Cellar/mysql@8.4/8.4.8/bin'

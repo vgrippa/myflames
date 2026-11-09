@@ -1016,7 +1016,7 @@ class ProcessTests(unittest.TestCase):
         script.write_text("#!%s\n%s" % (sys.executable, client), encoding="utf-8")
         script.chmod(script.stat().st_mode | stat.S_IEXEC)
         env = {"HOME": self.temp.name, "USERPROFILE": self.temp.name, "MYFLAMES_SECRET_BACKEND": "vault",
-               "PATH": str(bindir) + os.pathsep + os.environ.get("PATH", ""), "FAKE_STATE": str(self.state),
+               "PATH": str(bindir), "MYFLAMES_BUNDLED_CLIENT_DIR": "", "FAKE_STATE": str(self.state),
                "FAKE_ENGINE": self.engine}
         patcher = mock.patch.dict(os.environ, env)
         patcher.start()
@@ -1035,6 +1035,14 @@ class ProcessTests(unittest.TestCase):
         process_patch = mock.patch.object(ed.subprocess, "Popen", side_effect=spawn)
         self.processes = process_patch.start()
         self.addCleanup(process_patch.stop)
+        from myflames import lifecycle, client_tools, connector
+        patcher = mock.patch.object(lifecycle, 'COMMON_BIN_DIRS', ())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        previous = connector.client_choices()
+        connector.set_client_choices({})
+        self.addCleanup(connector.set_client_choices, previous)
+        client_tools._FACTS.clear()
         ed._FEATURES.clear()
         self.store = WorkspaceStore()
         self.registry = ed.EditorSessions(reap_every=0)
@@ -1243,6 +1251,29 @@ class ProcessTests(unittest.TestCase):
                             explain_format="table", parameters={"v": 1})
         self.assertEqual((missing["status"], missing["message"]), ("invalid", "Missing parameter: id"))
         self.assertNotIn("DELETE FROM t", self.session_log())
+
+    def test_session_start_remembers_endpoint_facts(self):
+        from myflames import client_tools
+        self.call('/api/editor/open')
+        session = self.registry.get('tab1')
+        self.assertEqual(client_tools.server_facts(client_tools.endpoint_key(self.connection)),
+                         dict(engine=session.engine, version=session.server_version))
+
+    def test_plan_and_kill_keep_the_sessions_client_after_settings_change(self):
+        from myflames import connector
+        self.call('/api/editor/open')
+        session = self.registry.get('tab1')
+        binary = session._resolved_binary
+        connector.set_client_choices({'mysql': '/missing/new/mysql', 'mariadb': '/missing/new/mariadb'})
+        with mock.patch.object(ed, 'Run', wraps=ed.Run) as run:
+            session.run_plan('SELECT 1', 'explain')
+        self.assertEqual(run.call_args[0][2]['binary'], binary)
+        # The real timeout sends KILL through a second client process. If it
+        # re-resolved, the changed Settings would fail before sending KILL.
+        with self.assertRaisesRegex(ed.EditorError, '1317'):
+            session.run_plan('SELECT 1 /*gate*/', 'analyze', timeout=0.1)
+        self.assertTrue((self.state / 'kills.log').exists())
+        self.assertFalse(session.ended)
 
     def test_plan_json_uses_the_tab_and_restores_settings_in_order(self):
         self.call("/api/editor/open")
