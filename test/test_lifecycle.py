@@ -514,16 +514,18 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(run.call_count, 0, 'setUp already probed these unchanged binaries')
         self.assertNotEqual(second['tools']['mysqlsh']['version_tuple'][0], 999)
 
-    def test_probe_cache_expires_and_explicit_refresh_reprobes(self):
+    def test_probe_cache_identity_and_explicit_refresh_reprobe(self):
         self.stop_detect()
-        with mock.patch.object(lc.time, 'monotonic', return_value=10 ** 12), \
-                mock.patch.object(lc.subprocess, 'run', wraps=lc.subprocess.run) as run:
+        with mock.patch.object(lc.subprocess, 'run', wraps=lc.subprocess.run) as run:
             lc.detect_tools(path=str(self.bin), common_dirs=())
-            self.assertEqual(run.call_count, len(lc.TOOLS))
-            lc.detect_tools(path=str(self.bin), common_dirs=())
-            self.assertEqual(run.call_count, len(lc.TOOLS))
+            self.assertEqual(run.call_count, 0)
             lc.detect_tools(path=str(self.bin), common_dirs=(), refresh=True)
-            self.assertEqual(run.call_count, 2 * len(lc.TOOLS))
+            self.assertEqual(run.call_count, len(lc.TOOLS))
+            binary = self.bin / 'mysqlsh'
+            info = binary.stat()
+            os.utime(str(binary), ns=(info.st_atime_ns, info.st_mtime_ns + 1000000))
+            lc.detect_tools(path=str(self.bin), common_dirs=())
+            self.assertEqual(run.call_count, len(lc.TOOLS) + 1)
 
     def test_probe_cache_never_remembers_timeouts_or_missing_tools(self):
         self.stop_detect()
@@ -561,7 +563,8 @@ class LifecycleTests(unittest.TestCase):
                 reports = list(pool.map(lambda _: lc.detect_tools(path=str(self.bin), common_dirs=()), range(4)))
             self.assertEqual(run.call_count, 1, 'concurrent detection must share a cache miss')
             self.assertTrue(all(r['tools']['mysqlsh']['available'] for r in reports))
-        self.assertLessEqual(len(lc._PROBE_CACHE), lc._PROBE_LIMIT)
+        from myflames import client_tools
+        self.assertLessEqual(len(client_tools._PROBE_CACHE), client_tools._PROBE_LIMIT)
 
     def test_option_file_escaping_and_permissions(self):
         password = 'a"b\\c\nd\r\t#;='

@@ -224,28 +224,12 @@ def _report_safe(value, passwords=(), field=''):
     return value
 
 
-# Completed local version probes only. Release-page results belong to tool_updates.
-_PROBE_CACHE = collections.OrderedDict()
-_PROBE_LOCK = threading.Lock()
-_PROBE_TTL = 60
-_PROBE_LIMIT = 64
-
-
-def _probe_key(name, binary):
-    try:
-        info = os.stat(binary)
-        return (name, os.path.realpath(binary), info.st_dev, info.st_ino,
-                info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-    except OSError:
-        return None
-
-
 def detect_tools(path=None, common_dirs=None, job=None, check_updates=False, refresh=False):
     """Discover each external tool, including deprecated mysqlpump (never offered).
 
     common_dirs=() makes PATH-only discovery deterministic for callers/tests.
     An unrecognized or failing version probe is unavailable, never guessed.
-    Completed probes are memoized for 60 seconds by binary identity; discovery
+    Completed probes are memoized by binary identity without expiry; discovery
     still runs every time. refresh=True bypasses the cache. Failures to launch
     and timeouts are never cached. No network check runs unless requested.
     """
@@ -269,35 +253,8 @@ def detect_tools(path=None, common_dirs=None, job=None, check_updates=False, ref
         entry = {'available': False, 'deprecated': name == 'mysqlpump'}
         if binary:
             entry['path'] = os.path.abspath(binary)
-            # Discovery is cheap and always fresh. A replaced binary invalidates
-            # the cache even when its path and mtime were preserved.
-            with _PROBE_LOCK:
-                if job:
-                    job.check_cancel()
-                cache_key = _probe_key(name, binary)
-                cached = _PROBE_CACHE.get(cache_key)
-                if not refresh and cached and time.monotonic() - cached[0] < _PROBE_TTL:
-                    entry.update(copy.deepcopy(cached[1]))
-                else:
-                    try:
-                        with tempfile.TemporaryDirectory(prefix='myflames-probe-') as home:
-                            child = subprocess.run([entry['path'], '--version'], stdout=subprocess.PIPE,
-                                                   stderr=subprocess.STDOUT, timeout=8, env=_clean_env(home))
-                        output = child.stdout.decode('utf-8', 'replace').strip()[:4096]
-                        entry['version'] = output
-                        entry['version_tuple'] = list(version_tuple(output))
-                        entry['engine'] = detect_flavor(output)
-                        entry['available'] = child.returncode == 0 and version_tuple(output) != (0, 0, 0)
-                        if not entry['available']:
-                            entry['error'] = 'Version probe failed or returned an unrecognized version.'
-                        if cache_key is not None and _probe_key(name, binary) == cache_key:
-                            fields = {key: value for key, value in entry.items() if key not in ('path', 'deprecated')}
-                            _PROBE_CACHE[cache_key] = (time.monotonic(), copy.deepcopy(fields))
-                            _PROBE_CACHE.move_to_end(cache_key)
-                            while len(_PROBE_CACHE) > _PROBE_LIMIT:
-                                _PROBE_CACHE.popitem(last=False)
-                    except (OSError, subprocess.TimeoutExpired) as exc:
-                        entry['error'] = type(exc).__name__
+            from .client_tools import probe
+            entry.update(probe(name, binary, refresh=refresh, job=job))
         found[name] = entry
     from .tool_updates import enrich_tools
     return enrich_tools({'schema_version': 'lifecycle-tools-1.0', 'tools': found},
