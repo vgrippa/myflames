@@ -50,7 +50,8 @@ import time
 import uuid
 
 from . import dbops, privileges, dump_options
-from .connector import ConnectorError, MySQLConnection, terminal_text
+from .connector import (ConnectorError, MySQLConnection, bundled_client_dir, bundled_program,
+                        installed_search_path, terminal_text)
 from .perf_common import Reader, ident, literal, now
 # Public compatibility export, including MariaDB tool banner precedence.
 from .server_info import detect_flavor, product_identity, tool_version_tuple as version_tuple, unsupported_version_note
@@ -249,16 +250,22 @@ def detect_tools(path=None, common_dirs=None, job=None, check_updates=False, ref
     and timeouts are never cached. No network check runs unless requested.
     """
     found = {}
+    # The desktop app's bundled mysql and mysqldump come after every installed
+    # tool, the common folders included (connector.bundled_client_dir).
+    bundled = bundled_client_dir() if path is None else None
+    search = installed_search_path(bundled) if bundled else path
     for name in TOOLS:
         if job:
             job.check_cancel()
-        binary = shutil.which(name, path=path)
+        binary = shutil.which(name, path=search)
         if not binary:
             for folder in COMMON_BIN_DIRS if common_dirs is None else common_dirs:
                 candidate = os.path.join(folder, name)
                 if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
                     binary = candidate
                     break
+        if not binary and bundled:
+            binary = bundled_program(bundled, name)
         entry = {'available': False, 'deprecated': name == 'mysqlpump'}
         if binary:
             entry['path'] = os.path.abspath(binary)

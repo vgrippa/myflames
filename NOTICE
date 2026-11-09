@@ -28,7 +28,8 @@ of the workspace (myflames/ui_assets) that loads on first use.
 The desktop app for macOS and Windows includes the MySQL command-line client
 programs mysql and mysqldump from MySQL 8.4.13 Community Server
 (https://www.mysql.com), Copyright (c) 1997, 2026, Oracle and/or its
-affiliates, with the OpenSSL 3.0 libraries Oracle ships beside them. They are
+affiliates, with the OpenSSL 3.5 libraries Oracle ships beside them
+(licensed under the Apache License, Version 2.0). They are
 separate programs that myflames runs as child processes, redistributed
 unmodified from Oracle's release archives (macOS releases re-sign them with
 the app's Developer ID), under the GNU General Public License version 2 with

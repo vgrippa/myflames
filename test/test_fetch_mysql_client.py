@@ -254,6 +254,33 @@ class TestDigest(unittest.TestCase):
         self.assertEqual(os.listdir(lab.cache), [])
         self.assertFalse(os.path.exists(lab.out))
 
+    def test_the_verified_bytes_are_the_ones_extracted_even_if_the_file_is_swapped(self):
+        # Abuse case: another writer replaces the cached archive right after
+        # its digest was checked. Extraction reads the handle that was hashed.
+        lab = Lab(self, 'darwin-arm64', mac_files())
+        evil = Lab(self, 'darwin-arm64', mac_files(**{'bin/mysql': macho([SYSTEM]) + b'evil'}))
+        real_hash = fetcher._hash
+
+        def hash_then_swap(handle, limit):
+            result = real_hash(handle, limit)
+            os.replace(evil.archive, lab.archive)
+            return result
+
+        with mock.patch.object(fetcher, '_hash', hash_then_swap):
+            lab.fetch()
+        with open(os.path.join(lab.out, 'bin', 'mysql'), 'rb') as handle:
+            self.assertEqual(handle.read(), mac_files()['bin/mysql'])
+
+    @unittest.skipUnless(hasattr(os, 'symlink') and os.name != 'nt', 'POSIX symlinks')
+    def test_a_symlink_in_the_cache_is_refused(self):
+        lab = Lab(self, 'darwin-arm64', mac_files())
+        elsewhere = os.path.join(lab.tmp.name, 'elsewhere.tar.gz')
+        os.replace(lab.archive, elsewhere)
+        os.symlink(elsewhere, lab.archive)
+        with self.assertRaisesRegex(fetcher.Refused, 'symbolic link'):
+            lab.fetch()
+        self.assertFalse(os.path.exists(lab.out))
+
     def test_a_matching_cached_archive_is_used_without_a_download(self):
         lab = Lab(self, 'darwin-arm64', mac_files())
         with mock.patch.object(fetcher, 'download', side_effect=AssertionError('no download')):
@@ -344,6 +371,18 @@ class TestWindows(unittest.TestCase):
         with mock.patch.object(fetcher, 'find_vc_runtime', return_value=None):
             with self.assertRaisesRegex(fetcher.Refused, 'Visual C\\+\\+ runtime'):
                 lab.fetch()
+
+    def test_refuses_dll_names_that_are_not_plain_file_names(self):
+        # Abuse case: a member named bin/..\\..\\outside.dll, imported by that
+        # name, must never become a path outside the output folder.
+        for name in ('..\\..\\outside.dll', 'C:outside.dll', 'sub/outside.dll'):
+            files = win_files(**{'bin/mysql.exe': pe([name] + CRT)})
+            files['bin/' + name] = pe(CRT)
+            lab = Lab(self, 'win32-x64', files)
+            with self.assertRaisesRegex(fetcher.Refused, 'plain DLL file name', msg=name):
+                lab.fetch(vc_runtime=vc_runtime(self))
+            self.assertFalse(os.path.exists(lab.out), name)
+            self.assertFalse(os.path.exists(os.path.join(lab.tmp.name, 'outside.dll')), name)
 
     def test_refuses_a_symlink_in_the_zip(self):
         files = win_files()

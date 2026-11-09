@@ -161,10 +161,17 @@ and its license to `licenses/MySQL-Client-LICENSE`.
 
 To move to another MySQL release, download the new archives with their `.md5`
 and `.asc` files from cdn.mysql.com, check the MD5 and the signature
-(`gpg --verify`) with the MySQL Release Engineering key from the MySQL manual
-(fingerprint `BCA4 3417 C3B4 85DD 128E C6D4 B7B3 B788 A8D3 785C`), then
-record the version, URLs, sizes, MD5 and SHA-256 in the lock, say how you
-checked them in its `comment`, and update the release named in NOTICE.
+(`gpg --status-fd 1 --verify`) with the MySQL Release Engineering key from the
+MySQL manual (fingerprint `BCA4 3417 C3B4 85DD 128E C6D4 B7B3 B788 A8D3 785C`,
+refreshed from a keyserver first, or a successor key the manual announces):
+require both `GOODSIG` and `VALIDSIG` with that fingerprint, since `VALIDSIG`
+alone also appears for an expired or revoked key. The MD5 comes from the same
+CDN as the archive; the signature is the real check. Compute the size and
+SHA-256 from the same file gpg verified, then record the version, URLs, sizes,
+MD5 and SHA-256 together in the lock, say how you checked them in its
+`comment`, update the release named in NOTICE, and have a reviewer repeat the
+signature check. Do not widen the script's system library lists or Visual C++
+runtime pattern without reviewing the new library.
 
 No automatic application updates or install actions are enabled.
 

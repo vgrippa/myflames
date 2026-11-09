@@ -152,11 +152,15 @@ origin. `main.cjs` passes `process.resourcesPath` to `backendEnvironment` only w
 after everything above (moving it there if the inherited PATH already holds it,
 and leaving it off PATH when the folder name holds the PATH separator), and sets
 `MYFLAMES_BUNDLED_CLIENT_DIR` to it. `connector._resolve_binary` keeps its order
-(`--mysql-binary`, then `mysql`, then `mariadb` on PATH) but skips a `mysql` found
-in that folder, so an installed `mariadb` anywhere on PATH still wins (Debian's
-MariaDB 11 packages ship `mysql` only in `mariadb-client-compat`); the bundled
-`mysql` is the last resort. Lifecycle tools find the bundled `mysqldump` by the same
-PATH (it reports engine `mysql`, so it is offered for MySQL servers only). The
+(`--mysql-binary`, then `mysql`, then `mariadb`) but searches a PATH without that
+folder under any spelling (`installed_search_path`: a trailing separator, another
+case, a symlink or junction), so an installed `mariadb` anywhere on PATH still wins
+(Debian's MariaDB 11 packages ship `mysql` only in `mariadb-client-compat`); the
+bundled `mysql` is the last resort, built as `<folder>/mysql[.exe]` and never
+searched (`bundled_program`: `shutil.which` would split a folder name holding the
+PATH separator). `lifecycle.detect_tools` looks for each tool on that PATH, then in
+`COMMON_BIN_DIRS`, then in the bundled folder (the bundled `mysqldump` reports
+engine `mysql`, so it is offered for MySQL servers only). The
 bundled client cannot sign in to MariaDB accounts that use `ed25519` or `parsec`
 (`ERROR 2059: Authentication plugin 'client_ed25519' cannot be loaded`); those need
 an installed MariaDB client. It carries no client plugins (`lib/plugin`), so
@@ -164,9 +168,13 @@ Kerberos, LDAP SASL, OCI and WebAuthn authentication also need an installed clie
 `apps/desktop/scripts/fetch-mysql-client.py` (stdlib) downloads the archive into
 `apps/desktop/build/mysql-client-cache` (or `MYFLAMES_MYSQL_CLIENT_CACHE`), refuses
 any size or SHA-256 mismatch with the lock (HTTPS only, the download capped at
-the pinned size), reads the dependencies from the Mach-O load commands or the PE
-import and delay-import tables and refuses anything outside the archive, the
-operating system and, on Windows, the Visual C++ runtime folder (found with
+the pinned size; the cached file is opened once, without following links, owned
+by the user, and the handle that was hashed is the one extracted), reads the
+dependencies from the Mach-O load commands or the PE import and delay-import
+tables and refuses anything outside the archive, the operating system and, on
+Windows, the Visual C++ runtime folder (DLL names must be plain file names;
+output paths never come from the archive and must stay inside the output
+folder; the runtime is found with
 `vswhere` in `VC\Redist\MSVC\<version>\x64\Microsoft.VC*.CRT`, or `--vc-runtime`),
 and writes `apps/desktop/build/mysql-client`. `package:mac`,
 `package-mac-release.sh` and the Windows workflow (archive cached by its SHA-256)

@@ -191,10 +191,12 @@ test('macOS: the bundled MySQL client is searched last, after PATH and every ins
   }
   assert.equal(parts.at(-2), '/Applications/MySQLWorkbench.app/Contents/MacOS');
   // Already on the inherited PATH: moved to the end, never searched earlier.
-  const moved = backendEnvironment('/desktop', { PATH: bundled + ':/usr/bin' }, 'darwin', fileSystem, resources).PATH.split(':');
-  assert.equal(moved[0], '/usr/bin');
-  assert.equal(moved.at(-1), bundled);
-  assert.equal(moved.filter(value => value === bundled).length, 1);
+  for (const alias of [bundled, bundled + '/', bundled + '//', resources + '/mysql-client/./bin']) {
+    const moved = backendEnvironment('/desktop', { PATH: alias + ':/usr/bin' }, 'darwin', fileSystem, resources).PATH.split(':');
+    assert.equal(moved[0], '/usr/bin', alias);
+    assert.equal(moved.at(-1), bundled);
+    assert.equal(moved.filter(value => value.startsWith(resources)).length, 1, alias);
+  }
 });
 test('the bundled client is added only for a packaged app with an absolute resources folder', () => {
   for (const env of [backendEnvironment('/desktop', { PATH: '/usr/bin' }, 'darwin'),
@@ -236,11 +238,13 @@ test('Windows: the bundled MySQL client is searched last, after PATH, the instal
     'C:\\Program Files\\MySQL\\MySQL Workbench 8.0 CE', bundled]);
   assert.equal(env.MYFLAMES_BUNDLED_CLIENT_DIR, bundled);
   // On the inherited PATH in another case or with a trailing backslash: moved to the end once.
-  const moved = backendEnvironment('C:\\desktop', { PATH: bundled.toUpperCase() + '\\;C:\\Windows\\System32', ProgramFiles: 'C:\\Program Files' }, 'win32', fileSystem, resources);
-  const parts = moved.PATH.split(';');
-  assert.equal(parts[0], 'C:\\Windows\\System32');
-  assert.equal(parts.at(-1), bundled);
-  assert.equal(parts.filter(value => value.toLowerCase().replace(/\\+$/, '') === bundled.toLowerCase()).length, 1);
+  for (const alias of [bundled.toUpperCase() + '\\', bundled.replace(/\\/g, '/'), bundled.replace(/\\/g, '/') + '/']) {
+    const moved = backendEnvironment('C:\\desktop', { PATH: alias + ';C:\\Windows\\System32', ProgramFiles: 'C:\\Program Files' }, 'win32', fileSystem, resources);
+    const parts = moved.PATH.split(';');
+    assert.equal(parts[0], 'C:\\Windows\\System32', alias);
+    assert.equal(parts.at(-1), bundled);
+    assert.equal(parts.filter(value => value.toLowerCase().includes('myflames-desktop')).length, 1, alias);
+  }
 });
 test('startup tolerates fragmented output and shutdown owns only its child process group', async () => {
   const f = fixture(), ready = startBackend(settings, f.dependencies);

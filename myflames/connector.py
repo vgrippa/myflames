@@ -74,6 +74,27 @@ def _same_dir(a, b):
         return False
 
 
+def installed_search_path(bundled):
+    """PATH without the bundled folder under any spelling (a trailing
+    separator, another case, a symlink or junction), for finding installed
+    clients first."""
+    return os.pathsep.join(entry for entry in (os.environ.get("PATH") or "").split(os.pathsep)
+                           if entry and not _same_dir(entry, bundled))
+
+
+def bundled_program(bundled, name):
+    """The bundled *name* (mysql, mysqldump) as an absolute file, or None.
+
+    Built directly, never searched: shutil.which would split a folder whose
+    name holds the PATH separator, and on Windows would also look in the
+    current directory first.
+    """
+    candidate = os.path.join(bundled, name + (".exe" if os.name == "nt" else ""))
+    if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+        return candidate
+    return None
+
+
 @contextmanager
 def client_environment():
     """Keep a private, empty home alive for the entire client invocation."""
@@ -315,9 +336,9 @@ class MySQLConnection:
     # ---- binary + defaults-file plumbing --------------------------------
 
     @staticmethod
-    def _which(name):
+    def _which(name, path=None):
         """Wrapper around shutil.which so tests can monkeypatch it."""
-        return shutil.which(name)
+        return shutil.which(name, path=path)
 
     def _resolve_binary(self):
         """Return the path to the mysql or mariadb client binary.
@@ -334,18 +355,16 @@ class MySQLConnection:
             self._binary_cached = self._binary_override
             return self._binary_cached
         bundled = bundled_client_dir()
+        search = installed_search_path(bundled) if bundled else None
         for name in ("mysql", "mariadb"):
-            path = self._which(name)
-            if path and not (bundled and _same_dir(os.path.dirname(path), bundled)):
-                self._binary_cached = path
-                return path
-        if bundled:
-            # Also reached when the folder could not go on PATH (a name with
-            # the PATH separator in it).
-            path = shutil.which("mysql", path=bundled)
+            path = self._which(name, search) if bundled else self._which(name)
             if path:
                 self._binary_cached = path
                 return path
+        path = bundled_program(bundled, "mysql") if bundled else None
+        if path:
+            self._binary_cached = path
+            return path
         raise ConnectorError(
             "Cannot find 'mysql' or 'mariadb' on PATH. Install the client "
             "binary or pass --mysql-binary /path/to/mysql."

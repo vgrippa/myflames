@@ -163,7 +163,7 @@ function backendEnvironment(dataDirectory, inherited = process.env, platform = p
   // Finder does not load shell startup files. Append fixed client installation
   // locations, preserving an explicitly configured PATH's search precedence.
   if (platform === 'darwin') {
-    env.PATH = [...new Set((env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin').split(':').filter(value => value && value !== bundled).concat([
+    env.PATH = [...new Set((env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin').split(':').filter(value => value && !(bundled && path.posix.normalize(value + '/') === path.posix.normalize(bundled + '/'))).concat([
       '/opt/homebrew/bin', '/usr/local/bin', '/usr/local/mysql/bin',
       '/opt/homebrew/opt/mysql-client/bin', '/usr/local/opt/mysql-client/bin',
       '/opt/homebrew/opt/mysql-shell/bin', '/usr/local/opt/mysql-shell/bin',
@@ -175,7 +175,8 @@ function backendEnvironment(dataDirectory, inherited = process.env, platform = p
       '/Applications/MySQLWorkbench.app/Contents/MacOS',
     ], last))].join(':');
   } else if (platform === 'win32') {
-    const key = value => value.toLowerCase().replace(/[\\/]+$/, '');
+    // The same folder in another case, with forward slashes or a trailing separator.
+    const key = value => path.win32.normalize(value + '\\').toLowerCase();
     env.PATH = uniqueWindowsPaths((env.PATH || '').split(';').filter(value => value && !(bundled && key(value) === key(bundled)))
       .concat(windowsClientDirectories(inherited, fileSystem), last)).join(';');
   }

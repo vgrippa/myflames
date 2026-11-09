@@ -60,6 +60,10 @@ WINDOWS_SYSTEM_DLLS = frozenset(name.lower() for name in (
     'Secur32.dll', 'DNSAPI.dll', 'ole32.dll', 'OLEAUT32.dll', 'bcrypt.dll', 'ntdll.dll',
     'RPCRT4.dll', 'IPHLPAPI.DLL', 'SHLWAPI.dll', 'WLDAP32.dll', 'NETAPI32.dll', 'VERSION.dll'))
 WINDOWS_SYSTEM_PREFIXES = ('api-ms-win-', 'ext-ms-win-')
+# A DLL is named by a plain file name; anything else (separators, a drive, "..")
+# is refused before it can become an output path.
+PLAIN_DLL = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._+-]*\.dll$', re.I)
+PLAIN_NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._+-]*$')
 VC_RUNTIME = re.compile(r'^(?:msvcp140(?:_[a-z0-9_]+)?|vcruntime140(?:_\d+)?|concrt140|vccorlib140|vcomp140)\.dll$', re.I)
 
 
@@ -103,18 +107,46 @@ def host_platform():
     return None
 
 
-def sha256_of(path, limit=None):
+def _hash(handle, limit):
+    """SHA-256 and length of an open file, stopping once it passes *limit* bytes."""
     digest, total = hashlib.sha256(), 0
-    with open(path, 'rb') as handle:
-        while True:
-            block = handle.read(CHUNK)
-            if not block:
-                break
-            total += len(block)
-            if limit is not None and total > limit:
-                return None, total
-            digest.update(block)
+    while True:
+        block = handle.read(CHUNK)
+        if not block:
+            break
+        total += len(block)
+        if total > limit:
+            return None, total
+        digest.update(block)
     return digest.hexdigest(), total
+
+
+def open_verified(path, entry):
+    """Open *path* once; return (handle, sha256, size), the handle only when it matches *entry*.
+
+    The handle that was hashed is the one extracted, so swapping the file
+    after the check changes nothing. A symlink, anything but a regular file
+    and, on POSIX, a file another user owns are refused.
+    """
+    if os.path.islink(path):
+        raise Refused('%s is a symbolic link' % path)
+    fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_BINARY', 0))
+    handle = os.fdopen(fd, 'rb')
+    try:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            raise Refused('%s is not a regular file' % path)
+        if hasattr(os, 'getuid') and info.st_uid != os.getuid():
+            raise Refused('%s belongs to another user' % path)
+        digest, total = _hash(handle, entry['size'])
+        if total == entry['size'] and digest == entry['sha256']:
+            handle.seek(0)
+            return handle, digest, total
+    except BaseException:
+        handle.close()
+        raise
+    handle.close()
+    return None, digest, total
 
 
 class _HttpsOnly(urllib.request.HTTPRedirectHandler):
@@ -146,35 +178,40 @@ def download(url, size, target):
 
 
 def cached_archive(entry, cache):
-    """Return the path of a cached archive whose size and SHA-256 match *entry*."""
+    """Return an open handle to the cached archive, verified against *entry*.
+
+    The caller extracts from this same handle and closes it.
+    """
     os.makedirs(cache, exist_ok=True)
     target = os.path.join(cache, posixpath.basename(entry['url']))
-    if os.path.isfile(target) and not os.path.islink(target):
-        digest, total = sha256_of(target, entry['size'])
-        if total == entry['size'] and digest == entry['sha256']:
-            return target
+    if os.path.lexists(target):
+        handle = open_verified(target, entry)[0]
+        if handle:
+            return handle
         sys.stderr.write('fetch-mysql-client: the cached %s does not match the lock; downloading it again\n'
                          % os.path.basename(target))
         os.unlink(target)
-    elif os.path.lexists(target):
-        raise Refused('%s is not a regular file' % target)
     print('Downloading %s (%d bytes)' % (entry['url'], entry['size']))
     partial = download(entry['url'], entry['size'], target)
-    digest, total = sha256_of(partial)
-    if total != entry['size'] or digest != entry['sha256']:
+    handle, digest, total = open_verified(partial, entry)
+    if handle is None:
         os.unlink(partial)
         raise Refused('refusing %s: got %d bytes with SHA-256 %s, the lock pins %d bytes with SHA-256 %s'
                       % (entry['url'], total, digest, entry['size'], entry['sha256']))
+    handle.close()
     os.replace(partial, target)
-    return target
+    handle = open_verified(target, entry)[0]
+    if handle is None:
+        raise Refused('%s changed after it was verified' % target)
+    return handle
 
 
 class Archive(object):
     """Read regular files by exact name from a verified tar.gz or zip archive."""
 
-    def __init__(self, path):
-        self.zip = path.endswith('.zip')
-        self.handle = zipfile.ZipFile(path) if self.zip else tarfile.open(path, 'r:gz')
+    def __init__(self, fileobj, is_zip):
+        self.zip, self.file = is_zip, fileobj
+        self.handle = zipfile.ZipFile(fileobj) if is_zip else tarfile.open(fileobj=fileobj, mode='r:gz')
         if self.zip:
             self.members = {info.filename: info for info in self.handle.infolist()}
         else:
@@ -200,6 +237,7 @@ class Archive(object):
 
     def close(self):
         self.handle.close()
+        self.file.close()
 
 
 # Mach-O: 64-bit little-endian headers and the load commands that name dylibs.
@@ -351,12 +389,13 @@ def plan_windows(archive, root, vc_runtime):
     """Map output paths to (origin, data) for the programs, their DLLs and the VC++ runtime."""
     in_bin = {}
     for name in archive.names():
-        if name.startswith(root + '/bin/') and name.count('/') == 2 and name.lower().endswith('.dll'):
+        if name.startswith(root + '/bin/') and name.count('/') == 2 and PLAIN_DLL.match(posixpath.basename(name)):
             in_bin[posixpath.basename(name).lower()] = name
     runtime = {}
     if vc_runtime:
         for path in glob.glob(os.path.join(vc_runtime, '*.dll')):
-            runtime[os.path.basename(path).lower()] = path
+            if PLAIN_DLL.match(os.path.basename(path)):
+                runtime[os.path.basename(path).lower()] = path
     files, queue = {}, ['mysql.exe', 'mysqldump.exe']
     while queue:
         name = queue.pop(0)
@@ -385,6 +424,8 @@ def plan_windows(archive, root, vc_runtime):
             relative = 'bin/' + name
         files[relative] = (origin, data)
         for dll in pe_imports(data, relative):
+            if not PLAIN_DLL.match(dll):
+                raise Refused('%s imports %r, which is not a plain DLL file name' % (relative, dll))
             if windows_system_dll(dll):
                 continue
             if dll.lower() in in_bin or VC_RUNTIME.match(dll):
@@ -404,10 +445,21 @@ def write_tree(out, files, extra, manifest):
             raise Refused('refusing to empty %s: the output folder must be named mysql-client or be empty' % out)
         shutil.rmtree(out)
     os.makedirs(out)
+    root = os.path.realpath(out)
+
+    def inside(relative):
+        parts = relative.split('/')
+        if not all(PLAIN_NAME.match(part) for part in parts):
+            raise Refused('refusing to write %r: not a plain path inside the output folder' % relative)
+        target = os.path.join(out, *parts)
+        if os.path.commonpath([root, os.path.realpath(os.path.dirname(target))]) != root:
+            raise Refused('refusing to write %r outside %s' % (relative, out))
+        return target
+
     entries = []
     for relative in sorted(files):
         origin, data = files[relative]
-        target = os.path.join(out, *relative.split('/'))
+        target = inside(relative)
         os.makedirs(os.path.dirname(target), exist_ok=True)
         with open(target, 'xb') as handle:
             handle.write(data)
@@ -417,9 +469,10 @@ def write_tree(out, files, extra, manifest):
             entry['file_version'] = pe_file_version(data)
         entries.append(entry)
     for relative, (origin, data) in sorted(extra.items()):
-        with open(os.path.join(out, relative), 'xb') as handle:
+        target = inside(relative)
+        with open(target, 'xb') as handle:
             handle.write(data)
-        os.chmod(os.path.join(out, relative), 0o644)
+        os.chmod(target, 0o644)
         entries.append({'path': relative, 'size': len(data), 'sha256': hashlib.sha256(data).hexdigest(), 'from': origin})
     manifest['files'] = entries
     with open(os.path.join(out, 'manifest.json'), 'x') as handle:
@@ -456,8 +509,7 @@ def fetch(platform, lock_path=LOCK, cache=CACHE, out=OUT, vc_runtime=None, run_c
         if not vc_runtime or not os.path.isdir(vc_runtime):
             raise Refused('the Visual C++ runtime folder was not found; install Visual Studio with the C++ '
                           'build tools, or pass --vc-runtime VC\\Redist\\MSVC\\<version>\\x64\\Microsoft.VC*.CRT')
-    path = cached_archive(entry, cache)
-    archive = Archive(path)
+    archive = Archive(cached_archive(entry, cache), entry['url'].endswith('.zip'))
     try:
         root = entry['root']
         files = plan_macos(archive, root) if platform == 'darwin-arm64' else plan_windows(archive, root, vc_runtime)
