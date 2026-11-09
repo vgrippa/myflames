@@ -337,9 +337,102 @@ class TestBinaryResolution(unittest.TestCase):
 
     def test_error_when_binary_missing(self):
         c = MySQLConnection(host="h")
-        with mock.patch.object(MySQLConnection, "_which", staticmethod(lambda n: None)):
+        with mock.patch.object(MySQLConnection, "_which", staticmethod(lambda n: None)), \
+                mock.patch.dict(os.environ, {"MYFLAMES_BUNDLED_CLIENT_DIR": ""}):
             with self.assertRaises(ConnectorError):
                 c._resolve_binary()
+
+
+class TestBundledClientResolution(unittest.TestCase):
+    """The desktop app's bundled mysql (MYFLAMES_BUNDLED_CLIENT_DIR, last on
+    PATH) is used only when no installed mysql or mariadb is found. Real
+    files and the real PATH search, no mocks."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.bundled = os.path.join(self.tmp.name, "resources", "mysql-client", "bin")
+        self.installed = os.path.join(self.tmp.name, "usr", "bin")
+        os.makedirs(self.installed)
+        self.program = self.make(self.bundled, "mysql")
+        self.make(self.bundled, "mysqldump")
+
+    @staticmethod
+    def make(folder, name):
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, name + (".exe" if os.name == "nt" else ""))
+        with open(path, "w") as handle:
+            handle.write("")
+        os.chmod(path, 0o755)
+        return path
+
+    def resolve(self, *entries, bundled=None):
+        env = {"PATH": os.pathsep.join(entries), "MYFLAMES_BUNDLED_CLIENT_DIR": bundled or self.bundled}
+        with mock.patch.dict(os.environ, env):
+            return MySQLConnection(host="h")._resolve_binary()
+
+    def same(self, a, b):
+        self.assertEqual(os.path.normcase(os.path.realpath(a)), os.path.normcase(os.path.realpath(b)))
+
+    def test_installed_mysql_comes_before_the_bundled_one(self):
+        installed = self.make(self.installed, "mysql")
+        self.same(self.resolve(self.installed, self.bundled), installed)
+
+    def test_installed_mariadb_wins_over_the_bundled_mysql(self):
+        # For example Debian's MariaDB 11 without mariadb-client-compat: no mysql.
+        mariadb = self.make(self.installed, "mariadb")
+        self.same(self.resolve(self.installed, self.bundled), mariadb)
+        self.same(self.resolve(self.bundled, self.installed), mariadb)
+
+    def test_an_alias_of_the_bundled_folder_never_beats_an_installed_client(self):
+        installed = self.make(self.installed, "mysql")
+        self.same(self.resolve(self.bundled + os.sep, self.installed), installed)
+        if hasattr(os, "symlink") and os.name != "nt":
+            alias = os.path.join(self.tmp.name, "alias")
+            os.symlink(self.bundled, alias)
+            self.same(self.resolve(alias, self.installed), installed)
+        # Another case on a case-insensitive volume (the macOS and Windows default).
+        upper = self.bundled.replace("mysql-client", "MYSQL-CLIENT")
+        if os.path.isdir(upper):
+            self.same(self.resolve(upper, self.installed), installed)
+
+    def test_bundled_mysql_is_the_last_resort(self):
+        self.same(self.resolve(self.installed, self.bundled), self.program)
+        # Also when its folder is not on PATH at all.
+        self.same(self.resolve(self.installed), self.program)
+
+    def test_a_folder_name_holding_the_path_separator_finds_only_the_bundled_client(self):
+        # Abuse case: with the app under /Users/Shared/x:y/, searching that
+        # folder as a PATH string would split it and run a mysql planted in
+        # /Users/Shared/x. The bundled program is built directly instead.
+        planted = self.make(os.path.join(self.tmp.name, "x"), "mysql")
+        bundled = os.path.join(self.tmp.name, "x" + os.pathsep + "y", "mysql-client", "bin")
+        program = self.make(bundled, "mysql")
+        found = self.resolve(self.installed, bundled=bundled)
+        self.same(found, program)
+        self.assertNotEqual(os.path.normcase(found), os.path.normcase(planted))
+
+    def test_only_an_absolute_bundled_folder_counts(self):
+        with mock.patch.dict(os.environ, {"PATH": self.installed, "MYFLAMES_BUNDLED_CLIENT_DIR": "mysql-client/bin"}):
+            with self.assertRaises(ConnectorError):
+                MySQLConnection(host="h")._resolve_binary()
+
+    def test_no_bundled_client_keeps_the_old_order(self):
+        mysql = self.make(self.installed, "mysql")
+        self.make(self.installed, "mariadb")
+        with mock.patch.dict(os.environ, {"PATH": self.installed, "MYFLAMES_BUNDLED_CLIENT_DIR": ""}):
+            self.same(MySQLConnection(host="h")._resolve_binary(), mysql)
+
+    def test_lifecycle_tools_find_installed_ones_first_then_the_bundled_ones(self):
+        from myflames import lifecycle
+        dump = self.make(self.installed, "mysqldump")
+        env = {"PATH": os.pathsep.join([self.bundled + os.sep, self.installed]), "MYFLAMES_BUNDLED_CLIENT_DIR": self.bundled}
+        with mock.patch.dict(os.environ, env), \
+                mock.patch.object(lifecycle.subprocess, "run", side_effect=OSError("not probed")):
+            tools = lifecycle.detect_tools(common_dirs=())["tools"]
+        self.same(tools["mysqldump"]["path"], dump)
+        self.same(tools["mysql"]["path"], self.program)
+        self.assertNotIn("path", tools["mariadb"])
 
 
 class TestArgvConstruction(unittest.TestCase):

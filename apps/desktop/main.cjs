@@ -40,7 +40,8 @@ function fail(error) {
   app.quit();
 }
 async function start() {
-  const env = backendEnvironment(dataDirectory);
+  // A packaged app adds its bundled MySQL client as the last PATH entry.
+  const env = backendEnvironment(dataDirectory, process.env, process.platform, fs, app.isPackaged ? process.resourcesPath : null);
   env.HOME = isolatedBackendHome(dataDirectory, os.homedir());
   env.USERPROFILE = env.HOME;
   // ssh reads ~/.ssh from the user's real home (see backendEnvironment).
@@ -126,7 +127,7 @@ async function start() {
 async function smokeWindow(origin) {
   // Explicit local test mode, never a renderer-controlled IPC channel.
   const deadline = Date.now() + 20000;
-  let reloaded = false;
+  let reloaded = false, mysqlClient = null;
   while (Date.now() < deadline) {
     const status = await window.webContents.executeJavaScript(`({ready: !!document.querySelector('.home-start') && !document.querySelector('.home [role=alert]') && !document.body.innerText.includes('Opening your workspace'), secretGone: !location.hash, node: typeof require, origin: location.origin, text: document.body.innerText})`);
     if (status.ready && status.secretGone) {
@@ -139,6 +140,8 @@ async function smokeWindow(origin) {
       const authenticated = await window.webContents.executeJavaScript(`fetch('/api/session/load', {method:'POST', headers:{'Content-Type':'application/json', 'X-Myflames-Token':localStorage.getItem('myflames.session-proof') || ''}, body:'{}'}).then(response => response.ok)`);
       if (!authenticated) throw new Error('Authenticated workspace request failed.');
       if (!reloaded) {
+        // Which mysql client the backend found (the bundled one when nothing is installed).
+        mysqlClient = await window.webContents.executeJavaScript(`fetch('/api/lifecycle/tools', {method:'POST', headers:{'Content-Type':'application/json', 'X-Myflames-Token':localStorage.getItem('myflames.session-proof') || ''}, body:'{}'}).then(response => response.json()).then(report => { const tool = (report.tools || {}).mysql || {}; return { available: tool.available === true, path: tool.path || null, version: tool.version || null }; })`);
         reloaded = true;
         await window.loadURL(origin + '/'); // No launch secret on a normal reload.
         continue;
@@ -168,7 +171,7 @@ async function smokeWindow(origin) {
       // Capture the completed editor, not a cached startup/refusal frame.
       await window.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
       fs.writeFileSync(path.join(dataDirectory, 'smoke.png'), (await window.webContents.capturePage()).toPNG());
-      fs.writeFileSync(path.join(dataDirectory, 'smoke.json'), JSON.stringify({ ready: true, packaged: app.isPackaged, backendExecutable: backend.child.spawnfile, shellNavigation: true, completion: true, authenticated: true, reloadAuthenticated: reloaded, preload, sandbox: window.webContents.getLastWebPreferences().sandbox, nodeIntegration: false, backendPid: backend.child.pid }));
+      fs.writeFileSync(path.join(dataDirectory, 'smoke.json'), JSON.stringify({ ready: true, packaged: app.isPackaged, backendExecutable: backend.child.spawnfile, shellNavigation: true, completion: true, authenticated: true, reloadAuthenticated: reloaded, preload, sandbox: window.webContents.getLastWebPreferences().sandbox, nodeIntegration: false, backendPid: backend.child.pid, mysqlClient }));
       process.stdout.write('Desktop smoke passed: authenticated workspace, sandboxed renderer, isolated data.\n');
       app.quit(); return;
     }

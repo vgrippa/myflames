@@ -17,6 +17,9 @@ The workspace ships as the macOS desktop app (3.3.0): an Apple Silicon
 Developer ID, notarized by Apple and attached to the GitHub release as
 `myflames-3.3.0-macos-arm64.dmg`. A Windows x64 installer
 (`myflames-3.3.0-windows-x64-setup.exe`) ships beside it as an unsigned preview.
+Both bundle the official MySQL 8.4 LTS client (`mysql`, `mysqldump`) as the
+last place the app looks for one, so a computer with no client installed can
+connect; installed clients keep precedence.
 The browser launch (`myflames ui`) is deprecated, and so is the Python command
 line (2026-11-06): myflames focuses on the desktop app and new features land
 there only. The CLI keeps its commands, flags, output and exit codes, prints one
