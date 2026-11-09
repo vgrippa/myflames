@@ -72,7 +72,7 @@ try {
     });
     server.on("error", reject);
   });
-  browser = await puppeteer.launch({ headless: "shell" });
+  browser = await puppeteer.launch({ headless: "shell", args: process.env.MYFLAMES_NO_SANDBOX ? ["--no-sandbox"] : [] });
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
@@ -193,7 +193,7 @@ try {
   await setText("select a, b from t where x = 1");
   const tookMenu = await openMenuByClick("Query 1");
   assert.ok(tookMenu < 100, `the menu appeared ${tookMenu.toFixed(1)} ms after the click`);
-  assert.deepEqual(await items(), [["Rename…", false], ["Duplicate", false], ["Save query…", false], ["Close", false], ["Close others", true]]);
+  assert.deepEqual(await items(), [["Rename…", false], ["Duplicate", false], ["Save query…", false], ["Open SQL file…", false], ["Close", false], ["Close others", true]]);
   assert.equal(await page.$eval(MENU, (e) => e.getAttribute("aria-label")), "Query tab Query 1");
   assert.equal(await page.$eval(`${MENU} [role=menuitem]`, (e) => e === document.activeElement), true, "focus starts on Rename…");
   assert.equal(await page.$eval(`${MENU} .context-menu-shortcut`, (e) => e.textContent), "F2");
@@ -296,9 +296,9 @@ try {
   await page.click('button[aria-label="New query tab"]');
   await page.waitForFunction(() => document.querySelectorAll(".query-tablist [role=tab]").length === 3);
   await openMenuByClick(long);
-  assert.deepEqual((await items()).map(([n, d]) => [n, d]), [["Rename…", false], ["Duplicate", false], ["Save query…", false], ["Close", false], ["Close others", false]]);
+  assert.deepEqual((await items()).map(([n, d]) => [n, d]), [["Rename…", false], ["Duplicate", false], ["Save query…", false], ["Open SQL file…", false], ["Close", false], ["Close others", false]]);
   const closesBefore = calls("/api/editor/close").length;
-  await page.click(`${MENU} [role=menuitem]:nth-of-type(5)`);
+  await page.click(`${MENU} [role=menuitem]:nth-of-type(6)`);
   await page.waitForFunction(() => document.querySelectorAll(".query-tablist [role=tab]").length === 1);
   assert.deepEqual(await tabNames(), [long]);
   assert.equal(calls("/api/editor/close").length - closesBefore, 2, "each other tab ends its session");
@@ -307,7 +307,7 @@ try {
   await page.click('button[aria-label="New query tab"]');
   await page.waitForFunction(() => document.querySelectorAll(".query-tablist [role=tab]").length === 2);
   await openMenuByClick("Query 2");
-  await page.click(`${MENU} [role=menuitem]:nth-of-type(4)`);
+  await page.click(`${MENU} [role=menuitem]:nth-of-type(5)`);
   await page.waitForFunction(() => document.querySelectorAll(".query-tablist [role=tab]").length === 1);
   assert.deepEqual(await tabNames(), [long], "Close closes the tab it was opened on");
   await until(() => active(ACTIVE_TAB), "focus moves to the remaining tab");
@@ -480,7 +480,7 @@ try {
   assert.equal(cut, "b".repeat(63), "the name is cut before the emoji");
   assert.ok(!broken(cut), "the saved name is valid text");
   await openMenuByClick("Renamed from the palette");
-  await page.click(`${MENU} [role=menuitem]:nth-of-type(5)`);
+  await page.click(`${MENU} [role=menuitem]:nth-of-type(6)`);
   await page.waitForFunction(() => document.querySelectorAll(".query-tablist [role=tab]").length === 1);
   assert.deepEqual(await tabNames(), ["Renamed from the palette"]);
 

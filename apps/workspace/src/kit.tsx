@@ -2621,6 +2621,8 @@ export function MetricTile({
   toneLabel,
   trend,
   attrs,
+  compare,
+  badge,
 }: {
   rowKey: string;
   selection?: Selection;
@@ -2631,6 +2633,10 @@ export function MetricTile({
   toneLabel?: string;
   trend?: ReactNode;
   attrs?: Record<string, string | undefined>;
+  /** One short muted line under the value (a baseline's "was 12/s"). */
+  compare?: ReactNode;
+  /** A marker after the status (a changed verdict). */
+  badge?: ReactNode;
 }) {
   const selected = !!selection && selection.key === rowKey;
   const content = (
@@ -2640,10 +2646,12 @@ export function MetricTile({
         {value}
         {unit && <span className="tile-unit">{unit === "%" || unit.startsWith("/") ? unit : ` ${unit}`}</span>}
       </span>
+      {compare && <span className="tile-compare">{compare}</span>}
       <span className="tile-foot">
         {/* A tile without a threshold (info, no label of its own) draws no
             marker: a lone dash in most tiles read as missing data. */}
         {tone && !(tone === "info" && !toneLabel) && <StatusPill tone={tone} label={toneLabel} quiet />}
+        {badge}
         {trend}
       </span>
     </>
@@ -3329,6 +3337,7 @@ export function ViewLayout({
   className = "",
   otherConnection,
   otherAction,
+  refreshMenu,
 }: {
   id: string;
   title: string;
@@ -3336,6 +3345,10 @@ export function ViewLayout({
   hideTitle?: boolean;
   info?: ReactNode;
   controls?: ReactNode;
+  /** More items in the Refresh split button's menu (role="menuitem"
+   * buttons, after Refresh every view): actions on the reading on screen,
+   * such as Save baseline, so they add no toolbar button. */
+  refreshMenu?: ReactNode;
   onRefresh?: () => void;
   refreshDisabled?: boolean;
   /** The Refresh button's words when it reads something not shown yet
@@ -3428,7 +3441,7 @@ export function ViewLayout({
           {onRefresh && (
             // While it reads: a spinner and "Refreshing…", aria-busy, clicks
             // ignored, and focus stays on it (aria-disabled, not disabled).
-            <span className={refreshAll ? "split-button view-refresh" : undefined}>
+            <span className={refreshAll || refreshMenu ? "split-button view-refresh" : undefined}>
               <ActionButton
                 className="toolbar-refresh"
                 labelClassName="toolbar-refresh-label"
@@ -3442,19 +3455,24 @@ export function ViewLayout({
               >
                 {refreshLabel}
               </ActionButton>
-              {refreshAll && (
+              {(refreshAll || refreshMenu) && (
+                // With items of its own the menu stays available while
+                // Refresh every view cannot run; that item says so itself.
                 <Popover menu label="Refresh options" buttonTitle="Refresh options"
                   buttonClassName="button split-button-options" wide
-                  disabled={refreshAll.disabled} busy={refreshAll.running}
+                  disabled={!refreshMenu && !!refreshAll?.disabled} busy={!refreshMenu && !!refreshAll?.running}
                   trigger={<Icon name="chevron-down" size={12} />}>
                   <div className="view-refresh-menu">
-                    <button type="button" role="menuitem" data-action="refresh-all"
-                      disabled={refreshAll.disabled || refreshAll.running}
-                      title={`Reads all ${refreshAll.count} sections on ${refreshAll.label} (${shortcut("R", true)})`}
-                      onClick={() => { closePopovers(); refreshAll.run(); }}>
-                      <span>Refresh every view on {refreshAll.label} ({shortcut("R", true)})</span>
-                      <span className="hint">{refreshAll.count} sections</span>
-                    </button>
+                    {refreshAll && (
+                      <button type="button" role="menuitem" data-action="refresh-all"
+                        disabled={refreshAll.disabled || refreshAll.running}
+                        title={`Reads all ${refreshAll.count} sections on ${refreshAll.label} (${shortcut("R", true)})`}
+                        onClick={() => { closePopovers(); refreshAll.run(); }}>
+                        <span>Refresh every view on {refreshAll.label} ({shortcut("R", true)})</span>
+                        <span className="hint">{refreshAll.count} sections</span>
+                      </button>
+                    )}
+                    {refreshMenu}
                   </div>
                 </Popover>
               )}

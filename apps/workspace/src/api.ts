@@ -348,6 +348,15 @@ export type AuditReport = {
 };
 export type AuditExport = { format: "json" | "csv"; content: string; mime: string; filename: string };
 
+export type AuditObject =
+  | { kind: "parameter"; key: string }
+  | { kind: "account"; key: { name: string; host: string; role: boolean } }
+  | { kind: "index"; key: { schema: string; table: string; index: string } };
+/** One local SQLite lookup. No database connection or server read. */
+export function readObjectAudit(server: string, object: AuditObject, signal?: AbortSignal, ssh?: { host: string; user: string; port: number }) {
+  return api<{ schema_version: "audit-1.0"; records: AuditRecord[] }>("audit/object", { server, ...(ssh ? { ssh } : {}), ...object }, signal);
+}
+
 /**
  * Record that a write's confirmation was cancelled (Cancel or Escape):
  * nothing was sent. *statements* are the ones the sheet would have sent and
@@ -493,7 +502,23 @@ export type MatchDelta = {
     change_pct: number | null;
   };
 };
+export type IndexHint = {
+  status: "no_predicate" | "suggestion" | "covered" | "not_explainable" | "unknown";
+  reason: string;
+  table?: string;
+  schema?: string;
+  columns?: string[];
+  index?: string;
+  ddl?: string;
+  caveats?: string;
+};
+export function indexSuggestion(connection: Connection, digest: string, schema: string | null, signal?: AbortSignal) {
+  return api<IndexHint>("live/index-suggestion", { connection, digest, schema }, signal);
+}
+
 export type TopStatement = {
+  /** Text-only advice computed with the report, requiring no extra read. */
+  index_hint?: IndexHint;
   digest: string | null;
   digest_text: string | null;
   schema: string | null;
@@ -545,6 +570,8 @@ export type TopStatement = {
 /** What a digest list covers: uptime, the oldest FIRST_SEEN listed, the
  * overflow row (DIGEST IS NULL) and Performance_schema_digest_lost. */
 export type TopCoverage = {
+  /** Whole digest table's oldest FIRST_SEEN, regardless of the display threshold (with_identity only). */
+  oldest_first_seen?: string | null;
   uptime_s: number | null;
   first_seen: string | null;
   digest_lost: number | null;
@@ -606,6 +633,26 @@ export type TopOrder =
   | "tmp_tables"
   | "locks";
 export type TopTable = { schema: string; table: string };
+/** top-1.0 text_limits: why a listed statement's sample or digest text was
+ * cut. Names the startup parameter behind it, its current value, a suggested
+ * value, and the estimated extra Performance Schema memory (estimate_basis:
+ * "measured", "formula", or the reason there is no estimate). Null when
+ * nothing listed was cut. */
+export type TopTextLimitPart = {
+  cut_rows: number;
+  suggested: number | null;
+  /** Digest only: each parameter's new value, the suggestion or its own value when already larger. */
+  suggested_values?: Record<string, number> | null;
+  estimate_bytes: number | null;
+  estimate_basis: string | null;
+};
+export type TopTextLimits = {
+  sql_text: (TopTextLimitPart & { name: string; value: number }) | null;
+  /** Digest text is limited by the smaller of the two values; raise both. */
+  digest: (TopTextLimitPart & { names: string[]; values: Record<string, number | null> }) | null;
+  /** MySQL 8.0+: SET PERSIST_ONLY stages the change for the next start. */
+  persist_only: boolean;
+};
 export type TopReport = {
   schema_version: "top-1.0";
   engine: string;
@@ -628,6 +675,9 @@ export type TopReport = {
   /** MySQL with SUM_CPU_TIME: whether the events_statements_cpu consumer is
    * on (null: unread); null itself on MariaDB or without the column. */
   cpu?: { collected: boolean | null } | null;
+  /** Which startup parameter cut sample or digest text and what raising it
+   * costs (null when nothing listed was cut, or in older replies). */
+  text_limits?: TopTextLimits | null;
 };
 export type RunningStatement = {
   id: number;
@@ -1130,6 +1180,45 @@ type PerfBase = {
   performance_schema: boolean;
   notes: string[];
 };
+/** memory-1.0: allocator accounting, never machine RAM or process RSS. */
+export type MemoryValue = { current_bytes: number | null; high_bytes: number | null; source: string; collection_reason?: string };
+/** engine_note: what this engine cannot put in the category (MariaDB Sort). */
+export type MemoryCategory = MemoryValue & { elapsed_s: number | null; key: string; label: string; share_pct: number | null; growth_bytes_per_s: number | null; engine_note?: string };
+export type MemoryEvent = MemoryValue & { event: string; category: string };
+export type MemoryAccount = MemoryValue & { user: string | null; host: string | null };
+export type MemorySession = MemoryAccount & { thread_id: number | null; processlist_id: number | null };
+export type MemoryFinding = { key: string; status: "watch" | "not_judged"; rule: string; reason: string };
+export type MemoryReport = PerfBase & {
+  schema_version: "memory-1.0";
+  available: boolean;
+  source: "performance_schema" | "mariadb_status" | null;
+  interval: number;
+  elapsed_s: number | null;
+  window_status: "ok" | "restarted" | "coverage_changed" | "unavailable";
+  status: "ok" | "watch" | "not_judged";
+  gate: string | null;
+  /** The Instruments row the gate's action opens ("ps", "group:memory", "actors"). */
+  gate_row?: string | null;
+  /** Foreground threads, read while thread_instrumentation is on: INSTRUMENTED = NO ones record no memory. */
+  thread_coverage?: { uninstrumented: number; foreground: number } | null;
+  coverage: { enabled: number; total: number } | null;
+  consumers: Record<string, boolean> | null;
+  current_bytes: number | null;
+  high_bytes: number | null;
+  growth_bytes_per_s: number | null;
+  innodb_buffer_pool_size: number | null;
+  buffer_pool_share_pct: number | null;
+  categories: MemoryCategory[];
+  events: MemoryEvent[];
+  sessions: MemorySession[];
+  accounts: MemoryAccount[];
+  collection: { events: boolean; sessions: boolean; accounts: boolean };
+  findings: MemoryFinding[];
+};
+export function memoryReport(connection: Connection, interval: number, signal?: AbortSignal) {
+  return api<MemoryReport>("live/memory", { connection, interval }, signal);
+}
+
 /** waits-1.0: wait events over a window and since server start. */
 export type WaitEvent = {
   event: string;
@@ -1661,7 +1750,25 @@ export type DdlProgressReport = DdlProgress & {
 export function ddlProgress(connection: Connection, connection_ids: number[], signal?: AbortSignal) {
   return api<DdlProgressReport>("live/ddl-progress", { connection, connection_ids }, signal);
 }
+export type SessionHistory = {
+  id: number;
+  available: boolean;
+  reason: string | null;
+  limit: number;
+  statements: { event_id: string; sql: string | null; duration_ms: number | null;
+    rows_examined: number | null; rows_sent: number | null; errors: number | null;
+    errno: number | null; message: string | null }[];
+};
+export function sessionHistory(connection: Connection, id: number, signal?: AbortSignal) {
+  return api<SessionHistory>("live/sessions/history", { connection, id }, signal);
+}
 export type Session = {
+  blocked_by?: number[];
+  blocks?: number;
+  blocks_total?: number;
+  blocks_ids?: number[];
+  root_blocker?: boolean;
+  longest_wait_s?: number | null;
   id: number;
   user: string | null;
   host: string | null;
@@ -1697,6 +1804,8 @@ export type SessionsReport = PerfBase & {
   /** Server observed while reading the report; absent in older reports. */
   server_identity?: KillServerIdentity;
   schema_version: "sessions-1.0";
+  /** Collected direct wait edges before list filters, capped at 5,000. */
+  blocking_edges?: { waiter: number; blocker: number }[];
   ddl?: DdlProgress;
   source: string;
   source_mode?: "auto" | "show_processlist";
@@ -1720,6 +1829,7 @@ export type SessionsReport = PerfBase & {
     lock_wait: { innodb: number; metadata: number; table: number; total: number };
     locked?: number;
     waiting_locks?: number;
+    root_blockers?: { id: number; blocks_total: number; longest_wait_s: number | null }[];
     connections: {
       current: number | null;
       max: number | null;
@@ -1958,6 +2068,22 @@ export type AnalysisExport = { format: string; content: string; mime: string; fi
 // ---- Query editor sessions (/api/editor/*, editor_session.py) ----------------
 
 /** editor-session-1.0: one tab's client session (one server session). */
+export type EditorTransactionMeter = {
+  age_seconds: number;
+  age_source: "innodb" | "observed";
+  rows_modified: string | null;
+  rows_locked: string | null;
+  lock_structs: string | null;
+  blocking: number | null;
+  blocking_truncated: boolean;
+  note: string | null;
+};
+/** Exact unsigned server counters; a missing timer is not zero elapsed time. */
+export type EditorStatementStats = { available: false; reason: string } | ({
+  available: true; reason: null; event_id: string;
+} & Record<"rows_examined" | "rows_sent" | "rows_affected" | "no_index_used" | "no_good_index_used" |
+  "created_tmp_tables" | "created_tmp_disk_tables" | "sort_merge_passes" | "select_full_join" |
+  "select_scan" | "lock_time" | "errors" | "warnings", string> & { timer_wait: string | null });
 export type EditorSession = {
   schema_version: "editor-session-1.0";
   tab_id: string;
@@ -1981,6 +2107,7 @@ export type EditorSession = {
   in_transaction: boolean | null;
   transaction_source: string | null;
   transaction_note: string | null;
+  transaction_meter?: EditorTransactionMeter | null;
   sql_mode: string | null;
   backslash_escapes: boolean | null;
   safe_updates: boolean | null;
@@ -1995,6 +2122,8 @@ export type EditorSession = {
   message: string | null;
   notes: string[];
   run: { id: string; state: string } | null;
+  /** The session's default database (DATABASE()), null when it has none. */
+  database_name?: string | null;
 };
 /** A result column: the name from the first row (types are not in the client's XML output). */
 export type EditorColumn = { name: string; hex: boolean; type: string | null };
@@ -2039,6 +2168,7 @@ export type EditorError = {
 export type EditorResult = EditorRows | EditorOk | EditorError;
 export type EditorStatementStatus = "pending" | "running" | "ok" | "error" | "stopped" | "not_run" | "session_ended";
 export type EditorStatement = {
+  server_stats?: EditorStatementStats;
   index: number;
   text: string;
   start: number;
@@ -2066,6 +2196,9 @@ export type EditorRun = {
   error: EditorError | null;
   stopped: { by: string; interrupted: boolean; message: string } | null;
   message: string | null;
+  /** The tab's On error option for this run: Run all with "continue" runs
+   * every statement and counts the failures instead of stopping. */
+  on_error?: "stop" | "continue";
   counts: { statements: number; run: number; rows: number; affected_rows: number; warnings: number; errors: number };
   audit_id: string | null;
   history_id: string | null;
@@ -2099,6 +2232,19 @@ export type EditorReply = {
 };
 export type EditorStop = { stopped: boolean; stop_requested?: boolean; message: string; session: EditorSession | null };
 export type EditorClose = { closed: boolean; reason?: "transaction_open" | "transaction_unknown"; message?: string; session: EditorSession | null };
+/** /api/editor/use: the tab session's new default database (status "none"
+ * when the tab has no session yet; the choice applies when it opens). */
+export type EditorUseReply = { status: string; database: string | null; session: EditorSession | null };
+/** /api/editor/file/open: a chosen .sql/.txt file, at most 5 MiB. The token
+ * binds the tab to the file for this backend's lifetime; the renderer never
+ * sends a path for writing. */
+export type EditorFileOpenReply =
+  | { cancelled: true }
+  | { cancelled: false; name: string; sql: string; token: string; warning: string | null };
+/** /api/editor/file/save: written atomically (temp file, fsync, rename). */
+export type EditorFileSaveReply =
+  | { cancelled: true }
+  | { cancelled: false; token: string; name: string; path: string };
 export type EditorHistoryItem = {
   at: string;
   tab_id: string;
@@ -2176,6 +2322,33 @@ export type CatalogTable = {
   columns: CatalogColumn[];
   indexes: CatalogIndex[];
 };
+/** catalog-1.0, level "objects": the routines, triggers or events of one schema (schema browser groups). */
+export type CatalogRoutine = { name: string; kind: "procedure" | "function" };
+export type CatalogTrigger = { name: string; table: string | null; event: string; timing: string };
+export type CatalogEvent = { name: string; status: string };
+export type CatalogObjects = {
+  schema_version: "catalog-1.0";
+  level: "objects";
+  schema: string;
+  group: "routines" | "triggers" | "events";
+  objects: (CatalogRoutine | CatalogTrigger | CatalogEvent)[];
+  truncated: boolean;
+  limit: number;
+};
+/** object-search-1.0: the command palette's bounded object search across the connection's schemas. */
+export type CatalogObjectKind =
+  | "table" | "view" | "system view" | "sequence" | "procedure" | "function" | "trigger" | "event";
+export type CatalogObject = { kind: CatalogObjectKind; schema: string; name: string };
+export type ObjectSearch = {
+  schema_version: "object-search-1.0";
+  text: string;
+  objects: CatalogObject[];
+  truncated: boolean;
+  limit: number;
+};
+/** Bounded (50 matches, 2 s) object name search; names with the text anywhere. */
+export const searchObjects = (connection: Connection, text: string, signal?: AbortSignal) =>
+  api<ObjectSearch>("live/object-search", { connection, text }, signal);
 
 export type AppUpdateInfo = {
   schema_version: "app-update-1.0";
@@ -2222,3 +2395,20 @@ export const downloadAppUpdate = (asset_url?: string | null, release_url?: strin
     { asset_url, release_url },
     signal
   );
+
+// Connection readiness and imports: read-only facts, never credentials.
+export type Readiness = {
+  engine: string; flavor: string; product: string; version: string;
+  read_only: boolean | null; super_read_only: boolean | null;
+  performance_schema: boolean | null; replica: boolean | null;
+  group_member: boolean | null; galera_member: boolean | null;
+  privileges: Record<string, boolean | null>;
+  actions: Record<string, { allowed: boolean | null; need: string; note: string }>;
+  notes: string[]; checked_at: string;
+};
+export const readReadiness = (connection: Connection) => api<Readiness>("live/readiness", { connection });
+export type ConnectionImportTool = "workbench" | "dbeaver";
+export type ImportedConnection = Pick<Connection, "name" | "host" | "port" | "user" | "database" | "ssh_host" | "ssh_user" | "ssh_port"> & { error?: string };
+export type ConnectionImportResult = { items: ImportedConnection[]; found: boolean; cancelled: boolean };
+export const previewConnections = (tool: ConnectionImportTool, choose = false) =>
+  api<ConnectionImportResult>("connections/import", { tool, choose });

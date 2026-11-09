@@ -105,7 +105,8 @@ try {
     // The address column is the flexible one; the form's word heads the schema
     // column; a connection never used in this window shows — with the reason.
     const headers = await page.$$eval('.connections thead [data-col] .th-label', els => els.map(el => el.textContent));
-    assert.ok(headers.includes('Default database'), JSON.stringify(headers));
+    // Database, with "Default database" in its tooltip, keeps the columns within 1440 px.
+    assert.ok(headers.includes('Database'), JSON.stringify(headers));
     assert.ok(!headers.includes('Default schema'), JSON.stringify(headers));
     const lastUsed = await page.$eval(`${connectionRow('Connection 03')} [data-col=last-used] span`, el => ({ text: el.textContent, title: el.title }));
     assert.equal(lastUsed.text.startsWith('—'), true);

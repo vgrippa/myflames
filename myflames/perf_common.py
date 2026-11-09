@@ -281,12 +281,33 @@ def named_rows(text):
         return []
     if "<!DOCTYPE" in text or "<!ENTITY" in text:
         raise ValueError("Unexpected XML from the client.")
+    # Both clients print C0 controls other than NUL verbatim, which XML 1.0
+    # forbids. Escape them (and the escape mark itself) reversibly before
+    # parsing and restore them after, so one object cannot break the read and
+    # every name keeps its exact identity (a\x01b never becomes another name).
+    # Lone surrogates (bytes that were not UTF-8) cannot name an object: they
+    # become U+FFFD.
+    text = _XML_SURROGATE.sub('\ufffd', text)
+    text = _XML_ESCAPE.sub(lambda m: '%s%x;' % (_XML_MARK, ord(m.group())), text)
     try:
         root = ElementTree.fromstring(text.strip())
     except ElementTree.ParseError as exc:
         raise ValueError("Could not read the client's XML output: %s" % exc)
-    return [{field.get("name"): (None if field.get(_XML_NIL) == "true" else (field.text or ""))
+    return [{_xml_restore(field.get("name")): (None if field.get(_XML_NIL) == "true" else _xml_restore(field.text or ""))
              for field in row.findall("field")} for row in root.findall("row")]
+
+
+#: A private-use character marks an escaped one: mark, hex code point, ";".
+_XML_MARK = '\U000f0000'
+_XML_SURROGATE = re.compile('[\ud800-\udfff]')
+_XML_ESCAPE = re.compile('[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff\U000f0000]')
+_XML_RESTORE = re.compile('\U000f0000([0-9a-f]+);')
+
+
+def _xml_restore(value):
+    if value is None or _XML_MARK not in value:
+        return value
+    return _XML_RESTORE.sub(lambda m: chr(int(m.group(1), 16)), value)
 
 
 class Server(object):

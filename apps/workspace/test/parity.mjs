@@ -125,6 +125,7 @@ function extractView(svgRoot, view) {
       rects: own(g, 'rect').map(rect), texts: own(g, 'text').map(text), lines: own(g, 'line').length,
     }));
   } else if (view === 'bargraph') {
+    result.chips = own(svgRoot, 'rect.mfc-mis-chip').map(rect);
     result.bars = Array.from(svgRoot.querySelectorAll('rect.bar')).map((r) => ({
       ...rect(r), id: r.getAttribute('data-node-id'), info: r.getAttribute('data-info'),
       label: r.getAttribute('data-label'), teach: r.getAttribute('data-teach-index'), cls: r.getAttribute('class'),
@@ -134,9 +135,11 @@ function extractView(svgRoot, view) {
     result.frames = group ? Array.from(group.children).map((g) => {
       const r = g.querySelector('rect');
       const t = g.querySelector('text');
+      const line = g.querySelector('line.fg-mark');
       return { id: g.getAttribute('data-node-id'), ...rect(r), label: t.textContent,
         tx: num(t.getAttribute('x')), ty: num(t.getAttribute('y')),
-        title: (g.querySelector('title')?.textContent || '').split('\n')[0] };
+        title: (g.querySelector('title')?.textContent || '').split('\n')[0],
+        mark: line ? ['x1', 'y1', 'x2', 'y2'].map((k) => num(line.getAttribute(k))).concat(line.getAttribute('stroke')) : null };
     }) : [];
     result.texts = [];
   }
@@ -163,6 +166,9 @@ function extract(svgRoot) {
       join: venn ? venn.getAttribute('data-join-type') : null,
       vennLabel: venn ? venn.getAttribute('aria-label') : null,
       regions: venn ? Array.from(venn.querySelectorAll('[data-region]')).map((r) => r.getAttribute('data-region') + ':' + r.getAttribute('fill')) : [],
+      // Row-estimate chip and dashed outline (parser misestimate record).
+      marks: own(g, '.mfc-mis-chip, .mfc-mis-outline').map((r) => ['class', 'x', 'y', 'width', 'height', 'rx', 'fill', 'stroke', 'stroke-dasharray']
+        .map((k) => r.getAttribute(k))),
     };
   });
   const edges = Array.from(svgRoot.querySelectorAll('.wb-edge')).map((p) => ({
@@ -191,6 +197,8 @@ const near = (a, b, tolerance = 0.5) => Math.abs(a - b) <= tolerance;
 const browser = await puppeteer.launch({ headless: 'shell' });
 let compared = 0;
 let nodesCompared = 0;
+let markedCards = 0;
+let markedRows = 0;
 try {
   const page = await browser.newPage();
   await page.setViewport({ width: 1300, height: 1100 });
@@ -247,6 +255,8 @@ try {
         assert.equal(actual[field], expected[field], at + ': ' + field);
       }
       assert.deepEqual(actual.regions, expected.regions, at + ': Venn regions');
+      assert.deepEqual(actual.marks, expected.marks, at + ': row-estimate chip and outline');
+      if (expected.marks.length) markedCards++;
       assert.deepEqual(actual.texts.map((t) => t[0]), expected.texts.map((t) => t[0]), at + ': card text');
       actual.texts.forEach((t, k) => assert.ok(near(t[1], expected.texts[k][1]) && near(t[2], expected.texts[k][2]), at + ': text position'));
       nodesCompared++;
@@ -292,7 +302,9 @@ try {
   }
   assert.deepEqual(errors, []);
   const fixtures = new Set(cases.map((c) => c.name)).size;
-  console.log(`Parity: ${compared} renders across ${fixtures} fixtures (${nodesCompared} nodes) match the Python SVG: identity, order, kinds, joins, geometry, text, edges, widths, attachment, no overlap`);
+  // Fixtures with a row misestimate exist (the parser's rule), so the marks were compared.
+  assert.ok(markedCards >= 6, 'misestimated cards compared: ' + markedCards);
+  console.log(`Parity: ${compared} renders across ${fixtures} fixtures (${nodesCompared} nodes, ${markedCards} with row-estimate marks) match the Python SVG: identity, order, kinds, joins, geometry, text, edges, widths, attachment, no overlap`);
 
   // ---- Execution tree, bar chart, flame graph -------------------------
   await page.setContent('<!DOCTYPE html><html><head><meta charset="utf-8"></head><body><div id="host"></div><script>' + bundle + '</script></body></html>');
@@ -373,6 +385,9 @@ try {
         for (const field of ['info', 'label', 'teach', 'cls']) assert.equal(actual[field], expected[field], at + ': ' + field);
         marks++;
       });
+      assert.equal(ts.chips.length, python.chips.length, where + ': row-estimate chips');
+      ts.chips.forEach((chip, k) => sameRect(chip, python.chips[k], where + ' chip', 0.001));
+      markedRows += ts.chips.length;
     } else {
       assert.ok(!result.empty, where + ': frames drawn');
       // Both renderers emit frames in pre-order with inputs in reported order.
@@ -388,6 +403,12 @@ try {
         assert.equal(actual.fill, expected.fill, at + ': color');
         assert.equal(actual.label, expected.label, at + ': fitted label');
         assert.equal(actual.title, expected.title, at + ': tooltip header');
+        assert.equal(!!actual.mark, !!expected.mark, at + ': row-estimate underline');
+        if (expected.mark) {
+          actual.mark.slice(0, 4).forEach((v, n) => assert.ok(near(v, expected.mark[n], Math.max(0.11, Math.abs(expected.mark[n]) * 0.01)), at + ': underline geometry'));
+          assert.equal(actual.mark[4], expected.mark[4], at + ': underline color');
+          markedRows++;
+        }
         marks++;
         flameFrames++;
       });
@@ -400,6 +421,7 @@ try {
     counts[item.view]++;
   }
   assert.deepEqual(errors, []);
+  assert.ok(markedRows >= 12, 'row-estimate chips and underlines compared: ' + markedRows);
   const viewFixtures = new Set(viewCases.map((c) => c.name)).size;
   console.log(`Parity: tree ${counts.tree}, bar chart ${counts.bargraph}, flame graph ${counts.flamegraph} renders (${flameFrames} frames) across ${viewFixtures} fixtures (${marks} rows/bars/frames) match the Python SVG: identity, order, geometry, colors, labels, details, nesting`);
 } finally {

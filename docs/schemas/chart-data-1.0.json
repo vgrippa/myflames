@@ -510,6 +510,93 @@
         "group": {
           "type": "string",
           "description": "Normalized operation type, schema, table and index identity; predicates and occurrence counters excluded. Children remain in reported order."
+        },
+        "misestimate": {
+          "$ref": "#/$defs/misestimate"
+        }
+      }
+    },
+    "misestimate": {
+      "type": "object",
+      "description": "Present only on operators the parser flags for a row misestimate (parser.misestimate_record: rows per loop off by 10x or more, on at least 1,000 rows across loops, with LIMIT/semijoin early-stop and CTE context). Python decides every value and text; the bundle draws label as the marker and shows text, reason and evidence as they are.",
+      "additionalProperties": false,
+      "required": ["direction", "factor", "estimated", "actual", "loops", "table", "kind", "label", "text", "reason", "evidence"],
+      "properties": {
+        "direction": {
+          "enum": ["under", "over"],
+          "description": "under: more actual rows than estimated; over: fewer."
+        },
+        "factor": {
+          "type": "number",
+          "minimum": 1,
+          "description": "Larger of estimated and actual rows per loop over the smaller (floored at 1)."
+        },
+        "estimated": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Estimated rows per loop (MariaDB: rows examined per scan)."
+        },
+        "actual": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Measured rows per loop (MariaDB: r_rows, rows examined per scan)."
+        },
+        "loops": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "table": {
+          "type": "string",
+          "description": "Schema-qualified table name when the plan supplies schema_name; otherwise the bare name (MariaDB: the alias). Statistics evidence must match this identity uniquely."
+        },
+        "kind": {
+          "enum": ["access", "filter"],
+          "description": "access: the table access itself; filter: the filter directly above an access that is not flagged."
+        },
+        "label": {
+          "type": "string",
+          "description": "Compact marker text, for example 'rows \u00d712 under'."
+        },
+        "text": {
+          "type": "string",
+          "description": "Estimate against actual, for example '12\u00d7 under (estimated 10, actual 120 rows per loop)'."
+        },
+        "reason": {
+          "type": "string",
+          "description": "What was compared and the rule that flagged it."
+        },
+        "evidence": {
+          "type": ["object", "null"],
+          "description": "advisor.statistics_evidence for this table when a capture's statistics freshness matched it; null otherwise.",
+          "additionalProperties": false,
+          "required": ["table", "last_update", "n_rows", "histograms", "text", "statement"],
+          "properties": {
+            "table": {
+              "type": "string",
+              "description": "schema.table as the server names it."
+            },
+            "last_update": {
+              "type": ["string", "null"],
+              "description": "mysql.innodb_table_stats.last_update, server-local time."
+            },
+            "n_rows": {
+              "type": ["integer", "null"]
+            },
+            "histograms": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "text": {
+              "type": "string",
+              "description": "The STALE_STATS facts, as the advisor states them."
+            },
+            "statement": {
+              "type": "string",
+              "description": "ANALYZE TABLE for copy and paste; myflames never runs it."
+            }
+          }
         }
       }
     },

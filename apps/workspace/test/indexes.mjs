@@ -8,6 +8,7 @@
 // with its confirmation, Open in Top statements with the table chip), and the
 // choice is restored with the workspace.
 import assert from "node:assert/strict";
+import { objectAuditFixture, assertObjectHistory } from "./object-changes-fixture.mjs";
 import path from "node:path";
 import { load, open, pause } from "./perf-harness.mjs";
 
@@ -46,6 +47,7 @@ const topFor = (body) => ({
 // The list of views docked, as a person who docked it: this suite asserts
 // the list's markers and keys (server-nav covers the floating default).
 const h = await open("/api/live/indexes", "indexes", {
+  "/api/audit/object": objectAuditFixture,
   "/api/live/schemas": schemasMock,
   "/api/live/tables": { status: 200, body: tablesReport },
   "/api/live/top": (body) => ({ status: 200, body: topFor(body) }),
@@ -143,6 +145,10 @@ try {
     ["orders.k_status", "Candidate"], ["orders.k_status_dup", "Candidate"], ["orders.k_customer", "Keep: backs a foreign key"],
   ]);
   await h.select(`${view} tr[data-index="orders.k_customer"]`);
+  await assertObjectHistory(page, "index", { empty: true });
+  const localRead = state.other.filter(call => call.path === "/api/audit/object");
+  assert.equal(localRead.length, 1, "one local lookup on inspector open");
+  assert.deepEqual(localRead[0].body.key, { schema: "mfshop", table: "orders", index: "k_customer" });
   await page.waitForFunction(() => /backs a foreign key \(child side of fk_orders_customer/.test(document.querySelector(".view-inspector")?.textContent || ""));
   assert.equal(await page.$(".view-inspector .perf-sql"), null, "no drop statement for an index to keep");
   // Keyboard: Up moves to the candidate above; details open on Enter with the statements.
@@ -156,6 +162,7 @@ try {
   await page.keyboard.press("ArrowUp");
   await page.keyboard.press("Enter");
   await page.waitForFunction(() => document.querySelector(".view-inspector h3")?.textContent === "k_status");
+  await assertObjectHistory(page, "index");
   const why = await h.inspector();
   assert.match(why, /COUNT_STAR = 0/);
   assert.match(why, /ALTER TABLE `mfshop`\.`orders` ALTER INDEX `k_status` INVISIBLE;/);

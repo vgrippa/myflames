@@ -18,6 +18,23 @@ import {
 import { Icon } from "./components";
 import { insertDefaults } from "./sqlSelection";
 import { prettyJson, totals, totalsText } from "./resultTotals";
+import {
+  FILTER_DEBOUNCE_MS,
+  MAX_PIN_ROWS,
+  compareResults,
+  defaultKeyColumn,
+  exportFilterLabel,
+  filterRows,
+  filterSummary,
+  pinResult,
+  pruneClosedTabPins,
+  sameColumns,
+  upsertChip,
+  type CompareDiff,
+  type CompareDiffRow,
+  type FilterChip,
+  type PinnedResult,
+} from "./resultFilter";
 import { MAC } from "./platform";
 import { ACTION_ELAPSED_AFTER_MS, ActionButton, ActionStatus, ContextMenu, DataTable, IconButton, Popover, StatusPill, closePopovers, sortRows,
   useElapsed, useFocusScope, useSince, type Column, type SortState, type Tone } from "./kit";
@@ -127,8 +144,11 @@ type GridRow = { key: string; i: number; v: (string | null)[] };
  * and its column among the result's columns. */
 type CellRef = { i: number; c: number };
 /** Cells from the anchor to the focus; *allRows*: whole columns. Only the
- * columns on screen between them count (the Columns menu can hide some). */
-type GridSelection = { anchor: CellRef; focus: CellRef; allRows: boolean };
+ * columns on screen between them count (the Columns menu can hide some).
+ * *members* snapshots the original indexes of the rows in the rectangle when
+ * it was made: a filter that hides an endpoint must never extend the
+ * selection to rows between them that the user never selected. */
+type GridSelection = { anchor: CellRef; focus: CellRef; allRows: boolean; members: number[] | null };
 /** The cell menu: *row* is the row's index in result.rows, *col* its column. */
 type Menu = { x: number; y: number; row: number; col: number; opener: HTMLElement } | null;
 /** Option on macOS, Alt elsewhere: with a click on a header it selects the column. */
@@ -146,8 +166,14 @@ const COPY_KEYS = MAC ? "⌘C" : "Ctrl+C";
  */
 type RowPanelLayout = { narrow: boolean; blocked: boolean; onOpen: () => void };
 
-function ResultGrid({ result, label, onCopied, rowPanel }: {
-  result: EditorRows; label: string; onCopied: (text: string) => void; rowPanel?: RowPanelLayout;
+function ResultGrid({ result, filteredRows, isFiltered, onAddChip, label, onCopied, rowPanel }: {
+  result: EditorRows;
+  filteredRows: GridRow[];
+  isFiltered: boolean;
+  onAddChip: (col: number, mode: "show" | "hide", value: string | null) => void;
+  label: string;
+  onCopied: (text: string) => void;
+  rowPanel?: RowPanelLayout;
 }) {
   const [sel, setSel] = useState<GridSelection | null>(null);
   const [sort, setSort] = useState<SortState | null>(null);
@@ -171,7 +197,8 @@ function ResultGrid({ result, label, onCopied, rowPanel }: {
   /** Shift was held on the key that moves the row focus: extend, do not collapse. */
   const extendNext = useRef(false);
   const ncol = result.columns.length;
-  const rows = useMemo<GridRow[]>(() => result.rows.map((v, i) => ({ key: String(i), i, v })), [result.rows]);
+  const allRows = useMemo<GridRow[]>(() => result.rows.map((v, i) => ({ key: String(i), i, v })), [result.rows]);
+  const rows = filteredRows;
   // The result's columns on screen, in order: the table reports them, and
   // selections, totals, copied text and Left/Right use only these (a hidden
   // column never enters a selection; the row panel still shows every column).
@@ -234,26 +261,35 @@ function ResultGrid({ result, label, onCopied, rowPanel }: {
     sorted.forEach((r, p) => at.set(r.i, p));
     return at;
   }, [sorted]);
-  // The selected rectangle in screen order: rows p0..p1, and the columns on
-  // screen from the anchor's column to the focus's (cols, in order).
+  // The selected rectangle in screen order: the member rows still on screen,
+  // and the columns on screen from the anchor's column to the focus's (cols,
+  // in order). rows === null means every row on screen (whole-column and
+  // select-all selections follow the filter).
   const rect = useMemo(() => {
     if (!sel || !sorted.length) return null;
     const lo = Math.min(sel.anchor.c, sel.focus.c);
     const hi = Math.max(sel.anchor.c, sel.focus.c);
     const cols = shownCols.filter((j) => j >= lo && j <= hi);
     if (!cols.length) return null;
-    if (sel.allRows) return { p0: 0, p1: sorted.length - 1, cols };
-    const a = position.get(sel.anchor.i);
-    const f = position.get(sel.focus.i);
-    if (a === undefined || f === undefined) return null;
-    return { p0: Math.min(a, f), p1: Math.max(a, f), cols };
-  }, [sel, position, sorted.length, shownCols]);
-  const cells = rect ? (rect.p1 - rect.p0 + 1) * rect.cols.length : 0;
+    if (sel.allRows) return { rows: null as Set<number> | null, cols };
+    const set = new Set<number>();
+    for (const i of sel.members || []) {
+      const p = position.get(i);
+      if (p !== undefined) set.add(p);
+    }
+    if (!set.size) return null;
+    return { rows: set, cols };
+  }, [sel, position, sorted, shownCols]);
+  const rectRowCount = rect ? (rect.rows ? rect.rows.size : sorted.length) : 0;
+  const cells = rectRowCount * (rect ? rect.cols.length : 0);
+  const inRect = (p: number) => !!rect && (rect.rows === null || rect.rows.has(p));
   const selectedCols = rect ? rect.cols.join(",") : "";
   function selectedValues(): (string | null)[][] {
     if (!rect) return [];
     const out: (string | null)[][] = [];
-    for (let p = rect.p0; p <= rect.p1; p++) out.push(rect.cols.map((j) => sorted[p].v[j] ?? null));
+    for (let p = 0; p < sorted.length; p++) {
+      if (rect.rows === null || rect.rows.has(p)) out.push(rect.cols.map((j) => sorted[p].v[j] ?? null));
+    }
     return out;
   }
   const summary = useMemo(() => (rect ? totalsText(totals(selectedValues().flat())) : ""), [rect, sorted]);
@@ -294,24 +330,38 @@ function ResultGrid({ result, label, onCopied, rowPanel }: {
     setMenu(null);
     setPanel(false);
   }, [result]);
-  const one = (c: CellRef): GridSelection => ({ anchor: c, focus: c, allRows: false });
+  /** A selection with its member rows snapshotted (original indexes), so a
+   * later filter intersects it instead of growing it. Whole-column and
+   * select-all selections keep no snapshot: they follow the rows on screen. */
+  function makeSel(anchor: CellRef, focus: CellRef, allRows: boolean): GridSelection {
+    if (allRows) return { anchor, focus, allRows, members: null };
+    const a = position.get(anchor.i);
+    const f = position.get(focus.i);
+    if (a === undefined || f === undefined) return { anchor, focus, allRows, members: [anchor.i, focus.i] };
+    const lo = Math.min(a, f);
+    const hi = Math.max(a, f);
+    const members: number[] = [];
+    for (let p = lo; p <= hi; p++) members.push(sorted[p].i);
+    return { anchor, focus, allRows, members };
+  }
+  const one = (c: CellRef): GridSelection => makeSel(c, c, false);
   function selectCell(i: number, c: number, extend: boolean) {
-    setSel((s) => (extend && s ? { anchor: s.anchor, focus: { i, c }, allRows: false } : one({ i, c })));
+    setSel((s) => (extend && s ? makeSel(s.anchor, { i, c }, false) : one({ i, c })));
   }
   function selectRow(i: number, extend: boolean) {
     setSel((s) =>
-      extend && s ? { anchor: { i: s.anchor.i, c: firstCol }, focus: { i, c: lastCol }, allRows: false }
-        : { anchor: { i, c: firstCol }, focus: { i, c: lastCol }, allRows: false });
+      extend && s ? makeSel({ i: s.anchor.i, c: firstCol }, { i, c: lastCol }, false)
+        : makeSel({ i, c: firstCol }, { i, c: lastCol }, false));
   }
   function selectColumn(c: number, extend: boolean) {
     if (!sorted.length) return;
     const top = sorted[0].i;
     const bottom = sorted[sorted.length - 1].i;
-    setSel((s) => ({ anchor: { i: top, c: extend && s ? s.anchor.c : c }, focus: { i: bottom, c }, allRows: true }));
+    setSel((s) => makeSel({ i: top, c: extend && s ? s.anchor.c : c }, { i: bottom, c }, true));
   }
   function selectAll() {
     if (!sorted.length || !shownCols.length) return;
-    setSel({ anchor: { i: sorted[0].i, c: firstCol }, focus: { i: sorted[sorted.length - 1].i, c: lastCol }, allRows: true });
+    setSel(makeSel({ i: sorted[0].i, c: firstCol }, { i: sorted[sorted.length - 1].i, c: lastCol }, true));
   }
   /** The table moved its row focus (a click, or an arrow, Home, End, Page key). */
   function onSelect(key: string) {
@@ -327,7 +377,9 @@ function ResultGrid({ result, label, onCopied, rowPanel }: {
     extendNext.current = false;
     setSel((s) => {
       const c = s ? s.focus.c : firstCol;
-      return extend && s ? { anchor: s.allRows ? { i: sorted[0]?.i ?? i, c: s.anchor.c } : s.anchor, focus: { i, c }, allRows: false } : one({ i, c });
+      return extend && s
+        ? makeSel(s.allRows ? { i: sorted[0]?.i ?? i, c: s.anchor.c } : s.anchor, { i, c }, false)
+        : one({ i, c });
     });
   }
   /** Bring a row into view in the table (drawn or not: long tables draw a window). */
@@ -405,7 +457,7 @@ function ResultGrid({ result, label, onCopied, rowPanel }: {
     const c = typeof at.c === "number" ? at.c : onScreenColumn(sel?.focus.c ?? firstCol);
     // A right click outside the selection selects that cell first.
     const p = position.get(at.i);
-    const inside = !!rect && p !== undefined && p >= rect.p0 && p <= rect.p1 && rect.cols.includes(c);
+    const inside = p !== undefined && inRect(p) && rect!.cols.includes(c);
     if (!inside) {
       if (at.c === "row") selectRow(at.i, false);
       else selectCell(at.i, c, false);
@@ -445,7 +497,8 @@ function ResultGrid({ result, label, onCopied, rowPanel }: {
       e.preventDefault();
       if (rect && cells > 1) void copySelection();
       else if (rect) {
-        const value = sorted[rect.p0].v[rect.cols[0]] ?? null;
+        const p0 = rect.rows ? Math.min(...rect.rows) : 0;
+        const value = sorted[p0].v[rect.cols[0]] ?? null;
         void copy(value ?? "", `Value of ${name(rect.cols[0])} copied.`);
       } else void copy(tsv([visibleValues(result.rows[at.i])]), "Row copied as tab-separated text.");
       return;
@@ -468,7 +521,7 @@ function ResultGrid({ result, label, onCopied, rowPanel }: {
     await copy(tsv(values), `${count(cells)} ${cells === 1 ? "cell" : "cells"} copied as tab-separated text.`);
   }
   const name = (col: number) => result.columns[col]?.name || `column ${col + 1}`;
-  const focusRow = panel && !rowPanel?.blocked && sel ? rows[sel.focus.i] : undefined;
+  const focusRow = panel && !rowPanel?.blocked && sel && position.has(sel.focus.i) ? allRows[sel.focus.i] : undefined;
   return (
     <div ref={root} className={`result-grid${panel ? " has-row-panel" : ""}`} onContextMenu={openMenu}
       onKeyDownCapture={onKeyDownCapture} onMouseDown={onMouseDown} onClickCapture={onClickCapture}>
@@ -485,11 +538,11 @@ function ResultGrid({ result, label, onCopied, rowPanel }: {
           rowAttrs={(r) => {
             const p = position.get(r.i) ?? -1;
             return {
-              "data-sel": rect && p >= rect.p0 && p <= rect.p1 ? "" : undefined,
+              "data-sel": p >= 0 && inRect(p) ? "" : undefined,
               "data-focus": sel && sel.focus.i === r.i ? "" : undefined,
             };
           }}
-          // ResultGrid draws its own menu (Show row, Select column, Copy).
+          // ResultGrid draws its own menu (Show row, Select column, filter chips, Copy).
           nativeRowMenu={false}
           className="result-table"
           onVisibleColumns={setVisibleKeys}
@@ -531,6 +584,20 @@ function ResultGrid({ result, label, onCopied, rowPanel }: {
           actions={[
             { label: "Show row", icon: "view", shortcut: MAC ? "Return" : "Enter", onClick: () => showRow(menu.row) },
             { label: `Select column (${name(menu.col)})`, icon: "columns", onClick: () => selectColumn(menu.col, false) },
+            {
+              label: "Show only this value",
+              onClick: () => {
+                onAddChip(menu.col, "show", result.rows[menu.row]?.[menu.col] ?? null);
+                setMenu(null);
+              },
+            },
+            {
+              label: "Hide this value",
+              onClick: () => {
+                onAddChip(menu.col, "hide", result.rows[menu.row]?.[menu.col] ?? null);
+                setMenu(null);
+              },
+            },
             { divider: true },
             ...(cells > 1
               ? [{ label: `Copy selection (${count(cells)} cells)`, icon: "copy", shortcut: COPY_KEYS, onClick: () => void copySelection() }]
@@ -539,11 +606,21 @@ function ResultGrid({ result, label, onCopied, rowPanel }: {
             { label: "Copy row", onClick: () => void copy(tsv([visibleValues(result.rows[menu.row])]), "Row copied as tab-separated text.") },
             {
               label: `Copy column (${name(menu.col)})`,
-              onClick: () => void copy(tsv(result.rows.map((r) => [r[menu.col]])), `Column ${name(menu.col)} copied (${rowsText(result.rows.length)} loaded).`),
+              onClick: () =>
+                void copy(
+                  tsv(sorted.map((r) => [r.v[menu.col]])),
+                  isFiltered
+                    ? `Column ${name(menu.col)} copied (${rowsText(sorted.length)} filtered).`
+                    : `Column ${name(menu.col)} copied (${rowsText(result.rows.length)} loaded).`,
+                ),
             },
             {
               label: "Copy all rows with header",
-              onClick: () => void copy(tsv([shownCols.map((j) => result.columns[j].name), ...result.rows.map(visibleValues)]), "Result copied with its header."),
+              onClick: () =>
+                void copy(
+                  tsv([shownCols.map((j) => result.columns[j].name), ...sorted.map((r) => visibleValues(r.v))]),
+                  isFiltered ? `Filtered result copied with its header (${rowsText(sorted.length)}).` : "Result copied with its header.",
+                ),
             },
           ]}
         />
@@ -659,6 +736,8 @@ function RowPanel({
 /** Export one result: CSV, JSON, SQL INSERT, Markdown, or the clipboard (TSV). */
 function ExportMenu({
   result,
+  isFiltered = false,
+  loadedCount,
   n,
   engine,
   binary,
@@ -668,6 +747,8 @@ function ExportMenu({
   backslash,
 }: {
   result: EditorRows;
+  isFiltered?: boolean;
+  loadedCount?: number;
   n: number;
   engine: string | null;
   binary: number[];
@@ -686,6 +767,7 @@ function ExportMenu({
   const [busy, setBusy] = useState("");
   const busySince = useSince(!!busy);
   const hexColumns = result.columns.map((c, j) => [c, j] as const).filter(([c]) => c.hex);
+  const filterTitle = isFiltered ? exportFilterLabel(result.rows.length) : undefined;
   async function run(format: "csv" | "json" | "sql" | "markdown" | "tsv") {
     if (busy) return;
     setBusy(format);
@@ -701,10 +783,14 @@ function ExportMenu({
         options: format === "csv" ? { header: true, formula_guard: guard } : {},
       });
       if (format === "tsv") {
-        onDone((await copyText(reply.content)) ? `Result ${n} copied as tab-separated text (${rowsText(result.rows.length)}).` : "The browser did not allow copying.");
+        onDone(
+          (await copyText(reply.content))
+            ? `Result ${n} copied as tab-separated text (${rowsText(result.rows.length)}${isFiltered ? " filtered" : ""}).`
+            : "The browser did not allow copying.",
+        );
       } else {
         download(reply.content, reply.filename, reply.mime);
-        onDone(`Result ${n} exported as ${reply.filename}.`);
+        onDone(`Result ${n} exported as ${reply.filename}${isFiltered ? ` (${rowsText(result.rows.length)} filtered)` : ""}.`);
       }
       closePopovers();
     } catch (e) {
@@ -718,18 +804,20 @@ function ExportMenu({
       label={`Export result ${n}`}
       className="result-export"
       buttonClassName="button small"
-      buttonTitle="Export or copy this result"
+      buttonTitle={filterTitle || "Export or copy this result"}
       wide
       trigger={
         <>
           <Icon name="export" size={14} />
-          Export
+          {filterTitle || "Export"}
         </>
       }
     >
-      <h3 className="popover-title">Export result {n}</h3>
+      <h3 className="popover-title">{filterTitle || `Export result ${n}`}</h3>
       <p className="hint">
-        {rowsText(result.rows.length)} as loaded. NULL is an empty CSV field and JSON null; an empty string is "".
+        {isFiltered
+          ? `${rowsText(result.rows.length)} of ${count(loadedCount ?? result.rows.length)} loaded rows matching the filter. NULL is an empty CSV field and JSON null; an empty string is "".`
+          : `${rowsText(result.rows.length)} as loaded. NULL is an empty CSV field and JSON null; an empty string is "".`}
       </p>
       {/* The clicked format shows that it works (and keeps focus); the others wait. */}
       <div className="export-actions">
@@ -904,6 +992,12 @@ function runSummary(run: EditorRun) {
   return `Run finished: ${c.run} ${c.run === 1 ? "statement" : "statements"}, ${c.rows.toLocaleString()} ${c.rows === 1 ? "row" : "rows"}.`;
 }
 
+/** Read the active Query editor tab id from the tablist so pinned results stay scoped to their tab. */
+function activeQueryTabId(): string {
+  if (typeof document === "undefined") return "default";
+  return document.querySelector('.query-tablist [role="tab"][aria-selected="true"]')?.getAttribute("data-tab-id") || "default";
+}
+
 export function ResultsPane(props: ResultsPaneProps) {
   const { run, running, selected, onSelect, plan } = props;
   const runningLabel = props.explaining ? "Explaining…" : "Running…";
@@ -940,6 +1034,94 @@ export function ResultsPane(props: ResultsPaneProps) {
   if (plan) keys.push({ key: "plan", label: "Analysis", title: "The last Run analysis of this tab" });
   const active = keys.some((k) => k.key === selected) ? selected : keys[0]?.key || "";
   const list = useRef<HTMLDivElement>(null);
+
+  const tabId = activeQueryTabId();
+  const index = active.startsWith("result:") ? Number(active.slice(7)) : -1;
+  const result = index >= 0 ? rows[index] : null;
+  const resultKey = `${tabId}:${run?.id || ""}:${index}`;
+
+  const [pinsByTab, setPinsByTab] = useState<Record<string, PinnedResult>>({});
+  // A pin lives in memory only and dies with its query tab: drop entries whose
+  // tab id is no longer in the tablist (a tab close re-renders this pane).
+  useEffect(() => {
+    const tablist = document.querySelector(".query-tablist");
+    if (!tablist) return;
+    const openIds = Array.from(tablist.querySelectorAll('[role="tab"][data-tab-id]')).map(
+      (el) => el.getAttribute("data-tab-id") || "",
+    );
+    setPinsByTab((prev) => pruneClosedTabPins(prev, openIds));
+  });
+  const [seenResult, setSeenResult] = useState<{ key: string; ref: EditorRows | null }>({ key: "", ref: null });
+  const [filterText, setFilterText] = useState("");
+  const [debouncedText, setDebouncedText] = useState("");
+  const [chips, setChips] = useState<FilterChip[]>([]);
+  const [comparing, setComparing] = useState(false);
+  const [keyCol, setKeyCol] = useState<number>(-1);
+
+  if (seenResult.key !== resultKey || seenResult.ref !== result) {
+    setSeenResult({ key: resultKey, ref: result });
+    if (filterText !== "") setFilterText("");
+    if (debouncedText !== "") setDebouncedText("");
+    if (chips.length > 0) setChips([]);
+    if (comparing) setComparing(false);
+    setKeyCol(result ? defaultKeyColumn(result.columns) : -1);
+  }
+
+  useEffect(() => {
+    if (filterText === "") {
+      setDebouncedText("");
+      return;
+    }
+    const timer = window.setTimeout(() => setDebouncedText(filterText), FILTER_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [filterText]);
+
+  const allGridRows = useMemo<GridRow[]>(
+    () => (result ? result.rows.map((v, i) => ({ key: String(i), i, v })) : []),
+    [result],
+  );
+  const isFiltered = debouncedText !== "" || chips.length > 0;
+  const filteredGridRows = useMemo<GridRow[]>(
+    () => filterRows(allGridRows, (r) => r.v, debouncedText, chips),
+    [allGridRows, debouncedText, chips],
+  );
+  const exportResult = useMemo<EditorRows | null>(
+    () => (result ? (isFiltered ? { ...result, rows: filteredGridRows.map((r) => r.v), row_count: filteredGridRows.length } : result) : null),
+    [result, isFiltered, filteredGridRows],
+  );
+
+  const pinned = pinsByTab[tabId] || null;
+  const isPinnedCurrent =
+    !!pinned &&
+    !!result &&
+    pinned.runId === (run?.id || "") &&
+    pinned.statement === result.statement &&
+    pinned.resultN === index + 1;
+  const canCompareWithPinned = !!pinned && !!result && !isPinnedCurrent && sameColumns(pinned.columns, result.columns);
+
+  function clearFilter() {
+    setFilterText("");
+    setDebouncedText("");
+    setChips([]);
+  }
+  function addChip(col: number, mode: "show" | "hide", value: string | null) {
+    if (!result) return;
+    const colName = result.columns[col]?.name || `column ${col + 1}`;
+    setChips((prev) => upsertChip(prev, col, colName, mode, value));
+  }
+  function removeChip(id: string) {
+    setChips((prev) => prev.filter((c) => c.id !== id));
+  }
+  function onPin() {
+    if (!result) return;
+    const next = pinResult(result, run?.id || "", index + 1);
+    setPinsByTab((prev) => ({ ...prev, [tabId]: next }));
+    setComparing(false);
+    setKeyCol(defaultKeyColumn(result.columns));
+    // The toolbar's pin badge carries the confirmation; no footer line
+    // repeats it.
+  }
+
   function onKey(e: KeyboardEvent<HTMLButtonElement>, i: number) {
     const next =
       e.key === "ArrowRight" ? (i + 1) % keys.length : e.key === "ArrowLeft" ? (i - 1 + keys.length) % keys.length : e.key === "Home" ? 0 : e.key === "End" ? keys.length - 1 : -1;
@@ -959,8 +1141,6 @@ export function ResultsPane(props: ResultsPaneProps) {
         ) : props.empty}
       </div>
     );
-  const index = active.startsWith("result:") ? Number(active.slice(7)) : -1;
-  const result = index >= 0 ? rows[index] : null;
   return (
     <div className="results-pane" aria-busy={running || undefined}>
       {live}
@@ -989,7 +1169,7 @@ export function ResultsPane(props: ResultsPaneProps) {
             </span>
           )}
         </div>
-        {result?.columns_known && (
+        {result?.columns_known && exportResult && (
           <div className="results-tabs-actions">
             {props.explain && props.onExplore && <ActionButton small busy={props.exploreBusy} busyLabel="Exploring…"
               disabled={!props.exploreBusy && props.exploreDisabled}
@@ -1000,7 +1180,9 @@ export function ResultsPane(props: ResultsPaneProps) {
               key={`${props.run?.id || ""}:${index}`}
               editorRun={props.run}
               backslash={props.backslash !== false}
-              result={result}
+              result={exportResult}
+              isFiltered={isFiltered}
+              loadedCount={result.rows.length}
               n={index + 1}
               engine={props.engine}
               binary={props.binary[index] || []}
@@ -1017,7 +1199,29 @@ export function ResultsPane(props: ResultsPaneProps) {
         tabIndex={0}
         aria-labelledby={`results-tab-${active.replace(":", "-")}`}
       >
-        {result && <ResultView {...props} result={result} n={index + 1} />}
+        {result && (
+          <ResultView
+            {...props}
+            result={result}
+            n={index + 1}
+            filterText={filterText}
+            onFilterText={setFilterText}
+            chips={chips}
+            onAddChip={addChip}
+            onRemoveChip={removeChip}
+            onClearFilter={clearFilter}
+            isFiltered={isFiltered}
+            filteredRows={filteredGridRows}
+            pinned={pinned}
+            isPinnedCurrent={isPinnedCurrent}
+            canCompareWithPinned={canCompareWithPinned}
+            comparing={comparing && canCompareWithPinned}
+            onPin={onPin}
+            onToggleCompare={() => setComparing((c) => !c)}
+            keyCol={keyCol}
+            onKeyColChange={setKeyCol}
+          />
+        )}
         {active === "messages" && run && <Messages {...props} run={run} />}
         {active === "plan" && plan}
       </div>
@@ -1035,11 +1239,64 @@ function ResultView({
   run,
   fromConnection,
   rowPanel,
-}: ResultsPaneProps & { result: EditorRows; n: number }) {
+  filterText,
+  onFilterText,
+  chips,
+  onAddChip,
+  onRemoveChip,
+  onClearFilter,
+  isFiltered,
+  filteredRows,
+  pinned,
+  isPinnedCurrent,
+  canCompareWithPinned,
+  comparing,
+  onPin,
+  onToggleCompare,
+  keyCol,
+  onKeyColChange,
+}: ResultsPaneProps & {
+  result: EditorRows;
+  n: number;
+  filterText: string;
+  onFilterText: (text: string) => void;
+  chips: FilterChip[];
+  onAddChip: (col: number, mode: "show" | "hide", value: string | null) => void;
+  onRemoveChip: (id: string) => void;
+  onClearFilter: () => void;
+  isFiltered: boolean;
+  filteredRows: GridRow[];
+  pinned: PinnedResult | null;
+  isPinnedCurrent: boolean;
+  canCompareWithPinned: boolean;
+  comparing: boolean;
+  onPin: () => void;
+  onToggleCompare: () => void;
+  keyCol: number;
+  onKeyColChange: (col: number) => void;
+}) {
   const statement = run?.statements[result.statement];
   const index = rowResults(run).indexOf(result);
   const cut = result.stopped !== null || result.truncated;
   const more = cut && canLoadMore(result) && result.limit < 100_000;
+  const filterInputRef = useRef<HTMLInputElement>(null);
+  const effectiveKeyCol = keyCol >= 0 && keyCol < result.columns.length ? keyCol : defaultKeyColumn(result.columns);
+  // Option values are column indexes, so duplicate column names stay
+  // selectable; a repeated name gets its occurrence number ("id (2)").
+  const keyColLabels = useMemo(() => {
+    const total = new Map<string, number>();
+    for (const c of result.columns) total.set(c.name, (total.get(c.name) || 0) + 1);
+    const seen = new Map<string, number>();
+    return result.columns.map((c) => {
+      const n = (seen.get(c.name) || 0) + 1;
+      seen.set(c.name, n);
+      return (total.get(c.name) || 0) > 1 ? `${c.name} (${n})` : c.name;
+    });
+  }, [result.columns]);
+  const compareDiff = useMemo<CompareDiff | null>(
+    () => (comparing && canCompareWithPinned && pinned ? compareResults(pinned, result, effectiveKeyCol) : null),
+    [comparing, canCompareWithPinned, pinned, result, effectiveKeyCol],
+  );
   if (!result.columns_known)
     return (
       <div className="result-empty">
@@ -1048,6 +1305,17 @@ function ResultView({
       </div>
     );
   const metaItems = [
+    comparing && compareDiff ? (
+      <span key="compare" className="result-compare-summary" role="status">
+        {compareDiff.summary}
+        {compareDiff.unchanged > 0 ? ` · ${count(compareDiff.unchanged)} unchanged` : ""}
+      </span>
+    ) : null,
+    !comparing && isFiltered ? (
+      <span key="filter" className="result-filter-summary" role="status">
+        {filterSummary(filteredRows.length, result.rows.length)}
+      </span>
+    ) : null,
     fromConnection ? <span key="from" className="result-from">From {fromConnection}</span> : null,
     cut ? <span key="cut" className="result-cut">{result.label || `first ${rowsText(result.row_count)}`}</span> : null,
     result.warnings ? <span key="warn">{`${count(result.warnings)} ${result.warnings === 1 ? "warning" : "warnings"}`}</span> : null,
@@ -1058,12 +1326,88 @@ function ResultView({
       </span>
     ) : null,
   ].filter(Boolean);
-  const hasBar = metaItems.length > 0 || !!reloaded[index] || more;
+  const hasFilterControls = filterText !== "" || chips.length > 0;
   return (
     <div className="result-view">
-      {hasBar && (
-        <div className="result-bar">
-          <span className="result-meta">
+      <div className="result-bar result-toolbar" role="toolbar" aria-label="Result tools">
+        {!comparing && (
+          <div className="result-filter-group">
+            <label className="toolbar-search result-filter-field">
+              <Icon name="search" size={14} />
+              <input
+                ref={filterInputRef}
+                type="search"
+                aria-label="Filter loaded rows"
+                placeholder="Filter loaded rows…"
+                value={filterText}
+                spellCheck={false}
+                autoCapitalize="off"
+                onChange={(e) => onFilterText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.nativeEvent.isComposing) return;
+                  if (e.key === "Escape" && (filterText !== "" || chips.length > 0)) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onClearFilter();
+                  }
+                }}
+              />
+            </label>
+            {chips.length > 0 && (
+              <div className="result-filter-chips" role="list" aria-label="Active filters">
+                {chips.map((chip) => {
+                  const valText = chip.value === null ? "NULL" : chip.value === "" ? "empty string" : chip.value;
+                  return (
+                    <span
+                      key={chip.id}
+                      role="listitem"
+                      className={`result-filter-chip is-${chip.mode}`}
+                      data-chip-col={chip.col}
+                      data-chip-mode={chip.mode}
+                      data-chip-null={chip.value === null ? "true" : undefined}
+                    >
+                      <span className="result-chip-col">
+                        {chip.mode === "hide" ? `not ${chip.colName}` : chip.colName}:
+                      </span>
+                      {chip.value === null ? (
+                        <span className="sql-null">NULL</span>
+                      ) : chip.value === "" ? (
+                        <span className="result-chip-empty">empty string</span>
+                      ) : (
+                        <bdi className="result-chip-val">{chip.value}</bdi>
+                      )}
+                      <button
+                        type="button"
+                        className="result-chip-remove"
+                        aria-label={`Remove filter ${chip.mode === "show" ? "Show only" : "Hide"} ${chip.colName} ${valText}`}
+                        title="Remove filter"
+                        onClick={() => onRemoveChip(chip.id)}
+                      >
+                        <Icon name="close" size={12} />
+                      </button>
+                    </span>
+                  );
+                })}
+              </div>
+            )}
+            {hasFilterControls && (
+              <button
+                type="button"
+                className="button small result-filter-clear"
+                aria-label="Clear filter"
+                title="Clear filter (Escape)"
+                onClick={() => {
+                  onClearFilter();
+                  filterInputRef.current?.focus();
+                }}
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        )}
+        {metaItems.length > 0 && (
+          <span className="result-meta result-summary">
             {metaItems.map((item, i) => (
               <span key={i}>
                 {i > 0 ? " · " : ""}
@@ -1071,33 +1415,228 @@ function ResultView({
               </span>
             ))}
           </span>
-          {reloaded[index] && <span className="result-note">{reloaded[index]}</span>}
-          {more && (
-            <span className="result-actions">
-              <button
-                type="button"
-                className="button small"
-                title="Runs this statement again with a larger row limit; rows may differ from this run"
-                onClick={() => onLoadMore(result)}
+        )}
+        {reloaded[index] && <span className="result-note">{reloaded[index]}</span>}
+        <span className="result-actions">
+          {comparing && canCompareWithPinned && (
+            <label className="toolbar-field result-compare-key">
+              <span>Key column</span>
+              <select
+                className="select"
+                aria-label="Key column"
+                value={String(effectiveKeyCol)}
+                onChange={(e) => onKeyColChange(Number(e.target.value))}
               >
-                Load more
-              </button>
+                {result.columns.map((_, j) => (
+                  <option key={j} value={String(j)}>
+                    {keyColLabels[j]}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {pinned && (
+            <span
+              className="result-pin-badge"
+              data-pinned="true"
+              title={
+                pinned.capped
+                  ? `Pinned the first ${count(MAX_PIN_ROWS)} of ${count(pinned.loadedCount)} loaded rows in this tab`
+                  : `Pinned ${rowsText(pinned.rows.length)} in this tab`
+              }
+            >
+              Pinned · {count(pinned.rows.length)}
+              {pinned.capped ? ` of ${count(pinned.loadedCount)}` : ""} {pinned.rows.length === 1 ? "row" : "rows"}
             </span>
           )}
-        </div>
+          <button
+            type="button"
+            className="button small"
+            data-action="pin-result"
+            aria-pressed={isPinnedCurrent}
+            title="Keep a copy of the loaded rows (at most 5,000) in memory for this tab"
+            onClick={onPin}
+          >
+            <Icon name="baseline" size={14} />
+            Pin result
+          </button>
+          {canCompareWithPinned && (
+            <button
+              type="button"
+              className="button small"
+              data-action="compare-pinned"
+              aria-pressed={comparing}
+              title="Compare this result with the pinned result in this tab"
+              onClick={onToggleCompare}
+            >
+              <Icon name="compare" size={14} />
+              Compare with pinned
+            </button>
+          )}
+          {more && (
+            <button
+              type="button"
+              className="button small"
+              title="Runs this statement again with a larger row limit; rows may differ from this run"
+              onClick={() => onLoadMore(result)}
+            >
+              Load more
+            </button>
+          )}
+        </span>
+      </div>
+      {comparing && canCompareWithPinned && compareDiff && pinned ? (
+        <ResultCompareView columns={result.columns} diff={compareDiff} pinned={pinned} />
+      ) : (
+        <ResultGrid
+          result={result}
+          filteredRows={filteredRows}
+          isFiltered={isFiltered}
+          onAddChip={onAddChip}
+          label={`Result ${n}`}
+          onCopied={(text) => onNote(text)}
+          rowPanel={rowPanel}
+        />
       )}
-      <ResultGrid result={result} label={`Result ${n}`} onCopied={(text) => onNote(text)} rowPanel={rowPanel} />
+    </div>
+  );
+}
+
+function ResultCompareView({
+  columns,
+  diff,
+  pinned,
+}: {
+  columns: EditorColumn[];
+  diff: CompareDiff;
+  pinned: PinnedResult;
+}) {
+  // The shared windowed DataTable: a large pin against a large result mounts
+  // only the rows in view, never the whole diff.
+  const tableColumns = useMemo<Column<CompareDiffRow>[]>(
+    () => [
+      {
+        key: "status",
+        label: "Change",
+        name: "Change",
+        width: 104,
+        minWidth: 88,
+        className: "cell-status",
+        render: (row) => {
+          const statusWord =
+            row.status === "added" ? "Added" : row.status === "removed" ? "Removed" : row.status === "changed" ? "Changed" : "Ambiguous";
+          const tone: Tone = row.status === "added" ? "ok" : row.status === "removed" ? "problem" : "watch";
+          return <StatusPill tone={tone} label={statusWord} />;
+        },
+      },
+      ...columns.map(
+        (c, j): Column<CompareDiffRow> => ({
+          key: `c${j}`,
+          label:
+            j === diff.keyCol ? (
+              <>
+                <span>{c.name}</span> <span className="compare-key-tag">key</span>
+              </>
+            ) : (
+              c.name
+            ),
+          name: c.name,
+          className: j === diff.keyCol ? "cell-value is-key-col" : "cell-value",
+          render: (row) => {
+            const isChanged = row.status === "changed" && row.changedCols.includes(j);
+            if (isChanged) {
+              return (
+                <span className="compare-cell-diff is-changed-cell" data-changed="true">
+                  <span className="compare-cell-before" title="Pinned value">
+                    {row.before?.[j] === "" ? (
+                      <span className="result-chip-empty">empty string</span>
+                    ) : (
+                      <Value value={row.before?.[j] ?? null} hex={c.hex} />
+                    )}
+                  </span>
+                  <span className="compare-cell-arrow" aria-hidden="true">→</span>
+                  <span className="compare-cell-after" title="Current value">
+                    {row.after?.[j] === "" ? (
+                      <span className="result-chip-empty">empty string</span>
+                    ) : (
+                      <Value value={row.after?.[j] ?? null} hex={c.hex} />
+                    )}
+                  </span>
+                </span>
+              );
+            }
+            const val = (row.after ?? row.before)?.[j] ?? null;
+            return <Value value={val} hex={c.hex} />;
+          },
+        }),
+      ),
+    ],
+    [columns, diff.keyCol],
+  );
+  return (
+    <div className="result-compare-view" aria-label="Result comparison">
+      {pinned.capped && (
+        <p className="result-compare-note hint">
+          Comparing against the first {count(MAX_PIN_ROWS)} of {count(pinned.loadedCount)} loaded rows in the pinned result.
+        </p>
+      )}
+      {diff.ambiguous.length > 0 && (
+        <p className="result-compare-note hint" role="status">
+          Ambiguous key: {rowsText(diff.ambiguous.length)} could not be matched because <bdi>{diff.keyColName}</bdi> has
+          duplicate or NULL values. Choose another key column.
+        </p>
+      )}
+      {diff.rows.length === 0 ? (
+        <div className="result-empty result-compare-empty">
+          <strong>No differences</strong>
+          <span>All {rowsText(diff.unchanged)} match the pinned result by {diff.keyColName}.</span>
+        </div>
+      ) : (
+        <DataTable<CompareDiffRow>
+          label="Added, removed and changed rows"
+          columns={tableColumns}
+          rows={diff.rows}
+          rowKey={(r) => r.id}
+          nativeRowMenu={false}
+          className="result-table result-compare-table"
+          rowClass={(r) => `compare-diff-row is-${r.status}`}
+          rowAttrs={(r) => ({ "data-diff-status": r.status })}
+        />
+      )}
     </div>
   );
 }
 
 function Messages({ run, base, stale, onJump, running, fromConnection }: ResultsPaneProps & { run: EditorRun }) {
   const c = run.counts;
+  // Count statement outcomes, never infer successes from planned statements.
+  // Stop and a lost connection can leave part of a Continue script unexecuted.
+  const continued = run.on_error === "continue" && !running;
+  const outcomes = [
+    `${count(run.statements.filter((s) => s.status === "ok").length)} succeeded`,
+    `${count(run.statements.filter((s) => s.status === "error").length)} failed`,
+    ...([
+      [["not_run", "pending"], "not run"],
+      [["stopped"], "stopped"],
+      [["session_ended", "running"], "outcome unknown"],
+    ] as const).map(([statuses, label]) => {
+        const n = run.statements.filter((s) => statuses.some((status) => s.status === status)).length;
+        return n ? `${count(n)} ${label}` : "";
+      }).filter(Boolean),
+  ].join(", ");
+  const deadlock = continued && run.results.some((r) => r.type === "error" && r.code === 1213);
+  const lockTimeout = continued && run.results.some((r) => r.type === "error" && r.code === 1205);
   const summary = [
     fromConnection ? `From ${fromConnection}` : "",
-    `${count(c.statements)} ${c.statements === 1 ? "statement" : "statements"}`,
-    c.run !== c.statements ? `${count(c.run)} run` : "",
-    c.errors ? `${count(c.errors)} ${c.errors === 1 ? "error" : "errors"}` : "",
+    continued
+      ? `${count(c.statements)} ${c.statements === 1 ? "statement" : "statements"}: ${outcomes}`
+      : `${count(c.statements)} ${c.statements === 1 ? "statement" : "statements"}`,
+    !continued && c.run !== c.statements ? `${count(c.run)} run` : "",
+    !continued && c.errors ? `${count(c.errors)} ${c.errors === 1 ? "error" : "errors"}` : "",
+    // Engine behavior, not a confirmed outcome: a script can SIGNAL either
+    // code, and a metadata lock wait also ends with 1205.
+    deadlock ? "Error 1213: an InnoDB deadlock rolls back the victim's whole transaction" : "",
+    lockTimeout ? "Error 1205: an InnoDB lock wait timeout rolls back the whole transaction only with innodb_rollback_on_timeout ON" : "",
     c.affected_rows ? `${count(c.affected_rows)} rows affected` : "",
     c.warnings ? `${count(c.warnings)} ${c.warnings === 1 ? "warning" : "warnings"}` : "",
     duration(run.duration_ms),

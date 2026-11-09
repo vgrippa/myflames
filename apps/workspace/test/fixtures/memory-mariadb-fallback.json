@@ -1,0 +1,68 @@
+{
+  "schema_version": "memory-1.0",
+  "engine": "mariadb",
+  "flavor": "mariadb",
+  "server_product": "MariaDB",
+  "server_version": "11.8.3-MariaDB",
+  "taken_at": "2026-11-08T18:00:00+00:00",
+  "uptime_s": 1000,
+  "performance_schema": false,
+  "available": true,
+  "source": "mariadb_status",
+  "interval": 5,
+  "elapsed_s": 5,
+  "window_status": "ok",
+  "coverage": null,
+  "consumers": null,
+  "gate": "Performance Schema is off (MariaDB's default); open Server > Instruments for categories and accounts.",
+  "gate_row": "ps",
+  "thread_coverage": null,
+  "status": "not_judged",
+  "current_bytes": 1625292800,
+  "high_bytes": null,
+  "growth_bytes_per_s": 10485760,
+  "innodb_buffer_pool_size": 1073741824,
+  "buffer_pool_share_pct": null,
+  "categories": [],
+  "events": [],
+  "sessions": [
+    {
+      "thread_id": null,
+      "processlist_id": 42,
+      "user": "app",
+      "host": "localhost",
+      "current_bytes": 83886080,
+      "high_bytes": 94371840,
+      "source": "information_schema.PROCESSLIST"
+    }
+  ],
+  "accounts": [],
+  "collection": {
+    "events": false,
+    "sessions": true,
+    "accounts": false
+  },
+  "findings": [
+    {
+      "key": "coverage",
+      "status": "not_judged",
+      "rule": "Rule of thumb: judge only a comparable window with known collection coverage.",
+      "reason": "Performance Schema is off (MariaDB's default); open Server > Instruments for categories and accounts."
+    },
+    {
+      "key": "growth",
+      "status": "watch",
+      "rule": "Rule of thumb: tracked bytes increased by more than both 1% of the starting total and 16 MiB across the window.",
+      "reason": "A short allocation burst can be normal; this does not prove a leak."
+    }
+  ],
+  "notes": [
+    "MariaDB process-list memory covers visible sessions; without PROCESS, only this user's sessions are visible.",
+    "MariaDB Memory_used counts only allocations made through the server's own allocator (my_malloc), so most InnoDB memory, the buffer pool included, is missing. Categories, accounts and a global high-water mark are not collected.",
+    "Tracked allocations are not process RSS or machine RAM; no RAM capacity is inferred.",
+    "Each event high is an upper bound (current bytes plus per-thread, account and host headroom), not a recorded peak; their sum is not a server peak.",
+    "Enabled instruments do not recover earlier allocations; session/account totals need not add up to the global total.",
+    "Categories use known event-name prefixes; unmatched allocations stay in Other, and TempTable may include mapped files.",
+    "Reads are sequential, not an atomic snapshot; the collection itself can allocate memory."
+  ]
+}

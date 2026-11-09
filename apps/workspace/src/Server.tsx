@@ -1,3 +1,4 @@
+import type { SqlOpenOptions } from "./statementThread";
 // The Server, Workload and Tuning places: live views of the connection in use.
 // Server uses a grouped sub-navigation (Overview, Contention, Schema, Setup,
 // Security) and Workload uses Queries and Resources, with a status dot or count
@@ -42,6 +43,7 @@ import type {
   TopReport,
   TopStatement,
   TopTable,
+  MemoryReport,
   WaitsReport,
 } from "./api";
 import { api } from "./api";
@@ -129,6 +131,7 @@ import "./server.css";
 const InnodbView = lazyComponent(() => import("./InnoDB").then((m) => m.InnodbView));
 const TuningView = lazyComponent(() => import("./Tuning").then((m) => m.TuningView));
 const SessionsView = lazyComponent(() => import("./Sessions").then((m) => m.SessionsView));
+const MemoryView = lazyComponent(() => import("./Memory").then((m) => m.MemoryView));
 const WaitsView = lazyComponent(() => import("./Waits").then((m) => m.WaitsView));
 const IoView = lazyComponent(() => import("./IoStats").then((m) => m.IoView));
 const IndexesView = lazyComponent(() => import("./Indexes").then((m) => m.IndexesView));
@@ -136,7 +139,7 @@ const TablesView = lazyComponent(() => import("./Tables").then((m) => m.TablesVi
 const ConfigView = lazyComponent(() => import("./Config").then((m) => m.ConfigView));
 const SchemaDiagramView = lazyComponent(() => import("./SchemaDiagram").then((m) => m.SchemaDiagramView));
 const AccountsView = lazyComponent(() => import("./Accounts").then((m) => m.AccountsView));
-const LAZY_VIEWS = [InnodbView, TuningView, SessionsView, WaitsView, IoView, IndexesView, TablesView, ConfigView, SchemaDiagramView, AccountsView];
+const LAZY_VIEWS = [InnodbView, TuningView, SessionsView, MemoryView, WaitsView, IoView, IndexesView, TablesView, ConfigView, SchemaDiagramView, AccountsView];
 /** Focuses the element with *id* after this task, or once it appears: a view
  * whose chunk is still loading mounts its heading a moment later (up to 2 s). */
 /** A view's title, for focus. A view with tabs keeps every tab mounted
@@ -179,7 +182,7 @@ const SHEET_WIDTH = 1040;
  * and a server connection; the server may cap max_user_connections). */
 export const REFRESH_CONCURRENCY = 3;
 /** Views that sample over a window start first, so the total is the longest window. */
-const WINDOWED: ServerKind[] = ["health", "waits", "io"];
+const WINDOWED: ServerKind[] = ["health", "memory", "waits", "io"];
 
 type RefreshState = "queued" | "loading" | "ok" | "failed" | "stopped" | "replaced";
 type RefreshItem = {
@@ -336,7 +339,7 @@ export function Server({
   /** Open a Learn lesson linked from Health. */
   onOpenLesson?: (lesson: string) => void;
   /** Open a statement in the Query editor without running it (new tab, or current tab when append is set). */
-  onOpenSql?: (sql: string, options?: { append?: boolean }) => void;
+  onOpenSql?: (sql: string, options?: SqlOpenOptions) => void;
   /** Open a saved investigation in Investigations (e.g. from Health's Capture when…). */
   onOpenInvestigation?: (id: string) => void;
   /** A link from the Query editor's schema browser: open Indexes or Tables
@@ -392,6 +395,7 @@ export function Server({
   // The schema in focus for I/O and Top statements, and the Waits and I/O
   // windows, are restored with the workspace; reports are not.
   const [schema, setSchema] = useState(initial?.schema ?? "");
+  const [memoryInterval, setMemoryInterval] = useState(initial?.memory_interval || 5);
   const [waitsInterval, setWaitsInterval] = useState(initial?.waits_interval || 10);
   const [ioInterval, setIoInterval] = useState(initial?.io_interval || 10);
   const [indexesSchemas, setIndexesSchemas] = useState<string[]>(initial?.indexes_schemas || []);
@@ -442,6 +446,7 @@ export function Server({
       min_seconds: minSeconds,
       health_interval: healthInterval,
       schema,
+      memory_interval: memoryInterval,
       waits_interval: waitsInterval,
       io_interval: ioInterval,
       ...(indexesSchemas.length ? { indexes_schemas: indexesSchemas } : {}),
@@ -453,7 +458,7 @@ export function Server({
       ...(reportRun ? { report_run: true } : {}),
       ...(Object.keys(columns).length ? { columns_v1: columns } : {}),
     });
-  }, [savedKind, order, minSeconds, healthInterval, schema, waitsInterval, ioInterval, indexesSchemas, tablesSchemas, inspectorOpen, sessionsScope, maintenanceSection, loopActiveNow, reportRun, columns]);
+  }, [savedKind, order, minSeconds, healthInterval, schema, memoryInterval, waitsInterval, ioInterval, indexesSchemas, tablesSchemas, inspectorOpen, sessionsScope, maintenanceSection, loopActiveNow, reportRun, columns]);
 
   // Reports, kept while the place is mounted (never saved). Each one carries
   // the key of the connection it was read from (binding.ts): a report from
@@ -467,6 +472,7 @@ export function Server({
   const [innodb, setInnodb] = useState<Bound<InnodbReport> | null>(null);
   const [errorlog, setErrorlog] = useState<Bound<ErrorLogReport> | null>(null);
   const [sessions, setSessions] = useState<Bound<SessionsReport> | null>(null);
+  const [memory, setMemory] = useState<Bound<MemoryReport> | null>(null);
   const [waits, setWaits] = useState<Bound<WaitsReport> | null>(null);
   const [io, setIo] = useState<Bound<IoReport> | null>(null);
   const [locks, setLocks] = useState<Bound<LocksReport> | null>(null);
@@ -535,7 +541,7 @@ export function Server({
   const [lastRead, setLastRead] = useState<{ key: string; at?: number; engineVersion?: string }>({ key: activeKey });
   useEffect(() => {
     const reports = [health.report ? { key: health.key, report: health.report } : null,
-      innodb, errorlog, sessions, waits, io, locks, indexes, tables, config, instruments, replication, cluster,
+      innodb, errorlog, sessions, memory, waits, io, locks, indexes, tables, config, instruments, replication, cluster,
       accounts ? { key: accounts.key, report: { engine: accounts.report.engine, server_version: accounts.report.version } } : null,
       diagram && diagram.source.key === activeKey ? { key: activeKey, report: diagram.diagram } : null,
       maintenance.tools, maintenance.upgrade, analysis, topStatements.top];
@@ -561,7 +567,7 @@ export function Server({
     }
     setLastRead((old) => old.key === activeKey && old.at === at && old.engineVersion === engineVersion
       ? old : { key: activeKey, at, engineVersion });
-  }, [activeKey, health.report, health.key, innodb, errorlog, sessions, waits, io, locks, indexes, tables,
+  }, [activeKey, health.report, health.key, innodb, errorlog, sessions, memory, waits, io, locks, indexes, tables,
     config, instruments, replication, cluster, accounts, diagram, maintenance.tools, maintenance.upgrade, analysis, topStatements.top, topStatements.refreshedAt]);
 
   // Links between views.
@@ -581,6 +587,7 @@ export function Server({
     sessions: sessions?.key || "",
     replication: replication?.key || "",
     cluster: cluster?.key || "",
+    memory: memory?.key || "",
     waits: waits?.key || "",
     io: io?.key || "",
     locks: locks?.key || "",
@@ -893,6 +900,7 @@ export function Server({
       sessions: sessions?.report,
       replication: replication?.report,
       cluster: cluster?.report,
+      memory: memory?.report,
       waits: waits?.report,
       io: io?.report,
       locks: locks?.report,
@@ -931,9 +939,11 @@ export function Server({
       const own = lastViewRead(view, key);
       return own ? own.params.endsWith(":true") : fallback;
     };
-    add("health", `health:${healthInterval}`, "live/health", (c) => ({ connection: c, interval: healthInterval }), (b) =>
+    // with_identity, as Health's own read: a baseline names the server its reading came from.
+    add("health", `health:${healthInterval}`, "live/health", (c) => ({ connection: c, interval: healthInterval, with_identity: true }), (b) =>
         setHealth((previous) => rememberHealth(previous, b as Bound<HealthReport>)),
       );
+    add("memory", `memory:${memoryInterval}`, "live/memory", (c) => ({ connection: c, interval: memoryInterval }), (b) => setMemory(b as Bound<MemoryReport>));
     add("waits", `waits:${waitsInterval}`, "live/waits", (c) => ({ connection: c, interval: waitsInterval }), (b) => setWaits(b as Bound<WaitsReport>));
     {
       const target = schema.trim();
@@ -1180,6 +1190,11 @@ export function Server({
   const instrumentsNow = current(instruments);
   const topNow = current(topStatements.top);
   const badges: Partial<Record<ServerKind, Marker>> = {};
+  const memoryNow = current(memory);
+  if (memoryNow) {
+    const tone = memoryNow.status === "not_judged" ? "unknown" : memoryNow.status;
+    badges.memory = dot(tone, memoryNow.status === "not_judged" ? "Not judged" : TONE_TEXT[tone]);
+  }
   if (health.report && health.key === activeKey) {
     const tone = toneOf(health.report.summary.status);
     badges.health = dot(tone, TONE_TEXT[tone]);
@@ -1362,7 +1377,7 @@ export function Server({
   } : null;
 
   // Performance Schema on or off, from any report already loaded for this connection.
-  const known = [instrumentsNow, current(waits), current(io), indexesNow, configNow, sessionsNow, innodbNow, errorlogNow].find(
+  const known = [instrumentsNow, current(memory), current(waits), current(io), indexesNow, configNow, sessionsNow, innodbNow, errorlogNow].find(
     (r): r is NonNullable<typeof r> => !!r && typeof r.performance_schema === "boolean",
   );
   const performanceSchema = instrumentsNow ? instrumentsNow.status.enabled : known ? known.performance_schema : null;
@@ -1490,6 +1505,7 @@ export function Server({
             settings={settings}
             onDigest={onDigest}
             onOpenPlan={onOpenPlan}
+            onOpenSql={onOpenSql}
           />
         );
       case "sessions":
@@ -1508,6 +1524,10 @@ export function Server({
             onOpenSql={onOpenSql}
           />
         );
+      case "memory":
+        return <MemoryView {...common}
+          selection={selection("memory")} interval={memoryInterval} onIntervalChange={setMemoryInterval}
+          report={memory} onReport={setMemory} />;
       case "waits":
         return (
           <WaitsView

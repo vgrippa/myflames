@@ -18,6 +18,17 @@
 // scale (#fff1cd to #e87942), excluding descendant counts. Zoom preserves
 // that scale; separators and unmeasured frames stay neutral.
 //
+// Marks: a frame whose operator the parser flags for a row misestimate
+// (node.misestimate) gets a thin underline: a 2 px line in MARK_COLOR along
+// the inside of the frame's bottom edge, from 1 px after its left edge to
+// 1 px before its right edge, drawn after the frame's text, without pointer
+// events. MARK_COLOR is a fixed dark violet, never a status or search color,
+// that keeps at least 3:1 against every default frame fill, so it stays the
+// same in either theme like the fills do. The underline follows its frame
+// when it zooms. Labels, their ".." truncation, tooltip headers and the
+// frame order do not change; the frame's detail line (flame_details, from
+// Python) names the estimate. Same rule as flamegraph.py.
+//
 // Click (or Enter/Space) selects a frame and zooms to it: its subtree fills
 // the width, ancestors stay dimmed at full width (click one to zoom out),
 // everything else hides, and labels are refitted. The zoomed frame's id is
@@ -31,6 +42,7 @@
 // no ids, every listener removed on destroy.
 import { html, svg } from "./core/dom";
 import { commas, pyFixed } from "./core/format";
+import { misestimateOf } from "./core/marks";
 import { FLAME_CSS } from "./core/styles";
 import { bindKeys, compile, createToolbar, isTyping } from "./core/toolbar";
 import type { ChartNode } from "./core/types";
@@ -75,6 +87,9 @@ export const FAMILY_COLORS: Record<string, string> = {
 export const SEPARATOR_COLORS: Record<string, string> = { "--": "#9aa0a6", "-": "#c4c8cc" };
 
 export const MATCH_COLOR = "#ff38c8";
+
+/** Underline of a marked frame (flamegraph.MARK_COLOR). */
+export const MARK_COLOR = "#3b2a8f";
 
 /** Palette name -> inclusive [red, green, blue] channel ranges. */
 export const PALETTES: Record<string, Array<[number, number]>> = {
@@ -243,6 +258,8 @@ interface Item extends Frame {
   g: SVGGElement;
   rect: SVGRectElement;
   text: SVGTextElement;
+  /** The underline of a marked frame. */
+  mark: SVGLineElement | null;
   label: string;
   fill: string;
   info: string;
@@ -314,8 +331,12 @@ export function renderFlamegraph(context: ViewContext): ViewInstance {
     svg(doc, "title", undefined, g, details ? header + "\n\n" + details : header);
     const rect = svg(doc, "rect", { x: px(x), y, width: px(w), height: rowH, rx: 2, ry: 2, fill }, g);
     const text = svg(doc, "text", { x: px(x + LABEL_INSET), y: px(y + rowH / 2 + 4) }, g, shown);
+    const mark = misestimateOf(node) ? svg(doc, "line", {
+      class: "fg-mark", x1: px(x + 1), y1: px(y + rowH - 1), x2: px(Math.max(x + 1, x + w - 1)), y2: px(y + rowH - 1),
+      stroke: MARK_COLOR, "stroke-width": 2, "pointer-events": "none",
+    }, g) : null;
     const info = [header].concat(details.split("\n").filter((line) => /\S/.test(line))).join(SEP);
-    return { ...frame, g, rect, text, label, fill, info, shown };
+    return { ...frame, g, rect, text, mark, label, fill, info, shown };
   });
 
   const detailsLine = workspace
@@ -343,6 +364,11 @@ export function renderFlamegraph(context: ViewContext): ViewInstance {
     item.rect.setAttribute("width", px(w));
     item.text.setAttribute("x", px(x + LABEL_INSET));
     item.text.textContent = label;
+    // A marked frame's underline follows it (1 px inside each edge).
+    if (item.mark) {
+      item.mark.setAttribute("x1", px(x + 1));
+      item.mark.setAttribute("x2", px(Math.max(x + 1, x + w - 1)));
+    }
   };
   const reset = () => {
     for (const item of items) {
@@ -458,6 +484,14 @@ export function renderFlamegraph(context: ViewContext): ViewInstance {
 
   root.setAttribute("data-wired", "true");
   return {
+    reveal(id: string) {
+      const item = byId.get(id);
+      if (!item) return false;
+      // A frame hidden by a zoom elsewhere comes back with the whole graph.
+      if (item.g.classList.contains("fg-hidden")) reset();
+      item.g.scrollIntoView({ block: "nearest", inline: "nearest" });
+      return true;
+    },
     destroy() {
       cleanups.splice(0).forEach((cleanup) => cleanup());
       root.remove();

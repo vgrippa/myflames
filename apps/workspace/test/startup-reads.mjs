@@ -14,7 +14,9 @@ const extra = {};
 const h = await open("/api/live/replication", "startup-reads", extra, { fallback: { status: 200, body: healthy } });
 const { page, state } = h;
 // Skip loop status lists the loops this myflames holds and reads no database.
-const viewReads = () => [...state.seen.map(() => "/api/live/replication"), ...state.other.map((o) => o.path)].filter((p) => p !== "/api/live/replication/skip-loop/status");
+const viewReads = () => [...state.seen.map(() => "/api/live/replication"), ...state.other.map((o) => o.path)].filter((p) => p !== "/api/live/replication/skip-loop/status"
+  // A connection chosen in the picker checks its readiness: not a view read.
+  && p !== "/api/live/readiness");
 const reset = () => { state.seen.length = 0; state.other.length = 0; state.privilegeReads.length = 0; };
 const place = async (label) => {
   await page.locator(`.main-nav button ::-p-text(${label})`).click();

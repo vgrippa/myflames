@@ -31,7 +31,11 @@
 .ops-form .ops-warning,
 .ops-form .ops-target,
 .ops-form > fieldset > .checkbox,
-.ops-form .ops-wide { grid-column: 1 / -1; }
+.ops-form .ops-wide,
+.ops-form .ops-targets { grid-column: 1 / -1; }
+.ops-targets { display: grid; gap: var(--space-1); max-width: 80ch; margin: 0; }
+.ops-targets > p { margin: 0; }
+.ops-evidence { margin: var(--space-1) 0 0; padding-left: 1.2em; }
 .ops-form details[open] > :not(summary) { margin-top: var(--space-2); }
 .ops-form details[open] { display: grid; gap: var(--space-2); }
 .ops-form details .ops-field { max-width: 320px; }

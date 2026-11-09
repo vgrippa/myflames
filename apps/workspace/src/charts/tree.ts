@@ -2,14 +2,17 @@
 // visible operator in pre-order (reported input order), indented by depth,
 // with self/total time, share of the root, a log-scaled blue self bar on a
 // hairline baseline, zebra stripes and a warning accent for operators named
-// by the analysis. Collapse/expand (per row and all), regex search and a
-// pinned details strip are scoped to this chart instance.
+// by the analysis. A misestimated operator (the parser's node.misestimate)
+// carries the row-estimate chip at the right end of its label column.
+// Collapse/expand (per row and all), regex search and a pinned details strip
+// are scoped to this chart instance.
 //
 // Geometry and text match the Python SVG (parity-tested); the in-SVG
 // "Search" link is replaced by the toolbar input above the chart.
 import { svg } from "./core/dom";
 import { cpLength, cpSlice, estimateText, fitLabel, pyFixed, treeTime } from "./core/format";
 import { highlightText } from "./core/highlights";
+import { drawChip, MARK_GAP, MARK_ROW_H, markWidth, misestimateOf } from "./core/marks";
 import { TREE_CSS } from "./core/styles";
 import { bindKeys, compile, createToolbar, isTyping } from "./core/toolbar";
 import type { ChartNode } from "./core/types";
@@ -72,6 +75,8 @@ export function rowInfo(node: ChartNode, rootTotal: number): string {
   // MySQL operator that never ran) read "not executed" (output_tree._row_info).
   parts.push(node.actual_rows !== null ? "Rows: " + pyFixed(rows, 0)
     : node.loops === null ? "Rows: not executed" : "Rows: not measured");
+  const mark = misestimateOf(node);
+  if (mark) parts.push("Row estimate: " + mark.text);
   const loops = node.loops || 1;
   if (loops > 1) parts.push("Loops: " + Math.trunc(loops));
   if (node.table) parts.push("Table: " + node.table);
@@ -164,7 +169,12 @@ export function renderTree(context: ViewContext): ViewInstance {
     let label = node.short_label || "";
     if (cpLength(label) > 46) label = cpSlice(label, 0, 45) + "…";
     const warn = highlightText(data, node) !== null;
-    if (workspace) label = fitLabel(label, labelW - depth * indent - TOGGLE_W - 6 - (warn ? 16 : 0), 11, 0.59, false);
+    const mark = misestimateOf(node);
+    const markW = mark ? markWidth(mark.label) : 0;
+    // The chip ends the label column; the label keeps the room before it
+    // (output_tree, in both layouts).
+    if (mark) label = fitLabel(label, labelW - depth * indent - TOGGLE_W - 2 * MARK_GAP - markW - (warn ? 16 : 0), 11, 0.59, false);
+    else if (workspace) label = fitLabel(label, labelW - depth * indent - TOGGLE_W - 6 - (warn ? 16 : 0), 11, 0.59, false);
     const info = rowInfo(node, rootTotal);
     const textY = y + ROW_H - 8;
     const indentX = LEFT + depth * indent;
@@ -189,6 +199,7 @@ export function renderTree(context: ViewContext): ViewInstance {
     }
     svg(doc, "text", { class: warn ? "row-label warn" : "row-label", x: indentX + TOGGLE_W, y: textY, "pointer-events": "none" },
       group, (warn ? "⚠ " : "") + label);
+    if (mark) drawChip(doc, group, mark.label, LEFT + labelW - MARK_GAP - markW, y + 5, MARK_ROW_H, 8, textY, { "pointer-events": "none" });
     svg(doc, "text", { class: "row-time", x: selfX + SELF_W - 4, y: textY, "text-anchor": "end", "pointer-events": "none" }, group, treeTime(self));
     // Every row prints its inclusive time, leaves included (a leaf's total
     // equals its self time); an unmeasured operator reads "—" as in Self.
@@ -355,6 +366,13 @@ export function renderTree(context: ViewContext): ViewInstance {
 
   root.setAttribute("data-wired", "true");
   return {
+    reveal(id: string) {
+      const index = byId.get(id);
+      if (index === undefined) return false;
+      reveal(index);
+      rows[index].element.scrollIntoView({ block: "nearest", inline: "nearest" });
+      return true;
+    },
     destroy() {
       cleanups.splice(0).forEach((cleanup) => cleanup());
       root.remove();

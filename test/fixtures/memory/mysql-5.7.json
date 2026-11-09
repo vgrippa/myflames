@@ -1,0 +1,77 @@
+{
+  "provenance": "Synthetic values, source-grounded SQL shape; not a live capture.",
+  "variables": {
+    "version": "5.7.44",
+    "version_comment": "MySQL Community Server",
+    "performance_schema": "ON",
+    "innodb_buffer_pool_size": 1073741824
+  },
+  "coverage": [
+    79,
+    400
+  ],
+  "consumers": [
+    [
+      "global_instrumentation",
+      "YES"
+    ],
+    [
+      "thread_instrumentation",
+      "YES"
+    ]
+  ],
+  "threads": [
+    0,
+    4
+  ],
+  "status_memory": [
+    1572864000,
+    1625292800
+  ],
+  "totals": [
+    [
+      134217728,
+      209715200,
+      1
+    ],
+    [
+      134217728,
+      209715200,
+      1
+    ]
+  ],
+  "categories": [
+    [
+      [
+        "performance_schema",
+        134217728,
+        209715200
+      ]
+    ],
+    [
+      [
+        "performance_schema",
+        134217728,
+        209715200
+      ]
+    ]
+  ],
+  "events": [
+    [
+      "memory/performance_schema/accounts",
+      134217728,
+      209715200
+    ]
+  ],
+  "sessions": [],
+  "accounts": [],
+  "fallback_sessions": [
+    [
+      42,
+      "app",
+      "localhost",
+      83886080,
+      94371840
+    ]
+  ]
+}

@@ -343,6 +343,112 @@ replication), pt-heartbeat (a heartbeat table), Orchestrator's drag to move
 replicas, and PMM's agents and long-term metric storage. Processlist already
 refreshes automatically, and Schema compare already swaps its sides.
 
+## Ideas from DBeaver and MySQL Workbench (November 2026)
+
+A comparison with DBeaver Community 26.2.4 (Apache-2.0) and MySQL Workbench
+8.0.47 and 26.10 (GPL-2.0), read from their documentation, release notes,
+issues and official screenshots only. No competitor code was read; myflames
+builds its own version of any idea it takes, starting from the user's job
+rather than copying the design.
+
+The landscape moved in 2026. [Oracle's September 10, 2026 announcement of MySQL Workbench 26](https://blogs.oracle.com/mysql/introducing-mysql-workbench-26)
+says Workbench 8.0 is no longer maintained. In the reviewed Workbench 26.10
+announcement and release notes, Workbench 26 is an Electron rewrite on MySQL
+Shell that lists support for MySQL 8.4 and later and does not list MariaDB
+connections or EER modeling. In the reviewed DBeaver Community 26.2.4
+documentation, the [Lock Manager](https://dbeaver.com/docs/dbeaver/Lock-Manager/)
+page does not list MySQL or MariaDB and the [Query Execution Plan](https://dbeaver.com/docs/dbeaver/Query-Execution-Plan/)
+page describes estimated `EXPLAIN` plans rather than `EXPLAIN ANALYZE` operator
+timings. myflames covers MySQL 5.7 to 26.x, MariaDB 10.11+ and Percona Server in
+one tool.
+
+Taken in 3.3.3:
+
+- Processlist shows who a session waits on and how many sessions it blocks, in
+  the Lock / Trx column, with root blockers first under the Locked filter, and
+  the Root blocker pill first in its cell. A session's inspector loads recent
+  statements; the Kill sheet keeps the mode choice directly below the statement
+  to send and explains its effect on the transaction and blocked sessions.
+- The Query editor reports what the server did after a run: rows examined,
+  returned and changed, scans, joins without an index and temporary tables on
+  disk per statement from the server's own statement history, and an open
+  transaction shows its age, changed rows
+  and the sessions waiting on its InnoDB locks.
+- Results can be filtered in place, with column value chips, and a result can
+  be pinned and compared against a later one, all without running the query
+  again.
+- Find and replace in the Query editor (`⌘F`, `⌥⌘F` / `Ctrl+H`) with Match case,
+  Whole word and Regular expression, up to 1,000 highlighted marks and 100,000
+  counted nonempty matches while replacements remain literal text. Regex search
+  runs in a worker with a 250 ms budget; Replace all uses one editor replacement.
+- Open and save `.sql` and `.txt` files in the Query editor (`⌘O`, `⌘S`,
+  `⇧⌘S`) through native file dialogs with an unsaved-changes prompt before
+  closing. Save refuses symbolic-link targets and changed folders; an appended
+  `.sql` never overwrites an existing file, and an expired binding opens Save as
+  in the same Save operation. Cancelled or failed closes keep unsaved edits.
+  **On error: Stop / Continue** counts actual outcomes for full-tab runs and is
+  bound into write review, with transaction rollback explained beside it.
+  **Database** keeps None through restore and applies it to the next session;
+  another connection's session refuses a change.
+- Back and Forward across places, Server and Workload views, query tabs and
+  plans (`⌘[` / `⌘]`, `Alt+Left` / `Alt+Right`, and a **Back to …** chip after
+  following a cross-link, without switching the connection in use), **Recent**
+  destinations and debounced schema object search in `⌘K` on the connection in
+  use (`/api/live/object-search`), and **Routines**, **Triggers** and **Events**
+  folders under each schema in the Query editor's Schemas panel. Client XML
+  reads preserve exact object names containing XML-forbidden control characters.
+- One shared statement inspector across Workload > Top statements and Query
+  digest (Statement, Latency, Rows, Flags, Suggested index, Actions). Suggested
+  indexes read only on **Read suggestion** (planning may evaluate expressions),
+  reuse a fresh result on reopening and offer **Read again**. After the exact
+  suggested index succeeds, **Measure the statement again** in that Query editor
+  tab asks before one Run analysis, with before-and-after measurements and
+  **Compare plans** when an earlier matching capture remains in memory. Query
+  digest's Slow log table source reads Tables metadata when the statement opens.
+- A Memory view (Workload > Resources) shows the server's tracked allocations
+  by category, session and account in binary units, with the exact bytes beside each
+  value in the inspector, growth over a sampling window and row-specific status pills.
+  General rules live once in the notes; the view opens on By session when no
+  categories were collected but sessions were. Sum of highs and Share (%) have
+  their full labels in tooltips; missing highs remain explicitly uncollected.
+- Health and Query digest keep baselines: save the reading on screen on this
+  computer, then compare a later reading against it, tied to the server's
+  identity.
+- Parameters and Users and roles show the latest change recorded in the local
+  Audit log in the object's inspector, with readable operation names, the local
+  storage hint, boxed statements with Copy and the exact record one click away.
+- Plans mark the eligible operators where the optimizer's row estimate was 10x
+  or more off the measured rows (at least 1,000 estimated or actual rows across
+  loops, skipping overestimates under early-stop ancestors and on MariaDB), in
+  the charts that render them, with the table's statistics evidence and the
+  `ANALYZE TABLE` statement to copy when the operator's table maps unambiguously
+  to a captured base table. MariaDB compares only eligible index lookups and
+  only underestimates.
+- Home's Connections show the last known facts of each server (product,
+  version, replication or cluster role, read-only and Performance Schema
+  state), refreshed on demand, and can import connections from MySQL Workbench
+  or DBeaver without passwords. The table calls its default-database column
+  Database (the form keeps Default database), prioritizes product and version
+  over the stale-time hint, and sizes default columns for 1440 px. The import
+  sheet has a wider preview and no empty error alert.
+- Health refreshes itself while it is visible; Auto-refresh defaults to While
+  visible instead of waiting to be turned on, waiting one full sampling
+  interval after each completed read before starting the next one.
+
+Next, from the same comparison: Unix socket, TLS client certificate and init
+command connections; object editors for routines, triggers, events and views,
+and a table designer, every change through the ALTER review; design by diff
+against a saved schema version; table copy through MySQL Shell utilities with
+verification; XLSX and whole-table export; data compare; and a Linux build with
+auto-update.
+
+Not taken: other engines and migration from other vendors (myflames is the
+MySQL family), notebooks, plugins and scripting, mock data, the
+Enterprise-only tools (Enterprise Backup, Audit Inspector, Firewall), an Intel
+Mac build, and a bundled LLM (the standing non-goal). Not adopted as
+presentation: icon-only toolbars, deep object trees, multi-step wizards,
+whole-window connection tints, and gauges without verdicts.
+
 ## Performance workspace: proposed next views
 
 Shipped: readable durations across Replication lag tables, signals, summary, tile and topology, and the Query editor ALTER review transaction age. Processlist inspector and Locks summary facts retain exact seconds on hover; duration tables keep numeric sorting. Settings and progress counters retain their units.
@@ -355,7 +461,7 @@ Candidates for the workspace's **Server** place, in suggested order. Each is rea
 
 **Shipped: Wait events, Index health, I/O hot spots, and Parameters (`config`).** The **Waits** and **I/O** views in the Workload place and **Indexes** and **Parameters** on Server, along with `myflames waits`, `indexes`, `io`, and `config` (`waits-1.0`, `indexes-1.0`, `io-1.0`, `config-1.0` with `parameters-1.0` in `/api/live/config`), read raw Performance Schema and information_schema tables, never the sys views, and never truncate or change instruments. Waits ranks wait events over a window without adding classes up and lists the classes that are off with the statements to turn them on. Indexes lists unused indexes (PRIMARY and UNIQUE excluded on both engines, foreign-key indexes kept; partitioned or unknown candidate tables under No data with DROP and visibility SQL withheld), redundant indexes with the advisor's rules, and tables read mostly by full scans, with a MariaDB `userstat` fallback. I/O shows tables, files, and file kinds over a window and since start, linked to Index health and Top statements. CLI `config` checks a short list of settings with engine defaults, sources, statuses, and caveats, and `--fail-on` for CI; the workspace **Parameters** view adds a full parameter group table (`myflames/parameters.py`, 817-variable `myflames/mysql_sysvars.py` catalog) with inline edits and batch review. The cost of each read is documented: per-table and per-index reads run only on request, scoped to a schema, and `INNODB_BUFFER_PAGE` is never read. Their claims passed a `mysql-correctness-reviewer` review and were checked live on MySQL 8.4, 9.7, and 26.7 and MariaDB 11.4 and 13.0, with Performance Schema on and off.
 
-**Shipped: Table health (missing primary keys and fragmentation).** The **Tables** tab (after Indexes on Server) and `myflames tables` (`schema-1.0`) list tables without a primary key, telling apart a unique key on NOT NULL columns that InnoDB uses as the clustered index from the hidden 6-byte row ID, and counting MySQL's generated invisible primary key as a key. They show `DATA_FREE` as reusable space, with the system and general tablespaces listed apart. Its size or percentage alone does not produce a warning or recommend a rebuild. Capacity and filesystem headroom remain unmeasured. Key changes remain statements to review; the optional Optimize action opens exact SQL for confirmation before execution. `--fresh` reads MySQL statistics past the `information_schema_stats_expiry` cache for myflames' own connection only. A shared database picker (all user databases by default) replaces the single schema field in Indexes, which reads every user database by default only up to 2,000 tables. Claims were checked against the server source by the `mysql-correctness-reviewer` and live on MySQL 8.4 and 26.7 and MariaDB 11.4 and 13.0, including fresh versus cached statistics.
+**Shipped: Table health (missing primary keys and fragmentation).** The **Tables** tab (after Indexes on Server) and `myflames tables` (`schema-1.0`) list tables without a primary key, telling apart a unique key on NOT NULL columns that InnoDB uses as the clustered index from the hidden 6-byte row ID, and counting MySQL's generated invisible primary key as a key. They show `DATA_FREE` as Fragmentation (Reclaimable bytes and a percentage), with the system and general tablespaces listed apart, and offer rebuild statements for DBAs choosing tables to `OPTIMIZE`; the amount alone still raises no health warning. Capacity and filesystem headroom remain unmeasured. Key changes remain statements to review; the optional Optimize action opens exact SQL for confirmation before execution. `--fresh` reads MySQL statistics past the `information_schema_stats_expiry` cache for myflames' own connection only. A shared database picker (all user databases by default) replaces the single schema field in Indexes, which reads every user database by default only up to 2,000 tables. Claims were checked against the server source by the `mysql-correctness-reviewer` and live on MySQL 8.4 and 26.7 and MariaDB 11.4 and 13.0, including fresh versus cached statistics.
 
 Possible follow-ups: per-partition free space from `information_schema.PARTITIONS`, MyISAM and Aria free space (`DATA_FREE` there is deleted-row space in the data file), and a link from a plan's table to its Tables row.
 
@@ -428,3 +534,5 @@ Completed workspace feedback: Plans sample opening, HTML/JSON export and investi
 ### November workspace refinement
 
 The app adopts the simple flame brand. Flame graph intensity now follows own measured time while frame width retains inclusive time. Workspace reset lives in Settings, digest filters have a dedicated row, and topology views share depth and motion controls. Motion represents reported state rather than traffic; reduced-motion preferences take priority.
+
+**Shipped (November 8): vendor-sourced upgrade targets, index suggestions and Fragmentation.** Upgrade check reads its target versions from the MySQL release notes (MySQL Community) or Percona's package repositories (Percona Server) along the manual's upgrade paths, and says how the server was installed (RPM, DEB, Ubuntu's package, generic archive) from the layout it reports. Top statements suggest an index for statements flagged No index used or Full scan, from the estimated plan and the table's existing indexes, and say when no index can help. Tables shows Fragmentation (Reclaimable bytes first) with rebuild statements to copy or review. Next: MariaDB and Percona XtraDB Cluster target lists (the MariaDB REST API and the `pxc-*` repositories), an index from `build_id` to official packages if exact package identification proves worth a lab catalog, and index suggestions for UPDATE and DELETE through `EXPLAIN` of the statement itself.

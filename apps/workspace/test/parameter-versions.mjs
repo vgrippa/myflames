@@ -166,6 +166,8 @@ async function browserSuite() {
       return void respond(report);
     }
     if (pathname === "/api/config/versions/history") return void respond(mock.history(body.engine, body.name));
+    // The Parameters inspector reads the local change history (Changed through myflames).
+    if (pathname === "/api/audit/object") return void respond({ schema_version: "audit-1.0", records: [] });
     errors.push(`Unexpected request: ${pathname}`); void request.abort();
   });
   await page.setViewport({ width: 1440, height: 900 });

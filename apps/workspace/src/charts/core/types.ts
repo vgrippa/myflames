@@ -54,6 +54,37 @@ export interface ChartNode {
   details_text: string;
   /** Flame-graph tooltip lines for exactly this operator (may be empty). */
   flame_details: string;
+  /** Present only when the parser flags this operator's row estimate. */
+  misestimate?: Misestimate;
+}
+
+/** STALE_STATS evidence for a misestimated table (advisor.statistics_evidence). */
+export interface MisestimateEvidence {
+  /** schema.table as the server names it. */
+  table: string;
+  last_update: string | null;
+  n_rows: number | null;
+  histograms: string[];
+  /** The advisor's facts, as text. */
+  text: string;
+  /** ANALYZE TABLE for copy and paste; never run by myflames. */
+  statement: string;
+}
+
+/** The parser's row-estimate record (parser.misestimate_record). The bundle
+ * draws ``label`` as the marker and shows the other text as it is. */
+export interface Misestimate {
+  direction: "under" | "over";
+  factor: number;
+  estimated: number;
+  actual: number;
+  loops: number;
+  table: string;
+  kind: "access" | "filter";
+  label: string;
+  text: string;
+  reason: string;
+  evidence: MisestimateEvidence | null;
 }
 
 export interface ChartProjection {
@@ -127,5 +158,11 @@ export interface ChartHandle {
   selected(): string;
   /** Drop the current selection locally; never notifies. */
   clear(): void;
+  /**
+   * Bring a drawn operator into view without changing the selection:
+   * Visual Explain pans to its card (zoom kept), the other views scroll it
+   * into view. False when the view does not draw it.
+   */
+  reveal(id: string): boolean;
   destroy(): void;
 }

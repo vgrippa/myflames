@@ -34,7 +34,21 @@ controls a separate set of operator bars below the native chart:
 
 Native charts keep their original visual meanings. Selecting rows does not turn
 a time-width flame graph into a row-width chart. **Largest self time** and
-**Largest estimate mismatch** select the relevant operator. Operators omitted
+**Largest estimate mismatch** select the relevant operator. When a measured plan has eligible base-table accesses,
+or filters directly above them,
+whose rows per loop differ by at least 10×
+(`max(actual, estimated) / max(1, min(actual, estimated)) >= 10`) and whose
+larger estimate or actual count times loops reaches 1,000 rows, the plan header shows
+**Misestimates N**: click it to step through them in descending ratio order,
+with violet markers in Visual Explain, the flame graph, the execution tree, and
+the bar chart (if the bar chart omits an operator because its self time is
+zero, a status message above the chart explains why and the inspector still
+opens it). The inspector's **Row estimate** section shows the direction and
+ratio and, when the operator's table maps unambiguously to a single base table
+in the captured schema evidence, the table's `mysql.innodb_table_stats.last_update`, statistics row count and
+histograms with an `ANALYZE TABLE` statement to copy. Overestimates are skipped
+below early-stop ancestors such as Limit and semijoin inner sides; MariaDB
+compares only eligible index lookups and only underestimates. Operators omitted
 by a native view remain accessible in the full operator table and metric list.
 MySQL SELECT-list subquery inputs are retained as separate branches; their
 timing is not subtracted from the enclosing iterator's self time.
@@ -65,11 +79,12 @@ next time you open `myflames ui`, or reload the page, it restores:
   notebook name, notes, and tags you had not saved yet
 - the open lesson in Learn
 - Query editor tabs (names, SQL, parameter JSON, the caret or selection, the
-  row limit, and which results tab was open) and the active tab, the time
+  row limit, the default database, the On error choice, and which results tab
+  was open) and the active tab, the time
   limit, analysis runs, trace option, and conditions, and the editor's panes
   (editor height, schema browser open and its width, history open, the run
-  time limit). Results, the tab's server session and credentials are never
-  saved
+  time limit). Results, the tab's server session, file paths, and credentials
+  are never saved
 - the connection in use: its saved connection ID and its non-secret fields
   (name, host, port, user, schema, TLS mode, and CA path)
 - the Server or Workload view (Health, InnoDB, Error log, Locks, Indexes,
@@ -255,10 +270,15 @@ read-only `demo` user.
 
 Use query tabs to keep drafts and name each query. Every tab has its own close button (shown on the active tab, on hover, and always on touch screens); a middle-click closes a tab, the tab on the left takes over, and the last tab stays.
 Right-click a tab (or focus it and press Shift+F10 or the context-menu key)
-for its menu: **Rename…** (also a double-click or F2 on the tab, and **Rename
-query tab** in the command palette), **Duplicate** (a copy right after it with
-the same SQL, parameters and row limit; the copy opens its own session when it
-runs), **Close**, and **Close others**. A name is trimmed, may not be empty
+for its menu: **Open SQL file…** (⌘O on macOS, Ctrl+O elsewhere), **Save…**
+(⌘S / Ctrl+S), **Save as…** (⇧⌘S / Ctrl+Shift+S), **Save query…**, **Rename…**
+(also a double-click or F2 on the tab, and **Rename query tab** in the command
+palette), **Duplicate** (a copy right after it with the same SQL, parameters,
+default database, On error choice, and row limit; the copy opens its own
+session when it runs), **Close**, and **Close others**. A tab opened from or
+saved to a local file shows an edited dot (`●`) before its title while its SQL
+differs from the file, and closing it asks **Unsaved changes** (**Discard and
+close** or **Cancel**). A name is trimmed, may not be empty
 (Enter on an empty name keeps the field open and says why; leaving the field
 keeps the old name) and holds at most 64 characters (a longer name is cut
 without splitting an emoji); Escape cancels. Names are
@@ -478,7 +498,18 @@ side.
   session; Stop, Commit and Roll back always go to the session's own
   connection.
 - **Run all** (**⇧⌘Return**, **Ctrl+Shift+Enter**) runs every statement of the
-  tab in order. A run stops at the first error.
+  tab in order. By default (**On error: Stop** in Run options) a run stops at
+  the first error; with **On error: Continue**, a full-tab run continues after a
+  statement error (stopping only on an explicit Stop, a time limit, a lost
+  session, or the output size limit). After a Continue run finishes, Messages
+  counts succeeded and failed statements, plus not run, stopped and outcome
+  unknown when present. Errors 1213 and 1205 add a
+  note on InnoDB behavior (a deadlock rolls back the victim's whole
+  transaction; a lock wait timeout does only with `innodb_rollback_on_timeout`
+  ON), never a claim about this run. The On error ⓘ explains that an InnoDB
+  error normally rolls back only the failed statement, while those two cases
+  roll back the whole transaction. Changing Stop or Continue requires a fresh
+  write review.
 - **Stop** (or **Escape** in the editor) sends `KILL QUERY` for the tab's
   session from a second connection. KILL QUERY ends the statement and undoes
   what that statement changed; an open transaction stays open, and later
@@ -495,6 +526,16 @@ side.
   error points. Undo, input methods and spell check stay the browser's own
   (the editor is a native text area under a colored layer). Above 60,000
   characters the colors are off.
+- **Find and replace** (**⌘F** / **Ctrl+F** for Find, **⌥⌘F** / **Ctrl+H**
+  for Replace) searches SQL in the active tab with **Match case** (`Aa`),
+  **Whole word** (`|ab|`) and **Regular expression** (`.*`). It counts up to
+  100,000 nonempty matches and highlights up to 1,000 while syntax highlighting
+  is enabled (up to 60,000 characters). Enter and Shift+Enter, or **⌘G** /
+  **⇧⌘G** (**Ctrl+G** / **Ctrl+Shift+G**), step between matches. **Replace**
+  and **Replace all** insert the replacement literally, including `$1` and
+  `$&`, through the native text area. Regex search runs in a background worker
+  with a 250 ms budget; a slow pattern reports "Pattern too slow to search".
+  Escape closes the bar and returns focus to the editor.
 
 Results come back in tabs: one per result set (**Result 1 · 1,000 rows ·
 12 ms**), then **Messages**, which lists every statement of the run with its
@@ -545,6 +586,30 @@ the SQL analyzed.
   one read again with a larger limit (rows may differ from the first run).
 - **Time limit** stops a run after that many seconds with KILL QUERY (0, the
   default, means no limit).
+- **Database** in the toolbar sets the tab's default database (**None** or a
+  database from the server's list, read through `POST /api/live/schemas` only
+  while the Query editor is on screen). When the tab has no open session, the
+  choice is kept on the tab and used when its next session starts; when a
+  session is already open, choosing a database sends `USE <database>` in that
+  session (`POST /api/editor/use`), while choosing **None** keeps the open
+  session's current database and records that a new session starts with none.
+  None is kept explicitly through restore, even if the connection has a default
+  database. A tab whose session belongs to another connection refuses a database
+  change until that session is closed.
+- **Open SQL file…** in a tab's menu (or **⌘O** / **Ctrl+O**) opens a `.sql` or
+  `.txt` file from this computer (`POST /api/editor/file/open`, UTF-8, up to 5
+  MiB) into a new tab. **Save…** (**⌘S** /
+  **Ctrl+S**) writes back to the tab's file path, and **Save as…** (**⇧⌘S** /
+  **Ctrl+Shift+S**) chooses a new path (`POST /api/editor/file/save`, up to
+  8,000,000 characters, adding `.sql` when the chosen name has no extension).
+Save refuses symbolic-link targets and a folder changed since it was chosen;
+use **Save as…** to choose it again. Adding `.sql` never replaces a file that
+already exists: choose its full name to approve replacement. Open refuses special
+files and a file or folder swapped for a link after selection, and enforces the
+5 MiB limit even if the file grows while being read. If a backend restart loses
+the file binding, Save opens Save as within the same operation and reports the
+outcome. Cancelling or failing a save or close keeps unsaved edits.
+
 - **Save query…** in a tab's menu (right-click the tab) or the command
   palette keeps the tab's SQL on this computer under a name (the tab's, to
   start with), in a folder you pick or create, with an optional note. The SQL,
@@ -563,12 +628,26 @@ the SQL analyzed.
   binary** are written as `X'..'`, because hex is only a guess), Markdown, and
   **Copy as TSV**. Exports use the values as loaded and never include
   connection settings or passwords.
+- After a run, a statement insights pill beside the result tabs summarizes the
+  server's examined and returned rows, index or full-scan access, joins without
+  an index, and temporary tables on disk for the selected statement (from
+  `performance_schema.events_statements_history` when available), with an ⓘ
+  popover for the counters and verdict rule and **Explain analyze** to run
+  analysis on that statement. Results can also be filtered in place (**Filter
+  rows**, plus **Show only this value** and **Hide this value** in the cell
+  menu as removable chips) and pinned (**Pin result**, up to 5,000 rows, with
+  **Compare with pinned** to compare a later result with the same columns by a
+  key column).
 
 The toolbar shows the transaction state of the tab's session: **Auto-commit**,
 **Manual commit** (autocommit off, no transaction), **Transaction open**, or
 **Transaction unknown** (MySQL without the transaction instrument, or a server
-that cannot tell). With a transaction open or unknown, **Commit** and **Roll
-back** appear, the tab shows a dot, and closing the tab asks **Commit and
+that cannot tell). While a transaction is open, the pill shows how long it has
+been open, how many rows it modified, and how many waiting InnoDB transactions
+it blocks (`transaction_meter`), with a popover for the details, **Commit**,
+**Roll back**, and **Show who waits** (which opens **Server > Locks**). With a
+transaction open or unknown, **Commit** and **Roll back** appear, the tab shows
+a dot, and closing the tab asks **Commit and
 close**, **Roll back and close**, or Cancel. When the connection in use is not
 the one the tab's session runs on, runs wait until you **Close session**.
 
@@ -635,15 +714,21 @@ The **schema browser** reads the schema list of the connection in use by
 itself the first time it is shown for that connection (once per connection;
 with no connection chosen it says to choose one), and its header has **Reload
 schemas**. It lists the schemas, a schema's tables and views, and a table's
-columns (type, key, NULL) and indexes; tables, columns and indexes are read
-when you expand them. Column and index
+columns (type, key, NULL) and indexes, plus collapsible **Routines**,
+**Triggers**, and **Events** folders under each schema; tables, columns,
+indexes, and object folders are read when you expand them (`POST
+/api/live/catalog`, up to 200 routines, triggers or events per folder with a
+truncation note). Column and index
 rows stay on one line, and the actions button shows only on the row being
 pointed at, the focused row, or on touch screens. Double-click a
-name to insert it at the cursor (`schema.table`, quoted with backticks only
+name (or press Enter or Space on a routine, trigger or event) to insert it at
+the cursor (`schema.object`, quoted with backticks only
 when needed). A table's menu (right-click or Shift+F10) has **Insert name**,
 **SELECT * … LIMIT 100** and **Show CREATE TABLE** (both added at the end of
 the tab and run), and **Open in Indexes** or **Open in Tables** (the Server
-views, on that table).
+views, on that table); a routine, trigger or event's menu has **Insert name**
+and **Show CREATE PROCEDURE / FUNCTION / TRIGGER / EVENT** (added at the end of
+the tab and run).
 
 The **history** lists the runs of every tab, newest first, with their
 connection, time, duration, rows and outcome; search it, click an entry to
@@ -662,6 +747,11 @@ run (statements, time and rows).
 | Explain | ⌘E | Ctrl+E |
 | Run analysis | ⇧⌘E | Ctrl+Shift+E |
 | Stop | Escape | Escape |
+| Open SQL file… | ⌘O | Ctrl+O |
+| Save SQL file | ⌘S | Ctrl+S |
+| Save SQL file as… | ⇧⌘S | Ctrl+Shift+S |
+| Find | ⌘F | Ctrl+F |
+| Find and replace | ⌥⌘F | Ctrl+H |
 
 ## Server: health, InnoDB, top statements, sessions, locks, waits, indexes, I/O, parameters, and security
 
@@ -790,7 +880,9 @@ instruments](#performance-schema-instruments) for Instruments.
 
 ### Explain a top statement
 
-A selected Top statement opens in a detail view using the available width; Back restores the list's sorting, filters and scroll. Its actions use the statement Performance Schema recorded:
+With **Slow log table**, opening a statement reads its **Tables** section immediately (metadata only, no table rows).
+
+Top statements and Query digest share one statement inspector (`StatementInspector.tsx`) and statement thread (`statementThread.ts`). A selected Top statement opens in a detail view using the available width (in Query digest it opens in the side inspector or sheet); Back restores the list's sorting, filters and scroll. In Top statements and Query digest's **Statement digests** source, a statement flagged **No index used** or **Full scan** offers **Suggested index** under Flags. Choose **Read suggestion** to run `EXPLAIN FORMAT=JSON` for a runnable SELECT and read existing indexes from `information_schema.STATISTICS` (`POST /api/live/index-suggestion`): planning can evaluate expressions, so opening the inspector starts no such read. A fresh result is reused when you reopen the statement; **Read again** reads anew. The result proposes a `CREATE INDEX` to copy or open in the Query editor, names an index already leading with those columns, or gives a reason it cannot suggest one. The narrow `SELECT * FROM t` case can be explained from the recorded text without a read: if `t` is a base table and there is no filter, no index reduces the rows read. When `DIGEST_TEXT` or `QUERY_SAMPLE_TEXT` was cut off, the inspector names the server setting that cut it (`max_digest_length`, `performance_schema_max_digest_length`, or `performance_schema_max_sql_text_length`), its current value, a suggested value, the approximate memory cost, and the option-file or `SET PERSIST_ONLY` lines. Its actions use the statement Performance Schema or the slow log recorded:
 
 - **Explain** and **Run analysis** switch to the Query editor and open the
   statement in a new tab named after its rank and first table (for example
@@ -855,6 +947,19 @@ A capture started from a digest records where it came from in the
 The query tab keeps the same source, so a capture you run later from that tab
 records it too. Session restore and saved investigations keep both. Captures
 imported from MySQL Shell carry a text label instead (`"mysqlsh-diagnostics"`).
+
+Opening a suggested index in the Query editor keeps its source statement, before
+average latency and rows examined per execution, and target connection in page
+memory only. After that exact single `CREATE INDEX` succeeds in its tab,
+**Measure the statement again** opens the statement in another tab (with a fill
+form first if it has normalized placeholders), then asks before one Run analysis
+on the same connection. The Analysis tab compares the before averages with the last
+captured run's statement-history time and rows examined, without substituting
+plan iterator timings for missing counters. **Compare plans** appears there
+when an earlier non-session capture of the same SQL, connection and database is
+still in memory, and opens both in **Plans > Compare**. The before digest
+averages and this single run can have different parameters, workload and cache
+conditions; the comparison does not prove that the index caused a change.
 
 ### Server health
 
@@ -938,10 +1043,20 @@ sorts, and joins without an index to **Top statements**, and the buffer pool,
 temporary table, filesort, join, and full scan tiles to their lesson in Learn.
 Small trend lines follow statements from clients, statements running, row lock
 waits, pages read from disk, bytes read from disk, and redo bytes per second
-across the last 20 samples, small on the tiles and larger in the inspector; the
-samples stay in memory and are never saved. **Auto-refresh** is Off by default;
-set to every 10, 30, or 60 seconds it runs while the view is on screen,
-skips a tick while a sample is still running, and stops after an error.
+across up to 60 completed readings, small on the tiles and larger in the inspector; the
+samples stay in memory and are never saved. **Auto-refresh** defaults to **While
+visible** (using the sampling window while Health is on screen), with **Off** and every
+10, 30, or 60 seconds; each automatic read is scheduled one full interval after
+the previous read finishes (so While visible with a 5 s sampling window reads
+for 5 s, then waits 5 s before the next read), never replaces another
+connection's greyed report (after a connection switch the report stays greyed
+until **Refresh**, and the schedule resumes after it), reads immediately on return unless a failed read is still in backoff, skips a tick while a sample is still running, and
+backs off after errors (up to 60 s). **Save baseline** in the Refresh menu keeps the current
+Health reading on this computer for that server (`server_uuid` on MySQL, or
+`hostname:port` on MariaDB, read in the same call via `with_identity: true`; up
+to 20 baselines per server), requiring a verified identity that matches the server reached when saving, and **Compare with baseline** shows the
+baseline value under each tile and marks changed statuses (skipping counter
+rates when the server restarted since the baseline).
 
 **Live charts** sit above Diagnostics from the first reading: queries per
 second, threads running, buffer pool reads from disk per second and
@@ -1004,6 +1119,19 @@ workers always count as running, so the running limits rise by
 `slave_parallel_threads`. Each window includes this tool's own second sample
 (about three statements and one connection), which never trips a rule by
 itself.
+
+### Memory
+
+**Workload > Resources > Memory** reads tracked allocations by category, session
+and account over a sampling window. Values use binary units; Numbers and Server context in the inspector show the exact bytes beside each value. General rules of thumb live
+once in the notes (ⓘ); a finding about a row has a status pill on the row and a
+reason in its inspector. **Sum of highs** and **Share (%)** have their full names
+in tooltips; the inspector keeps **Sum of event highs**, or **Session high** for
+MariaDB's PROCESSLIST counters. These highs are upper bounds, not a recorded
+server peak. Missing total highs read "sum of highs not collected". When no
+categories were collected but sessions were, the view opens on **By session**.
+Tracked allocations are not process RSS or machine RAM; collection gaps remain
+visible instead of reading as zero. Refresh reads again; the view does not poll.
 
 ### Wait events, index health, I/O, and parameters
 
@@ -1226,6 +1354,17 @@ only `global_instrumentation`, `thread_instrumentation` and `statements_digest`
 are on.
 
 ### Locks
+
+Processlist puts the **Root blocker** pill first in Lock / Trx. In the shared
+Kill sheet, **What to end** sits directly below **Statement to send**, before
+the remaining details, to keep the choice and exact statement together in the
+minimum window.
+
+Parameters and Users and roles show **Changed through myflames** for the newest
+matching successful or outcome-unknown local record: readable operation name
+(raw key on hover), "Kept on this computer.", boxed SQL with Copy, and **Open in
+Audit log** for that exact record. This records changes made through myflames
+on this computer, not all changes on the server.
 
 The Locks view reads the server's lock tables once per **Refresh**. One summary
 line says what is waiting and on whom, the facts under it count blocked
@@ -1654,12 +1793,15 @@ and never lowers a saved connection's protection.
 | `news` | optional `refresh` (boolean; reads again when the last read is at least a minute old) | `news-1.0`: `enabled`, up to six `items` (`title`, `link`, `source`, `source_id`, `engine`, `published` UTC or null, `summary`), `fetched_at`, `stale`, optional `error` and `offline`, and `sources` with each feed's last read. With the Settings switch off: `enabled: false` and nothing read |
 | `news/settings` | optional `enabled` (boolean) | `enabled`, the Settings switch **Show MySQL and MariaDB news on Home** (default on, stored in the workspace store) |
 | `connection/test` | `connection` | `version`, `engine`, `flavor`, `product`, visible `schemas`, `databases` (at most 1,000 from SHOW DATABASES, with `databases_truncated`) or `databases_error` (the test still succeeds), and `through_ssh` ("Through SSH host X") for a connection through SSH. Identity uses both version and version comment, including MariaDB with a numeric-only version |
+| `live/readiness` | `connection` (a saved `profile_id` fills its password) | The last-known server facts: `engine`, `flavor`, `product`, `version`, `read_only`, `super_read_only`, `performance_schema`, `replica`, `group_member`, `galera_member` (booleans or null when unavailable), `privileges`, `actions` (the sessions-all, kill and replication-status decisions), `notes` and `checked_at`. One bounded read-only invocation (3 s budget by default) plus up to two follow-up invocations for MariaDB replica status (`SHOW ALL SLAVES STATUS` or `SHOW SLAVE STATUS`) and ProxySQL Admin fallback, each capped at 64 MiB of output and 1 MiB of error text; no writes |
+| `connections/import` | `tool` (`workbench` or `dbeaver`), optional `choose` (true opens a fixed-argv native file dialog) | `items` (name, host, port, user, database, `type: "production"`, optional SSH fields), `found`, `cancelled`. Reads only the tool's own connections file (fixed default locations or the chosen file, at most 2 MiB and 1,000 connections); no passwords or keys are read or returned; nothing connects |
 | `ssh/hosts` | none | `ssh-hosts-1.0`: `hosts` (the Host aliases of `~/.ssh/config` and its Includes, at most 500; no patterns or negations), `ssh_found`, `message`. Runs no ssh and reads no network |
 | `live/start` | `connection`, `query`, `parameters`, `mode`, `repeat`, `timeout`, `trace`, `conditions`, optional `source` (`{"kind": "digest", "digest", "schema"}`, copied into the capture) | Job `id`, `state` |
 | `live/status` | `id` | `state`, `progress`, `repeat`, `error`, optional `result` |
 | `live/cancel` | `id` | Current job snapshot |
-| `live/top` | `connection`, optional `limit`, `schema` (the shared schema filter), `order` (`total`, `avg`, `examined`, `count`, or the attribution orders `full_join`, `scan`, `no_index`), `table` (`"schema.table"` or `{schema, table}`) | `top-1.0` statements and notes. Each statement has `capture_problem`: null when Run analysis (and Explore) can capture it, otherwise the reason (Explain in the editor does not need a capture), and the attribution counters `select_full_join`, `select_range_check`, `select_scan`; with `table`, each has `table_match` and the report has `table` and `match` (label "text match, not proof", caveats). `coverage`: uptime, the oldest `first_seen`, the overflow row, `digest_lost`, `counting_since` (the oldest FIRST_SEEN of the whole digest table when it began more than an hour after the server started, else null). Ranked against the whole server in one more aggregate read: `totals` (`digests`, `total_ms`, `executions` of every digest row), `others` (the digests the list does not hold, or null), `cpu` (`{collected}` on MySQL with SUM_CPU_TIME: false while the `events_statements_cpu` consumer is off, null when unread; null on MariaDB), and per statement `cpu_ms`, `p95_ms`, `p99_ms`, `p999_ms` (null where the server has no such column) and `new` (first seen in the last 24 hours, decided on the server, and only while the counters cover more than a day) |
-| `live/digest-histogram` | `connection`, `digest` (32 to 64 hexadecimal characters), `schema` (the statement's default schema; empty or null for none) | `digest-histogram-1.0`: the buckets of `performance_schema.events_statements_histogram_by_digest` with at least one call (`bucket`, `low_ms`, `high_ms` null for the open-ended last bucket, `count`). MariaDB and servers without the table answer `available: false` with a `reason`. Read when the statement's Latency section is on screen |
+| `live/top` | `connection`, optional `limit`, `schema` (the shared schema filter), `order` (`total`, `avg`, `examined`, `count`, or the attribution orders `full_join`, `scan`, `no_index`), `table` (`"schema.table"` or `{schema, table}`), `with_identity` (boolean; attaches `reading_server` from `baselines.read_with_identity` in the same call, plus `coverage.oldest_first_seen`) | `top-1.0` statements and notes. Each statement has `capture_problem`: null when Run analysis (and Explore) can capture it, otherwise the reason (Explain in the editor does not need a capture), and the attribution counters `select_full_join`, `select_range_check`, `select_scan`; with `table`, each has `table_match` and the report has `table` and `match` (label "text match, not proof", caveats). `coverage`: uptime, the oldest `first_seen`, the overflow row, `digest_lost`, `counting_since` (the oldest FIRST_SEEN of the whole digest table when it began more than an hour after the server started, else null). Ranked against the whole server in one more aggregate read: `totals` (`digests`, `total_ms`, `executions` of every digest row), `others` (the digests the list does not hold, or null), `cpu` (`{collected}` on MySQL with SUM_CPU_TIME: false while the `events_statements_cpu` consumer is off, null when unread; null on MariaDB), and per statement `cpu_ms`, `p95_ms`, `p99_ms`, `p999_ms` (null where the server has no such column) and `new` (first seen in the last 24 hours, decided on the server, and only while the counters cover more than a day) |
+| `live/index-suggestion` | `connection`, `digest`, optional `schema` | Re-reads a server-owned statement by digest, never accepts client SQL, and returns `status` (`no_predicate`, `suggestion`, `covered`, `not_explainable`, `unknown`) with `reason` and optional `ddl` and `caveats`. Reads `EXPLAIN FORMAT=JSON` for a runnable SELECT in a read-only transaction and existing indexes from `information_schema.STATISTICS`; planning can evaluate expressions, so the UI requires **Read suggestion** or **Read again**. A proven unfiltered SELECT-star can answer from stored text. No schema-version wrapper and no index creation |
+| `live/digest-histogram` | `connection`, `digest` (32 to 64 hexadecimal characters), `schema` (the statement's default schema; empty or null for none) | `digest-histogram-1.0`: the buckets of `performance_schema.events_statements_histogram_by_digest` with at least one call (`bucket`, `low_ms`, `high_ms` null for the open-ended last bucket, `count`). MariaDB and servers without the table answer `available: false` with a `reason`. Query digest reads when the Latency section is on screen; Top statements reads only after its **Latency histogram** click |
 | `live/digest-tables` | `connection`, `schema` (the statement's default schema, or null), `text` (normalized digest text or sample SQL, at most 1,000,000 characters) | `digest-tables-1.0`: `method` ("statement text"), `tables` (at most 20: `schema`, `name`, `found`, `type`, `engine`, `rows_estimate`, `data_bytes`, `index_bytes`, `indexes` with `name`, `unique`, `columns`, `visible`) and `notes`. Names come from the statement text; at most two bounded `information_schema` reads, never row data. A name without a schema stays unread. Read when the statement's Tables section is on screen |
 | `live/table-structure` | `connection`, `schema`, `table` | `table-structure-1.0` (`schema_browser.table_structure`); read-only; the saved password is filled like the views. |
 | `live/slow-log` | `connection`, `order`, `limit`, `from`, `to`, `user` | `slow-log-1.0` read from `mysql.slow_log` (Query digest, Slow log table); validated before connecting, 30 s. |
@@ -1671,7 +1813,8 @@ and never lowers a saved connection's protection.
 | `live/report` | `connection`, optional `interval` (2 to 60, default 10), `schemas` (or `schema`), `all_schemas` | `report-1.0` Full analysis: header (server, views, failures), summary, `look_first`, ranked `findings`, `sections`, `attribution`, `checklist`, notes. One run per connection at a time; an identical request joins it |
 | `report/export` | `report` (a `report-1.0` report), `format` (`html`, `markdown`, `json`, `text`, `digest`), optional `source` (`label`, `host`, `port`, `user`, `type` of the connection it was read from; other fields are dropped) | `{format, content, mime, filename}`, generated from the JSON; every format names the source connection |
 | `live/running` | `connection`, optional `min_seconds` | `running-1.0` statements. Kept for compatibility; `live/sessions` replaces it |
-| `live/sessions` | `connection`, optional `active_only` (boolean, default true: sessions running a statement, idle in a transaction, or waiting for a lock), `user`, `host` (client host, with or without the port), `db`, `min_seconds` (0 to 31536000), `limit` (1 to 10000, default 1000) | `sessions-1.0` report: `summary` over every visible session (connections against `max_connections`, counts by command, state, user, host and database, flag counts, the oldest open transaction, the history list length, a one-line `text`), `attention` (long-running, idle in transaction, lock waits), and `sessions`, each with its client host and port, statement, open InnoDB transaction (`trx`), `lock_wait`, MariaDB progress, `flags`, `status`, and `why`; plus `capabilities` (PROCESS), `rules`, and notes. The filters narrow only `sessions` |
+| `live/sessions` | `connection`, optional `active_only` (boolean, default true: sessions running a statement, idle in a transaction, or waiting for a lock), `user`, `host` (client host, with or without the port), `db`, `min_seconds` (0 to 31536000), `limit` (1 to 10000, default 1000) | `sessions-1.0` report: `summary` over every visible session (connections against `max_connections`, counts by command, state, user, host and database, flag counts, the oldest open transaction, the history list length, a one-line `text`), `attention` (long-running, idle in transaction, lock waits), and `sessions`, each with its client host and port, statement, open InnoDB transaction (`trx`), `lock_wait`, MariaDB progress, `flags`, `status`, and `why`; plus `capabilities` (PROCESS), `rules`, and notes. The filters narrow only `sessions`. Blocking: `blocking_edges` (`{waiter, blocker}` connection-ID pairs, collected before the filters and limit, at most 5,000), per session `blocked_by`, `blocks`, `blocks_ids`, `blocks_total`, `root_blocker`, `longest_wait_s`, and `summary.root_blockers` |
+| `live/sessions/history` | `connection`, `id` (a connection ID, 1 to 4294967295, checked before connecting) | The session's up to ten most recent statements from Performance Schema history: `{id, available, reason, limit, statements}` with `event_id` (a decimal string), `sql` (cut at 4,096 characters), `duration_ms`, `rows_examined`, `rows_sent`, `errors`, `errno`, `message`. At most four reads, 5 s each; disabled instrumentation or missing privileges return `available: false` with the reason; never enables anything |
 | `live/ddl-progress` | `connection`, `connection_ids` (1 to 200 positive integers) | `ddl-progress-1.0`: `available`, `reason`, `missing` (consumers or instruments to turn on), `source` and `items` (`id`, `stage`, `stage_label`, `percent`, `completed`, `estimated`, `elapsed_s`, `left_s`, `statement_kind`, `source`, `units`, optional `note`). One metadata read and one bounded progress read (on MariaDB a second native read when the first is refused); query limit 5 s; never changes instrumentation. `live/sessions` carries the same object as `ddl` |
 | `live/innodb` | `connection`, optional `raw` (boolean, default false) | `innodb-1.0` report: `SHOW ENGINE INNODB STATUS` parsed into `sections` (semaphores, transactions and purge, latest deadlock, latest foreign key error, file I/O, change buffer, adaptive hash index, redo log, buffer pool, row operations, background), each with `summary`, `items` (label, display text, status, rule), parsed `data`, and `links`; plus `header` (print time, averaging window), `summary`, `parse` (what was found), `rules`, and notes. `raw.text` only with `raw: true`. Without PROCESS: `available: false` and `error.code: "no_process"` |
 | `live/explain-connection` | `connection`, `connection_id` | Plan `raw`, `mode` (`explain` or `analyze-partial`), and a `capture-1.0` object for the viewer |
@@ -1679,17 +1822,21 @@ and never lowers a saved connection's protection.
 | `live/kill/prepare` | `connection`, `connection_id`, `mode`, `expect` | Exact reviewed kill details with a server-issued `review_token`; reads only. Apply must return the token with the same details |
 
 | `live/kill` | `connection`, `review_token`, `connection_id`, `mode` (`connection`, the default, or `query`), `expect` (`user`, `host`, and when known `trx_started` and `ps_thread_id`, as the report showed them) | `kill-1.0` result: `status` (`killed`, `refused`, `denied` by the server, or `gone`), `message`, the `statement` sent, what was `verified`, the re-read `target`, the session `after` the KILL, and `audit_id`. `killed` acknowledges an accepted KILL; unavailable verification leaves `after: null` and says "Sent; could not verify". On a read-only connection (the saved profile's setting, or `connection.read_only: true`) nothing is opened and the result is `refused` with the reason. myflames re-reads the session first and sends nothing when it changed. Refusals are results; bad input returns 400. One session per request, sent only from the confirmation dialog after `live/kill/prepare` issues a one-use `review_token` |
-| `audit/list` | optional `since_days`, `server` (saved connection name, host, or host:port), `status` (one audit status), `limit` (default 500), `before` (the id of the last record listed: the next page) | `audit-1.0`: `retention_days`, `has_more` (older records match), and `records`, newest first (every filter applies before `limit`), each with `status` (`pending`, `ok`, `error`, `declined`, `refused`, `unknown`), `outcome_unknown`, `outcome`, `surface`, `os_user`, `operation`, `connection`, the redacted `statements`, `target`, `verified`, `policy`, `error_code`, `message`, `after`, `duration_ms`. No server connection |
-| `audit/export` | `format` (`json` or `csv`), optional `since_days`, `server`, `status` | `format`, `content`, `mime`, `filename` for every matching record |
+| `audit/list` | optional `since_days`, `server` (saved connection name, host, or host:port), `status` (one audit status), `id` (a 32-character lowercase hexadecimal audit id, to filter to one record), `limit` (default 500), `before` (the id of the last record listed: the next page) | `audit-1.0`: `retention_days`, `has_more` (older records match), and `records`, newest first (every filter applies before `limit`), each with `status` (`pending`, `ok`, `error`, `declined`, `refused`, `unknown`), `outcome_unknown`, `outcome`, `surface`, `os_user`, `operation`, `connection`, the redacted `statements`, `target`, `verified`, `policy`, `error_code`, `message`, `after`, `duration_ms`. No server connection |
+| `audit/export` | `format` (`json` or `csv`), optional `since_days`, `server`, `status`, `id` | `format`, `content`, `mime`, `filename` for every matching record |
+| `audit/object` | `server` (the `host:port` endpoint as recorded, never a saved-connection label), `kind` (`parameter`, `account` or `index`), `key` (the parameter name, `{name, host, role}` or `{schema, table, index}`) | `audit-1.0` with `records`: up to five newest matching `ok`/`unknown` records. Local store read only, no server connection; an index matches only records that name it, never a whole-table change |
 | `audit/settings` | optional `retention_days` (1 to 3650) | `retention_days` (default 90); a lower value purges older records now |
 | `editor/open` | `tab_id` (1 to 100 of `A-Z a-z 0-9 _ . : -`), `connection`, optional `safe_updates` (true, false or null for the connection type's default: on for Production, off for Development), `idle_minutes` (1 to 1440, default 30), and `confirmed` with `confirm_token` or `decline` when turning safe updates off | `status`, `session` (`editor-session-1.0`: `state` starting, idle, running or ended; `connection` name, host, port, user, `type`, `read_only`; `engine`, `server_version`, `connection_id`, `autocommit`, `in_transaction` (true, false, or null when unknown) with `transaction_source` and `transaction_note`, `sql_mode`, `backslash_escapes`, `safe_updates`, `read_only_transactions`, `idle_seconds`, `idle_timeout_seconds`, `ended`, `ended_reason`, `message`, `notes`, `run` id and state). Starts the tab's client session, or returns the open one; a different connection for the same tab is refused (409 `identity_mismatch`), including for ended sessions and racing requests. Ended sessions compare endpoint and saved-profile identity; explicit reconnect for the same owner evaluates fresh policy. Errors do not reveal another connection's name. `safe_updates: false` is a write that lowers protection (`SET SESSION sql_safe_updates = 0`): it follows the write policy (Production answers `needs_confirmation` before opening anything) and is audited as `editor_safe_updates`; `true` is applied without asking |
-| `editor/run` | `tab_id`, `connection`, `sql`, optional `selection` (`{start, end}` in UTF-16 offsets of `sql`; only that part runs, split with the delimiter in effect where it starts) or `cursor` (a UTF-16 offset: the server runs the one statement the caret chooses, found with its own splitter and the session's reading of backslashes; scope `statement`), `limit` (rows kept per result set, 1 to 100,000, default 1,000), `timeout` (seconds, 0 for none), `wait` (seconds to wait for the result, 0 to 60, default 10), `confirmed` with `confirm_token`, `typed_target` for DROP DATABASE/SCHEMA, `decline`, and `safe_updates: true` / `idle_minutes` when this run starts the session (`safe_updates: false` is refused here; use `editor/open`) | `status`: `complete`, `error`, `stopped`, `running` (poll `editor/status`), `session_ended`, `needs_confirmation` (with `confirmation`: a one-time `token` valid `expires_in` seconds (300) for exactly the statements shown, `title`, `text`, `tone`, `kind`, `category`, `typed_target` (exact database name or null), `alter_preflight` (table, size, locks, transactions, coverage, warnings, optional rewrite), `reasons`, `warnings` (statements that commit a transaction that is or may be open; such statements always ask, also on Development), `in_transaction`, the exact `statements` and `count`, `connection_type`, `connection`), `refused` or `declined` (both with `audit_id`), or `invalid` (`code`, `message`: a statement myflames cannot send, nothing sent). A run has `run` (`editor-run-1.0`: `id`, `state`, `scope`, `limit`, `duration_ms`, `statements` with `index`, `text`, `start`, `end`, `verb`, `kind`, `status` ok, error, stopped (interrupted by Stop and undone), not_run, session_ended (the session ended while it was out: whether it ran is unknown), `duration_ms`; `results` in order, each `rows` (`statement`, `columns` with `name`, `hex` (a guess: every value looks like the client's 0x form), `type`: null, `columns_known`, `rows` of null or text (empty while the run is still running), `row_count`, `truncated`, `stopped` (`row_limit`: one plain read stopped with KILL QUERY; `row_limit_read`: anything else read to its end with the extra rows dropped; `size_limit`, `size_limit_read`), `label`, `server_rows`, `warnings`, `duration_ms`), `ok` (`affected_rows`, `info`, `warnings`) or `error` (`code`, `sqlstate`, `message`, `interrupted`, `position` with `offset`, `line`, `column`); the first `error`, `stopped` (`by`, `interrupted`, `message`), `counts`, `audit_id`, `history_id`) and `session`. A second run while one runs is 409 `busy`; an audit record that cannot be written is 400 `audit_failed` and nothing is sent |
+| `editor/run` | `tab_id`, `connection`, `sql`, optional `selection` (`{start, end}` in UTF-16 offsets of `sql`; only that part runs, split with the delimiter in effect where it starts) or `cursor` (a UTF-16 offset: the server runs the one statement the caret chooses, found with its own splitter and the session's reading of backslashes; scope `statement`), `on_error` (`"stop"`, the default, or `"continue"` for a full-tab run without `selection` or `cursor`), `limit` (rows kept per result set, 1 to 100,000, default 1,000), `timeout` (seconds, 0 for none), `wait` (seconds to wait for the result, 0 to 60, default 10), `confirmed` with `confirm_token`, `typed_target` for DROP DATABASE/SCHEMA, `decline`, and `safe_updates: true` / `idle_minutes` when this run starts the session (`safe_updates: false` is refused here; use `editor/open`) | `status`: `complete`, `error`, `stopped`, `running` (poll `editor/status`), `session_ended`, `needs_confirmation` (with `confirmation`: a one-time `token` valid `expires_in` seconds (300) for exactly the statements shown, `title`, `text`, `tone`, `kind`, `category`, `typed_target` (exact database name or null), `alter_preflight` (table, size, locks, transactions, coverage, warnings, optional rewrite), `reasons`, `warnings` (statements that commit a transaction that is or may be open; such statements always ask, also on Development), `in_transaction`, the exact `statements` and `count`, `connection_type`, `connection`), `refused` or `declined` (both with `audit_id`), or `invalid` (`code`, `message`: a statement myflames cannot send, nothing sent). A run has `run` (`editor-run-1.0`: `id`, `state`, `scope`, `limit`, `duration_ms`, `on_error` (`"continue"` for a full-tab Continue run, otherwise `"stop"`), `statements` with `index`, `text`, `start`, `end`, `verb`, `kind`, `status` ok, error, stopped (interrupted by Stop and undone), not_run, session_ended (the session ended while it was out: whether it ran is unknown), `duration_ms`; `results` in order, each `rows` (`statement`, `columns` with `name`, `hex` (a guess: every value looks like the client's 0x form), `type`: null, `columns_known`, `rows` of null or text (empty while the run is still running), `row_count`, `truncated`, `stopped` (`row_limit`: one plain read stopped with KILL QUERY; `row_limit_read`: anything else read to its end with the extra rows dropped; `size_limit`, `size_limit_read`), `label`, `server_rows`, `warnings`, `duration_ms`), `ok` (`affected_rows`, `info`, `warnings`) or `error` (`code`, `sqlstate`, `message`, `interrupted`, `position` with `offset`, `line`, `column`); the first `error`, `stopped` (`by`, `interrupted`, `message`), `counts`, `audit_id`, `history_id`) and `session`. A second run while one runs is 409 `busy`; an audit record that cannot be written is 400 `audit_failed` and nothing is sent |
 | `editor/preview` | `tab_id`, `connection`, `sql`, optional `selection` (`{start, end}` in UTF-16 offsets) or `cursor`, as for `editor/run` | Read-only planning with the same `_plan_run` and classification as Run. Returns `status: ready`, `scope`, `statements[] {index, kind, action_keys, state: allowed\|denied\|unknown, missing, reason}`, `aggregate {state, missing, reason, warning}`, and `policy {action, text}`; invalid SQL returns `status: invalid`, `code`, `message`, empty statements and an unknown aggregate. Uses only the workspace's cached `privileges-1.0` report for the same connection identity; no connection, saved-password lookup or SQL is sent, and no SQL or credentials are echoed. Missing reports, unmapped statements and sessions that changed roles are unknown. Only an all-denied batch disables Run; mixed batches warn, unknown remains enabled. Read-only policy refusal is independent |
-| `editor/status` | `tab_id`, optional `run_id`, `wait` (seconds, 0 to 60) | `status`, `session`, and `run` (the current or last run, with results once it finished); `status: "none"` when the tab has no session |
+| `editor/status` | `tab_id`, optional `run_id`, `wait` (seconds, 0 to 60), optional `refresh_insights` (true refreshes the insights once per 10 s per tab, skipping an active run) | `status`, `session`, and `run` (the current or last run, with results once it finished); `status: "none"` when the tab has no session. With `refresh_insights` the session can carry `transaction_meter` (`age_seconds`, `age_source`, `rows_modified`, `rows_locked`, `lock_structs`, `blocking`, `blocking_truncated`, `note`; null when no transaction is open), and a run's statements can carry `server_stats` (rows examined, returned and changed, index and scan counters, temporary tables, `errors`, `warnings`) |
 | `editor/stop` | `tab_id`, `connection`, optional `force` | `stopped` (true only when KILL QUERY was sent), `stop_requested`, `message`, `session`. Sends `KILL QUERY` for the session's own connection id from a second connection; later statements of the run do not run. A statement it interrupts ends with an error and is undone (status `stopped`); one that had already finished took effect (status `ok`). A statement still running 15 seconds after the KILL ends the session (`ended_reason: "unresponsive"`). `force: true` ends the session |
 | `editor/commit` | `tab_id`, `connection`, optional `confirmed` with `confirm_token`, `decline` | Like `editor/run` for a tagged `COMMIT`: a write, confirmed on Production and audited |
 | `editor/rollback` | `tab_id`, `connection` | Like `editor/run` for a tagged `ROLLBACK`; no confirmation |
 | `editor/close` | `tab_id`, optional `discard` | `closed`, `session`. Unless `discard: true`, a session whose transaction is open or unknown is not closed: `closed: false`, `reason` `transaction_open` or `transaction_unknown`. Ending the client rolls the transaction back |
+| `editor/use` | `tab_id`, `connection`, `database` (nonblank, 1 to 64 characters, no control characters) | With no session, `{status: "none", database, session: null}`; with an ended session, `status: "session_ended"`; otherwise the session state, `database` and `session`. `_use_database` acquires the run lock, sends tagged `USE` with backquotes doubled, and verifies `SELECT DATABASE()` using the session helper timeout (30 s). Busy or another connection's session is refused |
+| `editor/file/open` | `{}` | Native `.sql` / `.txt` chooser (`file_picker.choose_sql_file`, 120 s), followed by a bounded regular-file read (5 MiB, `SQL_MAX_BYTES`, checked even if the file grows). A file or folder swapped for a link after selection is refused. Returns `{cancelled: false, name, sql, token, warning}` or `{cancelled: true}`; no path is returned. UTF-8 BOM stripped; invalid bytes become U+FFFD with a warning. Local only |
+| `editor/file/save` | `sql` (up to 8,000,000 characters), optional `token`, `save_as: true`, `name` | The token binds a backend path and parent identity; Save as or no token uses `file_picker.choose_save_file`. Returns `{cancelled: false, token, name, path}` or `{cancelled: true}`. Atomic UTF-8 without BOM; symbolic-link targets and changed parent folders refused. Adding `.sql` never overwrites a file; choose its full name to replace it. An expired binding returns `unknown_token`; the UI opens Save as in the same Save operation. Local only; renderer-supplied paths are never used |
 | `editor/history` | optional `action` (`list`, the default, or `clear`), `limit` (default 200), `profile_id` | `items` newest first (`at`, `tab_id`, `connection` profile_id, name, host, port, `engine`, `kind`, `scope`, redacted `sql`, `sql_truncated`, `statements`, `statements_run`, `duration_ms`, `rows`, `affected_rows`, `status`, `error_code`), `max_entries`, `max_bytes`; or `cleared` |
 | `editor/saved/list` | optional `limit` (1 to 500, default 500) | `items`: `saved-query-1.0` records (`docs/schemas/saved-query-1.0.json`: `id`, `name`, `folder`, redacted `sql`, `note`, `database`, `created`, `updated`), the most recently saved, renamed or moved first; `max_entries` (500), `max_bytes` (4 MiB), `max_sql` (20,000 characters, the history's cap). Local only: no connection |
 | `editor/saved/save` | `name` (1 to 200 characters, one line), `sql`, optional `folder` (up to 200, empty for none), `note` (up to 2,000), `database` | `saved` (the record with its `id`) and `redacted` (true when a credential in the SQL was replaced). The SQL, name and note go through `dbops.redact`, as the history, before they are stored; SQL longer than the cap after redaction is refused, and so is a new query when 500 are kept or the store would pass 4 MiB (nothing is dropped) |
@@ -1698,15 +1845,17 @@ and never lowers a saved connection's protection.
 | `editor/saved/delete` | `id` | `deleted: 1`; an unknown `id` is an error ("no longer kept") |
 | `editor/export` | `format` (`csv`, `tsv`, `json`, `sql`, `markdown`), `result` (`columns`: names or `{name, hex, binary, type}`, `rows`), `table` and optional `schema` for `sql`, `engine`, `options` (`header`, `bom`, `formula_guard`, `objects`, `rows_per_insert`) | `format`, `content`, `mime`, `filename`. SQL writes `X'..'` only for columns marked `binary: true` (confirm the `hex` guess first); other values stay quoted text. No server connection; nothing from the connection is included |
 | `audit/declined` | `operation`, `statements` (as the confirmation showed them), optional `target`, `connection` | `audit_id`, `status: "declined"`: records a cancelled confirmation; nothing is sent to the server. The workspace calls it when a Kill sheet is cancelled (Cancel or Escape) with the tagged `KILL` statement, the identity it would have confirmed (`connection_id`, `mode`, `user`, `host`, `trx_started`, `ps_thread_id`), and the same `connection` the Kill would have used |
-| `live/health` | `connection`, optional `interval` (1 to 60 seconds, default 5) | `health-1.0` report: diagnostics (headline, verdict, why, rule, numbers, settings, recommendation, trend), metrics with value, delta, rate, unit, status, why, rule, link, and learn, plus summary, server facts, and notes. The request takes the sampling window to answer |
+| `live/health` | `connection`, optional `interval` (1 to 60 seconds, default 5), `with_identity` (boolean; attaches `reading_server`; a verified server or version change between samples is refused, while an unverifiable identity leaves `verified: false`) | `health-1.0` report: diagnostics (headline, verdict, why, rule, numbers, settings, recommendation, trend), metrics with value, delta, rate, unit, status, why, rule, link, and learn, plus summary, server facts, and notes. The request takes the sampling window to answer |
 | `live/watch` | `connection`, optional `limit` | `watch-1.0`: `threads_running`, `longest_statement`, `longest_lock_wait` (how long an InnoDB transaction has waited for its row lock, from `INNODB_TRX.trx_wait_started` only), `longest_waiting_statement` (a statement waiting for a metadata or table lock, with how long it has run; never judged as a lock wait), `read_at`, `errors` (per field), `notes` and `reason`; one bounded read for Health's **Capture when…** (Threads_running, the process list and `INNODB_TRX`, never `data_lock_waits`); a failed source is named in `errors` and leaves its field null |
 | `live/watch/capture` | `connection`, optional `watch` (the snapshot that tripped) | The `evidence` items for an investigation: the processlist, InnoDB status and locks reports with their text, and the watch snapshot |
 | `live/waits` | `connection`, optional `interval` (2 to 60 seconds, default 10), `limit` (1 to 200, default 20) | `waits-1.0` report: wait events over the window and since start, classes, coverage with enable statements, and notes |
 | `live/indexes` | `connection`, optional `schemas` (a list; the older `schema` still works), `all_schemas: true`, `limit` (1 to 5000; omitted collects the full scoped inventory, capped at 100,000 rows per category) | `indexes-1.0` report: full index inventory, unused, redundant, full scans, no data, summary, and notes. Without `schemas` it reads every user schema when they hold at most 2,000 tables, and otherwise returns 400 with the reason after one count; `all_schemas: true` skips the count |
 | `live/tables` | `connection`, optional `schemas` (a list; none means every user schema), `fresh` (boolean, MySQL: `information_schema_stats_expiry = 0` for this connection only), `limit` (1 to 5000; omitted collects the full scoped inventory, capped at 100,000 rows per category) | `schema-2.0` report: full table inventory, tables without a primary key with checks, fix statements and caveats, generated invisible keys, free space per InnoDB table, shared tablespaces, summary, and notes. Read-only: the statements are text |
-| `live/catalog` | `connection`, `schema`, optional `table` | `catalog-1.0` for the Query editor's schema browser (`schema_browser.py`): without `table`, `level: "tables"` with the schema's `tables` (`name`, `type`: table, view, system view or sequence) in name order, at most `limit` (5,000) with `truncated`; with `table`, `level: "table"` with `columns` (`name`, `type`, `nullable`, `key`, `default`, `extra`, `generated`) and `indexes` (`name`, `unique`, `primary`, `type`, `columns` with `name`, `expression`, `sub_part`). Reads `information_schema` only, tagged `/*myflames:editor*/`, one schema at a time; names are sent as hex literals. A missing table or one without privileges is a 400 error. The saved password is filled like the Server views |
+| `live/catalog` | `connection`, `schema`, optional `table`, optional `group` | `catalog-1.0` for the Query editor's schema browser (`schema_browser.py`): without `table` or `group`, `level: "tables"` with the schema's `tables` (`name`, `type`: table, view, system view or sequence) in name order, at most `limit` (5,000) with `truncated`; with `table`, `level: "table"` with `columns` (`name`, `type`, `nullable`, `key`, `default`, `extra`, `generated`) and `indexes` (`name`, `unique`, `primary`, `type`, `columns` with `name`, `expression`, `sub_part`); with `group` (`routines`, `triggers` or `events`), `level: "objects"` with the schema's `objects` in name order (routines carry `name` and `kind` (procedure or function), triggers `name`, `table`, `event` and `timing`, events `name` and `status`), at most `limit` (200) with `truncated`. Reads `information_schema` only, tagged `/*myflames:editor*/`, one schema at a time; names are sent as hex literals. A missing table or one without privileges is a 400 error. The saved password is filled like the Server views |
 | `live/schemas` | `connection` | `schemas-1.0`: every visible schema with its table count and whether it is a system schema, `user_tables`, and the Indexes limit (`all_limit`, `all_note`). Opens no table |
+| `live/object-search` | `connection`, `text` (2–128 characters) | `object-search-1.0` for the command palette (`schema_browser.object_search`): `objects` (`schema`, `name`, `kind`: table, view, system view, sequence, procedure, function, trigger or event) across every visible schema, name-ordered, at most `limit` (50) with `truncated`. One UNION read of information_schema TABLES, ROUTINES, TRIGGERS and EVENTS with the text as a hex-literal LIKE pattern (wildcards escaped with `!`, `ESCAPE '!'`), tagged `/*myflames:editor*/`, with a 2-second query timeout. The saved password is filled like the Server views; errors never carry it |
 | `live/io` | `connection`, optional `interval` (2 to 60 seconds, default 10), `schema`, `limit` (1 to 200, default 20) | `io-1.0` report: server-wide rates, tables, files and file kinds over the window and since start, and notes |
+| `live/memory` | `connection`, optional `interval` (2 to 60 seconds, default 5) | `memory-1.0` report: `server_product`, `server_version`, tracked allocations over a two-sample window, nullable `source` (`"performance_schema"`, `"mariadb_status"`, or `null` when unavailable), totals and growth, categories, top events, sessions and accounts (bounded lists), instrumentation `coverage` and `collection`, `findings` (rules of thumb), `status` and notes. Read-only; never changes instrumentation |
 | `live/config` | `connection` | `config-1.0` report (internal view id `config`): checks with settings (each with `dynamic`: whether it can change at runtime, or null), defaults, sources, statuses, actions and caveats, summary, notes, and `parameters` (`parameters-1.0` from `myflames/parameters.py` through `config_review.config_report(conn, parameters=True)`: `complete`, `notes`, and `items[]` with `name`, `value`, `truncated`, `scope`, `apply_type`, `modifiable`, `type`, `values`, `min`, `max`, `block_size`, `default`, `source`, `source_label`, `source_path`, `set_time`, `set_user`, `set_host`, `persisted`, `modified`, `description`, `checks`) |
 | `live/variable` | `connection`, `name` | `variable-1.0`: one variable's global and session values, scope, `dynamic`, type, range or values, default, source, the value in `mysqld-auto.cnf` (MySQL), and which modes it allows. Reads only |
 | `live/variable/plan` | `connection`, `name`, `value`, `mode` (`global`, `persist`, `persist_only`, `session`, `reset_persist`) | `variable-plan-1.0`: `status` (`ready` or `refused` with `problems`), the exact `statement`, before values, effect, privileges hint, undo, caveats, the option file line, `alternative` (MariaDB's option file line instead of PERSIST), `expect`, and the connection's `policy`. Reads only |
@@ -1734,6 +1883,10 @@ and never lowers a saved connection's protection.
 | `config/snapshots/save` | `connection`, optional `label` (up to 200 characters) | Reads the global parameters (read-only) and saves them as the server's next snapshot: `id`, `number`, `label`, `server`, `captured_at`, `saved_at`, `source_key`, `complete`, `count` |
 | `config/snapshots/get` | `id` (or `latest`) | The summary plus `snapshot` (`parameter-snapshot-1.0`) |
 | `config/snapshots/delete` | `id` | `deleted: true`, `id`; local only |
+| `baselines/list` | `connection`, `kind` (`health` or `digest`) | `baseline-list-1.0`: this server's baselines, newest first, with `server`, `server_key`, `items` and `max` (20). Always probes the server's identity (3 s query timeout), filling the saved password for that read only; it does not reuse a client-supplied identity |
+| `baselines/save` | `connection`, `kind`, `name`, `report` (a `health-1.0` reading, or `top-1.0` with `read_at` and at most 500 statements) | Validates the report's verified `reading_server`, then reads the current identity (3 s query timeout) and saves the reading (digest literals hidden, no samples), returning the item plus `max`. Refuses an unverified or mismatching reading, another engine/version, a reading taken before a restart, or a 21st baseline of that kind on that server. Health refuses a verified server/version change while collecting its two samples; a reading taken before a restart detected by the save-time uptime check cannot be saved |
+| `baselines/get` | `id` | The item's summary plus its payload; local read |
+| `baselines/delete` | `id` | `deleted: true`, `id`; local only, a missing id is refused |
 | `config/compare` | `source`, `target`, each `{live: {connection}}`, `{profile: NAME_OR_ID}`, `{snapshot: ID_OR_LATEST}` or `{file: JSON_TEXT}` | `parameter-compare-1.0`. Each side reads with its own connection and saved password, at most 120 s; a failed side becomes its `error` and its rows Not compared. Never changes a server |
 | `accounts/compare` | `source`, `target`, each `{live: {connection}}` or `{profile: NAME_OR_ID}` | `account-compare-1.0`: accounts paired by user and host with grant, role, default role and attribute differences, never password hashes |
 | `accounts/export` | `side` (`live` or `profile`), optional `accounts` (`user@host` strings) | `filename` (`account-grants.sql`), `text` (CREATE USER IF NOT EXISTS without a password, GRANT and SET DEFAULT ROLE statements; built-in system accounts left out unless named), `side`. Text only, never run |

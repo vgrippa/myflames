@@ -1,6 +1,17 @@
-"""Generate interactive collapsible plan tree SVG from parsed EXPLAIN tree."""
+"""Generate interactive collapsible plan tree SVG from parsed EXPLAIN tree.
+
+A misestimated operator (``details["misestimate"]``, parser) carries the
+row-estimate chip at the right end of its row's label column, and its
+details name the estimate; charts/tree.ts draws the same.
+"""
 import math
+from ._labels import fit_label
+from .output_workbench import MARK_COLOR, MARK_FILL, _misestimate, mark_width
 from .parser import xml_escape, flatten_nodes, render_info_panel
+
+#: Row-estimate chip height and its gap to the number columns (charts/tree.ts).
+MARK_ROW_H = 16
+MARK_GAP = 6
 
 _LOW_RGB = (0xde, 0xeb, 0xf7)   # light blue (low self-time)
 _HIGH_RGB = (0x21, 0x71, 0xb5)  # dark blue (high self-time)
@@ -68,6 +79,9 @@ def _row_info(node, root_total, unit_display):
                      else "Rows: not measured")
     elif rows is not None:
         parts.append(f"Rows: {float(rows):.0f}")
+    miss = _misestimate(details)
+    if miss:
+        parts.append("Row estimate: " + miss["text"])
     loops = node.get("loops")
     if loops and loops > 1:
         parts.append(f"Loops: {int(loops)}")
@@ -160,6 +174,7 @@ def render_tree(root, width=1200, title="MySQL Query Plan", unit_display="ms", a
         "  .col-hdr { font-size: 12px; fill: #666; font-weight: 600; }",
         "  .row-label { font-size: 11px; fill: #222; }",
         "  .row-label.warn { fill: #b71c1c; }",
+        f"  .mfc-mis {{ font-size: 11px; font-weight: 600; fill: {MARK_COLOR}; }}",
         "  .toggle { font-size: 13px; fill: #333; cursor: pointer; }",
         "  .toggle:hover { fill: #000; }",
         "  .leaf-indicator { font-size: 13px; fill: #bbb; cursor: default; }",
@@ -203,6 +218,12 @@ def render_tree(root, width=1200, title="MySQL Query Plan", unit_display="ms", a
             label = label[:45] + "\u2026"
 
         is_warn = (node.get("short_label") or "").strip() in highlight_set
+        miss = _misestimate(node.get("details"))
+        mark_w = mark_width(miss["label"]) if miss else 0
+        if miss:
+            # The chip ends the label column; the label keeps the room before it.
+            label = fit_label(label, LABEL_W - depth * INDENT - TOGGLE_W - 2 * MARK_GAP - mark_w
+                              - (16 if is_warn else 0), 11, 0.59, prefer_middle=False)
         info_str = _row_info(node, root_total, unit_display)
         color = _row_color(self_t, root_total)
 
@@ -254,6 +275,16 @@ def render_tree(root, width=1200, title="MySQL Query Plan", unit_display="ms", a
             f'<text class="{label_class}" x="{label_x}" y="{text_y}"'
             f' pointer-events="none">{xml_escape(warn_prefix + label)}</text>'
         )
+        if miss:
+            chip_x = LEFT + LABEL_W - MARK_GAP - mark_w
+            lines.append(
+                f'<rect class="mfc-mis-chip" x="{chip_x:.1f}" y="{y + 5}" width="{mark_w:.1f}"'
+                f' height="{MARK_ROW_H}" rx="8" fill="{MARK_FILL}" stroke="{MARK_COLOR}" pointer-events="none"/>'
+            )
+            lines.append(
+                f'<text class="mfc-mis" x="{chip_x + mark_w / 2:.1f}" y="{text_y}" text-anchor="middle"'
+                f' pointer-events="none">{xml_escape(miss["label"])}</text>'
+            )
         # Self time
         lines.append(
             f'<text class="row-time" x="{self_col_x + SELF_W - 4}" y="{text_y}"'

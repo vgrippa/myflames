@@ -103,6 +103,7 @@ import json
 import os
 import re
 import secrets
+import stat
 import subprocess
 import tempfile
 import threading
@@ -112,6 +113,7 @@ import weakref
 
 from .connector import ConnectorError, MySQLConnection
 from .server_info import identity_from_version, parse_version_tuple, product_identity
+from .editor_insights import EditorInsights
 
 SCHEMA_VERSION = "editor-session-1.0"
 RUN_SCHEMA_VERSION = "editor-run-1.0"
@@ -481,7 +483,7 @@ class Run(object):
     """One run in a session: the statements, their results, its state."""
 
     def __init__(self, units, limit, options, sql_text, offsets, scope, kind="run", audit=None, timeout=None,
-                 history=None, alter_context=None):
+                 history=None, alter_context=None, continue_on_error=False):
         self.id = uuid.uuid4().hex
         self.units = units
         self.limit = limit
@@ -514,12 +516,15 @@ class Run(object):
         self.message = None
         self.failed = None
         self.interrupted = False
+        #: Run all keeps going past a statement error (the tab's On error
+        #: option); Stop, a lost session and a declined review still stop it.
+        self.continue_on_error = continue_on_error
         self.snapshot_cache = None
         self.audit_id = None
         self.history_id = None
 
 
-class EditorSession(object):
+class EditorSession(EditorInsights):
     """One client process (one server session) for one editor tab."""
 
     #: Extra client options for a private session that needs them (Import
@@ -561,7 +566,10 @@ class EditorSession(object):
         self.in_transaction = None
         self.transaction_source = None
         self.transaction_note = None
+        self._init_insights()
         self.sql_mode = None
+        #: The session's default database, read with DATABASE() in refresh_state.
+        self.database_name = None
         # A new-session SHOW GRANTS report cannot describe this session
         # after SET ROLE (including an uncertain/failed send).
         self.privileges_changed = False
@@ -1221,6 +1229,8 @@ class EditorSession(object):
             self.in_transaction = row.get("in_transaction") == "1"
             self.transaction_source = "in_transaction"
             self.transaction_note = None
+        # DATABASE() is NULL when the session has no default database.
+        self.database_name = row.get("database_name") or None
 
     @property
     def backslash_escapes(self):
@@ -1297,7 +1307,8 @@ class EditorSession(object):
             extra = ", @@in_transaction AS in_transaction"
         token = secrets.token_hex(6)
         step = self._helper(TAG + "SELECT '%s' AS myflames_editor, CONNECTION_ID() AS connection_id, @@autocommit AS "
-                                  "autocommit, @@sql_mode AS sql_mode, @@sql_safe_updates AS sql_safe_updates%s"
+                                  "autocommit, @@sql_mode AS sql_mode, @@sql_safe_updates AS sql_safe_updates, "
+                                  "DATABASE() AS database_name%s"
                             % (token, extra))
         row = self._helper_row(step)
         lost = False
@@ -1318,6 +1329,7 @@ class EditorSession(object):
         if reconnected:
             self._terminate()
             return False
+        self._refresh_transaction_meter()
         return True
 
     def status(self):
@@ -1335,6 +1347,8 @@ class EditorSession(object):
                 "connection_id": self.connection_id, "autocommit": self.autocommit,
                 "in_transaction": self.in_transaction, "transaction_source": self.transaction_source,
                 "transaction_note": self.transaction_note, "sql_mode": self.sql_mode,
+                "transaction_meter": self._transaction_meter_status(),
+                "database_name": self.database_name,
                 "backslash_escapes": self.backslash_escapes if self.sql_mode is not None else None,
                 "safe_updates": self.safe_updates, "safe_updates_default": self.safe_updates_default,
                 "read_only_transactions": self.read_only,
@@ -1358,7 +1372,7 @@ class EditorSession(object):
         """
         from . import dbops
         from .live import analyze_unsupported, client_error_text
-        if not self.run_lock.acquire(False):
+        if not self._acquire_run_lock():
             raise EditorError("A statement is already running in this tab. Wait for it or press Stop.", "busy")
         previous, run, timer = None, None, None
         saved_version, rollback, problem = None, False, None
@@ -1483,11 +1497,13 @@ class EditorSession(object):
         return raw
 
     def busy(self):
+        # A transaction meter poll is not busy: user operations wait for it
+        # (_acquire_run_lock) instead of refusing.
         with self.lock:
             return self.run is not None and not self.run.done.is_set()
 
     def start_run(self, run):
-        if not self.run_lock.acquire(False):
+        if not self._acquire_run_lock():
             raise EditorError("A statement is already running in this tab. Wait for it or press Stop.", "busy")
         previous_run = None
         statements = []
@@ -1521,6 +1537,9 @@ class EditorSession(object):
                     verified = ["server_identity"]
                     if run.alter_context is not None:
                         target["alter_table"] = {k: run.alter_context.get(k) for k in ("schema", "table")}
+                        index = _alter_index_name(_alter_unit({"units": run.units}))
+                        if index is not None:
+                            target["alter_table"]["index"] = index
                         verified.append("alter_context")
                     run.audit_id = run.audit.attempt(statements, target=target, verified=verified)
                 except Exception as exc:
@@ -1568,6 +1587,8 @@ class EditorSession(object):
                 timer.start()
             for unit in run.units:
                 unit["status"] = "pending"
+            history_boundary = self._history_boundary(run) if run.kind == "run" else None
+            replaced = False
             for unit in run.units:
                 with self.lock:
                     if run.stop_requested or self.ended:
@@ -1598,12 +1619,23 @@ class EditorSession(object):
                 else:
                     # Completed, also when a Stop arrived as it finished.
                     unit["status"] = "ok"
-                if self.ended or unit["status"] in ("error", "stopped", "session_ended"):
+                replaced = replaced or may_replace_transaction(unit, errors)
+                if self.ended or unit["status"] in ("stopped", "session_ended"):
+                    break
+                if unit["status"] == "error" and not (run.continue_on_error and run.kind == "run"):
                     break
             for unit in run.units:
                 if unit.get("status") == "pending":
                     unit["status"] = "not_run"
             if not self.ended:
+                if run.kind == "run":
+                    self._collect_statement_history(run, history_boundary)
+                # A script can replace a transaction without exposing its
+                # intermediate closed state. Do not carry the previous age
+                # into a new transaction when PROCESS is unavailable: the
+                # observed age must stay a lower bound.
+                if replaced:
+                    self._transaction_seen_at = None
                 # Also tells whether an error that read like a lost connection was one:
                 # the helper fails with it only when the connection is really gone.
                 self.refresh_state()
@@ -1687,6 +1719,8 @@ class EditorSession(object):
                      "end": offsets.to_js(end), "verb": unit.get("verb"), "kind": unit.get("kind"),
                      "category": unit.get("category"), "status": unit.get("status", "pending"),
                      "duration_ms": unit.get("duration_ms")}
+            if "server_stats" in unit:
+                entry["server_stats"] = unit["server_stats"]
             if unit["lead"] or unit.get("explain_prefix"):
                 entry["sent"] = unit["send"]
             statements.append(entry)
@@ -1742,6 +1776,7 @@ class EditorSession(object):
                 "scope": run.scope, "started_at": run.started_at, "finished_at": run.finished_at,
                 "duration_ms": _ms(run.duration), "limit": run.limit, "statements": statements,
                 "results": results, "error": first_error, "stopped": stopped, "message": run.message,
+                "on_error": "continue" if run.continue_on_error else "stop",
                 "counts": totals, "audit_id": run.audit_id, "history_id": run.history_id}
 
     def snapshot(self, run=None):
@@ -2292,7 +2327,8 @@ def saved_query_entry(name, folder, sql, note, database):
 #: Every editor endpoint (ui.py adds them to its allowlist).
 PATHS = ("/api/editor/open", "/api/editor/run", "/api/editor/status", "/api/editor/stop",
          "/api/editor/commit", "/api/editor/rollback", "/api/editor/close", "/api/editor/history",
-         "/api/editor/export", "/api/editor/preview",
+         "/api/editor/export", "/api/editor/preview", "/api/editor/use",
+         "/api/editor/file/open", "/api/editor/file/save",
          "/api/editor/saved/list", "/api/editor/saved/save", "/api/editor/saved/rename",
          "/api/editor/saved/move", "/api/editor/saved/delete")
 #: Writes: the policy runs first, the saved password is filled only after it.
@@ -2541,14 +2577,35 @@ def _alter_unit(plan):
     return next((u for u in plan["units"] if _ALTER_TABLE.match(u["code"])), None)
 
 
+def _alter_index_name(unit):
+    """Name one index from the reviewed, masked SQL, never client metadata.
+
+    Fail closed for compound ALTERs. The index actions use these single
+    clauses; the existing splitter owns comments and quoted identifiers.
+    """
+    if unit is None:
+        return None
+    table = _ALTER_TABLE.match(unit["code"])
+    if table is None:
+        return None
+    clause = unit["code"][table.end():].strip().rstrip(';').strip()
+    if re.fullmatch(r'DROP\s+PRIMARY\s+KEY', clause, re.I):
+        return 'PRIMARY'
+    match = re.fullmatch(r'(?:ALTER\s+INDEX\s+(' + _SQL_NAME +
+                         r')\s+(?:VISIBLE|INVISIBLE|IGNORED|NOT\s+IGNORED)|DROP\s+(?:INDEX|KEY)\s+(' +
+                         _SQL_NAME + r'))', clause, re.I)
+    return restore_idents(match.group(1) or match.group(2), unit["idents"]) if match else None
+
+
 def _alter_binding(session, review):
     # DATABASE() can change between requests on the same tab. Bind unqualified
     # ALTERs to that schema as well as the live session and server identity.
     return [session.connection_id, session.server_identity, review.get("schema"), review.get("table")]
 
 
-def _review_digest(tab_id, identity, statements, decision):
-    return _digest(tab_id, identity, statements, ["run", decision.get("alter_binding")])
+def _review_digest(tab_id, identity, statements, decision, on_error):
+    # Continuing after an error can send writes a stop-mode review would not.
+    return _digest(tab_id, identity, statements, ["run", decision.get("alter_binding"), on_error])
 
 
 def _alter_review(plan, session):
@@ -2569,7 +2626,7 @@ def _alter_review(plan, session):
                 raise ConnectorError(session._helper_problem(step) or "Preflight read did not complete.")
             return [row for entry in step.entries if entry["type"] == "rows" for row in entry["rows"]]
 
-    if not session.run_lock.acquire(False):
+    if not session._acquire_run_lock():
         raise EditorError("A statement is already running in this tab. Wait for it or press Stop.", "busy")
     try:
         reader = Reader()
@@ -2962,6 +3019,46 @@ def implicit_commit(unit):
     return bool(_IMPLICIT_COMMIT.match(code) or _AUTOCOMMIT_ON.match(code))
 
 
+#: COMMIT or ROLLBACK, except ROLLBACK [WORK] TO [SAVEPOINT] name, which
+#: returns to a savepoint inside the open transaction (SQLCOM_ROLLBACK_TO_
+#: SAVEPOINT: M/sql/sql_yacc.yy:17994-18000, Ma/sql/sql_yacc.yy:18751-18762).
+_ENDING_CONTROL = re.compile(r"\s*(?:COMMIT|ROLLBACK(?!\s+(?:WORK\s+)?TO\b))\b", re.I)
+#: ER_PARSE_ERROR: the server rejected the text before running any of it.
+_PARSE_ERROR = 1064
+
+
+def may_replace_transaction(unit, errors):
+    """True when *unit*, as it ran, may have ended the session's transaction,
+    so an age observed before it is no longer a lower bound for the
+    transaction open afterwards.
+
+    COMMIT, ROLLBACK (not to a savepoint) and statements that commit
+    implicitly end it when they run or are stopped; failed DDL may have
+    committed before its error. A COMMIT or ROLLBACK that fails is kept:
+    it either fails its state check first and changes nothing, or clears
+    SERVER_STATUS_IN_TRANS before the engine call, which rolls back on
+    failure (M/sql/transaction.cc:242-247 and 399-406, Ma/sql/transaction.cc:
+    262-271 and 379-388), and the run stops at it. So the state read after
+    the run decides: a transaction still open then is the same one. A
+    failing BEGIN can leave a new one open (Ma/sql/handler.cc:3475-3478 after
+    Ma/sql/transaction.cc:205-206), so it is not kept. A parse error ran
+    nothing.
+    """
+    if unit.get("status") not in ("ok", "error", "stopped"):
+        return False
+    # Under a custom DELIMITER one client statement can hold several server
+    # statements; code masks strings and comments, so ';' separates them.
+    parts = [part for part in unit["code"].split(";") if part.strip()]
+    if not any(_ENDING_CONTROL.match(part) or implicit_commit({"code": part}) for part in parts):
+        return False
+    if unit["status"] != "error" or len(parts) > 1 or not unit.get("single", True):
+        return True
+    codes = [error.get("code") for error in errors or []]
+    if codes and all(code == _PARSE_ERROR for code in codes):
+        return False
+    return not _ENDING_CONTROL.match(parts[0])
+
+
 def _commit_warnings(units, session):
     """Warnings for statements that would commit a transaction that is (or
     may be) open in the session."""
@@ -3114,7 +3211,7 @@ SAFE_UPDATES_ON = TAG + "SET SESSION sql_safe_updates = 1"
 
 def _set_safe_updates(session, statement, audit=None):
     """Send the tab's safe-updates setting (tagged); busy when a run is out."""
-    if not session.run_lock.acquire(False):
+    if not session._acquire_run_lock():
         raise EditorError("A statement is running in this tab. Wait for it or press Stop.", "busy")
     try:
         session._verify_identity(audit, [statement])
@@ -3177,6 +3274,56 @@ def _lower_safe_updates_gate(registry, payload, tab_id, identity, safety, name, 
     return blocked, audit
 
 
+def _use_database(session, name):
+    """Send ``USE `name``` in the tab's session (tagged helper) and verify the
+    change by reading DATABASE() again. dbops classifies USE as a read of
+    category "session": no confirmation, no audit; the write policy applies
+    to the statements that run in the database afterwards. Backquotes in the
+    name are doubled, so the identifier is never split into SQL."""
+    if not session._acquire_run_lock():
+        raise EditorError("A statement is running in this tab. Wait for it or press Stop.", "busy")
+    try:
+        if session.ended:
+            raise EditorError(session.end_message or SESSION_ENDED_TEXT, "session_ended")
+        statement = "USE `%s`" % name.replace("`", "``")
+        step = session._helper(TAG + statement, results=0)
+        errors = step.real_errors()
+        if not step.marker or session.ended:
+            raise EditorError(session.end_message or SESSION_ENDED_TEXT, "session_ended")
+        if errors:
+            from . import dbops
+            raise EditorError(dbops.redact(errors[0].get("message") or "The server refused the database change.",
+                                           session._conn.password if session._conn is not None else None), "error")
+        if not session.refresh_state() or session.ended:
+            raise EditorError("The database change could not be verified; its outcome is unknown.", "unknown")
+        if session.database_name != name:
+            raise EditorError("The database change could not be verified; its outcome is unknown.", "unknown")
+    finally:
+        session.run_lock.release()
+
+
+def _use_api(payload, workspace):
+    """Change the default database of the tab's session. With no session yet
+    the choice is only kept by the tab and applies when the session opens."""
+    registry = _registry(workspace)
+    tab_id = _tab_id(payload)
+    _, identity, _, _ = _connection_facts(payload, workspace.store)
+    name = payload.get("database")
+    if not isinstance(name, str) or not name.strip() or len(name) > 64:
+        raise ValueError("Choose a database name (1 to 64 characters).")
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in name):
+        raise ValueError("The database name contains characters a schema name cannot have.")
+    session = _session_for(registry, tab_id, identity)
+    if session is None:
+        return {"status": "none", "database": name, "session": None}
+    if session.ended:
+        return {"status": "session_ended", "message": session.end_message or SESSION_ENDED_TEXT,
+                "session": session.status()}
+    _use_database(session, name)
+    return {"status": session.status()["state"], "database": session.database_name,
+            "session": session.status()}
+
+
 def _wait_run(run, payload, default):
     wait = _number(payload, "wait", default, 0, 60, "wait")
     if wait:
@@ -3214,6 +3361,9 @@ def _run_api(payload, workspace, fill_password):
     options, identity, safety, name = _connection_facts(payload, store)
     limit = int(_number(payload, "limit", DEFAULT_LIMIT, 1, MAX_LIMIT, "limit"))
     timeout = _number(payload, "timeout", 0, 0, 86400, "timeout") or None
+    on_error = payload.get("on_error", "stop")
+    if on_error not in ("stop", "continue"):
+        raise ValueError("on_error must be stop or continue.")
     if _start_preference(payload) is False:
         raise EditorError("Turn safe updates off with editor/open; on a Production connection it asks first.",
                           "invalid")
@@ -3261,7 +3411,7 @@ def _run_api(payload, workspace, fill_password):
             decision["warnings"] += review.get("warnings", [])
     statements = [u["send"] for u in plan["units"]]
     writes = [u["send"] for u in plan["units"] if u.get("kind") != "read"]
-    digest = _review_digest(tab_id, identity, statements, decision)
+    digest = _review_digest(tab_id, identity, statements, decision, on_error)
     audit = _audit_trail(store, "editor_run", safety, options, password, decision)
     blocked = _gate(registry, decision, payload, digest, audit, statements, writes, name, options)
     if blocked is not None:
@@ -3303,7 +3453,7 @@ def _run_api(payload, workspace, fill_password):
         if (decision["action"] == "refuse" or again != statements
                 or decision["action"] != initial_decision["action"]
                 or decision.get("warnings") != initial_decision.get("warnings")):
-            digest = _review_digest(tab_id, identity, again, decision)
+            digest = _review_digest(tab_id, identity, again, decision, on_error)
             audit = _audit_trail(store, "editor_run", safety, options, password, decision)
             blocked = _gate(registry, decision, dict(payload, confirmed=False), digest, audit, again,
                             [u["send"] for u in plan["units"] if u.get("kind") != "read"], name, options)
@@ -3316,7 +3466,8 @@ def _run_api(payload, workspace, fill_password):
     run = Run(plan["units"], limit, full_options, history_sql, plan["offsets"], plan["scope"],
               audit=audit if has_write else None, timeout=timeout,
               history={"record": _history_recorder(store, session, password)},
-              alter_context=decision.get("alter_preflight"))
+              alter_context=decision.get("alter_preflight"),
+              continue_on_error=on_error == "continue" and plan["scope"] == "all")
     changed = _policy_changed(payload, store, identity, safety, audit, [u["send"] for u in plan["units"]])
     if changed:
         # Nothing was sent. A session this request started (under the old
@@ -3324,7 +3475,7 @@ def _run_api(payload, workspace, fill_password):
         # existing one is kept, as is one another request holds for a run or
         # helper (run_lock is held for a whole run, so taking it reserves the
         # session: a later start_run sees it ended and refuses).
-        if started.get("session") is session and session.run_lock.acquire(False):
+        if started.get("session") is session and session._acquire_run_lock():
             try:
                 registry.remove(tab_id, session)
                 session.end("policy_changed", quiet=True)
@@ -3472,6 +3623,106 @@ def _open_api(payload, workspace, fill_password):
     return {"status": session.status()["state"], "session": session.status()}
 
 
+# ---- SQL files (Open SQL file, Save, Save as) ---------------------------------
+#
+# A tab opened from a file remembers it as an opaque token; the absolute path
+# and its canonical parent's device/inode stay in this map for this backend's
+# lifetime. The renderer never supplies a write path or a parent identity.
+# The map is bounded; the oldest binding is dropped.
+
+_FILE_TOKEN_MAX = 200
+_FILE_TOKENS = {}
+_FILE_TOKENS_LOCK = threading.Lock()
+
+
+def _file_token_remember(path, parent_identity=None):
+    from .file_picker import file_parent_identity
+    if parent_identity is None:
+        path = os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path))
+        parent_identity = file_parent_identity(path)
+    with _FILE_TOKENS_LOCK:
+        while len(_FILE_TOKENS) >= _FILE_TOKEN_MAX:
+            del _FILE_TOKENS[next(iter(_FILE_TOKENS))]
+        token = secrets.token_hex(16)
+        _FILE_TOKENS[token] = (path, parent_identity)
+        return token
+
+
+def _file_token_binding(token):
+    if not isinstance(token, str) or not token or len(token) > 100:
+        raise ValueError("Pass the file token of a file this workspace opened or saved.")
+    with _FILE_TOKENS_LOCK:
+        binding = _FILE_TOKENS.get(token)
+    if binding is None:
+        raise EditorError("This tab's file binding is gone (the workspace server restarted). "
+                          "Use Save as to choose the file again.", "unknown_token")
+    return binding
+
+
+def _file_open_api(payload):
+    """Choose a .sql/.txt file with the native dialog and read it (at most
+    5 MiB, UTF-8; a BOM is stripped and invalid bytes become U+FFFD with a
+    one-line warning). Local file only: no connection, no server."""
+    from .file_picker import SQL_MAX_BYTES, choose_sql_file, file_parent_identity, open_for_read
+    chosen = choose_sql_file()
+    if chosen.get("cancelled"):
+        return {"cancelled": True}
+    # The chooser already resolved and checked the path (file_picker.check_file).
+    # Resolving it again would follow a link swapped in since; instead the
+    # file and its folder are opened without following one, nor waiting on a FIFO.
+    path = chosen["path"]
+    parent_identity = file_parent_identity(path)
+    fd = open_for_read(path, parent_identity)
+    with os.fdopen(fd, "rb") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("Choose a regular SQL file.")
+        if info.st_size > SQL_MAX_BYTES:
+            raise ValueError("The file is larger than 5 MiB. Open it in smaller parts.")
+        raw = handle.read(SQL_MAX_BYTES + 1)
+    if len(raw) > SQL_MAX_BYTES:
+        raise ValueError("The file is larger than 5 MiB. Open it in smaller parts.")
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raw = raw[3:]
+    warning = None
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw.decode("utf-8", "replace")
+        warning = ("Some bytes were not valid UTF-8 and were replaced with the replacement "
+                   "character (U+FFFD); saving writes the replaced text.")
+    return {"cancelled": False, "name": os.path.basename(path), "sql": text,
+            "token": _file_token_remember(path, parent_identity), "warning": warning}
+
+
+def _file_save_api(payload):
+    """Write the tab's SQL to its bound file (the token's path), or ask where
+    with the native save dialog (Save as, or a tab without a binding). The
+    write is atomic (temp file, fsync, rename), UTF-8 without a BOM."""
+    from .file_picker import SQL_EXTENSIONS, check_save_destination, choose_save_file, write_text_atomic
+    sql = payload.get("sql")
+    if not isinstance(sql, str):
+        raise ValueError("Pass the SQL text to save.")
+    if len(sql) > 8 * 1000 * 1000:
+        raise ValueError("The SQL text is too large to save (8,000,000 characters at most).")
+    token = payload.get("token")
+    overwrite = True
+    if payload.get("save_as") is True or not token:
+        chosen = choose_save_file(payload.get("name") or "query.sql")
+        if chosen.get("cancelled"):
+            return {"cancelled": True}
+        path, parent_identity, overwrite = check_save_destination(chosen["path"])
+    else:
+        path, parent_identity = _file_token_binding(token)
+        # Do not resolve a token's parent again and silently bind a different
+        # directory. The writer compares its identity at the write boundary.
+        if os.path.splitext(path)[1].lower() not in SQL_EXTENSIONS:
+            raise ValueError("Save as a .sql or .txt file.")
+    write_text_atomic(path, sql, parent_identity=parent_identity, overwrite=overwrite)
+    return {"cancelled": False, "token": _file_token_remember(path, parent_identity),
+            "name": os.path.basename(path), "path": path}
+
+
 def api_response(path, payload, workspace, fill_password=None):
     """Answer one /api/editor/* request. *fill_password(payload)* returns the
     payload with the saved password filled in (ui._with_saved_password); it is
@@ -3484,6 +3735,11 @@ def api_response(path, payload, workspace, fill_password=None):
     if path == "/api/editor/export":
         return export_result(payload.get("format"), payload.get("result"), payload.get("table"),
                              payload.get("schema"), payload.get("engine") or "mysql", payload.get("options"))
+    if path == "/api/editor/file/open":
+        # Local files, no server: they need no connection or workspace store.
+        return _file_open_api(payload)
+    if path == "/api/editor/file/save":
+        return _file_save_api(payload)
     if path == "/api/editor/preview":
         return _preview_api(payload, workspace)
     store = workspace.store
@@ -3519,6 +3775,8 @@ def api_response(path, payload, workspace, fill_password=None):
             raise ValueError("That saved query is no longer kept on this computer.")
         return {"deleted": 1}
     registry = _registry(workspace)
+    if path == "/api/editor/use":
+        return _use_api(payload, workspace)
     if path == "/api/editor/run":
         return _run_api(payload, workspace, fill_password)
     if path == "/api/editor/commit":
@@ -3542,6 +3800,8 @@ def api_response(path, payload, workspace, fill_password=None):
     if path == "/api/editor/status":
         if session is None:
             return {"status": "none", "session": None, "run": None}
+        if payload.get("refresh_insights") is True:
+            session.refresh_transaction_meter()
         run = session.run
         run_id = payload.get("run_id")
         if run is not None and (run_id is None or run_id == run.id):

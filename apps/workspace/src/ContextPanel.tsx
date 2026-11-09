@@ -1,8 +1,35 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { number, time, type Operator, type Plan } from "./api";
+import type { Misestimate } from "./charts/core/types";
 import { Disclosure, Fields, InspectorSection, Segmented, StatusPill } from "./kit";
+import { CopySql } from "./PerfShared";
 import { AllOccurrences } from "./PlanStats";
 import { severityText } from "./compareText";
+
+/** The parser's row-estimate verdict for the selected operator and, when the
+ * capture read this table's statistics, the advisor's evidence and the
+ * ANALYZE TABLE statement to copy (myflames never runs it). */
+function RowEstimate({ mark }: { mark: Misestimate }) {
+  const evidence = mark.evidence;
+  return (
+    <InspectorSection title="Row estimate" info={mark.reason}>
+      <p className="misestimate-verdict">
+        <span className="misestimate-tag">{mark.label}</span>
+        <span>{mark.text}</span>
+      </p>
+      {evidence && <>
+        <Fields label="Table statistics" rows={[
+          ["Table", <bdi>{evidence.table}</bdi>],
+          ["Statistics updated", evidence.last_update
+            ? <span title={`Server time: ${evidence.last_update}`}>{evidence.last_update}</span> : "Not recorded"],
+          ["Rows in statistics", evidence.n_rows === null ? "Not recorded" : number(evidence.n_rows)],
+          ["Histograms", evidence.histograms.length ? <bdi>{evidence.histograms.join(", ")}</bdi> : "None"],
+        ]} />
+        <CopySql sql={evidence.statement} label="ANALYZE TABLE statement" />
+      </>}
+    </InspectorSection>
+  );
+}
 
 /** The inspector owns operator detail and the linked list, leaving the canvas
  * height independent of the operator count. The runtime owns metric values. */
@@ -29,7 +56,9 @@ export function ContextPanel({
   const picked = useRef(false);
   const setTab = (value: string) => { picked.current = true; setTabState(value); };
   const selectedId = selected?.node_id;
-  const group = plan.chart_data?.nodes.find(node => node.id === selectedId)?.group;
+  const chartNode = plan.chart_data?.nodes.find(node => node.id === selectedId);
+  const group = chartNode?.group;
+  const mark = chartNode?.misestimate;
 
   useEffect(() => { if (selectedId && !picked.current) setTabState("measurements"); }, [selectedId]);
   const findings = plan.analysis.warnings.filter((w) => !selected ||
@@ -61,6 +90,7 @@ export function ContextPanel({
               {collapsed ? "Expand branch" : "Collapse branch"}
             </button>}
           </div>}
+          {mark && <RowEstimate mark={mark} />}
           <InspectorSection title="Measurements" info="Times include all loops. Row counts are per loop.">
             <Fields rows={[
               ["Self time", measured ? time(selected.self_time_ms) : "—"],

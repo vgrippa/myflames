@@ -461,15 +461,39 @@ def read_variables(conn):
     return variables
 
 
-def take_sample(conn, clock=None):
+def take_sample(conn, clock=None, with_identity=False, include_variables=False):
     """One ``SHOW GLOBAL STATUS`` read: {status, t, taken_at}.
 
-    ``t`` is the monotonic clock when the result arrived; the server read the
-    status just before, after the connection was set up, so both samples
-    carry the same small bias and the window between them stays accurate.
+    ``t`` is the monotonic clock when the status rows arrived, before any
+    identity tail. The server read the status just before, after connection
+    setup; waiting for identity must not move this sample's timestamp.
     """
-    status = _pairs(_rows(conn, "SHOW GLOBAL STATUS"))
-    return {"status": status, "t": (clock or time.monotonic)(), "taken_at": _now()}
+    clock = clock or time.monotonic
+    extra = {}
+
+    def mark_sample():
+        extra['t'], extra['taken_at'] = clock(), _now()
+
+    if with_identity:
+        from .baselines import read_with_identity
+        statements = ["SHOW GLOBAL STATUS"]
+        if include_variables:
+            # Read pool settings too, avoiding another client invocation
+            # whose configuration could come from another backend.
+            names = tuple(VARIABLES) + tuple(POOL_VARIABLES)
+            # Configuration precedes the status: its cost is outside the
+            # measured window and both samples have the same status tail.
+            statements.insert(0, "SHOW GLOBAL VARIABLES WHERE Variable_name IN (%s)"
+                              % ", ".join("'%s'" % v for v in names))
+        groups, identity = read_with_identity(conn, statements, HEALTH_TAG, on_data=mark_sample)
+        status = _pairs(groups[-1])
+        extra["reading_server"] = identity
+        if include_variables:
+            extra["variables"] = _pairs(groups[0])
+    else:
+        status = _pairs(_rows(conn, "SHOW GLOBAL STATUS"))
+        mark_sample()
+    return dict(extra, status=status)
 
 
 def _check_interval(interval):
@@ -479,27 +503,49 @@ def _check_interval(interval):
     return interval
 
 
-def health_report(conn, interval=DEFAULT_INTERVAL, sleep=None, clock=None):
+def health_report(conn, interval=DEFAULT_INTERVAL, sleep=None, clock=None, with_identity=False):
     """Return the ``health-1.0`` report. Read-only; see the module docstring.
 
     Reads the variables, samples the status, waits until *interval* seconds
     have passed since the first sample, samples again, and computes.
     *sleep* and *clock* default to time.sleep and time.monotonic.
+    With *with_identity*, configuration shares the first sample's client
+    invocation and each sample carries its identity. Different servers or
+    versions refuse the window; an incomplete identity cannot be saved.
     """
     interval = _check_interval(interval)
     sleep = sleep or time.sleep
     clock = clock or time.monotonic
     try:
-        variables = read_variables(conn)
-        first = take_sample(conn, clock)
+        if with_identity:
+            first = take_sample(conn, clock, with_identity=True, include_variables=True)
+            variables = first["variables"]
+        else:
+            variables = read_variables(conn)
+            first = take_sample(conn, clock)
         remaining = interval - (clock() - first["t"])
         if remaining > 0:
             sleep(remaining)
-        second = take_sample(conn, clock)
+        second = take_sample(conn, clock, with_identity=with_identity)
     except ConnectorError as exc:
         text = " ".join(str(exc).split())
         raise ValueError("Could not read the server status: " + re.sub(r"^mysql client exited \d+:\s*", "", text))
-    return compute_health(first, second, variables, interval)
+    if with_identity:
+        a, b = first["reading_server"], second["reading_server"]
+        if a.get("verified") and b.get("verified"):
+            if a["server_key"] != b["server_key"] or a["server"]["version"] != b["server"]["version"]:
+                raise ValueError("The server changed between Health samples. Refresh to sample again.")
+            reading = b
+        else:
+            reading = {"verified": False, "error": "The server identity could not be verified for both Health "
+                       "samples. Refresh to sample again."}
+    report = compute_health(first, second, variables, interval)
+    if with_identity:
+        report["reading_server"] = reading
+        report["notes"][-1] = ("Statuses are rules of thumb, not verdicts; each metric and diagnostic says which "
+                               "rule it uses. Each window includes this tool's status and identity checks and "
+                               "their connections.")
+    return report
 
 # ---- arithmetic (pure) ----------------------------------------------------------
 

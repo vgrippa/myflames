@@ -1,4 +1,5 @@
 import { chooseConnection, connectionOption } from "./chrome-helpers.mjs";
+import { objectAuditFixture, assertObjectHistory } from "./object-changes-fixture.mjs";
 // Parameters: synthetic catalog metadata on recorded config-1.0 reports,
 // mocked planning and apply endpoints, bounded batch review, declined audits,
 // partial success, legacy fallback, source inspection and responsive tables.
@@ -169,6 +170,7 @@ let catalog = mysql;
 const applied = [], planned = [], declined = [], variableReads = [];
 let planReply = null, applyReply = null, variableReply = null;
 let useSingleFixtures = false;
+let objectAuditReply = objectAuditFixture;
 const variables = {
   "mysql:max_connections": await load("variable-mysql-8.4-global.json"),
   "mysql:innodb_log_file_size": await load("variable-mysql-8.4-persist-only.json"),
@@ -259,6 +261,7 @@ function planFor(body) {
 // The list of views docked, as a person who docked it: this suite asserts
 // the list's markers and keys (server-nav covers the floating default).
 const h = await open("/api/live/config", "parameters", {
+  "/api/audit/object": body => objectAuditReply(body),
   "/api/live/variable": (body, request) => {
     variableReads.push(body);
     const answer = variableReply ? variableReply(body) : { status: 200, body: variableFor(body.name) };
@@ -441,9 +444,21 @@ try {
   // the facts; a flagged parameter adds one recommendation with its reason,
   // the suggested change and the caveat. Nothing is repeated.
   await h.select(row("slow_query_log"));
+  await assertObjectHistory(page, "parameter");
+  assert.deepEqual(state.other.filter(call => call.path === "/api/audit/object").at(-1).body,
+    { server: "127.0.0.1:3306", kind: "parameter", key: "slow_query_log" });
+  const appliesBeforeUndo = applied.length;
+  await h.button("Undo…", '.view-inspector [data-object-changes="parameter"] ');
+  await page.waitForSelector(single);
+  await page.waitForFunction(s => document.querySelector(`${s} .variable-statement`)?.textContent.includes("OFF"), {}, single);
+  assert.equal(applied.length, appliesBeforeUndo, "Undo opens normal review without sending");
+  const declinesBeforeUndo = declined.length;
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.variable-sheet"));
+  await waitFor(() => declined.length === declinesBeforeUndo + 1, "cancelling Undo records one declined attempt");
   const slow = mysql.checks.find(c => c.key === "slow_log");
   const inspected = await h.inspector();
-  assert.deepEqual(await texts(".view-inspector .inspector-block h4"), ["Current value", "Recommendation"]);
+  assert.deepEqual(await texts(".view-inspector .inspector-block h4"), ["Current value", "Recommendation", "Changed through myflames"]);
   assert.equal((inspected.match(/The slow query log records statements/g) || []).length, 1, "the description appears once");
   assert.ok(inspected.includes(slow.why) && inspected.includes(slow.caveat), "the reason and the caveat are shown");
   assert.doesNotMatch(inspected, /Explanation and recommendations|What it is|Why it is flagged|Apply type|Scope/);
@@ -469,7 +484,7 @@ try {
   await back();
   // Two checks that do not flag it: one Checked row, no recommendation.
   await h.select(row("innodb_dedicated_server"));
-  assert.deepEqual(await texts(".view-inspector .inspector-block h4"), ["Current value"]);
+  assert.deepEqual(await texts(".view-inspector .inspector-block h4"), ["Current value", "Changed through myflames"]);
   assert.match(await h.inspector(), /Checked.*Buffer pool size.*Dedicated server/s);
   assert.match(await h.inspector(), /Changes\s*After a restart/);
   await back();
@@ -1202,6 +1217,9 @@ try {
     for (const value of [
       { name: "Read only", host: "readonly.local", port: 3306, user: "reader", database: "", ssl_mode: "PREFERRED", ssl_ca: "", type: "production", read_only: true },
       { name: "Staging", host: "staging.local", port: 3306, user: "dev", database: "", ssl_mode: "PREFERRED", ssl_ca: "", type: "production", read_only: false },
+      ...["A", "B"].map(letter => ({ name: `Tunnel ${letter}`, host: "127.0.0.1", port: 3306, user: "dev", database: "",
+        ssl_mode: "PREFERRED", ssl_ca: "", type: "production", read_only: false,
+        ssh_host: `bastion-${letter.toLowerCase()}`, ssh_user: "deploy", ssh_port: 2222 })),
     ]) await fetch("/api/profiles/save", { method: "POST", headers: { "Content-Type": "application/json", "X-Myflames-Token": token }, body: JSON.stringify({ value }) });
   });
   await page.reload({ waitUntil: "networkidle0" }); await h.server(); await h.view("config"); await page.waitForSelector(`${view} .summary-line`); await h.idle(view);
@@ -1245,6 +1263,72 @@ try {
   await page.keyboard.press("Escape");
   await h.idle(view); await waitFor(() => planningActive === 0, "all delayed plans settled");
   useSingleFixtures = false;
+  // Undo keeps its original scope after another client removes a persisted
+  // entry. An unavailable RESET PERSIST must never become SET GLOBAL = ''.
+  await chooseConnection(page, initialConnection);
+  const undoReport = structuredClone(mysql);
+  const model = undoReport.parameters.items.find(p => p.name === "max_connections");
+  undoReport.parameters.items.push({ ...model, name: "sql_mode", type: "string", value: "STRICT_TRANS_TABLES", checks: [] });
+  objectAuditReply = body => {
+    const answer = objectAuditFixture(body);
+    if (body.key === "sql_mode") Object.assign(answer.body.records[0], { operation: "set_persist_only",
+      target: { name: "sql_mode", mode: "persist_only", persisted_state: { state: "absent" } } });
+    if (body.key === "max_connections") answer.body.records[0].target.global_value = null;
+    return answer;
+  };
+  variableReply = body => {
+    const v = variableFor(body.name);
+    if (body.name === "sql_mode") {
+      v.persisted.present = false;
+      v.modes.reset_persist = { ...v.modes.reset_persist, available: false, reason: "No persisted entry remains." };
+    } else v.nullable = true; // Synthetic metadata tests the NULL control only.
+    return { status: 200, body: v };
+  };
+  await refresh(undoReport);
+  await h.select(row("sql_mode")); await assertObjectHistory(page, "parameter");
+  const plansBeforeRemovedUndo = planned.length, writesBeforeRemovedUndo = applied.length;
+  await h.button("Undo…", '.view-inspector [data-object-changes="parameter"] ');
+  await page.waitForFunction(s => /Cannot undo: No persisted entry remains\./.test(document.querySelector(s)?.textContent || ""), {}, single);
+  assert.equal(await page.$eval(singleConfirm, e => e.disabled), true);
+  assert.equal(await page.$(`${single} .variable-modes`), null);
+  await pause(350); // Longer than the planning debounce: no fallback is queued.
+  assert.equal(planned.length, plansBeforeRemovedUndo);
+  assert.equal(applied.length, writesBeforeRemovedUndo);
+  const removedUndoDeclines = declined.length;
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.variable-sheet"));
+  await waitFor(() => declined.length > removedUndoDeclines, "removed-entry Undo cancellation is audited");
+  assert.equal(declined.at(-1).mode, "reset_persist", "Cancel also retains the original scope");
+
+  // Present SQL NULL is a known inverse, distinct from a missing before-value.
+  planReply = body => { const plan = planFor(body); plan.variable.nullable = true; return { status: 200, body: plan }; };
+  await back(); await h.select(row("max_connections")); await assertObjectHistory(page, "parameter");
+  await h.button("Undo…", '.view-inspector [data-object-changes="parameter"] ');
+  await page.waitForFunction(s => document.querySelector(`${s} .variable-field input[type=checkbox]`)?.checked === true, {}, single);
+  await page.waitForFunction(s => !!document.querySelector(`${s} .variable-statement`), {}, single);
+  assert.equal(planned.at(-1).mode, "global");
+  assert.equal(planned.at(-1).value, null);
+  assert.equal(applied.length, writesBeforeRemovedUndo);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.variable-sheet"));
+  variableReply = null; planReply = null; objectAuditReply = objectAuditFixture;
+  // The same database endpoint behind two SSH hosts has distinct history.
+  objectAuditReply = body => {
+    const reply = objectAuditFixture(body);
+    reply.body.records[0].statements = [`Change through ${body.ssh?.host || "direct"}`];
+    return reply;
+  };
+  for (const letter of ["A", "B"]) {
+    await chooseConnection(page, await connectionOption(page, `Tunnel ${letter}`));
+    await refresh(mysql);
+    await h.select(row("max_connections"));
+    await assertObjectHistory(page, "parameter");
+    const request = state.other.filter(call => call.path === "/api/audit/object").at(-1).body;
+    assert.equal(request.server, "127.0.0.1:3306");
+    assert.deepEqual(request.ssh, { host: `bastion-${letter.toLowerCase()}`, user: "deploy", port: 2222 });
+    assert.equal(await text('.view-inspector [data-object-changes="parameter"] pre'), `Change through bastion-${letter.toLowerCase()}`);
+  }
+  objectAuditReply = objectAuditFixture;
   const saved = await h.savedSlow(s => s.kind === "config");
   assert.equal(JSON.stringify(saved.state).includes("config-1.0"), false, "reports are not saved");
   assert.equal(JSON.stringify(saved.state).includes("variable-plan"), false, "plans are not saved");

@@ -1,0 +1,17 @@
+{
+  "recorded": "2026-11-08",
+  "image": "mysql:9.7.2",
+  "variables": {
+    "basedir": "/usr/",
+    "build_id": "9a4505a7aae969ddb2e30d8250a3eb6ad5839433",
+    "character_sets_dir": "/usr/share/mysql-9.7/charsets/",
+    "hostname": "f0b18f066ca4",
+    "lc_messages_dir": "/usr/share/mysql-9.7/",
+    "plugin_dir": "/usr/lib64/mysql/plugin/",
+    "socket": "/var/run/mysqld/mysqld.sock",
+    "version": "9.7.2",
+    "version_comment": "MySQL Community Server - GPL",
+    "version_compile_machine": "aarch64",
+    "version_compile_os": "Linux"
+  }
+}

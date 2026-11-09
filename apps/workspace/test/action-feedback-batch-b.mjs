@@ -29,7 +29,13 @@ export function batchBScenarios({ goPlace, goView, visible, named, click, confir
       "/api/editor/run": b => ({ status: "complete", session: editorSession({ in_transaction: true }), run: editorRun(b.sql) }),
       [`/api/editor/${action}`]: () => ({ status: "complete", session: editorSession(), run: { ...editorRun(action.toUpperCase()), kind: "action" } }),
     },
-    setup: async ctx => { await prepareEditor(ctx); await ctx.page.click("[data-action=run]"); await visible(ctx.page, `[data-action=${action}]`); },
+    // Commit and Roll back live in the transaction meter's popover (the toolbar
+    // keeps one transaction pill): open it first.
+    setup: async ctx => {
+      await prepareEditor(ctx); await ctx.page.click("[data-action=run]");
+      await visible(ctx.page, ".editor-transaction-trigger"); await ctx.page.click(".editor-transaction-trigger");
+      await visible(ctx.page, `[data-action=${action}]`);
+    },
     target: `[data-action=${action}]`,
     afterClick: async ({ page }) => {
       await requireFocus(page, `[data-action=${action}]`);

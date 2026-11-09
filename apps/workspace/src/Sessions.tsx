@@ -8,10 +8,10 @@
 // never offered for server threads.
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useOpenRead } from "./viewOnScreen";
-import { api, number, type Connection, type Session, type SessionBreakdown, type SessionFlag, type SessionsReport } from "./api";
+import { api, number, sessionHistory, type SessionHistory, type Connection, type Session, type SessionBreakdown, type SessionFlag, type SessionsReport } from "./api";
 import type { ServerKind } from "./session";
-import { useConnectionReads, type Bound } from "./binding";
-import { PriorityTable, Duration, engineLabel } from "./PerfShared";
+import { connectionKey, useConnectionReads, type Bound } from "./binding";
+import { PriorityTable, Duration, engineLabel, ms } from "./PerfShared";
 import { durationText } from "./duration";
 import { KillDialog, KillResultNote, killVia, useKillPrivilege, seconds, sendKill, type KillNote, type KillTarget } from "./Locks";
 import { MassKillDialog } from "./MassKillDialog";
@@ -83,6 +83,29 @@ function isLocked(s: Session): boolean {
   return s.is_locked ?? (lockStatus(s) !== null || s.trx?.state === "LOCK WAIT");
 }
 
+/** Expand direct edges only for the selected inspector, never per table row. */
+function blockedSessionIds(report: SessionsReport, id: number): number[] {
+  const downstream = new Map<number, number[]>();
+  // Older reports only carry direct IDs on the returned rows.
+  const edges = report.blocking_edges ?? report.sessions.flatMap(s =>
+    (s.blocks_ids || []).map(waiter => ({ waiter, blocker: s.id })));
+  for (const { waiter, blocker } of edges) {
+    const children = downstream.get(blocker) || [];
+    children.push(waiter);
+    downstream.set(blocker, children);
+  }
+  const seen = new Set<number>([id]);
+  const pending = [...(downstream.get(id) || [])];
+  while (pending.length) {
+    const next = pending.pop()!;
+    if (seen.has(next)) continue;
+    seen.add(next);
+    pending.push(...(downstream.get(next) || []));
+  }
+  seen.delete(id);
+  return [...seen].sort((a, b) => a - b);
+}
+
 function Breakdown({ title, rows }: { title: string; rows: SessionBreakdown }) {
   const max = Math.max(1, ...rows.map((r) => r.count));
   return (
@@ -125,6 +148,38 @@ function killTarget(s: Session): KillTarget {
   };
 }
 
+function RecentStatements({ connection, id, onInstruments }: { connection: Connection; id: number; onInstruments: () => void }) {
+  const key = connectionKey(connection);
+  const [answer, setAnswer] = useState<SessionHistory | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    const abort = new AbortController();
+    setAnswer(null);
+    setError("");
+    sessionHistory(connection, id, abort.signal).then(value => {
+      if (!abort.signal.aborted) setAnswer(value);
+    }).catch(error => { if (!abort.signal.aborted) setError((error as Error).message); });
+    return () => abort.abort();
+  }, [key, id]);
+  const history = answer?.id === id ? answer : null;
+  return <InspectorSection title="Recent statements">
+    <ViewStatus loading={!history && !error ? "Reading recent statements…" : ""} error={error} />
+    {history?.reason && (history.available ? <p className="hint">{history.reason}</p> :
+      <PrerequisiteGate action={<button type="button" className="text-button" onClick={onInstruments}>Open Instruments</button>}>
+        <bdi>{history.reason}</bdi>
+      </PrerequisiteGate>)}
+    {!!history?.statements.length && <ol className="session-history">
+      {history.statements.map(item => <li key={item.event_id}>
+        <pre className="inspector-sql"><code><bdi>{item.sql ?? "No SQL text retained"}</bdi></code></pre>
+        <Fields rows={[["Duration", ms(item.duration_ms)], ["Rows examined", item.rows_examined === null ? "—" : number(item.rows_examined)],
+          ["Rows sent", item.rows_sent === null ? "—" : number(item.rows_sent)],
+          ["Errors", item.errors === null ? "—" : number(item.errors)],
+          !!item.errno && ["Error", <bdi>{item.errno}: {item.message}</bdi>]]} />
+      </li>)}
+    </ol>}
+  </InspectorSection>;
+}
+
 export function SessionsView({
   connection,
   disabled,
@@ -163,6 +218,7 @@ export function SessionsView({
   const [auto, setAuto] = useState(0);
   const [search, setSearch] = useState("");
   const [target, setTarget] = useState<KillTarget | null>(null);
+  const [targetBlocking, setTargetBlocking] = useState("");
   // The KILL a row menu chose (Kill query… or Kill connection…); the sheet
   // can still switch it.
   const [targetMode, setTargetMode] = useState<"connection" | "query" | undefined>(undefined);
@@ -270,6 +326,7 @@ export function SessionsView({
     trigger.current = opener;
     setNote(null);
     setTargetMode(mode);
+    setTargetBlocking(x.blocks_total ? `Blocks ${x.blocks_total} sessions now (longest wait ${seconds(x.longest_wait_s ?? null)}).` : "");
     setTarget({ ...killTarget(x), via: killVia(connection), server_identity: report?.server_identity ? { ...report.server_identity } : undefined });
   }
   // The generic Kill privilege answers (own sessions need none), for the row
@@ -355,7 +412,8 @@ export function SessionsView({
   // Filtered once per report and search, not on every render (a selection in
   // thousands of sessions).
   const rows = useMemo(() => {
-    const all = report?.sessions || [];
+    const all = [...(report?.sessions || [])];
+    if (scope === "locked") all.sort((a, b) => Number(!!b.root_blocker) - Number(!!a.root_blocker) || (b.blocks_total || 0) - (a.blocks_total || 0));
     if (!needle) return all;
     return all.filter(
       (x) =>
@@ -365,7 +423,7 @@ export function SessionsView({
           .toLowerCase()
           .includes(needle),
     );
-  }, [report, needle]);
+  }, [report, needle, scope]);
   const noProcess = report?.capabilities.process_privilege === false;
 
   const columns: Column<Session>[] = [
@@ -438,7 +496,8 @@ export function SessionsView({
       key: "statement",
       label: "Statement",
       flex: true,
-      minWidth: 220,
+      width: 140,
+      minWidth: 140,
       sort: (x) => x.info_short || x.last_statement || "",
       render: (x) =>
         x.info_short ? (
@@ -456,13 +515,28 @@ export function SessionsView({
     {
       key: "lock",
       label: "Lock / Trx",
-      width: 140,
+      width: 228,
       sort: (x) => {
-        const ls = lockStatus(x);
-        return ls === "waiting" ? 0 : ls === "holding" ? 1 : 2;
+        // Counts cannot exceed the 5,000-edge budget. Root blockers sort
+        // before every other row, then by downstream count descending.
+        return (x.root_blocker ? -10001 : 0) - (x.blocks_total || 0);
       },
       render: (x) => {
         const ls = lockStatus(x);
+        const blockers = x.blocked_by || [];
+        const total = x.blocks_total || 0;
+        if (blockers.length || total) {
+          const waits = blockers.length ? `Waits on ${blockers[0]}${blockers.length > 1 ? ` +${blockers.length - 1}` : ""}` : "";
+          const text = [waits, total ? `${waits ? "blocks" : "Blocks"} ${total}` : ""].filter(Boolean).join(" · ");
+          const summary = `${text}${x.lock_wait?.wait_s != null ? ` (${durationText(x.lock_wait.wait_s)})` : ""}`;
+          const detail = [blockers.length ? `Waits on ${blockers.join(", ")}` : "",
+            total ? `Blocks ${total} sessions; longest wait ${seconds(x.longest_wait_s ?? null)}` : "",
+            x.lock_wait?.wait_s != null ? `Wait (${durationText(x.lock_wait.wait_s)})` : ""].filter(Boolean).join("; ");
+          return <span className="cell-truncate" title={detail}>
+            {x.root_blocker && <><StatusPill tone="problem" label="Root blocker" title="Root blocker" />{summary ? " · " : ""}</>}
+            {summary}
+          </span>;
+        }
         if (ls === "waiting") {
           return (
             <span className="pill is-danger" title={x.lock_detail || "Waiting on lock"}>
@@ -547,16 +621,26 @@ export function SessionsView({
                 Waiting {seconds(x.lock_wait.wait_s)} for {LOCK_KIND[x.lock_wait.kind] || "a lock"}
                 {x.lock_wait.detail ? ` (${x.lock_wait.detail})` : ""}.
               </p>
-              <button type="button" className="text-button" onClick={() => onOpenView("locks")}>
-                Open Locks to see who blocks it
-              </button>
+              {!!x.blocked_by?.length && <p>Blocked by {x.blocked_by.map((id, i) => <span key={id}>
+                {i > 0 && ", "}{report.sessions.some(s => s.id === id) ? <button type="button" className="text-button"
+                  onClick={() => { setSearch(""); selection.select(String(id), true); }}>Connection {id}</button> :
+                  <>Connection {id} (not in this list)</>}
+              </span>)}</p>}
+              {!x.blocked_by?.length && <button type="button" className="text-button" onClick={() => onOpenView("locks")}>Open Locks to see who blocks it</button>}
             </InspectorSection>
           )}
+          {!!x.blocks_total && <InspectorSection title="Blocking">
+            <p>Blocks {x.blocks_total} sessions (longest {seconds(x.longest_wait_s ?? null)})</p>
+            <div className="session-block-links" title="Links follow the loaded sessions; counts cover the collected snapshot.">{blockedSessionIds(report, x.id).map(id =>
+              report.sessions.some(s => s.id === id) ? <button key={id} type="button" className="text-button"
+                onClick={() => { setSearch(""); selection.select(String(id), true); }}>Connection {id}</button> :
+                <span key={id}>Connection {id} (not in this list)</span>)}</div>
+          </InspectorSection>}
           {x.ddl && <InspectorSection title="DDL progress"><DdlDetails item={x.ddl} /></InspectorSection>}
           {x.info ? (
             <InspectorSection title="Statement">
               <pre className="inspector-sql">
-                <code>{x.info}</code>
+                <code><bdi>{x.info}</bdi></code>
               </pre>
               {x.info_truncated && <p className="hint">The server keeps only the start of long statements.</p>}
               {!x.explainable && (
@@ -566,10 +650,12 @@ export function SessionsView({
           ) : x.last_statement ? (
             <InspectorSection title="Last statement">
               <pre className="inspector-sql">
-                <code>{x.last_statement}</code>
+                <code><bdi>{x.last_statement}</bdi></code>
               </pre>
             </InspectorSection>
           ) : null}
+          {x.thread_kind === "client" && !other && <RecentStatements key={`${reads.key}:${x.id}`} connection={connection} id={x.id}
+            onInstruments={() => onOpenView("instruments")} />}
           <InspectorSection title="Session">
             <Fields
               rows={[
@@ -686,6 +772,12 @@ export function SessionsView({
         {target && !killLeft && (
           <KillDialog
             target={target}
+            blocking={targetBlocking ? mode => <>
+              <p>{targetBlocking}</p>
+              <p>{mode === "connection"
+                ? "Ending the connection rolls back its open transaction and releases its locks when the rollback finishes (a prepared XA transaction stays prepared); another blocker can keep sessions waiting."
+                : "Stopping the statement leaves the connection open; an open transaction keeps its locks unless the session runs in autocommit mode, so sessions may keep waiting."}</p>
+            </> : undefined}
             busy={killing}
             initialMode={targetMode}
             onCancel={() => {
@@ -811,6 +903,7 @@ export function SessionsView({
               <SearchField label="Filter sessions" value={search} onChange={setSearch} placeholder="Filter" />
             </div>
               <PriorityTable
+                key={scope}
                 id="sessions.sessions"
                 detailColumns={["user", "db", "command", "statement", "lock", "flags"]}
                 // Flags, Database and Command start off so the list (with the

@@ -165,6 +165,29 @@ export type UpgradeReport = {
   checks: UpgradeFinding[]; counts: { error: number; warning: number; notice: number };
   manual_checks: Json[]; method: string; partial: boolean; status: string; limitations: string[];
 };
+export type InstallMethod = "rpm" | "distro_rpm" | "deb" | "ubuntu_deb" | "tarball" | "windows_msi" | "windows_zip" | "homebrew" | "macos" | "unknown";
+export type UpgradeTarget = {
+  version: string; check_version: string; series: string; date: string | null; url: string | null;
+  path: "patch" | "next_lts" | "innovation" | "lts_after_innovation"; path_label: string;
+  /** Percona only: the repository line (ps-84-lts) and where packages exist (codenames or el8, el9). */
+  repository?: string | null; packages?: string[];
+  /** A Docker-image-only release, offered because the server looks like a container. */
+  docker_only?: boolean;
+  shell: { ok: boolean; needs: string | null } | null;
+};
+export type UpgradeTargets = {
+  schema_version: "upgrade-targets-1.0";
+  server: { engine: "mysql" | "mariadb"; flavor: string; product: string; version: string };
+  install: { method: InstallMethod; label: string; confidence: "high" | "medium" | "low"; evidence: string[]; package: string | null; build_id: string | null; container: boolean };
+  source: { kind: "release_notes" | "percona_repository" | "bundled" | "none"; label: string; urls: string[]; checked_at: string | null; error: string | null };
+  guidance: { text: string; command: string | null; url: string | null };
+  targets: UpgradeTarget[]; recommended: string | null;
+  not_direct: { series: string; newest: string; reason: string }[];
+  unclassified: { series: string; newest: string; reason: string }[];
+  /** Releases the release notes list that cannot be installed this way (removed, Docker image only). */
+  unavailable: { version: string; reason: string }[];
+  notes: string[];
+};
 export type LifecycleOperation = "dump" | "restore" | "clone";
 export type PrepareRequest =
   | { operation: "dump"; directory: string; schemas: string[]; tables: string[]; threads: number; prefer_shell: boolean; options?: DumpOptions }
@@ -196,6 +219,7 @@ export type LifecycleJob = {
 };
 export function jobActive(job: LifecycleJob) { return job.state === "queued" || job.state === "running"; }
 export const readLifecycleTools = (connection: Connection, signal?: AbortSignal, checkUpdates = false) => api<LifecycleTools>("lifecycle/tools", { connection, check_updates: checkUpdates }, signal);
+export const readUpgradeTargets = (connection: Connection, signal?: AbortSignal) => api<UpgradeTargets>("lifecycle/upgrade-targets", { connection }, signal);
 export const checkUpgrade = (connection: Connection, target_version: string, prefer_shell: boolean, signal?: AbortSignal) => api<UpgradeReport>("lifecycle/upgrade-check", { connection, target_version, prefer_shell }, signal);
 export const prepareLifecycle = (connection: Connection, request: PrepareRequest, signal?: AbortSignal) => api<LifecyclePlan>("lifecycle/prepare", { connection, ...request }, signal);
 export const startLifecycle = (connection: Connection, plan: LifecyclePlan, typed_target: string, donor?: Connection, typed_acknowledgement?: string) => api<LifecycleJob>("lifecycle/start", { connection, operation: plan.operation, plan, typed_target, donor, confirmed: true, ...(typed_acknowledgement ? { typed_acknowledgement } : {}) });
@@ -238,6 +262,14 @@ export function toolDownloadUrl(value?: string): string | undefined {
     const url = new URL(value || "");
     return url.protocol === "https:" && !url.username && !url.password && !url.port &&
       ["dev.mysql.com", "downloads.mysql.com", "mariadb.org", "mariadb.com"].includes(url.hostname) ? url.href : undefined;
+  } catch { return undefined; }
+}
+/** Release notes and repository guides the upgrade target list links to. */
+export function upgradeLinkUrl(value?: string | null): string | undefined {
+  try {
+    const url = new URL(value || "");
+    return url.protocol === "https:" && !url.username && !url.password && !url.port &&
+      ["dev.mysql.com", "docs.percona.com"].includes(url.hostname) ? url.href : undefined;
   } catch { return undefined; }
 }
 export const chooseBackupDirectory = () => api<{path: string | null; cancelled: boolean}>("lifecycle/choose-directory", {});

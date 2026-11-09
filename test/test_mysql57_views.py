@@ -24,7 +24,7 @@ import subprocess
 import unittest
 from unittest import mock
 
-from _perf_replay import FakeTime, assert_read_only, fixture, replay
+from _perf_replay import FakeTime, assert_read_only, deny_blocker_read, fixture, replay
 from myflames import (cluster, config_review, ddl_progress, discover, error_log, health, indexes, innodb_status,
                       locks, param_compare, parameters, perf_common, ps_instruments, replication, schema_health,
                       server_checks, sessions, variables, watch)
@@ -307,6 +307,7 @@ class TestLocks(unittest.TestCase):
 class TestSessionsWatchProgress(unittest.TestCase):
     def test_sessions(self):
         conn, data = replay('sessions', SERVER)
+        deny_blocker_read(conn)  # the 5.7 recording predates the blocker read
         report = sessions.sessions_report(conn, **data['args'])
         self.assertEqual(report['source'], 'information_schema.PROCESSLIST')
         self.assertEqual(report['summary']['lock_wait'], {'innodb': 1, 'metadata': 1, 'table': 0, 'total': 2})

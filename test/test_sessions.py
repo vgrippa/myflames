@@ -38,7 +38,20 @@ def replay(server, edit=None):
         for name in ddl_progress.CONSUMERS] + [
         ['instrument', None, name, 'YES', 'YES'] for name in ddl_progress.STAGES
         if engine != 'mariadb' or not name.endswith('(flush)')])])
-    return ReplayConn(calls, edit=edit)
+    class LegacyReplay(ReplayConn):
+        def run(self, sql, extra_flags=None, timeout=None):
+            # Explicit synthetic privilege denial: these live recordings
+            # predate the optional blocker read. New graph tests supply edges.
+            # The lock instrument probe only: DDL progress's settings read also
+            # selects 'instrument' rows (ddl_progress.py) and keeps its replay.
+            if 'data_lock_waits' in sql or 'INNODB_LOCK_WAITS' in sql or "SELECT 'instrument', ENABLED" in sql:
+                self.calls.append((sql, list(extra_flags or [])))
+                raise ConnectorError('ERROR 1142: SELECT command denied')
+            if 'SELECT trx_requested_lock_id' in sql:
+                self.calls.append((sql, list(extra_flags or [])))
+                return ''
+            return super(LegacyReplay, self).run(sql, extra_flags=extra_flags, timeout=timeout)
+    return LegacyReplay(calls, edit=edit)
 
 
 def report_for(server, **kwargs):
@@ -321,6 +334,10 @@ def synthetic(rows, trx=(), version='8.4.11', ps='ON', status=None, history='12'
 
         def run(self, sql, extra_flags=None, timeout=None):
             self.calls.append(sql)
+            # Synthetic empty lock snapshot, separate from the process list.
+            if any(part in sql for part in ('data_lock_waits', 'INNODB_LOCK_WAITS',
+                                            'SELECT trx_requested_lock_id', "SELECT 'instrument', ENABLED")):
+                return ''
             if "SELECT 'consumer'" in sql:
                 if isinstance(ddl_rows, Exception):
                     raise ddl_rows

@@ -557,8 +557,10 @@ try {
 
   // Until now the Cluster place read nothing but /api/live/cluster (the review
   // above planned and sent one change, whose progress it followed).
+  // A connection chosen in the picker checks its readiness (connection
+  // readiness contract): that check is not a view read.
   assert.deepEqual(state.other.filter((o) => o.path.startsWith("/api/live/") && !o.path.startsWith("/api/live/cluster/")
-    && o.path !== "/api/live/action/progress").map((o) => o.path), [], "no other view read");
+    && o.path !== "/api/live/action/progress" && o.path !== "/api/live/readiness").map((o) => o.path), [], "no other view read");
   // Server's Refresh all reads the cluster once, and the place shows that answer.
   await answer(R["mysql-8.4-standalone"]);
   const beforeAll = state.seen.length;

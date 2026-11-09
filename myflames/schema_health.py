@@ -1,5 +1,5 @@
 """Table health: tables without a primary key or a usable unique key, and
-InnoDB free space (fragmentation), for chosen schemas or every user schema.
+InnoDB fragmentation and rebuild candidates, for chosen schemas or every user schema.
 
 :func:`table_report` returns the ``schema-2.0`` envelope shared by ``myflames
 tables`` and the workspace's Server > Tables tab. It is read-only: it reads
@@ -125,7 +125,10 @@ mariadb-server 13.0 "Ma/" with the 10.11, 11.4 and 11.8 tags):
   statistics (M/sql/dd/info_schema/table_stats.cc:187, 458-460); MariaDB
   reads it every time. A file grows by one extent up to 32 MiB, then by four
   (fsp0fsp.cc:1400-1425), or by AUTOEXTEND_SIZE (MySQL, up to 4 GiB,
-  fsp0fsp.cc:1329-1342), whose unused tail is expected allocation. Free space alone is not a health warning. A partitioned table sums its
+  fsp0fsp.cc:1329-1342), whose unused tail is expected allocation. Use the
+  reclaimable bytes to prioritize rebuild candidates, allowing for regrowth
+  and allocation steps. Half-empty pages are not counted, so real
+  fragmentation can be higher. A partitioned table sums its
   partitions (M/storage/innobase/handler/ha_innopart.cc:3591-3621;
   Ma/sql/ha_partition.cc:8957-8972).
 * OPTIMIZE TABLE on InnoDB is "recreate + analyze"
@@ -172,8 +175,8 @@ DEFAULT_LIMIT = 200
 MAX_BROWSE_ROWS = 100000
 MIB = 1 << 20
 GIB = 1 << 30
-# DATA_FREE describes reusable allocation, not exhaustion or wasted space.
-# Capacity warnings require a measured file limit or filesystem headroom.
+# DATA_FREE ranks fragmentation candidates by potentially reclaimable allocation.
+# Keep the existing info status: this report does not measure disk headroom.
 GIPK_COLUMN = "my_row_id"
 #: Names tried, in order, for a new surrogate key column.
 SURROGATE_NAMES = ("id", "row_id", "pk_id")
@@ -189,9 +192,8 @@ STATUS_ORDER = {"problem": 0, "watch": 1, "ok": 2, "info": 2, "shared": 3, "unkn
 RULES = {
     "no_usable_key": "problem: no PRIMARY KEY and no UNIQUE key on NOT NULL columns",
     "not_null_unique": "watch: no PRIMARY KEY, but a UNIQUE key on NOT NULL columns stands in for it",
-    "free": ("Informational: DATA_FREE is reusable space inside the tablespace. Its amount or percentage "
-             "alone does not establish a problem or a need to rebuild. File capacity and filesystem "
-             "headroom are not measured by this report."),
+    "free": ("Prioritize fragmented file-per-table tables by reclaimable bytes; check fresh statistics, "
+             "free disk and expected regrowth before rebuilding"),
 }
 
 # ---- sampling (talks to the server) ------------------------------------------
@@ -872,7 +874,7 @@ def _fragmentation(server, raw, tables, fold):
             item["free_bytes"] = max(item["free_bytes"], free)
             item["tables"].append("%s.%s" % key)
         entry["why"] = _free_why(entry)
-        # This is an optional operation, never a recommendation based on DATA_FREE.
+        # Rebuild candidates retain info status and the existing SQL wire fields.
         if entry["status"] == "info":
             target = "%s.%s" % (ident(t["schema"]), ident(t["table"]))
             entry["fix_sql"] = "OPTIMIZE TABLE %s;" % target
@@ -908,13 +910,14 @@ def _free_why(f, server=None):
                 % ("the %s tablespace %s" % (f["tablespace"], f["tablespace_name"]) if f["tablespace_name"]
                    else "a shared tablespace"))
     if f["free_bytes"] is None:
-        return "DATA_FREE is unavailable. Reusable space and its percentage are unknown."
+        return "DATA_FREE is unavailable. Reclaimable bytes and fragmentation percentage are unknown."
     if f["status"] == "unknown":
-        return "The tablespace of this table could not be read, so its free space is not judged."
+        return "The tablespace of this table could not be read, so its fragmentation is not judged."
     if not f["free_bytes"]:
         return ("DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). "
+                "Half-empty pages are not counted, so fragmentation can still exist. "
                 "This does not establish that the tablespace or disk is full.")
-    text = "%s reusable space" % _bytes_text(f["free_bytes"])
+    text = "%s potentially reclaimable by rebuilding this fragmented table" % _bytes_text(f["free_bytes"])
     if f["free_pct"] is None:
         text += "; its percentage is unknown because data or index bytes are unavailable"
     else:
@@ -922,7 +925,9 @@ def _free_why(f, server=None):
     if f.get("autoextend_bytes"):
         text += (" (AUTOEXTEND_SIZE %s: allocation grows in steps, which can leave unused space)"
                  % _bytes_text(f["autoextend_bytes"]))
-    return text + ". " + RULES["free"]
+    return (text + ". " + RULES["free"] + ". DATA_FREE counts whole free extents, not half-empty pages, "
+            "so real fragmentation can be higher. Reclaimable bytes are an estimate. File capacity and "
+            "filesystem headroom are not measured by this report.")
 
 
 def optimize_caveat(server):
@@ -935,15 +940,18 @@ def optimize_caveat(server):
 
 
 OPTIMIZE_CAVEAT = (
-    "Optional maintenance; review and confirm before executing. For InnoDB, OPTIMIZE TABLE rebuilds the table (the same rebuild as ALTER TABLE ... "
-    "FORCE or ALTER TABLE ... ENGINE=InnoDB) and then analyzes it. The rebuild lets writes continue, with "
+    "Rebuild candidate; review before running either statement. For InnoDB, OPTIMIZE TABLE recreates the table "
+    "and then analyzes it; ALTER TABLE ... ENGINE=InnoDB rebuilds without the separate ANALYZE TABLE step. "
+    "The rebuild lets reads and writes continue, with "
     "exclusive metadata locks at the start and the end; those wait for transactions that use the table, and "
     "queries on it queue behind them. With a FULLTEXT or SPATIAL index the rebuild blocks writes. It writes a "
-    "new copy of the table, so it needs free disk space for one, plus temporary sort files in innodb_tmpdir and "
+    "new copy of the table, so allow free disk space about the size of data plus indexes, plus temporary sort files in innodb_tmpdir and "
     "an online log of up to innodb_online_alter_log_max_size (128 MiB by default) for the writes made meanwhile. "
-    "It is written to the binary log, so replicas rebuild too; "
-    "OPTIMIZE NO_WRITE_TO_BINLOG TABLE keeps it on this server (MySQL 8.4 and later then need the "
-    "OPTIMIZE_LOCAL_TABLE privilege). If the table will grow back, the free space would be reused anyway and a "
+    "Large tables take time. Both statements are written to the binary log when binary logging is enabled, "
+    "so replicas rebuild too; OPTIMIZE NO_WRITE_TO_BINLOG TABLE (or OPTIMIZE LOCAL TABLE) keeps OPTIMIZE "
+    "on this server (MySQL 8.4 and later then need the OPTIMIZE_LOCAL_TABLE privilege). "
+    "ALTER TABLE ... ENGINE=InnoDB has no NO_WRITE_TO_BINLOG or LOCAL clause. "
+    "If the table will grow back, the free space would be reused anyway and a "
     "rebuild gains little.")
 
 
@@ -1108,6 +1116,10 @@ def at_or_worse(report, level):
 # ---- text output for the CLI -------------------------------------------------------
 
 _MARK = {"ok": "ok", "info": "info", "watch": "WATCH", "problem": "PROBLEM", "shared": "shared", "unknown": "?"}
+# The deprecated CLI keeps its established text; workspace guidance uses RULES.
+_CLI_FREE_RULE = ("Informational: DATA_FREE is reusable space inside the tablespace. Its amount or percentage "
+                  "alone does not establish a problem or a need to rebuild. File capacity and filesystem "
+                  "headroom are not measured by this report.")
 
 
 def _rows_text(value):
@@ -1146,7 +1158,7 @@ def format_text(report):
     lines.append("")
     lines.append("FREE SPACE (InnoDB, file-per-table tablespaces)")
     flagged = [f for f in report["fragmentation"] if f["status"] == "info"]
-    lines.append("  " + RULES["free"])
+    lines.append("  " + _CLI_FREE_RULE)
     if not flagged:
         lines.append("  No file-per-table reusable space reported.")
     else:

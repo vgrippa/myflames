@@ -86,13 +86,19 @@ def _client_text(data):
     return text.replace("\r\n", "\n") if os.name == "nt" else text
 
 
-def _run_bounded(argv, timeout, input=None, env=None):
+def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail_start=None):
     """Drain both pipes concurrently on POSIX and Windows with fixed byte caps.
 
     A separate stdin writer prevents a large script from blocking output
     drainage. On timeout, overflow or interruption, kill and reap the client
-    and join every pipe worker before returning to the caller.
+    and join every pipe worker before returning to the caller. A read-only
+    caller may give (raw marker row, seconds) to start a separate tail budget
+    once that complete row arrives. Only that mode retains stdout on timeout.
+    Its optional on_tail_start callback runs once in the stdout reader at
+    that boundary, before waiting for the tail; it must not block.
     """
+    tail_marker = (re.compile(rb'(?:^|\n)' + re.escape(tail_timeout[0].encode('ascii')) + rb'\r?\n')
+                   if tail_timeout is not None else None)
     deadline = time.monotonic() + timeout
     proc = subprocess.Popen(argv, stdin=subprocess.PIPE if input is not None else None,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, bufsize=0)
@@ -100,6 +106,8 @@ def _run_bounded(argv, timeout, input=None, env=None):
     failed = []
     buffers = [bytearray(), bytearray()]
     workers = []
+    tail_deadline = []
+    timed_out = None
 
     def drain(pipe, index, limit, label):
         try:
@@ -113,7 +121,16 @@ def _run_bounded(argv, timeout, input=None, env=None):
                                                  "the client was stopped and the outcome is unknown."
                                                  % (label, limit)))
                     break
+                old_size = len(buffers[index])
                 buffers[index].extend(chunk)
+                if index == 0 and tail_marker is not None and not tail_deadline:
+                    # Include a split marker, but never rescan a large result.
+                    start = max(0, old_size - len(tail_timeout[0]) - 3)
+                    if tail_marker.search(buffers[0], start):
+                        tail_deadline.append(time.monotonic() + tail_timeout[1])
+                        if on_tail_start is not None:
+                            on_tail_start()
+                        changed.set()
         except OSError:
             failed.append(ConnectorError("Lost connection to the MySQL client while reading; "
                                          "the outcome is unknown."))
@@ -153,14 +170,17 @@ def _run_bounded(argv, timeout, input=None, env=None):
             changed.clear()
             if failed:
                 raise failed[0]
-            remaining = deadline - time.monotonic()
+            remaining = (tail_deadline[0] if tail_deadline else deadline) - time.monotonic()
             if remaining <= 0:
-                raise subprocess.TimeoutExpired(argv, timeout)
+                raise subprocess.TimeoutExpired(argv, tail_timeout[1] if tail_deadline else timeout)
             if not any(worker.is_alive() for worker in workers):
                 proc.wait(timeout=remaining)
                 break
             changed.wait(min(remaining, 0.05))
         return subprocess.CompletedProcess(argv, proc.returncode, bytes(buffers[0]), bytes(buffers[1]))
+    except subprocess.TimeoutExpired as exc:
+        timed_out = exc
+        raise
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -170,6 +190,9 @@ def _run_bounded(argv, timeout, input=None, env=None):
         for pipe in (proc.stdin, proc.stdout, proc.stderr):
             if pipe is not None:
                 pipe.close()
+        if timed_out is not None and tail_timeout is not None:
+            # The child is reaped and readers joined before exposing output.
+            timed_out.output = bytes(buffers[0])
 
 #: A statement error the client prints in batch mode: "ERROR 1146 (42S02) at line 3: ...".
 _STATEMENT_ERROR = re.compile(r"^ERROR \d+(?: \([^)]*\))? at line \d+", re.M)
@@ -199,6 +222,18 @@ class ConnectorError(RuntimeError):
     """Raised when the CLI binary returns a non-zero exit code or malformed
     output. Read errors preserve stderr for connection diagnostics; write
     errors redact credentials before exposing the client's message."""
+
+
+class PartialReadError(ConnectorError):
+    """A framed, read-only batch failed; its caller must validate completion.
+
+    Output is deliberately absent from the error message and never accepted
+    as a successful reading by the ordinary connector methods.
+    """
+
+    def __init__(self, message, stdout):
+        super().__init__(message)
+        self.stdout = stdout
 
 
 class MySQLConnection:
@@ -532,33 +567,50 @@ class MySQLConnection:
 
     # ---- query execution -------------------------------------------------
 
-    def run(self, sql, extra_flags=None, timeout=None):
+    def run(self, sql, extra_flags=None, timeout=None, tail_timeout=None, on_tail_start=None):
         """Run *sql* and return the raw stdout as a ``str``.
 
         Raises :class:`ConnectorError` with stderr attached on failure.
+        ``tail_timeout=(marker, seconds)`` is for framed read-only batches:
+        unbuffered output starts a separate deadline at the complete marker
+        row, and errors retain stdout in :class:`PartialReadError`.
+        Optional on_tail_start runs at that marker, even if the tail fails.
         """
         started = time.monotonic()
         try:
             with self._invocation_defaults() as defaults_path, client_environment() as env:
-                argv = self._build_argv(sql, extra_flags=extra_flags, defaults_path=defaults_path)
-                proc = _run_bounded(argv, timeout=timeout or self.query_timeout, env=env)
-        except subprocess.TimeoutExpired:
+                flags = list(extra_flags or [])
+                options = {}
+                if tail_timeout is not None:
+                    flags.append('--unbuffered')
+                    options['tail_timeout'] = tail_timeout
+                    if on_tail_start is not None:
+                        options['on_tail_start'] = on_tail_start
+                argv = self._build_argv(sql, extra_flags=flags, defaults_path=defaults_path)
+                proc = _run_bounded(argv, timeout=timeout or self.query_timeout, env=env, **options)
+        except subprocess.TimeoutExpired as exc:
             from .dbops import redact
-            raise ConnectorError(
+            message = (
                 "Query timed out after {}s: {}".format(
-                    timeout or self.query_timeout, redact(sql or "", self.password)[:120]
+                    exc.timeout, redact(sql or "", self.password)[:120]
                 )
-            ) from None
+            )
+            if tail_timeout is not None:
+                raise PartialReadError(message, _client_text(exc.output)) from None
+            raise ConnectorError(message) from None
         except FileNotFoundError as e:
             raise ConnectorError(
                 "Cannot execute MySQL client binary: {}".format(e)
             ) from e
         if proc.returncode != 0:
             stderr = (proc.stderr or b"").decode("utf-8", errors="replace").strip()
-            raise ConnectorError(
+            message = (
                 "mysql client exited {}: {}".format(proc.returncode, stderr or "no stderr")
                 + self._tunnel_note(started)
             )
+            if tail_timeout is not None:
+                raise PartialReadError(message, _client_text(proc.stdout))
+            raise ConnectorError(message)
         return _client_text(proc.stdout)
 
     def run_script(self, sql, extra_flags=None, timeout=None):

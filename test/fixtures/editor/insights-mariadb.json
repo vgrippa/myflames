@@ -1,0 +1,45 @@
+{
+  "provenance": "Hand-authored engine-shape fixture, not a live recording. Columns checked against engine source.",
+  "engine": "mariadb",
+  "server_version": "10.11.14-MariaDB",
+  "history": [
+    {
+      "rows_examined": "1500",
+      "rows_sent": "50",
+      "rows_affected": "0",
+      "no_index_used": "0",
+      "no_good_index_used": "0",
+      "created_tmp_tables": "2",
+      "created_tmp_disk_tables": "1",
+      "sort_merge_passes": "0",
+      "select_full_join": "1",
+      "select_scan": "0",
+      "lock_time": "0",
+      "timer_wait": null,
+      "errors": "0",
+      "warnings": "0",
+      "event_id": "42",
+      "sql_text": "SELECT * FROM t",
+      "nesting_event_type": null,
+      "nesting_event_level": "0"
+    }
+  ],
+  "transaction": {
+    "trx_id": "123",
+    "age_seconds": "240",
+    "rows_modified": "1240",
+    "rows_locked": "1243",
+    "lock_structs": "5"
+  },
+  "waits": [
+    {
+      "waiting_id": "201"
+    },
+    {
+      "waiting_id": "202"
+    },
+    {
+      "waiting_id": "203"
+    }
+  ]
+}

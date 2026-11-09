@@ -30,6 +30,12 @@ export type QueryTab = {
   fill_lists?: string[];
   /** Rows kept per result set when the tab runs SQL (default 1,000). */
   limit?: number;
+  /** Run all with "continue" runs every statement and counts the failures. */
+  on_error?: "stop" | "continue";
+  /** The tab's default database: chosen in the editor toolbar, applied with
+   * USE in the tab's session and restored with the tab. Empty means explicit
+   * None; absent inherits the connection default or source schema. */
+  database?: string;
   /** The caret or selection, restored with the tab. */
   selection?: { start: number; end: number };
   /** The results tab on screen: "messages", "plan", or "result:N". */
@@ -87,6 +93,7 @@ export const SERVER_KINDS = [
   "sessions",
   "replication",
   "cluster",
+  "memory",
   "waits",
   "io",
   "locks",
@@ -126,6 +133,7 @@ export type SlowState = {
   /** Schema in focus for I/O and Top statements ("" = none). */
   schema: string;
   /** Waits and I/O sampling windows in seconds (one of WINDOW_INTERVALS). */
+  memory_interval?: number;
   waits_interval: number;
   io_interval: number;
   /** Databases chosen in the Indexes and Tables pickers; absent or empty
@@ -174,6 +182,10 @@ export const TABLE_IDS = [
   "readyset.connections",
   "schema.versions",
   "schema.differences",
+  "memory.categories",
+  "memory.sessions",
+  "memory.accounts",
+  "memory.events",
   "waits.events",
   "waits.classes",
   "io.tables",
@@ -345,6 +357,7 @@ export function defaultLab(): LabState {
       min_seconds: 0,
       health_interval: 5,
       schema: "",
+      memory_interval: 5,
       waits_interval: 10,
       io_interval: 10,
       inspector: false,
@@ -451,6 +464,9 @@ export function normalizeLab(raw: unknown): LabState {
     }
     if (typeof t.limit === "number" && Number.isFinite(t.limit) && Math.round(t.limit) !== DEFAULT_ROW_LIMIT)
       tab.limit = int(t.limit, DEFAULT_ROW_LIMIT, 1, MAX_ROW_LIMIT);
+    if (t.on_error === "continue") tab.on_error = "continue";
+    if (typeof t.database === "string" && t.database.length <= 64 && !/[\x00-\x1f\x7f]/.test(t.database))
+      tab.database = t.database;
     if (isObject(t.selection)) {
       const start = int(t.selection.start, 0, 0, tab.sql.length);
       const end = int(t.selection.end, start, 0, tab.sql.length);
@@ -480,6 +496,7 @@ export function normalizeLab(raw: unknown): LabState {
         ? (s.health_interval as number)
         : 5,
       schema: text(s.schema, "", 64).replace(/[\n\r\0]/g, ""),
+      memory_interval: WINDOW_INTERVALS.includes(s.memory_interval as number) ? (s.memory_interval as number) : 5,
       waits_interval: WINDOW_INTERVALS.includes(s.waits_interval as number)
         ? (s.waits_interval as number)
         : 10,
@@ -513,6 +530,8 @@ const tabExtras = (t: QueryTab) =>
     t.fill_note ?? null,
     t.fill_lists ?? null,
     t.limit ?? null,
+    t.on_error ?? null,
+    t.database ?? null,
     t.selection ?? null,
     t.result_tab ?? null,
   ]);

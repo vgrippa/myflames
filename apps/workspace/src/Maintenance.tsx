@@ -23,8 +23,8 @@ import { MAC, WINDOWS } from "./platform";
 import { durationText } from "./duration";
 import {
   cancelLifecycleJob, checkUpgrade, documentationUrl, jobActive, listLifecycleJobs,
-  prepareLifecycle, readLifecycleJob, readLifecycleTools, startLifecycle, useOpsScope,
-  type LifecycleJob, type LifecyclePlan, type LifecycleTools,
+  prepareLifecycle, readLifecycleJob, readLifecycleTools, readUpgradeTargets, startLifecycle, upgradeLinkUrl, useOpsScope,
+  type LifecycleJob, type LifecyclePlan, type LifecycleTools, type UpgradeTarget, type UpgradeTargets,
   type MissingPrivileges, type PrepareRequest, type Tool, type UpgradeFinding,
   type UpgradeReport, type Verification,
 } from "./opsApi";
@@ -42,9 +42,11 @@ export type MaintenanceSection = "tools" | "upgrade" | "dump" | "restore" | "clo
 export type MaintenanceMemory = {
   tools: Bound<LifecycleTools> | null;
   upgrade: Bound<UpgradeReport> | null;
+  /** Upgrade targets from the vendor's releases and the install method (upgrade-targets-1.0). */
+  targets: Bound<UpgradeTargets> | null;
   jobs: Bound<LifecycleJob>[];
 };
-export const emptyMaintenance: MaintenanceMemory = { tools: null, upgrade: null, jobs: [] };
+export const emptyMaintenance: MaintenanceMemory = { tools: null, upgrade: null, targets: null, jobs: [] };
 const SECTION_LABEL: Record<MaintenanceSection, string> = { tools: "Tools", upgrade: "Upgrade check", dump: "Dump", restore: "Restore", clone: "Clone" };
 /** A preflight older than this is prepared again before anything starts. */
 export const PREFLIGHT_TTL_MS = 60_000;
@@ -398,6 +400,10 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   const unknownTables = tables.filter((name) => !loadedTables.has(name));
   const tableScope = !!oneSchema && tables.length > 0;
   const tools = memory.tools?.key === key ? memory.tools.report : null;
+  const targetReport = memory.targets?.key === key ? memory.targets.report : null;
+  // Percona targets are "8.4.11-11"; the checker takes the upstream version.
+  const chosenTarget: UpgradeTarget | undefined = targetReport?.targets.find((t) => t.version === target);
+  const chosenVersion = () => target === "custom" ? customTarget.trim() : chosenTarget ? chosenTarget.check_version : target;
   // Dump's databases, and Restore's Default database once its form is shown.
   const catalog = useSchemaCatalog(connection, onScreen && ((section === "dump" && scope !== "instance") || (section === "restore" && !!tools)));
   const restoreDatabases = (catalog.catalog?.schemas || []).filter((s) => !s.system).map((s) => s.name);
@@ -574,6 +580,27 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   }
   useOpenRead({ key, reportKey: tools ? key : null, ready: !disabled && !busy,
     busy: !!reads.loading || reads.running(), read: () => { void loadTools(); } });
+  // The target list reads once per connection when Upgrade check opens; it
+  // runs beside the view's reads so it never holds up Check upgrade.
+  const targetsTried = useRef("");
+  const [targetsLoading, setTargetsLoading] = useState(false);
+  const [targetsError, setTargetsError] = useState<{ key: string; text: string } | null>(null);
+  useEffect(() => {
+    if (section !== "upgrade" || !tools || disabled || memory.targets?.key === key || targetsTried.current === key) return;
+    targetsTried.current = key;
+    const from = connection, label = connectionLabel(connection);
+    const controller = new AbortController();
+    setTargetsLoading(true); setTargetsError(null);
+    readUpgradeTargets(from, controller.signal).then((report) => {
+      onMemory((m) => ({ ...m, targets: { key: connectionKey(from), label, report } }));
+    }, (e: unknown) => {
+      if (!controller.signal.aborted) setTargetsError({ key: connectionKey(from), text: e instanceof Error ? e.message : String(e) });
+    }).finally(() => { if (!controller.signal.aborted) setTargetsLoading(false); });
+    return () => { controller.abort(); setTargetsLoading(false); if (targetsTried.current === key && memory.targets?.key !== key) targetsTried.current = ""; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [section, !!tools, disabled, key]);
+  useEffect(() => { setTarget(""); setCustomTarget(""); }, [key]);
+  useEffect(() => { if (targetReport?.recommended) setTarget((t) => t || targetReport.recommended || ""); }, [targetReport]);
   useEffect(() => {
     if (!preflightError && !failedChecks.length) return;
     resultRef.current?.focus();
@@ -599,7 +626,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
     return <button type="button" className="text-button" onClick={() => selection.select(`check:${shownPlan?.report.checks.findIndex(c => c.check === check.check)}`, true)}>Review check</button>;
   }
   async function runUpgrade() {
-    const version = target === "custom" ? customTarget.trim() : target;
+    const version = chosenVersion();
     if (formDisabled || reads.running() || !VERSION.test(version) || missingPrivileges.upgrade_check) return;
     setNotice(""); setFailure(null);
     selection.select("", false);
@@ -787,7 +814,13 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
 
   const shellVersion = tools?.tools.mysqlsh?.available ? tools.tools.mysqlsh.version_tuple?.join(".") || "" : "";
   const versions = [...new Set([...targetVersions, shellVersion].filter((v) => VERSION.test(v)))];
-  const version = target === "custom" ? customTarget.trim() : target;
+  const version = chosenVersion();
+  // Newest first; the suggested target says so. Without a target list (still
+  // reading, or it failed) the MySQL Shell version stays the one offer.
+  const targetOptions: [string, string][] = targetReport && targetReport.targets.length
+    ? [...targetReport.targets].reverse().map((t): [string, string] => [t.version,
+      [t.version, t.path_label, t.version === targetReport.recommended ? "suggested" : ""].filter(Boolean).join(" · ")])
+    : targetReport?.server.engine === "mariadb" ? [] : versions.map((v): [string, string] => [v, v]);
   // Chosen tables come from the loaded list: one a reload no longer lists blocks the preflight.
   const dumpValid = !!directory.trim() && validInteger(threads, 1, 64) && (scope === "instance" || schemas.length > 0) && !unknownTables.length && !missingTables.length;
   const restoreValid = !!restoreDirectory.trim() && validInteger(threads, 1, 64);
@@ -842,8 +875,9 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
       </>}
       {section === "upgrade" && tools && <>
         {form(<>
-          <label className="ops-field"><span>Target version</span><Select label="Target version" value={target} options={[["", "Choose a version"], ...versions.map((v): [string, string] => [v, v]), ["custom", "Other version…"]]} onChange={setTarget} /></label>
+          <label className="ops-field"><span>Target version</span><Select label="Target version" value={target} options={[["", targetsLoading ? "Reading releases…" : "Choose a version"], ...targetOptions, ["custom", "Other version…"]]} onChange={setTarget} /></label>
           {target === "custom" && <FormField label="Exact version" value={customTarget} onChange={setCustomTarget} placeholder="8.4.0" hint="major.minor.patch" />}
+          <UpgradeTargetNotes report={targetReport} chosen={chosenTarget} loading={targetsLoading} error={targetsError?.key === key ? targetsError.text : ""} />
           <Checkbox checked={!preferShell} onChange={(v) => setPreferShell(!v)}>Partial check without MySQL Shell (native subset)</Checkbox>
         </>)}
         <div className="ops-actions"><ReadAction busy={checking} busyLabel="Checking…" gate={privilegeResult()} write={false} className="primary" disabled={formDisabled || detecting || !VERSION.test(version)} blocked={missingPrivileges.upgrade_check} onClick={() => { void runUpgrade(); }}>Check upgrade</ReadAction>{readStatus("upgrade")}<span className="hint">Only reads. Never says an upgrade is safe.</span></div>
@@ -995,4 +1029,44 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
       <p className="hint">myflames repeats the preflight right before starting and stops if anything changed. Cancelling a running job may leave partial data to clean up.</p>
     </ConfirmSheet>}
   </>;
+}
+
+const INSTALL_HINT: Record<string, string> = { high: "", medium: " (likely)", low: " (uncertain)" };
+
+/** Where the target list came from, how the server was installed and what that means for the upgrade. */
+function UpgradeTargetNotes({ report, chosen, loading, error }: { report: UpgradeTargets | null; chosen?: UpgradeTarget; loading: boolean; error: string }) {
+  if (loading && !report) return <p className="hint ops-targets" role="status">Reading the releases this server can upgrade to…</p>;
+  if (!report) return error ? <p className="hint ops-targets">Could not list target versions ({error}). Choose Other version… to type one.</p> : null;
+  const { install, source, guidance } = report;
+  // Only a Percona line name (ps-84-lts) fills the placeholder; a function replacer keeps "$" literal.
+  const repository = chosen?.repository && /^ps-[0-9a-z]{2}(?:-lts|-innovation)?$/.test(chosen.repository) ? chosen.repository : "";
+  const command = !guidance.command ? "" : guidance.command.includes("{repository}")
+    ? (repository ? guidance.command.replace("{repository}", () => repository) : "") : guidance.command;
+  const read = source.checked_at ? ` · read ${source.checked_at.slice(11, 16)} UTC` : "";
+  const releaseNotes = upgradeLinkUrl(chosen?.url);
+  const guide = upgradeLinkUrl(guidance.url);
+  return <div className="ops-targets">
+    <p className="hint">
+      <strong>Installed from: {install.label}{INSTALL_HINT[install.confidence]}</strong>
+      {" · "}{source.label}{source.kind !== "none" && `${read} · ${report.targets.length.toLocaleString()} ${report.targets.length === 1 ? "release" : "releases"} offered`}
+      {source.error && source.kind !== "bundled" ? ` (partly read: ${source.error})` : ""}
+    </p>
+    {guidance.text && <p className="hint">{guidance.text}{guide && <> <a href={guide} target="_blank" rel="noopener noreferrer">{guide.includes("percona") ? "percona-release guide" : "Repository guide"}</a></>}</p>}
+    {command && <Commands text={command} label="Repository setup command" />}
+    {chosen && <p className="hint">
+      {chosen.version}{chosen.date ? ` (${chosen.date})` : ""}: {chosen.path_label}{chosen.docker_only ? " · Docker image only" : ""}{chosen.packages?.length ? ` · packages for ${chosen.packages.join(", ")}` : ""}
+      {chosen.shell && !chosen.shell.ok ? ` · needs MySQL Shell ${chosen.shell.needs || "newer than the server"} or newer for the full check` : ""}
+      {releaseNotes && <> · <a href={releaseNotes} target="_blank" rel="noopener noreferrer">Release notes</a></>}
+    </p>}
+    {report.notes.map((note, i) => <p key={i} className="hint">{note}</p>)}
+    {(install.evidence.length > 0 || report.not_direct.length > 0 || report.unclassified.length > 0 || (report.unavailable || []).length > 0) && <details className="ops-details">
+      <summary>How this was decided</summary>
+      <ul className="ops-evidence">
+        {install.evidence.map((e, i) => <li key={`e${i}`}>{e}</li>)}
+        {install.container && <li>The host name looks like a container ID.</li>}
+        {[...report.not_direct, ...report.unclassified].map((n) => <li key={`n${n.series}`}>{n.series} (newest {n.newest}): {n.reason}</li>)}
+        {(report.unavailable || []).map((u) => <li key={`u${u.version}`}>{u.version}: {u.reason}</li>)}
+      </ul>
+    </details>}
+  </div>;
 }

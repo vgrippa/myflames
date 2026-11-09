@@ -278,6 +278,7 @@ export function AuditLog({ profiles, focusId = "" }: { profiles: Profile[]; focu
   const [since, setSince] = useState("");
   const [status, setStatus] = useState("");
   const [selected, setSelected] = useState(focusId);
+  const [focusedId, setFocusedId] = useState(focusId);
   const [exporting, setExporting] = useState("");
   const [exported, setExported] = useState("");
   const [exportError, setExportError] = useState("");
@@ -287,8 +288,8 @@ export function AuditLog({ profiles, focusId = "" }: { profiles: Profile[]; focu
 
   // The filters every read sends: the server applies them before the page.
   const filters = useMemo(
-    () => ({ ...(server ? { server } : {}), ...(since ? { since_days: Number(since) } : {}), ...(status ? { status } : {}) }),
-    [server, since, status],
+    () => ({ ...(focusedId ? { id: focusedId } : {}), ...(server ? { server } : {}), ...(since ? { since_days: Number(since) } : {}), ...(status ? { status } : {}) }),
+    [focusedId, server, since, status],
   );
   const remember = (records: AuditRecord[]) =>
     setSeen((names) => {
@@ -606,6 +607,7 @@ export function AuditLog({ profiles, focusId = "" }: { profiles: Profile[]; focu
                 </Popover>
               ) : <div className="audit-inline-filters" role="group" aria-label="Filter audit records">{filterControls}</div>}
               <div className="audit-actions" role="group" aria-label="Audit actions">
+                {focusedId && <button type="button" className="button" onClick={() => setFocusedId("")}>Show all records</button>}
                 {report && <RetentionControl days={retention} onSaved={() => void load()} />}
                 <Popover
                   label="Export the audit log"

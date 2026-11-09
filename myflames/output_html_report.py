@@ -65,7 +65,7 @@ def _render_svg(root, view_type, width, title, unit, **kwargs):
     from .output_tree import render_tree
     from .parser import (
         build_flame_entries, flatten_nodes as _flat,
-        enhance_flame_titles,
+        enhance_flame_titles, misestimate_marks,
     )
 
     teach_index_by_folded = kwargs.get("teach_index_by_folded") or {}
@@ -93,20 +93,11 @@ def _render_svg(root, view_type, width, title, unit, **kwargs):
         )
 
     # flamegraph (default)
-    frame_labels = {}
-    frame_ids = {}
-    if kwargs.get("node_identity"):
-        def identity_entries(node, path=None):
-            token = "operator:" + node["node_id"]
-            frame_labels[token] = node["folded_label"]
-            frame_ids[token] = node["node_id"]
-            path = list(path or []) + [token]
-            yield path, node["self_time"]
-            for child in node.get("children", []):
-                yield from identity_entries(child, path)
-        entries = list(identity_entries(root))
-    else:
-        entries = list(build_flame_entries(root))
+    # Every plan frame has identity, including standalone fallback SVGs.
+    # Labels remain display text and never decide which operator is marked.
+    frame_labels = {"operator:" + n["node_id"]: n["folded_label"] for n in _flat(root)}
+    frame_ids = {"operator:" + n["node_id"]: n["node_id"] for n in _flat(root)}
+    entries = list(build_flame_entries(root, node_identity=True))
     # Whole microseconds per measured operator (flamegraph.flame_scale,
     # mirrored by charts/flamegraph.ts).
     folded_text, flame_unit = plan_folded(entries, root["total_time"],
@@ -136,6 +127,7 @@ def _render_svg(root, view_type, width, title, unit, **kwargs):
         family_by_folded=_family_by_folded or None,
         frame_labels=frame_labels or None,
         frame_ids=frame_ids or None,
+        marks=misestimate_marks(root),
     )
     # Enhance tooltips with each frame's own operator details (frames carry
     # data-node-id here, so the lookup is exact).

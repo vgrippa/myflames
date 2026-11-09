@@ -58,6 +58,8 @@ const done = await load("lifecycle-job-dump-done.json");
 const schemas = await load("schemas-mysql-8.4.json");
 
 const UPGRADE = "/api/lifecycle/upgrade-check";
+const TARGETS = "/api/lifecycle/upgrade-targets";
+const targets = await load("lifecycle-upgrade-targets-mysql-8.4.json");
 const PREPARE = "/api/lifecycle/prepare";
 const START = "/api/lifecycle/start";
 const STATUS = "/api/lifecycle/status";
@@ -80,6 +82,7 @@ const h = await open("/api/lifecycle/tools", "maintenance", {
   "/api/files/local/list": body => ({ status: 200, body: { path: body.path || "/Users/dba", home: "/Users/dba", entries: [], transfers: false } }),
   [REVEAL]: body => next.reveal.shift() || { status: 200, body: { revealed: body.path }, delay: 100 },
   [UPGRADE]: () => ({ status: 200, body: next.upgrade, delay: 50 }),
+  [TARGETS]: () => ({ status: 200, body: targets, delay: 50 }),
   [PREPARE]: () => next.prepare.shift() || { status: 200, body: dumpPlan },
   [START]: (body) => {
     const reply = next.start.shift();
@@ -192,7 +195,8 @@ try {
   // it was shown with (the default one, then Primary). Maintenance itself read nothing else.
   const healthReads = calls("/api/live/health");
   assert.deepEqual(healthReads.map((o) => o.body.connection.host), ["127.0.0.1", "primary.test"], "one on-open Health read per connection");
-  assert.deepEqual(state.other.filter((o) => o.path !== JOBS && o.path !== "/api/live/health"), []);
+  // Choosing Primary in the picker checked its readiness (connection readiness contract).
+  assert.deepEqual(state.other.filter((o) => o.path !== JOBS && o.path !== "/api/live/health" && o.path !== "/api/live/readiness"), []);
 
   // Tools on this computer and what they offer for the server.
   state.fallback = { status: 200, body: tools };
@@ -206,7 +210,24 @@ try {
 
   // Upgrade check: the partial check without MySQL Shell, labelled as such.
   await section("Upgrade check");
-  assert.deepEqual(await page.$$eval(`${view} select[aria-label="Target version"] option`, (els) => els.map((e) => e.value)), ["", "9.6.0", "custom"]);
+  // Targets come from the release notes and the upgrade paths: 8.4 patches and
+  // the next LTS (9.7), newest first, with the newest 9.7 suggested and chosen.
+  await page.waitForSelector(`${view} .ops-targets strong`);
+  assert.equal(calls(TARGETS).length, 1, "the target list reads once when Upgrade check opens");
+  assert.deepEqual(await page.$$eval(`${view} select[aria-label="Target version"] option`, (els) => els.map((e) => e.value)),
+    ["", "9.7.4", "9.7.3", "9.7.2", "9.7.1", "9.7.0", "8.4.13", "8.4.12", "8.4.11", "8.4.10", "8.4.9", "8.4.8", "8.4.7", "8.4.6", "8.4.5", "8.4.4", "custom"]);
+  assert.equal(await page.$eval(`${view} select[aria-label="Target version"]`, (e) => e.value), "9.7.4");
+  assert.match(await text(`${view} select[aria-label="Target version"] option[value="9.7.4"]`), /^9\.7\.4 · next LTS · suggested$/);
+  const notes = await text(`${view} .ops-targets`);
+  assert.match(notes, /Installed from: RPM packages · MySQL release notes · read 21:20 UTC · 15 releases offered/);
+  assert.match(notes, /MySQL Yum repository/);
+  assert.match(notes, /9\.7\.4 \(2026-10-20\): next LTS · needs MySQL Shell 9\.7 or newer for the full check · Release notes/);
+  assert.equal(await page.$eval(`${view} .ops-targets a[href*="news-9-7-4"]`, (a) => a.getAttribute("href")), "https://dev.mysql.com/doc/relnotes/mysql/9.7/en/news-9-7-4.html");
+  await page.select(`${view} select[aria-label="Target version"]`, "8.4.13");
+  assert.match(await text(`${view} .ops-targets`), /8\.4\.13 \(2026-10-20\): same series · Release notes/);
+  assert.doesNotMatch(await text(`${view} .ops-targets`), /needs MySQL Shell/);
+  await page.select(`${view} select[aria-label="Target version"]`, "9.7.4");
+  await captureSheet("upgrade-targets");
   await page.select(`${view} select[aria-label="Target version"]`, "custom");
   await field("Exact version", "8.4.0");
   await assertPrivilege(page, `${view} .ops-actions button`, "unknown");

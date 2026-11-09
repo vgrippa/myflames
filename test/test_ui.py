@@ -32,13 +32,39 @@ class TestBackendReadLimits(unittest.TestCase):
             self.assertEqual(collect.call_args[0][0], factory.return_value.__enter__.return_value)
             return collect.call_args
 
+    def test_session_history_route_is_bounded_and_fills_saved_password(self):
+        from myflames import ui
+        workspace = mock.Mock()
+        workspace.store.connection_with_saved_password.side_effect = lambda c: dict(c, password='private-fixture')
+        with mock.patch('myflames.connector.MySQLConnection') as factory, \
+                mock.patch('myflames.sessions.sessions_history', return_value={'id': 42, 'statements': []}) as collect:
+            result = api_response('/api/live/sessions/history',
+                                  {'connection': {'profile_id': 'saved', 'host': 'localhost'}, 'id': 42}, workspace)
+        self.assertEqual(result, {'id': 42, 'statements': []})
+        self.assertEqual(collect.call_args[0][1], 42)
+        self.assertEqual(factory.call_args[1]['query_timeout'], 5)
+        self.assertEqual(factory.call_args[1]['password'], 'private-fixture')
+        self.assertIn('/api/live/sessions/history', ui._SERVER_VIEW_PATHS)
+        import inspect
+        self.assertIn('"/api/live/sessions/history"', inspect.getsource(WorkspaceHandler.do_POST))
+
+    def test_session_history_rejects_sql_in_id_before_connection(self):
+        with mock.patch('myflames.connector.MySQLConnection') as factory:
+            with self.assertRaises(ValueError):
+                api_response('/api/live/sessions/history', {'connection': {}, 'id': '1; KILL 2'})
+            factory.assert_not_called()
+
     def test_catalog_prefix_and_keyset_are_forwarded_literally(self):
         args, kwargs = self.call('/api/live/catalog', {'schema': 'shop', 'prefix': 'a%_', 'after': 'a%_Z'},
                                  'myflames.schema_browser.catalog_report')
         self.assertEqual(args[1:], ('shop', None))
-        self.assertEqual(kwargs, {'prefix': 'a%_', 'after': 'a%_Z', 'stats': False})
+        self.assertEqual(kwargs, {'prefix': 'a%_', 'after': 'a%_Z', 'stats': False, 'group': None})
         _, kwargs = self.call('/api/live/catalog', {'schema': 'shop'}, 'myflames.schema_browser.catalog_report')
-        self.assertEqual(kwargs, {'prefix': None, 'after': None, 'stats': False})
+        self.assertEqual(kwargs, {'prefix': None, 'after': None, 'stats': False, 'group': None})
+        # The schema browser's Routines, Triggers and Events folders pass a group.
+        _, kwargs = self.call('/api/live/catalog', {'schema': 'shop', 'group': 'triggers'},
+                              'myflames.schema_browser.catalog_report')
+        self.assertEqual(kwargs['group'], 'triggers')
         # Maintenance > Dump asks for engine, rows and size; only a literal true does.
         for value, expected in ((True, True), ('true', False), (1, False), (None, False)):
             _, kwargs = self.call('/api/live/catalog', {'schema': 'shop', 'stats': value},
@@ -59,7 +85,7 @@ class TestBackendReadLimits(unittest.TestCase):
             with self.subTest(value=value):
                 _, kwargs = self.call('/api/live/catalog', {'schema': 'shop', 'prefix': value, 'after': value},
                                       'myflames.schema_browser.catalog_report')
-                self.assertEqual(kwargs, {'prefix': expected, 'after': expected, 'stats': False})
+                self.assertEqual(kwargs, {'prefix': expected, 'after': expected, 'stats': False, 'group': None})
 
     def test_selected_and_global_schema_limits_require_a_boolean_override(self):
         for route, target in (('tables', 'myflames.schema_health.table_report'),
@@ -1247,3 +1273,19 @@ class TestFilesEndpoints(unittest.TestCase):
         source = inspect.getsource(ui.WorkspaceHandler.do_POST)
         self.assertIn('_SSH_CONNECTION_PATHS + _FILES_PATHS', source)
         self.assertFalse(hasattr(ui, '_SFTP_PATHS'), 'the unreleased /api/live/sftp routes are gone')
+
+
+class TestBaselineSamplingDispatch(unittest.TestCase):
+    def test_identity_is_passed_to_collectors_without_a_later_client_read(self):
+        from myflames import connector, ui
+        for path, target, args in (
+            ('/api/live/health', 'myflames.health.health_report', {'interval': 5}),
+            ('/api/live/top', 'myflames.discover.top_report', {'limit': 50}),
+        ):
+            for flag in (None, False, True, 'true'):
+                with self.subTest(path=path, flag=flag), mock.patch.object(connector, 'MySQLConnection') as factory, \
+                        mock.patch(target, return_value={'reading_server': {'verified': False, 'error': 'unavailable'}}) as read:
+                    result = ui._discover_response(path, dict(args, connection={'host': 'db'}, with_identity=flag))
+                    self.assertEqual(read.call_args[1]['with_identity'], flag is True)
+                    self.assertIs(result, read.return_value)
+                    factory.return_value.__enter__.return_value.run.assert_not_called()

@@ -143,7 +143,7 @@ try {
   assert.match(await text(`${view} .summary-line`), /Performance Schema is on/);
   assert.ok(await page.$(`${view} .instr-features`));
   assert.equal(await text(`${view} [data-feature=replication_receiver] .status-pill`), "Optional");
-  assert.match(await text(`${view} .summary-line`), /8 views ready/);
+  assert.match(await text(`${view} .summary-line`), /9 views ready/);
   assert.doesNotMatch(await text(`${view} .summary-line`), /partly|off/);
   assert.match(await h.popover("About presets"), /reviewed Apply action/);
   // Presets and feature links retain their inspector details.

@@ -65,9 +65,64 @@ let watchFallback = {
   notes: [],
   reason: null,
 };
+// Baselines (/api/baselines/*): an in-memory store with the contract of
+// baselines.py (newest first; the reading kept as numbers, statuses and
+// headlines; refusals as 400 {error}). test_baselines.py covers the real one.
+const baselines = [];
+let baselineRefusal = null;
+const keepHealth = (r) => ({
+  schema_version: r.schema_version, engine: r.engine, server_product: r.server_product ?? null, server_version: r.server_version,
+  interval: r.interval, taken_at: r.taken_at, uptime_s: r.uptime_s, summary: r.summary,
+  metrics: r.metrics.map(({ key, group, label, unit, value, status }) => ({ key, group, label, unit, value, status })),
+  diagnostics: r.diagnostics.map(({ key, title, status, state, headline, value, unit }) => ({ key, title, status, state, headline, value, unit })),
+});
+const SERVER = { engine: "mysql", flavor: "mysql", product: "MySQL", version: "8.4.11", server_uuid: "3e11fa47-71ca-11e1-9e33-c80aa9429562",
+  hostname: "db1", port: 3306 };
+// Another server of the same version (a moved tunnel or virtual IP).
+const SERVER_B = { ...SERVER, server_uuid: "8f0c2b6e-0a43-11ef-8d43-0242ac120002", hostname: "db2" };
+const keyOf = (s) => `${s.engine}/uuid/${s.server_uuid}`;
+const describe = (s) => `${s.product} ${s.version} (server_uuid ${s.server_uuid})`;
+// A reading as live/health answers it with with_identity: true.
+const fromServer = (report, server = SERVER) => ({ ...report,
+  reading_server: { verified: true, server_key: keyOf(server), server, uptime_s: report.uptime_s, server_time: "2026-10-14 16:25:26.000000" } });
+// The server the connection reaches when a baseline is listed or saved.
+let reached = SERVER;
+let baselineClock = Date.UTC(2026, 10, 8, 14, 2);
+const baselineMocks = {
+  "/api/baselines/list": (body) => ({ status: 200, body: { schema_version: "baseline-list-1.0", kind: body.kind, server: reached,
+    server_key: keyOf(reached), max: 20,
+    items: baselines.filter((b) => b.item.kind === body.kind && b.item.server_key === keyOf(reached)).map((b) => b.item).reverse() } }),
+  "/api/baselines/save": (body) => {
+    if (baselineRefusal) return baselineRefusal;
+    // baselines.py: the reading's own server must be the one reached now.
+    const reading = body.report.reading_server?.server;
+    if (!reading || body.report.reading_server?.verified !== true) return { status: 400, body: { error: "Could not save the baseline: the server's identity was not read with this reading. Refresh, then save again." } };
+    if (keyOf(reading) !== keyOf(reached)) {
+      return { status: 400, body: { error: `Could not save the baseline: this reading came from ${describe(reading)}, but the connection now reaches ${describe(reached)}. Refresh, then save again.` } };
+    }
+    baselineClock += 60_000;
+    const item = { id: (baselines.length + 1).toString(16).padStart(32, "0"), kind: body.kind, name: body.name.trim(),
+      created_at: new Date(baselineClock).toISOString(), server: reached, server_key: keyOf(reached), taken_at: body.report.taken_at,
+      uptime_s: body.report.uptime_s, status: body.report.summary.status, problem: 4, watch: 2, ok: 18 };
+    baselines.push({ item, payload: keepHealth(body.report) });
+    return { status: 200, body: { ...item, max: 20 } };
+  },
+  "/api/baselines/get": (body) => {
+    const found = baselines.find((b) => b.item.id === body.id);
+    return found ? { status: 200, body: { ...found.item, payload: found.payload } }
+      : { status: 400, body: { error: "Could not open the baseline: it is no longer saved on this computer." } };
+  },
+  "/api/baselines/delete": (body) => {
+    const index = baselines.findIndex((b) => b.item.id === body.id);
+    if (index < 0) return { status: 400, body: { error: "Could not delete the baseline: it is no longer saved on this computer." } };
+    baselines.splice(index, 1);
+    return { status: 200, body: { deleted: true, id: body.id } };
+  },
+};
 // The list of views docked, as a person who docked it: this suite asserts
 // the list's markers and keys (server-nav covers the floating default).
 const h = await open("/api/live/health", "health", {
+  ...baselineMocks,
   "/api/live/top": (body, request) => (holdTop ? (heldTop.push({ body, request }), null) : topFor(body)),
   "/api/live/watch": () => ({ status: 200, body: watchQueue.shift() || watchFallback }),
   "/api/live/sessions": { status: 200, body: sessionsFixture },
@@ -100,13 +155,19 @@ try {
   // chart of one point or a Min equal to its Max.
   assert.equal(await text(`${view} #health-live-h`), "Live charts");
   assert.ok(await page.$(`${view} .health-live-charts.is-pending`), "live charts wait for a second reading");
-  assert.equal(await text(`${view} .health-live-charts-note`), "Charts start with the next reading. Turn on Auto-refresh.");
+  assert.equal(await text(`${view} .health-live-charts-note`), "Collecting…");
   assert.deepEqual(await page.$$eval(`${view} .health-live-chart`, (els) => els.map((e) => [e.dataset.chart,
     e.querySelector(".health-chart-current")?.textContent, !!e.querySelector("svg"), !!e.querySelector(".health-chart-range"),
     Math.round(e.getBoundingClientRect().height) <= 84])),
   [["queries", "283/s", false, false, true], ["threads_running", "2 threads", false, false, true],
     ["bp_disk_reads", "0.30 pages/s", false, false, true], ["threads_connected", "1 connection", false, false, true]]);
   assert.match(await text(`${view} .health-live-chart[data-chart="queries"] .health-chart-summary`), /^Queries per second: 283\/s, one reading so far\.$/);
+  assert.equal(await page.$eval(`${view} .auto-refresh select`, (e) => e.value), "-1", "While visible is the default");
+  assert.deepEqual(await page.$$eval(`${view} .auto-refresh option`, (els) => els.map((e) => [e.value, e.textContent])),
+    [["-1", "While visible"], ["0", "Off"], ["10", "Every 10 s"], ["30", "Every 30 s"], ["60", "Every 60 s"]]);
+  // Keep the existing report and baseline scenarios manually driven. The
+  // visible-only lifecycle is exercised separately below with its own clock.
+  await page.select(`${view} .auto-refresh select`, "0");
   // 900 px and below the tiles form strips that scroll sideways: each group's
   // heading carries its share of the summary's count (a dot plus words), so
   // Diagnostics plus the groups add up to the summary line at a glance.
@@ -128,7 +189,7 @@ try {
   assert.equal(state.seen[0].connection.password || "", "", "no password was typed");
   assert.match(await h.popover("About Health"), /Performance Schema is not needed/);
   assert.equal(await page.$eval(`${view} .auto-refresh select`, (e) => e.disabled), false);
-  assert.equal(await page.$eval(`${view} .auto-refresh select`, (e) => e.value), "0", "auto-refresh is off by default");
+  assert.equal(await page.$eval(`${view} .auto-refresh select`, (e) => e.value), "0", "Off remains selected");
   assert.deepEqual(await page.$$eval(`${view} .health-window option`, (els) => els.map((e) => e.value)), ["1", "2", "5", "10", "15", "30", "60"]);
   assert.equal(await page.$eval(`${view} .health-window select`, (e) => e.value), "5");
   // The place's intro is behind the ⓘ next to its title.
@@ -183,7 +244,7 @@ try {
   assert.match(bpWhy, /full when free pages are at or below/);
   assert.doesNotMatch(bpWhy, /What to do/, "no suggestion while warming");
   // One reading: the trend is the value and one muted line, no chart of one point.
-  assert.match(bpWhy, /Read from disk\s*[\d.]+ (B|KiB)\/sThe chart starts with the next reading\./);
+  assert.match(bpWhy, /Read from disk\s*[\d.]+ (B|KiB)\/sCollecting…/);
   assert.equal(await page.$(".view-inspector svg.sparkline"), null);
   assert.match(bpWhy, /page cleaner evicts the least recently used pages/);
   assert.match(bpWhy, /Time to full at this ratee?stimate/);
@@ -302,7 +363,7 @@ try {
   await h.view("health");
   await page.waitForSelector(`${view} .summary-line`);
   await h.select(tile("questions"));
-  await page.waitForFunction(() => /The chart starts with the next reading\./.test(document.querySelector(".view-inspector [data-trend=pending]")?.textContent || ""));
+  await page.waitForFunction(() => /Collecting…/.test(document.querySelector(".view-inspector [data-trend=pending]")?.textContent || ""));
   await (await page.$(".server-place")).screenshot({ path: path.join(h.shots, "health.png") });
 
   // Links: a flagged row lock tile opens Locks; the view keeps the report.
@@ -350,7 +411,7 @@ try {
     return charts.getBoundingClientRect().bottom <= diags.getBoundingClientRect().top + 1;
   });
   assert.equal(chartsBeforeDiag, true, "live charts sit above existing diagnostics");
-  assert.equal(await text(`${view} .health-live-charts-note`), "Turn on Auto-refresh to see the trend");
+  assert.equal(await page.$(`${view} .health-live-charts-note`), null, "no opt-in hint after two readings");
   // Connections in use is the count of open connections (Threads_connected),
   // never the share of max_connections; each chart shows its latest reading.
   assert.deepEqual(
@@ -397,7 +458,8 @@ try {
   await page.waitForFunction(() => !document.querySelector(".view-inspector svg.sparkline"));
   assert.equal(await page.$(`${tile("com_select")} svg.sparkline`), null, "only key rates get a trend");
 
-  // Automatic refresh: opt-in; runs on the chosen period while the view is visible.
+  // Explicit automatic refresh choices remain available. Capture when… below
+  // keeps its existing accelerated interval checks.
   await page.click(".detail-back");
   await page.waitForFunction(() => !document.querySelector(".view-inspector"));
   await page.evaluate(() => {
@@ -410,7 +472,7 @@ try {
   await pause(700);
   assert.ok(state.seen.length > before, "auto-refresh sampled again");
   await page.select(`${view} .auto-refresh select`, "0");
-  assert.equal(await text(`${view} .health-live-charts-note`), "Turn on Auto-refresh to see the trend");
+  assert.equal(await page.$(`${view} .health-live-charts-note`), null, "no opt-in hint after two readings");
   await h.idle(view);
   const stopped = state.seen.length;
   await pause(500);
@@ -571,8 +633,9 @@ try {
   await page.waitForFunction((sel) => !document.querySelector(sel), {}, `${view} .health-watch-line`);
   await page.emulateTimezone();
 
-  // Error: shown in an alert, the last report stays, auto-refresh turns off.
-  await page.select(`${view} .auto-refresh select`, "30");
+  // Error: shown in an alert, the last report stays, and automatic reads back off.
+  // Start the read manually so the queued failure belongs to this request.
+  await page.select(`${view} .auto-refresh select`, "0");
   state.queue.push(failure);
   await h.refresh();
   await page.waitForSelector(`${view} .error`);
@@ -673,6 +736,228 @@ try {
   });
   await page.setViewport({ width: 1440, height: 1000 });
 
+
+  // ---- Is this normal? Save baseline and Compare with baseline live in the
+  // Refresh menu (no toolbar button). Comparing marks each tile "was X" and
+  // each verdict that changed, and the summary counts the changes; after a
+  // restart the tiles built from counters say Not compared. Each reading
+  // carries the server it came from (with_identity); one without it, as the
+  // MariaDB fixture on screen now, can be neither saved nor compared.
+  await page.click(`${view} button[aria-label="Refresh options"]`);
+  await page.waitForSelector(`${view} .view-refresh-menu [data-action=save-baseline]`, { visible: true });
+  assert.deepEqual(await page.$$eval(`${view} .view-refresh-menu [data-action$=baseline]`, (els) => els.map((e) => [e.disabled,
+    e.querySelector(".hint").textContent])), [[true, "Refresh first: the server's identity was not read with this reading."],
+    [true, "Refresh first: the server's identity was not read with this reading."]]);
+  await page.keyboard.press("Escape");
+  state.queue.push({ status: 200, body: fromServer(mysql) });
+  await h.refresh();
+  await page.waitForFunction(() => /MySQL 8\.4\.11/.test(document.querySelector(".server-view[data-view=health] .fact-strip")?.textContent || ""));
+  await h.idle(view);
+  assert.equal(state.seen.at(-1).with_identity, true, "the reading asks for the server's identity");
+  assert.equal(await page.$$eval(`${view} .view-toolbar button`, (els) => els.filter((e) => /baseline/i.test(e.textContent)).length), 0,
+    "no toolbar button for baselines");
+  const baselineCalls = (p) => state.other.filter((o) => o.path === `/api/baselines/${p}`);
+  const openRefreshMenu = async () => {
+    await page.click(`${view} button[aria-label="Refresh options"]`);
+    await page.waitForSelector(`${view} .view-refresh-menu [data-action=save-baseline]`, { visible: true });
+  };
+  const sheet = "dialog.baseline-sheet";
+  const setName = (value) => page.$eval(`${sheet} input`, (e, v) => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(e, v);
+    e.dispatchEvent(new Event("input", { bubbles: true }));
+  }, value);
+  const confirmSheet = () => page.click(`${sheet} .sheet-buttons .action-button`);
+  await openRefreshMenu();
+  assert.deepEqual(await page.$$eval(`${view} .view-refresh-menu [role=menuitem]`, (els) => els.map((e) => [e.dataset.action, e.disabled])),
+    [["refresh-all", false], ["save-baseline", false], ["compare-baseline", false]]);
+  assert.match(await text(`${view} [data-action=save-baseline]`), /^Save baseline…Keep this reading on this computer$/);
+  // Save: the name starts filled in, Cancel has focus, and the reading on screen is sent.
+  await page.click(`${view} [data-action=save-baseline]`);
+  await page.waitForSelector(sheet);
+  assert.equal(await page.evaluate(() => document.activeElement?.textContent), "Cancel", "Cancel is focused first");
+  assert.match(await page.$eval(`${sheet} input`, (e) => e.value), /^Baseline, \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+  assert.match(await text(sheet), /Saving reads only the server's identity/);
+  await setName("Older");
+  await confirmSheet();
+  await page.waitForFunction((s) => !document.querySelector(s), {}, sheet);
+  await page.waitForFunction((v) => /Saved the baseline \u2068Older\u2069\./.test(document.querySelector(`${v} .baseline-status`)?.textContent || ""), {}, view);
+  const sent = baselineCalls("save").at(-1).body;
+  assert.deepEqual([sent.kind, sent.name, sent.report.schema_version, sent.report.taken_at], ["health", "Older", "health-1.0", mysql.taken_at]);
+  assert.equal(sent.connection.host, "127.0.0.1");
+  assert.equal(sent.connection.password || "", "", "no password was typed");
+  // A refusal (the limit of 20) shows in the sheet, which keeps the typed name.
+  baselineRefusal = { status: 400, body: { error: "Could not save the baseline: 20 Health baselines of this server are already kept on this computer, the most allowed. Delete one in Compare with baseline, then save again." } };
+  await openRefreshMenu();
+  await page.click(`${view} [data-action=save-baseline]`);
+  await page.waitForSelector(sheet);
+  await setName("Before deploy");
+  await confirmSheet();
+  await page.waitForSelector(`${sheet} .baseline-error`);
+  assert.match(await text(`${sheet} .baseline-error`), /20 Health baselines of this server are already kept.*Delete one in Compare with baseline/);
+  assert.equal(await page.$eval(`${sheet} input`, (e) => e.value), "Before deploy");
+  baselineRefusal = null;
+  await confirmSheet();
+  await page.waitForFunction((s) => !document.querySelector(s), {}, sheet);
+  assert.deepEqual(baselines.map((b) => b.item.name), ["Older", "Before deploy"]);
+  // The connection now reaches another server of the same version: the
+  // reading on screen came from the first one, so it is not filed under the second.
+  reached = SERVER_B;
+  await openRefreshMenu();
+  await page.click(`${view} [data-action=save-baseline]`);
+  await page.waitForSelector(sheet);
+  await setName("Switched");
+  await confirmSheet();
+  await page.waitForSelector(`${sheet} .baseline-error`);
+  assert.equal(await text(`${sheet} .baseline-error`), `Could not save the baseline: this reading came from ${describe(SERVER)}, but the connection now reaches ${describe(SERVER_B)}. Refresh, then save again.`);
+  assert.equal(await page.$eval(`${sheet} input`, (e) => e.value), "Switched");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction((s) => !document.querySelector(s), {}, sheet);
+  reached = SERVER;
+  assert.deepEqual(baselines.map((b) => b.item.name), ["Older", "Before deploy"], "nothing was filed under the other server");
+  // An empty name is refused beside the field; nothing is sent.
+  await openRefreshMenu();
+  await page.click(`${view} [data-action=save-baseline]`);
+  await page.waitForSelector(sheet);
+  const savesBefore = baselineCalls("save").length;
+  await setName("   ");
+  await confirmSheet();
+  await page.waitForSelector(`${sheet} .form-error`);
+  assert.equal(await text(`${sheet} .form-row .form-error`), "Name the baseline.");
+  assert.equal(baselineCalls("save").length, savesBefore);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction((s) => !document.querySelector(s), {}, sheet);
+
+  // A later reading on the same run (uptime 14 s, then 614 s): five verdicts changed.
+  const changed = structuredClone(mysql);
+  changed.taken_at = "2026-10-14T16:35:25.574713+00:00";
+  changed.uptime_s = 614;
+  const setMetric = (r, key, value, status) => Object.assign(r.metrics.find((m) => m.key === key), { value, status });
+  const setDiag = (r, key, status, state, headline) => Object.assign(r.diagnostics.find((d) => d.key === key), { status, state, headline });
+  setMetric(changed, "questions", 400, "info");
+  setMetric(changed, "threads_running", 40, "watch"); // a gauge: OK, now Watch
+  setMetric(changed, "bp_hit_ratio", 92.5, "watch"); // counters: OK, now Watch
+  setMetric(changed, "row_lock_time", 3.2, "ok"); // Watch, now OK
+  setDiag(changed, "buffer_pool", "ok", "full", "Full, 0.2 MiB/s read from disk"); // Warming, now OK
+  setDiag(changed, "redo", "problem", null, "Covers about 4 min of writes"); // Watch, now Problem
+  state.queue.push({ status: 200, body: fromServer(changed) });
+  await h.refresh();
+  await page.waitForFunction((t) => /40/.test(document.querySelector(t)?.textContent || ""), {}, `${tile("threads_running")} .tile-value`);
+  await h.idle(view);
+  await openRefreshMenu();
+  await page.click(`${view} [data-action=compare-baseline]`);
+  await page.waitForSelector(`${sheet} .baseline-choices`);
+  assert.deepEqual(baselineCalls("list").at(-1).body.kind, "health");
+  assert.equal(baselineCalls("list").at(-1).body.connection.host, "127.0.0.1");
+  assert.deepEqual(await page.$$eval(`${sheet} .baseline-choice`, (els) => els.map((e) => [e.querySelector(".baseline-choice-name").textContent,
+    e.querySelector("input").checked])), [["Before deploy", true], ["Older", false]], "newest first, and chosen");
+  assert.match(await text(`${sheet} legend`), /^2 of 20 kept for this server, newest first$/);
+  await confirmSheet();
+  await page.waitForSelector(`${view} .baseline-bar`);
+  await page.waitForFunction((s) => !document.querySelector(s), {}, sheet);
+  assert.equal(baselineCalls("get").at(-1).body.id, baselines[1].item.id);
+  assert.match(await text(`${view} .baseline-bar`), /Baseline\s*Before deploy · \d{4}-\d{2}-\d{2} \d{2}:\d{2}\s*→\s*Now\s*\d\d:\d\d:\d\d/);
+  assert.match(await text(`${view} [data-baseline-summary]`), /^ · 5 verdicts changed since Before deploy, \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+  assert.equal(await text(`${tile("questions")} .tile-compare`), "was 283/s");
+  assert.equal(await text(`${tile("threads_running")} .tile-compare`), "was 2 threads");
+  assert.equal(await text(`${tile("bp_hit_ratio")} .tile-compare`), "was 100.0%");
+  const was = () => page.$$eval(`${view} .verdict-was`, (els) => els.map((e) => [
+    e.closest("[data-metric]")?.dataset.metric || e.closest("[data-diagnostic]")?.dataset.diagnostic, e.textContent]));
+  assert.deepEqual((await was()).sort(), [["bp_hit_ratio", "was OK"], ["buffer_pool", "was Warming"], ["redo", "was Watch"],
+    ["row_lock_time", "was Watch"], ["threads_running", "was OK"]]);
+  // Each tile holds its label, value, "was" line and status inside its box (at most 120 px).
+  const boxes = await page.$$eval(`${view} .metric-tile`, (els) => els.map((e) => {
+    const r = e.getBoundingClientRect(), l = e.querySelector(".tile-label").getBoundingClientRect();
+    const c = e.querySelector(".tile-compare")?.getBoundingClientRect(), f = e.querySelector(".tile-foot").getBoundingClientRect();
+    return { key: e.closest("[data-metric]").dataset.metric, height: r.height,
+      inside: l.top >= r.top - 0.5 && (!c || (c.top >= l.bottom - 0.5 && c.bottom <= f.top + 0.5)) && f.bottom <= r.bottom + 0.5 };
+  }));
+  assert.deepEqual(boxes.filter((b) => b.height > 120 || !b.inside), [], "tiles keep every line inside");
+  for (const [name, selector] of [["diagnostics", `${view} .health-diagnostics`], ["connections", `${view} [aria-labelledby="health-connections"]`],
+    ["buffer-pool", `${view} [aria-labelledby="health-buffer_pool"]`]]) {
+    await page.$eval(selector, (e) => e.scrollIntoView({ block: "center", behavior: "instant" }));
+    await (await page.$(selector)).screenshot({ path: path.join(h.shots, `health-baseline-${name}.png`) });
+  }
+  // The inspector says what it was and what it is now.
+  await h.select(tile("threads_running"));
+  await page.waitForFunction(() => /Since the baseline/.test(document.querySelector(".view-inspector")?.textContent || ""));
+  assert.match(await h.inspector(), /Since the baselineBefore deploy2 threads · OKNow40 threads · Watch/);
+  await h.select(diag("buffer_pool"));
+  await page.waitForFunction(() => /Since the baseline/.test(document.querySelector(".view-inspector")?.textContent || ""));
+  assert.match(await h.inspector(), /Before deployWarming: 17% full, about 8 min 13 s to full at this rate · WarmingNowFull, 0\.2 MiB\/s read from disk · OK/);
+  await page.click(".detail-back");
+  await page.waitForFunction(() => !document.querySelector(".view-inspector"));
+  // A restart since the baseline (uptime 30 s): tiles built from counters are
+  // not compared; gauges and diagnostics still are.
+  const restarted = structuredClone(changed);
+  restarted.taken_at = "2026-10-14T16:40:25.574713+00:00";
+  restarted.uptime_s = 30;
+  state.queue.push({ status: 200, body: fromServer(restarted) });
+  await h.refresh();
+  await page.waitForFunction((t) => /Not compared/.test(document.querySelector(t)?.textContent || ""), {}, `${tile("questions")} .tile-compare`);
+  assert.equal(await page.$eval(`${tile("questions")} .baseline-not-compared`, (e) => e.title), "Not compared: the server restarted since");
+  assert.equal(await text(`${tile("threads_running")} .tile-compare`), "was 2 threads");
+  assert.deepEqual((await was()).map((x) => x[0]).sort(), ["buffer_pool", "redo", "threads_running"]);
+  assert.match(await text(`${view} [data-baseline-summary]`), /3 verdicts changed since Before deploy/);
+  assert.match(await text(`${view} .baseline-bar [data-baseline-note]`), /^Not compared: the server restarted since the baseline/);
+  // 720 px, light and dark: the bar fits and nothing scrolls sideways.
+  for (const theme of ["light", "dark"]) {
+    await page.evaluate((t) => { document.documentElement.dataset.theme = t; }, theme);
+    for (const width of [1440, 720]) {
+      await page.setViewport({ width, height: 900 });
+      await pause(150);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth), 0,
+        `no sideways scroll at ${width} px (${theme})`);
+      const fits = await page.$eval(`${view} .baseline-bar`, (e) => {
+        const r = e.getBoundingClientRect();
+        const v = e.closest(".server-view").getBoundingClientRect();
+        return r.left >= v.left - 1 && r.right <= v.right + 1;
+      });
+      assert.ok(fits, `the baseline bar fits at ${width} px (${theme})`);
+      await page.screenshot({ path: path.join(h.shots, `health-baseline-${width}-${theme}.png`) });
+    }
+  }
+  await page.evaluate(() => { delete document.documentElement.dataset.theme; });
+  await page.setViewport({ width: 1440, height: 1000 });
+  // Delete asks in its row and removes only that baseline; the comparison goes on.
+  await page.click(`${view} .baseline-bar [data-action=change-baseline]`);
+  await page.waitForSelector(`${sheet} .baseline-choices`);
+  assert.equal(await page.$eval(`${sheet} .baseline-choice input:checked`, (e) => e.closest(".baseline-choice").querySelector(".baseline-choice-name").textContent),
+    "Before deploy", "the baseline compared now stays chosen");
+  await page.click(`${sheet} button[aria-label="Delete baseline Older"]`);
+  await page.waitForSelector(`${sheet} [data-action=confirm-delete-baseline]`);
+  assert.equal(baselineCalls("delete").length, 0, "nothing is deleted before Delete");
+  await page.click(`${sheet} [data-action=confirm-delete-baseline]`);
+  await page.waitForFunction((s) => document.querySelectorAll(`${s} .baseline-choice`).length === 1, {}, sheet);
+  assert.equal(baselineCalls("delete").at(-1).body.id, "1".padStart(32, "0"));
+  assert.match(await text(`${sheet} .baseline-delete-status`), /Deleted Older from this computer\./);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction((s) => !document.querySelector(s), {}, sheet);
+  assert.ok(await page.$(`${view} .baseline-bar`), "Cancel keeps the comparison");
+  // A reading from another server of the same version is never compared
+  // with this server's baseline, and a baseline is never chosen for it.
+  state.queue.push({ status: 200, body: fromServer({ ...restarted, taken_at: "2026-10-14T16:45:25.574713+00:00" }, SERVER_B) });
+  await h.refresh();
+  await page.waitForFunction((v) => /^Not compared: this reading came from/.test(document.querySelector(`${v} .baseline-bar [data-baseline-note]`)?.textContent || ""), {}, view);
+  assert.equal(await text(`${view} .baseline-bar [data-baseline-note]`), `Not compared: this reading came from ${describe(SERVER_B)}, and the baseline belongs to ${describe(SERVER)}.`);
+  assert.equal(await page.$(`${view} .tile-compare`), null, "no earlier value from another server");
+  assert.equal(await page.$(`${view} [data-baseline-summary]`), null);
+  await page.click(`${view} .baseline-bar [data-action=change-baseline]`);
+  await page.waitForSelector(`${sheet} .baseline-choices`);
+  await confirmSheet();
+  await page.waitForSelector(`${sheet} .baseline-error`);
+  assert.equal(await text(`${sheet} .baseline-error`), `Could not compare: this reading came from ${describe(SERVER_B)}, and the baseline belongs to ${describe(SERVER)}. Refresh, then compare.`);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction((s) => !document.querySelector(s), {}, sheet);
+  state.queue.push({ status: 200, body: fromServer({ ...restarted, taken_at: "2026-10-14T16:46:25.574713+00:00" }) });
+  await h.refresh();
+  await page.waitForFunction((t) => /was 2 threads/.test(document.querySelector(t)?.textContent || ""), {}, `${tile("threads_running")} .tile-compare`);
+  // Stop comparing: the tiles and the summary are as before.
+  await page.click(`${view} [data-action=stop-comparing]`);
+  await page.waitForFunction((v) => !document.querySelector(`${v} .baseline-bar`), {}, view);
+  assert.equal(await page.$(`${view} .tile-compare`), null);
+  assert.equal(await page.$(`${view} .verdict-was`), null);
+  assert.equal(await page.$(`${view} [data-baseline-summary]`), null);
+
   // Session restore keeps the view, the interval and the inspector, never the report.
   await page.select(`${view} .health-window select`, "30");
   await h.select(diag("tmp_tables"));
@@ -685,9 +970,12 @@ try {
   await h.server();
   await page.waitForSelector("#server-nav-health[aria-current=page]");
   assert.equal(await page.$eval(`${view} .health-window select`, (e) => e.value), "30");
-  // The restored window is used by the read on open; the report itself is never restored.
+  // Off is kept across reload, so restoring a window does not read by itself.
+  assert.equal(await page.$eval(`${view} .auto-refresh select`, (e) => e.value), "0");
+  await page.waitForSelector(`${view} .view-empty`);
+  await h.refresh();
   await page.waitForSelector(`${view} .summary-line`);
-  assert.equal(state.seen.at(-1).interval, 30, "the read on open uses the restored window");
+  assert.equal(state.seen.at(-1).interval, 30, "manual Refresh uses the restored window");
   assert.equal(await page.$(".view-inspector"), null, "without a restored report there is no selected detail to open");
   // A restored Top statements view stays selected too.
   await h.view("top");
@@ -699,3 +987,164 @@ try {
 } finally {
   await h.close();
 }
+
+// Visible-only automatic reads use real timers here. The pure helper suite
+// exhaustively tests deadlines with a fake clock; these cases exercise React,
+// request binding, DOM visibility, persistence and the modal boundaries.
+async function automaticHealth(fixture) {
+  // Synthetic identities match the engine of each recorded report. No claim
+  // about an engine's UUID support is derived from these test identities.
+  const source = fixture.engine === "mariadb"
+    ? { ...SERVER, engine: "mariadb", flavor: "mariadb", product: "MariaDB", version: fixture.server_version,
+      server_uuid: null, hostname: "db-maria" } : SERVER;
+  const sourceKey = source.server_uuid ? keyOf(source) : `${source.engine}/host/${source.hostname}:${source.port}`;
+  const identified = (report) => ({ ...report, reading_server: { verified: true, server_key: sourceKey, server: source,
+    uptime_s: report.uptime_s, server_time: "2026-11-08 18:00:00.000000" } });
+  const a = await open("/api/live/health", `health-visible-${fixture.engine}`, {
+    ...baselineMocks, "/api/live/innodb": { status: 200, body: innodbFixture },
+    "/api/baselines/list": { status: 200, body: { schema_version: "baseline-list-1.0", kind: "health",
+      server: source, server_key: sourceKey, max: 20, items: [] } },
+  }, { list: "docked" });
+  const { page, state } = a;
+  const errors = [], failedRequests = [], responses = [];
+  page.on("console", (msg) => { if (["error", "warning"].includes(msg.type())) errors.push(msg.text()); });
+  page.on("requestfailed", (req) => failedRequests.push({ url: req.url(), error: req.failure()?.errorText }));
+  page.on("response", (res) => { if (res.url().endsWith("/api/live/health")) responses.push(res.status()); });
+  const seen = () => state.seen.length;
+  const until = async (condition, message, timeout = 10000) => {
+    const deadline = Date.now() + timeout;
+    while (!condition() && Date.now() < deadline) await pause(25);
+    if (!condition()) {
+      await page.screenshot({ path: path.join(a.shots, `health-auto-failure-${fixture.engine}.png`) });
+      assert.fail(`${message}: ${JSON.stringify({ requests: state.seen, responses, errors, failedRequests })}`);
+    }
+  };
+  const selectAuto = (value) => page.select(`${view} .auto-refresh select`, value);
+  const settle = () => page.waitForFunction((v) => !document.querySelector(`${v} .capture-status`), {}, view);
+  const visible = (value) => page.evaluate((next) => {
+    // The visibility API has no setter. Simulate the event Electron emits
+    // when its native window hides, without requiring an OS window manager.
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => next ? "visible" : "hidden" });
+    document.dispatchEvent(new Event("visibilitychange"));
+  }, value);
+  try {
+    state.fallback = { status: 200, body: identified(fixture) };
+    await a.server();
+    await page.waitForSelector(`${view} .summary-line`);
+    assert.equal(seen(), 1, "opening Health starts exactly one read");
+    assert.equal(await page.$eval(`${view} .auto-refresh select`, (e) => e.value), "-1");
+    assert.equal(await a.text(`${view} .health-live-charts-note`), "Collecting…");
+    const next = identified({ ...fixture, taken_at: "2026-11-08T18:00:00Z" });
+    state.fallback = { status: 200, body: next };
+    await page.waitForSelector(`${view} .health-live-chart svg`, { timeout: 8000 });
+    assert.equal(seen(), 2, "charts fill automatically with a second reading");
+    assert.ok(state.seen.every((body) => body.with_identity === true), "baseline identity stays requested");
+    await page.select(`${view} .health-window select`, "1");
+    await settle();
+
+    // An invisible native window, an inactive place and an inactive Server
+    // view all pause. Returning asks once now, with no catch-up burst.
+    for (const [hide, show, name] of [
+      [() => visible(false), () => visible(true), "hidden window"],
+      [() => a.button("Investigations", ".main-nav "), () => a.server(), "inactive place"],
+      [() => a.view("innodb"), () => a.view("health"), "inactive view"],
+    ]) {
+      await hide();
+      const paused = seen();
+      await pause(1300);
+      assert.equal(seen(), paused, `${name} does not read`);
+      await show();
+      await until(() => seen() === paused + 1, `${name} resumes once`);
+      await settle();
+      await pause(250);
+      assert.equal(seen(), paused + 1, `${name} has no burst`);
+    }
+
+    // Refresh cannot replace the reading or chart beneath an editing form.
+    // Baseline sheets keep the reading they opened with; closing resumes once.
+    for (const kind of ["save", "compare", "capture"]) {
+      await settle();
+      if (kind === "capture") {
+        await page.click(`${view} button[aria-label="Capture when conditions"]`);
+        await page.waitForSelector(`${view} .capture-when-form`);
+      } else {
+        await page.click(`${view} button[aria-label="Refresh options"]`);
+        await page.click(`${view} [data-action=${kind}-baseline]`);
+        await page.waitForSelector("dialog.baseline-sheet[open]");
+      }
+      const paused = seen();
+      await pause(1300);
+      assert.equal(seen(), paused, `${kind} form pauses automatic reads`);
+      await page.keyboard.press("Escape");
+      await until(() => seen() === paused + 1, `${kind} closing resumes once`);
+      await settle();
+    }
+
+    // A slow request never overlaps a second automatic request.
+    await selectAuto("0");
+    await settle();
+    state.delay = 1500;
+    const slowBefore = seen();
+    await selectAuto("-1");
+    await until(() => seen() === slowBefore + 1, "slow read starts");
+    await pause(1200);
+    assert.equal(seen(), slowBefore + 1, "one read in flight even past the interval");
+    await selectAuto("0");
+    await settle();
+    state.delay = 0;
+
+    // Two failed reads back off to 2 s and 4 s at the 1 s sampling window;
+    // success keeps the last report and restores normal scheduling.
+    state.queue.push(failure, failure);
+    const failBefore = seen();
+    await selectAuto("-1");
+    await page.waitForFunction((v) => /retry in 2 s/.test(document.querySelector(`${v} .health-refresh-backoff`)?.textContent || ""), {}, view);
+    assert.ok(await page.$(`${view} .summary-line`), "failure keeps the last good report");
+    await pause(1100);
+    assert.equal(seen(), failBefore + 1, "first retry respects backoff");
+    await page.waitForFunction((v) => /retry in 4 s/.test(document.querySelector(`${v} .health-refresh-backoff`)?.textContent || ""), {}, view);
+    assert.equal(seen(), failBefore + 2);
+    await pause(2100);
+    assert.equal(seen(), failBefore + 2, "second retry doubles the wait");
+    await until(() => seen() === failBefore + 3, "backoff recovers");
+    await settle();
+    await page.waitForFunction((v) => !document.querySelector(`${v} .health-refresh-backoff`), {}, view);
+    await until(() => seen() === failBefore + 4, "success restores the one-second interval");
+    await settle();
+    await selectAuto("0");
+
+    // Off means manual reads only, including after a view switch and reload.
+    const stopped = seen();
+    await a.view("innodb"); await a.view("health");
+    await pause(1300);
+    assert.equal(seen(), stopped, "Off survives a view switch");
+    await a.savedSlow((s) => s.kind === "health" && s.health_interval === 1);
+    await page.reload({ waitUntil: "networkidle0" });
+    await a.server();
+    await page.waitForSelector(`${view} .view-empty`);
+    assert.equal(await page.$eval(`${view} .auto-refresh select`, (e) => e.value), "0");
+    await pause(1300);
+    assert.equal(seen(), stopped, "Off survives reload without a read on open");
+    await a.refresh();
+    await page.waitForSelector(`${view} .summary-line`);
+    assert.equal(seen(), stopped + 1, "manual Refresh still works with Off");
+
+    for (const width of [1440, 720]) for (const theme of ["light", "dark"]) {
+      await page.setViewport({ width, height: 900 });
+      await page.evaluate((t) => document.documentElement.dataset.theme = t, theme);
+      await page.evaluate(() => document.fonts.ready);
+      await page.waitForFunction(() => document.documentElement.scrollWidth === document.documentElement.clientWidth);
+      await page.screenshot({ path: path.join(a.shots, `health-auto-${fixture.engine}-${width}-${theme}.png`) });
+    }
+    assert.equal(responses.filter((s) => s === 400).length, 2, "only the two intentional failures");
+    assert.ok(responses.every((s) => s === 200 || s === 400));
+    assert.deepEqual(failedRequests, [], "no transport errors");
+    assert.deepEqual(errors.filter((s) => !/^Failed to load resource: the server responded with a status of 400/.test(s)), []);
+    assert.deepEqual(a.errors, []);
+  } finally {
+    await a.close();
+  }
+}
+await automaticHealth(mysql);
+await automaticHealth(mariadb);
+console.log("health visible refresh: ok (MySQL and MariaDB)");

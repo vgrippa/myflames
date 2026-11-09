@@ -31,7 +31,14 @@ const kit = source('../src/kit.tsx'), bulk = source('../src/MassKillDialog.tsx')
 const locks = source('../src/Locks.tsx');
 const errorText = run(`(${named(kit, 'errorText')})`, {});
 const writeFailure = run(`(${named(kit, 'writeFailure')})`, { errorText });
-const connectionKey = run(`(${named(source('../src/binding.ts'), 'connectionKey')})`, {});
+// connectionKey trims pasted blanks (trimPasted, built on BLANK and AROUND)
+// and adds the SSH target (sshKey): evaluate that chain from the real source.
+const binding = source('../src/binding.ts');
+const bindingConsts = run(['BLANK', 'AROUND'].map(name => binding.getText().match(new RegExp(`^const ${name} = .*;$`, 'm'))[0]).join('\n')
+  + '\n({ BLANK, AROUND })', {});
+const trimPasted = run(`(${named(binding, 'trimPasted')})`, { AROUND: bindingConsts.AROUND });
+const sshKey = run(`(${named(binding, 'sshKey')})`, { trimPasted });
+const connectionKey = run(`(${named(binding, 'connectionKey')})`, { trimPasted, sshKey });
 const React = { Fragment: 'fragment', createElement: (type, props, ...children) => ({ type, props: { ...props, children } }) };
 function text(tree) {
   if (tree == null || typeof tree === 'boolean') return '';
@@ -161,6 +168,8 @@ for (const filter of ['time']) for (const [engine, server_version, server_produc
 ]) test(`digest ${filter}: ${label} through projection, footer and export`, async () => {
   const calls = [], signal = new AbortController().signal;
   const project = run(`(${load.arguments[2].getText()})`, {
+    // The Performance Schema source; reading_server (baselines) is not under test here.
+    source: 'pfs', readingServerOf: () => undefined,
     filter, limit: 50, minSeconds: 1,
     api: async (...args) => { calls.push(args); return { engine, server_version, server_product, statements: [] }; },
   });
@@ -169,20 +178,19 @@ for (const filter of ['time']) for (const [engine, server_version, server_produc
   assert.equal(calls[0][2], signal);
   let status;
   const env = { engineName, bound: { key: 'original', report }, reads: { key: 'original' },
-    connection: { host: 'original' }, connectionLabel: c => c.host, loading: false,
+    connection: { host: 'original' }, connectionLabel: c => c.host, loading: false, isFile: false,
+    report, fileRead: { loading: false },
     useWindowStatus: (_key, value) => { status = value; } };
   run(`const current = ${current.initializer.getText()}; ${footer.getText()}`, env);
   assert.equal(status.engineVersion, label);
   env.reads.key = 'other';
   run(`const current = ${current.initializer.getText()}; ${footer.getText()}`, { ...env });
   assert.equal(status.engineVersion, undefined, 'an old report never labels the active connection');
-  const exportText = find(digest, n => ts.isVariableDeclaration(n) && n.name.getText() === 'generatePtReportText');
-  const exported = run(`(${exportText.initializer.getText()})()`, {
-    engineName, serverMeta: report, bound: { label: 'Original' }, filter, statements: [],
-    aggregates: { totalCalls: 0, totalWorkloadMs: 0, totalExamined: 0, totalSent: 0, totalLockMs: 0 },
-    time: String, number: String,
-  });
-  assert.match(exported, new RegExp(`^# Server: ${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'));
+  // The export (textReport, inline since 3.3.1) names the server with the same
+  // engineName call as the footer, whose label is asserted above per engine.
+  const textReport = find(digest, n => ts.isFunctionDeclaration(n) && n.name?.text === 'textReport');
+  assert.ok(textReport, 'the digest export (textReport)');
+  assert.match(textReport.getText(), /# Server: \$\{engineName\(report\.engine, report\.version, report\.server_product\)\}/);
 });
 
 // Render the real Settings root's JSX attributes, then run the runner's actual

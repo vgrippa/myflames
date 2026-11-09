@@ -225,7 +225,7 @@ try {
     });
     server.on("error", reject);
   });
-  browser = await puppeteer.launch({ headless: "shell" });
+  browser = await puppeteer.launch({ headless: "shell", args: process.env.MYFLAMES_NO_SANDBOX ? ["--no-sandbox"] : [] });
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
@@ -609,6 +609,7 @@ try {
   assert.ok(await page.$('.query-tabs .tab-transaction[aria-label="Transaction open"]'), "the tab shows its open transaction");
   const action = (verb) => ({ status: "complete", session: session({ in_transaction: false }), run: run([statement(0, verb, 0, { kind: verb === "COMMIT" ? "write" : "read" })], [{ type: "ok", statement: 0, affected_rows: 0, info: null, warnings: 0, duration_ms: 1 }], { kind: "action" }) });
   mock.rollback.push(action("ROLLBACK"));
+  await page.click(".editor-transaction-trigger");
   await page.click("[data-action=rollback]");
   await until(() => calls("/api/editor/rollback").length === 1, "Roll back sent nothing");
   await page.waitForFunction(() => document.querySelector(".statusbar-note")?.textContent === "Rolled back.");
@@ -619,6 +620,8 @@ try {
   await setText("BEGIN");
   await chord("Enter");
   await ran(11);
+  await page.waitForSelector(".editor-transaction-trigger");
+  await page.click(".editor-transaction-trigger");
   await page.waitForSelector("[data-action=commit]");
   const confirmation = (token, statements, over = {}) => ({
     token, expires_in: 300, title: "Production connection", text: "This is a Production connection, so myflames asks before every write.",
@@ -1101,7 +1104,7 @@ try {
   await page.click(cell(0, 2), { button: "right" });
   await page.waitForSelector('.context-menu[aria-label="Result actions"]');
   assert.deepEqual((await texts('.context-menu[aria-label="Result actions"] [role=menuitem]')).map((t) => t.replace(/(⌘C|Ctrl\+C|Return|Enter)$/, "")),
-    ["Show row", "Select column (doc)", "Copy selection (15 cells)", "Copy value (doc)", "Copy row", "Copy column (doc)", "Copy all rows with header"],
+    ["Show row", "Select column (doc)", "Show only this value", "Hide this value", "Copy selection (15 cells)", "Copy value (doc)", "Copy row", "Copy column (doc)", "Copy all rows with header"],
     "a right click inside the selection keeps it");
   await page.keyboard.press("Escape");
   await page.waitForSelector('.context-menu[aria-label="Result actions"]', { hidden: true });

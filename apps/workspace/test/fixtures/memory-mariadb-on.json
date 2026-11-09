@@ -1,0 +1,153 @@
+{
+  "schema_version": "memory-1.0",
+  "engine": "mariadb",
+  "flavor": "mariadb",
+  "server_product": "MariaDB",
+  "server_version": "11.8.3-MariaDB",
+  "taken_at": "2026-11-08T18:00:00+00:00",
+  "uptime_s": 1000,
+  "performance_schema": true,
+  "available": true,
+  "source": "performance_schema",
+  "interval": 5,
+  "elapsed_s": 5,
+  "window_status": "ok",
+  "coverage": {
+    "enabled": 400,
+    "total": 400
+  },
+  "consumers": {
+    "global_instrumentation": true,
+    "thread_instrumentation": true
+  },
+  "gate": null,
+  "gate_row": null,
+  "thread_coverage": {
+    "uninstrumented": 0,
+    "foreground": 4
+  },
+  "status": "ok",
+  "current_bytes": 1476395008,
+  "high_bytes": 2306867200,
+  "growth_bytes_per_s": 0,
+  "innodb_buffer_pool_size": 1073741824,
+  "buffer_pool_share_pct": 72.73,
+  "categories": [
+    {
+      "key": "buffer_pool",
+      "label": "InnoDB buffer pool",
+      "current_bytes": 1073741824,
+      "high_bytes": 1572864000,
+      "source": "performance_schema.memory_summary_global_by_event_name",
+      "elapsed_s": 5,
+      "growth_bytes_per_s": 0,
+      "share_pct": 72.73
+    },
+    {
+      "key": "sort",
+      "label": "Sort",
+      "current_bytes": 134217728,
+      "high_bytes": 314572800,
+      "source": "performance_schema.memory_summary_global_by_event_name",
+      "elapsed_s": 5,
+      "growth_bytes_per_s": 0,
+      "share_pct": 9.09,
+      "engine_note": "MariaDB does not instrument the sort buffer (Filesort_buffer::sort_keys), so Sort leaves it out."
+    },
+    {
+      "key": "performance_schema",
+      "label": "Performance Schema",
+      "current_bytes": 134217728,
+      "high_bytes": 209715200,
+      "source": "performance_schema.memory_summary_global_by_event_name",
+      "elapsed_s": 5,
+      "growth_bytes_per_s": 0,
+      "share_pct": 9.09
+    },
+    {
+      "key": "other",
+      "label": "Other",
+      "current_bytes": 134217728,
+      "high_bytes": 209715200,
+      "source": "performance_schema.memory_summary_global_by_event_name",
+      "elapsed_s": 5,
+      "growth_bytes_per_s": 0,
+      "share_pct": 9.09
+    },
+    {
+      "key": "network",
+      "label": "Network",
+      "current_bytes": null,
+      "high_bytes": null,
+      "source": "performance_schema.memory_summary_global_by_event_name",
+      "elapsed_s": null,
+      "growth_bytes_per_s": null,
+      "share_pct": null,
+      "collection_reason": "MariaDB does not instrument the network buffer (NET::buff), so Network is never collected."
+    }
+  ],
+  "events": [
+    {
+      "event": "memory/innodb/buf_buf_pool",
+      "category": "buffer_pool",
+      "current_bytes": 1073741824,
+      "high_bytes": 1572864000,
+      "source": "performance_schema.memory_summary_global_by_event_name"
+    },
+    {
+      "event": "memory/sql/Filesort_info::merge",
+      "category": "sort",
+      "current_bytes": 134217728,
+      "high_bytes": 314572800,
+      "source": "performance_schema.memory_summary_global_by_event_name"
+    },
+    {
+      "event": "memory/performance_schema/accounts",
+      "category": "performance_schema",
+      "current_bytes": 134217728,
+      "high_bytes": 209715200,
+      "source": "performance_schema.memory_summary_global_by_event_name"
+    },
+    {
+      "event": "memory/sql/thd::main_mem_root",
+      "category": "other",
+      "current_bytes": 134217728,
+      "high_bytes": 209715200,
+      "source": "performance_schema.memory_summary_global_by_event_name"
+    }
+  ],
+  "sessions": [
+    {
+      "thread_id": 52,
+      "processlist_id": 42,
+      "user": "app",
+      "host": "localhost",
+      "current_bytes": 134217728,
+      "high_bytes": 209715200,
+      "source": "performance_schema.memory_summary_by_thread_by_event_name"
+    }
+  ],
+  "accounts": [
+    {
+      "user": "app",
+      "host": "localhost",
+      "current_bytes": 134217728,
+      "high_bytes": 209715200,
+      "source": "performance_schema.memory_summary_by_account_by_event_name"
+    }
+  ],
+  "collection": {
+    "events": true,
+    "sessions": true,
+    "accounts": true
+  },
+  "findings": [],
+  "notes": [
+    "Tracked allocations are not process RSS or machine RAM; no RAM capacity is inferred.",
+    "Each event high is an upper bound (current bytes plus per-thread, account and host headroom), not a recorded peak; their sum is not a server peak.",
+    "Enabled instruments do not recover earlier allocations; session/account totals need not add up to the global total.",
+    "Categories use known event-name prefixes; unmatched allocations stay in Other, and TempTable may include mapped files.",
+    "Reads are sequential, not an atomic snapshot; the collection itself can allocate memory.",
+    "Performance Schema on this server charges a free to the thread that makes it, so the session or account that allocated the memory can be overstated and the one that freed it can drop below 0."
+  ]
+}

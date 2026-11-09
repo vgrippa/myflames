@@ -19,10 +19,13 @@ import {
   type TopReport,
   type TopStatement,
   type TopTable,
+  type TopTextLimitPart,
 } from "./api";
 import { normalizeSource } from "./session";
+import { StatementInspector } from "./StatementInspector";
+import { STATEMENT_FLAGS as FLAGS, type SqlOpenOptions } from "./statementThread";
 import { InstrumentsLink } from "./Instruments";
-import { PriorityTable, CompactNumber, CopySql, SchemaField } from "./PerfShared";
+import { PriorityTable, CompactNumber, CopySql, SchemaField, bytes } from "./PerfShared";
 import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "./binding";
 import { Icon } from "./components";
 import {
@@ -128,16 +131,6 @@ function rankList(ranks: number[]) {
 }
 
 // Plain-English meaning of each Performance Schema flag (hover, inspector).
-const FLAGS: Record<string, [string, string]> = {
-  no_index_used: ["No index used", "At least one execution read a table without any index (a full scan)."],
-  no_good_index_used: ["No good index", "The server found no good index for at least one execution."],
-  tmp_disk_tables: ["Temp table on disk", "Built an internal temporary table on disk instead of in memory."],
-  sort_merge_passes: ["Sort merge passes", "Sorting outgrew sort_buffer_size and needed merge passes."],
-  low_selectivity: [
-    "Reads ≫ returns",
-    "Examines more than twice the rows it returns (rows sent ÷ rows examined below 0.5).",
-  ],
-};
 export const ORDERS: [TopOrder, string][] = [
   ["total", "Total time"],
   ["avg", "Average time"],
@@ -624,6 +617,7 @@ export function TopActions({
   compact = false,
   idPrefix = "top-",
   name = "",
+  available,
 }: {
   row: TopStatement;
   rank: number;
@@ -637,6 +631,7 @@ export function TopActions({
   idPrefix?: string;
   /** Added to the buttons' accessible names ("statement 1 that names shop.orders"). */
   name?: string;
+  available?: Partial<Record<DigestAction, boolean>>;
 }) {
   const explainGate = usePrivilege("explain");
   const analysisGate = usePrivilege("run_analysis");
@@ -684,7 +679,7 @@ export function TopActions({
     window.setTimeout(() => analyzeButton.current?.focus());
   }
   function openConfirm() {
-    if (disabled || problem || analysisGate.disabledReason) return;
+    if (disabled || problem || analysisGate.disabledReason || available?.analyze === false) return;
     setVoided(false);
     setConfirming({
       identity,
@@ -701,7 +696,7 @@ export function TopActions({
   function execute() {
     const c = confirming;
     setConfirming(null);
-    if (!c || c.identity !== identity || disabled || problem || analysisGate.disabledReason) {
+    if (!c || c.identity !== identity || disabled || problem || analysisGate.disabledReason || available?.analyze === false) {
       setVoided(true);
       return;
     }
@@ -711,9 +706,19 @@ export function TopActions({
   return (
     <div className="top-actions">
       <div className="button-row">
+        {!compact && (
+          <button
+            className="button"
+            disabled={disabled || !text || available?.open === false}
+            aria-label={`Open in Query editor: ${label}`}
+            onClick={() => onAction("open", row, rank)}
+          >
+            Open in Query editor
+          </button>
+        )}
         <button
           className="button"
-          disabled={disabled || !!explainProblem}
+          disabled={disabled || !!explainProblem || available?.explain === false}
           aria-label={`Explain ${label}`}
           aria-describedby={explainProblem ? reasonId : undefined}
           title={
@@ -729,7 +734,7 @@ export function TopActions({
         <button
           ref={analyzeButton}
           className="button"
-          disabled={disabled || !!problem}
+          disabled={disabled || !!problem || available?.analyze === false}
           aria-label={`Run analysis on ${label}`}
           aria-describedby={problem ? reasonId : undefined}
           aria-expanded={needsValues ? undefined : !!confirming}
@@ -743,16 +748,7 @@ export function TopActions({
         >
           Run analysis
         </button>
-        {!compact && (
-          <button
-            className="button"
-            disabled={disabled || !text}
-            aria-label={`Use ${label} in the editor`}
-            onClick={() => onAction("open", row, rank)}
-          >
-            Use this query
-          </button>
-        )}
+
       </div>
       <span id={`${privilegeId}-explain`} className={explainGate.state === "allowed" ? "account-sr" : "account-note"}>
         {explainGate.state !== "allowed" && "Explain: "}{explainGate.reason}
@@ -810,6 +806,63 @@ export function TopActions({
 
 type Row = TopStatement & { rank: number };
 
+/** The server cut this statement's sample or digest text at a startup
+ * parameter's limit (top-1.0 text_limits): name the parameter, suggest a
+ * value, price the memory, and show copyable fix text. myflames never runs
+ * it; the Parameters view applies SET PERSIST_ONLY as a reviewed write. */
+function TextLimitFix({
+  cut,
+  names,
+  part,
+  persistOnly,
+  noSuggestion,
+}: {
+  cut: string;
+  names: string[];
+  part: TopTextLimitPart;
+  persistOnly: boolean;
+  noSuggestion: string;
+}) {
+  // A parameter already above the suggestion keeps its value (never lowered).
+  const valueFor = (name: string) => part.suggested_values?.[name] ?? part.suggested;
+  const fix =
+    part.suggested !== null
+      ? [
+          "# the option file, under [mysqld], then restart:",
+          ...names.map((name) => `${name} = ${valueFor(name)}`),
+          ...(persistOnly
+            ? [
+                "",
+                "-- or stage it for the next start (MySQL 8.0+):",
+                ...names.map((name) => `SET PERSIST_ONLY ${name} = ${valueFor(name)};`),
+              ]
+            : []),
+        ].join("\n")
+      : null;
+  return (
+    <div className="top-text-limit">
+      <p className="hint">
+        {cut}{" "}
+        {part.suggested !== null ? (
+          <>
+            Raise {names.length > 1 ? "them" : "it"} to {number(part.suggested)} and restart
+            {part.estimate_bytes !== null && (
+              <span title={part.estimate_basis || undefined}>
+                ; about +{bytes(part.estimate_bytes)} of Performance Schema memory (estimate
+                {part.estimate_basis?.startsWith("formula") ? ", from the sizing settings" : ""})
+              </span>
+            )}
+            .
+          </>
+        ) : (
+          noSuggestion
+        )}
+      </p>
+      {fix && <CopySql sql={fix} label="Statement text limit fix" />}
+    </div>
+  );
+}
+
 export function TopStatementsView({
   connection,
   disabled,
@@ -823,6 +876,7 @@ export function TopStatementsView({
   settings,
   onDigest,
   onOpenPlan,
+  onOpenSql,
 }: {
   connection: Connection;
   /** The Query editor is capturing: row actions and Explain top N wait. */
@@ -839,6 +893,7 @@ export function TopStatementsView({
    * connection *expect* (connectionKey) only. */
   onDigest: (row: TopStatement, rank: number, action: DigestAction, expect: string) => void;
   onOpenPlan?: (id: string) => void;
+  onOpenSql?: (sql: string, options?: SqlOpenOptions) => void;
 }) {
   const explainGate = usePrivilege("explain");
   const privilegeId = useId();
@@ -940,7 +995,15 @@ export function TopStatementsView({
   let inspector: InspectorContent | null = null;
   const row = rows.find((r) => statementKey(r, r.rank) === selection.key);
   if (row) {
-    const text = row.sample_text || row.digest_text || "";
+    const textLimits = top?.text_limits ?? null;
+    const digestLimit = textLimits?.digest ?? null;
+    const digestValues = digestLimit
+      ? digestLimit.names
+          .map((name) => digestLimit.values[name])
+          .filter((value): value is number => typeof value === "number" && value > 0)
+      : [];
+    const digestCurrent = digestValues.length ? Math.min(...digestValues) : null;
+    const digestCut = (row.digest_text || "").trimEnd().endsWith("...");
     inspector = {
       key: selection.key,
       title: `Statement ${row.rank}`,
@@ -951,8 +1014,10 @@ export function TopStatementsView({
           {row.schema && <span>· {row.schema}</span>}
         </>
       ),
-      actions: (
-        <TopActions
+      body: (
+        <>
+          <StatementInspector row={row} source="pfs" connection={connection} disabled={!!other}
+            onOpenSql={onOpenSql} actions={<TopActions
           row={row}
           rank={row.rank}
           disabled={actionsOff}
@@ -961,55 +1026,39 @@ export function TopStatementsView({
           onAction={(action, r, rank) => {
             if (!other) onDigest(r, rank, action, activeKey);
           }}
-        />
-      ),
-      body: (
-        <>
-          <InspectorSection title={row.sample_text ? "Statement" : "Normalized statement"}>
-            {text ? <CopySql sql={text} label={`Statement ${row.rank}`} /> : <p className="hint">No statement text was recorded.</p>}
-            {!row.sample_text && (
-              <p className="hint top-normalized">
-                Normalized text: ? marks each literal value. Explain and Run analysis open it with parameters to fill in
-                first.
-              </p>
+        />}
+            notes={<>{(top?.notes || []).map((note, i) => <p className="hint" key={i}><bdi>{note}</bdi></p>)}</>}
+            statementExtra={<>
+            {textLimits?.sql_text && row.sample_truncated && (
+              <TextLimitFix
+                cut={`Cut at ${number(textLimits.sql_text.value)} bytes: ${textLimits.sql_text.name}.`}
+                names={[textLimits.sql_text.name]}
+                part={textLimits.sql_text}
+                persistOnly={textLimits.persist_only}
+                noSuggestion="It is already at 65,536 bytes or more."
+              />
+            )}
+            {digestLimit && digestCut && (
+              <TextLimitFix
+                cut={
+                  digestCurrent !== null
+                    ? `Cut at ${number(digestCurrent)} bytes: the smaller of ${digestLimit.names.join(" and ")}.`
+                    : `The digest text was cut: the limit is the smaller of ${digestLimit.names.join(" and ")}.`
+                }
+                names={digestLimit.names}
+                part={digestLimit}
+                persistOnly={textLimits?.persist_only ?? false}
+                noSuggestion={
+                  digestCurrent === null
+                    ? "The current values could not be read, so there is no suggestion."
+                    : "They are already at 65,536 bytes or more."
+                }
+              />
             )}
             {row.sample_text && row.sample_truncated && digestQuery(row).names.length > 0 && (
               <p className="hint">The sample was cut off, so Explain and Run analysis use the normalized text with parameters to fill in.</p>
             )}
-          </InspectorSection>
-          {row.flags.length > 0 && (
-            <InspectorSection title="Flags">
-              <ul className="top-flags">
-                {row.flags.map((f) => {
-                  const [label, why] = FLAGS[f] || [f.replace(/_/g, " "), ""];
-                  return (
-                    <li key={f}>
-                      <strong>{label}</strong>
-                      {why && <span className="hint"> {why}</span>}
-                    </li>
-                  );
-                })}
-              </ul>
-            </InspectorSection>
-          )}
-          <InspectorSection title="Latency">
-            <Fields
-              rows={[
-                ["Total", time(row.total_ms)],
-                ["Average", time(row.avg_ms)],
-                ["Longest", time(row.max_ms)],
-              ]}
-            />
-          </InspectorSection>
-          <InspectorSection title="Rows">
-            <Fields
-              rows={[
-                ["Rows examined", number(row.rows_examined)],
-                ["Rows sent", number(row.rows_sent)],
-                row.examined_per_sent !== null && ["Examined per row sent", number(row.examined_per_sent)],
-              ]}
-            />
-          </InspectorSection>
+            </>}>
           <InspectorSection title="Access and sorting">
             <Fields
               rows={[
@@ -1040,6 +1089,7 @@ export function TopStatementsView({
               ]}
             />
           </InspectorSection>
+          </StatementInspector>
         </>
       ),
     };

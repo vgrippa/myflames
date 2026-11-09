@@ -34,6 +34,18 @@ for positive time (:func:`flame_units`), so widths keep sub-millisecond
 detail and no measured operator disappears to rounding. That count unit
 sets widths only: tooltips print each time in a readable unit
 (:func:`flame_value_text`).
+
+Marks: ``marks`` names the folded tokens whose frames carry a mark (plan
+callers pass the operators the parser flags for a row misestimate). A marked
+frame gets a thin underline: a 2 px line in :data:`MARK_COLOR` along the
+inside of the frame's bottom edge, from 1 px after its left edge to 1 px
+before its right edge, drawn after the frame's text, without pointer events.
+:data:`MARK_COLOR` is a fixed dark violet, never a status or search color,
+that keeps at least 3:1 against every default frame fill, so it stays the
+same in either theme like the fills do. The underline follows its frame when
+it zooms. Labels, their ``..`` truncation, tooltip headers and the frame
+order do not change; the frame's detail line (tooltip lines after the
+header) names the estimate.
 """
 import math
 import re
@@ -43,7 +55,7 @@ from .parser import xml_escape
 __all__ = [
     "folded_to_svg", "frame_color", "label_hash", "fit_frame_label",
     "flame_scale", "flame_units", "plan_folded", "flame_value_text", "flame_header", "NO_TIME",
-    "FAMILY_COLORS", "SEPARATOR_COLORS", "PALETTES", "MATCH_COLOR",
+    "FAMILY_COLORS", "SEPARATOR_COLORS", "PALETTES", "MATCH_COLOR", "MARK_COLOR",
 ]
 
 # ---------------------------------------------------------------------------
@@ -96,6 +108,9 @@ SEPARATOR_COLORS = {"--": "#9aa0a6", "-": "#c4c8cc"}
 
 #: Fill of frames matched by a search.
 MATCH_COLOR = "#ff38c8"
+
+#: Underline of a marked frame (a row misestimate in plan graphs).
+MARK_COLOR = "#3b2a8f"
 
 #: Palette name -> (red, green, blue) channel ranges, inclusive. Every range
 #: keeps 12 px black labels at a contrast ratio of at least 4.5:1.
@@ -493,7 +508,7 @@ SCRIPT = r"""
     var y = num(rect, "y");
     groups.push(g);
     frames.push({
-      g: g, rect: rect, text: text, x: num(rect, "x"), w: num(rect, "width"),
+      g: g, rect: rect, text: text, mark: child(g, "line"), x: num(rect, "x"), w: num(rect, "width"),
       level: icicle ? y : -y, label: g.getAttribute("data-label") || "",
       fill: rect.getAttribute("fill"), shown: text ? text.textContent : "",
       info: tip ? tip.textContent : ""
@@ -511,6 +526,11 @@ SCRIPT = r"""
     if (f.text) {
       f.text.setAttribute("x", (x + 3).toFixed(2));
       f.text.textContent = label;
+    }
+    // A marked frame's underline follows it (1 px inside each edge).
+    if (f.mark) {
+      f.mark.setAttribute("x1", (x + 1).toFixed(2));
+      f.mark.setAttribute("x2", Math.max(x + 1, x + w - 1).toFixed(2));
     }
   }
   function within(outer, inner) {
@@ -655,14 +675,16 @@ def _empty_svg(width):
 def folded_to_svg(folded_text, title="Flame Graph", width=1200, height=16,
                   countname="samples", inverted=False, colors="hot",
                   teach_index_by_folded=None, complexity_by_folded=None,
-                  family_by_folded=None, frame_labels=None, frame_ids=None):
+                  family_by_folded=None, frame_labels=None, frame_ids=None,
+                  marks=None):
     """Render folded stacks as a standalone interactive SVG string.
 
     ``frame_labels`` maps a folded token to the label to display and
     ``frame_ids`` maps a token to a stable node id (``data-node-id``).
     ``teach_index_by_folded`` and ``family_by_folded`` are keyed by the
-    displayed label. ``complexity_by_folded`` is accepted for compatibility
-    and ignored. Output is deterministic for a given input.
+    displayed label. ``marks`` holds the folded tokens whose frames get the
+    underline mark (module docstring). ``complexity_by_folded`` is accepted
+    for compatibility and ignored. Output is deterministic for a given input.
     """
     try:
         width = int(width)
@@ -686,6 +708,7 @@ def folded_to_svg(folded_text, title="Flame Graph", width=1200, height=16,
     svg_h = HEADER_H + rows * pitch + FOOTER_H
     labels = frame_labels or {}
     ids = frame_ids or {}
+    marked = set(marks or ())
 
     out = [
         '<?xml version="1.0" encoding="UTF-8" standalone="no"?>',
@@ -733,6 +756,11 @@ def folded_to_svg(folded_text, title="Flame Graph", width=1200, height=16,
                    % (_px(x), y, _px(w), row_h, fill))
         out.append('<text x="%s" y="%s">%s</text>'
                    % (_px(x + LABEL_INSET), _px(y + row_h / 2.0 + 4), _esc(fit_frame_label(label, w))))
+        if token in marked:
+            out.append('<line class="fg-mark" x1="%s" y1="%s" x2="%s" y2="%s" stroke="%s" '
+                       'stroke-width="2" pointer-events="none"/>'
+                       % (_px(x + 1), _px(y + row_h - 1), _px(max(x + 1, x + w - 1)),
+                          _px(y + row_h - 1), MARK_COLOR))
         out.append("</g>")
     out.append("</g>")
     out.append('<text class="fg-details" x="%d" y="%d">%s</text>'

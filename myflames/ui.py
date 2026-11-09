@@ -66,9 +66,12 @@ def _discover_response(path, payload, workspace=None):
         from .slow_queries import check_request
         check_request(payload.get("from"), payload.get("to"), payload.get("order") or "total",
                       payload.get("limit", 50), payload.get("user"), payload.get("database"))
+    if path == "/api/live/sessions/history":
+        from .sessions import check_history_id
+        check_history_id(payload.get("id"))
     options = connection_options(payload.get("connection"))
     password = options.get("password")
-    if path == "/api/live/ddl-progress":
+    if path in ("/api/live/ddl-progress", "/api/live/sessions/history", "/api/live/memory"):
         options["query_timeout"] = 5
     elif path == "/api/live/explain-connection":
         # MariaDB waits up to 30 s for the target thread to answer SHOW EXPLAIN.
@@ -93,12 +96,16 @@ def _discover_response(path, payload, workspace=None):
         return _report_response(payload, options, schemas)
     try:
         with MySQLConnection(**options) as conn:
+            if path == "/api/live/index-suggestion":
+                from .index_hint import read_suggestion
+                return read_suggestion(conn, payload.get("digest"), payload.get("schema"))
             if path == "/api/live/top":
                 schema = payload.get("schema") or None
                 # table: "schema.table" or {"schema", "table"} (workload attribution).
                 return discover.top_report(conn, payload.get("limit", 20), schema,
                                            payload.get("order", "total"), payload.get("table") or None,
-                                           extra_metrics=bool(payload.get("extra_metrics")))
+                                           extra_metrics=bool(payload.get("extra_metrics")),
+                                           with_identity=payload.get("with_identity") is True)
             if path == "/api/live/slow-log":
                 from .slow_queries import slow_log_table_report
                 return slow_log_table_report(conn, payload.get("from"), payload.get("to"), payload.get("user"),
@@ -114,6 +121,9 @@ def _discover_response(path, payload, workspace=None):
             if path == "/api/live/ddl-progress":
                 from .ddl_progress import ddl_progress_report
                 return ddl_progress_report(conn, payload.get("connection_ids"))
+            if path == "/api/live/sessions/history":
+                from .sessions import sessions_history
+                return sessions_history(conn, payload.get("id"))
             if path == "/api/live/sessions":
                 from .sessions import DEFAULT_LIMIT, sessions_report
                 return sessions_report(conn, active_only=payload.get("active_only", True),
@@ -176,13 +186,17 @@ def _discover_response(path, payload, workspace=None):
                                    waits_only=payload.get("waits_only") is True, identity=True)
             if path == "/api/live/health":
                 from .health import DEFAULT_INTERVAL, health_report
-                return health_report(conn, payload.get("interval", DEFAULT_INTERVAL))
+                return health_report(conn, payload.get("interval", DEFAULT_INTERVAL),
+                                     with_identity=payload.get("with_identity") is True)
             if path == "/api/live/watch":
                 from .watch import DEFAULT_LIMIT, watch_report
                 return watch_report(conn, payload.get("limit", DEFAULT_LIMIT))
             if path == "/api/live/watch/capture":
                 from .watch import capture_evidence
                 return capture_evidence(conn, watch_snapshot=payload.get("watch"))
+            if path == "/api/live/memory":
+                from .memory import DEFAULT_WINDOW, memory_report
+                return memory_report(conn, payload.get("interval", DEFAULT_WINDOW))
             if path == "/api/live/waits":
                 from .perf_common import DEFAULT_WINDOW
                 from .waits import DEFAULT_LIMIT, waits_report
@@ -586,10 +600,14 @@ def _audit_response(path, payload, store):
         return _declined_response(payload, store)
     since, server = payload.get("since_days"), payload.get("server") or None
     status = payload.get("status") or None
+    if path == "/api/audit/object":
+        return dbops.audit_object_report(store, server, payload.get("kind"), payload.get("key"), payload.get("ssh"))
     if path == "/api/audit/list":
-        return dbops.audit_report(store, since, server, payload.get("limit", 500), status, payload.get("before"))
+        return dbops.audit_report(store, since, server, payload.get("limit", 500), status, payload.get("before"),
+                                  record_id=payload.get("id"))
     if path == "/api/audit/export":
-        return dbops.audit_export(store, payload.get("format", "json"), since, server, status)
+        return dbops.audit_export(store, payload.get("format", "json"), since, server, status,
+                                  record_id=payload.get("id"))
     if path == "/api/audit/settings":
         if payload.get("retention_days") is not None:
             store.set_audit_retention_days(payload["retention_days"])
@@ -899,6 +917,11 @@ def _lifecycle_response(path, payload, workspace):
                 server = lc.read_server(conn, options)
             return dict(tools, server={k: server[k] for k in ("engine", "version")},
                         offered=lc.offered_tools(server, tools))
+        if path == "/api/lifecycle/upgrade-targets":
+            from . import upgrade_targets
+            with lc._connect(lc.LifecycleConnection, options) as conn:
+                return upgrade_targets.upgrade_targets(
+                    conn, tools=lc.detect_tools(), fetch=getattr(workspace, "release_reader", None) or upgrade_targets.offline)
         if path == "/api/lifecycle/upgrade-check":
             with lc._connect(lc.LifecycleConnection, options) as conn, \
                     workspace.lifecycle.runner("upgrade_check", options) as runner:
@@ -1154,10 +1177,10 @@ def _replication_response(path, payload, workspace):
 # Endpoints that open a database connection. Each accepts connection.profile_id
 # so a remembered password is filled in on the server, for that request only.
 #: Read-only live server views answered by _discover_response.
-_SERVER_VIEW_PATHS = ("/api/live/top", "/api/live/slow-log", "/api/live/running", "/api/live/sessions", "/api/live/ddl-progress", "/api/live/locks",
+_SERVER_VIEW_PATHS = ("/api/live/sessions/history", "/api/live/index-suggestion", "/api/live/top", "/api/live/slow-log", "/api/live/running", "/api/live/sessions", "/api/live/ddl-progress", "/api/live/locks",
                       "/api/live/innodb", "/api/live/error-log", "/api/live/cluster", "/api/live/health",
                       "/api/live/watch", "/api/live/watch/capture",
-                      "/api/live/waits", "/api/live/indexes", "/api/live/tables", "/api/live/schemas",
+                      "/api/live/memory", "/api/live/waits", "/api/live/indexes", "/api/live/tables", "/api/live/schemas",
                       "/api/live/io", "/api/live/config", "/api/live/instruments",
                       "/api/live/report", "/api/live/explain-connection", "/api/live/proxysql",
                       "/api/live/proxysql/digests", "/api/live/readyset", "/api/live/readyset/explain-cache",
@@ -1171,7 +1194,7 @@ _WRITE_PATHS = ("/api/live/kill", "/api/live/kill/bulk") + _EDITOR_WRITE_PATHS
 #: Editor open and stop connect with the request's connection (stop sends
 #: KILL QUERY for the tab's own session from a second connection).
 _EDITOR_CONNECTION_PATHS = ("/api/editor/open", "/api/editor/stop")
-_CONNECTION_PATHS = (("/api/connection/test", "/api/live/start") + _WRITE_PATHS + _SERVER_VIEW_PATHS
+_CONNECTION_PATHS = (("/api/live/readiness", "/api/connection/test", "/api/live/start") + _WRITE_PATHS + _SERVER_VIEW_PATHS
                      + _EDITOR_CONNECTION_PATHS)
 #: Server lifecycle (lifecycle.py, answered by _lifecycle_response). Tools, the
 #: upgrade check and the dump, restore and clone plans only read: they get the
@@ -1179,7 +1202,8 @@ _CONNECTION_PATHS = (("/api/connection/test", "/api/live/start") + _WRITE_PATHS 
 #: runs first (dbops.gate with confirmed: true), then the saved password is
 #: filled, and every attempt is audited. Status and cancel act on a job the
 #: server holds (cancel's KILL QUERY reuses the job's own connection).
-_LIFECYCLE_READ_PATHS = ("/api/lifecycle/tools", "/api/lifecycle/upgrade-check", "/api/lifecycle/prepare")
+_LIFECYCLE_READ_PATHS = ("/api/lifecycle/tools", "/api/lifecycle/upgrade-targets", "/api/lifecycle/upgrade-check",
+                         "/api/lifecycle/prepare")
 _LIFECYCLE_WRITE_PATHS = ("/api/lifecycle/start",)
 _LIFECYCLE_PATHS = _LIFECYCLE_READ_PATHS + _LIFECYCLE_WRITE_PATHS + ("/api/lifecycle/status",
                                                                      "/api/lifecycle/cancel")
@@ -1208,6 +1232,10 @@ _CONNECTION_PATHS = _CONNECTION_PATHS + _REPLICATION_READ_PATHS + _REPLICATION_W
 _CATALOG_PATHS = ("/api/live/catalog", "/api/live/table-structure")
 _TABLE_COLUMNS_PATHS = ("/api/live/table-columns",)
 _CONNECTION_PATHS = _CONNECTION_PATHS + _CATALOG_PATHS + _TABLE_COLUMNS_PATHS
+#: The command palette's object search (object-search-1.0): one bounded,
+#: timed-out read of the connection, answered by _object_search_response.
+_OBJECT_SEARCH_PATHS = ("/api/live/object-search",)
+_CONNECTION_PATHS = _CONNECTION_PATHS + _OBJECT_SEARCH_PATHS
 
 from .schema_diagram_api import PATHS as _DIAGRAM_PATHS, READ_PATH as _DIAGRAM_READ_PATH  # noqa: E402
 _CONNECTION_PATHS = _CONNECTION_PATHS + (_DIAGRAM_READ_PATH,)
@@ -1216,6 +1244,13 @@ _CONNECTION_PATHS = _CONNECTION_PATHS + (_DIAGRAM_READ_PATH,)
 #: are not in _CONNECTION_PATHS (which fills only the top-level connection).
 from .schema_versions_api import PATHS as _SCHEMA_VERSION_PATHS, LARGE_PATHS as _SCHEMA_VERSION_LARGE  # noqa: E402
 from .compare_api import PATHS as _COMPARE_PATHS  # noqa: E402
+#: Baselines (baselines.py): a Health reading or Query digest totals kept on
+#: this computer. List and save read the server's identity through the
+#: connection (its saved password filled for that read); get and delete open
+#: no connection.
+from .baselines import PATHS as _BASELINE_PATHS  # noqa: E402
+
+
 #: Parameter version catalogs (param_versions.py): answers from the generated
 #: sysvar_history modules only. No connection, no server read, no audit.
 _PARAM_VERSION_PATHS = ("/api/config/versions", "/api/config/versions/compare",
@@ -1410,7 +1445,24 @@ def _catalog_response(payload, path="/api/live/catalog"):
             if path == "/api/live/table-structure":
                 return table_structure(conn, payload.get("schema"), payload.get("table"))
             return catalog_report(conn, payload.get("schema"), payload.get("table"),
-                                  prefix=prefix, after=after, stats=payload.get("stats") is True)
+                                  prefix=prefix, after=after, stats=payload.get("stats") is True,
+                                  group=payload.get("group"))
+    except (ValueError, ConnectorError) as exc:
+        _reraise_redacted(exc, options.get("password"))
+
+
+def _object_search_response(payload):
+    """object-search-1.0 for the command palette: one bounded information_schema
+    read with a 2-second budget; the password never reaches an error."""
+    from .live import connection_options
+    from .connector import MySQLConnection
+    from .schema_browser import check_search, object_search
+    text = check_search(payload.get("text"))
+    options = connection_options(payload.get("connection"))
+    options["query_timeout"] = 2
+    try:
+        with MySQLConnection(**options) as conn:
+            return object_search(conn, text)
     except (ValueError, ConnectorError) as exc:
         _reraise_redacted(exc, options.get("password"))
 
@@ -1748,6 +1800,9 @@ def _session_capture_response(payload, workspace):
 def api_response(path, payload, workspace=None):
     if not isinstance(payload, dict):
         raise ValueError("Expected a JSON request object.")
+    if path == "/api/connections/import":
+        from .connection_import import response
+        return response(payload)
     if path == "/api/analysis/prepare-query":
         from .analysis_query import prepare
         return prepare(payload.get("query"))
@@ -1826,6 +1881,12 @@ def api_response(path, payload, workspace=None):
             raise ValueError("This operation requires a running workspace.")
         return compare_api.response(path, payload, workspace.store,
                                     lambda value: _with_saved_password(value, workspace))
+    if path in _BASELINE_PATHS:
+        from . import baselines
+        if workspace is None:
+            raise ValueError("This operation requires a running workspace.")
+        return baselines.response(path, payload, workspace.store,
+                                  lambda value: _with_saved_password(value, workspace))
     if path in _PARAM_VERSION_PATHS:
         return _param_version_response(path, payload)
     if path in _SCHEMA_VERSION_PATHS:
@@ -1884,6 +1945,9 @@ def api_response(path, payload, workspace=None):
             if path == "/api/live/cancel":
                 job.cancel()
             return job.snapshot()
+        if path == "/api/live/readiness":
+            from .readiness import response
+            return response(payload)
         if path == "/api/connection/test":
             return _test_connection_response(payload)
         if path == "/api/live/kill/prepare":
@@ -1900,6 +1964,8 @@ def api_response(path, payload, workspace=None):
             return _replication_response(path, payload, workspace)
         if path in _CATALOG_PATHS:
             return _catalog_response(payload, path)
+        if path in _OBJECT_SEARCH_PATHS:
+            return _object_search_response(payload)
         if path in _VARIABLE_PATHS:
             return _variable_response(path, payload, workspace)
         if path in _ACTION_PATHS:
@@ -2029,7 +2095,8 @@ class WorkspaceServer(ThreadingHTTPServer):
     #: process five seconds after it was asked to stop.
     TUNNEL_CLOSE_SECONDS = 3.0
 
-    def __init__(self, port=0, store_path=None, no_restore=False, tool_groups_file=None, news_reader=None):
+    def __init__(self, port=0, store_path=None, no_restore=False, tool_groups_file=None, news_reader=None,
+                 release_reader=None):
         from .workspace_store import WorkspaceStore
         from .live import LiveJobs
         self.store = WorkspaceStore(store_path)
@@ -2039,6 +2106,10 @@ class WorkspaceServer(ThreadingHTTPServer):
         # Home news reads the network only through this reader: cmd_ui passes
         # news.fetch_feed; servers built without one (tests) never read feeds.
         self.news_reader = news_reader
+        # The Upgrade check's version list reads vendor release pages only
+        # through this reader: cmd_ui passes upgrade_targets.fetch_page;
+        # servers built without one (tests) answer from the bundled catalog.
+        self.release_reader = release_reader
         self.jobs = LiveJobs()
         from .editor_session import EditorSessions
         # One mysql/mariadb client process per Query editor tab; all are
@@ -2471,14 +2542,14 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                              "/api/profiles/list", "/api/profiles/save", "/api/profiles/delete",
                              "/api/profiles/forget-password", "/api/ssh/hosts",
                              "/api/live/start", "/api/live/status", "/api/live/cancel", "/api/connection/test",
-                             "/api/live/top", "/api/live/slow-log", "/api/live/digest-histogram", "/api/live/digest-tables",
-                             "/api/live/running", "/api/live/sessions", "/api/live/ddl-progress",
+                             "/api/live/index-suggestion", "/api/live/top", "/api/live/slow-log", "/api/live/digest-histogram", "/api/live/digest-tables",
+                             "/api/live/running", "/api/live/sessions", "/api/live/sessions/history", "/api/live/ddl-progress",
                              "/api/live/locks", "/api/live/innodb", "/api/live/error-log", "/api/live/cluster", "/api/live/proxysql",
                              "/api/live/kill", "/api/live/kill/prepare",
                              "/api/live/kill/bulk", "/api/live/kill/bulk/prepare",
                              "/api/live/table-columns",
                              "/api/live/health", "/api/live/watch", "/api/live/watch/capture",
-                             "/api/live/waits", "/api/live/indexes",
+                             "/api/live/memory", "/api/live/waits", "/api/live/indexes",
                              "/api/live/tables", "/api/live/schemas",
                              "/api/live/io", "/api/live/config", "/api/live/instruments",
                              "/api/live/report", "/api/report/export",
@@ -2486,18 +2557,20 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                              "/api/session/load", "/api/session/save", "/api/session/clear",
                              "/api/session/settings",
                              "/api/audit/list", "/api/audit/export", "/api/audit/settings",
-                             "/api/audit/declined",
+                             "/api/audit/declined", "/api/audit/object",
                              "/api/table-data/open", "/api/table-data/prepare", "/api/table-data/apply",
                              "/api/table-data/decline", "/api/table-data/status", "/api/table-data/cancel", "/api/table-data/close",
                              "/api/editor/open", "/api/editor/run", "/api/editor/status", "/api/editor/preview",
                              "/api/editor/stop", "/api/editor/commit", "/api/editor/rollback",
                              "/api/editor/close", "/api/editor/history", "/api/editor/export",
+                             "/api/editor/use", "/api/editor/file/open", "/api/editor/file/save",
                              "/api/editor/saved/list", "/api/editor/saved/save", "/api/editor/saved/rename",
                              "/api/editor/saved/move", "/api/editor/saved/delete",
                              "/api/analysis/prepare-query") + _LIFECYCLE_PATHS \
-                + _REPLICATION_PATHS + _CATALOG_PATHS + _VARIABLE_PATHS + _ACTION_PATHS + _ACCOUNT_PATHS + _DIAGRAM_PATHS + _SCHEMA_VERSION_PATHS + _COMPARE_PATHS + _APP_UPDATE_PATHS \
+                + _REPLICATION_PATHS + _CATALOG_PATHS + _OBJECT_SEARCH_PATHS + _VARIABLE_PATHS + _ACTION_PATHS + _ACCOUNT_PATHS + _DIAGRAM_PATHS + _SCHEMA_VERSION_PATHS + _COMPARE_PATHS + _APP_UPDATE_PATHS \
                 + _NEWS_PATHS + _PARAM_VERSION_PATHS + _CSV_IMPORT_PATHS + _SLOW_LOG_PATHS \
-                + _SSH_CONNECTION_PATHS + _FILES_PATHS \
+                + _SSH_CONNECTION_PATHS + _FILES_PATHS + ("/api/live/readiness", "/api/connections/import") \
+                + _BASELINE_PATHS \
                 + (_ACTION_PROGRESS_PATH, "/api/live/proxysql/digests", "/api/live/readyset",
                    "/api/live/readyset/explain-cache", "/api/live/readyset/export-caches"):
             self._send(404, {"error": "Not found."})
@@ -2567,10 +2640,11 @@ def cmd_ui(argv):
         parser.exit(2, "UI assets are missing. Reinstall myflames or build apps/workspace.\n")
     try:
         from .news import fetch_feed  # Home news: the only server that reads feeds
+        from .upgrade_targets import fetch_page
         # Set only by the desktop app: a file in its private runtime directory.
         server = WorkspaceServer(args.port, no_restore=args.no_restore,
                                  tool_groups_file=os.environ.get("MYFLAMES_TOOL_GROUPS_FILE") or None,
-                                 news_reader=fetch_feed)
+                                 news_reader=fetch_feed, release_reader=fetch_page)
     except ValueError as exc:
         parser.exit(2, "Cannot start the UI: %s\n" % exc)
     except OSError as exc:

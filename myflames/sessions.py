@@ -318,6 +318,113 @@ def _last_statements(reader, server, idle, notes):
 
 # ---- shaping ------------------------------------------------------------------
 
+def _blocking_graph(sessions, edges):
+    """Unique direct edges and cycle-safe descendants, before list filtering.
+
+    A known waiter never becomes a root merely because its upstream edge was
+    unavailable or capped. Unknown owners and self edges convey no evidence.
+    """
+    upstream, downstream = {}, {}
+    for waiter, blocker in edges:
+        if not waiter or not blocker or waiter == blocker:
+            continue
+        upstream.setdefault(waiter, set()).add(blocker)
+        downstream.setdefault(blocker, set()).add(waiter)
+    by_id = {s["id"]: s for s in sessions}
+    roots = []
+    for s in sessions:
+        cid = s["id"]
+        seen, pending = {cid}, list(downstream.get(cid, ()))
+        while pending:
+            item = pending.pop()
+            if item in seen:
+                continue
+            seen.add(item)
+            pending.extend(downstream.get(item, ()))
+        seen.discard(cid)
+        waits = [(by_id.get(i, {}).get("lock_wait") or {}).get("wait_s") for i in seen]
+        waits = [w for w in waits if w is not None]
+        s.update(blocked_by=sorted(upstream.get(cid, ())), blocks=len(downstream.get(cid, ())),
+                 # Retain direct IDs for older consumers. The inspector uses
+                 # the report adjacency, which also covers filtered-out rows.
+                 blocks_total=len(seen), blocks_ids=sorted(downstream.get(cid, ())),
+                 root_blocker=bool(seen) and not upstream.get(cid) and not s["lock_wait"],
+                 longest_wait_s=max(waits) if waits else None)
+        if seen:
+            s["active"] = True
+            s["is_locked"] = True
+        if s["root_blocker"]:
+            roots.append({"id": cid, "blocks_total": len(seen), "longest_wait_s": s["longest_wait_s"]})
+    return sorted(roots, key=lambda s: (-s["blocks_total"], s["id"]))
+
+
+HISTORY_LIMIT = 10
+HISTORY_CONSUMERS = ("global_instrumentation", "thread_instrumentation",
+                     "events_statements_current", "events_statements_history")
+
+
+def check_history_id(connection_id):
+    if isinstance(connection_id, bool) or not isinstance(connection_id, int) or not 1 <= connection_id <= 4294967295:
+        raise ValueError("Choose a connection id from 1 to 4294967295.")
+    return connection_id
+
+
+def sessions_history(conn, connection_id):
+    """At most ten completed statement events for one live client thread.
+
+    Both engines expose these columns and picosecond timers. Never enable a
+    consumer or instrument here; absent prerequisites remain a single reason.
+    """
+    from .locks import TEXT_CAP
+    cid = check_history_id(connection_id)
+    reader = Reader(conn, SESSIONS_TAG)
+    result = {"id": cid, "available": False, "reason": None, "statements": [], "limit": HISTORY_LIMIT}
+
+    def unavailable(text):
+        result["reason"] = text
+        return result
+
+    try:
+        variables = show_variables(reader, ("version", "version_comment", "performance_schema"))
+        server = Server(variables, {})
+        if not server.ps_on:
+            return unavailable("Performance Schema is off; recent statements are not recorded.")
+        setup = reader.pairs("SELECT NAME, ENABLED FROM performance_schema.setup_consumers WHERE NAME IN "
+                             "('global_instrumentation', 'thread_instrumentation', "
+                             "'events_statements_current', 'events_statements_history') UNION ALL "
+                             "SELECT 'statement_instruments', IF(COUNT(*) > 0, 'YES', 'NO') FROM "
+                             "performance_schema.setup_instruments WHERE NAME LIKE 'statement/%' AND ENABLED = 'YES'")
+        missing = [name for name in HISTORY_CONSUMERS + ("statement_instruments",) if setup.get(name) != "YES"]
+        if missing:
+            return unavailable("Recent statements need %s enabled." % ", ".join(missing))
+        thread = reader.rows("SELECT THREAD_ID, INSTRUMENTED, HISTORY FROM performance_schema.threads "
+                             "WHERE PROCESSLIST_ID = %d LIMIT 1" % cid)
+        if not thread:
+            return unavailable("This session has ended or its thread is not visible to this account.")
+        if len(thread[0]) < 3 or thread[0][1:3] != ["YES", "YES"]:
+            return unavailable("Statement instrumentation or history is off for this session's thread.")
+        rows = reader.rows("SELECT s.EVENT_ID, LEFT(s.SQL_TEXT, %d), s.TIMER_WAIT, s.ROWS_EXAMINED, "
+                           "s.ROWS_SENT, s.ERRORS, s.MYSQL_ERRNO, s.MESSAGE_TEXT FROM "
+                           "performance_schema.events_statements_history s JOIN performance_schema.threads t "
+                           "ON t.THREAD_ID = s.THREAD_ID WHERE t.PROCESSLIST_ID = %d AND t.THREAD_ID = %d "
+                           "ORDER BY s.EVENT_ID DESC LIMIT %d" % (TEXT_CAP, cid, int(thread[0][0]), HISTORY_LIMIT))
+    except ConnectorError as exc:
+        if denied(exc) or _needs_process(exc):
+            return unavailable("This account cannot read Performance Schema statement history or its setup.")
+        raise
+    for row in rows[:HISTORY_LIMIT]:
+        row = list(row) + [None] * (8 - len(row))
+        timer = _number(row[2])
+        result["statements"].append({"event_id": row[0], "sql": row[1][:TEXT_CAP] if row[1] else None,
+                                     "duration_ms": timer / 1000000000.0 if timer is not None else None,
+                                     "rows_examined": _int(row[3]), "rows_sent": _int(row[4]),
+                                     "errors": _int(row[5]), "errno": _int(row[6]), "message": row[7]})
+    result["available"] = True
+    if not rows:
+        result["reason"] = "No completed statements are retained for this session."
+    return result
+
+
 def _session(row, engine, source, trx):
     if engine == "mariadb":
         row = list(row) + [None] * (14 - len(row))
@@ -617,6 +724,22 @@ def sessions_report(conn, active_only=True, user=None, host=None, db=None, min_s
         if item["id"] in by_id:
             by_id[item["id"]]["ddl"] = item
     _last_statements(reader, server, [s for s in sessions if "idle_in_trx" in s["flags"]], notes)
+    edges = []
+    if any(s["lock_wait"] for s in sessions):
+        from .locks import MAX_TREE_EDGES, session_wait_edges
+        edges, edge_notes = session_wait_edges(reader, server, sessions, every, process)
+        notes.extend(edge_notes)
+        # Keep the graph and its serialized adjacency on the same bounded
+        # snapshot, independently of the filters and the returned row limit.
+        edges = sorted({(a, b) for a, b in edges if a and b and a != b})
+        if len(edges) > MAX_TREE_EDGES:
+            edges = edges[:MAX_TREE_EDGES]
+            notes.append("Blocker counts cover the collected edge budget; additional wait edges may be missing.")
+        if any(s["lock_wait"]["kind"] == "table" for s in sessions if s["lock_wait"]):
+            notes.append("Table-level wait owners are not exposed by the row and metadata lock sources.")
+        if not server.ps_on:
+            notes.append("Performance Schema is off; open Server > Instruments to review lock instrumentation.")
+    root_blockers = _blocking_graph(sessions, edges)
     clients = [s for s in sessions if s["thread_kind"] == "client"]
 
     lock_kinds = {"innodb": 0, "metadata": 0, "table": 0}
@@ -655,6 +778,7 @@ def sessions_report(conn, active_only=True, user=None, host=None, db=None, min_s
         "history_list_length": history_item,
         "locked": sum(1 for s in sessions if s.get("is_locked")),
         "waiting_locks": sum(1 for s in sessions if s.get("lock_wait") is not None),
+        "root_blockers": root_blockers,
     }
     summary["status"] = _worst([s["status"] for s in sessions] + [connections["status"]]
                                + ([oldest["status"]] if oldest else [])
@@ -663,6 +787,8 @@ def sessions_report(conn, active_only=True, user=None, host=None, db=None, min_s
 
     matched = [s for s in sessions if _matches(s, filters)]
     matched.sort(key=lambda s: (-SEVERITY.get(s["status"], 0), -(s["time_s"] or 0), s["id"] or 0))
+    if locked_only:
+        matched.sort(key=lambda s: (not s["root_blocker"], -s["blocks_total"]))
     listed = matched[:limit]
 
     def ids(flag, seconds):
@@ -719,7 +845,8 @@ def sessions_report(conn, active_only=True, user=None, host=None, db=None, min_s
         "rules": dict(RULES),
         "summary": summary, "attention": attention,
         "matched": len(matched), "truncated": len(matched) > limit or truncated_read,
-        "sessions": listed, "ddl": ddl, "notes": notes, "links": dict(_LINKS),
+        "sessions": listed, "blocking_edges": [{"waiter": a, "blocker": b} for a, b in edges],
+        "ddl": ddl, "notes": notes, "links": dict(_LINKS),
     })
     return report
 

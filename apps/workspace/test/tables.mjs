@@ -1,4 +1,4 @@
-// Tables view of the Server place: mocked /api/live/tables with schema-1.0
+// Tables view of the Server place: mocked /api/live/tables with schema-2.0
 // reports recomputed from live captures (fixtures/), and the database picker's
 // /api/live/schemas. All user databases is the default, Fresh numbers is
 // MySQL only, rows sort and filter inside a scrolling region, the why and the
@@ -37,7 +37,7 @@ state.fallback = { status: 200, body: fresh };
 const view = ".server-view[data-view=tables]";
 const rows = (label) => page.$$eval(`${view} [aria-label="${label}"] tbody tr`, (els) => els.map((e) => e.dataset.table));
 const missingLabel = "Tables without a primary key";
-const freeLabel = "Free space by table";
+const freeLabel = "Fragmentation by table";
 const whyPk = async () => {
   await page.click('button[aria-label="About Tables"]');
   await page.locator('[role=dialog][aria-label="About Tables"] button ::-p-text(Why a primary key matters)').click();
@@ -58,6 +58,21 @@ const assertRefreshBlocked = async () => {
   await pause(100);
   assert.equal(state.seen.length, before, "gated Refresh sends no table read");
 };
+
+async function captureThemes(page, dir, prefix) {
+  for (const theme of ["light", "dark"]) {
+    await page.evaluate(t => document.documentElement.dataset.theme = t, theme);
+    for (const width of [1440, 720]) {
+      await page.setViewport({ width, height: 900 });
+      await page.evaluate(() => document.fonts.ready);
+      await page.waitForFunction(() => document.documentElement.scrollWidth <= innerWidth + 1);
+      await page.screenshot({ path: path.join(dir, `${prefix}-${theme}-${width}.png`) });
+    }
+  }
+  await page.setViewport({ width: 1440, height: 1000 });
+  await page.evaluate(() => document.documentElement.dataset.theme = "light");
+}
+
 try {
   await h.server();
   // Tables follows Indexes in the Schema group (Database diagram is a place of its own).
@@ -134,7 +149,7 @@ try {
   assert.equal(state.seen.at(-1).fresh, false);
   assert.match(await text(`${view} .fact-strip`), /Statistics\s*fresh from InnoDB/);
   assert.match(await text(`${view} .perf-summary-line`),
-    /^10 tables without a usable key, 2 with only a unique NOT NULL key · 2 tables with reusable free space$/);
+    /^10 tables without a usable key, 2 with only a unique NOT NULL key · 2 fragmented tables$/);
   assert.ok((await text(`${view} .summary-line p`)).length <= 120, "one summary line, at most 120 characters");
   assert.deepEqual(await page.$$eval(`${view} .segmented button`, (els) => els.map((e) => e.dataset.value)), ["missing", "free"]);
   assert.equal(await page.$eval("#server-nav-tables .status-dot", (e) => e.className), "status-dot is-problem");
@@ -209,23 +224,37 @@ try {
   await inspectorHas(/uk_b/);
   assert.match(await text(`${view} .tables-gipk`), /mftab\.gipk_t/);
 
-  // Free space is informational; positive reusable extents are listed by default.
+  // Fragmentation keeps info statuses, with potentially reclaimable bytes largest first.
   if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.click(`${view} .segmented button[data-value=free]`);
   assert.deepEqual(await rows(freeLabel), ["mftab.frag_fpt", "mftab.ae_t"]);
+  assert.match(await text(`${view} .segmented button[data-value=free]`), /Fragmentation\s*2/);
+  assert.equal(await text(`${view} .tables-free-show select option:checked`), "Fragmented tables");
+  assert.ok(await page.$('input[aria-label="Minimum fragmentation percent"]'));
+  const freeHeader = `${view} [aria-label="${freeLabel}"] th[data-col=free]`;
+  assert.match(await text(freeHeader), /Reclaimable/);
+  assert.equal(await page.$eval(freeHeader, e => e.getAttribute("aria-sort")), "descending", "switching from the sorted missing-key list resets to Reclaimable");
+  const pctHeader = `${view} [aria-label="${freeLabel}"] th[data-col=pct]`;
+  assert.match(await text(pctHeader), /Fragmentation %/);
+  assert.match(await page.$eval(pctHeader, e => e.title), /DATA_FREE \/ \(DATA_LENGTH \+ INDEX_LENGTH \+ DATA_FREE\)/);
   const fpt = `${view} tr[data-table="mftab.frag_fpt"]`;
-  assert.match(await text(fpt), /Reusable space/);
+  assert.match(await text(fpt), /Fragmented/);
   assert.match(await text(fpt), /275\.0 MiB/);
   await h.select(fpt);
   await inspectorHas(/OPTIMIZE TABLE `mftab`\.`frag_fpt`;/);
-  assert.match(await h.inspector(), /ALTER TABLE `mftab`\.`frag_fpt` FORCE, ALGORITHM=INPLACE, LOCK=NONE;/);
-  assert.match(await h.inspector(), /Optional maintenance; review and confirm/);
+  assert.match(await h.inspector(), /ALTER TABLE `mftab`\.`frag_fpt` ENGINE=InnoDB;/);
+  assert.match(await h.inspector(), /Rebuild/);
+  for (const pattern of [/recreate \+ analyze/, /without the separate ANALYZE TABLE step/, /concurrent reads and writes/,
+    /metadata locks/, /FULLTEXT or SPATIAL/, /writes wait until the rebuild ends/, /free disk about the size/, /replicas rebuild too/,
+    /NO_WRITE_TO_BINLOG/, /partly filled pages/, /Fresh numbers and refresh/]) assert.match(await h.inspector(), pattern);
   if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.select(`${view} .tables-free-show select`, "shared");
   assert.deepEqual((await rows(freeLabel)).sort(), ["mftab.frag_gen", "mftab.gen_small", "mftab.sys_small"]);
   await h.select(`${view} tr[data-table="mftab.frag_gen"]`);
   await page.waitForFunction(() => document.querySelector(".view-inspector h3")?.textContent === "mftab.frag_gen");
-  assert.equal(await page.$(".view-inspector .perf-sql"), null, "no per-table fix");
+  assert.equal(await page.$$(".view-inspector .perf-sql").then(items => items.length), 2, "shared tables show both statements with the non-shrinking caveat");
+  assert.match(await h.inspector(), /the file does not shrink/);
+  assert.equal(await page.$eval(`${view} tr[data-table="mftab.frag_gen"] td[data-col=free]`, e => e.textContent), "Unknown", "shared DATA_FREE is not per-table reclaimable bytes");
   assert.match(await text(`${view} .tables-shared`), /mf_gen \(general\)/);
   assert.match(await text(`${view} .tables-shared`), /the file does not shrink/);
   if (await page.$(".detail-back")) await page.click(".detail-back");
@@ -266,7 +295,7 @@ try {
   await (await page.$(".server-place")).screenshot({ path: path.join(h.shots, "tables-gate.png") });
   if (await page.$(".detail-back")) await page.click(".detail-back");
   await page.click(`${view} .segmented button[data-value=free]`);
-  assert.deepEqual(await rows(freeLabel), ["mftab.ae_t", "mftab.frag_fpt"], "cached positive free space remains informational");
+  assert.deepEqual(await rows(freeLabel), ["mftab.ae_t", "mftab.frag_fpt"], "cached fragmentation still sorts by reclaimable bytes");
   assert.match(await h.notes(), /information_schema_stats_expiry/);
 
   // Narrowing below the cap enables normal reads again.
@@ -502,6 +531,53 @@ try {
   await contextAction("Show CREATE TABLE (DDL)");
   await page.waitForSelector('[aria-label="SQL editor"]');
   assert.equal(await page.$eval('[aria-label="SQL editor"]', editor => editor.value), `SHOW CREATE TABLE ${qTable};`);
+
+  // The owner's example: 5.5 GiB on a 17 MiB table ranks before 1.3 GiB on
+  // 25.8 GiB. Also include a higher percentage with fewer bytes so a sort on
+  // percentage cannot accidentally satisfy the ordering assertion.
+  await h.server();
+  await h.view("tables");
+  const base = fresh.fragmentation.find(row => row.status === "info");
+  const candidates = [
+    { ...base, schema: "analytics", table: "historical", data_bytes: 25.8 * 2 ** 30, index_bytes: 0, free_bytes: 1.3 * 2 ** 30, free_pct: 5 },
+    { ...base, schema: "analytics", table: "hourly", data_bytes: 17 * 2 ** 20, index_bytes: 0, free_bytes: 5.5 * 2 ** 30, free_pct: 99.7 },
+    { ...base, schema: "s.`name", table: "t.`name", data_bytes: 0, index_bytes: 0, free_bytes: 2 ** 30, free_pct: 100,
+      online_sql: "ALTER TABLE `s.``name`.`t.``name` FORCE, ALGORITHM=INPLACE, LOCK=NONE;" },
+    { ...base, schema: "analytics", table: "unknown_space", status: "unknown", free_bytes: 100 * 2 ** 30 },
+  ];
+  state.queue.push({ status: 200, body: { ...fresh, fragmentation: candidates,
+    summary: { ...fresh.summary, free_info: 3 } } });
+  await h.refresh();
+  await page.waitForFunction(() => /3 fragmented tables/.test(document.querySelector(".perf-summary-line")?.textContent || ""));
+  if (await page.$(".detail-back")) await page.click(".detail-back");
+  await page.click(`${view} .segmented button[data-value=free]`);
+  assert.deepEqual(await rows(freeLabel), ["analytics.hourly", "analytics.historical", "s.`name.t.`name"]);
+  await page.select(`${view} .tables-free-show select`, "unknown");
+  assert.equal(await text(`${view} tr[data-table="analytics.unknown_space"] td[data-col=free]`), "Unknown");
+  await page.select(`${view} .tables-free-show select`, "info");
+  await page.type('input[aria-label="Minimum fragmentation percent"]', "90");
+  await page.waitForFunction(() => document.querySelectorAll('[aria-label="Fragmentation by table"] tbody tr[data-table]').length === 2);
+  assert.deepEqual(await rows(freeLabel), ["analytics.hourly", "s.`name.t.`name"]);
+  await page.click('input[aria-label="Minimum fragmentation percent"]', { clickCount: 3 });
+  await page.keyboard.press("Backspace");
+  await page.waitForFunction(() => document.querySelectorAll('[aria-label="Fragmentation by table"] tbody tr[data-table]').length === 3);
+  const quoted = "`s.``name`.`t.``name`";
+  await h.select(`${view} tr[data-table="s.\`name.t.\`name"]`);
+  // OPTIMIZE and ALTER ... ENGINE=InnoDB open in the editor; the online-only
+  // variant (refused instead of blocking writes) is copy only.
+  const sql = [`OPTIMIZE TABLE ${quoted};`, `ALTER TABLE ${quoted} ENGINE=InnoDB;`, `ALTER TABLE ${quoted} FORCE, ALGORITHM=INPLACE, LOCK=NONE;`];
+  await page.waitForFunction(expected => Array.from(document.querySelectorAll('.view-inspector .perf-sql code'), e => e.textContent).join("\n") === expected.join("\n"), {}, sql);
+  await captureThemes(page, h.shots, "tables-rebuild");
+  const sentBefore = state.other.filter(call => call.path === "/api/editor/run").length;
+  await page.evaluate(() => { window.__rebuildCopies = []; navigator.clipboard.writeText = text => { window.__rebuildCopies.push(text); return Promise.resolve(); }; });
+  await page.$$eval('.view-inspector .perf-sql button', buttons => buttons.forEach(button => button.click()));
+  assert.deepEqual(await page.evaluate(() => window.__rebuildCopies), sql, "both statements quote dots and escaped backquotes");
+  for (const [i, label] of ["OPTIMIZE TABLE", "ALTER TABLE"].entries()) {
+    if (i) { await h.server(); await h.view("tables"); }
+    await page.click(`.view-inspector button[aria-label="Open in Query editor: ${label}"]`);
+    await page.waitForFunction(expected => document.querySelector('[aria-label="SQL editor"]')?.value === expected, {}, sql[i]);
+  }
+  assert.equal(state.other.filter(call => call.path === "/api/editor/run").length, sentBefore, "copying and opening rebuild statements never executes them");
 
   assert.deepEqual(h.errors, []);
   console.log("tables view: ok");

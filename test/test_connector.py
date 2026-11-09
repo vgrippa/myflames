@@ -965,6 +965,48 @@ class TestBoundedTransport(unittest.TestCase):
                 conn.run_write('SELECT 1', timeout=0.2)
             self.assertIsNotNone(self.children[0].poll())
 
+    def test_identity_tail_has_its_own_budget_and_retains_output_after_reaping(self):
+        for newline in ('\n', '\r\n'):
+            output = newline.join(('myflames_reading_0', 'name\tvalue', 'myflames_reading_1', ''))
+            script = ('import os,sys\nassert "--unbuffered" in sys.argv\n'
+                      'os.write(1, %r)\nr,w=os.pipe()\nos.read(r,1)' % output.encode())
+            with self.subTest(newline=newline), self.child(script), MySQLConnection('h', binary='mysql') as conn:
+                tail_started = []
+                with self.assertRaises(connector.PartialReadError) as caught:
+                    conn.run('SELECT 1', timeout=5, tail_timeout=('myflames_reading_1', 0.2),
+                             on_tail_start=lambda: tail_started.append(self.children[0].poll()))
+                self.assertEqual(tail_started, [None], 'capture completion once, before the tail times out')
+                self.assertIn('after 0.2s', str(caught.exception), 'the tail does not inherit the data budget')
+                self.assertEqual(caught.exception.stdout.replace('\r\n', '\n'), output.replace('\r\n', '\n'))
+                self.assertNotIn('name\tvalue', str(caught.exception), 'partial server data is not an error message')
+                self.assertEqual(len(self.children), 1)
+                self.assertIsNotNone(self.children[0].poll())
+
+    def test_marker_in_data_or_without_newline_cannot_extend_the_read_budget(self):
+        for output in ('name\tmyflames_reading_1\n', 'myflames_reading_1',
+                       'name\tmyflames_reading_1\\nspoof\n'):
+            script = 'import os\nos.write(1, %r)\nr,w=os.pipe()\nos.read(r,1)' % output.encode()
+            with self.subTest(output=output), self.child(script), MySQLConnection('h', binary='mysql') as conn:
+                on_tail_start = mock.Mock()
+                with self.assertRaises(connector.PartialReadError) as caught:
+                    conn.run('SELECT 1', timeout=0.2, tail_timeout=('myflames_reading_1', 5),
+                             on_tail_start=on_tail_start)
+                on_tail_start.assert_not_called()
+                self.assertIn('after 0.2s', str(caught.exception), 'only a complete marker row changes the deadline')
+                self.assertIsNotNone(self.children[0].poll())
+
+    def test_identity_sql_error_retains_stdout_only_for_opted_in_read_batches(self):
+        output = 'myflames_reading_0\nname\tvalue\nmyflames_reading_1\n'
+        script = 'import sys\nsys.stdout.write(%r)\nsys.stderr.write("ERROR 1227: denied")\nsys.exit(1)' % output
+        for options in ({}, {'tail_timeout': ('myflames_reading_1', 3)}):
+            with self.subTest(options=options), self.child(script), MySQLConnection('h', binary='mysql') as conn:
+                with self.assertRaises(ConnectorError) as caught:
+                    conn.run('SELECT 1', **options)
+                self.assertEqual(isinstance(caught.exception, connector.PartialReadError), bool(options))
+                if options:
+                    self.assertEqual(caught.exception.stdout, output)
+                self.assertIsNotNone(self.children[0].poll())
+
 
 class TestClientText(unittest.TestCase):
     """Windows clients write CRLF line ends; other systems keep data as is."""

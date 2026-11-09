@@ -17,6 +17,8 @@ export interface ViewContext {
 }
 
 export interface ViewInstance {
+  /** Bring a drawn operator into view (ChartHandle.reveal); optional. */
+  reveal?(id: string): boolean;
   destroy(): void;
 }
 

@@ -176,7 +176,8 @@ try {
     return !!state?.investigation.id && !state.investigation.dirty;
   });
   await page.reload({ waitUntil: "networkidle0" });
-  await page.waitForSelector(".session-notice");
+  // The workspace restores quietly (3.3.2): wait for the restored plan.
+  await page.waitForSelector(".plan-item");
   await frame();
   assert.equal((await page.$$(".plan-item")).length, 1);
   await button("Save investigation", ".topbar ");

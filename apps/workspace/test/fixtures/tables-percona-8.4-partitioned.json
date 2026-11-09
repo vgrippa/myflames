@@ -55,7 +55,7 @@
  "rules": {
   "no_usable_key": "problem: no PRIMARY KEY and no UNIQUE key on NOT NULL columns",
   "not_null_unique": "watch: no PRIMARY KEY, but a UNIQUE key on NOT NULL columns stands in for it",
-  "free": "Informational: DATA_FREE is reusable space inside the tablespace. Its amount or percentage alone does not establish a problem or a need to rebuild. File capacity and filesystem headroom are not measured by this report."
+  "free": "Prioritize fragmented file-per-table tables by reclaimable bytes; check fresh statistics, free disk and expected regrowth before rebuilding"
  },
  "why": [
   {
@@ -218,7 +218,7 @@
    "tablespace": null,
    "tablespace_name": null,
    "status": "ok",
-   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
+   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). Half-empty pages are not counted, so fragmentation can still exist. This does not establish that the tablespace or disk is full."
   },
   {
    "schema": "review",
@@ -232,7 +232,7 @@
    "tablespace": null,
    "tablespace_name": null,
    "status": "ok",
-   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
+   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). Half-empty pages are not counted, so fragmentation can still exist. This does not establish that the tablespace or disk is full."
   },
   {
    "schema": "review",
@@ -246,7 +246,7 @@
    "tablespace": null,
    "tablespace_name": null,
    "status": "ok",
-   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
+   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). Half-empty pages are not counted, so fragmentation can still exist. This does not establish that the tablespace or disk is full."
   },
   {
    "schema": "review",
@@ -260,7 +260,7 @@
    "tablespace": null,
    "tablespace_name": null,
    "status": "ok",
-   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). This does not establish that the tablespace or disk is full."
+   "why": "DATA_FREE is 0: no free space beyond what InnoDB holds back (2 extents plus about 1% of the file). Half-empty pages are not counted, so fragmentation can still exist. This does not establish that the tablespace or disk is full."
   }
  ],
  "shared_tablespaces": [],

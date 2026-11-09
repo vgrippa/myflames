@@ -1,0 +1,57 @@
+{
+  "schema_version": "memory-1.0",
+  "engine": "mysql",
+  "flavor": "mysql",
+  "server_product": "MySQL",
+  "server_version": "8.4.11",
+  "taken_at": "2026-11-08T18:00:00+00:00",
+  "uptime_s": 1000,
+  "performance_schema": true,
+  "available": false,
+  "source": "performance_schema",
+  "interval": 5,
+  "elapsed_s": 5,
+  "window_status": "unavailable",
+  "coverage": null,
+  "consumers": null,
+  "gate": "Memory instrument coverage could not be read; open Server > Instruments to check it.",
+  "gate_row": "group:memory",
+  "thread_coverage": null,
+  "status": "not_judged",
+  "current_bytes": null,
+  "high_bytes": null,
+  "growth_bytes_per_s": null,
+  "innodb_buffer_pool_size": 1073741824,
+  "buffer_pool_share_pct": null,
+  "categories": [],
+  "events": [],
+  "sessions": [],
+  "accounts": [],
+  "collection": {
+    "events": false,
+    "sessions": false,
+    "accounts": false
+  },
+  "findings": [
+    {
+      "key": "coverage",
+      "status": "not_judged",
+      "rule": "Rule of thumb: judge only a comparable window with known collection coverage.",
+      "reason": "Memory instrument coverage could not be read; open Server > Instruments to check it."
+    }
+  ],
+  "notes": [
+    "Could not read memory instrument coverage: ERROR 1142: SELECT command denied",
+    "Could not read memory consumers: ERROR 1142: SELECT command denied",
+    "Could not read performance_schema.memory_summary_global_by_event_name: ERROR 1142: SELECT command denied",
+    "Could not read performance_schema.memory_summary_by_thread_by_event_name: ERROR 1142: SELECT command denied",
+    "Could not read performance_schema.memory_summary_by_account_by_event_name: ERROR 1142: SELECT command denied",
+    "Tracked allocations are not process RSS or machine RAM; no RAM capacity is inferred.",
+    "Each event high is an upper bound (current bytes plus per-thread, account and host headroom), not a recorded peak; their sum is not a server peak.",
+    "Enabled instruments do not recover earlier allocations; session/account totals need not add up to the global total.",
+    "Categories use known event-name prefixes; unmatched allocations stay in Other, and TempTable may include mapped files.",
+    "Reads are sequential, not an atomic snapshot; the collection itself can allocate memory.",
+    "Performance Schema on MySQL 8.0.23 and later charges a free made by another thread to the global total, so the session or account that allocated the memory can be overstated.",
+    "No comparable growth window (unavailable); refresh to sample again."
+  ]
+}

@@ -539,14 +539,16 @@ class TestRead(Home):
         self.assertNotEqual(report['fingerprints']['query_rules_memory'], report['fingerprints']['query_rules_disk'])
         self.assertTrue(all(sql.startswith('SELECT') for sql in conn.calls))
 
-    def test_a_value_the_client_cannot_write_as_xml_is_unread_never_misread(self):
+    def test_a_control_character_in_a_value_is_read_exactly_never_misread(self):
+        # The client prints C0 controls raw, which XML forbids; perf_common.named_rows
+        # escapes them reversibly, so the value is read exactly (never replaced).
         conn = self.admin()
         conn.db.execute("UPDATE main.mysql_query_rules SET comment = 'a' || char(1) || 'b' WHERE rule_id = 30")
         report = proxysql.read_status(conn)
-        self.assertFalse(report['config_readable'])
-        self.assertEqual(report['actions'], [])
-        self.assertIn('Not read: main.mysql_query_rules (a value the client could not print as XML (such as a control '
-                      'character)).', report['notes'])
+        self.assertTrue(report['config_readable'])
+        rule = next(r for r in report['query_rules'] if r['rule_id'] == 30)
+        self.assertEqual(rule['comment'], 'a\x01b')
+        self.assertFalse([n for n in report['notes'] if n.startswith('Not read:')])
 
     def test_a_table_is_absent_only_when_every_copy_says_no_such_table(self):
         # Codex review: memory and runtime unread, disk readable, was taken for a table this version lacks.

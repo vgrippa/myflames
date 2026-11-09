@@ -48,6 +48,9 @@ try {
     await page.keyboard.down("Meta"); await page.keyboard.press("k"); await page.keyboard.up("Meta");
     await page.waitForSelector("dialog.command-palette[open]");
     await page.type('input[aria-label="Search commands"]', "not-a-command");
+    // With a connection in use the palette searches objects first (Searching
+    // objects…); "No commands" appears once that search settles.
+    await page.waitForSelector('.command-empty');
     assert.match(await page.$eval('.command-empty', element => element.textContent), /No commands/);
     await page.keyboard.press("Escape");
     await page.waitForFunction(() => !document.querySelector("dialog.command-palette"));

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<data grt_format="2.0"><value type="list" content-type="object" content-struct-name="db.mgmt.Connection">
+<value type="object" struct-name="db.mgmt.Connection" id="1">
+<value type="string" key="name">Production &amp; reporting</value>
+<link type="object" key="driver">com.mysql.rdbms.mysql.driver.native_sshtun</link>
+<value type="dict" key="parameterValues">
+<value key="hostName">db.internal</value><value key="port">3307</value><value key="userName">reporter</value><value key="schema">sales</value>
+<value key="sshHost">bastion.example:2222</value><value key="sshUserName">deploy</value>
+<value key="password">DO_NOT_IMPORT</value><value key="sshPassword">DO_NOT_IMPORT_SSH</value><value key="sshKeyFile">/never/open/key</value>
+</value></value>
+<value type="object" struct-name="db.mgmt.Connection" id="2"><value key="name">Unrelated</value><link key="driver">com.other.rdbms.postgresql.driver.native</link></value>
+<value type="object" struct-name="db.mgmt.Connection" id="3"><value key="name">Maria</value><link key="driver">com.mysql.rdbms.mysql.driver.native</link><value key="parameterValues"><value key="hostName">maria.example</value><value key="userName">reader</value></value></value>
+</value></data>

@@ -358,6 +358,10 @@ def fixture_connection(tool, maria=False):
             conn = ReplayConn(data["calls"], clock=clock)
         else:
             conn, data = replay(view, server, clock=clock)
+        if view == "sessions":
+            # Recordings predate the optional blocker read.
+            from _perf_replay import deny_blocker_read
+            deny_blocker_read(conn)
         if view == "sessions" and not maria:
             # Recordings predate the DDL progress read; answer it the way
             # test_report does: no active stages, events_stages_current off.

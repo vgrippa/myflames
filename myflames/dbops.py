@@ -1892,7 +1892,68 @@ AUDIT_CSV_COLUMNS = ("id", "attempted_at", "finished_at", "status", "outcome", "
                      "rows_affected", "duration_ms", "ssh")
 
 
-def audit_report(store, since_days=None, server=None, limit=None, status=None, before=None):
+def audit_object_report(store, server, kind, key, ssh=None):
+    """Local history with an exact structured target and SSH endpoint."""
+    if (not isinstance(server, str) or not 1 <= len(server) <= 300 or
+            not re.fullmatch(r'.+:[0-9]{1,5}', server)):
+        raise ValueError('server must be the audit host:port.')
+    tunnel = None
+    if ssh is not None:
+        if (not isinstance(ssh, dict) or set(ssh) != {'host', 'user', 'port'} or
+                not isinstance(ssh['host'], str) or not ssh['host'].strip() or len(ssh['host']) > 255 or
+                not isinstance(ssh['user'], str) or len(ssh['user']) > 255 or
+                isinstance(ssh['port'], bool) or not isinstance(ssh['port'], int) or not 0 <= ssh['port'] <= 65535 or
+                any(ch in ssh['host'] + ssh['user'] for ch in ('\x00', '\n', '\r'))):
+            raise ValueError('ssh must identify one SSH host, user and port.')
+        from .ssh_tunnel import target_text
+        tunnel = target_text({'ssh_host': ssh['host'], 'ssh_user': ssh['user'], 'ssh_port': ssh['port'] or None})
+    fields = {'parameter': ('name',), 'account': ('name', 'host'), 'index': ('schema', 'table', 'index')}
+    if not isinstance(kind, str) or kind not in fields:
+        raise ValueError('kind must be index, parameter or account.')
+    if kind == 'parameter' and isinstance(key, str):
+        key = {'name': key}
+    expected_fields = set(fields[kind]) | ({'role'} if kind == 'account' else set())
+    if not isinstance(key, dict) or set(key) != expected_fields:
+        raise ValueError('key must identify exactly one %s.' % kind)
+    if kind == 'account' and not isinstance(key['role'], bool):
+        raise ValueError('key.role must be true or false.')
+    for field in fields[kind]:
+        value = key[field]
+        if (not isinstance(value, str) or len(value) > 256 or '\x00' in value or
+                (not value and not (kind == 'account' and field in ('name', 'host')))):
+            raise ValueError('key.%s must be object-name text.' % field)
+    return {'schema_version': AUDIT_SCHEMA_VERSION, 'records': store.audit_object_records(server, kind, key, tunnel)}
+
+
+def audit_object_matches(operation, target, engine, kind, key):
+    """SQLite predicate. Old, malformed or insufficient targets fail closed."""
+    try:
+        target = json.loads(target) if target else None
+    except (ValueError, TypeError, RecursionError):
+        return False
+    if not isinstance(target, dict):
+        return False
+    if kind == 'parameter':
+        return (operation in ('set_global', 'set_persist', 'set_persist_only', 'set_session', 'reset_persist') and
+                target.get('name') == key['name'])
+    if kind == 'account':
+        from .accounts import _name
+        if engine not in ('mysql', 'mariadb'):
+            return False
+        try:
+            account = _name(key['name'], key['host'], engine, key['role'])
+        except ValueError:
+            return False
+        return operation.startswith('accounts.') and target.get('account') == account
+    if kind == 'index':
+        index = target.get('alter_table')
+        return (operation == 'editor_run' and isinstance(index, dict) and
+                all(index.get(field) == key[field] for field in ('schema', 'table', 'index')))
+    # Never infer an index from its table or stored statement text.
+    return False
+
+
+def audit_report(store, since_days=None, server=None, limit=None, status=None, before=None, record_id=None):
     """The ``audit-1.0`` envelope: newest records first, with the retention
     setting. Every filter (*since_days*, *server*, *status*) applies before
     *limit*; *before* (a record id) continues a list after that record, and
@@ -1900,7 +1961,8 @@ def audit_report(store, since_days=None, server=None, limit=None, status=None, b
     if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100000):
         raise ValueError('limit must be an integer from 1 to 100000.')
     fetch = limit + 1 if limit is not None and limit < 100000 else limit
-    records = store.audit_records(since_days=since_days, server=server, limit=fetch, status=status, before=before)
+    records = store.audit_records(since_days=since_days, server=server, limit=fetch, status=status, before=before,
+                                  record_id=record_id)
     more = fetch != limit and len(records) > limit
     return {"schema_version": AUDIT_SCHEMA_VERSION, "retention_days": store.audit_retention_days(),
             "records": records[:limit] if more else records, "has_more": more}
@@ -1936,11 +1998,11 @@ def audit_csv(records):
     return buffer.getvalue()
 
 
-def audit_export(store, fmt="json", since_days=None, server=None, status=None):
+def audit_export(store, fmt="json", since_days=None, server=None, status=None, record_id=None):
     """``{"format", "content", "mime", "filename"}`` for every matching record."""
     if fmt not in ("json", "csv"):
         raise ValueError("Choose export format 'json' or 'csv'.")
-    report = audit_report(store, since_days=since_days, server=server, status=status)
+    report = audit_report(store, since_days=since_days, server=server, status=status, record_id=record_id)
     report.pop("has_more", None)
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
     if fmt == "csv":

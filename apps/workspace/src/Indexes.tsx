@@ -47,6 +47,7 @@ import {
 } from "./kit";
 
 import { PaginatedReportTable } from "./PaginatedReportTable";
+import { ObjectChanges } from "./ObjectChanges";
 import { ReviewedSqlAction, ReviewedSqlBridger, ReviewedSqlProvider, ReviewedSqlStatus, useReviewedSql } from "./ReviewedSqlAction";
 
 const SOURCES: Record<string, string> = {
@@ -760,11 +761,18 @@ export function IndexesView({
       };
   }
 
+  const changedIndex = report && (type === "index" ? report.indexes : type === "unused" ? report.unused : type === "redundant" ? report.redundant : [])
+    ?.find(r => `${r.schema}.${r.table}.${r.index}` === name);
+  const [auditRevision, setAuditRevision] = useState(0);
+  if (inspector && changedIndex && !other) inspector = { ...inspector, body: <>{inspector.body}
+    <ObjectChanges key={auditRevision} connection={connection} object={{ kind: "index", key: { schema: changedIndex.schema, table: changedIndex.table, index: changedIndex.index } }} />
+  </> };
+
   const loadHint = tooMany
     ? `This scope has ${scopeTables.toLocaleString()} tables in user databases, more than ${limit.toLocaleString()}: choose databases. ${catalog.catalog?.all_note || ""}`
     : "";
   return (
-    <ReviewedSqlProvider connection={connection} disabled={disabled || !!other} onComplete={() => void load()}>
+    <ReviewedSqlProvider connection={connection} disabled={disabled || !!other} onComplete={() => { setAuditRevision(n => n + 1); void load(); }}>
       <ReviewedSqlBridger bridgerRef={reviewedSqlRef} />
       <ViewLayout
         id="indexes"

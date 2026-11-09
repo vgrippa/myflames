@@ -1,0 +1,6 @@
+{"connections": {
+ "mysql-id": {"provider":"mysql","driver":"mysql8","name":"MySQL SSH","configuration":{"host":"db.internal","port":"3308","auth-properties":{"userName":"app","userPassword":"DO_NOT_IMPORT"},"configurationType":"MANUAL","database":"shop","password":"DO_NOT_IMPORT","url":"jdbc:mysql://secret:DO_NOT_IMPORT@ignored/", "handlers":{"ssh_tunnel":{"type":"TUNNEL","enabled":true,"user":"deploy","password":"DO_NOT_IMPORT_SSH","properties":{"host":"bastion.example","port":"2222","keyPath":"/never/open/key"}}}}},
+ "maria-id": {"provider":"mysql","driver":"mariaDB","name":"MariaDB","configuration":{"host":"maria.example","port":"3306","user":"reader","database":"analytics"}},
+ "pg-id": {"provider":"postgresql","driver":"postgres-jdbc","name":"Postgres","configuration":{"host":"pg.example"}},
+ "other-id": {"provider":"generic","driver":"mysql8","name":"Generic JDBC","configuration":{"host":"ignored.example"}}
+}}

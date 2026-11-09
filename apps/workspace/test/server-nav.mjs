@@ -59,7 +59,7 @@ try {
   assert.equal(await page.$('.place-toolbar [data-action="refresh-all"]'), null,
     "only the view's Refresh is visible before a wider read");
   await openRefreshMenu(page);
-  assert.match(await text('.view-refresh-menu'), /Refresh every view on .+ \(⌥⌘R\).*17 sections/s,
+  assert.match(await text('.view-refresh-menu'), /Refresh every view on .+ \(⌥⌘R\).*18 sections/s,
     "the secondary action names its connection, shortcut and scope");
   assert.equal(await page.$eval('.view-refresh-menu [data-action="refresh-all"]', e => e.getAttribute('role')), 'menuitem');
   assert.equal(live().length, beforeRefreshMenu, "opening Refresh options reads nothing");
@@ -579,7 +579,7 @@ try {
   assert.deepEqual(await switcher("top").then(({ popup, expanded, name }) => ({ popup, expanded, name })), { popup: "dialog", expanded: "false", name: "Top statements" });
   await page.click("#top-switcher");
   await page.waitForSelector('.view-switcher-popover[role=dialog][aria-label="Workload views"]');
-  assert.deepEqual(await texts(".view-switcher-popover .source-label"), ["Top statements", "Processlist", "Waits", "I/O"]);
+  assert.deepEqual(await texts(".view-switcher-popover .source-label"), ["Top statements", "Processlist", "Memory", "Waits", "I/O"]);
   await page.waitForFunction(() => document.activeElement?.id === "server-nav-top");
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => document.activeElement?.id === "top-switcher");

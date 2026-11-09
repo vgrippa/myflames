@@ -21,6 +21,8 @@ The advisor never mutates the plan tree; it only augments the analysis dict
 produced by :func:`analyze_plan`.
 """
 
+import re
+
 from .server_info import detect_flavor
 
 
@@ -564,6 +566,131 @@ def _lookup(mapping, table):
     return None, None
 
 
+def _freshness_facts(entry):
+    """The STALE_STATS facts of one freshness entry, as text parts."""
+    facts = []
+    if entry.get("last_update"):
+        facts.append("InnoDB statistics last updated {}{}".format(
+            entry["last_update"],
+            " (n_rows {:,})".format(entry["n_rows"]) if isinstance(entry.get("n_rows"), int) else ""))
+    histograms = entry.get("histograms") or []
+    if not isinstance(histograms, list):
+        histograms = []
+    facts.append("histograms on " + ", ".join(histograms) if histograms
+                 else "no column histograms")
+    return facts
+
+
+def _captured_base_tables(capture):
+    """Proven unaliased MariaDB names from one flat captured SELECT.
+
+    This deliberately refuses CTEs, subqueries, set operations, table
+    functions and table hints rather than resolving SQL scopes or aliases.
+    Schema identity comes from the captured query, never from the set of
+    statistics entries that happened to be readable. A digest's source
+    schema need not be the connection's effective default schema.
+    """
+    capture = capture or {}
+    query = capture.get("query")
+    if capture.get("engine") != "mariadb" or not isinstance(query, str) or len(query) > 200000:
+        return {}
+    # Executable comments have SQL semantics that masking would discard.
+    if re.search(r"/\*(?:!|M!)", query, re.I):
+        return {}
+    from .collectors import _strip_comments_and_literals
+    tokens = re.findall(r"`(?:``|[^`])*`|[\w$]+|[^\s]", _strip_comments_and_literals(query))
+    words = [t.upper() for t in tokens]
+    if (not words or words[0] != "SELECT" or words.count("SELECT") != 1
+            or any(t in words for t in ("WITH", "UNION", "EXCEPT", "INTERSECT", "FOR", "LOCK",
+                                       "PARTITION", "USE", "FORCE", "IGNORE", "'", '"', "`", "\\"))
+            or ";" in tokens[:-1]):
+        return {}
+    stops = {"WHERE", "GROUP", "HAVING", "ORDER", "LIMIT", "FOR", "LOCK", "WINDOW", ";"}
+    reserved = stops | {"JOIN", "STRAIGHT_JOIN", "INNER", "OUTER", "LEFT", "RIGHT", "CROSS", "NATURAL", "ON", "USING"}
+
+    def identifier(pos):
+        if pos >= len(tokens):
+            return None
+        token = tokens[pos]
+        if token.startswith("`") and token.endswith("`"):
+            return token[1:-1].replace("``", "`") or None
+        return token if re.fullmatch(r"[\w$]+", token) and not token.isdigit() else None
+
+    names = {}
+    pos, depth, in_sources, expecting = 0, 0, False, False
+    while pos < len(tokens):
+        token, word = tokens[pos], words[pos]
+        if expecting:
+            first = identifier(pos)
+            if first is None:
+                return {}
+            schema, table = None, first
+            pos += 1
+            if pos < len(tokens) and tokens[pos] == ".":
+                table = identifier(pos + 1)
+                if not table:
+                    return {}
+                schema = first
+                pos += 2
+            # Parenthesized sources, functions and hints need SQL resolution.
+            if pos < len(tokens) and words[pos] in ("(", "PARTITION", "USE", "FORCE", "IGNORE"):
+                return {}
+            alias = None
+            if pos < len(tokens) and words[pos] == "AS":
+                alias = identifier(pos + 1)
+                if not alias:
+                    return {}
+                pos += 2
+            elif pos < len(tokens) and words[pos] not in reserved and identifier(pos):
+                alias = identifier(pos)
+                pos += 1
+            name = alias if alias is not None else table
+            # Keep every occurrence: a duplicate name cannot identify one access.
+            key = (schema + "." + table if isinstance(schema, str) and schema
+                   and "." not in schema and "." not in table else None)
+            names.setdefault(name, []).append(key if alias is None else None)
+            expecting = False
+            continue
+        if token == "(":
+            depth += 1
+        elif token == ")":
+            depth -= 1
+            if depth < 0:
+                return {}
+        elif depth == 0:
+            if word == "FROM" or in_sources and (word in ("JOIN", "STRAIGHT_JOIN") or token == ","):
+                in_sources, expecting = True, True
+            elif word in stops:
+                in_sources = False
+        pos += 1
+    if depth or expecting:
+        return {}
+    return {name: keys[0] for name, keys in names.items() if len(keys) == 1 and keys[0]}
+
+
+def _stale_entries(analysis, freshness, capture=None):
+    """``[(plan table, fq table, entry), ...]`` for each misestimated table
+    with a freshness entry, in misestimate order (worst first)."""
+    out = []
+    base_tables = _captured_base_tables(capture)
+    for miss in (analysis or {}).get("misestimates") or []:
+        table = miss.get("table") or ""
+        # MySQL's schema-qualified plan identity is exact. MariaDB prints
+        # aliases, so even a unique suffix (or an alias containing a dot)
+        # cannot establish which base table supplied the access.
+        schema = miss.get("schema")
+        # Freshness keys and _qualified use one schema/table separator.
+        # Dots inside either identifier cannot be represented unambiguously.
+        qualified = (isinstance(schema, str) and schema and "." not in schema
+                     and table.startswith(schema + ".") and "." not in table[len(schema) + 1:])
+        key = (table if qualified
+               else base_tables.get(table))
+        entry = (freshness or {}).get(key)
+        if entry and isinstance(entry, dict):
+            out.append((table, key, entry))
+    return out
+
+
 def _rule_stale_statistics(analysis, schema, stats, variables, context):
     """Add statistics freshness evidence to each misestimated table.
 
@@ -578,26 +705,44 @@ def _rule_stale_statistics(analysis, schema, stats, variables, context):
         return []
     out = []
     seen = set()
-    for miss in analysis.get("misestimates") or []:
-        key, entry = _lookup(freshness, miss.get("table") or "")
-        if not entry or key in seen:
+    for _table, key, entry in _stale_entries(analysis, freshness, context.get("capture")):
+        if key in seen:
             continue
         seen.add(key)
-        if not isinstance(entry, dict):
-            continue
-        facts = []
-        if entry.get("last_update"):
-            facts.append("InnoDB statistics last updated {}{}".format(
-                entry["last_update"],
-                " (n_rows {:,})".format(entry["n_rows"]) if isinstance(entry.get("n_rows"), int) else ""))
-        histograms = entry.get("histograms") or []
-        if not isinstance(histograms, list):
-            histograms = []
-        facts.append("histograms on " + ", ".join(histograms) if histograms
-                     else "no column histograms")
         out.append(("STALE_STATS", "medium",
-                     "Statistics for misestimated table {}: {}.".format(key, "; ".join(facts)),
+                     "Statistics for misestimated table {}: {}.".format(key, "; ".join(_freshness_facts(entry))),
                      ""))
+    return out
+
+
+def statistics_evidence(analysis, freshness, capture=None):
+    """The STALE_STATS evidence per misestimated table, for the plan views.
+
+    ``{plan table identity: {table, last_update, n_rows, histograms, text,
+    statement}}``: ``table`` is the server's ``schema.table`` the freshness
+    entry belongs to, ``text`` the same facts the STALE_STATS finding states,
+    and ``statement`` the ``ANALYZE TABLE`` the plan's statistics suggestion
+    names, quoted for copy and paste. myflames never runs it. A table the
+    advisor cannot identify (an alias, an unknown schema, or statistics not
+    readable) has no entry. MariaDB requires an unaliased base table and a
+    known schema in the capture query context. ANALYZE TABLE recalculates InnoDB persistent statistics on both
+    engines (ha_innobase::analyze calls info_low with the ANALYZE flag).
+    """
+    out = {}
+    for table, key, entry in _stale_entries(analysis, freshness or {}, capture):
+        if table in out:
+            continue
+        histograms = entry.get("histograms") if isinstance(entry.get("histograms"), list) else []
+        last_update = entry.get("last_update")
+        out[table] = {
+            "table": key,
+            "last_update": last_update if isinstance(last_update, str) else None,
+            "n_rows": entry["n_rows"] if isinstance(entry.get("n_rows"), int)
+            and not isinstance(entry.get("n_rows"), bool) else None,
+            "histograms": [h for h in histograms if isinstance(h, str)],
+            "text": "; ".join(_freshness_facts(entry)),
+            "statement": "ANALYZE TABLE {};".format(_qualified(key)),
+        }
     return out
 
 
@@ -933,6 +1078,9 @@ def advise(analysis, schema=None, stats=None, variables=None, freshness=None, ca
     analysis["environment_warnings"] = warnings
     analysis["environment_suggestions"] = suggestions
     analysis["environment_findings"] = findings
+    # The same freshness facts per misestimated table, for the plan views'
+    # markers, tooltips and the workspace inspector (chart_data).
+    analysis["statistics_evidence"] = statistics_evidence(analysis, context["freshness"], context["capture"])
     analysis["collected_variables"] = dict(variables or {})
     analysis["collected_schema"] = dict(schema or {})
     analysis["collected_stats"] = dict(stats or {})

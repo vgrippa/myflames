@@ -187,6 +187,12 @@ try {
   await h.select(`${qd} tbody tr[data-row-key]:first-child`);
   const inspector = await h.inspector();
   assert.match(inspector, /Latency/);
+  const sharedSections = await page.$$eval('[data-statement-inspector] > .inspector-block > h4', nodes => nodes.map(n => n.textContent.trim()));
+  assert.deepEqual(sharedSections.slice(0, 6), ["Statement", "Latency", "Rows", "Flags", "Actions", "Source notes"]);
+  assert.match(inspector, /Examined per execution/);
+  assert.match(inspector, /Examined per row returned/);
+  assert.match(inspector, /Run analysis/);
+  assert.doesNotMatch(inspector, /Suggested index/, "slow logs have no P_S digest for index advice");
   assert.match(inspector, /Who ran it/);
   assert.match(inspector, /Sample \(the slowest call\)/);
   assert.match(inspector, /Fingerprint/);
@@ -248,7 +254,7 @@ try {
   assert.doesNotMatch(fileInspector, /Found in the statement text/);
   assert.match(fileInspector, /Sample \(the slowest call\)/);
   assert.match(await text(".view-inspector .qd-sample-meta"), /line \d/);
-  assert.equal(await page.$eval('.view-inspector button[title*="comes from a file"]', (e) => e.disabled), false);
+  assert.equal(await page.$eval('.view-inspector [title*="comes from a file"] button', (e) => e.disabled), false);
   assert.equal(calls("/api/live/digest-tables").length, 1, "only the table source's statement read its tables");
   await shoot("file");
   await page.keyboard.press("Escape");

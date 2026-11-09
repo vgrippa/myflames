@@ -347,7 +347,7 @@ try {
   assert.ok(await page.$('.server-view[data-view=top] th[data-col=statement]'));
   assert.equal(await disabled("Explain statement 2"), false);
   assert.equal(await disabled("Run analysis on statement 2"), true);
-  assert.equal(await disabled("Use statement 2 in the editor"), false);
+  assert.equal(await disabled("Open in Query editor: statement 2"), false);
   assert.match(
     await text("#top-reason-2"),
     /Run analysis is off for this statement: Capture accepts one SELECT/,
@@ -404,9 +404,9 @@ try {
   privilegeActions = {};
   await refreshPrivileges();
   await row(2);
-  // Use this query still opens it, as recorded, with no parameters to fill,
+  // Open in Query editor still opens it, as recorded, with no parameters to fill,
   // in a new tab of the Query editor.
-  await page.locator('[aria-label="Use statement 2 in the editor"]').click();
+  await page.locator('[aria-label="Open in Query editor: statement 2"]').click();
   await page.waitForSelector(".main-nav button.active ::-p-text(Query editor)");
   await page.waitForFunction(() =>
     document.querySelector(".editor-panel .notice")?.textContent.includes("cannot run it: Capture accepts one SELECT"),
@@ -417,7 +417,7 @@ try {
   );
   assert.equal(await page.$(".fill-notice"), null);
   assert.equal(starts.length, 0);
-  assert.equal(editorRuns.length, 0, "Use this query runs nothing");
+  assert.equal(editorRuns.length, 0, "Open in Query editor runs nothing");
 
   // 2. Explain from a row: a new tab, the digest schema as default database,
   // EXPLAIN in that tab's session and its rows in an Explain result tab,

@@ -104,7 +104,7 @@ mariadb-server checkouts):
 import datetime
 import re
 
-from .connector import ConnectorError, MySQLConnection
+from .connector import ConnectorError, MySQLConnection, unescape_mysql
 from .live import capture_problem
 # Compatibility exports for one release; these primitives no longer belong to discovery.
 from .perf_common import SERVER_STATE_SQL, _denied, _reason, _server, _version_tuple, conn_identity, text_rows
@@ -169,12 +169,46 @@ _MAX_TEXT_SQL = "SELECT @@performance_schema_max_sql_text_length"
 _OVERFLOW_SQL = ("SELECT COUNT_STAR, SUM_TIMER_WAIT FROM performance_schema.events_statements_summary_by_digest "
                  "WHERE DIGEST IS NULL")
 _COVERAGE_SQL = "SHOW GLOBAL STATUS WHERE Variable_name IN ('Uptime', 'Performance_schema_digest_lost')"
+#: The two best-effort reads behind the text_limits envelope field (never one
+#: read per row): the sizing variables and the connection high-water mark in
+#: one, the measured buffer bytes in the other.
+_TEXT_LIMIT_VARS_SQL = (
+    "SHOW GLOBAL VARIABLES WHERE Variable_name IN ('max_digest_length', 'performance_schema_max_digest_length', "
+    "'performance_schema_digests_size', 'performance_schema_events_statements_history_long_size', "
+    "'performance_schema_events_statements_history_size', 'performance_schema_max_thread_instances', "
+    "'performance_schema_max_statement_stack', 'max_connections')")
+#: SHOW, not performance_schema.global_status: MariaDB has no such table
+#: (ERROR 1146 on 11.8), and SHOW reads the same on MySQL 5.7 and later.
+_TEXT_LIMIT_STATUS_SQL = "SHOW GLOBAL STATUS WHERE Variable_name = 'Max_used_connections'"
+#: memory_summary events whose bytes scale with the SQL text length
+#: (storage/perfschema/pfs_builtin_memory.cc). The digest sample instrument
+#: (builtin_memory_digest_sample_sqltext) is declared but never registered,
+#: so that part is computed from performance_schema_digests_size instead.
+_SQL_TEXT_MEMORY = (
+    "memory/performance_schema/events_statements_current.sql_text",
+    "memory/performance_schema/events_statements_history.sql_text",
+    "memory/performance_schema/events_statements_history_long.sql_text")
+#: The token buffers behind stored digest text (pfs_builtin_memory.cc).
+_DIGEST_TEXT_MEMORY = (
+    "memory/performance_schema/events_statements_summary_by_digest.digest_text",
+    "memory/performance_schema/events_statements_current.digest_text",
+    "memory/performance_schema/events_statements_history.digest_text",
+    "memory/performance_schema/events_statements_history_long.digest_text")
+_TEXT_LIMIT_MEMORY_SQL = (
+    "SELECT EVENT_NAME, CURRENT_NUMBER_OF_BYTES_USED "
+    "FROM performance_schema.memory_summary_global_by_event_name WHERE EVENT_NAME IN (%s)"
+    % ", ".join("'%s'" % name for name in _SQL_TEXT_MEMORY + _DIGEST_TEXT_MEMORY))
+#: Raising a text length goes to the smallest of these steps above its
+#: current value (the variables cap at 1048576: sql/sys_vars.cc).
+_TEXT_LENGTH_STEPS = (4096, 8192, 16384, 32768, 65536)
 #: What a list that ranks against the whole server (top_report with
 #: server_context) reads in one more aggregate read: every digest row (the
 #: overflow row included) with its total statement time and executions, the
 #: oldest FIRST_SEEN and its age computed on the server (TIMESTAMPDIFF, so no
 #: client clock or time zone is involved), and the events_statements_cpu
 #: consumer (NULL where the server has none: MariaDB, MySQL before 8.0.28).
+#: This scans allocated digest capacity, not just populated rows or top-N
+#: (both engines: table_esms_by_digest::rnd_next loops to digest_max).
 _CONTEXT_SQL = ("SELECT COUNT(*), SUM(SUM_TIMER_WAIT), SUM(COUNT_STAR), MIN(FIRST_SEEN), "
                 "TIMESTAMPDIFF(SECOND, MIN(FIRST_SEEN), NOW()), "
                 "(SELECT ENABLED FROM performance_schema.setup_consumers WHERE NAME = 'events_statements_cpu') "
@@ -408,7 +442,7 @@ def table_reference(digest_text, digest_schema, schema, table):
 
 
 def _top(conn, limit=20, schema=None, order="total", table=None, extra_metrics=False,
-         server_context=True):
+         server_context=True, with_identity=False):
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 200:
         raise ValueError("Choose a limit from 1 to 200.")
     if order not in ORDERS:
@@ -441,8 +475,9 @@ def _top(conn, limit=20, schema=None, order="total", table=None, extra_metrics=F
     if order in ORDER_FILTERS:
         tail = "ORDER BY %s DESC, %s LIMIT %d" % (
             ORDERS[order], ORDER_TIEBREAKS.get(order, "SUM_TIMER_WAIT DESC"), fetch)
+    reading = {} if with_identity else None
     engine, version, has_sample, max_text, items, kept = _digest_rows(
-        conn, where, tail, exclude=True, extra_metrics=extra_metrics, detail=server_context)
+        conn, where, tail, exclude=True, extra_metrics=extra_metrics, detail=server_context, reading=reading)
     candidates = len(items)
     if table is not None:
         matched = []
@@ -453,12 +488,15 @@ def _top(conn, limit=20, schema=None, order="total", table=None, extra_metrics=F
                                        "label": TEXT_MATCH_LABEL}
                 matched.append(item)
         items = matched[:limit]
-    overflow = _digest_overflow(conn)
-    context = _server_context(conn) if server_context else None
-    coverage = _coverage(conn, items, overflow, context)
+    overflow = _digest_overflow(conn, reading["overflow"] if with_identity else None)
+    context = _server_context(conn) if server_context or with_identity else None
+    coverage = _coverage(conn, items, overflow, context, reading["coverage"] if with_identity else None)
+    if with_identity:
+        # Independent of the one-hour presentation threshold and top-N.
+        coverage["oldest_first_seen"] = context["first_seen"] if context else None
     if server_context:
         _mark_new(items, coverage["uptime_s"], context)
-    totals = context["totals"] if context else None
+    totals = context["totals"] if context and server_context else None
     notes = ["Counters accumulate since the server started or the digest table was last truncated."]
     if order in _ORDER_NOTES and not (table is not None and order in ("no_index", "scan", "scans")):
         notes.append(_ORDER_NOTES[order])
@@ -466,7 +504,13 @@ def _top(conn, limit=20, schema=None, order="total", table=None, extra_metrics=F
         notes.append("This server keeps no sample statement text; digest text shows ? where "
                      "literal values were, so fill those in before capturing.")
     elif any(s["sample_truncated"] for s in items):
-        notes.append("Sample text was cut at %d bytes (performance_schema_max_sql_text_length)." % max_text)
+        notes.append("Sample text was cut at %d bytes: raise "
+                     "performance_schema_max_sql_text_length (now %d; needs a restart) to keep whole "
+                     "sample statements." % (max_text, max_text))
+    if any(_digest_text_cut(s.get("digest_text")) for s in items):
+        notes.append("Digest text was cut at the digest length limit: raise max_digest_length and "
+                     "performance_schema_max_digest_length together (both need a restart) to keep whole "
+                     "normalized statements.")
     if coverage["counting_since"]:
         notes.append("Counting since %s: the digest table was reset or statements began after the "
                      "server started." % coverage["counting_since"][:19])
@@ -484,7 +528,14 @@ def _top(conn, limit=20, schema=None, order="total", table=None, extra_metrics=F
               "table": {"schema": table[0], "table": table[1]} if table else None,
               "totals": totals, "others": _others(totals, items),
               "cpu": _cpu_state(engine, kept, context) if server_context else None,
-              "coverage": coverage}
+              "coverage": coverage,
+              "text_limits": (_text_limits(conn, engine, version, max_text, items)
+                              if server_context else None)}
+    if with_identity:
+        report["reading_server"] = reading["identity"]
+        if reading["identity"].get("verified"):
+            server = reading["identity"]["server"]
+            report.update(flavor=server["flavor"], server_product=server["product"])
     if table is not None:
         report["match"] = {"label": TEXT_MATCH_LABEL, "caveats": list(TEXT_MATCH_CAVEATS),
                            "candidates": candidates, "capped": candidates >= TABLE_CANDIDATES}
@@ -512,7 +563,7 @@ _ORDER_NOTES = {
 }
 
 
-def _coverage(conn, items, overflow, context=None):
+def _coverage(conn, items, overflow, context=None, rows=None):
     """What the list covers: Uptime, the oldest FIRST_SEEN listed, the
     overflow row, and Performance_schema_digest_lost (best effort).
 
@@ -525,10 +576,11 @@ def _coverage(conn, items, overflow, context=None):
     coverage = {"uptime_s": None, "first_seen": min(seen) if seen else None, "digest_lost": None,
                 "counting_since": None,
                 "overflow": {"executions": overflow[0], "total_ms": round(overflow[1], 3)} if overflow else None}
-    try:
-        rows = _rows(conn, _COVERAGE_SQL)
-    except Exception:
-        rows = []
+    if rows is None:
+        try:
+            rows = _rows(conn, _COVERAGE_SQL)
+        except Exception:
+            rows = []
     values = {row[0]: row[1] for row in rows if len(row) >= 2}
     if "Uptime" in values:
         coverage["uptime_s"] = _int(values["Uptime"])
@@ -544,6 +596,9 @@ _COUNT = re.compile(r"^-?\d+$")
 _TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
 
 
+CONTEXT_TIMEOUT = 3
+
+
 def _server_context(conn):
     """The whole digest table in one aggregate read (:data:`_CONTEXT_SQL`):
     ``{"totals": {digests, total_ms, executions}, "first_seen", "age_s",
@@ -552,9 +607,19 @@ def _server_context(conn):
     ``cpu_enabled`` is None where the server has no events_statements_cpu
     consumer."""
     try:
-        rows = _rows(conn, _CONTEXT_SQL)
+        # This scans the allocated digest capacity. Keep its time budget and
+        # failures separate from the required reading and its identity.
+        text = conn.run(DISCOVER_TAG + _CONTEXT_SQL, extra_flags=['--comments', '--skip-reconnect'],
+                        timeout=CONTEXT_TIMEOUT)
+        rows = [[unescape_mysql(cell) for cell in line.split('\t')]
+                for line in text.replace('\r\n', '\n').split('\n') if line]
     except Exception:
         return None
+    return _context_from_rows(rows)
+
+
+def _context_from_rows(rows):
+    """Parse the one aggregate row, whether batched or read separately."""
     if len(rows) != 1 or len(rows[0]) != 6:
         return None
     count, wait, calls, first, age, cpu = [_null(cell) for cell in rows[0]]
@@ -608,7 +673,7 @@ def _cpu_state(engine, kept, context):
     return {"collected": context["cpu_enabled"] if context else None}
 
 
-def _digest_overflow(conn):
+def _digest_overflow(conn, rows=None):
     """``(executions, total_ms)`` summed into the digest table's overflow row.
 
     When events_statements_summary_by_digest is full, statements with a new
@@ -616,10 +681,11 @@ def _digest_overflow(conn):
     pfs_digest.cc:300-310, table_helper.cc:710-715). The main query skips that
     row, so report it. Best effort: any error or unexpected shape is ignored.
     """
-    try:
-        rows = _rows(conn, _OVERFLOW_SQL)
-    except Exception:
-        return None
+    if rows is None:
+        try:
+            rows = _rows(conn, _OVERFLOW_SQL)
+        except Exception:
+            return None
     if len(rows) != 1 or len(rows[0]) != 2:
         return None
     count, wait = _int(_null(rows[0][0])), _int(_null(rows[0][1]))
@@ -647,7 +713,193 @@ def _sample_cut(sample, max_text):
     return size >= max_text or (sample.endswith("...") and size >= max_text - 12)
 
 
-def _digest_rows(conn, where, tail, exclude=False, extra_metrics=False, detail=False):
+def _digest_text_cut(digest_text):
+    """True when the digest text itself was cut: the parser stops recording
+    tokens at max_digest_length (and Performance Schema stores at most
+    performance_schema_max_digest_length) and appends "..."
+    (M/sql/sql_digest.cc:333)."""
+    text = (digest_text or "").rstrip()
+    return text.endswith("...")
+
+
+def _suggest_text_length(value):
+    """The smallest step of _TEXT_LENGTH_STEPS above the current value."""
+    for step in _TEXT_LENGTH_STEPS:
+        if step > value:
+            return step
+    return None
+
+
+def _read_error_text(exc):
+    if isinstance(exc, ConnectorError):
+        return _reason(exc)
+    return str(exc) or exc.__class__.__name__
+
+
+def _text_limit_reads(conn):
+    """(variables, variables_reason, memory, memory_reason) for the
+    text-limit estimates, best effort: a failed read leaves empty values and
+    a reason, never an error."""
+    variables, variables_reason = {}, None
+    for sql in (_TEXT_LIMIT_VARS_SQL, _TEXT_LIMIT_STATUS_SQL):
+        try:
+            for row in _rows(conn, sql):
+                if len(row) >= 2 and row[0] is not None:
+                    variables[str(row[0])] = _int(_null(row[1]))
+        except Exception as exc:
+            variables_reason = variables_reason or _read_error_text(exc)
+    memory, memory_reason = None, None
+    try:
+        memory = {}
+        for row in _rows(conn, _TEXT_LIMIT_MEMORY_SQL):
+            if len(row) >= 2 and row[0] in _SQL_TEXT_MEMORY + _DIGEST_TEXT_MEMORY:
+                memory[row[0]] = max(0, _int(_null(row[1])))
+    except Exception as exc:
+        memory, memory_reason = None, _read_error_text(exc)
+    return variables, variables_reason, memory, memory_reason
+
+
+def _thread_rows(variables):
+    """The threads the per-thread history and current buffers allocate for:
+    the configured instance cap, else the connection high-water mark, else
+    max_connections."""
+    for name in ("performance_schema_max_thread_instances", "Max_used_connections", "max_connections"):
+        value = variables.get(name)
+        if value is not None and value > 0:
+            return value
+    return None
+
+
+def _stack(variables):
+    """The current-statement table keeps one text buffer per statement stack
+    level per thread (performance_schema_max_statement_stack, default 10;
+    M/storage/perfschema/pfs_buffer_container.cc:666-676)."""
+    value = variables.get("performance_schema_max_statement_stack")
+    return value if value is not None and value > 0 else 10
+
+
+def _connections(variables):
+    """(count, source) for per-connection buffers: the high-water mark when
+    known, else the configured cap."""
+    for name in ("Max_used_connections", "max_connections"):
+        value = variables.get(name)
+        if value is not None and value > 0:
+            return value, name
+    return None, None
+
+
+def _sql_text_estimate(old, new, variables, memory, memory_reason):
+    """(bytes, basis) of the Performance Schema memory added by raising
+    performance_schema_max_sql_text_length from old to new: the measured
+    buffer bytes scaled by new/old plus the digest samples (digests_size x
+    (new - old), whose instrument is never registered), or the same from the
+    sizing variables. (None, reason) when neither can be computed."""
+    digests_size = variables.get("performance_schema_digests_size")
+    samples = digests_size * (new - old) if digests_size is not None and digests_size > 0 else None
+    if memory is not None and all(name in memory for name in _SQL_TEXT_MEMORY) and samples is not None:
+        measured = sum(memory[name] for name in _SQL_TEXT_MEMORY)
+        return int(measured * (new / float(old) - 1)) + samples, "measured"
+    long_size = variables.get("performance_schema_events_statements_history_long_size")
+    history_size = variables.get("performance_schema_events_statements_history_size")
+    threads = _thread_rows(variables)
+    if (samples is None or long_size is None or long_size < 0
+            or history_size is None or history_size < 0 or threads is None):
+        return None, "no estimate: " + (memory_reason or "the sizing variables could not be read")
+    stored = (long_size + threads * (history_size + _stack(variables))) * (new - old)
+    return stored + samples, "formula"
+
+
+def _digest_text_estimate(old, new, values, variables, memory, memory_reason):
+    """(bytes, basis) of raising the smaller digest length limit to *new*,
+    each parameter keeping its value when already larger: the stored digest
+    text buffers grow with performance_schema_max_digest_length alone, and
+    each connection's parser buffer with max_digest_length
+    (M/sql/sql_class.cc:894-896)."""
+    connections, source = _connections(variables)
+    mdl = values.get("max_digest_length")
+    stored_size = values.get("performance_schema_max_digest_length")
+    per_connection = None
+    if connections is not None and mdl is not None and mdl > 0:
+        per_connection = connections * max(0, max(mdl, new) - mdl)
+    stored_new = max(stored_size, new) if stored_size is not None and stored_size > 0 else None
+    if memory is not None and all(name in memory for name in _DIGEST_TEXT_MEMORY) and stored_new is not None:
+        if per_connection is None:
+            return None, "no estimate: the connection count could not be read"
+        measured = sum(memory[name] for name in _DIGEST_TEXT_MEMORY)
+        return (int(measured * (stored_new / float(stored_size) - 1)) + per_connection,
+                "measured, plus per-connection buffers (%s)" % source)
+    digests_size = variables.get("performance_schema_digests_size")
+    long_size = variables.get("performance_schema_events_statements_history_long_size")
+    history_size = variables.get("performance_schema_events_statements_history_size")
+    threads = _thread_rows(variables)
+    if (per_connection is None or stored_new is None
+            or digests_size is None or digests_size <= 0
+            or long_size is None or long_size < 0
+            or history_size is None or history_size < 0 or threads is None):
+        return None, "no estimate: " + (memory_reason or "the sizing variables could not be read")
+    stored = (digests_size + long_size + threads * (history_size + _stack(variables))) * (stored_new - stored_size)
+    return stored + per_connection, "formula, plus per-connection buffers (%s)" % source
+
+
+def _sql_text_limit(max_text, cut_rows, variables, memory, memory_reason):
+    """The sql_text part of text_limits (the sample text cap)."""
+    entry = {"name": "performance_schema_max_sql_text_length", "value": max_text,
+             "cut_rows": cut_rows, "suggested": _suggest_text_length(max_text),
+             "estimate_bytes": None, "estimate_basis": None}
+    if entry["suggested"] is None:
+        entry["estimate_basis"] = "no change suggested"
+    else:
+        entry["estimate_bytes"], entry["estimate_basis"] = _sql_text_estimate(
+            max_text, entry["suggested"], variables, memory, memory_reason)
+    return entry
+
+
+def _digest_text_limit(cut_rows, variables, variables_reason, memory, memory_reason):
+    """The digest part of text_limits: digest text is limited by the smaller
+    of max_digest_length and performance_schema_max_digest_length, so both
+    are raised together."""
+    names = ["max_digest_length", "performance_schema_max_digest_length"]
+    values = {name: variables.get(name) for name in names}
+    known = [value for value in values.values() if value is not None and value > 0]
+    current = min(known) if known else None
+    suggested = _suggest_text_length(current) if current is not None else None
+    # Raise only what is below the suggestion: a larger value is kept.
+    targets = ({name: max(value or 0, suggested) for name, value in values.items()}
+               if suggested is not None else None)
+    entry = {"names": names, "values": values, "cut_rows": cut_rows, "suggested": suggested,
+             "suggested_values": targets, "estimate_bytes": None, "estimate_basis": None}
+    if suggested is None:
+        entry["estimate_basis"] = ("no change suggested" if current is not None else
+                                   "no estimate: the digest length variables could not be read"
+                                   + (" (%s)" % variables_reason if variables_reason else ""))
+    else:
+        entry["estimate_bytes"], entry["estimate_basis"] = _digest_text_estimate(
+            current, suggested, values, variables, memory, memory_reason)
+    return entry
+
+
+def _text_limits(conn, engine, version, max_text, items):
+    """The text_limits field of top-1.0: which startup parameter cut the
+    sample or digest text on screen, its current value, a suggested value,
+    the memory the raise costs and whether SET PERSIST_ONLY can stage it
+    (MySQL 8.0+). None when nothing listed was cut. Two reads at most, both
+    best effort; never one read per row."""
+    cut_samples = sum(1 for s in items if s.get("sample_truncated"))
+    cut_digests = sum(1 for s in items if _digest_text_cut(s.get("digest_text")))
+    if not (cut_samples or cut_digests):
+        return None
+    variables, variables_reason, memory, memory_reason = _text_limit_reads(conn)
+    limits = {"sql_text": None, "digest": None,
+              "persist_only": engine == "mysql" and _version_tuple(version) >= (8, 0)}
+    if cut_samples:
+        limits["sql_text"] = _sql_text_limit(max_text, cut_samples, variables, memory, memory_reason)
+    if cut_digests:
+        limits["digest"] = _digest_text_limit(cut_digests, variables, variables_reason,
+                                              memory, memory_reason)
+    return limits
+
+
+def _digest_rows(conn, where, tail, exclude=False, extra_metrics=False, detail=False, reading=None):
     """Read digest rows: (engine, version, has_sample, max_text, items, kept).
 
     *where* adds conditions to the shared ones; *tail* is the ORDER BY/LIMIT.
@@ -657,9 +909,15 @@ def _digest_rows(conn, where, tail, exclude=False, extra_metrics=False, detail=F
     MySQL columns (:data:`_OPTIONAL_COLUMNS`, None when absent) and the
     server's ``new_24h`` flag; *kept* names the optional columns the server
     accepted. Without *detail* the statement is exactly what it always was.
+    An optional *reading* dict receives the identity and metadata from the
+    successful digest batch, keeping the return tuple unchanged for callers.
     """
     engine, version, ver, enabled = _server(conn)
     if not enabled:
+        if reading is not None:
+            default = " (MariaDB's default)" if engine == "mariadb" else ""
+            raise ValueError("Performance Schema is off%s; open Server > Instruments to see what Query digest needs."
+                             % default)
         raise ValueError(_perfschema_off_message(engine))
     _check_digest_consumer(conn)
     has_sample = engine == "mysql" and ver >= (8, 0, 3)
@@ -698,7 +956,17 @@ def _digest_rows(conn, where, tail, exclude=False, extra_metrics=False, detail=F
 
     while True:
         try:
-            rows = _rows(conn, digest_sql())
+            if reading is not None:
+                from .baselines import read_with_identity
+                groups, identity = read_with_identity(
+                    conn, [digest_sql(), _COVERAGE_SQL, _OVERFLOW_SQL], DISCOVER_TAG)
+                rows, coverage_rows, overflow_rows = groups
+                if identity.get("verified") and (identity["server"]["engine"] != engine
+                                                 or identity["server"]["version"] != version):
+                    raise ValueError("The server changed while reading statement digests. Refresh to read again.")
+                reading.update(identity=identity, coverage=coverage_rows, overflow=overflow_rows)
+            else:
+                rows = _rows(conn, digest_sql())
             break
         except ConnectorError as exc:
             missing = re.search(r"Unknown column '([^']+)'", str(exc))
@@ -766,6 +1034,10 @@ def _digest_rows(conn, where, tail, exclude=False, extra_metrics=False, detail=F
         item["capture_problem"] = projection["problem"] or None
         item["analysis_sql"] = projection["sql"] if projection["converted"] else None
         item["analysis_warning"] = projection["warning"]
+        from .index_hint import no_predicate
+        hint = no_predicate(item)
+        if hint:
+            item["index_hint"] = hint
         items.append(item)
     return engine, version, has_sample, max_text, items, kept
 
@@ -908,7 +1180,7 @@ def find_statement(conn, digest, schema=None):
 
 
 def top_report(conn, limit=20, schema=None, order="total", table=None, extra_metrics=False,
-               server_context=True):
+               server_context=True, with_identity=False):
     """The ``top-1.0`` JSON envelope shared by the CLI and the UI.
 
     *table* (``"schema.table"``, a pair, or ``{"schema", "table"}``) keeps
@@ -921,9 +1193,17 @@ def top_report(conn, limit=20, schema=None, order="total", table=None, extra_met
     ``coverage.counting_since``, ``cpu`` (``{"collected"}`` on MySQL with
     SUM_CPU_TIME, else None) and, per statement, ``cpu_ms``, ``p95_ms``,
     ``p99_ms``, ``p999_ms`` (None where the server has no such column) and
-    ``new``. The Full analysis attribution reads its lists without it."""
+    ``new``. The Full analysis attribution reads its lists without it.
+
+    With *with_identity*, the digest rows, coverage, overflow and server
+    identity share one client invocation. The optional context aggregate is
+    a separate best-effort read with its own three-second timeout. Adds
+    ``reading_server`` and ``coverage.oldest_first_seen`` (the whole table's
+    MIN(FIRST_SEEN), independent of the counting_since display threshold).
+    Without the flag the report shape and statements stay unchanged.
+    """
     return _top(conn, limit, schema, order, table, extra_metrics=extra_metrics,
-                server_context=server_context)
+                server_context=server_context, with_identity=with_identity)
 
 
 #: Buckets of one digest with at least one call, in bucket order.

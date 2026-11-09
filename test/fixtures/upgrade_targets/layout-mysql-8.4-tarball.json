@@ -1,0 +1,17 @@
+{
+  "recorded": "2026-11-08",
+  "image": "debian:12-slim+mysql-8.4.13-linux-glibc2.28-aarch64.tar.xz",
+  "variables": {
+    "basedir": "/usr/local/mysql-8.4.13-linux-glibc2.28-aarch64/",
+    "build_id": "9ee9697d22f0641e88ec349b20a3b9f5fe19d376",
+    "character_sets_dir": "/usr/local/mysql-8.4.13-linux-glibc2.28-aarch64/share/charsets/",
+    "hostname": "5c5e25a8922f",
+    "lc_messages_dir": "/usr/local/mysql-8.4.13-linux-glibc2.28-aarch64/share/",
+    "plugin_dir": "/usr/local/mysql-8.4.13-linux-glibc2.28-aarch64/lib/plugin/",
+    "socket": "/tmp/mysql.sock",
+    "version": "8.4.13",
+    "version_comment": "MySQL Community Server - GPL",
+    "version_compile_machine": "aarch64",
+    "version_compile_os": "Linux"
+  }
+}

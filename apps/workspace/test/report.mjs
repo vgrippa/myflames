@@ -48,14 +48,16 @@ if (process.argv.includes("--unit")) {
   const taskCode = (await transform(tasks, { loader: "ts" })).code;
   for (const diagram of documents) {
     const scope = { latestConnection: { current: {} }, connectionKey: () => "current", lastViewRead: () => null,
-      readRunning: () => false, ALL_SERVER_VIEWS, READ_LABELS: {}, healthInterval: 5, waitsInterval: 10,
+      readRunning: () => false, ALL_SERVER_VIEWS, READ_LABELS: {}, healthInterval: 5, memoryInterval: 5, waitsInterval: 10,
       ioInterval: 10, schema: "", order: "total", topStatements: { table: null },
       topRead: () => ({ params: "top", body: () => ({}) }), sessionsScope: "active", minSeconds: 0,
       locks: null, tables: null, indexesSchemas: [], tablesSchemas: [], ERROR_LOG_READ: "error-log",
       errorLogBody: () => ({}), diagram, diagramDatabase: "selected", refreshDiagramDatabase: database,
-      WINDOWED: ["health", "waits", "io"] };
+      WINDOWED: ["health", "memory", "waits", "io"] };
     const actual = new Function("scope", `with (scope) { ${taskCode}; return refreshTasks(); }`)(scope);
     assert.equal(actual.length, ALL_SERVER_VIEWS.length + 3 + (database(diagram, "selected", "current") ? 1 : 0));
+    assert.deepEqual(actual.slice(0, 5).map(t => t.view), ["health", "memory", "waits", "io", "innodb"],
+      "four sampling views precede the first non-sampling read");
   }
   assert.doesNotMatch(source, /badges\.(replication|report|tuning)/);
   assert.doesNotMatch(source, /click Load or Refresh|Top statements, Sessions|Kill in Sessions/);
@@ -250,7 +252,7 @@ rich.header.views.find((v) => v.key === "tables").status = "failed";
 
 // Other live views: answered from fixtures, or held until the test lets them go.
 const extraFixtures = Object.fromEntries(await Promise.all([
-  ["/api/live/io", "io-mysql-8.4.json"], ["/api/live/innodb", "innodb-mysql-8.4.json"],
+  ["/api/live/memory", "memory-ok.json"], ["/api/live/io", "io-mysql-8.4.json"], ["/api/live/innodb", "innodb-mysql-8.4.json"],
   ["/api/live/error-log", "errorlog-mysql-8.4.json"],
   ["/api/live/sessions", "sessions-mysql-8.4.json"], ["/api/live/indexes", "indexes-mysql-8.4.json"],
   ["/api/live/tables", "tables-mysql-8.4.json"], ["/api/live/instruments", "instruments-mysql-8.4.json"],
@@ -381,7 +383,7 @@ try {
   assert.equal(await page.$("#server-nav-report"), null, "the Full analysis is no Server view");
   await openRefreshMenu(page);
   assert.equal(await page.$eval(refreshAll, (e) => e.disabled), false, "Refresh all works before any view is loaded");
-  assert.match(await page.$eval(refreshAll, (e) => e.title), /Reads all 17 sections/);
+  assert.match(await page.$eval(refreshAll, (e) => e.title), /Reads all 18 sections/);
   await page.keyboard.press("Escape");
   await h.fullAnalysis();
   assert.match(await text(`${view} .view-empty`), /Runs every Server view once and ranks what to look at first, about 10 to 20 s\. It only reads\./);
@@ -604,7 +606,7 @@ try {
   const refreshed = Object.keys(replies);
   await openRefreshMenu(page);
   assert.equal(await page.$eval(refreshAll, (e) => e.disabled), false);
-  assert.match(await page.$eval(refreshAll, (e) => e.title), /Reads all 17 sections on .+ \(⌥⌘R\)/);
+  assert.match(await page.$eval(refreshAll, (e) => e.title), /Reads all 18 sections on .+ \(⌥⌘R\)/);
   await page.keyboard.press("Escape");
   // Hold every read: three start (the sampling views first), the rest wait.
   for (const p of refreshed) hold.add(p);
@@ -618,16 +620,16 @@ try {
   await pause(300);
   assert.equal(held.length, 3, "never more than three at once");
   assert.equal(state.seen.length, reportRuns, "analysis must not overlap the per-view reads");
-  assert.deepEqual(held.map((e) => e.path), ["/api/live/health", "/api/live/waits", "/api/live/io"]);
+  assert.deepEqual(held.map((e) => e.path), ["/api/live/health", "/api/live/memory", "/api/live/waits"]);
   assert.equal(held[0].body.interval, 5, "Health keeps its window");
-  assert.equal(held[2].body.interval, 10, "unopened I/O uses its configured window");
+  assert.equal(held[1].body.interval, 5, "unopened Memory uses its configured window");
   // It names the views it reads now, so a slow one is never hidden behind a count.
-  assert.match(await statusText(), /^Refreshing 1 of 17 · Health, Waits, I\/O…$/);
+  assert.match(await statusText(), /^Refreshing 1 of 18 · Health, Memory, Waits…$/);
   assert.equal(await page.$eval('.server-view[data-view=config] [aria-label="Refresh options"]',
     e => e.getAttribute('aria-disabled')), 'true', "the menu cannot start another wider read");
   assert.equal(await page.$$eval(".source-list .source-refreshing", (els) => els.length), 10); // the Server list: 10 views (Database diagram and the Full analysis are places of their own)
   await h.workload();
-  assert.equal(await page.$$eval(".source-list .source-refreshing", (els) => els.length), 4);
+  assert.equal(await page.$$eval(".source-list .source-refreshing", (els) => els.length), 5);
   await h.server();
   assert.ok(await page.$(".server-place .refresh-all-stop"), "the top bar shows Stop while the wider read runs");
   await h.fullAnalysis();
@@ -645,7 +647,10 @@ try {
   // Locks fails; the others answer.
   fail.set("/api/live/locks", "Could not read locks: ERROR 2013 (HY000): Lost connection to MySQL server during query");
   release("/api/live/health");
-  await until(() => held.length === 3 && held.some((e) => e.path === "/api/live/innodb"), "the next view starts");
+  await until(() => held.length === 3 && held.some((e) => e.path === "/api/live/io"), "the fourth sampling view starts");
+  assert.deepEqual(held.map(e => e.path), ["/api/live/memory", "/api/live/waits", "/api/live/io"]);
+  release("/api/live/memory");
+  await until(() => held.length === 3 && held.some(e => e.path === "/api/live/innodb"), "the first non-sampling view starts");
   while (held.length || state.other.length - before < refreshed.length) {
     if (held.length) release();
     await pause(30);
@@ -663,7 +668,7 @@ try {
   assert.equal(calls("/api/live/indexes").at(-1).body.all_schemas, undefined, "unopened Indexes never grants large-schema consent");
   assert.equal(calls("/api/live/tables").at(-1).body.all_schemas, undefined, "unopened Tables never grants large-schema consent");
   assert.equal(traffic.peak, 3, "at most three reads at once");
-  await page.waitForFunction(() => /^16 of 17 views refreshed; Locks failed$/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
+  await page.waitForFunction(() => /^17 of 18 views refreshed; Locks failed$/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
   // The failure, per view: a mark in the list of views, the list, a note above the view.
   assert.ok(await page.$("#server-nav-locks .source-stale[data-refresh=failed]"));
   // The compact status marker has its own screen-reader text before the
@@ -673,7 +678,7 @@ try {
   assert.equal(await page.$("#server-nav-health .source-stale"), null);
   await page.click(".server-place .refresh-all-status");
   const list = await page.$$eval(".popover .refresh-all-list li", (els) => els.map((e) => [e.dataset.view, e.dataset.state, e.textContent]));
-  assert.equal(list.length, 17);
+  assert.equal(list.length, 18);
   assert.equal(list.findIndex(x => x[0] === "errorlog"), list.findIndex(x => x[0] === "innodb") + 1);
   assert.deepEqual(list.filter(x => x[1] !== "ok").map(x => [x[0], x[1]]), [["locks", "failed"]]);
   assert.equal(list.at(-1)[0], "report", "analysis is scheduled after individual sections");
@@ -712,7 +717,7 @@ try {
   assert.ok(traffic.peak <= 3, "already running individual reads occupy refresh worker slots");
   release("/api/live/locks");
   hold.clear();
-  await page.waitForFunction(() => /^17 of 17 views refreshed$/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
+  await page.waitForFunction(() => /^18 of 18 views refreshed$/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
   await page.click(".server-view[data-view=locks] .lock-check input");
 
   // A newer read of a view that fails, then the older Refresh all answer: not counted as refreshed.
@@ -726,7 +731,7 @@ try {
   await refreshView();
   await page.waitForSelector(".server-view[data-view=health] [role=alert]");
   release("/api/live/health");
-  await page.waitForFunction(() => /^16 of 17 views refreshed$/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
+  await page.waitForFunction(() => /^17 of 18 views refreshed$/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
   await page.click(".server-place .refresh-all-status");
   assert.match(await page.$eval('.popover .refresh-all-list li[data-view="health"]', (e) => `${e.dataset.state} ${e.textContent}`),
     /^replaced Replaced\s*Health\s*A newer read of this view was asked for/);
@@ -751,11 +756,16 @@ try {
   await pause(200);
   assert.equal(calls("/api/live/health").length, healthBefore + 1, "one Health read for both");
   release("/api/live/health");
-  await page.waitForFunction(() => /^17 of 17 views refreshed$/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
+  await page.waitForFunction(() => /^18 of 18 views refreshed$/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
   assert.equal(await page.$$eval(".source-list .source-stale", (els) => els.length), 0, "no view is marked any more");
   assert.equal(await page.$(".refresh-note"), null);
 
   // Escape stops it: queued views are never read and keep their reports.
+  // Health samples while it is on screen, and Refresh all joins a sample in
+  // flight; leave it and let any sample finish so only this run is counted.
+  await h.view("config");
+  await pause(100);
+  while (held.length) release();
   for (const p of refreshed) hold.add(p);
   const stopBefore = state.other.length;
   await clickRefreshAll();
@@ -766,12 +776,17 @@ try {
   while (held.length) release();
   await pause(300);
   assert.equal(state.other.length - stopBefore, 3, "nothing more starts after Escape");
-  await page.waitForFunction(() => /^0 of 17 views refreshed; stopped$/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
+  await page.waitForFunction(() => /^0 of 18 views refreshed; stopped$/.test(document.querySelector(".server-place .refresh-all-status")?.textContent || ""));
   assert.equal(await page.$$eval(".source-list .source-stale[data-refresh=stopped]", (els) => els.length), 10);
   await h.workload();
-  assert.equal(await page.$$eval(".source-list .source-stale[data-refresh=stopped]", (els) => els.length), 4);
+  assert.equal(await page.$$eval(".source-list .source-stale[data-refresh=stopped]", (els) => els.length), 5);
   await h.server();
+  // Opening Health again shows the report it kept and reads once (it refreshes
+  // itself while on screen); let that read finish before the next run.
+  await h.view("health");
   assert.ok(await page.$(".server-view[data-view=health] .summary-line"), "Health keeps its report");
+  await pause(100);
+  while (held.length) release();
 
   // A connection switch stops a run and drops its late answers.
   const switchBefore = state.other.length;
@@ -785,8 +800,12 @@ try {
   release("/api/live/health", [200, late]);
   while (held.length) release();
   await pause(300);
-  // The switch also reads the new connection's privileges once (not a view).
-  assert.equal(state.other.slice(switchBefore).filter((o) => o.path !== "/api/live/privileges").length, 3, "nothing more starts after the switch");
+  // The switch also reads the new connection's privileges once, and checks its
+  // readiness once because it was chosen in the picker (neither is a view);
+  // hidden views, the Query editor's database picker included, never read.
+  const afterSwitch = state.other.slice(switchBefore);
+  assert.equal(afterSwitch.filter((o) => o.path === "/api/live/readiness").length, 1, "one readiness check for the chosen connection");
+  assert.equal(afterSwitch.filter((o) => !["/api/live/privileges", "/api/live/readiness"].includes(o.path)).length, 3, "nothing more starts after the switch");
   assert.doesNotMatch(await text(".server-view[data-view=health] .fact-strip"), /8\.4\.99/, "a late answer for the old connection is dropped");
   await openRefreshMenu(page);
   assert.equal(await page.$eval(refreshAll, (e) => e.disabled), false, "new connection can refresh without opening each section");
@@ -914,7 +933,7 @@ try {
   assert.equal(await page.$('.server-place.is-diagram-place [data-action=refresh-all]'), null, "no Refresh all in the diagram place");
   await h.server();
   await clickRefreshAll();
-  await page.waitForFunction(() => /^18 of 18 views refreshed$/.test(document.querySelector(".refresh-all-status")?.textContent || ""));
+  await page.waitForFunction(() => /^19 of 19 views refreshed$/.test(document.querySelector(".refresh-all-status")?.textContent || ""));
   assert.equal(calls("/api/schema-diagram/read").length, diagramReads + 1);
   assert.equal(calls("/api/schema-diagram/read").at(-1).body.database, "shop");
   await h.view("diagram");
@@ -941,7 +960,7 @@ try {
     return parseFloat(added.style.top) >= parseFloat(existing.style.top) + parseFloat(existing.style.height);
   }), true, "global refresh places new tables below the latest arrangement");
   await h.server();
-  await page.waitForFunction(() => /^18 of 18 views refreshed$/.test(document.querySelector(".refresh-all-status")?.textContent || ""));
+  await page.waitForFunction(() => /^19 of 19 views refreshed$/.test(document.querySelector(".refresh-all-status")?.textContent || ""));
 
   assert.deepEqual(h.errors, []);
   console.log("full analysis and refresh all: ok");

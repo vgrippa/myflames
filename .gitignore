@@ -36,6 +36,9 @@ build/
 
 # Local database labs and credentials (never distribute)
 /local/
+# Signing and notarization secrets: App Store Connect API keys, certificates
+*.p8
+*.p12
 
 # Screenshots written by the Files browser suites (files-browser.mjs, files-connections.mjs).
 apps/workspace/test/shots-*/

@@ -28,6 +28,10 @@ Live features need a local `mysql` or `mariadb` client, reachable through PATH o
 
 Add a connection on Home, choose a connection policy, and test it. Start with **Read-only** for inspection. Use SSH tunneling when your connection requires a bastion. Credentials and SSH configuration remain on your computer.
 
+Home's Connections table calls its default-database column **Database** (tooltip "Default database"); the connection form keeps **Default database**. The table prioritizes product and version in **Server**, letting the stale-time hint truncate first, and its default columns are sized for a 1440 px window. It keeps the last facts collected for each server (product, version, replication or cluster role, read-only and Performance Schema state) and shows them even while the server is offline, marked as stale. Choose **Check now** from a connection's menu to refresh them; Test connection and an explicit choice in the connection picker also check the server. To bring connections over from another tool, open the Connections header menu and choose **Import from MySQL Workbench or DBeaver…**, pick **MySQL Workbench** or **DBeaver** in **From**, review the selected rows and the duplicates it found in the wider preview, then import. The sheet shows an error alert only when there is an error. Imported connections use the Production policy and carry no password, so review their TLS and SSH settings and test before use.
+
+Use **Back** and **Forward** in the top bar (**⌘[** and **⌘]** on macOS, **Alt+Left** and **Alt+Right** elsewhere) to move across places, Server and Workload views, query tabs and open plans, or open **Search…** (**⌘K** / **Ctrl+K**) for recent destinations, commands, and database objects on the connection in use.
+
 The macOS app stores its data under `~/Library/Application Support/myflames-desktop`; Windows uses `%APPDATA%\myflames-desktop`.
 
 ## Choose a next step

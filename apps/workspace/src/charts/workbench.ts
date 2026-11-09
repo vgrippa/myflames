@@ -7,10 +7,13 @@
 // in reported input order; edges attach to the actual card bounds (join
 // cards are taller); estimated cost is never printed as milliseconds; time
 // appears only when actual_last_row_ms was measured; MariaDB synthetic joins
-// keep the "unknown" (unshaded) symbol.
+// keep the "unknown" (unshaded) symbol. A misestimated operator (the parser's
+// node.misestimate) carries its label as a chip at the right of the header
+// band and a dashed outline just outside the card (output_workbench).
 import { createDetails } from "./core/details";
 import { f1, html, svg } from "./core/dom";
 import { cpLength, fitLabel, fmt, time } from "./core/format";
+import { drawChip, MARK_COLOR, markWidth, misestimateOf } from "./core/marks";
 import { bindSearch } from "./core/search";
 import { WORKBENCH_CSS } from "./core/styles";
 import { SEARCH_LABEL } from "./core/toolbar";
@@ -32,6 +35,11 @@ export const VIEWPORT_H = 660;
  * .wb-edge-label in WORKBENCH_CSS; keep in step, test_workbench checks it).
  * Fit keeps it at 11 px or more on screen (core/zoom.ts MIN_TEXT_PX). */
 export const SMALLEST_TEXT_PX = 11;
+/** Row-estimate chip: inset from the card's right edge, height, and the
+ * dashed outline's gap outside the card (output_workbench, keep in step). */
+const MARK_INSET = 8;
+const MARK_H = 18;
+const OUTLINE_GAP = 3;
 
 /** Operator palette; must match output_workbench.COLORS (parity-tested). */
 export const COLORS: Record<WorkbenchKind | "result", string> = {
@@ -226,17 +234,22 @@ export function renderWorkbench(context: ViewContext): ViewInstance {
   }
 
   const items: Array<{ element: SVGGElement; node: ChartNode }> = [];
+  const cards = new Map<string, PlacedNode>();
   for (const item of placed.nodes) {
     const node = item.node;
     const label = node.short_label || "Unknown operator";
+    const mark = misestimateOf(node);
+    const markW = mark ? markWidth(mark.label) : 0;
     const group = svg(doc, "g", {
-      class: "wb-node", role: "button", tabindex: 0, "aria-label": label, "data-node-id": node.id,
+      // The marker is drawn, so its words are in the accessible name too.
+      class: "wb-node", role: "button", tabindex: 0, "aria-label": mark ? label + ", " + mark.label : label, "data-node-id": node.id,
       "data-details": node.details_text, "data-label": label, "data-kind": node.wb_kind,
       transform: "translate(" + f1(item.x) + " " + f1(item.y) + ")",
       "data-teach-index": node.teach_index === null ? null : node.teach_index,
     }, graph);
     svg(doc, "title", undefined, group, node.details_text);
     svg(doc, "rect", { class: "wb-box", width: BOX_W, height: item.height, rx: 7, fill: "white", stroke: "#c4cfd6" }, group);
+    const chip = () => { if (mark) drawChip(doc, group, mark.label, BOX_W - MARK_INSET - markW, 8, MARK_H, 9, 21); };
     if (isJoin(node)) {
       const joinType = node.join_type || "unknown";
       const names = joinLabel(joinType);
@@ -244,6 +257,7 @@ export function renderWorkbench(context: ViewContext): ViewInstance {
       joinSymbol(doc, group, joinType, names.label, names.meaning);
       const heading = names.label + " · " + (ALGORITHMS[node.wb_kind] || "Join");
       svg(doc, "text", { x: 128, y: 124, "text-anchor": "middle", class: "wb-title" }, group, fitLabel(heading, BOX_W - 24, 13));
+      chip();
     } else {
       let secondary = node.table || node.condition || node.index || node.operation || "";
       if (node.table && node.index) secondary += " · " + node.index;
@@ -251,14 +265,24 @@ export function renderWorkbench(context: ViewContext): ViewInstance {
         ? label.slice(0, label.indexOf(" ["))
         : (!node.table && node.condition && label.startsWith("Filter: ") ? "Filter" : label);
       svg(doc, "path", { d: "M7 0 H249 Q256 0 256 7 V34 H0 V7 Q0 0 7 0", fill: COLORS[node.wb_kind] || COLORS.unknown }, group);
-      svg(doc, "text", { x: 12, y: 23, class: "wb-title wb-band-title" }, group, fitLabel(heading, BOX_W - 24, 13));
+      // The chip takes the right of the header band; the title keeps the rest.
+      svg(doc, "text", { x: 12, y: 23, class: "wb-title wb-band-title" }, group, fitLabel(heading, BOX_W - 24 - (mark ? markW + 6 : 0), 13));
+      chip();
       svg(doc, "text", { x: 12, y: 57 }, group, fitLabel(secondary, BOX_W - 24, 12));
     }
     const timing = "Self " + time(node.measured ? node.self_ms : null) + " · total " + time(node.measured ? node.total_ms : null);
     svg(doc, "text", { x: 12, y: item.height - 35, class: "wb-caption" }, group, timing);
     svg(doc, "text", { x: 12, y: item.height - 14, class: "wb-caption" }, group,
       "Est. cost " + fmt(node.estimated_cost) + " · loops " + fmt(node.loops));
+    if (mark) {
+      svg(doc, "rect", {
+        class: "mfc-mis-outline", x: -OUTLINE_GAP, y: -OUTLINE_GAP, width: BOX_W + 2 * OUTLINE_GAP,
+        height: item.height + 2 * OUTLINE_GAP, rx: 10, fill: "none", stroke: MARK_COLOR, "stroke-width": 2,
+        "stroke-dasharray": "6 4", "pointer-events": "none",
+      }, group);
+    }
     items.push({ element: group, node });
+    cards.set(node.id, item);
   }
 
   const first = placed.nodes[0];
@@ -333,6 +357,12 @@ export function renderWorkbench(context: ViewContext): ViewInstance {
   zoom.fit();
   root.setAttribute("data-wired", "true");
   return {
+    reveal(id: string) {
+      const card = cards.get(id);
+      if (!card) return false;
+      zoom.show(card.x - OUTLINE_GAP, card.y - OUTLINE_GAP, BOX_W + 2 * OUTLINE_GAP, card.height + 2 * OUTLINE_GAP);
+      return true;
+    },
     destroy() {
       zoom.destroy();
       resize?.disconnect();

@@ -13,6 +13,7 @@ from .parser import (
     flatten_nodes,
     enhance_flame_titles,
     analyze_plan,
+    misestimate_marks,
     render_info_panel,
 )
 from .flamegraph import folded_to_svg, plan_folded
@@ -1510,7 +1511,7 @@ Subcommands:
     if args.type == "flamegraph":
         # Whole microseconds per measured operator (flamegraph.flame_scale);
         # tooltips print readable units (flamegraph.flame_value_text).
-        folded_text, flame_unit = plan_folded(build_flame_entries(root), root["total_time"],
+        folded_text, flame_unit = plan_folded(build_flame_entries(root, node_identity=True), root["total_time"],
                                               keep_root=True)
         if not folded_text.strip():
             # Empty/degenerate input, not a tripped finding — exit 2 (bad input)
@@ -1539,6 +1540,9 @@ Subcommands:
             teach_index_by_folded=teach_maps["by_folded_label"],
             complexity_by_folded=_complexity_by_folded or None,
             family_by_folded=_family_by_folded or None,
+            frame_labels={"operator:" + n["node_id"]: n["folded_label"] for n in flatten_nodes(root)},
+            frame_ids={"operator:" + n["node_id"]: n["node_id"] for n in flatten_nodes(root)},
+            marks=misestimate_marks(root),
         )
         if not args.no_enhance:
             # Each frame's tooltip gets its own operator's details

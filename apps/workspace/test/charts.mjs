@@ -123,6 +123,20 @@ flames = {'twins': build_chart_data(twins), 'micro': build_chart_data(micro), 'p
           'zero': build_chart_data(parse_explain('{"operation":"Table scan","actual_last_row_ms":0}')),
           'unmeasured': build_chart_data(parse_explain('{"operation":"Table scan"}'))}
 (out / 'flames.json').write_text(json.dumps(flames))
+# Row-estimate marks: the recorded MySQL 9.7 capture (stale statistics, with
+# the advisor's evidence) and the MariaDB 11.8 plan.
+from myflames.advisor import advise
+from myflames.parser import analyze_plan, flatten_nodes
+cap = json.loads(Path('test/fixtures/captures/mysql-9.7-stale-stats.capture.json').read_text())
+stale = parse_explain(cap['raw'])
+stale_analysis = analyze_plan(stale)
+advise(stale_analysis, freshness=cap['stats_freshness'], capture=cap)
+maria = parse_explain(Path('test/mariadb-11.8-stale-stats-join.json').read_text())
+(out / 'marks.json').write_text(json.dumps({
+    'mysql': build_chart_data(stale, title='Stale statistics', analysis=stale_analysis, compact=True),
+    'mariadb': build_chart_data(maria, title='Stale statistics, MariaDB'),
+    'flagged': [n['node_id'] for n in flatten_nodes(stale) if n['details'].get('misestimate')],
+    'mariaFlagged': [n['node_id'] for n in flatten_nodes(maria) if n['details'].get('misestimate')]}))
 for view in ('tree', 'bargraph', 'flamegraph', 'workbench', 'diagram'):
     (out / ('report-' + view + '.html')).write_text(render_html_report(text, view_type=view, title='Report ' + view))
 review = '{"operation":"Filter: (t.id > 0)","actual_last_row_ms":0.5,"actual_rows":1,"actual_loops":1,"inputs":[{"operation":"Table scan on t","actual_last_row_ms":0.2,"actual_rows":1,"actual_loops":1}]}'
@@ -530,6 +544,7 @@ try {
   assert.equal(await frame.$eval('.wb-node.selected', (el) => el.dataset.nodeId), ids[1], 'messages from non-parent windows are ignored');
   assert.equal(await page.evaluate(() => window.messages.length), 1, 'parent-driven selection is not echoed');
   await viewSuite(browser, page, errors);
+  await marksSuite(page);
   assert.deepEqual(errors, []);
   console.log('Browser: mounting, two independent charts, scoped search and counts, keyboard, teach bridge, SVG export, drag suppression, initial selection, collapse, untrusted text, sandbox + CSP bridge passed');
 } finally {
@@ -928,4 +943,175 @@ async function viewSuite(browser, page, errors) {
   }
   assert.deepEqual(errors, []);
   console.log('Browser: tree collapse/expand/all/keyboard/search/reveal, bar order/pin/search n/N/Esc, flame zoom/unzoom/search/ignore-case/exact tooltips/µs/empty/icicle, Ctrl+F scoped to the chart, no dialogs, reports (teach CTA, Export SVG, JSON-LD, noscript, highlights) passed');
+}
+
+
+// ---- Row-estimate marks (the parser's misestimate record) ----------------
+async function marksSuite(page) {
+  const marks = JSON.parse(await fs.readFile(path.join(directory, 'marks.json'), 'utf8'));
+  await page.setContent('<!DOCTYPE html><html><head><meta charset="utf-8"></head><body><div id="host"></div><script>' + bundle + '</script></body></html>');
+  assert.equal(marks.flagged.length, 1);
+  assert.equal(marks.mariaFlagged.length, 1);
+  const flagged = marks.flagged[0];
+  const record = marks.mysql.nodes.find((n) => n.id === flagged).misestimate;
+  assert.equal(record.label, 'rows ×451 under');
+  assert.equal(record.evidence.statement, 'ANALYZE TABLE `myflames_w2c_stale`.`orders`;');
+  const probe = (data, id, view, theme) => page.evaluate((data, id, view, theme) => {
+    document.documentElement.dataset.theme = theme;
+    const host = document.getElementById('host');
+    host.textContent = '';
+    const handle = MyflamesCharts.mount(host, data, { view, width: 1200 });
+    const svg = host.querySelector('svg');
+    const css = (el, prop) => getComputedStyle(el)[prop];
+    const lum = (color) => {
+      const [r, g, b] = color.match(/[\d.]+/g).slice(0, 3).map((v) => Number(v) / 255)
+        .map((c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const contrast = (a, b) => { const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x); return (hi + 0.05) / (lo + 0.05); };
+    const out = { view, theme };
+    if (view === 'flamegraph') {
+      const lines = Array.from(svg.querySelectorAll('line.fg-mark'));
+      out.count = lines.length;
+      const line = lines[0];
+      const rect = line.parentNode.querySelector('rect');
+      const insets = () => [Number(line.getAttribute('x1')) - Number(rect.getAttribute('x')),
+        Number(rect.getAttribute('x')) + Number(rect.getAttribute('width')) - Number(line.getAttribute('x2'))];
+      out.id = line.closest('g[data-node-id]').dataset.nodeId;
+      out.stroke = css(line, 'stroke');
+      out.bottom = Number(rect.getAttribute('y')) + Number(rect.getAttribute('height')) - Number(line.getAttribute('y1'));
+      out.insets = insets();
+      out.tooltip = line.parentNode.querySelector('title').textContent;
+      // Zoom to the frame's parent: the underline follows its frame.
+      const parent = data.nodes.find((n) => n.id === id).parent_id;
+      svg.querySelector('.frames > g[data-node-id="' + parent + '"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      out.zoomedInsets = insets();
+      out.zoomedWidth = Number(rect.getAttribute('width'));
+    } else {
+      const chips = Array.from(svg.querySelectorAll('.mfc-mis-chip'));
+      out.count = chips.length;
+      const chip = chips[0];
+      const text = chip.nextElementSibling;
+      out.label = text.textContent;
+      out.text = css(text, 'fill');
+      out.fill = css(chip, 'fill');
+      out.contrast = contrast(out.text, out.fill);
+      out.fontSize = parseFloat(css(text, 'fontSize'));
+      const tb = text.getBBox();
+      const cb = chip.getBBox();
+      out.textInside = tb.x >= cb.x - 0.5 && tb.x + tb.width <= cb.x + cb.width + 0.5;
+      if (view === 'workbench') {
+        const card = svg.querySelector('.wb-node[data-node-id="' + id + '"]');
+        out.owned = card.contains(chip);
+        const outline = card.querySelector('.mfc-mis-outline');
+        out.outline = css(outline, 'stroke');
+        out.outlineContrast = contrast(out.outline, css(svg.querySelector('.mfc-background'), 'fill'));
+        const title = card.querySelector('.wb-title').getBBox();
+        out.gap = cb.x - (title.x + title.width);
+        out.aria = card.getAttribute('aria-label');
+      } else if (view === 'tree') {
+        const row = svg.querySelector('.tree-row[data-node-id="' + id + '"]');
+        out.owned = row.contains(chip);
+        const label = row.querySelector('.row-label').getBBox();
+        out.gap = cb.x - (label.x + label.width);
+        out.beforeNumbers = cb.x + cb.width <= Math.min(...Array.from(row.querySelectorAll('.row-time, .row-pct'), (t) => t.getBBox().x));
+      } else {
+        const bar = svg.querySelector('rect.bar[data-node-id="' + id + '"]');
+        out.owned = Math.abs(Number(chip.getAttribute('y')) - Number(bar.getAttribute('y')) - 6) < 0.01;
+        const label = Array.from(svg.querySelectorAll('text.label')).find((t) => t.getAttribute('y') === text.getAttribute('y')).getBBox();
+        out.gap = label.x - (cb.x + cb.width);
+        out.info = bar.getAttribute('data-info');
+      }
+    }
+    out.reveal = handle.reveal(id);
+    out.unknown = handle.reveal('n:000000000000');
+    handle.destroy();
+    return out;
+  }, data, id, view, theme);
+  const ink = { light: 'rgb(91, 60, 196)', dark: 'rgb(179, 164, 255)' };
+  const card = { light: 'rgb(255, 255, 255)', dark: 'rgb(37, 40, 44)' };
+  for (const theme of ['light', 'dark']) {
+    for (const view of ['workbench', 'tree', 'bargraph']) {
+      const r = await probe(marks.mysql, flagged, view, theme);
+      const at = view + ' ' + theme;
+      assert.equal(r.count, 1, at + ': one chip, on the flagged operator only');
+      assert.equal(r.label, record.label, at + ': the parser label, as is');
+      assert.ok(r.owned, at + ': the chip belongs to the flagged operator');
+      assert.equal(r.text, ink[theme], at + ': --mfc-estimate text');
+      assert.equal(r.fill, card[theme], at + ': chip on the card color');
+      assert.ok(r.contrast >= 4.5, at + ': chip text contrast ' + r.contrast.toFixed(2));
+      assert.ok(r.fontSize >= 11, at + ': never below 11 px');
+      assert.ok(r.textInside, at + ': the label fits its chip in the real font');
+      assert.ok(r.gap >= 0, at + ': the label never runs into the chip (' + r.gap.toFixed(1) + ' px)');
+      assert.equal(r.reveal, true, at + ': reveal a drawn operator');
+      assert.equal(r.unknown, false, at + ': reveal an unknown id');
+      if (view === 'workbench') {
+        assert.equal(r.outline, ink[theme], at + ': dashed outline in --mfc-estimate');
+        assert.ok(r.outlineContrast >= 3, at + ': outline contrast ' + r.outlineContrast.toFixed(2));
+        assert.equal(r.aria, 'Index lookup [orders.idx_customer], rows ×451 under');
+      }
+      if (view === 'tree') assert.ok(r.beforeNumbers, at + ': the chip ends before the number columns');
+      if (view === 'bargraph') assert.match(r.info, /Row estimate: 451× under \(estimated 1, actual 451 rows per loop\)/);
+    }
+    const f = await probe(marks.mysql, flagged, 'flamegraph', theme);
+    assert.equal(f.count, 1, 'flame ' + theme + ': one underline');
+    assert.equal(f.id, flagged);
+    assert.equal(f.stroke, 'rgb(59, 42, 143)', 'flame ' + theme + ': a fixed mark color, like the frame fills');
+    assert.equal(f.bottom, 1, 'flame: along the inside of the bottom edge');
+    // x and width are each written with 2 decimals, so an inset can read 0.99.
+    const oneInside = (insets) => insets.every((v) => Math.abs(v - 1) <= 0.02);
+    assert.ok(oneInside(f.insets), 'flame: 1 px inside each edge ' + f.insets);
+    assert.ok(oneInside(f.zoomedInsets), 'flame: the underline follows its frame when zoomed ' + f.zoomedInsets);
+    assert.ok(f.zoomedWidth > 1000, 'flame: the zoomed frame spans the chart');
+    assert.match(f.tooltip, /\nRow estimate: 451× under \(estimated 1, actual 451 rows per loop\)\n/, 'flame: the detail line names the estimate');
+    assert.equal(f.reveal, true);
+  }
+  const maria = await probe(marks.mariadb, marks.mariaFlagged[0], 'workbench', 'light');
+  assert.equal(maria.count, 1, 'MariaDB: one chip');
+  assert.equal(maria.label, 'rows ×451 under');
+  // Visual Explain: reveal pans to a card outside the view and keeps the zoom.
+  const revealed = await page.evaluate((data, id) => {
+    document.documentElement.dataset.theme = 'light';
+    const host = document.getElementById('host');
+    host.textContent = '';
+    const handle = MyflamesCharts.mount(host, data, { view: 'workbench', width: 900 });
+    const svg = host.querySelector('svg');
+    const viewport = svg.querySelector('.wb-viewport');
+    // Three steps in: the view (461 x 338 units) still holds a card with its margin.
+    for (let i = 0; i < 3; i++) svg.querySelector('[data-action="in"]').click();
+    const card = svg.querySelector('.wb-node[data-node-id="' + id + '"]');
+    const [x, y] = card.getAttribute('transform').match(/[-\d.]+/g).map(Number);
+    const h = Number(card.querySelector('.wb-box').getAttribute('height'));
+    const inView = () => {
+      const b = viewport.viewBox.baseVal;
+      return x >= b.x && y >= b.y && x + 256 <= b.x + b.width && y + h <= b.y + b.height;
+    };
+    const zoom = svg.querySelector('[data-action="reset"]').textContent;
+    const before = inView();
+    const ok = handle.reveal(id);
+    const panned = viewport.getAttribute('viewBox');
+    handle.reveal(id);
+    const result = { before, after: inView(), ok, zoomKept: zoom === svg.querySelector('[data-action="reset"]').textContent,
+      stays: viewport.getAttribute('viewBox') === panned };
+    handle.destroy();
+    return result;
+  }, marks.mysql, flagged);
+  assert.deepEqual(revealed, { before: false, after: true, ok: true, zoomKept: true, stays: true },
+    'reveal brings the card into view at the same zoom, and leaves a visible card where it is');
+  // Payloads from before the field draw no marks.
+  const old = JSON.parse(JSON.stringify(marks.mysql));
+  for (const node of old.nodes) delete node.misestimate;
+  const none = await page.evaluate((data) => {
+    const host = document.getElementById('host');
+    let count = 0;
+    for (const view of ['workbench', 'tree', 'bargraph', 'flamegraph']) {
+      host.textContent = '';
+      const handle = MyflamesCharts.mount(host, data, { view, width: 1200 });
+      count += host.querySelectorAll('.mfc-mis-chip, .mfc-mis-outline, .fg-mark').length;
+      handle.destroy();
+    }
+    return count;
+  }, old);
+  assert.equal(none, 0, 'no record, no marks');
+  console.log('Browser: row-estimate marks in Visual Explain, tree, bar chart and flame graph (light and dark contrast, fit, underline follows zoom, reveal, MariaDB, old payloads) passed');
 }

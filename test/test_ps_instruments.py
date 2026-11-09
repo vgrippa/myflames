@@ -387,6 +387,8 @@ class TestLiveReplay(unittest.TestCase):
         statuses = {f['key']: f['status'] for f in result['features']}
         self.assertEqual(statuses.pop('replication_receiver'), 'off')
         self.assertEqual(statuses.pop('locks_rows'), 'not_needed')
+        # Minimal setup intentionally leaves most MariaDB memory instruments off.
+        self.assertEqual(statuses.pop('memory'), 'partial')
         self.assertEqual(set(statuses.values()), {'ready'})
 
     def test_denied(self):
@@ -510,7 +512,7 @@ INSTRUMENT_LITERAL = re.compile(r"(?<![\w/])((?:wait|statement|stage|memory)/[A-
 CONSUMER_LITERAL = re.compile(r"\b(global_instrumentation|thread_instrumentation|statements_digest|"
                               r"events_(?:statements|stages|transactions|waits)_(?:current|history_long|history|cpu))\b")
 TABLE_LITERAL = re.compile(r"performance_schema\.([a-z_]+)")
-VIEW_MODULES = ('discover', 'live', 'locks', 'waits', 'indexes', 'io_stats', 'perf_common', 'config_review', 'health',
+VIEW_MODULES = ('memory', 'discover', 'live', 'locks', 'waits', 'indexes', 'io_stats', 'perf_common', 'config_review', 'health',
                 'report', 'server_checks', 'replication', 'variables', 'error_log', 'cluster')
 
 
@@ -568,6 +570,14 @@ class TestFeatureMapStaysInSync(unittest.TestCase):
         with open(os.path.join(MODULES_DIR, module + '.py'), encoding='utf-8') as handle:
             return handle.read()
 
+    def settable_source(self, module):
+        """The module source without the built-in memory/performance_schema/*
+        instrument names: those are always counted and cannot be turned off
+        (ps_instruments docstring), so no FEATURES entry maps them and the
+        consumer-like words inside their names (events_statements_current in
+        the .sql_text memory instrument, for one) name no consumer."""
+        return re.sub(r"memory/performance_schema/[A-Za-z0-9_.]+", "", self.source(module))
+
     def module_features(self, module):
         return [f for f in m.FEATURES if module in f['modules']]
 
@@ -586,7 +596,7 @@ class TestFeatureMapStaysInSync(unittest.TestCase):
             for f in self.module_features(module):
                 for kind in ('needs', 'optional'):
                     needs.extend(f.get(kind, {}).get('instruments', ()))
-            for literal in set(INSTRUMENT_LITERAL.findall(self.source(module))):
+            for literal in set(INSTRUMENT_LITERAL.findall(self.settable_source(module))):
                 prefix = literal.replace('%', '')
                 with self.subTest(module=module, instrument=literal):
                     self.assertTrue(any(n.rstrip('%').startswith(prefix) or prefix.startswith(n.rstrip('%'))
@@ -599,7 +609,7 @@ class TestFeatureMapStaysInSync(unittest.TestCase):
             for f in self.module_features(module):
                 for kind in ('needs', 'optional'):
                     needs.update(f.get(kind, {}).get('consumers', ()))
-            for literal in set(CONSUMER_LITERAL.findall(self.source(module))):
+            for literal in set(CONSUMER_LITERAL.findall(self.settable_source(module))):
                 with self.subTest(module=module, consumer=literal):
                     self.assertIn(literal, needs, '%s names consumer %s, which FEATURES does not map'
                                   % (module, literal))
@@ -617,7 +627,7 @@ class TestFeatureMapStaysInSync(unittest.TestCase):
         self.assertEqual([f['key'] for f in groups['wait/io/table']['features']], ['waits', 'indexes', 'io'])
         self.assertEqual([f['key'] for f in groups['statement']['features']], ['top', 'capture', 'locks_last'])
         self.assertEqual([(f['key'], f['required']) for f in groups['wait/synch']['features']], [('waits', False)])
-        self.assertEqual(groups['memory']['features'], [])
+        self.assertEqual(groups['memory']['features'], [{'key': 'memory', 'label': 'Memory', 'view': 'memory', 'required': True}])
         self.assertEqual([f['key'] for f in m._features_for_consumer('statements_digest')], ['top'])
 
 

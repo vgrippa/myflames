@@ -1272,6 +1272,136 @@ class TestLiveScenarios(HealthCase):
 
 # ---- 6. sampling ------------------------------------------------------------------------------------
 
+class IdentityHealthConn(object):
+    """Each run chooses one backend; every statement in that run uses it."""
+
+    def __init__(self, data, moved=False, missing_sample=None, failed_identity=None, clock=None):
+        self.data, self.moved, self.missing_sample = data, moved, missing_sample
+        self.calls = []
+        self.failed_identity = failed_identity
+        self.clock = clock
+
+    def run(self, sql, extra_flags=None, tail_timeout=None, on_tail_start=None):
+        n = len(self.calls)
+        self.calls.append((sql, extra_flags))
+        sample = self.data['samples'][n]['status']
+        variables = self.data['variables']
+        values = dict(variables, hostname='db2' if n and self.moved else 'db1', port='3306')
+        if 'mariadb' not in variables['version'].lower():
+            values['server_uuid'] = ('8f0c2b6e-0a43-11ef-8d43-0242ac120002' if n and self.moved
+                                     else '3e11fa47-71ca-11e1-9e33-c80aa9429562')
+        out = []
+        for statement in sql.split('; '):
+            raw = re.sub(r'/\*.*?\*/\s*', '', statement)
+            marker = re.fullmatch(r"SELECT '(myflames_reading_\d+)'", raw)
+            if marker:
+                out.append(batch([[marker.group(1)]]))
+                if tail_timeout and marker.group(1) == tail_timeout[0] and on_tail_start is not None:
+                    on_tail_start()
+            elif raw == 'SHOW GLOBAL STATUS':
+                if self.clock is not None:
+                    # A constant workload, sampled before the identity tail.
+                    sample = dict(sample, Questions=str(int(self.clock.monotonic() * 100)),
+                                  Queries=str(int(self.clock.monotonic() * 100)))
+                out.append(batch(sample.items()))
+            elif raw.startswith('SHOW GLOBAL VARIABLES'):
+                names = re.findall(r"'([a-z_]+)'", raw)
+                identity = 'hostname' in names
+                if identity and n == self.failed_identity:
+                    from myflames.connector import PartialReadError
+                    if self.clock is not None:
+                        self.clock.now += 3
+                    raise PartialReadError('Query timed out after 3s.', ''.join(out))
+                out.append(batch([(k, v) for k, v in values.items() if k in names
+                                  and not (identity and n == self.missing_sample)]))
+            elif raw.startswith('SHOW GLOBAL STATUS WHERE'):
+                out.append(batch([['Uptime', sample['Uptime']]]))
+            elif raw == "SELECT 'now', NOW(6)":
+                out.append(batch([['now', '2026-11-09 12:00:0%d.000000' % n]]))
+            else:
+                raise AssertionError('unexpected statement: ' + raw)
+        return ''.join(out)
+
+
+class TestIdentitySampling(HealthCase):
+    def test_two_samples_carry_identity_in_their_own_client_invocation(self):
+        for name in ('mysql-5.7', 'mysql-8.4', 'mysql-26.7', 'percona-8.4', 'mariadb-11.4', 'mariadb-13.0'):
+            with self.subTest(server=name):
+                data, clock = fixture(name), FakeTime()
+                conn = IdentityHealthConn(data)
+                report = health.health_report(conn, 5, sleep=clock.sleep, clock=clock.monotonic, with_identity=True)
+                self.assertEqual(len(conn.calls), 2, 'no later invocation may supply an identity or configuration')
+                self.assertTrue(report['reading_server']['verified'])
+                self.assertEqual(report['reading_server']['server']['version'], data['variables']['version'])
+                self.assertEqual(report['reading_server']['uptime_s'], int(data['samples'][1]['status']['Uptime']))
+                for sql, flags in conn.calls:
+                    self.assertIn('SHOW GLOBAL STATUS;', sql)
+                    self.assertIn("'hostname'", sql)
+                    self.assertIn('NOW(6)', sql)
+                    self.assertIn('--comments', flags)
+                    self.assertIn('--skip-reconnect', flags)
+                    self.assertNotRegex(sql, WRITE_WORDS)
+                self.assertIn("'max_connections'", conn.calls[0][0], 'configuration shares the first sample')
+                self.assertIn("'thread_pool_size'", conn.calls[0][0])
+                expected = health.compute_health(data['samples'][0], data['samples'][1], data['variables'], 5)
+                self.assertEqual(report['server'], expected['server'])
+
+    def test_different_backends_of_the_same_version_refuse_the_health_window(self):
+        for name in ('mysql-8.4', 'mariadb-11.4'):
+            with self.subTest(server=name):
+                clock = FakeTime()
+                conn = IdentityHealthConn(fixture(name), moved=True)
+                with self.assertRaisesRegex(ValueError, 'server changed between Health samples'):
+                    health.health_report(conn, 5, sleep=clock.sleep, clock=clock.monotonic, with_identity=True)
+                self.assertEqual(len(conn.calls), 2)
+
+    def test_either_missing_identity_leaves_the_report_unverified(self):
+        for n in (0, 1):
+            clock = FakeTime()
+            report = health.health_report(IdentityHealthConn(fixture('mariadb-11.4'), missing_sample=n), 5,
+                                          sleep=clock.sleep, clock=clock.monotonic, with_identity=True)
+            self.assertFalse(report['reading_server']['verified'])
+            self.assertIn('both Health samples', report['reading_server']['error'])
+
+    def test_identity_timeout_keeps_both_measured_samples_without_another_invocation(self):
+        for name in ('mysql-8.4', 'mariadb-11.4'):
+            for failed in (0, 1):
+                with self.subTest(server=name, sample=failed):
+                    clock, data = FakeTime(), fixture(name)
+                    conn = IdentityHealthConn(data, failed_identity=failed)
+                    report = health.health_report(conn, 5, sleep=clock.sleep, clock=clock.monotonic, with_identity=True)
+                    self.assertEqual(len(conn.calls), 2)
+                    self.assertFalse(report['reading_server']['verified'])
+                    # This fake samples exactly five seconds apart; the live
+                    # fixture's original monotonic timestamps cover longer.
+                    expected = health.compute_health(dict(data['samples'][0], t=0),
+                                                     dict(data['samples'][1], t=5), data['variables'], 5)
+                    self.assertEqual(report['metrics'], expected['metrics'])
+                    self.assertEqual(report['server'], expected['server'])
+
+    def test_identity_timeout_does_not_distort_status_rate_interval(self):
+        """A tail delay must not inflate the first sample or dilute the second."""
+        for name in ('mysql-8.4', 'mariadb-11.4'):
+            for failed in (0, 1):
+                for interval in (5, 1):
+                    with self.subTest(server=name, sample=failed, interval=interval):
+                        clock = FakeTime()
+                        conn = IdentityHealthConn(fixture(name), failed_identity=failed, clock=clock)
+                        with mock.patch.object(health, '_now', side_effect=lambda: str(clock.monotonic())):
+                            report = health.health_report(conn, interval, sleep=clock.sleep,
+                                                          clock=clock.monotonic, with_identity=True)
+                        self.assertFalse(report['reading_server']['verified'])
+                        self.assertEqual(len(conn.calls), 2)
+                        for key in ('questions', 'queries'):
+                            self.assertEqual(by_key(report)[key]['rate'], 100)
+                        # A first tail longer than the requested interval delays
+                        # the second status read; its actual elapsed time counts.
+                        elapsed = max(interval, 3) if failed == 0 else interval
+                        self.assertEqual(report['elapsed_s'], elapsed)
+                        self.assertEqual(report['started_at'], '1000.0')
+                        self.assertEqual(report['taken_at'], str(1000.0 + elapsed))
+
+
 class TestSampling(HealthCase):
     def test_waits_out_the_interval_and_reads_only(self):
         clock = FakeTime(query_s=0.2)

@@ -1758,6 +1758,22 @@ button.metric-tile.is-selected:hover {
 .tile-foot > .sparkline {
   margin-left: auto;
 }
+/* A comparison under the value ("was 12/s"), and a marker kept beside the
+   status (a changed verdict). */
+.tile-compare {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+.tile-foot > .tile-badge {
+  flex-shrink: 0;
+  margin-right: auto;
+  white-space: nowrap;
+}
 @media (max-width: 900px) {
   .tile-grid {
     display: flex;

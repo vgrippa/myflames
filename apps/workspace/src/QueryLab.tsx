@@ -1,4 +1,6 @@
-import { bytes } from "./PerfShared";
+import { captureThreadKey, indexWasApplied, measurementMatches, type SqlOpenOptions, type SuggestedIndexOrigin } from "./statementThread";
+import { DigestBefore, MeasuredStatement } from "./MeasureAgain";
+import { bytes, useSchemaCatalog } from "./PerfShared";
 import { AlterPredictionWhy, notPredictedReason, type AlterPrediction } from "./AlterPrediction";
 import { engineName } from "./OpsShared";
 import {
@@ -23,11 +25,14 @@ import {
   type Connection,
   type EditorClose,
   type EditorConfirmation,
+  type EditorFileOpenReply,
+  type EditorFileSaveReply,
   type EditorReply,
   type EditorRows,
   type EditorRun,
   type EditorSession,
   type EditorStop,
+  type EditorUseReply,
   type Plan,
   type SavedQuery,
   type TopStatement,
@@ -55,11 +60,11 @@ import {
 } from "./session";
 import { connectionKey, connectionLabel } from "./binding";
 import { Icon } from "./components";
-import { ActionButton, ActionStatus, IDLE_ACTION, writeFailure, type ActionState, Checkbox, ConfirmSheet, EmptyState, IconButton, InfoPopover, Notice, NumberField, StatusPill, useFocusScope, useWindowStatus, type Tone } from "./kit";
+import { ActionButton, ActionStatus, IDLE_ACTION, writeFailure, type ActionState, Checkbox, ConfirmSheet, EmptyState, IconButton, InfoPopover, Notice, NumberField, Popover, Segmented, StatusPill, useFocusScope, useWindowStatus, type Tone } from "./kit";
 import { ConnectionTypeBand, useWritePolicy, TYPE_LABEL } from "./Connections";
 import { SqlEditor, type Range } from "./SqlEditor";
 import { ResultsPane, rowResults, duration as resultDuration } from "./ResultsPane";
-import { SchemaBrowser } from "./SchemaBrowser";
+import { SchemaBrowser, type SchemaReveal } from "./SchemaBrowser";
 import { HistoryPanel, type SidePanelTab } from "./HistoryPanel";
 import { SaveQuerySheet } from "./SavedQueries";
 import { FillParametersSheet } from "./FillParameters";
@@ -70,6 +75,8 @@ import { editorPrivilegeGate, isPrivilegeDenial, privilegeButtonProps, usePrivil
 import { lazyComponent } from "./lazy";
 import { MAC } from "./platform";
 import "./editor.css";
+import "./editor-insights.css";
+import { StatementInsight } from "./EditorInsights";
 import { DdlMeter, DdlUnavailable, ddlLeft } from "./DdlProgress";
 import { followDdlProgress } from "./ddlProgressPoll";
 import { useImportCsv } from "./importCsvApi";
@@ -92,6 +99,9 @@ const NARROW = 720;
 /** The results keep their tabs, result bar, column header and three rows:
  * in a short window (the 720x520 minimum) the editor gives way to them. */
 const RESULTS_KEEP = 208;
+/** RESULTS_KEEP budgets the result toolbar at one line; when it wraps, the
+ * extra lines come out of the editor's room too (measureEditorRoom). */
+const RESULT_BAR_LINE = 40;
 /** The editor itself keeps three lines. */
 const EDITOR_FLOOR = 72;
 type Tab = QueryTab;
@@ -111,8 +121,13 @@ export type EditorState = Pick<
   LabState,
   "tabs" | "tab_id" | "timeout" | "repeat" | "trace" | "conditions" | "editor_layout"
 >;
+/** In-memory navigation only: SQL, credentials and results stay in the editor. */
+export type QueryNavigation = { tabId: string; reveal: Omit<SchemaReveal, "n"> | null };
+
 /** What the Server place asks of the editor. */
 export type QueryLabHandle = {
+  navigationSelection: () => QueryNavigation;
+  restoreNavigation: (selection: QueryNavigation) => QueryNavigation;
   /** Open a Top statements row in a new tab. Explain runs in that tab;
    * Run analysis captures measured timings. With *expect* (a
    * connectionKey), nothing opens or runs unless that is still the
@@ -124,7 +139,7 @@ export type QueryLabHandle = {
   openTab: (id: string) => void;
   /** Open a statement in a new tab (or append to the current tab when
    * *options.append* is set, as for Parameters' SET SESSION), selected and not run. */
-  openSql: (sql: string, options?: { append?: boolean }) => void;
+  openSql: (sql: string, options?: SqlOpenOptions) => void;
   /** Request closing a query tab, verifying uncommitted transactions first. */
   closeTab: (id: string) => void;
   /** Start renaming the current tab (the palette's Rename query tab). */
@@ -133,6 +148,9 @@ export type QueryLabHandle = {
   formatSql: () => void;
   /** Save the current tab's SQL as a saved query (the palette's Save query…). */
   saveQuery: () => void;
+  /** Reveal an object in the schema browser (the palette's object search):
+   * opens the pane, expands the schema and focuses the row. */
+  revealInSchemaBrowser: (schema: string, table: string | null) => void;
 };
 function parseParameters(text: string): unknown {
   try {
@@ -174,7 +192,13 @@ type Job = {
 
 /** What the editor knows about one tab's session and its last run. Kept in
  * page memory only: results and the connection are never saved. */
+type CapturedStatement = { capture: Capture; name: string };
 type Runtime = {
+  /** Index-fix thread metadata stays in this page, never in saved tabs. */
+  indexOrigin?: SuggestedIndexOrigin;
+  indexDdl?: string;
+  measureBefore?: SuggestedIndexOrigin;
+  measureSql?: string;
   session: EditorSession | null;
   /** connectionKey of the connection the session was opened with. */
   sessionKey: string;
@@ -198,7 +222,7 @@ type Runtime = {
   /** The Parameters an Explain bound, reused by its Load more and Explore. */
   explainParameters?: Record<string, unknown>;
   explaining: boolean;
-  analysis: { capture: Capture; name: string } | null;
+  analysis: (CapturedStatement & { previous?: CapturedStatement; measured?: SuggestedIndexOrigin }) | null;
   running: boolean;
   stopping: boolean;
   /** The per-tab control owning a request, including session opens and closes. */
@@ -217,6 +241,11 @@ type Runtime = {
   safe: boolean | null;
   /** The server answered whether this tab already has a session (after a reload). */
   probed: boolean;
+  /** The file the tab was opened from or saved to: the backend-issued token,
+   * the file's base name and the SQL as last saved (the dirty dot compares). */
+  file: { token: string; name: string; savedSql: string } | null;
+  /** A file dialog or write for this tab is on its way. */
+  fileBusy: boolean;
 };
 const blankRuntime = (): Runtime => ({
   session: null,
@@ -245,6 +274,8 @@ const blankRuntime = (): Runtime => ({
   reloaded: {},
   safe: null,
   probed: false,
+  file: null,
+  fileBusy: false,
 });
 type SendMeta = {
   runSql: string;
@@ -458,12 +489,15 @@ export const QueryLab = forwardRef<
     /** Reports whether a capture started here is running. */
     onBusyChange?: (busy: boolean) => void;
     onConnected?: (connection: Connection) => void;
-    /** Automatic DDL reads stop when the kept editor leaves the screen. */
+    /** Automatic DDL reads and the schema catalog read stop while the kept
+     * editor is off screen. */
     onScreen?: boolean;
     onOpenInstruments?: (row: string) => void;
     /** Open Indexes or Tables on one table (the schema browser's menu); *from*
      * is the key of the connection the name was read from. */
     onOpenTable?: (view: "indexes" | "tables", schema: string, table: string, from: string) => void;
+    onOpenLocks?: () => void;
+    onCompareCaptures?: (before: CapturedStatement, after: CapturedStatement) => Promise<void>;
   }
 >(function QueryLab(
   {
@@ -479,6 +513,8 @@ export const QueryLab = forwardRef<
     onScreen = true,
     onOpenInstruments,
     onOpenTable,
+    onOpenLocks,
+    onCompareCaptures,
   },
   ref,
 ) {
@@ -490,15 +526,23 @@ export const QueryLab = forwardRef<
   // The tab on screen, for work that finishes after an await (Format SQL).
   const tabRef = useRef(tab.id);
   tabRef.current = tab.id;
+  // The tab list, for file saves that finish after an await.
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+  // The connection's schema list pre-fills the default-database picker (one
+  // cheap catalog read per connection, cached; PerfShared.useSchemaCatalog),
+  // read only while the editor is on screen: a hidden editor never reads.
+  const { catalog: schemaCatalog } = useSchemaCatalog(connection, onScreen);
   const [timeout, setTimeoutSeconds] = useState(start.timeout);
   const [repeat, setRepeat] = useState(start.repeat);
   const [trace, setTrace] = useState(start.trace);
   const [conditions, setConditions] = useState(start.conditions);
   const [layout, setLayout] = useState<EditorLayout>(() => normalizeEditorLayout(start.editor_layout ?? defaultEditorLayout()));
   // The room for the editor and the results under it: from the editor's top
-  // to the bottom of the tab panel, less the splitter and the operation
-  // feedback line under the results. Measured after every render (a banner,
-  // a note or a wrapped toolbar moves the editor) and on resize.
+  // to the bottom of the tab panel, less the splitter, the insight lines and
+  // the operation feedback line under the results. Measured after every
+  // render (a banner, a note or a wrapped toolbar moves the editor) and on
+  // resize.
   const tabPanel = useRef<HTMLDivElement>(null);
   const [editorRoom, setEditorRoom] = useState(0);
   // The last room measured: an unchanged room is not set again. A no-op
@@ -507,6 +551,10 @@ export const QueryLab = forwardRef<
   // waited, until React stopped with "Maximum update depth exceeded" (seen
   // when Format SQL replaced the text).
   const measuredRoom = useRef(0);
+  // Set while the panel's ResizeObserver lives, so a measure can also watch
+  // chrome whose height changes without the panel resizing (the insight
+  // lines, a result toolbar wrapping onto more lines).
+  const roomObserver = useRef<ResizeObserver | null>(null);
   const measureEditorRoom = useCallback(() => {
     const panel = tabPanel.current;
     const wrap = panel?.querySelector<HTMLElement>(".sql-editor-wrap");
@@ -515,8 +563,18 @@ export const QueryLab = forwardRef<
     const splitter = panel.querySelector<HTMLElement>(".editor-splitter");
     const feedback = panel.querySelector<HTMLElement>(".editor-feedback");
     const ddlFeedback = panel.querySelector<HTMLElement>(".ddl-editor");
-    const room = Math.floor(panel.getBoundingClientRect().bottom - wrap.getBoundingClientRect().top
-      - (splitter?.offsetHeight || 0) - (feedback?.offsetHeight || 0) - (ddlFeedback?.offsetHeight || 0));
+    let taken = (splitter?.offsetHeight || 0) + (feedback?.offsetHeight || 0) + (ddlFeedback?.offsetHeight || 0);
+    // The insight lines sit between the splitter and the results.
+    for (const el of panel.querySelectorAll<HTMLElement>(".editor-insights")) {
+      taken += el.offsetHeight;
+      roomObserver.current?.observe(el);
+    }
+    const resultBar = panel.querySelector<HTMLElement>(".result-toolbar");
+    if (resultBar) {
+      roomObserver.current?.observe(resultBar);
+      taken += Math.max(0, resultBar.offsetHeight - RESULT_BAR_LINE);
+    }
+    const room = Math.floor(panel.getBoundingClientRect().bottom - wrap.getBoundingClientRect().top - taken);
     if (room === measuredRoom.current) return;
     measuredRoom.current = room;
     setEditorRoom(room);
@@ -525,8 +583,12 @@ export const QueryLab = forwardRef<
     const panel = tabPanel.current;
     if (!panel) return;
     const observer = new ResizeObserver(measureEditorRoom);
+    roomObserver.current = observer;
     observer.observe(panel);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      roomObserver.current = null;
+    };
   }, [measureEditorRoom]);
   /** The tallest editor that leaves the results their rows; the editor shows
    * the height the splitter set, up to this. */
@@ -587,6 +649,8 @@ export const QueryLab = forwardRef<
   const [fillFormTab, setFillFormTab] = useState<string | null>(null);
   const [explainFormat, setExplainFormat] = useState<ExplainFormat>(storedExplainFormat);
   const [analysisOptionsOpen, setAnalysisOptionsOpen] = useState(false);
+  const [measurePending, setMeasurePending] = useState<string | null>(null);
+  const capturedStatements = useRef(new Map<string, CapturedStatement>());
   const [analysisReview, setAnalysisReview] = useState<{
     tab: Tab; sql: string; parameters: unknown; label: string; binding: string;
   } | null>(null);
@@ -714,6 +778,12 @@ export const QueryLab = forwardRef<
   const effectiveExplainFormat = explainFormat === "tree" && !treeAvailable ? "table" : explainFormat;
   const analysisBinding = JSON.stringify([tab.id, tab.sql, tab.parameters, connectionKey(connection), timeout, repeat, trace, conditions]);
   useEffect(() => { setAnalysisReview(null); }, [analysisBinding]);
+  useEffect(() => {
+    if (!measurePending) return;
+    setMeasurePending(null);
+    if (tab.id !== measurePending || !rt.measureBefore || bindingProblem(tab)) return;
+    setAnalysisReview({ tab: { ...tab }, sql: tab.sql, parameters: {}, label: "the source statement", binding: analysisBinding });
+  }, [measurePending, analysisBinding]);
   const [ddl, setDdl] = useState<{ owner: string; progress: DdlProgress } | null>(null);
   const ddlOwner = JSON.stringify([tab.id, rt.gen, rt.run?.id, rt.sessionKey]);
   const ddlEligible = rt.running && rt.run?.state === "running" && !rt.stopping && rt.stopGen !== rt.gen &&
@@ -741,14 +811,17 @@ export const QueryLab = forwardRef<
     analysisWarning,
     layout.height,
     Boolean(rt.run),
+    rt.running,
     Boolean(rt.note),
     ddlEligible,
     ddlShown,
   ]);
   const [pending, setPending] = useState<Pending | null>(null);
   const [pendingBusy, setPendingBusy] = useState(false);
-  const [closing, setClosing] = useState<{ tabId: string; known: boolean; keepTab: boolean } | null>(null);
+  const [closing, setClosing] = useState<{ tabId: string; known: boolean; keepTab: boolean; discardFile: boolean } | null>(null);
   const [closingBusy, setClosingBusy] = useState(false);
+  /** A file-backed tab with unsaved edits asks Save / Don't save / Cancel. */
+  const [closingFile, setClosingFile] = useState<{ tabId: string; keepTab: boolean } | null>(null);
   const [historyTick, setHistoryTick] = useState(0);
   /** Bumped after Save query…, so an open Saved tab reads again. */
   const [savedTick, setSavedTick] = useState(0);
@@ -766,6 +839,10 @@ export const QueryLab = forwardRef<
   useFocusScope(historySheet, { open: narrow && onScreen && !tableData && sheet === "history", onClose: () => setSheet(""), returnFocus: () => sheetOpener.current });
   const showBrowser = narrow ? sheet === "browser" : layout.browser;
   const showHistory = narrow ? sheet === "history" : layout.history;
+  // The palette's object search reveals an object here (opens the pane, then
+  // the browser expands the schema and focuses the row).
+  const [browserReveal, setBrowserReveal] = useState<SchemaReveal | null>(null);
+  const browserRevealSerial = useRef(0);
   const polls = useRef(new Map<string, AbortController>());
   const policy = useWritePolicy();
   const connectionRef = useRef(connection);
@@ -788,13 +865,26 @@ export const QueryLab = forwardRef<
   }
 
   useImperativeHandle(ref, () => ({
+    navigationSelection: () => ({ tabId, reveal: browserReveal?.connection === connectionKey(connection)
+      ? { connection: browserReveal.connection, schema: browserReveal.schema, table: browserReveal.table } : null }),
+    restoreNavigation: (selection: QueryNavigation) => {
+      const id = tabs.some((t) => t.id === selection.tabId) ? selection.tabId : tabId;
+      const reveal = selection.reveal?.connection === connectionKey(connection) ? selection.reveal : null;
+      setTabId(id);
+      setBrowserReveal(reveal ? { ...reveal, n: ++browserRevealSerial.current } : null);
+      if (reveal) {
+        if (narrow) setSheet("browser");
+        else setLayout((l) => (l.browser ? l : { ...l, browser: true }));
+      }
+      return { tabId: id, reveal };
+    },
     openDigest,
     newTab: () => addTab(true),
     openTab: (id: string) => {
       if (tabs.some((t) => t.id === id)) setTabId(id);
     },
-    openSql: (sql: string, options?: { append?: boolean }) =>
-      options?.append ? appendStatement(sql) : openStatement(sql),
+    openSql: (sql: string, options?: SqlOpenOptions) =>
+      options?.append && !options.indexOrigin ? appendStatement(sql) : openStatement(sql, options?.indexOrigin),
     closeTab: (id: string) => {
       void requestClose(id);
     },
@@ -806,6 +896,11 @@ export const QueryLab = forwardRef<
       whenShown(() => void formatSql());
     },
     saveQuery: () => startSaveQuery(tab.id),
+    revealInSchemaBrowser: (schema: string, table: string | null) => {
+      if (narrow) setSheet("browser");
+      else setLayout((l) => (l.browser ? l : { ...l, browser: true }));
+      setBrowserReveal({ connection: connectionKey(connection), schema, table, n: ++browserRevealSerial.current });
+    },
   }));
   /** Save query…: the sheet asks for a name (the tab's), a folder and a note. */
   function startSaveQuery(id: string) {
@@ -852,7 +947,7 @@ export const QueryLab = forwardRef<
    * A statement that only has normalized
    * text opens with a parameters skeleton and waits for values.
    */
-  function openDigest(row: TopStatement, rank: number, action: DigestAction, expect?: string) {
+  function openDigest(row: TopStatement, rank: number, action: DigestAction, expect?: string, measureBefore?: SuggestedIndexOrigin) {
     if (expect !== undefined && expect !== connectionKey(connection)) {
       setStatus("");
       setError("The connection in use changed after you chose this statement, so nothing ran. Refresh Top statements and choose it again.");
@@ -883,6 +978,10 @@ export const QueryLab = forwardRef<
       next.fill = q.names;
       next.fill_note = fillNotice(q);
       if (q.lists.length) next.fill_lists = q.lists;
+    }
+    if (measureBefore) {
+      patchRuntime(next.id, { measureBefore, measureSql: next.sql });
+      next.target = { ...measureBefore.target };
     }
     setTabs((ts) => [...ts, next]);
     setTabId(next.id);
@@ -920,6 +1019,7 @@ export const QueryLab = forwardRef<
       editor.current?.scrollIntoView({ block: "nearest" }),
     );
     if (action === "explain") runSql(false, q.sql, 0, true, next);
+    else if (measureBefore) setMeasurePending(next.id);
     else void startCapture(next, q.sql, {}, action, `Top statements #${rank}`);
   }
   /** Later: close the form and edit the Parameters JSON by hand, as before it. */
@@ -1009,11 +1109,27 @@ export const QueryLab = forwardRef<
           received.current = next.id;
           const info = lastRunInfo.current;
           if (info?.mode === "analyze") {
-            patchRuntime(info.tabId, { analysis: { capture: next.result, name: captureName.current } });
+            const previous = info.inSession ? undefined : capturedStatements.current.get(captureThreadKey(jobConnection.current!, next.result));
+            const origin = runtimeRef.current[info.tabId]?.measureBefore;
+            const measured = origin && origin.target.key === connectionKey(jobConnection.current!) &&
+              measurementMatches(runtimeRef.current[info.tabId]?.measureSql, info.sql, info.inSession) ? origin : undefined;
+            const analysis = { capture: next.result, name: captureName.current, previous, measured };
+            patchRuntime(info.tabId, { analysis });
+            if (!info.inSession) {
+              const key = captureThreadKey(jobConnection.current!, next.result);
+              capturedStatements.current.delete(key);
+              if (capturedStatements.current.size >= 50) capturedStatements.current.delete(capturedStatements.current.keys().next().value!);
+              capturedStatements.current.set(key, { capture: next.result, name: captureName.current });
+            }
             changeTab({ result_tab: "plan" }, info.tabId);
             setStatus("Analysis complete. The statement ran. Choose Explore to open the visual plan.");
           } else {
             setStatus("Visual plan ready.");
+            if (!info?.inSession) {
+              const key = captureThreadKey(jobConnection.current!, next.result);
+              if (capturedStatements.current.size >= 50) capturedStatements.current.delete(capturedStatements.current.keys().next().value!);
+              capturedStatements.current.set(key, { capture: next.result, name: captureName.current });
+            }
             await onCapture(next.result, captureName.current);
           }
         }
@@ -1126,6 +1242,45 @@ export const QueryLab = forwardRef<
     return () => controller.abort();
     // Once per tab until answered; the runtime ref holds the rest.
   }, [tab.id]);
+  // QueryLab stays mounted in other places. Read only for the visible tab,
+  // never while its user SQL or transaction action owns the session pipe.
+  useEffect(() => {
+    if (!onScreen || tableData || rt.session?.in_transaction !== true || rt.session.ended ||
+        rt.running || rt.operation || rt.stopping || rt.sessionKey !== connectionKey(connection)) return;
+    const id = tab.id, gen = rt.gen, sessionId = rt.session.connection_id, key = rt.sessionKey;
+    let stopped = false, timer = 0, controller: AbortController | null = null;
+    const schedule = () => { window.clearTimeout(timer); if (!stopped && !document.hidden) timer = window.setTimeout(read, 10000); };
+    async function read() {
+      if (stopped || document.hidden) return;
+      const current = runtimeRef.current[id];
+      if (!current || current.gen !== gen || current.running || current.operation || current.stopping) return;
+      controller = new AbortController();
+      try {
+        const reply = await api<EditorReply>("editor/status", {
+          tab_id: id, connection: current.sessionConnection || connectionRef.current, refresh_insights: true, wait: 0,
+        }, controller.signal);
+        const latest = runtimeRef.current[id];
+        if (!stopped && !controller.signal.aborted && latest?.gen === gen && !latest.running && !latest.operation &&
+            latest.sessionKey === key && reply.session?.connection_id === sessionId) {
+          patchRuntime(id, { session: reply.session });
+        }
+      } catch {
+        // Keep the observed age, but never present old counters as a fresh read.
+        const latest = runtimeRef.current[id];
+        if (!stopped && !controller.signal.aborted && latest?.gen === gen && !latest.running && !latest.operation && latest.session?.transaction_meter) {
+          patchRuntime(id, { session: { ...latest.session, transaction_meter: {
+            ...latest.session.transaction_meter, rows_modified: null, rows_locked: null, lock_structs: null,
+            blocking: null, note: "Transaction details could not be refreshed; open Server > Locks to check.",
+          } } });
+        }
+      } finally { controller = null; schedule(); }
+    }
+    const visibility = () => { window.clearTimeout(timer); controller?.abort(); if (!document.hidden) schedule(); };
+    document.addEventListener("visibilitychange", visibility);
+    schedule();
+    return () => { stopped = true; window.clearTimeout(timer); controller?.abort(); document.removeEventListener("visibilitychange", visibility); };
+  }, [tab.id, onScreen, tableData, rt.session?.connection_id, rt.session?.in_transaction, rt.session?.ended,
+      rt.running, rt.operation, rt.stopping, rt.gen, rt.sessionKey, connectionKey(connection)]);
   const target = useMemo(
     () => runTarget(tab.sql, cursor.start, cursor.end),
     [tab.sql, cursor.start, cursor.end],
@@ -1237,7 +1392,10 @@ export const QueryLab = forwardRef<
   /** The connection a run of *t* uses: a Top statements tab runs in the
    * schema it was recorded in when the connection names none. */
   function connectionFor(t: Tab): Connection {
-    const database = connection.database || t.source?.schema || "";
+    const measurement = runtimeRef.current[t.id]?.measureBefore;
+    // A measurement runs in its statement's schema; otherwise the tab's chosen
+    // default database wins over the connection's and the source statement's.
+    const database = measurement ? measurement.statement.schema ?? "" : t.database ?? (connection.database || t.source?.schema || "");
     return database === connection.database ? connection : { ...connection, database };
   }
   /** Start one capture of *sql* for tab *t* with the lab's settings. */
@@ -1298,7 +1456,7 @@ export const QueryLab = forwardRef<
         timeout,
         // In-session runs keep the tab's temporary tables; the backend
         // refuses repeat/trace there.
-        repeat: inSession ? 1 : repeat,
+        repeat: inSession || runtimeRef.current[t.id]?.measureBefore ? 1 : repeat,
         trace: inSession ? false : trace,
         conditions,
         ...(inSession ? { session_tab: t.id } : {}),
@@ -1321,7 +1479,7 @@ export const QueryLab = forwardRef<
         id: result.id,
         state: "queued",
         progress: 0,
-        repeat: mode === "explain" ? 1 : repeat,
+        repeat: mode === "explain" || runtimeRef.current[t.id]?.measureBefore ? 1 : repeat,
         error: "",
         result: null,
       });
@@ -1494,6 +1652,7 @@ export const QueryLab = forwardRef<
       ...(part.cursor !== undefined ? { cursor: part.cursor } : {}),
       limit: t.limit ?? DEFAULT_ROW_LIMIT,
       timeout: layout.run_timeout || 0,
+      on_error: t.on_error ?? "stop",
       ...(explain ? { explain_format: effectiveExplainFormat } : {}),
       ...(explainParameters ? { parameters: explainParameters } : {}),
       wait: 2,
@@ -1705,7 +1864,7 @@ export const QueryLab = forwardRef<
         const fresh = run.results.map((x) => ({ ...x, statement: merge.statement }));
         const results = [...r.run.results.filter((x) => x.statement < merge.statement), ...fresh, ...r.run.results.filter((x) => x.statement > merge.statement)];
         const statements = r.run.statements.map((s) =>
-          s.index === merge.statement ? { ...s, status: run.statements[0]?.status ?? s.status, duration_ms: run.statements[0]?.duration_ms ?? s.duration_ms } : s,
+          s.index === merge.statement ? { ...s, status: run.statements[0]?.status ?? s.status, duration_ms: run.statements[0]?.duration_ms ?? s.duration_ms, server_stats: run.statements[0]?.server_stats } : s,
         );
         const at = new Date().toLocaleTimeString();
         return {
@@ -1782,6 +1941,103 @@ export const QueryLab = forwardRef<
       return;
     }
     void send(id, "editor/open", { tab_id: id, connection: connectionFor(tab), safe_updates: on }, { runSql: "" });
+  }
+
+  // ---- SQL files and the default database ------------------------------------
+
+  /** The tab's SQL as a file on disk: ⌘O opens, ⌘S saves back, ⇧⌘S asks where. */
+  async function openSqlFile() {
+    if (rt.fileBusy) return;
+    patchRuntime(tab.id, { fileBusy: true });
+    setError("");
+    try {
+      const reply = await api<EditorFileOpenReply>("editor/file/open", {});
+      if (reply.cancelled) return;
+      const id = crypto.randomUUID();
+      const base = reply.name.replace(/\.(sql|txt)$/i, "");
+      const name = clipName(base || reply.name, MAX_TAB_NAME) || reply.name;
+      setTabs((ts) => [...ts, { id, name, sql: reply.sql, parameters: "{}" }]);
+      setTabId(id);
+      patchRuntime(id, { file: { token: reply.token, name: reply.name, savedSql: reply.sql } });
+      note(id, reply.warning ? `Opened ${reply.name}. ${reply.warning}` : `Opened ${reply.name}.`);
+      window.setTimeout(() => focusTab(id));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      patchRuntime(tab.id, { fileBusy: false });
+    }
+  }
+  /** Save *id* back to its file, or ask where (Save as, or no file yet).
+   * Returns false when the user cancelled or the write failed. */
+  async function saveTab(id: string, saveAs = false): Promise<boolean> {
+    const t = tabsRef.current.find((x) => x.id === id);
+    const now = runtimeRef.current[id];
+    if (!t || now?.fileBusy) return false;
+    patchRuntime(id, { fileBusy: true });
+    try {
+      const save = (askWhere: boolean) => api<EditorFileSaveReply>("editor/file/save", {
+        sql: t.sql,
+        ...(askWhere || !now?.file ? { save_as: true, name: now?.file?.name || `${t.name}.sql` } : { token: now.file.token }),
+      });
+      let reply: EditorFileSaveReply;
+      try {
+        reply = await save(saveAs);
+      } catch (e) {
+        // Keep ownership of this operation while recovering an expired token.
+        if ((e as ApiError).code !== "unknown_token" || saveAs || !now?.file) throw e;
+        note(id, "The file binding expired. Choose where to save this SQL file.");
+        reply = await save(true);
+      }
+      if (reply.cancelled) {
+        note(id, "Save cancelled. The SQL file was not saved.");
+        return false;
+      }
+      patchRuntime(id, { file: { token: reply.token, name: reply.name, savedSql: t.sql } });
+      note(id, `Saved to ${reply.path}.`);
+      return true;
+    } catch (e) {
+      const err = e as ApiError;
+      note(id, err.message, true);
+      return false;
+    } finally {
+      patchRuntime(id, { fileBusy: false });
+    }
+  }
+  /** The default database of the tab's session (USE), remembered with the tab
+   * and applied when a new session opens. */
+  async function chooseDatabase(name: string) {
+    const id = tab.id;
+    const problem = sessionProblem(id);
+    if (problem) {
+      note(id, problem, true);
+      return;
+    }
+    const previous = tab.database;
+    changeTab({ database: name }, id);
+    const now = runtimeRef.current[id];
+    const session = now?.session;
+    if (!session || session.ended) {
+      note(id, name ? `${name} is the default database when this tab's session opens.` : "A new session starts with no default database.");
+      return;
+    }
+    if (!name) {
+      // There is no un-USE: a live session keeps its database until it closes.
+      note(id, "The open session keeps its database; a new session starts with none. Close the session to clear it.");
+      return;
+    }
+    if (session.database_name === name) return;
+    patchRuntime(id, { fileBusy: true });
+    try {
+      const via = sessionConnectionOf(id) || connectionFor(tab);
+      const reply = await api<EditorUseReply>("editor/use", { tab_id: id, connection: via, database: name });
+      if (reply.session) adoptSession(id, reply.session, { connection: via });
+      note(id, reply.session ? `Default database: ${reply.database ?? name}.` : `${name} is the default database when this tab's session opens.`);
+    } catch (e) {
+      changeTab({ database: previous }, id);
+      note(id, (e as Error).message, true);
+    } finally {
+      patchRuntime(id, { fileBusy: false });
+    }
   }
   /** Load more is only for results of the session in use, on the
    * connection in use: never another server's, or a session since closed. */
@@ -1893,13 +2149,19 @@ export const QueryLab = forwardRef<
   }
   /** Close a tab (or only its session): a transaction that is open, or may
    * be, asks Commit, Roll back or Cancel first. */
-  async function requestClose(id: string, keepTab = false): Promise<"closed" | "asks" | "running" | "error"> {
+  async function requestClose(id: string, keepTab = false, discardFile = false): Promise<"closed" | "asks" | "running" | "error"> {
     const now = runtimeRef.current[id];
     if (now?.running) {
       setError("A statement is running in this tab. Stop it before closing.");
       return "running";
     }
     if (now?.operation || now?.stopping) return "running";
+    // A file-backed tab with unsaved edits asks before anything closes.
+    const t = tabsRef.current.find((x) => x.id === id);
+    if (!discardFile && !keepTab && now?.file && t && t.sql !== now.file.savedSql) {
+      setClosingFile({ tabId: id, keepTab });
+      return "asks";
+    }
     patchRuntime(id, { operation: "close", note: "", noteError: false, sessionFeedback: { phase: "pending", message: "Closing the session…", startedAt: Date.now(), endedAt: null } });
     try {
       const reply = await api<EditorClose>("editor/close", { tab_id: id, connection: sessionConnectionOf(id) || connectionRef.current });
@@ -1913,7 +2175,7 @@ export const QueryLab = forwardRef<
       }
       if (reply.session) adoptSession(id, reply.session, {});
       patchRuntime(id, { sessionFeedback: IDLE_ACTION });
-      setClosing({ tabId: id, known: reply.reason === "transaction_open", keepTab });
+      setClosing({ tabId: id, known: reply.reason === "transaction_open", keepTab, discardFile });
       return "asks";
     } catch (e) {
       const failure = writeFailure(e);
@@ -1953,7 +2215,7 @@ export const QueryLab = forwardRef<
     const c = closing;
     if (!c) return;
     setClosing(null);
-    commit(c.tabId, () => void requestClose(c.tabId, c.keepTab));
+    commit(c.tabId, () => void requestClose(c.tabId, c.keepTab, c.discardFile));
   }
 
   // ---- Editing helpers (schema browser, history, error positions) ----------
@@ -1972,10 +2234,15 @@ export const QueryLab = forwardRef<
     if (narrow) setSheet("");
   }
   /** Open *statement* in a new tab, selected, without running it. */
-  function openStatement(statement: string) {
+  function openStatement(statement: string, indexOrigin?: SuggestedIndexOrigin) {
+    if (indexOrigin && indexOrigin.target.key !== connectionKey(connectionRef.current)) {
+      setError("The connection changed. Refresh the statements before opening the suggested index.");
+      return;
+    }
     const body = statement.trim().replace(/;$/, "");
     const sql = body ? `${body};` : "";
     const id = crypto.randomUUID();
+    if (indexOrigin) patchRuntime(id, { indexOrigin, indexDdl: sql });
     setTabs((ts) => [
       ...ts,
       {
@@ -1983,6 +2250,8 @@ export const QueryLab = forwardRef<
         name: `Query ${ts.length + 1}`,
         sql,
         parameters: "{}",
+        ...(indexOrigin ? { source: normalizeSource({ kind: "digest", digest: indexOrigin.statement.digest, schema: indexOrigin.statement.schema }) || undefined,
+          target: { ...indexOrigin.target } } : {}),
       },
     ]);
     setTabId(id);
@@ -2140,9 +2409,7 @@ export const QueryLab = forwardRef<
 
   const pendingFill = unfilled(tab, tab.sql, parseParameters(tab.parameters));
   const unbound = bindingProblem(tab);
-  const tabSchema = tab.source
-    ? connection.database || tab.source.schema || ""
-    : "";
+  const tabSchema = tab.source ? connectionFor(tab).database : "";
   const session = rt.session;
   const running = rt.running;
   const runBusy = running && !rt.explaining && (!rt.operation || rt.operation === "run");
@@ -2160,19 +2427,39 @@ export const QueryLab = forwardRef<
   else if (session && session.in_transaction === null)
     tx = ["unknown", "Transaction unknown", session.transaction_note || "This server cannot tell whether a transaction is open."];
   else if (session) tx = ["ok", session.autocommit === false ? "Manual commit" : "Auto-commit", session.autocommit === false ? "autocommit is off: changes wait for Commit" : "Each statement commits on its own."];
+  const meter = session?.transaction_meter;
+  const transactionLabel = session?.in_transaction === true
+    ? ["Transaction open", meter ? durationText(meter.age_seconds) : "",
+       meter?.rows_modified != null ? `${BigInt(meter.rows_modified).toLocaleString()} rows changed` : "",
+       meter?.blocking ? `blocking ${meter.blocking}${meter.blocking_truncated ? "+" : ""}` : ""].filter(Boolean).join(" · ")
+    : tx[1];
   const runLabel = rt.run && !running ? rt.run : null;
+  const resultIndex = tab.result_tab?.startsWith("result:") ? Number(tab.result_tab.slice(7)) : -1;
+  const insightStatements = (rt.run?.statements || []).filter(s => resultIndex >= 0
+    ? s.index === rowResults(rt.run)[resultIndex]?.statement
+    : !["pending", "running", "not_run"].includes(s.status));
   // A tab may retain a session/results from another connection. Publish only
   // evidence belonging to the connection named by the shell's active scope.
   const statusKey = connectionKey(connection);
   const statusSession = rt.sessionKey === statusKey ? session : null;
   const statusRun = rt.runKey === statusKey ? runLabel : null;
+  // Edited since the last save (a tab opened from or saved to a file).
+  const fileDirty = !!rt.file && rt.file.savedSql !== tab.sql;
+  // The default database the picker shows: the live session's DATABASE(),
+  // else the tab's choice (or the connection's) for the next session.
+  const databaseShown = session && !session.ended ? session.database_name ?? "" : connectionFor(tab).database || "";
+  const databaseNames = (schemaCatalog?.schemas || []).map((s) => s.name);
+  const databaseOptions = databaseShown && !databaseNames.includes(databaseShown)
+    ? [databaseShown, ...databaseNames]
+    : databaseNames;
+  const sessionText = statusSession
+    ? statusSession.ended ? "Session ended"
+      : `${running ? "Running" : statusSession.state === "starting" ? "Session starting" : "Session open"}${statusSession.connection_id !== null ? ` · connection ${statusSession.connection_id}` : ""}${statusSession.read_only_transactions ? " · read-only" : ""}`
+    : rt.probed && !session ? "No session" : undefined;
   useWindowStatus(`query:${statusKey}:${tab.id}`, {
     connectionState: connectionLabel(connection),
     engineVersion: statusSession?.server_version ? `${statusSession.server_product || (statusSession.engine === "mariadb" ? "MariaDB" : statusSession.engine === "mysql" ? "MySQL" : "Server")} ${statusSession.server_version}` : undefined,
-    sessionState: statusSession
-      ? statusSession.ended ? "Session ended"
-        : `${running ? "Running" : statusSession.state === "starting" ? "Session starting" : "Session open"}${statusSession.connection_id !== null ? ` · connection ${statusSession.connection_id}` : ""}${statusSession.read_only_transactions ? " · read-only" : ""}`
-      : rt.probed && !session ? "No session" : undefined,
+    sessionState: sessionText ? `${sessionText}${fileDirty ? " · Edited" : ""}` : fileDirty ? "Edited" : undefined,
     // The transaction state is in the editor toolbar, and the rows and time
     // of the run in its result tabs: the footer does not repeat them.
     lastRunAt: statusRun?.finished_at ? Date.parse(statusRun.finished_at) : undefined,
@@ -2195,12 +2482,29 @@ export const QueryLab = forwardRef<
     // values edited since.
     void startCapture(tab, statement.text, rt.explainParameters || {}, "explain", "the Explain result", true);
   }
+  const indexApplied = !!rt.indexOrigin && !!rt.indexDdl && !rt.explain && indexWasApplied(rt.run, rt.indexDdl);
+  const canMeasure = indexApplied && rt.indexOrigin?.target.key === connectionKey(connection) && rt.runKey === connectionKey(connection);
+  function measureAgain() {
+    if (!canMeasure || busy || rt.running || rt.operation || !rt.indexOrigin) return;
+    openDigest(rt.indexOrigin.statement, 1, "analyze", rt.indexOrigin.target.key, rt.indexOrigin);
+  }
+  async function compareMeasurement() {
+    if (!rt.analysis?.previous || !rt.analysis.measured || !onCompareCaptures || openingPlanRef.current) return;
+    openingPlanRef.current = true; setOpeningPlan(true);
+    try { await onCompareCaptures(rt.analysis.previous, rt.analysis); }
+    catch (e) { setError((e as Error).message); }
+    finally { openingPlanRef.current = false; setOpeningPlan(false); }
+  }
   const analysisBusy = jobBusy && captureOwner?.mode === "analyze";
   const planPane = rt.analysis || (analysisBusy && lastRun?.tabId === tab.id) ? (
     <div className="plan-pane">
       {analysisBusy && lastRun?.tabId === tab.id ? (
         <p role="status" className="capture-status"><span className="spinner" /> Analyzing {job?.progress || 0} / {job?.repeat || repeat} runs…</p>
       ) : rt.analysis && <>
+        {rt.analysis.measured && <MeasuredStatement before={rt.analysis.measured.before} capture={rt.analysis.capture}
+          onOpenInstruments={onOpenInstruments ? () => onOpenInstruments("consumer:events_statements_history") : undefined} />}
+        {rt.analysis.measured && rt.analysis.previous && onCompareCaptures && <ActionButton small data-action="compare-measurement"
+          busy={openingPlan} busyLabel="Opening…" onClick={() => void compareMeasurement()}>Compare plans</ActionButton>}
         <p>Measured: the statement ran {rt.analysis.capture.measurements.count} time(s).
           {rt.analysis.capture.measurements.median_ms != null && ` Median: ${resultDuration(rt.analysis.capture.measurements.median_ms)}.`}</p>
         <ActionButton small busy={openingPlan} busyLabel="Opening…" onClick={() => void openAnalysis()}>Explore</ActionButton>
@@ -2231,6 +2535,7 @@ export const QueryLab = forwardRef<
             onInsert={insertAtCursor}
             onQuery={appendAndRun}
             onOpenTable={onOpenTable}
+            reveal={browserReveal}
             onOpenData={tableData ? undefined : (schema, table, from) => {
               if (from !== connectionKey(connection)) {
                 setError("The connection changed. Refresh the schema browser before opening table data.");
@@ -2332,6 +2637,9 @@ export const QueryLab = forwardRef<
                         }}
                       >
                         <span className="query-tab-label">{t.name}</span>
+                        {runtime[t.id]?.file && runtime[t.id]!.file!.savedSql !== t.sql && (
+                          <span aria-hidden="true" title="Edited since the last save">●</span>
+                        )}
                         {runtime[t.id]?.session?.in_transaction === true && !runtime[t.id]?.session?.ended && (
                           <span className="tab-transaction" aria-label="Transaction open" title="Transaction open">TX</span>
                         )}
@@ -2373,6 +2681,10 @@ export const QueryLab = forwardRef<
                       setTabMenu(null);
                       startSaveQuery(tabMenu.id);
                     }}
+                    onOpenFile={() => {
+                      setTabMenu(null);
+                      void openSqlFile();
+                    }}
                     onClose={() => {
                       const id = tabMenu.id;
                       setTabMenu(null);
@@ -2404,6 +2716,16 @@ export const QueryLab = forwardRef<
               if (e.code === "KeyF" && e.shiftKey && e.altKey && !e.metaKey && !e.ctrlKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
                 void formatSql();
+              }
+              // Open SQL file (⌘O) and Save / Save as (⌘S, ⇧⌘S).
+              const fileMod = (MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey) && !e.altKey && !e.nativeEvent.isComposing;
+              if (fileMod && e.key.toLowerCase() === "o") {
+                e.preventDefault();
+                void openSqlFile();
+              }
+              if (fileMod && e.key.toLowerCase() === "s") {
+                e.preventDefault();
+                void saveTab(tab.id, e.shiftKey);
               }
             }}
           >
@@ -2470,6 +2792,29 @@ export const QueryLab = forwardRef<
                       </Checkbox>
                       <SafeUpdatesInfo />
                     </div>
+                    <div className="safe-updates-row">
+                      <Segmented
+                        label="On error"
+                        value={tab.on_error ?? "stop"}
+                        options={[
+                          { value: "stop" as const, label: "Stop", title: "Run all stops at the first statement that fails" },
+                          { value: "continue" as const, label: "Continue", title: "Run all runs every statement and counts the failures" },
+                        ]}
+                        onChange={(v) => changeTab({ on_error: v === "continue" ? "continue" : undefined })}
+                      />
+                      <InfoPopover label="On error">
+                        <p>
+                          Stop ends Run all at the first statement that fails. Continue runs every
+                          statement; Messages lists each failure with its statement number, and the
+                          summary counts what succeeded and what failed.
+                        </p>
+                        <p>
+                          By default, an InnoDB error rolls back only the failed statement. A deadlock,
+                          or a lock wait timeout with innodb_rollback_on_timeout ON, rolls back the
+                          whole transaction.
+                        </p>
+                      </InfoPopover>
+                    </div>
                   </div>
                 </EditorSplitButton>
                 <ActionButton
@@ -2495,6 +2840,24 @@ export const QueryLab = forwardRef<
                 >
                   Stop
                 </ActionButton>
+              </div>
+              <div className="toolbar-group editor-database">
+                <label className="inline-field"
+                  title="The default database of this tab's session: choosing one sends USE in it, and a new session starts in it">
+                  Database
+                  <select
+                    aria-label="Default database"
+                    data-action="database"
+                    value={databaseShown}
+                    disabled={running || busy || rt.fileBusy || !!rt.operation}
+                    onChange={(e) => void chooseDatabase(e.target.value)}
+                  >
+                    <option value="">None</option>
+                    {databaseOptions.map((name) => (
+                      <option key={name} value={name}>{name}</option>
+                    ))}
+                  </select>
+                </label>
               </div>
               {!privilegeNotice && <>
                 <span id={`${privilegeId}-run`} className="account-sr">{runGate.reason}</span>
@@ -2601,20 +2964,6 @@ export const QueryLab = forwardRef<
                   </button>
                 )}
               </div>
-              <div className="toolbar-group tx-group" aria-label="Transaction" hidden={!txOpen}>
-                {txOpen && (
-                  <>
-                    <ActionButton small data-action="commit" busy={rt.operation === "commit"} busyLabel="Committing…"
-                      disabled={rt.operation !== "commit" && (running || sessionBusy || transactionUnknown)} onClick={() => commit()}>
-                      Commit
-                    </ActionButton>
-                    <ActionButton small data-action="rollback" busy={rt.operation === "rollback"} busyLabel="Rolling back…"
-                      disabled={rt.operation !== "rollback" && (running || sessionBusy || transactionUnknown)} onClick={() => rollback()}>
-                      Roll back
-                    </ActionButton>
-                  </>
-                )}
-              </div>
               <div className="toolbar-group format-tools">
                 <IconButton
                   icon="format"
@@ -2666,10 +3015,28 @@ export const QueryLab = forwardRef<
                   rows; the editor keeps only this tab's transaction state. */}
               {session && !session.ended && (
                 <span className="tx-state" title={tx[2]} data-state={tx[1]}>
-                  <StatusPill
+                  {txOpen ? <Popover label={transactionLabel} className="editor-transaction-popover"
+                    buttonClassName="button small ghost editor-transaction-trigger"
+                    buttonTitle={transactionLabel}
+                    trigger={<StatusPill tone={session.transaction_meter?.blocking ? "watch" : session.in_transaction === true ? "info" : tx[0]} label={transactionLabel} />}>
+                    <p><bdi>{session.transaction_meter?.note || tx[2]}</bdi></p>
+                    {session.transaction_meter?.age_source === "observed" && <p>Age is a lower bound from the first observation in this tab.</p>}
+                    {session.transaction_meter?.rows_locked != null && <p>
+                      {BigInt(session.transaction_meter.rows_locked).toLocaleString()} rows locked · {BigInt(session.transaction_meter.lock_structs || "0").toLocaleString()} lock structures
+                    </p>}
+                    <p>Blocking counts waiting InnoDB transactions (row and table locks), up to 500; metadata-lock waits are in Server &gt; Locks.</p>
+                    <div className="editor-transaction-actions">
+                      <ActionButton small data-action="commit" busy={rt.operation === "commit"} busyLabel="Committing…"
+                        disabled={rt.operation !== "commit" && (running || sessionBusy || transactionUnknown)} onClick={() => commit()}>Commit</ActionButton>
+                      <ActionButton small data-action="rollback" busy={rt.operation === "rollback"} busyLabel="Rolling back…"
+                        disabled={rt.operation !== "rollback" && (running || sessionBusy || transactionUnknown)} onClick={() => rollback()}>Roll back</ActionButton>
+                      {onOpenLocks && <button className="button small" disabled={mismatch} onClick={onOpenLocks}>Show who waits</button>}
+                    </div>
+                    <ActionStatus state={rt.sessionFeedback} />
+                  </Popover> : <StatusPill
                     tone={tx[1] === "Auto-commit" && session.autocommit === null ? "unknown" : tx[0]}
                     label={tx[1] === "Auto-commit" && session.autocommit === null ? "Autocommit unknown" : tx[1]}
-                  />
+                  />}
                 </span>
               )}
               {/* In the toolbar row, so a late preview never pushes the editor down. */}
@@ -2686,9 +3053,10 @@ export const QueryLab = forwardRef<
                   {shortDigest(tab.source.digest)}
                 </code>
                 {tabSchema &&
-                  (connection.database
+                  (!rt.measureBefore && connection.database
                     ? ` · runs in ${tabSchema}, the connection's schema`
                     : ` · runs in ${tabSchema}, the schema it was recorded in`)}
+                {rt.measureBefore && !tabSchema && " · runs without a default schema"}
                 {tab.target && !unbound && ` · on ${tab.target.label}`}
               </p>
             )}
@@ -2849,6 +3217,27 @@ export const QueryLab = forwardRef<
                 e.preventDefault();
               }}
             />
+            {rt.indexOrigin && <div className="editor-insights" aria-label="Suggested index measurement">
+              <div className="editor-insight"><DigestBefore before={rt.indexOrigin.before} />
+                {indexApplied && <ActionButton small data-action="measure-again" busy={analysisBusy} busyLabel="Analyzing…"
+                  disabled={!canMeasure || busy || running || !!rt.operation || rt.stopping || !!analysisGate.disabledReason}
+                  title={!canMeasure ? "Switch back to the connection where the index was created." : analysisGate.disabledReason || undefined}
+                  onClick={measureAgain}>Measure the statement again</ActionButton>}
+              </div>
+            </div>}
+            {!running && rt.run?.kind === "run" && tab.result_tab !== "plan" && <div className="editor-insights" aria-label="Statement server stats">
+              {insightStatements.map(insightStatement =>
+              <StatementInsight key={insightStatement.index} statement={insightStatement} numbered={insightStatements.length > 1}
+                disabled={busy || !canReload(tab.id) || !!analysisGate.disabledReason || !!rt.operation || rt.stopping}
+                busy={analysisBusy}
+                onOpenInstruments={onOpenInstruments && rt.runKey === connectionKey(connection)
+                  ? () => onOpenInstruments(insightStatement.server_stats?.available === false &&
+                    insightStatement.server_stats.reason.startsWith("Performance Schema is off") ? "ps" : "consumer:events_statements_history") : undefined}
+                onAnalyze={() => {
+                  setError(""); setStatus("");
+                  setAnalysisReview({ tab: { ...tab }, sql: rt.explain ? insightStatement.text : insightStatement.sent || insightStatement.text,
+                    parameters: rt.explain ? rt.explainParameters || {} : {}, label: `statement ${insightStatement.index + 1}`, binding: analysisBinding });
+                }} />)}</div>}
             <ResultsPane
               rowPanel={{ narrow: narrow && onScreen && !tableData, blocked: narrow && sheet !== "", onOpen: () => setSheet("") }}
               run={rt.run}
@@ -2905,7 +3294,7 @@ export const QueryLab = forwardRef<
       {analysisReview && analysisReview.binding === analysisBinding && <ConfirmSheet
         title={`Run analysis on ${connectionLabel(connection)}?`}
         description={/^\s*(?:\(|SELECT\b|WITH\b|TABLE\b)/i.test(analysisReview.sql.replace(/^(?:\s+|\/\*[\s\S]*?\*\/|(?:--\s|#)[^\n]*(?:\n|$))*/, ""))
-          ? `Run analysis runs the statement ${repeat} time(s) in a read-only transaction, with a ${timeout} s time limit per run.`
+          ? `Run analysis runs the statement ${runtimeRef.current[analysisReview.tab.id]?.measureBefore ? 1 : repeat} time(s) in a read-only transaction, with a ${timeout} s time limit per run.`
           : "This is not a SELECT, so Run analysis does not run it. It prepares a SELECT that reads the same rows, when the statement allows one, in a new tab for you to review first. Nothing runs now."}
         confirmLabel="Run analysis" confirmTone="primary" busy={starting}
         onCancel={() => setAnalysisReview(null)} onConfirm={() => {
@@ -3113,6 +3502,33 @@ export const QueryLab = forwardRef<
           secondary={{ label: "Roll back and close", onClick: () => void closeDiscarding() }}
           onCancel={() => setClosing(null)}
           onConfirm={commitAndClose}
+        />
+      )}
+      {closingFile && (
+        <ConfirmSheet
+          eyebrow="Unsaved changes"
+          title={`Save ${tabs.find((t) => t.id === closingFile.tabId)?.name || "this tab"} before closing it?`}
+          description={`${runtime[closingFile.tabId]?.file?.name || "The file"} changed since the last save.`}
+          busy={!!runtime[closingFile.tabId]?.fileBusy}
+          confirmTone="primary"
+          confirmLabel="Save"
+          secondary={{
+            label: "Don't save",
+            onClick: () => {
+              const c = closingFile;
+              setClosingFile(null);
+              void requestClose(c.tabId, c.keepTab, true);
+            },
+          }}
+          onCancel={() => setClosingFile(null)}
+          onConfirm={() => {
+            const c = closingFile;
+            void saveTab(c.tabId).then((saved) => {
+              if (!saved) return;
+              setClosingFile(null);
+              void requestClose(c.tabId, c.keepTab);
+            });
+          }}
         />
       )}
     </section>

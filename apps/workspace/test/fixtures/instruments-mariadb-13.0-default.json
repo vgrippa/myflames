@@ -53,6 +53,12 @@
           "label": "I/O: per table and per file",
           "required": true,
           "view": "io"
+        },
+        {
+          "key": "memory",
+          "label": "Memory",
+          "view": "memory",
+          "required": true
         }
       ],
       "gain": "The master switch: every summary table and every event table depends on it.",
@@ -92,6 +98,12 @@
           "label": "Locks: an idle blocker's last statement",
           "required": true,
           "view": "locks"
+        },
+        {
+          "key": "memory",
+          "label": "Memory",
+          "view": "memory",
+          "required": false
         }
       ],
       "gain": "Collection per session: the events_* tables and the per-thread, account, user and host summaries. While it is on, setup_actors decides which sessions are recorded.",
@@ -590,6 +602,20 @@
       "view": "locks"
     },
     {
+      "key": "memory",
+      "label": "Memory",
+      "view": "memory",
+      "explain": "Tracked allocations by category, session and account; MariaDB also has allocator and process-list counters.",
+      "missing": [
+        "performance_schema is OFF"
+      ],
+      "optional_missing": [],
+      "rows": [
+        "ps"
+      ],
+      "status": "unavailable"
+    },
+    {
       "explain": "Where server threads spent their waiting time, by wait event and class.",
       "key": "waits",
       "label": "Waits",
@@ -966,7 +992,14 @@
       },
       "default": "off (Performance Schema's own memory always counted)",
       "enabled": null,
-      "features": [],
+      "features": [
+        {
+          "key": "memory",
+          "label": "Memory",
+          "view": "memory",
+          "required": true
+        }
+      ],
       "gain": "Memory in use and peak, per subsystem and per thread, user, host and account (memory_summary_* tables and the sys.memory_* views).",
       "id": "group:memory",
       "key": "memory",

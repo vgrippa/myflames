@@ -468,7 +468,7 @@ try {
   assert.equal(await page.$(".run-confirm"), null);
   assert.equal(await disabled('[aria-label="Run analysis on statement 2"]'), true);
   assert.equal(await disabled('[aria-label="Explain statement 2"]'), true);
-  assert.equal(await disabled('[aria-label="Use statement 2 in the editor"]'), true);
+  assert.equal(await disabled('[aria-label="Open in Query editor: statement 2"]'), true);
   assert.equal(await other("top"), true);
   assert.equal(calls("/api/live/start").length, 0, "nothing ran");
 

@@ -51,8 +51,11 @@ if (html) {
   const entry = html.match(/<script type="module" crossorigin src="\/assets\/([^"]+\.js)"/)?.[1];
   assert.ok(entry, "index.html loads the entry chunk");
   const size = (await fs.stat(path.join(assets, "assets", entry))).size;
-  // About 365 KB after the split (1.1 MB before). Home, the sidebar and the
-  // shell only: a place or view belongs in a lazy chunk.
-  assert.ok(size < 450_000, `entry chunk ${entry} is ${size} bytes; keep places and views out of it (lazy.tsx)`);
+  // About 365 KB after the split (1.1 MB before), 442 KB by 3.3.2 and 475 KB
+  // in 3.3.3, where the shell gained Back and Forward history, Cmd+K object
+  // search and recents, and readiness facts on Home. Home, the sidebar and
+  // the shell only: a place or view belongs in a lazy chunk. Next step to win
+  // room back: move main.tsx's plan screen into a lazy chunk.
+  assert.ok(size < 500_000, `entry chunk ${entry} is ${size} bytes; keep places and views out of it (lazy.tsx)`);
 }
 console.log("Bundle split contracts passed.");

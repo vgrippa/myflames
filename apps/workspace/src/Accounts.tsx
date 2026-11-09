@@ -7,6 +7,7 @@ import { ConnectionTypeBand, useWritePolicy } from "./Connections";
 import { useOpenRead, useViewOnScreen } from "./viewOnScreen";
 import { CopySql, engineLabel } from "./PerfShared";
 import { VisiblePrivilegeGate } from "./Locks";
+import { ObjectChanges } from "./ObjectChanges";
 import { ActionButton, ActionStatus, Checkbox, ConfirmSheet, CountBadge, DataTable, Disclosure, EmptyState, Fields, InspectorSection, useSince,
   SearchField, Segmented, Select, StatusDot, SummaryLine, ViewLayout, ViewStatus,
   type Column, type InspectorContent, type Selection } from "./kit";
@@ -407,6 +408,7 @@ function AccountInspector({ detail, connection, report, blocked, pending, onPend
     </div></InspectorSection>}
     <Disclosure title="Current grant statements"><CopySql label="Current grants" sql={detail.grants.join(";\n")} /></Disclosure>
     {!!detail.warnings.length && <Disclosure title="Account notes"><ul>{detail.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul></Disclosure>}
+    <ObjectChanges connection={connection} object={{ kind: "account", key: { name: detail.name, host: detail.host, role: !!detail.role } }} />
   </div>;
 }
 

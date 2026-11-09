@@ -8,8 +8,15 @@
 // screen, then saves the processlist, InnoDB status and locks as an
 // investigation); the view and the sampling window are restored with the
 // workspace.
-import { useEffect, useRef, useState } from "react";
-import { useOpenRead, useViewOnScreen } from "./viewOnScreen";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useViewOnScreen } from "./viewOnScreen";
+import {
+  baselineMismatch, compareHealth, diagnosticVerdict, metricVerdict, savedAtText, verdictText, type MetricComparison,
+} from "./baselineCompare";
+import { readingServerOf, type HealthBaselinePayload } from "./baselinesApi";
+import {
+  BaselineBar, BaselineMenu, CompareBaselineSheet, SaveBaselineSheet, defaultBaselineName, type ActiveBaseline,
+} from "./Baselines";
 import {
   api,
   type Bundle,
@@ -28,11 +35,10 @@ import {
   type WatchReport,
 } from "./api";
 import { HEALTH_INTERVALS, type ServerKind } from "./session";
-import { useConnectionReads, type Bound } from "./binding";
+import { connectionLabel, useConnectionReads, type Bound } from "./binding";
 import { StatementsBehind, type DigestAction, type LabSettings, type OpenTop } from "./SlowQueries";
 import {
   ActionStatus,
-  AutoRefresh,
   Checkbox,
   EmptyState,
   FactStrip,
@@ -56,14 +62,93 @@ import {
   isIdentifier,
   toneRank,
   trendRange,
+  useAction,
   type InspectorContent,
   type Selection,
   type TrendPoint,
 } from "./kit";
 import "./health.css";
 
-/** Automatic refresh choices (seconds); off by default. */
+/** Automatic refresh choices (seconds); -1 follows the sampling window. */
 const AUTO_INTERVALS = [10, 30, 60];
+export const HEALTH_AUTO_KEY = "myflames.health.auto.";
+export function healthAutoPreference(value: string | null): number {
+  const n = value === null || value.trim() === "" ? -1 : Number(value);
+  return n === -1 || n === 0 || AUTO_INTERVALS.includes(n) ? n : -1;
+}
+
+/** One full interval after each completed read, with no queued catch-up ticks.
+ * Control changes update the schedule without requesting a read. Manual reads
+ * share started/finished with automatic reads. A tick that starts no read
+ * (another connection's greyed report on screen) is deferred, not dropped. */
+export function createHealthRefresh({ every, enabled = true, read, now, later, cancel, backoff }: {
+  every: number;
+  enabled?: boolean;
+  read: () => void;
+  now: () => number;
+  later: (fn: () => void, ms: number) => number;
+  cancel: (id: number) => void;
+  backoff: (seconds: number) => void;
+}) {
+  let visible = false;
+  let pending = false;
+  let disposed = false;
+  let failures = 0;
+  let retryAt = 0;
+  let timer: number | undefined;
+  const clear = () => { if (timer !== undefined) cancel(timer); timer = undefined; };
+  const schedule = (ms: number) => {
+    clear();
+    if (visible && enabled && !pending && !disposed) timer = later(tick, ms);
+  };
+  const tick = () => {
+    clear();
+    if (!visible || !enabled || pending || disposed) return;
+    if (retryAt > now()) { schedule(retryAt - now()); return; }
+    // Claim the flight before invoking read, including synchronous callbacks.
+    pending = true;
+    read();
+  };
+  return {
+    setVisible(next: boolean) {
+      if (disposed || next === visible) return;
+      visible = next;
+      clear();
+      if (visible) tick();
+    },
+    configure(nextEvery: number, nextEnabled: boolean) {
+      if (disposed || (nextEvery === every && nextEnabled === enabled)) return;
+      every = nextEvery;
+      enabled = nextEnabled;
+      // Enabling automatic refresh is a preference change, not a visibility
+      // return. Its first read waits too; an existing read keeps its flight.
+      clear();
+      schedule(Math.max(every, retryAt - now()));
+    },
+    started() { pending = true; clear(); backoff(0); },
+    /** A tick that starts no read (another connection's greyed report stays
+     * on screen): the claim is released and the next tick waits a full
+     * interval; an outstanding failure backoff still wins. */
+    deferred() {
+      if (disposed) return;
+      pending = false;
+      schedule(Math.max(every, retryAt - now()));
+    },
+    finished(success: boolean) {
+      if (disposed) return;
+      pending = false;
+      failures = success ? 0 : failures + 1;
+      const delay = success ? every
+        : Math.min(60000, every * 2 ** Math.min(failures, 16));
+      // Only failures carry a deadline across a visibility change. Returning
+      // after a successful read asks once now, then waits a full interval.
+      retryAt = success ? 0 : now() + delay;
+      backoff(success ? 0 : delay / 1000);
+      schedule(delay);
+    },
+    dispose() { disposed = true; clear(); },
+  };
+}
 /** Capture when…: check interval choices (seconds). */
 const WATCH_INTERVALS = [5, 10, 30, 60];
 /** Samples kept per connection in memory for live charts and sparklines. */
@@ -123,8 +208,11 @@ export type HealthMemory = {
   report: HealthReport | null;
   history: HealthSample[];
   watch?: WatchState | null;
+  /** Compare with baseline: the baseline chosen on the connection in use
+   * (kept while the Server place is open, never saved; cleared by a switch). */
+  baseline?: ActiveBaseline<HealthBaselinePayload> | null;
 };
-export const emptyHealth: HealthMemory = { key: "", label: "", report: null, history: [], watch: null };
+export const emptyHealth: HealthMemory = { key: "", label: "", report: null, history: [], watch: null, baseline: null };
 
 /** Keep a new sample (from Health's Refresh or from Refresh all): the
  * report, and its rates appended to the history of its connection. The
@@ -140,7 +228,11 @@ export function rememberHealth(previous: HealthMemory, { key, label, report }: B
   const sample: HealthSample = { at: report.taken_at, values };
   const history = previous.key === key && !report.restarted ? previous.history : [];
   const again = previous.key === key && !!report.taken_at && previous.report?.taken_at === report.taken_at;
-  return { key, label, report, history: again ? history : [...history, sample].slice(-HISTORY_LIMIT), watch: previous.watch ?? null };
+  return {
+    key, label, report, history: again ? history : [...history, sample].slice(-HISTORY_LIMIT), watch: previous.watch ?? null,
+    // A comparison goes on with each new reading of the same connection.
+    baseline: previous.baseline && previous.baseline.key === key ? previous.baseline : null,
+  };
 }
 
 /** The connection in use changed: the readings of the previous one are
@@ -154,8 +246,11 @@ export function switchHealthConnection(previous: HealthMemory, activeKey: string
   if (before && before.key !== activeKey && (before.active || !before.capture)) {
     watch = before.capture ? { ...before, active: false, note: "" } : null;
   }
-  if (history === previous.history && watch === before) return previous;
-  return { ...previous, history, watch };
+  // A baseline belongs to the server it was chosen on.
+  const kept = previous.baseline ?? null;
+  const baseline = kept && kept.key !== activeKey ? null : kept;
+  if (history === previous.history && watch === before && baseline === kept) return previous;
+  return { ...previous, history, watch, baseline };
 }
 
 /** The conditions of *rules* in words: "threads running at or above 32". */
@@ -352,10 +447,9 @@ function Links({
   );
 }
 
-/** Until the next reading the chart waits: one line instead of a chart of
- * one point (the Live charts heading says to turn on Auto-refresh). */
-export function pendingTrendText(auto: number) {
-  return auto ? `The chart starts with the next reading (every ${auto} s).` : "The chart starts with the next reading.";
+/** Until the next reading the chart waits, without drawing a one-point chart. */
+export function pendingTrendText(_auto: number) {
+  return "Collecting…";
 }
 
 /** The inspector's trend: the sparkline once there are two readings, with
@@ -493,6 +587,20 @@ export function groupStatusText(statuses: HealthStatus[]) {
   return [problem ? plural(problem, "problem", "problems") : "", watch ? `${watch} to watch` : ""].filter(Boolean).join(", ");
 }
 
+/** A tile's line under its value while Health compares: "was 283/s", or
+ * why there is none (a counter after a restart, a tile the baseline lacks). */
+export function baselineLine(metric: HealthMetric, then: MetricComparison | undefined) {
+  if (!then || !then.inBaseline) return "Not in the baseline";
+  if (!then.compared) {
+    return (
+      <span className="baseline-not-compared" title="Not compared: the server restarted since">
+        Not compared<span className="visually-hidden">: the server restarted since</span>
+      </span>
+    );
+  }
+  return `was ${then.before === null ? "—" : healthText({ ...metric, unit: then.beforeUnit || metric.unit }, then.before)}`;
+}
+
 export function HealthView({
   connection,
   disabled,
@@ -529,7 +637,19 @@ export function HealthView({
   onOpenLesson?: (lesson: string) => void;
   onOpenInvestigation?: (id: string) => void;
 }) {
-  const [auto, setAuto] = useState(0);
+  const preferenceKey = HEALTH_AUTO_KEY + (connection.type || "production");
+  const [preference, setPreference] = useState<{ key: string; value: number } | null>(null);
+  const storedAuto = () => {
+    try { return healthAutoPreference(localStorage.getItem(preferenceKey)); } catch { return -1; }
+  };
+  const auto = preference?.key === preferenceKey ? preference.value : storedAuto();
+  const setAuto = (value: number) => {
+    setPreference({ key: preferenceKey, value });
+    try { localStorage.setItem(preferenceKey, String(value)); } catch { /* Best effort. */ }
+  };
+  const [retrySeconds, setRetrySeconds] = useState(0);
+  const refreshLoop = useRef<ReturnType<typeof createHealthRefresh> | null>(null);
+  const readSequence = useRef(0);
   const onScreen = useViewOnScreen();
   const reads = useConnectionReads(connection);
   const loading = !!reads.loading;
@@ -537,6 +657,20 @@ export function HealthView({
   const root = useRef<HTMLDivElement>(null);
   const report = memory.report;
   const key = reads.key;
+
+  // Save baseline and Compare with baseline (the Refresh menu): each sheet
+  // holds the connection, and Save the reading, of the moment it opened; a
+  // connection switch closes it.
+  const [baselineSheet, setBaselineSheet] = useState<
+    null | { kind: "save"; key: string; connection: Connection; report: HealthReport } | { kind: "compare"; key: string; connection: Connection }
+  >(null);
+  const visibilitySettings = useRef({ onScreen, disabled, baselineSheet });
+  visibilitySettings.current = { onScreen, disabled, baselineSheet };
+  const updateRefreshVisibility = useRef(() => {});
+  const baselineSaved = useAction(key);
+  useEffect(() => setBaselineSheet(null), [key]);
+  const activeBaseline = memory.baseline && memory.baseline.key === key ? memory.baseline : null;
+  const refreshOptions = () => root.current?.closest(".server-view")?.querySelector<HTMLElement>('button[aria-label="Refresh options"]');
 
   // Capture when…: the watch lives in Server's memory (it outlives this view
   // while the Server place is open); the form below is a draft until Start.
@@ -762,34 +896,107 @@ export function HealthView({
     return () => window.clearInterval(timer);
   }, [checking, onScreen, disabled, watchEvery, watchRun]);
 
-  async function load() {
-    await reads.run(
+  async function load(automatic = false) {
+    if (automatic && reads.running()) return;
+    // An automatic read never replaces another connection's greyed report:
+    // it waits for the view's own Refresh. The tick is deferred a full
+    // interval, not dropped, so a manual Refresh resumes the schedule.
+    if (automatic && memory.report && memory.key !== reads.currentKey()) {
+      refreshLoop.current?.deferred();
+      return;
+    }
+    const sequence = ++readSequence.current;
+    const readKey = reads.currentKey();
+    refreshLoop.current?.started();
+    let failed = false;
+    const result = await reads.run(
       `health:${interval}`,
       `Sampling the server for ${interval} s…`,
-      (c, signal) => api<HealthReport>("live/health", { connection: c, interval }, signal),
+      // with_identity: the server's identity read with the reading, so a
+      // baseline is filed under (and compared with) the server it came from.
+      (c, signal) => api<HealthReport>("live/health", { connection: c, interval, with_identity: true }, signal),
       (b) => onMemory((previous) => rememberHealth(previous, b)),
-      { onError: () => setAuto(0) },
+      // Explicit reads supersede even the same window, including a read
+      // shared with Refresh all. The binding's generation drops its answer.
+      { force: !automatic, onError: () => { failed = true; } },
     );
+    // An aborted or late read must not release a newer read's scheduler slot.
+    if (sequence === readSequence.current && reads.currentKey() === readKey)
+      refreshLoop.current?.finished(!!result || !failed);
   }
   const loadRef = useRef(load);
   loadRef.current = load;
 
-  // Automatic refresh is opt-in and skips ticks while a sample is running,
-  // the page is hidden, or the view is not on screen.
+  // Observe visibility on the actual view and its ancestors too: the Server
+  // place stays mounted while hidden, and narrow navigation can hide a view.
   useEffect(() => {
-    if (!auto || !onScreen) return;
-    const timer = window.setInterval(() => {
+    const loop = createHealthRefresh({
+      every: (auto === -1 ? interval : auto || interval) * 1000,
+      enabled: auto !== 0,
+      read: () => { void loadRef.current(true); },
+      now: () => performance.now(),
+      // setInterval, not setTimeout: the tick cancels its own interval on
+      // entry and the next one is registered by finished/configure, so the
+      // cadence is fixed-rate per interval and test clocks that shorten long
+      // intervals (window.setInterval) apply to it.
+      later: (fn, ms) => window.setInterval(fn, ms),
+      cancel: (id) => window.clearInterval(id),
+      backoff: setRetrySeconds,
+    });
+    refreshLoop.current = loop;
+    setRetrySeconds(0);
+    if (reads.running()) loop.started();
+    const update = () => {
+      const state = visibilitySettings.current;
       const view = root.current?.closest<HTMLElement>(".server-view");
-      const visible = !!view && view.offsetParent !== null;
-      if (!document.hidden && visible && onScreen && !disabled && !reads.running()) loadRef.current();
-    }, auto * 1000);
-    return () => window.clearInterval(timer);
-  }, [auto, disabled, onScreen]);
-
-  useOpenRead({ key: reads.key, reportKey: memory.report ? memory.key : null, ready: !disabled, busy: !!loading || reads.running(), read: () => { void loadRef.current(); } });
+      const sheetOpen = !!view?.querySelector('dialog[open], .capture-when-form');
+      loop.setVisible(state.onScreen && !state.disabled && !state.baselineSheet && !sheetOpen &&
+        document.visibilityState === "visible" && !!view && view.offsetParent !== null &&
+        getComputedStyle(view).visibility !== "hidden");
+    };
+    const observer = new MutationObserver(update);
+    // Child changes detect Capture when… opening and closing. Attribute
+    // changes catch a hidden place or a modal, without polling the DOM.
+    const view = root.current?.closest<HTMLElement>(".server-view");
+    if (view) observer.observe(view, { childList: true, subtree: true, attributes: true, attributeFilter: ["open", "hidden", "style", "class"] });
+    for (let el: HTMLElement | null = view?.parentElement || null; el; el = el.parentElement)
+      observer.observe(el, { attributes: true, attributeFilter: ["hidden", "style", "class"] });
+    document.addEventListener("visibilitychange", update);
+    window.addEventListener("resize", update);
+    updateRefreshVisibility.current = update;
+    update();
+    return () => {
+      loop.dispose();
+      observer.disconnect();
+      document.removeEventListener("visibilitychange", update);
+      window.removeEventListener("resize", update);
+      if (refreshLoop.current === loop) refreshLoop.current = null;
+    };
+  }, [key]);
+  useEffect(() => {
+    refreshLoop.current?.configure((auto === -1 ? interval : auto || interval) * 1000, auto !== 0);
+  }, [auto, interval, key]);
+  useEffect(() => { updateRefreshVisibility.current(); }, [onScreen, disabled, baselineSheet]);
+  useEffect(() => {
+    // Refresh all may finish while Health is between automatic reads. Its
+    // accepted report starts a full interval without simulating a reopening.
+    if (report && memory.key === key && !reads.running()) refreshLoop.current?.finished(true);
+  }, [report, memory.key, key]);
 
   const stale = !!report && memory.key !== key;
   const history = memory.key === key ? memory.history : [];
+  const readingServer = readingServerOf(report);
+  // A reading from another server than the baseline's is never compared.
+  const mismatch = activeBaseline && report && !stale ? baselineMismatch(readingServer, activeBaseline.baseline) : "";
+  const comparison = useMemo(
+    () => (activeBaseline && report && !stale && !mismatch ? compareHealth(activeBaseline.baseline.payload, report) : null),
+    [activeBaseline, report, stale, mismatch],
+  );
+  const baselineReason = disabled ? "The Query editor is capturing; wait." : !report ? "Load health first."
+    : stale ? `From ${memory.label}; refresh to read this server.`
+      : !readingServer || readingServer.error !== undefined ? "Refresh first: the server's identity was not read with this reading." : "";
+  const serverLabel = connectionLabel(connection);
+  const stopComparing = () => onMemory((previous) => (previous.baseline ? { ...previous, baseline: null } : previous));
   const s = report?.summary;
   const d = s?.diagnostics;
   const engine = report ? report.server_product || (report.engine === "mariadb" ? "MariaDB" : "MySQL") : "";
@@ -850,6 +1057,22 @@ export function HealthView({
             <InspectorSection title="Verdict">
               <p className="health-verdict-text">{x.verdict}</p>
             </InspectorSection>
+            {comparison && activeBaseline && (() => {
+              const then = comparison.diagnostics[x.key];
+              const now = diagnosticVerdict(x.status, x.state);
+              return (
+                <InspectorSection title="Since the baseline">
+                  <Fields
+                    label={`${x.title}: since the baseline`}
+                    rows={[
+                      [<bdi key="n">{activeBaseline.baseline.name}</bdi>, !then?.inBaseline ? "Not in the baseline"
+                        : `${then.beforeHeadline || "No reading"}${then.beforeVerdict ? ` · ${verdictText(then.beforeVerdict)}` : ""}`],
+                      ["Now", `${x.headline}${now ? ` · ${verdictText(now)}` : ""}`],
+                    ]}
+                  />
+                </InspectorSection>
+              );
+            })()}
             {behind}
             {x.recommendation && (x.status === "watch" || x.status === "problem") && (
               <InspectorSection title="What to do">
@@ -929,6 +1152,20 @@ export function HealthView({
             <InspectorSection title="Why this status">
               <p className={m.status === "watch" || m.status === "problem" ? "health-why-flag" : ""}>{m.why}</p>
             </InspectorSection>
+            {comparison && activeBaseline && (() => {
+              const then = comparison.metrics[m.key];
+              const now = metricVerdict(m.status);
+              const before = !then?.inBaseline ? "Not in the baseline" : !then.compared ? "Not compared: the server restarted since"
+                : `${then.before === null ? "—" : healthText({ ...m, unit: then.beforeUnit || m.unit }, then.before)}${then.beforeVerdict ? ` · ${verdictText(then.beforeVerdict)}` : ""}`;
+              return (
+                <InspectorSection title="Since the baseline">
+                  <Fields
+                    label={`${m.label}: since the baseline`}
+                    rows={[[<bdi key="n">{activeBaseline.baseline.name}</bdi>, before], ["Now", `${healthText(m)}${now ? ` · ${verdictText(now)}` : ""}`]]}
+                  />
+                </InspectorSection>
+              );
+            })()}
             {m.detail && (
               <InspectorSection title="In this window">
                 <p>{m.detail}</p>
@@ -951,7 +1188,7 @@ export function HealthView({
     <ViewLayout
       id="health"
       title="Health"
-      className="health-panel server-aligned-values"
+      className={`health-panel server-aligned-values${comparison ? " is-comparing" : ""}`}
       onBack={onBack}
       info={
         <>
@@ -968,11 +1205,13 @@ export function HealthView({
             label="Window"
             className="health-window"
             value={interval}
-            disabled={loading}
+            disabled={disabled}
             options={HEALTH_INTERVALS.map((v) => [v, `${v} s`])}
             onChange={(v) => onIntervalChange(+v)}
           />
-          <AutoRefresh value={auto} options={AUTO_INTERVALS} disabled={!report} onChange={setAuto} />
+          <ToolbarSelect label="Auto-refresh" className="auto-refresh" value={auto}
+            options={[[-1, "While visible"], [0, "Off"], ...AUTO_INTERVALS.map((v): [number, string] => [v, `Every ${v} s`])]}
+            onChange={(v) => setAuto(+v)} />
           <Popover
             label="Capture when conditions"
             trigger="Capture when…"
@@ -1069,7 +1308,18 @@ export function HealthView({
       }
       onRefresh={() => void load()}
       refreshDisabled={disabled}
-      loading={loading}
+      refreshMenu={
+        <BaselineMenu
+          saveReason={baselineReason}
+          compareReason={baselineReason}
+          onSave={() => report && setBaselineSheet({ kind: "save", key, connection: { ...connection }, report })}
+          onCompare={() => setBaselineSheet({ kind: "compare", key, connection: { ...connection } })}
+        />
+      }
+      // Refresh stays live while a read is on its way (the button's busy
+      // state would swallow the click): pressing it supersedes that read,
+      // newest wins. The status line below carries the read's progress.
+      loading={false}
       otherConnection={stale ? memory.label : null}
       inspector={inspector}
       inspectorEmpty={<p>Select a diagnostic or a tile to see what it measures, its rule and its numbers.</p>}
@@ -1083,6 +1333,56 @@ export function HealthView({
             doneAt={reads.doneAt}
             slowAfter={(interval + 20) * 1000}
           />
+          <ActionStatus className="baseline-status" state={baselineSaved} onDismiss={baselineSaved.reset} />
+          {auto !== 0 && retrySeconds > 0 && (
+            <div className="hint health-refresh-backoff" role="status">Automatic refresh backed off: retry in {retrySeconds} s while visible.</div>
+          )}
+          {activeBaseline && report && !stale && (
+            <BaselineBar
+              name={activeBaseline.baseline.name}
+              savedAt={savedAtText(activeBaseline.baseline.created_at)}
+              now={clockTime(report.taken_at)}
+              notes={[
+                mismatch ? `Not compared: ${mismatch}.` : "",
+                comparison?.restarted ? "Not compared: the server restarted since the baseline, so tiles built from counters show no earlier value." : "",
+                comparison?.upgraded ? `Upgraded since the baseline: ${comparison.upgraded.from} → ${comparison.upgraded.to}.` : "",
+              ]}
+              onChange={() => setBaselineSheet({ kind: "compare", key, connection: { ...connection } })}
+              onStop={stopComparing}
+            />
+          )}
+          {baselineSheet?.kind === "save" && (
+            <SaveBaselineSheet
+              kind="health"
+              connection={baselineSheet.connection}
+              server={serverLabel}
+              defaultName={defaultBaselineName(baselineSheet.report.taken_at)}
+              report={baselineSheet.report}
+              returnFocus={refreshOptions}
+              onClose={() => setBaselineSheet(null)}
+              onSaved={(item) => {
+                setBaselineSheet(null);
+                baselineSaved.show("done", `Saved the baseline \u2068${item.name}\u2069.`);
+              }}
+            />
+          )}
+          {baselineSheet?.kind === "compare" && (
+            <CompareBaselineSheet<HealthBaselinePayload>
+              kind="health"
+              connection={baselineSheet.connection}
+              server={serverLabel}
+              current={activeBaseline?.baseline.id}
+              reading={readingServer}
+              returnFocus={refreshOptions}
+              onClose={() => setBaselineSheet(null)}
+              onCompare={(baseline) => {
+                const chosenOn = baselineSheet.key;
+                setBaselineSheet(null);
+                baselineSaved.reset();
+                onMemory((previous) => ({ ...previous, baseline: { key: chosenOn, baseline } }));
+              }}
+            />
+          )}
           {watch && (checking || watch.capture) && (
             <div className="health-watch-status">
               {checking && (
@@ -1156,6 +1456,13 @@ export function HealthView({
                 {" "}
                 · {(report.elapsed_s ?? report.interval).toFixed(1)} s window at {new Date(report.taken_at).toLocaleTimeString()}
               </span>
+              {comparison && activeBaseline && (
+                <span className="baseline-summary" data-baseline-summary>
+                  {" "}
+                  · {comparison.changed ? `${plural(comparison.changed, "verdict", "verdicts")} changed` : "No verdict changed"} since{" "}
+                  <bdi>{activeBaseline.baseline.name}</bdi>, {savedAtText(activeBaseline.baseline.created_at)}
+                </span>
+              )}
             </SummaryLine>
             <FactStrip
               label="Server"
@@ -1180,13 +1487,11 @@ export function HealthView({
                   <h3 id="health-live-h">Live charts</h3>
                   {history.length < 2 ? (
                     <span className="health-live-charts-note">
-                      {auto === 0 ? "Charts start with the next reading. Turn on Auto-refresh." : `Charts start with the next reading (every ${auto} s).`}
+                      Collecting…
                     </span>
-                  ) : auto === 0 ? (
-                    <span className="health-live-charts-note">Turn on Auto-refresh to see the trend</span>
                   ) : (
                     <span className="health-live-charts-count">
-                      Last {history.length} readings, every {auto} s
+                      Last {history.length} readings
                     </span>
                   )}
                 </div>
@@ -1223,6 +1528,13 @@ export function HealthView({
                     tone={x.status as HealthStatus}
                     toneLabel={diagnosticLabel(x)}
                     label={x.title}
+                    detail={
+                      comparison?.diagnostics[x.key]?.verdictChanged ? (
+                        <span className="verdict-was" data-verdict-was={comparison.diagnostics[x.key].beforeVerdict || ""}>
+                          was {verdictText(comparison.diagnostics[x.key].beforeVerdict)}
+                        </span>
+                      ) : undefined
+                    }
                     value={<span title={x.headline}>{x.headline}</span>}
                     attrs={{ "data-diagnostic": x.key }}
                     className="health-diag"
@@ -1262,6 +1574,14 @@ export function HealthView({
                         unit={unit}
                         tone={m.status}
                         attrs={{ "data-metric": m.key }}
+                        compare={comparison ? baselineLine(m, comparison.metrics[m.key]) : undefined}
+                        badge={
+                          comparison?.metrics[m.key]?.verdictChanged ? (
+                            <span className="tile-badge verdict-was" data-verdict-was={comparison.metrics[m.key].beforeVerdict || ""}>
+                              was {verdictText(comparison.metrics[m.key].beforeVerdict)}
+                            </span>
+                          ) : undefined
+                        }
                         trend={
                           points.length > 1 ? (
                             <Sparkline points={points} label={m.label} format={(v) => healthText(m, v)} className="health-spark" />

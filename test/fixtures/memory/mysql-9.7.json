@@ -1,0 +1,138 @@
+{
+  "provenance": "Synthetic values, source-grounded SQL shape; not a live capture.",
+  "variables": {
+    "version": "9.7.2",
+    "version_comment": "MySQL Community Server",
+    "performance_schema": "ON",
+    "innodb_buffer_pool_size": 1073741824
+  },
+  "coverage": [
+    400,
+    400
+  ],
+  "consumers": [
+    [
+      "global_instrumentation",
+      "YES"
+    ],
+    [
+      "thread_instrumentation",
+      "YES"
+    ]
+  ],
+  "threads": [
+    0,
+    4
+  ],
+  "status_memory": [
+    1572864000,
+    1625292800
+  ],
+  "totals": [
+    [
+      1476395008,
+      2306867200,
+      4
+    ],
+    [
+      2076180480,
+      2726297600,
+      4
+    ]
+  ],
+  "categories": [
+    [
+      [
+        "buffer_pool",
+        1073741824,
+        1572864000
+      ],
+      [
+        "sort",
+        134217728,
+        314572800
+      ],
+      [
+        "performance_schema",
+        134217728,
+        209715200
+      ],
+      [
+        "other",
+        134217728,
+        209715200
+      ]
+    ],
+    [
+      [
+        "buffer_pool",
+        1073741824,
+        1572864000
+      ],
+      [
+        "sort",
+        734003200,
+        734003200
+      ],
+      [
+        "performance_schema",
+        134217728,
+        209715200
+      ],
+      [
+        "other",
+        134217728,
+        209715200
+      ]
+    ]
+  ],
+  "events": [
+    [
+      "memory/innodb/buf_buf_pool",
+      1073741824,
+      1572864000
+    ],
+    [
+      "memory/sql/Filesort_buffer::sort_keys",
+      734003200,
+      734003200
+    ],
+    [
+      "memory/performance_schema/accounts",
+      134217728,
+      209715200
+    ],
+    [
+      "memory/sql/THD::main_mem_root",
+      134217728,
+      209715200
+    ]
+  ],
+  "sessions": [
+    [
+      52,
+      42,
+      "app",
+      "localhost",
+      1153433600,
+      1258291200
+    ]
+  ],
+  "accounts": [
+    [
+      "app",
+      "localhost",
+      134217728,
+      209715200
+    ]
+  ],
+  "fallback_sessions": [
+    [
+      42,
+      "app",
+      "localhost",
+      83886080,
+      94371840
+    ]
+  ]
+}

@@ -3,6 +3,7 @@
 // the packaged registration. --unit needs no browser or loopback server.
 // No existing source or packaged asset is rewritten by this suite.
 import assert from "node:assert/strict";
+import { objectAuditFixture, assertObjectHistory } from "./object-changes-fixture.mjs";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { execFileSync } from "node:child_process";
@@ -288,6 +289,7 @@ let holdApply = false, releaseApply = null;
 let h;
 try {
   h = await open("/api/accounts/list", "accounts", {
+    "/api/audit/object": objectAuditFixture,
     "/": content("text/html", html), "/__accounts.js": content("text/javascript", js), "/__accounts.css": content("text/css", css),
     "/api/live/privileges": () => { privilegeReads++; return { status: 200, delay: privilegeDelay, body: { schema_version: "privileges-1.0", account: "operator@localhost", actions: { ...actions, kill: denied, explain: unknown } } }; },
     "/api/accounts/read": body => ({ status: 200, body: readDetail(body.user) }),
@@ -512,6 +514,8 @@ try {
   assert.deepEqual(probes.compact[0].privileges, ["INSERT", "UPDATE"]);
 
   await inspect();
+  await assertObjectHistory(page, "account");
+  assert.equal(count("audit/object"), 1, "one local lookup on inspector open");
   assert.equal(await h.text(".accounts-view .summary-text"), "Accounts read · 2 users · 1 role", "the read result precedes the pluralized counts");
   assert.equal(await page.$("probe"), null); // User names are rendered as text.
   assert.equal(count("accounts/apply"), 0);
