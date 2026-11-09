@@ -448,6 +448,118 @@ class TestWorkspaceLaunchGuidance(unittest.TestCase):
         self.assertNotIn('myflames-token', page)
 
 
+class TestAppUpdateRoutes(unittest.TestCase):
+    """Exercise dispatch and persistence without opening a listening socket."""
+
+    def setUp(self):
+        from types import SimpleNamespace
+        from myflames.workspace_store import WorkspaceStore
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        env = mock.patch.dict(os.environ, {'HOME': temp.name, 'USERPROFILE': temp.name,
+                                          'MYFLAMES_SECRET_BACKEND': 'vault', 'MYFLAMES_UPDATES_DIR': ''})
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop('MYFLAMES_VAULT_PASSPHRASE', None)
+        self.workspace = SimpleNamespace(store=WorkspaceStore(Path(temp.name) / 'store' / 'workspace.sqlite3'))
+        net = mock.patch('myflames.app_update._opener', side_effect=AssertionError('network'))
+        self.net = net.start()
+        self.addCleanup(net.stop)
+        browser = mock.patch('webbrowser.open', side_effect=AssertionError('browser'))
+        browser.start()
+        self.addCleanup(browser.stop)
+
+    def test_update_status_reports_auto_check_and_stage_snapshots_without_network(self):
+        staging = {'schema_version': 'app-update-stage-1.0', 'state': 'running', 'version': '99.0.0',
+                   'received': 12, 'total': 24, 'reason': None}
+        staged = {'version': '98.0.0', 'file': 'myflames-98.0.0-macos-arm64.zip', 'size': 24, 'sha256': 'a' * 64}
+        with mock.patch('myflames.app_update.staging_state', return_value=staging), \
+                mock.patch('myflames.app_update.staged_update', return_value=staged):
+            for workspace in (None, self.workspace):
+                status = api_response('/api/app/update/status', {}, workspace)
+                self.assertIs(status['auto_check'], True)
+                self.assertEqual(status['staging'], staging)
+                self.assertEqual(status['staged'], staged)
+                self.assertIsNone(status['last_check'])
+        self.assertFalse(self.workspace.store.path.exists())
+        self.net.assert_not_called()
+
+    def test_update_status_names_running_lifecycle_operations(self):
+        # Restart to update warns first: quitting stops dumps, restores and clones.
+        from types import SimpleNamespace
+        jobs = SimpleNamespace(active_operations=lambda: ['dump', 'clone'])
+        workspace = SimpleNamespace(store=self.workspace.store, lifecycle=jobs)
+        self.assertEqual(api_response('/api/app/update/status', {}, workspace)['active_operations'], ['dump', 'clone'])
+        self.assertEqual(api_response('/api/app/update/status', {}, self.workspace)['active_operations'], [])
+        self.assertEqual(api_response('/api/app/update/status', {})['active_operations'], [])
+        self.net.assert_not_called()
+
+    def test_update_settings_round_trip_and_strict_boolean(self):
+        from myflames.workspace_store import WorkspaceStore
+        expected = {'schema_version': 'app-update-settings-1.0', 'auto_check': True}
+        self.assertEqual(api_response('/api/app/update/settings', {}, self.workspace), expected)
+        self.assertFalse(self.workspace.store.path.exists())
+        for enabled in (False, True):
+            expected['auto_check'] = enabled
+            self.assertEqual(api_response('/api/app/update/settings', {'auto_check': enabled}, self.workspace), expected)
+            self.workspace.store = WorkspaceStore(self.workspace.store.path)
+            self.assertEqual(api_response('/api/app/update/settings', {}, self.workspace), expected)
+            self.assertIs(api_response('/api/app/update/status', {}, self.workspace)['auto_check'], enabled)
+        for invalid in (None, 0, 1, 'false', [], {}):
+            with self.subTest(value=invalid), self.assertRaisesRegex(ValueError, 'true or false'):
+                api_response('/api/app/update/settings', {'auto_check': invalid}, self.workspace)
+        with self.assertRaisesRegex(ValueError, 'running workspace'):
+            api_response('/api/app/update/settings', {'auto_check': False})
+        self.net.assert_not_called()
+
+    def test_update_stage_dispatch_and_post_allowlist(self):
+        from myflames.ui import _APP_UPDATE_PATHS
+        state = {'schema_version': 'app-update-stage-1.0', 'state': 'running'}
+        with mock.patch('myflames.app_update.stage_update', return_value=state) as stage:
+            self.assertEqual(api_response('/api/app/update/stage', {}, self.workspace), state)
+            stage.assert_called_once_with()
+        for path in ('/api/app/update/stage', '/api/app/update/settings'):
+            self.assertIn(path, _APP_UPDATE_PATHS)
+
+    def test_update_post_authentication_and_json_dispatch_without_listening_socket(self):
+        import io
+        from email.message import Message
+        self.workspace.origin = 'http://127.0.0.1:12345'
+        self.workspace.token = 'update-api-token'
+        self.workspace.cookie_name = 'session'
+        self.workspace.session_secret = 'update-session-secret'
+
+        def request(path, overrides):
+            handler = object.__new__(WorkspaceHandler)
+            handler.server, handler.command, handler.path = self.workspace, 'POST', path
+            headers = {'Host': '127.0.0.1:12345', 'Origin': self.workspace.origin,
+                       'Cookie': 'session=update-session-secret', 'X-Myflames-Token': self.workspace.token,
+                       'Content-Type': 'application/json', 'Content-Length': '2'}
+            headers.update(overrides)
+            handler.headers = Message()
+            for key, value in headers.items():
+                handler.headers[key] = value
+            handler.rfile, handler.connection = io.BytesIO(b'{}'), mock.Mock()
+            sent = []
+            handler._send = lambda status, body: sent.append((status, body))
+            handler.do_POST()
+            self.assertEqual(len(sent), 1)
+            return sent[0]
+
+        with mock.patch('myflames.app_update.stage_update', return_value={'state': 'running'}) as stage:
+            for path in ('/api/app/update/stage', '/api/app/update/settings'):
+                for headers in ({'Host': 'evil.test'}, {'Origin': 'https://evil.test'}, {'Origin': ''},
+                                {'Cookie': ''}, {'X-Myflames-Token': 'wrong'}):
+                    with self.subTest(path=path, headers=headers):
+                        self.assertEqual(request(path, headers)[0], 403)
+                self.assertEqual(request(path, {'Content-Type': 'text/plain'})[0], 415)
+            stage.assert_not_called()
+            self.assertEqual(request('/api/app/update/stage', {}), (200, {'state': 'running'}))
+            self.assertEqual(request('/api/app/update/settings', {}),
+                             (200, {'schema_version': 'app-update-settings-1.0', 'auto_check': True}))
+        self.assertFalse(self.workspace.store.path.exists())
+
+
 class TestWorkspaceHTTP(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -508,6 +620,31 @@ class TestWorkspaceHTTP(unittest.TestCase):
         status, body, _ = self.request('POST', '/api/app/update/status', {})
         self.assertEqual(json.loads(body)['last_check'], checked['last_check'])
         self.assertEqual(checked['last_check']['latest_version'], '99.0.0')
+
+    def test_app_update_stage_and_settings_require_session_authentication(self):
+        with mock.patch('myflames.app_update.stage_update', return_value={'state': 'running'}) as stage:
+            for path in ('/api/app/update/stage', '/api/app/update/settings'):
+                for headers in ({'Cookie': self.server.cookie_name + '=wrong'}, {'X-Myflames-Token': 'wrong'},
+                                {'Origin': 'https://example.com'}):
+                    with self.subTest(path=path, headers=headers):
+                        status, _, _ = self.request('POST', path, {}, headers=headers)
+                        self.assertEqual(status, 403)
+            stage.assert_not_called()
+            status, body, _ = self.request('POST', '/api/app/update/stage', {})
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body), {'state': 'running'})
+        try:
+            status, body, _ = self.request('POST', '/api/app/update/settings', {'auto_check': False})
+            self.assertEqual(status, 200)
+            self.assertIs(json.loads(body)['auto_check'], False)
+            status, body, _ = self.request('POST', '/api/app/update/status', {})
+            self.assertEqual(status, 200)
+            result = json.loads(body)
+            self.assertIs(result['auto_check'], False)
+            self.assertIn('staging', result)
+            self.assertIn('staged', result)
+        finally:
+            self.server.store.set_app_update_auto(True)
 
     def test_unexpected_error_is_neutral_for_live_reads_and_logged_to_stderr(self):
         import io

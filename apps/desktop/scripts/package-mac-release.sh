@@ -1,5 +1,6 @@
 #!/bin/sh
-# Build the Developer ID signed, notarized Apple Silicon DMG for a release.
+# Build the Developer ID signed, notarized Apple Silicon DMG for a release, and
+# the zip of the same app that the in-app update installs (Squirrel.Mac).
 #
 #   MYFLAMES_MAC_IDENTITY   the Developer ID Application certificate: its name
 #                           without the "Developer ID Application: " prefix, or
@@ -66,11 +67,13 @@ version=$(node -p 'require("./package.json").version')
 app=dist/mac-arm64/myflames.app
 name=myflames-$version-macos-arm64.dmg
 dmg=dist/$name
-rm -rf "$app" "$dmg" "$dmg.sha256"
+zipname=myflames-$version-macos-arm64.zip
+zip=dist/$zipname
+rm -rf "$app" "$dmg" "$dmg.sha256" "$zip" "$zip.sha256" "$zip.blockmap"
 
 # Signs every binary with the hardened runtime, notarizes and staples the app,
-# then builds the DMG around it.
-npx --no-install electron-builder --mac dmg --arm64 --config electron-builder.json --publish never \
+# then builds the DMG and the zip around it.
+npx --no-install electron-builder --mac dmg zip --arm64 --config electron-builder.json --publish never \
   -c.mac.identity="$identity" -c.mac.notarize=true \
   || die "electron-builder failed (output above); $locked_hint"
 
@@ -111,9 +114,22 @@ notarized --type execute "$mount/myflames.app"
 xcrun stapler validate -q "$mount/myflames.app"
 hdiutil detach -quiet "$mount"
 trap - EXIT
+# The update zip: the same signed, stapled app, which Squirrel.Mac installs
+# only when its signature meets the installed app's designated requirement.
+unzipped=$(mktemp -d)
+ditto -x -k "$zip" "$unzipped"
+[ -d "$unzipped/myflames.app" ] || die "$zipname does not hold myflames.app"
+codesign --verify --deep --strict "$unzipped/myflames.app"
+notarized --type execute "$unzipped/myflames.app"
+xcrun stapler validate -q "$unzipped/myflames.app"
+rm -rf "$unzipped" "$zip.blockmap"
 
-# The in-app update download stops at 150 MiB (myflames/app_update.py).
-size=$(stat -f %z "$dmg")
-[ "$size" -le $((150 * 1024 * 1024)) ] || die "$name is $size bytes, over the 150 MiB update download limit"
-(cd dist && shasum -a 256 "$name" > "$name.sha256")
+# The in-app download and update stop at 150 MiB (myflames/app_update.py).
+for file in "$dmg" "$zip"; do
+  size=$(stat -f %z "$file")
+  [ "$size" -le $((150 * 1024 * 1024)) ] || die "$file is $size bytes, over the 150 MiB update download limit"
+done
+# The app checks the update zip (and Download checks the DMG) against these.
+(cd dist && shasum -a 256 "$name" > "$name.sha256" && shasum -a 256 "$zipname" > "$zipname.sha256")
 echo "$dmg"
+echo "$zip"

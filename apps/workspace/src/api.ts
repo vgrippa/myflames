@@ -2362,6 +2362,13 @@ export type AppUpdateInfo = {
   asset_name?: string | null;
   asset_url?: string | null;
   asset_size?: number | null;
+  /** The release file the desktop app installs (macOS .zip, Windows -setup.exe). */
+  update_asset_name?: string | null;
+  update_asset_url?: string | null;
+  update_asset_size?: number | null;
+  /** The published .sha256 of the download and of the update file, when the release has one. */
+  asset_checksum_url?: string | null;
+  update_checksum_url?: string | null;
   /** When the release metadata was read (UTC, ISO 8601). */
   checked_at?: string;
   error?: string;
@@ -2380,14 +2387,38 @@ export type AppUpdateLastCheck = {
   reason: string | null;
 };
 
-/** Asks GitHub for the latest release: only when the user clicks Check for updates. */
+/** The backend's download of the update file (app_update.stage_update). */
+export type AppUpdateStaging = {
+  schema_version: "app-update-stage-1.0";
+  state: "running" | "done" | "failed";
+  version: string | null;
+  received: number;
+  total: number | null;
+  reason: string | null;
+};
+
+/** Asks GitHub for the latest release: Check for updates, or the automatic check when it is on. */
 export const checkAppUpdate = (force = false, signal?: AbortSignal) =>
   api<AppUpdateInfo>("app/update/check", { force }, signal);
 
-/** The stored last check; local only, never the network. */
+/** The stored last check, the setting and the update download; local only, never the network. */
 export const appUpdateStatus = (signal?: AbortSignal) =>
-  api<{ schema_version: "app-update-status-1.0"; current_version: string; last_check: AppUpdateLastCheck | null }>(
-    "app/update/status", {}, signal);
+  api<{
+    schema_version: "app-update-status-1.0"; current_version: string; last_check: AppUpdateLastCheck | null;
+    auto_check?: boolean; staging?: AppUpdateStaging | null;
+    staged?: { version: string; file: string; size: number } | null;
+    /** Dump, restore or clone operations running now (quitting stops them). */
+    active_operations?: string[];
+  }>("app/update/status", {}, signal);
+
+/** Download and verify the update file the last check found (answers at once; progress in status). */
+export const stageAppUpdate = (signal?: AbortSignal) =>
+  api<AppUpdateStaging>("app/update/stage", {}, signal);
+
+/** "Check for updates automatically": read, or store when *auto_check* is given. */
+export const appUpdateSettings = (auto_check?: boolean, signal?: AbortSignal) =>
+  api<{ schema_version: "app-update-settings-1.0"; auto_check: boolean }>(
+    "app/update/settings", auto_check === undefined ? {} : { auto_check }, signal);
 
 export const downloadAppUpdate = (asset_url?: string | null, release_url?: string | null, signal?: AbortSignal) =>
   api<{ status: string; download_path?: string; message: string; html_url?: string }>(

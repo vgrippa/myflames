@@ -1,10 +1,11 @@
 'use strict';
-const { app, BrowserWindow, dialog, session, shell, Menu } = require('electron');
+const { app, BrowserWindow, dialog, session, shell, Menu, ipcMain, autoUpdater } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const { backendEnvironment, startBackend, sameOrigin, externalLink, dataPath, isolatedBackendHome, toolGroupsFile } = require('./backend.cjs');
+const updater = require('./updater.cjs');
 
 app.setName('myflames');
 process.on('SIGTERM', () => app.quit());
@@ -15,20 +16,76 @@ const dataDirectory = dataPath(process.env.MYFLAMES_DESKTOP_DATA ||
 fs.mkdirSync(dataDirectory, { recursive: true, mode: 0o700 });
 app.setPath('userData', dataDirectory);
 app.setPath('sessionData', path.join(dataDirectory, 'chromium'));
+// The backend downloads and checks an update here (MYFLAMES_UPDATES_DIR);
+// updater.cjs reads it back from this fixed folder only.
+const updatesDirectory = path.join(dataDirectory, 'updates');
+fs.mkdirSync(updatesDirectory, { recursive: true, mode: 0o700 });
+updater.removeStale(updatesDirectory, app.getVersion());
 let backend, launching, window, quitting = false, fatal = false, blockedSmokeRequests = 0;
+// The update the person chose to install ({ version, relaunch }), and the
+// macOS restart that lets Squirrel.Mac quit the app itself.
+let preparedUpdate = null, preparing = null, restartingForUpdate = false;
 const smoke = process.argv.includes('--smoke') && (!app.isPackaged || process.env.MYFLAMES_DESKTOP_SMOKE === '1');
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => { if (window) { if (window.isMinimized()) window.restore(); window.focus(); } });
-  app.on('window-all-closed', () => app.quit());
+  app.on('window-all-closed', () => { if (!restartingForUpdate) app.quit(); });
   app.on('before-quit', event => {
     if (quitting) return;
     event.preventDefault(); quitting = true;
-    Promise.resolve(backend ? backend.stop() : launching?.stop()).catch(() => { fatal = true;
-      if (!smoke) dialog.showErrorBox('Backend shutdown incomplete', 'The desktop could not confirm that all owned backend processes stopped. Check your running database operations.');
-    }).finally(() => app.exit(fatal ? 1 : 0));
+    stopBackend().finally(() => { installOnQuit(); app.exit(fatal ? 1 : 0); });
   });
   app.whenReady().then(start).catch(fail);
+}
+function stopBackend() {
+  return Promise.resolve(backend ? backend.stop() : launching?.stop()).catch(() => { fatal = true;
+    if (!smoke) dialog.showErrorBox('Backend shutdown incomplete', 'The desktop could not confirm that all owned backend processes stopped. Check your running database operations.');
+  });
+}
+function bundleWritable() {
+  if (process.platform !== 'darwin') return true;
+  const bundle = path.resolve(process.execPath, '..', '..', '..'); // myflames.app
+  try { fs.accessSync(bundle, fs.constants.W_OK); fs.accessSync(path.dirname(bundle), fs.constants.W_OK); return true; }
+  catch { return false; }
+}
+function updateSupport() {
+  const reason = updater.unsupportedReason({ platform: process.platform, packaged: app.isPackaged,
+    inApplications: process.platform === 'darwin' && app.isInApplicationsFolder(), bundleWritable: bundleWritable() });
+  return { ok: true, supported: !reason, reason, ready: preparedUpdate ? preparedUpdate.version : null };
+}
+// Check the staged update again and give it to the platform installer. The
+// page passes nothing: the file and its checksum come from the updates folder.
+async function prepareUpdate() {
+  const reason = updateSupport().reason;
+  if (reason) return { ok: false, reason };
+  const staged = updater.verifyStaged(updatesDirectory, app.getVersion());
+  if (preparedUpdate && preparedUpdate.version === staged.version) return { ok: true, version: staged.version };
+  if (process.platform === 'darwin') await updater.prepareMac(autoUpdater, staged);
+  preparedUpdate = { version: staged.version, relaunch: false };
+  return { ok: true, version: staged.version };
+}
+async function restartToUpdate() {
+  if (!preparedUpdate) return { ok: false, reason: 'No update is ready to install.' };
+  if (quitting) return { ok: false, reason: 'myflames is already quitting.' };
+  if (process.platform === 'win32') { preparedUpdate.relaunch = true; app.quit(); return { ok: true }; }
+  // macOS: stop the backend and its tools first, then Squirrel.Mac closes the
+  // windows, quits, replaces the app and opens the new version.
+  quitting = true; restartingForUpdate = true;
+  await stopBackend();
+  if (fatal) { app.exit(1); return { ok: false, reason: 'The backend did not stop.' }; }
+  autoUpdater.once('error', () => app.exit(0)); // installed at the next start instead
+  setTimeout(() => app.exit(0), 15000).unref();
+  autoUpdater.quitAndInstall();
+  return { ok: true };
+}
+// Windows installs a prepared update when the app quits, after the backend
+// stopped: silently, and starting the new version after Restart to update.
+function installOnQuit() {
+  if (process.platform !== 'win32' || !preparedUpdate || fatal) return;
+  try {
+    const staged = updater.verifyStaged(updatesDirectory, app.getVersion());
+    if (staged.version === preparedUpdate.version) updater.launchWindowsInstaller(staged.file, preparedUpdate.relaunch);
+  } catch { /* offered again at the next start */ }
 }
 function fail(error) {
   if (quitting) return;
@@ -47,6 +104,7 @@ async function start() {
   env.MYFLAMES_SSH_HOME = os.homedir();
   // A downloaded update goes to the user's real Downloads folder, not the isolated HOME.
   env.MYFLAMES_DOWNLOADS_DIR = app.getPath('downloads');
+  env.MYFLAMES_UPDATES_DIR = updatesDirectory;
   // The packaged backend entry stops itself if this process dies uncleanly.
   env.MYFLAMES_DESKTOP_PARENT = String(process.pid);
   fs.mkdirSync(env.HOME, { recursive: true, mode: 0o700 });
@@ -110,6 +168,16 @@ async function start() {
     { label: 'Window', submenu: [{ role: 'minimize' }, { role: 'close' }] },
   ]));
   const contents = window.webContents;
+  // The update bridge (preload.cjs): only the workspace's own top frame, no
+  // arguments, and a plain { ok: false, reason } instead of a thrown error.
+  const handle = (channel, action) => ipcMain.handle(channel, async event => {
+    if (!updater.isWorkspaceSender(event, contents, origin)) throw new Error('Refused.');
+    try { return await action(); }
+    catch (error) { return { ok: false, reason: error instanceof Error ? error.message : 'The update could not be installed.' }; }
+  });
+  handle('myflames:update-support', async () => updateSupport());
+  handle('myflames:update-prepare', () => (preparing ||= prepareUpdate().finally(() => { preparing = null; })));
+  handle('myflames:update-restart', restartToUpdate);
   contents.on('will-attach-webview', event => event.preventDefault());
   contents.on('will-navigate', (event, url) => { if (!sameOrigin(url, origin)) event.preventDefault(); });
   contents.on('will-redirect', (event, url) => { if (!sameOrigin(url, origin)) event.preventDefault(); });
@@ -144,8 +212,12 @@ async function smokeWindow(origin) {
         continue;
       }
       const externalBlocked = await window.webContents.executeJavaScript(`fetch('http://127.0.0.1:65534/').then(() => false, () => true)`);
-      // The preload is packaged and exposes exactly one function (the Files place's dropped-file paths).
-      const preload = await window.webContents.executeJavaScript(`JSON.stringify(Object.keys(window.myflamesDesktop || {})) === '["pathForFile"]' && window.myflamesDesktop.pathForFile(new File(['x'], 'x.txt')) === ''`);
+      // The preload is packaged and exposes the Files place's dropped-file
+      // paths and the update bridge, which answers from the workspace page.
+      const preload = await window.webContents.executeJavaScript(`(async () => { const d = window.myflamesDesktop || {};
+        const support = await d.update.support();
+        return JSON.stringify(Object.keys(d)) === '["pathForFile","update"]' && JSON.stringify(Object.keys(d.update)) === '["support","prepare","restart"]' &&
+          d.pathForFile(new File(['x'], 'x.txt')) === '' && support.ok === true && typeof support.supported === 'boolean'; })()`);
       if (!externalBlocked || blockedSmokeRequests < 1) throw new Error('Desktop origin restriction failed.');
       // A smoke started from a terminal or CI does not make the window key, so
       // Chromium withholds focus events and the editor never opens completion.

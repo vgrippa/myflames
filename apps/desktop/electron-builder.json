@@ -8,7 +8,7 @@
     "grantFileProtocolExtraPrivileges": false, "resetAdHocDarwinSignature": true
   },
   "directories": { "output": "dist" },
-  "files": ["main.cjs", "backend.cjs", "preload.cjs", "package.json"],
+  "files": ["main.cjs", "backend.cjs", "preload.cjs", "updater.cjs", "package.json"],
   "extraResources": [
     { "from": "build/backend/myflames-backend", "to": "backend" },
     { "from": "../../LICENSE", "to": "licenses/MyFlames-LICENSE" },
@@ -21,7 +21,8 @@
     "target": ["dir"], "category": "public.app-category.developer-tools",
     "icon": "../../docs/brand/myflames-app-icon.icns",
     "identity": null, "notarize": false,
-    "hardenedRuntime": true, "entitlements": "entitlements.mac.plist", "entitlementsInherit": "entitlements.mac.plist"
+    "hardenedRuntime": true, "entitlements": "entitlements.mac.plist", "entitlementsInherit": "entitlements.mac.plist",
+    "artifactName": "${productName}-${version}-macos-${arch}.${ext}"
   },
   "dmg": { "artifactName": "${productName}-${version}-macos-${arch}.${ext}", "writeUpdateInfo": false },
   "win": { "target": [{ "target": "nsis", "arch": ["x64"] }], "icon": "../../docs/brand/myflames-app-icon.png" },

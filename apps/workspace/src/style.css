@@ -5098,6 +5098,46 @@ kbd {
 .brand-name {
   font-weight: 600;
 }
+/* The update badge beside the brand (UpdateBadge.tsx): a newer version in
+   accent, its download as a progress ring, ready to install in green. On the
+   icon rail it becomes a dot on the logo's corner; Settings lists it too. */
+.update-badge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--accent-fill);
+  color: var(--accent-ink);
+  cursor: pointer;
+}
+.update-badge:hover { background: var(--accent-hover); }
+.update-badge:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.update-badge[data-phase="ready"] { background: var(--ok); color: #ffffff; }
+.update-badge:is([data-phase="downloading"], [data-phase="preparing"]) { background: var(--accent-soft); color: var(--accent); }
+.update-badge .spinner { width: 12px; height: 12px; border-width: 2px; }
+.update-ring-track { fill: none; stroke: var(--accent-line); stroke-width: 2.5; }
+.update-ring-value { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linecap: round; transition: stroke-dashoffset 0.3s ease; }
+@media (prefers-reduced-motion: reduce) {
+  .update-ring-value { transition: none; }
+}
+@media (max-width: 900px) and (min-width: 651px) {
+  .sidebar:not(:has(> .sidebar-drawer.open)) .brand-group { position: relative; }
+  .sidebar:not(:has(> .sidebar-drawer.open)) .update-badge {
+    position: absolute;
+    top: 1px;
+    right: -1px;
+    width: 12px;
+    height: 12px;
+    box-shadow: 0 0 0 2px var(--surface-muted);
+  }
+  .sidebar:not(:has(> .sidebar-drawer.open)) .update-badge > * { display: none; }
+  .sidebar:not(:has(> .sidebar-drawer.open)) .update-badge:is([data-phase="downloading"], [data-phase="preparing"]) { background: var(--accent); }
+}
 /* Update dialog */
 .update-dialog {
   max-width: 480px;
@@ -5157,6 +5197,24 @@ kbd {
   background: var(--ok-soft);
   color: var(--ok-text);
 }
+.update-status-badge.ready {
+  background: var(--ok-soft);
+  color: var(--ok-text);
+}
+/* Update: the download's progress (indeterminate while verifying and preparing). */
+.update-progress {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--ink-secondary);
+}
+.update-progress progress {
+  width: 100%;
+  height: 6px;
+  accent-color: var(--accent);
+}
+.update-in-place-hint { margin: 0; }
 .update-release-title {
   font-size: var(--text-base);
   color: var(--ink);

@@ -1821,6 +1821,15 @@ class LifecycleTests(unittest.TestCase):
             job.wait(5)
             self.assertEqual(job.snapshot()['state'], 'done', job.snapshot())
 
+    def test_active_operations_lists_only_queued_and_running_jobs(self):
+        registry = lc.LifecycleJobs()
+        self.addCleanup(registry.close)
+        self.addCleanup(registry.jobs.clear)  # runs first: close() would stop these stand-ins
+        for key, operation, state in (('a', 'dump', 'done'), ('b', 'restore', 'running'),
+                                      ('c', 'clone', 'queued'), ('d', 'dump', 'failed')):
+            registry.jobs[key] = types.SimpleNamespace(operation=operation, state=state)
+        self.assertEqual(registry.active_operations(), ['restore', 'clone'])
+
     def test_review_marker_redaction_does_not_disable_cancel(self):
         for password in ('a', '41'):
             conn = ReplayConnection()
