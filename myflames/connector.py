@@ -68,6 +68,12 @@ def bundled_client_dir():
 
 
 def _same_dir(a, b):
+    """Whether two spellings name one folder: by file identity when both exist
+    (case-insensitive volumes, junctions), else by their resolved paths."""
+    try:
+        return os.path.samefile(a, b)
+    except (OSError, ValueError):
+        pass
     try:
         return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
     except (OSError, ValueError):

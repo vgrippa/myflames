@@ -254,6 +254,7 @@ class TestDigest(unittest.TestCase):
         self.assertEqual(os.listdir(lab.cache), [])
         self.assertFalse(os.path.exists(lab.out))
 
+    @unittest.skipIf(os.name == 'nt', 'Windows does not rename over a file that is open')
     def test_the_verified_bytes_are_the_ones_extracted_even_if_the_file_is_swapped(self):
         # Abuse case: another writer replaces the cached archive right after
         # its digest was checked. Extraction reads the handle that was hashed.
@@ -280,6 +281,21 @@ class TestDigest(unittest.TestCase):
         with self.assertRaisesRegex(fetcher.Refused, 'symbolic link'):
             lab.fetch()
         self.assertFalse(os.path.exists(lab.out))
+
+    @unittest.skipUnless(hasattr(os, 'mkfifo'), 'POSIX FIFOs')
+    def test_a_fifo_in_the_cache_is_refused_without_hanging(self):
+        lab = Lab(self, 'darwin-arm64', mac_files())
+        os.unlink(lab.archive)
+        os.mkfifo(lab.archive)
+        with self.assertRaisesRegex(fetcher.Refused, 'not a regular file'):
+            lab.fetch()
+
+    @unittest.skipUnless(hasattr(os, 'getuid'), 'POSIX ownership')
+    def test_a_cached_archive_others_can_write_is_refused(self):
+        lab = Lab(self, 'darwin-arm64', mac_files())
+        os.chmod(lab.archive, 0o666)
+        with self.assertRaisesRegex(fetcher.Refused, 'others can write'):
+            lab.fetch()
 
     def test_a_matching_cached_archive_is_used_without_a_download(self):
         lab = Lab(self, 'darwin-arm64', mac_files())

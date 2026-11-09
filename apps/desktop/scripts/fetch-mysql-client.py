@@ -126,18 +126,20 @@ def open_verified(path, entry):
 
     The handle that was hashed is the one extracted, so swapping the file
     after the check changes nothing. A symlink, anything but a regular file
-    and, on POSIX, a file another user owns are refused.
+    and, on POSIX, a file another user owns or others can write are refused.
     """
     if os.path.islink(path):
         raise Refused('%s is a symbolic link' % path)
-    fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_BINARY', 0))
+    # O_NONBLOCK: a FIFO in place of the archive must not hang the open.
+    fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0)
+                 | getattr(os, 'O_BINARY', 0))
     handle = os.fdopen(fd, 'rb')
     try:
         info = os.fstat(handle.fileno())
         if not stat.S_ISREG(info.st_mode):
             raise Refused('%s is not a regular file' % path)
-        if hasattr(os, 'getuid') and info.st_uid != os.getuid():
-            raise Refused('%s belongs to another user' % path)
+        if hasattr(os, 'getuid') and (info.st_uid != os.getuid() or info.st_mode & 0o022):
+            raise Refused('%s belongs to another user or others can write it' % path)
         digest, total = _hash(handle, entry['size'])
         if total == entry['size'] and digest == entry['sha256']:
             handle.seek(0)

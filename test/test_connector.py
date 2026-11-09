@@ -391,6 +391,10 @@ class TestBundledClientResolution(unittest.TestCase):
             alias = os.path.join(self.tmp.name, "alias")
             os.symlink(self.bundled, alias)
             self.same(self.resolve(alias, self.installed), installed)
+        # Another case on a case-insensitive volume (the macOS and Windows default).
+        upper = self.bundled.replace("mysql-client", "MYSQL-CLIENT")
+        if os.path.isdir(upper):
+            self.same(self.resolve(upper, self.installed), installed)
 
     def test_bundled_mysql_is_the_last_resort(self):
         self.same(self.resolve(self.installed, self.bundled), self.program)
