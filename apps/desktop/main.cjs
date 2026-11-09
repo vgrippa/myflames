@@ -32,6 +32,9 @@ if (!app.requestSingleInstanceLock()) app.quit();
 else {
   // After the lock: a second launch must not remove an update being staged.
   updater.removeStale(updatesDirectory, app.getVersion());
+  // An autoUpdater error with no listener would throw in the main process;
+  // prepareMac listens while it works, and this keeps any later one harmless.
+  autoUpdater.on('error', () => {});
   app.on('second-instance', () => { if (window) { if (window.isMinimized()) window.restore(); window.focus(); } });
   app.on('window-all-closed', () => { if (!restartingForUpdate) app.quit(); });
   // Every quit waits for the backend and its tools to stop: a second Quit
@@ -69,7 +72,10 @@ async function prepareUpdate() {
   if (reason) return { ok: false, reason };
   const staged = updater.verifyStaged(updatesDirectory, app.getVersion());
   if (preparedUpdate && preparedUpdate.version === staged.version) return { ok: true, version: staged.version };
-  if (process.platform === 'darwin') await updater.prepareMac(autoUpdater, staged);
+  if (process.platform === 'darwin') {
+    // A result after the page stopped waiting still makes the update ready.
+    await updater.prepareMac(autoUpdater, staged, { onLate: () => { preparedUpdate = { version: staged.version, relaunch: false }; } });
+  }
   preparedUpdate = { version: staged.version, relaunch: false };
   return { ok: true, version: staged.version };
 }

@@ -168,8 +168,9 @@ export function startAutomaticChecks() {
   if (automatic !== null) return;
   loadUpdateStatus();
   const tick = () => {
+    // Never while Software update is open: the release it shows stays the one Update installs.
     if (state.autoCheck === true && state.loaded && !state.checking && !state.installing && !state.ready
-        && automaticCheckDue(state.last)) void checkForUpdates();
+        && !state.dialog && automaticCheckDue(state.last)) void checkForUpdates();
   };
   window.setTimeout(tick, 10_000);
   automatic = window.setInterval(tick, 60 * 60 * 1000);
@@ -189,8 +190,10 @@ function run(work: () => Promise<void>): Promise<void> {
 }
 
 /** Update: check again when needed, download and verify the update file, then
- * hand it to the desktop app. Progress and errors land in the shared state. */
-export function installUpdate(): Promise<void> {
+ * hand it to the desktop app. Progress and errors land in the shared state.
+ * *expected* is the version the person is looking at: a newer release found
+ * since then is shown first instead of installed unseen. */
+export function installUpdate(expected?: string | null): Promise<void> {
   return run(async () => {
     const bridge = desktopUpdate();
     if (!bridge || state.ready) return;
@@ -205,7 +208,20 @@ export function installUpdate(): Promise<void> {
       if (!info?.update_available) {
         throw new Error(state.last?.outcome === "failed" ? `Could not check: ${state.last.reason}` : "No newer version was found.");
       }
-      const staging = await stageAppUpdate();
+      if (expected && info.latest_version !== expected) {
+        if (state.dialog) set({ dialog: { info } });
+        throw new Error(`myflames ${info.latest_version} was released since this window opened. Check its details, then click Update again.`);
+      }
+      let staging: AppUpdateStaging | null;
+      try {
+        staging = await stageAppUpdate();
+      } catch (e) {
+        // The download may have started even though its answer was lost: adopt it.
+        let current: AppUpdateStaging | null = null;
+        try { current = (await appUpdateStatus()).staging ?? null; } catch { /* keep the first error */ }
+        if (!current || current.state === "failed" || current.version !== info.latest_version) throw e;
+        staging = current;
+      }
       set({ staging });
       await finishInstall(bridge, staging);
     } catch (e) {

@@ -16,7 +16,8 @@ const { sameOrigin } = require('./backend.cjs');
 
 const MANIFEST = 'staged-update.json';
 const MAX_MANIFEST_BYTES = 4096;
-const FEED_LIFETIME = 120000; // Squirrel.Mac reads the feed and the zip within this
+const FEED_LIFETIME = 120000; // how long the page waits for Squirrel.Mac to stage the update
+const FEED_CAP = 300000;      // the loopback feed never outlives this, even for a late result
 const FILE_NAME = /^myflames-([0-9]+\.[0-9]+\.[0-9]+)-(macos|windows)-(arm64|x64|universal)(-setup)?\.(zip|exe)$/i;
 // The backend's partial downloads (app_update.stage_update).
 const PART_NAME = /^\.myflames-stage-[^/\\]*\.part$/;
@@ -196,28 +197,37 @@ function squirrelReason(error) {
 }
 
 // Hand a verified zip to Squirrel.Mac; resolves when it has staged the update.
-async function prepareMac(autoUpdater, staged, { lifetime = FEED_LIFETIME } = {}) {
-  const feed = await serveOnce(staged.file, staged.size, { lifetime });
-  try {
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => finish(new Error('Installing the update took too long.')), lifetime);
-      const onDownloaded = () => finish();
-      const onError = error => finish(new Error(squirrelReason(error)));
-      const onNone = () => finish(new Error('The update could not be installed.'));
-      function finish(error) {
-        clearTimeout(timer);
-        autoUpdater.removeListener('update-downloaded', onDownloaded);
-        autoUpdater.removeListener('error', onError);
-        autoUpdater.removeListener('update-not-available', onNone);
-        if (error) reject(error); else resolve();
-      }
-      autoUpdater.on('update-downloaded', onDownloaded);
-      autoUpdater.on('error', onError);
-      autoUpdater.on('update-not-available', onNone);
-      autoUpdater.setFeedURL({ url: feed.url, serverType: 'json' });
-      autoUpdater.checkForUpdates();
-    });
-  } finally { feed.close(); }
+// The page waits *lifetime*; Squirrel.Mac cannot be cancelled, so after that
+// its result is still followed (onLate on a late success) and the feed stays
+// up until it settles or FEED_CAP passes.
+async function prepareMac(autoUpdater, staged, { lifetime = FEED_LIFETIME, cap = FEED_CAP, onLate } = {}) {
+  const feed = await serveOnce(staged.file, staged.size, { lifetime: Math.max(cap, lifetime) });
+  let waiting = true;
+  const settled = new Promise((resolve) => {
+    const onDownloaded = () => done(null, true);
+    const onError = error => done(new Error(squirrelReason(error)), false);
+    const onNone = () => done(new Error('The update could not be installed.'), false);
+    function done(error, downloaded) {
+      autoUpdater.removeListener('update-downloaded', onDownloaded);
+      autoUpdater.removeListener('error', onError);
+      autoUpdater.removeListener('update-not-available', onNone);
+      feed.close();
+      if (!waiting && downloaded && onLate) onLate();
+      resolve(error);
+    }
+    autoUpdater.on('update-downloaded', onDownloaded);
+    autoUpdater.on('error', onError);
+    autoUpdater.on('update-not-available', onNone);
+  });
+  autoUpdater.setFeedURL({ url: feed.url, serverType: 'json' });
+  autoUpdater.checkForUpdates();
+  let timer;
+  const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve('timeout'), lifetime); timer.unref?.(); });
+  const outcome = await Promise.race([settled, timeout]);
+  clearTimeout(timer);
+  waiting = false;
+  if (outcome === 'timeout') throw new Error('Installing the update took too long. myflames keeps trying; check again in a moment.');
+  if (outcome) throw outcome;
 }
 
 // The NSIS installer electron-builder makes: /S silent, --updated keeps the

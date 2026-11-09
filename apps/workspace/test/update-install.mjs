@@ -340,6 +340,65 @@ try {
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => !document.querySelector("dialog.update-dialog"));
 
+  // R1 (review C1). A refresh that fails when the dialog opens: the dialog
+  // says why and offers Check again, never "up to date".
+  await page.evaluate(() => { localStorage.removeItem("__bridgeSupport"); localStorage.removeItem("__bridgePrepare"); });
+  statusMock = statusBody(record("available"));
+  checkMock = { status: 200, body: info(record("failed", { reason: "GitHub could not be reached" }),
+    { error: "Could not check for updates: GitHub could not be reached.", reason: "GitHub could not be reached" }) };
+  await page.reload({ waitUntil: "networkidle0" });
+  await page.waitForSelector(".sidebar .brand-group button.update-badge[data-phase=available]");
+  await page.click(".sidebar .brand-group .update-badge");
+  await page.waitForSelector("dialog.update-dialog[open]");
+  const failedText = await page.$eval("dialog.update-dialog", (e) => e.textContent);
+  assert.match(failedText, /Could not check for updates: GitHub could not be reached\./);
+  assert.doesNotMatch(failedText, /up to date/i, "a failed refresh is never shown as up to date");
+  assert.ok((await dialogButtons()).includes("Check again"), "Check again is offered");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.update-dialog"));
+
+  // R2 (review C2). Restart when the running operations cannot be read: ask first.
+  checkMock = { status: 200, body: info(record("available"), updateFields) };
+  await page.evaluate(() => localStorage.setItem("__bridgeSupport",
+    JSON.stringify({ ok: true, supported: true, reason: null, ready: "3.2.0" })));
+  statusMock = statusBody(record("available"));
+  await page.reload({ waitUntil: "networkidle0" });
+  await badgePhase("ready");
+  await page.click(".sidebar .brand-group .update-badge");
+  await page.waitForSelector("dialog.update-dialog[open]");
+  const restartsBefore = await page.evaluate(() => window.__bridgeCalls.filter((c) => c === "restart").length);
+  statusMock = { status: 500, body: { error: "Could not read the workspace." } };
+  await page.locator("dialog.update-dialog button ::-p-text(Restart to update)").click();
+  await page.waitForFunction(() => /could not check whether a dump, restore or clone is running/
+    .test(document.querySelector("dialog.update-dialog")?.textContent || ""), { timeout: 10000 });
+  assert.equal(await page.evaluate(() => window.__bridgeCalls.filter((c) => c === "restart").length), restartsBefore,
+    "no restart while the running operations are unknown");
+  await page.locator("dialog.update-dialog button ::-p-text(Restart anyway)").click();
+  await page.waitForFunction((n) => window.__bridgeCalls.filter((c) => c === "restart").length === n + 1, { timeout: 10000 }, restartsBefore);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.update-dialog"));
+
+  // R3 (review C4). The stage request's answer is lost but the download
+  // started: the page adopts it, and the update still becomes ready.
+  await page.evaluate(() => localStorage.removeItem("__bridgeSupport"));
+  let lostStaging = null;
+  statusMock = () => statusBody(record("available"), { staging: lostStaging });
+  stageMock = { status: 502, body: { error: "The connection was reset." } };
+  await page.reload({ waitUntil: "networkidle0" });
+  await page.waitForSelector(".sidebar .brand-group button.update-badge[data-phase=available]");
+  await page.click(".sidebar .brand-group .update-badge");
+  await page.waitForSelector("dialog.update-dialog[open]");
+  await page.waitForSelector("dialog.update-dialog .dialog-actions .button.primary:not([disabled])");
+  lostStaging = staging("running", 10, 100);
+  const preparesBefore = await page.evaluate(() => window.__bridgeCalls.filter((c) => c === "prepare").length);
+  await page.locator("dialog.update-dialog .dialog-actions .button.primary").click();
+  await badgePhase("downloading");
+  lostStaging = staging("done", 100, 100);
+  await badgePhase("ready");
+  assert.equal(await page.evaluate(() => window.__bridgeCalls.filter((c) => c === "prepare").length), preparesBefore + 1,
+    "prepare ran for the adopted download");
+  stageMock = null;
+
   assert.deepEqual(external, [], "no request ever leaves this machine (GitHub included)");
   assert.deepEqual(h.errors, []);
   console.log(`Update install passed (${countPath("/api/app/update/check")} checks, all mocked or local). Screenshots: ${shots}`);

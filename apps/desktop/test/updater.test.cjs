@@ -239,7 +239,7 @@ test('a refused update (for example a different signature) is reported, not inst
   const none = fakeUpdater(emitter => emitter.emit('update-not-available'));
   await assert.rejects(updater.prepareMac(none, staged), /could not be installed/);
   const silent = fakeUpdater(() => {});
-  await assert.rejects(updater.prepareMac(silent, staged, { lifetime: 50 }), /too long/);
+  await assert.rejects(updater.prepareMac(silent, staged, { lifetime: 50, cap: 200 }), /too long/);
 });
 
 test('Windows runs the installer silently with fixed arguments and no shell', () => {
@@ -252,4 +252,24 @@ test('Windows runs the installer silently with fixed arguments and no shell', ()
   assert.deepEqual(calls[0], ['C:\\data\\updates\\myflames-3.4.0-windows-x64-setup.exe', ['--updated', '/S', '--force-run'],
     { cwd: path.dirname('C:\\data\\updates\\myflames-3.4.0-windows-x64-setup.exe'), detached: true, stdio: 'ignore', windowsHide: true, shell: false }]);
   assert.equal(calls[1], 'unref');
+});
+
+test('a result after the page stopped waiting is still followed (Codex review C3)', async () => {
+  const dir = folder(); const staged = updater.verifyStaged((stage(dir), dir), '3.3.3', 'darwin');
+  // Late success: Squirrel.Mac staged the update after the wait ended; the app records it.
+  let late = 0;
+  const slow = fakeUpdater(() => {});
+  await assert.rejects(updater.prepareMac(slow, staged, { lifetime: 30, cap: 2000, onLate: () => { late += 1; } }), /too long/);
+  assert.equal(slow.listenerCount('update-downloaded'), 1, 'still listening after the timeout');
+  const answer = await (await fetch(slow.options.url)).json();
+  assert.equal((await fetch(answer.url)).status, 200, 'the feed still serves the zip');
+  slow.emit('update-downloaded');
+  assert.equal(late, 1);
+  assert.equal(slow.listenerCount('update-downloaded') + slow.listenerCount('error'), 0);
+  await assert.rejects(fetch(slow.options.url), undefined, 'the feed closed once it settled');
+  // Late error: absorbed by the listener prepareMac keeps (no throw from emit).
+  const failing = fakeUpdater(() => {});
+  await assert.rejects(updater.prepareMac(failing, staged, { lifetime: 30, cap: 2000, onLate: () => { late += 1; } }), /too long/);
+  assert.doesNotThrow(() => failing.emit('error', new Error('late failure')));
+  assert.equal(late, 1, 'a late error never marks the update ready');
 });

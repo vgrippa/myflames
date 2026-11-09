@@ -9,7 +9,7 @@ import { Icon } from "./components";
 import { useFocusScope } from "./kit";
 import { hasUnsavedWork } from "./unsavedWork";
 import {
-  desktopUpdate, installUpdate, readUpdateSupport, restartToUpdate, stagingPercent, useUpdateStatus,
+  checkForUpdates, desktopUpdate, installUpdate, readUpdateSupport, restartToUpdate, stagingPercent, useUpdateStatus,
 } from "./updateStatus";
 
 const megabytes = (bytes: number) => `${Math.max(1, Math.round(bytes / 1_000_000))} MB`;
@@ -37,8 +37,8 @@ export function UpdateDialog({
   const [downloadResult, setDownloadResult] = useState<{ status: string; message: string; download_path?: string; html_url?: string } | null>(null);
   const [error, setError] = useState("");
   const [restarting, setRestarting] = useState(false);
-  /** What a restart would lose (running operations, unsaved changes), shown before Restart anyway. */
-  const [stops, setStops] = useState<{ operations: string[]; unsaved: boolean } | null>(null);
+  /** What a restart would lose (running operations, unsaved changes, or operations it could not check), shown before Restart anyway. */
+  const [stops, setStops] = useState<{ operations: string[]; unsaved: boolean; unknown: boolean } | null>(null);
 
   useFocusScope(dialog, {
     open: true,
@@ -54,12 +54,14 @@ export function UpdateDialog({
   }, []);
 
   async function handleDownload() {
-    if (!updateInfo) return;
     setDownloading(true);
     setError("");
     setDownloadResult(null);
     try {
-      const res = await downloadAppUpdate(updateInfo.asset_url, updateInfo.html_url);
+      // Opened without a fresh answer (after a reload): the download needs the asset a check finds.
+      const info = updateInfo ?? await checkForUpdates();
+      if (!info) { setError("Could not read the latest release. Try again."); return; }
+      const res = await downloadAppUpdate(info.asset_url, info.html_url);
       setDownloadResult(res);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Could not download the update.");
@@ -73,17 +75,24 @@ export function UpdateDialog({
     setRestarting(true);
     if (!confirmed) {
       let running: string[] = [];
-      try { running = (await appUpdateStatus()).active_operations ?? []; } catch { /* unknown: restart as asked */ }
+      let unknown = false;
+      try { running = (await appUpdateStatus()).active_operations ?? []; } catch { unknown = true; }
       const unsaved = hasUnsavedWork();
-      if (running.length || unsaved) { setStops({ operations: running, unsaved }); setRestarting(false); return; }
+      if (running.length || unsaved || unknown) { setStops({ operations: running, unsaved, unknown }); setRestarting(false); return; }
     }
     await restartToUpdate();
     setRestarting(false);
   }
 
   const current = updateInfo?.current_version || appVersion();
-  const latest = s.ready || updateInfo?.latest_version || current;
-  const isNewer = !!s.ready || (updateInfo?.update_available ?? false);
+  // What is known without a fresh answer too: a version being prepared or
+  // downloaded, or a current stored check that found one.
+  const knownNewer = s.ready || s.staging?.version
+    || (s.last?.outcome === "available" ? s.last.latest_version : null);
+  const latest = s.ready || updateInfo?.latest_version || knownNewer || current;
+  const isNewer = !!s.ready || (updateInfo?.update_available ?? false) || (!updateInfo && !!knownNewer);
+  // No answer and nothing known: the last check failed (or could not run).
+  const unknownState = !updateInfo && !isNewer;
   // In place: the desktop app can replace this copy. Unknown (null) until it answers.
   const inPlace = desktopUpdate() ? (s.support ? s.support.supported : null) : false;
   const percent = stagingPercent(s.staging);
@@ -146,6 +155,15 @@ export function UpdateDialog({
             <Icon name="import" size={14} />
             <span>myflames {latest} is available.</span>
           </div>
+        ) : unknownState ? (
+          <div className="update-status-badge available" role="status">
+            <Icon name="warning" size={14} />
+            <span>
+              {s.last?.outcome === "failed" && s.last.reason
+                ? `Could not check for updates: ${s.last.reason}.`
+                : "Could not read the latest release."}
+            </span>
+          </div>
         ) : (
           <div className="update-status-badge up-to-date">
             <Icon name="check" size={14} />
@@ -177,6 +195,11 @@ export function UpdateDialog({
         {stops && stops.operations.length > 0 && (
           <p className="form-error" role="alert">
             {runningText(stops.operations)}. Restarting stops {stops.operations.length > 1 ? "them" : "it"} before {stops.operations.length > 1 ? "they finish" : "it finishes"}.
+          </p>
+        )}
+        {stops?.unknown && (
+          <p className="form-error" role="alert">
+            myflames could not check whether a dump, restore or clone is running. Restarting stops any that are.
           </p>
         )}
         {stops?.unsaved && (
@@ -218,6 +241,11 @@ export function UpdateDialog({
         <button type="button" className="text-button" onClick={onClose}>
           {isNewer ? "Later" : "Close"}
         </button>
+        {unknownState && (
+          <button type="button" className="button primary" disabled={s.checking} onClick={() => void checkForUpdates()}>
+            {s.checking ? (<><span className="spinner" aria-hidden="true" /><span>Checking…</span></>) : <span>Check again</span>}
+          </button>
+        )}
         {isNewer && !s.ready && (inPlace === false || s.installError) && (
           <button
             type="button"
@@ -240,7 +268,7 @@ export function UpdateDialog({
             type="button"
             className="button primary"
             disabled={s.installing || inPlace === null}
-            onClick={() => void installUpdate()}
+            onClick={() => void installUpdate(updateInfo?.update_available ? updateInfo.latest_version : null)}
           >
             {s.installing ? (
               <>
