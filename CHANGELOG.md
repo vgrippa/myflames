@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **README screenshots show myflames 3.3.3.** Home, Visual Explain, Query editor and Server Health were captured again from the 3.3.3 workspace (they showed 3.1.1). The website's documentation and homepage copy them from `docs/screenshots/`.
 
+### Fixed
+
+- **The desktop app finds the MySQL client in more install locations.** On Windows it also searches the `mysql.exe` bundled with MySQL Workbench (`Program Files\MySQL\MySQL Workbench <version>`), after the MySQL Server, MariaDB and MySQL Shell folders, so a server with only Workbench installed no longer stops at "Cannot find 'mysql' or 'mariadb' on PATH". On macOS, where Finder does not load shell startup files, it also searches keg-only versioned Homebrew formulae (`mysql-client@8.4`, `mysql@8.0`, `mariadb@11.4`..., newest first), Laravel Herd's `~/Library/Application Support/Herd/bin` and, last, `/Applications/MySQLWorkbench.app/Contents/MacOS`.
+
 ## [3.3.3] - 2026-11-09
 
 ### Added
