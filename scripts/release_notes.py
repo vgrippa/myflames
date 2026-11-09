@@ -15,11 +15,13 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
+VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\Z")
 # "## [3.3.3] - 2026-11-09" (Keep a Changelog); "## [2.3.0] (2026-09-30)" in older entries.
 HEADING_RE = re.compile(r"^## \[(?P<version>[^\]]+)\](?P<rest>.*)$")
 DATE_RE = re.compile(r"^\s*(?:-\s*(?P<dash>\d{4}-\d{2}-\d{2})|\((?P<paren>\d{4}-\d{2}-\d{2})\))\s*$")
-FENCE_RE = re.compile(r"^\s*(```|~~~)")
+# A code fence: three or more backticks or tildes (Markdown); it closes on the
+# same character, at least as many, and nothing else on the line.
+FENCE_RE = re.compile(r"^\s*(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
 
 
 class ReleaseNotesError(Exception):
@@ -36,15 +38,28 @@ def normalize_version(value):
     return version
 
 
+def _prose(lines, start=0, state=None):
+    """(index, line) of every line from *start* that is outside a code fence.
+    *state*, a dict, gets "open": the fence still open at the end, or None."""
+    state = {} if state is None else state
+    opened = state["open"] = None
+    for index in range(start, len(lines)):
+        line = lines[index]
+        match = FENCE_RE.match(line)
+        if opened is None:
+            # A backtick fence's info string cannot hold a backtick.
+            if match and not (match.group("fence")[0] == "`" and "`" in match.group("info")):
+                opened = state["open"] = match.group("fence")
+                continue
+            yield index, line
+        elif match and match.group("fence")[0] == opened[0] and len(match.group("fence")) >= len(opened) \
+                and not match.group("info").strip():
+            opened = state["open"] = None
+
+
 def _headings(lines):
     """(index, version, rest) for every level-two release heading outside code fences."""
-    fenced = False
-    for index, line in enumerate(lines):
-        if FENCE_RE.match(line):
-            fenced = not fenced
-            continue
-        if fenced:
-            continue
+    for index, line in _prose(lines):
         match = HEADING_RE.match(line)
         if match:
             yield index, match.group("version").strip(), match.group("rest")
@@ -52,13 +67,8 @@ def _headings(lines):
 
 def _next_section(lines, start):
     """Index of the next level-two heading after *start* (fences respected), or len(lines)."""
-    fenced = False
-    for index in range(start + 1, len(lines)):
-        line = lines[index]
-        if FENCE_RE.match(line):
-            fenced = not fenced
-            continue
-        if not fenced and line.startswith("## "):
+    for index, line in _prose(lines, start + 1):
+        if line.startswith("## "):
             return index
     return len(lines)
 
@@ -80,6 +90,11 @@ def section(text, version, changelog="CHANGELOG.md"):
         raise ReleaseNotesError(
             "%s has '## [%s]' without a release date. Write '## [%s] - YYYY-MM-DD'." % (changelog, version, version))
     body = lines[index + 1:_next_section(lines, index)]
+    fences = {}
+    for _ in _prose(body, state=fences):
+        pass
+    if fences["open"]:
+        raise ReleaseNotesError("%s's section for %s has a code fence (%s) that is never closed." % (changelog, version, fences["open"]))
     while body and not body[0].strip():
         body.pop(0)
     while body and not body[-1].strip():

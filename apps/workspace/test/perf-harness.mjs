@@ -75,10 +75,13 @@ export const DOCK_KEY = "myflames.serverNavCollapsed";
  * starts (its stdout, JSON, is returned as helpers.seeded); *beforeGoto(page)*
  * runs before the first navigation (clock, time zone, media features);
  * *viewport* is the first window size; *refuse* (a RegExp of paths) records
- * and refuses more requests the way unmocked live reads are refused. Returns
- * helpers; call close() in a finally block. */
+ * and refuses more requests the way unmocked live reads are refused; *offline*
+ * aborts every request that is not for the local server (kept in
+ * state.blocked); *launchArgs* are extra Chromium switches. Returns helpers;
+ * call close() in a finally block. */
 export async function open(endpoint, name, extra = {}, {
   fallback = null, list = "floating", seed = "", beforeGoto = null, viewport = { width: 1440, height: 1000 }, refuse = null,
+  offline = false, launchArgs = [],
 } = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), `myflames-${name}-`));
   const store = path.join(directory, "workspace.sqlite3");
@@ -109,15 +112,21 @@ export async function open(endpoint, name, extra = {}, {
     });
     proc.on("error", reject);
   });
-  const browser = await puppeteer.launch({ headless: "shell" });
+  const browser = await puppeteer.launch({ headless: "shell", args: launchArgs });
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
   // slowAssets (a RegExp of paths) holds matching static files back by slowAssetsMs (a lazy chunk that loads late).
-  const state = { queue: [], fallback, delay: 0, slowAssets: null, slowAssetsMs: 1500, seen: [], other: [], privilegeReads: [], privileges: { schema_version: "privileges-1.0", account: "root@localhost", actions: {} } };
+  const state = { queue: [], fallback, delay: 0, slowAssets: null, slowAssetsMs: 1500, seen: [], other: [], blocked: [], privilegeReads: [], privileges: { schema_version: "privileges-1.0", account: "root@localhost", actions: {} } };
+  const server = new URL(url).origin;
   await page.setRequestInterception(true);
   page.on("request", (request) => {
-    const pathname = new URL(request.url()).pathname;
+    const target = new URL(request.url());
+    if (offline && target.origin !== server && !["data:", "blob:"].includes(target.protocol)) {
+      state.blocked.push(target.href);
+      return request.abort("blockedbyclient");
+    }
+    const pathname = target.pathname;
     if (pathname !== endpoint && extra[pathname]) {
       const body = JSON.parse(request.postData() || "{}");
       state.other.push({ path: pathname, body });

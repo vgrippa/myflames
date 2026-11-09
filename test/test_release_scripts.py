@@ -92,6 +92,44 @@ class ReleaseNotesTest(unittest.TestCase):
         with self.assertRaises(notes.ReleaseNotesError):
             notes.section(CHANGELOG, "9.9.9")
 
+    def test_longer_fences_and_tildes_close_only_on_their_own_kind(self):
+        text = textwrap.dedent("""\
+            ## [3.5.0] - 2026-12-05
+
+            - Example:
+
+              ````markdown
+              ```sql
+              ## [0.0.1] - 2020-01-01
+              ```
+              ````
+
+            ~~~
+            ```
+            ~~~
+
+            - The real entry.
+
+            ## [3.4.9] - 2026-12-04
+
+            - Older.
+            """)
+        _, body = notes.section(text, "3.5.0")
+        self.assertIn("- The real entry.", body)
+        self.assertIn("## [0.0.1] - 2020-01-01", body)
+        self.assertNotIn("Older.", body)
+        self.assertEqual(notes.section(text, "3.4.9")[1], "- Older.\n")
+
+    def test_unclosed_fence_is_refused_instead_of_swallowing_older_releases(self):
+        text = "## [3.5.0] - 2026-12-05\n\n- A.\n\n```\nno end\n\n## [3.4.9] - 2026-12-04\n\n- Older.\n"
+        with self.assertRaisesRegex(notes.ReleaseNotesError, "code fence \\(```\\) that is never closed"):
+            notes.section(text, "3.5.0")
+
+    def test_version_with_a_newline_is_refused(self):
+        for value in ("3.3.4\nX=1", "3.3.4/../x", "../3.3.4"):
+            with self.subTest(value=value), self.assertRaises(notes.ReleaseNotesError):
+                notes.normalize_version(value)
+
     def test_v_prefix_and_older_heading_style(self):
         self.assertEqual(notes.section(CHANGELOG, "v3.3.9")[1], "### Fixed\n\n- An older fix.\n")
         self.assertEqual(notes.section(CHANGELOG, "2.3.0"), ("2026-09-30", "- Older heading style.\n"))
@@ -246,9 +284,23 @@ class CheckReleaseAssetsTest(unittest.TestCase):
     def test_zip_uploaded_before_dmg_fails(self):
         order = FULL[4:] + FULL[:4]
         problems = assets.check(release(*order), "3.4.0")
-        self.assertEqual(len(problems), 1)
+        self.assertEqual(len(problems), 2)
         self.assertIn("myflames-3.4.0-macos-arm64.zip was uploaded before myflames-3.4.0-macos-arm64.dmg", problems[0])
         self.assertIn("upload them again", problems[0])
+        self.assertIn("GitHub lists myflames-3.4.0-macos-arm64.zip before the DMG", problems[1])
+
+    def test_listing_order_is_what_a_333_client_reads(self):
+        # Lower DMG id, but listed after the zip: a 3.3.3 client takes the first match.
+        listed = release(*FULL)
+        listed["assets"].sort(key=lambda a: a["name"].endswith(".dmg"))
+        problems = assets.check(listed, "3.4.0")
+        self.assertEqual(problems, ["GitHub lists myflames-3.4.0-macos-arm64.zip before the DMG, so installed myflames "
+                                    "3.3.3 and earlier would download it instead of myflames-3.4.0-macos-arm64.dmg."])
+        # The rule matches whole labels only, like the shipped one: "darwin" is not "win".
+        chosen = assets.legacy_macos_choice([{"name": "myflames-3.4.0-windows-x64-setup.exe"},
+                                             {"name": "myflames-3.4.0-macos-arm64.dmg.sha256"},
+                                             {"name": "myflames-3.4.0-macos-arm64.dmg"}])
+        self.assertEqual(chosen["name"], "myflames-3.4.0-macos-arm64.dmg")
 
     def test_gh_release_view_json_of_a_draft(self):
         # `gh release view --json assets` gives node ids; the number is in apiUrl.
@@ -259,7 +311,7 @@ class CheckReleaseAssetsTest(unittest.TestCase):
                                for i, name in enumerate(order)]}
         self.assertEqual(assets.check(gh(FULL), "3.4.0"), [])
         problems = assets.check(gh(FULL[4:] + FULL[:4]), "3.4.0")
-        self.assertEqual(len(problems), 1)
+        self.assertEqual(len(problems), 2)
         self.assertIn("(asset id 700 < 702)", problems[0])
         unknown = {"assets": [{"id": "RA_x", "name": n, "state": "uploaded"} for n in FULL]}
         self.assertEqual(assets.check(unknown, "3.4.0"), ["The DMG and zip asset ids cannot be read, so their upload order is unknown."])
@@ -282,6 +334,50 @@ class CheckReleaseAssetsTest(unittest.TestCase):
             broken = run("check_release_assets.py", "3.4.0", "-", input="not json")
             self.assertEqual(broken.returncode, 1)
             self.assertIn("cannot read the release JSON", broken.stderr)
+
+
+def workflow_step(path, name):
+    """The run: block of the step called *name* in a workflow file (no YAML parser in the stdlib)."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    start = next(i for i, line in enumerate(lines) if line.strip() == "- name: " + name)
+    run = next(i for i in range(start + 1, len(lines)) if lines[i].strip() == "run: |")
+    indent = len(lines[run]) - len(lines[run].lstrip())
+    block = []
+    for line in lines[run + 1:]:
+        if line.strip() and len(line) - len(line.lstrip()) <= indent:
+            break
+        block.append(line)
+    return textwrap.dedent("\n".join(block)) + "\n"
+
+
+@unittest.skipUnless(shutil.which("bash"), "needs bash")
+class DocsSyncWorkflowTest(unittest.TestCase):
+    """Abuse cases for .github/workflows/docs-sync.yml's shell steps."""
+
+    def run_tag_step(self, tag):
+        script = workflow_step(REPO / ".github/workflows/docs-sync.yml", "Release tag")
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = Path(tmp) / "github_env"
+            env_file.write_text("")
+            done = subprocess.run(["bash", "-c", script], env={"PATH": "/usr/bin:/bin", "TAG": tag, "GITHUB_ENV": str(env_file)},
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+            return done, env_file.read_text()
+
+    def test_release_tag_sets_only_version(self):
+        for tag, version in (("v3.3.4", "3.3.4"), ("v3.4.0-rc.1", "3.4.0-rc.1")):
+            with self.subTest(tag=tag):
+                done, written = self.run_tag_step(tag)
+                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+                self.assertEqual(written, "VERSION=%s\n" % version)
+
+    def test_a_second_line_in_the_tag_never_reaches_github_env(self):
+        for tag in ("v1.2.3\nBASH_ENV=$(echo INJECTED >&2)", "v1.2.3\n", "x\nv1.2.3", "3.3.4", "v3.3.4; rm -rf /"):
+            with self.subTest(tag=tag):
+                done, written = self.run_tag_step(tag)
+                self.assertEqual(done.returncode, 1)
+                self.assertEqual(written, "")
+                # The rejected value is not echoed, so it cannot print a workflow command.
+                self.assertEqual(done.stdout, "::error::Not a release tag (expected vX.Y.Z).\n")
 
 
 if __name__ == "__main__":

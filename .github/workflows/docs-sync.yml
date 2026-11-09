@@ -46,7 +46,8 @@ jobs:
         env:
           NO_CHANGELOG: ${{ contains(github.event.pull_request.labels.*.name, 'no-changelog') }}
         run: |
-          changed=$(git diff --name-only HEAD^1 HEAD)
+          # Both sides of a rename, and names unquoted (-z), one per line.
+          changed=$(git diff --name-only --no-renames -z HEAD^1 HEAD | tr '\0' '\n')
           user_facing=$(printf '%s\n' "$changed" \
             | grep -E '^(apps/workspace/src/|apps/desktop/|myflames/)' \
             | grep -Ev '^(apps/desktop/test/|myflames/ui_assets/)' \
@@ -86,8 +87,10 @@ jobs:
     steps:
       - name: Release tag
         run: |
-          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'; then
-            echo "::error::Not a release tag: $TAG (expected vX.Y.Z)."
+          # The whole value must match: a line-based check (grep) would let a
+          # second line reach GITHUB_ENV.
+          if ! [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Not a release tag (expected vX.Y.Z)."
             exit 1
           fi
           echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"

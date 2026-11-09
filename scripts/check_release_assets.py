@@ -51,6 +51,24 @@ def asset_id(asset):
     raise ValueError("no numeric id")
 
 
+def legacy_macos_choice(assets):
+    """The asset an installed myflames 3.3.3 or earlier downloads on an Apple
+    Silicon Mac: the first one, in the order GitHub lists them, whose name has
+    a macOS label and an arm64 label and ends in .zip, .tar.gz, .dmg or .exe
+    (app_update.match_asset_for_platform as released in 3.3.3; kept here
+    because that rule ships in apps already installed)."""
+    def named(name, labels):
+        return re.search(r"(?<![a-z0-9])(?:" + "|".join(labels) + r")(?![a-z0-9])", name)
+    for asset in assets:
+        if not isinstance(asset, dict) or not isinstance(asset.get("name"), str):
+            continue
+        name = asset["name"].lower()
+        if (named(name, ("mac", "macos", "darwin", "apple")) and named(name, ("arm64", "aarch64", "universal"))
+                and name.endswith((".zip", ".tar.gz", ".dmg", ".exe"))):
+            return asset
+    return None
+
+
 def check(release, version):
     """A list of problems with *release* (the GitHub API release object)."""
     version = release_notes.normalize_version(version)
@@ -80,6 +98,11 @@ def check(release, version):
                     "(`gh release upload`) so they come after the DMG." % (update["name"], dmg["name"], update_id, dmg_id))
         except ValueError:
             problems.append("The DMG and zip asset ids cannot be read, so their upload order is unknown.")
+    if dmg is not None:
+        chosen = legacy_macos_choice(assets)
+        if chosen is not dmg:
+            problems.append("GitHub lists %s before the DMG, so installed myflames 3.3.3 and earlier would download "
+                            "it instead of %s." % (chosen["name"] if chosen else "no macOS file", dmg["name"]))
     return problems
 
 

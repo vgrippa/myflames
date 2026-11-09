@@ -121,13 +121,12 @@ const h = await open("/api/live/health", "readme-screenshots", extra, {
   fallback: ok(health), seed, beforeGoto: fixPage, viewport: SIZE,
   // Editor calls that would reach a server are refused unless mocked above.
   refuse: /^\/api\/editor\/(?!saved\/)/,
+  // Nothing but the local server, from the first request on (state.blocked).
+  offline: true,
+  // Whole-tile rasterization and one color profile: the same pixels on every run.
+  launchArgs: ["--disable-partial-raster", "--force-color-profile=srgb"],
 });
 const { page } = h;
-const remote = [];
-page.on("request", (request) => {
-  const url = new URL(request.url());
-  if (!["127.0.0.1", "localhost"].includes(url.hostname) && !["data:", "blob:"].includes(url.protocol)) remote.push(url.href);
-});
 
 /** Wait until nothing loads or animates, then write *file*. */
 async function shoot(file) {
@@ -140,7 +139,16 @@ async function shoot(file) {
   await page.evaluate(() => document.fonts.ready);
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   await pause(600);
-  await page.screenshot({ path: path.join(out, file) });
+  // Settled: two captures in a row agree pixel for pixel.
+  let shot = await page.screenshot();
+  for (let tries = 0; tries < 10; tries++) {
+    await pause(250);
+    const again = await page.screenshot();
+    if (Buffer.compare(shot, again) === 0) break;
+    shot = again;
+    if (tries === 9) throw new Error(`${file} never settled`);
+  }
+  await fs.writeFile(path.join(out, file), shot);
   console.log("wrote", path.relative(root, path.join(out, file)));
 }
 const clickButton = async (text, scope = "") => {
@@ -179,7 +187,7 @@ try {
   await shoot("server-health.png");
 
   assert.deepEqual(h.errors, [], "page errors");
-  assert.deepEqual(remote, [], "requests outside 127.0.0.1");
+  assert.deepEqual(h.state.blocked, [], "requests outside the local server (blocked)");
   const mocked = new Set(Object.keys(extra));
   const refused = [...new Set(h.state.other.map((o) => o.path).filter((p) => !mocked.has(p)))];
   if (refused.length) console.log("refused (not mocked):", refused.join(", "));
