@@ -888,7 +888,9 @@ class TestWindowsClientTrust(unittest.TestCase):
         self.run.assert_not_called()
 
     def test_each_installation_root_is_accepted_and_unset_roots_are_not(self):
-        for key in ('ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'LOCALAPPDATA', 'USERPROFILE'):
+        # MYFLAMES_USER_PROFILE: the desktop's real profile (its backend's USERPROFILE is isolated).
+        for key in ('ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'LOCALAPPDATA', 'MYFLAMES_USER_PROFILE',
+                    'USERPROFILE'):
             self.windows_os.environ = {key: r'C:\Allowed'}
             with self.subTest(key=key):
                 self.assertEqual(connector.probe_client(r'C:\Allowed\bin\mysql.exe')['name'], 'mysql.exe')

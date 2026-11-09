@@ -338,8 +338,10 @@ def _check_client_trust(path):
         resolved = ntpath.normcase(ntpath.normpath(resolved))
         # This location restriction is a minimum Windows trust check. An
         # ACL check via ctypes is a later improvement, not a version check.
+        # The desktop app runs the backend with an isolated USERPROFILE and
+        # names the real one in MYFLAMES_USER_PROFILE.
         for key in ('ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432',
-                    'LOCALAPPDATA', 'USERPROFILE'):
+                    'LOCALAPPDATA', 'MYFLAMES_USER_PROFILE', 'USERPROFILE'):
             root = os.environ.get(key)
             if not root or not ntpath.isabs(root) or not local_path(root):
                 continue
@@ -383,15 +385,20 @@ def _check_client_trust(path):
         raise ValueError(message) from exc
 
 
-def probe_client(path):
-    """Validate one absolute client path and return its bounded version banner."""
+def probe_client(path, check_trust=True):
+    """Validate one absolute client path and return its bounded version banner.
+
+    *check_trust* False only describes the automatic PATH client, which the
+    connector uses as PATH finds it; a client chosen in the workspace is
+    always checked."""
     if (not isinstance(path, str) or not path or len(path) > 4096 or
             any(c in path for c in '\0\r\n') or not os.path.isabs(path)):
         raise ValueError("Choose an absolute path to the database client.")
     name = os.path.basename(path)
     if (name.lower() if os.name == 'nt' else name) not in ('mysql', 'mariadb', 'mysql.exe', 'mariadb.exe'):
         raise ValueError("Choose a client named mysql, mariadb, mysql.exe or mariadb.exe.")
-    _check_client_trust(path)
+    if check_trust:
+        _check_client_trust(path)
     if not os.path.isfile(path):
         raise ValueError("The database client must be an existing regular file.")
     try:

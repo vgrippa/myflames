@@ -447,6 +447,17 @@ class TestDatabaseClientAPI(unittest.TestCase):
         self.assertEqual(cleared['active']['path'], automatic)
         self.assertEqual(cleared['active']['source'], 'path')
         self.assertEqual(cleared['detected'][0]['path'], automatic)
+        # An automatic PATH client in a shared folder is described as PATH finds it
+        # (the connector uses it so), but never offered as a choice (security re-review R2).
+        shared = self.binary(folder='shared')
+        os.chmod(str(Path(shared).parent), 0o777)
+        self.addCleanup(os.chmod, str(Path(shared).parent), 0o755)
+        with mock.patch.dict(os.environ, {'PATH': str(Path(shared).parent)}):
+            status, described = self.post('/api/client/settings', {})
+        self.assertEqual(status, 200, described)
+        self.assertNotIn('error', described)
+        self.assertEqual((described['active']['path'], described['active']['source']), (shared, 'path'))
+        self.assertEqual(described['detected'], [])
 
     @unittest.skipIf(os.name == 'nt', 'POSIX executable fixture')
     def test_every_invalid_choice_is_refused_without_replacing_saved_choice(self):

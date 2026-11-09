@@ -1431,7 +1431,8 @@ def _client_settings_response(path, payload, workspace):
             if automatic is None:
                 return result
             try:
-                active = connector.probe_client(os.path.abspath(automatic))
+                # Described as PATH finds it: the connector uses it without the chosen-client trust rule.
+                active = connector.probe_client(os.path.abspath(automatic), check_trust=False)
             except ValueError as exc:
                 result['error'] = str(exc)
                 return result

@@ -151,6 +151,23 @@ and after each change, and `_resolve_binary` uses it after a per-connection
 `binary=` override and before PATH, probing it again when the file changes. The
 chosen client serves server reads, the Query editor, reviewed writes and CSV
 import. Restore and clone use the client found by `lifecycle.detect_tools`.
+Because the chosen client receives every connection's password (the option
+file), `connector._check_client_trust` runs before each use and in the probe:
+on macOS and Linux the file and every folder above both the chosen path and its
+real path must be owned by the user or root with no group or other write, except
+a root-owned sticky folder and, on macOS only, group write by the admin group
+(gid 80: its members can already act as root, and `/opt/homebrew/bin` and
+`/Applications` give it write access); on Windows only a local `mysql.exe` or
+`mariadb.exe` (no UNC or device path) under `ProgramFiles`, `ProgramFiles(x86)`,
+`ProgramW6432`, `LOCALAPPDATA` or the real profile (`MYFLAMES_USER_PROFILE`, which
+`main.cjs` sets because the backend's `USERPROFILE` is isolated; `backendEnvironment`
+passes the other four) is accepted, and an ACL check is still to come. The client
+runs by its fully resolved path, so no link on the way can redirect it after the
+check; the dialog shows the chosen path. `--no-defaults --version` runs in its own
+process group (killed with its children at the deadline) outside the selection
+lock. Detection offers only clients that pass the check; the automatic PATH client
+is described as PATH finds it, because the connector uses it so (the same check
+for PATH discovery is an open lead).
 A broken stored choice raises `ClientMissingError` ("The chosen database client is
 unavailable…") instead of falling back. `POST /api/client/detect` lists usable
 clients on PATH and, on macOS and Linux, in `lifecycle.COMMON_BIN_DIRS`
