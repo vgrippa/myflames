@@ -227,6 +227,9 @@ test('a refused update (for example a different signature) is reported, not inst
     assert.equal(error.message, 'The update is not signed by the developer of this copy of myflames, so it was not installed.');
     return true;
   });
+  // Squirrel.Mac's words for a lower version (ElectronSquirrelPreventDowngrades), seen in the release spike.
+  const older = fakeUpdater(emitter => emitter.emit('error', new Error("Cannot update to a bundle with a lower version number. The application has ElectronSquirrelPreventDowngrades enabled and is trying to update from '3.3.95' to '3.3.91' which appears to be a downgrade")));
+  await assert.rejects(updater.prepareMac(older, staged), { message: 'The update is older than this copy of myflames, so it was not installed.' });
   const other = fakeUpdater(emitter => emitter.emit('error', new Error('Could not read file:///private/var/x/update.zip: disk full')));
   await assert.rejects(updater.prepareMac(other, staged), (error) => {
     assert.doesNotMatch(error.message, /file:\/\//);

@@ -188,6 +188,9 @@ function squirrelReason(error) {
   if (/code signature|did not pass validation|code requirement/i.test(message)) {
     return 'The update is not signed by the developer of this copy of myflames, so it was not installed.';
   }
+  if (/lower version|downgrade/i.test(message)) {
+    return 'The update is older than this copy of myflames, so it was not installed.';
+  }
   const plain = message.replace(/(?:file|https?):\/\/\S+/g, '').replace(/\s+/g, ' ').trim();
   return plain ? 'The update could not be installed: ' + plain.replace(/[.:]+$/, '') + '.' : 'The update could not be installed.';
 }
