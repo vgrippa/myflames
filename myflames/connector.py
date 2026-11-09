@@ -420,14 +420,19 @@ def _default_client_path():
         if path is None:
             return None
         try:
-            # Folder chmod/chown does not change the executable's identity.
+            # Run the fully resolved file, never through the chosen alias: a
+            # link anywhere on the way (even an intermediate hop) cannot then
+            # redirect the client after this check. Its real folders are
+            # checked on every call (a folder chmod does not change identity).
+            real = os.path.realpath(path)
             _check_client_trust(path)
-            info = os.stat(path)
-            identity = (path, os.path.realpath(path), info.st_dev, info.st_ino,
+            _check_client_trust(real)
+            info = os.stat(real)
+            identity = (path, real, info.st_dev, info.st_ino,
                         info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_mode)
             if identity != previous:
-                probe_client(path)
-                _check_client_trust(path)
+                probe_client(real)
+                _check_client_trust(real)
         except (OSError, ValueError) as exc:
             with _DEFAULT_BINARY_LOCK:
                 if generation != _DEFAULT_BINARY_GENERATION:
@@ -439,7 +444,7 @@ def _default_client_path():
             if generation != _DEFAULT_BINARY_GENERATION:
                 continue
             _DEFAULT_BINARY_PROBE = identity
-            return path
+            return real
 
 
 def detect_clients(path=None, common_dirs=None):

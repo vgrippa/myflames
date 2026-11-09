@@ -360,7 +360,8 @@ class TestClientSelection(unittest.TestCase):
         self.addCleanup(env.stop)
 
     def binary(self, name='mysql', body='print("mysql Ver 8.4.0")', folder='bin'):
-        directory = os.path.join(self.temp.name, folder)
+        # The real temp path (macOS /var is a link): a chosen client runs by its real path.
+        directory = os.path.join(os.path.realpath(self.temp.name), folder)
         os.makedirs(directory, exist_ok=True)
         path = os.path.join(directory, name)
         with open(path, 'w') as stream:
@@ -514,6 +515,22 @@ class TestClientSelection(unittest.TestCase):
                 else:
                     with self.assertRaisesRegex(ValueError, 'can be changed by other users'):
                         connector.probe_client(path)
+
+    def test_chosen_client_runs_its_resolved_file_not_the_alias_chain(self):
+        # Code review D6: /safe/mysql -> /hop/mysql -> real file. The client is
+        # run by its real path, so a swapped intermediate link cannot redirect it.
+        real = self.binary()
+        hop_folder = tempfile.mkdtemp(dir=self.temp.name)
+        os.chmod(hop_folder, 0o700)
+        hop = os.path.join(hop_folder, 'mysql')
+        os.symlink(real, hop)
+        alias_folder = tempfile.mkdtemp(dir=self.temp.name)
+        os.chmod(alias_folder, 0o700)
+        alias = os.path.join(alias_folder, 'mysql')
+        os.symlink(hop, alias)
+        connector.set_default_binary(alias)
+        self.addCleanup(connector.set_default_binary, None)
+        self.assertEqual(connector._default_client_path(), os.path.realpath(real))
 
     def test_other_users_client_is_refused(self):
         path = self.binary()

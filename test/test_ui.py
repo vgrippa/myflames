@@ -319,7 +319,8 @@ class TestDatabaseClientAPI(unittest.TestCase):
 
     def binary(self, body='print("mysql Ver 8.4.0")', name='mysql', folder='bin'):
         import sys
-        directory = Path(self.temp.name) / folder
+        # The real temp path (macOS /var is a link): a chosen client runs by its real path.
+        directory = Path(os.path.realpath(self.temp.name)) / folder
         directory.mkdir(exist_ok=True)
         path = directory / name
         path.write_text('#!' + sys.executable + '\n' + body + '\n')
