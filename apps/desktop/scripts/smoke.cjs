@@ -1,5 +1,5 @@
 'use strict';
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
@@ -36,11 +36,25 @@ const path = require('node:path');
     const samePath = (a, b) => windows ? String(a).toLowerCase() === b.toLowerCase() : a === b;
     if (appPath && (!report.packaged || !samePath(report.backendExecutable, bundledBackend)))
       throw new Error('The packaged app did not use its bundled backend.');
+    let clientLine = '';
+    if (appPath) {
+      // The bundled MySQL client starts with only the system folders on PATH,
+      // and the backend found a usable mysql (the bundled one unless one is installed).
+      const bin = windows ? path.join(appPath, 'resources', 'mysql-client', 'bin') : path.join(appPath, 'Contents/Resources/mysql-client/bin');
+      const version = require('../mysql-client.lock.json').version;
+      const run = spawnSync(path.join(bin, windows ? 'mysql.exe' : 'mysql'), ['--version'], { env: { PATH: env.PATH, ...(windows ? { SystemRoot: process.env.SystemRoot || 'C:\\Windows' } : {}) }, encoding: 'utf8', timeout: 20000 });
+      if (run.status !== 0 || !run.stdout.includes('Ver ' + version + ' '))
+        throw new Error('The bundled MySQL client did not start: ' + (run.error ? run.error.message : (run.stdout + run.stderr).trim()));
+      const client = report.mysqlClient || {};
+      if (!client.available) throw new Error('The packaged backend found no usable mysql client.');
+      const inside = String(client.path || '').toLowerCase().startsWith((bin + path.sep).toLowerCase());
+      clientLine = `Backend mysql client: ${client.path} (${inside ? 'bundled' : 'installed'}). Bundled: ${run.stdout.trim()}\n`;
+    }
     try { process.kill(report.backendPid, 0); throw new Error('Owned backend remained alive after desktop exit.'); }
     catch (error) { if (error.code !== 'ESRCH') throw error; }
     const outputDirectory = path.resolve(__dirname, '../smoke-results');
     await fs.mkdir(outputDirectory, { recursive: true });
     await fs.copyFile(path.join(home, 'smoke.png'), path.join(outputDirectory, 'desktop.png'));
-    process.stdout.write(output + 'Owned backend stopped. Screenshot: apps/desktop/smoke-results/desktop.png\n');
+    process.stdout.write(output + clientLine + 'Owned backend stopped. Screenshot: apps/desktop/smoke-results/desktop.png\n');
   } finally { clearTimeout(timeout); await fs.rm(home, { recursive: true, force: true }); }
 })().catch(error => { process.stderr.write(error.message + '\n'); process.exitCode = 1; });

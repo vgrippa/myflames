@@ -113,10 +113,30 @@ the [signed release build](../apps/desktop/README.md#build-the-signed-release));
 local builds stay unsigned
 ([build instructions](../apps/desktop/README.md#build-an-unsigned-macos-app)).
 Before distributing official builds more widely, complete native packaging
-tests, dependency notices, a verified update channel, and a deliberate
-MySQL/MariaDB client distribution policy. Installed clients are discovered in
-standard macOS locations, and the MySQL and MariaDB installers' folders on Windows, as well as PATH. Keep the Python CLI
+tests, dependency notices and a verified update channel. Keep the Python CLI
 available independently.
+
+Client distribution policy: the app bundles the official MySQL command-line
+client, `mysql` and `mysqldump` from one MySQL 8.4 LTS release (pinned with its
+download URL, size and SHA-256 in `apps/desktop/mysql-client.lock.json`), so a
+computer with no MySQL or MariaDB client installed can still connect. Installed
+clients always win: the backend searches PATH, then the standard macOS locations
+(Homebrew, including keg-only versioned formulae, MacPorts, Oracle's
+`/usr/local/mysql`, Laravel Herd, MySQL Workbench) or, on Windows, the MySQL
+Server, MariaDB, MySQL Shell and MySQL Workbench folders under Program Files, and
+only then the bundled folder, which is the last PATH entry; an installed
+`mariadb` also wins over the bundled `mysql`. The bundled client is unmodified
+Oracle code under GPLv2 with the Universal FOSS Exception, run as a separate
+program; its license ships in the app and NOTICE says where its source is. It
+connects to MySQL servers and to MariaDB accounts that use
+`mysql_native_password`, but not to MariaDB accounts that use `ed25519` or
+`parsec` (the MySQL client has no such plugin), or to servers that require
+Kerberos, LDAP SASL, OCI or WebAuthn authentication: those need an installed
+client. MariaDB dumps keep using `mariadb-dump`, which is not bundled. On
+Windows, the client's Visual C++ runtime DLLs ship beside it, so it runs without
+the Visual C++ Redistributable. The DMG and the installer grow by the client's
+size; see the [developer reference](DEVELOPER_REFERENCE.md#local-ui) for the
+build, verification and update steps.
 
 Electron renderer code must stay sandboxed, with context isolation and no Node
 integration. The main process owns its Python child and launch secret; it must

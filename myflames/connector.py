@@ -56,6 +56,23 @@ CLIENT_CHARSET_FLAGS = ("--default-character-set=utf8mb4",
 _CLIENT_ENV = ("PATH", "SYSTEMROOT", "WINDIR", "LANG", "LC_ALL", "LC_CTYPE",
                "TZ", "TMPDIR", "TEMP", "TMP")
 
+# The desktop app names the folder of the MySQL client it bundles (mysql and
+# mysqldump, apps/desktop/backend.cjs), which it also appends to PATH last.
+BUNDLED_CLIENT_ENV = "MYFLAMES_BUNDLED_CLIENT_DIR"
+
+
+def bundled_client_dir():
+    """The desktop app's bundled client folder, or None (an absolute path only)."""
+    value = os.environ.get(BUNDLED_CLIENT_ENV) or ""
+    return value if os.path.isabs(value) else None
+
+
+def _same_dir(a, b):
+    try:
+        return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+    except (OSError, ValueError):
+        return False
+
 
 @contextmanager
 def client_environment():
@@ -306,15 +323,26 @@ class MySQLConnection:
         """Return the path to the mysql or mariadb client binary.
 
         Prefers an explicit override, then ``mysql`` (which MariaDB also
-        ships under that name on most distros), then ``mariadb``.
+        ships under that name on most distros), then ``mariadb``. The
+        desktop app's bundled MySQL client (``MYFLAMES_BUNDLED_CLIENT_DIR``,
+        the last PATH entry) comes after both, so an installed ``mariadb``
+        is still preferred to it.
         """
         if self._binary_cached:
             return self._binary_cached
         if self._binary_override:
             self._binary_cached = self._binary_override
             return self._binary_cached
+        bundled = bundled_client_dir()
         for name in ("mysql", "mariadb"):
             path = self._which(name)
+            if path and not (bundled and _same_dir(os.path.dirname(path), bundled)):
+                self._binary_cached = path
+                return path
+        if bundled:
+            # Also reached when the folder could not go on PATH (a name with
+            # the PATH separator in it).
+            path = shutil.which("mysql", path=bundled)
             if path:
                 self._binary_cached = path
                 return path

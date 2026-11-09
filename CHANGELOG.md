@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The desktop app includes the MySQL client.** The macOS app and the Windows installer bundle the official MySQL 8.4.13 LTS command-line client (`mysql` and `mysqldump`, with the OpenSSL libraries they load and, on Windows, the Visual C++ runtime DLLs), so a computer with no MySQL or MariaDB client installed connects without "Cannot find 'mysql' or 'mariadb' on PATH". Installed clients keep precedence: the bundled folder is the last PATH entry, after PATH and every standard install location, and an installed `mariadb` is also preferred to the bundled `mysql`. MariaDB accounts that use `ed25519` or `parsec` authentication still need an installed MariaDB client. The client is unmodified Oracle code under GPLv2 with the Universal FOSS Exception; its license ships in the app and NOTICE says where its source is. The build pins the release archives by URL, size and SHA-256 (`apps/desktop/mysql-client.lock.json`, checked against Oracle's MD5 and GPG signature) and refuses any mismatch. The DMG grows by about 7 MB.
+
 ### Changed
 
 - **README screenshots show myflames 3.3.3.** Home, Visual Explain, Query editor and Server Health were captured again from the 3.3.3 workspace (they showed 3.1.1). The website's documentation and homepage copy them from `docs/screenshots/`.

@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
 const path = require('node:path');
+const fs = require('node:fs');
 const { parseLaunchLine, sameOrigin, externalLink, backendEnvironment, startBackend } = require('../backend.cjs');
 const url = 'http://127.0.0.1:54321/#launch=' + 'S'.repeat(43);
 function fixture() {
@@ -169,6 +170,77 @@ test('Windows client discovery falls back to the mysql.exe bundled with MySQL Wo
   // Server first; Workbench 6.3 CE has no mysql.exe here, so it is not added.
   assert.deepEqual(env.PATH.split(';'), ['C:\\Windows\\System32', 'C:\\Program Files\\MySQL\\MySQL Server 8.4\\bin',
     'C:\\Program Files\\MySQL\\MySQL Workbench 8.0 CE']);
+});
+test('macOS: the bundled MySQL client is searched last, after PATH and every installed client folder', () => {
+  const resources = '/Applications/myflames.app/Contents/Resources';
+  const bundled = resources + '/mysql-client/bin';
+  const fileSystem = { readdirSync(dir) {
+    if (dir === '/opt/homebrew/opt') return ['mysql-client@8.4', 'mariadb@11.4'];
+    throw new Error('ENOENT');
+  } };
+  const env = backendEnvironment('/desktop', { HOME: '/Users/jane', PATH: '/usr/bin:/opt/homebrew/bin' }, 'darwin', fileSystem, resources);
+  const parts = env.PATH.split(':');
+  assert.equal(parts.at(-1), bundled);
+  assert.equal(parts.filter(value => value === bundled).length, 1);
+  assert.equal(env.MYFLAMES_BUNDLED_CLIENT_DIR, bundled);
+  // Inherited PATH, the standard folders, keg-only Homebrew, Herd and Workbench (PR #16) all come first.
+  for (const installed of ['/usr/bin', '/opt/homebrew/bin', '/usr/local/mysql/bin', '/opt/homebrew/opt/mysql-client/bin',
+    '/opt/homebrew/opt/mariadb@11.4/bin', '/opt/homebrew/opt/mysql-client@8.4/bin',
+    '/Users/jane/Library/Application Support/Herd/bin', '/Applications/MySQLWorkbench.app/Contents/MacOS']) {
+    assert.ok(parts.indexOf(installed) >= 0 && parts.indexOf(installed) < parts.indexOf(bundled), installed);
+  }
+  assert.equal(parts.at(-2), '/Applications/MySQLWorkbench.app/Contents/MacOS');
+  // Already on the inherited PATH: moved to the end, never searched earlier.
+  const moved = backendEnvironment('/desktop', { PATH: bundled + ':/usr/bin' }, 'darwin', fileSystem, resources).PATH.split(':');
+  assert.equal(moved[0], '/usr/bin');
+  assert.equal(moved.at(-1), bundled);
+  assert.equal(moved.filter(value => value === bundled).length, 1);
+});
+test('the bundled client is added only for a packaged app with an absolute resources folder', () => {
+  for (const env of [backendEnvironment('/desktop', { PATH: '/usr/bin' }, 'darwin'),
+    backendEnvironment('/desktop', { PATH: '/usr/bin' }, 'darwin', fs, null),
+    backendEnvironment('/desktop', { PATH: '/usr/bin' }, 'darwin', fs, 'relative/Resources')]) {
+    assert.ok(env.PATH.endsWith(':/Applications/MySQLWorkbench.app/Contents/MacOS'));
+    assert.ok(!env.PATH.includes('Resources'));
+    assert.equal(env.MYFLAMES_BUNDLED_CLIENT_DIR, undefined);
+  }
+  // Linux is not a packaged target: its PATH stays exactly as inherited.
+  const linux = backendEnvironment('/desktop', { PATH: '/custom' }, 'linux', fs, '/opt/myflames/resources');
+  assert.equal(linux.PATH, '/custom');
+  assert.equal(linux.MYFLAMES_BUNDLED_CLIENT_DIR, undefined);
+  // A folder name holding the PATH separator cannot go on PATH; the backend still gets it by name.
+  const colon = backendEnvironment('/desktop', { PATH: '/usr/bin' }, 'darwin', fs, '/Users/jane/a:b/myflames.app/Contents/Resources');
+  assert.ok(!colon.PATH.includes('a:b'));
+  assert.equal(colon.MYFLAMES_BUNDLED_CLIENT_DIR, '/Users/jane/a:b/myflames.app/Contents/Resources/mysql-client/bin');
+});
+test('Windows: the bundled MySQL client is searched last, after PATH, the installer folders and Workbench', () => {
+  const files = new Set(['c:\\program files\\mysql\\mysql workbench 8.0 ce\\mysql.exe']);
+  const fileSystem = {
+    readdirSync: dir => {
+      if (dir.toLowerCase() === 'c:\\program files\\mysql') return ['MySQL Workbench 8.0 CE', 'MySQL Server 8.4'];
+      if (dir.toLowerCase() === 'c:\\program files') return ['MariaDB 11.8', 'MySQL'];
+      throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+    },
+    statSync: file => {
+      const lower = file.toLowerCase();
+      if (lower === 'c:\\program files\\mysql\\mysql server 8.4\\bin' || lower === 'c:\\program files\\mariadb 11.8\\bin') return { isDirectory: () => true, isFile: () => false };
+      if (files.has(lower)) return { isDirectory: () => false, isFile: () => true };
+      throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+    },
+  };
+  const resources = 'C:\\Users\\jane\\AppData\\Local\\Programs\\myflames-desktop\\resources';
+  const bundled = resources + '\\mysql-client\\bin';
+  const env = backendEnvironment('C:\\desktop', { PATH: 'C:\\Windows\\System32;C:\\tools\\mysql\\bin', ProgramFiles: 'C:\\Program Files' }, 'win32', fileSystem, resources);
+  assert.deepEqual(env.PATH.split(';'), ['C:\\Windows\\System32', 'C:\\tools\\mysql\\bin',
+    'C:\\Program Files\\MySQL\\MySQL Server 8.4\\bin', 'C:\\Program Files\\MariaDB 11.8\\bin',
+    'C:\\Program Files\\MySQL\\MySQL Workbench 8.0 CE', bundled]);
+  assert.equal(env.MYFLAMES_BUNDLED_CLIENT_DIR, bundled);
+  // On the inherited PATH in another case or with a trailing backslash: moved to the end once.
+  const moved = backendEnvironment('C:\\desktop', { PATH: bundled.toUpperCase() + '\\;C:\\Windows\\System32', ProgramFiles: 'C:\\Program Files' }, 'win32', fileSystem, resources);
+  const parts = moved.PATH.split(';');
+  assert.equal(parts[0], 'C:\\Windows\\System32');
+  assert.equal(parts.at(-1), bundled);
+  assert.equal(parts.filter(value => value.toLowerCase().replace(/\\+$/, '') === bundled.toLowerCase()).length, 1);
 });
 test('startup tolerates fragmented output and shutdown owns only its child process group', async () => {
   const f = fixture(), ready = startBackend(settings, f.dependencies);

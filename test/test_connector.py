@@ -337,9 +337,58 @@ class TestBinaryResolution(unittest.TestCase):
 
     def test_error_when_binary_missing(self):
         c = MySQLConnection(host="h")
-        with mock.patch.object(MySQLConnection, "_which", staticmethod(lambda n: None)):
+        with mock.patch.object(MySQLConnection, "_which", staticmethod(lambda n: None)), \
+                mock.patch.dict(os.environ, {"MYFLAMES_BUNDLED_CLIENT_DIR": ""}):
             with self.assertRaises(ConnectorError):
                 c._resolve_binary()
+
+
+class TestBundledClientResolution(unittest.TestCase):
+    """The desktop app's bundled mysql (MYFLAMES_BUNDLED_CLIENT_DIR, last on
+    PATH) is used only when no installed mysql or mariadb is found."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.bundled = os.path.join(self.tmp.name, "resources", "mysql-client", "bin")
+        self.installed = os.path.join(self.tmp.name, "usr", "bin")
+        for folder in (self.bundled, self.installed):
+            os.makedirs(folder)
+        self.program = os.path.join(self.bundled, "mysql.exe" if os.name == "nt" else "mysql")
+        with open(self.program, "w") as handle:
+            handle.write("")
+        os.chmod(self.program, 0o755)
+        patcher = mock.patch.dict(os.environ, {"MYFLAMES_BUNDLED_CLIENT_DIR": self.bundled})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def resolve(self, found):
+        with mock.patch.object(MySQLConnection, "_which", staticmethod(lambda name: found.get(name))):
+            return MySQLConnection(host="h")._resolve_binary()
+
+    def test_installed_mysql_comes_before_the_bundled_one(self):
+        installed = os.path.join(self.installed, "mysql")
+        self.assertEqual(self.resolve({"mysql": installed}), installed)
+
+    def test_installed_mariadb_wins_over_the_bundled_mysql(self):
+        # PATH finds the bundled mysql (no installed one); an installed mariadb,
+        # for example Debian's MariaDB 11 without mariadb-client-compat, wins.
+        mariadb = os.path.join(self.installed, "mariadb")
+        self.assertEqual(self.resolve({"mysql": self.program, "mariadb": mariadb}), mariadb)
+
+    def test_bundled_mysql_is_the_last_resort(self):
+        self.assertEqual(self.resolve({"mysql": self.program}), self.program)
+        # Also when its folder could not be put on PATH at all.
+        self.assertEqual(os.path.normcase(self.resolve({})), os.path.normcase(self.program))
+
+    def test_only_an_absolute_bundled_folder_counts(self):
+        with mock.patch.dict(os.environ, {"MYFLAMES_BUNDLED_CLIENT_DIR": "mysql-client/bin"}):
+            with self.assertRaises(ConnectorError):
+                self.resolve({})
+
+    def test_no_bundled_client_keeps_the_old_order(self):
+        with mock.patch.dict(os.environ, {"MYFLAMES_BUNDLED_CLIENT_DIR": ""}):
+            self.assertEqual(self.resolve({"mysql": self.program, "mariadb": "/usr/bin/mariadb"}), self.program)
 
 
 class TestArgvConstruction(unittest.TestCase):
