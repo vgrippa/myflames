@@ -127,7 +127,8 @@ export function ReadinessFacts({ connection, details = false }: { connection: Co
     <span className="connection-readiness-line" title={fullTitle}>{line && <bdi>{line}</bdi>}</span>
     {entry.facts && <span className="hint" title={fullTitle}> · {seen}</span>}
     <span className="hint" role="status">{entry.pending ? " · Checking…" : ""}</span>
-    <span className="form-error" role="alert"><bdi>{entry.error || ""}</bdi></span>
+    {/* An alert only with something to announce: an empty one reads as a failure on Home. */}
+    {entry.error && <span className="form-error" role="alert"><bdi>{entry.error}</bdi></span>}
     {details && entry.facts?.performance_schema === false && <InfoPopover label="Readiness limits">
       <p>Performance Schema is off; performance views are limited. See Server &gt; Instruments.</p>
     </InfoPopover>}

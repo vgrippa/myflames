@@ -2878,7 +2878,9 @@ read (a 5 s window reads for 5 s, then waits 5 s). The loop runs only while the
 document is visible, the view is mounted and laid out, the Server place is on
 screen and no baseline sheet or Capture when… form is open, and it is
 single-flight (a pending read blocks the next tick, and a manual Refresh shares
-the same path). In `Health.tsx` `load()`, an automatic read never replaces
+the same path). Refresh is busy only for a read it started: during an automatic
+read it stays live, and pressing it supersedes that read (the newest read wins);
+the status line shows every read's progress. In `Health.tsx` `load()`, an automatic read never replaces
 another connection's greyed report: after a connection switch the report stays
 greyed until a manual Refresh, and the schedule resumes after it (`deferred()`
 waits a full interval). Leaving Health and returning calls `setVisible(true)`,

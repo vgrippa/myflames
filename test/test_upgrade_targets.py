@@ -15,6 +15,7 @@ Innovation series is superseded once the next LTS series has a release.
 import datetime
 import http.client
 import inspect
+import io
 import itertools
 import json
 import os
@@ -1175,7 +1176,8 @@ class Cache(Base):
         self.assertEqual(reader.calls.count(ut.DOC_INDEX), 2)
 
     def test_http_error_text_names_the_status(self):
-        error = urllib.error.HTTPError(ut.DOC_INDEX, 503, 'Service Unavailable', {}, None)
+        # A real (empty) body: on Python 3.9 and older an HTTPError without one cannot close.
+        error = urllib.error.HTTPError(ut.DOC_INDEX, 503, 'Service Unavailable', {}, io.BytesIO(b''))
         self.addCleanup(error.close)
         report = self.report(mysql_layout('8.0.43'), FakeReader(fail={ut.DOC_INDEX: error}))
         self.assertEqual(report['source']['error'], 'The release source answered HTTP 503.')

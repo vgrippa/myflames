@@ -1285,14 +1285,15 @@
 }
 
 /* ---- Narrow windows ---------------------------------------------------------- */
-/* A narrow editor pane (the 720 px window with the sidebar, or the schema
-   browser open in a window under about 1000 px): the toolbar wraps onto a
-   second row instead of hiding controls in a sideways scroll, and the scope
-   shares that row. */
+/* An editor pane narrower than the toolbar's one row (about 1,100 px with
+   the Database picker and a transaction meter: the 720 px window, or the
+   schema browser open in a 1440 px window): the toolbar wraps onto a second
+   row instead of hiding controls in a sideways scroll, and the scope shares
+   that row. */
 .query-lab .editor-panel {
   container: editor-panel / inline-size;
 }
-@container editor-panel (max-width: 700px) {
+@container editor-panel (max-width: 1100px) {
   .editor-toolbar {
     flex-wrap: wrap;
     overflow: visible;

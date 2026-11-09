@@ -650,6 +650,8 @@ export function HealthView({
   const [retrySeconds, setRetrySeconds] = useState(0);
   const refreshLoop = useRef<ReturnType<typeof createHealthRefresh> | null>(null);
   const readSequence = useRef(0);
+  // The read the user's Refresh started (its sequence; 0 for none).
+  const [manualRead, setManualRead] = useState(0);
   const onScreen = useViewOnScreen();
   const reads = useConnectionReads(connection);
   const loading = !!reads.loading;
@@ -668,7 +670,7 @@ export function HealthView({
   visibilitySettings.current = { onScreen, disabled, baselineSheet };
   const updateRefreshVisibility = useRef(() => {});
   const baselineSaved = useAction(key);
-  useEffect(() => setBaselineSheet(null), [key]);
+  useEffect(() => { setBaselineSheet(null); setManualRead(0); }, [key]);
   const activeBaseline = memory.baseline && memory.baseline.key === key ? memory.baseline : null;
   const refreshOptions = () => root.current?.closest(".server-view")?.querySelector<HTMLElement>('button[aria-label="Refresh options"]');
 
@@ -907,6 +909,7 @@ export function HealthView({
     }
     const sequence = ++readSequence.current;
     const readKey = reads.currentKey();
+    if (!automatic) setManualRead(sequence);
     refreshLoop.current?.started();
     let failed = false;
     const result = await reads.run(
@@ -920,6 +923,7 @@ export function HealthView({
       // shared with Refresh all. The binding's generation drops its answer.
       { force: !automatic, onError: () => { failed = true; } },
     );
+    setManualRead((current) => (current === sequence ? 0 : current));
     // An aborted or late read must not release a newer read's scheduler slot.
     if (sequence === readSequence.current && reads.currentKey() === readKey)
       refreshLoop.current?.finished(!!result || !failed);
@@ -1316,10 +1320,11 @@ export function HealthView({
           onCompare={() => setBaselineSheet({ kind: "compare", key, connection: { ...connection } })}
         />
       }
-      // Refresh stays live while a read is on its way (the button's busy
-      // state would swallow the click): pressing it supersedes that read,
-      // newest wins. The status line below carries the read's progress.
-      loading={false}
+      // Refresh is busy only for the read it started. An automatic read leaves
+      // it live (a busy button would swallow the click): pressing it
+      // supersedes that read, newest wins. The status line below carries
+      // every read's progress.
+      loading={!!manualRead && loading}
       otherConnection={stale ? memory.label : null}
       inspector={inspector}
       inspectorEmpty={<p>Select a diagnostic or a tile to see what it measures, its rule and its numbers.</p>}

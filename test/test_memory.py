@@ -386,9 +386,12 @@ class MemoryTests(unittest.TestCase):
             'memory/sql/NET::buff', 'memory/performance_schema/threads', 'memory/vendor/a', 'memory/sql/JOIN_CACHE_x')
         case = memory._CATEGORY_CASE
         with contextlib.closing(sqlite3.connect(':memory:')) as db:
-            db.create_function('LEFT', 2, lambda text, n: text[:n])
+            # LEFT is a keyword to older SQLite (Python 3.7's): register MySQL's
+            # LEFT() under another name and call it by that name.
+            db.create_function('MYSQL_LEFT', 2, lambda text, n: text[:n])
             for name in names:
-                (sql_category,) = db.execute('SELECT ' + case + ' FROM (SELECT ? AS EVENT_NAME)', (name,)).fetchone()
+                sql = 'SELECT ' + case.replace('LEFT(', 'MYSQL_LEFT(') + ' FROM (SELECT ? AS EVENT_NAME)'
+                (sql_category,) = db.execute(sql, (name,)).fetchone()
                 self.assertEqual(sql_category, memory.category(name), name)
         self.assertEqual(len(memory.CATEGORIES), 7)
         self.assertIn('LIMIT 7', memory.CATEGORY_SQL)

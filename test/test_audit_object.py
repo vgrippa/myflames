@@ -170,7 +170,7 @@ class TestAuditObject(unittest.TestCase):
 
         def traced():
             conn = connect()
-            conn.set_trace_callback(queries.append)
+            conn.set_trace_callback(lambda sql: queries.append(sql))  # Python 3.7 hashes the callback
             return conn
 
         workspace = mock.Mock(store=self.store)

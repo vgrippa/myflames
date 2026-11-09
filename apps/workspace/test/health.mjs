@@ -1089,6 +1089,10 @@ async function automaticHealth(fixture) {
     await until(() => seen() === slowBefore + 1, "slow read starts");
     await pause(1200);
     assert.equal(seen(), slowBefore + 1, "one read in flight even past the interval");
+    // Only a read Refresh started makes it busy: during an automatic read it
+    // stays live, so pressing it supersedes that read.
+    assert.equal(await page.$eval(`${view} [data-action=refresh]`, (e) => e.getAttribute("aria-busy")), null,
+      "Refresh is not busy during an automatic read");
     await selectAuto("0");
     await settle();
     state.delay = 0;
