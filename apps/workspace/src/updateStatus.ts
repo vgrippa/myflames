@@ -274,6 +274,11 @@ export async function openUpdateDialog(from?: HTMLElement | null) {
   const info = state.info?.update_available || state.ready || state.installing ? state.info : await checkForUpdates();
   set({ dialog: { info: info ?? state.info } });
 }
+/** Check again from Software update: a successful answer replaces what the open dialog shows. */
+export async function checkAgainInDialog() {
+  const info = await checkForUpdates();
+  if (info && state.dialog) set({ dialog: { info } });
+}
 export function closeUpdateDialog() {
   set({ dialog: null });
 }

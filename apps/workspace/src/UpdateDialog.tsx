@@ -9,7 +9,7 @@ import { Icon } from "./components";
 import { useFocusScope } from "./kit";
 import { hasUnsavedWork } from "./unsavedWork";
 import {
-  checkForUpdates, desktopUpdate, installUpdate, readUpdateSupport, restartToUpdate, stagingPercent, useUpdateStatus,
+  checkAgainInDialog, checkForUpdates, desktopUpdate, installUpdate, readUpdateSupport, restartToUpdate, stagingPercent, useUpdateStatus,
 } from "./updateStatus";
 
 const megabytes = (bytes: number) => `${Math.max(1, Math.round(bytes / 1_000_000))} MB`;
@@ -242,7 +242,7 @@ export function UpdateDialog({
           {isNewer ? "Later" : "Close"}
         </button>
         {unknownState && (
-          <button type="button" className="button primary" disabled={s.checking} onClick={() => void checkForUpdates()}>
+          <button type="button" className="button primary" disabled={s.checking} onClick={() => void checkAgainInDialog()}>
             {s.checking ? (<><span className="spinner" aria-hidden="true" /><span>Checking…</span></>) : <span>Check again</span>}
           </button>
         )}
@@ -268,7 +268,7 @@ export function UpdateDialog({
             type="button"
             className="button primary"
             disabled={s.installing || inPlace === null}
-            onClick={() => void installUpdate(updateInfo?.update_available ? updateInfo.latest_version : null)}
+            onClick={() => void installUpdate(isNewer ? latest : null)}
           >
             {s.installing ? (
               <>

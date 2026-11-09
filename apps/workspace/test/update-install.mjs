@@ -354,6 +354,12 @@ try {
   assert.match(failedText, /Could not check for updates: GitHub could not be reached\./);
   assert.doesNotMatch(failedText, /up to date/i, "a failed refresh is never shown as up to date");
   assert.ok((await dialogButtons()).includes("Check again"), "Check again is offered");
+  // Check again succeeds: the open dialog shows that answer (review N1).
+  checkMock = { status: 200, body: info(record("up_to_date")) };
+  await page.locator("dialog.update-dialog button ::-p-text(Check again)").click();
+  await page.waitForFunction(() => /myflames is up to date\./.test(document.querySelector("dialog.update-dialog")?.textContent || ""),
+    { timeout: 10000 });
+  assert.doesNotMatch(await page.$eval("dialog.update-dialog", (e) => e.textContent), /Could not/);
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => !document.querySelector("dialog.update-dialog"));
 
