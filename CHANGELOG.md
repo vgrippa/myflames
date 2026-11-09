@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **README screenshots show myflames 3.3.3.** Home, Visual Explain, Query editor and Server Health were captured again from the 3.3.3 workspace (they showed 3.1.1). The website's documentation and homepage copy them from `docs/screenshots/`.
+- **Larger demo database.** `scripts/demo-db.sh` loads a larger, skewed `testdb` (200,000 users, 2M orders, 6M order lines, 1M reviews) from `scripts/demo-db-seed.sql`, plus the `sakila` and `employees` sample databases, so demo queries take measurable time and plans change with the values queried. `DEMO_DATASETS` selects which databases to load.
 
 ## [3.3.3] - 2026-11-09
 
