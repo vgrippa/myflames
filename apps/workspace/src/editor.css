@@ -259,11 +259,15 @@
   font-size: var(--text-sm);
 }
 
-/* One compact toolbar. Narrow panes scroll controls inside this row. */
+/* One compact toolbar. Its items wrap onto another row whenever they do not
+   fit, at any pane width: the row's width depends on the Database picker's
+   longest name, the scope, the transaction state and the note, so no fixed
+   breakpoint can promise one row, and a row that cannot wrap squeezes a
+   label under its neighbor. */
 .editor-toolbar {
   flex: none;
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   align-items: center;
   min-width: 0;
   overflow-x: auto;
@@ -358,11 +362,14 @@
   color: var(--ink-muted);
   overflow-wrap: anywhere;
 }
-/* A denial, in the toolbar row: one line (the full text is its tooltip and
-   each action's description), so it never adds a row under the toolbar. */
+/* A denial, at the end of the toolbar: one line (the full text is also its
+   tooltip and each action's description). Its basis is the whole sentence,
+   so it stays on a row only where it fits whole and otherwise starts the
+   next row; it ends with an ellipsis only when even a full row is too
+   narrow for it (the 720 px window). */
 .editor-privilege-note {
-  flex: 0 1 auto;
-  min-width: 8em;
+  flex: 1 1 auto;
+  min-width: min(100%, 24em);
   margin: 0 0 0 var(--space-1);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -976,15 +983,21 @@
 }
 
 /* This tab's transaction state, at the end of the editor toolbar (the
-   window status bar carries the connection, session and last run). It is the
-   one toolbar item that gives way: a long meter shrinks with an ellipsis
-   (editor-insights.css) instead of pushing the run actions out. */
+   window status bar carries the connection, session and last run). A plain
+   state (Auto-commit, Manual commit, Session ended) keeps its full width:
+   its pill does not clip, so a narrower box would paint the word under the
+   next item. */
 .editor-toolbar .tx-state {
-  flex: 0 1 auto;
-  min-width: 0;
+  flex: none;
   display: inline-flex;
   align-items: center;
   font-size: var(--text-sm);
+}
+/* The transaction meter is the one that gives way when its row is too
+   narrow for it: its trigger shrinks with an ellipsis (editor-insights.css). */
+.editor-toolbar .tx-state:has(.editor-transaction-popover) {
+  flex: 0 1 auto;
+  min-width: 0;
 }
 .result-meta,
 .message-facts,
@@ -1285,28 +1298,21 @@
 }
 
 /* ---- Narrow windows ---------------------------------------------------------- */
-/* An editor pane narrower than the toolbar's one row (about 1,100 px with
-   the Database picker and a transaction meter: the 720 px window, or the
-   schema browser open in a 1440 px window): the toolbar wraps onto a second
-   row instead of hiding controls in a sideways scroll, and the scope shares
-   that row. */
+/* An editor pane of 1,100 px or less (the 720 px window, or the schema
+   browser open in a 1440 px window) wraps the toolbar onto two rows or more:
+   groups may also wrap inside, the scope gives way with an ellipsis, and the
+   separators go, since a wrapped group would otherwise start a row with one. */
 .query-lab .editor-panel {
   container: editor-panel / inline-size;
 }
 @container editor-panel (max-width: 1100px) {
   .editor-toolbar {
-    flex-wrap: wrap;
     overflow: visible;
   }
   .editor-toolbar > .toolbar-group {
     flex-wrap: wrap;
     min-width: 0;
     max-width: 100%;
-  }
-  /* Wrapped toolbar: the note fills the rest of the last row (one line),
-     so a late answer still never adds a row. */
-  .editor-toolbar .editor-privilege-note {
-    flex: 1 1 8em;
   }
   .editor-toolbar .run-scope {
     flex: 0 1 auto;
