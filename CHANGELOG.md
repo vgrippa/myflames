@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A missing database client no longer stops the app at a command-line message.** When no `mysql` or `mariadb` client is found, the view that needed one (Health and the other Server views, Test connection, the Query editor, Maintenance > Tools) explains it in plain words with how to get a client on this platform and **Choose client…**, instead of "Cannot find 'mysql' or 'mariadb' on PATH… pass --mysql-binary", which the app cannot use. **Settings > Database client…** shows the client in use, lists the ones found, and stores or clears a choice after checking that it runs. Maintenance > Tools still lists the tools and their download links without a client.
+
 ### Changed
 
 - **README screenshots show myflames 3.3.3.** Home, Visual Explain, Query editor and Server Health were captured again from the 3.3.3 workspace (they showed 3.1.1). The website's documentation and homepage copy them from `docs/screenshots/`.

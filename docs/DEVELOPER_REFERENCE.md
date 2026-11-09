@@ -130,6 +130,31 @@ startup scripts; on Windows it appends the installers' versioned `bin` folders
 (`MySQL\MySQL Server *`, `MariaDB *`, then `MySQL\MySQL Shell *` under each Program
 Files folder, newest version first, `windowsClientDirectories` in `backend.cjs`), which
 the MySQL and MariaDB installers do not add to PATH. Packaged app data is separate from development and CLI data.
+When no client is found, `connector.ClientMissingError` (a `ConnectorError`,
+`code = "client-missing"`) carries "myflames could not find the MySQL or MariaDB
+command-line client (mysql or mariadb)."; every refused workspace request it
+caused (found through `__cause__`/`__context__` by `connector.client_missing_error`,
+so wrappers such as Health's "Could not read the server status: " keep it) answers
+400 with `"code": "client-missing"`, and the CLI alone adds "Install it or pass
+--mysql-binary /path/to/mysql.". The workspace shows `ClientMissingNotice`
+(`ClientMissing.tsx`) for that code in every Server view's `ViewStatus`, Test
+connection, the Query editor tab and Maintenance > Tools, which keeps its tools
+and download links (`server: {}`, `offered: {}`, `server_error: {code, error}`).
+A client chosen in the workspace (`POST /api/client/settings`: `{}` reads,
+`{"path": <absolute>}` stores after `<path> --version` exits 0 within 5 s, 16 KiB
+per stream, in `client_environment()`, naming mysql or mariadb, for a regular file
+named `mysql`, `mariadb`, `mysql.exe` or `mariadb.exe`; `{"path": null}` clears;
+the workspace store keeps it) is `connector.set_default_binary` at server start
+and after each change, and `_resolve_binary` uses it after a per-connection
+`binary=` override and before PATH, probing it again when the file changes; a
+broken stored choice raises `ClientMissingError` ("The chosen database client is
+unavailable…") instead of falling back. `POST /api/client/detect` lists usable
+clients on PATH and, on macOS and Linux, in `lifecycle.COMMON_BIN_DIRS`
+(deduplicated by real path, at most ten probed). Both answer `client-settings-1.0`
+(`path`, `active` {`path`, `version`, `source` `chosen`|`path`} or null,
+`detected` [{`path`, `name`, `version`, `source` `path`|`common`}], `error` for a
+broken stored choice). Tests: `test/test_connector.py`, `test/test_ui.py`,
+`apps/workspace/test/database-client.mjs`.
 `package:win` builds the unsigned Windows x64 NSIS installer
 (`myflames-<version>-windows-x64-setup.exe`, per user). PyInstaller does not
 cross-compile, so `.github/workflows/windows-desktop.yml` builds the backend on a

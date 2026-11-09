@@ -24,7 +24,7 @@ To share it, choose **Export** in Plans for a standalone HTML report or JSON. **
 
 ## Connect to a server
 
-Live features need a local `mysql` or `mariadb` client, reachable through PATH or standard vendor installation folders. Maintenance may also need `mysqlsh`, `mysqldump` or `mariadb-dump`.
+Live features need a local `mysql` or `mariadb` client, reachable through PATH or standard vendor installation folders. Maintenance may also need `mysqlsh`, `mysqldump` or `mariadb-dump`. If myflames finds no client, the view says so and offers **Choose client…**: pick `mysql` or `mariadb` (on Windows `mysql.exe`, which MySQL Server, MySQL Workbench and MariaDB install), or open **Settings > Database client…** to see the client in use, the ones found, and to choose or clear one.
 
 Add a connection on Home, choose a connection policy, and test it. Start with **Read-only** for inspection. Use SSH tunneling when your connection requires a bastion. Credentials and SSH configuration remain on your computer.
 
