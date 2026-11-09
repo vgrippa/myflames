@@ -46,21 +46,32 @@ jobs:
         env:
           NO_CHANGELOG: ${{ contains(github.event.pull_request.labels.*.name, 'no-changelog') }}
         run: |
-          # Both sides of a rename, and names unquoted (-z), one per line.
-          changed=$(git diff --name-only --no-renames -z HEAD^1 HEAD | tr '\0' '\n')
-          user_facing=$(printf '%s\n' "$changed" \
-            | grep -E '^(apps/workspace/src/|apps/desktop/|myflames/)' \
-            | grep -Ev '^(apps/desktop/test/|myflames/ui_assets/)' \
-            | grep -Ev '(^|/)tests?/|(^|/)test_[^/]*\.py$' || true)
-          if [ -z "$user_facing" ]; then
+          # Both sides of a rename (--no-renames), each name whole (-z): a name
+          # holding a newline cannot pass for CHANGELOG.md.
+          changed=$(mktemp)
+          git diff --name-only --no-renames -z HEAD^1 HEAD > "$changed"
+          user_facing=()
+          changelog=no
+          while IFS= read -r -d '' file; do
+            if [ "$file" = "CHANGELOG.md" ]; then changelog=yes; fi
+            case "$file" in
+              apps/desktop/test/*|myflames/ui_assets/*) continue ;;
+              apps/workspace/src/*|apps/desktop/*|myflames/*) ;;
+              *) continue ;;
+            esac
+            if [[ /$file =~ /tests?/ || /$file =~ /test_[^/]*\.py$ ]]; then continue; fi
+            user_facing+=("$file")
+          done < "$changed"
+          if [ "${#user_facing[@]}" -eq 0 ]; then
             echo "No user-facing code changed."
-          elif printf '%s\n' "$changed" | grep -qx 'CHANGELOG.md'; then
+          elif [ "$changelog" = "yes" ]; then
             echo "User-facing code changed and CHANGELOG.md has an entry."
           elif [ "$NO_CHANGELOG" = "true" ]; then
             echo "User-facing code changed without a CHANGELOG.md entry; the PR has the no-changelog label."
           else
             echo "::error file=CHANGELOG.md::User-facing code changed without a CHANGELOG.md entry. Add one under [Unreleased], or label the PR no-changelog when users see no difference."
-            printf '%s\n' "$user_facing"
+            # Shell-quoted, one per line: a name cannot print a workflow command.
+            printf '%q\n' "${user_facing[@]}"
             exit 1
           fi
       - name: A version change is a complete release

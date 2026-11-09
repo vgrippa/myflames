@@ -568,7 +568,8 @@ are the contracts of the tools that check them.
   only in the release job). On a pull request to master (also when its labels
   change): a change under `apps/workspace/src/`, `apps/desktop/` (not
   `test/`) or `myflames/` (not `ui_assets/`, `tests/` or `test_*.py`; both
-  sides of a rename count) without a
+  sides of a rename count, and names are compared whole, so a name holding a
+  newline cannot pass for `CHANGELOG.md`) without a
   `CHANGELOG.md` change fails unless the PR has the `no-changelog` label, and a
   change of the `apps/desktop/package.json` version runs
   `check_release_sync.py` for the new version. When a release is published, or
@@ -583,7 +584,9 @@ are the contracts of the tools that check them.
   release's DMG and Windows `-setup.exe` with their `.sha256`, never the update
   zip), `build_docs.py --source` (the handbook, the reference documents and the
   raster images in `docs/screenshots`; links and SVG files are not copied) and
-  its QA, and commits to its default branch when something changed. The site goes live only when someone clicks Publish
+  its QA without the CLI examples (no code from this repository runs in that
+  job, which can push), and commits to its default branch when something
+  changed. The site goes live only when someone clicks Publish
   in Lovable.
 
 ### Shared view presentation

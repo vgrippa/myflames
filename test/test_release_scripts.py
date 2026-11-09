@@ -8,6 +8,7 @@ Run:
 """
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -369,6 +370,61 @@ class DocsSyncWorkflowTest(unittest.TestCase):
                 done, written = self.run_tag_step(tag)
                 self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
                 self.assertEqual(written, "VERSION=%s\n" % version)
+
+    def run_changelog_step(self, files, label=False, base_files=()):
+        """The PR job's changelog step on a merge commit shaped like refs/pull/N/merge."""
+        script = workflow_step(REPO / ".github/workflows/docs-sync.yml", "CHANGELOG entry for user-facing changes")
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": tempfile.gettempdir(), "GIT_CONFIG_NOSYSTEM": "1",
+               "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com", "GIT_COMMITTER_NAME": "t",
+               "GIT_COMMITTER_EMAIL": "t@example.com", "NO_CHANGELOG": "true" if label else "false"}
+        with tempfile.TemporaryDirectory() as tmp:
+            def git(*args):
+                subprocess.run(["git", "-c", "init.defaultBranch=master", "-c", "commit.gpgsign=false"] + list(args),
+                               cwd=tmp, env=env, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            git("init", "-q")
+            for name in ("CHANGELOG.md",) + tuple(base_files):
+                path = Path(tmp) / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("base\n")
+            git("add", "-A")
+            git("commit", "-qm", "base")
+            git("checkout", "-qb", "pr")
+            for name, action in files:
+                path = Path(tmp) / name
+                if action == "delete":
+                    git("rm", "-q", name)
+                    continue
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("change\n")
+            git("add", "-A")
+            git("commit", "-qm", "pr")
+            git("checkout", "-q", "master")
+            git("merge", "-q", "--no-ff", "pr", "-m", "merge")
+            return subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", script], cwd=tmp, env=env,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+
+    @unittest.skipUnless(shutil.which("git") and os.name != "nt", "needs git and newline file names")
+    def test_changelog_gate(self):
+        cases = [
+            ("documentation only", [("docs/handbook/x.md", "add"), ("README.md", "add")], False, 0),
+            ("tests and built assets only", [("apps/workspace/test/a.mjs", "add"), ("apps/desktop/test/a.test.cjs", "add"),
+                                             ("myflames/ui_assets/index.html", "add"), ("myflames/x/tests/t.py", "add"),
+                                             ("myflames/test_x.py", "add")], False, 0),
+            ("workspace code without an entry", [("apps/workspace/src/Health.tsx", "add")], False, 1),
+            ("Python code with an entry", [("myflames/ui.py", "add"), ("CHANGELOG.md", "add")], False, 0),
+            ("desktop code with the no-changelog label", [("apps/desktop/main.cjs", "add")], True, 0),
+            ("a module moved out of myflames", [("myflames/old.py", "delete"), ("scripts/old.py", "add")], False, 1),
+            # Abuse case: one file whose name holds a newline before CHANGELOG.md.
+            ("a name that ends in a CHANGELOG.md line", [("myflames/x\nCHANGELOG.md", "add")], False, 1),
+        ]
+        for label, files, has_label, status in cases:
+            with self.subTest(label):
+                base = [name for name, action in files if action == "delete"]
+                done = self.run_changelog_step(files, has_label, base)
+                self.assertEqual(done.returncode, status, done.stdout + done.stderr)
+                if status:
+                    self.assertTrue(done.stdout.startswith("::error file=CHANGELOG.md::"), done.stdout)
+                    self.assertFalse(any(line.startswith("::") for line in done.stdout.splitlines()[1:]), done.stdout)
 
     def test_a_second_line_in_the_tag_never_reaches_github_env(self):
         for tag in ("v1.2.3\nBASH_ENV=$(echo INJECTED >&2)", "v1.2.3\n", "x\nv1.2.3", "3.3.4", "v3.3.4; rm -rf /"):
