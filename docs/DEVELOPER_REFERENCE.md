@@ -342,7 +342,10 @@ reopening, and an ad hoc signed 3.3.91 zip with a correct checksum was refused
 by Squirrel.Mac and the app stayed 3.3.90. On the Windows lab PC the CI
 installer, staged as a newer version, was installed silently after
 **Restart to update**, which replaced the install folder and reopened the app
-13 seconds later.
+13 seconds later. After the security fixes, signed builds 3.3.95 and 3.3.96 repeated the
+macOS update through the Host-checked feed, and an older signed build staged
+as 3.3.99 was refused by `ElectronSquirrelPreventDowngrades` ("The update is
+older than this copy of myflames, so it was not installed.").
 
 Every HTTPS read (the release check and download, `tool_updates._fetch`, and
 Home news) takes its context from `myflames/tls.py` `https_context()`: the
