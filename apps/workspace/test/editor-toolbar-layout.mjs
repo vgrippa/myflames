@@ -2,7 +2,8 @@
 // transaction state and the privilege note end the toolbar; when its one row
 // was too narrow for them (a 1440 px window with the schema browser closed
 // and a MySQL 8.0 server, whose Run analysis note is long), the state shrank
-// to nothing while its "Auto-commit" kept painting under the note. Checked at
+// to nothing while its "Auto-commit" kept painting under the note. The note
+// shows its whole sentence wherever one toolbar row can hold it. Checked at
 // 1440, 1040 and 720 px, light and dark, with the schema browser open and
 // closed, one statement or two (the scope), a plain state and a long
 // transaction meter. The real isolated workspace (perf-harness.mjs); every
@@ -76,6 +77,14 @@ const measure = () => page.evaluate(() => {
       return { name: e.getAttribute("aria-label") || e.textContent.trim().slice(0, 40), paint, text, box, node: e.className };
     }),
     nested: items.map((e) => items.map((o) => e !== o && (e.contains(o) || o.contains(e)))),
+    // The note's whole sentence (scroll), what it shows (client), and the
+    // width of one full toolbar row (the toolbar's content box).
+    note: (() => {
+      const n = bar.querySelector(".editor-privilege-note");
+      const s = getComputedStyle(bar);
+      return { scroll: n.scrollWidth, client: n.clientWidth, margin: parseFloat(getComputedStyle(n).marginLeft),
+        row: bar.clientWidth - parseFloat(s.paddingLeft) - parseFloat(s.paddingRight) };
+    })(),
   };
 });
 
@@ -135,6 +144,16 @@ async function sweep(state) {
         const m = await noOverlap(where);
         const names = m.labels.map((l) => l.name);
         assert.ok(names.some((n) => n.startsWith("Run analysis needs")), `the note is on screen ${where}`);
+        // The note is never cut short to share a row: where its sentence fits
+        // one full toolbar row it shows whole (on the next row if need be),
+        // and only a sentence longer than a full row (the 720 px window, or
+        // a 1040 px window with the schema browser open) ends with an ellipsis.
+        const note = m.note;
+        const fitsRow = note.scroll + note.margin <= note.row;
+        if (width === 1440 || (width === 1040 && !pane))
+          assert.ok(fitsRow, `one toolbar row holds the whole note ${where}: ${JSON.stringify(note)}`);
+        if (fitsRow) assert.ok(note.scroll <= note.client, `the note shows its whole sentence ${where}: ${JSON.stringify(note)}`);
+        else assert.ok(note.client + note.margin >= note.row - 1, `a note longer than a row takes a full row ${where}: ${JSON.stringify(note)}`);
         if (state === "Auto-commit") {
           // A plain state is short: its whole word shows, never cut to nothing.
           const pill = m.labels.find((l) => l.node.includes("status-pill"));

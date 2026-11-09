@@ -362,12 +362,14 @@
   color: var(--ink-muted);
   overflow-wrap: anywhere;
 }
-/* A denial, in the toolbar row: one line (the full text is its tooltip and
-   each action's description). It fills the rest of the last row, at least
-   8em, so a late answer adds a row only when less than that is left. */
+/* A denial, at the end of the toolbar: one line (the full text is also its
+   tooltip and each action's description). Its basis is the whole sentence,
+   so it stays on a row only where it fits whole and otherwise starts the
+   next row; it ends with an ellipsis only when even a full row is too
+   narrow for it (the 720 px window). */
 .editor-privilege-note {
-  flex: 1 1 8em;
-  min-width: 8em;
+  flex: 1 1 auto;
+  min-width: min(100%, 24em);
   margin: 0 0 0 var(--space-1);
   overflow: hidden;
   text-overflow: ellipsis;
