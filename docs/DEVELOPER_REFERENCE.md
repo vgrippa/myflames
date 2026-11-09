@@ -168,8 +168,9 @@ Kerberos, LDAP SASL, OCI and WebAuthn authentication also need an installed clie
 `apps/desktop/scripts/fetch-mysql-client.py` (stdlib) downloads the archive into
 `apps/desktop/build/mysql-client-cache` (or `MYFLAMES_MYSQL_CLIENT_CACHE`), refuses
 any size or SHA-256 mismatch with the lock (HTTPS only, the download capped at
-the pinned size; the cached file is opened once, without following links, owned
-by the user, and the handle that was hashed is the one extracted), reads the
+the pinned size; the cached file is opened once, without following links or
+blocking, owned by the user and not writable by others, and the handle that was
+hashed is the one extracted), reads the
 dependencies from the Mach-O load commands or the PE import and delay-import
 tables and refuses anything outside the archive, the operating system and, on
 Windows, the Visual C++ runtime folder (DLL names must be plain file names;
