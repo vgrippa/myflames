@@ -98,6 +98,10 @@ test('Finder client discovery appends fixed locations without shell execution or
   assert.ok(backendEnvironment('/desktop', { HOME: '/Users/jane' }, 'darwin').PATH.split(':')
     .includes('/Users/jane/Library/Application Support/Herd/bin'));
   assert.ok(!backendEnvironment('/desktop', { HOME: 'relative' }, 'darwin').PATH.includes('Herd'));
+  // A ':' in HOME must not add a relative entry to PATH.
+  const split = backendEnvironment('/desktop', { HOME: '/Users/a:relative' }, 'darwin').PATH.split(':');
+  assert.ok(!split.some(entry => entry.includes('Herd')), 'no Herd entry for a HOME with a colon');
+  assert.ok(split.every(entry => entry.startsWith('/')), 'every PATH entry stays absolute');
   assert.ok(backendEnvironment('/desktop', {}, 'darwin').PATH.endsWith(':/Applications/MySQLWorkbench.app/Contents/MacOS'));
 });
 test('Finder client discovery finds keg-only versioned Homebrew clients, newest first', () => {

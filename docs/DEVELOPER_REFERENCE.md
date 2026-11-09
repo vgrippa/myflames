@@ -1957,6 +1957,27 @@ planner, write gate and session engine from the CLI.
   compiled by `test/sql-format-load.mjs`); browser suite `test/editor-tools.mjs`
   (`npm run test:editor-tools`; `EDITOR_TOOLS_SHOTS=<dir>` writes screenshots at
   1440x900 and 720x520, light and dark).
+- Toolbar layout (`editor.css`): the editor toolbar wraps onto another row
+  whenever its items do not fit, at any pane width; no fixed breakpoint can
+  promise one row, since the Database picker's longest name, the scope, the
+  transaction state and the privilege note all change its width. An item
+  shrinks below its content only when it clips that content: the plain
+  transaction state (Auto-commit, Manual commit, Session ended) keeps its full
+  width, and the transaction meter shortens with an ellipsis only when a row
+  is too narrow for it. The privilege note's basis is its whole sentence
+  (`flex: 1 1 auto; min-width: min(100%, 24em)`): it stays on a row only
+  where it fits whole, otherwise starts the next row, and ends with an
+  ellipsis only when even a full row is too narrow (the 720 px window, or a
+  1040 px window with the schema browser open); its tooltip keeps the full
+  text. In a pane of 1,100 px or less the groups may also wrap and the scope
+  shortens. Browser suite `test/editor-toolbar-layout.mjs`
+  (`npm run test:editor-toolbar-layout`; `EDITOR_TOOLBAR_SHOTS=<dir>` keeps
+  screenshots) asserts that no two toolbar labels paint over each other and
+  none leaves the toolbar, and that the note shows its whole sentence wherever
+  one toolbar row can hold it (always at 1440 px, and at 1040 px with the
+  schema browser closed), at 1440, 1040 and 720 px, light and dark, with the
+  schema browser open and closed, one or two statements, Auto-commit and the
+  transaction meter.
 - The editor's room (`measureEditorRoom`) is set only when the measured value
   changes (`measuredRoom`): a no-op update from its every-commit layout effect
   kept re-rendering while a lower-priority caret update waited, and React

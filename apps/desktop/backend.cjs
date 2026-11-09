@@ -170,7 +170,9 @@ function backendEnvironment(dataDirectory, inherited = process.env, platform = p
       '/opt/homebrew/opt/mariadb/bin', '/usr/local/opt/mariadb/bin', '/opt/local/bin',
     ], homebrewVersionedClientDirectories(fileSystem), [
       // Laravel Herd links its MySQL client here and adds it to PATH only in ~/.zshrc.
-      ...(path.posix.isAbsolute(inherited.HOME || '') ? [path.posix.join(inherited.HOME, 'Library/Application Support/Herd/bin')] : []),
+      // A HOME with ':' would split into two PATH entries, one of them relative.
+      ...(path.posix.isAbsolute(inherited.HOME || '') && !inherited.HOME.includes(':')
+        ? [path.posix.join(inherited.HOME, 'Library/Application Support/Herd/bin')] : []),
       // MySQL Workbench bundles mysql and mysqldump, often older than the server: last.
       '/Applications/MySQLWorkbench.app/Contents/MacOS',
     ], last))].join(':');
