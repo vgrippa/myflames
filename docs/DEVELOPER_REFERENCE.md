@@ -125,11 +125,72 @@ POSIX, `MYFLAMES_SSH_AUTH_SOCK` (the inherited agent socket); `main.cjs` sets
 `MYFLAMES_SSH_HOME` from `os.homedir()`. The backend's own HOME stays isolated,
 and database clients never see either variable.
 Development and tests use separate app data, never the real CLI workspace.
-Client discovery appends fixed macOS installation directories without shell
-startup scripts; on Windows it appends the installers' versioned `bin` folders
-(`MySQL\MySQL Server *`, `MariaDB *`, then `MySQL\MySQL Shell *` under each Program
-Files folder, newest version first, `windowsClientDirectories` in `backend.cjs`), which
-the MySQL and MariaDB installers do not add to PATH. Packaged app data is separate from development and CLI data.
+Client discovery (`backendEnvironment` in `backend.cjs`) builds the backend PATH
+without shell startup scripts, in this order. macOS: the inherited PATH (Finder's
+default `/usr/bin:/bin:/usr/sbin:/sbin` when none), then `/opt/homebrew/bin`,
+`/usr/local/bin`, `/usr/local/mysql/bin`, the Homebrew `opt` folders of
+`mysql-client`, `mysql-shell` and `mariadb`, `/opt/local/bin`, keg-only versioned
+formulae (`mysql-client@*`, `mysql@*`, `mariadb@*` under `/opt/homebrew/opt` then
+`/usr/local/opt`, newest first), Laravel Herd's `~/Library/Application Support/Herd/bin`
+and `/Applications/MySQLWorkbench.app/Contents/MacOS`. Windows: the inherited PATH,
+then the installers' versioned folders under each Program Files folder, which the
+installers do not add to PATH (`MySQL\MySQL Server *\bin`, `MariaDB *\bin`,
+`MySQL\MySQL Shell *\bin`, then `MySQL\MySQL Workbench *` when it holds `mysql.exe`;
+newest version first, `windowsClientDirectories`), compared without case.
+**Bundled client.** The packaged app ships the official MySQL client in
+`<resources>/mysql-client` (`Contents/Resources/mysql-client` in the `.app`,
+`resources\mysql-client` beside `myflames.exe` on Windows): `bin/mysql` and
+`bin/mysqldump` from the MySQL 8.4 LTS release pinned in
+`apps/desktop/mysql-client.lock.json`, with exactly the libraries they load
+(macOS: OpenSSL in `lib/`, found through `@loader_path/../lib`; Windows: the
+OpenSSL DLLs and the Visual C++ runtime DLLs `msvcp140.dll`, `vcruntime140.dll`
+and `vcruntime140_1.dll` beside the programs), the archive's `LICENSE` and
+`README`, and a `manifest.json` that lists every file with its size, SHA-256 and
+origin. `main.cjs` passes `process.resourcesPath` to `backendEnvironment` only when
+`app.isPackaged` (development builds add nothing); `backendEnvironment` appends
+`<resources>/mysql-client/bin` as the very last PATH entry on macOS and Windows,
+after everything above (moving it there if the inherited PATH already holds it,
+and leaving it off PATH when the folder name holds the PATH separator), and sets
+`MYFLAMES_BUNDLED_CLIENT_DIR` to it. `connector._resolve_binary` keeps its order
+(`--mysql-binary`, then `mysql`, then `mariadb`) but searches a PATH without that
+folder under any spelling (`installed_search_path`: a trailing separator, another
+case, a symlink or junction), so an installed `mariadb` anywhere on PATH still wins
+(Debian's MariaDB 11 packages ship `mysql` only in `mariadb-client-compat`); the
+bundled `mysql` is the last resort, built as `<folder>/mysql[.exe]` and never
+searched (`bundled_program`: `shutil.which` would split a folder name holding the
+PATH separator). `lifecycle.detect_tools` looks for each tool on that PATH, then in
+`COMMON_BIN_DIRS`, then in the bundled folder (the bundled `mysqldump` reports
+engine `mysql`, so it is offered for MySQL servers only). The
+bundled client cannot sign in to MariaDB accounts that use `ed25519` or `parsec`
+(`ERROR 2059: Authentication plugin 'client_ed25519' cannot be loaded`); those need
+an installed MariaDB client. It carries no client plugins (`lib/plugin`), so
+Kerberos, LDAP SASL, OCI and WebAuthn authentication also need an installed client.
+`apps/desktop/scripts/fetch-mysql-client.py` (stdlib) downloads the archive into
+`apps/desktop/build/mysql-client-cache` (or `MYFLAMES_MYSQL_CLIENT_CACHE`), refuses
+any size or SHA-256 mismatch with the lock (HTTPS only, the download capped at
+the pinned size; the cached file is opened once, without following links or
+blocking, owned by the user and not writable by others, and the handle that was
+hashed is the one extracted), reads the
+dependencies from the Mach-O load commands or the PE import and delay-import
+tables and refuses anything outside the archive, the operating system and, on
+Windows, the Visual C++ runtime folder (DLL names must be plain file names;
+output paths never come from the archive and must stay inside the output
+folder; the runtime is found with
+`vswhere` in `VC\Redist\MSVC\<version>\x64\Microsoft.VC*.CRT`, or `--vc-runtime`),
+and writes `apps/desktop/build/mysql-client`. `package:mac`,
+`package-mac-release.sh` and the Windows workflow (archive cached by its SHA-256)
+run it before electron-builder; electron-builder copies the folder to
+`mysql-client` and its `LICENSE` to `licenses/MySQL-Client-LICENSE`. The release
+build re-signs the client and its libraries with the app's Developer ID under
+the hardened runtime and checks that `mysql --version` and `mysqldump --version`
+still run; the packaged smoke runs the bundled `mysql --version` with only the
+system folders on PATH and checks that the backend found a usable `mysql`
+(`/api/lifecycle/tools`). Moving to another MySQL release repeats the checks
+recorded in the lock's `comment` (Oracle's MD5 file and `.asc` signature, then
+the SHA-256) and updates NOTICE. Tests: `apps/desktop/test` (PATH order,
+extraResources, lock) and `test/test_fetch_mysql_client.py`,
+`test_connector.TestBundledClientResolution`.
+Packaged app data is separate from development and CLI data.
 `package:win` builds the unsigned Windows x64 NSIS installer
 (`myflames-<version>-windows-x64-setup.exe`, per user). PyInstaller does not
 cross-compile, so `.github/workflows/windows-desktop.yml` builds the backend on a

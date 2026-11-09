@@ -25,6 +25,26 @@ contributors, and its dependency nearley 2.20.1
 Tim Radvan, both licensed under the MIT License. They are built into a chunk
 of the workspace (myflames/ui_assets) that loads on first use.
 
+The desktop app for macOS and Windows includes the MySQL command-line client
+programs mysql and mysqldump from MySQL 8.4.13 Community Server
+(https://www.mysql.com), Copyright (c) 1997, 2026, Oracle and/or its
+affiliates, with the OpenSSL 3.5 libraries Oracle ships beside them
+(licensed under the Apache License, Version 2.0). They are
+separate programs that myflames runs as child processes, redistributed
+unmodified from Oracle's release archives (macOS releases re-sign them with
+the app's Developer ID), under the GNU General Public License version 2 with
+the Universal FOSS Exception, version 1.0. Their license text, with the
+third-party notices it includes, is in licenses/MySQL-Client-LICENSE (and in
+mysql-client/LICENSE) inside the app. The corresponding source code is the
+mysql-8.4.13 tag of https://github.com/mysql/mysql-server
+(https://github.com/mysql/mysql-server/tree/mysql-8.4.13), also available as
+https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.13.tar.gz and from
+https://dev.mysql.com/downloads/mysql/ (Source Code). The Windows installer
+also includes the Microsoft Visual C++ runtime DLLs those programs load
+(msvcp140.dll, vcruntime140.dll and vcruntime140_1.dll), copied unmodified from
+Visual Studio's redistributable folder and redistributed under Microsoft's
+Visual Studio license terms for distributable code.
+
 History
 -------
 myflames began as a fork of FlameGraph, which is licensed under the Common

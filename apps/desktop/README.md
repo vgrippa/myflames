@@ -120,13 +120,59 @@ The package directory is scaffolding; the signed, notarized DMG comes from
 `package:mac:release` ([Build the signed release](#build-the-signed-release)).
 Updater trust, platform icons, dependency licensing, Windows process supervision
 and packaged platform validation remain release work.
-Database clients are not bundled. On macOS the launcher appends standard
-Homebrew, Oracle MySQL and MacPorts client locations to the backend PATH so
-Finder launches can discover installed tools without reading shell startup files.
-On Windows it appends the `bin` folders the MySQL and MariaDB installers create
-under Program Files (`MySQL\MySQL Server 8.4`, `MariaDB 11.8`, `MySQL\MySQL Shell 8.4`
-and other versions, newest first), which they do not add to PATH; PATH keeps
-precedence.
+On macOS the launcher appends standard Homebrew (including keg-only versioned
+formulae such as `mysql-client@8.4`), Oracle MySQL, MacPorts, Laravel Herd and
+MySQL Workbench client locations to the backend PATH so Finder launches can
+discover installed tools without reading shell startup files. On Windows it
+appends the folders the MySQL and MariaDB installers create under Program Files
+(`MySQL\MySQL Server 8.4\bin`, `MariaDB 11.8\bin`, `MySQL\MySQL Shell 8.4\bin`
+and other versions, newest first, then a MySQL Workbench folder that holds
+`mysql.exe`), which they do not add to PATH; PATH keeps precedence.
+
+### Bundled MySQL client
+
+A packaged app also bundles the official MySQL command-line client (`mysql` and
+`mysqldump` from the MySQL 8.4 LTS release pinned in `mysql-client.lock.json`)
+in `Contents/Resources/mysql-client` (Windows: `resources\mysql-client`), so a
+computer with no client installed can connect. `main.cjs` passes the resources
+folder to `backendEnvironment` only when packaged, which appends
+`mysql-client/bin` as the very last PATH entry and names it in
+`MYFLAMES_BUNDLED_CLIENT_DIR`: every installed client above is found first, and
+the backend also prefers an installed `mariadb` to the bundled `mysql`.
+Development runs (`npm start`) add nothing. MariaDB accounts that use `ed25519`
+or `parsec` authentication need an installed MariaDB client.
+
+`npm run fetch:mysql-client` (`scripts/fetch-mysql-client.py`, standard library
+only) downloads the pinned archive from cdn.mysql.com into
+`build/mysql-client-cache`, refuses it unless its size and SHA-256 match the
+lock, and writes `build/mysql-client`: the two programs, exactly the shared
+libraries they load (read from their Mach-O load commands or PE import tables;
+anything outside the archive and the operating system is refused), the
+archive's `LICENSE` and `README`, and `manifest.json` with every file's size,
+SHA-256 and origin. On Windows it also copies the Visual C++ runtime DLLs the
+programs import (`msvcp140.dll`, `vcruntime140.dll`, `vcruntime140_1.dll`)
+from Visual Studio's `VC\Redist\MSVC\<version>\x64\Microsoft.VC*.CRT` folder
+(found with `vswhere`; pass `--vc-runtime <folder>` otherwise), so the client
+runs without the Visual C++ Redistributable installed. It runs the bundled
+`mysql --version` with nothing else on PATH when the build machine can.
+`package:mac` and `package:mac:release` run it first; the Windows workflow runs
+it before `package:win`. electron-builder copies the folder to `mysql-client`
+and its license to `licenses/MySQL-Client-LICENSE`.
+
+To move to another MySQL release, download the new archives with their `.md5`
+and `.asc` files from cdn.mysql.com, check the MD5 and the signature
+(`gpg --status-fd 1 --verify`) with the MySQL Release Engineering key from the
+MySQL manual (fingerprint `BCA4 3417 C3B4 85DD 128E C6D4 B7B3 B788 A8D3 785C`,
+refreshed from a keyserver first, or a successor key the manual announces):
+require both `GOODSIG` and `VALIDSIG` with that fingerprint, since `VALIDSIG`
+alone also appears for an expired or revoked key. The MD5 comes from the same
+CDN as the archive; the signature is the real check. Compute the size and
+SHA-256 from the same file gpg verified, then record the version, URLs, sizes,
+MD5 and SHA-256 together in the lock, say how you checked them in its
+`comment`, update the release named in NOTICE, and have a reviewer repeat the
+signature check. Do not widen the script's system library lists or Visual C++
+runtime pattern without reviewing the new library.
+
 No automatic application updates or install actions are enabled.
 
 ## Build an unsigned macOS app
@@ -159,8 +205,8 @@ The macOS configuration explicitly disables Developer ID signing and
 notarization for local builds; only the release script below turns them on.
 Apple Silicon executables retain local ad-hoc signatures required
 to run; these do not certify a publisher. The app includes the project's LICENSE
-and NOTICE under `Contents/Resources/licenses`, with the Electron, Chromium and
-bundled Python license notices beside them, and the original inspiration credit
+and NOTICE under `Contents/Resources/licenses`, with the Electron, Chromium,
+bundled Python and bundled MySQL client license notices beside them, and the original inspiration credit
 retained in About. Electron fuses turn off `ELECTRON_RUN_AS_NODE`, `NODE_OPTIONS`
 and `--inspect`, load the app only from its asar archive and validate that
 archive's integrity. `build-backend.py` collects the myflames modules and package
@@ -172,7 +218,10 @@ The packaged smoke uses a temporary app-data directory, a minimal Finder-style
 PATH and an invalid system Python override. Run it after every build and before
 attaching the zip to a release. It verifies the bundled backend,
 authentication, reload, renderer isolation, command search, keyword completion
-and owned-process shutdown. It does not connect to a database. Packaged test mode
+and owned-process shutdown, that the bundled `mysql --version` runs with only
+the system folders on PATH, and that the backend found a usable `mysql` (it
+prints which one: the bundled client, or an installed one the launcher found).
+It does not connect to a database. Packaged test mode
 requires both `--smoke` and `MYFLAMES_DESKTOP_SMOKE=1`; normal Finder launches do
 not enter it.
 
@@ -206,7 +255,10 @@ predecessor from the keychain). It overrides
 the unsigned configuration for this build only: electron-builder signs every
 binary, the PyInstaller backend included, under the hardened runtime with
 `entitlements.mac.plist` (only `com.apple.security.cs.allow-jit`), notarizes and
-staples the app, and builds the DMG. The script then runs the packaged smoke,
+staples the app, and builds the DMG. It fetches the bundled MySQL client first;
+electron-builder re-signs it and its libraries with the same Developer ID, and
+the script refuses a build whose client was signed by another certificate or
+no longer starts (library validation). The script then runs the packaged smoke,
 signs, notarizes and staples the DMG, checks that Gatekeeper accepts the app,
 the DMG and the app inside the mounted DMG as notarized, refuses a DMG over the
 150 MiB in-app update download limit (`myflames/app_update.py`), and writes
@@ -242,8 +294,9 @@ The `Windows desktop` workflow (`.github/workflows/windows-desktop.yml`) builds
 `myflames-<version>-windows-x64-setup.exe` on a GitHub-hosted Windows runner for
 each pull request and push to master that touches `apps/desktop` or `myflames`,
 and on demand (Actions > Windows desktop > Run workflow). It builds the backend
-with PyInstaller in a fresh venv, runs `npm test`, packages the NSIS installer
-with `package:win`, runs the packaged smoke against `dist/win-unpacked` with a
+with PyInstaller in a fresh venv, runs `npm test`, fetches the bundled MySQL
+client (the archive cached by its SHA-256, the Visual C++ runtime DLLs from the
+runner's Visual Studio), packages the NSIS installer with `package:win`, runs the packaged smoke against `dist/win-unpacked` with a
 PATH of only the Windows system folders, and uploads the installer and its
 `.sha256` as the `myflames-windows-x64` artifact on the run's summary page.
 
@@ -254,6 +307,7 @@ run from the repository root in Git Bash:
 python -m venv local/desktop-build-venv
 local/desktop-build-venv/Scripts/python.exe -m pip install -r apps/desktop/requirements-build.txt
 local/desktop-build-venv/Scripts/python.exe apps/desktop/scripts/build-backend.py
+python apps/desktop/scripts/fetch-mysql-client.py --platform win32-x64
 cd apps/desktop
 npm ci
 npm run package:win
