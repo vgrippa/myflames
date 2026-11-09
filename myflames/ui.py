@@ -1425,10 +1425,11 @@ def _client_settings_response(path, payload, workspace):
             source = 'chosen'
         else:
             # Common install folders are suggestions only. The automatic
-            # client must match the connector's mysql-before-mariadb lookup.
-            automatic = (connector.MySQLConnection._which('mysql') or
-                         connector.MySQLConnection._which('mariadb'))
-            if automatic is None:
+            # client is the connector's own: installed mysql, then mariadb,
+            # then the desktop's bundled MySQL client.
+            try:
+                automatic = connector.MySQLConnection(host='localhost')._resolve_binary()
+            except connector.ClientMissingError:
                 return result
             try:
                 # Described as PATH finds it: the connector uses it without the chosen-client trust rule.

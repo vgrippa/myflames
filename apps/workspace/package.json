@@ -62,6 +62,7 @@
     "test:safe-updates-info": "npm run build && node test/safe-updates-info.mjs",
     "test:sql-format": "node test/sql-format.mjs",
     "test:editor-tools": "npm run build && node test/editor-tools.mjs",
+    "test:editor-toolbar-layout": "npm run build && node test/editor-toolbar-layout.mjs",
     "test:editor-find": "npm run build && node test/editor-find.mjs",
     "test:replication": "npm run build && node test/replication.mjs",
     "test:replication-source-version": "npm run build && node test/replication-source-version.mjs",

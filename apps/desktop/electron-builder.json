@@ -11,11 +11,13 @@
   "files": ["main.cjs", "backend.cjs", "preload.cjs", "package.json"],
   "extraResources": [
     { "from": "build/backend/myflames-backend", "to": "backend" },
+    { "from": "build/mysql-client", "to": "mysql-client" },
     { "from": "../../LICENSE", "to": "licenses/MyFlames-LICENSE" },
     { "from": "../../NOTICE", "to": "licenses/MyFlames-NOTICE" },
     { "from": "node_modules/electron/dist/LICENSE", "to": "licenses/Electron-LICENSE" },
     { "from": "node_modules/electron/dist/LICENSES.chromium.html", "to": "licenses/Chromium-LICENSES.html" },
-    { "from": "build/backend/Python-LICENSE.txt", "to": "licenses/Python-LICENSE.txt" }
+    { "from": "build/backend/Python-LICENSE.txt", "to": "licenses/Python-LICENSE.txt" },
+    { "from": "build/mysql-client/LICENSE", "to": "licenses/MySQL-Client-LICENSE" }
   ],
   "mac": {
     "target": ["dir"], "category": "public.app-category.developer-tools",

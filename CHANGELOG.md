@@ -7,13 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
+### Added
 
-- **A missing database client no longer stops the app at a command-line message.** When no `mysql` or `mariadb` client is found, the view that needed one (Health and the other Server views, Test connection, the Query editor, Maintenance > Tools) explains it in plain words with how to get a client on this platform and **Choose client…**, instead of "Cannot find 'mysql' or 'mariadb' on PATH… pass --mysql-binary", which the app cannot use. **Settings > Database client…** shows the client in use, lists the ones found, and stores or clears a choice after checking that it runs. Maintenance > Tools still lists the tools and their download links without a client.
+- **The desktop app includes the MySQL client.** The macOS app and the Windows installer bundle the official MySQL 8.4.13 LTS command-line client (`mysql` and `mysqldump`, with the OpenSSL libraries they load and, on Windows, the Visual C++ runtime DLLs), so a computer with no MySQL or MariaDB client installed connects without "Cannot find 'mysql' or 'mariadb' on PATH". Installed clients keep precedence: the bundled folder is the last PATH entry, after PATH and every standard install location, and an installed `mariadb` is also preferred to the bundled `mysql`. MariaDB accounts that use `ed25519` or `parsec` authentication still need an installed MariaDB client. The client is unmodified Oracle code under GPLv2 with the Universal FOSS Exception; its license ships in the app and NOTICE says where its source is. The build pins the release archives by URL, size and SHA-256 (`apps/desktop/mysql-client.lock.json`, checked against Oracle's MD5 and GPG signature) and refuses any mismatch. The DMG grows by about 7 MB.
 
 ### Changed
 
 - **README screenshots show myflames 3.3.3.** Home, Visual Explain, Query editor and Server Health were captured again from the 3.3.3 workspace (they showed 3.1.1). The website's documentation and homepage copy them from `docs/screenshots/`.
+- **Larger demo database.** `scripts/demo-db.sh` loads a larger, skewed `testdb` (200,000 users, 2M orders, 6M order lines, 1M reviews) from `scripts/demo-db-seed.sql`, plus the `sakila` and `employees` sample databases, so demo queries take measurable time and plans change with the values queried. `DEMO_DATASETS` selects which databases to load.
+
+### Fixed
+
+- **A missing database client no longer stops the app at a command-line message.** When no `mysql` or `mariadb` client is found, the view that needed one (Health and the other Server views, Test connection, the Query editor, Maintenance > Tools) explains it in plain words with how to get a client on this platform and **Choose client…**, instead of "Cannot find 'mysql' or 'mariadb' on PATH… pass --mysql-binary", which the app cannot use. **Settings > Database client…** shows the client in use, lists the ones found, and stores or clears a choice after checking that it runs. Maintenance > Tools still lists the tools and their download links without a client.
+- **Query editor toolbar labels no longer overlap.** With the schema browser closed in a 1440 px window and a server where Run analysis is unavailable (MySQL before 8.3), **Auto-commit** was drawn on top of the Run analysis note at the end of the toolbar. The toolbar now wraps onto another row whenever its items do not fit, at any width, and the transaction state keeps its full width. The note moves to the next row instead of being cut short and shows its whole sentence wherever one toolbar row can hold it; it ends with an ellipsis only in a narrower editor, such as the 720 px window (its tooltip keeps the full text).
+- **The desktop app finds the MySQL client in more install locations.** On Windows it also searches the `mysql.exe` bundled with MySQL Workbench (`Program Files\MySQL\MySQL Workbench <version>`), after the MySQL Server, MariaDB and MySQL Shell folders, so a server with only Workbench installed no longer stops at "Cannot find 'mysql' or 'mariadb' on PATH". On macOS, where Finder does not load shell startup files, it also searches keg-only versioned Homebrew formulae (`mysql-client@8.4`, `mysql@8.0`, `mariadb@11.4`..., newest first), Laravel Herd's `~/Library/Application Support/Herd/bin` and, last, `/Applications/MySQLWorkbench.app/Contents/MacOS`.
 
 ## [3.3.3] - 2026-11-09
 

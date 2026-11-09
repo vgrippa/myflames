@@ -16,7 +16,7 @@ After a run, the line beside the results reports the server's examined and retur
 
 A result can be searched without running the query again: the filter field matches the loaded rows, and a cell's menu offers **Show only this value** and **Hide this value** as removable chips. Selection totals, copy and export then work on the filtered rows. **Pin result** keeps a result in the tab (up to 5,000 rows), and **Compare with pinned** lines a later result with the same columns up against it by a key column, marking added, removed and changed rows.
 
-Completion uses schema and column information from the selected server. Live work needs a local `mysql` or `mariadb` client; **Settings > Database client…** shows which one myflames uses and lets you choose another. Use Stop to cancel a running query. If the outcome of a transaction operation is unknown, inspect the session before retrying a change.
+Completion uses schema and column information from the selected server. Live work runs through a `mysql` or `mariadb` client: an installed one when the app finds it, otherwise the MySQL client included with the app; **Settings > Database client…** shows which one myflames uses and lets you choose another. Use Stop to cancel a running query. If the outcome of a transaction operation is unknown, inspect the session before retrying a change.
 
 ## Explain a statement
 

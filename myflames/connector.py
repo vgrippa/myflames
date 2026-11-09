@@ -59,6 +59,50 @@ CLIENT_CHARSET_FLAGS = ("--default-character-set=utf8mb4",
 _CLIENT_ENV = ("PATH", "SYSTEMROOT", "WINDIR", "LANG", "LC_ALL", "LC_CTYPE",
                "TZ", "TMPDIR", "TEMP", "TMP")
 
+# The desktop app names the folder of the MySQL client it bundles (mysql and
+# mysqldump, apps/desktop/backend.cjs), which it also appends to PATH last.
+BUNDLED_CLIENT_ENV = "MYFLAMES_BUNDLED_CLIENT_DIR"
+
+
+def bundled_client_dir():
+    """The desktop app's bundled client folder, or None (an absolute path only)."""
+    value = os.environ.get(BUNDLED_CLIENT_ENV) or ""
+    return value if os.path.isabs(value) else None
+
+
+def _same_dir(a, b):
+    """Whether two spellings name one folder: by file identity when both exist
+    (case-insensitive volumes, junctions), else by their resolved paths."""
+    try:
+        return os.path.samefile(a, b)
+    except (OSError, ValueError):
+        pass
+    try:
+        return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+    except (OSError, ValueError):
+        return False
+
+
+def installed_search_path(bundled):
+    """PATH without the bundled folder under any spelling (a trailing
+    separator, another case, a symlink or junction), for finding installed
+    clients first."""
+    return os.pathsep.join(entry for entry in (os.environ.get("PATH") or "").split(os.pathsep)
+                           if entry and not _same_dir(entry, bundled))
+
+
+def bundled_program(bundled, name):
+    """The bundled *name* (mysql, mysqldump) as an absolute file, or None.
+
+    Built directly, never searched: shutil.which would split a folder whose
+    name holds the PATH separator, and on Windows would also look in the
+    current directory first.
+    """
+    candidate = os.path.join(bundled, name + (".exe" if os.name == "nt" else ""))
+    if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+        return candidate
+    return None
+
 
 @contextmanager
 def client_environment():
@@ -567,15 +611,19 @@ class MySQLConnection:
     # ---- binary + defaults-file plumbing --------------------------------
 
     @staticmethod
-    def _which(name):
+    def _which(name, path=None):
         """Wrapper around shutil.which so tests can monkeypatch it."""
-        return shutil.which(name)
+        return shutil.which(name, path=path)
 
     def _resolve_binary(self):
         """Return the path to the mysql or mariadb client binary.
 
-        Prefers an explicit override, the workspace choice, then PATH.
-        Existing connection objects follow setting changes on their next call.
+        Prefers an explicit override, the workspace choice, then PATH:
+        ``mysql`` (which MariaDB also ships under that name on most distros),
+        then ``mariadb``. The desktop app's bundled MySQL client
+        (``MYFLAMES_BUNDLED_CLIENT_DIR``, the last PATH entry) comes after
+        both, so an installed ``mariadb`` is still preferred to it. Existing
+        connection objects follow setting changes on their next call.
         """
         if self._binary_override:
             self._binary_cached = self._binary_override
@@ -594,11 +642,16 @@ class MySQLConnection:
                     return chosen
                 if self._binary_cached:
                     return self._binary_cached
+            # Installed clients first; the desktop's bundled MySQL client last.
+            bundled = bundled_client_dir()
+            search = installed_search_path(bundled) if bundled else None
             path = None
             for name in ("mysql", "mariadb"):
-                path = self._which(name)
+                path = self._which(name, search) if bundled else self._which(name)
                 if path:
                     break
+            if not path and bundled:
+                path = bundled_program(bundled, "mysql")
             with _DEFAULT_BINARY_LOCK:
                 if generation != _DEFAULT_BINARY_GENERATION:
                     continue
