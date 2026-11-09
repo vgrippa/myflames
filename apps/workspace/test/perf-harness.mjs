@@ -16,6 +16,9 @@ const fixtures = fileURLToPath(new URL("./fixtures/", import.meta.url));
 
 export const load = async (name) => JSON.parse(await fs.readFile(path.join(fixtures, name), "utf8"));
 export const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+/** Extra Chromium launch flags for sandboxes that refuse the defaults
+ * (MYFLAMES_BROWSER_ARGS="--no-sandbox"); empty in a normal environment. */
+export const browserArgs = (process.env.MYFLAMES_BROWSER_ARGS || "").split(" ").filter(Boolean);
 
 /** The Server sub-navigation labels by group, in order (SERVER_VIEWS in
  * Server.tsx). The one place suites learn the list: update it with a new view. */
@@ -94,7 +97,7 @@ export async function open(endpoint, name, extra = {}, { fallback = null, list =
     });
     proc.on("error", reject);
   });
-  const browser = await puppeteer.launch({ headless: "shell" });
+  const browser = await puppeteer.launch({ headless: "shell", args: browserArgs });
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));

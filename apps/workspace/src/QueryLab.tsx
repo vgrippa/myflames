@@ -21,6 +21,7 @@ import {
   ddlProgress,
   type DdlProgress,
   ApiError,
+  isClientMissing,
   type Capture,
   type Connection,
   type EditorClose,
@@ -62,6 +63,7 @@ import { connectionKey, connectionLabel } from "./binding";
 import { Icon } from "./components";
 import { ActionButton, ActionStatus, IDLE_ACTION, writeFailure, type ActionState, Checkbox, ConfirmSheet, EmptyState, IconButton, InfoPopover, Notice, NumberField, Popover, Segmented, StatusPill, useFocusScope, useWindowStatus, type Tone } from "./kit";
 import { ConnectionTypeBand, useWritePolicy, TYPE_LABEL } from "./Connections";
+import { ClientMissingNotice } from "./ClientMissing";
 import { SqlEditor, type Range } from "./SqlEditor";
 import { ResultsPane, rowResults, duration as resultDuration } from "./ResultsPane";
 import { SchemaBrowser, type SchemaReveal } from "./SchemaBrowser";
@@ -1691,7 +1693,7 @@ export const QueryLab = forwardRef<
         patchRuntime(id, { sessionFeedback: { ...failure, message: failure.phase === "unknown" ? `Outcome unknown. ${failure.message}` : failure.message,
           startedAt: null, endedAt: Date.now() } });
       } else {
-        if (!isRun) patchRuntime(id, { sessionFeedback: { phase: "failed", message: err.message, startedAt: null, endedAt: Date.now() } });
+        if (!isRun) patchRuntime(id, { sessionFeedback: { phase: "failed", message: err.message, code: isClientMissing(e) ? "client-missing" : undefined, startedAt: null, endedAt: Date.now() } });
         else setError(err.message);
       }
       return;
@@ -3102,7 +3104,11 @@ export const QueryLab = forwardRef<
                 </ActionButton>
               </div>
             )}
-            <ActionStatus className="editor-session-status" state={rt.sessionFeedback} />
+            {rt.sessionFeedback.phase === "failed" && rt.sessionFeedback.code === "client-missing" ? (
+              <ClientMissingNotice className="editor-session-status" onRetry={() => reconnect()} />
+            ) : (
+              <ActionStatus className="editor-session-status" state={rt.sessionFeedback} />
+            )}
             {importCsv.element}
             {batchRunning && (
               <p className="hint">

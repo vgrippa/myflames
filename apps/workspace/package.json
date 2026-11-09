@@ -83,6 +83,7 @@
     "test:import-csv-unit": "node test/import-csv-unit.mjs",
     "test:home-workspace": "npm run build && node test/home-workspace.mjs",
     "test:update-check": "npm run build && node test/update-check.mjs",
+    "test:database-client": "npm run build && node test/database-client.mjs",
     "test:news": "npm run build && node test/news.mjs",
     "test:news-setting": "node test/news-setting.mjs",
     "test:report-table-exports": "node test/report-table-export.mjs",

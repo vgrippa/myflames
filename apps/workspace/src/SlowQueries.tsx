@@ -460,6 +460,7 @@ export function useTopStatements({
     running: reads.running,
     error: reads.error || actionError,
     readError: reads.error,
+    readErrorCode: reads.errorCode,
     stop: reads.stop,
     doneAt: reads.doneAt,
     load,
@@ -1141,7 +1142,7 @@ export function TopStatementsView({
       inspector={inspector}
       detailBackLabel="Back to statements"
       inspectorEmpty={<p>Select a statement to see its full text, its numbers, and Explain or Run analysis.</p>}
-      status={<ViewStatus loading={top ? loading : ""} error={gate ? "" : error}
+      status={<ViewStatus loading={top ? loading : ""} error={gate ? "" : error} errorCode={!gate && state.readError ? state.readErrorCode : ""}
         onStop={loading ? state.stop : undefined}
         onRetry={!gate && state.readError ? () => void state.load(schema) : undefined} doneAt={state.doneAt} />}
     >

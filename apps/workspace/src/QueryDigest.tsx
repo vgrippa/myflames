@@ -1119,7 +1119,7 @@ export function QueryDigestView({ connection, onOpenInEditor, onExplain, onAnaly
           {isFile && <ActionStatus className="qd-file-line" state={choosing} />}
           {isFile ? <ViewStatus loading={fileRead.loading} error={fileRead.error} onStop={() => stopFile()} onRetry={() => { void readFile(); }}
             doneAt={fileRead.doneAt} slowAfter={2000} slowText="Reading the whole file." />
-            : <ViewStatus loading={reads.loading} error={reads.error} onStop={reads.stop} onRetry={() => { void load(); }} doneAt={reads.doneAt} />}
+            : <ViewStatus loading={reads.loading} error={reads.error} errorCode={reads.errorCode} onStop={reads.stop} onRetry={() => { void load(); }} doneAt={reads.doneAt} />}
           {isFile && fileRead.loading && fileProgress && fileProgress.percent != null && <p className="qd-file-progress">
             <progress max={100} value={fileProgress.percent} aria-label={`Read ${fileProgress.percent}% of the file`} />
             <span>{fileProgress.percent.toFixed(0)}% · {bytes(fileProgress.bytes_read)} of {bytes(fileProgress.bytes_total)}</span>

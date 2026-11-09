@@ -760,7 +760,7 @@ export function SessionsView({
       otherConnection={other}
       inspector={inspector}
       inspectorEmpty={<p>Select a session to see its statement, its transaction, Show plan and Kill.</p>}
-      status={<><ViewStatus loading={loading} error={error}
+      status={<><ViewStatus loading={loading} error={error} errorCode={reads.error ? reads.errorCode : ""}
         onStop={reads.loading ? reads.stop : undefined}
         onRetry={reads.error ? () => void load(scope === "active") : undefined} doneAt={reads.doneAt} />
         {killLeft && <div className="view-status"><ActionStatus state={{ phase: "pending", startedAt: killLeft.startedAt,

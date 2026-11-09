@@ -808,7 +808,7 @@ export function IndexesView({
         inspectorEmpty={<p>Select an index or a table to see why it is listed and the statements to copy.</p>}
         status={
           <>
-            <ViewStatus loading={reads.loading} error={error} onStop={reads.stop} onRetry={reads.error ? () => void load() : undefined} doneAt={reads.doneAt} slowAfter={45_000} />
+            <ViewStatus loading={reads.loading} error={error} errorCode={reads.errorCode} onStop={reads.stop} onRetry={reads.error ? () => void load() : undefined} doneAt={reads.doneAt} slowAfter={45_000} />
             <ReviewedSqlStatus />
           </>
         }

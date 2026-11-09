@@ -596,7 +596,7 @@ export function ReplicationView({ connection, disabled, selection, report: bound
         />
       ) : undefined}
       info={<><p>Each replication channel (MySQL) or connection (MariaDB) of the connection in use: thread states, the last error, lag signals and positions. Reading changes nothing.</p><p>Seconds behind the source alone does not show that a replica is caught up: compare heartbeats, receiver and worker lag in the inspector.</p><p>Skip this transaction and Skip until stopped are changes: each asks first, shows the exact statements, and is recorded in the Audit log. A skipped transaction is missing on the replica.</p></>}
-      status={<div ref={viewRef}><ViewStatus loading={checkingInInspector ? undefined : reads.loading} error={error} startedAt={readSince ?? undefined}
+      status={<div ref={viewRef}><ViewStatus loading={checkingInInspector ? undefined : reads.loading} error={error} errorCode={failure?.key === key && !failure.write ? "" : reads.errorCode} startedAt={readSince ?? undefined}
         onStop={reads.loading ? reads.stop : undefined} onRetry={reads.error ? () => void load() : undefined} doneAt={reads.doneAt}>
         {failure?.key === key && failure.loop && <button className="text-button" type="button" onClick={() => { setFailure(null); setPollRetry((n) => n + 1); }}>Retry status</button>}
       </ViewStatus>

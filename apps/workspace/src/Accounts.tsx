@@ -290,7 +290,7 @@ function AccountsListView({ connection, disabled = false, onBack, selection, rep
     status={<>
       {/* A first load shows its progress under its button in the empty state
           (nothing moves under the pointer); later reads use this line. */}
-      <ViewStatus loading={busy || (report ? reads.loading : "")} error={error || reads.error}
+      <ViewStatus loading={busy || (report ? reads.loading : "")} error={error || reads.error} errorCode={error ? "" : reads.errorCode}
         onStop={reads.loading && !busy ? reads.stop : undefined} onRetry={reads.error && !error ? () => void load() : undefined} doneAt={reads.doneAt} />
       {results.filter(result => result.key === reads.key).map(result => <BatchResult key={result.id} results={result.report}
         onDismiss={() => setResults(old => old.filter(item => item.id !== result.id))} />)}

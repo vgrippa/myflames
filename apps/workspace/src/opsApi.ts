@@ -153,6 +153,9 @@ export type LifecycleTools = {
   schema_version: "lifecycle-tools-1.0"; tools: Record<string, Tool>;
   server: LifecycleServer;
   offered: { dump: string[]; upgrade: string; clone: boolean; physical_backup: boolean; physical_backup_requires_local_files: boolean };
+  /** When the server cannot be read for lack of a client, tools and download
+   * links still answer and server and offered are empty; this says why. */
+  server_error?: { code: string; error: string } | null;
 };
 export type Verification = { check: string; status: "passed" | "failed" | "not_checked"; reason: string; [key: string]: Json };
 export type UpgradeFinding = {
