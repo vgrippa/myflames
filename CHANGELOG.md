@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.3] - 2026-11-09
+
 ### Added
 
 - **Upgrade check lists the versions you can upgrade to.** The Target version list now comes from the vendor: MySQL Community Server versions from the official MySQL release notes, Percona Server versions from Percona's package repositories (repo.percona.com, read for the server's install method: Yum folders for an RPM install, the APT pool otherwise). It offers only releases on a supported upgrade path (patches of the server's series, the next LTS series, and Innovation releases before it; an LTS or bugfix series is never skipped, and an Innovation series is left out once the next LTS has shipped), newest first, with the newest release of the next LTS chosen. myflames also says how the server was installed (RPM packages, DEB packages, Ubuntu's own package or a generic archive, from the layout the server reports, with the evidence and `build_id`) and what that means for the upgrade, including the `percona-release enable-only` command for a Percona target. Releases Oracle removed from download or published only as a Docker image are left out (a Docker-only release stays when the server looks like a container). Offline, MySQL targets come from the releases bundled with myflames.
