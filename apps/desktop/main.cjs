@@ -188,6 +188,10 @@ async function start() {
   handle('myflames:update-support', async () => updateSupport());
   handle('myflames:update-prepare', () => (preparing ||= prepareUpdate().finally(() => { preparing = null; })));
   handle('myflames:update-restart', restartToUpdate);
+  // Restart to update asked about unsaved changes in the page first, and the
+  // backend has stopped by now: a beforeunload refusal would only leave a
+  // window with no backend until the fallback exit, so it is overridden.
+  contents.on('will-prevent-unload', event => { if (restartingForUpdate) event.preventDefault(); });
   contents.on('will-attach-webview', event => event.preventDefault());
   contents.on('will-navigate', (event, url) => { if (!sameOrigin(url, origin)) event.preventDefault(); });
   contents.on('will-redirect', (event, url) => { if (!sameOrigin(url, origin)) event.preventDefault(); });

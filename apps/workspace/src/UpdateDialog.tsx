@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import { appUpdateStatus, appVersion, downloadAppUpdate, type AppUpdateInfo } from "./api";
 import { Icon } from "./components";
 import { useFocusScope } from "./kit";
+import { hasUnsavedWork } from "./unsavedWork";
 import {
   desktopUpdate, installUpdate, readUpdateSupport, restartToUpdate, stagingPercent, useUpdateStatus,
 } from "./updateStatus";
@@ -36,8 +37,8 @@ export function UpdateDialog({
   const [downloadResult, setDownloadResult] = useState<{ status: string; message: string; download_path?: string; html_url?: string } | null>(null);
   const [error, setError] = useState("");
   const [restarting, setRestarting] = useState(false);
-  /** Operations a restart would stop, shown before Restart anyway. */
-  const [stops, setStops] = useState<string[] | null>(null);
+  /** What a restart would lose (running operations, unsaved changes), shown before Restart anyway. */
+  const [stops, setStops] = useState<{ operations: string[]; unsaved: boolean } | null>(null);
 
   useFocusScope(dialog, {
     open: true,
@@ -73,7 +74,8 @@ export function UpdateDialog({
     if (!confirmed) {
       let running: string[] = [];
       try { running = (await appUpdateStatus()).active_operations ?? []; } catch { /* unknown: restart as asked */ }
-      if (running.length) { setStops(running); setRestarting(false); return; }
+      const unsaved = hasUnsavedWork();
+      if (running.length || unsaved) { setStops({ operations: running, unsaved }); setRestarting(false); return; }
     }
     await restartToUpdate();
     setRestarting(false);
@@ -172,9 +174,14 @@ export function UpdateDialog({
 
         {(error || s.installError) && <p className="form-error" role="alert">{error || s.installError}</p>}
 
-        {stops && (
+        {stops && stops.operations.length > 0 && (
           <p className="form-error" role="alert">
-            {runningText(stops)}. Restarting stops {stops.length > 1 ? "them" : "it"} before {stops.length > 1 ? "they finish" : "it finishes"}.
+            {runningText(stops.operations)}. Restarting stops {stops.operations.length > 1 ? "them" : "it"} before {stops.operations.length > 1 ? "they finish" : "it finishes"}.
+          </p>
+        )}
+        {stops?.unsaved && (
+          <p className="form-error" role="alert">
+            Some changes are not saved yet. Restarting now loses them.
           </p>
         )}
 

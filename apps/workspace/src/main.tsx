@@ -1,5 +1,6 @@
 // First: the stylesheets, in cascade order (styles.ts).
 import "./styles";
+import { setUnsavedWorkCheck } from "./unsavedWork";
 import { PrivilegesProvider } from "./privileges";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type SyntheticEvent } from "react";
 import { createRoot } from "react-dom/client";
@@ -648,18 +649,26 @@ function App() {
     // Also warn when a save failed, or
     // when changes are still unconfirmed and too large for the request a
     // closing page may still send (keepalive).
-    const guard = (event: BeforeUnloadEvent) => {
+    const atRisk = () => {
       const { dirty: changed, tabs } = unsaved.current;
       // Serialized only here, when the page is about to unload.
       const edited = () => tabsText(editorTabs.current || tabs) !== tabsBaseline.current;
       const offAndEdited = !saver.active && (changed || edited());
-      if (unsavedWorkspaceContent.current || offAndEdited || saver.failed || saver.atRisk()) {
+      return unsavedWorkspaceContent.current || offAndEdited || saver.failed || saver.atRisk();
+    };
+    const guard = (event: BeforeUnloadEvent) => {
+      if (atRisk()) {
         event.preventDefault();
         event.returnValue = "";
       }
     };
     window.addEventListener("beforeunload", guard);
-    return () => window.removeEventListener("beforeunload", guard);
+    // Restart to update asks with the same rule before the desktop app closes the window.
+    setUnsavedWorkCheck(atRisk);
+    return () => {
+      window.removeEventListener("beforeunload", guard);
+      setUnsavedWorkCheck(null);
+    };
   }, [saver]);
   // The restorable snapshot. Plans are serialized only when they change;
   // plans that could not be reopened are kept as they were stored.

@@ -414,6 +414,9 @@ try {
   await page.keyboard.press("Tab");
   assert.equal(await page.evaluate(() => document.activeElement?.closest(".news-toggle")?.textContent.trim()),
     "Show MySQL and MariaDB news on Home");
+  await page.keyboard.press("Tab");
+  assert.equal(await page.evaluate(() => document.activeElement?.closest(".update-auto-toggle")?.textContent.trim()),
+    "Check for updates automatically");
 
   await page.keyboard.press("Tab");
   assert.equal(await focused(), "Start fresh");
@@ -473,7 +476,7 @@ try {
   assert.match(aboutText, /CDDL 1\.0 \(see NOTICE\)/);
   // One privacy line names what the app contacts, and when.
   assert.equal(await text(about + " .about-privacy p"),
-    "myflames contacts only your database servers, official release pages when you check for updates, and news feeds when shown and turned on.");
+    "myflames contacts only your database servers, official release pages when it checks for updates (at start and once a day while that setting is on, or when you ask), and news feeds when shown and turned on.");
   // Focus starts on Close and stays inside: Tab wraps to the first control
   // (Check for updates in the Updates row), Shift+Tab wraps back.
   assert.equal(await focused(), "Close");
