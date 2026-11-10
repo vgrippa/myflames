@@ -1,0 +1,85 @@
+/* Three-class roots beat CodeMirror's injected base theme in either color mode. */
+.sql-editor-wrap.sql-cm .sql-cm-host {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+}
+.sql-editor-wrap.sql-cm .cm-editor {
+  height: 100%;
+  color: var(--ink);
+  background: var(--surface);
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+}
+.sql-editor-wrap.sql-cm .cm-editor.cm-focused {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.sql-editor-wrap.sql-cm .cm-scroller {
+  overflow: auto;
+  font-family: var(--font-mono);
+  line-height: var(--editor-line-h);
+  tab-size: 2;
+}
+.sql-editor-wrap.sql-cm .cm-content {
+  width: auto;
+  height: auto;
+  min-height: 100%;
+  flex: 1 0 auto;
+  padding: var(--space-3) 0 var(--space-6);
+  overflow: visible;
+  color: var(--ink);
+  caret-color: var(--ink);
+  letter-spacing: 0;
+  font-variant-ligatures: none;
+}
+.sql-editor-wrap.sql-cm .cm-lineWrapping {
+  flex-shrink: 1;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.sql-editor-wrap.sql-cm .cm-line {
+  padding: 0 var(--space-4);
+}
+.sql-editor-wrap.sql-cm .cm-gutters {
+  color: var(--ink-faint);
+  background: var(--surface-subtle);
+  border-right: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--editor-line-h);
+}
+.sql-editor-wrap.sql-cm .cm-lineNumbers .cm-gutterElement {
+  min-width: 47px;
+  padding: 0 var(--space-2) 0 var(--space-1);
+}
+.sql-editor-wrap.sql-cm .cm-gutterElement.is-current {
+  color: var(--accent-text);
+  font-weight: 600;
+}
+.sql-editor-wrap.sql-cm .cm-gutterElement.is-error {
+  color: var(--danger-text);
+  font-weight: 600;
+}
+.sql-editor-wrap.sql-cm .cm-selectionBackground,
+.sql-editor-wrap.sql-cm .cm-editor.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground {
+  background: var(--editor-selection);
+}
+.sql-editor-wrap.sql-cm .cm-content ::selection,
+.sql-editor-wrap.sql-cm .cm-content::selection {
+  background: var(--editor-selection);
+}
+.sql-editor-wrap.sql-cm .cm-cursor,
+.sql-editor-wrap.sql-cm .cm-dropCursor {
+  border-left-color: var(--ink);
+}
+.sql-editor-wrap.sql-cm .cm-placeholder {
+  color: var(--ink-faint);
+}
+.sql-editor-wrap.sql-cm .sql-flash {
+  background: var(--accent-soft);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}

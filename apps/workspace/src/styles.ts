@@ -13,6 +13,7 @@ import "./table-data.css";
 import "./import-csv.css";
 import "./query-digest.css";
 import "./editor.css";
+import "./editor-cm.css";
 import "./editor-find.css";
 import "./editor-insights.css";
 import "./result-grid.css";
