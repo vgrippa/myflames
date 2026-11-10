@@ -1452,6 +1452,10 @@ def _empty_directory(path, allow_default_parent=False, create_default_parent=Fal
         anchor = os.path.dirname(default)
         if os.path.islink(anchor) or not os.path.isdir(anchor):
             raise Refused('The default dump parent must be an existing folder, not a symbolic link: ' + anchor)
+        # A link named like the default folder (even a dangling one) would
+        # make myflames create its target elsewhere.
+        if os.path.islink(default):
+            raise Refused('The default dump folder is a symbolic link; choose another output folder: ' + default)
     # The final component must not be a link, and the parent must still be the
     # real path resolved at preflight: a folder swapped for a link afterwards
     # (into another backup tree, say) refuses instead of being followed.

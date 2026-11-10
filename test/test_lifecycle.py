@@ -1123,6 +1123,18 @@ class LifecycleTests(unittest.TestCase):
                 lc.prepare_dump(self.conn, CONNECTION, output, schemas=['app'], tools=self.native_tools())
         self.assertEqual(list(real.iterdir()), [])
 
+    def test_dump_refuses_a_default_folder_that_is_a_dangling_link(self):
+        (self.root / 'Documents').mkdir()
+        elsewhere = self.root / 'elsewhere' / 'target'
+        (self.root / 'elsewhere').mkdir()
+        with mock.patch.dict(os.environ, {'MYFLAMES_SSH_HOME': str(self.root)}):
+            default = Path(lc.default_dump_parent())
+            default.symlink_to(elsewhere, target_is_directory=True)
+            output = os.path.join(str(default), 'app')
+            with self.assertRaisesRegex(lc.Refused, 'default dump folder is a symbolic link'):
+                lc.prepare_dump(self.conn, CONNECTION, output, schemas=['app'], tools=self.native_tools())
+        self.assertFalse(elsewhere.exists(), 'nothing was created at the link target')
+
     def test_dump_refuses_default_parent_creation_not_in_review(self):
         with mock.patch.dict(os.environ, {'MYFLAMES_SSH_HOME': str(self.root)}):
             parent = Path(lc.default_dump_parent())

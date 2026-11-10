@@ -977,6 +977,16 @@ class ExportTests(unittest.TestCase):
         self.assertIn("(9223372036854775807, '=SUM(A1)', NULL)", text)
         self.assertIn("_utf8mb4 X'%s'" % "back\\slash 'q'".encode("utf-8").hex().upper(), text)
         self.assertEqual(text.count("INSERT INTO"), 2)
+        # Typed numeric, a value is unquoted only when it reads back as the same
+        # text in any column: leading zeros, exponents and negative zero stay
+        # quoted (the type may come from another table than the result's).
+        typed = ed.export_result("sql", {"columns": [{"name": "n", "type": "int"}],
+                                         "rows": [["7"], ["-12"], ["1.50"], ["0"], ["-0.5"], ["001"], ["1e3"], ["1."],
+                                                  [".5"], ["-0"], ["-0.0"], ["+5"]]}, table="t", options={"rows_per_insert": 20})["content"]
+        for kept in ("(7)", "(-12)", "(1.50)", "(0)", "(-0.5)"):
+            self.assertIn(kept, typed)
+        for quoted in ("('001')", "('1e3')", "('1.')", "('.5')", "('-0')", "('-0.0')", "('+5')"):
+            self.assertIn(quoted, typed)
         # Without a numeric type, numbers are quoted (safe for any column).
         plain = ed.export_result("sql", {"columns": ["n"], "rows": [["5"]]}, table="t")["content"]
         self.assertIn("('5')", plain)

@@ -2074,7 +2074,10 @@ _MIME = {"csv": "text/csv", "tsv": "text/tab-separated-values", "json": "applica
 _EXT = {"csv": "csv", "tsv": "tsv", "json": "json", "sql": "sql", "markdown": "md"}
 NUMERIC_TYPES = ("tinyint", "smallint", "mediumint", "int", "integer", "bigint", "decimal", "numeric", "float",
                  "double", "real", "year")
-_NUMBER = re.compile(r"^-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?$")
+# A value written unquoted must read back as the same text even if the column
+# turns out not to be numeric (a type inferred from another table, a shadowing
+# temporary table): no leading zeros, no exponent, no negative zero.
+_NUMBER = re.compile(r"^-?(?:0|[1-9]\d*)(?:\.\d+)?$")
 _FORMULA = ("=", "+", "-", "@", "\t", "\r")
 
 
@@ -2173,7 +2176,7 @@ def sql_literal(value, hex_column=False, numeric=False):
         return "NULL"
     if hex_column and HEX_VALUE.match(value):
         return "X'%s'" % value[2:]
-    if numeric and _NUMBER.match(value):
+    if numeric and _NUMBER.match(value) and not (value[0] == "-" and not value.strip("-0.")):
         return value
     if all(32 <= ord(c) != 127 for c in value) and "\\" not in value:
         return "'" + value.replace("'", "''") + "'"

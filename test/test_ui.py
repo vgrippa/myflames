@@ -318,7 +318,8 @@ class TestLifecycleToolsAPI(unittest.TestCase):
                 mock.patch.object(lifecycle, 'read_server') as read:
             result = api_response('/api/lifecycle/tools', {}, self.workspace)
         self.assertEqual(result['schema_version'], 'lifecycle-tools-2.0')
-        self.assertEqual(set(result), {'schema_version', 'tools', 'copies'})
+        self.assertEqual(set(result), {'schema_version', 'tools', 'copies', 'default_dump_parent'})
+        self.assertTrue(result['default_dump_parent'].endswith('myflames dumps'))
         self.assertEqual(set(result['tools']), set(lifecycle.TOOLS))
         self.assertEqual(result['copies'], [])
         self.assertTrue(all(not entry['available'] for entry in result['tools'].values()))
