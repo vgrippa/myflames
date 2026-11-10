@@ -182,10 +182,11 @@ async function start() {
   app.setAboutPanelOptions({ applicationName: 'myflames', applicationVersion: app.getVersion(),
     copyright: 'Apache-2.0', credits: "Inspired by Brendan Gregg's FlameGraph and Tanel Poder's SQL Plan FlameGraphs." });
   const editCommand = async command => {
+    if (!window || window.isDestroyed()) return;
     // The single workspace window is also the target during the smoke's
     // emulated focus, when the desktop itself is not the foreground app.
     const target = webContents.getFocusedWebContents() || window.webContents;
-    if (target.isDestroyed()) return;
+    if (!target || target.isDestroyed()) return;
     let handled = false;
     try {
       // Fixed scripts only: no renderer input or arbitrary command names.
@@ -193,7 +194,7 @@ async function start() {
         ? "window.__myflamesEditCommand?.('undo')"
         : "window.__myflamesEditCommand?.('redo')");
     } catch { /* An unavailable page keeps the native editing fallback. */ }
-    if (handled !== true && !target.isDestroyed()) {
+    if (handled !== true && window && !window.isDestroyed() && !target.isDestroyed()) {
       if (command === 'undo') target.undo();
       else target.redo();
     }

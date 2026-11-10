@@ -69,6 +69,7 @@ import { ClientMissingNotice } from "./ClientMissing";
 import { SqlEditor, type SqlEditorHandle } from "./editor/SqlEditor";
 import { EDITOR_SHORTCUTS } from "./editor/keymap";
 import type { Range } from "./editor/types";
+import { createsTemporaryTable } from "./editor/problems";
 import { useEditorSettings } from "./editorSettings";
 import { ResultsPane, rowResults, duration as resultDuration } from "./ResultsPane";
 import { SchemaBrowser, type SchemaReveal } from "./SchemaBrowser";
@@ -380,7 +381,6 @@ function connectionShortName(c: Connection) {
 }
 /** CREATE or DROP of a database or schema (the verb the backend names it). */
 const DATABASE_LIST_DDL = /^(?:CREATE|DROP)\s+(?:DATABASE|SCHEMA)$/i;
-const CREATE_TEMPORARY_TABLE = /^(?:\s|\/\*[\s\S]*?\*\/|--(?=\s|$)[^\r\n]*|#[^\r\n]*)*CREATE\s+TEMPORARY\s+TABLE\b/i;
 /** True when a finished run may have changed the connection's database list:
  * a CREATE/DROP DATABASE or SCHEMA, or a statement the editor cannot classify
  * as harmless (no verb, or a bare CREATE/DROP whose text names a database). */
@@ -921,7 +921,7 @@ export const QueryLab = forwardRef<
       updated.sessionTempTables = false;
     }
     if (updated.session && !updated.session.ended && next.run && next.run.state !== "session_ended" &&
-        next.run.statements.some(s => s.status === "ok" && CREATE_TEMPORARY_TABLE.test(s.text))) {
+        next.run.statements.some(s => s.status === "ok" && createsTemporaryTable(s.text))) {
       updated.sessionTempTables = true;
     }
     runtimeRef.current = { ...all, [id]: updated };

@@ -15,6 +15,11 @@ const word = /[A-Za-z0-9_$\u0080-\uffff]/;
 const clauseEnd = new Set(["WHERE", "SET", "GROUP", "HAVING", "ORDER", "LIMIT", "WINDOW", "RETURNING", "UNION", "EXCEPT", "INTERSECT", "FOR", "LOCK", "VALUES"]);
 const notName = new Set([...clauseEnd, "SELECT", "FROM", "JOIN", "INNER", "LEFT", "RIGHT", "CROSS", "NATURAL", "OUTER", "ON", "USING", "AS", "INTO"]);
 const nameAt = (w: Word | undefined) => w?.name && !notName.has(w.kw) ? w.name : null;
+const CREATE_TEMPORARY_TABLE = /^(?:\s|\/\*[\s\S]*?\*\/|--(?=\s|$)[^\r\n]*(?=[\r\n]|$)|#[^\r\n]*(?=[\r\n]|$))*CREATE\s+(?:OR\s+REPLACE\s+)?TEMPORARY\s+TABLE\b/i;
+
+export function createsTemporaryTable(text: string): boolean {
+  return CREATE_TEMPORARY_TABLE.test(text);
+}
 
 /** Same tokenizer and backslash mask as completion. Keep offsets and opaque
  * literal tokens: dropping literals could join unrelated names across them.
@@ -160,8 +165,9 @@ function metadataProblems(words: Word[], database: string, created: Set<string>,
       // Table-valued functions are not physical tables. INSERT's column list is.
       if (top[j]?.text === "(" && !into) continue;
       if (top[j]?.kw === "PARTITION" && top[j + 1]?.text === "(" && top[j + 2]?.text === ")") j += 3;
-      if (top[j]?.kw === "AS") j++;
-      const alias = nameAt(top[j]) && !KEYWORDS.has(top[j].kw) ? top[j].name! : ref.table;
+      const explicitAlias = top[j]?.kw === "AS";
+      if (explicitAlias) j++;
+      const alias = nameAt(top[j]) && (explicitAlias || !KEYWORDS.has(top[j].kw)) ? top[j].name! : ref.table;
       const schema = ref.schema || database;
       const local = !ref.schema && (locals.has(fold(ref.table)) || fold(ref.table) === "dual") || created.has(tableKey(schema, ref.table));
       bind(alias, local || !schema ? null : { schema, table: ref.table, alias });

@@ -82,6 +82,78 @@ async function ready(h, name, columns) {
   await tick(); return tip;
 }
 try {
+  {
+    const h = harness("SELECT * FROM USERS"), peek = h.catalog.peek.bind(h.catalog);
+    h.catalog.peek = (kind, params) => kind === "tables"
+      ? { failed: false, value: { tables: [{ name: "users", rows: 321 }] } } : peek(kind, params);
+    const tip = await ready(h, "USERS");
+    assert.ok(tip.dom.textContent.includes("Estimated rows: 321"), "cached table estimates ignore identifier case");
+    tip.destroy();
+  }
+  for (const sql of [
+    "WITH summary AS (SELECT 1 AS val) SELECT summary.val FROM summary",
+    "WITH summary AS (SELECT 1 AS val) SELECT * FROM (SELECT summary.val FROM summary) t",
+    "WITH RECURSIVE summary AS (SELECT summary.val FROM summary) SELECT * FROM summary",
+  ]) {
+    for (const name of ["summary.val", "val FROM summary", "summary)"]) {
+      const pos = sql.indexOf(name);
+      if (pos < 0) continue;
+      const h = harness(sql);
+      assert.equal(h.openAt(pos), null, "CTEs and their columns cannot borrow physical metadata");
+      assert.equal(calls.length, 0, sql);
+    }
+  }
+  // Fake catalog counts service reads, including calls that would hit a cache.
+  // Every candidate is peeked before the first sequential read is started.
+  for (const count of [3, 4, 5]) {
+    const names = ["orders", "customers", "order_items", "products", "suppliers"].slice(0, count);
+    for (const cached of [[], [names[1]], names]) {
+      const h = harness(`SELECT id FROM ${names.join(" JOIN ")}`), events = [], pending = [];
+      let active = 0, maximum = 0, reads = 0;
+      const result = table => ({ failed: false, value: { schema: "app", table,
+        columns: [column(table === "orders" ? "id" : "other")], indexes: [] } });
+      h.catalog.peek = (kind, { table }) => {
+        if (kind === "tables") return null;
+        assert.equal(kind, "columns"); events.push(`peek:${table}`);
+        return cached.includes(table) ? result(table) : null;
+      };
+      h.catalog.read = (kind, { table }) => {
+        assert.equal(kind, "columns"); events.push(`read:${table}`); reads++;
+        maximum = Math.max(maximum, ++active);
+        return new Promise(resolve => pending.push(() => { active--; resolve(result(table)); }));
+      };
+      const tip = h.open("id");
+      await tick();
+      if (count >= 4) {
+        assert.equal(tip, null, "a capped table list cannot resolve an unqualified column");
+        assert.deepEqual(events, [], "a capped table list cannot peek or read column metadata");
+        assert.equal(reads, 0);
+        continue;
+      }
+      assert.deepEqual(events.slice(0, count), names.map(table => `peek:${table}`));
+      while (pending.length) { pending.shift()(); await tick(); }
+      assert.ok(maximum <= 1, "at most one catalog read in flight");
+      assert.equal(reads, names.filter(table => !cached.includes(table)).length);
+      assert.ok(tip.dom.textContent.includes("app.orders.id"), "only the unique column match is shown");
+      tip.destroy();
+    }
+  }
+  {
+    const h = harness("SELECT id FROM orders JOIN customers JOIN order_items"), tip = h.open("id");
+    assert.equal(calls.length, 1);
+    h.view.state = h.view.state.update({ changes: { from: 0, insert: " " } }).state;
+    await answer(calls[0]);
+    assert.equal(calls.length, 1, "an invalidated hover cannot start the next sequential read");
+    assert.equal(tip.dom.textContent, ""); tip.destroy();
+  }
+  for (const failure of [{ failed: true, value: null }, { failed: false, value: null }]) {
+    const h = harness("SELECT id FROM orders JOIN customers"), read = h.catalog.read.bind(h.catalog);
+    h.catalog.peek = (kind, { table }) => kind === "columns" && table === "customers" ? failure : null;
+    h.catalog.read = (...args) => { assert.equal(args[1].table, "orders"); return read(...args); };
+    const tip = h.open("id"); await answer(calls[0]);
+    assert.equal(tip.dom.textContent, "", "failed or missing cached metadata prevents a partial answer");
+    assert.equal(h.view.closed, 1); tip.destroy();
+  }
   for (const [sql, hover, expected, table] of [
     ["SELECT id FROM users", "users", "app.users", true],
     ["SELECT a.id FROM users AS a", "a.id", "app.users", true],
@@ -94,6 +166,8 @@ try {
     ["INSERT INTO users (id, email) VALUES (1, '')", "email", "app.users.email", false],
     ["SELECT b.email FROM users a JOIN contacts b ON a.id=b.id", "email", "app.contacts.email", false],
     ["SELECT sales.users.id FROM sales.users", "id", "sales.users.id", false],
+    ["SELECT a.id FROM users a JOIN contacts JOIN orders JOIN products JOIN suppliers", "id", "app.users.id", false],
+    ["SELECT a.id FROM users a JOIN contacts JOIN orders JOIN products JOIN suppliers", "users", "app.users", true],
   ]) {
     const h = harness(sql), tip = await ready(h, hover);
     assert.equal(byClass(tip.dom, "sql-hover-heading")[0].textContent, expected);
@@ -121,7 +195,7 @@ try {
   }
   for (const sql of ["SELECT missing FROM users", "SELECT id FROM users a JOIN contacts b ON a.id=b.id"]) {
     const h = harness(sql), tip = h.open(sql.includes("missing") ? "missing" : "id");
-    assert.ok(tip); for (const call of calls) call.resolve(detail(call)); await tick();
+    assert.ok(tip); for (const call of calls) { call.resolve(detail(call)); await tick(); }
     assert.equal(tip.dom.textContent, ""); assert.equal(h.view.closed, 1); tip.destroy();
   }
   {
@@ -169,6 +243,7 @@ try {
   for (const rows of [1234, 0, null, undefined, NaN, -1]) {
     const h = harness("SELECT * FROM users"); let peeks = 0;
     h.catalog.peek = (kind, params) => {
+      if (kind === "columns") return null;
       assert.equal(kind, "tables"); assert.deepEqual(params, { schema: "app" }); peeks++;
       return { failed: false, value: { tables: [{ name: "users", rows }] } };
     };

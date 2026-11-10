@@ -34,14 +34,14 @@ function labDeclaration(name) {
   assert.ok(found, name);
   return ts.isVariableDeclaration(found) ? `const ${found.getText(labSource)};` : found.getText(labSource);
 }
-const runtimeHarness = new Function(ts.transpileModule(`
+const makeRuntimeHarness = new Function('createsTemporaryTable', ts.transpileModule(`
   const IDLE_ACTION = {}, runtimeRef = {current: {}};
   const setRuntime = () => {};
   ${labDeclaration('blankRuntime')}
-  ${labDeclaration('CREATE_TEMPORARY_TABLE')}
   ${labDeclaration('patchRuntime')}
   return {patch: patchRuntime, get: id => runtimeRef.current[id]};
 `, { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText);
+const runtimeHarness = () => makeRuntimeHarness(cm.createsTemporaryTable);
 const liveSession = { connection_id: 7, started_at: '2026-11-10T12:00:00Z', ended: false };
 const tempRun = (text = 'CREATE TEMPORARY TABLE tmp(id INT)', status = 'ok', state = 'complete') =>
   ({ state, statements: [{ text, status }] });
@@ -119,6 +119,27 @@ function editor(p, doc) {
 }
 
 try {
+  await test('temporary creates accept MariaDB OR REPLACE and preserve MySQL leading-comment rules', () => {
+    for (const sql of ['CREATE TEMPORARY TABLE tmp(id INT)', 'CREATE OR REPLACE TEMPORARY TABLE tmp(id INT)',
+      '/* leading */ CREATE OR REPLACE TEMPORARY TABLE tmp(id INT)',
+      '-- leading\nCREATE TEMPORARY TABLE tmp(id INT)', '# leading\nCREATE TEMPORARY TABLE tmp(id INT)',
+      '-- note\nCREATE TEMPORARY TABLE t', '# note\r\nCREATE OR REPLACE TEMPORARY TABLE t',
+      ' \t\ncreate or replace temporary table tmp(id int)']) assert.equal(cm.createsTemporaryTable(sql), true, sql);
+    for (const sql of ['CREATE TABLE tmp(id INT)', '--CREATE TEMPORARY TABLE tmp(id INT)',
+      '-- CREATE TEMPORARY TABLE t (id int)', '# CREATE TEMPORARY TABLE t',
+      "SELECT 'CREATE TEMPORARY TABLE'",
+      'CREATE OR TEMPORARY TABLE tmp(id INT)']) assert.equal(cm.createsTemporaryTable(sql), false, sql);
+  });
+  await test('AS accepts a keyword alias without borrowing a joined physical table', () => {
+    const p = pair(); tables(p, ['project_status', 'status']);
+    columns(p, 'project_status', ['project_id']); columns(p, 'status', ['id']);
+    assert.deepEqual(messages(p, 'SELECT status.project_id FROM project_status AS status JOIN status ON status.project_id=status.id'), []);
+    assert.deepEqual(messages(p, 'SELECT status.project_id FROM project_status AS status JOIN status s ON status.project_id=s.id'), []);
+    assert.deepEqual(messages(p, 'SELECT status.absent FROM project_status AS status JOIN status s ON status.project_id=s.id'),
+      ['No column `absent` in `app.project_status`.']);
+    assert.deepEqual(messages(p, 'SELECT status.id FROM project_status status JOIN status ON 1=1'), [],
+      'without AS the keyword still is not an alias');
+  });
   await test('peek misses never call the API; successful cache hits preserve the result', () => {
     const p = pair(); assert.equal(p.catalog.peek('tables', { schema: 'app' }), null);
     assert.equal(p.catalog.peek('schemas', {}), null);
@@ -155,6 +176,7 @@ try {
   await test('QueryLab remembers only successful temporary creates, after leading comments and whitespace', () => {
     const h = runtimeHarness();
     for (const [i, text] of ['CREATE TEMPORARY TABLE tmp(id INT)',
+      'CREATE OR REPLACE TEMPORARY TABLE tmp(id INT)',
       ' \n/* note */ -- note\r\n# note\n cReAtE TeMpOrArY TaBlE tmp(id INT)',
       '--\nCREATE TEMPORARY TABLE IF NOT EXISTS tmp(id INT)'].entries()) {
       const id = String(i);

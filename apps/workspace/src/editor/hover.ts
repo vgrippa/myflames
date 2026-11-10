@@ -2,7 +2,7 @@ import type { Extension } from "@codemirror/state";
 import { closeHoverTooltip, closeHoverTooltips, hoverTooltip, repositionTooltips,
   type EditorView, type HoverTooltipSource, type Tooltip } from "@codemirror/view";
 import type { CatalogColumn, CatalogTable, CatalogTables, Connection } from "../api";
-import { completionContext, type TableRef } from "../sqlCompletion";
+import { completionContext, cteNames, type TableRef } from "../sqlCompletion";
 import { HIGHLIGHT_LIMIT, tokenize } from "../sqlHighlight";
 import { splitStatements } from "../sqlSelection";
 import { catalogFor, type CatalogOwner, type CatalogResult, type CatalogService } from "./catalog";
@@ -50,7 +50,9 @@ function targetAt(sql: string, pos: number, side: number, env: EditorEnv): Targe
         (to <= open.start || (from > open.start && close && to <= close.start))) references = destination.tables;
     }
   }
-  const refs = references.map(t => ({ ...t, schema: t.schema || database })).filter(t => t.schema);
+  const ctes = cteNames(text, offset, env.backslashEscapes);
+  const refs = references.filter(t => t.schema || !ctes.some(name => same(name, t.table)))
+    .map(t => ({ ...t, schema: t.schema || database })).filter(t => t.schema);
   const name = special ? text.slice(from + 1, to - 1).replace(/``/g, "`") : text.slice(from, to);
   const range = { from: from + statement.start, to: to + statement.start };
   const q = context.qualifiers;
@@ -63,6 +65,8 @@ function targetAt(sql: string, pos: number, side: number, env: EditorEnv): Targe
   if (!q.length) {
     const tables = refs.filter(t => same(t.alias, name) || same(t.table, name));
     if (tables.length === 1) return { ...range, tables };
+    // Completion caps the list at four tables, so another candidate may exist.
+    if (context.tables.length === 4) return null;
     return refs.length ? { ...range, tables: refs, column: name } : null;
   }
   const tables = refs.filter(t => q.length === 1 ? same(t.alias, q[0])
@@ -79,7 +83,7 @@ type PeekCatalog = CatalogService & {
 };
 function cachedRows(catalog: CatalogService, schema: string, table: string): number | undefined {
   const cached = (catalog as PeekCatalog).peek?.("tables", { schema });
-  const rows = cached && !cached.failed ? cached.value?.tables.find(t => t.name === table)?.rows : undefined;
+  const rows = cached && !cached.failed ? cached.value?.tables.find(t => same(t.name, table))?.rows : undefined;
   return typeof rows === "number" && Number.isFinite(rows) && rows >= 0 ? rows : undefined;
 }
 
@@ -128,6 +132,8 @@ export function hoverSource(env: Environment,
     const target = snapshot.connection ? targetAt(doc.toString(), pos, side, snapshot) : null;
     if (!target) return null;
     const catalog = catalogFor(env), epoch = catalog.syncConnection();
+    const results = target.tables.map(t => catalog.peek("columns", { schema: t.schema, table: t.table }));
+    if (target.tables.length > 4 && results.some(r => !r)) return null;
     let editor = editors.get(view);
     if (!editor) { editor = {}; editors.set(view, editor); }
     const owner: CatalogOwner = { editor, generation: ++generation };
@@ -160,20 +166,26 @@ export function hoverSource(env: Environment,
         repositionTooltips(view);
       }
     };
-    void Promise.all(target.tables.map(t => catalog.read("columns", { schema: t.schema, table: t.table }, owner)))
-      .then(results => {
+    void (async () => {
+      for (let i = 0; i < results.length; i++) {
+        if (results[i]) continue;
+        const t = target.tables[i];
+        results[i] = await catalog.read("columns", { schema: t.schema, table: t.table }, owner);
         if (!valid()) { dismiss(); return; }
-        // Ambiguous unqualified columns and partial failures are not evidence.
-        if (results.some(r => r.failed || !r.value)) { answer = null; show(); return; }
-        const matches = results.flatMap(r => {
-          const table = r.value!;
-          if (target.column === undefined) return [{ table }];
-          const column = table.columns.find(c => same(c.name, target.column!));
-          return column ? [{ table, column }] : [];
-        });
-        answer = matches.length === 1 ? matches[0] : null;
-        show();
-      }).catch(() => { answer = null; dismiss(); });
+      }
+    })().then(() => {
+      if (!valid()) { dismiss(); return; }
+      // Ambiguous unqualified columns and partial failures are not evidence.
+      if (results.some(r => !r || r.failed || !r.value)) { answer = null; show(); return; }
+      const matches = results.flatMap(r => {
+        const table = r!.value!;
+        if (target.column === undefined) return [{ table }];
+        const column = table.columns.find(c => same(c.name, target.column!));
+        return column ? [{ table, column }] : [];
+      });
+      answer = matches.length === 1 ? matches[0] : null;
+      show();
+    }).catch(() => { answer = null; dismiss(); });
     return { pos: target.from, end: target.to, above: true, create() {
       dom = node("div", "sql-hover", "Reading…");
       show();
