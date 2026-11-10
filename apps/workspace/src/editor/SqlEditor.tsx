@@ -9,6 +9,7 @@ import { attachAutomation } from "./automation";
 import { argumentHintsExtension } from "./argumentHints";
 import { completionExtension, completionSources } from "./completion";
 import { FindBar, findHooks } from "./FindBar";
+import { findExtension } from "./findMarks";
 import { hoverExtension } from "./hover";
 import { editorKeymap } from "./keymap";
 import { FLASH_MS, matchingBrackets, setError, setFlash, setStatement, sqlMarks } from "./marks";
@@ -118,7 +119,7 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(function Sq
     const initial = clampRange(p.initialSelection?.start ?? 0, p.initialSelection?.end ?? p.initialSelection?.start ?? 0, p.value.length);
     return EditorState.create({ doc: p.value, selection: EditorSelection.single(initial.start, initial.end), extensions: [
       ...compartmentNames.map(name => slots[name].of(config[name])),
-      history(), lineNumbers(), drawSelection(), indentUnit.of("  "), EditorState.tabSize.of(2), sqlMarks(),
+      history(), lineNumbers(), drawSelection(), indentUnit.of("  "), EditorState.tabSize.of(2), sqlMarks(), findExtension(),
       tooltips({ parent: document.body }),
       Prec.highest(EditorView.domEventHandlers({
         keydown(event) { latest.current.onKeyDown?.(event); return event.defaultPrevented; },
