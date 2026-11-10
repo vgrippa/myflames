@@ -915,6 +915,55 @@ class TestAppUpdateRoutes(unittest.TestCase):
         self.assertFalse(self.workspace.store.path.exists())
 
 
+class TestEditorSettingsRoutes(unittest.TestCase):
+    """The Query editor settings endpoint: the local store only, no connection."""
+
+    def setUp(self):
+        from types import SimpleNamespace
+        from myflames.workspace_store import WorkspaceStore
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        env = mock.patch.dict(os.environ, {'HOME': temp.name, 'USERPROFILE': temp.name,
+                                          'MYFLAMES_SECRET_BACKEND': 'vault'})
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop('MYFLAMES_VAULT_PASSPHRASE', None)
+        self.workspace = SimpleNamespace(store=WorkspaceStore(Path(temp.name) / 'store' / 'workspace.sqlite3'))
+
+    def test_editor_settings_read_defaults_without_creating_storage(self):
+        from myflames.workspace_store import EDITOR_SETTING_DEFAULTS
+        expected = {'schema_version': 'editor-settings-1.0',
+                    'settings': dict(EDITOR_SETTING_DEFAULTS), 'defaults': dict(EDITOR_SETTING_DEFAULTS)}
+        self.assertEqual(api_response('/api/settings/editor', {}, self.workspace), expected)
+        self.assertFalse(self.workspace.store.path.exists())
+
+    def test_editor_settings_round_trip(self):
+        from myflames.workspace_store import EDITOR_SETTING_DEFAULTS, WorkspaceStore
+        changed = dict(EDITOR_SETTING_DEFAULTS, soft_wrap=True, hover_info=False)
+        expected = {'schema_version': 'editor-settings-1.0',
+                    'settings': changed, 'defaults': dict(EDITOR_SETTING_DEFAULTS)}
+        result = api_response('/api/settings/editor', {'set': {'soft_wrap': True, 'hover_info': False}}, self.workspace)
+        self.assertEqual(result, expected)
+        self.workspace.store = WorkspaceStore(self.workspace.store.path)
+        self.assertEqual(api_response('/api/settings/editor', {}, self.workspace), expected)
+
+    def test_editor_settings_bad_payloads_raise_value_error(self):
+        for payload in ({'set': {'unknown_key': True}}, {'set': {'soft_wrap': 'on'}},
+                        {'set': {'soft_wrap': None}}, {'set': {'soft_wrap': 1}},
+                        {'set': ['soft_wrap']}, {'other': True}, {'set': {}, 'extra': 1}):
+            with self.subTest(payload=payload), self.assertRaises(ValueError):
+                api_response('/api/settings/editor', payload, self.workspace)
+        self.assertFalse(self.workspace.store.path.exists())
+        with self.assertRaisesRegex(ValueError, 'running workspace'):
+            api_response('/api/settings/editor', {'set': {'soft_wrap': True}})
+
+    def test_editor_settings_path_is_local_only_and_allowed_for_post(self):
+        from myflames.ui import _CONNECTION_PATHS, _SERVER_VIEW_PATHS, _SETTINGS_PATHS
+        self.assertIn('/api/settings/editor', _SETTINGS_PATHS)
+        self.assertNotIn('/api/settings/editor', _SERVER_VIEW_PATHS)
+        self.assertNotIn('/api/settings/editor', _CONNECTION_PATHS)
+
+
 class TestWorkspaceHTTP(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

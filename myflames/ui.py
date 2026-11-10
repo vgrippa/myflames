@@ -1267,7 +1267,7 @@ from .baselines import PATHS as _BASELINE_PATHS  # noqa: E402
 #: Parameter version catalogs (param_versions.py): answers from the generated
 #: sysvar_history modules only. No connection, no server read, no audit.
 _PARAM_VERSION_PATHS = ("/api/config/versions", "/api/config/versions/compare",
-                        "/api/config/versions/history")
+                        "/api/config/versions/history", "/api/config/versions/names")
 #: Server variables (variables.py, answered by _variable_response). Read and
 #: plan only read: they get the saved password like the views. Apply is a
 #: write: the connection's policy runs first (dbops.gate with confirmed: true),
@@ -1405,6 +1405,9 @@ def _active_lifecycle_operations(workspace):
 #: Checks keep their outcome in the workspace store; status never reads the network.
 _APP_UPDATE_PATHS = ('/api/app/update/check', '/api/app/update/download', '/api/app/update/status',
                      '/api/app/update/stage', '/api/app/update/settings')
+#: Local application settings kept in the workspace store (workspace_store.py):
+#: the Query editor's settings. No connection, no server read, no audit.
+_SETTINGS_PATHS = ('/api/settings/editor',)
 # Application client selection is separate from saved connection credentials.
 _CLIENT_PATHS = ('/api/client/tools', '/api/client/tools/choose')
 _CLIENT_SETTINGS_LOCK = threading.Lock()
@@ -1495,6 +1498,8 @@ def _param_version_response(path, payload):
     engine = payload.get("engine")
     if engine not in param_versions.ENGINES:
         raise ValueError("Choose engine mysql or mariadb.")
+    if path == "/api/config/versions/names":
+        return param_versions.names(engine, payload.get("version"))
     if path == "/api/config/versions/compare":
         for field in ("from", "to"):
             value = payload.get(field)
@@ -1507,6 +1512,23 @@ def _param_version_response(path, payload):
         raise ValueError("Choose a parameter name of at most %d characters."
                          % param_versions.MAX_NAME_LENGTH)
     return param_versions.history(engine, name)
+
+
+def _settings_response(path, payload, workspace):
+    """Local application settings in the workspace store; never opens a connection."""
+    if workspace is None:
+        raise ValueError("This operation requires a running workspace.")
+    if path == "/api/settings/editor":
+        from .workspace_store import EDITOR_SETTING_DEFAULTS
+        if set(payload) - {"set"}:
+            raise ValueError("Unexpected editor settings field.")
+        changes = payload.get("set")
+        if changes is not None:
+            workspace.store.set_editor_settings(changes)
+        return {"schema_version": "editor-settings-1.0",
+                "settings": workspace.store.editor_settings(),
+                "defaults": dict(EDITOR_SETTING_DEFAULTS)}
+    raise ValueError("Not found.")
 
 
 def _accounts_response(path, payload, workspace):
@@ -1976,6 +1998,8 @@ def api_response(path, payload, workspace=None):
         if "auto_check" in payload:
             workspace.store.set_app_update_auto(payload["auto_check"])
         return {"schema_version": "app-update-settings-1.0", "auto_check": workspace.store.app_update_auto()}
+    if path in _SETTINGS_PATHS:
+        return _settings_response(path, payload, workspace)
     if path == "/api/app/update/download":
         from . import app_update
         return app_update.download_binary_update(
@@ -2694,7 +2718,7 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                              "/api/editor/saved/move", "/api/editor/saved/delete",
                              "/api/analysis/prepare-query") + _LIFECYCLE_PATHS \
                 + _REPLICATION_PATHS + _CATALOG_PATHS + _OBJECT_SEARCH_PATHS + _VARIABLE_PATHS + _ACTION_PATHS + _ACCOUNT_PATHS + _DIAGRAM_PATHS + _SCHEMA_VERSION_PATHS + _COMPARE_PATHS + _APP_UPDATE_PATHS \
-                + _CLIENT_PATHS + _NEWS_PATHS + _PARAM_VERSION_PATHS + _CSV_IMPORT_PATHS + _SLOW_LOG_PATHS \
+                + _CLIENT_PATHS + _NEWS_PATHS + _SETTINGS_PATHS + _PARAM_VERSION_PATHS + _CSV_IMPORT_PATHS + _SLOW_LOG_PATHS \
                 + _SSH_CONNECTION_PATHS + _FILES_PATHS + ("/api/live/readiness", "/api/connections/import") \
                 + _BASELINE_PATHS \
                 + (_ACTION_PROGRESS_PATH, "/api/live/proxysql/digests", "/api/live/readyset",

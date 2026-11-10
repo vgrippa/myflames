@@ -417,6 +417,16 @@ try {
   await page.keyboard.press("Tab");
   assert.equal(await page.evaluate(() => document.activeElement?.closest(".update-auto-toggle")?.textContent.trim()),
     "Check for updates automatically");
+  // The Query editor group is its own chunk; its six switches join the Tab
+  // order once the group has rendered.
+  await page.waitForSelector("#settings-popover .settings-editor-group");
+  for (const label of ["Multiple cursors", "Suggestions while typing", "Close brackets and quotes", "Wrap long lines", "Problem warnings", "Details on hover"]) {
+    await page.keyboard.press("Tab");
+    assert.equal(
+      await page.evaluate(() => document.activeElement?.closest("#settings-popover .settings-editor-group .session-toggle")?.textContent.trim()),
+      label,
+    );
+  }
 
   await page.keyboard.press("Tab");
   assert.equal(await focused(), "Start fresh");
@@ -522,7 +532,68 @@ try {
   await go("Home");
   assert.deepEqual(await active(), ["Home"]);
 
-  // 4d. The connection in use (the unsaved default) is Production: the window
+  // 4d. The command palette's "Query editor settings" action opens the
+  // Settings popover (Meta+K / Ctrl+K): in a narrow window the drawer opens
+  // with it, the popover fits a 720x520 window and scrolls when its content
+  // is taller, and a switch saves through /api/settings/editor and survives
+  // a reload.
+  await page.setViewport({ width: 720, height: 520 });
+  await page.waitForFunction(() => document.querySelector("#window-sidebar-toggle")?.getAttribute("aria-expanded") === "false");
+  const MOD = process.platform === "darwin" ? "Meta" : "Control";
+  await page.keyboard.down(MOD); await page.keyboard.press("k"); await page.keyboard.up(MOD);
+  await page.waitForSelector("dialog.command-palette[open]");
+  await page.type('input[aria-label="Search commands"]', "Query editor settings");
+  assert.deepEqual(await texts(".command-option span"), ["Query editor settings"]);
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => !document.querySelector("dialog.command-palette[open]"));
+  // Narrow: the drawer opens too, so the popover is always reachable.
+  await page.waitForSelector(".sidebar-drawer.open");
+  await page.waitForSelector("#settings-popover");
+  assert.ok(await visible("#settings-popover"), "the palette action opens the Settings popover");
+  assert.equal(await text("#settings-popover .settings-editor-group .section-label"), "Query editor");
+  assert.deepEqual(await texts("#settings-popover .settings-editor-group .session-toggle"), [
+    "Multiple cursors", "Suggestions while typing", "Close brackets and quotes",
+    "Wrap long lines", "Problem warnings", "Details on hover",
+  ], "the Query editor group lists its six switches");
+  // It fits the window and scrolls: the content is taller than the window.
+  const popoverBox = await page.$eval("#settings-popover", (e) => {
+    const r = e.getBoundingClientRect();
+    return { top: r.top, bottom: r.bottom, view: innerHeight, tall: e.scrollHeight > e.clientHeight + 1, overflowY: getComputedStyle(e).overflowY };
+  });
+  assert.ok(popoverBox.top >= 0 && popoverBox.bottom <= popoverBox.view, `the popover fits the window (${JSON.stringify(popoverBox)})`);
+  assert.ok(popoverBox.tall && /^(auto|scroll)$/.test(popoverBox.overflowY), "the popover scrolls when its content is taller");
+  // A switch saves through /api/settings/editor (the real store): it stays
+  // on across a reload, and a second toggle puts it back off.
+  const editorWrite = (on) => page.waitForResponse((r) =>
+    r.url().includes("/api/settings/editor") && (r.request().postData() || "").includes(`"soft_wrap":${on}`));
+  const wrapSettled = (on) => page.waitForFunction((expected) => {
+    const row = [...document.querySelectorAll("#settings-popover .settings-editor-group .session-toggle")]
+      .find((e) => e.textContent.trim() === "Wrap long lines");
+    return !!row && row.querySelector("input").checked === expected;
+  }, {}, on);
+  const wrapToggle = () => page.locator('#settings-popover .settings-editor-group .session-toggle ::-p-text(Wrap long lines)').click();
+  let saved = editorWrite(true);
+  await wrapToggle();
+  await saved;
+  await wrapSettled(true);
+  await page.reload({ waitUntil: "networkidle0" });
+  await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state !== "loading");
+  await page.keyboard.down(MOD); await page.keyboard.press("k"); await page.keyboard.up(MOD);
+  await page.waitForSelector("dialog.command-palette[open]");
+  await page.type('input[aria-label="Search commands"]', "Query editor settings");
+  await page.keyboard.press("Enter");
+  await page.waitForSelector("#settings-popover");
+  await page.waitForSelector("#settings-popover .settings-editor-group");
+  await wrapSettled(true);
+  saved = editorWrite(false);
+  await wrapToggle();
+  await saved;
+  await wrapSettled(false);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("#settings-popover"));
+  await page.setViewport({ width: 1440, height: 1000 });
+
+  // 4e. The connection in use (the unsaved default) is Production: the window
   // footer of every place that sends to it starts with that state (a dot and
   // words, named for screen readers); Home, Plans and Learn have none, and
   // nothing is drawn over the top bar.

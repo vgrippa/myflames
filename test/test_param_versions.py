@@ -607,6 +607,91 @@ class CliTest(Cataloged):
                 self.assertIn('Exit codes: 0', out)
 
 
+class NamesTest(Cataloged):
+    """param_versions.names: the variable names of one release for the editor."""
+
+    def test_exact_release(self):
+        result = param_versions.names('mysql', '8.0.30')
+        self.assertEqual(result['schema_version'], 'param-names-1.0')
+        self.assertEqual(result['engine'], 'mysql')
+        self.assertEqual(result['requested'], '8.0.30')
+        self.assertEqual(result['release'], '8.0.30')
+        self.assertIs(result['exact'], True)
+        by_name = dict((row['name'], row) for row in result['names'])
+        # added_later arrives in 8.4.0; gone_var leaves there.
+        self.assertNotIn('added_later', by_name)
+        self.assertIn('gone_var', by_name)
+        self.assertEqual(by_name['always_on'], {'name': 'always_on', 'scope': 'global',
+                                                'type': 'boolean', 'dynamic': True, 'deprecated': False})
+        self.assertIs(by_name['old_alias']['deprecated'], True)
+        self.assertIs(by_name['mystery_var']['dynamic'], True)
+
+    def test_uncataloged_patch_and_percona_suffix_fall_back_to_the_earlier_release(self):
+        for text in ('8.0.31', '8.0.36-28', 'mysql-8.0.35'):
+            with self.subTest(version=text):
+                result = param_versions.names('mysql', text)
+                self.assertEqual(result['requested'], text)
+                self.assertEqual(result['release'], '8.0.30')
+                self.assertIs(result['exact'], False)
+                self.assertTrue(result['names'])
+        # A 9.0 patch newer than the one cataloged release falls back to it.
+        result = param_versions.names('mysql', '9.0.1')
+        self.assertEqual(result['release'], '9.0.0')
+        self.assertIs(result['exact'], False)
+        by_name = dict((row['name'], row) for row in result['names'])
+        self.assertNotIn('removed_var', by_name)
+        self.assertIn('readded_var', by_name)
+
+    def test_unknown_series_and_only_later_releases_answer_empty(self):
+        for text in ('8.1.0', '8.0.5', 'not-a-version'):
+            with self.subTest(version=text):
+                result = param_versions.names('mysql', text)
+                self.assertEqual(result['release'], None)
+                self.assertIs(result['exact'], False)
+                self.assertEqual(result['names'], [])
+
+    def test_mariadb(self):
+        result = param_versions.names('mariadb', '10.11.0')
+        self.assertEqual(result['release'], '10.11.0')
+        self.assertIs(result['exact'], True)
+        by_name = dict((row['name'], row) for row in result['names'])
+        self.assertIn('mariadb_only', by_name)
+        self.assertIn('always_on', by_name)
+        self.assertEqual(by_name['mariadb_only']['type'], 'string')
+        result = param_versions.names('mariadb', '10.11.9-MariaDB-log')
+        self.assertEqual(result['release'], '10.11.0')
+        self.assertIs(result['exact'], False)
+        result = param_versions.names('mariadb', '10.5.9')
+        self.assertEqual(result['release'], None)
+        self.assertEqual(result['names'], [])
+
+    def test_dynamic_unknown_stays_none(self):
+        # A catalog that does not record dynamic must not read as "not
+        # dynamic"; only deprecated is always a bool.
+        module = _adhoc_module('mysql')
+        module.HISTORY = {
+            'hushed_var': ((0, ('global', 'integer', None, '4', None, None, None, None, None, None, None, None)),),
+            'loud_var': ((0, ('global', 'integer', True, '4', None, None, None, None, None, None, None, None)),),
+            'fading_var': ((0, ('global', 'integer', True, '4', None, None, None, None, ('source',), None, None, None)),),
+        }
+        _install(module)
+        self.addCleanup(_uninstall, 'mysql')
+        result = param_versions.names('mysql', '2.0.0')
+        self.assertEqual(result['release'], '2.0.0')
+        by_name = dict((row['name'], row) for row in result['names'])
+        self.assertIsNone(by_name['hushed_var']['dynamic'])
+        self.assertIs(by_name['loud_var']['dynamic'], True)
+        self.assertIs(by_name['fading_var']['deprecated'], True)
+        self.assertIs(by_name['hushed_var']['deprecated'], False)
+
+    def test_bad_version_is_a_plain_refusal(self):
+        for version in (None, 8030, '', '   ', 'x' * 33):
+            with self.subTest(version=version), self.assertRaisesRegex(ValueError, 'cataloged version'):
+                param_versions.names('mysql', version)
+        with self.assertRaisesRegex(ValueError, 'Choose engine'):
+            param_versions.names('postgres', '8.0.30')
+
+
 class HttpApiTest(Cataloged):
     """The /api/config/versions endpoints through the real POST handler, in
     the style of test_ui_http.py: memory streams, never a listening socket."""
@@ -694,7 +779,7 @@ class HttpApiTest(Cataloged):
 
     def test_auth_runs_before_dispatch_and_unknown_path_is_404(self):
         for path in ('/api/config/versions', '/api/config/versions/compare',
-                     '/api/config/versions/history'):
+                     '/api/config/versions/history', '/api/config/versions/names'):
             with self.subTest(path=path):
                 status, result = self.post(path, {}, headers={'X-Myflames-Token': 'wrong'})
                 self.assertEqual(status, 403)
@@ -708,6 +793,41 @@ class HttpApiTest(Cataloged):
                                   side_effect=AssertionError('no password fill')):
             status, result = self.post('/api/config/versions/compare',
                                        {'engine': 'mariadb', 'from': '10.6.0', 'to': '10.11.0'})
+            self.assertEqual(status, 200)
+            connect.assert_not_called()
+
+    def test_names(self):
+        status, result = self.post('/api/config/versions/names', {'engine': 'mysql', 'version': '8.0.30'})
+        self.assertEqual(status, 200)
+        self.assertEqual(result['schema_version'], 'param-names-1.0')
+        self.assertIs(result['exact'], True)
+        self.assertEqual(result['release'], '8.0.30')
+        self.assertIn({'name': 'always_on', 'scope': 'global', 'type': 'boolean',
+                       'dynamic': True, 'deprecated': False}, result['names'])
+        status, result = self.post('/api/config/versions/names', {'engine': 'mysql', 'version': '8.0.36-28'})
+        self.assertEqual(status, 200)
+        self.assertIs(result['exact'], False)
+        self.assertEqual(result['release'], '8.0.30')
+        status, result = self.post('/api/config/versions/names', {'engine': 'mysql', 'version': '8.1.0'})
+        self.assertEqual(status, 200)
+        self.assertEqual(result['release'], None)
+        self.assertEqual(result['names'], [])
+        status, result = self.post('/api/config/versions/names', {'engine': 'mariadb', 'version': '10.11.9-MariaDB'})
+        self.assertEqual(status, 200)
+        self.assertEqual(result['release'], '10.11.0')
+
+    def test_names_bad_requests_are_one_plain_sentence(self):
+        for payload in ({'engine': 'postgres', 'version': '8.0.30'}, {'engine': 'mysql'},
+                        {'engine': 'mysql', 'version': 8030}, {'engine': 'mysql', 'version': 'x' * 33}):
+            with self.subTest(payload=payload):
+                status, result = self.post('/api/config/versions/names', payload)
+                self.assertEqual(status, 400)
+                self.assertIn('error', result)
+
+    def test_names_needs_no_connection(self):
+        with mock.patch('myflames.connector.MySQLConnection',
+                        side_effect=AssertionError('no connection')) as connect:
+            status, _ = self.post('/api/config/versions/names', {'engine': 'mysql', 'version': '8.4.3'})
             self.assertEqual(status, 200)
             connect.assert_not_called()
 

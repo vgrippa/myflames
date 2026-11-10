@@ -10,8 +10,15 @@ import { ClientToolsDialog } from "./ClientTools";
 import { Icon, type IconName } from "./components";
 import { Checkbox, CountBadge, Popover, closePopovers, useFocusScope } from "./kit";
 import { NewsSetting } from "./HomeNews";
+import { lazyComponent } from "./lazy";
 import { AutoUpdateSetting, UpdateBadge, UpdateMenuItem } from "./UpdateBadge";
 import type { SaveStatus } from "./session";
+
+// The Query editor settings group is its own chunk, loaded when the popover
+// first renders (below), and rendered through lazyComponent so
+// editorSettings.ts stays out of the entry chunk.
+const QueryEditorSettings = lazyComponent(() => import("./QueryEditorSettings").then((m) => m.QueryEditorSettings));
+
 
 export type Place = "home" | "server" | "workload" | "replication" | "cluster" | "proxysql" | "readyset" | "tuning" | "files" | "query" | "digest" | "diagram" | "schema" | "plans" | "investigations" | "learn";
 export const PLACES: { key: Place; label: string; icon: IconName }[] = [
@@ -68,6 +75,7 @@ export function Sidebar({
   expanded,
   narrow,
   onExpandedChange,
+  settingsRequest,
   placeBadges,
   placeMuted,
 }: {
@@ -76,6 +84,10 @@ export function Sidebar({
   /** The shell updates this together with expansion at the rail breakpoint. */
   narrow: boolean;
   onExpandedChange?: (expanded: boolean) => void;
+  /** The command palette (App) raises this counter to ask for the Settings
+   * popover; each change opens the popover, and the drawer too where a
+   * narrow window reaches the popover from the drawer. */
+  settingsRequest: number;
   logo: string;
   /** The place on screen; null while the workspace opens. */
   place: Place | null;
@@ -109,6 +121,16 @@ export function Sidebar({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [clientOpen, setClientOpen] = useState(false);
+  // The command palette (App) raises settingsRequest to ask for the
+  // Settings popover; each change opens it, with the drawer in a narrow
+  // window, where the popover is reached from the drawer.
+  const seenSettingsRequest = useRef(settingsRequest);
+  useEffect(() => {
+    if (settingsRequest === seenSettingsRequest.current) return;
+    seenSettingsRequest.current = settingsRequest;
+    setSettingsOpen(true);
+    if (narrow) setDrawerOpen(true);
+  }, [settingsRequest, narrow]);
   const sidebar = useRef<HTMLElement>(null);
   const menuButton = useRef<HTMLButtonElement>(null);
   const drawer = useRef<HTMLDivElement>(null);
@@ -452,6 +474,7 @@ export function Sidebar({
             </p>
             <NewsSetting />
             <AutoUpdateSetting />
+            <QueryEditorSettings />
             <div className="settings-menu">
               <UpdateMenuItem onChoose={() => { setSettingsOpen(false); setDrawerOpen(false); }} />
               {onStartFresh && <button type="button" className="settings-item" disabled={!ready}

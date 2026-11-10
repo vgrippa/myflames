@@ -134,6 +134,35 @@ class TestWorkspaceStore(unittest.TestCase):
                 self.store.set_app_update_auto(invalid)
         self.assertFalse(self.path.exists())
 
+    def test_editor_settings_default_without_creating_storage(self):
+        self.assertEqual(self.store.editor_settings(), workspace_store.EDITOR_SETTING_DEFAULTS)
+        self.assertFalse(self.path.exists())
+
+    def test_editor_settings_round_trip(self):
+        expected = dict(workspace_store.EDITOR_SETTING_DEFAULTS, soft_wrap=True, multi_cursor=False)
+        self.assertEqual(self.store.set_editor_settings({'soft_wrap': True, 'multi_cursor': False}), expected)
+        self.assertEqual(WorkspaceStore(self.path).editor_settings(), expected)
+        # A partial write changes only the keys it names.
+        self.store.set_editor_settings({'soft_wrap': False})
+        self.assertEqual(WorkspaceStore(self.path).editor_settings(),
+                         dict(workspace_store.EDITOR_SETTING_DEFAULTS, multi_cursor=False))
+
+    def test_editor_settings_rejects_unknown_keys_and_non_boolean_values(self):
+        for changes in ({'unknown_key': True}, {'soft_wrap': 'on'}, {'soft_wrap': None}, {'soft_wrap': 1},
+                        {'hover_info': []}, ['soft_wrap']):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                self.store.set_editor_settings(changes)
+        self.assertFalse(self.path.exists())
+
+    def test_editor_settings_ignore_unknown_and_malformed_stored_rows(self):
+        self.store.set_editor_settings({'hover_info': False})
+        with contextlib.closing(sqlite3.connect(str(self.path))) as conn, conn:
+            conn.execute("INSERT OR REPLACE INTO settings VALUES ('editor.unknown', 'on')")
+            conn.execute("INSERT OR REPLACE INTO settings VALUES ('editor.soft_wrap', 'unexpected')")
+            conn.execute("INSERT OR REPLACE INTO settings VALUES ('editor.completion_auto', 'off')")
+        expected = dict(workspace_store.EDITOR_SETTING_DEFAULTS, hover_info=False, completion_auto=False)
+        self.assertEqual(self.store.editor_settings(), expected)
+
     def test_write_lock_timeout_closes_the_connection(self):
         # BEGIN IMMEDIATE raising (a busy timeout under write contention) must
         # not leak the connection, which no caller owns yet.

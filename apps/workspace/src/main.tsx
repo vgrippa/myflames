@@ -1944,6 +1944,9 @@ function App() {
   }
 
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  // The Settings popover owns its open state (Sidebar.tsx); the palette asks
+  // for it through this counter, which raises once per palette run.
+  const [settingsRequest, setOpenSettingsRequest] = useState(0);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
@@ -2105,6 +2108,10 @@ function App() {
     { id: "query-rename-tab", label: "Rename query tab", group: "Query editor", icon: "edit", keywords: "rename tab name title query editor", run: () => { go("query"); withLab((lab) => lab.renameTab()); } },
     { id: "query-format-sql", label: "Format SQL", group: "Query editor", icon: "format", keywords: "format indent beautify pretty sql query editor", run: () => { go("query"); withLab((lab) => lab.formatSql()); } },
     { id: "query-save", label: "Save query…", group: "Query editor", icon: "plus", keywords: "save saved query favorite bookmark snippet folder keep query editor", run: () => { go("query"); withLab((lab) => lab.saveQuery()); } },
+    // The editor settings live as switches in the Settings popover (its Query
+    // editor group); the palette asks Sidebar to open the popover rather than
+    // naming each switch.
+    { id: "query-editor-settings", label: "Query editor settings", group: "Query editor", icon: "settings", keywords: "settings multiple cursors suggestions brackets quotes wrap problems hover", run: () => setOpenSettingsRequest((n) => n + 1) },
   ];
 
   return (
@@ -2133,6 +2140,7 @@ function App() {
         onToggleRestore={toggleRestore}
         onAuditLog={openAuditLog}
         onStartFresh={() => setConfirmFresh(true)}
+        settingsRequest={settingsRequest}
         placeBadges={{ replication: replicationBadge, cluster: clusterBadge, proxysql: proxyBadge, readyset: readysetBadge }}
         placeMuted={clusterMuted || proxyMuted || readysetMuted || replicationMuted ? {
           ...(replicationMuted ? { replication: NOT_A_REPLICA } : {}),

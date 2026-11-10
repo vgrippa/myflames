@@ -739,6 +739,12 @@ details > p {
   left: 0;
   bottom: calc(100% + var(--space-2));
   width: 248px;
+  /* The footer row (41 px) and the sidebar's bottom padding (8 px) sit
+     below the anchor, plus the 8 px gap and a 16 px headroom: 73 px in
+     all. In a 720x520 window the top then stays at least 16 px from the
+     window top; it scrolls below that. */
+  max-height: calc(100vh - 73px);
+  overflow-y: auto;
   z-index: 20;
   background: var(--surface-raised);
   border: 1px solid var(--line);
@@ -748,6 +754,16 @@ details > p {
   display: grid;
   gap: var(--space-2);
   animation: chrome-panel-in var(--motion-panel);
+}
+/* The Query editor group: its own label, then one switch row per setting. */
+.settings-editor-group {
+  display: grid;
+  gap: var(--space-1);
+}
+.settings-editor-group > .section-label {
+  font-size: var(--text-xs);
+  padding: var(--space-2) var(--space-2) 0;
+  border-top: 1px solid var(--line);
 }
 .settings-theme-group {
   display: flex;
