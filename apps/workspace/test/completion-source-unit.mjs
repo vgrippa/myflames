@@ -7,7 +7,10 @@ const built = await build({ stdin: { resolveDir: root, contents: `
   export * from './src/editor/catalog'; export * from './src/editor/completion';
   export {variableContext, cteNames} from './src/sqlCompletion';
   export {EditorView} from '@codemirror/view';
-  export {wordsFor} from './src/editor/engineWords';
+  export {history, undo} from '@codemirror/commands';
+  export {Transaction} from '@codemirror/state';
+  export {pickedCompletion} from '@codemirror/autocomplete';
+  export {wordsFor, functionsFor} from './src/editor/engineWords';
   export {EditorState, EditorSelection} from '@codemirror/state';
   export {CompletionContext, autocompletion, startCompletion, closeCompletion, completionStatus, currentCompletions} from '@codemirror/autocomplete';
 ` }, bundle: true, format: 'esm', platform: 'neutral', target: 'es2020', write: false, logLevel: 'silent',
@@ -426,6 +429,65 @@ try {
     pair.env.current.serverVersion = 'unknown';
     assert.equal((await pair.source(context('SEL|', true))).options[0].label, 'SELECT');
     assert.equal(sent.length, 0);
+  });
+  await test('function suggestions use generated counts and release details only in unquoted expressions', async () => {
+    const pair = sourceEnv(); Object.assign(pair.env.current, { connection: undefined, engine: 'mysql', serverVersion: '8.0.36' });
+    for (const [name, count] of [['POW', '2 arguments'], ['ABS', '1 argument'], ['ATAN', '1 to 2 arguments'], ['CONCAT', 'at least 1 arguments'], ['COUNT', '']]) {
+      assert.ok(cm.functionsFor('mysql', '8.0.36').functions.some(fn => fn.name === name));
+      const result = await pair.source(context(`SELECT ${name}|`, true));
+      const fn = result.options.find(o => o.label === name && o.type === 'function');
+      assert.ok(fn, name); assert.equal(fn.detail, 'function' + (count ? ' · ' + count : ''));
+      assert.equal(typeof fn.apply, 'function');
+    }
+    const overlap = await pair.source(context('SELECT REVERSE|', true));
+    assert.deepEqual(overlap.options.filter(o => o.label === 'REVERSE').map(o => o.type), ['keyword', 'function'], 'deduplication keeps keyword and function entries');
+    for (const marked of ['SELECT * FROM POW|', 'SELECT app.POW|', 'SELECT `POW|']) {
+      const result = await pair.source(context(marked, true));
+      assert.ok(!result.options.some(o => o.type === 'function'), marked);
+    }
+    pair.env.current.serverVersion = '8.0.99';
+    const result = await pair.source(context('SELECT POW|', true));
+    assert.equal(result.options.find(o => o.type === 'function' && o.label === 'POW').detail, 'function · 2 arguments, MySQL 8.0.46 list');
+    assert.equal(sent.length, 0);
+  });
+  await test('function apply keeps every matching cursor inside parentheses and undoes in one step', async () => {
+    const pair = sourceEnv(); Object.assign(pair.env.current, { connection: undefined, engine: 'mysql', serverVersion: '8.0.36' });
+    for (const [marked, multiple, expected, heads] of [
+      ['SELECT PO|', false, 'SELECT POW()', [11]],
+      ['SELECT PO|(1, 2)', false, 'SELECT POW(1, 2)', [10]],
+      ['SELECT PO|, PO', true, 'SELECT POW(), POW()', [11, 18]],
+    ]) {
+      const ctx = context(marked, true);
+      let state = cm.EditorState.create({ doc: ctx.state.doc,
+        selection: multiple ? cm.EditorSelection.create([cm.EditorSelection.cursor(9), cm.EditorSelection.cursor(13)]) : ctx.state.selection,
+        extensions: [cm.EditorState.allowMultipleSelections.of(true), cm.history()] });
+      const initial = state.doc.toString(), initialSelection = state.selection, transactions = [];
+      const view = { get state() { return state; }, dispatch(spec) { const tr = state.update(spec); state = tr.state; transactions.push(tr); } };
+      const result = await pair.source(new cm.CompletionContext(state, state.selection.main.head, true));
+      const fn = result.options.find(o => o.label === 'POW' && o.type === 'function'); assert.ok(fn);
+      fn.apply(view, fn, result.from, result.to);
+      assert.equal(state.doc.toString(), expected);
+      assert.deepEqual(state.selection.ranges.map(r => r.head), heads);
+      assert.equal(transactions.length, 1, 'insertion and caret movement are one transaction');
+      assert.equal(transactions[0].annotation(cm.pickedCompletion), fn);
+      assert.equal(transactions[0].annotation(cm.Transaction.userEvent), 'input.complete');
+      assert.equal(cm.undo(view), true); assert.equal(state.doc.toString(), initial);
+      assert.ok(state.selection.eq(initialSelection)); assert.equal(cm.undo(view), false);
+    }
+    // One mismatched prefix means only the main cursor completes. Other cursors
+    // stay present and map through the insertion without moving into parentheses.
+    const doc = 'SELECT PO, XX, PO';
+    let state = cm.EditorState.create({ doc,
+      selection: cm.EditorSelection.create([9, 13, 17].map(pos => cm.EditorSelection.cursor(pos)), 2),
+      extensions: [cm.EditorState.allowMultipleSelections.of(true), cm.history()] });
+    const result = await pair.source(new cm.CompletionContext(state, state.selection.main.head, true));
+    const fn = result.options.find(o => o.label === 'POW' && o.type === 'function'); assert.ok(fn);
+    const view = { get state() { return state; }, dispatch(spec) { state = state.update(spec).state; } };
+    fn.apply(view, fn, result.from, result.to);
+    assert.equal(state.doc.toString(), 'SELECT PO, XX, POW()');
+    assert.deepEqual(state.selection.ranges.map(r => r.head), [9, 13, 19]);
+    assert.equal(state.selection.mainIndex, 2);
+    assert.equal(cm.undo(view), true); assert.equal(state.doc.toString(), doc);
   });
   await test('variable lexical guards, scopes, replacement and one cached offline call', async () => {
     const pair = sourceEnv(); Object.assign(pair.env.current, { connection: undefined, engine: 'mysql', serverVersion: '8.4.6' });

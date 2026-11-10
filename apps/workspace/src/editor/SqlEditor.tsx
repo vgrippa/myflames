@@ -90,8 +90,8 @@ function configurations(props: SqlEditorProps, env: Environment, length: number)
     close_brackets: settings.close_brackets ? [closeBrackets(), Prec.high(keymap.of(closeBracketsKeymap))] : [],
     completion_auto: small ? [autocompletion({
       override: completionSources(env), activateOnTyping: settings.completion_auto, defaultKeymap: false,
-    }), completionExtension(settings, env), argumentHintsExtension(settings, env)] : [],
-    hover_info: small && settings.hover_info ? hoverExtension(settings, env) : [],
+    }), completionExtension(settings, env)] : [],
+    hover_info: small && settings.hover_info ? [hoverExtension(settings, env), argumentHintsExtension(settings, env)] : [],
     problem_warnings: small && settings.problem_warnings ? problemsExtension(settings, env) : [],
     language: [sqlLanguage, sqlHighlighting],
     matching: small ? matchingBrackets : [],

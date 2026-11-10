@@ -81,6 +81,7 @@
     "test:reviewed-sql-actions": "npm run build && node test/reviewed-sql-actions.mjs",
     "test:completion": "node test/sql-completion.mjs && npm run build && node test/completion-browser.mjs",
     "test:desktop-shell": "npm run build && node test/desktop-shell.mjs",
+    "test:argument-hints": "node test/argument-hints-unit.mjs",
     "test:editor-fixes": "node test/editor-fixes.mjs",
     "test:table-data": "npm run build && node test/table-data.mjs",
     "test:import-csv": "npm run build && node test/import-csv.mjs",

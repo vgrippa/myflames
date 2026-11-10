@@ -1,10 +1,11 @@
-import { autocompletion, closeCompletion, completionStatus, startCompletion, type Completion, type CompletionContext as CMContext,
+import { autocompletion, closeCompletion, completionStatus, startCompletion, insertCompletionText, pickedCompletion, type Completion, type CompletionContext as CMContext,
   type CompletionResult, type CompletionSource } from "@codemirror/autocomplete";
-import { StateEffect, StateField, type Extension } from "@codemirror/state";
+import { EditorSelection, StateEffect, StateField, type Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, showPanel, type Panel } from "@codemirror/view";
 import { paramNames, type Connection, type ParamNames } from "../api";
 import { columnTargets, commonCompletionWords, completionContext, cteNames, variableContext,
   type CompletionContext, type Suggestion } from "../sqlCompletion";
+import { argumentCount } from "./argumentHints";
 import { catalogFor, type CatalogOwner } from "./catalog";
 import type { EditorEnv, EditorFeatureSettings } from "./types";
 
@@ -31,12 +32,12 @@ function hintPanel(view: EditorView): Panel {
 }
 
 // Only app-owned kind values reach CodeMirror's CSS type field (C3).
-const types: Record<Suggestion["kind"], string> = { schema: "schema", table: "table", column: "column", alias: "alias", keyword: "keyword" };
+const types: Record<Candidate["kind"], string> = { function: "function", schema: "schema", table: "table", column: "column", alias: "alias", keyword: "keyword" };
 type WordCatalog = typeof import("./engineWords");
 // Keep the generated engine vocabulary out of QueryLab and the entry bundle.
 let wordCatalog: Promise<WordCatalog> | undefined;
 const loadWords = () => wordCatalog ||= import("./engineWords");
-type Candidate = Suggestion & { fuzzy: boolean };
+type Candidate = Omit<Suggestion, "kind"> & { kind: Suggestion["kind"] | "function"; fuzzy: boolean };
 type IdentifierContext = CompletionContext & { quoted?: boolean; nativePattern?: string };
 type Metadata = {
   schemas?: string[]; tables?: { name: string; schema: string }[]; completeTables?: boolean;
@@ -47,7 +48,7 @@ function candidates(context: IdentifierContext, metadata: Metadata, ctes: string
   const quote = (name: string) => !context.quoted && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name) &&
     !(env.engine && env.serverVersion && words?.isKeyword(env.engine, env.serverVersion, name))
     ? name : "`" + name.replace(/`/g, "``") + "`";
-  const add = (label: string, kind: Suggestion["kind"], detail: string, fuzzy: boolean, insert = quote(label)) =>
+  const add = (label: string, kind: Candidate["kind"], detail: string, fuzzy: boolean, insert = quote(label)) =>
     out.push({ label, kind, detail, insert, fuzzy });
   for (const column of metadata.columns || []) add(column.name, "column", `${column.table.schema}.${column.table.table} · ${column.type}`, true,
     context.qualifiers.length || context.tables.length < 2 ? quote(column.name) : `${quote(column.table.alias)}.${quote(column.name)}`);
@@ -61,6 +62,12 @@ function candidates(context: IdentifierContext, metadata: Metadata, ctes: string
     if (list?.release) for (const keyword of list.keywords) add(keyword.name, "keyword",
       `${keyword.reserved ? "reserved keyword" : "keyword"}${list.exact ? "" : `, ${env.engine === "mysql" ? "MySQL" : "MariaDB"} ${list.release} list`}`, true, context.quoted ? quote(keyword.name) : keyword.name);
     else for (const name of commonCompletionWords) add(name, "keyword", "keyword", true, context.quoted ? quote(name) : name);
+    if (!context.quoted && env.engine && env.serverVersion) {
+      const functions = words?.functionsFor(env.engine, env.serverVersion);
+      if (functions?.release) for (const fn of functions.functions) add(fn.name, "function",
+        ["function", argumentCount(fn)].filter(Boolean).join(" · ") +
+        (functions.exact ? "" : `, ${env.engine === "mysql" ? "MySQL" : "MariaDB"} ${functions.release} list`), true, fn.name);
+    }
   }
   return out;
 }
@@ -92,7 +99,21 @@ function resultFor(context: { start: number; end: number; prefix: string; quoted
   return { from: context.start, to: context.end, filter: nativeFilter, note,
     // No validFor: every edit reruns the lexical guards and inventory requests.
     // Prefix-only results retain the legacy order and cap with filter:false.
-    options: selected.map((item, index) => ({ label: item.label, detail: item.detail, type: types[item.kind], apply: context.quoted ? item.insert.slice(1) : item.insert,
+    options: selected.map((item, index) => ({ label: item.label, detail: item.detail, type: types[item.kind], apply: item.kind === "function" ? (view: EditorView, completion: Completion, from: number, to: number) => {
+      const state = view.state, main = state.selection.main;
+      const fromOff = from - main.from, toOff = to - main.from;
+      const allMatch = state.selection.ranges.every(range => range.empty &&
+        state.sliceDoc(range.from + fromOff, range.from + toOff) === state.sliceDoc(from, to));
+      const source = allMatch ? state : state.update({ selection: EditorSelection.single(main.anchor, main.head) }).state;
+      const parentheses = state.sliceDoc(to, to + 1) !== "(";
+      const tr = source.update(insertCompletionText(source, item.insert + (parentheses ? "()" : ""), from, to));
+      const completed = tr.newSelection.ranges.map(range => parentheses ? EditorSelection.cursor(range.head - 1) : range);
+      const selection = allMatch ? EditorSelection.create(completed, tr.newSelection.mainIndex)
+        : EditorSelection.create(state.selection.ranges.map((range, index) => index === state.selection.mainIndex
+          ? completed[0] : range.map(tr.changes)), state.selection.mainIndex);
+      view.dispatch({ changes: tr.changes, selection, scrollIntoView: true,
+        annotations: pickedCompletion.of(completion), userEvent: "input.complete" });
+    } : context.quoted ? item.insert.slice(1) : item.insert,
       ...(nativeFilter ? { boost: (item.label.toLowerCase().startsWith(prefix) ? 1e6 : 0) - index * 10000 } : {}) })) };
 }
 type Job = { owner: CatalogOwner; key: string; cancel: () => void; valid: () => boolean };
