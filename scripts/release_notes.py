@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
-"""Print the CHANGELOG.md section of one release, for GitHub release notes.
+"""Print one release's notes page, for the GitHub release.
 
     python3 scripts/release_notes.py 3.3.4 > notes.md
     gh release create v3.3.4 --notes-file notes.md ...
 
-The section is the body under "## [VERSION] - YYYY-MM-DD", up to the next
-level-two heading, without the heading itself and without leading or trailing
-blank lines. A missing, undated, duplicated or empty section is an error (exit
-status 1) with a message that says what to write. Stdlib only, Python 3.7+.
+The page is docs/release-notes/X.Y.Z.md. It starts with the title line
+"# myflames X.Y.Z (YYYY-MM-DD)", then a sentence about the version, then
+level-two sections named in SECTIONS, in that order, ending with "Additional
+resources". The notes are the page without its title line (GitHub shows the
+release name above them) and without leading or trailing blank lines. A
+missing page, a wrong title, an unknown, repeated or out-of-order section, a
+deeper heading, a page with no entries, an unclosed code fence, an em dash or
+an internal /api/ path is an error (exit status 1) with a message that says
+what to fix. docs/release-notes/index.md lists every page, newest first; see
+DEVELOPER_REFERENCE "Release notes". Stdlib only, Python 3.7+.
 """
 import argparse
 import re
@@ -15,14 +21,36 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\Z")
-# "## [3.3.3] - 2026-11-09" (Keep a Changelog); "## [2.3.0] (2026-09-30)" in older entries.
-HEADING_RE = re.compile(r"^## \[(?P<version>[^\]]+)\](?P<rest>.*)$")
-DATE_RE = re.compile(r"^\s*(?:-\s*(?P<dash>\d{4}-\d{2}-\d{2})|\((?P<paren>\d{4}-\d{2}-\d{2})\))\s*$")
+NOTES_DIR = ROOT / "docs" / "release-notes"
+# ASCII digits only, the same rule as docs-sync.yml's tag check.
+VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?\Z")
+TITLE_RE = re.compile(r"^# myflames (?P<version>\S+) \((?P<date>\d{4}-\d{2}-\d{2})\)$")
+# "- [myflames 3.3.4 (2026-11-10)](3.3.4.md)" in index.md.
+INDEX_RE = re.compile(r"^- \[myflames (?P<version>\S+) \((?P<date>\d{4}-\d{2}-\d{2})\)\]\((?P<file>[^)\s]+)\)$")
+# Markdown allows up to three spaces before a heading.
+HEADING_RE = re.compile(r"^ {0,3}(?P<marks>#{1,6})\s+(?P<text>.*?)\s*$")
 # A code fence: three or more backticks or tildes (Markdown); it closes on the
 # same character, at least as many, and nothing else on the line.
 FENCE_RE = re.compile(r"^\s*(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
 
+# The sections a page may have, in the order it must use them. Leave out the
+# empty ones; "Additional resources" is always there.
+SECTIONS = (
+    "Release highlights",
+    "New features",
+    "Improvements",
+    "Bug fixes",
+    "Security fixes",
+    "Deprecations and removals",
+    "Known issues",
+    "Packaging notes",
+    "Additional resources",
+)
+# Writing rules a script can see (the rest are in DEVELOPER_REFERENCE).
+STYLE = (
+    ("—", "an em dash: use a period, comma, colon or parentheses"),
+    ("/api/", "an internal /api/ path: say what the user can do instead"),
+)
 
 # Every release's notes end with the project's origin credit (README, NOTICE):
 # Brendan Gregg and Tanel Poder are where this work began. Never remove it.
@@ -31,7 +59,7 @@ CREDIT = ("Inspired by [Brendan Gregg's FlameGraph](https://github.com/brendangr
 
 
 class ReleaseNotesError(Exception):
-    """The CHANGELOG has no usable section for the version."""
+    """The release notes page is missing or not in the release notes format."""
 
 
 def normalize_version(value):
@@ -42,6 +70,17 @@ def normalize_version(value):
     if not VERSION_RE.match(version):
         raise ReleaseNotesError("Not a release version: %r (expected X.Y.Z, for example 3.3.4)." % value)
     return version
+
+
+def version_key(version):
+    """Sort key for X.Y.Z: a pre-release ("-rc.2") sorts before its release and
+    after "-rc.1" (numeric identifiers compare as numbers); "+build" is ignored."""
+    match = re.match(r"^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+.*)?$", version)
+    if not match:
+        return (-1,)
+    pre = match.group(4)
+    parts = tuple((0, int(part), "") if part.isdigit() else (1, 0, part) for part in pre.split(".")) if pre else ()
+    return tuple(int(part) for part in match.groups()[:3]) + (pre is None, parts)
 
 
 def _prose(lines, start=0, state=None):
@@ -63,66 +102,87 @@ def _prose(lines, start=0, state=None):
             opened = state["open"] = None
 
 
-def _headings(lines):
-    """(index, version, rest) for every level-two release heading outside code fences."""
-    for index, line in _prose(lines):
-        match = HEADING_RE.match(line)
-        if match:
-            yield index, match.group("version").strip(), match.group("rest")
+def page(text, version, name=None):
+    """Return (date, notes) of *version*'s release notes page *text*.
 
-
-def _next_section(lines, start):
-    """Index of the next level-two heading after *start* (fences respected), or len(lines)."""
-    for index, line in _prose(lines, start + 1):
-        if line.startswith("## "):
-            return index
-    return len(lines)
-
-
-def section(text, version, changelog="CHANGELOG.md"):
-    """Return (date, body) of *version*'s dated section in CHANGELOG *text*."""
+    *notes* is the page without its title line, as GitHub shows it."""
     version = normalize_version(version)
+    name = name or "docs/release-notes/%s.md" % version
     lines = text.splitlines()
-    found = [(index, rest) for index, name, rest in _headings(lines) if name == version]
-    if not found:
-        raise ReleaseNotesError(
-            "%s has no section for %s. Add '## [%s] - YYYY-MM-DD' above the previous release "
-            "(move the entries from [Unreleased] into it)." % (changelog, version, version))
-    if len(found) > 1:
-        raise ReleaseNotesError("%s has %d sections for %s; keep one." % (changelog, len(found), version))
-    index, rest = found[0]
-    date = DATE_RE.match(rest)
-    if not date:
-        raise ReleaseNotesError(
-            "%s has '## [%s]' without a release date. Write '## [%s] - YYYY-MM-DD'." % (changelog, version, version))
-    body = lines[index + 1:_next_section(lines, index)]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    title = TITLE_RE.match(lines[0]) if lines else None
+    if not title or title.group("version") != version:
+        raise ReleaseNotesError("%s must start with '# myflames %s (YYYY-MM-DD)', the release date in brackets."
+                                % (name, version))
+    body = lines[1:]
     fences = {}
-    for _ in _prose(body, state=fences):
-        pass
+    seen, entries = [], False
+    for index, line in _prose(body, state=fences):
+        for needle, what in STYLE:
+            if needle in line:
+                raise ReleaseNotesError("%s line %d has %s." % (name, index + 2, what))
+        heading = HEADING_RE.match(line)
+        if heading:
+            level, label = len(heading.group("marks")), heading.group("text")
+            if level != 2:
+                raise ReleaseNotesError("%s line %d: '%s' is not a release notes section. Use only "
+                                        "'## <section>' headings: %s." % (name, index + 2, line.strip(), ", ".join(SECTIONS)))
+            if label not in SECTIONS:
+                raise ReleaseNotesError("%s has an unknown section '## %s'. Sections: %s."
+                                        % (name, label, ", ".join(SECTIONS)))
+            if label in seen:
+                raise ReleaseNotesError("%s has '## %s' twice; keep one." % (name, label))
+            if seen and SECTIONS.index(label) < SECTIONS.index(seen[-1]):
+                raise ReleaseNotesError("%s has '## %s' after '## %s'. Order: %s."
+                                        % (name, label, seen[-1], ", ".join(SECTIONS)))
+            seen.append(label)
+        elif line.lstrip().startswith("- ") and seen and seen[-1] != "Additional resources":
+            entries = True
     if fences["open"]:
-        raise ReleaseNotesError("%s's section for %s has a code fence (%s) that is never closed." % (changelog, version, fences["open"]))
+        raise ReleaseNotesError("%s has a code fence (%s) that is never closed." % (name, fences["open"]))
+    if "Additional resources" not in seen:
+        raise ReleaseNotesError("%s needs '## Additional resources' at the end (download, Quickstart and "
+                                "issue links)." % name)
+    if not entries:
+        raise ReleaseNotesError("%s lists no changes: add entries under its sections." % name)
     while body and not body[0].strip():
         body.pop(0)
     while body and not body[-1].strip():
         body.pop()
-    # Subsection headings alone ("### Added" with nothing under it) are no notes.
-    if not any(line.strip() and not line.lstrip().startswith("#") for line in body):
-        raise ReleaseNotesError("%s's section for %s is empty: list what changed under it." % (changelog, version))
-    return date.group("dash") or date.group("paren"), "\n".join(body) + "\n"
+    return title.group("date"), "\n".join(body) + "\n"
+
+
+def index(text):
+    """[(version, date, file)] of index.md's entries, in the order listed."""
+    entries = []
+    for _, line in _prose(text.splitlines()):
+        match = INDEX_RE.match(line.strip())
+        if match:
+            entries.append((match.group("version"), match.group("date"), match.group("file")))
+    return entries
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Print one release's CHANGELOG section (the GitHub release notes).")
+    parser = argparse.ArgumentParser(description="Print one release's notes page (the GitHub release notes).")
     parser.add_argument("version", help="release version, for example 3.3.4 or v3.3.4")
-    parser.add_argument("--changelog", type=Path, default=ROOT / "CHANGELOG.md", help="default: the repository's CHANGELOG.md")
+    parser.add_argument("--notes-dir", type=Path, default=NOTES_DIR,
+                        help="folder of release notes pages (default: the repository's docs/release-notes)")
     args = parser.parse_args(argv)
     try:
-        text = args.changelog.read_text(encoding="utf-8")
+        version = normalize_version(args.version)
+    except ReleaseNotesError as exc:
+        print("release_notes: %s" % exc, file=sys.stderr)
+        return 1
+    path = args.notes_dir / (version + ".md")
+    try:
+        text = path.read_text(encoding="utf-8")
     except OSError as exc:
-        print("release_notes: cannot read %s: %s" % (args.changelog, exc.strerror or exc), file=sys.stderr)
+        print("release_notes: cannot read %s: %s. Write the release notes page for %s there "
+              "(DEVELOPER_REFERENCE \"Release notes\")." % (path, exc.strerror or exc, version), file=sys.stderr)
         return 1
     try:
-        _, body = section(text, args.version, args.changelog.name)
+        _, body = page(text, version, "%s/%s" % (args.notes_dir.name, path.name))
     except ReleaseNotesError as exc:
         print("release_notes: %s" % exc, file=sys.stderr)
         return 1

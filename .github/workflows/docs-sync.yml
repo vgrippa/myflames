@@ -5,11 +5,13 @@ name: Docs and release sync
 #
 # - pull_request: a change to user-facing code (apps/workspace/src, apps/desktop
 #   outside test/, myflames outside tests and ui_assets) needs a CHANGELOG.md
-#   entry, unless the PR has the "no-changelog" label. A PR that changes the
-#   version in apps/desktop/package.json must be a complete release:
+#   [Unreleased] entry (or a docs/release-notes page change), unless the PR has
+#   the "no-changelog" label. A PR that changes the version in
+#   apps/desktop/package.json must be a complete release:
 #   scripts/check_release_sync.py VERSION.
-# - release (published), or run by hand for a tag: the release notes become
-#   the CHANGELOG section (scripts/release_notes.py), and the release must carry
+# - release (published), or run by hand for a tag: the GitHub release notes
+#   become docs/release-notes/VERSION.md (scripts/release_notes.py), and the
+#   release must carry
 #   the DMG, the macOS update zip and the Windows installer, each with its
 #   .sha256, the DMG uploaded before the zip (scripts/check_release_assets.py).
 
@@ -53,7 +55,9 @@ jobs:
           user_facing=()
           changelog=no
           while IFS= read -r -d '' file; do
-            if [ "$file" = "CHANGELOG.md" ]; then changelog=yes; fi
+            case "$file" in
+              CHANGELOG.md|docs/release-notes/*.md) changelog=yes ;;
+            esac
             case "$file" in
               apps/desktop/test/*|myflames/ui_assets/*) continue ;;
               apps/workspace/src/*|apps/desktop/*|myflames/*) ;;
@@ -112,10 +116,10 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Release notes are the CHANGELOG section
+      - name: Release notes are the release notes page
         run: |
           if ! python3 scripts/release_notes.py "$VERSION" > "$RUNNER_TEMP/notes.md"; then
-            echo "::error file=CHANGELOG.md::CHANGELOG.md at $TAG has no dated, non-empty section for $VERSION; the release notes were left as they are."
+            echo "::error file=docs/release-notes/$VERSION.md::docs/release-notes/$VERSION.md at $TAG is missing or not in the release notes format; the release notes were left as they are."
             exit 1
           fi
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/current.md"
@@ -125,10 +129,10 @@ jobs:
           sys.exit(0 if notes == current else 1)
           EOF
           then
-            echo "The release notes already match CHANGELOG.md."
+            echo "The release notes already match docs/release-notes/$VERSION.md."
           else
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/notes.md"
-            echo "Replaced the release notes with the CHANGELOG.md section for $VERSION."
+            echo "Replaced the release notes with docs/release-notes/$VERSION.md."
           fi
       - name: Release files and upload order
         # Also when the notes step failed, so one run reports both problems.

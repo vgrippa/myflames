@@ -7,8 +7,11 @@ Checks, all reported at once:
 
 - apps/desktop/package.json "version", myflames/__init__.py __version__ and
   pyproject.toml [project] version all equal VERSION;
-- CHANGELOG.md has a dated, non-empty "## [VERSION] - YYYY-MM-DD" section
-  (the release notes, scripts/release_notes.py);
+- docs/release-notes/VERSION.md is a release notes page in the release notes
+  format (scripts/release_notes.py), and docs/release-notes/index.md lists it
+  first with the same date, lists every page in the folder, newest first, and
+  names only pages that exist;
+- CHANGELOG.md's [Unreleased] holds no entries (they moved into the page);
 - docs/screenshots/manifest.json (written by `npm run docs:screenshots` in
   apps/workspace) says the README screenshots were captured from VERSION, and
   the four README images exist;
@@ -65,6 +68,64 @@ def pyproject_version(root):
     return None
 
 
+def release_notes_problems(root, version):
+    """Problems with VERSION's release notes page, the index and [Unreleased]."""
+    problems = []
+    folder = root / "docs/release-notes"
+    name = "docs/release-notes/%s.md" % version
+    date = None
+    try:
+        date, _ = release_notes.page(_read(folder / (version + ".md")), version, name)
+    except OSError:
+        problems.append("%s is missing: write the release notes page for %s (DEVELOPER_REFERENCE "
+                        "\"Release notes\"), from the entries under CHANGELOG.md [Unreleased]." % (name, version))
+    except release_notes.ReleaseNotesError as exc:
+        problems.append(str(exc))
+
+    try:
+        entries = release_notes.index(_read(folder / "index.md"))
+    except OSError as exc:
+        problems.append("docs/release-notes/index.md: cannot read (%s)." % exc)
+    else:
+        line = "- [myflames %s (%s)](%s.md)" % (version, date or "YYYY-MM-DD", version)
+        if not entries or entries[0][0] != version:
+            problems.append("docs/release-notes/index.md must list %s first: add '%s' at the top of the list."
+                            % (version, line))
+        elif date and entries[0][1] != date:
+            problems.append("docs/release-notes/index.md dates %s %s, but its page says %s."
+                            % (version, entries[0][1], date))
+        listed = set()
+        for listed_version, _, target in entries:
+            listed.add(target)
+            if target != listed_version + ".md":
+                problems.append("docs/release-notes/index.md links myflames %s to %r, not %r."
+                                % (listed_version, target, listed_version + ".md"))
+            elif not (folder / target).is_file():
+                problems.append("docs/release-notes/index.md lists myflames %s, but %s is missing."
+                                % (listed_version, target))
+        keys = [release_notes.version_key(v) for v, _, _ in entries]
+        if keys != sorted(keys, reverse=True):
+            problems.append("docs/release-notes/index.md must list versions newest first.")
+        for path in sorted(folder.glob("*.md")):
+            if path.name != "index.md" and path.name not in listed:
+                problems.append("docs/release-notes/index.md does not list %s." % path.name)
+
+    try:
+        changelog = _read(root / "CHANGELOG.md").splitlines()
+    except OSError as exc:
+        problems.append("CHANGELOG.md: cannot read (%s)." % exc)
+    else:
+        unreleased = next((i for i, text in enumerate(changelog) if text.strip() == "## [Unreleased]"), None)
+        if unreleased is None:
+            problems.append("CHANGELOG.md needs its '## [Unreleased]' heading (new entries go under it).")
+        else:
+            rest = changelog[unreleased + 1:]
+            end = next((i for i, text in enumerate(rest) if text.startswith("## ")), len(rest))
+            if any(text.lstrip().startswith("- ") for text in rest[:end]):
+                problems.append("CHANGELOG.md [Unreleased] still has entries: move them into %s." % name)
+    return problems
+
+
 def check(root, version):
     """A list of problems (empty when everything agrees on *version*)."""
     problems = []
@@ -84,12 +145,7 @@ def check(root, version):
         if found != version:
             problems.append("%s is %r, not %r." % (label, found, version))
 
-    try:
-        release_notes.section(_read(root / "CHANGELOG.md"), version)
-    except OSError as exc:
-        problems.append("CHANGELOG.md: cannot read (%s)." % exc)
-    except release_notes.ReleaseNotesError as exc:
-        problems.append(str(exc))
+    problems.extend(release_notes_problems(root, version))
 
     shots = root / "docs/screenshots"
     try:
@@ -122,7 +178,7 @@ def check(root, version):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Check that versions, CHANGELOG, README screenshots and handbook agree on a release.")
+    parser = argparse.ArgumentParser(description="Check that versions, release notes, README screenshots and handbook agree on a release.")
     parser.add_argument("version", help="release version, for example 3.3.4 or v3.3.4")
     parser.add_argument("--root", type=Path, default=ROOT, help="repository root (default: this checkout)")
     args = parser.parse_args(argv)
@@ -132,7 +188,7 @@ def main(argv=None):
         for problem in problems:
             print("- " + problem, file=sys.stderr)
         return 1
-    print("Release %s is in sync: versions, CHANGELOG section, README screenshots and handbook manifest."
+    print("Release %s is in sync: versions, release notes, README screenshots and handbook manifest."
           % release_notes.normalize_version(args.version))
     return 0
 

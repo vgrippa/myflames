@@ -1,0 +1,26 @@
+# myflames release notes
+
+What changed in each version of myflames, newest first. Changes that are merged but not released yet are listed in [CHANGELOG.md](../../CHANGELOG.md).
+
+- [myflames 3.3.4 (2026-11-10)](3.3.4.md)
+- [myflames 3.3.3 (2026-11-09)](3.3.3.md)
+- [myflames 3.3.2 (2026-11-05)](3.3.2.md)
+- [myflames 3.3.1 (2026-10-31)](3.3.1.md)
+- [myflames 3.3.0 (2026-10-23)](3.3.0.md)
+- [myflames 3.2.0 (2026-10-23)](3.2.0.md)
+- [myflames 3.1.1 (2026-10-22)](3.1.1.md)
+- [myflames 3.1.0 (2026-10-20)](3.1.0.md)
+- [myflames 3.0.0 (2026-10-16)](3.0.0.md)
+- [myflames 2.3.0 (2026-09-30)](2.3.0.md)
+- [myflames 2.2.0 (2026-06-30)](2.2.0.md)
+- [myflames 2.1.0 (2026-06-05)](2.1.0.md)
+- [myflames 2.0.2 (2026-06-05)](2.0.2.md)
+- [myflames 2.0.1 (2026-06-05)](2.0.1.md)
+- [myflames 2.0.0 (2026-06-05)](2.0.0.md)
+- [myflames 1.5.0 (2026-04-25)](1.5.0.md)
+- [myflames 1.4.0 (2026-04-23)](1.4.0.md)
+- [myflames 1.3.1 (2026-04-13)](1.3.1.md)
+- [myflames 1.3.0 (2026-04-10)](1.3.0.md)
+- [myflames 1.2.0 (2026-04-09)](1.2.0.md)
+- [myflames 1.1.0 (2026-04-01)](1.1.0.md)
+- [myflames 1.0.0 (2025-12-15)](1.0.0.md)

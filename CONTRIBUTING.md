@@ -200,7 +200,7 @@ grep -rn "ET_USING_INDEX\b" sql/opt_explain.cc                     # EXPLAIN str
 grep -rn "dict_index_build_internal_non_clust" storage/innobase/dict/  # InnoDB dict
 ```
 
-Cite the file:line(s) in the commit message **and** in the lesson / advisor rule body. The CHANGELOG entry for 1.5.0 has 6+ such citations — follow that pattern.
+Cite the file:line(s) in the commit message **and** in the lesson / advisor rule body. The 1.5.0 entries in `git show v1.5.0:CHANGELOG.md` have 6+ such citations: follow that pattern in commit messages (release notes stay free of source citations).
 
 ## Code style
 

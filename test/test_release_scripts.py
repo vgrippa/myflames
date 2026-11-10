@@ -35,42 +35,41 @@ assets = _load("check_release_assets")
 CHANGELOG = textwrap.dedent("""\
     # Changelog
 
+    Release notes: docs/release-notes/index.md.
+
     ## [Unreleased]
+    """)
 
-    ### Fixed
+PAGE = textwrap.dedent("""\
+    # myflames 3.4.0 (2026-12-01)
 
-    - Something not released yet.
+    myflames 3.4.0 is available for macOS on Apple Silicon.
 
-    ## [3.4.0] - 2026-12-01
+    ## New features
 
-    myflames 3.4.0 adds one thing.
-
-    ### Added
-
-    - **One thing.** It works.
+    - Adds one thing. It works.
 
     ```text
-    ## [9.9.9] - 2026-01-01 inside a code fence is not a heading
+    ## [9.9.9] inside a code fence is not a section
     ```
 
-    ## [3.3.9] - 2026-11-20
+    ## Bug fixes
 
-    ### Fixed
+    - Fixed an issue where the other thing failed.
 
-    - An older fix.
+    ## Additional resources
 
-    ## [3.3.8]
-
-    - Undated.
-
-    ## [3.3.7] - 2026-11-10
-
-    ### Added
-
-    ## [2.3.0] (2026-09-30)
-
-    - Older heading style.
+    - Download the latest myflames from [myflames.io](https://myflames.io/download.html)
     """)
+
+INDEX = textwrap.dedent("""\
+    # myflames release notes
+
+    - [myflames 3.4.0 (2026-12-01)](3.4.0.md)
+    - [myflames 3.3.9 (2026-11-20)](3.3.9.md)
+    """)
+
+OLDER = PAGE.replace("3.4.0 (2026-12-01)", "3.3.9 (2026-11-20)").replace("3.4.0 is", "3.3.9 is")
 
 
 def run(script, *args, **kwargs):
@@ -79,114 +78,142 @@ def run(script, *args, **kwargs):
 
 
 class ReleaseNotesTest(unittest.TestCase):
-    def test_section_body_without_heading_or_outer_blank_lines(self):
-        date, body = notes.section(CHANGELOG, "3.4.0")
+    def test_notes_are_the_page_without_its_title(self):
+        date, body = notes.page(PAGE, "3.4.0")
         self.assertEqual(date, "2026-12-01")
-        self.assertTrue(body.startswith("myflames 3.4.0 adds one thing.\n\n### Added\n"))
-        self.assertIn("- **One thing.** It works.", body)
-        self.assertNotIn("3.3.9", body)
-        self.assertTrue(body.endswith("```\n"))
+        self.assertTrue(body.startswith("myflames 3.4.0 is available"), body)
+        self.assertNotIn("# myflames 3.4.0", body)
+        self.assertTrue(body.endswith("(https://myflames.io/download.html)\n"))
+        self.assertEqual(notes.page("\n\n" + PAGE, "v3.4.0")[0], "2026-12-01")
 
-    def test_heading_inside_code_fence_does_not_end_the_section(self):
-        _, body = notes.section(CHANGELOG, "3.4.0")
-        self.assertIn("## [9.9.9] - 2026-01-01 inside a code fence", body)
-        with self.assertRaises(notes.ReleaseNotesError):
-            notes.section(CHANGELOG, "9.9.9")
+    def test_heading_inside_code_fence_is_not_a_section(self):
+        _, body = notes.page(PAGE, "3.4.0")
+        self.assertIn("## [9.9.9] inside a code fence", body)
 
     def test_longer_fences_and_tildes_close_only_on_their_own_kind(self):
-        text = textwrap.dedent("""\
-            ## [3.5.0] - 2026-12-05
-
-            - Example:
+        text = PAGE.replace("- Adds one thing. It works.\n", textwrap.dedent("""\
+            - Adds an example:
 
               ````markdown
               ```sql
-              ## [0.0.1] - 2020-01-01
+              ### Not a heading
               ```
               ````
 
             ~~~
             ```
             ~~~
+            """))
+        _, body = notes.page(text, "3.4.0")
+        self.assertIn("### Not a heading", body)
+        with self.assertRaisesRegex(notes.ReleaseNotesError, "'### After' is not a release notes section"):
+            notes.page(text.replace("~~~\n```\n~~~\n", "~~~\n```\n~~~\n\n### After\n"), "3.4.0")
 
-            - The real entry.
-
-            ## [3.4.9] - 2026-12-04
-
-            - Older.
-            """)
-        _, body = notes.section(text, "3.5.0")
-        self.assertIn("- The real entry.", body)
-        self.assertIn("## [0.0.1] - 2020-01-01", body)
-        self.assertNotIn("Older.", body)
-        self.assertEqual(notes.section(text, "3.4.9")[1], "- Older.\n")
-
-    def test_unclosed_fence_is_refused_instead_of_swallowing_older_releases(self):
-        text = "## [3.5.0] - 2026-12-05\n\n- A.\n\n```\nno end\n\n## [3.4.9] - 2026-12-04\n\n- Older.\n"
+    def test_unclosed_fence_is_refused(self):
         with self.assertRaisesRegex(notes.ReleaseNotesError, "code fence \\(```\\) that is never closed"):
-            notes.section(text, "3.5.0")
+            notes.page(PAGE.replace("## [9.9.9] inside a code fence is not a section\n```\n", "no end\n"), "3.4.0")
 
     def test_version_with_a_newline_is_refused(self):
-        for value in ("3.3.4\nX=1", "3.3.4/../x", "../3.3.4"):
+        for value in ("3.3.4\nX=1", "3.3.4/../x", "../3.3.4", "Unreleased", "\u0663.3.4"):
             with self.subTest(value=value), self.assertRaises(notes.ReleaseNotesError):
                 notes.normalize_version(value)
 
-    def test_v_prefix_and_older_heading_style(self):
-        self.assertEqual(notes.section(CHANGELOG, "v3.3.9")[1], "### Fixed\n\n- An older fix.\n")
-        self.assertEqual(notes.section(CHANGELOG, "2.3.0"), ("2026-09-30", "- Older heading style.\n"))
-
-    def test_missing_undated_empty_and_duplicate_sections_fail_clearly(self):
+    def test_format_errors_say_what_to_fix(self):
         cases = {
-            "3.5.0": "no section for 3.5.0",
-            "3.3.8": "without a release date",
-            "3.3.7": "is empty",
-            "Unreleased": "Not a release version",
+            "wrong title": (PAGE.replace("# myflames 3.4.0 (2026-12-01)", "# myflames 3.4.0"), "must start with '# myflames 3.4.0 (YYYY-MM-DD)'"),
+            "other version": (OLDER, "must start with '# myflames 3.4.0"),
+            "unknown section": (PAGE.replace("## Bug fixes", "## Fixed"), "unknown section '## Fixed'"),
+            "out of order": (PAGE.replace("## New features", "## Packaging notes"), "'## Bug fixes' after '## Packaging notes'"),
+            "twice": (PAGE.replace("## Bug fixes", "## New features"), "'## New features' twice"),
+            "level three": (PAGE.replace("## Bug fixes", "### Fixed"), "'### Fixed' is not a release notes section"),
+            "indented heading": (PAGE.replace("## Bug fixes", "   ### Fixed"), "'### Fixed' is not a release notes section"),
+            "second title": (PAGE.replace("## Bug fixes", "# Bug fixes"), "'# Bug fixes' is not a release notes section"),
+            "no resources": (PAGE.split("## Additional resources")[0], "needs '## Additional resources'"),
+            "no entries": ("# myflames 3.4.0 (2026-12-01)\n\nIntro.\n\n## Additional resources\n\n- Link\n", "lists no changes"),
+            "em dash": (PAGE.replace("It works.", "It works — fast."), "line 7 has an em dash"),
+            "api path": (PAGE.replace("It works.", "It reads `/api/live/x`."), "internal /api/ path"),
         }
-        for version, message in cases.items():
-            with self.subTest(version=version):
+        for label, (text, message) in cases.items():
+            with self.subTest(label):
                 with self.assertRaises(notes.ReleaseNotesError) as caught:
-                    notes.section(CHANGELOG, version)
+                    notes.page(text, "3.4.0")
                 self.assertIn(message, str(caught.exception))
-        twice = CHANGELOG + "\n## [3.4.0] - 2026-12-02\n\n- Again.\n"
-        with self.assertRaisesRegex(notes.ReleaseNotesError, "2 sections for 3.4.0"):
-            notes.section(twice, "3.4.0")
+        # An en dash in a range and an em dash inside a code block are fine.
+        notes.page(PAGE.replace("It works.", "It takes 0.5–1 s.").replace("is not a section", "— here"), "3.4.0")
+
+    def test_index_entries_in_order(self):
+        self.assertEqual(notes.index(INDEX), [("3.4.0", "2026-12-01", "3.4.0.md"), ("3.3.9", "2026-11-20", "3.3.9.md")])
+        self.assertEqual(notes.index("```\n- [myflames 1.0.0 (2025-01-01)](1.0.0.md)\n```\n"), [])
+
+    def test_version_key_orders_releases(self):
+        ordered = ["3.10.0", "3.4.0", "3.4.0-rc.10", "3.4.0-rc.2", "3.4.0-rc.1", "3.4.0-beta", "3.3.9", "2.0.0"]
+        self.assertEqual(sorted(ordered, key=notes.version_key, reverse=True), ordered)
 
     def test_cli_prints_utf8_notes_and_fails_with_status_1(self):
         with tempfile.TemporaryDirectory() as tmp:
-            changelog = Path(tmp) / "CHANGELOG.md"
-            changelog.write_text(CHANGELOG.replace("It works.", "It works in 0.5–1 s → µs."), encoding="utf-8")
-            done = run("release_notes.py", "3.4.0", "--changelog", str(changelog))
+            folder = Path(tmp)
+            (folder / "3.4.0.md").write_text(PAGE.replace("It works.", "It works in 0.5–1 s → µs."), encoding="utf-8")
+            done = run("release_notes.py", "3.4.0", "--notes-dir", str(folder))
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertIn("It works in 0.5–1 s → µs.", done.stdout)
-            self.assertFalse(done.stdout.startswith("## "))
-            missing = run("release_notes.py", "3.5.0", "--changelog", str(changelog))
+            self.assertFalse(done.stdout.startswith("#"))
+            missing = run("release_notes.py", "3.5.0", "--notes-dir", str(folder))
             self.assertEqual(missing.returncode, 1)
             self.assertEqual(missing.stdout, "")
-            self.assertIn("release_notes: CHANGELOG.md has no section for 3.5.0", missing.stderr)
-            unreadable = run("release_notes.py", "3.4.0", "--changelog", str(Path(tmp) / "absent.md"))
-            self.assertEqual(unreadable.returncode, 1)
-            self.assertIn("cannot read", unreadable.stderr)
+            self.assertIn("release_notes: cannot read", missing.stderr)
+            self.assertIn("Write the release notes page for 3.5.0", missing.stderr)
+            (folder / "3.4.1.md").write_text(PAGE, encoding="utf-8")
+            wrong = run("release_notes.py", "v3.4.1", "--notes-dir", str(folder))
+            self.assertEqual(wrong.returncode, 1)
+            self.assertIn("must start with '# myflames 3.4.1", wrong.stderr)
+            bad = run("release_notes.py", "latest", "--notes-dir", str(folder))
+            self.assertEqual(bad.returncode, 1)
+            self.assertIn("Not a release version", bad.stderr)
 
     def test_cli_notes_end_with_the_inspiration_credit_once(self):
         readme = (REPO / "README.md").read_text(encoding="utf-8")
         self.assertIn(notes.CREDIT, readme, "the credit matches the README's line")
         with tempfile.TemporaryDirectory() as tmp:
-            changelog = Path(tmp) / "CHANGELOG.md"
-            changelog.write_text(CHANGELOG, encoding="utf-8")
-            done = run("release_notes.py", "3.4.0", "--changelog", str(changelog))
+            page = Path(tmp) / "3.4.0.md"
+            page.write_text(PAGE, encoding="utf-8")
+            done = run("release_notes.py", "3.4.0", "--notes-dir", tmp)
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertTrue(done.stdout.endswith("\n\n" + notes.CREDIT + "\n"), done.stdout[-200:])
-            # A section that already carries the credit is not given a second one.
-            changelog.write_text(CHANGELOG.replace("- **One thing.** It works.",
-                                                   "- **One thing.** It works.\n\n" + notes.CREDIT), encoding="utf-8")
-            again = run("release_notes.py", "3.4.0", "--changelog", str(changelog))
+            # A page that already carries the credit is not given a second one.
+            page.write_text(PAGE + "\n" + notes.CREDIT + "\n", encoding="utf-8")
+            again = run("release_notes.py", "3.4.0", "--notes-dir", tmp)
             self.assertEqual(again.stdout.count(notes.CREDIT), 1)
 
-    def test_real_changelog_has_the_333_notes(self):
-        date, body = notes.section((REPO / "CHANGELOG.md").read_text(encoding="utf-8"), "3.3.3")
-        self.assertEqual(date, "2026-11-09")
-        self.assertTrue(body.startswith("### Added"))
-        self.assertNotIn("## [3.3.2]", body)
+
+class RealReleaseNotesTest(unittest.TestCase):
+    """docs/release-notes as shipped: every page valid, the index complete and in order."""
+
+    FOLDER = REPO / "docs/release-notes"
+
+    def test_every_page_is_in_the_format_and_ends_with_the_credit(self):
+        pages = sorted(p for p in self.FOLDER.glob("*.md") if p.name != "index.md")
+        self.assertGreater(len(pages), 20)
+        for path in pages:
+            with self.subTest(path.name):
+                text = path.read_text(encoding="utf-8")
+                date, body = notes.page(text, path.stem)
+                self.assertTrue(text.rstrip("\n").endswith(notes.CREDIT), "%s ends with the credit" % path.name)
+                self.assertIn("## Additional resources", body)
+
+    def test_index_lists_every_page_newest_first_with_its_date(self):
+        entries = notes.index((self.FOLDER / "index.md").read_text(encoding="utf-8"))
+        pages = {p.stem for p in self.FOLDER.glob("*.md") if p.name != "index.md"}
+        self.assertEqual({v for v, _, _ in entries}, pages)
+        versions = [v for v, _, _ in entries]
+        self.assertEqual(versions, sorted(versions, key=notes.version_key, reverse=True))
+        for version, date, target in entries:
+            with self.subTest(version):
+                self.assertEqual(target, version + ".md")
+                self.assertEqual(notes.page((self.FOLDER / target).read_text(encoding="utf-8"), version)[0], date)
+
+    def test_the_latest_release_has_notes(self):
+        version = json.loads((REPO / "apps/desktop/package.json").read_text(encoding="utf-8"))["version"]
+        self.assertEqual(notes.index((self.FOLDER / "index.md").read_text(encoding="utf-8"))[0][0], version)
 
 
 def write_repo(root, version="3.4.0", **override):
@@ -207,6 +234,9 @@ def write_repo(root, version="3.4.0", **override):
             version = "9.9.9"
             """) % version,
         "CHANGELOG.md": CHANGELOG,
+        "docs/release-notes/index.md": INDEX.replace("3.4.0", version),
+        "docs/release-notes/%s.md" % version: PAGE.replace("3.4.0", version),
+        "docs/release-notes/3.3.9.md": OLDER,
         "docs/screenshots/manifest.json": json.dumps({"version": version, "commit": "a" * 40, "captured_at": "2026-12-01T00:00:00Z"}),
         "docs/handbook/manifest.json": json.dumps([{"id": "quickstart", "file": "quickstart.md"}]),
         "docs/handbook/quickstart.md": "# Quickstart\n",
@@ -259,13 +289,28 @@ class CheckReleaseSyncTest(unittest.TestCase):
         self.assertIn("Release 3.4.0 is not in sync:", done.stderr)
         self.assertEqual(done.stderr.count("\n- "), 5)
 
-    def test_changelog_section_must_exist_be_dated_and_not_empty(self):
-        for version, message in (("3.5.0", "no section"), ("3.3.8", "without a release date"), ("3.3.7", "is empty")):
-            with self.subTest(version=version):
-                write_repo(self.tmp, version=version)
-                problems = sync.check(self.tmp, version)
-                self.assertEqual(len(problems), 1, problems)
-                self.assertIn(message, problems[0])
+    def test_release_notes_page_index_and_unreleased(self):
+        cases = (
+            ({"docs/release-notes/3.4.0.md": None}, "docs/release-notes/3.4.0.md is missing"),
+            ({"docs/release-notes/3.4.0.md": PAGE.replace("## Bug fixes", "## Fixed")}, "unknown section '## Fixed'"),
+            ({"docs/release-notes/index.md": INDEX.replace("- [myflames 3.4.0 (2026-12-01)](3.4.0.md)\n", "")},
+             "must list 3.4.0 first: add '- [myflames 3.4.0 (2026-12-01)](3.4.0.md)'"),
+            ({"docs/release-notes/index.md": INDEX.replace("3.4.0 (2026-12-01)", "3.4.0 (2026-12-02)")},
+             "dates 3.4.0 2026-12-02, but its page says 2026-12-01"),
+            ({"docs/release-notes/3.3.9.md": None}, "lists myflames 3.3.9, but 3.3.9.md is missing"),
+            ({"docs/release-notes/3.3.8.md": OLDER}, "does not list 3.3.8.md"),
+            ({"docs/release-notes/index.md": INDEX + "- [myflames 3.3.10 (2026-11-21)](3.3.10.md)\n",
+              "docs/release-notes/3.3.10.md": OLDER.replace("3.3.9", "3.3.10")}, "newest first"),
+            ({"docs/release-notes/index.md": INDEX.replace("(3.3.9.md)", "(../../x.md)")}, "links myflames 3.3.9 to '../../x.md'"),
+            ({"CHANGELOG.md": CHANGELOG + "\n### Bug fixes\n\n- Not moved yet.\n"}, "[Unreleased] still has entries"),
+            ({"CHANGELOG.md": "# Changelog\n"}, "needs its '## [Unreleased]' heading"),
+        )
+        for override, message in cases:
+            with self.subTest(message):
+                shutil.rmtree(str(self.tmp))
+                write_repo(self.tmp, **override)
+                problems = sync.check(self.tmp, "3.4.0")
+                self.assertTrue(any(message in problem for problem in problems), problems)
 
     def test_missing_screenshot_manifest_and_handbook_chapter(self):
         write_repo(self.tmp, **{"docs/screenshots/manifest.json": None, "docs/handbook/quickstart.md": None})
@@ -427,6 +472,10 @@ class DocsSyncWorkflowTest(unittest.TestCase):
                                              ("myflames/test_x.py", "add")], False, 0),
             ("workspace code without an entry", [("apps/workspace/src/Health.tsx", "add")], False, 1),
             ("Python code with an entry", [("myflames/ui.py", "add"), ("CHANGELOG.md", "add")], False, 0),
+            ("workspace code with a release notes page", [("apps/workspace/src/a.tsx", "add"),
+                                                          ("docs/release-notes/3.4.0.md", "add")], False, 0),
+            ("workspace code with an unrelated docs page", [("apps/workspace/src/a.tsx", "add"),
+                                                            ("docs/release-notes/x/notes.txt", "add")], False, 1),
             ("desktop code with the no-changelog label", [("apps/desktop/main.cjs", "add")], True, 0),
             ("a module moved out of myflames", [("myflames/old.py", "delete"), ("scripts/old.py", "add")], False, 1),
             # Abuse case: one file whose name holds a newline before CHANGELOG.md.
