@@ -1700,6 +1700,17 @@ export type InstrumentsReport = PerfBase & {
 };
 /** schemas-1.0: the schema picker's list (perf_common.schema_catalog). */
 export type SchemaInfo = { name: string; tables: number; system: boolean };
+/** Offline release catalog, with no connection or live variable values. */
+export type ParamNames = {
+  schema_version: "param-names-1.0";
+  engine: "mysql" | "mariadb";
+  requested: string;
+  release: string | null;
+  exact: boolean;
+  names: { name: string; scope: "global" | "session" | "both"; type: string | null; dynamic: boolean | null; deprecated: boolean }[];
+};
+export const paramNames = (engine: ParamNames["engine"], version: string, signal?: AbortSignal) =>
+  api<ParamNames>("config/versions/names", { engine, version }, signal);
 export type SchemaCatalog = PerfBase & {
   schema_version: "schemas-1.0";
   schemas: SchemaInfo[];

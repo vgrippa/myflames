@@ -5,13 +5,17 @@ import { build } from 'esbuild';
 const root = fileURLToPath(new URL('..', import.meta.url));
 const built = await build({ stdin: { resolveDir: root, contents: `
   export * from './src/editor/catalog'; export * from './src/editor/completion';
+  export {variableContext, cteNames} from './src/sqlCompletion';
+  export {EditorView} from '@codemirror/view';
+  export {wordsFor} from './src/editor/engineWords';
   export {EditorState, EditorSelection} from '@codemirror/state';
   export {CompletionContext, autocompletion, startCompletion, closeCompletion, completionStatus, currentCompletions} from '@codemirror/autocomplete';
 ` }, bundle: true, format: 'esm', platform: 'neutral', target: 'es2020', write: false, logLevel: 'silent',
   define: { 'process.env.NODE_ENV': '"production"' }, plugins: [{ name: 'api', setup(b) {
     b.onResolve({ filter: /^(\.\/|\.\.\/)api$/ }, () => ({ path: 'api', namespace: 'stub' }));
     b.onLoad({ filter: /.*/, namespace: 'stub' }, () => ({ contents: `export class ApiError extends Error {}
-      export const api = (path, body, signal) => globalThis.__catalogApi(path, body, signal);` }));
+      export const api = (path, body, signal) => globalThis.__catalogApi(path, body, signal);
+      export const paramNames = (engine, version, signal) => api("config/versions/names", {engine, version}, signal);` }));
   } }],
 });
 const cm = await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text + '\n//# sourceURL=completion-source-bundle.mjs').toString('base64'));
@@ -260,7 +264,7 @@ try {
     held.resolve(schemas(['SE_database'])); await flush();
     assert.equal(cm.completionStatus(live.view.state), 'pending', 'catalog arrival asks CM to refresh the one source');
     const refreshed = await live.query(true);
-    assert.deepEqual(refreshed.options.map(o => o.label), ['SE_database', 'SELECT', 'SET']);
+    assert.deepEqual(refreshed.options.map(o => o.label), ['SE_database', 'SELECT', 'SET', 'INSERT INTO']);
     assert.equal(sent.length, 1, 'internal refresh does not start another request');
     assert.equal(live.view.state.field(cm.completionHint), ''); live.destroy();
   });
@@ -399,6 +403,163 @@ try {
     assert.equal(cm.startCompletion(view), true); assert.equal(cm.completionStatus(state), 'pending');
     assert.equal((await source(new cm.CompletionContext(state, 2, true))).options[0].label, 'SELECT'); assert.equal(cm.closeCompletion(view), true);
     assert.equal(await source(new cm.CompletionContext(state, 2, false)), null);
+  });
+
+  await test('connected vocabulary follows generated engine and release facts', async () => {
+    for (const [engine, version, prefix, word, present] of [
+      ['mysql', '8.0.13', 'LATER', 'LATERAL', false],
+      ['mysql', '8.0.14', 'LATER', 'LATERAL', true],
+      ['mysql', '8.0.36', 'QUAL', 'QUALIFY', false],
+      ['mysql', '8.4.6', 'QUAL', 'QUALIFY', true],
+      ['mariadb', '11.8.2', 'VECT', 'VECTOR', true],
+    ]) {
+      // Verify expectations against the decoded generated data as well as the source.
+      assert.equal(cm.wordsFor(engine, version).keywords.some(k => k.name === word), present);
+      const pair = sourceEnv(); Object.assign(pair.env.current, { connection: undefined, engine, serverVersion: version });
+      const result = await pair.source(context(prefix + '|', true));
+      assert.equal(result.options.some(o => o.label === word), present, `${engine} ${version} ${word}`);
+      if (present) assert.match(result.options.find(o => o.label === word).detail, /^(reserved )?keyword$/);
+    }
+    const pair = sourceEnv(); Object.assign(pair.env.current, { connection: undefined, engine: 'mysql', serverVersion: '8.4.12' });
+    assert.equal((await pair.source(context('QUAL|', true))).options.find(o => o.label === 'QUALIFY').detail,
+      'reserved keyword, MySQL 8.4.11 list');
+    pair.env.current.serverVersion = 'unknown';
+    assert.equal((await pair.source(context('SEL|', true))).options[0].label, 'SELECT');
+    assert.equal(sent.length, 0);
+  });
+  await test('variable lexical guards, scopes, replacement and one cached offline call', async () => {
+    const pair = sourceEnv(); Object.assign(pair.env.current, { connection: undefined, engine: 'mysql', serverVersion: '8.4.6' });
+    const names = [
+      { name: 'autocommit', scope: 'both', type: 'boolean', dynamic: true, deprecated: false },
+      { name: 'version', scope: 'global', type: 'string', dynamic: false, deprecated: false },
+      { name: 'sql_log_bin', scope: 'session', type: null, dynamic: null, deprecated: true },
+    ];
+    handler = () => Promise.resolve({ schema_version: 'param-names-1.0', engine: 'mysql', requested: '8.4.6', release: '8.4.6', exact: true, names });
+    for (const [marked, expected] of [
+      ['SELECT @@|', ['autocommit', 'version', 'sql_log_bin']],
+      ['SELECT @@global.|', ['autocommit', 'version']],
+      ['SELECT @@session.|', ['autocommit', 'sql_log_bin']],
+      ['SELECT @@LOCAL.|', ['autocommit', 'sql_log_bin']],
+    ]) {
+      const result = await pair.source(context(marked, true));
+      assert.deepEqual(result.options.map(o => o.label), expected);
+      assert.equal(result.options[0].detail, 'global, session');
+      if (expected.includes('sql_log_bin')) assert.equal(result.options.at(-1).detail, 'session, deprecated');
+    }
+    assert.equal(sent.length, 1); assert.equal(sent[0].path, 'config/versions/names');
+    assert.deepEqual(sent[0].body, { engine: 'mysql', version: '8.4.6' });
+    const middle = await pair.source(context('SELECT @@session.auto|commit', true));
+    assert.deepEqual([middle.from, middle.to, middle.options[0].apply], [17, 27, 'autocommit']);
+    const fuzzy = await pair.source(context('SELECT @@sllb|', true));
+    assert.equal(fuzzy.filter, true); assert.equal(fuzzy.options[0].label, 'sql_log_bin');
+    for (const marked of ["SELECT '@@ve|'", 'SELECT /* @@ve| */', 'SELECT -- @@ve|', 'SELECT `@@ve|`', 'SELECT @ve|', 'SELECT @@@ve|', 'DELIMITER $$\nSELECT @@ve|']) {
+      const pos = marked.indexOf('|');
+      assert.equal(cm.variableContext(marked.replace('|', ''), pos), null, marked);
+    }
+    assert.equal(sent.length, 1);
+    pair.env.current.serverVersion = '8.0.36'; await pair.source(context('SELECT @@|', true));
+    assert.equal(sent.length, 2, 'release change reads the matching names catalog');
+    pair.env.current.serverVersion = '8.4.6'; await pair.source(context('SELECT @@|', true));
+    assert.equal(sent.length, 2, 'returning to a release reuses its immutable catalog');
+  });
+  await test('variable abort, timeout and automatic triggers use no live catalog', async () => {
+    const pair = sourceEnv(); Object.assign(pair.env.current, { connection: undefined, engine: 'mysql', serverVersion: '8.4.6' });
+    handler = () => new Promise(() => {});
+    const ctx = context('SELECT @@|', true), pending = pair.source(ctx); await flush();
+    assert.equal(sent.length, 1);
+    for (const listener of ctx.abortListeners) listener();
+    assert.equal(await pending, null); assert.equal(sent[0].signal.aborted, true);
+    const timed = pair.source(context('SELECT @@session.|')); await advance(220);
+    assert.equal(sent.length, 2); await advance(7780);
+    assert.equal((await timed).note, 'System variable suggestions timed out. Try Ctrl+Space again.');
+    assert.equal(sent[1].signal.aborted, true);
+  });
+  await test('CTEs are local table suggestions with scope, quoting and no stored table guesses', async () => {
+    const pair = sourceEnv(); pair.env.current.connection = undefined;
+    const result = await pair.source(context('WITH a AS (SELECT 1), b AS (SELECT 2) SELECT * FROM |', true));
+    assert.deepEqual(result.options.map(o => [o.label, o.type, o.detail]), [['a', 'table', 'CTE'], ['b', 'table', 'CTE']]);
+    for (const [marked, expected] of [
+      ['WITH `a``b`(id) AS (SELECT 1) SELECT * FROM |', ['a`b']],
+      ['WITH a AS (SELECT 1) SELECT 1; SELECT * FROM |', []],
+      ['WITH a AS (SELECT 1), b AS (SELECT * FROM |) SELECT 1', ['a']],
+      ['WITH RECURSIVE a AS (SELECT * FROM |) SELECT 1', ['a']],
+      ['SELECT * FROM (WITH inner_cte AS (SELECT 1) SELECT * FROM inner_cte) t JOIN |', []],
+      ['WITH outer_cte AS (SELECT 1) SELECT * FROM (WITH inner_cte AS (SELECT 2) SELECT * FROM |) t', ['outer_cte', 'inner_cte']],
+    ]) {
+      const pos = marked.indexOf('|'); assert.deepEqual(cm.cteNames(marked.replace('|', ''), pos), expected, marked);
+    }
+    assert.equal(sent.length, 0);
+  });
+  await test('complete inventories use fuzzy candidates, prefix first, with a 40 item bound', async () => {
+    const pair = sourceEnv();
+    handler = () => Promise.resolve(columns(['users', 'usr_exact', 'unrelated', ...Array.from({ length: 50 }, (_, i) => `usr_${i}`)]));
+    const result = await pair.source(context('SELECT app.people.usr|', true));
+    assert.equal(result.options.length, 40); assert.equal(result.options[0].label, 'usr_exact');
+    assert.ok(result.options.every(o => o.label.startsWith('usr')), 'prefix results fill the cap before fuzzy results');
+    handler = () => Promise.resolve(columns(['users', 'usr_exact']));
+    const other = sourceEnv();
+    const fuzzy = await other.source(context('SELECT app.people.usr|', true));
+    assert.equal(fuzzy.filter, true); assert.deepEqual(fuzzy.options.map(o => o.label), ['usr_exact', 'users']);
+    assert.ok(fuzzy.options[0].boost > fuzzy.options[1].boost);
+    const alias = sourceEnv(); alias.env.current.connection = undefined;
+    assert.ok((await alias.source(context('SELECT usr| FROM people users', true))).options.some(o => o.type === 'alias' && o.label === 'users'));
+    assert.ok((await alias.source(context('WITH users AS (SELECT 1) SELECT * FROM usr|', true))).options.some(o => o.label === 'users'));
+  });
+  await test('200-table schemas read the full list once; larger or truncated inventories stay prefix-only', async () => {
+    for (const count of [200, 201]) {
+      const pair = sourceEnv();
+      handler = path => Promise.resolve(path === 'live/schemas' ? { schemas: [{ name: 'app', tables: count }] } : tables(['users', 'usr_exact'], count > 200));
+      const before = sent.length, result = await pair.source(context('SELECT * FROM usr|', true));
+      assert.deepEqual(sent[before + 1].body, { connection: conn(), schema: 'app', ...(count > 200 ? { prefix: 'usr' } : {}) });
+      assert.deepEqual(result.options.map(o => o.label), count > 200 ? ['usr_exact'] : ['usr_exact', 'users']);
+      assert.equal(result.note, count > 200 ? 'More tables match. Keep typing to narrow the list.' : '');
+      if (count === 200) {
+        await pair.source(context('SELECT * FROM user|', true));
+        assert.equal(sent.length, before + 2, 'full schema inventory is reused across prefixes');
+      }
+    }
+    const pair = sourceEnv(); handler = path => Promise.resolve(path === 'live/schemas' ? { schemas: [{ name: 'app', tables: 200 }] } : tables(['users'], true));
+    assert.deepEqual((await pair.source(context('SELECT * FROM usr|', true))).options, [], 'truncated full read cannot enable fuzzy tables');
+  });
+  await test('engine-aware catalog quoting covers reserved and non-reserved keywords and hostile names', async () => {
+    const pair = sourceEnv(); Object.assign(pair.env.current, { engine: 'mysql', serverVersion: '8.4.6' });
+    assert.deepEqual(cm.wordsFor('mysql', '8.4.6').keywords.find(k => k.name === 'BULK'), { name: 'BULK', reserved: false });
+    handler = () => Promise.resolve(columns(['select', 'bulk', 'a b', 'a`b', 'ordinary']));
+    const result = await pair.source(context('SELECT app.people.|', true));
+    assert.deepEqual(result.options.map(o => o.label), ['select', 'bulk', 'a b', 'a`b', 'ordinary']);
+    assert.deepEqual(result.options.map(o => o.apply), ['`select`', '`bulk`', '`a b`', '`a``b`', 'ordinary']);
+    assert.ok(result.options.every(o => typeof o.apply === 'string'));
+  });
+  await test('native matcher ranks prefixes before fuzzy columns and toggles editor aria-expanded', async () => {
+    const pair = sourceEnv(), live = await nativeEditor(pair, 'SELECT app.people.usr|');
+    handler = () => Promise.resolve(columns(['users', 'usr_exact']));
+    const expanded = () => live.view.state.facet(cm.EditorView.contentAttributes)
+      .map(value => typeof value === 'function' ? value(live.view) : value).find(value => 'aria-expanded' in value)['aria-expanded'];
+    assert.equal(expanded(), 'false'); cm.startCompletion(live.view); assert.equal(expanded(), 'false');
+    await advance(100);
+    assert.deepEqual(cm.currentCompletions(live.view.state).map(o => o.label), ['usr_exact', 'users']);
+    assert.equal(expanded(), 'true'); live.escape(); assert.equal(expanded(), 'false'); live.destroy();
+  });
+
+  await test('native fuzzy matching inside backticks keeps raw labels and string insertion', async () => {
+    const pair = sourceEnv(), live = await nativeEditor(pair, 'SELECT app.people.`usr|');
+    handler = () => Promise.resolve(columns(['users', 'usr_exact']));
+    cm.startCompletion(live.view); await advance(100);
+    assert.deepEqual(cm.currentCompletions(live.view.state).map(o => o.label), ['usr_exact', 'users']);
+    live.destroy();
+    const closed = sourceEnv(); handler = () => Promise.resolve(columns(['users', 'usr_exact']));
+    const closedResult = await closed.source(context('SELECT app.people.`usr|`', true));
+    assert.deepEqual(closedResult.options.map(o => o.label), ['usr_exact']);
+    assert.equal(closedResult.filter, false, 'a closing quote in the replacement range is not a fuzzy search character');
+    const other = sourceEnv(); handler = () => Promise.resolve(columns(['name']));
+    const marked = 'SELECT `na|` FROM app.users u JOIN app.roles r ON u.id=r.id';
+    const result = await other.source(context(marked, true));
+    assert.deepEqual(result.options.map(o => o.apply), ['u`.`name`', 'r`.`name`']);
+    assert.equal(marked.replace('|', '').slice(0, result.from) + result.options[0].apply + marked.replace('|', '').slice(result.to),
+      'SELECT `u`.`name` FROM app.users u JOIN app.roles r ON u.id=r.id');
+    const escaped = sourceEnv(); handler = () => Promise.resolve(columns(['a`b']));
+    const quoted = await escaped.source(context('SELECT app.people.`a``|`', true));
+    assert.equal(quoted.filter, false); assert.equal(quoted.options[0].apply, 'a``b`');
   });
   console.log(`${passed} completion source and catalog tests passed.`);
 } finally {
