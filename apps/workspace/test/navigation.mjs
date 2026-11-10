@@ -534,9 +534,9 @@ try {
 
   // 4d. The command palette's "Query editor settings" action opens the
   // Settings popover (Meta+K / Ctrl+K): in a narrow window the drawer opens
-  // with it, the popover fits a 720x520 window and scrolls when its content
-  // is taller, and a switch saves through /api/settings/editor and survives
-  // a reload.
+  // with it, and the popover fits a 720x520 window and scrolls when its
+  // content is taller. (A switch saving across a reload is step 12: the
+  // reload drops state the steps below build, so it runs last.)
   await page.setViewport({ width: 720, height: 520 });
   await page.waitForFunction(() => document.querySelector("#window-sidebar-toggle")?.getAttribute("aria-expanded") === "false");
   const MOD = process.platform === "darwin" ? "Meta" : "Control";
@@ -562,33 +562,6 @@ try {
   });
   assert.ok(popoverBox.top >= 0 && popoverBox.bottom <= popoverBox.view, `the popover fits the window (${JSON.stringify(popoverBox)})`);
   assert.ok(popoverBox.tall && /^(auto|scroll)$/.test(popoverBox.overflowY), "the popover scrolls when its content is taller");
-  // A switch saves through /api/settings/editor (the real store): it stays
-  // on across a reload, and a second toggle puts it back off.
-  const editorWrite = (on) => page.waitForResponse((r) =>
-    r.url().includes("/api/settings/editor") && (r.request().postData() || "").includes(`"soft_wrap":${on}`));
-  const wrapSettled = (on) => page.waitForFunction((expected) => {
-    const row = [...document.querySelectorAll("#settings-popover .settings-editor-group .session-toggle")]
-      .find((e) => e.textContent.trim() === "Wrap long lines");
-    return !!row && row.querySelector("input").checked === expected;
-  }, {}, on);
-  const wrapToggle = () => page.locator('#settings-popover .settings-editor-group .session-toggle ::-p-text(Wrap long lines)').click();
-  let saved = editorWrite(true);
-  await wrapToggle();
-  await saved;
-  await wrapSettled(true);
-  await page.reload({ waitUntil: "networkidle0" });
-  await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state !== "loading");
-  await page.keyboard.down(MOD); await page.keyboard.press("k"); await page.keyboard.up(MOD);
-  await page.waitForSelector("dialog.command-palette[open]");
-  await page.type('input[aria-label="Search commands"]', "Query editor settings");
-  await page.keyboard.press("Enter");
-  await page.waitForSelector("#settings-popover");
-  await page.waitForSelector("#settings-popover .settings-editor-group");
-  await wrapSettled(true);
-  saved = editorWrite(false);
-  await wrapToggle();
-  await saved;
-  await wrapSettled(false);
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => !document.querySelector("#settings-popover"));
   await page.setViewport({ width: 1440, height: 1000 });
@@ -1394,6 +1367,45 @@ try {
   assert.equal(await digestRows(page), 50);
   assert.equal(await page.$(".digest-place tr.is-selected"), null, "the old read restores no selection");
   await other.close();
+
+  // 12. Last, after every other step: a Query editor settings switch saves
+  // through /api/settings/editor (the real store), stays on across a reload,
+  // and a second toggle puts it back off. The reload drops the state the
+  // earlier steps built (the Workload read of the mocked 8.4.3), so this
+  // runs once nothing else needs it.
+  const editorWrite = (on) => page.waitForResponse((r) =>
+    r.url().includes("/api/settings/editor") && (r.request().postData() || "").includes(`"soft_wrap":${on}`));
+  const wrapSettled = (on) => page.waitForFunction((expected) => {
+    const row = [...document.querySelectorAll("#settings-popover .settings-editor-group .session-toggle")]
+      .find((e) => e.textContent.trim() === "Wrap long lines");
+    return !!row && row.querySelector("input").checked === expected;
+  }, {}, on);
+  const wrapToggle = () => page.locator('#settings-popover .settings-editor-group .session-toggle ::-p-text(Wrap long lines)').click();
+  await page.keyboard.down(MOD); await page.keyboard.press("k"); await page.keyboard.up(MOD);
+  await page.waitForSelector("dialog.command-palette[open]");
+  await page.type('input[aria-label="Search commands"]', "Query editor settings");
+  await page.keyboard.press("Enter");
+  await page.waitForSelector("#settings-popover");
+  await page.waitForSelector("#settings-popover .settings-editor-group");
+  let saved = editorWrite(true);
+  await wrapToggle();
+  await saved;
+  await wrapSettled(true);
+  await page.reload({ waitUntil: "networkidle0" });
+  await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state !== "loading");
+  await page.keyboard.down(MOD); await page.keyboard.press("k"); await page.keyboard.up(MOD);
+  await page.waitForSelector("dialog.command-palette[open]");
+  await page.type('input[aria-label="Search commands"]', "Query editor settings");
+  await page.keyboard.press("Enter");
+  await page.waitForSelector("#settings-popover");
+  await page.waitForSelector("#settings-popover .settings-editor-group");
+  await wrapSettled(true);
+  saved = editorWrite(false);
+  await wrapToggle();
+  await saved;
+  await wrapSettled(false);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("#settings-popover"));
 
   assert.deepEqual(errors, []);
   console.log("Navigation checks passed. " + directory);

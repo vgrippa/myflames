@@ -41,6 +41,7 @@ import path from "node:path";
 import net from "node:net";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
+import { EDITOR, setEditorText, insertEditorText, selectEditor } from "./editor-helpers.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const root = fileURLToPath(new URL("../../../", import.meta.url));
@@ -577,7 +578,7 @@ const PLACE_READY = {
   cluster: `__perf.view('cluster')`,
   proxysql: `__perf.view('proxysql')`,
   tuning: `__perf.view('tuning')`,
-  query: `!!__perf.vis('textarea.sql-editor')`,
+  query: `!!__perf.vis('.sql-editor')`,
   plans: `!!__perf.vis('.plans-empty, .plan-chart svg, .compare-empty, .chart-frame')`,
   investigations: `!!__perf.vis('section.library') && !__perf.busy('section.library')`,
   learn: `!!__perf.vis('.teach-catalog') && !__perf.busy('.teach-catalog')`,
@@ -849,32 +850,26 @@ async function editorScenario(s, bigPlanFile) {
   const out = [];
   out.push(await goPlace(s, "query"));
   const text = script(5000);
-  // A real paste (⌘V from the clipboard), the way a script arrives. Chrome's
-  // execCommand("insertText") of the same text takes seconds even in a bare
-  // textarea, so it would measure Chrome, not the editor.
-  await page.browserContext().overridePermissions(s.origin, ["clipboard-read", "clipboard-write", "clipboard-sanitized-write"]);
-  await page.focus("textarea.sql-editor");
-  const copied = await page.evaluate((text) => navigator.clipboard.writeText(text).then(() => true, (e) => String(e)), text);
-  if (copied !== true) out.push({ name: "editor paste 5,000 lines", error: `clipboard: ${copied}` });
-  else out.push({ ...(await interact(s, "editor paste 5,000 lines", async () => {
-    await page.keyboard.down("Meta");
-    await page.keyboard.press("KeyV", { commands: ["selectAll", "paste"] });
-    await page.keyboard.up("Meta");
-  }, `document.querySelector('textarea.sql-editor').value.length > 300000`, { max: 8000, timeout: 60000 })), chars: text.length });
+  // A paste, the way a script arrives: one ClipboardEvent through the editor's
+  // paste path. Chrome's execCommand("insertText") of the same text takes
+  // seconds, so it would measure Chrome, not the editor.
+  out.push({ ...(await interact(s, "editor paste 5,000 lines", () => setEditorText(page, text),
+    `document.querySelector('.sql-editor').value.length > 300000`, { max: 8000, timeout: 60000 })), chars: text.length });
   // Type at the end, then in the middle (the highlight layers redraw what follows).
-  await page.evaluate(() => { const t = document.querySelector("textarea.sql-editor"); t.focus(); t.setSelectionRange(t.value.length, t.value.length); });
-  out.push(await typeMeasure(s, "editor type at end (5,000 lines)", "textarea.sql-editor", "\nSELECT 1 FROM dual;"));
-  await page.evaluate(() => { const t = document.querySelector("textarea.sql-editor"); const at = Math.floor(t.value.length / 2); t.focus(); t.setSelectionRange(at, at); });
-  out.push(await typeMeasure(s, "editor type in middle (5,000 lines)", "textarea.sql-editor", " AND x = 1"));
-  out.push(await scrollMeasure(s, "editor scroll (5,000 lines)", "textarea.sql-editor", 200, 90));
+  await selectEditor(page, await page.$eval(EDITOR, (el) => el.value.length));
+  out.push(await typeMeasure(s, "editor type at end (5,000 lines)", EDITOR, "\nSELECT 1 FROM dual;"));
+  await selectEditor(page, await page.$eval(EDITOR, (el) => Math.floor(el.value.length / 2)));
+  out.push(await typeMeasure(s, "editor type in middle (5,000 lines)", EDITOR, " AND x = 1"));
+  // The CodeMirror scroller, not the content element, is what scrolls.
+  out.push(await scrollMeasure(s, "editor scroll (5,000 lines)", ".cm-scroller", 200, 90));
   // Switching away and back with the big script open (the session snapshot, App re-render).
   out.push(await goPlace(s, "home", "place home (5,000-line script open)"));
   out.push(await goPlace(s, "query", "place query (5,000-line script open)"));
   // A small script with a large plan open: what each keystroke costs the rest of the workspace.
-  await page.evaluate(() => { const t = document.querySelector("textarea.sql-editor"); t.focus(); t.select(); });
-  await page.evaluate(() => document.execCommand("insertText", false, "SELECT 1;"));
+  await page.$eval(EDITOR, (el) => { el.focus(); el.select(); });
+  await insertEditorText(page, "SELECT 1;");
   await pause(1500);
-  out.push(await typeMeasure(s, "editor type, short script", "textarea.sql-editor", " -- note"));
+  out.push(await typeMeasure(s, "editor type, short script", EDITOR, " -- note"));
   await goPlace(s, "plans");
   const importBtn = await page.evaluateHandle(() => [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === "Import plan" && b.getClientRects().length));
   await importBtn.asElement().click();
@@ -883,8 +878,8 @@ async function editorScenario(s, bigPlanFile) {
   await page.waitForFunction(() => !document.querySelector("dialog[open]") && !!__perf.vis(".plan-chart svg, .chart-frame svg"), { timeout: 20000 });
   await pause(1500);
   await goPlace(s, "query");
-  await page.evaluate(() => { const t = document.querySelector("textarea.sql-editor"); t.focus(); t.setSelectionRange(t.value.length, t.value.length); });
-  out.push(await typeMeasure(s, "editor type, short script, 1,000-operator plan open", "textarea.sql-editor", " -- note"));
+  await selectEditor(page, await page.$eval(EDITOR, (el) => el.value.length));
+  out.push(await typeMeasure(s, "editor type, short script, 1,000-operator plan open", EDITOR, " -- note"));
   // The autosave a second after the last key: the main-thread work it costs.
   out.push(await idleMeasure(s, "autosave after an edit (5,000-line tab, 1,000-operator plan)", 2500));
   return out;

@@ -9,6 +9,7 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
+import { setEditorText } from "./editor-helpers.mjs";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const directory = await fs.mkdtemp(path.join(os.tmpdir(), "myflames-editor-insights-"));
@@ -71,7 +72,7 @@ async function wait(check, message, timeout = 8000) {
 }
 async function run(sql = "SELECT * FROM t") {
   const count = calls("editor/run").length;
-  await page.locator('[aria-label="SQL editor"]').fill(sql);
+  await setEditorText(page, sql);
   await page.click("[data-action=run]");
   await wait(() => calls("editor/run").length === count + 1, "one Run request");
   await page.waitForFunction(value => !document.querySelector(".results-running") &&
@@ -165,7 +166,7 @@ try {
   {
     // A failed run has no rows: wait for its stats line instead of a cell.
     const count = calls("editor/run").length;
-    await page.locator('[aria-label="SQL editor"]').fill("SELECT * FROM t WHERE");
+    await setEditorText(page, "SELECT * FROM t WHERE");
     await page.click("[data-action=run]");
     await wait(() => calls("editor/run").length === count + 1, "one Run request");
     await page.waitForFunction(() => !document.querySelector(".results-running") &&

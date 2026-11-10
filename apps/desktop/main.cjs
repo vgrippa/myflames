@@ -254,19 +254,23 @@ async function smokeWindow(origin) {
       await window.webContents.executeJavaScript(`document.querySelector('.command-trigger').click()`);
       await waitForSmoke(`!!document.querySelector('dialog.command-palette[open]')`);
       await window.webContents.executeJavaScript(`Array.from(document.querySelectorAll('.command-option')).find(element => element.innerText.includes('Query editor')).click()`);
-      await waitForSmoke(`!!document.querySelector('textarea.sql-editor') && !document.querySelector('dialog.command-palette')`);
-      await window.webContents.executeJavaScript(`
-        const ed = document.querySelector('textarea.sql-editor');
-        ed.focus();
-        ed.select();
-        document.execCommand('insertText', false, 'SEL');
-      `);
+      await waitForSmoke(`!!document.querySelector('.sql-editor') && !document.querySelector('dialog.command-palette')`);
+      // A new tab already holds text: select it all so the typed text replaces it.
+      const before = await window.webContents.executeJavaScript(`(() => { const ed = document.querySelector('.sql-editor'); ed.focus(); ed.select(); return ed.value; })()`);
+      // Native input, the way a user's keystrokes arrive.
+      window.webContents.insertText('SEL');
+      await waitForSmoke(`document.querySelector('.sql-editor').value === 'SEL'`, 'editor input');
       await waitForSmoke(`!!document.querySelector('.sql-completion [role=option]')`);
+      // The Edit menu path: Undo and Redo reach the CodeMirror history.
+      window.webContents.undo();
+      await waitForSmoke(`document.querySelector('.sql-editor').value === ${JSON.stringify(before)}`, 'Edit menu Undo');
+      window.webContents.redo();
+      await waitForSmoke(`document.querySelector('.sql-editor').value === 'SEL'`, 'Edit menu Redo');
       // DOM readiness can precede Chromium's next painted frame after reload.
       // Capture the completed editor, not a cached startup/refusal frame.
       await window.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
       fs.writeFileSync(path.join(dataDirectory, 'smoke.png'), (await window.webContents.capturePage()).toPNG());
-      fs.writeFileSync(path.join(dataDirectory, 'smoke.json'), JSON.stringify({ ready: true, packaged: app.isPackaged, backendExecutable: backend.child.spawnfile, shellNavigation: true, completion: true, authenticated: true, reloadAuthenticated: reloaded, preload, sandbox: window.webContents.getLastWebPreferences().sandbox, nodeIntegration: false, backendPid: backend.child.pid, mysqlClient }));
+      fs.writeFileSync(path.join(dataDirectory, 'smoke.json'), JSON.stringify({ ready: true, packaged: app.isPackaged, backendExecutable: backend.child.spawnfile, shellNavigation: true, completion: true, undoRedo: true, authenticated: true, reloadAuthenticated: reloaded, preload, sandbox: window.webContents.getLastWebPreferences().sandbox, nodeIntegration: false, backendPid: backend.child.pid, mysqlClient }));
       process.stdout.write('Desktop smoke passed: authenticated workspace, sandboxed renderer, isolated data.\n');
       app.quit(); return;
     }

@@ -1,4 +1,5 @@
 import { chooseConnection, openConnectionPicker } from "./chrome-helpers.mjs";
+import { setEditorText } from "./editor-helpers.mjs";
 // The Query editor's SQL files and session options: Open SQL file (the tab
 // menu and Cmd/Ctrl+O, a mocked chooser endpoint), the edited dot and the
 // close prompt (Save / Don't save / Cancel), Save and Save as (Cmd/Ctrl+S,
@@ -199,11 +200,7 @@ try {
   const tabNames = () => page.$$eval(".query-tablist [role=tab] .query-tab-label", (els) => els.map((e) => e.textContent));
   const sql = () => page.$eval(EDITOR, (e) => e.value);
   async function setText(value) {
-    await page.$eval(EDITOR, (el, v) => {
-      el.focus();
-      el.select();
-      document.execCommand("insertText", false, v);
-    }, value);
+    await setEditorText(page, value);
   }
   async function press(key, { shift = false } = {}) {
     await page.$eval(EDITOR, (el) => el.focus());
