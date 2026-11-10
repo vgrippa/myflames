@@ -15,7 +15,7 @@ import { editorKeymap } from "./keymap";
 import { FLASH_MS, matchingBrackets, setError, setFlash, setStatement, sqlMarks } from "./marks";
 import { problemsExtension } from "./problems";
 import { sqlHighlighting, sqlLanguage } from "./sqlLanguage";
-import { clampRange, mainSelection, type EditorEnv, type Range, type SqlEditorHandle, type SqlEditorProps } from "./types";
+import { clampOffset, clampRange, mainSelection, normalizeEol, normalizedOffset, normalizedRange, type EditorEnv, type Range, type SqlEditorHandle, type SqlEditorProps } from "./types";
 import { visualExtension } from "./visual";
 
 export type { SqlEditorHandle, SqlEditorProps } from "./types";
@@ -23,6 +23,7 @@ export const External = Annotation.define<boolean>();
 
 /** Preserve positions outside the changed span and make the edit one undo step. */
 export function externalValueTransaction(state: EditorState, value: string): TransactionSpec | null {
+  value = normalizeEol(value);
   const before = state.doc.toString();
   if (before === value) return null;
   let from = 0, oldEnd = before.length, newEnd = value.length;
@@ -81,7 +82,7 @@ function configurations(props: SqlEditorProps, env: Environment, length: number)
       "aria-label": "SQL editor", class: "sql-editor", spellcheck: "false", autocapitalize: "off", autocorrect: "off",
       ...(props.describedBy ? { "aria-describedby": props.describedBy } : {}),
     }),
-    visual: visualExtension(settings, env),
+    visual: visualExtension(settings, env, length),
   };
 }
 
@@ -92,6 +93,9 @@ function sameConfiguration(a: SqlEditorProps | null, b: SqlEditorProps): boolean
 }
 function sameRange(a?: Range | null, b?: Range | null) {
   return a?.start === b?.start && a?.end === b?.end;
+}
+function normalizedMark(text: string, range?: Range | null): Range | null {
+  return range ? normalizedRange(text, range.start, range.end) : null;
 }
 
 export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(function SqlEditor(props, ref) {
@@ -115,9 +119,10 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(function Sq
     flashTimer.current = null;
   }
   function createState(p: SqlEditorProps) {
-    const config = configurations(p, env, p.value.length), slots = compartments.current!;
-    const initial = clampRange(p.initialSelection?.start ?? 0, p.initialSelection?.end ?? p.initialSelection?.start ?? 0, p.value.length);
-    return EditorState.create({ doc: p.value, selection: EditorSelection.single(initial.start, initial.end), extensions: [
+    const value = normalizeEol(p.value);
+    const config = configurations(p, env, value.length), slots = compartments.current!;
+    const initial = normalizedRange(p.value, p.initialSelection?.start ?? 0, p.initialSelection?.end ?? p.initialSelection?.start ?? 0);
+    return EditorState.create({ doc: value, selection: EditorSelection.single(initial.start, initial.end), extensions: [
       ...compartmentNames.map(name => slots[name].of(config[name])),
       history(), lineNumbers(), drawSelection(), indentUnit.of("  "), EditorState.tabSize.of(2), sqlMarks(), findExtension(),
       tooltips({ parent: document.body }),
@@ -134,7 +139,7 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(function Sq
       EditorState.transactionExtender.of(tr => {
         if ((tr.startState.doc.length <= HIGHLIGHT_LIMIT) === (tr.newDoc.length <= HIGHLIGHT_LIMIT)) return null;
         const next = configurations(latest.current, env, tr.newDoc.length);
-        return { effects: (["completion_auto", "hover_info", "problem_warnings", "matching"] as const)
+        return { effects: (["completion_auto", "hover_info", "problem_warnings", "matching", "visual"] as const)
           .map(name => slots[name].reconfigure(next[name])) };
       }),
       EditorView.updateListener.of(update => {
@@ -188,11 +193,13 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(function Sq
       const config = configurations(props, env, view.state.doc.length);
       for (const name of compartmentNames) effects.push(compartments.current![name].reconfigure(config[name]));
     }
-    if (switched || !previous || !sameRange(previous.statement, props.statement)) effects.push(setStatement.of(props.statement ?? null));
-    if (switched || !previous || !sameRange(previous.error, props.error)) effects.push(setError.of(props.error ?? null));
-    if (switched || !previous || previous.flash !== props.flash) {
+    const statement = normalizedMark(props.value, props.statement), error = normalizedMark(props.value, props.error);
+    const flash = normalizedMark(props.value, props.flash);
+    if (switched || !previous || !sameRange(normalizedMark(previous.value, previous.statement), statement)) effects.push(setStatement.of(statement));
+    if (switched || !previous || !sameRange(normalizedMark(previous.value, previous.error), error)) effects.push(setError.of(error));
+    if (switched || !previous || previous.flash !== props.flash || !sameRange(normalizedMark(previous.value, previous.flash), flash)) {
       clearFlashTimer();
-      effects.push(setFlash.of(props.flash ?? null));
+      effects.push(setFlash.of(flash));
       if (props.flash) flashTimer.current = setTimeout(() => {
         flashTimer.current = null;
         if (viewRef.current === view) view.dispatch({ effects: setFlash.of(null) });
@@ -214,6 +221,13 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(function Sq
     applied.current = props;
   });
 
+  // Before the parent's onChange echo, imperative callers already use the live
+  // normalized document. Only use raw prop offsets while those props still match.
+  function offsetSource(view: EditorView): string {
+    const live = view.state.doc.toString(), raw = latest.current.value;
+    return raw.includes("\r") && normalizeEol(raw) === live ? raw : live;
+  }
+
   useImperativeHandle(ref, () => ({
     get element() { return viewRef.current?.contentDOM ?? null; },
     getValue: () => viewRef.current?.state.doc.toString() ?? "",
@@ -222,7 +236,7 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(function Sq
     setSelection(start, end = start, options = {}) {
       const view = viewRef.current;
       if (!view) return;
-      const range = clampRange(start, end, view.state.doc.length);
+      const range = normalizedRange(offsetSource(view), start, end);
       const selection = EditorSelection.single(range.start, range.end);
       view.dispatch({ selection, userEvent: "select", effects: options.scroll === false ? []
         : EditorView.scrollIntoView(selection.main, { y: options.scroll ?? "nearest" }) });
@@ -231,10 +245,20 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(function Sq
     replaceRange(from, to, text, options = {}) {
       const view = viewRef.current;
       if (!view || view.state.readOnly) return false;
-      const range = clampRange(from, to, view.state.doc.length);
-      const length = view.state.doc.length - (range.end - range.start) + text.length;
-      const selected = options.select ? clampRange(options.select.start, options.select.end, length) : null;
-      view.dispatch({ changes: { from: range.start, to: range.end, insert: text },
+      const raw = offsetSource(view), rawRange = clampRange(from, to, raw.length);
+      const range = normalizedRange(raw, rawRange.start, rawRange.end);
+      const insert = normalizeEol(text), delta = insert.length - (range.end - range.start);
+      // Selection offsets describe the raw post-edit text. Map each segment
+      // separately so a bound inside CRLF cannot create a spurious lone CR.
+      const selectionOffset = (offset: number) => {
+        const at = clampOffset(offset, raw.length - (rawRange.end - rawRange.start) + text.length);
+        if (at <= rawRange.start) return normalizedOffset(raw, at);
+        if (at <= rawRange.start + text.length) return range.start + normalizedOffset(text, at - rawRange.start);
+        return normalizedOffset(raw, at - text.length + rawRange.end - rawRange.start) + delta;
+      };
+      const selected = options.select ? clampRange(selectionOffset(options.select.start), selectionOffset(options.select.end),
+        view.state.doc.length + delta) : null;
+      view.dispatch({ changes: { from: range.start, to: range.end, insert },
         selection: selected ? EditorSelection.single(selected.start, selected.end) : undefined,
         annotations: isolateHistory.of("full"), userEvent: "input", scrollIntoView: !!options.focus });
       if (options.focus) view.focus();
@@ -243,7 +267,7 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(function Sq
     insertAtCursor(text) {
       const view = viewRef.current;
       if (!view || view.state.readOnly) return;
-      view.dispatch(view.state.replaceSelection(text), { annotations: isolateHistory.of("full"), userEvent: "input", scrollIntoView: true });
+      view.dispatch(view.state.replaceSelection(normalizeEol(text)), { annotations: isolateHistory.of("full"), userEvent: "input", scrollIntoView: true });
     },
     focus() { viewRef.current?.focus(); },
     isShown: () => !!viewRef.current?.contentDOM.getClientRects().length,

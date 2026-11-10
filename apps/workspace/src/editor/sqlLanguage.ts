@@ -1,6 +1,6 @@
 import { Language, defineLanguageFacet, languageDataProp, syntaxHighlighting, syntaxTree } from "@codemirror/language";
 import type { EditorState } from "@codemirror/state";
-import { NodeProp, NodeSet, NodeType, Parser, Tree, type Input, type PartialParse } from "@lezer/common";
+import { NodeProp, NodeSet, NodeType, Parser, Tree, type Input, type PartialParse, type TreeFragment } from "@lezer/common";
 import { Tag, styleTags, tagHighlighter } from "@lezer/highlight";
 import { HIGHLIGHT_LIMIT, tokenize, type Token, type TokenKind } from "../sqlHighlight";
 
@@ -26,20 +26,21 @@ for (const kind of kinds) {
 }
 const nodeSet = new NodeSet(nodes).extend(styleTags(styles));
 
-/** One bounded pass, including long lines. Fragments are deliberately not reused. */
+/** One bounded full pass, including long lines. Reuse only wholly unchanged trees. */
 class SqlParser extends Parser {
-  createParse(input: Input): PartialParse {
+  createParse(input: Input, fragments: readonly TreeFragment[]): PartialParse {
     let parsedPos = 0;
-    let stoppedAt: number | null = null;
-    let tree: Tree | null = null;
+    let tree: Tree | null = fragments.find(fragment => fragment.from === 0 && fragment.to === input.length &&
+      fragment.offset === 0 && !fragment.openStart && !fragment.openEnd && fragment.tree.length === input.length &&
+      fragment.tree.type === nodeSet.types[0])?.tree ?? null;
     return {
       get parsedPos() { return parsedPos; },
-      get stoppedAt() { return stoppedAt; },
-      stopAt(pos) {
-        if (stoppedAt !== null && pos > stoppedAt) throw new RangeError("Cannot extend a stopped SQL parse");
-        stoppedAt = pos;
-      },
+      // This atomic parser always finishes the full input. Reporting a smaller
+      // stoppedAt makes the language scheduler repeatedly parse viewport growth.
+      get stoppedAt() { return null; },
+      stopAt() {},
       advance() {
+        parsedPos = input.length;
         if (tree) return tree;
         const buffer: number[] = [];
         if (input.length <= HIGHLIGHT_LIMIT) {
@@ -48,8 +49,6 @@ class SqlParser extends Parser {
             buffer.push(ids.get(name)!, token.start, token.end, 4);
           }
         }
-        // stopAt is a scheduling hint: this atomic pass can finish beyond it.
-        parsedPos = input.length;
         tree = Tree.build({ buffer, nodeSet, topID: 0, length: input.length });
         return tree;
       },

@@ -67,3 +67,21 @@ export function clampRange(start: number, end: number, length: number): Range {
   const to = clampOffset(end, length);
   return { start: Math.min(clampOffset(start, length), to), end: to };
 }
+
+/** Match CodeMirror and textarea line endings at every incoming text boundary. */
+export function normalizeEol(text: string): string {
+  return text.replace(/\r\n?/g, "\n");
+}
+
+/** CRLF loses one code unit; a lone CR becomes LF without changing offsets. */
+export function normalizedOffset(text: string, offset: number): number {
+  const end = clampOffset(offset, text.length);
+  let removed = 0;
+  for (let at = text.indexOf("\r\n"); at >= 0 && at < end; at = text.indexOf("\r\n", at + 2)) removed++;
+  return end - removed;
+}
+
+export function normalizedRange(text: string, start: number, end = start): Range {
+  const range = clampRange(start, end, text.length);
+  return { start: normalizedOffset(text, range.start), end: normalizedOffset(text, range.end) };
+}

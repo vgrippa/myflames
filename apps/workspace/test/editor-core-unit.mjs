@@ -1,4 +1,4 @@
-// Pure EditorState and command tests. No browser, server or generated test files.
+// Renderless mounts plus real EditorState tests. No browser or server.
 // Run from apps/workspace: node test/editor-core-unit.mjs
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
@@ -11,6 +11,8 @@ const tokenizer = fileURLToPath(new URL("../src/sqlHighlight.ts", import.meta.ur
 const bundled = await build({
   stdin: { contents: `
     export { EditorState, EditorSelection, Transaction, Compartment } from "@codemirror/state";
+    export { EditorView, highlightActiveLine, gutterLineClass } from "@codemirror/view";
+    export { mountEditor } from "test-mount-hooks";
     export { history, undo, redo, undoDepth, isolateHistory } from "@codemirror/commands";
     export { syntaxTree } from "@codemirror/language";
     export { autocompletion } from "@codemirror/autocomplete";
@@ -25,6 +27,80 @@ const bundled = await build({
   bundle: true, format: "esm", platform: "neutral", target: "es2020", write: false, logLevel: "silent",
   define: { "process.env.NODE_ENV": '"production"' },
   plugins: [{ name: "tokenize-spy", setup(b) {
+    // Replace only React's lifecycle and the DOM view. States, extensions,
+    // history, transactions, marks and update listeners remain real.
+    b.onResolve({ filter: /^test-mount-hooks$|^react$/ }, args =>
+      args.path === "test-mount-hooks" || args.importer.endsWith("/editor/SqlEditor.tsx")
+        ? { path: "hooks", namespace: "mount" } : undefined);
+    b.onLoad({ filter: /.*/, namespace: "mount" }, () => ({ contents: `
+      let active;
+      export const forwardRef = render => render;
+      export function useRef(current) {
+        const i = active.index++;
+        return active.hooks[i] ??= { current };
+      }
+      export function useState(value) {
+        const slot = useRef(value);
+        return [slot.current, next => { slot.current = next; }];
+      }
+      export function useLayoutEffect(run, deps) {
+        const slot = useRef(null);
+        if (!deps || !slot.current || deps.some((v, i) => v !== slot.current.deps[i])) {
+          active.effects.push(() => {
+            slot.current?.cleanup?.();
+            slot.current = { deps, cleanup: run() };
+          });
+        }
+      }
+      export function useImperativeHandle(ref, make, deps) {
+        useLayoutEffect(() => { ref.current = make(); }, deps);
+      }
+      export function mountEditor(Component, props) {
+        const instance = { hooks: [], index: 0, effects: [] }, ref = { current: null };
+        const previousDocument = globalThis.document;
+        globalThis.document ??= { body: { style: { tabSize: "2" } } };
+        function render(next = props) {
+          props = next;
+          active = instance;
+          instance.index = 0;
+          instance.effects = [];
+          Component(props, ref);
+          active = null;
+          for (const effect of instance.effects) effect();
+        }
+        function unmount() {
+          for (const hook of instance.hooks) hook.current?.cleanup?.();
+          if (previousDocument === undefined) delete globalThis.document;
+          else globalThis.document = previousDocument;
+        }
+        try { render(); } catch (error) { unmount(); throw error; }
+        return { render, unmount, get handle() { return ref.current; },
+          get view() { return instance.hooks[1].current; } };
+      }
+    ` }));
+    b.onResolve({ filter: /^@codemirror\/view$/ }, args =>
+      args.importer.endsWith("/editor/SqlEditor.tsx") ? { path: "view", namespace: "mount-view" } : undefined);
+    b.onLoad({ filter: /.*/, namespace: "mount-view" }, () => ({ contents: `
+      export * from "@codemirror/view";
+      import { EditorView as RealView } from "@codemirror/view";
+      // Inherit the real static facets without constructing a DOM renderer.
+      export class EditorView extends RealView {
+        constructor({ state }) {
+          const view = { state, contentDOM: {}, scrollDOM: { scrollTop: 0, scrollLeft: 0 },
+            dispatch(...specs) {
+              const startState = view.state, tr = startState.update(...specs);
+              view.state = tr.state;
+              for (const listener of view.state.facet(RealView.updateListener))
+                listener({ startState, state: view.state, docChanged: tr.docChanged, transactions: [tr] });
+            },
+            setState(state) { view.state = state; },
+            requestMeasure(spec) { spec.write(spec.read()); },
+            destroy() {}, focus() {},
+          };
+          return view;
+        }
+      }
+    `, resolveDir: root }));
     b.onResolve({ filter: /^\.\.\/platform$/ }, () => ({ path: "platform", namespace: "test-platform" }));
     b.onLoad({ filter: /.*/, namespace: "test-platform" }, () => ({ contents: "export const MAC = globalThis.__editorTestMac;" }));
     b.onResolve({ filter: /^\.\.\/sqlHighlight$/ }, () => ({ path: "tokenizer", namespace: "spy" }));
@@ -94,6 +170,117 @@ for (const [before, after] of [["", "SELECT 1"], ["SELECT 1", ""], ["abc", "ab"]
   assert.equal(cm.undoDepth(view.state), 1);
   assert.equal(cm.undo(view), true);
   assert.equal(view.state.doc.toString(), before);
+}
+
+// EOL-only syncs preserve an existing undo step as well as an empty history.
+{
+  const view = target(stateFor("a\nb"));
+  view.dispatch({ changes: { from: 3, insert: "x" }, userEvent: "input.type" });
+  for (let i = 0; i < 5; i++) {
+    assert.equal(cm.externalValueTransaction(view.state, "a\r\nbx"), null);
+    assert.equal(cm.externalValueTransaction(view.state, "a\rbx"), null);
+    assert.equal(cm.undoDepth(view.state), 1);
+  }
+}
+
+// CRLF is normalized once at the boundary, including every supplied offset.
+{
+  const raw = "SELECT 1;\r\nSELECT 2;", changes = [];
+  const props = { docId: "crlf", docIds: ["crlf"], value: raw, settings: allSettings,
+    initialSelection: { start: raw.length, end: raw.length },
+    statement: { start: 11, end: 20 }, flash: { start: 11, end: 17 }, error: { start: 18, end: 19 },
+    onChange: (value, selection) => changes.push({ value, selection }) };
+  const mounted = cm.mountEditor(cm.SqlEditor, props);
+  try {
+    const { handle } = mounted;
+    assert.equal(handle.getValue(), "SELECT 1;\nSELECT 2;");
+    assert.deepEqual(handle.getSelection(), { start: 19, end: 19 });
+    assert.deepEqual(decorations(mounted.view.state.field(cm.markState).decorations), [
+      [10, 16, "sql-flash"], [10, 19, "sql-current"], [17, 18, "sql-error-mark"],
+    ]);
+    const before = mounted.view.state.doc;
+    for (let i = 0; i < 5; i++) mounted.render({ ...props });
+    assert.equal(mounted.view.state.doc, before, "repeated CRLF props never change the document");
+    assert.equal(cm.undoDepth(mounted.view.state), 0, "repeated syncs must not grow undo history");
+    assert.deepEqual(changes, [], "external sync does not emit onChange");
+    handle.setSelection(11, 17, { scroll: false });
+    assert.deepEqual(handle.getSelection(), { start: 10, end: 16 });
+    assert.equal(handle.replaceRange(18, 19, "20\r\n-- end", { select: { start: 22, end: 28 } }), true);
+    assert.equal(handle.getValue(), "SELECT 1;\nSELECT 20\n-- end;");
+    assert.deepEqual(handle.getSelection(), { start: 20, end: 26 });
+    assert.deepEqual(changes.at(-1), { value: "SELECT 1;\nSELECT 20\n-- end;", selection: { start: 20, end: 26 } });
+    assert.equal(cm.undoDepth(mounted.view.state), 1);
+    // Before the parent echoes onChange, handle offsets use the live text.
+    handle.setSelection(20, 26, { scroll: false });
+    assert.deepEqual(handle.getSelection(), { start: 20, end: 26 });
+    assert.equal(cm.undo(mounted.view), true);
+    assert.equal(handle.getValue(), "SELECT 1;\nSELECT 2;");
+    // The raw basis changes but the supplied numeric ranges stay the same.
+    mounted.render({ ...props, value: "SELECT 1;\nSELECT 2; " });
+    assert.deepEqual(mounted.view.state.field(cm.markState).statement, { start: 11, end: 20 });
+  } finally { mounted.unmount(); }
+}
+for (const [value, offset, expected] of [["a\r\nb", 4, 3], ["a\rb", 3, 3], ["a\r\nb\rc\r\nd", 9, 7]]) {
+  const props = { docId: "eol", docIds: ["eol"], value, settings: allSettings,
+    initialSelection: { start: offset, end: offset }, onChange() {} };
+  const mounted = cm.mountEditor(cm.SqlEditor, props);
+  try {
+    assert.equal(mounted.handle.getSelection().start, expected);
+    assert.equal(cm.externalValueTransaction(mounted.view.state, value), null);
+  } finally { mounted.unmount(); }
+}
+{
+  assert.equal(cm.normalizeEol("a\r\nb\rc\nd"), "a\nb\nc\nd");
+  assert.deepEqual([0, 1, 2, 3, 4].map(at => cm.normalizedOffset("a\r\nb", at)), [0, 1, 1, 2, 3]);
+  assert.deepEqual(cm.normalizedRange("🐬\r\nb", 4, 5), { start: 3, end: 4 });
+  assert.deepEqual(cm.normalizedRange("a\r\nb", -10, Infinity), { start: 0, end: 3 });
+  assert.deepEqual(cm.normalizedRange("a\r\nb", 4, 2), { start: 1, end: 1 });
+  assert.deepEqual(cm.normalizedRange("a\r\nb", NaN, NaN), { start: 0, end: 0 });
+  const mounted = cm.mountEditor(cm.SqlEditor, { docId: "inside-crlf", docIds: ["inside-crlf"],
+    value: "a\r\nb", settings: allSettings, onChange() {} });
+  try {
+    mounted.handle.replaceRange(2, 2, "x", { select: { start: 2, end: 3 } });
+    assert.equal(mounted.handle.getValue(), "ax\nb");
+    assert.deepEqual(mounted.handle.getSelection(), { start: 1, end: 2 });
+  } finally { mounted.unmount(); }
+}
+
+// Initial length gates visual aids, while bidi control highlighting stays on.
+{
+  function visualConfiguration(state) {
+    // CM does not export its special-character configuration facet.
+    return Object.values(state.config.facets).flat().map(provider => state.facet(provider.facet));
+  }
+  const mounted = cm.mountEditor(cm.SqlEditor, { docId: "large", docIds: ["large"],
+    value: "SELECT \u202e" + " ".repeat(60000), settings: allSettings, onChange() {} });
+  try {
+    let state = mounted.view.state;
+    const activeLine = cm.highlightActiveLine();
+    const hasActiveLine = s => visualConfiguration(s).some(value => Array.isArray(value) && value.some(row => row?.plugin === activeLine));
+    assert.equal(hasActiveLine(state), false, "large initial document has no active-line aid");
+    assert.ok(!state.facet(cm.gutterLineClass).flatMap(set => {
+      const classes = [];
+      for (const i = set.iter(); i.value; i.next()) classes.push(i.value.elementClass);
+      return classes;
+    }).includes("cm-activeLineGutter"), "large initial document has no active-line gutter aid");
+    assert.ok(!visualConfiguration(state).some(value => value?.highlightWordAroundCursor === true),
+      "large initial document has no selection-match aid");
+    assert.ok(visualConfiguration(state).some(value => value?.specialChars instanceof RegExp && value.specialChars.test("\u202e")),
+      "bidi override is included in the special-character highlighting configuration");
+    for (const char of ["\u200c", "\u200d", "\u202a", "\u202b", "\u202c", "\u2068"]) {
+      assert.ok(visualConfiguration(state).some(value => value?.specialChars instanceof RegExp &&
+        new RegExp(value.specialChars.source).test(char)), "explicit bidi additions supplement CodeMirror's defaults");
+    }
+    // Opening large must still allow the aids to return when the text shrinks.
+    mounted.handle.replaceRange(8, state.doc.length, "");
+    state = mounted.view.state;
+    assert.equal(hasActiveLine(state), true);
+    assert.ok(visualConfiguration(state).some(value => value?.highlightWordAroundCursor === true));
+    assert.ok(visualConfiguration(state).some(value => value?.specialChars instanceof RegExp && value.specialChars.test("\u202e")));
+    mounted.handle.insertAtCursor(" ".repeat(60000));
+    assert.equal(hasActiveLine(mounted.view.state), false);
+    assert.ok(!visualConfiguration(mounted.view.state).some(value => value?.highlightWordAroundCursor === true));
+  } finally { mounted.unmount(); }
 }
 
 // The same store used by the component retains independent undo stacks and scroll.
@@ -253,4 +440,4 @@ for (const [sql, carets, expected] of [
   detach();
   assert.equal(Object.hasOwn(element, "value"), false);
 }
-console.log("Editor core: external undo and selection mapping, document histories, shortcut gates and fallthrough, marks, tokenizer spy and automation passed.");
+console.log("Editor core: CRLF mount/sync/offsets, large-document visual gates, bidi config, external undo, document histories, shortcuts, marks, tokenizer spy and automation passed.");

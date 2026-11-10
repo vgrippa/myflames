@@ -5,14 +5,26 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
+const root = fileURLToPath(new URL("..", import.meta.url));
+const tokenizer = fileURLToPath(new URL("../src/sqlHighlight.ts", import.meta.url));
+globalThis.__sqlTreeTokenizeCalls = 0;
 const result = await build({
   stdin: { contents: `
     export { EditorState } from "@codemirror/state";
-    export { syntaxTree, highlightingFor, matchBrackets } from "@codemirror/language";
+    export { syntaxTree, ensureSyntaxTree, highlightingFor, matchBrackets } from "@codemirror/language";
+    export { TreeFragment } from "@lezer/common";
     export { getStyleTags } from "@lezer/highlight";
     export * from "./src/editor/sqlLanguage";
     export { tokenize, HIGHLIGHT_LIMIT } from "./src/sqlHighlight";
   `, resolveDir: fileURLToPath(new URL("..", import.meta.url)) },
+  plugins: [{ name: "tokenizer-call-count", setup(b) {
+    b.onResolve({ filter: /^\.\.\/sqlHighlight$/ }, () => ({ path: "tokenizer", namespace: "spy" }));
+    b.onLoad({ filter: /.*/, namespace: "spy" }, () => ({ contents: `
+      export * from ${JSON.stringify(tokenizer)};
+      import { tokenize as original } from ${JSON.stringify(tokenizer)};
+      export function tokenize(sql) { globalThis.__sqlTreeTokenizeCalls++; return original(sql); }
+    `, resolveDir: root }));
+  } }],
   bundle: true, format: "esm", platform: "neutral", target: "es2020", write: false, logLevel: "silent",
 });
 const cm = await import("data:text/javascript;base64," + Buffer.from(result.outputFiles[0].text).toString("base64"));
@@ -93,3 +105,43 @@ assert.deepEqual(cm.treeTokens(boundary), []);
 boundary = boundary.update({ changes: { from: 60000, to: 60001 } }).state;
 assert.deepEqual(cm.treeTokens(boundary), cm.tokenize(boundary.doc.toString()));
 console.log(`SQL tree parity: ${checked} cases passed (${fixtureCount} fixture SQL strings, 2000 seeded cases, long line, limit, classes and bracket scan).`);
+
+// Full atomic parses remain complete when viewport requests grow without edits.
+{
+  const before = globalThis.__sqlTreeTokenizeCalls;
+  let state = makeState(longLine);
+  assert.equal(globalThis.__sqlTreeTokenizeCalls, before + 1);
+  const tree = cm.syntaxTree(state);
+  for (const upto of [4000, 5000, 6000]) {
+    const ensured = cm.ensureSyntaxTree(state, upto, 1000);
+    assert.equal(globalThis.__sqlTreeTokenizeCalls, before + 1, "viewport growth must not tokenize again");
+    assert.equal(ensured, tree);
+  }
+  assert.equal(cm.sqlLanguage.parser.parse(longLine, cm.TreeFragment.addTree(tree)), tree,
+    "a full unchanged fragment reuses the previous complete tree");
+  assert.equal(globalThis.__sqlTreeTokenizeCalls, before + 1);
+  state = state.update({ changes: { from: 4000, to: 4001, insert: "x" } }).state;
+  for (const upto of [4000, 5000, 6000]) cm.ensureSyntaxTree(state, upto, 1000);
+  assert.equal(globalThis.__sqlTreeTokenizeCalls, before + 2, "one edit must trigger exactly one full tokenization");
+  assert.deepEqual(cm.treeTokens(state), cm.tokenize(state.doc.toString()));
+  const parse = cm.sqlLanguage.parser.startParse(longLine);
+  parse.stopAt(4000);
+  assert.equal(parse.advance().length, longLine.length);
+  assert.equal(parse.parsedPos, longLine.length);
+  assert.equal(parse.stoppedAt, null, "atomic parses report completion beyond scheduling hints");
+
+  // A changed edge cannot be mistaken for an unchanged full-document fragment.
+  for (const fragment of [
+    new cm.TreeFragment(1, longLine.length, tree, 0),
+    new cm.TreeFragment(0, longLine.length - 1, tree, 0),
+    new cm.TreeFragment(0, longLine.length, tree, 1),
+    new cm.TreeFragment(0, longLine.length, tree, 0, true, false),
+    new cm.TreeFragment(0, longLine.length, tree, 0, false, true),
+  ]) {
+    const calls = globalThis.__sqlTreeTokenizeCalls;
+    const rebuilt = cm.sqlLanguage.parser.parse(longLine, [fragment]);
+    assert.equal(globalThis.__sqlTreeTokenizeCalls, calls + 1);
+    assert.notEqual(rebuilt, tree);
+  }
+}
+console.log("SQL tree scheduling: viewport growth, unchanged fragment reuse and single edit reparse passed.");
