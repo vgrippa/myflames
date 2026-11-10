@@ -1023,6 +1023,29 @@ try {
   await page.waitForSelector(EDITOR);
   await until(() => schemaReads() === catalogReads + 1, "showing the editor again did not re-read the database list");
   await until(async () => (await databaseNames()).includes("restoredb"), "the picker lacks the database created while away");
+  // A CREATE DATABASE that ends while the editor is hidden reads nothing
+  // then (the view is off screen); showing the editor reads the list once.
+  catalogReads = schemaReads();
+  mock.holdRun = true;
+  await setText("CREATE DATABASE laterdb");
+  await chord("Enter");
+  await until(() => held.some((e) => e.path === "/api/editor/run" && e.body.sql === "CREATE DATABASE laterdb"), "the CREATE DATABASE run was not sent");
+  await page.locator(".main-nav button ::-p-text(Home)").click();
+  await page.waitForSelector(".home", { visible: true });
+  mock.holdRun = false;
+  const heldCreate = held.find((e) => e.path === "/api/editor/run" && e.body.sql === "CREATE DATABASE laterdb");
+  held.splice(held.indexOf(heldCreate), 1);
+  mock.schemas = [...mock.schemas, { name: "laterdb", tables: 0, system: false }];
+  answerHeld(heldCreate, { status: "complete", session: session(), run: run(
+    [statement(0, "CREATE DATABASE laterdb", 0, { verb: "CREATE DATABASE", kind: "write", category: "ddl" })],
+    [{ type: "ok", statement: 0, affected_rows: 1, info: null, warnings: 0, duration_ms: 3 }]) });
+  await pause(500);
+  assert.equal(schemaReads(), catalogReads, "a run that ended while the editor was hidden read no database list");
+  await page.locator(".main-nav button ::-p-text(Query editor)").click();
+  await page.waitForSelector(EDITOR);
+  await until(() => schemaReads() === catalogReads + 1, "showing the editor again did not read the invalidated list");
+  await until(async () => (await databaseNames()).includes("laterdb"), "the picker lacks the database created while hidden");
+  await idle();
 
   // 11. The session ended: what was lost, and Reconnect (never automatic).
   mock.run.push({ status: "session_ended", session: session({ ended: true, ended_reason: "connection_lost", state: "ended", message: "Session ended. Session settings were lost and any open transaction was rolled back." }),

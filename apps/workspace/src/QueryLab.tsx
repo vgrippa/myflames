@@ -1,6 +1,6 @@
 import { captureThreadKey, indexWasApplied, measurementMatches, type SqlOpenOptions, type SuggestedIndexOrigin } from "./statementThread";
 import { DigestBefore, MeasuredStatement } from "./MeasureAgain";
-import { bytes, useSchemaCatalog } from "./PerfShared";
+import { bytes, invalidateSchemaCatalog, useSchemaCatalog } from "./PerfShared";
 import { AlterPredictionWhy, notPredictedReason, type AlterPrediction } from "./AlterPrediction";
 import { engineName } from "./OpsShared";
 import {
@@ -552,8 +552,7 @@ export const QueryLab = forwardRef<
   // The connection's schema list pre-fills the default-database picker (one
   // cheap catalog read per connection, cached; PerfShared.useSchemaCatalog),
   // read only while the editor is on screen: a hidden editor never reads.
-  const { catalog: schemaCatalog, reload: reloadSchemaCatalog, reloadStale: reloadStaleSchemaCatalog } =
-    useSchemaCatalog(connection, onScreen);
+  const { catalog: schemaCatalog, reloadStale: reloadStaleSchemaCatalog } = useSchemaCatalog(connection, onScreen);
   // Back on screen the list may be stale: a database created elsewhere (the
   // Maintenance restore, another tab's CREATE DATABASE) shows without an app
   // restart. reloadStale(0) attaches to the first read still in flight
@@ -1882,9 +1881,11 @@ export const QueryLab = forwardRef<
   function finish(id: string, run: EditorRun, meta: SendMeta, session?: EditorSession | null) {
     if (run.error) denied(run.error, sessionConnectionOf(id));
     // A run that created or dropped a database (or one the editor cannot
-    // classify) makes the cached database list stale: re-read it so the
-    // Database picker has the new name. A hidden editor waits for its return.
-    if (onScreen && !meta.action && runMayChangeDatabases(run)) reloadSchemaCatalog();
+    // classify) makes the database list of the connection it ran on stale,
+    // whichever connection is on screen now: views on screen read it again,
+    // a hidden editor when it is shown (this callback may be from an earlier
+    // render, so it never decides visibility itself).
+    if (!meta.action && runMayChangeDatabases(run)) invalidateSchemaCatalog(sessionConnectionOf(id) || connectionRef.current);
     // A completed statement does not acknowledge a Stop still on its way.
     patchRuntime(id, { running: false, explaining: false, operation: "", execConnection: null, pollTrouble: false });
     setHistoryTick((n) => n + 1);

@@ -871,9 +871,10 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
     ...(memory.tools?.report.tools[copy.name || ""] || {}),
     ...copy,
     name: copy.name || "",
-    // The update check covered the copy myflames uses for the tool's name;
-    // another installed copy of the same tool was never checked.
-    ...(toolCopies?.length && !copy.used ? { update: undefined } : {}),
+    // The update check covered the copy in the tools record for the name
+    // (tools[name]); any other copy, even one used for another role (a
+    // query-only client), was never checked.
+    ...(toolCopies?.length && copy.path !== memory.tools?.report.tools[copy.name || ""]?.path ? { update: undefined } : {}),
     row: `tool:${copy.path || `${copy.name}:${i}`}`,
   }));
   const updateWord = (tool: Tool): string => {

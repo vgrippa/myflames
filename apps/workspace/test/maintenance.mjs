@@ -60,6 +60,10 @@ const schemas = await load("schemas-mysql-8.4.json");
 // /usr/local); the bundled copy beside it was never checked and must not
 // inherit the result.
 tools.tools.mysqldump.update = { status: "current", latest_version: "8.4.13", checked_at: "2026-11-01T10:00:00Z", source_url: "https://dev.mysql.com/downloads/mysql/", message: "Checked mysqldump Ver 8.4.3 against the 8.4 series." };
+// A second mysql copy used for queries only (another role): the update check
+// covered tools.mysql (/usr/local), so this used copy must stay Not checked.
+tools.copies.push({ ...tools.copies.find((c) => c.path === "/usr/local/bin/mysql"), path: "/opt/homebrew/bin/mysql", realpath: "/opt/homebrew/Cellar/mysql@8.4/8.4.13/bin/mysql", used: true });
+tools.tools.mysql.update = { status: "available", latest_version: "8.4.13", checked_at: "2026-11-01T10:00:00Z", source_url: "https://dev.mysql.com/downloads/mysql/", message: "Checked mysql Ver 8.4.3 against the 8.4 series." };
 
 const UPGRADE = "/api/lifecycle/upgrade-check";
 const TARGETS = "/api/lifecycle/upgrade-targets";
@@ -245,6 +249,10 @@ try {
   // Only the copy the update check covered carries its result.
   assert.match(await text(`${view} [data-row-key="tool:/usr/local/bin/mysqldump"]`), /Current in checked series/, "the used copy carries the update result");
   assert.match(await text(bundledDumpRow), /Not checked/, "another copy of the same tool was never checked");
+  const queryOnlyRow = `${view} [data-row-key="tool:/opt/homebrew/bin/mysql"]`;
+  assert.match(await text(queryOnlyRow), /Used/);
+  assert.match(await text(queryOnlyRow), /Not checked/, "a used copy the update check did not cover reads Not checked");
+  assert.match(await text(`${view} [data-row-key="tool:/usr/local/bin/mysql"]`), /Update available: 8\.4\.13/, "the checked copy keeps its result");
   await h.select(bundledDumpRow);
   assert.doesNotMatch(await h.inspector(), /Latest checked/, "an unchecked copy has no update detail");
   assert.match(await text(`${view} [data-row-key="tool:/usr/local/bin/mysqlpump"]`), /Deprecated/);

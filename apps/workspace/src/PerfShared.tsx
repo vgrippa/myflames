@@ -248,8 +248,22 @@ const catalogs = new Map<string, Promise<SchemaCatalog>>();
 /** When the cached read of a connection resolved, for reloadStale. */
 const catalogReadAt = new Map<string, number>();
 /** The hook instances of a connection: a refresh replaces the shared promise,
- * so the others are told to attach to it (one subscriber set per key). */
-const catalogListeners = new Map<string, Set<() => void>>();
+ * so the others are told to attach to it (one subscriber set per key); an
+ * invalidation (true) makes only the instances on screen read again. */
+const catalogListeners = new Map<string, Set<(invalidated?: boolean) => void>>();
+/** The connection each key was last rendered with: a read for a key always
+ * uses that key's connection, never the one on screen when a late callback
+ * runs (a run that ends after the person switched connections). */
+const catalogConnections = new Map<string, Connection>();
+
+/** Forget *connection*'s database list (a run created or dropped a database):
+ * its views on screen read it again now; hidden ones read when shown. */
+export function invalidateSchemaCatalog(connection: Connection) {
+  const key = connectionKey(connection);
+  catalogs.delete(key);
+  catalogReadAt.delete(key);
+  for (const listener of [...(catalogListeners.get(key) || [])]) listener(true);
+}
 
 /** The database list for *connection*: loaded when *enabled*, cached. */
 export function useSchemaCatalog(connection: Connection, enabled = true) {
@@ -259,12 +273,13 @@ export function useSchemaCatalog(connection: Connection, enabled = true) {
   const [state, setState] = useState<{ key: string; catalog: SchemaCatalog | null; error: string; loading: boolean }>(
     { key: "", catalog: null, error: "", loading: false },
   );
-  const connectionRef = useRef(connection);
-  connectionRef.current = connection;
+  catalogConnections.set(key, connection);
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
   const load = useCallback(
     (refresh = false) => {
       if (refresh || !catalogs.has(key)) {
-        const request = api<SchemaCatalog>("live/schemas", { connection: connectionRef.current });
+        const request = api<SchemaCatalog>("live/schemas", { connection: catalogConnections.get(key)! });
         catalogs.set(key, request);
         // The failure is handled below; this branch only records the time.
         request.then(() => {
@@ -294,7 +309,7 @@ export function useSchemaCatalog(connection: Connection, enabled = true) {
   useEffect(() => {
     let listeners = catalogListeners.get(key);
     if (!listeners) catalogListeners.set(key, (listeners = new Set()));
-    const attach = () => load();
+    const attach = (invalidated?: boolean) => { if (!invalidated || enabledRef.current) load(); };
     listeners.add(attach);
     return () => {
       listeners.delete(attach);
