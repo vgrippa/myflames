@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, dialog, session, shell, Menu, ipcMain, autoUpdater } = require('electron');
+const { app, BrowserWindow, dialog, session, shell, Menu, ipcMain, autoUpdater, webContents } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
@@ -181,9 +181,30 @@ async function start() {
   });
   app.setAboutPanelOptions({ applicationName: 'myflames', applicationVersion: app.getVersion(),
     copyright: 'Apache-2.0', credits: "Inspired by Brendan Gregg's FlameGraph and Tanel Poder's SQL Plan FlameGraphs." });
+  const editCommand = async command => {
+    // The single workspace window is also the target during the smoke's
+    // emulated focus, when the desktop itself is not the foreground app.
+    const target = webContents.getFocusedWebContents() || window.webContents;
+    if (target.isDestroyed()) return;
+    let handled = false;
+    try {
+      // Fixed scripts only: no renderer input or arbitrary command names.
+      handled = await target.executeJavaScript(command === 'undo'
+        ? "window.__myflamesEditCommand?.('undo')"
+        : "window.__myflamesEditCommand?.('redo')");
+    } catch { /* An unavailable page keeps the native editing fallback. */ }
+    if (handled !== true && !target.isDestroyed()) {
+      if (command === 'undo') target.undo();
+      else target.redo();
+    }
+  };
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     ...(process.platform === 'darwin' ? [{ label: 'myflames', submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'quit' }] }] : []),
-    { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
+    { label: 'Edit', submenu: [
+      { id: 'edit-undo', label: 'Undo', accelerator: 'CmdOrCtrl+Z', click: () => editCommand('undo') },
+      { id: 'edit-redo', label: 'Redo', accelerator: process.platform === 'darwin' ? 'Shift+CmdOrCtrl+Z' : 'CmdOrCtrl+Y', click: () => editCommand('redo') },
+      { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' },
+    ] },
     { label: 'View', submenu: [{ role: 'reload' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'togglefullscreen' }] },
     { label: 'Window', submenu: [{ role: 'minimize' }, { role: 'close' }] },
   ]));
@@ -262,9 +283,9 @@ async function smokeWindow(origin) {
       await waitForSmoke(`document.querySelector('.sql-editor').value === 'SEL'`, 'editor input');
       await waitForSmoke(`!!document.querySelector('.sql-completion [role=option]')`);
       // The Edit menu path: Undo and Redo reach the CodeMirror history.
-      window.webContents.undo();
+      Menu.getApplicationMenu().getMenuItemById('edit-undo').click();
       await waitForSmoke(`document.querySelector('.sql-editor').value === ${JSON.stringify(before)}`, 'Edit menu Undo');
-      window.webContents.redo();
+      Menu.getApplicationMenu().getMenuItemById('edit-redo').click();
       await waitForSmoke(`document.querySelector('.sql-editor').value === 'SEL'`, 'Edit menu Redo');
       // DOM readiness can precede Chromium's next painted frame after reload.
       // Capture the completed editor, not a cached startup/refusal frame.

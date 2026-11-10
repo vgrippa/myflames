@@ -61,6 +61,7 @@
     "test:audit": "npm run build && node test/audit.mjs",
     "test:editor": "npm run build && node test/editor.mjs",
     "test:editor-core": "npm run build && node test/editor-core.mjs",
+    "test:edit-menu": "npm run build && node test/edit-menu.mjs",
     "test:safe-updates-info": "npm run build && node test/safe-updates-info.mjs",
     "test:sql-format": "node test/sql-format.mjs",
     "test:editor-tools": "npm run build && node test/editor-tools.mjs",

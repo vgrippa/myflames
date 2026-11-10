@@ -1,7 +1,7 @@
 import { forwardRef, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 import { Annotation, Compartment, EditorSelection, EditorState, Prec, type Extension, type StateEffect, type TransactionSpec } from "@codemirror/state";
 import { EditorView, crosshairCursor, drawSelection, keymap, lineNumbers, placeholder, rectangularSelection, tooltips } from "@codemirror/view";
-import { history, isolateHistory } from "@codemirror/commands";
+import { history, isolateHistory, redo, undo } from "@codemirror/commands";
 import { autocompletion, closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
 import { indentUnit } from "@codemirror/language";
 import { HIGHLIGHT_LIMIT } from "../sqlHighlight";
@@ -20,6 +20,25 @@ import { visualExtension } from "./visual";
 
 export type { SqlEditorHandle, SqlEditorProps } from "./types";
 export const External = Annotation.define<boolean>();
+
+declare global {
+  interface Window {
+    __myflamesEditCommand?: (command: "undo" | "redo") => boolean;
+  }
+}
+
+// Installed once when this module loads. Native menu commands cannot reliably
+// reach CodeMirror's history, especially after editor-only transactions.
+if (typeof window !== "undefined") window.__myflamesEditCommand = command => {
+  if (command !== "undo" && command !== "redo") return false;
+  const editor = document.activeElement?.closest<HTMLElement>(".cm-editor");
+  const view = editor ? EditorView.findFromDOM(editor) : null;
+  if (!view) return false;
+  if (command === "undo") undo(view);
+  else redo(view);
+  // An empty CodeMirror history is still handled: never fall back to Chromium.
+  return true;
+};
 
 /** Preserve positions outside the changed span and make the edit one undo step. */
 export function externalValueTransaction(state: EditorState, value: string): TransactionSpec | null {
