@@ -508,7 +508,10 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   const remapDenied = folderInfo?.report?.remap_allowed === false;
   useEffect(() => {
     // A dump that creates its own databases restores into them only.
-    if (remapDenied) { setRestoreNew(false); setRestoreSchema(""); }
+    if (!remapDenied) return;
+    // Say so when it replaces a database the person had chosen.
+    if (restoreNew || restoreSchema) setNotice(`Default database is back to As in the dump: ${folderInfo?.report?.remap_reason || "this dump restores into its own databases."}`);
+    setRestoreNew(false); setRestoreSchema("");
   }, [remapDenied]);
   const plan = prepared?.report;
   const upgrade = memory.upgrade?.report || null;

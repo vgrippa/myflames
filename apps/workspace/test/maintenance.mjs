@@ -631,6 +631,9 @@ try {
   await page.waitForFunction((s) => { const os = document.querySelectorAll(`${s} option`); return os.length === 1 && os[0].textContent === "As in the dump"; }, {}, databaseChoice);
   assert.equal(await page.$eval(databaseChoice, (e) => e.value), "", "a previous choice resets to As in the dump");
   assert.equal(await databaseHint(), "This dump creates its own databases (CREATE DATABASE and USE), so it restores into them; choose As in the dump.");
+  assert.equal(await text(`${view} .ops-note[role=status]`),
+    "Default database is back to As in the dump: This dump creates its own databases (CREATE DATABASE and USE), so it restores into them; choose As in the dump.",
+    "the reset of a chosen database is announced");
   assert.equal(infoCalls("/dumps/own-databases").length, 1, "one read once typing settled");
   assert.equal(await page.$eval(`${view} .ops-actions button.primary`, (e) => e.disabled), false, "Start is never blocked on the dump folder read");
   // A failed read keeps today's choices and its sentence is the folder's hint.
