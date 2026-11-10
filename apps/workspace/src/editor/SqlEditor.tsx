@@ -22,6 +22,46 @@ import { visualExtension } from "./visual";
 export type { SqlEditorHandle, SqlEditorProps } from "./types";
 export const External = Annotation.define<boolean>();
 
+// CodeMirror copies this theme's scope to body-mounted tooltip containers.
+// Theme rules follow its base themes, including the light defaults used when
+// the app switches appearance through CSS variables rather than darkTheme.
+const tooltipTheme = EditorView.theme({
+  ".cm-tooltip": {
+    zIndex: 140,
+    border: "1px solid var(--line-strong)",
+    borderRadius: "var(--radius-md)",
+    backgroundColor: "var(--surface-raised)",
+    color: "var(--ink)",
+    boxShadow: "var(--shadow-raised)",
+    fontFamily: "var(--font-sans)",
+    fontSize: "var(--text-sm)",
+    lineHeight: "var(--leading-sm)",
+  },
+  ".cm-tooltip-section:not(:first-child)": { borderTop: "1px solid var(--line-strong)" },
+  ".cm-panels": {
+    backgroundColor: "var(--surface-raised)", color: "var(--ink)", borderColor: "var(--line-strong)",
+  },
+  ".cm-panel.cm-panel-lint": {
+    backgroundColor: "var(--surface-raised)", color: "var(--ink)",
+    fontFamily: "var(--font-sans)", fontSize: "var(--text-sm)", lineHeight: "var(--leading-sm)",
+  },
+  ".cm-diagnostic": { color: "var(--ink)", padding: "var(--space-1) var(--space-2)" },
+  ".cm-diagnosticText": { color: "var(--ink)" },
+  ".cm-diagnostic-warning": { borderLeftColor: "var(--warn)" },
+  ".cm-diagnostic-error": { borderLeftColor: "var(--danger)" },
+  ".cm-diagnostic-info": { borderLeftColor: "var(--info)" },
+  ".cm-diagnostic-hint": { borderLeftColor: "var(--info)" },
+  ".cm-diagnosticSource": { color: "var(--ink-muted)", fontSize: "var(--text-sm)", opacity: 1 },
+  ".cm-diagnosticAction": {
+    backgroundColor: "var(--surface-raised)", color: "var(--ink)",
+    border: "1px solid var(--line-strong)", borderRadius: "var(--radius-sm)",
+  },
+  ".cm-panel.cm-panel-lint ul [aria-selected], .cm-panel.cm-panel-lint ul:focus [aria-selected]": {
+    backgroundColor: "var(--accent-soft)", color: "var(--ink)",
+  },
+  ".cm-panel.cm-panel-lint [name=close]": { color: "var(--ink)" },
+});
+
 declare global {
   interface Window {
     __myflamesEditCommand?: (command: "undo" | "redo") => boolean;
@@ -148,7 +188,7 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(function Sq
       EditorState.phrases.of({
         Diagnostics: "Problems", "No diagnostics": "No problem warnings", close: "Close", Completions: "SQL suggestions",
       }),
-      tooltips({ parent: document.body }),
+      tooltips({ parent: document.body }), tooltipTheme,
       Prec.highest(EditorView.domEventHandlers({
         keydown(event) { latest.current.onKeyDown?.(event); return event.defaultPrevented; },
         drop(event) {

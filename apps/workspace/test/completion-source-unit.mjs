@@ -409,34 +409,37 @@ try {
   });
 
   await test('connected vocabulary follows generated engine and release facts', async () => {
-    for (const [engine, version, prefix, word, present] of [
+    for (const [engine, version, prefix, word, present, detail] of [
       ['mysql', '8.0.13', 'LATER', 'LATERAL', false],
-      ['mysql', '8.0.14', 'LATER', 'LATERAL', true],
+      ['mysql', '8.0.14', 'LATER', 'LATERAL', true, 'reserved'],
       ['mysql', '8.0.36', 'QUAL', 'QUALIFY', false],
-      ['mysql', '8.4.6', 'QUAL', 'QUALIFY', true],
-      ['mariadb', '11.8.2', 'VECT', 'VECTOR', true],
+      ['mysql', '8.4.6', 'QUAL', 'QUALIFY', true, ''],
+      ['mariadb', '11.8.2', 'VECT', 'VECTOR', true, 'reserved'],
     ]) {
       // Verify expectations against the decoded generated data as well as the source.
       assert.equal(cm.wordsFor(engine, version).keywords.some(k => k.name === word), present);
       const pair = sourceEnv(); Object.assign(pair.env.current, { connection: undefined, engine, serverVersion: version });
       const result = await pair.source(context(prefix + '|', true));
       assert.equal(result.options.some(o => o.label === word), present, `${engine} ${version} ${word}`);
-      if (present) assert.match(result.options.find(o => o.label === word).detail, /^(reserved )?keyword$/);
+      if (present) assert.equal(result.options.find(o => o.label === word && o.type === 'keyword').detail, detail);
     }
     const pair = sourceEnv(); Object.assign(pair.env.current, { connection: undefined, engine: 'mysql', serverVersion: '8.4.12' });
     assert.equal((await pair.source(context('QUAL|', true))).options.find(o => o.label === 'QUALIFY').detail,
-      'reserved keyword, MySQL 8.4.11 list');
+      'reserved, MySQL 8.4.11 list');
+    assert.equal((await pair.source(context('BUL|', true))).options.find(o => o.label === 'BULK').detail,
+      'MySQL 8.4.11 list', 'a non-reserved fallback keyword shows only its release');
     pair.env.current.serverVersion = 'unknown';
-    assert.equal((await pair.source(context('SEL|', true))).options[0].label, 'SELECT');
+    const fallback = (await pair.source(context('SEL|', true))).options[0];
+    assert.equal(fallback.label, 'SELECT'); assert.equal(fallback.detail, '');
     assert.equal(sent.length, 0);
   });
   await test('function suggestions use generated counts and release details only in unquoted expressions', async () => {
     const pair = sourceEnv(); Object.assign(pair.env.current, { connection: undefined, engine: 'mysql', serverVersion: '8.0.36' });
-    for (const [name, count] of [['POW', '2 arguments'], ['ABS', '1 argument'], ['ATAN', '1 to 2 arguments'], ['CONCAT', 'at least 1 arguments'], ['COUNT', '']]) {
+    for (const [name, count] of [['PI', '0 arguments'], ['POW', '2 arguments'], ['ABS', '1 argument'], ['ATAN', '1 to 2 arguments'], ['CONCAT', 'at least 1 argument'], ['COUNT', '']]) {
       assert.ok(cm.functionsFor('mysql', '8.0.36').functions.some(fn => fn.name === name));
       const result = await pair.source(context(`SELECT ${name}|`, true));
       const fn = result.options.find(o => o.label === name && o.type === 'function');
-      assert.ok(fn, name); assert.equal(fn.detail, 'function' + (count ? ' · ' + count : ''));
+      assert.ok(fn, name); assert.equal(fn.detail, count);
       assert.equal(typeof fn.apply, 'function');
     }
     const overlap = await pair.source(context('SELECT REVERSE|', true));
@@ -447,7 +450,9 @@ try {
     }
     pair.env.current.serverVersion = '8.0.99';
     const result = await pair.source(context('SELECT POW|', true));
-    assert.equal(result.options.find(o => o.type === 'function' && o.label === 'POW').detail, 'function · 2 arguments, MySQL 8.0.46 list');
+    assert.equal(result.options.find(o => o.type === 'function' && o.label === 'POW').detail, '2 arguments, MySQL 8.0.46 list');
+    assert.equal((await pair.source(context('SELECT COUNT|', true))).options.find(o => o.type === 'function' && o.label === 'COUNT').detail,
+      'MySQL 8.0.46 list', 'unknown counts keep the release without a leading comma');
     assert.equal(sent.length, 0);
   });
   await test('function apply keeps every matching cursor inside parentheses and undoes in one step', async () => {

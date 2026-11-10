@@ -27,9 +27,9 @@ type ArgumentHint = Tooltip & { label: string };
 /** Counts come only from generated engine facts, with no parameter names. */
 export function argumentCount(fn: Pick<EngineFunction, "min" | "max">): string {
   if (fn.min === null || fn.max === null) return "";
-  if (fn.max === "unbounded") return `at least ${fn.min} arguments`;
+  if (fn.max === "unbounded") return `at least ${fn.min} argument${fn.min === 1 ? "" : "s"}`;
   if (fn.min === fn.max) return `${fn.min} argument${fn.min === 1 ? "" : "s"}`;
-  return `${fn.min} to ${fn.max} arguments`;
+  return `${fn.min} to ${fn.max} argument${fn.max === 1 ? "" : "s"}`;
 }
 
 function hintAt(state: EditorState, env: EditorEnv, words?: WordCatalog, previous?: ArgumentHint | null): ArgumentHint | null {

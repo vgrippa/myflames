@@ -7,7 +7,7 @@ const bundled = await build({
     export { EditorState, EditorSelection } from "@codemirror/state";
     export { showTooltip } from "@codemirror/view";
     export { sqlLanguage } from "./src/editor/sqlLanguage";
-    export { argumentHintsExtension } from "./src/editor/argumentHints";
+    export { argumentCount, argumentHintsExtension } from "./src/editor/argumentHints";
     export { functionsFor } from "./src/editor/engineWords";
   `, resolveDir: fileURLToPath(new URL("..", import.meta.url)) },
   bundle: true, format: "esm", platform: "neutral", target: "es2020", write: false, logLevel: "silent",
@@ -73,6 +73,16 @@ async function check(marked, expected, options) {
   h.destroy(); passed++;
 }
 try {
+  // Exact, bounded, unbounded and unknown counts all share this formatter.
+  for (const [min, max, expected] of [
+    [0, 0, "0 arguments"], [1, 1, "1 argument"], [2, 2, "2 arguments"],
+    [0, 1, "0 to 1 argument"], [1, 2, "1 to 2 arguments"], [2, 3, "2 to 3 arguments"],
+    [0, "unbounded", "at least 0 arguments"], [1, "unbounded", "at least 1 argument"],
+    [2, "unbounded", "at least 2 arguments"], [null, null, ""], [1, null, ""], [null, 2, ""],
+  ]) {
+    assert.equal(cm.argumentCount({ min, max }), expected, `${min} to ${max}`);
+    passed++;
+  }
   const list = cm.functionsFor("mysql", "8.0.36");
   for (const [name, min, max] of [["POW", 2, 2], ["ABS", 1, 1], ["CONCAT", 1, "unbounded"], ["ATAN", 1, 2], ["COUNT", null, null], ["PI", 0, 0]])
     assert.deepEqual(list.functions.find(fn => fn.name === name), { name, min, max });
@@ -81,9 +91,9 @@ try {
     ["SELECT DATE_FORMAT(|)", "DATE_FORMAT(…) · 2 arguments · argument 1"],
     ["SELECT abs(|)", "ABS(…) · 1 argument · argument 1"],
     ["SELECT ATAN(|)", "ATAN(…) · 1 to 2 arguments · argument 1"],
-    ["SELECT CONCAT(|)", "CONCAT(…) · at least 1 arguments · argument 1"],
+    ["SELECT CONCAT(|)", "CONCAT(…) · at least 1 argument · argument 1"],
     ["SELECT COUNT(|)", "COUNT(…) · argument 1"], ["SELECT PI(|)", "PI(…) · 0 arguments · argument 1"],
-    ["SELECT POW(1, CONCAT('a', |))", "CONCAT(…) · at least 1 arguments · argument 2"],
+    ["SELECT POW(1, CONCAT('a', |))", "CONCAT(…) · at least 1 argument · argument 2"],
     ["SELECT POW(CONCAT('a', 'b'), |)", "POW(…) · 2 arguments · argument 2"],
     ["SELECT POW(1, (2, |))", "POW(…) · 2 arguments · argument 2"],
     ["SELECT POW(1, missing(2, |))", "POW(…) · 2 arguments · argument 2"],
@@ -99,8 +109,8 @@ try {
     ["SELECT POW(1, `still, |", "POW(…) · 2 arguments · argument 2"],
     ["SELECT POW(1, 2); SELECT ABS(|)", "ABS(…) · 1 argument · argument 1"],
   ]) await check(marked, expected);
-  await check("SELECT CONCAT('a\\', 1, |)", "CONCAT(…) · at least 1 arguments · argument 3", { env: { backslashEscapes: false } });
-  await check("SELECT CONCAT('a\\', 1, |)", "CONCAT(…) · at least 1 arguments · argument 1", { env: { backslashEscapes: true } });
+  await check("SELECT CONCAT('a\\', 1, |)", "CONCAT(…) · at least 1 argument · argument 3", { env: { backslashEscapes: false } });
+  await check("SELECT CONCAT('a\\', 1, |)", "CONCAT(…) · at least 1 argument · argument 1", { env: { backslashEscapes: true } });
   await check("SELECT CONCAT('a\\', 1; SELECT |", null, { env: { backslashEscapes: false } });
   await check("SELECT CONCAT('a\\', 1); SELECT ABS(|)", "ABS(…) · 1 argument · argument 1", { env: { backslashEscapes: false } });
   await check("SELECT CONCAT('a\\', " + " ".repeat(4000) + "|)", null, { env: { backslashEscapes: false } });

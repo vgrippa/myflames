@@ -5158,13 +5158,14 @@ the catalog does not have resolves to nothing, and completion falls back to
 the small common word list (`commonCompletionWords`, `sqlCompletion.ts`).
 `isKeyword` drives engine-aware backtick quoting in completion: a name that
 is a keyword on the connected server's own release is quoted. The suggestion
+detail is `reserved` for reserved keywords and empty for other keywords. The
 detail names the release when the match is not exact (", MySQL 8.0.36 list").
 `functionsFor` resolves the native and grammar functions with their
 argument-count bounds under the same policy. Completion lists each function
-with a `function` kind and a `function · N arguments` detail (a `min` to
+with a `function` kind and an argument-count detail such as `N arguments` (a `min` to
 `max` range reads `N to M arguments`, an unbounded maximum `at least N
-arguments`, unknown bounds omitted), and accepting one inserts `NAME()`
-with the caret inside, or only the name when the text already holds an
+arguments`, singular counts use `argument`, unknown bounds omitted). Accepting
+one inserts `NAME()` with the caret inside, or only the name when the text already holds an
 opening `(` (`completion.ts`). `argumentHints.ts` shows the call the caret
 sits in as `NAME(…) · N arguments · argument k` with the same count
 strings, never parameter names, behind the **Details on hover** setting: it
@@ -5653,7 +5654,7 @@ the target tables' columns with `schema.table · type` details, aliases, CTE
 names, tables, schemas, the engine's own keywords
 and functions for the connected server's release (see [Engine words for the
 Query editor](#engine-words-for-the-query-editor); functions carry a
-`function · N arguments` detail; a small common word list when the release
+`N arguments` detail; a small common word list when the release
 is not cataloged) and `@@` system variables from
 `/api/config/versions/names`, filtered to the typed scope (`global`,
 `session`, or both when no scope was typed) with deprecated names marked.

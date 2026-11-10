@@ -1,18 +1,10 @@
 /* CodeMirror owns positioning and listbox focus. The app supplies its tokens. */
 .cm-tooltip.sql-completion {
-  z-index: 140;
   width: min(360px, calc(100vw - 16px));
   max-height: min(300px, 50vh);
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-md);
-  background: var(--surface-raised);
-  color: var(--ink);
-  box-shadow: var(--shadow-raised);
-  font-family: var(--font-sans);
-  font-size: var(--text-sm);
 }
 .cm-tooltip.sql-completion > ul { overflow-y: auto; min-height: 0; max-height: inherit; padding: 0; font-family: var(--font-sans); }
 .cm-tooltip.sql-completion > ul > .sql-completion-option {
@@ -33,15 +25,7 @@
 /* Keep the live region mounted so VoiceOver can announce subsequent text. */
 .sql-completion-hint:empty { padding: 0; border: 0; }
 
-/* Hover tooltips mount under body, outside the editor's layout wrappers. */
-.cm-tooltip:has(.sql-hover) {
-  z-index: 140;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-md);
-  background: var(--surface-raised);
-  color: var(--ink);
-  box-shadow: var(--shadow-raised);
-}
+/* SqlEditor's CodeMirror theme supplies the shared tooltip surface. */
 .sql-hover {
   max-width: min(640px, calc(100vw - 16px));
   max-height: 50vh;
@@ -57,15 +41,7 @@
 .sql-hover-name, .sql-hover-type { min-width: 0; overflow-wrap: anywhere; }
 .sql-hover-note { color: var(--ink-muted); white-space: nowrap; }
 
-/* Argument hints share hover tokens and never take keyboard focus. */
-.cm-tooltip:has(.sql-arg-hint) {
-  z-index: 140;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-md);
-  background: var(--surface-raised);
-  color: var(--ink);
-  box-shadow: var(--shadow-raised);
-}
+/* Argument hints never take keyboard focus. */
 .sql-arg-hint {
   max-width: min(640px, calc(100vw - 16px));
   padding: var(--space-2) var(--space-3);

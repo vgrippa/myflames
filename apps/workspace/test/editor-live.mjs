@@ -287,7 +287,7 @@ try {
   await typeSuffix("SELECT ", "CONCA");
   const concat = await option("CONCAT");
   assert.equal(concat.kind, "function");
-  assert.match(concat.detail, /function/i);
+  assert.match(concat.detail, /argument/i);
   await typeSuffix("SELECT ", "@@innodb_buffer_p");
   const bufferPool = await option("innodb_buffer_pool_size");
   assert.match(bufferPool.detail, /\bglobal\b/);
@@ -483,7 +483,7 @@ try {
       }],
       ["function", async () => {
         await typeSuffix("SELECT ", "CONCA");
-        await completionDetail("CONCAT", "function");
+        await completionDetail("CONCAT", "at least 1 argument");
       }],
       ["argument-hint", async () => {
         await setEditorText(page, "SELECT DATE_FORMAT(created_at, ) FROM users;");
@@ -599,6 +599,8 @@ try {
               await closeShotUI();
               await prepare();
               const file = `${state}-${width}${appearance === "dark" ? "-dark" : ""}.png`;
+              await page.waitForFunction(() => document.getAnimations()
+                .every(animation => animation.playState !== "running"), { timeout: 2000 });
               await page.screenshot({ path: path.join(out, file) });
               written.push({ file, state, width, scheme: appearance, console_errors: diagnostics() });
             } catch (error) {

@@ -81,7 +81,11 @@ try {
     if(!engineList)await page.keyboard.press('Escape');
   }
   assert.ok(engineList,'keywords come from the connected engine and release (MySQL 8.4.3)');
-  assert.ok((await list()).some(s=>s.includes('OPTIMIZER_COSTS')&&s.includes('reserved keyword')),'an engine keyword shows its kind');
+  const optimizerOption=await page.$$eval('.sql-completion-option',rows=>{
+    const row=rows.find(e=>e.querySelector('.sql-completion-label')?.textContent==='OPTIMIZER_COSTS');
+    return row&&{detail:row.querySelector('.cm-completionDetail')?.textContent||'',kind:row.querySelector('.sql-completion-kind')?.textContent||''};
+  });
+  assert.ok(optimizerOption&&optimizerOption.detail==='reserved'&&optimizerOption.kind==='keyword','an engine keyword shows its kind');
   await page.keyboard.press('Escape');
   await setEditorText(page,'');
   await page.keyboard.type('SEL');await has('SELECT');

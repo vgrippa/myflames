@@ -60,13 +60,14 @@ function candidates(context: IdentifierContext, metadata: Metadata, ctes: string
   if (!context.qualifiers.length && context.place === "expression") {
     const list = env.engine && env.serverVersion ? words?.wordsFor(env.engine, env.serverVersion) : undefined;
     if (list?.release) for (const keyword of list.keywords) add(keyword.name, "keyword",
-      `${keyword.reserved ? "reserved keyword" : "keyword"}${list.exact ? "" : `, ${env.engine === "mysql" ? "MySQL" : "MariaDB"} ${list.release} list`}`, true, context.quoted ? quote(keyword.name) : keyword.name);
-    else for (const name of commonCompletionWords) add(name, "keyword", "keyword", true, context.quoted ? quote(name) : name);
+      [keyword.reserved ? "reserved" : "", list.exact ? "" : `${env.engine === "mysql" ? "MySQL" : "MariaDB"} ${list.release} list`]
+        .filter(Boolean).join(", "), true, context.quoted ? quote(keyword.name) : keyword.name);
+    else for (const name of commonCompletionWords) add(name, "keyword", "", true, context.quoted ? quote(name) : name);
     if (!context.quoted && env.engine && env.serverVersion) {
       const functions = words?.functionsFor(env.engine, env.serverVersion);
       if (functions?.release) for (const fn of functions.functions) add(fn.name, "function",
-        ["function", argumentCount(fn)].filter(Boolean).join(" · ") +
-        (functions.exact ? "" : `, ${env.engine === "mysql" ? "MySQL" : "MariaDB"} ${functions.release} list`), true, fn.name);
+        [argumentCount(fn), functions.exact ? "" : `${env.engine === "mysql" ? "MySQL" : "MariaDB"} ${functions.release} list`]
+          .filter(Boolean).join(", "), true, fn.name);
     }
   }
   return out;

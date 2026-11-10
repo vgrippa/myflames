@@ -442,9 +442,9 @@ Catalog suggestions use the selected connection's configured database. They
 include schemas, tables, columns and simple aliases, with quoted identifiers.
 Keyword and function suggestions come from the connected server's own
 release (an uncataloged patch or Percona build gets the nearest earlier
-cataloged list, named in the suggestion); a function is labeled
-`function · N arguments`, and accepting one inserts `NAME()` with the
-cursor inside, or only the name when a `(` already follows. `@@` offers
+cataloged list, named in the suggestion). Reserved keywords show `reserved`
+in the detail. A function shows its argument count, such as `N arguments`.
+Accepting one inserts `NAME()` with the cursor inside, or only the name when a `(` already follows. `@@` offers
 that release's system variables with their scope. They do not represent
 temporary tables or a database
 selected by running `USE` in an editor session. Complex nested scopes and
