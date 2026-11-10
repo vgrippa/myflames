@@ -422,11 +422,31 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
     physical_backup_requires_local_files: rawOffered?.physical_backup_requires_local_files === true,
   } } : null;
   const targetReport = memory.targets?.key === key ? memory.targets.report : null;
+  /** A target the installed MySQL Shell cannot check (shell.ok false). */
+  const shellBlocked = (t: UpgradeTarget) => !!t.shell && !t.shell.ok;
+  const shellNeeds = (t: UpgradeTarget) => t.shell?.needs ? `needs MySQL Shell ${t.shell.needs} or newer` : "needs a newer MySQL Shell";
+  // The newest release can need a newer MySQL Shell than the installed one:
+  // suggest the newest target the installed Shell can actually check.
+  const suggestedTarget = targetReport
+    ? targetReport.targets.some((t) => t.version === targetReport.recommended && !shellBlocked(t))
+      ? targetReport.recommended
+      : [...targetReport.targets].reverse().find((t) => !shellBlocked(t))?.version ?? null
+    : null;
   // Percona targets are "8.4.11-11"; the checker takes the upstream version.
   const chosenTarget: UpgradeTarget | undefined = targetReport?.targets.find((t) => t.version === target);
   const chosenVersion = () => target === "custom" ? customTarget.trim() : chosenTarget ? chosenTarget.check_version : target;
   // Dump's databases, and Restore's Default database once its form is shown.
   const catalog = useSchemaCatalog(connection, onScreen && ((section === "dump" && scope !== "instance") || (section === "restore" && !!tools)));
+  // Opening Dump or Restore re-reads the database list once: a database
+  // created or dropped since the cached read shows up without Reload databases.
+  const catalogReload = useRef(catalog.reload);
+  catalogReload.current = catalog.reload;
+  const catalogSection = useRef("");
+  useEffect(() => {
+    const opened = onScreen && (section === "dump" || section === "restore") ? section : "";
+    if (opened && catalogSection.current !== opened) catalogReload.current();
+    catalogSection.current = opened;
+  }, [section, onScreen]);
   const restoreDatabases = (catalog.catalog?.schemas || []).filter((s) => !s.system).map((s) => s.name);
   // The donor is another server: every saved connection but the one in use.
   // Not one through SSH: CLONE runs from server to server, never through
@@ -621,7 +641,12 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [section, !!tools, disabled, key]);
   useEffect(() => { setTarget(""); setCustomTarget(""); }, [key]);
-  useEffect(() => { if (targetReport?.recommended) setTarget((t) => t || targetReport.recommended || ""); }, [targetReport]);
+  useEffect(() => { if (suggestedTarget) setTarget((t) => t || suggestedTarget); }, [targetReport]);
+  // An upgrade check's error belongs to the Upgrade check tab: leaving the
+  // tab drops it (a later check replaces it, as every read does).
+  useEffect(() => {
+    if (section !== "upgrade" && readKind === "upgrade") reads.clearError();
+  }, [section, readKind]);
   useEffect(() => {
     if (!preflightError && !failedChecks.length) return;
     resultRef.current?.focus();
@@ -714,9 +739,9 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
         lastDumpParent = parentPath(p.report.target);
         reservedDirectories.current = [...reservedDirectories.current.slice(-KEEP_FINISHED), p.report.target];
         setDirectoryTouched(false);
+        // A started dump ends its table picking: the next dump starts from All tables.
+        setTables([]);
       }
-      // An authorized job keeps its original binding even if the user
-      // switched while start was in flight; keep its id for Cancel.
       denied(job.error, checked);
       rememberOwners([job], checked);
       rememberStart(job);
@@ -747,6 +772,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
             lastDumpParent = parentPath(p.report.target);
             reservedDirectories.current = [...reservedDirectories.current.slice(-KEEP_FINISHED), p.report.target];
             setDirectoryTouched(false);
+            setTables([]);
           }
           rememberOwners([found], from);
           rememberStart(found);
@@ -854,7 +880,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   // reading, or it failed) the MySQL Shell version stays the one offer.
   const targetOptions: [string, string][] = targetReport && targetReport.targets.length
     ? [...targetReport.targets].reverse().map((t): [string, string] => [t.version,
-      [t.version, t.path_label, t.version === targetReport.recommended ? "suggested" : ""].filter(Boolean).join(" · ")])
+      [t.version, t.path_label, shellBlocked(t) ? shellNeeds(t) : "", t.version === suggestedTarget ? "suggested" : ""].filter(Boolean).join(" · ")])
     : targetReport?.server.engine === "mariadb" ? [] : versions.map((v): [string, string] => [v, v]);
   // Chosen tables come from the loaded list: one a reload no longer lists blocks the preflight.
   const dumpValid = !!directory.trim() && validInteger(threads, 1, 64) && (scope === "instance" || schemas.length > 0) && !unknownTables.length && !missingTables.length;
@@ -865,7 +891,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
     <Segmented label="Maintenance task" value={section} options={(Object.keys(SECTION_LABEL) as MaintenanceSection[]).filter(value => value !== "clone" || !tools || tools.offered.clone).map((value) => ({ value, label: SECTION_LABEL[value], disabled: busy || (!!reads.loading && readKind !== "tools") }))} onChange={(next) => { selection.select("", false); setNotice(""); onSection(next); }} />
   </>;
   const form = (children: ReactNode) => <div className="ops-form"><fieldset disabled={formDisabled}>{children}</fieldset></div>;
-  const statusError = failure?.key === key ? failure.text : readKind === "preflight" ? "" : reads.error;
+  const statusError = failure?.key === key ? failure.text : readKind === "preflight" || (readKind === "upgrade" && section !== "upgrade") ? "" : reads.error;
   const retryRead = () => { void (readKind === "upgrade" ? runUpgrade() : readKind === "preflight" ? prepare() : loadTools(checkingUpdates)); };
   const readStatus = (kind: typeof readKind) => <ActionStatus keepLine state={{ phase: reads.loading && readKind === kind ? "pending" : "idle", message: reads.loading, startedAt: readSince }}
     onStop={reads.stop} stopLabel="Stop waiting" />;
@@ -940,7 +966,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
           {scope !== "instance" && <div className="form-row">
             <span className="form-row-label">Databases</span>
             <div className="form-row-control">
-              <SchemaPicker id="ops-dump-schemas" value={schemas} onChange={setSchemas} catalog={catalog.catalog} error={catalog.error} loading={catalog.loading} onReload={catalog.reload} disabled={formDisabled} />
+              <SchemaPicker id="ops-dump-schemas" value={schemas} onChange={(next) => { setSchemas(next); setTables([]); }} catalog={catalog.catalog} error={catalog.error} loading={catalog.loading} onReload={catalog.reload} disabled={formDisabled} emptyLabel="No database chosen" />
               <p className="hint">{!schemas.length ? "Choose at least one database." : schemas.length > 1 ? "Choose one database to pick its tables." : ""}</p>
             </div>
           </div>}

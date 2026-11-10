@@ -286,14 +286,20 @@ export function useSchemaCatalog(connection: Connection, enabled = true) {
   return { catalog: current.catalog, error: current.error, loading: current.loading, reload: () => load(true) };
 }
 
-function schemaSummary(value: string[]) {
-  if (!value.length) return "All user databases";
+function schemaSummary(value: string[], catalog: SchemaCatalog | null, emptyLabel: string) {
+  if (!value.length) return emptyLabel;
+  // Every user database chosen reads as "All user databases"; nothing chosen
+  // is the caller's empty label (Dump: "No database chosen").
+  const user = (catalog?.schemas || []).filter((s) => !s.system);
+  if (user.length > 0 && user.every((s) => value.includes(s.name))) return "All user databases";
   if (value.length <= 2) return value.join(", ");
   return `${value.length} databases`;
 }
 
 /** Multi-select of databases with search. An empty selection means every
- * database except mysql, sys, performance_schema and information_schema.
+ * database except mysql, sys, performance_schema and information_schema,
+ * unless the caller names emptiness itself with *emptyLabel* (Dump: there
+ * nothing chosen is not a valid dump).
  * The floating kit popover keeps the toolbar height stable. */
 export function SchemaPicker({
   id,
@@ -304,6 +310,7 @@ export function SchemaPicker({
   loading,
   onReload,
   disabled,
+  emptyLabel = "All user databases",
 }: {
   id: string;
   value: string[];
@@ -313,6 +320,8 @@ export function SchemaPicker({
   loading: boolean;
   onReload: () => void;
   disabled?: boolean;
+  /** What the field reads while nothing is chosen. */
+  emptyLabel?: string;
 }) {
   const control = useRef<HTMLFieldSetElement>(null);
   const [showSystem, setShowSystem] = useState(false);
@@ -329,7 +338,7 @@ export function SchemaPicker({
           trigger={
             <>
               <span className="visually-hidden">Databases: </span>
-              <span id={id} className="perf-picker-summary">{schemaSummary(value)}</span>
+              <span id={id} className="perf-picker-summary">{schemaSummary(value, catalog, emptyLabel)}</span>
             </>
           }
         >

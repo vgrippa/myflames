@@ -850,6 +850,46 @@ try {
   assert.equal(await page.$eval(stagingRow + " [data-col=password] span", el => el.title), "No saved password");
   // The unsaved default connection is in use until another is chosen.
   assert.match(await text(".connection-row.is-active"), /Local MySQL.*In use/);
+  // G1: the Connections table fits its frame at 1440 and 720 px, light and
+  // dark: the Columns control never covers the last header, Type is only as
+  // wide as its badge, and Name takes the spare width.
+  const tableFit = async (width) => {
+    await page.setViewport({ width, height: width === 720 ? 520 : 900 });
+    await waitFor(
+      () => page.evaluate(() => {
+        const frame = document.querySelector(".connections .data-table-frame");
+        if (!frame) return false;
+        const heads = [...frame.querySelectorAll("thead th[data-col]")];
+        if (!heads.length) return false;
+        const last = heads.at(-1).getBoundingClientRect();
+        const menu = frame.querySelector(".table-columns-cell").getBoundingClientRect();
+        return last.right <= menu.left + 1;
+      }),
+      `the last header stays left of the Columns gutter at ${width} px`,
+    );
+    const m = await page.evaluate(() => {
+      const frame = document.querySelector(".connections .data-table-frame");
+      const heads = [...frame.querySelectorAll("thead th[data-col]")];
+      const last = heads.at(-1).getBoundingClientRect();
+      const menu = frame.querySelector(".table-columns-cell").getBoundingClientRect();
+      const widthOf = (key) => parseFloat(frame.querySelector(`col[data-col="${key}"]`)?.style.width || "0");
+      return { gap: menu.left - last.right, name: widthOf("name"), type: widthOf("type"),
+        pageScroll: document.documentElement.scrollWidth > innerWidth };
+    });
+    assert.ok(m.gap >= -1, `the Columns control never covers the last header at ${width} px: ${JSON.stringify(m)}`);
+    assert.equal(m.pageScroll, false, `no horizontal page scroll at ${width} px`);
+    assert.ok(m.name > 108, `Name takes the spare width at ${width} px (it was fixed at 108): ${m.name}`);
+    assert.ok(m.type > 0 && m.type < 184, `Type is only as wide as its badge at ${width} px (it was fixed at 184): ${m.type}`);
+  };
+  for (const theme of ["light", "dark"]) {
+    await page.evaluate((t) => { document.documentElement.dataset.theme = t; }, theme);
+    for (const width of [1440, 720]) {
+      await tableFit(width);
+      await page.screenshot({ path: path.join(directory, `connections-table-${theme}-${width}.png`) });
+    }
+  }
+  await page.evaluate(() => { document.documentElement.dataset.theme = "light"; });
+  await page.setViewport({ width: 1440, height: 900 });
   // Test a saved connection from its row: by id, with no password sent.
   await connectionAction(page, "Prod", "Test");
   await page.waitForFunction((s) => document.querySelector(".connection-panel .row-test")?.textContent === "Connected · 8.4.3", {}, prodRow);

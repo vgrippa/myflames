@@ -840,7 +840,7 @@ export function Connections({
         setSelected(ids => checked ? [...new Set([...ids, row.key])] : ids.filter(id => id !== row.key));
       }}><span className="visually-hidden">Select {row.fields.name || connectionTarget(row.fields)}</span></Checkbox>
     ) },
-    { key: "name", label: "Name", primary: true, width: 108, minWidth: 96, sort: row => row.fields.name,
+    { key: "name", label: "Name", primary: true, flex: true, width: 108, minWidth: 96, sort: row => row.fields.name,
       render: row => <span className="cell-name">
         <TypeDot type={row.profile?.type || "production"} readOnly={row.fields.read_only} />
         <strong className="cell-truncate" title={row.fields.name || connectionTarget(row.fields)}>{row.fields.name || connectionTarget(row.fields)}</strong>
@@ -848,16 +848,17 @@ export function Connections({
           {row.profile?.type === "development" ? "Dev" : "Prod"}
         </span>
       </span> },
-    { key: "type", label: "Type", width: 184, minWidth: 184, sort: row => row.profile?.type || "production", render: row => (
+    // No declared width: the badge (Production, Development, Read-only) sets it.
+    { key: "type", label: "Type", sort: row => row.profile?.type || "production", render: row => (
       <SafetyTags type={row.profile?.type || "production"} readOnly={row.fields.read_only} />
     ) },
-    { key: "endpoint", label: "user@host:port", flex: true, width: 112, minWidth: 92, sort: row => connectionTarget(row.fields),
+    { key: "endpoint", label: "user@host:port", width: 112, minWidth: 92, sort: row => connectionTarget(row.fields),
       render: row => <span className="cell-truncate" title={connectionTarget(row.fields)}>{connectionTarget(row.fields)}</span> },
-    { key: "schema", label: "Database", title: "Default database", width: 104, sort: row => row.fields.database,
+    { key: "schema", label: "Database", title: "Default database", width: 94, sort: row => row.fields.database,
       render: row => row.fields.database
         ? <span className="cell-truncate" title={row.fields.database}>{row.fields.database}</span>
         : <span className="cell-truncate cell-empty" title="No default database">—<span className="visually-hidden">No default database</span></span> },
-    { key: "server", label: "Server", width: 124, minWidth: 112,
+    { key: "server", label: "Server", width: 112, minWidth: 112,
       render: row => <ReadinessFacts connection={{ ...row.fields, profile_id: row.profile?.id, type: row.profile?.type }} /> },
     { key: "password", label: "Password", width: 80, sort: row => row.profile?.has_saved_password ? 1 : 0,
       render: row => <span className="cell-truncate" title={passwordStatus(row.profile)}>{row.profile?.has_saved_password ? "Saved" : "Not saved"}</span> },

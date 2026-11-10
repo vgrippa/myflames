@@ -2041,12 +2041,12 @@ export function DataTable<T>({
       // Neither do flags: a cell's pills keep their size (a name beside them truncates).
       const cells = t.tBodies[0].querySelectorAll<HTMLElement>(`:scope > tr[data-row-key] > td[data-col="${CSS.escape(key)}"]`);
       for (let i = 0; i < cells.length; i++) {
-        const pills = cells[i].querySelectorAll(".pill, .status-pill");
+        const pills = cells[i].querySelectorAll(".pill, .status-pill, .type-tag");
         if (!pills.length) continue;
         let flags = 0;
         pills.forEach((p) => (flags += p.getBoundingClientRect().width + 8));
         // A name beside the flags keeps a few characters.
-        const pillWidth = CELL_PAD + (cells[i].querySelector(".cell-name > :not(.pill, .status-pill)") ? 64 : 0) + flags;
+        const pillWidth = CELL_PAD + (cells[i].querySelector(".cell-name > :not(.pill, .status-pill, .type-tag)") ? 64 : 0) + flags;
         min = Math.max(min, Math.ceil(pillWidth));
         if ((nextFlags[key] || 0) < Math.ceil(flags) - 1) {
           nextFlags[key] = Math.ceil(flags);

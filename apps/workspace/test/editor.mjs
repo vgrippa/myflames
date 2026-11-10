@@ -500,6 +500,35 @@ try {
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   await page.setViewport({ width: 1440, height: 1000 });
 
+  // 3b. SQL INSERT export: the run's rows carry no column types; the catalog
+  // of the one table the statement read declares them, and numeric columns
+  // (id INT) go unquoted. Untyped columns stay quoted; values are never
+  // inspected for a guess.
+  mock.run.push({
+    status: "complete",
+    session: session(),
+    run: run(
+      [statement(0, "SELECT id, name FROM shop.users", 0)],
+      [rows(0, [{ name: "id", hex: false, type: null }, { name: "name", hex: false, type: null }], [["1", "User 1"], ["2", "User 2"]])],
+    ),
+  });
+  await setText("SELECT id, name FROM shop.users");
+  const beforeUsersRun = calls("/api/editor/run").length;
+  await page.click("[data-action=run-all]");
+  await ran(beforeUsersRun + 1);
+  await idle();
+  await page.locator(".result-export button ::-p-text(Export)").click();
+  await page.waitForSelector(".popover .export-sql");
+  assert.deepEqual(await page.$$eval(".popover .export-sql input", (els) => els.map((e) => e.value)), ["users", "shop"]);
+  const exportsBefore = calls("/api/editor/export").length;
+  await page.locator(".popover button ::-p-text(Download SQL)").click();
+  const sqlExport = await until(() => calls("/api/editor/export").length > exportsBefore && calls("/api/editor/export").at(-1), "no SQL export");
+  assert.equal(sqlExport.format, "sql");
+  assert.equal(sqlExport.result.columns[0].type, "int", "the catalog types id numeric, so the export writes it unquoted");
+  assert.equal(sqlExport.result.columns[1].type, null, "a column the catalog does not declare stays untyped (quoted)");
+  assert.deepEqual(sqlExport.result.rows, [["1", "User 1"], ["2", "User 2"]]);
+  assert.ok(calls("/api/live/catalog").some((b) => b.table === "users" && b.schema === "shop"), "the table's catalog supplied the types");
+
   // 4. An error: Messages, the underline, and Go to line.
   const BAD = "SELECT 1;\nSELEC 2 FROM t";
   await setText(BAD);
@@ -512,7 +541,7 @@ try {
     ),
   });
   await page.click("[data-action=run-all]");
-  await ran(5);
+  await ran(6);
   await page.waitForSelector(".message-error");
   assert.equal(await page.$eval(".results-tabs [aria-selected=true]", (e) => e.textContent), "Messages1", "an error opens Messages");
   assert.match(await text(".message-error"), /ERROR 1064 \(42000\): You have an error/);
@@ -528,7 +557,7 @@ try {
   mock.run.push({ status: "running", session: session({ state: "running" }), run: running });
   mock.holdStatus = true;
   await chord("Enter");
-  await ran(6);
+  await ran(7);
   await page.waitForSelector(".results-running");
   assert.equal(await page.$eval("[data-action=stop]", (e) => e.disabled), false);
   await until(() => heldStatus.length > 0, "no status poll while running");
@@ -551,7 +580,7 @@ try {
   mock.holdStatus = true;
   await page.focus(EDITOR);
   await chord("Enter");
-  await ran(7);
+  await ran(8);
   await page.waitForSelector(".results-running");
   await page.focus(EDITOR);
   await page.keyboard.press("Escape");
@@ -575,7 +604,7 @@ try {
     run: run([statement(0, "SELECT * FROM orders", 0)], [rows(0, ["id"], [["1"], ["2"]], { stopped: "row_limit", label: "stopped after 2 rows", truncated: true, limit: 2 })]),
   });
   await chord("Enter");
-  body = await ran(8);
+  body = await ran(9);
   assert.equal(body.limit, 2);
   await page.waitForSelector(".result-cut");
   assert.equal(await text(".result-cut"), "stopped after 2 rows");
@@ -585,7 +614,7 @@ try {
     run: run([statement(0, "SELECT * FROM orders", 0)], [rows(0, ["id"], [["1"], ["2"], ["3"], ["4"], ["5"]], { limit: 1002 })]),
   });
   await page.locator(".result-actions button ::-p-text(Load more)").click();
-  body = await ran(9);
+  body = await ran(10);
   assert.equal(body.limit, 1002);
   // The run's own text with that statement selected, in the same session.
   assert.equal(body.sql, "SELECT * FROM orders");
@@ -604,7 +633,7 @@ try {
   mock.run.push({ status: "complete", session: session({ in_transaction: true, autocommit: true }), run: run([statement(0, "START TRANSACTION", 0, { kind: "write" })], [{ type: "ok", statement: 0, affected_rows: 0, info: null, warnings: 0, duration_ms: 1 }]) });
   await setText("START TRANSACTION");
   await chord("Enter");
-  await ran(10);
+  await ran(11);
   await page.waitForFunction(() => document.querySelector(".tx-state")?.dataset.state === "Transaction open");
   assert.ok(await page.$('.query-tabs .tab-transaction[aria-label="Transaction open"]'), "the tab shows its open transaction");
   const action = (verb) => ({ status: "complete", session: session({ in_transaction: false }), run: run([statement(0, verb, 0, { kind: verb === "COMMIT" ? "write" : "read" })], [{ type: "ok", statement: 0, affected_rows: 0, info: null, warnings: 0, duration_ms: 1 }], { kind: "action" }) });
@@ -619,7 +648,7 @@ try {
   mock.run.push({ status: "complete", session: session({ in_transaction: true }), run: run([statement(0, "BEGIN", 0, { kind: "write" })], [{ type: "ok", statement: 0, affected_rows: 0, info: null, warnings: 0, duration_ms: 1 }]) });
   await setText("BEGIN");
   await chord("Enter");
-  await ran(11);
+  await ran(12);
   await page.waitForSelector(".editor-transaction-trigger");
   await page.click(".editor-transaction-trigger");
   await page.waitForSelector("[data-action=commit]");
@@ -647,7 +676,7 @@ try {
   mock.run.push({ status: "complete", session: session({ tab_id: "2", in_transaction: null, transaction_note: "The transaction instrument is off." }), run: run([statement(0, "UPDATE t SET a = 1 WHERE id = 1", 0, { kind: "write" })], [{ type: "ok", statement: 0, affected_rows: 1, info: null, warnings: 0, duration_ms: 1 }]) });
   await setText("UPDATE t SET a = 1 WHERE id = 1");
   await chord("Enter");
-  await ran(12);
+  await ran(13);
   await page.waitForFunction(() => document.querySelector(".tx-state")?.dataset.state === "Transaction unknown");
   // The footer leaves the transaction to the toolbar, which is always shown:
   // Query digest is a place of its own, not a mode of the editor.
@@ -862,7 +891,8 @@ try {
 
   // 10. Schema browser: one automatic list read; details stay lazy.
   assert.equal(seen.filter((s) => s.path === "/api/live/schemas").length, 1, "one schema-list read when the editor opens");
-  assert.equal(calls("/api/live/catalog").length, 0, "table details stay lazy");
+  // (The SQL export of the users result read its table's catalog for column types.)
+  assert.equal(calls("/api/live/catalog").filter((b) => b.schema === "testdb").length, 0, "table details stay lazy");
   const treeRow = async (kind, label) => {
     await page.waitForFunction((kind, label) => [...document.querySelectorAll(`.tree-row.kind-${kind}`)].some((r) => r.querySelector(".tree-label")?.textContent === label), {}, kind, label);
     for (const handle of await page.$$(`.tree-row.kind-${kind}`))
@@ -874,9 +904,10 @@ try {
   await more.focus();
   await page.keyboard.press("Enter");
   const users = await treeRow("table", "users");
-  assert.equal(calls("/api/live/catalog")[0].schema, "testdb");
-  assert.equal(calls("/api/live/catalog")[1].after, "orders");
-  assert.equal(calls("/api/live/catalog")[1].prefix, "");
+  const treeReads = calls("/api/live/catalog").filter((b) => b.schema === "testdb");
+  assert.equal(treeReads[0].schema, "testdb");
+  assert.equal(treeReads[1].after, "orders");
+  assert.equal(treeReads[1].prefix, "");
   assert.equal(await page.$(".tree-row.kind-more"), null, "no continuation after the last page");
   assert.equal(await page.$eval(".schema-browser", e => /Showing the first/.test(e.textContent)), false, "the cap notice goes away on the last page");
   assert.equal((await page.$$(".tree-row.kind-table")).length, 2, "pages are appended");
@@ -1688,6 +1719,21 @@ try {
   await page.waitForFunction(() => document.querySelector('[data-action=run]')?.title.includes("read-only"));
   assert.equal(await page.$eval('[data-action=run]', e => e.getAttribute("aria-disabled")), "true");
   await sharedPrivilegeNotice("This connection is read-only.");
+
+  // F7b: a refused Run all (several DDL statements) says so once, in the
+  // banner, not also in amber beside Auto-commit.
+  const ddlRefusal = "Run DDL statements one at a time, with a separate confirmation for each; nothing was sent.";
+  mock.preview = () => ({ ...previewReply("allowed"), policy: { action: "refuse", text: ddlRefusal } });
+  await setText("CREATE TABLE t1 (id INT);\nCREATE TABLE t2 (id INT)");
+  await page.waitForFunction((t) => document.querySelector(".editor-privilege-note")?.textContent === t, {}, ddlRefusal);
+  const ddlBefore = calls("/api/editor/run").length;
+  await page.focus(EDITOR);
+  await chord("Enter", true);
+  assert.equal(calls("/api/editor/run").length, ddlBefore, "a refused Run all sends nothing");
+  await page.waitForFunction((t) => [...document.querySelectorAll("p.error[role=alert]")].some((e) => e.textContent.includes(t)), {}, ddlRefusal);
+  assert.equal(await page.$(".editor-privilege-note"), null, "the banner's refusal is not repeated beside Auto-commit");
+  await page.click("p.error[role=alert] .notice-dismiss");
+  await page.waitForFunction(() => !document.querySelector("p.error[role=alert]"));
   mock.preview = null;
   // An unknown persistent session (including SET ROLE) stays runnable.
   for (const sql of ["SET ROLE NONE", "SET GLOBAL max_connections = 123"]) {

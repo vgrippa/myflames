@@ -81,8 +81,13 @@ const job = (base, id, extra = {}) => ({ ...structuredClone(base), id, ...extra 
 const h = await open("/api/lifecycle/tools", "maintenance", {
   "/api/files/local/list": body => ({ status: 200, body: { path: body.path || "/Users/dba", home: "/Users/dba", entries: [], transfers: false } }),
   [REVEAL]: body => next.reveal.shift() || { status: 200, body: { revealed: body.path }, delay: 100 },
-  [UPGRADE]: () => ({ status: 200, body: next.upgrade, delay: 50 }),
+  [UPGRADE]: (body) => (typeof body.target_version === "string" && body.target_version.startsWith("9.7")
+    ? { status: 400, body: { error: "MySQL Shell 9.6.0 cannot check this pair: the server must be older than the Shell and the target at most 9.6. Install a newer MySQL Shell." } }
+    : { status: 200, body: next.upgrade, delay: 50 }),
   [TARGETS]: () => ({ status: 200, body: targets, delay: 50 }),
+  "/api/live/catalog": (body) => ({ status: 200, body: { schema_version: "catalog-1.0", level: "tables", schema: body.schema,
+    tables: ["orders", "users", "notes"].map((name) => ({ name, type: "table", engine: "InnoDB", rows: 10, bytes: 16384 })),
+    truncated: false, limit: 200, prefix: null, after: null, next_after: null, stats: true } }),
   [PREPARE]: () => next.prepare.shift() || { status: 200, body: dumpPlan },
   [START]: (body) => {
     const reply = next.start.shift();
@@ -230,22 +235,24 @@ try {
   // Upgrade check: the partial check without MySQL Shell, labelled as such.
   await section("Upgrade check");
   // Targets come from the release notes and the upgrade paths: 8.4 patches and
-  // the next LTS (9.7), newest first, with the newest 9.7 suggested and chosen.
+  // the next LTS (9.7), newest first. 9.7 needs a newer MySQL Shell than the
+  // installed 9.6.0: marked in its option, never the suggested default.
   await page.waitForSelector(`${view} .ops-targets strong`);
   assert.equal(calls(TARGETS).length, 1, "the target list reads once when Upgrade check opens");
   assert.deepEqual(await page.$$eval(`${view} select[aria-label="Target version"] option`, (els) => els.map((e) => e.value)),
     ["", "9.7.4", "9.7.3", "9.7.2", "9.7.1", "9.7.0", "8.4.13", "8.4.12", "8.4.11", "8.4.10", "8.4.9", "8.4.8", "8.4.7", "8.4.6", "8.4.5", "8.4.4", "custom"]);
-  assert.equal(await page.$eval(`${view} select[aria-label="Target version"]`, (e) => e.value), "9.7.4");
-  assert.match(await text(`${view} select[aria-label="Target version"] option[value="9.7.4"]`), /^9\.7\.4 · next LTS · suggested$/);
+  assert.equal(await page.$eval(`${view} select[aria-label="Target version"]`, (e) => e.value), "8.4.13");
+  assert.match(await text(`${view} select[aria-label="Target version"] option[value="9.7.4"]`), /^9\.7\.4 · next LTS · needs MySQL Shell 9\.7 or newer$/);
+  assert.match(await text(`${view} select[aria-label="Target version"] option[value="8.4.13"]`), /^8\.4\.13 · same series · suggested$/);
   const notes = await text(`${view} .ops-targets`);
   assert.match(notes, /Installed from: RPM packages · MySQL release notes · read 21:20 UTC · 15 releases offered/);
   assert.match(notes, /MySQL Yum repository/);
-  assert.match(notes, /9\.7\.4 \(2026-10-20\): next LTS · needs MySQL Shell 9\.7 or newer for the full check · Release notes/);
-  assert.equal(await page.$eval(`${view} .ops-targets a[href*="news-9-7-4"]`, (a) => a.getAttribute("href")), "https://dev.mysql.com/doc/relnotes/mysql/9.7/en/news-9-7-4.html");
-  await page.select(`${view} select[aria-label="Target version"]`, "8.4.13");
-  assert.match(await text(`${view} .ops-targets`), /8\.4\.13 \(2026-10-20\): same series · Release notes/);
-  assert.doesNotMatch(await text(`${view} .ops-targets`), /needs MySQL Shell/);
+  assert.match(notes, /8\.4\.13 \(2026-10-20\): same series · Release notes/);
+  assert.equal(await page.$eval(`${view} .ops-targets a[href*="news-8-4-13"]`, (a) => a.getAttribute("href")), "https://dev.mysql.com/doc/relnotes/mysql/8.4/en/news-8-4-13.html");
+  assert.doesNotMatch(notes, /needs MySQL Shell/);
   await page.select(`${view} select[aria-label="Target version"]`, "9.7.4");
+  assert.match(await text(`${view} .ops-targets`), /9\.7\.4 \(2026-10-20\): next LTS · needs MySQL Shell 9\.7 or newer for the full check · Release notes/);
+  assert.equal(await page.$eval(`${view} .ops-targets a[href*="news-9-7-4"]`, (a) => a.getAttribute("href")), "https://dev.mysql.com/doc/relnotes/mysql/9.7/en/news-9-7-4.html");
   await captureSheet("upgrade-targets");
   await page.select(`${view} select[aria-label="Target version"]`, "custom");
   await field("Exact version", "8.4.0");
@@ -274,16 +281,44 @@ try {
   await page.waitForFunction((v) => /MySQL Shell ·/.test(document.querySelector(`${v} .summary-text`)?.textContent || ""), {}, view);
   assert.equal(await text(`${view} .summary-text`), "MySQL 8.0.46 to 8.4.0 · MySQL Shell · 2 errors, 27 warnings, 2 notices");
 
+  // A target the installed Shell cannot check fails with its own error, which
+  // belongs to the Upgrade check tab only: it never shows on Dump or Restore,
+  // and leaving the tab clears it.
+  await page.select(`${view} select[aria-label="Target version"]`, "9.7.4");
+  await page.locator(`${view} .ops-actions button ::-p-text(Check upgrade)`).click();
+  await settle(UPGRADE, 3);
+  assert.equal(calls(UPGRADE)[2].body.target_version, "9.7.4");
+  await page.waitForSelector(`${view} .view-status [role=alert]`);
+  assert.match(await text(`${view} .view-status [role=alert]`), /MySQL Shell 9\.6\.0 cannot check this pair/);
+  await section("Dump");
+  assert.equal(await page.$(`${view} .view-status [role=alert]`), null, "the upgrade error never shows on Dump");
+  await section("Restore");
+  assert.equal(await page.$(`${view} .view-status [role=alert]`), null, "the upgrade error never shows on Restore");
+  await section("Upgrade check");
+  await page.waitForSelector(`${view} select[aria-label="Target version"]`);
+  await pause(150);
+  assert.equal(await page.$(`${view} .view-status [role=alert]`), null, "leaving the tab cleared the error");
+
   // Dump: a folder with files in it is refused at the preflight.
   await section("Dump");
   // The Dump tool select names the resolved programs, as the resolver reports them.
   assert.deepEqual(await page.$$eval(`${view} select[aria-label="Tool"] option`, (os) => os.map((o) => o.textContent)),
     ["Automatic (MySQL Shell 9.6.0 first)", "SQL dump (mysqldump 8.4.3 · Homebrew mysql@8.4)"]);
   await page.select(`${view} select[aria-label="Scope"]`, "schemas");
+  // Nothing picked says so, with the hint; every user database picked reads as
+  // "All user databases" (and the hint is gone).
+  assert.equal(await text(`${view} #ops-dump-schemas`), "No database chosen");
+  assert.match(await text(`${view} .ops-dump .form-row-control > .hint`), /Choose at least one database\./);
+  await captureSheet("dump-form");
   await page.click(`${view} #ops-dump-schemas`);
   await page.waitForSelector(`${view} .perf-picker-panel`);
   await page.locator(`${view} .perf-picker-option ::-p-text(mftab)`).click();
+  await page.locator(`${view} .perf-picker-option ::-p-text(mfother)`).click();
+  assert.equal(await text(`${view} #ops-dump-schemas`), "All user databases", "every user database chosen reads as all");
+  assert.doesNotMatch(await text(`${view} .ops-dump .form-row-control > .hint`), /Choose at least one database/);
+  await page.locator(`${view} .perf-picker-option ::-p-text(mfother)`).click();
   await page.keyboard.press("Escape");
+  assert.equal(await text(`${view} #ops-dump-schemas`), "mftab");
   await field("Output folder", "/Users/dba/maintenance/busy");
   next.prepare.push({ status: 400, body: { error: `Could not complete the request: ${refused.error}` } });
   await preflight();
@@ -340,6 +375,16 @@ try {
   assert.equal(await page.$(`${view} .ops-details`), null, 'failed preflight clears old commands');
   await field('Output folder', dumpPlan.target);
 
+  // F3: tables picked for one dump never leak into the next one.
+  await page.click(`${view} [data-dump-tables] .perf-picker-button`);
+  await page.waitForSelector(".dump-table-panel [data-table=orders]");
+  await page.click(".dump-table-panel [data-table=orders] input");
+  await page.click(".dump-table-panel [data-table=users] input");
+  assert.equal(await page.$eval(".dump-table-panel .perf-picker-all input", (e) => e.checked), false, "picked tables uncheck All tables");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".dump-table-panel"));
+  assert.equal(await text(`${view} #ops-dump-tables`), "orders, users");
+
   // Start, progress, Cancel.
   next.start.push({ job: job(running, "job-1") });
   await preflight();
@@ -353,6 +398,7 @@ try {
   assert.deepEqual([started.operation, started.typed_target, started.confirmed, started.plan.binding], ["dump", dumpPlan.target, true, dumpPlan.binding]);
   await closedSheet();
   await page.waitForSelector(`${view} .ops-job[data-job=job-1][data-state=running]`);
+  assert.equal(await text(`${view} #ops-dump-tables`), "All tables (3)", "a started dump resets the next one to All tables");
   assert.match(await text(`${view} .ops-job`), /Dump · .*Running.*Cancel/);
   assert.match(await text(`${view} .ops-job .ops-progress`), /25%/);
   await page.waitForFunction(() => document.activeElement?.dataset.job === 'job-1');
@@ -417,6 +463,7 @@ try {
   await section("Dump");
   await page.waitForSelector(`${view} .ops-job[data-job=job-2][data-state=done]`);
   assert.match(await text(`${view} .ops-job[data-job=job-2]`), /Completed/);
+  assert.equal(await text(`${view} #ops-dump-tables`), "All tables (3)", "reopening Dump after a completed dump starts from All tables");
   await settle(REVEAL, 1, 'a dump recovered after a lost Start reply auto-opens once');
   assert.deepEqual(calls(REVEAL)[0].body, { path: `${done.result.directory}/myflames-manifest.json` });
   const completedCard = `${view} .ops-job[data-job=job-2]`;
@@ -438,6 +485,22 @@ try {
     const path = document.querySelector(`${v} .ops-folder-input input`)?.value;
     return path?.startsWith('/Users/dba/maintenance/') && path !== old;
   }, {}, view, dumpPlan.target);
+
+  // F2: opening Dump or Restore re-reads the database list, once per opening,
+  // so a database created or dropped elsewhere shows up without Reload databases.
+  const schemaReads = () => calls("/api/live/schemas").length;
+  const schemaReadsBecome = async (n, message) => {
+    for (let i = 0; i < 100 && schemaReads() < n; i++) await pause(25);
+    assert.equal(schemaReads(), n, message);
+  };
+  const beforeTabs = schemaReads();
+  await section("Tools");
+  await section("Dump");
+  await schemaReadsBecome(beforeTabs + 1, "opening Dump re-reads the database list once");
+  await section("Restore");
+  await schemaReadsBecome(beforeTabs + 2, "opening Restore re-reads the database list once");
+  await pause(300);
+  assert.equal(schemaReads(), beforeTabs + 2, "an open section reads once");
 
   // Restore: the typed target gates Start.
   await section("Restore");
