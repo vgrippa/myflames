@@ -27,7 +27,7 @@ const mod = await import(
   "data:text/javascript;base64," +
     Buffer.from(result.outputFiles[0].text).toString("base64")
 );
-const { wordsFor, isKeyword } = mod;
+const { wordsFor, isKeyword, functionsFor } = mod;
 
 function findWord(engine, version, name) {
   const { keywords } = wordsFor(engine, version);
@@ -233,6 +233,77 @@ function findWord(engine, version, name) {
   assert.equal(isKeyword("mysql", "26.10.0", "SEQUENCE"), false);
 }
 
+// 4. Native function arity independently verified with git cat-file against
+// the listed source tags. Bounds are envelopes, so ODD/EVEN do not claim parity.
+{
+  const findFunction = (engine, version, name) =>
+    functionsFor(engine, version).functions.find(fn => fn.name === name) ?? null;
+  const expectBounds = (engine, version, name, min, max) =>
+    assert.deepEqual(findFunction(engine, version, name), { name, min, max });
+
+  // mysql-8.0.36:sql/item_create.cc:1519-1520, both names use Item_func_pow.
+  expectBounds("mysql", "8.0.36", "POW", 2, 2);
+  expectBounds("mysql", "8.0.36", "POWER", 2, 2);
+  // mysql-8.0.36:sql/item_create.cc:1392; MAX_ARGLIST_SIZE defined at 129-130.
+  expectBounds("mysql", "8.0.36", "CONCAT", 1, "unbounded");
+  // mysql-8.0.36:sql/item_create.cc:1453-1454, SQL_FN_EVEN starts at zero.
+  expectBounds("mysql", "8.0.36", "JSON_OBJECT", 0, "unbounded");
+  // mysql-8.0.36:sql/item_create.cc:1457, SQL_FN_ODD starts at three.
+  expectBounds("mysql", "8.0.36", "JSON_SET", 3, "unbounded");
+  // mysql-8.0.36:sql/item_create.cc:1721-1722, internal registry entry.
+  assert.equal(findFunction("mysql", "8.0.36", "INTERNAL_AUTO_INCREMENT"), null);
+  // mysql-5.7.44:sql/item_create.cc:3440 (arg2), 7749-7750 (both aliases).
+  expectBounds("mysql", "5.7.44", "POW", 2, 2);
+  expectBounds("mysql", "5.7.44", "POWER", 2, 2);
+  // mariadb-13.0.2:sql/item_create.cc:130 (arg2), 6330 (registration).
+  expectBounds("mariadb", "13.0.2", "ADD_MONTHS", 2, 2);
+  // mysql-8.0.36:sql/item_create.cc:1371-1788 has no ADD_MONTHS entry.
+  assert.equal(findFunction("mysql", "8.0.36", "ADD_MONTHS"), null);
+  // mariadb-13.0.2:sql/item_create.cc:3496-3502 rejects counts below one.
+  expectBounds("mariadb", "13.0.2", "CONCAT", 1, "unbounded");
+  // mariadb-13.0.2:sql/item_geofunc.cc:3716 (arg2), 4913 (registration).
+  expectBounds("mariadb", "13.0.2", "ST_DISTANCE", 2, 2);
+  // mariadb-13.0.2:sql/item_create.cc:5212-5233, guard before constructor switch.
+  expectBounds("mariadb", "13.0.2", "MASTER_GTID_WAIT", 1, 2);
+
+  // mysql-8.0.22:sql/item_create.cc has neither entry; mysql-8.0.23 adds
+  // ST_FRECHETDISTANCE at 1523 and ST_HAUSDORFFDISTANCE at 1539-1540.
+  for (const name of ["ST_FRECHETDISTANCE", "ST_HAUSDORFFDISTANCE"]) {
+    assert.equal(findFunction("mysql", "8.0.22", name), null);
+    expectBounds("mysql", "8.0.23", name, 2, 3);
+  }
+
+  // Every grammar hint remains present, but no arity is invented for COUNT.
+  for (const [engine, version] of [["mysql", "8.0.36"], ["mariadb", "13.0.2"]]) {
+    const result = functionsFor(engine, version);
+    expectBounds(engine, version, "COUNT", null, null);
+    for (const name of wordsFor(engine, version).grammarFunctions) {
+      assert.ok(result.functions.some(fn => fn.name === name), `${engine} missing ${name}`);
+    }
+    const names = result.functions.map(fn => fn.name);
+    assert.deepEqual(names, [...new Set(names)].sort(), "hints are sorted and deduplicated");
+    assert.equal(functionsFor(engine, version).functions, result.functions);
+  }
+
+  // Function hints and keywords share exact, suffix, and nearest-earlier policy.
+  for (const [engine, version] of [
+    ["mysql", "8.0.36"], ["mysql", "8.0.36-28"], ["mysql", "8.4.12"],
+    ["mariadb", "10.11.6-MariaDB-log"], ["mariadb", "10.6.6"],
+  ]) {
+    const words = wordsFor(engine, version);
+    const functions = functionsFor(engine, version);
+    assert.equal(functions.release, words.release);
+    assert.equal(functions.exact, words.exact);
+    assert.deepEqual(functions.functions, functionsFor(engine, words.release).functions);
+  }
+  for (const [engine, version] of [
+    ["mysql", "5.7.8"], ["mysql", "8.0.10"], ["mariadb", "11.4.1"],
+    ["mysql", "5.6.51"], ["mariadb", "10.5.20"], ["mysql", "invalid"], ["mysql", ""],
+  ]) {
+    assert.deepEqual(functionsFor(engine, version), { release: null, exact: false, functions: [] });
+  }
+}
+
 console.log(
-  "engine-words: fallback rules, case-insensitive lookup, and verified MySQL/MariaDB keyword facts passed.",
+  "engine-words: fallback rules, case-insensitive lookup, and verified MySQL/MariaDB keyword and function facts passed.",
 );

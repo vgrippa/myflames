@@ -203,6 +203,122 @@ class TestMariaDBParser(unittest.TestCase):
         self.assertEqual(grammar_functions, ["ADDDATE", "COUNT"])
 
 
+class TestNativeFunctionBounds(unittest.TestCase):
+    """Source snippets exercise each supported arity form without engine checkouts."""
+
+    def test_mysql_macros_factories_aliases_and_unknowns(self):
+        source = """
+class Optional_instantiator {
+  static constexpr int Min_argcount = 1;
+  static constexpr int Max_argcount = 3;
+};
+class Variadic_instantiator {
+  static constexpr int Min_argcount = 0;
+  static constexpr auto Max_argcount = MAX_ARGLIST_SIZE;
+};
+class Opaque_instantiator {
+  static constexpr int Min_argcount = COMPUTED_MIN;
+  static constexpr int Max_argcount = 4;
+};
+using Alias = Optional_instantiator;
+using Second_alias = Alias;
+using Spatial_alias = Instantiator_with_functype<Item_spatial, 2>;
+using Cycle_a = Cycle_b;
+using Cycle_b = Cycle_a;
+static const auto func_array[] = {
+  {"FIXED", SQL_FN(Item_fixed, 2)},
+  {"FIXED_ALIAS", SQL_FN(Item_fixed, 2)},
+  {"LIST", SQL_FN_LIST(Item_list, 0)},
+  {"VAR", SQL_FN_V(Item_var, 1, MAX_ARGLIST_SIZE)},
+  {"VAR_LIST", SQL_FN_V_LIST(Item_list, 2, 4)},
+  {"VAR_THD", SQL_FN_V_THD(Item_thd, 3, 5)},
+  {"VAR_LIST_THD", SQL_FN_V_LIST_THD(Item_list_thd, 0, MAX_ARGLIST_SIZE)},
+  {"ODD", SQL_FN_ODD(Item_odd, 3, MAX_ARGLIST_SIZE)},
+  {"EVEN", SQL_FN_EVEN(Item_even, 0, MAX_ARGLIST_SIZE)},
+  {"FACTORY", SQL_FACTORY(Optional_instantiator)},
+  {"FACTORY_ALIAS", SQL_FACTORY(Second_alias)},
+  {"FACTORY_VARIADIC", SQL_FACTORY(Variadic_instantiator)},
+  {"SPATIAL", SQL_FACTORY(Spatial_alias)},
+  {"OPAQUE", SQL_FACTORY(Opaque_instantiator)},
+  {"CYCLE", SQL_FACTORY(Cycle_a)},
+  {"MISSING", SQL_FACTORY(Missing_instantiator)},
+  {"EXPRESSION", SQL_FN(Item_fixed, 1 + 1)},
+  {"INTERNAL_HIDDEN", SQL_FN(Item_fixed, 2)},
+  {"HIDDEN_BY_MACRO", SQL_FN_LIST_INTERNAL_V(Item_internal, 1, 3)},
+  // {"COMMENTED", SQL_FN(Item_fixed, 9)},
+};
+"""
+        self.assertEqual(gen.parse_mysql_functions(source), {
+            "FIXED": (2, 2), "FIXED_ALIAS": (2, 2), "LIST": (0, 0),
+            "VAR": (1, "unbounded"), "VAR_LIST": (2, 4),
+            "VAR_THD": (3, 5), "VAR_LIST_THD": (0, "unbounded"),
+            "ODD": (3, "unbounded"), "EVEN": (0, "unbounded"),
+            "FACTORY": (1, 3), "FACTORY_ALIAS": (1, 3),
+            "FACTORY_VARIADIC": (0, "unbounded"), "SPATIAL": (2, 2),
+            "OPAQUE": (None, None), "CYCLE": (None, None),
+            "MISSING": (None, None), "EXPRESSION": (None, None),
+        })
+
+    def test_legacy_fixed_inheritance_geometry_aliases_and_oracle_exclusion(self):
+        source = """
+class Create_pair : public Create_func_arg2 {};
+class Create_pair_alias : public Create_pair {};
+class Create_oracle : public Create_func_arg1 {};
+const Native_func_registry func_array[] = {
+  {{STRING_WITH_LEN("PAIR")}, BUILDER(Create_pair)},
+  {{STRING_WITH_LEN("PAIR_ALIAS")}, BUILDER(Create_pair_alias)},
+  {{STRING_WITH_LEN("INTERNAL_PAIR")}, BUILDER(Create_pair)},
+  /* {{STRING_WITH_LEN("COMMENTED")}, BUILDER(Create_pair)}, */
+};
+const Native_func_registry geometry_array[] = {
+  {{C_STRING_WITH_LEN("ST_PAIR")}, GEOM_BUILDER(Create_pair)},
+};
+const Native_func_registry oracle_func_array[] = {
+  {{STRING_WITH_LEN("PAIR")}, BUILDER(Create_oracle)},
+};
+"""
+        self.assertEqual(gen.parse_legacy_functions(source), {
+            "PAIR": (2, 2), "PAIR_ALIAS": (2, 2), "ST_PAIR": (2, 2),
+        })
+
+    def test_legacy_native_guards_switches_and_conservative_unknowns(self):
+        cases = [
+            ("exact", "if (arg_count != 2) { ERROR; return NULL; }", (2, 2)),
+            ("interval", "if (unlikely(arg_count < 2 || arg_count > 4)) { ERROR; return NULL; }", (2, 4)),
+            ("separate_guards", "if (arg_count < 2) { ERROR; return NULL; } if (arg_count > 3) { ERROR; return NULL; }", (2, 3)),
+            ("bare_guard", "if (arg_count < 2) ERROR;", (2, "unbounded")),
+            ("accepted_branch", "if (arg_count == 2 || arg_count == 3) { return new Item(); } else { ERROR; return NULL; }", (2, 3)),
+            ("conditional_default", "switch (arg_count) { case 2: return new Item(); default: if (oracle_mode) { ERROR; return NULL; } return new Item(); }", (None, None)),
+            ("exclusive", "if (arg_count <= 1 || arg_count >= 5) { ERROR; return NULL; }", (2, 4)),
+            ("variadic", "if (arg_count < 1) { ERROR; return NULL; }", (1, "unbounded")),
+            ("switch", "switch (arg_count) { case 1: return new Item(); case 2: return new Item(); default: ERROR; return NULL; }", (1, 2)),
+            ("guarded_dispatch", "if (arg_count < 1 || arg_count > 2) { ERROR; return NULL; } switch (arg_count) { case 1: func = new Item(); break; case 2: func = new Item(); break; } return func;", (1, 2)),
+            ("unguarded_dispatch", "switch (arg_count) { case 1: return new Item(); case 2: return new Item(); }", (None, None)),
+            ("incomplete_dispatch", "if (arg_count < 1 || arg_count > 3) { ERROR; return NULL; } switch (arg_count) { case 1: return new Item(); case 3: return new Item(); }", (None, None)),
+            ("switch_tail", "switch (arg_count) { case 1: return new Item(); case 2: return new Item(); } ERROR; return NULL;", (1, 2)),
+            ("gap", "switch (arg_count) { case 1: return new Item(); case 3: return new Item(); default: ERROR; return NULL; }", (None, None)),
+            ("nested", "if (oracle_mode) { if (arg_count != 2) { ERROR; return NULL; } }", (None, None)),
+            ("conditional_error", "if (arg_count != 2) { if (oracle_mode) { ERROR; return NULL; } }", (None, None)),
+            ("parity", "if (arg_count < 2 || arg_count % 2 != 0) { ERROR; return NULL; }", (None, None)),
+            ("symbolic", "if (arg_count > MAX_ARGS) { ERROR; return NULL; }", (None, None)),
+            ("delegated", "return make_item(item_list);", (None, None)),
+        ]
+        for name, body, expected in cases:
+            with self.subTest(name=name):
+                # Real builders use this error to reject an invalid count.
+                body = body.replace("ERROR", "my_error(ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT, MYF(0), name)")
+                source = """
+class Create_test : public Create_native_func {};
+Item *Create_test::create_native(THD *thd, List<Item> *item_list) {
+%s
+}
+const Native_func_registry func_array[] = {
+  {{STRING_WITH_LEN("TEST")}, BUILDER(Create_test)},
+};
+""" % body
+                self.assertEqual(gen.parse_legacy_functions(source), {"TEST": expected})
+
+
 class TestReleaseTags(unittest.TestCase):
     """Release-to-tag and major.minor series selection from VERSIONS tuples."""
 
@@ -289,6 +405,28 @@ class TestDeltaEncodingRoundTrip(unittest.TestCase):
 
         decoded = gen.decode_series(encoded)
         self.assertEqual(decoded, releases)
+
+    def test_function_deltas_preserve_changes_removals_and_unknown_bounds(self):
+        releases = [
+            {"release": "8.0.11", "tag": "mysql-8.0.11", "keywords": [],
+             "grammarFunctions": ["COUNT"],
+             "functions": {"CHANGED": (1, 1), "REMOVED": (2, 2), "UNKNOWN": (None, None)}},
+            {"release": "8.0.12", "tag": "mysql-8.0.12", "keywords": [],
+             "grammarFunctions": ["COUNT"],
+             "functions": {"ADDED": (0, "unbounded"), "CHANGED": (1, 3), "UNKNOWN": (None, None)}},
+            {"release": "8.0.13", "tag": "mysql-8.0.13", "keywords": [],
+             "grammarFunctions": ["COUNT"],
+             "functions": {"CHANGED": (None, None), "UNKNOWN": (2, 2)}},
+        ]
+        encoded = gen.encode_series(releases)
+        self.assertEqual(encoded["releases"][1]["functions"], {
+            "ADDED": (0, "unbounded"), "CHANGED": (1, 3),
+        })
+        self.assertEqual(encoded["releases"][1]["functionsRemoved"], ["REMOVED"])
+        self.assertEqual(encoded["releases"][2]["functionsRemoved"], ["ADDED"])
+        self.assertEqual(gen.decode_series(encoded), releases)
+        # Earlier snapshots must not inherit a later release's mutations.
+        self.assertEqual(gen.decode_series(encoded)[0]["functions"]["CHANGED"], (1, 1))
 
     def test_encode_empty_series_raises(self):
         with self.assertRaises(ValueError):

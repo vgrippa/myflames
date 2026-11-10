@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Generate the SQL keyword catalog for every cataloged MySQL and MariaDB release.
+"""Generate the SQL keyword and native-function catalog for every cataloged MySQL and MariaDB release.
 
-Reads `sql/lex.h` and `sql/sql_yacc.yy` from the MySQL and MariaDB git checkouts
+Reads `sql/lex.h`, `sql/sql_yacc.yy`, `sql/item_create.cc` and MariaDB's
+`sql/item_geofunc.cc` from the MySQL and MariaDB git checkouts
 at every tag in `myflames/sysvar_history_mysql.py` and
 `myflames/sysvar_history_mariadb.py` without checking out files in the working
 tree (`git ls-tree` and `git cat-file --batch`).
@@ -14,6 +15,7 @@ Usage:
 """
 
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -154,10 +156,11 @@ class Git(object):
             return {}
         proc = self._batch()
         assert proc.stdin is not None and proc.stdout is not None
-        proc.stdin.write(("".join(oid + "\n" for oid in unique)).encode("ascii"))
-        proc.stdin.flush()
         out = {}  # type: Dict[str, str]
         for oid in unique:
+            # Drain each response before sending more: both pipes are bounded.
+            proc.stdin.write((oid + "\n").encode("ascii"))
+            proc.stdin.flush()
             header = proc.stdout.readline().decode("ascii", errors="replace").strip()
             parts = header.split()
             if len(parts) < 3 or parts[1] == "missing":
@@ -297,10 +300,9 @@ def _extract_c_array_section(lex_text: str, array_name: str) -> str:
     if not match:
         return ""
     start = match.end()
-    end_match = re.search(r"^\s*\}\s*;", lex_text[start:], re.M)
-    if end_match:
-        return lex_text[start : start + end_match.start()]
-    return lex_text[start:]
+    cleaned = _strip_c_comments_and_strings(lex_text)
+    end = _balanced_end(cleaned, start - 1)
+    return lex_text[start:end]
 
 
 def parse_mysql_lex(lex_text: str) -> Tuple[Dict[str, str], List[str]]:
@@ -473,6 +475,288 @@ def parse_mariadb_words(
     return keywords, grammar_functions
 
 
+
+# Bounds describe the registry's argument-count envelope, not argument types or
+# parity (SQL_FN_ODD/EVEN). Unknown expressions must never become guessed counts.
+FunctionBounds = Tuple[Optional[int], Any]
+UNKNOWN_BOUNDS = (None, None)  # type: FunctionBounds
+
+
+def _balanced_end(text: str, start: int, opening: str = "{", closing: str = "}") -> int:
+    """Return the matching delimiter in comment/string-masked source."""
+    depth = 0
+    for i in range(start, len(text)):
+        if text[i] == opening:
+            depth += 1
+        elif text[i] == closing:
+            depth -= 1
+            if depth == 0:
+                return i
+    raise ValueError("Unclosed source delimiter at {}".format(start))
+
+
+def _count_constant(expr: str) -> Any:
+    expr = expr.strip()
+    if re.fullmatch(r"\d+[uUlL]*", expr):
+        return int(re.sub(r"[uUlL]+$", "", expr))
+    # mysql-8.0.36:sql/item_create.cc:129 uses the argument-list size type's
+    # numeric maximum as the variadic sentinel. No arbitrary constants evaluated.
+    if expr == "MAX_ARGLIST_SIZE":
+        return "unbounded"
+    return None
+
+
+def _classes(clean: str) -> Dict[str, Tuple[str, str]]:
+    classes = {}
+    pattern = r"\bclass\s+(\w+)(?:\s*:\s*public\s+(\w+))?\s*\{"
+    for match in re.finditer(pattern, clean):
+        end = _balanced_end(clean, match.end() - 1)
+        classes[match.group(1)] = (match.group(2) or "", clean[match.end():end])
+    return classes
+
+
+def parse_mysql_functions(source: str) -> Dict[str, FunctionBounds]:
+    """MySQL 8+: explicit SQL_FN bounds and SQL_FACTORY instantiator constants."""
+    clean = _strip_c_comments_and_strings(source)
+    classes = _classes(clean)
+    aliases = dict(re.findall(r"\busing\s+(\w+)\s*=\s*([^;]+);", clean))
+
+    def factory_bounds(name: str, seen: Set[str]) -> FunctionBounds:
+        name = name.strip()
+        root = name.split("<", 1)[0].strip()
+        if root in seen:
+            return UNKNOWN_BOUNDS
+        seen = seen | {root}
+        if root in aliases:
+            return factory_bounds(aliases[root], seen)
+        # The spatial aliases select the explicit 1/2-argument specializations.
+        # mysql-8.0.36:sql/item_create.cc:195-215,589-601.
+        if root == "Instantiator_with_functype":
+            match = re.search(r",\s*([12])\s*>$", name)
+            if match:
+                count = int(match.group(1))
+                return count, count
+        body = classes.get(root, ("", ""))[1]
+        values = []
+        for field in ("Min_argcount", "Max_argcount"):
+            match = re.search(r"\b" + field + r"\s*=\s*([^;]+);", body)
+            values.append(_count_constant(match.group(1)) if match else None)
+        if not isinstance(values[0], int) or values[1] is None:
+            return UNKNOWN_BOUNDS
+        return values[0], values[1]
+
+    body = _extract_c_array_section(source, "func_array")
+    masked = _strip_c_comments_and_strings(body)
+    functions = {}
+    pattern = r'\{\s*"([A-Z0-9_]+)"\s*,\s*(SQL_\w+)\s*\('
+    for match in re.finditer(pattern, body):
+        if masked[match.start()] != "{":
+            continue
+        name, macro = match.groups()
+        if "INTERNAL" in name or "INTERNAL" in macro:
+            continue
+        end = _balanced_end(masked, match.end() - 1, "(", ")")
+        args = masked[match.end():end].strip()
+        bounds = UNKNOWN_BOUNDS
+        if macro == "SQL_FACTORY":
+            bounds = factory_bounds(args, set())
+        elif macro in ("SQL_FN", "SQL_FN_LIST"):
+            count = _count_constant(args.rsplit(",", 1)[-1])
+            if isinstance(count, int):
+                bounds = count, count
+        elif macro in ("SQL_FN_V", "SQL_FN_V_THD", "SQL_FN_V_LIST",
+                       "SQL_FN_V_LIST_THD", "SQL_FN_ODD", "SQL_FN_EVEN"):
+            parts = args.rsplit(",", 2)
+            if len(parts) == 3:
+                lo, hi = _count_constant(parts[1]), _count_constant(parts[2])
+                if isinstance(lo, int) and hi is not None:
+                    bounds = lo, hi
+        functions[name] = bounds
+    return dict(sorted(functions.items()))
+
+
+def _guard_bounds(condition: str, accepts: bool) -> FunctionBounds:
+    """Bounds for a deliberately small, fully matched constant-check language."""
+    wrapper = re.fullmatch(r"(?:unlikely|likely)\s*\((.*)\)", condition, re.S)
+    if wrapper:
+        condition = wrapper.group(1).strip()
+    negated = re.fullmatch(r"!\s*\((.*)\)", condition, re.S)
+    if negated:
+        return _guard_bounds(negated.group(1).strip(), not accepts)
+    # Equality alternatives and their rejected complement.
+    separator, operator = (r"\|\|", "==") if accepts else (r"&&", "!=")
+    parts = re.split(separator, condition)
+    equalities = [re.fullmatch(r"\s*arg_count\s*" + operator + r"\s*(\d+)\s*", x)
+                  for x in parts]
+    if all(equalities):
+        values = sorted(set(int(x.group(1)) for x in equalities if x))
+        if len(values) == values[-1] - values[0] + 1:
+            return values[0], values[-1]
+        return UNKNOWN_BOUNDS
+    parts = re.split(r"&&" if accepts else r"\|\|", condition)
+    lo, hi = 0, "unbounded"
+    for part in parts:
+        check = re.fullmatch(r"\s*arg_count\s*(<=|>=|<|>)\s*(\d+)\s*", part)
+        if not check:
+            return UNKNOWN_BOUNDS
+        op, value = check.group(1), int(check.group(2))
+        if accepts:
+            op = {"<": ">=", "<=": ">", ">": "<=", ">=": "<"}[op]
+        if op in ("<", "<="):
+            lo = max(lo, value + int(op == "<="))
+        else:
+            upper = value - int(op == ">=")
+            hi = upper if hi == "unbounded" else min(hi, upper)
+    return (lo, hi) if hi == "unbounded" or lo <= hi else UNKNOWN_BOUNDS
+
+
+def _unconditional_count_error(block: str) -> bool:
+    return ("ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT" in block
+            and not re.search(r"\b(if|switch|for|while)\b|\?", block))
+
+
+def _native_body_bounds(body: str) -> FunctionBounds:
+    """Recognize universal rejection guards or exhaustive constant-count switches.
+
+    This is not a C++ evaluator: mode-dependent, parity-dependent and delegated
+    validation stay unknown. Lower-only bounds describe the registry builder,
+    not runtime argument types or other server resource limits.
+    """
+    # Hide nested blocks: a check in only one path cannot establish global bounds.
+    depth = 0
+    top = []
+    for char in body:
+        top.append(char if depth == 0 else " ")
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+    top = "".join(top)
+    bounds = []
+    covered_errors = 0
+    error_name = "ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT"
+    for match in re.finditer(r"\bif\s*\(", top):
+        end = _balanced_end(body, match.end() - 1, "(", ")")
+        condition = body[match.end():end].strip()
+        tail = body[end + 1:]
+        brace = re.match(r"\s*\{", tail)
+        if brace:
+            start = end + 1 + brace.end() - 1
+            block_end = _balanced_end(body, start)
+            block = body[start + 1:block_end]
+        else:
+            # A single unbraced error call is also an unconditional rejection.
+            statement = re.match(r"\s*my_error\s*\([^;]+;", tail)
+            if not statement:
+                continue
+            block = statement.group(0)
+            block_end = end + statement.end()
+        accepts = False
+        if error_name not in block:
+            alternate = re.match(r"\s*else\s*\{", body[block_end + 1:])
+            if not alternate:
+                continue
+            start = block_end + 1 + alternate.end() - 1
+            block = body[start + 1:_balanced_end(body, start)]
+            accepts = True
+        if not _unconditional_count_error(block):
+            continue
+        candidate = _guard_bounds(condition, accepts)
+        if candidate == UNKNOWN_BOUNDS:
+            return UNKNOWN_BOUNDS
+        bounds.append(candidate)
+        covered_errors += block.count(error_name)
+
+    for match in re.finditer(r"\bswitch\s*\(\s*arg_count\s*\)\s*\{", top):
+        end = _balanced_end(body, match.end() - 1)
+        switch = body[match.end():end]
+        if re.search(r"\bswitch\b", switch):
+            return UNKNOWN_BOUNDS
+        cases = re.findall(r"\bcase\s+(\d+)\s*:", switch)
+        if not cases or len(cases) != len(re.findall(r"\bcase\b", switch)):
+            return UNKNOWN_BOUNDS
+        default = re.search(r"\bdefault\s*:", switch)
+        error_tail = switch[default.end():] if default else body[end + 1:]
+        if not _unconditional_count_error(error_tail):
+            # MariaDB MASTER_*_WAIT checks a finite interval first, then
+            # dispatches every allowed count without an error/default arm.
+            # A dispatch alone never proves which other counts are rejected.
+            values = sorted(set(int(x) for x in cases))
+            if bounds and not default and error_name not in switch:
+                lower = max(b[0] for b in bounds)
+                uppers = [b[1] for b in bounds if isinstance(b[1], int)]
+                if (uppers and values[0] == lower and values[-1] == min(uppers)
+                        and len(values) == values[-1] - values[0] + 1):
+                    continue
+            return UNKNOWN_BOUNDS
+        if default and re.search(r"\bcase\b|\bnew\b", error_tail):
+            return UNKNOWN_BOUNDS
+        if not default:
+            branches = re.split(r"\bcase\s+\d+\s*:", switch)[1:]
+            if any(not re.search(r"\breturn\s+new\b", b) for b in branches):
+                return UNKNOWN_BOUNDS
+        values = sorted(set(int(x) for x in cases))
+        if len(values) != values[-1] - values[0] + 1:
+            return UNKNOWN_BOUNDS
+        bounds.append((values[0], values[-1]))
+        covered_errors += error_tail.count(error_name)
+
+    # Do not silently ignore a second validation path (including nested checks).
+    if not bounds or covered_errors != body.count(error_name):
+        return UNKNOWN_BOUNDS
+    lo = max(b[0] for b in bounds)
+    upper = [b[1] for b in bounds if isinstance(b[1], int)]
+    hi = min(upper) if upper else "unbounded"
+    return (lo, hi) if hi == "unbounded" or lo <= hi else UNKNOWN_BOUNDS
+
+
+def parse_legacy_functions(source: str) -> Dict[str, FunctionBounds]:
+    """MySQL 5.7 / MariaDB registries, excluding Oracle-mode overrides."""
+    clean = _strip_c_comments_and_strings(source)
+    classes = _classes(clean)
+    bodies = {}
+    for match in re.finditer(r"\b(\w+)::create_native\s*\([^;{}]*\)\s*\{", clean):
+        bodies[match.group(1)] = clean[match.end():_balanced_end(clean, match.end() - 1)]
+
+    def class_bounds(name: str, seen: Set[str]) -> FunctionBounds:
+        if name in seen:
+            return UNKNOWN_BOUNDS
+        parent, body = classes.get(name, ("", ""))
+        fixed = re.fullmatch(r"Create_func_arg([0-3])", parent)
+        if fixed:
+            count = int(fixed.group(1))
+            return count, count
+        implementation = bodies.get(name)
+        if implementation is None:
+            inline = re.search(r"\bcreate_native\s*\([^;{}]*\)\s*(?:override\s*)?\{", body)
+            if inline:
+                implementation = body[inline.end():_balanced_end(body, inline.end() - 1)]
+        if implementation is not None:
+            return _native_body_bounds(implementation)
+        if parent and parent != "Create_native_func":
+            return class_bounds(parent, seen | {name})
+        return UNKNOWN_BOUNDS
+
+    functions = {}
+    # Main and geometry arrays, plus any same-format additional native registry.
+    # Restrict to registry initializers so Oracle overrides cannot replace defaults.
+    pattern = r"\bNative_func_registry\s+(\w+)\s*\[\s*\]\s*=\s*\{"
+    for array in re.finditer(pattern, clean):
+        if "oracle" in array.group(1).lower():
+            continue
+        end = _balanced_end(clean, array.end() - 1)
+        original = source[array.end():end]
+        masked = clean[array.end():end]
+        entry = r'(?:C_)?STRING_WITH_LEN\s*\(\s*"([A-Z0-9_]+)"\s*\)\s*\}\s*,\s*(?:GEOM_)?BUILDER\s*\(\s*(\w+)\s*\)'
+        for match in re.finditer(entry, original):
+            if not masked[match.start():].startswith(("STRING_WITH_LEN", "C_STRING_WITH_LEN")):
+                continue
+            name, builder = match.groups()
+            if "INTERNAL" not in name:
+                functions[name] = class_bounds(builder, set())
+    return dict(sorted(functions.items()))
+
+
 def series_of_version(version: str) -> str:
     parts = version.split(".")
     if len(parts) < 2:
@@ -499,7 +783,7 @@ def encode_series(releases: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
             "tag": str,
             "keywords": [{"name": str, "reserved": bool}, ...],
             "grammarFunctions": [str, ...],
-            "functions": {},
+            "functions": {name: (minimum, maximum), ...},
         }
     """
     if not releases:
@@ -523,6 +807,7 @@ def encode_series(releases: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
 
     prev_kw = dict(first_kw)
     prev_fns = set(base_grammar_fns)
+    prev_functions = dict(first.get("functions", {}))
 
     for rel in releases[1:]:
         curr_kw = {
@@ -574,7 +859,15 @@ def encode_series(releases: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
             delta["grammarFunctionsAdded"] = fn_added
         if fn_removed:
             delta["grammarFunctionsRemoved"] = fn_removed
-        delta["functions"] = dict(rel.get("functions", {}))
+        curr_functions = dict(rel.get("functions", {}))
+        delta["functions"] = {
+            name: bounds for name, bounds in sorted(curr_functions.items())
+            if name not in prev_functions or bounds != prev_functions[name]
+        }
+        removed_functions = sorted(set(prev_functions) - set(curr_functions))
+        if removed_functions:
+            delta["functionsRemoved"] = removed_functions
+        prev_functions = curr_functions
         encoded_releases.append(delta)
 
         prev_kw = curr_kw
@@ -598,6 +891,7 @@ def decode_series(series_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     for name in series_data["baseNonReserved"]:
         kw_map[name] = False
     fn_set = set(series_data["baseGrammarFunctions"])
+    functions = {}
 
     out = []  # type: List[Dict[str, Any]]
     for idx, rel in enumerate(series_data["releases"]):
@@ -619,6 +913,9 @@ def decode_series(series_data: Dict[str, Any]) -> List[Dict[str, Any]]:
             for name in rel.get("grammarFunctionsAdded", ()):
                 fn_set.add(name)
 
+        for name in rel.get("functionsRemoved", ()):
+            functions.pop(name, None)
+        functions.update(rel.get("functions", {}))
         keywords = [
             {"name": name, "reserved": kw_map[name]} for name in sorted(kw_map)
         ]
@@ -628,7 +925,7 @@ def decode_series(series_data: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "tag": rel["tag"],
                 "keywords": keywords,
                 "grammarFunctions": sorted(fn_set),
-                "functions": dict(rel.get("functions", {})),
+                "functions": dict(sorted(functions.items())),
             }
         )
     return out
@@ -639,14 +936,17 @@ def collect_engine_catalog(
     versions: Sequence[Tuple[Any, ...]],
     engine: str,
 ) -> Dict[str, Dict[str, Any]]:
-    """Read `sql/lex.h` and `sql/sql_yacc.yy` for every cataloged tag in `versions`."""
+    """Read lexer, grammar and native registries for every cataloged release tag."""
     git = Git(repo)
     try:
         tags = release_tags(versions)
-        tag_blobs = {}  # type: Dict[str, Tuple[str, str]]
+        tag_blobs = {}  # type: Dict[str, Tuple[str, ...]]
         needed_oids = []  # type: List[str]
         for version, tag, _series in tags:
-            tree = git.tree(tag, ("sql/lex.h", "sql/sql_yacc.yy"))
+            paths = ["sql/lex.h", "sql/sql_yacc.yy", "sql/item_create.cc"]
+            if engine == "mariadb":
+                paths.append("sql/item_geofunc.cc")
+            tree = git.tree(tag, paths)
             lex_oid = tree.get("sql/lex.h", "")
             yacc_oid = tree.get("sql/sql_yacc.yy", "")
             if not lex_oid or not yacc_oid:
@@ -655,22 +955,34 @@ def collect_engine_catalog(
                         tag, version, repo
                     )
                 )
-            tag_blobs[tag] = (lex_oid, yacc_oid)
-            needed_oids.append(lex_oid)
-            needed_oids.append(yacc_oid)
+            if any(path not in tree for path in paths):
+                raise RuntimeError("Missing function source in {}".format(tag))
+            tag_blobs[tag] = tuple(tree[path] for path in paths)
+            needed_oids.extend(tag_blobs[tag])
 
         blob_texts = git.texts(needed_oids)
         parse_fn = parse_mysql_words if engine == "mysql" else parse_mariadb_words
 
         parsed_cache = {}  # type: Dict[Tuple[str, str], Tuple[List[Dict[str, Any]], List[str]]]
+        function_cache = {}  # type: Dict[Tuple[str, ...], Dict[str, FunctionBounds]]
         by_series = {}  # type: Dict[str, List[Dict[str, Any]]]
         for version, tag, series in tags:
-            pair = tag_blobs[tag]
+            blobs = tag_blobs[tag]
+            pair = blobs[:2]
             if pair not in parsed_cache:
                 parsed_cache[pair] = parse_fn(
                     blob_texts[pair[0]], blob_texts[pair[1]]
                 )
             keywords, grammar_functions = parsed_cache[pair]
+            function_key = blobs[2:]
+            if function_key not in function_cache:
+                source = "\n".join(blob_texts[oid] for oid in function_key)
+                function_parser = (parse_mysql_functions
+                                   if engine == "mysql" and series != "5.7"
+                                   else parse_legacy_functions)
+                function_cache[function_key] = function_parser(source)
+                if not function_cache[function_key]:
+                    raise RuntimeError("Parsed zero native functions from {}".format(tag))
             if not keywords:
                 raise RuntimeError(
                     "Parsed zero keywords from {} ({}) in {}".format(tag, version, repo)
@@ -681,7 +993,7 @@ def collect_engine_catalog(
                     "tag": tag,
                     "keywords": keywords,
                     "grammarFunctions": grammar_functions,
-                    "functions": {},
+                    "functions": function_cache[function_key],
                 }
             )
 
@@ -703,7 +1015,21 @@ def _format_str_list(items: Sequence[str]) -> str:
     return "[" + ", ".join('"{}"'.format(item) for item in items) + "]"
 
 
-def _format_release_delta(delta: Dict[str, Any]) -> str:
+def _format_functions(functions: Dict[str, FunctionBounds]) -> str:
+    # Group names with the same bounds. Unknown is '?', unbounded is '*'.
+    groups = {}  # type: Dict[str, List[str]]
+    for name, bounds in sorted(functions.items()):
+        key = ",".join("?" if x is None else "*" if x == "unbounded" else str(x)
+                       for x in bounds)
+        groups.setdefault(key, []).append(name)
+    if not groups:
+        return "{}"
+    fields = [json.dumps(key) + ": " + json.dumps(" ".join(groups[key]))
+              for key in sorted(groups)]
+    return "{ " + ", ".join(fields) + " }"
+
+
+def _format_release_delta(delta: Dict[str, Any], function_ref: str = "") -> str:
     fields = [
         'release: "{}"'.format(delta["release"]),
         'tag: "{}"'.format(delta["tag"]),
@@ -757,7 +1083,9 @@ def _format_release_delta(delta: Dict[str, Any]) -> str:
                 _format_str_list(sorted(fn_removed))
             )
         )
-    fields.append("functions: {}")
+    if delta.get("functionsRemoved"):
+        fields.append("functionsRemoved: {}".format(_format_str_list(delta["functionsRemoved"])))
+    fields.append("functions: " + (function_ref or _format_functions(delta.get("functions", {}))))
     return "{ " + ", ".join(fields) + " }"
 
 
@@ -797,7 +1125,8 @@ def render_generated_ts(
         "// MariaDB tags: {}".format(mariadb_tag_summary),
         "//   " + ", ".join(mariadb_tags),
         "",
-        "export type GeneratedFunctionEntry = Record<string, never>;",
+        '// Bounds key: "min,max"; ? means unknown, * means unbounded. Value: space-separated names.',
+        "export type GeneratedFunctionEntry = Readonly<Record<string, string>>;",
         "",
         "export type GeneratedReleaseWordsDelta = {",
         "  readonly release: string;",
@@ -814,6 +1143,7 @@ def render_generated_ts(
         "  readonly grammarFunctionsAdded?: readonly string[];",
         "  readonly grammarFunctionsRemoved?: readonly string[];",
         "  readonly functions: GeneratedFunctionEntry;",
+        "  readonly functionsRemoved?: readonly string[];",
         "};",
         "",
         "export type GeneratedSeriesWords = {",
@@ -830,8 +1160,21 @@ def render_generated_ts(
         "  readonly mariadb: Record<string, GeneratedSeriesWords>;",
         "};",
         "",
-        "export const ENGINE_WORDS_CATALOG: GeneratedEngineWordsCatalog = {",
+
     ]
+
+    function_sets = {}  # type: Dict[str, int]
+    for catalog in (mysql_series, mariadb_series):
+        for series in sorted(catalog, key=_version_sort_key):
+            for rel in catalog[series]["releases"]:
+                packed = _format_functions(rel.get("functions", {}))
+                if packed != "{}" and packed not in function_sets:
+                    function_sets[packed] = len(function_sets)
+    lines.append("const FUNCTION_SETS: readonly GeneratedFunctionEntry[] = [")
+    for packed in function_sets:
+        lines.append("  " + packed + ",")
+    lines.append("];\n")
+    lines.append("export const ENGINE_WORDS_CATALOG: GeneratedEngineWordsCatalog = {")
 
     for engine_name, catalog in (("mysql", mysql_series), ("mariadb", mariadb_series)):
         lines.append("  {}: {{".format(engine_name))
@@ -848,7 +1191,9 @@ def render_generated_ts(
             lines.append('      baseGrammarFunctions: "{}",'.format(base_fns))
             lines.append("      releases: [")
             for rel in sdata["releases"]:
-                lines.append("        {},".format(_format_release_delta(rel)))
+                packed = _format_functions(rel.get("functions", {}))
+                ref = "FUNCTION_SETS[{}]".format(function_sets[packed]) if packed != "{}" else "{}"
+                lines.append("        {},".format(_format_release_delta(rel, ref)))
             lines.append("      ],")
             lines.append("    },")
         lines.append("  },")
@@ -860,7 +1205,7 @@ def render_generated_ts(
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Generate SQL keyword catalogs from MySQL and MariaDB git checkouts."
+        description="Generate SQL word and function catalogs from MySQL and MariaDB git checkouts."
     )
     parser.add_argument(
         "--mysql-source",

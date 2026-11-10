@@ -3,6 +3,12 @@ import {
   type GeneratedSeriesWords,
 } from "./engineWords.generated";
 
+export type EngineFunction = {
+  name: string;
+  min: number | null;
+  max: number | null | "unbounded";
+};
+
 export type EngineWord = { name: string; reserved: boolean };
 
 export type EngineWordsResult = {
@@ -17,6 +23,7 @@ type DecodedRelease = {
   patch: number;
   keywords: EngineWord[];
   keywordSet: Set<string>;
+  functions: EngineFunction[];
   grammarFunctions: string[];
 };
 
@@ -48,6 +55,7 @@ function decodeSeries(seriesData: GeneratedSeriesWords): DecodedSeries {
   }
   const fnSet = new Set<string>(splitWords(seriesData.baseGrammarFunctions));
 
+  const functionMap = new Map<string, EngineFunction>();
   const releases: DecodedRelease[] = [];
   const byRelease = new Map<string, DecodedRelease>();
 
@@ -91,6 +99,20 @@ function decodeSeries(seriesData: GeneratedSeriesWords): DecodedSeries {
       }
     }
 
+    for (const name of delta.functionsRemoved ?? []) functionMap.delete(name);
+    for (const [bounds, names] of Object.entries(delta.functions)) {
+      const [lo, hi] = bounds.split(",");
+      const min = lo === "?" ? null : Number(lo);
+      const max = hi === "?" ? null : hi === "*" ? "unbounded" : Number(hi);
+      for (const name of splitWords(names)) functionMap.set(name, { name, min, max });
+    }
+    // Grammar-only functions have no source-table bounds. Native entries win
+    // when the lexer also declares that name.
+    const allFunctions = new Map(functionMap);
+    for (const name of fnSet) {
+      if (!allFunctions.has(name)) allFunctions.set(name, { name, min: null, max: null });
+    }
+    const functions = Array.from(allFunctions.keys()).sort().map(name => allFunctions.get(name)!);
     const sortedNames = Array.from(kwMap.keys()).sort();
     const keywords: EngineWord[] = sortedNames.map((name) => ({
       name,
@@ -105,6 +127,7 @@ function decodeSeries(seriesData: GeneratedSeriesWords): DecodedSeries {
       keywords,
       keywordSet,
       grammarFunctions,
+      functions,
     };
     releases.push(decoded);
     byRelease.set(delta.release, decoded);
@@ -208,4 +231,18 @@ export function isKeyword(
   const resolved = resolveRelease(engine, version);
   if (!resolved) return false;
   return resolved.decoded.keywordSet.has(name.toUpperCase());
+}
+
+/** Resolve native and grammar function hints using the same release policy as wordsFor. */
+export function functionsFor(
+  engine: "mysql" | "mariadb",
+  version: string,
+): { release: string | null; exact: boolean; functions: EngineFunction[] } {
+  const resolved = resolveRelease(engine, version);
+  if (!resolved) return { release: null, exact: false, functions: [] };
+  return {
+    release: resolved.decoded.release,
+    exact: resolved.exact,
+    functions: resolved.decoded.functions,
+  };
 }
