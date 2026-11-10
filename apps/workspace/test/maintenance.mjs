@@ -44,6 +44,7 @@ async function assertPrivilege(page, selector, state, need) {
 }
 
 const tools = await load("lifecycle-tools-mysql.json");
+tools.default_dump_parent = "/Users/dba/Documents/myflames dumps";
 const native = await load("upgrade-native-8.0.46-to-8.4.0.json");
 const shell = await load("upgrade-shell-8.0.46-to-8.4.0.json");
 const dumpPlan = await load("lifecycle-plan-dump.json");
@@ -321,6 +322,8 @@ try {
   await page.waitForSelector(`${view} .view-status [role=alert]`);
   assert.match(await text(`${view} .view-status [role=alert]`), /MySQL Shell 9\.6\.0 cannot check this pair/);
   await section("Dump");
+  await page.waitForFunction(parent => document.querySelector('.ops-folder-input input')?.value.startsWith(parent + '/'), {}, tools.default_dump_parent);
+  assert.equal(calls(PREPARE).length, 0, "suggesting the backend default never prepares a dump");
   assert.equal(await page.$(`${view} .view-status [role=alert]`), null, "the upgrade error never shows on Dump");
   await section("Restore");
   assert.equal(await page.$(`${view} .view-status [role=alert]`), null, "the upgrade error never shows on Restore");
@@ -477,6 +480,12 @@ try {
   assert.match(await text(`${view} .ops-job`), /Cancelled/);
   assert.match(await text(`${view} .ops-job .ops-warning`), /An incomplete dump may remain/);
   assert.equal(calls(REVEAL).length, 0, "cancelled dumps never open a folder");
+  const chosenParent = dumpPlan.target.slice(0, dumpPlan.target.lastIndexOf('/'));
+  assert.notEqual(chosenParent, tools.default_dump_parent);
+  await field("Output folder", "");
+  await page.waitForFunction(parent => document.querySelector('.ops-folder-input input')?.value.startsWith(parent + '/'), {}, chosenParent);
+  assert.equal(await page.$eval('.ops-folder-input input', e => e.value.slice(0, e.value.lastIndexOf('/'))), chosenParent,
+    "the earlier dump's chosen parent wins over the backend default in this window");
   const polls = calls(STATUS).length;
   await pause(2000);
   assert.equal(calls(STATUS).length, polls, "a finished job is not polled");

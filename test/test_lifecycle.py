@@ -391,6 +391,7 @@ class MissingClientToolsTests(unittest.TestCase):
         from myflames.connector import ClientMissingError
         report = ui.api_response('/api/lifecycle/tools', {'connection': {'host': 'localhost'}}, self.workspace)
         self.assertEqual(report['schema_version'], 'lifecycle-tools-2.0')
+        self.assertEqual(report['default_dump_parent'], lc.default_dump_parent())
         self.assertEqual(report['server'], {})
         self.assertEqual(report['offered'], {})
         self.assertEqual(report['server_error'], {'code': 'client-missing', 'error': ClientMissingError.MESSAGE})
@@ -428,6 +429,35 @@ class MissingClientToolsTests(unittest.TestCase):
         with mock.patch.object(lc.LifecycleConnection, 'run', side_effect=ConnectorError('access denied')):
             with self.assertRaisesRegex(ConnectorError, 'access denied'):
                 ui.api_response('/api/lifecycle/tools', {'connection': {'host': 'localhost'}}, self.workspace)
+
+
+class DefaultDumpParentTests(unittest.TestCase):
+    def test_real_home_documents_and_home_fallback_are_read_only(self):
+        with tempfile.TemporaryDirectory() as home, \
+                mock.patch.dict(os.environ, {'MYFLAMES_SSH_HOME': home, 'HOME': '/isolated-backend-home'}):
+            expected = os.path.join(home, 'myflames dumps')
+            self.assertEqual(lc.default_dump_parent(), expected)
+            self.assertFalse(os.path.exists(expected))
+            documents = os.path.join(home, 'Documents')
+            os.mkdir(documents)
+            expected = os.path.join(documents, 'myflames dumps')
+            self.assertEqual(lc.default_dump_parent(), expected)
+            self.assertEqual(os.listdir(documents), [])
+
+    def test_windows_userprofile_with_and_without_documents(self):
+        import ntpath
+        from myflames import ssh_tunnel
+        # Exercise Windows path and environment semantics on every test host.
+        for documents_exist in (False, True):
+            with self.subTest(documents=documents_exist), \
+                    mock.patch.dict(os.environ, {'MYFLAMES_SSH_HOME': '', 'USERPROFILE': r'C:\Users\DBA',
+                                                 'HOME': '/isolated-backend-home'}), \
+                    mock.patch.object(ssh_tunnel.os, 'name', 'nt'), \
+                    mock.patch.object(lc.os, 'path', ntpath), \
+                    mock.patch.object(ntpath, 'isdir', return_value=documents_exist) as isdir:
+                expected = r'C:\Users\DBA\Documents\myflames dumps' if documents_exist else r'C:\Users\DBA\myflames dumps'
+                self.assertEqual(lc.default_dump_parent(), expected)
+                self.assertEqual(isdir.call_args[0], (r'C:\Users\DBA\Documents',))
 
 
 @unittest.skipIf(os.name == 'nt', 'POSIX executable fixtures; Windows trust tested separately')
@@ -1047,6 +1077,67 @@ class LifecycleTests(unittest.TestCase):
         self.assert_secret_transport(self.calls()[0])
         self.assertNotIn(PASSWORD, json.dumps(result) + json.dumps(self.store.audit_records()))
         self.assertIn('--set-gtid-purged=OFF', self.calls()[0]['argv'])
+
+    def test_dump_creates_only_reviewed_default_parent_at_start(self):
+        for documents_exist in (False, True):
+            with self.subTest(documents=documents_exist), tempfile.TemporaryDirectory(dir=str(self.root)) as home, \
+                    mock.patch.dict(os.environ, {'MYFLAMES_SSH_HOME': home}):
+                anchor = Path(home, 'Documents') if documents_exist else Path(home)
+                if documents_exist:
+                    anchor.mkdir()
+                parent = anchor / 'myflames dumps'
+                output = str(parent / 'app-2026-11-10')
+                conn, tools = ReplayConnection(), self.native_tools()
+                with mock.patch.object(lc, 'detect_tools', return_value=tools):
+                    plan = lc.prepare_dump(conn, CONNECTION, output, schemas=['app'], tools=tools)
+                    self.assertTrue(plan['ready'])
+                    check = next(c for c in plan['checks'] if c['check'] == 'output_parent')
+                    self.assertEqual(check['reason'], 'Creates the folder %s.' % parent)
+                    self.assertFalse(parent.exists(), 'preflight must create nothing')
+                    repeated = lc.prepare_dump(conn, CONNECTION, output, schemas=['app'], tools=tools)
+                    self.assertEqual(plan['binding'], repeated['binding'])
+                    with mock.patch.object(lc.os, 'mkdir', wraps=os.mkdir) as mkdir:
+                        result = lc.dump_job(CONNECTION, plan, True, plan['target'], self.audit('dump'),
+                                             factory=lambda **kw: conn, start=False).run()
+                    self.assertEqual(result['state'], 'done', result)
+                    created = [c[0] for c in mkdir.call_args_list if str(c[0][0]).startswith(str(anchor) + os.sep)]
+                    self.assertEqual(created, [(str(parent), 0o700), (output, 0o700)])
+                self.assertEqual(sorted(p.name for p in anchor.iterdir()), ['myflames dumps'])
+                self.assertEqual(sorted(p.name for p in parent.iterdir()), ['app-2026-11-10'])
+                self.assertEqual(sorted(p.name for p in Path(output).iterdir()), ['dump.sql', lc.MANIFEST])
+                self.assertEqual(stat.S_IMODE(parent.stat().st_mode), 0o700)
+
+    def test_dump_refuses_any_other_missing_parent(self):
+        output = str(self.root / 'myflames dump typo' / 'app')
+        with self.assertRaisesRegex(lc.Refused, '^Output parent directory must exist\\.$'):
+            lc.prepare_dump(self.conn, CONNECTION, output, schemas=['app'], tools=self.native_tools())
+        self.assertFalse(Path(output).parent.exists())
+
+    def test_dump_refuses_linked_documents_even_after_output_normalization(self):
+        real = self.root / 'real-documents'
+        real.mkdir()
+        (self.root / 'Documents').symlink_to(real, target_is_directory=True)
+        with mock.patch.dict(os.environ, {'MYFLAMES_SSH_HOME': str(self.root)}):
+            output = os.path.join(lc.default_dump_parent(), 'app')
+            with self.assertRaisesRegex(lc.Refused, 'not a symbolic link'):
+                lc.prepare_dump(self.conn, CONNECTION, output, schemas=['app'], tools=self.native_tools())
+        self.assertEqual(list(real.iterdir()), [])
+
+    def test_dump_refuses_default_parent_creation_not_in_review(self):
+        with mock.patch.dict(os.environ, {'MYFLAMES_SSH_HOME': str(self.root)}):
+            parent = Path(lc.default_dump_parent())
+            parent.mkdir()
+            output = str(parent / 'app')
+            tools = self.native_tools()
+            with mock.patch.object(lc, 'detect_tools', return_value=tools):
+                plan = lc.prepare_dump(self.conn, CONNECTION, output, schemas=['app'], tools=tools)
+                self.assertFalse(any(c['check'] == 'output_parent' for c in plan['checks']))
+                parent.rmdir()
+                result = lc.dump_job(CONNECTION, plan, True, plan['target'], self.audit('dump'),
+                                     factory=lambda **kw: self.conn, start=False).run()
+            self.assertEqual(result['state'], 'refused', result)
+            self.assertFalse(parent.exists(), 'a changed creation intent needs another review')
+            self.assertEqual(self.calls(), [])
 
     def run_dump(self, conn, engine='mysql', shell=False):
         tools = self.tools if shell else self.native_tools(engine)

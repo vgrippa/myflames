@@ -8,7 +8,8 @@ profile safety from dbops.connection_safety, not a policy supplied by a client.
 No CLI, HTTP endpoint, global registry, or process starts on import.
 
 Wire contracts:
-  lifecycle-tools-2.0: tools[name] {available, path, version, engine, deprecated}
+  lifecycle-tools-2.0: tools[name] {available, path, version, engine, deprecated},
+    default_dump_parent (the real user's Documents/myflames dumps, or home fallback).
   upgrade-check-1.0: server, target_version, method, partial, checks[], counts,
     manual_checks[], limitations[], status (findings are NOT a process failure).
   lifecycle-plan-1.0: operation, request, server, connection_key, tool, target,
@@ -296,7 +297,8 @@ def detect_tools(path=None, common_dirs=None, job=None, check_updates=False, ref
                              selected.get('path') == entry['path'])
         if entry['used']:
             entry.update(reason=selected['reason'], warning=selected['warning'])
-    report = dict(schema_version='lifecycle-tools-2.0', tools=found, copies=copies)
+    report = dict(schema_version='lifecycle-tools-2.0', tools=found, copies=copies,
+                  default_dump_parent=default_dump_parent())
     if used is not None:
         # Match the public client-tools Use shape, not selector-only facts.
         used.pop('server', None)
@@ -1429,7 +1431,27 @@ def _output_path(path):
     return os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path))
 
 
-def _empty_directory(path):
+def default_dump_parent():
+    """Suggest a real-user folder without creating it, even under an isolated HOME."""
+    from .ssh_tunnel import ssh_home
+    home = _absolute(ssh_home())
+    documents = os.path.join(home, 'Documents')
+    return os.path.join(documents if os.path.isdir(documents) else home, 'myflames dumps')
+
+
+def _empty_directory(path, allow_default_parent=False, create_default_parent=False):
+    """Validate the output; only a confirmed dump may create its default parent.
+
+    Return the missing parent so preflight can name and bind that extra write.
+    Never create intermediate directories or follow a linked Documents folder.
+    """
+    parent = os.path.dirname(path)
+    default = default_dump_parent() if allow_default_parent else None
+    is_default = default is not None and os.path.normcase(parent) == os.path.normcase(os.path.realpath(_absolute(default)))
+    if is_default:
+        anchor = os.path.dirname(default)
+        if os.path.islink(anchor) or not os.path.isdir(anchor):
+            raise Refused('The default dump parent must be an existing folder, not a symbolic link: ' + anchor)
     # The final component must not be a link, and the parent must still be the
     # real path resolved at preflight: a folder swapped for a link afterwards
     # (into another backup tree, say) refuses instead of being followed.
@@ -1440,8 +1462,15 @@ def _empty_directory(path):
                       'nothing was written: ' + path)
     if os.path.lexists(path) and (not os.path.isdir(path) or os.listdir(path)):
         raise Refused('Output directory must not exist or must be empty; refusing to overwrite: ' + path)
-    if not os.path.isdir(os.path.dirname(path)):
-        raise Refused('Output parent directory must exist.')
+    if not os.path.isdir(parent):
+        if not is_default or os.path.lexists(parent):
+            raise Refused('Output parent directory must exist.')
+        if create_default_parent:
+            os.mkdir(parent, 0o700)
+            # Recheck the usual link/empty-directory rules after the write.
+            _empty_directory(path, allow_default_parent=True)
+        return parent
+    return None
 
 
 def _names(values, label):
@@ -1605,7 +1634,7 @@ def prepare_dump(conn, connection, directory, schemas=None, tables=None, threads
     """Build a reviewable logical dump plan; Shell dryRun runs before confirmation."""
     server = read_server(conn, connection)
     directory = _output_path(directory)
-    _empty_directory(directory)
+    missing_parent = _empty_directory(directory, allow_default_parent=True)
     if isinstance(schemas, str) or isinstance(tables, str):
         raise ValueError('Schemas and tables must be lists, not strings.')
     schemas, tables = _names(schemas, 'schema'), _names(tables, 'table')
@@ -1624,7 +1653,7 @@ def prepare_dump(conn, connection, directory, schemas=None, tables=None, threads
         request['options'] = selected_options
     catalog = _catalog(conn, schemas, tables, include_system=tool['name'] != 'mysqlsh' and not schemas)
     estimate = sum(int(row[4] or 0) + int(row[5] or 0) for row in catalog)
-    available = shutil.disk_usage(os.path.dirname(directory)).free
+    available = shutil.disk_usage(os.path.dirname(missing_parent) if missing_parent else os.path.dirname(directory)).free
     required = [('SELECT', 'ALL', 'ALL PRIVILEGES')]
     if selected_options.get('events', not (tool['name'] == 'mysqlsh' and tables)):
         required.append(('EVENT', 'ALL', 'ALL PRIVILEGES'))
@@ -1634,6 +1663,9 @@ def prepare_dump(conn, connection, directory, schemas=None, tables=None, threads
                             'Uncompressed table/index estimate; dump size can differ.',
                             estimated_bytes=estimate, available_bytes=available),
               _privileges_check(conn, required)]
+    if missing_parent:
+        checks.append(_verification('output_parent', 'passed', 'Creates the folder %s.' % missing_parent,
+                                    path=missing_parent))
     if tables:
         checks.append(_tables_check(catalog, schemas[0], tables, _lower_case_table_names(conn)))
     nontransactional = ['%s.%s' % (r[0], r[1]) for r in catalog if r[2] == 'BASE TABLE' and r[3] != 'InnoDB']
@@ -1674,7 +1706,8 @@ def prepare_dump(conn, connection, directory, schemas=None, tables=None, threads
         checks.append(_verification('long_statements', 'passed', 'Review long statements before locks.', sessions=running))
     except ConnectorError:
         checks.append(_verification('long_statements', 'not_checked', 'PROCESS access unavailable.'))
-    return _plan('dump', server, connection, request, tool, directory, commands, checks, warnings)
+    return _plan('dump', server, connection, request, tool, directory, commands, checks, warnings,
+                 binding_extra={'create_dump_parent': missing_parent} if missing_parent else None)
 
 
 def _lower_case_table_names(conn):
@@ -2071,7 +2104,11 @@ def _perform_dump(job, conn, plan, connection):
     directory = request['directory']
     job.partial_state = ('An incomplete dump may remain in %s; its manifest marks it incomplete and restore '
                          'refuses it. Remove the directory before dumping there again.' % directory)
-    _empty_directory(directory)
+    missing_parent = _empty_directory(directory, allow_default_parent=True)
+    if missing_parent:
+        if not any(c['check'] == 'output_parent' and c.get('path') == missing_parent for c in plan['checks']):
+            raise Refused('Output parent directory must exist.')
+        _empty_directory(directory, allow_default_parent=True, create_default_parent=True)
     if not os.path.exists(directory):
         os.mkdir(directory, 0o700)
     os.chmod(directory, 0o700)

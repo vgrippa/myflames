@@ -526,23 +526,24 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   const activeJob = memory.jobs.find((b) => b.key === key && jobActive(b.report));
   const activeHere = !!activeJob;
   const dumpStem = dumpFolderStem(oneSchema || connection.name || connection.host);
+  const defaultDumpParent = tools?.default_dump_parent || "";
   const finishedDumps = memory.jobs.filter(b => b.key === key && b.report.operation === "dump" && !jobActive(b.report)).map(b => b.report.id).join(",");
   useEffect(() => {
-    if (section !== "dump" || !onScreen || directoryTouched || directoryPicking || busy || activeHere) return;
+    if (section !== "dump" || !onScreen || directoryTouched || directoryPicking || busy || activeHere || (!lastDumpParent && !defaultDumpParent)) return;
     const controller = new AbortController();
     const edit = directoryEdit.current;
     setDirectoryError("");
     // Clearing a field often precedes typing a replacement. Let that edit
     // finish, and never apply a suggestion over a newer keystroke.
     const timer = window.setTimeout(() => {
-      void suggestDumpFolder(lastDumpParent, dumpStem, controller.signal, reservedDirectories.current).then(path => {
+      void suggestDumpFolder(lastDumpParent, dumpStem, controller.signal, reservedDirectories.current, defaultDumpParent).then(path => {
         if (!controller.signal.aborted && edit === directoryEdit.current) setDirectory(path);
       }).catch(e => {
         if (!controller.signal.aborted && edit === directoryEdit.current) setDirectoryError(`Could not suggest an output folder: ${(e as Error).message} Browse or enter a new folder path.`);
       });
     }, 250);
     return () => { controller.abort(); window.clearTimeout(timer); };
-  }, [key, section, onScreen, dumpStem, scope, schemas.join("\u0000"), directoryTouched, directoryVersion, directoryPicking, busy, activeHere, finishedDumps]);
+  }, [key, section, onScreen, dumpStem, defaultDumpParent, scope, schemas.join("\u0000"), directoryTouched, directoryVersion, directoryPicking, busy, activeHere, finishedDumps]);
   function changeDirectory(path: string) {
     directoryEdit.current++;
     setDirectoryVersion(n => n + 1);

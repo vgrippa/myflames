@@ -745,6 +745,7 @@ function ExportMenu({
   onDone,
   editorRun,
   backslash,
+  columnTypes,
 }: {
   result: EditorRows;
   isFiltered?: boolean;
@@ -758,6 +759,7 @@ function ExportMenu({
    * table the result's statement read (still editable). */
   editorRun: EditorRun | null;
   backslash: boolean;
+  columnTypes?: (result: EditorRows) => Promise<(string | null)[]>;
 }) {
   // Read once per result (the menu is keyed by run and result).
   const [defaults] = useState(() => insertDefaults(editorRun, result, backslash));
@@ -772,9 +774,11 @@ function ExportMenu({
     if (busy) return;
     setBusy(format);
     try {
-      // SQL literals are typed only by the server: a result column whose own
-      // type is numeric is written unquoted; every other value stays quoted.
-      const columns = result.columns.map((c, j) => ({ name: c.name, hex: c.hex, binary: binary.includes(j), type: c.type }));
+      // Server result types win. SQL alone may fill gaps for proven direct
+      // column references; expressions and unreadable metadata stay quoted.
+      const types = format === "sql" && result.columns.some(c => !c.type)
+        ? await columnTypes?.(result) : undefined;
+      const columns = result.columns.map((c, j) => ({ name: c.name, hex: c.hex, binary: binary.includes(j), type: c.type || types?.[j] || null }));
       const reply = await api<EditorExport>("editor/export", {
         format,
         result: {
@@ -984,6 +988,8 @@ export type ResultsPaneProps = {
   empty: ReactNode;
   /** The session reads backslashes in strings as escapes (sql_mode). */
   backslash?: boolean;
+  /** Read declared types for direct references in this result's statement. */
+  columnTypes?: (result: EditorRows) => Promise<(string | null)[]>;
 };
 
 /** The results area: result tabs, Messages, and the plan tab. */
@@ -1183,6 +1189,7 @@ export function ResultsPane(props: ResultsPaneProps) {
               key={`${props.run?.id || ""}:${index}`}
               editorRun={props.run}
               backslash={props.backslash !== false}
+              columnTypes={props.columnTypes}
               result={exportResult}
               isFiltered={isFiltered}
               loadedCount={result.rows.length}

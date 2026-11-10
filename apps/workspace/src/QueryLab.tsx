@@ -24,6 +24,7 @@ import {
   clientMissingCode,
   isClientAuthPlugin,
   type Capture,
+  type CatalogTable,
   type Connection,
   type EditorClose,
   type EditorConfirmation,
@@ -41,7 +42,7 @@ import {
 } from "./api";
 import type { DigestAction } from "./SlowQueries";
 import { durationText } from "./duration";
-import { delimiterAt, describeTarget, runTarget, sqlRun, type RunTarget } from "./sqlSelection";
+import { delimiterAt, describeTarget, insertDefaults, runTarget, selectColumnReferences, sqlRun, type RunTarget } from "./sqlSelection";
 import {
   digestName,
   digestQuery,
@@ -217,6 +218,9 @@ type Runtime = {
   runKey: string;
   runSessionId: number | null;
   runConnectionName: string;
+  /** Retained with the result, even if the tab later opens another session. */
+  runConnection: Connection | null;
+  runBackslash: boolean;
   /** Requests started for the tab; an answer to an older probe is dropped. */
   gen: number;
   /** The last status poll failed: the run may still be going, retrying. */
@@ -261,6 +265,8 @@ const blankRuntime = (): Runtime => ({
   runKey: "",
   runSessionId: null,
   runConnectionName: "",
+  runConnection: null,
+  runBackslash: true,
   gen: 0,
   pollTrouble: false,
   run: null,
@@ -1829,6 +1835,8 @@ export const QueryLab = forwardRef<
       runKey: now.sessionKey,
       runSessionId: s?.connection_id ?? null,
       runConnectionName: s ? sessionName(s) : now.sessionConnection ? connectionShortName(now.sessionConnection) : "",
+      runConnection: now.sessionConnection,
+      runBackslash: s?.backslash_escapes !== false,
     };
   }
   async function poll(id: string, runId: string, meta: SendMeta, gen: number) {
@@ -1931,6 +1939,28 @@ export const QueryLab = forwardRef<
     const rows = rowResults(run);
     changeTab({ result_tab: run.error || !rows.length || run.state === "session_ended" ? "messages" : "result:0" }, id);
     if (run.state === "stopped") note(id, run.stopped?.message || "Stopped.");
+  }
+  /** SQL export alone asks for declared types, using the result's source
+   * connection and statement, never the editable INSERT target or picker. */
+  async function columnTypesFor(result: EditorRows): Promise<(string | null)[]> {
+    const original = result.columns.map(c => c.type);
+    const source = rt.run?.statements[result.statement];
+    const backslash = rt.runBackslash;
+    if (!source || !rt.runConnection || original.every(Boolean)) return original;
+    const references = selectColumnReferences(source.text, result.columns.map(c => c.name), backslash);
+    const target = insertDefaults(rt.run, result, backslash);
+    if (!references?.some(Boolean) || !target.schema || !target.table) return original;
+    try {
+      const catalog = await api<CatalogTable>("live/catalog", {
+        connection: rt.runConnection, schema: target.schema, table: target.table,
+      });
+      if (catalog.schema !== target.schema || catalog.table !== target.table) return original;
+      const declared = new Map(catalog.columns.map(c => [c.name.toLowerCase(), c.type]));
+      return original.map((type, i) => type || (references[i] ? declared.get(references[i]!.toLowerCase()) : null) || null);
+    } catch {
+      // Missing or unreadable catalog metadata never changes literal quoting.
+      return original;
+    }
   }
   async function stop(id = tab.id) {
     const now = runtimeRef.current[id];
@@ -3312,7 +3342,8 @@ export const QueryLab = forwardRef<
               selected={tab.result_tab || ""}
               onSelect={(key) => changeTab({ result_tab: key })}
               engine={session?.engine || null}
-              backslash={session?.backslash_escapes !== false}
+              backslash={rt.runBackslash}
+              columnTypes={columnTypesFor}
               plan={planPane}
               explain={rt.explain}
               explaining={rt.explaining}

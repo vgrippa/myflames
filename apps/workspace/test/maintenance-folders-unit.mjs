@@ -15,7 +15,7 @@ const requests = [];
 let listing;
 globalThis.__maintenanceFolderApi = (route, body, signal) => {
   requests.push({ route, body, signal });
-  return Promise.resolve(listing);
+  return Promise.resolve(typeof listing === 'function' ? listing(body) : listing);
 };
 const apiUrl = moduleUrl('export const api = (...args) => globalThis.__maintenanceFolderApi(...args); export class ApiError extends Error {}');
 const filesUrl = moduleUrl((await compile('filesApi.ts')).replace('"./api"', JSON.stringify(apiUrl)));
@@ -55,6 +55,23 @@ try {
   assert.equal(await suggestDumpFolder('', 'sales-2026-01-02'), 'C:\\Users\\dba\\sales-2026-01-02');
   listing = { path: '/', home: '/', entries: [] };
   assert.equal(await suggestDumpFolder('/', 'sales-2026-01-02'), '/sales-2026-01-02');
+  const defaultParent = '/Users/dba/Documents/myflames dumps';
+  listing = { path: '/Users/dba/Documents', entries: [] };
+  assert.equal(await suggestDumpFolder('', 'sales-2026-01-02', signal, [], defaultParent), defaultParent + '/sales-2026-01-02');
+  assert.deepEqual(requests.at(-1).body, { path: '/Users/dba/Documents' }, 'missing default is only suggested, never listed or created');
+  assert.equal(await suggestDumpFolder('', 'sales-2026-01-02', signal,
+    [defaultParent + '/sales-2026-01-02'], defaultParent), defaultParent + '/sales-2026-01-02-2', 'missing default still honors session reservations');
+  listing = ({ path }) => ({ path, entries: path === '/Users/dba/Documents'
+    ? [{ name: 'myflames dumps', kind: 'dir' }] : [{ name: 'sales-2026-01-02' }] });
+  assert.equal(await suggestDumpFolder('', 'sales-2026-01-02', signal, [], defaultParent), defaultParent + '/sales-2026-01-02-2', 'existing default is listed for collisions');
+  listing = { path: '/chosen/backups', entries: [] };
+  const beforeChosen = requests.length;
+  assert.equal(await suggestDumpFolder('/chosen/backups', 'sales-2026-01-02', signal, [], defaultParent), '/chosen/backups/sales-2026-01-02');
+  assert.equal(requests.length, beforeChosen + 1, 'the earlier parent wins without inspecting the default');
+  assert.deepEqual(requests.at(-1).body, { path: '/chosen/backups' });
+  listing = { path: 'C:\\Users\\dba\\Documents', entries: [] };
+  assert.equal(await suggestDumpFolder('', 'sales-2026-01-02', signal, [], 'C:\\Users\\dba\\Documents\\myflames dumps'),
+    'C:\\Users\\dba\\Documents\\myflames dumps\\sales-2026-01-02');
   assert.ok(requests.every(r => r.route === 'files/local/list'), 'suggestions never create a directory or start a job');
   const bindingUrl = moduleUrl('export const connectionKey = null;');
   const opsSource = (await compile('opsApi.ts'))

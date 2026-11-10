@@ -127,6 +127,7 @@ const mock = {
   holdStatus: false,
   holdRun: false,
   holdTable: false,
+  catalogColumns: null,
   privilegeActions: {},
   preview: null,
   holdPreview: false,
@@ -188,7 +189,7 @@ function reply(p, body) {
           tables: (filtered || (body.after ? ["users"] : ["orders"])).map((name) => ({ name, type: "table" })) };
       }
       return { schema_version: "catalog-1.0", level: "table", schema: body.schema, table: body.table,
-        columns: [{ name: "id", type: "int", nullable: false, key: "PRI", default: null, extra: "auto_increment", generated: false },
+        columns: mock.catalogColumns || [{ name: "id", type: "int", nullable: false, key: "PRI", default: null, extra: "auto_increment", generated: false },
           { name: "status", type: "varchar(20)", nullable: true, key: "MUL", default: null, extra: "", generated: false }],
         indexes: [{ name: "PRIMARY", unique: true, primary: true, type: "BTREE", columns: [{ name: "id", expression: null, sub_part: null }] }] };
   }
@@ -502,10 +503,11 @@ try {
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   await page.setViewport({ width: 1440, height: 1000 });
 
-  // 3b. SQL INSERT export: only the result column's own server type decides
-  // quoting. An expression or alias reusing a column name (LPAD(id, ...) AS
-  // id) carries no type and stays quoted, even where the read table declares
-  // that name numeric; a result column the server typed numeric is unquoted.
+  // 3b. SQL INSERT export borrows declared types for plain references only.
+  // LPAD(id, ...) AS id stays quoted even though the catalog calls id int;
+  // qty retains its own server type. XML results without types borrow once.
+  mock.catalogColumns = ["id", "qty"].map(name => ({ name, type: "int", nullable: false,
+    key: "", default: null, extra: "", generated: false }));
   mock.run.push({
     status: "complete",
     session: session(),
@@ -530,7 +532,43 @@ try {
   assert.equal(sqlExport.result.columns[0].type, null, "an alias reusing a column name stays untyped, so 00123 keeps its quotes");
   assert.equal(sqlExport.result.columns[1].type, "int", "a result column the server typed numeric is written unquoted");
   assert.deepEqual(sqlExport.result.rows, [["00123", "7"], ["00042", "8"]]);
-  assert.equal(calls("/api/live/catalog").length, catalogBefore, "the export never reads the table's catalog for column types");
+  assert.equal(calls("/api/live/catalog").length, catalogBefore + 1, "at most one catalog read for an export");
+  assert.equal(calls("/api/live/catalog").at(-1).table, "users");
+  assert.equal(calls("/api/live/catalog").at(-1).schema, "shop");
+  await page.waitForSelector(".popover .export-sql", { hidden: true });
+
+  // Direct columns use their source's declared types, even when the INSERT
+  // target is edited. A UNION cannot borrow from either input table.
+  for (const union of [false, true]) {
+    const sql = "SELECT id, qty FROM shop.users" + (union ? " UNION SELECT id, qty FROM shop.other" : "");
+    mock.run.push({ status: "complete", session: session(),
+      run: run([statement(0, sql, 0)], [rows(0, ["id", "qty"], [["1", "7"]])]) });
+    await setText(sql);
+    const beforeRun = calls("/api/editor/run").length;
+    await page.click("[data-action=run-all]");
+    await ran(beforeRun + 1);
+    await idle();
+    await page.locator(".result-export button ::-p-text(Export)").click();
+    await page.waitForSelector(".popover .export-sql");
+    await page.locator('.popover .export-sql input[placeholder="Target table name"]').fill("users_copy");
+    const beforeExport = calls("/api/editor/export").length;
+    const beforeCatalog = calls("/api/live/catalog").length;
+    await page.locator(".popover button ::-p-text(Download SQL)").click();
+    const exported = await until(() => calls("/api/editor/export").length > beforeExport && calls("/api/editor/export").at(-1), "no direct/UNION SQL export");
+    assert.equal(exported.format, "sql");
+    assert.equal(exported.table, "users_copy");
+    assert.deepEqual(exported.result.columns.map(c => c.type), union ? [null, null] : ["int", "int"],
+      union ? "UNION values stay quoted" : "both direct integer columns are unquoted");
+    assert.equal(calls("/api/live/catalog").length, beforeCatalog + (union ? 0 : 1),
+      union ? "UNION never reads a table's types" : "one catalog read per direct-column export");
+    if (!union) {
+      const catalogRead = calls("/api/live/catalog").at(-1);
+      assert.deepEqual([catalogRead.schema, catalogRead.table], ["shop", "users"], "read the source, not the INSERT target");
+      assert.deepEqual(catalogRead.connection, calls("/api/editor/run").at(-1).connection, "catalog uses the result's session connection");
+    }
+    await page.waitForSelector(".popover .export-sql", { hidden: true });
+  }
+  mock.catalogColumns = null;
 
   // 4. An error: Messages, the underline, and Go to line.
   const BAD = "SELECT 1;\nSELEC 2 FROM t";
@@ -544,7 +582,7 @@ try {
     ),
   });
   await page.click("[data-action=run-all]");
-  await ran(6);
+  await ran(8);
   await page.waitForSelector(".message-error");
   assert.equal(await page.$eval(".results-tabs [aria-selected=true]", (e) => e.textContent), "Messages1", "an error opens Messages");
   assert.match(await text(".message-error"), /ERROR 1064 \(42000\): You have an error/);
@@ -560,7 +598,7 @@ try {
   mock.run.push({ status: "running", session: session({ state: "running" }), run: running });
   mock.holdStatus = true;
   await chord("Enter");
-  await ran(7);
+  await ran(9);
   await page.waitForSelector(".results-running");
   assert.equal(await page.$eval("[data-action=stop]", (e) => e.disabled), false);
   await until(() => heldStatus.length > 0, "no status poll while running");
@@ -583,7 +621,7 @@ try {
   mock.holdStatus = true;
   await page.focus(EDITOR);
   await chord("Enter");
-  await ran(8);
+  await ran(10);
   await page.waitForSelector(".results-running");
   await page.focus(EDITOR);
   await page.keyboard.press("Escape");
@@ -607,7 +645,7 @@ try {
     run: run([statement(0, "SELECT * FROM orders", 0)], [rows(0, ["id"], [["1"], ["2"]], { stopped: "row_limit", label: "stopped after 2 rows", truncated: true, limit: 2 })]),
   });
   await chord("Enter");
-  body = await ran(9);
+  body = await ran(11);
   assert.equal(body.limit, 2);
   await page.waitForSelector(".result-cut");
   assert.equal(await text(".result-cut"), "stopped after 2 rows");
@@ -617,7 +655,7 @@ try {
     run: run([statement(0, "SELECT * FROM orders", 0)], [rows(0, ["id"], [["1"], ["2"], ["3"], ["4"], ["5"]], { limit: 1002 })]),
   });
   await page.locator(".result-actions button ::-p-text(Load more)").click();
-  body = await ran(10);
+  body = await ran(12);
   assert.equal(body.limit, 1002);
   // The run's own text with that statement selected, in the same session.
   assert.equal(body.sql, "SELECT * FROM orders");
@@ -636,7 +674,7 @@ try {
   mock.run.push({ status: "complete", session: session({ in_transaction: true, autocommit: true }), run: run([statement(0, "START TRANSACTION", 0, { kind: "write" })], [{ type: "ok", statement: 0, affected_rows: 0, info: null, warnings: 0, duration_ms: 1 }]) });
   await setText("START TRANSACTION");
   await chord("Enter");
-  await ran(11);
+  await ran(13);
   await page.waitForFunction(() => document.querySelector(".tx-state")?.dataset.state === "Transaction open");
   assert.ok(await page.$('.query-tabs .tab-transaction[aria-label="Transaction open"]'), "the tab shows its open transaction");
   const action = (verb) => ({ status: "complete", session: session({ in_transaction: false }), run: run([statement(0, verb, 0, { kind: verb === "COMMIT" ? "write" : "read" })], [{ type: "ok", statement: 0, affected_rows: 0, info: null, warnings: 0, duration_ms: 1 }], { kind: "action" }) });
@@ -651,7 +689,7 @@ try {
   mock.run.push({ status: "complete", session: session({ in_transaction: true }), run: run([statement(0, "BEGIN", 0, { kind: "write" })], [{ type: "ok", statement: 0, affected_rows: 0, info: null, warnings: 0, duration_ms: 1 }]) });
   await setText("BEGIN");
   await chord("Enter");
-  await ran(12);
+  await ran(14);
   await page.waitForSelector(".editor-transaction-trigger");
   await page.click(".editor-transaction-trigger");
   await page.waitForSelector("[data-action=commit]");
@@ -679,7 +717,7 @@ try {
   mock.run.push({ status: "complete", session: session({ tab_id: "2", in_transaction: null, transaction_note: "The transaction instrument is off." }), run: run([statement(0, "UPDATE t SET a = 1 WHERE id = 1", 0, { kind: "write" })], [{ type: "ok", statement: 0, affected_rows: 1, info: null, warnings: 0, duration_ms: 1 }]) });
   await setText("UPDATE t SET a = 1 WHERE id = 1");
   await chord("Enter");
-  await ran(13);
+  await ran(15);
   await page.waitForFunction(() => document.querySelector(".tx-state")?.dataset.state === "Transaction unknown");
   // The footer leaves the transaction to the toolbar, which is always shown:
   // Query digest is a place of its own, not a mode of the editor.

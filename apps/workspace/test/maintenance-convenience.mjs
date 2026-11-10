@@ -4,6 +4,7 @@ import path from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {open,load} from './perf-harness.mjs';
 const tools=await load('lifecycle-tools-mysql.json');
+tools.default_dump_parent='/Users/dba/Documents/myflames dumps';
 const catalogs=JSON.parse(execFileSync(process.env.PYTHON || 'python3',['-c',
  'import json; from myflames.dump_options import capability_catalog; print(json.dumps({n:capability_catalog(n,tool_version="8.4.0") for n in ("mysqlsh","mysqldump")}))'],{cwd:new URL('../../../',import.meta.url),encoding:'utf8'}));
 for(const name of ['mysqlsh','mysqldump'])tools.tools[name].dump_capabilities=catalogs[name];
@@ -36,10 +37,12 @@ tools.tools.mysqlpump.download_url='javascript:alert(1)';
 let folder={status:200,body:{path:'/tmp/Backup folder – café',cancelled:false}};
 const picker='/api/lifecycle/choose-directory';
 let localEntries=[];
+let defaultParentExists=false;
 const h=await open('/api/lifecycle/tools','maintenance-convenience',{
  '/api/lifecycle/jobs':{status:200,body:{jobs:[]}},
  [picker]:()=>folder,
- '/api/files/local/list':b=>({status:200,body:{path:b.path||'/Users/dba',home:'/Users/dba',transfers:false,entries:localEntries}}),
+ '/api/files/local/list':b=>({status:200,body:{path:b.path||'/Users/dba',home:'/Users/dba',transfers:false,
+  entries:b.path==='/Users/dba/Documents'?(defaultParentExists?[{name:'myflames dumps',kind:'dir'}]:[]):localEntries}}),
  '/api/lifecycle/prepare':()=>preflightReply,
  '/api/live/schemas':{status:200,body:schemas},
  '/api/live/catalog':catalogAnswer,
@@ -75,10 +78,13 @@ try {
   await h.narrow(`tools-${theme}-390.png`);
  }
  await page.locator(`${view} .segmented button ::-p-text(Dump)`).click();
- await page.waitForFunction(()=>document.querySelector('.ops-folder-input input')?.value.startsWith('/Users/dba/'));
+ await page.waitForFunction(parent=>document.querySelector('.ops-folder-input input')?.value.startsWith(parent+'/'),{},tools.default_dump_parent);
  const suggested=await field();
+ assert.equal(suggested.slice(0,suggested.lastIndexOf('/')),tools.default_dump_parent,'the backend default is used even before its folder exists');
+ assert.equal(state.other.some(r=>/mkdir|prepare|start/.test(r.path)),false,'a first-use suggestion creates nothing');
  assert.match(suggested,/\d{4}-\d{2}-\d{2}$/,'the initial output folder includes a local calendar date');
  const suggestedName=suggested.split('/').at(-1);
+ defaultParentExists=true;
  localEntries=[{name:suggestedName},{name:suggestedName+'-2'}];
  await page.$eval('.ops-folder-input input',e=>e.select());
  await page.keyboard.press('Backspace');

@@ -155,6 +155,8 @@ export type LifecycleServer = {
 };
 export type LifecycleTools = {
   schema_version: "lifecycle-tools-2.0"; tools: Record<string, Tool>;
+  /** Backend-resolved real-user dump parent; suggesting it creates nothing. */
+  default_dump_parent: string;
   server: LifecycleServer;
   /** Every copy found, one row per copy in the Tools table (copies of the
    * tools map entries carry the same fields plus name and used). */
