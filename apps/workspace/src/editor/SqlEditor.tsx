@@ -15,7 +15,7 @@ import { editorKeymap } from "./keymap";
 import { FLASH_MS, matchingBrackets, setError, setFlash, setStatement, sqlMarks } from "./marks";
 import { problemsExtension } from "./problems";
 import { sqlHighlighting, sqlLanguage } from "./sqlLanguage";
-import { clampOffset, clampRange, mainSelection, normalizeEol, normalizedOffset, normalizedRange, type EditorEnv, type Range, type SqlEditorHandle, type SqlEditorProps } from "./types";
+import { clampOffset, clampRange, mainSelection, normalizeEol, normalizedOffset, normalizedRange, sameConnection, type EditorEnv, type Range, type SqlEditorHandle, type SqlEditorProps } from "./types";
 import { visualExtension } from "./visual";
 
 export type { SqlEditorHandle, SqlEditorProps } from "./types";
@@ -107,7 +107,7 @@ function configurations(props: SqlEditorProps, env: Environment, length: number)
 
 function sameConfiguration(a: SqlEditorProps | null, b: SqlEditorProps): boolean {
   return !!a && (Object.keys(b.settings) as (keyof typeof b.settings)[]).every(key => a.settings[key] === b.settings[key]) &&
-    a.completionConnection === b.completionConnection && a.engine === b.engine && a.serverVersion === b.serverVersion &&
+    sameConnection(a.completionConnection, b.completionConnection) && a.engine === b.engine && a.serverVersion === b.serverVersion &&
     a.backslashEscapes === b.backslashEscapes && a.placeholder === b.placeholder && a.describedBy === b.describedBy;
 }
 function sameRange(a?: Range | null, b?: Range | null) {

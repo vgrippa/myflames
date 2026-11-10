@@ -8,6 +8,7 @@ const bundled = await build({
     export { EditorState } from "@codemirror/state";
     export { hoverSource, hoverExtension } from "./src/editor/hover";
     export { catalogFor } from "./src/editor/catalog";
+    export { sameConnection } from "./src/editor/types";
   `, resolveDir: fileURLToPath(new URL("..", import.meta.url)) },
   bundle: true, format: "esm", platform: "neutral", target: "es2020", write: false, logLevel: "silent",
   plugins: [{ name: "fake-api", setup(b) {
@@ -273,6 +274,20 @@ try {
     assert.ok(cm.hoverExtension({ hover_info: true }, edge.env).active, "real hoverTooltip extension");
   }
   assert.ok(allCalls.every(c => typeof c.body.table === "string" && !("stats" in c.body)));
+  {
+    // The parent rebuilds the connection object on every render; comparing it
+    // by identity reconfigured every compartment mid-hover, destroying the
+    // hover plugin before its 350 ms delay elapsed (editor-abuse step 5).
+    const connection = { name: "n", host: "db", port: 3306, user: "reader", database: "app", ssl_mode: "preferred" };
+    assert.ok(cm.sameConnection(connection, { ...connection }), "identical content, fresh object");
+    assert.ok(cm.sameConnection(connection, connection));
+    assert.ok(!cm.sameConnection(connection, { ...connection, database: "other" }));
+    assert.ok(!cm.sameConnection(connection, { ...connection, profile_id: "p1" }));
+    assert.ok(!cm.sameConnection({ ...connection, profile_id: "p1" }, connection));
+    assert.ok(!cm.sameConnection(connection, undefined));
+    assert.ok(!cm.sameConnection(undefined, connection));
+    assert.ok(cm.sameConnection(undefined, undefined));
+  }
   console.log("Hover: table/alias/column, exclusions, ambiguity, cancellation, 12-column cap, cache-only estimates and hostile text nodes passed (minimal DOM stub).");
 } finally {
   for (const service of services) service.dispose();

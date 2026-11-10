@@ -60,6 +60,16 @@ export function mainSelection(state: EditorState): Range {
   return { start: from, end: to };
 }
 
+/** Parents rebuild the connection object on every render; an identical
+ * connection by value must not reconfigure (and reset) editor plugins. */
+export function sameConnection(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
+  const aRecord = a as Record<string, unknown>, bRecord = b as Record<string, unknown>;
+  const keys = Object.keys(aRecord);
+  return keys.length === Object.keys(bRecord).length && keys.every(key => aRecord[key] === bRecord[key]);
+}
+
 export function clampOffset(value: number, length: number): number {
   return Math.min(length, Math.max(0, Number.isNaN(value) ? 0 : Math.trunc(value)));
 }
