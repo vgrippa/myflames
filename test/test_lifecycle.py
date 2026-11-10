@@ -62,6 +62,7 @@ class ReplayConnection(object):
         self.change_identity_at = None
         self.denied = None
         self.row_count = 2
+        self.schema_defaults = {'app': {'character_set': 'utf8mb4', 'collation': 'utf8mb4_0900_ai_ci'}}
         self.clone_state = 'Completed'
         self.grants = ['GRANT ALL PRIVILEGES ON *.* TO `operator`@`%`',
                        'GRANT BACKUP_ADMIN, CLONE_ADMIN ON *.* TO `operator`@`%`']
@@ -117,6 +118,13 @@ class ReplayConnection(object):
             if self.restored_marker and os.path.exists(self.restored_marker):
                 return _tsv(CATALOG)
             return _tsv(self.catalog)
+        if body.startswith('SELECT SCHEMA_NAME,DEFAULT_CHARACTER_SET_NAME,DEFAULT_COLLATION_NAME '):
+            return _tsv([[name, values['character_set'], values['collation']]
+                         for name, values in self.schema_defaults.items()])
+        if body.startswith('SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = '):
+            name = re.search(r"CONVERT\(X'([0-9a-f]+)' USING utf8mb4\)", body).group(1)
+            name = bytes.fromhex(name).decode('utf-8')
+            return _tsv([[name]]) if name in self.schema_defaults else ''
         if body == 'SELECT @@lower_case_table_names':
             if 'lower_case_table_names' not in self.variables:
                 raise ConnectorError('ERROR 1193 (HY000): Unknown system variable')
@@ -190,6 +198,7 @@ stdin = sys.stdin.read()
 record = {'name':name, 'argv':sys.argv, 'env':dict(os.environ), 'cnf':cnf,
           'cnf_mode':stat.S_IMODE(os.stat(cnf).st_mode), 'password_seen':'password=' in config,
           'stdin_hash':hashlib.sha256(stdin.encode()).hexdigest(),
+          'create_database_sql':stdin if stdin.startswith('/*myflames:lifecycle*/ CREATE DATABASE ') else None,
           'donor_secret_on_stdin':"donor''private" in stdin,
           'sql_on_argv':any('CLONE ' in arg or 'SELECT ' in arg for arg in sys.argv)}
 with (root/'calls.jsonl').open('a') as log:
@@ -222,12 +231,16 @@ if mode == 'slow':
     while True: signal.pause()
 if name.endswith('dump') or name == 'mysqldump':
     print('25% dumped',file=sys.stderr,flush=True)
-    print('CREATE DATABASE IF NOT EXISTS app;\nUSE app;\nCREATE TABLE t(id INT);\nINSERT INTO t VALUES (1),(2);')
+    if '--databases' in sys.argv or '--all-databases' in sys.argv:
+        print('CREATE DATABASE IF NOT EXISTS app;\nUSE app;')
+    print('CREATE TABLE t(id INT);\nINSERT INTO t VALUES (1),(2);')
     print('100% dumped',file=sys.stderr,flush=True)
 elif name == 'mysqlsh':
     # JavaScript print() adds no line break; only an explicit "\\n" ends the line.
     marker = re.search(r'print\("(myflames_job_[^"]+:)" \+ session.getConnectionId\(\)( \+ "\\n")?\)', stdin)
     if marker: print(marker.group(1)+'41', end='\n' if marker.group(2) else '', flush=True)
+    if mode == 'fail_after_marker':
+        print('failure after marker',file=sys.stderr); sys.exit(3)
     print('Initializing - done', flush=True)
     print('\x1b[36mNOTE: \x1b[0mProgress information uses estimated values', file=sys.stderr, flush=True)
     call = re.search(r'util\.(dumpInstance|dumpSchemas|dumpTables|loadDump)\((.*)\);?',stdin)
@@ -259,7 +272,9 @@ elif mode in ('restart', 'gone') and 'CLONE INSTANCE' in stdin:
 else:
     marker = re.search(r"SELECT CONCAT\('(myflames_job_[^']+:)',CONNECTION_ID\(\)\)",stdin)
     if marker: print(marker.group(1)+'41',flush=True)
-    (root/'restored').touch()
+    if mode == 'fail_after_marker':
+        print('failure after marker',file=sys.stderr); sys.exit(3)
+    if marker: (root/'restored').touch()
     print('100% restored',file=sys.stderr,flush=True)
 '''
 
@@ -473,6 +488,26 @@ class LifecycleTests(unittest.TestCase):
 
     def target(self):
         return ReplayConnection(server_variables(identity='recipient'), catalog=[], restored_marker=str(self.bin / 'restored'))
+
+    def make_picked_dump(self):
+        conn, tools = ReplayConnection(catalog=CATALOG[:1]), self.native_tools()
+        plan = lc.prepare_dump(conn, CONNECTION, self.output, schemas=['app'], tables=['t'], tools=tools)
+        with mock.patch.object(lc, 'detect_tools', return_value=tools):
+            result = lc.dump_job(CONNECTION, plan, True, plan['target'], self.audit('dump'),
+                                 factory=lambda **kw: conn, start=False).run()
+        self.assertEqual(result['state'], 'done', result)
+        return result['result']['manifest']
+
+    def update_dump(self, sql=None, **fields):
+        """Synthetic backup variants, with a manifest matching their bytes."""
+        path = Path(self.output, lc.MANIFEST)
+        manifest = json.loads(path.read_text(encoding='utf-8'))
+        if sql is not None:
+            Path(self.output, 'dump.sql').write_text(sql, encoding='utf-8')
+            manifest['files'] = lc._file_records(self.output)
+        manifest.update(fields)
+        path.write_text(json.dumps(manifest), encoding='utf-8')
+        return manifest
 
     def stop_detect(self):
         # Python 3.7's patcher.stop() raises on a second call (3.8 made it a no-op).
@@ -1425,6 +1460,319 @@ class LifecycleTests(unittest.TestCase):
         self.assert_secret_transport(self.calls()[-1])
         self.assertIn('--binary-mode', self.calls()[-1]['argv'])
         self.assertNotIn('-e', self.calls()[-1]['argv'])
+
+    def test_picked_restore_creates_missing_database_with_reviewed_charset_first(self):
+        manifest = self.make_picked_dump()
+        self.assertEqual(manifest['schema_defaults'], self.conn.schema_defaults)
+        target, tools = self.target(), self.native_tools()
+        target.schema_defaults = {}
+        plan = lc.prepare_restore(target, CONNECTION, self.output, tools=tools)
+        create = 'CREATE DATABASE `app` DEFAULT CHARACTER SET `utf8mb4` COLLATE `utf8mb4_0900_ai_ci`'
+        self.assertEqual(plan['commands'][0], create)
+        self.assertEqual(plan['create_database'], create)
+        self.assertTrue(plan['ready'])
+        self.assertEqual(next(c for c in plan['checks'] if c['check'] == 'target_schema'),
+                         {'check': 'target_schema', 'status': 'passed',
+                          'reason': 'Creates database app first; it does not exist on this server.'})
+        self.assertTrue(plan['remap_allowed'])
+        self.assertEqual(len([sql for sql, flags in target.calls if
+                              sql.startswith(lc.TAG + 'SELECT SCHEMA_NAME FROM')]), 1)
+        self.assertFalse(any('CREATE DATABASE' in sql for sql, flags in target.calls))
+        consumed = []
+        with mock.patch.object(lc, 'detect_tools', return_value=tools):
+            job = lc.restore_job(CONNECTION, plan, True, plan['target'], self.audit(),
+                                 factory=lambda **kw: target, start=False)
+            job.review_consumer = lambda: consumed.append(len(self.calls()))
+            result = job.run()
+        self.assertEqual(result['state'], 'done', result)
+        create_call, load_call = self.calls()[-2:]
+        self.assertEqual(consumed, [len(self.calls()) - 2], 'review consumed before either write client')
+        self.assertEqual(create_call['create_database_sql'], lc.TAG + create + ';\n')
+        self.assertFalse(any(arg.startswith('--database=') for arg in create_call['argv']))
+        self.assertIn('--database=app', load_call['argv'])
+        self.assertIn('--binary-mode', create_call['argv'])
+        self.assertIn('--comments', create_call['argv'])
+        self.assert_secret_transport(create_call)
+        self.assert_secret_transport(load_call)
+        records = self.store.audit_records()
+        restore_audit = next(row for row in records if row['operation'] == 'restore')
+        self.assertIn(create, json.dumps(restore_audit))
+
+    def test_picked_restore_old_manifest_warns_and_uses_server_defaults(self):
+        self.make_picked_dump()
+        manifest = self.update_dump()
+        del manifest['schema_defaults']
+        Path(self.output, lc.MANIFEST).write_text(json.dumps(manifest), encoding='utf-8')
+        target = self.target()
+        target.schema_defaults = {}
+        plan = lc.prepare_restore(target, CONNECTION, self.output, tools=self.native_tools())
+        self.assertEqual(plan['commands'][0], 'CREATE DATABASE `app`')
+        self.assertTrue(any('server defaults' in w for w in plan['warnings']))
+
+    def test_dump_records_defaults_for_selected_empty_databases(self):
+        conn, tools = ReplayConnection(catalog=[]), self.native_tools()
+        conn.schema_defaults['empty'] = {'character_set': 'latin1', 'collation': 'latin1_swedish_ci'}
+        plan = lc.prepare_dump(conn, CONNECTION, self.output, schemas=['app', 'empty'], tools=tools)
+        with mock.patch.object(lc, 'detect_tools', return_value=tools):
+            result = lc.dump_job(CONNECTION, plan, True, plan['target'], self.audit('dump'),
+                                 factory=lambda **kw: conn, start=False).run()
+        self.assertEqual(result['state'], 'done', result)
+        self.assertEqual(result['result']['manifest']['schema_defaults'], conn.schema_defaults)
+        reads = [sql for sql, flags in conn.calls if 'DEFAULT_CHARACTER_SET_NAME' in sql]
+        self.assertEqual(reads, [lc.TAG + 'SELECT SCHEMA_NAME,DEFAULT_CHARACTER_SET_NAME,DEFAULT_COLLATION_NAME '
+                                'FROM information_schema.SCHEMATA WHERE SCHEMA_NAME IN (' +
+                                lc.literal('app') + ',' + lc.literal('empty') + ')'])
+
+    def test_picked_restore_quotes_untrusted_charset_metadata(self):
+        self.make_picked_dump()
+        charset = 'utf8mb4`; DROP DATABASE valuable; --'
+        self.update_dump(schema_defaults={'app': {'character_set': charset, 'collation': 'utf8mb4_0900_ai_ci'}})
+        target = self.target()
+        target.schema_defaults = {}
+        plan = lc.prepare_restore(target, CONNECTION, self.output, tools=self.native_tools())
+        self.assertEqual(plan['create_database'], 'CREATE DATABASE `app` DEFAULT CHARACTER SET ' +
+                         lc.ident(charset) + ' COLLATE `utf8mb4_0900_ai_ci`')
+        # The apparent injected commands remain inside one quoted identifier.
+        classification = dbops.classify(plan['create_database'])
+        self.assertEqual(classification['count'], 1)
+        self.assertEqual(classification['statements'][0]['verb'], 'CREATE DATABASE')
+
+    def test_picked_restore_existing_database_needs_no_create(self):
+        self.make_picked_dump()
+        plan = lc.prepare_restore(self.target(), CONNECTION, self.output, tools=self.native_tools())
+        self.assertIsNone(plan['create_database'])
+        self.assertEqual(len(plan['commands']), 1)
+        self.assertEqual(next(c for c in plan['checks'] if c['check'] == 'target_schema')['reason'],
+                         'Database app exists on this server.')
+        self.assertFalse(any('server defaults' in w for w in plan['warnings']))
+
+    def test_picked_restore_creation_and_scan_are_bound_before_writes(self):
+        self.make_picked_dump()
+        target, tools = self.target(), self.native_tools()
+        target.schema_defaults = {}
+        plan = lc.prepare_restore(target, CONNECTION, self.output, tools=tools)
+        extra = {'manifest': plan['manifest_hash'], 'create_database': plan['create_database'],
+                 'sql_scan': plan['sql_scan']}
+        self.assertEqual(plan['binding'], lc._plan_binding(plan, extra))
+        for key in ('create_database', 'sql_scan'):
+            changed = dict(extra)
+            changed[key] = None
+            self.assertNotEqual(plan['binding'], lc._plan_binding(plan, changed))
+        # A database appearing after review requires a new review. Never
+        # silently skip a reviewed CREATE, or substitute IF NOT EXISTS.
+        target.schema_defaults = self.conn.schema_defaults
+        calls = len(self.calls())
+        with mock.patch.object(lc, 'detect_tools', return_value=tools):
+            result = lc.restore_job(CONNECTION, plan, True, plan['target'], self.audit(),
+                                    factory=lambda **kw: target, start=False).run()
+        self.assertEqual(result['state'], 'refused', result)
+        self.assertEqual(len(self.calls()), calls)
+
+    def test_picked_restore_review_failure_blocks_database_creation(self):
+        self.make_picked_dump()
+        target, tools = self.target(), self.native_tools()
+        target.schema_defaults = {}
+        plan = lc.prepare_restore(target, CONNECTION, self.output, tools=tools)
+        def refuse_review():
+            raise lc.Refused('Review expired; nothing was sent.')
+        calls = len(self.calls())
+        with mock.patch.object(lc, 'detect_tools', return_value=tools):
+            job = lc.restore_job(CONNECTION, plan, True, plan['target'], self.audit(),
+                                 factory=lambda **kw: target, start=False)
+            job.review_consumer = refuse_review
+            result = job.run()
+        self.assertEqual(result['state'], 'refused', result)
+        self.assertEqual(len(self.calls()), calls)
+
+    def test_picked_restore_remaps_to_new_database(self):
+        self.make_picked_dump()
+        target, tools = self.target(), self.native_tools()
+        plan = lc.prepare_restore(target, CONNECTION, self.output, schema='new_app', tools=tools)
+        self.assertTrue(plan['remap_allowed'])
+        self.assertIn('no CREATE DATABASE', plan['remap_reason'])
+        self.assertTrue(plan['commands'][0].startswith('CREATE DATABASE `new_app`'))
+        self.assertEqual(plan['target'], '127.0.0.1:3306/new_app')
+        # Return the actual remapped catalog for verification, rather than
+        # treating a successful client exit as proof of restored objects.
+        target.restored_marker = None
+        invoke = lc._invoke
+        def load(*args, **kwargs):
+            value = invoke(*args, **kwargs)
+            if kwargs.get('input_file'):
+                target.catalog = [['new_app'] + CATALOG[0][1:]]
+            return value
+        with mock.patch.object(lc, 'detect_tools', return_value=tools), mock.patch.object(lc, '_invoke', side_effect=load):
+            result = lc.restore_job(CONNECTION, plan, True, plan['target'], self.audit(),
+                                    factory=lambda **kw: target, start=False).run()
+        self.assertEqual(result['result']['status'], 'completed', result)
+        self.assertIn('--database=new_app', self.calls()[-1]['argv'])
+
+    def test_picked_restore_refuses_content_that_cannot_remap(self):
+        self.make_picked_dump()
+        for sql, reason in [('USE app;\nCREATE TABLE t(id INT);', 'USE'),
+                            ('cReAtE dAtAbAsE app;\n', 'CREATE DATABASE'),
+                            ('CREATE SCHEMA app;\n', 'CREATE SCHEMA'),
+                            ('CREATE VIEW v AS SELECT * FROM `aPp`.t;', 'names app'),
+                            ('CREATE VIEW v AS SELECT * FROM app.t;', 'names app')]:
+            with self.subTest(reason=reason):
+                self.update_dump(sql=sql)
+                plan = lc.prepare_restore(self.target(), CONNECTION, self.output, tools=self.native_tools())
+                self.assertFalse(plan['remap_allowed'])
+                self.assertIn(reason, plan['remap_reason'])
+                with self.assertRaisesRegex(lc.Refused, re.escape(plan['remap_reason'])):
+                    lc.prepare_restore(self.target(), CONNECTION, self.output, schema='new_app', tools=self.native_tools())
+
+    def test_whole_database_restore_keeps_own_databases(self):
+        self.make_dump()
+        with mock.patch.object(lc, '_sql_schema_scan', wraps=lc._sql_schema_scan) as scan:
+            plan = lc.prepare_restore(self.target(), CONNECTION, self.output, tools=self.native_tools())
+        scan.assert_not_called()  # Scope alone refuses remapping; avoid an unnecessary full scan.
+        self.assertFalse(plan['remap_allowed'])
+        self.assertEqual(plan['remap_reason'], 'This dump creates its own databases (CREATE DATABASE and USE), '
+                                              'so it restores into them; choose As in the dump.')
+        self.assertIsNone(plan['create_database'])
+        with self.assertRaisesRegex(lc.Refused, re.escape(plan['remap_reason'])):
+            lc.prepare_restore(self.target(), CONNECTION, self.output, schema='new_app', tools=self.native_tools())
+
+    def test_restore_failure_guidance_follows_load_marker_for_sql_and_shell(self):
+        for shell in (False, True):
+            self.output = str(self.root / ('failure-shell-' + str(shell)))
+            self.make_dump(shell=shell)
+            tools = self.tools if shell else self.native_tools()
+            for mode, started in (('fail', False), ('fail_after_marker', True)):
+                with self.subTest(shell=shell, mode=mode):
+                    target = self.target()
+                    plan = lc.prepare_restore(target, CONNECTION, self.output, tools=tools)
+                    (self.bin / 'mode').write_text(mode)
+                    # Set mode after rebuild so Shell dryRun succeeds, and
+                    # failure occurs in the actual load client.
+                    def set_mode():
+                        (self.bin / 'mode').write_text(mode)
+                    (self.bin / 'mode').unlink()
+                    with mock.patch.object(lc, 'detect_tools', return_value=tools):
+                        job = lc.restore_job(CONNECTION, plan, True, plan['target'], self.audit(),
+                                             factory=lambda **kw: target, start=False)
+                        job.review_consumer = set_mode
+                        result = job.run()
+                    (self.bin / 'mode').unlink()
+                    self.assertEqual(result['state'], 'failed', result)
+                    self.assertIn('failure', result['error'])
+                    partial = result['result']['partial_state']
+                    if started:
+                        self.assertTrue(partial.startswith('Part of the dump may be loaded'), partial)
+                    else:
+                        self.assertEqual(partial, 'Nothing was loaded: the client stopped before running any statement.')
+
+    def test_restore_prepare_endpoint_exposes_remap_fields_before_start(self):
+        from myflames import ui
+        self.make_picked_dump()
+        target = self.target()
+        workspace = types.SimpleNamespace(store=self.store, lifecycle=lc.LifecycleJobs())
+        self.addCleanup(workspace.lifecycle.close)
+        payload = {'connection': CONNECTION, 'operation': 'restore', 'directory': self.output}
+        with mock.patch.object(lc, 'LifecycleConnection', return_value=target):
+            for sql, allowed in [('CREATE TABLE t(id INT);', True), ('USE app;', False)]:
+                self.update_dump(sql=sql)
+                reply = ui.api_response('/api/lifecycle/prepare', payload, workspace)
+                self.assertIs(reply['remap_allowed'], allowed)
+                self.assertIsInstance(reply['remap_reason'], str)
+                self.assertTrue(reply['review_token'])
+        self.assertFalse((self.bin / 'restored').exists(), 'prepare is read-only')
+
+    def test_restore_preflight_failure_does_not_claim_partial_data(self):
+        self.make_dump(shell=True)
+        target = self.target()
+        plan = lc.prepare_restore(target, CONNECTION, self.output, tools=self.tools)
+        (self.bin / 'mode').write_text('fail')
+        result = lc.restore_job(CONNECTION, plan, True, plan['target'], self.audit(),
+                                factory=lambda **kw: target, start=False).run()
+        self.assertEqual(result['state'], 'failed', result)
+        self.assertEqual(result['result']['partial_state'],
+                         'Nothing was loaded: the client stopped before running any statement.')
+        self.assertFalse((self.bin / 'restored').exists())
+
+    def test_picked_restore_scans_chunk_boundaries_against_reviewed_hash(self):
+        self.make_picked_dump()
+        for suffix, key in [('cReAtE' + ' ' * (2 * 1024 * 1024) + 'DaTaBaSe app;', 'create_database'),
+                            (';\nUsE app;', 'use'), ('`aPp`.t;', 'qualified_source')]:
+            with self.subTest(key=key):
+                sql = 'x' * (1024 * 1024 - 5) + ';\n' + suffix
+                self.update_dump(sql=sql)
+                plan = lc.prepare_restore(self.target(), CONNECTION, self.output, tools=self.native_tools())
+                self.assertTrue(plan['sql_scan'][key])
+                self.assertFalse(plan['remap_allowed'])
+        # A raced input must match the reviewed record during scanning too.
+        manifest = lc.read_manifest(self.output)
+        Path(self.output, 'dump.sql').write_text('CREATE TABLE different(id INT);')
+        with self.assertRaises(lc.Refused):
+            lc._sql_schema_scan(self.output, manifest['files'][0], 'app')
+
+    def test_picked_restore_scan_handles_comments_and_data_without_rewriting(self):
+        self.make_picked_dump()
+        cases = [('-- header\n/* comment */ uSe app;', 'use'),
+                 ('CREATE /* ordinary comment */ DATABASE app;', 'create_database'),
+                 ('/*!50000 USE app */;', 'use'),
+                 ('/*M!100100 USE app */;', 'use'),
+                 ('CREATE VIEW v AS SELECT * FROM `app` /* gap */ . `t`;', 'qualified_source')]
+        for sql, key in cases:
+            with self.subTest(sql=sql):
+                self.update_dump(sql=sql)
+                plan = lc.prepare_restore(self.target(), CONNECTION, self.output, tools=self.native_tools())
+                self.assertTrue(plan['sql_scan'][key])
+                self.assertFalse(plan['remap_allowed'])
+        sql = ("-- USE app; CREATE DATABASE app; `app`.t\n"
+               "/* CREATE SCHEMA app; */\n"
+               "CREATE TABLE t(note TEXT);\n"
+               "INSERT INTO t VALUES ('USE app; CREATE DATABASE app; `app`.t'), ('it\\'s fine');\n")
+        self.update_dump(sql=sql)
+        target = self.target()
+        target.schema_defaults = {}
+        plan = lc.prepare_restore(target, CONNECTION, self.output, tools=self.native_tools())
+        self.assertTrue(plan['remap_allowed'])
+        self.assertTrue(plan['create_database'])
+        self.assertFalse(any(plan['sql_scan'].values()))
+        self.assertEqual(Path(self.output, 'dump.sql').read_text(), sql)
+
+    def test_picked_restore_scan_quotes_schema_names_and_handles_unicode_boundaries(self):
+        self.make_picked_dump()
+        for schema in ('a`pp', 'sãles', 'app space'):
+            with self.subTest(schema=schema):
+                sql = 'x' * (1024 * 1024 - 3) + ';\nSELECT * FROM ' + lc.ident(schema) + '.t;'
+                manifest = self.update_dump(sql=sql, scope={'schemas': [schema], 'tables': ['t']})
+                scan = lc._sql_schema_scan(self.output, manifest['files'][0], schema)
+                self.assertTrue(scan['qualified_source'])
+
+    def test_picked_shell_restore_remapping_has_no_extra_create(self):
+        self.make_dump(shell=True)
+        self.update_dump(scope={'schemas': ['app'], 'tables': ['t']})
+        plan = lc.prepare_restore(self.target(), CONNECTION, self.output, schema='other', tools=self.tools)
+        self.assertTrue(plan['remap_allowed'])
+        self.assertIn('Shell table dumps', plan['remap_reason'])
+        self.assertIsNone(plan['create_database'])
+        self.assertEqual(plan['sql_scan'], {})
+        self.assertEqual(len(plan['commands']), 1)
+        self.assertIn('"schema": "other"', plan['commands'][0])
+
+    def test_picked_restore_scan_keeps_lexer_state_across_every_byte_boundary(self):
+        self.make_picked_dump()
+        original = lc._copy_reviewed_file
+        def fragment_copy(directory, record, output, job):
+            class Fragments(object):
+                def write(self, chunk):
+                    for byte in chunk:
+                        output.write(bytes([byte]))
+            return original(directory, record, Fragments(), job)
+        for sql, source, key in [('CREATE/* comment */DATABASE app;', 'app', 'create_database'),
+                                 ('/*M!100100 USE app */;', 'app', 'use'),
+                                 ('-- comment\n/*!50000 USE app */;', 'app', 'use'),
+                                 ('SELECT * FROM `sãles` /* gap */ . t;', 'sãles', 'qualified_source'),
+                                 ('SELECT * FROM `a``pp`.t;', 'a`pp', 'qualified_source'),
+                                 ("INSERT INTO t VALUES ('it\\'s `app`.t; USE app;');", 'app', None)]:
+            with self.subTest(sql=sql):
+                manifest = self.update_dump(sql=sql)
+                with mock.patch.object(lc, '_copy_reviewed_file', side_effect=fragment_copy):
+                    scan = lc._sql_schema_scan(self.output, manifest['files'][0], source)
+                self.assertTrue(scan[key] if key else not any(scan.values()), scan)
 
     def test_restore_row_mismatch_is_failed_verification(self):
         self.make_dump()

@@ -18,10 +18,12 @@ Wire contracts:
     written_bytes and the server's estimated_bytes, else null);
     result: status, verification[] and (for dumps) manifest.
     Failures include failure_category (input, connection, operation).
-  Restore plans carry manifest, manifest_hash, required_acknowledgement and a
+  Restore plans carry manifest, manifest_hash, create_database, sql_scan,
+    remap_allowed, remap_reason, required_acknowledgement and a
     staging_space check. Start requires typed_acknowledgement for mysql table
     replacement, in addition to typed_target and existing_objects=drop.
-  lifecycle-manifest-1.0: source, scope, tool, options, started_at, finished_at,
+  lifecycle-manifest-1.0: source, scope, schema_defaults (per-schema character_set
+    and collation; optional for older dumps), tool, options, started_at, finished_at,
     files[{path,size_bytes,sha256}], samples[], verification[], complete.
   tool-groups-1.0 (ToolGroups file for a supervising desktop app): groups[]
     (process group ids of running external tools).
@@ -32,6 +34,7 @@ Database contracts and source locations: .claude/skills/server-lifecycle/SKILL.m
 Native checks deliberately cover a small documented set, not Shell's checker.
 No MySQL Shell implementation is vendored or translated here.
 """
+import codecs
 import collections
 import contextlib
 import copy
@@ -39,6 +42,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import stat
@@ -803,7 +807,11 @@ class LifecycleJob(object):
         self._started = False
         self.cancel_error = ''
         #: What a failure or cancel may leave behind; the operation sets it.
-        self.partial_state = 'Partial dump, restore or clone data may remain; inspect the target.'
+        self.partial_state = ('Nothing was loaded: the client stopped before running any statement.' if operation == 'restore'
+                              else 'Partial dump, restore or clone data may remain; inspect the target.')
+        # Restore changes this guidance only when its load client reports that
+        # the first statement/script ran. connection_id is cleared on exit.
+        self.restore_started_state = None
         #: Latest structured progress (clone: performance_schema.clone_progress).
         self.detail = None
         #: Events emitted so far (the log keeps the last 200).
@@ -824,6 +832,8 @@ class LifecycleJob(object):
         if stream in ('stdout', 'status') and re.fullmatch(re.escape(self.marker) + r'[0-9]+', raw):
             with self.lock:
                 self.connection_id = int(raw[len(self.marker):])
+                if self.restore_started_state is not None:
+                    self.partial_state = self.restore_started_state
             if self.cancelled.is_set():
                 self._kill_query()
             return
@@ -1488,6 +1498,17 @@ def _catalog(conn, schemas=None, tables=None, include_system=False):
                                   _catalog_where(schemas, tables, include_system))
 
 
+def _schema_defaults(conn, schemas, include_system=False):
+    """Record database defaults, including selected databases with no tables."""
+    where = ("SCHEMA_NAME NOT IN ('performance_schema','information_schema')" if include_system else
+             "SCHEMA_NAME NOT IN ('mysql','sys','performance_schema','information_schema')")
+    if schemas:
+        where = 'SCHEMA_NAME IN (' + ','.join(literal(s) for s in schemas) + ')'
+    rows = Reader(conn, TAG).rows('SELECT SCHEMA_NAME,DEFAULT_CHARACTER_SET_NAME,DEFAULT_COLLATION_NAME '
+                                  'FROM information_schema.SCHEMATA WHERE ' + where)
+    return {row[0]: {'character_set': row[1], 'collation': row[2]} for row in rows}
+
+
 def _dump_size_estimate(conn, server, catalog, schemas, tables, include_system):
     """About how many bytes an SQL dump writes: the data size (DATA_LENGTH)
     of its tables, for a progress bar only, never a check. MySQL 8.0 and
@@ -2008,6 +2029,7 @@ def _perform_dump(job, conn, plan, connection):
     os.chmod(directory, 0o700)
     started = now()
     catalog, samples = [], []
+    schema_defaults = {}
     records = []
     complete = False
     verification = []
@@ -2015,6 +2037,7 @@ def _perform_dump(job, conn, plan, connection):
         selected_options = request.get('options', {})
         return {'schema_version': 'lifecycle-manifest-1.0', 'source': plan['server'],
                 'scope': {'schemas': request['schemas'], 'tables': request['tables']}, 'tool': tool,
+                'schema_defaults': schema_defaults,
                 'options': {'consistent': True, 'threads': request['threads'], 'users': tool['name'] != 'mysqlsh' and not request['schemas'],
                             'routines': selected_options.get('routines', not (tool['name'] == 'mysqlsh' and request['tables'])),
                             'events': selected_options.get('events', not (tool['name'] == 'mysqlsh' and request['tables'])),
@@ -2028,6 +2051,7 @@ def _perform_dump(job, conn, plan, connection):
         job.step('Reading the list of tables.')
         include_system = tool['name'] != 'mysqlsh' and not request['schemas']
         catalog = _catalog(conn, request['schemas'], request['tables'], include_system=include_system)
+        schema_defaults = _schema_defaults(conn, request['schemas'], include_system=include_system)
         structure_only = bool(request.get('options', {}).get('structure_only'))
         # Source row counts feed restore's row comparison; a structure-only
         # dump carries no rows, so no counts are sampled or recorded.
@@ -2137,6 +2161,160 @@ def _copy_reviewed_file(directory, record, output, job):
         raise Refused('Backup changed while staging; no restore statement was sent.')
 
 
+def _sql_schema_scan(directory, record, source_schema, job=None):
+    """Scan the reviewed bytes with bounded tokens and chunk-independent state.
+
+    This recognizes the schema references relevant to picked-table mysqldump
+    output, not arbitrary SQL semantics. Skip data strings and ordinary
+    comments; inspect executable version comments, including MariaDB's form.
+    Never rewrite the dump. The checksum must still match after this read.
+    """
+    found = dict(create_database=False, create_schema=False, use=False, qualified_source=False)
+    source = (source_schema or '').casefold()
+    words = re.compile(r'[\w$]+')
+    spaces = re.compile(r'\s+')
+    line_end = re.compile(r'[\r\n]')
+    quote_end = {"'": re.compile(r"['\\]"), '"': re.compile(r'["\\]'), '`': re.compile('`')}
+
+    class Scan(object):
+        def __init__(self):
+            self.decoder = codecs.getincrementaldecoder('utf-8')('replace')
+            self.pending = self.word = self.quoted = ''
+            self.quote = self.comment = None
+            self.version = False
+            self.previous = ''
+            self.source_previous = False
+            self.at_start = True
+            # Database names have at most 64 characters. Longer tokens must
+            # not retain unbounded INSERT data, nor match a truncated name.
+            self.limit = max(len(source), len('DATABASE')) + 1
+
+        def token(self, kind, value):
+            value = value.casefold()
+            if self.source_previous and kind == 'symbol' and value == '.':
+                found['qualified_source'] = True
+            self.source_previous = bool(source) and kind in ('word', 'identifier') and value == source
+            if kind == 'word':
+                if self.previous == 'create' and value in ('database', 'schema'):
+                    found['create_' + value] = True
+                if self.at_start and value == 'use':
+                    found['use'] = True
+            self.previous = value if kind == 'word' else ''
+            self.at_start = kind == 'symbol' and value == ';'
+
+        def end_word(self):
+            if self.word:
+                self.token('word', self.word)
+                self.word = ''
+
+        def write(self, chunk, final=False):
+            text = self.pending + self.decoder.decode(chunk, final=final)
+            end = len(text) if final else max(0, len(text) - 3)
+            i = 0
+            while i < end:
+                char = text[i]
+                if self.comment == 'line':
+                    newline = line_end.search(text, i, end)
+                    if newline:
+                        self.comment = None
+                        i = newline.end()
+                    else:
+                        i = end
+                    continue
+                if self.comment == 'block':
+                    closing = text.find('*/', i, end + 1)
+                    if closing >= 0:
+                        self.comment = None
+                        i = closing + 2
+                    else:
+                        i = end
+                    continue
+                if self.quote:
+                    closing = quote_end[self.quote].search(text, i, end)
+                    stop = closing.start() if closing else end
+                    if self.quote != "'":
+                        self.quoted = (self.quoted + text[i:min(stop, i + self.limit)])[:self.limit]
+                    i = stop
+                    if not closing:
+                        continue
+                    char = text[i]
+                    if char == self.quote:
+                        if text.startswith(self.quote * 2, i):
+                            self.quoted = (self.quoted + char)[:self.limit]
+                            i += 2
+                            continue
+                        self.token('literal' if self.quote == "'" else 'identifier', self.quoted)
+                        self.quote, self.quoted = None, ''
+                    elif char == '\\' and self.quote in ("'", '"'):
+                        # SQL dump strings use backslash escapes; retain no
+                        # string data. Double quotes may also be identifiers.
+                        self.quoted = (self.quoted + text[i + 1:i + 2])[:self.limit]
+                        i += 2
+                        continue
+                    elif self.quote != "'":
+                        self.quoted = (self.quoted + char)[:self.limit]
+                    i += 1
+                    continue
+                if self.version:
+                    if char.isdigit():
+                        i += 1
+                        continue
+                    self.version = False
+                if char.isalnum() or char in '_$':
+                    match = words.match(text, i, end)
+                    self.word = (self.word + match.group()[:self.limit])[:self.limit]
+                    i = match.end()
+                    continue
+                self.end_word()
+                if text.startswith('/*!', i) or text.startswith('/*M!', i):
+                    self.version = True
+                    i += 3 if text.startswith('/*!', i) else 4
+                elif text.startswith('/*', i):
+                    self.comment = 'block'
+                    i += 2
+                elif text.startswith('*/', i):
+                    i += 2
+                elif char == '#' or (text.startswith('--', i) and text[i + 2:i + 3].isspace()):
+                    self.comment = 'line'
+                    i += 1
+                elif char in ("'", '"', '`'):
+                    self.quote = char
+                    i += 1
+                elif char.isspace():
+                    i = spaces.match(text, i, end).end()
+                else:
+                    self.token('symbol', char)
+                    i += 1
+            self.pending = text[i:]
+            if final:
+                self.end_word()
+
+    runner = job or LifecycleJob('restore_scan', lambda job: None)
+    scan = Scan()
+    _copy_reviewed_file(directory, record, scan, runner)
+    scan.write(b'', final=True)
+    return found
+
+
+def _restore_remap(manifest, sql_scan):
+    scope = manifest['scope']
+    picked = len(scope['schemas']) == 1 and bool(scope['tables'])
+    if manifest['tool']['name'] == 'mysqlsh':
+        return (True, 'Single-schema Shell table dumps support a different default database.') if picked else (
+            False, 'Shell schema remapping is offered only for single-schema table dumps.')
+    if not picked:
+        return False, ('This dump creates its own databases (CREATE DATABASE and USE), so it restores into them; '
+                       'choose As in the dump.')
+    reasons = [name for key, name in (('create_database', 'CREATE DATABASE'), ('create_schema', 'CREATE SCHEMA'),
+                                     ('use', 'USE')) if sql_scan.get(key)]
+    if reasons:
+        return False, 'dump.sql contains %s, so it cannot load into another database.' % ', '.join(reasons)
+    if sql_scan.get('qualified_source'):
+        return False, ('dump.sql names %s in qualified references (such as view definitions), '
+                       'so it cannot load into another database.' % scope['schemas'][0])
+    return True, 'dump.sql has no CREATE DATABASE, CREATE SCHEMA, USE or source-qualified references.'
+
+
 def prepare_restore(conn, connection, directory, schema=None, tools=None, allow_source_restore=False,
                     existing_objects='refuse', threads=4, resume=False, staging_directory=None, job=None):
     """Preflight checksum, target identity, local_infile and duplicate objects.
@@ -2181,10 +2359,16 @@ def prepare_restore(conn, connection, directory, schema=None, tools=None, allow_
                                 'Target is the source; explicitly choose allow_source_restore.' if same_source else 'Target differs from source.'))
     if source['engine'] != server['engine']:
         checks.append(_verification('engine', 'failed', 'Cross-engine restores are not validated; refused.'))
-    if schema and not shell_dump and scope['schemas'] != [schema]:
-        raise Refused('A SQL dump containing CREATE DATABASE/USE or qualified DDL cannot be remapped to a different schema.')
-    if schema and shell_dump and (len(scope['schemas']) != 1 or not scope['tables']):
-        raise Refused('Shell schema remapping is offered only for single-schema table dumps.')
+    sql_scan = {}
+    if not shell_dump:
+        record = next((r for r in manifest['files'] if r['path'] == 'dump.sql'), None)
+        if record is None:
+            raise Refused('SQL backup manifest has no dump.sql file.')
+        if scope['tables'] and len(scope['schemas']) == 1:
+            sql_scan = _sql_schema_scan(directory, record, scope['schemas'][0], job)
+    remap_allowed, remap_reason = _restore_remap(manifest, sql_scan)
+    if schema and ((not shell_dump and scope['schemas'] != [schema]) or shell_dump) and not remap_allowed:
+        raise Refused(remap_reason)
     if shell_dump:
         tool = _pick(tools, ('mysqlsh',))
         if server['engine'] != 'mysql' or version_tuple(server['version']) < (5, 7, 0):
@@ -2192,8 +2376,6 @@ def prepare_restore(conn, connection, directory, schema=None, tools=None, allow_
         checks.append(_verification('local_infile', 'passed' if server['variables'].get('local_infile', '').upper() in ('ON', '1') else 'failed',
                                     'loadDump requires local_infile=ON. No SET GLOBAL is sent automatically.'))
     else:
-        if not any(r['path'] == 'dump.sql' for r in manifest['files']):
-            raise Refused('SQL backup manifest has no dump.sql file.')
         tool = _load_tool(tools, server['engine'])
         if existing_objects == 'ignore':
             raise Refused('Ignoring existing objects is supported only by Shell loads; SQL dumps include DROP TABLE.')
@@ -2226,7 +2408,29 @@ def prepare_restore(conn, connection, directory, schema=None, tools=None, allow_
         progress_unsafe = os.path.islink(progress_file) or (os.path.lexists(progress_file) and resume is not True)
         checks.append(_verification('load_progress', 'failed' if progress_unsafe else 'passed',
                                     'Existing progress requires resume=True; the file is retained for cancellation recovery.'))
-    commands = [_load_expression(request)] if shell_dump else [tool['name'] + ' --defaults-file=<0600 file> --binary-mode --comments < ' + os.path.join(directory, 'dump.sql')]
+    commands = ([_load_expression(request)] if shell_dump else
+                [tool['name'] + ' --defaults-file=<0600 file> ' +
+                 ' '.join(shlex.quote(arg) for arg in _sql_load_args(request)) +
+                 ' < ' + shlex.quote(os.path.join(directory, 'dump.sql'))])
+    create_database = None
+    if schema and not shell_dump:
+        rows = Reader(conn, TAG).rows('SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ' + literal(schema))
+        if not rows and scope['tables'] and not (sql_scan.get('create_database') or sql_scan.get('create_schema')):
+            create_database = 'CREATE DATABASE ' + ident(schema)
+            defaults = manifest.get('schema_defaults', {}).get(scope['schemas'][0], {})
+            if defaults.get('character_set') and defaults.get('collation'):
+                create_database += (' DEFAULT CHARACTER SET ' + ident(defaults['character_set']) +
+                                    ' COLLATE ' + ident(defaults['collation']))
+            else:
+                warnings.append('The dump manifest has no source database character set and collation; '
+                                'database %s will use the server defaults.' % schema)
+            commands.insert(0, create_database)
+            checks.append(_verification('target_schema', 'passed',
+                                        'Creates database %s first; it does not exist on this server.' % schema))
+        else:
+            checks.append(_verification('target_schema', 'passed',
+                                        'Database %s exists on this server.' % schema if rows else
+                                        'The dump creates its own database.'))
     if shell_dump and all(c['status'] != 'failed' for c in checks):
         runner = job or LifecycleJob('restore_dry_run', lambda job: None, connection)
         with tempfile.TemporaryDirectory(prefix='myflames-dry-run-') as scratch:
@@ -2235,8 +2439,10 @@ def prepare_restore(conn, connection, directory, schema=None, tools=None, allow_
                     _shell_script(runner, _load_expression(dry_request, True)), timeout=120)
         checks.append(_verification('dry_run', 'passed', 'MySQL Shell loadDump dryRun completed.'))
     plan = _plan('restore', server, connection, request, tool, target, commands, checks, warnings,
-                 binding_extra=_hash(manifest))
+                 binding_extra={'manifest': _hash(manifest), 'create_database': create_database, 'sql_scan': sql_scan})
     plan.update(manifest=manifest, manifest_hash=_hash(manifest),
+                create_database=create_database, sql_scan=sql_scan,
+                remap_allowed=remap_allowed, remap_reason=remap_reason,
                 required_acknowledgement=('REPLACE mysql SYSTEM TABLES ON ' + target) if system_sql else None)
     return plan
 
@@ -2252,6 +2458,13 @@ def _load_expression(request, dry_run=False):
     return 'util.loadDump(%s,%s)' % (json.dumps(request['directory']), json.dumps(options))
 
 
+def _sql_load_args(request):
+    args = ['--local-infile=0', '--batch', '--skip-column-names', '--unbuffered'] + list(dbops.WRITE_CLIENT_FLAGS)
+    if request.get('schema'):
+        args.append('--database=' + request['schema'])
+    return args
+
+
 def restore_job(connection, plan, confirmed=False, typed_target=None, audit=None, safety=None,
                 factory=LifecycleConnection, start=True, typed_acknowledgement=None):
     connection = copy.deepcopy(connection)
@@ -2265,13 +2478,14 @@ def restore_job(connection, plan, confirmed=False, typed_target=None, audit=None
         if _staging_check(manifest, request['staging_directory'])['status'] != 'passed':
             raise Refused('Insufficient free space for the reviewed restore snapshot.')
         tool = fresh['tool']
+        job.partial_state = 'Nothing was loaded: the client stopped before running any statement.'
         if tool['name'] == 'mysqlsh':
-            job.partial_state = ('Part of the dump may be loaded on %s. MySQL Shell recorded its progress in %s: '
-                                 'prepare the restore again with resume to continue.' % (fresh['target'],
-                                                                                         request['progress_file']))
+            job.restore_started_state = ('Part of the dump may be loaded on %s. MySQL Shell recorded its progress in %s: '
+                                         'prepare the restore again with resume to continue.' %
+                                         (fresh['target'], request['progress_file']))
         else:
-            job.partial_state = ('Part of the dump may be loaded on %s (statements run in order and each one '
-                                 'commits). Check the schemas before running it again.' % fresh['target'])
+            job.restore_started_state = ('Part of the dump may be loaded on %s (statements run in order and each one '
+                                         'commits). Check the schemas before running it again.' % fresh['target'])
         if tool['name'] == 'mysqlsh':
             # Shell reads chunks lazily. Loading the original directory would
             # leave a TOCTOU window even after its preflight checksums passed.
@@ -2287,9 +2501,7 @@ def restore_job(connection, plan, confirmed=False, typed_target=None, audit=None
                 job.step('Loading with MySQL Shell.')
                 _invoke(job, tool, connection, ['--js'], _shell_script(job, _load_expression(staged_request)))
         else:
-            args = ['--local-infile=0', '--batch', '--skip-column-names', '--unbuffered'] + list(dbops.WRITE_CLIENT_FLAGS)
-            if request.get('schema'):
-                args += ['--database=' + request['schema']]
+            args = _sql_load_args(request)
             # An stdin prefix prints the actual executing session id before
             # streaming the dump. No password or SQL is put in -e/argv.
             with tempfile.TemporaryFile('w+b', dir=request['staging_directory']) as sql:
@@ -2299,6 +2511,14 @@ def restore_job(connection, plan, confirmed=False, typed_target=None, audit=None
                 _copy_reviewed_file(request['directory'], record, sql, job)
                 _check_reviewed_manifest(request['directory'], fresh['manifest_hash'], job)
                 sql.seek(0)
+                if fresh.get('create_database'):
+                    # This is the exact reviewed first command, under the same
+                    # consumed token, policy checks and audit as the load. Do
+                    # not select the new database until creation has succeeded.
+                    job.step('Creating the reviewed target database.')
+                    _invoke(job, tool, connection,
+                            ['--local-infile=0', '--batch'] + list(dbops.WRITE_CLIENT_FLAGS),
+                            TAG + fresh['create_database'] + ';\n')
                 job.step('Loading dump.sql with %s.' % tool['name'])
                 _invoke(job, tool, connection, args, input_file=sql)
         job.step('Verifying the restored objects and row counts.')
