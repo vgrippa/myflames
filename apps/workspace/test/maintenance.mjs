@@ -185,7 +185,7 @@ try {
     [...groups.find((g) => g.querySelector("h3").textContent === "Setup").querySelectorAll(".source-item")].at(-1).dataset.view), "maintenance");
   state.fallback = { status: 200, body: tools };
   await h.view("maintenance");
-  await page.waitForSelector(`${view} [data-row-key="tool:mysqlsh"]`);
+  await page.waitForSelector(`${view} [data-row-key="tool:/usr/local/bin/mysqlsh"]`);
   assert.match(await h.popover("About Maintenance"), /only read.*Audit log/s);
   assert.equal(state.seen.length, 1, "one local tool detection on open");
   assert.equal(state.seen[0].check_updates, false);
@@ -200,13 +200,32 @@ try {
 
   // Tools on this computer and what they offer for the server.
   state.fallback = { status: 200, body: tools };
-  await page.waitForSelector(`${view} [data-row-key="tool:mysqlsh"]`);
+  await page.waitForSelector(`${view} [data-row-key="tool:/usr/local/bin/mysqlsh"]`);
   assert.equal(await text(`${view} .summary-text`), "MySQL 8.4.3 · Tools");
   assert.equal(await page.$(`${view} .summary-line .status-pill`), null, "no verdict on a tool list");
-  assert.match(await text(`${view} [data-row-key="tool:mysqlpump"]`), /Deprecated/);
+  // The Used block at the top: one line per job, with the origin and the why.
+  const usedBlock = `${view} [data-client-tools-used]`;
+  assert.match(await text(usedBlock), /Queriesmysql 8\.4\.3 · Homebrew mysql@8\.4 · matches this server \(MySQL 8\.4\)/);
+  assert.match(await text(usedBlock), /Dumpsmysqldump 8\.4\.3 · Homebrew mysql@8\.4 · matches this server \(MySQL 8\.4\)/);
+  assert.match(await text(usedBlock), /Restores/);
+  assert.match(await text(usedBlock), /MySQL Shellmysqlsh 9\.6\.0 · Homebrew mysql-shell · newest MySQL Shell found/);
+  assert.equal(await page.$(`${usedBlock} [data-role=backup]`), null, "no physical backup line without one");
+  assert.match(await text(usedBlock), /Change…/);
+  // One row per copy: From and Path columns, and the Used marker on the copy
+  // chosen for this server (never on the bundled mysqldump beside it).
+  const shellRow = `${view} [data-row-key="tool:/usr/local/bin/mysqlsh"]`;
+  assert.match(await text(shellRow), /Homebrew mysql-shell/);
+  assert.match(await text(shellRow), /\/usr\/local\/bin\/mysqlsh/);
+  assert.match(await text(`${view} [data-row-key="tool:/usr/local/bin/mysqldump"]`), /Used/);
+  const bundledDumpRow = `${view} [data-row-key="tool:/Applications/myflames.app/Contents/Resources/client-tools/8.4/bin/mysqldump"]`;
+  assert.match(await text(bundledDumpRow), /Bundled with myflames/);
+  assert.doesNotMatch(await text(bundledDumpRow), /Used/);
+  assert.match(await text(`${view} [data-row-key="tool:/usr/local/bin/mysqlpump"]`), /Deprecated/);
   assert.match(await text(`${view} .ops-offered`), /Dumpmysqlsh, mysqldump.*Upgrade checkMySQL Shell \(full check\)/s);
-  await h.select(`${view} [data-row-key="tool:mysqlsh"]`);
+  await h.select(shellRow);
   assert.match(await h.inspector(), /Path\/usr\/local\/bin\/mysqlsh/);
+  assert.match(await h.inspector(), /FromHomebrew mysql-shell/);
+  assert.match(await h.inspector(), /Why this copynewest MySQL Shell found/);
 
   // Upgrade check: the partial check without MySQL Shell, labelled as such.
   await section("Upgrade check");
@@ -257,6 +276,9 @@ try {
 
   // Dump: a folder with files in it is refused at the preflight.
   await section("Dump");
+  // The Dump tool select names the resolved programs, as the resolver reports them.
+  assert.deepEqual(await page.$$eval(`${view} select[aria-label="Tool"] option`, (os) => os.map((o) => o.textContent)),
+    ["Automatic (MySQL Shell 9.6.0 first)", "SQL dump (mysqldump 8.4.3 · Homebrew mysql@8.4)"]);
   await page.select(`${view} select[aria-label="Scope"]`, "schemas");
   await page.click(`${view} #ops-dump-schemas`);
   await page.waitForSelector(`${view} .perf-picker-panel`);
@@ -292,6 +314,8 @@ try {
   assert.equal(await page.$(`${sheet} input[type=text]`), null);
   assert.equal(await page.$eval(confirmButton, e => e.classList.contains('primary') && !e.classList.contains('danger-solid')), true);
   assert.match(await text(`${sheet} .inspector-fields`), /Contentsapp \(all tables\)/);
+  // The review sheet's Tool field: the resolver's line, with the path below it.
+  assert.match(await text(`${sheet} .inspector-fields`), /Toolmysqlsh 8\.4\.3 · Chosen folder · matches this server \(MySQL 8\.4\)\/Users\/dba\/maintenance\/bin\/mysqldump/);
   assert.match(await text(`${sheet} .ops-warning`), /^MySQL Shell .*older than the server/);
   assert.equal(await page.$eval(`${sheet} .ops-warning`, e => !!(e.compareDocumentPosition(e.parentElement.querySelector('.inspector-fields')) & Node.DOCUMENT_POSITION_FOLLOWING)), true);
   assert.equal(await page.$$eval(`${sheet} .ops-warning`, es => es.length), 2, 'routine caveats remain plain notes');

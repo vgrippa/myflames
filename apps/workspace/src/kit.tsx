@@ -3561,8 +3561,8 @@ export function ViewStatus({
   loading?: string;
   error?: string;
   /** The error's machine-readable reason (reads.errorCode). "client-missing"
-   * shows the ClientMissingNotice (Choose client…, Try again) instead of the
-   * bare text. */
+   * and "client-auth-plugin" show the ClientMissingNotice (Choose client
+   * tools…, Try again) instead of the bare text. */
   errorCode?: string;
   children?: ReactNode;
   /** Stop waiting for the read (reads.stop), offered once it is slow. */
@@ -3633,8 +3633,8 @@ export function ViewStatus({
       {showError && (
         // The alert holds the error alone; Try again sits beside it in the same box.
         <div className={`error view-status-error${onRetry ? " has-retry" : ""}`}>
-          {errorCode === "client-missing" ? (
-            <ClientMissingNotice onRetry={onRetry ? () => { onRetry(); refocus(); } : undefined} />
+          {errorCode === "client-missing" || errorCode === "client-auth-plugin" ? (
+            <ClientMissingNotice text={errorCode === "client-auth-plugin" ? error : ""} onRetry={onRetry ? () => { onRetry(); refocus(); } : undefined} />
           ) : (
             <>
               <p role="alert">

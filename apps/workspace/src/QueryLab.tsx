@@ -21,7 +21,8 @@ import {
   ddlProgress,
   type DdlProgress,
   ApiError,
-  isClientMissing,
+  clientMissingCode,
+  isClientAuthPlugin,
   type Capture,
   type Connection,
   type EditorClose,
@@ -612,7 +613,7 @@ export const QueryLab = forwardRef<
   // A Run or Explain refused for a missing database client keeps the failed
   // request here, so the notice's Try again sends that same request again.
   /** A Run or Explain refused for a missing client, with the connection it was for (Try again resends only to it). */
-  const [runClientMissing, setRunClientMissing] = useState<{ tabId: string; connection: string; retry: () => void } | null>(null);
+  const [runClientMissing, setRunClientMissing] = useState<{ tabId: string; connection: string; text: string; retry: () => void } | null>(null);
   // When a fresh-connection capture fails because the query names a table
   // the server does not have (a TEMPORARY table lives only in the tab's
   // session), the error notice offers one retry inside that session.
@@ -1698,8 +1699,9 @@ export const QueryLab = forwardRef<
         patchRuntime(id, { sessionFeedback: { ...failure, message: failure.phase === "unknown" ? `Outcome unknown. ${failure.message}` : failure.message,
           startedAt: null, endedAt: Date.now() } });
       } else {
-        if (!isRun) patchRuntime(id, { sessionFeedback: { phase: "failed", message: err.message, code: isClientMissing(e) ? "client-missing" : undefined, startedAt: null, endedAt: Date.now() } });
-        else if (isClientMissing(e)) setRunClientMissing({ tabId: id, connection: connectionKey(payload.connection as Connection),
+        if (!isRun) patchRuntime(id, { sessionFeedback: { phase: "failed", message: err.message, code: clientMissingCode(e) || undefined, startedAt: null, endedAt: Date.now() } });
+        else if (clientMissingCode(e)) setRunClientMissing({ tabId: id, connection: connectionKey(payload.connection as Connection),
+          text: isClientAuthPlugin(e) ? err.message : "",
           retry: () => void send(id, path, payload, meta) });
         else setError(err.message);
       }
@@ -3112,8 +3114,8 @@ export const QueryLab = forwardRef<
                 </ActionButton>
               </div>
             )}
-            {rt.sessionFeedback.phase === "failed" && rt.sessionFeedback.code === "client-missing" ? (
-              <ClientMissingNotice className="editor-session-status" onRetry={() => reconnect()} />
+            {rt.sessionFeedback.phase === "failed" && (rt.sessionFeedback.code === "client-missing" || rt.sessionFeedback.code === "client-auth-plugin") ? (
+              <ClientMissingNotice className="editor-session-status" text={rt.sessionFeedback.code === "client-auth-plugin" ? rt.sessionFeedback.message : ""} onRetry={() => reconnect()} />
             ) : (
               <ActionStatus className="editor-session-status" state={rt.sessionFeedback} />
             )}
@@ -3130,7 +3132,7 @@ export const QueryLab = forwardRef<
               <Notice variant="note">{status}</Notice>
             )}
             {runClientMissing && runClientMissing.tabId === tab.id && runClientMissing.connection === connectionKey(connection) ? (
-              <ClientMissingNotice onRetry={() => {
+              <ClientMissingNotice text={runClientMissing.text} onRetry={() => {
                 const retry = runClientMissing.retry;
                 setRunClientMissing(null);
                 // The tab still uses the connection the run was for (checked above).

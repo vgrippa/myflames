@@ -1,7 +1,7 @@
 // Wire types for replication.py and lifecycle.py. Keep opaque, engine-specific
 // facts as JSON; statements, bindings and identities are round-tripped intact.
 import { useEffect, useRef } from "react";
-import { api, type Connection, type ConnectionType } from "./api";
+import { api, type ClientToolsOrigin, type ClientToolsReason, type ClientToolsUsed, type Connection, type ConnectionType } from "./api";
 import { connectionKey } from "./binding";
 import type { DatabaseTopologyTiers } from "./readysetApi";
 
@@ -143,15 +143,24 @@ export type DumpCapabilities = {options: DumpOption[]; groups?: [string, string]
 export type SchemaTable = { name: string; type: "table" | "view" | "system view" | "sequence"; engine?: string | null; rows?: number | null; bytes?: number | null };
 export type SchemaTables = { schema_version: "catalog-1.0"; level: "tables"; schema: string; tables: SchemaTable[]; truncated: boolean; limit: number; next_after: string | null; stats?: boolean };
 export type DumpOptions = Record<string, string | boolean | number>;
-export type Tool = { dump_capabilities?: DumpCapabilities; dump_table_capabilities?: DumpCapabilities; download_url?: string; update?: ToolUpdate; available: boolean; deprecated: boolean; path?: string; version?: string; version_tuple?: number[]; engine?: string; error?: string; name?: string };
+export type Tool = { dump_capabilities?: DumpCapabilities; dump_table_capabilities?: DumpCapabilities; download_url?: string; update?: ToolUpdate; available: boolean; deprecated: boolean; path?: string; version?: string; version_tuple?: number[]; engine?: string; error?: string; name?: string;
+  /** lifecycle-tools-2.0: where this copy comes from and why it was picked. */
+  installation?: string | null; origin?: ClientToolsOrigin; origin_label?: string; reason?: ClientToolsReason; warning?: string | null; realpath?: string;
+  /** Set on `copies` entries: this copy is the one chosen for the server. */
+  used?: boolean };
 export type LifecycleServer = {
   engine: string; version: string; identity?: Facts; variables?: Facts;
   /** mysql, percona or mariadb, and the product name (Percona Server keeps engine "mysql"). */
   flavor?: string; product?: string;
 };
 export type LifecycleTools = {
-  schema_version: "lifecycle-tools-1.0"; tools: Record<string, Tool>;
+  schema_version: "lifecycle-tools-2.0"; tools: Record<string, Tool>;
   server: LifecycleServer;
+  /** Every copy found, one row per copy in the Tools table (copies of the
+   * tools map entries carry the same fields plus name and used). */
+  copies?: (Tool & { name: string })[];
+  /** The programs the resolver picked for this server (client-tools-1.0). */
+  used?: ClientToolsUsed;
   offered: { dump: string[]; upgrade: string; clone: boolean; physical_backup: boolean; physical_backup_requires_local_files: boolean };
   /** When the server cannot be read for lack of a client, tools and download
    * links still answer and server and offered are empty; this says why. */

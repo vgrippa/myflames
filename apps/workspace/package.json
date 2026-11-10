@@ -86,7 +86,7 @@
     "test:home-workspace": "npm run build && node test/home-workspace.mjs",
     "test:update-check": "npm run build && node test/update-check.mjs",
     "test:update-install": "npm run build && node test/update-install.mjs",
-    "test:database-client": "npm run build && node test/database-client.mjs",
+    "test:client-tools": "npm run build && node test/client-tools.mjs",
     "test:news": "npm run build && node test/news.mjs",
     "test:news-setting": "node test/news-setting.mjs",
     "test:report-table-exports": "node test/report-table-export.mjs",

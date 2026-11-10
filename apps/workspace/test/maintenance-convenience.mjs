@@ -53,22 +53,22 @@ const view='.server-view[data-view="maintenance"]';
 const field=()=>page.$eval(`${view} .ops-folder-input input`,e=>e.value);
 try {
  await h.server();await h.view('maintenance');
- await page.waitForSelector('[data-row-key="tool:mysqlsh"]');
+ await page.waitForSelector('[data-row-key="tool:/usr/local/bin/mysqlsh"]');
  assert.equal(state.seen.length,1);
  assert.equal(state.seen[0].check_updates,false);
- assert.match(await h.text('[data-row-key="tool:mysqlsh"]'),/Not checked/);
+ assert.match(await h.text('[data-row-key="tool:/usr/local/bin/mysqlsh"]'),/Not checked/);
  state.fallback={status:200,body:tools};
  const updateReply=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/lifecycle/tools');
  await h.button('Check for updates',`${view} `);
  await updateReply;
- await page.waitForSelector('[data-row-key="tool:mysqlsh"]');
+ await page.waitForSelector('[data-row-key="tool:/usr/local/bin/mysqlsh"]');
  await page.waitForFunction(()=>!document.querySelector('.ops-actions button[aria-busy=true]'));
  assert.equal(state.seen[1].check_updates,true);
- assert.match(await h.text('[data-row-key="tool:mysqlsh"]'),/Update available: 9.7.1/);
- assert.match(await h.text('[data-row-key="tool:mysqldump"]'),/Could not check/);
+ assert.match(await h.text('[data-row-key="tool:/usr/local/bin/mysqlsh"]'),/Update available: 9.7.1/);
+ assert.match(await h.text('[data-row-key="tool:/usr/local/bin/mysqldump"]'),/Could not check/);
  assert.match(await h.text('.ops-tool-updates'),/mysqlsh/);
- assert.equal(await page.$eval('[data-row-key="tool:mysqlsh"] a',e=>e.href),'https://dev.mysql.com/downloads/');
- assert.equal(await page.$('[data-row-key="tool:mysqlpump"] a'),null);
+ assert.equal(await page.$eval('[data-row-key="tool:/usr/local/bin/mysqlsh"] a',e=>e.href),'https://dev.mysql.com/downloads/');
+ assert.equal(await page.$('[data-row-key="tool:/usr/local/bin/mysqlpump"] a'),null);
  for(const theme of ['light','dark']) {
   await page.emulateMediaFeatures([{name:'prefers-color-scheme',value:theme}]);
   await page.screenshot({path:path.join(h.shots,`tools-${theme}-1440.png`)});
@@ -144,7 +144,7 @@ try {
  assert.deepEqual(await h.texts(`${view} .dump-group > legend`),['Contents','SQL output','Compression']);
  assert.match(await h.text('.ops-dump-options'),/backup file stays uncompressed/);
  assert.match(await h.text('.ops-dump-options'),/do not offer encryption/);
- assert.match(await h.text('select[aria-label="Tool"] option[value=sql]'),/^SQL dump \(mysqldump\)$/);
+ assert.match(await h.text('select[aria-label="Tool"] option[value=sql]'),/^SQL dump \(mysqldump 8\.4\.3 · Homebrew mysql@8\.4\)$/);
  await page.select('select[aria-label="Tool"]','auto');
  await page.waitForFunction(()=>document.querySelector('.ops-dump-options')?.textContent.includes('Options for mysqlsh'));
 

@@ -2,6 +2,7 @@
 import "./styles";
 import { setUnsavedWorkCheck } from "./unsavedWork";
 import { PrivilegesProvider } from "./privileges";
+import { ConnectionInUseProvider } from "./connectionInUse";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type SyntheticEvent } from "react";
 import { createRoot } from "react-dom/client";
 import {
@@ -2107,6 +2108,7 @@ function App() {
   ];
 
   return (
+    <ConnectionInUseProvider connection={request} connected={ready && safety.known && !!request.host}>
     <PrivilegesProvider connection={request} connectRevision={connectRevision + resetKey} passwordRevision={passwordRevision} connected={ready && safety.known && !!request.host}>
     <div className={`app${sidebarOpen ? "" : " sidebar-collapsed"}`}>
       <a href="#main" className="skip">
@@ -3161,6 +3163,7 @@ function App() {
       )}
     </div>
     </PrivilegesProvider>
+    </ConnectionInUseProvider>
   );
 }
 /** Save investigation: the notebook (name, plan name, baseline, tags and

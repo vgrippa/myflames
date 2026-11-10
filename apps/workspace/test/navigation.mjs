@@ -421,7 +421,7 @@ try {
   await page.keyboard.press("Tab");
   assert.equal(await focused(), "Start fresh");
   await page.keyboard.press("Tab");
-  assert.equal(await focused(), "Database client…");
+  assert.equal(await focused(), "Client tools…");
   await page.keyboard.press("Tab");
   assert.equal(await focused(), "Audit log");
   await page.keyboard.press("Tab");

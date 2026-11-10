@@ -7,6 +7,8 @@
 import { useEffect, useRef, useState, type ComponentProps, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { deletedConnectionLabel } from "./savedConnections";
 import { ClientMissingNotice } from "./ClientMissing";
+import { ClientToolsDialog, UsedForServer } from "./ClientTools";
+import { reasonSentence, toolUseLine } from "./clientToolsText";
 import { privilegeResult, targetPrivilege, usePrivilege, usePrivileges } from "./privileges";
 import { download, recordDeclined, type Connection, type Profile } from "./api";
 import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "./binding";
@@ -124,9 +126,10 @@ function planMessages(plan: LifecyclePlan) {
   if (versionWarning > 0) warnings.unshift(...warnings.splice(versionWarning, 1));
   return { warnings, notes: plan.warnings.filter(routine) };
 }
-/** "mysqlsh 9.6.0" (the full --version banner is in the plan's tool). */
-// A plan of another step (or one still loading) may carry no tool yet.
-const toolName = (tool?: Tool) => (tool ? [tool.name, tool.version_tuple?.length ? tool.version_tuple.join(".") : tool.version].filter(Boolean).join(" ") : "") || "Not available";
+/** The reviewed tool, as the resolver describes it everywhere (clientToolsText). */
+function planToolLine(plan: LifecyclePlan) {
+  return toolUseLine(plan.tool, { engine: plan.server.engine, version: plan.server.version, product: plan.server.product });
+}
 
 function FormField({ label, value, onChange, disabled, type = "text", hint, wide, placeholder }: {
   label: string; value: string; onChange: (value: string) => void;
@@ -350,6 +353,8 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   const [startLeft, setStartLeft] = useState(false);
   const startSince = useSince(busy);
   const [checkingUpdates, setCheckingUpdates] = useState(false);
+  const [clientToolsOpen, setClientToolsOpen] = useState(false);
+  const changeToolsButton = useRef<HTMLButtonElement>(null);
   const [readKind, setReadKind] = useState<"tools" | "upgrade" | "preflight">("tools");
   const readSince = useSince(!!reads.loading);
   const detecting = !!reads.loading && readKind === "tools";
@@ -401,9 +406,13 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   const unknownTables = tables.filter((name) => !loadedTables.has(name));
   const tableScope = !!oneSchema && tables.length > 0;
   const rawTools = memory.tools?.key === key ? memory.tools.report : null;
-  // The client-missing answer still lists the tools and their download links
-  // but leaves server and offered empty; guard every offered read.
-  const toolsMissing = rawTools?.server_error?.code === "client-missing";
+  // The client-missing (or client-auth-plugin) answer still lists the tools
+  // and their download links but leaves server and offered empty; guard every
+  // offered read.
+  const toolsClientError = rawTools?.server_error && ["client-missing", "client-auth-plugin"].includes(rawTools.server_error.code)
+    ? rawTools.server_error
+    : null;
+  const toolsMissing = !!toolsClientError;
   const rawOffered = rawTools?.offered;
   const tools = rawTools ? { ...rawTools, offered: {
     dump: rawOffered?.dump || [],
@@ -773,7 +782,18 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
     finally { cancelPending.current.delete(id); setCancelling((pending) => pending === id ? "" : pending); }
   }
 
-  const toolRows = Object.entries(memory.tools?.report.tools || {}).map(([name, tool]) => ({ ...tool, name }));
+  // lifecycle-tools-2.0: one row per copy found (the tools record's entry for
+  // the copy's name supplies its update check and download link). Without
+  // copies (older answer), the record alone lists the tools.
+  const toolRows = (memory.tools?.report.copies?.length
+    ? memory.tools.report.copies
+    : Object.entries(memory.tools?.report.tools || {}).map(([name, tool]) => ({ ...tool, name }))
+  ).map((copy, i) => ({
+    ...(memory.tools?.report.tools[copy.name || ""] || {}),
+    ...copy,
+    name: copy.name || "",
+    row: `tool:${copy.path || `${copy.name}:${i}`}`,
+  }));
   const updateWord = (tool: Tool): string => {
     const update = tool.update;
     if (tool.deprecated) return "Deprecated";
@@ -784,13 +804,16 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
     return "Could not check";
   };
   const availableUpdates = toolRows.filter(t => t.update?.status === "available" && t.available && !t.deprecated);
-  const toolColumns: Column<Tool & { name: string }>[] = [
+  const toolColumns: Column<(typeof toolRows)[number]>[] = [
     { key: "name", label: "Tool", primary: true, sort: (r) => r.name, render: (r) => r.name },
     { key: "status", label: "Status", sort: (r) => Number(r.available), render: (r) => <StatusPill tone={r.deprecated ? "unknown" : r.available ? "ok" : "unknown"} label={r.deprecated ? "Deprecated" : r.available ? "Available" : "Not found"} /> },
-    { key: "version", label: "Version", flex: true, sort: (r) => (r.version_tuple || []).join("."), render: (r) => (r.version_tuple?.length ? <span title={r.version}>{r.version_tuple.join(".")}</span> : r.version || r.error || "Not available") },
+    { key: "version", label: "Version", sort: (r) => (r.version_tuple || []).join("."), render: (r) => (r.version_tuple?.length ? <span title={r.version}>{r.version_tuple.join(".")}</span> : r.version || r.error || "Not available") },
+    { key: "from", label: "From", sort: (r) => r.origin_label || "", render: (r) => r.origin_label || "Not available" },
+    { key: "path", label: "Path", flex: true, render: (r) => (r.path ? <code className="client-path" title={r.realpath || r.path}>{r.path}</code> : "Not found") },
     { key: "update", label: "Updates", render: (r) => <span title={r.update?.message}><StatusPill tone={r.update?.status === "available" ? "watch" : "unknown"} label={updateWord(r)} /></span> },
     { key: "download", label: "Download", render: (r) => toolDownloadUrl(r.download_url) ? <a className="ops-tool-link" href={toolDownloadUrl(r.download_url)} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} aria-label={`Official download page for ${r.name}`}>Official site</a> : "Not available" },
     { key: "engine", label: "Engine", render: (r) => (r.engine ? engineName(r.engine) : "Not available") },
+    { key: "used", label: "Used", render: (r) => (r.used ? <StatusPill tone="ok" label="Used" /> : "") },
   ];
   const findings = (upgrade?.checks || []).map((finding, index) => ({ ...finding, row: String(index) }));
   const findingColumns: Column<(typeof findings)[number]>[] = [
@@ -798,14 +821,14 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
     { key: "check", label: "Check", primary: true, flex: true, sort: (r) => r.title, render: (r) => r.title },
     { key: "objects", label: "Objects", num: true, sort: (r) => r.affected_objects.length, render: (r) => <span title={r.affected_objects.join(", ") || undefined}>{r.affected_objects.length.toLocaleString()}</span> },
   ];
-  const selectedTool = section === "tools" ? toolRows.find((t) => `tool:${t.name}` === selection.key) : undefined;
+  const selectedTool = section === "tools" ? toolRows.find((t) => t.row === selection.key) : undefined;
   const selectedFinding = section === "upgrade" ? findings.find((f) => `finding:${f.row}` === selection.key) : undefined;
   const selectedCheck = operation ? shownPlan?.report.checks.find((_, i) => `check:${i}` === selection.key) : undefined;
   let inspector: InspectorContent | null = null;
   if (selectedTool) inspector = {
-    key: `tool:${selectedTool.name}`, title: selectedTool.name,
+    key: selectedTool.row, title: selectedTool.name,
     meta: <StatusPill tone={selectedTool.deprecated ? "unknown" : selectedTool.available ? "ok" : "unknown"} label={selectedTool.deprecated ? "Deprecated" : selectedTool.available ? "Available" : "Not found"} />,
-    body: <InspectorSection title="Detected tool"><Fields rows={[["Path", selectedTool.path || "Not found"], ["Version", selectedTool.version || "Not available"], ["Engine", selectedTool.engine ? engineName(selectedTool.engine) : "Not available"], !!selectedTool.error && ["Probe", selectedTool.error]]} />{selectedTool.deprecated && <p>Deprecated tools are listed for information and never offered.</p>}
+    body: <InspectorSection title="Detected tool"><Fields rows={[["Path", selectedTool.path || "Not found"], ["Version", selectedTool.version || "Not available"], ["Engine", selectedTool.engine ? engineName(selectedTool.engine) : "Not available"], !!selectedTool.origin_label && ["From", selectedTool.origin_label], !!selectedTool.reason && ["Why this copy", reasonSentence(selectedTool.reason, selectedTool, tools?.server)], !!selectedTool.used && ["Used", "This copy runs the job on this server"], !!selectedTool.error && ["Probe", selectedTool.error]]} />{selectedTool.deprecated && <p>Deprecated tools are listed for information and never offered.</p>}
       {selectedTool.update && <><p>{selectedTool.update.message}</p><Fields rows={[["Latest checked", selectedTool.update.latest_version || "Unknown"], ["Checked at", selectedTool.update.checked_at || "Not checked"]]} /></>}
       {toolDownloadUrl(selectedTool.download_url) && <a className="ops-tool-link" href={toolDownloadUrl(selectedTool.download_url)} target="_blank" rel="noopener noreferrer">Official download page</a>}
     </InspectorSection>,
@@ -880,11 +903,17 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
       )}
       {!tools && <div className="ops-tool-loading">{detecting ? "Finding MySQL and MariaDB tools on this computer…" : reads.error ? "Tool detection failed. Try again above to continue." : "Waiting to detect local tools…"}{readStatus("tools")}</div>}
       {section === "tools" && memory.tools && <>
+        {!toolsMissing && memory.tools.report.used && (
+          <div className="ops-used client-tools-used-block">
+            <strong>Used for this server</strong>
+            <UsedForServer used={memory.tools.report.used} server={memory.tools.report.server} onChange={() => setClientToolsOpen(true)} changeRef={changeToolsButton} />
+          </div>
+        )}
         <div className="ops-actions"><ActionButton busy={detecting && checkingUpdates} busyLabel="Checking…" disabled={disabled || busy || (!!reads.loading && !checkingUpdates)} onClick={() => { void loadTools(true); }}>Check for updates</ActionButton>{tools && <ActionStatus keepLine state={{ phase: detecting && checkingUpdates ? "pending" : "idle", message: reads.loading, startedAt: readSince }} onStop={reads.stop} stopLabel="Stop waiting" />}</div>
         {!!availableUpdates.length && <div className="ops-tool-updates" role="status">Updates available for {availableUpdates.map(t => t.name).join(", ")}.</div>}
-        <DataTable id="maintenance.tools" label="Detected tools" rows={toolRows} columns={toolColumns} rowKey={(r) => `tool:${r.name}`} selection={selection} />
+        <DataTable id="maintenance.tools" label="Detected tools" rows={toolRows} columns={toolColumns} rowKey={(r) => r.row} selection={selection} />
         {toolsMissing ? (
-          <ClientMissingNotice className="ops-offered" onRetry={() => { void loadTools(); }} />
+          <ClientMissingNotice className="ops-offered" text={toolsClientError?.code === "client-auth-plugin" ? toolsClientError.error : ""} onRetry={() => { void loadTools(); }} />
         ) : (
         <div className="ops-offered"><Fields label="Offered for this server" rows={[["Dump", memory.tools.report.offered.dump.join(", ") || "No dump tool for this engine"], ["Upgrade check", memory.tools.report.offered.upgrade === "mysqlsh" ? "MySQL Shell (full check)" : memory.tools.report.offered.upgrade === "native_subset" ? "Partial check (native subset)" : "mariadb-upgrade steps to run on the server host"], ["Clone", memory.tools.report.offered.clone ? "Offered after its preflight" : "Not offered"], ["Physical backup", memory.tools.report.offered.physical_backup ? "Detected; runs on the server host" : "Not available"]]} /></div>
         )}
@@ -932,7 +961,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
             </div>
           </div>}
           <FormRow label="Tool" htmlFor="ops-dump-tool">
-            <Select id="ops-dump-tool" label="Tool" value={sqlDump ? "sql" : "auto"} options={[["auto", "Automatic (MySQL Shell first)"], ["sql", `SQL dump (${tools.offered.dump.find(name => name !== "mysqlsh") || (tools.server.engine === "mariadb" ? "mariadb-dump" : "mysqldump")})`]]} onChange={(v) => setSqlDump(v === "sql")} />
+            <Select id="ops-dump-tool" label="Tool" value={sqlDump ? "sql" : "auto"} options={[["auto", rawTools?.used?.shell ? `Automatic (MySQL Shell ${rawTools.used.shell.version} first)` : "Automatic (MySQL Shell first)"], ["sql", rawTools?.used?.dump ? `SQL dump (${rawTools.used.dump.program} ${rawTools.used.dump.version} · ${rawTools.used.dump.origin_label})` : `SQL dump (${tools.offered.dump.find(name => name !== "mysqlsh") || (tools.server.engine === "mariadb" ? "mariadb-dump" : "mysqldump")})`]]} onChange={(v) => setSqlDump(v === "sql")} />
           </FormRow>
           <div className={`ops-folder-check${folderFailure ? " ops-invalid" : ""}`} role="group" aria-label="Output folder" aria-invalid={!!folderFailure || undefined}><DumpFolderField key={`dump:${key}`} value={directory} stem={dumpStem} onChange={changeDirectory} onPicking={picking => { directoryEdit.current++; setDirectoryPicking(picking); }} disabled={formDisabled} />{directoryError && <p className="form-error" role="alert">{directoryError}</p>}{folderFailure && <p className="form-error">{folderFailure.reason}</p>}</div>
         </FormGrid>
@@ -1029,9 +1058,10 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
         ] as [string, string][] : []),
         ["Server", engineName(sheet.report.server.engine, sheet.report.server.version, sheet.report.server.product)],
         !!sheet.report.server.identity?.hostname && ["Host name", String(sheet.report.server.identity.hostname)],
-        ["Tool", toolName(sheet.report.tool)],
+        ["Tool", <span className="ops-tool-line">{planToolLine(sheet.report).line}{sheet.report.tool.path ? <><br /><code className="client-path hint">{sheet.report.tool.path}</code></> : null}</span>],
         ["Preflight", `${plural(sheet.report.checks.filter((c) => c.status === "passed").length, "check")} passed${sheet.report.checks.some((c) => c.status === "not_checked") ? `, ${sheet.report.checks.filter((c) => c.status === "not_checked").length.toLocaleString()} not checked` : ""}`],
       ]} />
+      {sheet.report.tool.warning && <p className="ops-warning">{sheet.report.tool.warning}</p>}
       {sheet.report.policy?.text && <p>{sheet.report.policy.text}</p>}
       {sheet.report.operation !== "dump" && sheet.report.warnings.map((line, i) => <p className="ops-warning" key={i}>{line}</p>)}
       {!!planMessages(sheet.report).notes.length && <ul className="hint">{planMessages(sheet.report).notes.map((line, i) => <li key={i}>{line}</li>)}</ul>}
@@ -1044,6 +1074,13 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
       </div>}
       <p className="hint">myflames repeats the preflight right before starting and stops if anything changed. Cancelling a running job may leave partial data to clean up.</p>
     </ConfirmSheet>}
+    {clientToolsOpen && (
+      <ClientToolsDialog
+        returnFocus={changeToolsButton}
+        onClose={() => setClientToolsOpen(false)}
+        onChanged={() => { void loadTools(); }}
+      />
+    )}
   </>;
 }
 

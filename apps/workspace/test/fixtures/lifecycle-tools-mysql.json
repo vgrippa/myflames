@@ -1,10 +1,11 @@
 {
- "schema_version": "lifecycle-tools-1.0",
+ "schema_version": "lifecycle-tools-2.0",
  "tools": {
   "mysqlsh": {
    "available": true,
    "deprecated": false,
    "path": "/usr/local/bin/mysqlsh",
+   "realpath": "/usr/local/Cellar/mysql-shell/9.6.0/bin/mysqlsh",
    "version": "mysqlsh Ver 9.6.0",
    "version_tuple": [
     9,
@@ -12,6 +13,11 @@
     0
    ],
    "engine": "mysql",
+   "installation": null,
+   "origin": "homebrew",
+   "origin_label": "Homebrew mysql-shell",
+   "reason": "newest",
+   "warning": null,
    "download_url": "https://dev.mysql.com/downloads/shell/",
    "update": {
     "status": "not_checked",
@@ -25,6 +31,7 @@
    "available": true,
    "deprecated": false,
    "path": "/usr/local/bin/mysqldump",
+   "realpath": "/usr/local/Cellar/mysql@8.4/8.4.3/bin/mysqldump",
    "version": "mysqldump Ver 8.4.3",
    "version_tuple": [
     8,
@@ -32,6 +39,11 @@
     3
    ],
    "engine": "mysql",
+   "installation": "mysql:/usr/local/Cellar/mysql@8.4/8.4.3/bin",
+   "origin": "homebrew",
+   "origin_label": "Homebrew mysql@8.4",
+   "reason": "series",
+   "warning": null,
    "download_url": "https://dev.mysql.com/downloads/mysql/",
    "update": {
     "status": "not_checked",
@@ -45,6 +57,7 @@
    "available": true,
    "deprecated": true,
    "path": "/usr/local/bin/mysqlpump",
+   "realpath": "/usr/local/Cellar/mysql@8.0/8.0.36/bin/mysqlpump",
    "version": "mysqlpump Ver 8.0.36",
    "version_tuple": [
     8,
@@ -52,6 +65,10 @@
     36
    ],
    "engine": "mysql",
+   "installation": "mysql:/usr/local/Cellar/mysql@8.0/8.0.36/bin",
+   "origin": "homebrew",
+   "origin_label": "Homebrew mysql@8.0",
+   "warning": null,
    "download_url": "https://dev.mysql.com/doc/refman/8.0/en/mysqlpump.html",
    "update": {
     "status": "deprecated",
@@ -65,6 +82,7 @@
    "available": true,
    "deprecated": false,
    "path": "/usr/local/bin/mariadb-dump",
+   "realpath": "/usr/local/Cellar/mariadb/11.4.5/bin/mariadb-dump",
    "version": "mariadb-dump Ver 10.19 Distrib 11.4.5-MariaDB",
    "version_tuple": [
     11,
@@ -72,6 +90,10 @@
     5
    ],
    "engine": "mariadb",
+   "installation": "mariadb:/usr/local/Cellar/mariadb/11.4.5/bin",
+   "origin": "homebrew",
+   "origin_label": "Homebrew mariadb",
+   "warning": null,
    "download_url": "https://mariadb.org/download/",
    "update": {
     "status": "not_checked",
@@ -85,6 +107,7 @@
    "available": true,
    "deprecated": false,
    "path": "/usr/local/bin/mariadb-backup",
+   "realpath": "/usr/local/Cellar/mariadb/11.4.5/bin/mariadb-backup",
    "version": "mariadb-backup based on MariaDB server 11.4.5-MariaDB",
    "version_tuple": [
     11,
@@ -92,6 +115,10 @@
     5
    ],
    "engine": "mariadb",
+   "installation": "mariadb:/usr/local/Cellar/mariadb/11.4.5/bin",
+   "origin": "homebrew",
+   "origin_label": "Homebrew mariadb",
+   "warning": null,
    "download_url": "https://mariadb.org/download/",
    "update": {
     "status": "not_checked",
@@ -105,6 +132,7 @@
    "available": true,
    "deprecated": false,
    "path": "/usr/local/bin/mysql",
+   "realpath": "/usr/local/Cellar/mysql@8.4/8.4.3/bin/mysql",
    "version": "mysql Ver 8.4.3",
    "version_tuple": [
     8,
@@ -112,6 +140,11 @@
     3
    ],
    "engine": "mysql",
+   "installation": "mysql:/usr/local/Cellar/mysql@8.4/8.4.3/bin",
+   "origin": "homebrew",
+   "origin_label": "Homebrew mysql@8.4",
+   "reason": "series",
+   "warning": null,
    "download_url": "https://dev.mysql.com/downloads/mysql/",
    "update": {
     "status": "not_checked",
@@ -125,6 +158,7 @@
    "available": true,
    "deprecated": false,
    "path": "/usr/local/bin/mariadb",
+   "realpath": "/usr/local/Cellar/mariadb/11.4.5/bin/mariadb",
    "version": "mariadb Ver 15.1 Distrib 11.4.5-MariaDB",
    "version_tuple": [
     11,
@@ -132,6 +166,10 @@
     5
    ],
    "engine": "mariadb",
+   "installation": "mariadb:/usr/local/Cellar/mariadb/11.4.5/bin",
+   "origin": "homebrew",
+   "origin_label": "Homebrew mariadb",
+   "warning": null,
    "download_url": "https://mariadb.org/download/",
    "update": {
     "status": "not_checked",
@@ -145,6 +183,7 @@
    "available": true,
    "deprecated": false,
    "path": "/usr/local/bin/mariadb-upgrade",
+   "realpath": "/usr/local/Cellar/mariadb/11.4.5/bin/mariadb-upgrade",
    "version": "mariadb-upgrade Ver 2.0.0 Distrib 11.4.5-MariaDB",
    "version_tuple": [
     11,
@@ -152,6 +191,10 @@
     5
    ],
    "engine": "mariadb",
+   "installation": "mariadb:/usr/local/Cellar/mariadb/11.4.5/bin",
+   "origin": "homebrew",
+   "origin_label": "Homebrew mariadb",
+   "warning": null,
    "download_url": "https://mariadb.org/download/",
    "update": {
     "status": "not_checked",
@@ -161,6 +204,203 @@
     "message": "Update check not requested."
    }
   }
+ },
+ "copies": [
+  {
+   "name": "mysql",
+   "available": true,
+   "deprecated": false,
+   "path": "/usr/local/bin/mysql",
+   "realpath": "/usr/local/Cellar/mysql@8.4/8.4.3/bin/mysql",
+   "version": "mysql Ver 8.4.3",
+   "version_tuple": [8, 4, 3],
+   "engine": "mysql",
+   "installation": "mysql:/usr/local/Cellar/mysql@8.4/8.4.3/bin",
+   "origin": "homebrew",
+   "origin_label": "Homebrew mysql@8.4",
+   "reason": "series",
+   "warning": null,
+   "used": true
+  },
+  {
+   "name": "mysqldump",
+   "available": true,
+   "deprecated": false,
+   "path": "/usr/local/bin/mysqldump",
+   "realpath": "/usr/local/Cellar/mysql@8.4/8.4.3/bin/mysqldump",
+   "version": "mysqldump Ver 8.4.3",
+   "version_tuple": [8, 4, 3],
+   "engine": "mysql",
+   "installation": "mysql:/usr/local/Cellar/mysql@8.4/8.4.3/bin",
+   "origin": "homebrew",
+   "origin_label": "Homebrew mysql@8.4",
+   "reason": "series",
+   "warning": null,
+   "used": true
+  },
+  {
+   "name": "mysqldump",
+   "available": true,
+   "deprecated": false,
+   "path": "/Applications/myflames.app/Contents/Resources/client-tools/8.4/bin/mysqldump",
+   "realpath": "/Applications/myflames.app/Contents/Resources/client-tools/8.4/bin/mysqldump",
+   "version": "mysqldump Ver 8.4.13",
+   "version_tuple": [8, 4, 13],
+   "engine": "mysql",
+   "installation": "mysql:/Applications/myflames.app/Contents/Resources/client-tools/8.4/bin",
+   "origin": "bundled",
+   "origin_label": "Bundled with myflames",
+   "warning": null,
+   "used": false
+  },
+  {
+   "name": "mysqlpump",
+   "available": true,
+   "deprecated": true,
+   "path": "/usr/local/bin/mysqlpump",
+   "realpath": "/usr/local/Cellar/mysql@8.0/8.0.36/bin/mysqlpump",
+   "version": "mysqlpump Ver 8.0.36",
+   "version_tuple": [8, 0, 36],
+   "engine": "mysql",
+   "installation": "mysql:/usr/local/Cellar/mysql@8.0/8.0.36/bin",
+   "origin": "homebrew",
+   "origin_label": "Homebrew mysql@8.0",
+   "warning": null,
+   "used": false
+  },
+  {
+   "name": "mysqlsh",
+   "available": true,
+   "deprecated": false,
+   "path": "/usr/local/bin/mysqlsh",
+   "realpath": "/usr/local/Cellar/mysql-shell/9.6.0/bin/mysqlsh",
+   "version": "mysqlsh Ver 9.6.0",
+   "version_tuple": [9, 6, 0],
+   "engine": "mysql",
+   "installation": null,
+   "origin": "homebrew",
+   "origin_label": "Homebrew mysql-shell",
+   "reason": "newest",
+   "warning": null,
+   "used": true
+  },
+  {
+   "name": "mariadb",
+   "available": true,
+   "deprecated": false,
+   "path": "/usr/local/bin/mariadb",
+   "realpath": "/usr/local/Cellar/mariadb/11.4.5/bin/mariadb",
+   "version": "mariadb Ver 15.1 Distrib 11.4.5-MariaDB",
+   "version_tuple": [11, 4, 5],
+   "engine": "mariadb",
+   "installation": "mariadb:/usr/local/Cellar/mariadb/11.4.5/bin",
+   "origin": "homebrew",
+   "origin_label": "Homebrew mariadb",
+   "warning": null,
+   "used": false
+  },
+  {
+   "name": "mariadb-dump",
+   "available": true,
+   "deprecated": false,
+   "path": "/usr/local/bin/mariadb-dump",
+   "realpath": "/usr/local/Cellar/mariadb/11.4.5/bin/mariadb-dump",
+   "version": "mariadb-dump Ver 10.19 Distrib 11.4.5-MariaDB",
+   "version_tuple": [11, 4, 5],
+   "engine": "mariadb",
+   "installation": "mariadb:/usr/local/Cellar/mariadb/11.4.5/bin",
+   "origin": "homebrew",
+   "origin_label": "Homebrew mariadb",
+   "warning": null,
+   "used": false
+  },
+  {
+   "name": "mariadb-backup",
+   "available": true,
+   "deprecated": false,
+   "path": "/usr/local/bin/mariadb-backup",
+   "realpath": "/usr/local/Cellar/mariadb/11.4.5/bin/mariadb-backup",
+   "version": "mariadb-backup based on MariaDB server 11.4.5-MariaDB",
+   "version_tuple": [11, 4, 5],
+   "engine": "mariadb",
+   "installation": "mariadb:/usr/local/Cellar/mariadb/11.4.5/bin",
+   "origin": "homebrew",
+   "origin_label": "Homebrew mariadb",
+   "warning": null,
+   "used": false
+  },
+  {
+   "name": "mariadb-upgrade",
+   "available": true,
+   "deprecated": false,
+   "path": "/usr/local/bin/mariadb-upgrade",
+   "realpath": "/usr/local/Cellar/mariadb/11.4.5/bin/mariadb-upgrade",
+   "version": "mariadb-upgrade Ver 2.0.0 Distrib 11.4.5-MariaDB",
+   "version_tuple": [11, 4, 5],
+   "engine": "mariadb",
+   "installation": "mariadb:/usr/local/Cellar/mariadb/11.4.5/bin",
+   "origin": "homebrew",
+   "origin_label": "Homebrew mariadb",
+   "warning": null,
+   "used": false
+  }
+ ],
+ "used": {
+  "client": {
+   "role": "client",
+   "program": "mysql",
+   "path": "/usr/local/bin/mysql",
+   "version": "8.4.3",
+   "engine": "mysql",
+   "installation": "mysql:/usr/local/Cellar/mysql@8.4/8.4.3/bin",
+   "origin": "homebrew",
+   "origin_label": "Homebrew mysql@8.4",
+   "bundled": false,
+   "reason": "series",
+   "warning": null
+  },
+  "dump": {
+   "role": "dump",
+   "program": "mysqldump",
+   "path": "/usr/local/bin/mysqldump",
+   "version": "8.4.3",
+   "engine": "mysql",
+   "installation": "mysql:/usr/local/Cellar/mysql@8.4/8.4.3/bin",
+   "origin": "homebrew",
+   "origin_label": "Homebrew mysql@8.4",
+   "bundled": false,
+   "reason": "series",
+   "warning": null
+  },
+  "load": {
+   "role": "load",
+   "program": "mysql",
+   "path": "/usr/local/bin/mysql",
+   "version": "8.4.3",
+   "engine": "mysql",
+   "installation": "mysql:/usr/local/Cellar/mysql@8.4/8.4.3/bin",
+   "origin": "homebrew",
+   "origin_label": "Homebrew mysql@8.4",
+   "bundled": false,
+   "reason": "series",
+   "warning": null
+  },
+  "backup": null,
+  "shell": {
+   "role": "shell",
+   "program": "mysqlsh",
+   "path": "/usr/local/bin/mysqlsh",
+   "version": "9.6.0",
+   "engine": "mysql",
+   "installation": null,
+   "origin": "homebrew",
+   "origin_label": "Homebrew mysql-shell",
+   "bundled": false,
+   "reason": "newest",
+   "warning": null
+  },
+  "missing": [],
+  "notes": []
  },
  "server": {
   "engine": "mysql",

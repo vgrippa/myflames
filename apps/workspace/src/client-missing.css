@@ -1,5 +1,5 @@
-/* The missing-client notice (ClientMissingNotice) and the Database client
- * dialog (DatabaseClientDialog), both from ClientMissing.tsx. */
+/* The missing-client notice (ClientMissingNotice) and the Client tools
+ * dialog and Used-for-this-server block (ClientTools.tsx). */
 .client-missing {
   display: flex;
   flex-direction: column;
@@ -77,4 +77,87 @@
 }
 .client-dialog .action-spacer {
   flex: 1;
+}
+/* The Client tools dialog lists installations, so it reads wider. */
+.client-tools-dialog {
+  max-width: 720px;
+}
+.client-tools-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: flex-start;
+}
+.client-tools-engine-field {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1, 4px);
+  font-weight: 600;
+}
+.client-tools-folder {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.client-tools-used {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: flex-start;
+}
+.client-tools-used-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: flex-start;
+}
+.client-tools-roles {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1, 4px);
+}
+.client-tools-role {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+}
+.client-tools-role dt {
+  min-width: 8.5em;
+  font-weight: 600;
+}
+.client-tools-role dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.client-tools-warning {
+  color: var(--warn-text);
+}
+.client-tools-note {
+  margin: 0;
+}
+.client-tools-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.client-tools-table th {
+  text-align: left;
+  font-weight: 600;
+  padding: 0 var(--space-2) var(--space-1, 4px) 0;
+}
+.client-tools-table td {
+  padding: 0 var(--space-2) var(--space-1, 4px) 0;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+.client-tools-shells {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1, 4px);
+  overflow-wrap: anywhere;
 }
