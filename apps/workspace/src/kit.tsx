@@ -3476,7 +3476,14 @@ export function ViewLayout({
                         disabled={refreshAll.disabled}
                         aria-disabled={refreshAll.running || undefined}
                         title={`Reads all ${refreshAll.count} sections on ${refreshAll.label} (${shortcut("R", true)})`}
-                        onClick={() => { if (refreshAll.running) return; closePopovers(); refreshAll.run(); }}>
+                        onClick={(e) => {
+                          if (refreshAll.running) return;
+                          // Hand focus to the Refresh options button first (it
+                          // stays focusable while busy), synchronously, so no
+                          // later effect has to win a race against a reader.
+                          e.currentTarget.closest(".view-refresh")?.querySelector<HTMLButtonElement>(".split-button-options")?.focus();
+                          closePopovers(); refreshAll.run();
+                        }}>
                         <span>Refresh every view on {refreshAll.label} ({shortcut("R", true)})</span>
                         <span className="hint">{refreshAll.count} sections</span>
                       </button>
