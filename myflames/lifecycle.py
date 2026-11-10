@@ -74,8 +74,9 @@ MANIFEST = 'myflames-manifest.json'
 MAX_RESTORE_FILES = 10000
 MAX_RESTORE_BYTES = 10 * 1024 * 1024 * 1024
 MAX_RESTORE_DIRECTORIES = 10000
-# Folder picks are advisory and must not scan multi-GiB SQL dumps.
-DUMP_INFO_SCAN_BYTES = 64 * 1024 * 1024
+# Folder picks are advisory (the UI reads after each pause in typing): scan
+# at most this much; the restore review decides for larger dumps.
+DUMP_INFO_SCAN_BYTES = 16 * 1024 * 1024
 DOC = 'https://dev.mysql.com/doc/refman/8.4/en/'
 SHELL_DOC = 'https://dev.mysql.com/doc/mysql-shell/9.6/en/mysql-shell-utilities-upgrade.html'
 # Intentionally limited metadata checks; dates verified in the versioned manual.
@@ -1738,8 +1739,11 @@ def _regular_input(path, expected_size=None, text=False):
             raise Refused('%s is not a regular file.' % os.path.basename(path))
         if expected_size is not None and info.st_size != expected_size:
             raise Refused('Backup file size no longer matches the dump manifest: %s.' % os.path.basename(path))
-        handle = os.fdopen(fd, 'r', encoding='utf-8') if text else os.fdopen(fd, 'rb')
-        fd = None
+        # Hand the descriptor over before fdopen: if fdopen fails it has
+        # already closed it, and closing it again here could close a
+        # descriptor another thread opened meanwhile.
+        owned, fd = fd, None
+        handle = os.fdopen(owned, 'r', encoding='utf-8') if text else os.fdopen(owned, 'rb')
         with handle:
             yield handle, info
     finally:
