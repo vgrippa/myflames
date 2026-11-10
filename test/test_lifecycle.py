@@ -7,6 +7,7 @@ argv/env and credential file metadata, never its contents or secret stdin.
 import ast
 import copy
 import hashlib
+import io
 import json
 import os
 import re
@@ -1727,9 +1728,13 @@ class LifecycleTests(unittest.TestCase):
 
     def dump_info_reply(self):
         from myflames import ui
-        self.assertIn('/api/lifecycle/dump-info', ui._LIFECYCLE_READ_PATHS)
+        self.assertIn('/api/lifecycle/dump-info', ui._LIFECYCLE_PATHS)
+        self.assertNotIn('/api/lifecycle/dump-info', ui._LIFECYCLE_READ_PATHS)
+        self.assertNotIn('/api/lifecycle/dump-info', ui._CONNECTION_PATHS)
         self.assertNotIn('/api/lifecycle/dump-info', ui._WRITE_PATHS)
-        with mock.patch.object(lc, '_connect', side_effect=AssertionError('dump-info must not connect')):
+        with mock.patch.object(lc, '_connect', side_effect=AssertionError('dump-info must not connect')), \
+                mock.patch.object(self.store, 'connection_with_saved_password',
+                                  side_effect=AssertionError('folder facts must not read saved passwords')):
             return ui.api_response('/api/lifecycle/dump-info', {'directory': self.output},
                                    types.SimpleNamespace(store=self.store))
 
@@ -1792,6 +1797,128 @@ class LifecycleTests(unittest.TestCase):
         Path(self.output).mkdir()
         with self.assertRaisesRegex(lc.Refused, 'manifest.*missing.*completed dump folder'):
             self.dump_info_reply()
+
+    def test_dump_info_large_picked_sql_defers_remap_scan_to_restore(self):
+        self.make_picked_dump()
+        self.update_dump(sql='CREATE TABLE t(id INT);')
+        reason = ('This dump is large; whether it can load into another database is decided '
+                  'when you review the restore.')
+        with mock.patch.object(lc, 'DUMP_INFO_SCAN_BYTES', 8), \
+                mock.patch.object(lc, '_sql_schema_scan', side_effect=AssertionError('folder pick scanned large SQL')):
+            reply = self.dump_info_reply()
+        self.assertIsNone(reply['remap_allowed'])
+        self.assertEqual(reply['remap_reason'], reason)
+        # The advisory cap does not weaken the authoritative restore review.
+        with mock.patch.object(lc, 'DUMP_INFO_SCAN_BYTES', 8):
+            plan = lc.prepare_restore(self.target(), CONNECTION, self.output, tools=self.native_tools())
+        self.assertTrue(plan['remap_allowed'])
+        with mock.patch.object(lc, 'MAX_RESTORE_BYTES', 8):
+            with self.assertRaisesRegex(lc.Refused, 'byte limit'):
+                lc.prepare_restore(self.target(), CONNECTION, self.output, tools=self.native_tools())
+
+    def test_dump_info_limits_tool_version_length(self):
+        self.make_picked_dump()
+        manifest = lc.read_manifest(self.output)
+        self.update_dump(tool=dict(manifest['tool'], version='v' * 65))
+        self.assertEqual(self.dump_info_reply()['tool']['version'], 'v' * 64)
+
+    @unittest.skipUnless(os.name == 'posix' and hasattr(os, 'mkfifo') and hasattr(os, 'O_NONBLOCK'),
+                         'requires POSIX nonblocking FIFOs')
+    def test_dump_info_and_restore_refuse_fifo_inputs_without_waiting_for_writer(self):
+        self.make_picked_dump()
+        for name in ('dump.sql', lc.MANIFEST):
+            path = Path(self.output, name)
+            original = path.read_bytes()
+            path.unlink()
+            os.mkfifo(str(path), 0o600)
+            try:
+                for operation in ('dump_info', 'prepare_restore'):
+                    with self.subTest(file=name, operation=operation):
+                        errors = []
+                        def read_input():
+                            try:
+                                if operation == 'dump_info':
+                                    lc.dump_info(self.output)
+                                else:
+                                    lc.prepare_restore(self.target(), CONNECTION, self.output,
+                                                       tools=self.native_tools())
+                            except BaseException as exc:
+                                errors.append(exc)
+                        worker = threading.Thread(target=read_input)
+                        worker.daemon = True
+                        worker.start()
+                        worker.join(2)
+                        blocked = worker.is_alive()
+                        if blocked:
+                            # Unblock a regressed blocking open before reporting
+                            # failure; never leave a reader behind in the suite.
+                            writer = os.open(str(path), os.O_WRONLY | os.O_NONBLOCK)
+                            os.close(writer)
+                            worker.join(2)
+                        self.assertFalse(worker.is_alive(), 'FIFO reader did not stop after cleanup')
+                        self.assertFalse(blocked, 'Reading a FIFO waited for a writer')
+                        self.assertEqual(len(errors), 1, errors)
+                        self.assertIsInstance(errors[0], lc.Refused)
+            finally:
+                path.unlink()
+                path.write_bytes(original)
+
+    def test_dump_info_and_restore_refuse_directory_or_missing_sql(self):
+        self.make_picked_dump()
+        path = Path(self.output, 'dump.sql')
+        original = path.read_bytes()
+        for kind in ('directory', 'missing'):
+            path.unlink()
+            if kind == 'directory':
+                path.mkdir()
+            try:
+                with self.subTest(kind=kind), self.assertRaises(lc.Refused):
+                    self.dump_info_reply()
+                with self.subTest(kind=kind), self.assertRaises(lc.Refused):
+                    lc.prepare_restore(self.target(), CONNECTION, self.output, tools=self.native_tools())
+            finally:
+                if kind == 'directory':
+                    path.rmdir()
+                path.write_bytes(original)
+
+    def test_dump_info_size_mismatch_refuses_before_sql_scan(self):
+        self.make_picked_dump()
+        path = Path(self.output, 'dump.sql')
+        path.write_bytes(path.read_bytes() + b'-- changed size')
+        with mock.patch.object(lc, '_sql_schema_scan', side_effect=AssertionError('changed SQL was scanned')):
+            with self.assertRaisesRegex(lc.Refused, 'no longer matches the dump manifest'):
+                self.dump_info_reply()
+
+    def test_restore_size_mismatch_refuses_before_sql_read_or_scan(self):
+        self.make_picked_dump()
+        path = Path(self.output, 'dump.sql')
+        path.write_bytes(path.read_bytes() + b'-- changed size')
+        inode = path.stat().st_ino
+        fdopen = lc.os.fdopen
+        def checked_fdopen(fd, *args, **kwargs):
+            if lc.os.fstat(fd).st_ino == inode:
+                raise AssertionError('changed SQL was opened for reading')
+            return fdopen(fd, *args, **kwargs)
+        with mock.patch.object(lc.os, 'fdopen', side_effect=checked_fdopen), \
+                mock.patch.object(lc, '_sql_schema_scan', side_effect=AssertionError('changed SQL was scanned')):
+            with self.assertRaises(lc.Refused):
+                lc.prepare_restore(self.target(), CONNECTION, self.output, tools=self.native_tools())
+
+    def test_reviewed_copy_size_mismatch_refuses_before_read(self):
+        manifest = self.make_picked_dump()
+        record = next(record for record in manifest['files'] if record['path'] == 'dump.sql')
+        path = Path(self.output, 'dump.sql')
+        path.write_bytes(path.read_bytes() + b'-- changed size')
+        job = mock.Mock()
+        with mock.patch.object(lc.os, 'fdopen', side_effect=AssertionError('changed SQL was read')):
+            with self.assertRaises(lc.Refused):
+                lc._copy_reviewed_file(self.output, record, io.BytesIO(), job)
+
+    def test_dump_info_scan_oserror_is_typed_refusal(self):
+        self.make_picked_dump()
+        with mock.patch.object(lc, '_sql_schema_scan', side_effect=PermissionError('permission denied')):
+            with self.assertRaisesRegex(lc.Refused, 'completed dump folder'):
+                self.dump_info_reply()
 
     def test_dump_info_refuses_manifest_traversal_without_opening_named_file(self):
         self.make_dump()

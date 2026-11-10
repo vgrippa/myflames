@@ -74,6 +74,8 @@ MANIFEST = 'myflames-manifest.json'
 MAX_RESTORE_FILES = 10000
 MAX_RESTORE_BYTES = 10 * 1024 * 1024 * 1024
 MAX_RESTORE_DIRECTORIES = 10000
+# Folder picks are advisory and must not scan multi-GiB SQL dumps.
+DUMP_INFO_SCAN_BYTES = 64 * 1024 * 1024
 DOC = 'https://dev.mysql.com/doc/refman/8.4/en/'
 SHELL_DOC = 'https://dev.mysql.com/doc/mysql-shell/9.6/en/mysql-shell-utilities-upgrade.html'
 # Intentionally limited metadata checks; dates verified in the versioned manual.
@@ -1719,8 +1721,36 @@ def _manifest_path(path):
     return path.split('/')
 
 
-def _file_records(directory, job=None, max_files=None, max_bytes=None, max_directories=None):
+@contextlib.contextmanager
+def _regular_input(path, expected_size=None, text=False):
+    """Refuse special files without waiting for a FIFO writer or reading bytes.
+
+    Validate the opened descriptor, not a preceding pathname stat: an input
+    can be replaced between that stat and open. Keep ownership until fdopen
+    succeeds so every refusal also closes the descriptor.
+    """
+    flags = (os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0) |
+             getattr(os, 'O_BINARY', 0))
+    fd = os.open(path, flags)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise Refused('%s is not a regular file.' % os.path.basename(path))
+        if expected_size is not None and info.st_size != expected_size:
+            raise Refused('Backup file size no longer matches the dump manifest: %s.' % os.path.basename(path))
+        handle = os.fdopen(fd, 'r', encoding='utf-8') if text else os.fdopen(fd, 'rb')
+        fd = None
+        with handle:
+            yield handle, info
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def _file_records(directory, job=None, max_files=None, max_bytes=None, max_directories=None,
+                  expected_records=None):
     records = []
+    expected_sizes = {r['path']: r['size_bytes'] for r in expected_records or []}
     total_bytes, directories = 0, 0
     for root, folders, files in os.walk(directory, followlinks=False):
         directories += 1
@@ -1741,13 +1771,15 @@ def _file_records(directory, job=None, max_files=None, max_bytes=None, max_direc
                 continue
             if max_files is not None and len(records) >= max_files:
                 raise Refused('Restore preflight exceeds the file limit (%d).' % max_files)
-            if os.path.islink(path) or not os.path.isfile(path):
+            if os.path.islink(path):
                 raise Refused('Backup contains a symlink or non-regular file.')
-            if max_bytes is not None and total_bytes + os.path.getsize(path) > max_bytes:
-                raise Refused('Restore preflight exceeds the byte limit (%d bytes).' % max_bytes)
+            relative = '/'.join(os.path.relpath(path, directory).split(os.sep))
+            _manifest_path(relative)
             digest = hashlib.sha256()
             size = 0
-            with open(path, 'rb') as handle:
+            with _regular_input(path, expected_sizes.get(relative)) as (handle, info):
+                if max_bytes is not None and total_bytes + info.st_size > max_bytes:
+                    raise Refused('Restore preflight exceeds the byte limit (%d bytes).' % max_bytes)
                 while True:
                     # Read at most one byte beyond the remaining budget, even
                     # when a file grows after the initial stat.
@@ -1762,8 +1794,6 @@ def _file_records(directory, job=None, max_files=None, max_bytes=None, max_direc
                     if job:
                         job.check_cancel()
                     digest.update(data)
-            relative = '/'.join(os.path.relpath(path, directory).split(os.sep))
-            _manifest_path(relative)
             records.append({'path': relative, 'size_bytes': size,
                             'sha256': digest.hexdigest()})
     return sorted(records, key=lambda r: r['path'])
@@ -1783,7 +1813,7 @@ def _read_manifest_value(directory):
     directory = _absolute(directory)
     if os.path.islink(os.path.join(directory, MANIFEST)):
         raise Refused('Manifest cannot be a symlink.')
-    with open(os.path.join(directory, MANIFEST), 'r', encoding='utf-8') as handle:
+    with _regular_input(os.path.join(directory, MANIFEST), text=True) as (handle, unused):
         text = handle.read(16 * 1024 * 1024 + 1)
         if len(text) > 16 * 1024 * 1024:
             raise Refused('Backup manifest exceeds the 16 MiB metadata limit.')
@@ -1809,7 +1839,7 @@ def read_manifest(directory, job=None):
     """Validate a completed backup and every file checksum before restore."""
     manifest = _read_manifest_value(directory)
     if manifest['files'] != _file_records(directory, job, MAX_RESTORE_FILES, MAX_RESTORE_BYTES,
-                                         MAX_RESTORE_DIRECTORIES):
+                                         MAX_RESTORE_DIRECTORIES, expected_records=manifest['files']):
         raise Refused('Backup file list, sizes or checksums no longer match the manifest.')
     return manifest
 
@@ -2160,10 +2190,7 @@ def _copy_reviewed_file(directory, record, output, job):
         if os.path.islink(relative):
             raise Refused('Backup input became a symbolic link.')
     digest, size = hashlib.sha256(), 0
-    flags = os.O_RDONLY | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOFOLLOW', 0)
-    with os.fdopen(os.open(path, flags), 'rb') as source:
-        if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
-            raise Refused('Backup input is not a regular file.')
+    with _regular_input(path, record['size_bytes']) as (source, unused):
         for chunk in iter(lambda: source.read(1024 * 1024), b''):
             job.check_cancel()
             size += len(chunk)
@@ -2436,8 +2463,8 @@ def _restore_input(directory, job=None, verify=True):
     return directory, manifest
 
 
-def _restore_sql_scan(directory, manifest, job=None):
-    """Use the identical scan for folder facts and authoritative preflight."""
+def _restore_sql_scan(directory, manifest, job=None, max_scan_bytes=None):
+    """Share the scan; folder facts may defer it above their byte budget."""
     if manifest['tool']['name'] == 'mysqlsh':
         return {}
     record = next((r for r in manifest['files'] if r['path'] == 'dump.sql'), None)
@@ -2445,6 +2472,15 @@ def _restore_sql_scan(directory, manifest, job=None):
         raise Refused('SQL backup manifest has no dump.sql file; choose a completed SQL dump folder.')
     scope = manifest['scope']
     if scope['tables'] and len(scope['schemas']) == 1:
+        # Check size before entering the scanner. A small manifest record
+        # cannot disguise a huge input, and even a deferred file must be regular.
+        path = os.path.join(directory, 'dump.sql')
+        if os.path.islink(path):
+            raise Refused('Backup input became a symbolic link.')
+        with _regular_input(path, record['size_bytes']):
+            pass
+        if max_scan_bytes is not None and record['size_bytes'] > max_scan_bytes:
+            return None
         # Eligibility describes the folder before a target name is chosen.
         # Do not exempt a hardcoded qualifier matching a proposed target: the
         # folder facts and preflight must make the same remapping decision.
@@ -2456,23 +2492,30 @@ def dump_info(directory, job=None):
     """Read completed dump facts without a server connection or tool launch.
 
     Reads the manifest without checksumming every file (a folder pick must
-    stay cheap); the SQL scan checks dump.sql's checksum. These are advisory
+    stay cheap); a bounded SQL scan checks dump.sql's checksum. These are advisory
     facts: restore's preflight still verifies every file and decides.
     """
     directory, manifest = _restore_input(directory, job, verify=False)
     if manifest['tool']['name'] == 'mariadb-backup':
         raise Refused('This is a physical backup; choose a logical dump folder for Restore.')
     try:
-        sql_scan = _restore_sql_scan(directory, manifest, job)
+        sql_scan = _restore_sql_scan(directory, manifest, job, max_scan_bytes=DUMP_INFO_SCAN_BYTES)
     except Refused as exc:
         # The reviewed-bytes reader speaks of staging; no restore is staged here.
         if not str(exc).startswith('Backup '):
             raise
         raise Refused('dump.sql no longer matches the dump manifest (changed, replaced or a link); '
                       'choose a completed dump folder.') from None
-    allowed, reason = _restore_remap(manifest, sql_scan)
+    except OSError:
+        raise Refused('Cannot read dump.sql; check that it exists and is a readable regular file, '
+                      'then choose a completed dump folder.') from None
+    if sql_scan is None:
+        allowed, reason = None, ('This dump is large; whether it can load into another database is decided '
+                                 'when you review the restore.')
+    else:
+        allowed, reason = _restore_remap(manifest, sql_scan)
     return dict(schema_version='lifecycle-dump-info-1.0',
-                tool={key: manifest['tool'][key] for key in ('name', 'version')},
+                tool=dict(name=manifest['tool']['name'], version=manifest['tool']['version'][:64]),
                 engine=manifest['source']['engine'],
                 scope={key: list(manifest['scope'][key]) for key in ('schemas', 'tables')},
                 structure_only=manifest.get('options', {}).get('structure_only', False),

@@ -899,6 +899,8 @@ def _lifecycle_response(path, payload, workspace):
         from .folder_picker import choose_directory
         return choose_directory()
     if path == "/api/lifecycle/dump-info":
+        if set(payload) - {"directory"}:
+            raise ValueError("Dump folder facts accept only a directory.")
         return lc.dump_info(payload.get("directory"))
     if path == "/api/lifecycle/tools" and not isinstance(payload.get("connection"), dict):
         return _dump_tool_capabilities(lc.detect_tools(check_updates=payload.get("check_updates") is True))
@@ -1213,14 +1215,15 @@ _CONNECTION_PATHS = (("/api/live/readiness", "/api/connection/test", "/api/live/
 #: filled, and every attempt is audited. Status and cancel act on a job the
 #: server holds (cancel's KILL QUERY reuses the job's own connection).
 _LIFECYCLE_READ_PATHS = ("/api/lifecycle/tools", "/api/lifecycle/upgrade-targets", "/api/lifecycle/upgrade-check",
-                         "/api/lifecycle/prepare", "/api/lifecycle/dump-info")
+                         "/api/lifecycle/prepare")
 _LIFECYCLE_WRITE_PATHS = ("/api/lifecycle/start",)
 _LIFECYCLE_PATHS = _LIFECYCLE_READ_PATHS + _LIFECYCLE_WRITE_PATHS + ("/api/lifecycle/status",
                                                                      "/api/lifecycle/cancel")
 #: The jobs of one connection (answered by _lifecycle_jobs_response): opens no
 #: database connection, so it is neither a read nor a write path.
 _LIFECYCLE_JOB_LIST_PATHS = ("/api/lifecycle/jobs",)
-_LIFECYCLE_PATHS = _LIFECYCLE_PATHS + _LIFECYCLE_JOB_LIST_PATHS + ("/api/lifecycle/choose-directory",)
+_LIFECYCLE_PATHS = _LIFECYCLE_PATHS + _LIFECYCLE_JOB_LIST_PATHS + ("/api/lifecycle/choose-directory",
+                                                              "/api/lifecycle/dump-info")
 _WRITE_PATHS = _WRITE_PATHS + _LIFECYCLE_WRITE_PATHS
 _CONNECTION_PATHS = _CONNECTION_PATHS + _LIFECYCLE_READ_PATHS + _LIFECYCLE_WRITE_PATHS
 #: Replication (replication.py, answered by _replication_response). Status only

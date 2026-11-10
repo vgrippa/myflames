@@ -82,6 +82,9 @@ class TestWriteHTTP(unittest.TestCase):
         return payload
 
     def test_dump_info_http_reads_folder_and_refuses_unsafe_manifest(self):
+        self.assertIn('/api/lifecycle/dump-info', ui._LIFECYCLE_PATHS)
+        self.assertNotIn('/api/lifecycle/dump-info', ui._LIFECYCLE_READ_PATHS)
+        self.assertNotIn('/api/lifecycle/dump-info', ui._CONNECTION_PATHS)
         folder = Path(os.environ['HOME']) / 'dump'
         folder.mkdir()
         sql = b'CREATE TABLE t(id INT);'
@@ -93,7 +96,9 @@ class TestWriteHTTP(unittest.TestCase):
                                'sha256': hashlib.sha256(sql).hexdigest()}]}
         metadata = folder / lifecycle.MANIFEST
         metadata.write_text(json.dumps(manifest))
-        with mock.patch.object(lifecycle, '_connect', side_effect=AssertionError('must not connect')):
+        with mock.patch.object(lifecycle, '_connect', side_effect=AssertionError('must not connect')), \
+                mock.patch.object(self.server.store, 'connection_with_saved_password',
+                                  side_effect=AssertionError('folder facts must not read saved passwords')):
             status, result = self.post('/api/lifecycle/dump-info', {'directory': str(folder)})
             self.assertEqual(status, 200)
             self.assertEqual(result['schema_version'], 'lifecycle-dump-info-1.0')
@@ -105,6 +110,18 @@ class TestWriteHTTP(unittest.TestCase):
             self.assertEqual(status, 400)
             self.assertIn('unsafe relative file path', result['error'])
             self.assertIn('Choose a completed dump folder', result['error'])
+
+    def test_dump_info_http_rejects_extra_keys_before_password_lookup_or_folder_read(self):
+        path = '/api/lifecycle/dump-info'
+        for key, value in (('connection', {'profile_id': 'saved'}), ('unexpected', True), ('password', 'secret')):
+            with self.subTest(key=key), \
+                    mock.patch.object(self.server.store, 'connection_with_saved_password',
+                                      side_effect=AssertionError('saved password was read')), \
+                    mock.patch.object(lifecycle, 'dump_info') as read:
+                status, result = self.post(path, {'directory': 'unused', key: value})
+                self.assertEqual(status, 400)
+                self.assertIsInstance(result['error'], str)
+                read.assert_not_called()
 
     def test_dump_info_http_refusal_and_authentication_without_connection(self):
         path = '/api/lifecycle/dump-info'
