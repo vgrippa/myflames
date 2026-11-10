@@ -23,3 +23,23 @@
   padding: 0 2px;
   font-weight: 600;
 }
+
+.sql-editor-wrap.sql-cm .cm-lintRange-warning {
+  background-image: none;
+  text-decoration: underline wavy var(--warn);
+  text-underline-offset: 3px;
+}
+
+.sql-editor-wrap.sql-cm .cm-lint-marker-warning {
+  content: none;
+  background-color: var(--warn);
+  clip-path: polygon(50% 5%, 98% 95%, 2% 95%);
+}
+
+.sql-editor-wrap.sql-cm .cm-diagnostic-warning {
+  border-left-color: var(--warn);
+}
+
+.sql-editor-wrap.sql-cm .cm-lintRange-active {
+  background-color: var(--warn-soft);
+}

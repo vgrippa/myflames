@@ -1,5 +1,6 @@
 import type { ChangeSpec, Line, StateCommand } from "@codemirror/state";
 import { selectNextOccurrence, selectSelectionMatches } from "@codemirror/search";
+import { openLintPanel, nextDiagnostic, previousDiagnostic } from "@codemirror/lint";
 
 function commentMarkerLength(text: string, indent: number): number {
   const rest = text.slice(indent);
@@ -52,6 +53,6 @@ export const toggleSqlComment: StateCommand = ({ state, dispatch }) => {
 
 export const selectNextOccurrenceCmd: StateCommand = selectNextOccurrence;
 export const selectAllOccurrencesCmd: StateCommand = selectSelectionMatches;
-export const showProblemsCmd: StateCommand = () => false;
-export const nextProblemCmd: StateCommand = () => false;
-export const previousProblemCmd: StateCommand = () => false;
+export const showProblemsCmd = openLintPanel;
+export const nextProblemCmd = nextDiagnostic;
+export const previousProblemCmd = previousDiagnostic;

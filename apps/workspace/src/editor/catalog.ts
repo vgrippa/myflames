@@ -41,6 +41,17 @@ export class CatalogService {
     this.listeners.add(fn);
     return () => { this.listeners.delete(fn); };
   }
+  /** Inspect only live, identity-bound metadata. Never starts a catalog read. */
+  peek<K extends keyof CatalogKinds>(kind: K, params: CatalogParams[K]): CatalogResult<CatalogKinds[K]> | null {
+    this.syncConnection();
+    const key = JSON.stringify([kind, params]), entry = this.cache.get(key);
+    if (!entry) return null;
+    if (entry.until <= Date.now()) {
+      this.remove(key, entry, "expired");
+      return null;
+    }
+    return entry.result as CatalogResult<CatalogKinds[K]>;
+  }
   cancelOwner(owner: CatalogOwner): void {
     for (const read of this.pending)
       if (read.owner.editor === owner.editor && read.owner.generation === owner.generation) read.controller.abort();
