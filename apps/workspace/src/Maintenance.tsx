@@ -26,8 +26,8 @@ import { MAC, WINDOWS } from "./platform";
 import { durationText } from "./duration";
 import {
   cancelLifecycleJob, checkUpgrade, documentationUrl, jobActive, listLifecycleJobs,
-  prepareLifecycle, readLifecycleJob, readLifecycleTools, readUpgradeTargets, startLifecycle, upgradeLinkUrl, useOpsScope,
-  type LifecycleJob, type LifecyclePlan, type LifecycleTools, type UpgradeTarget, type UpgradeTargets,
+  prepareLifecycle, readDumpInfo, readLifecycleJob, readLifecycleTools, readUpgradeTargets, startLifecycle, upgradeLinkUrl, useOpsScope,
+  type DumpInfo, type LifecycleJob, type LifecyclePlan, type LifecycleTools, type UpgradeTarget, type UpgradeTargets,
   type MissingPrivileges, type PrepareRequest, type Tool, type UpgradeFinding,
   type UpgradeReport, type Verification,
 } from "./opsApi";
@@ -322,6 +322,10 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   const directoryEdit = useRef(0);
   const reservedDirectories = useRef<string[]>([]);
   const [restoreDirectory, setRestoreDirectory] = useState("");
+  /** lifecycle-dump-info-1.0 for the folder in the Dump folder field. It only
+   * shapes the Default database choices and hints; the preflight stays the
+   * authority and Start never waits for this read. */
+  const [dumpInfo, setDumpInfo] = useState<{ directory: string; report: DumpInfo | null; error: string } | null>(null);
   const [restoreSchema, setRestoreSchema] = useState("");
   /** Restore into a database the list does not have (typed). */
   const [restoreNew, setRestoreNew] = useState(false);
@@ -355,6 +359,12 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [clientToolsOpen, setClientToolsOpen] = useState(false);
   const changeToolsButton = useRef<HTMLButtonElement>(null);
+  /** The button the Client tools dialog returns focus to (its opener). */
+  const toolsReturnFocus = useRef<HTMLElement | null>(null);
+  function openClientTools(from: HTMLElement | null) {
+    toolsReturnFocus.current = from;
+    setClientToolsOpen(true);
+  }
   const [readKind, setReadKind] = useState<"tools" | "upgrade" | "preflight">("tools");
   const readSince = useSince(!!reads.loading);
   const detecting = !!reads.loading && readKind === "tools";
@@ -473,6 +483,30 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
     return !!option && optionShown(option, dumpOptions) && (name !== "compression_level" || ["gzip", "zstd"].includes(String(dumpOptions.compression)));
   }));
   useEffect(() => { setDumpOptions({}); }, [key, dumpToolName]);
+  // The roles the resolver could not fill for this server (client-tools-1.0),
+  // and its engine note (for example the MariaDB sentence about its tools).
+  const missingRole = (role: "dump" | "load") => rawTools?.used?.missing.find((m) => m.role === role);
+  const toolNotes = rawTools?.used?.notes || [];
+  const noToolSentence = (role: "dump" | "load") =>
+    [missingRole(role)?.text || (role === "dump" ? "No dump tool for this server." : ""), ...toolNotes].filter(Boolean).join(" ");
+  /** Dump can run only when a tool is offered for the chosen kind; Restore
+   * needs the load role. */
+  const sqlDumpOffered = !!tools?.offered.dump.some((name) => name !== "mysqlsh");
+  const noDumpTool = !!tools && !toolsMissing && !tools.offered.dump.length;
+  const noLoadTool = !!tools && !!missingRole("load");
+  const dumpToolOptions: ["auto" | "sql", string][] = [];
+  if (tools && !noDumpTool) {
+    dumpToolOptions.push(["auto", rawTools?.used?.shell ? `Automatic (MySQL Shell ${rawTools.used.shell.version} first)` : "Automatic (MySQL Shell first)"]);
+    if (sqlDumpOffered) dumpToolOptions.push(["sql", rawTools?.used?.dump ? `SQL dump (${rawTools.used.dump.program} ${rawTools.used.dump.version} · ${rawTools.used.dump.origin_label})` : `SQL dump (${tools.offered.dump.find(name => name !== "mysqlsh") || (tools.server.engine === "mariadb" ? "mariadb-dump" : "mysqldump")})`]);
+  }
+  useEffect(() => { if (!sqlDumpOffered) setSqlDump(false); }, [sqlDumpOffered]);
+  // The dump-info answer counts only for the folder still in the field.
+  const folderInfo = dumpInfo && dumpInfo.directory === restoreDirectory.trim() ? dumpInfo : null;
+  const remapDenied = folderInfo?.report?.remap_allowed === false;
+  useEffect(() => {
+    // A dump that creates its own databases restores into them only.
+    if (remapDenied) { setRestoreNew(false); setRestoreSchema(""); }
+  }, [remapDenied]);
   const plan = prepared?.report;
   const upgrade = memory.upgrade?.report || null;
   const shownPlan = plan?.operation === section && prepared?.key === key ? prepared : null;
@@ -511,6 +545,21 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
     setDirectoryVersion(n => n + 1);
     setDirectoryTouched(!!path); setDirectory(path); setDirectoryError("");
   }
+  // Read the restore folder's dump summary once typing or picking settles. A
+  // folder change cancels the read in flight; a late answer for a replaced
+  // folder is dropped (the abort guard), so the latest request always wins.
+  useEffect(() => {
+    const directory = restoreDirectory.trim();
+    if (!directory) { setDumpInfo(null); return; }
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      readDumpInfo(directory, controller.signal).then(
+        (report) => { if (!controller.signal.aborted) setDumpInfo({ directory, report, error: "" }); },
+        (e: unknown) => { if (!controller.signal.aborted) setDumpInfo({ directory, report: null, error: e instanceof Error ? e.message : String(e) }); },
+      );
+    }, 300);
+    return () => { controller.abort(); window.clearTimeout(timer); };
+  }, [restoreDirectory]);
   function removeTables(names: string[]) {
     const remaining = tables.filter(name => !names.includes(name));
     setTables(remaining);
@@ -936,7 +985,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
         {!toolsMissing && memory.tools.report.used && (
           <div className="ops-used client-tools-used-block">
             <strong>Used for this server</strong>
-            <UsedForServer used={memory.tools.report.used} server={memory.tools.report.server} onChange={() => setClientToolsOpen(true)} changeRef={changeToolsButton} />
+            <UsedForServer used={memory.tools.report.used} server={memory.tools.report.server} onChange={() => openClientTools(changeToolsButton.current)} changeRef={changeToolsButton} />
           </div>
         )}
         <div className="ops-actions"><ActionButton busy={detecting && checkingUpdates} busyLabel="Checking…" disabled={disabled || busy || (!!reads.loading && !checkingUpdates)} onClick={() => { void loadTools(true); }}>Check for updates</ActionButton>{tools && <ActionStatus keepLine state={{ phase: detecting && checkingUpdates ? "pending" : "idle", message: reads.loading, startedAt: readSince }} onStop={reads.stop} stopLabel="Stop waiting" />}</div>
@@ -962,6 +1011,16 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
         </>}
       </>}
       <div ref={fieldsRef} className="ops-task-fields">
+      {section === "dump" && tools && noDumpTool && (
+        <PrerequisiteGate action={<button type="button" className="button small" onClick={(e) => openClientTools(e.currentTarget)}>Choose client tools…</button>}>
+          {noToolSentence("dump")}
+        </PrerequisiteGate>
+      )}
+      {section === "restore" && tools && noLoadTool && (
+        <PrerequisiteGate action={<button type="button" className="button small" onClick={(e) => openClientTools(e.currentTarget)}>Choose client tools…</button>}>
+          {noToolSentence("load")}
+        </PrerequisiteGate>
+      )}
       {section === "dump" && tools && <div className="ops-form ops-dump"><fieldset disabled={formDisabled}>
         <FormGrid>
           <FormRow label="Scope" htmlFor="ops-dump-scope">
@@ -991,7 +1050,13 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
             </div>
           </div>}
           <FormRow label="Tool" htmlFor="ops-dump-tool">
-            <Select id="ops-dump-tool" label="Tool" value={sqlDump ? "sql" : "auto"} options={[["auto", rawTools?.used?.shell ? `Automatic (MySQL Shell ${rawTools.used.shell.version} first)` : "Automatic (MySQL Shell first)"], ["sql", rawTools?.used?.dump ? `SQL dump (${rawTools.used.dump.program} ${rawTools.used.dump.version} · ${rawTools.used.dump.origin_label})` : `SQL dump (${tools.offered.dump.find(name => name !== "mysqlsh") || (tools.server.engine === "mariadb" ? "mariadb-dump" : "mysqldump")})`]]} onChange={(v) => setSqlDump(v === "sql")} />
+            {noDumpTool ? (
+              <select id="ops-dump-tool" className="select" aria-label="Tool" disabled value="">
+                <option value="" disabled>No dump tool for this server</option>
+              </select>
+            ) : (
+              <Select id="ops-dump-tool" label="Tool" value={sqlDump ? "sql" : "auto"} options={dumpToolOptions} onChange={(v) => setSqlDump(v === "sql")} />
+            )}
           </FormRow>
           <div className={`ops-folder-check${folderFailure ? " ops-invalid" : ""}`} role="group" aria-label="Output folder" aria-invalid={!!folderFailure || undefined}><DumpFolderField key={`dump:${key}`} value={directory} stem={dumpStem} onChange={changeDirectory} onPicking={picking => { directoryEdit.current++; setDirectoryPicking(picking); }} disabled={formDisabled} />{directoryError && <p className="form-error" role="alert">{directoryError}</p>}{folderFailure && <p className="form-error">{folderFailure.reason}</p>}</div>
         </FormGrid>
@@ -1002,9 +1067,15 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
       </fieldset></div>}
       {section === "restore" && tools && form(<>
         <div className="ops-target"><span>Restores into</span><strong>{connectionLabel(connection)}</strong></div>
-        <FolderField key={`restore:${key}`} label="Dump folder" value={restoreDirectory} onChange={setRestoreDirectory} disabled={formDisabled} hint="A completed myflames dump with its checksummed manifest." />
+        <FolderField key={`restore:${key}`} label="Dump folder" value={restoreDirectory} onChange={setRestoreDirectory} disabled={formDisabled}
+          hint={folderInfo?.error ? folderInfo.error : "A completed myflames dump with its checksummed manifest."} />
         <details><summary>Options</summary>
-          {catalog.error ? (
+          {remapDenied ? (
+            <label className="ops-field"><span>Default database</span>
+              <Select label="Default database" value="" options={[["", "As in the dump"]]} onChange={() => {}} />
+              <span className="hint">{folderInfo?.report?.remap_reason}</span>
+            </label>
+          ) : catalog.error ? (
             <FormField label="Default database" value={restoreSchema} onChange={setRestoreSchema} placeholder="As in the dump"
               hint={`Could not list databases (${catalog.error}). Type a name, or leave it empty. SQL dumps can name other databases; this does not confine the restore.`} />
           ) : <>
@@ -1047,7 +1118,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
         <details><summary>Donor TLS</summary><label className="ops-field"><span>TLS mode</span><Select label="TLS mode" value={donor.ssl_mode || "REQUIRED"} options={[["REQUIRED", "Required"], ["VERIFY_CA", "Verify CA"], ["VERIFY_IDENTITY", "Verify identity"]]} onChange={(v) => setDonor({ ...donor, ssl_mode: v })} /></label><FormField label="CA file" value={donor.ssl_ca || ""} onChange={(v) => setDonor({ ...donor, ssl_ca: v })} /></details>
       </>))}
       </div>
-      {operation && tools && (operation !== "clone" || tools.offered.clone) && <div className="ops-actions"><ReadAction busy={preparing} busyLabel="Checking…" action={operation === "clone" ? "clone_recipient" : operation === "restore" ? "restore" : undefined} gate={operationGate} className="primary" disabled={formDisabled || detecting || !canPrepare} blocked={blocked || privilegeBlock} onClick={() => { void prepare(); }}>{`Start ${operation}…`}</ReadAction>{readStatus("preflight")}{activeJob ? <JobSummary job={activeJob.report} onShow={() => { onSection(activeJob.report.operation); setFocusJob(activeJob.report.id || ""); }} /> : !blocked && !privilegeBlock && <span className="hint">Checks first (reads only), then shows the exact commands for you to confirm.</span>}</div>}
+      {operation && tools && (operation !== "clone" || tools.offered.clone) && <div className="ops-actions"><ReadAction busy={preparing} busyLabel="Checking…" action={operation === "clone" ? "clone_recipient" : operation === "restore" ? "restore" : undefined} gate={operationGate} className="primary" disabled={formDisabled || detecting || !canPrepare} blocked={blocked || privilegeBlock} onClick={() => { void prepare(); }}>{`Start ${operation}…`}</ReadAction>{readStatus("preflight")}{activeJob ? <JobSummary job={activeJob.report} onShow={() => { onSection(activeJob.report.operation); setFocusJob(activeJob.report.id || ""); }} /> : operation === "dump" && noDumpTool ? <span className="hint">{noToolSentence("dump")}</span> : operation === "restore" && noLoadTool ? <span className="hint">{noToolSentence("load")}</span> : !blocked && !privilegeBlock && <span className="hint">Checks first (reads only), then shows the exact commands for you to confirm.</span>}</div>}
       {notice && <p className="ops-note" role="status">{notice}</p>}
       <section ref={resultRef} className={`ops-preflight-result${preflightError || failedChecks.length ? " has-result" : ""}`} role="alert" tabIndex={-1}>
         {preflightError && <><p>Start {operation} is blocked: {preflightError} Fix the fields, then click Start {operation}… again.</p><button type="button" className="text-button" onClick={() => focusFix({ check: "input", status: "failed", reason: preflightError })}>Review fields</button></>}
@@ -1106,7 +1177,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
     </ConfirmSheet>}
     {clientToolsOpen && (
       <ClientToolsDialog
-        returnFocus={changeToolsButton}
+        returnFocus={toolsReturnFocus}
         onClose={() => setClientToolsOpen(false)}
         onChanged={() => { void loadTools(); }}
       />

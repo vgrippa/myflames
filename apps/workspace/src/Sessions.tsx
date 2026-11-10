@@ -830,7 +830,8 @@ export function SessionsView({
             </SummaryLine>
             {report.ddl && !other && <DdlUnavailable progress={report.ddl} />}
             <FactStrip
-              label="Connections"
+              label="Server-wide"
+              title="Threads_connected and Threads_running from SHOW GLOBAL STATUS; they include monitoring and background threads."
               facts={[
                 ["Connected", c?.current != null ? number(c.current) : "—"],
                 ["Limit", c?.max != null ? number(c.max) : "—"],
@@ -986,7 +987,12 @@ export function SessionsView({
                     : minSeconds
                       ? `No session has been in its state for ${minSeconds} seconds or longer.`
                       : scope === "active"
-                        ? "No active sessions right now."
+                        // The summary counts every collected session, before
+                        // the table's filters: an empty table with active
+                        // sessions means the filters hid them.
+                        ? s && s.active > 0
+                          ? "No sessions match the filters."
+                          : "No active sessions right now."
                         : scope === "locked"
                           ? "No locked transactions right now."
                           : "No sessions."

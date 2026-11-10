@@ -11,6 +11,7 @@ poll skips its remaining read while one waits.
 """
 import time
 
+from . import analysis_query
 from .connector import ConnectorError
 from .locks import SYSTEM_NOW, blocking_transactions_query
 from .server_info import parse_version_tuple
@@ -44,8 +45,15 @@ def helper_rows(step):
     return []
 
 
-def unavailable(reason):
-    return {"available": False, "reason": reason}
+def unavailable(reason, unit):
+    return dict(analysis_eligibility(unit), available=False, reason=reason)
+
+
+def analysis_eligibility(unit):
+    """Project the sent SQL locally, independently of execution success."""
+    prepared = analysis_query.prepare(unit["send"])
+    return {"analyzable": not bool(prepared["problem"]),
+            "analyze_reason": prepared["problem"]}
 
 
 class EditorInsights(object):
@@ -99,7 +107,7 @@ class EditorInsights(object):
     def _history_boundary(self, run):
         reason = "Statement history could not be read; check Server > Instruments."
         for unit in run.units:
-            unit["server_stats"] = unavailable(reason)
+            unit["server_stats"] = unavailable(reason, unit)
         thread = self._thread_expression()
         # MAX returns one row even when the ring is empty. Only this thread is read.
         sql = ("SELECT @@performance_schema AS performance_schema, "
@@ -121,7 +129,7 @@ class EditorInsights(object):
         elif unsigned(row.get("event_id")) is not None:
             return int(row["event_id"])
         for unit in run.units:
-            unit["server_stats"] = unavailable(reason)
+            unit["server_stats"] = unavailable(reason, unit)
         return None
 
     def _collect_statement_history(self, run, boundary):
@@ -162,12 +170,13 @@ class EditorInsights(object):
                 if len(matches) == 1 and sum(exact(matches[0], r) for r in rows) == 1:
                     pairs.append((matches[0], row))
         for unit in units:
-            unit["server_stats"] = unavailable("This statement was not retained unambiguously in the thread's history; check Server > Instruments.")
+            unit["server_stats"] = unavailable("This statement was not retained unambiguously in the thread's history; check Server > Instruments.", unit)
         for unit, row in pairs:
             stats = {key: unsigned(row.get(key)) for key in FIELDS}
             if any(stats[key] is None for key in FIELDS if key != "timer_wait"):
                 continue
-            unit["server_stats"] = dict(stats, available=True, reason=None, event_id=unsigned(row["event_id"]))
+            unit["server_stats"] = dict(stats, available=True, reason=None, event_id=unsigned(row["event_id"]),
+                                        **analysis_eligibility(unit))
 
     def _refresh_transaction_meter(self, observation=False):
         """Sample the open transaction. *observation* (a poll) stops before

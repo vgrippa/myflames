@@ -2267,6 +2267,11 @@ export type EditorStatement = {
   verb: string | null;
   kind: string | null;
   category: string | null;
+  /** False when the backend refuses EXPLAIN ANALYZE for this statement (SET,
+   * SHOW, …); absent on an older backend, which the editor treats as true. */
+  analyzable?: boolean;
+  /** Why analyzable is false (a sentence); empty or absent otherwise. */
+  analyze_reason?: string;
   status: EditorStatementStatus;
   duration_ms: number | null;
   sent?: string;

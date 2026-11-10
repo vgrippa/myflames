@@ -230,6 +230,18 @@ export type LifecycleJob = {
   result: LifecycleResult | null; error: string; policy?: OpsPolicy;
 };
 export function jobActive(job: LifecycleJob) { return job.state === "queued" || job.state === "running"; }
+/** lifecycle-dump-info-1.0: what a dump folder restores into, read before the
+ * preflight so Restore's Default database choices match the dump. */
+export type DumpInfo = {
+  schema_version: "lifecycle-dump-info-1.0";
+  tool: { name: "mysqldump" | "mariadb-dump" | "mysqlsh"; version?: string };
+  engine: "mysql" | "mariadb";
+  scope: { schemas: string[]; tables: string[] };
+  structure_only: boolean;
+  remap_allowed: boolean;
+  remap_reason: string;
+};
+export const readDumpInfo = (directory: string, signal?: AbortSignal) => api<DumpInfo>("lifecycle/dump-info", { directory }, signal);
 export const readLifecycleTools = (connection: Connection, signal?: AbortSignal, checkUpdates = false) => api<LifecycleTools>("lifecycle/tools", { connection, check_updates: checkUpdates }, signal);
 export const readUpgradeTargets = (connection: Connection, signal?: AbortSignal) => api<UpgradeTargets>("lifecycle/upgrade-targets", { connection }, signal);
 export const checkUpgrade = (connection: Connection, target_version: string, prefer_shell: boolean, signal?: AbortSignal) => api<UpgradeReport>("lifecycle/upgrade-check", { connection, target_version, prefer_shell }, signal);

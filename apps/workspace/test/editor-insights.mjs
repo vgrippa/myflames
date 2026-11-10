@@ -28,6 +28,9 @@ const server = spawn(process.env.PYTHON || "python3", ["-c",
 });
 let browser, page, runN = 0;
 let fixture = fixtures[0], nextStats = null, meter = null, tx = false, holdMeter = false, expectMeterAbort = false;
+// Merged into the run's statement: the analyzable contract fields, and a
+// message when the statement failed.
+let statementExtra = {}, failNext = null;
 // Where the person is: the Server place cancels its own reads when it switches views or goes off screen.
 let phase = "editor";
 const seen = [], held = [], diagnostics = [], responses = [], failedRequests = [];
@@ -44,14 +47,17 @@ const session = tabId => ({
 function result(body) {
   const sql = body.sql || "SELECT 1";
   const statements = [{ index: 0, text: sql, start: 0, end: sql.length, verb: "select", kind: "read", category: "read",
-    status: "ok", duration_ms: 5, server_stats: nextStats,
+    status: failNext ? "error" : "ok", duration_ms: 5, server_stats: nextStats, ...statementExtra,
     ...(body.explain_format ? { sent: `EXPLAIN ${sql}` } : {}) }];
+  const failure = failNext ? { type: "error", statement: 0, code: 1064, sqlstate: "42000", message: failNext,
+    interrupted: false, duration_ms: 5, position: null } : null;
   return { status: "complete", session: session(body.tab_id), run: {
-    schema_version: "editor-run-1.0", id: `insight-${++runN}`, kind: "run", state: "complete", scope: "statement",
+    schema_version: "editor-run-1.0", id: `insight-${++runN}`, kind: "run", state: failure ? "error" : "complete", scope: "statement",
     started_at: "2026-11-08T12:00:00Z", finished_at: "2026-11-08T12:00:01Z", duration_ms: 5, limit: 1000, statements,
-    results: [{ type: "rows", statement: 0, columns: [{ name: "one", hex: false, type: null }], columns_known: true,
+    results: failure ? [failure] : [{ type: "rows", statement: 0, columns: [{ name: "one", hex: false, type: null }], columns_known: true,
       rows: [[String(runN)], ["a"], ["b"], ["c"]], row_count: 4, truncated: false, limit: 1000, stopped: null, label: null, server_rows: 4, warnings: 0, duration_ms: 5 }],
-    error: null, stopped: null, message: null, counts: { statements: 1, run: 1, rows: 4, affected_rows: 0, warnings: 0, errors: 0 },
+    error: failure, stopped: null, message: null,
+    counts: { statements: 1, run: 1, rows: failure ? 0 : 4, affected_rows: 0, warnings: 0, errors: failure ? 1 : 0 },
     audit_id: null, history_id: null,
   } };
 }

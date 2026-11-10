@@ -329,8 +329,16 @@ def select(discovered, server=None, choice=None):
     def fallback(reason):
         candidates = [(g, name) for g in groups for name in ('mysql', 'mariadb')
                       if name in g['programs'] and (not g['bundled'] or name == 'mysql')]
-        candidates.sort(key=lambda pair: (pair[0]['bundled'], pair[1] != 'mysql',
-                                           pair[0]['order'], pair[0]['key'], pair[1]))
+        if reason == 'other_engine':
+            # First contact keeps discovery order. Once the engine is known,
+            # prefer authentication support and the newest actual client.
+            candidates.sort(key=lambda pair: (
+                not pair[0]['has_auth_plugins'],
+                tuple(-n for n in server_info.parse_version_tuple(pair[0]['programs'][pair[1]]['version'])),
+                pair[0]['bundled'], pair[0]['order'], pair[0]['key'], pair[1]))
+        else:
+            candidates.sort(key=lambda pair: (pair[0]['bundled'], pair[1] != 'mysql',
+                                               pair[0]['order'], pair[0]['key'], pair[1]))
         return _use(candidates[0][0], 'client', candidates[0][1], reason) if candidates else None
 
     def missing(role, program, chosen=False):

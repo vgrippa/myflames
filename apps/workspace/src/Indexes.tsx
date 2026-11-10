@@ -861,7 +861,11 @@ export function IndexesView({
               {[
                 ...(report.available ? [`${count(s.unused_candidates)} unused`, `${count(s.keep_foreign_key)} for foreign keys`] : []),
                 `${count(s.redundant)} redundant`,
-                report.available ? `${count(s.mostly_full_scans)} mostly full scans` : "full scans not available",
+                // One phrase for both counts: every table with unindexed
+                // fetches, and how many of them read mostly without an index.
+                report.available
+                  ? `${count(s.full_scans)} ${s.full_scans === 1 ? "table" : "tables"} read by full scans${s.mostly_full_scans ? ` (${count(s.mostly_full_scans)} mostly)` : ""}`
+                  : "full scans not available",
                 ...(s.no_data ? [`${count(s.no_data)} without data`] : []),
               ].join(" · ")}
             </span>
@@ -899,7 +903,7 @@ export function IndexesView({
                       ...(report.indexes ? [{value:"all" as List,label:"All indexes",count:inventory.length}] : []),
                       { value: "unused", label: "Unused", count: available ? unused.length : null },
                       { value: "redundant", label: "Redundant", count: redundant.length },
-                      { value: "scans", label: "Full scans", count: available ? scans.length : null },
+                      { value: "scans", label: "Full scans", count: available ? scans.length : null, title: "Tables with reads that used no index" },
                       ...(noData.length ? [{ value: "nodata" as List, label: "No data", count: noData.length }] : []),
                     ]}
                   />

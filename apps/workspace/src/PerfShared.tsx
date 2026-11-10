@@ -245,6 +245,11 @@ export function WindowSelect({
 /** One list per connection while the workspace is open (one cheap read:
  * schema names and table counts, perf_common.schema_catalog). */
 const catalogs = new Map<string, Promise<SchemaCatalog>>();
+/** When the cached read of a connection resolved, for reloadStale. */
+const catalogReadAt = new Map<string, number>();
+/** The hook instances of a connection: a refresh replaces the shared promise,
+ * so the others are told to attach to it (one subscriber set per key). */
+const catalogListeners = new Map<string, Set<() => void>>();
 
 /** The database list for *connection*: loaded when *enabled*, cached. */
 export function useSchemaCatalog(connection: Connection, enabled = true) {
@@ -261,10 +266,14 @@ export function useSchemaCatalog(connection: Connection, enabled = true) {
       if (refresh || !catalogs.has(key)) {
         const request = api<SchemaCatalog>("live/schemas", { connection: connectionRef.current });
         catalogs.set(key, request);
+        request.then(() => {
+          if (catalogs.get(key) === request) catalogReadAt.set(key, Date.now());
+        });
         // A failed read is forgotten, unless a newer one already replaced it.
         request.catch(() => {
           if (catalogs.get(key) === request) catalogs.delete(key);
         });
+        if (refresh) for (const listener of catalogListeners.get(key) || []) listener();
       }
       const request = catalogs.get(key)!;
       // Only the latest read of the connection on screen may answer: an older
@@ -279,11 +288,35 @@ export function useSchemaCatalog(connection: Connection, enabled = true) {
     },
     [key],
   );
+  // Another instance's refresh (Reload databases, the editor's catalog
+  // triggers) shows here without waiting for this view to reload itself.
+  useEffect(() => {
+    let listeners = catalogListeners.get(key);
+    if (!listeners) catalogListeners.set(key, (listeners = new Set()));
+    const attach = () => load();
+    listeners.add(attach);
+    return () => {
+      listeners.delete(attach);
+      if (!listeners.size) catalogListeners.delete(key);
+    };
+  }, [key, load]);
   useEffect(() => {
     if (enabled && state.key !== key) load();
   }, [enabled, key, load, state.key]);
   const current = state.key === key ? state : { catalog: null, error: "", loading: enabled };
-  return { catalog: current.catalog, error: current.error, loading: current.loading, reload: () => load(true) };
+  return {
+    catalog: current.catalog,
+    error: current.error,
+    loading: current.loading,
+    reload: () => load(true),
+    /** Re-read only when the cached list is older than *ms* (or never read):
+     * opening a picker every few seconds does not refetch. */
+    reloadStale: (ms: number) => {
+      const at = catalogReadAt.get(key);
+      if (at !== undefined && Date.now() - at <= ms) return;
+      load(at !== undefined);
+    },
+  };
 }
 
 function schemaSummary(value: string[], catalog: SchemaCatalog | null, emptyLabel: string) {

@@ -162,6 +162,37 @@ class InsightTests(unittest.TestCase):
             unit.update(status="ok", server_stats={"available": False, "reason": "not read"})
         return types.SimpleNamespace(units=units)
 
+    def test_statement_analysis_eligibility_uses_converter_including_failed_select(self):
+        from myflames import analysis_query
+        session, fixture = self.session()
+        cases = [('SET @x=1', False, 'ok'), ('SHOW TABLES', False, 'ok'),
+                 ('SELECT 1', True, 'ok'), ('SELECT * FROM missing', True, 'error'),
+                 ('UPDATE t SET x=1 WHERE id=2', True, 'ok'),
+                 ('UPDATE t JOIN other USING (id) SET t.x=1', False, 'ok')]
+        for sql, allowed, status in cases:
+            with self.subTest(sql=sql, status=status):
+                run = self.run_for(sql)
+                run.units[0]['status'] = status
+                row = dict(fixture['history'][0], sql_text=run.units[0]['send'],
+                           errors='1' if status == 'error' else '0')
+                with mock.patch.object(session, '_helper', side_effect=AssertionError('eligibility is local')):
+                    session._attribute_history(run, [row], 40)
+                stats = run.units[0]['server_stats']
+                self.assertTrue(stats['available'])
+                self.assertIs(stats['analyzable'], allowed)
+                self.assertEqual(stats['analyze_reason'], analysis_query.prepare(sql)['problem'])
+                self.assertEqual(bool(stats['analyze_reason']), not allowed)
+
+    def test_analysis_eligibility_survives_missing_history(self):
+        session, fixture = self.session()
+        run = self.run_for('SET @x=1; SELECT 1')
+        with mock.patch.object(session, '_helper', return_value=self.step()):
+            self.assertIsNone(session._history_boundary(run))
+        self.assertEqual([u['server_stats']['analyzable'] for u in run.units], [False, True])
+        session._attribute_history(run, [], 40)
+        self.assertEqual([u['server_stats']['analyzable'] for u in run.units], [False, True])
+        self.assertFalse(any(u['server_stats']['available'] for u in run.units))
+
     def test_both_engines_preserve_counters_null_timer_and_bigint(self):
         for engine in ("mysql", "mariadb"):
             with self.subTest(engine=engine):
@@ -1072,6 +1103,8 @@ class ProcessTests(unittest.TestCase):
         self.assertTrue(all(s.get("server_stats", {}).get("available") for s in statements),
                         "each completed statement must carry its own history stats")
         self.assertEqual([s["server_stats"]["rows_examined"] for s in statements], ["1", "1"])
+        self.assertTrue(all(s["server_stats"]["analyzable"] for s in statements))
+        self.assertEqual([s["server_stats"]["analyze_reason"] for s in statements], ["", ""])
         log = self.session_log()
         start = log.index("SELECT 1")
         self.assertEqual(log[start:start + 2], ["SELECT 1", "SELECT 2"])

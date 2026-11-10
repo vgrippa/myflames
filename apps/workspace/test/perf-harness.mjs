@@ -135,7 +135,9 @@ export async function open(endpoint, name, extra = {}, {
       state.other.push({ path: pathname, body });
       const mock = typeof extra[pathname] === "function" ? extra[pathname](body, request) : extra[pathname];
       if (!mock) return;
-      const reply = () => request.respond({ status: mock.status, contentType: "application/json", body: JSON.stringify(mock.body) });
+      // A delayed reply can outlive the page's interest (an aborted read):
+      // responding to a dropped request is simply ignored.
+      const reply = () => request.respond({ status: mock.status, contentType: "application/json", body: JSON.stringify(mock.body) }).catch(() => {});
       return mock.delay ? void setTimeout(reply, mock.delay) : reply();
     }
     if (pathname !== endpoint && pathname === "/api/live/privileges") {

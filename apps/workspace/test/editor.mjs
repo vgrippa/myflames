@@ -116,6 +116,8 @@ const mock = {
   run: [], // queued replies for editor/run (else `runDefault`)
   status: [], // queued replies for editor/status with a run_id
   stopReply: null,
+  // The database list the editor's picker caches; tests add databases to it.
+  schemas: [{ name: "testdb", tables: 2, system: false }, { name: "mysql", tables: 38, system: true }],
   commit: [],
   rollback: [],
   close: [],
@@ -172,7 +174,7 @@ function reply(p, body) {
     case "/api/live/schemas":
       return {
         schema_version: "schemas-1.0", engine: "mysql", server_version: "8.4.3", taken_at: "x", uptime_s: 1, performance_schema: true,
-        schemas: [{ name: "testdb", tables: 2, system: false }, { name: "mysql", tables: 38, system: true }],
+        schemas: mock.schemas,
         user_tables: 2, all_limit: 2000, all_note: "", system: ["mysql"],
       };
     case "/api/live/catalog":
@@ -890,8 +892,10 @@ try {
   await page.waitForFunction((sel) => document.querySelector(sel).value === "SELECT * FROM customers WHERE id = 7", {}, EDITOR);
   await page.click('button[aria-label="Hide the history"]');
 
-  // 10. Schema browser: one automatic list read; details stay lazy.
-  assert.equal(seen.filter((s) => s.path === "/api/live/schemas").length, 1, "one schema-list read when the editor opens");
+  // 10. Schema browser: one automatic list read on open; the DROP DATABASE
+  // run above re-read it once (a dropped database leaves the picker). Details
+  // stay lazy.
+  assert.equal(seen.filter((s) => s.path === "/api/live/schemas").length, 2, "one schema-list read on open, one after DROP DATABASE");
   assert.equal(calls("/api/live/catalog").filter((b) => b.schema === "testdb").length, 0, "table details stay lazy");
   const treeRow = async (kind, label) => {
     await page.waitForFunction((kind, label) => [...document.querySelectorAll(`.tree-row.kind-${kind}`)].some((r) => r.querySelector(".tree-label")?.textContent === label), {}, kind, label);
@@ -955,7 +959,7 @@ try {
   await page.click('.editor-toolbar button[aria-label="Show the schema browser"]');
   await page.waitForFunction(() => document.querySelector(".schema-browser-slot")?.hidden === false);
   assert.ok(await page.$(".tree-row.kind-column"), "the tree is still there");
-  assert.equal(calls("/api/live/schemas").length, 1, "and nothing was read again");
+  assert.equal(calls("/api/live/schemas").length, 2, "and nothing was read again");
 
   // A prefix is sent to the server, including literal SQL wildcard characters;
   // it can find a table outside the pages already loaded in the tree.
@@ -973,6 +977,51 @@ try {
   await page.keyboard.press("Backspace");
   await treeRow("table", "users");
   assert.equal((await page.$$(".tree-row.kind-table")).length, 2, "clearing the prefix restores all loaded pages");
+
+  // 10b. The Database picker's catalog does not go stale (T3a): a run with
+  // CREATE/DROP DATABASE (or a statement the editor cannot classify) re-reads
+  // it, and showing the editor again re-reads it too. A plain SELECT keeps
+  // the cached list.
+  const schemaReads = () => calls("/api/live/schemas").length;
+  const databaseNames = () => page.$$eval('[data-action="database"] option', (els) => els.map((e) => e.value));
+  assert.ok((await databaseNames()).includes("testdb"), "the picker starts from the cached list");
+  let catalogReads = schemaReads();
+  const runsBeforeCatalog = calls("/api/editor/run").length;
+  await setText("SELECT 1");
+  await chord("Enter");
+  await ran(runsBeforeCatalog + 1);
+  await idle();
+  await pause(150);
+  assert.equal(schemaReads(), catalogReads, "a SELECT keeps the cached database list");
+  mock.run.push({ status: "complete", session: session(), run: run(
+    [statement(0, "CREATE DATABASE newdb", 0, { verb: "CREATE DATABASE", kind: "write", category: "ddl" })],
+    [{ type: "ok", statement: 0, affected_rows: 1, info: null, warnings: 0, duration_ms: 3 }]) });
+  mock.schemas = [...mock.schemas, { name: "newdb", tables: 0, system: false }];
+  await setText("CREATE DATABASE newdb");
+  await chord("Enter");
+  await until(() => schemaReads() === catalogReads + 1, "CREATE DATABASE did not re-read the database list");
+  await until(async () => (await databaseNames()).includes("newdb"), "the picker lacks the database created a moment ago");
+  // Focusing the picker right after a read does not refetch.
+  await page.focus('[data-action="database"]');
+  await pause(150);
+  assert.equal(schemaReads(), catalogReads + 1, "opening the picker within the stale interval does not refetch");
+  // A statement the editor cannot classify (no verb) re-reads it too.
+  catalogReads = schemaReads();
+  mock.run.push({ status: "complete", session: session(), run: run(
+    [statement(0, "SELECT 1", 0, { verb: null, kind: null, category: null })], [rows(0, ["1"], [["1"]])]) });
+  await setText("SELECT 1");
+  await chord("Enter");
+  await until(() => schemaReads() === catalogReads + 1, "an unclassifiable statement did not re-read the database list");
+  // Shown again (a restore into a new database happened elsewhere), the
+  // editor re-reads the list without an app restart.
+  catalogReads = schemaReads();
+  await page.locator(".main-nav button ::-p-text(Home)").click();
+  await page.waitForSelector(".home", { visible: true });
+  mock.schemas = [...mock.schemas, { name: "restoredb", tables: 1, system: false }];
+  await page.locator(".main-nav button ::-p-text(Query editor)").click();
+  await page.waitForSelector(EDITOR);
+  await until(() => schemaReads() === catalogReads + 1, "showing the editor again did not re-read the database list");
+  await until(async () => (await databaseNames()).includes("restoredb"), "the picker lacks the database created while away");
 
   // 11. The session ended: what was lost, and Reconnect (never automatic).
   mock.run.push({ status: "session_ended", session: session({ ended: true, ended_reason: "connection_lost", state: "ended", message: "Session ended. Session settings were lost and any open transaction was rolled back." }),

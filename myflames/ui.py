@@ -898,6 +898,8 @@ def _lifecycle_response(path, payload, workspace):
             raise ValueError("Folder selection does not accept arguments.")
         from .folder_picker import choose_directory
         return choose_directory()
+    if path == "/api/lifecycle/dump-info":
+        return lc.dump_info(payload.get("directory"))
     if path == "/api/lifecycle/tools" and not isinstance(payload.get("connection"), dict):
         return _dump_tool_capabilities(lc.detect_tools(check_updates=payload.get("check_updates") is True))
     if path in ("/api/lifecycle/upgrade-check", "/api/lifecycle/prepare") and payload.get("config_path") is not None:
@@ -1211,7 +1213,7 @@ _CONNECTION_PATHS = (("/api/live/readiness", "/api/connection/test", "/api/live/
 #: filled, and every attempt is audited. Status and cancel act on a job the
 #: server holds (cancel's KILL QUERY reuses the job's own connection).
 _LIFECYCLE_READ_PATHS = ("/api/lifecycle/tools", "/api/lifecycle/upgrade-targets", "/api/lifecycle/upgrade-check",
-                         "/api/lifecycle/prepare")
+                         "/api/lifecycle/prepare", "/api/lifecycle/dump-info")
 _LIFECYCLE_WRITE_PATHS = ("/api/lifecycle/start",)
 _LIFECYCLE_PATHS = _LIFECYCLE_READ_PATHS + _LIFECYCLE_WRITE_PATHS + ("/api/lifecycle/status",
                                                                      "/api/lifecycle/cancel")

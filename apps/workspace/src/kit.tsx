@@ -2875,8 +2875,9 @@ export function SummaryLine({ tone, toneLabel, children, notes, notesTitle, extr
 }
 
 /** Facts on one line: "Server MySQL 8.4 · Uptime 2 d". Under 900 px it folds
- * into a Details disclosure so narrow windows reach the content first. */
-export function FactStrip({ label, facts }: { label: string; facts: [string, ReactNode][] }) {
+ * into a Details disclosure so narrow windows reach the content first.
+ * *title* explains the whole strip on hover. */
+export function FactStrip({ label, facts, title }: { label: string; facts: [string, ReactNode][]; title?: string }) {
   const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(max-width: 900px)").matches);
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
@@ -2892,7 +2893,7 @@ export function FactStrip({ label, facts }: { label: string; facts: [string, Rea
         <Icon name="disclosure" size={14} />
         Details
       </summary>
-      <dl className="fact-strip" aria-label={label}>
+      <dl className="fact-strip" aria-label={label} title={title}>
         {facts.map(([dt, dd]) => (
           <div key={dt}>
             <dt>{dt}</dt>

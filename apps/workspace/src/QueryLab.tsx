@@ -107,6 +107,9 @@ const RESULTS_KEEP = 208;
 const RESULT_BAR_LINE = 40;
 /** The editor itself keeps three lines. */
 const EDITOR_FLOOR = 72;
+/** Opening the Database picker re-reads the database list only when the
+ * cached read is older than this (never on every focus or keystroke). */
+const CATALOG_STALE_MS = 10_000;
 type Tab = QueryTab;
 type ExplainFormat = "table" | "tree" | "json";
 const EXPLAIN_FORMAT_KEY = "myflames.editor.explainFormat";
@@ -352,6 +355,20 @@ function sessionName(s: EditorSession) {
 function connectionShortName(c: Connection) {
   return c.name || `${c.user ? `${c.user}@` : ""}${c.host}:${c.port}`;
 }
+/** CREATE or DROP of a database or schema (the verb the backend names it). */
+const DATABASE_LIST_DDL = /^(?:CREATE|DROP)\s+(?:DATABASE|SCHEMA)$/i;
+/** True when a finished run may have changed the connection's database list:
+ * a CREATE/DROP DATABASE or SCHEMA, or a statement the editor cannot classify
+ * as harmless (no verb, or a bare CREATE/DROP whose text names a database). */
+function runMayChangeDatabases(run: EditorRun): boolean {
+  return run.statements.some((s) => {
+    const verb = (s.verb || "").trim();
+    if (!verb) return true;
+    if (DATABASE_LIST_DDL.test(verb)) return true;
+    if (/^(?:CREATE|DROP)$/i.test(verb)) return /^\s*(?:CREATE|DROP)\s+(?:DATABASE|SCHEMA)\b/i.test(s.text);
+    return false;
+  });
+}
 /** The word at *offset*, for the error underline (at least one character). */
 function wordAt(sql: string, offset: number): Range {
   let start = Math.max(0, Math.min(offset, sql.length));
@@ -535,7 +552,17 @@ export const QueryLab = forwardRef<
   // The connection's schema list pre-fills the default-database picker (one
   // cheap catalog read per connection, cached; PerfShared.useSchemaCatalog),
   // read only while the editor is on screen: a hidden editor never reads.
-  const { catalog: schemaCatalog } = useSchemaCatalog(connection, onScreen);
+  const { catalog: schemaCatalog, reload: reloadSchemaCatalog, reloadStale: reloadStaleSchemaCatalog } =
+    useSchemaCatalog(connection, onScreen);
+  // Back on screen the list may be stale: a database created elsewhere (the
+  // Maintenance restore, another tab's CREATE DATABASE) shows without an app
+  // restart. reloadStale(0) attaches to the first read still in flight
+  // instead of starting a second one next to it.
+  const wasOnScreen = useRef(onScreen);
+  useEffect(() => {
+    if (onScreen && !wasOnScreen.current) reloadStaleSchemaCatalog(0);
+    wasOnScreen.current = onScreen;
+  }, [onScreen, reloadStaleSchemaCatalog]);
   const [timeout, setTimeoutSeconds] = useState(start.timeout);
   const [repeat, setRepeat] = useState(start.repeat);
   const [trace, setTrace] = useState(start.trace);
@@ -1854,6 +1881,10 @@ export const QueryLab = forwardRef<
   }
   function finish(id: string, run: EditorRun, meta: SendMeta, session?: EditorSession | null) {
     if (run.error) denied(run.error, sessionConnectionOf(id));
+    // A run that created or dropped a database (or one the editor cannot
+    // classify) makes the cached database list stale: re-read it so the
+    // Database picker has the new name. A hidden editor waits for its return.
+    if (onScreen && !meta.action && runMayChangeDatabases(run)) reloadSchemaCatalog();
     // A completed statement does not acknowledge a Stop still on its way.
     patchRuntime(id, { running: false, explaining: false, operation: "", execConnection: null, pollTrouble: false });
     setHistoryTick((n) => n + 1);
@@ -2866,6 +2897,7 @@ export const QueryLab = forwardRef<
                     data-action="database"
                     value={databaseShown}
                     disabled={running || busy || rt.fileBusy || !!rt.operation}
+                    onFocus={() => reloadStaleSchemaCatalog(CATALOG_STALE_MS)}
                     onChange={(e) => void chooseDatabase(e.target.value)}
                   >
                     <option value="">None</option>

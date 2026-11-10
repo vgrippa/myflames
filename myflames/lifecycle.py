@@ -283,8 +283,12 @@ def detect_tools(path=None, common_dirs=None, job=None, check_updates=False, ref
         if name == 'mysqlpump':
             entry['used'] = False
         found[name] = entry
+    selected_paths = {item['path']: item for item in
+                      (used.get(role) for role in ('shell', 'backup', 'load', 'dump', 'client'))
+                      if item} if used is not None else {}
     for entry in copies:
-        selected = found.get(entry['name'], {})
+        selected = (selected_paths.get(entry['path'], {}) if used is not None else
+                    found.get(entry['name'], {}))
         entry['used'] = bool(entry['name'] != 'mysqlpump' and entry.get('available') and
                              selected.get('path') == entry['path'])
         if entry['used']:
@@ -2392,6 +2396,89 @@ def _restore_remap(manifest, sql_scan):
                   'outside the target database.')
 
 
+def _restore_input(directory, job=None, verify=True):
+    """Shared folder normalization and bounded manifest validation for reads.
+
+    *verify* checksums every file (restore's preflight). Folder facts read the
+    manifest only: their SQL scan still checks dump.sql's own checksum.
+    """
+    if not isinstance(directory, (str, os.PathLike)) or not os.fspath(directory):
+        raise Refused('Choose a dump folder containing myflames-manifest.json.')
+    try:
+        directory = os.path.realpath(_absolute(directory))
+        manifest = read_manifest(directory, job) if verify else _read_manifest_value(directory)
+    except Refused as exc:
+        raise Refused(str(exc) + ' Choose a completed dump folder.') from None
+    except FileNotFoundError:
+        raise Refused('The dump folder or myflames-manifest.json is missing; choose a completed dump folder.') from None
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise Refused('Cannot read the dump folder or manifest; check folder permissions and choose a completed dump: ' +
+                      str(exc)) from None
+    # File records are validated by read_manifest before any named file is
+    # opened. Validate the facts consumed by both callers, too.
+    tool, source, scope = (manifest.get(key) for key in ('tool', 'source', 'scope'))
+    options = manifest.get('options', {})
+    if (not isinstance(tool, dict) or tool.get('name') not in
+            ('mysqldump', 'mariadb-dump', 'mysqlsh', 'mariadb-backup') or
+            not isinstance(tool.get('version'), str) or
+            not isinstance(source, dict) or source.get('engine') not in ('mysql', 'mariadb') or
+            not isinstance(scope, dict) or not isinstance(options, dict) or
+            type(options.get('structure_only', False)) is not bool):
+        raise Refused('The dump manifest has invalid tool, source, scope or options; choose a completed dump folder.')
+    for key in ('schemas', 'tables'):
+        names = scope.get(key)
+        if not isinstance(names, list):
+            raise Refused('The dump manifest has invalid scope names; choose a completed dump folder.')
+        try:
+            _names(names, key)
+        except ValueError:
+            raise Refused('The dump manifest has invalid scope names; choose a completed dump folder.') from None
+    return directory, manifest
+
+
+def _restore_sql_scan(directory, manifest, job=None):
+    """Use the identical scan for folder facts and authoritative preflight."""
+    if manifest['tool']['name'] == 'mysqlsh':
+        return {}
+    record = next((r for r in manifest['files'] if r['path'] == 'dump.sql'), None)
+    if record is None:
+        raise Refused('SQL backup manifest has no dump.sql file; choose a completed SQL dump folder.')
+    scope = manifest['scope']
+    if scope['tables'] and len(scope['schemas']) == 1:
+        # Eligibility describes the folder before a target name is chosen.
+        # Do not exempt a hardcoded qualifier matching a proposed target: the
+        # folder facts and preflight must make the same remapping decision.
+        return _sql_schema_scan(directory, record, scope['schemas'][0], job)
+    return {}
+
+
+def dump_info(directory, job=None):
+    """Read completed dump facts without a server connection or tool launch.
+
+    Reads the manifest without checksumming every file (a folder pick must
+    stay cheap); the SQL scan checks dump.sql's checksum. These are advisory
+    facts: restore's preflight still verifies every file and decides.
+    """
+    directory, manifest = _restore_input(directory, job, verify=False)
+    if manifest['tool']['name'] == 'mariadb-backup':
+        raise Refused('This is a physical backup; choose a logical dump folder for Restore.')
+    try:
+        sql_scan = _restore_sql_scan(directory, manifest, job)
+    except Refused as exc:
+        # The reviewed-bytes reader speaks of staging; no restore is staged here.
+        if not str(exc).startswith('Backup '):
+            raise
+        raise Refused('dump.sql no longer matches the dump manifest (changed, replaced or a link); '
+                      'choose a completed dump folder.') from None
+    allowed, reason = _restore_remap(manifest, sql_scan)
+    return dict(schema_version='lifecycle-dump-info-1.0',
+                tool={key: manifest['tool'][key] for key in ('name', 'version')},
+                engine=manifest['source']['engine'],
+                scope={key: list(manifest['scope'][key]) for key in ('schemas', 'tables')},
+                structure_only=manifest.get('options', {}).get('structure_only', False),
+                remap_allowed=allowed, remap_reason=reason)
+
+
 def prepare_restore(conn, connection, directory, schema=None, tools=None, allow_source_restore=False,
                     existing_objects='refuse', threads=4, resume=False, staging_directory=None, job=None):
     """Preflight checksum, target identity, local_infile and duplicate objects.
@@ -2401,8 +2488,7 @@ def prepare_restore(conn, connection, directory, schema=None, tools=None, allow_
     Only this backend's completed, verified manifests are accepted.
     """
     server = read_server(conn, connection)
-    directory = os.path.realpath(_absolute(directory))
-    manifest = read_manifest(directory, job)
+    directory, manifest = _restore_input(directory, job)
     staging_directory = os.path.realpath(_absolute(staging_directory or tempfile.gettempdir()))
     if not os.path.isdir(staging_directory):
         raise ValueError('Restore staging directory must exist.')
@@ -2436,13 +2522,7 @@ def prepare_restore(conn, connection, directory, schema=None, tools=None, allow_
                                 'Target is the source; explicitly choose allow_source_restore.' if same_source else 'Target differs from source.'))
     if source['engine'] != server['engine']:
         checks.append(_verification('engine', 'failed', 'Cross-engine restores are not validated; refused.'))
-    sql_scan = {}
-    if not shell_dump:
-        record = next((r for r in manifest['files'] if r['path'] == 'dump.sql'), None)
-        if record is None:
-            raise Refused('SQL backup manifest has no dump.sql file.')
-        if scope['tables'] and len(scope['schemas']) == 1:
-            sql_scan = _sql_schema_scan(directory, record, scope['schemas'][0], job, target_schema=schema)
+    sql_scan = _restore_sql_scan(directory, manifest, job)
     remap_allowed, remap_reason = _restore_remap(manifest, sql_scan)
     if schema and ((not shell_dump and scope['schemas'] != [schema]) or shell_dump) and not remap_allowed:
         raise Refused(remap_reason)

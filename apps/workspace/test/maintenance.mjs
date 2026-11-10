@@ -71,6 +71,15 @@ const CANCEL = "/api/lifecycle/cancel";
 const JOBS = "/api/lifecycle/jobs";
 const DECLINED = "/api/audit/declined";
 const REVEAL = "/api/files/local/reveal";
+const DUMPINFO = "/api/lifecycle/dump-info";
+/** Per-folder dump-info answers (lifecycle-dump-info-1.0); unlisted folders
+ * answer remap-allowed, so the read never changes Restore's choices. */
+const dumpInfos = new Map();
+const dumpInfoDefault = { status: 200, body: {
+  schema_version: "lifecycle-dump-info-1.0", tool: { name: "mysqldump", version: "8.4.3" }, engine: "mysql",
+  scope: { schemas: ["mftab"], tables: ["orders", "users"] }, structure_only: false, remap_allowed: true,
+  remap_reason: "The dump.sql scan found no CREATE DATABASE, CREATE SCHEMA, USE or qualified reference outside the target database.",
+} };
 /** What the mocked server answers next, per path. */
 const next = { upgrade: native, prepare: [], start: [], reveal: [] };
 /** The jobs myflames holds, by id, as the status endpoint would return them,
@@ -110,6 +119,10 @@ const h = await open("/api/lifecycle/tools", "maintenance", {
   },
   [JOBS]: (body) => ({ status: 200, body: { schema_version: "lifecycle-jobs-1.0", jobs: listed(body.connection) } }),
   "/api/live/schemas": { status: 200, body: schemas },
+  [DUMPINFO]: (body) => dumpInfos.get(body.directory) || dumpInfoDefault,
+  // The Client tools dialog reads this; a static answer keeps detection local.
+  "/api/client/tools": { status: 200, body: { schema_version: "client-tools-1.0", installations: [], shells: [], skipped: [],
+    choice: { mysql: { path: null, installation: null, error: null }, mariadb: { path: null, installation: null, error: null } } } },
   [DECLINED]: (body, request) => {
     void request.continue();
     return null;
@@ -579,6 +592,61 @@ try {
   assert.equal(calls(START).at(-1).body.typed_acknowledgement, systemPlan.required_acknowledgement);
   assert.deepEqual(calls(START).at(-1).body.plan, systemPlan, 'the reviewed plan and token are unchanged');
 
+  // F5: the Dump folder read (lifecycle-dump-info-1.0) shapes Default database
+  // up front. The preflight stays the authority: Start is never blocked on it.
+  const infoCalls = (directory) => calls(DUMPINFO).filter((c) => c.body.directory === directory);
+  const databaseOptions = () => page.$$eval(`${databaseChoice} option`, (os) => os.map((o) => o.textContent));
+  const databaseHint = () => page.$eval(databaseChoice, (e) => e.closest("label")?.querySelector(".hint")?.textContent || "");
+  const folderHint = () => page.$eval(`${view} .ops-folder-input input`, (e) => e.closest(".ops-field")?.querySelector(".hint")?.textContent || "");
+  await page.$eval(`${view} .ops-form details > summary`, (e) => { e.closest("details").open = true; });
+  await page.waitForFunction((s) => document.querySelectorAll(`${s} option`).length > 2, {}, databaseChoice);
+  assert.ok(infoCalls(dumpPlan.target).length >= 1, "the folder in the field was read");
+  assert.ok((await databaseOptions()).includes("New database…"), "a remap-allowed dump keeps today's choices");
+  // remap_allowed false: only As in the dump, the reason as the field's hint,
+  // and a previous choice resets.
+  dumpInfos.set("/dumps/own-databases", { status: 200, body: {
+    schema_version: "lifecycle-dump-info-1.0", tool: { name: "mysqldump", version: "8.4.3" }, engine: "mysql",
+    scope: { schemas: [], tables: [] }, structure_only: false, remap_allowed: false,
+    remap_reason: "This dump creates its own databases (CREATE DATABASE and USE), so it restores into them; choose As in the dump.",
+  } });
+  await page.select(databaseChoice, "mftab");
+  await field("Dump folder", "/dumps/own-databases");
+  await page.waitForFunction((s) => { const os = document.querySelectorAll(`${s} option`); return os.length === 1 && os[0].textContent === "As in the dump"; }, {}, databaseChoice);
+  assert.equal(await page.$eval(databaseChoice, (e) => e.value), "", "a previous choice resets to As in the dump");
+  assert.equal(await databaseHint(), "This dump creates its own databases (CREATE DATABASE and USE), so it restores into them; choose As in the dump.");
+  assert.equal(infoCalls("/dumps/own-databases").length, 1, "one read once typing settled");
+  assert.equal(await page.$eval(`${view} .ops-actions button.primary`, (e) => e.disabled), false, "Start is never blocked on the dump folder read");
+  // A failed read keeps today's choices and its sentence is the folder's hint.
+  dumpInfos.set("/dumps/broken", { status: 400, body: { error: "No completed myflames dump in /dumps/broken: myflames-manifest.json is missing." } });
+  await field("Dump folder", "/dumps/broken");
+  await page.waitForFunction((s) => {
+    const input = document.querySelector(`${s} .ops-folder-input input`);
+    return input?.closest(".ops-field")?.querySelector(".hint")?.textContent.includes("No completed myflames dump");
+  }, {}, view);
+  assert.ok((await databaseOptions()).includes("New database…"), "a failed read keeps today's choices");
+  assert.equal(await folderHint(), "No completed myflames dump in /dumps/broken: myflames-manifest.json is missing.", "a failed read is the folder field's hint");
+  // A folder change while a read is in flight: the latest request wins and the
+  // late answer never applies.
+  dumpInfos.set("/dumps/slow", { status: 200, delay: 700, body: {
+    schema_version: "lifecycle-dump-info-1.0", tool: { name: "mysqlsh", version: "9.6.0" }, engine: "mysql",
+    scope: { schemas: [], tables: [] }, structure_only: false, remap_allowed: false,
+    remap_reason: "Shell schema remapping is offered only for single-schema table dumps.",
+  } });
+  dumpInfos.set("/dumps/final", dumpInfoDefault);
+  await field("Dump folder", "/dumps/slow");
+  for (let i = 0; i < 100 && !infoCalls("/dumps/slow").length; i++) await pause(25);
+  assert.equal(infoCalls("/dumps/slow").length, 1, "the read for the typed folder started");
+  await field("Dump folder", "/dumps/final");
+  await page.waitForFunction((s) => { const os = [...document.querySelectorAll(`${s} option`)]; return os.length > 2 && os.at(-1).textContent === "New database…"; }, {}, databaseChoice);
+  await pause(900);
+  assert.ok((await databaseOptions()).includes("New database…"), "a late answer for a replaced folder never applies");
+  assert.equal(infoCalls("/dumps/slow").length, 1, "a replaced folder is not read again");
+  assert.equal(infoCalls("/dumps/final").length, 1, "the latest folder was read once");
+  // The remap-denied layout, both themes and widths.
+  await field("Dump folder", "/dumps/own-databases");
+  await page.waitForFunction((s) => document.querySelectorAll(`${s} option`).length === 1, {}, databaseChoice);
+  await captureSheet("restore-remap-denied");
+
   // Clone: the donor fields fill from a saved connection (never the one in
   // use, never a password), and stay editable.
   await section("Clone");
@@ -809,6 +877,56 @@ try {
   assert.equal(await page.$(`${view} .ops-actions button.primary`), null, "unsupported clone has no write action");
   await section("Tools");
   await h.setPrivileges({});
+
+  // M3: a MariaDB server with no MariaDB client tools. Dump and Restore name
+  // the missing program and the engine note instead of offering dead choices,
+  // and the gate opens the Client tools dialog.
+  const noMariaTools = structuredClone(tools);
+  noMariaTools.server = { ...noMariaTools.server, engine: "mariadb", version: "11.4.5", product: "MariaDB" };
+  noMariaTools.offered = { ...noMariaTools.offered, dump: [], clone: false };
+  noMariaTools.used = {
+    client: { ...noMariaTools.used.client, reason: "other_engine" },
+    dump: null, load: null, backup: null, shell: noMariaTools.used.shell,
+    missing: [
+      { role: "dump", program: "mariadb-dump", text: "No usable mariadb-dump was found." },
+      { role: "load", program: "mariadb", text: "No usable mariadb was found." },
+    ],
+    notes: ["No MariaDB client tools were found; the MySQL client reads this server. Dumps and restores need MariaDB client tools."],
+  };
+  state.queue.push({ status: 200, body: noMariaTools });
+  await section("Tools");
+  await h.refresh(); await h.idle(view);
+  assert.match(await text(usedBlock), /No usable mariadb-dump was found\./);
+  await section("Dump");
+  await page.waitForSelector(`${view} .gate`);
+  const dumpGate = await text(`${view} .gate`);
+  assert.match(dumpGate, /No usable mariadb-dump was found\./);
+  assert.match(dumpGate, /Dumps and restores need MariaDB client tools\./);
+  assert.match(dumpGate, /Choose client tools…/);
+  // The Tool select offers only tools that can run: none here.
+  assert.deepEqual(await page.$$eval(`${view} select[aria-label="Tool"] option`, (os) => os.map((o) => [o.textContent, o.disabled])),
+    [["No dump tool for this server", true]], "no runnable tool is offered");
+  assert.equal(await page.$eval(`${view} select[aria-label="Tool"]`, (e) => e.disabled), true);
+  assert.equal(await page.$eval(`${view} .ops-actions button.primary`, (e) => e.disabled || e.getAttribute("aria-disabled") === "true"), true, "Start dump stays greyed");
+  assert.match(await text(`${view} .ops-actions`), /No usable mariadb-dump was found\./);
+  assert.doesNotMatch(await text(`${view} .ops-actions`), /Checks first/, "the reason replaces the Checks first hint");
+  await captureSheet("dump-no-tool");
+  await h.button("Choose client tools…", `${view} .gate `);
+  await page.waitForSelector("dialog.client-tools-dialog[open]");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.client-tools-dialog"));
+  assert.equal(await page.evaluate(() => document.activeElement?.textContent), "Choose client tools…", "closing the dialog returns focus to the gate button");
+  await section("Restore");
+  await page.waitForSelector(`${view} .gate`);
+  assert.match(await text(`${view} .gate`), /No usable mariadb was found\./);
+  assert.match(await text(`${view} .gate`), /Dumps and restores need MariaDB client tools\./);
+  assert.match(await text(`${view} .ops-actions`), /No usable mariadb was found\./);
+  assert.doesNotMatch(await text(`${view} .ops-actions`), /Checks first/);
+  await captureSheet("restore-no-tool");
+  // Back to the MySQL tools for the closing screenshots.
+  state.queue.push({ status: 200, body: tools });
+  await section("Tools");
+  await h.refresh(); await h.idle(view);
 
   await h.narrow("maintenance-390.png");
   await page.screenshot({ path: path.join(h.shots, "maintenance-1440.png") });

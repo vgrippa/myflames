@@ -2,6 +2,7 @@
 import contextlib
 import copy
 from email.message import Message
+import hashlib
 import io
 import json
 import os
@@ -79,6 +80,47 @@ class TestWriteHTTP(unittest.TestCase):
         elif path == '/api/live/variable/apply':
             payload['expect']['connection_identity'] = dbops.connection_identity(self.connection)
         return payload
+
+    def test_dump_info_http_reads_folder_and_refuses_unsafe_manifest(self):
+        folder = Path(os.environ['HOME']) / 'dump'
+        folder.mkdir()
+        sql = b'CREATE TABLE t(id INT);'
+        (folder / 'dump.sql').write_bytes(sql)
+        manifest = {'schema_version': 'lifecycle-manifest-1.0', 'complete': True,
+                    'source': {'engine': 'mysql'}, 'tool': {'name': 'mysqldump', 'version': '8.4.13'},
+                    'scope': {'schemas': ['app'], 'tables': ['t']},
+                    'files': [{'path': 'dump.sql', 'size_bytes': len(sql),
+                               'sha256': hashlib.sha256(sql).hexdigest()}]}
+        metadata = folder / lifecycle.MANIFEST
+        metadata.write_text(json.dumps(manifest))
+        with mock.patch.object(lifecycle, '_connect', side_effect=AssertionError('must not connect')):
+            status, result = self.post('/api/lifecycle/dump-info', {'directory': str(folder)})
+            self.assertEqual(status, 200)
+            self.assertEqual(result['schema_version'], 'lifecycle-dump-info-1.0')
+            self.assertTrue(result['remap_allowed'])
+            self.assertFalse(result['structure_only'], 'old manifests default to dumps with rows')
+            manifest['files'][0]['path'] = '../outside.sql'
+            metadata.write_text(json.dumps(manifest))
+            status, result = self.post('/api/lifecycle/dump-info', {'directory': str(folder)})
+            self.assertEqual(status, 400)
+            self.assertIn('unsafe relative file path', result['error'])
+            self.assertIn('Choose a completed dump folder', result['error'])
+
+    def test_dump_info_http_refusal_and_authentication_without_connection(self):
+        path = '/api/lifecycle/dump-info'
+        payload = {'directory': str(Path(os.environ['HOME']) / 'missing')}
+        with mock.patch.object(lifecycle, '_connect', side_effect=AssertionError('must not connect')):
+            status, result = self.post(path, payload)
+            self.assertEqual(status, 400)
+            self.assertIn('manifest', result['error'])
+            self.assertIn('choose a completed dump folder', result['error'])
+            with mock.patch.object(lifecycle, 'dump_info') as read:
+                status, result = self.post(path, payload, headers={'X-Myflames-Token': 'wrong'})
+                self.assertEqual(status, 403)
+                read.assert_not_called()
+            status, result = self.post(path, {})
+            self.assertEqual(status, 400)
+            self.assertIn('Choose a dump folder', result['error'])
 
     def test_index_suggestion_http_uses_server_digest_and_read_only_connection(self):
         from test_index_hint import fake

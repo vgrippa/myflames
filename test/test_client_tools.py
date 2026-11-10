@@ -487,6 +487,30 @@ class SelectionTests(unittest.TestCase):
                 self.assertEqual(ct.first_contact_client(self.discovered, keys)['installation'], expected['key'])
         self.assertIsNone(ct.first_contact_client(dict(installations=[], shells=[]), {}))
 
+    def test_other_engine_prefers_newest_client_including_bundle(self):
+        result = self.choose('11.4.5-MariaDB', engine='mariadb')
+        self.assertEqual(result['client']['version'], '8.4.13')
+        self.assertEqual(result['client']['reason'], 'other_engine')
+        self.assertTrue(result['client']['bundled'])
+        self.assertIsNone(result['dump'])
+        self.assertIsNone(result['load'])
+
+    def test_other_engine_auth_plugins_win_then_installed_breaks_ties(self):
+        self.groups[0]['has_auth_plugins'] = True
+        self.assertEqual(self.choose('11.4.5-MariaDB', engine='mariadb')['client']['version'], '8.4.8')
+        self.groups[2]['has_auth_plugins'] = True
+        self.groups.append(self.group('8.4.13', 9, plugins=True))
+        selected = self.choose('11.4.5-MariaDB', engine='mariadb')['client']
+        self.assertEqual(selected['installation'], self.groups[-1]['key'])
+        self.assertFalse(selected['bundled'])
+
+    def test_unknown_server_preserves_first_contact_order(self):
+        self.groups[2]['has_auth_plugins'] = True
+        for server in (None, {'engine': 'unknown', 'version': '11.4.5'}):
+            selected = ct.select(self.discovered, server)['client']
+            self.assertEqual(selected['version'], '8.4.8')
+            self.assertEqual(selected['reason'], 'unknown_server')
+
     def test_owner_mac_selection_table(self):
         for server, version, reason in (('8.4.3', '8.4.13', 'series'), ('8.0.44', '8.0.45', 'series'),
                                         ('5.7.44', '8.0.45', 'newer'), ('9.7.2', '8.4.13', 'older')):
@@ -535,7 +559,7 @@ class SelectionTests(unittest.TestCase):
     def test_other_engine_mariadb_missing_roles(self):
         result = self.choose('11.8.2-MariaDB', 'mariadb')
         self.assertEqual(result['client']['reason'], 'other_engine')
-        self.assertEqual(result['client']['version'], '8.4.8')
+        self.assertEqual(result['client']['version'], '8.4.13')
         for role in ('dump', 'load', 'backup', 'shell'):
             self.assertIsNone(result[role])
         self.assertEqual({m['role'] for m in result['missing']}, {'dump', 'load', 'backup'})
