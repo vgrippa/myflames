@@ -178,8 +178,15 @@ settings**. **Test connection** also lists visible schemas. **Save connection**
 keeps the settings; **Use without saving** puts them in use for this workspace
 only. The connection marked **In use** is the one the Query editor and Server
 use, and **Use** on any row switches to it. A local `mysql` or `mariadb` client
-executable is required, as with the existing CLI connection workflow. The UI
-says "connection"; the API and CLI call a saved connection a profile.
+executable is required; the app includes the MySQL client and also finds installed
+tools. **Settings > Client tools…** shows which programs serve the connection in
+use and lets you choose an installation separately for MySQL and MariaDB, or
+keep **Automatic (best match for each server)**. Automatic prefers the server's
+engine and major.minor series, then the nearest newer series, then the newest
+older series with a warning. Within the series it prefers authentication
+plugins, then newest patch, then installed before bundled. An unavailable choice
+stays selected with its error. The UI says "connection"; the API calls a saved
+connection a profile.
 
 Each saved connection also has a type and a read-only setting that decide how
 myflames guards statements that change the server (today, ending a session
@@ -478,7 +485,9 @@ Each query tab owns one server session: one `mysql` or `mariadb` client
 process started on the tab's first run and kept until the tab closes, its
 connection changes, it is idle for 30 minutes, or the workspace stops. `SET
 SESSION`, user variables, temporary tables and transactions last across runs
-in that tab. myflames never reconnects on its own: when a session ends, the tab
+in that tab. The session pins the selected client; plan and Stop helpers keep
+that client and check its trust again before starting. Changing **Client tools…**
+applies to new sessions. myflames never reconnects on its own: when a session ends, the tab
 says **Session ended: <reason>. Session settings were lost and any open
 transaction was rolled back.** and **Reconnect** starts a new one.
 
@@ -1871,7 +1880,9 @@ and never lowers a saved connection's protection.
 | `live/replication/skip-loop/status` | `connection`, optional `job_id` | `loops` of this connection (or one loop). Opens no database connection; loops are matched by the connection's endpoint (saved connection, host, port, user, TLS), so changing its type or Read-only keeps them. A myflames restart starts with none |
 | `live/replication/skip-loop/stop` | `connection`, `job_id` | The loop's status; it stops before its next skip. Not subject to the write policy (it ends a confirmed change) |
 | `live/cluster` | `connection` | `cluster-1.0` report (`cluster.read_status`, the same as `myflames cluster`): kind, members with their state, role, address and version as this server sees them, quorum and failures tolerated (null when this server cannot see them, such as a read replica), flow control and queues, InnoDB Cluster read replicas and routers, findings, status, notes. Reads only; query timeout 30 s |
-| `lifecycle/tools` | `connection` (optional) | `lifecycle-tools-1.0`: every tool found on this computer (`available`, `deprecated`, `path`, `version`, `version_tuple`, `engine`), and with a connection the `server` (engine, version) and what is `offered` (dump tools, upgrade method, clone, physical backup) |
+| `client/tools` | `connection` (optional), `refresh` (optional, true to re-probe) | `client-tools-1.0`: installations, Shell copies, skipped paths/reasons and per-engine choices; with a connection, the server or read error and selected programs per job. See the [client tools contract](DEVELOPER_REFERENCE.md#local-ui) |
+| `client/tools/choose` | `engine`, `path` (absolute client/folder, `bundled`, or null for Automatic), optional `connection` | Validates and stores one engine's choice, returning `client-tools-1.0`; a refused choice leaves the current choice intact |
+| `lifecycle/tools` | `connection` (optional), `check_updates` (optional) | `lifecycle-tools-2.0`: selected `tools` and every discovered `copies` entry with origin, path and used status; with a connection, the server is read before selection and the response adds `used` roles and `offered` operations. Client failures retain inventory with empty server/offered and `server_error` (currently `client-missing`, including plugin failures) |
 | `lifecycle/upgrade-check` | `connection`, `target_version` (`X.Y.Z`), optional `prefer_shell` (default true), `config_path` | `upgrade-check-1.0`: `method` (`mysqlsh`, `native_subset` with `partial: true`, or `mariadb_upgrade_guidance`), `checks` (`id`, `title`, `status`, `severity`, `affected_objects`, `doc_link`, details), `counts`, `manual_checks`, `limitations`. Reads only |
 | `lifecycle/prepare` | `connection`, `operation` (`dump`: `directory`, `schemas`, `tables`, `threads`, `prefer_shell`; `restore`: `directory`, `schema`, `existing` refuse, ignore or drop, `allow_source`, `resume`, `threads`; `clone`: `donor` (a connection, `profile_id` allowed), `donor_address`, `data_directory`, `require_ssl`) | `lifecycle-plan-1.0`: `review_token`, `target`, the exact `commands`, `checks` (passed, failed, not_checked, with the reason), `warnings`, `ready`, `binding`, `server`, `tool`. Reads only (MySQL Shell's dryRun runs here); a folder that exists and is not empty is a 400 error |
 | `lifecycle/start` | `connection`, `operation`, `plan` (the preflight's, including its `review_token`), `typed_target` (restore and clone), `donor` (clone), `confirmed: true` | `lifecycle-job-1.0` snapshot (`id`, `operation`, `state` queued, running, done, failed, refused or cancelled, `progress`, `detail`, `events`, `result` with `status`, `verification`, `manifest`, `partial_state`, `audit_id`, `error`). The write policy runs first; the job repeats the preflight and refuses (nothing started) unless it still matches |
