@@ -974,9 +974,9 @@ are the contracts of the tools that check them.
   repository out at its latest release tag (the peeled commit of an annotated
   tag; never master, so the site describes the released app) beside it, runs `sync_releases.py` (the latest
   release's DMG and Windows `-setup.exe` with their `.sha256`, never the update
-  zip), `build_docs.py --source` (the handbook, the release notes under a Release
-  notes group, the reference documents and the raster images in
-  `docs/screenshots`; links and SVG files are not copied) and
+  zip), `build_docs.py --source` (the handbook, the release notes from 3.0.0 on
+  under a Release notes group, with older versions linked on GitHub, the
+  reference documents and the raster images in `docs/screenshots`; links and SVG files are not copied) and
   its QA without the CLI examples (no code from this repository runs in that
   job, which can push), and commits to its default branch when something
   changed. The site goes live only when someone clicks Publish
