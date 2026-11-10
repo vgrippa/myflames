@@ -7,6 +7,7 @@ This is the detailed contract per feature; [AGENTS.md](../AGENTS.md) has the rul
 - [Commands Reference](#commands-reference)
   - [Local UI](#local-ui)
   - [Release sync](#release-sync)
+  - [Release notes](#release-notes)
   - [Shared view presentation](#shared-view-presentation)
   - [Chart runtime](#chart-runtime)
   - [Bundle and lazy loading](#bundle-and-lazy-loading)
@@ -886,26 +887,24 @@ the window-open handler always denies a new app window. Tests:
 
 ### Release sync
 
-A release is one commit in which the versions, the CHANGELOG, the README
+A release is one commit in which the versions, the release notes, the README
 screenshots and the handbook agree, and one GitHub release whose notes and
 files come from that commit. AGENTS.md "Release sync" lists the steps; these
 are the contracts of the tools that check them.
 
 - **Versions.** `apps/desktop/package.json` `version`, `myflames/__init__.py`
   `__version__` and `pyproject.toml` `[project] version` are equal.
-- **Release notes.** `scripts/release_notes.py X.Y.Z` (or `vX.Y.Z`) prints the
-  body of `CHANGELOG.md`'s `## [X.Y.Z] - YYYY-MM-DD` section (the older
-  `## [X.Y.Z] (YYYY-MM-DD)` form is read too): everything up to the next
-  level-two heading outside a code fence (a fence closes only on its own
-  character, at least as long), without the heading and without leading or
-  trailing blank lines, as UTF-8. A missing, undated, duplicated or empty
-  section (subsection headings with no entry under them), or one with a fence
-  that never closes, prints why on stderr and exits 1. The script then ends the
-  notes with the inspiration credit line (`CREDIT`, the README's "Inspired by
-  Brendan Gregg's FlameGraph and Tanel Poder's SQL Plan FlameGraphs"), unless
-  the section already holds it, so no release's notes lose it. The GitHub
-  release notes are this text verbatim, so a summary paragraph for the release
-  goes at the top of the section.
+- **Release notes.** `scripts/release_notes.py X.Y.Z` (or `vX.Y.Z`) prints
+  `docs/release-notes/X.Y.Z.md` (`--notes-dir` reads another folder) without
+  its title line and without leading or trailing blank lines, as UTF-8: the
+  GitHub release shows its name above the notes. It refuses a page that breaks
+  the format in [Release notes](#release-notes) (title, sections, order, no
+  heading deeper than level two, at least one entry, closed code fences, no em
+  dash and no `/api/` path outside code fences) with a message on stderr that
+  says what to fix, and exits 1. The script then ends the notes with the
+  inspiration credit line (`CREDIT`, the README's "Inspired by Brendan Gregg's
+  FlameGraph and Tanel Poder's SQL Plan FlameGraphs"), unless the page already
+  holds it, so no release's notes lose it.
 - **README screenshots.** `npm run docs:screenshots` in `apps/workspace`
   (`test/readme-screenshots.mjs`) builds nothing: it opens the built
   workspace in `myflames/ui_assets` through the perf harness (`open()` with
@@ -930,7 +929,11 @@ are the contracts of the tools that check them.
   systems, so capture on macOS, where the README's app runs. Run it after
   `npm run build` at the release commit.
 - **`scripts/check_release_sync.py X.Y.Z`** exits 0 only when the three
-  versions equal X.Y.Z, `CHANGELOG.md` has the dated, non-empty section,
+  versions equal X.Y.Z, `docs/release-notes/X.Y.Z.md` passes
+  `release_notes.py`'s format check, `docs/release-notes/index.md` lists it
+  first with the page's date, lists every page in the folder newest first and
+  names only pages that exist, `CHANGELOG.md` `[Unreleased]` holds no entries
+  (they moved into the page),
   `docs/screenshots/manifest.json` `version` is X.Y.Z with the four README
   images present, and `docs/handbook/manifest.json` parses with every listed
   chapter file present; otherwise it lists every problem and exits 1.
@@ -953,26 +956,79 @@ are the contracts of the tools that check them.
   change): a change under `apps/workspace/src/`, `apps/desktop/` (not
   `test/`) or `myflames/` (not `ui_assets/`, `tests/` or `test_*.py`; both
   sides of a rename count, and names are compared whole, so a name holding a
-  newline cannot pass for `CHANGELOG.md`) without a
-  `CHANGELOG.md` change fails unless the PR has the `no-changelog` label, and a
+  newline cannot pass for `CHANGELOG.md`) without a change to `CHANGELOG.md`
+  or to a `docs/release-notes/*.md` page fails unless the PR has the
+  `no-changelog` label, and a
   change of the `apps/desktop/package.json` version runs
   `check_release_sync.py` for the new version. When a release is published, or
   by hand for a tag (Actions > Docs and release sync > Run workflow), it checks
   out the tag (the whole value must match `vX.Y.Z`; it is never echoed),
   replaces the release notes with `release_notes.py`'s text when they differ
-  (ignoring line endings and outer blank lines), fails when the section is
-  missing, and runs `check_release_assets.py`.
+  (ignoring line endings and outer blank lines), fails when the tag has no
+  valid page for the version, and runs `check_release_assets.py`. Release
+  notes of releases published before the tag carried `docs/release-notes`
+  are edited by hand from master: `python3 scripts/release_notes.py X.Y.Z >
+  local/notes.md && gh release edit vX.Y.Z --notes-file local/notes.md`.
 - **Website.** myflames.io is built from the separate `vgrippa/myflames-website`
   repository. Its `sync.yml` workflow (every 6 hours and on demand) checks this
   repository out at its latest release tag (the peeled commit of an annotated
   tag; never master, so the site describes the released app) beside it, runs `sync_releases.py` (the latest
   release's DMG and Windows `-setup.exe` with their `.sha256`, never the update
-  zip), `build_docs.py --source` (the handbook, the reference documents and the
-  raster images in `docs/screenshots`; links and SVG files are not copied) and
+  zip), `build_docs.py --source` (the handbook, the release notes from 3.0.0 on
+  under a Release notes group, with older versions linked on GitHub, the
+  reference documents and the raster images in `docs/screenshots`; links and SVG files are not copied) and
   its QA without the CLI examples (no code from this repository runs in that
   job, which can push), and commits to its default branch when something
   changed. The site goes live only when someone clicks Publish
   in Lovable.
+
+### Release notes
+
+The release notes are written for people who use myflames (DBAs, SREs and
+developers), in the form of Percona Server for MySQL's release notes: an index
+and one page per version. Engineering detail (endpoints, schemas, functions,
+tests, the reasons behind a design) belongs in this reference and in commit
+messages, never in the notes.
+
+- **Files.** `docs/release-notes/index.md` lists every version newest first,
+  one line each: `- [myflames X.Y.Z (YYYY-MM-DD)](X.Y.Z.md)`.
+  `docs/release-notes/X.Y.Z.md` is one version's page. `CHANGELOG.md` holds
+  only `## [Unreleased]`: every pull request that changes what users see adds
+  its entry there, already written in the style below and under the heading
+  of the section it will go to (`### New features`, `### Bug fixes`, and so
+  on). The release commit moves those entries into the new page and leaves
+  `[Unreleased]` empty.
+- **Page layout.** The first line is `# myflames X.Y.Z (YYYY-MM-DD)`. Under it
+  comes one sentence on where the version runs (from 3.3.0: "myflames X.Y.Z is
+  available for macOS on Apple Silicon and, as an unsigned preview, for
+  Windows x64."). Then these `##` sections, in this order, each left out when
+  empty: Release highlights, New features, Improvements, Bug fixes, Security
+  fixes, Deprecations and removals, Known issues, Packaging notes, Additional
+  resources (always present: the download links, the Quickstart and GitHub
+  Issues). No other headings. The page ends with the inspiration credit line.
+- **Release highlights.** Only for a version with three or more notable
+  changes: two to four bullets of one sentence each, naming what is worth
+  upgrading for. The detail stays in the sections below.
+- **Entries.** Each is a bullet of one to three sentences, about 15 to 60
+  words, with no bold title in front. New features start with "Adds",
+  improvements with "Improves" or with the thing and what it does now, bug
+  fixes with "Fixed an issue where" and the symptom the user saw (a second
+  sentence may say what happens now), deprecations with what to use instead.
+  UI labels are bold as they appear (**Settings > Client tools…**); SQL,
+  variables, programs, options and file names are in backticks.
+- **What stays out.** `/api/` paths, schema tags such as `memory-1.0`, module,
+  function and test names, CI, release tooling, README screenshots, test
+  infrastructure and other contributor-only work, mechanics such as timers,
+  worker threads and time budgets, lists of edge cases, and review notes.
+  Command line and `myflames-mcp` changes appear only as deprecations or when
+  they are the whole point of the entry.
+- **Writing.** Plain sentences a colleague would say aloud. No em dashes (a
+  period, comma, colon or parentheses instead; en dashes only in number
+  ranges), no chains of semicolons or stacked parentheses, no "not X, but Y"
+  frames unless the contrast is the news, no lists padded to three, no filler
+  such as seamless, robust, comprehensive, leverage, ensure or notably, no
+  emojis, no notes about who wrote or reviewed the change. Every fact comes
+  from the change itself.
 
 ### Shared view presentation
 

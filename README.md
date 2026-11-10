@@ -91,7 +91,8 @@ ProxySQL 2.x and 3.x are supported in the ProxySQL place when connected to a Pro
 | [docs/VISUAL_EXPLAIN_REFERENCE.md](docs/VISUAL_EXPLAIN_REFERENCE.md) | Operator color key, metrics and advisor rules across the plan views (see also [docs/WORKBENCH_VIEW.md](docs/WORKBENCH_VIEW.md)). |
 | [docs/DEVELOPER_REFERENCE.md](docs/DEVELOPER_REFERENCE.md) | Architecture, JSON schemas, parser and advisor contracts, write-safety invariants and testing guide. |
 | [docs/DESKTOP.md](docs/DESKTOP.md) | macOS Electron desktop app packaging, process lifecycle, client discovery and storage layout. |
-| [CHANGELOG.md](CHANGELOG.md) | Release history and notable changes per version. |
+| [Release notes](docs/release-notes/index.md) | What changed in each version, newest first. |
+| [CHANGELOG.md](CHANGELOG.md) | Changes merged since the last release. |
 | [test/README.md](test/README.md) | Plan fixtures, live replay fixtures and test suite instructions. |
 
 ## License and credits

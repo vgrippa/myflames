@@ -1,6 +1,6 @@
 # myflames roadmap
 
-> Where myflames is going and why. For *what changed in each release*, see [CHANGELOG.md](CHANGELOG.md). For the queue of teaching lessons, see [.claude/ALGORITHM_ROADMAP.md](.claude/ALGORITHM_ROADMAP.md).
+> Where myflames is going and why. For *what changed in each release*, see the [release notes](docs/release-notes/index.md). For the queue of teaching lessons, see [.claude/ALGORITHM_ROADMAP.md](.claude/ALGORITHM_ROADMAP.md).
 
 ## Vision
 
@@ -176,7 +176,7 @@ for limits and [the verification checklist](docs/UI_TESTING.md) for release gate
   Database diagram with a Mermaid view, Users and roles with every grant
   scope, Maintenance (upgrade check, dump, restore, clone) and Replication;
   and a broad correctness pass over plan parsing, MariaDB plans, write
-  classification and the update downloader. See [CHANGELOG.md](CHANGELOG.md).
+  classification and the update downloader. See the [3.1.0 release notes](docs/release-notes/3.1.0.md).
 
 - **Ideas from MySQL Shell and DBeaver**: find the query first (`top` from
   Performance Schema digests, `running` with the plan of a running statement),

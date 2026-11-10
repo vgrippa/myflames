@@ -7,7 +7,8 @@ and 26.7 and MariaDB 11.4 and 13.0 with Performance Schema on and the engine
 defaults, MariaDB with its defaults (Performance Schema off), MySQL 8.4 after
 changes, MariaDB 13.0 after the Minimal preset, and a user without SELECT on
 performance_schema. Every preset and toggle statement was also run on those
-servers when the fixtures were recorded (see the CHANGELOG entry).
+servers when the fixtures were recorded (see the 3.0.0 entry in
+`git show v3.1.0:CHANGELOG.md`).
 """
 import inspect
 import json

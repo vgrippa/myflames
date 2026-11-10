@@ -66,8 +66,8 @@ the ordinary suite unless `MYFLAMES_MYSQL_FIXTURES` is set. These checks exercis
 captured server output; they do not open a live connection themselves.
 
 The September 2026 review used MySQL 26.7.0 from a freshly pulled `mysql:latest`
-image. See the September 2026 review in the CHANGELOG (3.x) for the tested scope and
-remaining limitations.
+image. See the "Review fixes (2026-09-15)" section of `git show v2.3.0:CHANGELOG.md` for the
+tested scope and remaining limitations.
 
 ## GA version matrix (live servers)
 
