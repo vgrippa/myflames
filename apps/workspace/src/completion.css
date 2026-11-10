@@ -32,3 +32,27 @@
 .sql-completion-hint { flex: none; padding: var(--space-2) var(--space-3); border-top: 1px solid var(--line); color: var(--ink-muted); background: var(--surface-raised); font-family: var(--font-sans); font-size: var(--text-sm); }
 /* Keep the live region mounted so VoiceOver can announce subsequent text. */
 .sql-completion-hint:empty { padding: 0; border: 0; }
+
+/* Hover tooltips mount under body, outside the editor's layout wrappers. */
+.cm-tooltip:has(.sql-hover) {
+  z-index: 140;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  color: var(--ink);
+  box-shadow: var(--shadow-raised);
+}
+.sql-hover {
+  max-width: min(640px, calc(100vw - 16px));
+  max-height: 50vh;
+  overflow: auto;
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.sql-hover-heading { display: block; margin-bottom: var(--space-1); font-weight: 600; overflow-wrap: anywhere; }
+.sql-hover-heading, .sql-hover-name, .sql-hover-type { font-family: var(--font-mono); }
+.sql-hover-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto; gap: var(--space-2); }
+.sql-hover-name, .sql-hover-type { min-width: 0; overflow-wrap: anywhere; }
+.sql-hover-note { color: var(--ink-muted); white-space: nowrap; }
