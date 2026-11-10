@@ -44,6 +44,7 @@ async function assertPrivilege(page, selector, state, need) {
 }
 
 const tools = await load("lifecycle-tools-mysql.json");
+tools.default_dump_parent = "/Users/dba/Documents/myflames dumps";
 const native = await load("upgrade-native-8.0.46-to-8.4.0.json");
 const shell = await load("upgrade-shell-8.0.46-to-8.4.0.json");
 const dumpPlan = await load("lifecycle-plan-dump.json");
@@ -56,6 +57,14 @@ const running = await load("lifecycle-job-dump-running.json");
 const cancelled = await load("lifecycle-job-dump-cancelled.json");
 const done = await load("lifecycle-job-dump-done.json");
 const schemas = await load("schemas-mysql-8.4.json");
+// The update check covered the used copy of a tool name (mysqldump 8.4.3 in
+// /usr/local); the bundled copy beside it was never checked and must not
+// inherit the result.
+tools.tools.mysqldump.update = { status: "current", latest_version: "8.4.13", checked_at: "2026-11-01T10:00:00Z", source_url: "https://dev.mysql.com/downloads/mysql/", message: "Checked mysqldump Ver 8.4.3 against the 8.4 series." };
+// A second mysql copy used for queries only (another role): the update check
+// covered tools.mysql (/usr/local), so this used copy must stay Not checked.
+tools.copies.push({ ...tools.copies.find((c) => c.path === "/usr/local/bin/mysql"), path: "/opt/homebrew/bin/mysql", realpath: "/opt/homebrew/Cellar/mysql@8.4/8.4.13/bin/mysql", used: true });
+tools.tools.mysql.update = { status: "available", latest_version: "8.4.13", checked_at: "2026-11-01T10:00:00Z", source_url: "https://dev.mysql.com/downloads/mysql/", message: "Checked mysql Ver 8.4.3 against the 8.4 series." };
 
 const UPGRADE = "/api/lifecycle/upgrade-check";
 const TARGETS = "/api/lifecycle/upgrade-targets";
@@ -67,6 +76,15 @@ const CANCEL = "/api/lifecycle/cancel";
 const JOBS = "/api/lifecycle/jobs";
 const DECLINED = "/api/audit/declined";
 const REVEAL = "/api/files/local/reveal";
+const DUMPINFO = "/api/lifecycle/dump-info";
+/** Per-folder dump-info answers (lifecycle-dump-info-1.0); unlisted folders
+ * answer remap-allowed, so the read never changes Restore's choices. */
+const dumpInfos = new Map();
+const dumpInfoDefault = { status: 200, body: {
+  schema_version: "lifecycle-dump-info-1.0", tool: { name: "mysqldump", version: "8.4.3" }, engine: "mysql",
+  scope: { schemas: ["mftab"], tables: ["orders", "users"] }, structure_only: false, remap_allowed: true,
+  remap_reason: "The dump.sql scan found no CREATE DATABASE, CREATE SCHEMA, USE or qualified reference outside the target database.",
+} };
 /** What the mocked server answers next, per path. */
 const next = { upgrade: native, prepare: [], start: [], reveal: [] };
 /** The jobs myflames holds, by id, as the status endpoint would return them,
@@ -81,8 +99,13 @@ const job = (base, id, extra = {}) => ({ ...structuredClone(base), id, ...extra 
 const h = await open("/api/lifecycle/tools", "maintenance", {
   "/api/files/local/list": body => ({ status: 200, body: { path: body.path || "/Users/dba", home: "/Users/dba", entries: [], transfers: false } }),
   [REVEAL]: body => next.reveal.shift() || { status: 200, body: { revealed: body.path }, delay: 100 },
-  [UPGRADE]: () => ({ status: 200, body: next.upgrade, delay: 50 }),
+  [UPGRADE]: (body) => (typeof body.target_version === "string" && body.target_version.startsWith("9.7")
+    ? { status: 400, body: { error: "MySQL Shell 9.6.0 cannot check this pair: the server must be older than the Shell and the target at most 9.6. Install a newer MySQL Shell." } }
+    : { status: 200, body: next.upgrade, delay: 50 }),
   [TARGETS]: () => ({ status: 200, body: targets, delay: 50 }),
+  "/api/live/catalog": (body) => ({ status: 200, body: { schema_version: "catalog-1.0", level: "tables", schema: body.schema,
+    tables: ["orders", "users", "notes"].map((name) => ({ name, type: "table", engine: "InnoDB", rows: 10, bytes: 16384 })),
+    truncated: false, limit: 200, prefix: null, after: null, next_after: null, stats: true } }),
   [PREPARE]: () => next.prepare.shift() || { status: 200, body: dumpPlan },
   [START]: (body) => {
     const reply = next.start.shift();
@@ -101,6 +124,10 @@ const h = await open("/api/lifecycle/tools", "maintenance", {
   },
   [JOBS]: (body) => ({ status: 200, body: { schema_version: "lifecycle-jobs-1.0", jobs: listed(body.connection) } }),
   "/api/live/schemas": { status: 200, body: schemas },
+  [DUMPINFO]: (body) => dumpInfos.get(body.directory) || dumpInfoDefault,
+  // The Client tools dialog reads this; a static answer keeps detection local.
+  "/api/client/tools": { status: 200, body: { schema_version: "client-tools-1.0", installations: [], shells: [], skipped: [],
+    choice: { mysql: { path: null, installation: null, error: null }, mariadb: { path: null, installation: null, error: null } } } },
   [DECLINED]: (body, request) => {
     void request.continue();
     return null;
@@ -185,7 +212,7 @@ try {
     [...groups.find((g) => g.querySelector("h3").textContent === "Setup").querySelectorAll(".source-item")].at(-1).dataset.view), "maintenance");
   state.fallback = { status: 200, body: tools };
   await h.view("maintenance");
-  await page.waitForSelector(`${view} [data-row-key="tool:mysqlsh"]`);
+  await page.waitForSelector(`${view} [data-row-key="tool:/usr/local/bin/mysqlsh"]`);
   assert.match(await h.popover("About Maintenance"), /only read.*Audit log/s);
   assert.equal(state.seen.length, 1, "one local tool detection on open");
   assert.equal(state.seen[0].check_updates, false);
@@ -200,33 +227,63 @@ try {
 
   // Tools on this computer and what they offer for the server.
   state.fallback = { status: 200, body: tools };
-  await page.waitForSelector(`${view} [data-row-key="tool:mysqlsh"]`);
+  await page.waitForSelector(`${view} [data-row-key="tool:/usr/local/bin/mysqlsh"]`);
   assert.equal(await text(`${view} .summary-text`), "MySQL 8.4.3 · Tools");
   assert.equal(await page.$(`${view} .summary-line .status-pill`), null, "no verdict on a tool list");
-  assert.match(await text(`${view} [data-row-key="tool:mysqlpump"]`), /Deprecated/);
+  // The Used block at the top: one line per job, with the origin and the why.
+  const usedBlock = `${view} [data-client-tools-used]`;
+  assert.match(await text(usedBlock), /Queriesmysql 8\.4\.3 · Homebrew mysql@8\.4 · matches this server \(MySQL 8\.4\)/);
+  assert.match(await text(usedBlock), /Dumpsmysqldump 8\.4\.3 · Homebrew mysql@8\.4 · matches this server \(MySQL 8\.4\)/);
+  assert.match(await text(usedBlock), /Restores/);
+  assert.match(await text(usedBlock), /MySQL Shellmysqlsh 9\.6\.0 · Homebrew mysql-shell · newest MySQL Shell found/);
+  assert.equal(await page.$(`${usedBlock} [data-role=backup]`), null, "no physical backup line without one");
+  assert.match(await text(usedBlock), /Change…/);
+  // One row per copy: From and Path columns, and the Used marker on the copy
+  // chosen for this server (never on the bundled mysqldump beside it).
+  const shellRow = `${view} [data-row-key="tool:/usr/local/bin/mysqlsh"]`;
+  assert.match(await text(shellRow), /Homebrew mysql-shell/);
+  assert.match(await text(shellRow), /\/usr\/local\/bin\/mysqlsh/);
+  assert.match(await text(`${view} [data-row-key="tool:/usr/local/bin/mysqldump"]`), /Used/);
+  const bundledDumpRow = `${view} [data-row-key="tool:/Applications/myflames.app/Contents/Resources/client-tools/8.4/bin/mysqldump"]`;
+  assert.match(await text(bundledDumpRow), /Bundled with myflames/);
+  assert.doesNotMatch(await text(bundledDumpRow), /Used/);
+  // Only the copy the update check covered carries its result.
+  assert.match(await text(`${view} [data-row-key="tool:/usr/local/bin/mysqldump"]`), /Current in checked series/, "the used copy carries the update result");
+  assert.match(await text(bundledDumpRow), /Not checked/, "another copy of the same tool was never checked");
+  const queryOnlyRow = `${view} [data-row-key="tool:/opt/homebrew/bin/mysql"]`;
+  assert.match(await text(queryOnlyRow), /Used/);
+  assert.match(await text(queryOnlyRow), /Not checked/, "a used copy the update check did not cover reads Not checked");
+  assert.match(await text(`${view} [data-row-key="tool:/usr/local/bin/mysql"]`), /Update available: 8\.4\.13/, "the checked copy keeps its result");
+  await h.select(bundledDumpRow);
+  assert.doesNotMatch(await h.inspector(), /Latest checked/, "an unchecked copy has no update detail");
+  assert.match(await text(`${view} [data-row-key="tool:/usr/local/bin/mysqlpump"]`), /Deprecated/);
   assert.match(await text(`${view} .ops-offered`), /Dumpmysqlsh, mysqldump.*Upgrade checkMySQL Shell \(full check\)/s);
-  await h.select(`${view} [data-row-key="tool:mysqlsh"]`);
+  await h.select(shellRow);
   assert.match(await h.inspector(), /Path\/usr\/local\/bin\/mysqlsh/);
+  assert.match(await h.inspector(), /FromHomebrew mysql-shell/);
+  assert.match(await h.inspector(), /Why this copynewest MySQL Shell found/);
 
   // Upgrade check: the partial check without MySQL Shell, labelled as such.
   await section("Upgrade check");
   // Targets come from the release notes and the upgrade paths: 8.4 patches and
-  // the next LTS (9.7), newest first, with the newest 9.7 suggested and chosen.
+  // the next LTS (9.7), newest first. 9.7 needs a newer MySQL Shell than the
+  // installed 9.6.0: marked in its option, never the suggested default.
   await page.waitForSelector(`${view} .ops-targets strong`);
   assert.equal(calls(TARGETS).length, 1, "the target list reads once when Upgrade check opens");
   assert.deepEqual(await page.$$eval(`${view} select[aria-label="Target version"] option`, (els) => els.map((e) => e.value)),
     ["", "9.7.4", "9.7.3", "9.7.2", "9.7.1", "9.7.0", "8.4.13", "8.4.12", "8.4.11", "8.4.10", "8.4.9", "8.4.8", "8.4.7", "8.4.6", "8.4.5", "8.4.4", "custom"]);
-  assert.equal(await page.$eval(`${view} select[aria-label="Target version"]`, (e) => e.value), "9.7.4");
-  assert.match(await text(`${view} select[aria-label="Target version"] option[value="9.7.4"]`), /^9\.7\.4 · next LTS · suggested$/);
+  assert.equal(await page.$eval(`${view} select[aria-label="Target version"]`, (e) => e.value), "8.4.13");
+  assert.match(await text(`${view} select[aria-label="Target version"] option[value="9.7.4"]`), /^9\.7\.4 · next LTS · needs MySQL Shell 9\.7 or newer$/);
+  assert.match(await text(`${view} select[aria-label="Target version"] option[value="8.4.13"]`), /^8\.4\.13 · same series · suggested$/);
   const notes = await text(`${view} .ops-targets`);
   assert.match(notes, /Installed from: RPM packages · MySQL release notes · read 21:20 UTC · 15 releases offered/);
   assert.match(notes, /MySQL Yum repository/);
-  assert.match(notes, /9\.7\.4 \(2026-10-20\): next LTS · needs MySQL Shell 9\.7 or newer for the full check · Release notes/);
-  assert.equal(await page.$eval(`${view} .ops-targets a[href*="news-9-7-4"]`, (a) => a.getAttribute("href")), "https://dev.mysql.com/doc/relnotes/mysql/9.7/en/news-9-7-4.html");
-  await page.select(`${view} select[aria-label="Target version"]`, "8.4.13");
-  assert.match(await text(`${view} .ops-targets`), /8\.4\.13 \(2026-10-20\): same series · Release notes/);
-  assert.doesNotMatch(await text(`${view} .ops-targets`), /needs MySQL Shell/);
+  assert.match(notes, /8\.4\.13 \(2026-10-20\): same series · Release notes/);
+  assert.equal(await page.$eval(`${view} .ops-targets a[href*="news-8-4-13"]`, (a) => a.getAttribute("href")), "https://dev.mysql.com/doc/relnotes/mysql/8.4/en/news-8-4-13.html");
+  assert.doesNotMatch(notes, /needs MySQL Shell/);
   await page.select(`${view} select[aria-label="Target version"]`, "9.7.4");
+  assert.match(await text(`${view} .ops-targets`), /9\.7\.4 \(2026-10-20\): next LTS · needs MySQL Shell 9\.7 or newer for the full check · Release notes/);
+  assert.equal(await page.$eval(`${view} .ops-targets a[href*="news-9-7-4"]`, (a) => a.getAttribute("href")), "https://dev.mysql.com/doc/relnotes/mysql/9.7/en/news-9-7-4.html");
   await captureSheet("upgrade-targets");
   await page.select(`${view} select[aria-label="Target version"]`, "custom");
   await field("Exact version", "8.4.0");
@@ -255,13 +312,53 @@ try {
   await page.waitForFunction((v) => /MySQL Shell ·/.test(document.querySelector(`${v} .summary-text`)?.textContent || ""), {}, view);
   assert.equal(await text(`${view} .summary-text`), "MySQL 8.0.46 to 8.4.0 · MySQL Shell · 2 errors, 27 warnings, 2 notices");
 
+  // A target the installed Shell cannot check fails with its own error, which
+  // belongs to the Upgrade check tab only: it never shows on Dump or Restore,
+  // and leaving the tab clears it.
+  await page.select(`${view} select[aria-label="Target version"]`, "9.7.4");
+  await page.locator(`${view} .ops-actions button ::-p-text(Check upgrade)`).click();
+  await settle(UPGRADE, 3);
+  assert.equal(calls(UPGRADE)[2].body.target_version, "9.7.4");
+  await page.waitForSelector(`${view} .view-status [role=alert]`);
+  assert.match(await text(`${view} .view-status [role=alert]`), /MySQL Shell 9\.6\.0 cannot check this pair/);
+  await section("Dump");
+  await page.waitForFunction(parent => document.querySelector('.ops-folder-input input')?.value.startsWith(parent + '/'), {}, tools.default_dump_parent);
+  assert.equal(calls(PREPARE).length, 0, "suggesting the backend default never prepares a dump");
+  assert.equal(await page.$(`${view} .view-status [role=alert]`), null, "the upgrade error never shows on Dump");
+  await section("Restore");
+  assert.equal(await page.$(`${view} .view-status [role=alert]`), null, "the upgrade error never shows on Restore");
+  await section("Upgrade check");
+  await page.waitForSelector(`${view} select[aria-label="Target version"]`);
+  await pause(150);
+  assert.equal(await page.$(`${view} .view-status [role=alert]`), null, "leaving the tab cleared the error");
+
   // Dump: a folder with files in it is refused at the preflight.
   await section("Dump");
+  // The Dump tool select names the resolved programs, as the resolver reports them.
+  assert.deepEqual(await page.$$eval(`${view} select[aria-label="Tool"] option`, (os) => os.map((o) => o.textContent)),
+    ["Automatic (MySQL Shell 9.6.0 first)", "SQL dump (mysqldump 8.4.3 · Homebrew mysql@8.4)"]);
   await page.select(`${view} select[aria-label="Scope"]`, "schemas");
+  // Nothing picked says so, with the hint; every user database picked reads as
+  // "All user databases" (and the hint is gone).
+  assert.equal(await text(`${view} #ops-dump-schemas`), "No database chosen");
+  assert.match(await text(`${view} .ops-dump .form-row-control > .hint`), /Choose at least one database\./);
+  await captureSheet("dump-form");
   await page.click(`${view} #ops-dump-schemas`);
   await page.waitForSelector(`${view} .perf-picker-panel`);
   await page.locator(`${view} .perf-picker-option ::-p-text(mftab)`).click();
+  await page.locator(`${view} .perf-picker-option ::-p-text(mfother)`).click();
+  assert.equal(await text(`${view} #ops-dump-schemas`), "All user databases", "every user database chosen reads as all");
+  assert.doesNotMatch(await text(`${view} .ops-dump .form-row-control > .hint`), /Choose at least one database/);
+  // A system database on top of every user database is a plain selection, not
+  // "All user databases" (the label means exactly the user set).
+  await page.locator(`${view} .perf-picker-foot label ::-p-text(Show system databases)`).click();
+  await page.locator(`${view} .perf-picker-option ::-p-text(mysql)`).click();
+  assert.equal(await text(`${view} #ops-dump-schemas`), "3 databases", "a system database on top of every user database reads as a count");
+  await page.locator(`${view} .perf-picker-option ::-p-text(mysql)`).click();
+  assert.equal(await text(`${view} #ops-dump-schemas`), "All user databases", "back to exactly the user set");
+  await page.locator(`${view} .perf-picker-option ::-p-text(mfother)`).click();
   await page.keyboard.press("Escape");
+  assert.equal(await text(`${view} #ops-dump-schemas`), "mftab");
   await field("Output folder", "/Users/dba/maintenance/busy");
   next.prepare.push({ status: 400, body: { error: `Could not complete the request: ${refused.error}` } });
   await preflight();
@@ -292,6 +389,8 @@ try {
   assert.equal(await page.$(`${sheet} input[type=text]`), null);
   assert.equal(await page.$eval(confirmButton, e => e.classList.contains('primary') && !e.classList.contains('danger-solid')), true);
   assert.match(await text(`${sheet} .inspector-fields`), /Contentsapp \(all tables\)/);
+  // The review sheet's Tool field: the resolver's line, with the path below it.
+  assert.match(await text(`${sheet} .inspector-fields`), /Toolmysqlsh 8\.4\.3 · Chosen folder · matches this server \(MySQL 8\.4\)\/Users\/dba\/maintenance\/bin\/mysqldump/);
   assert.match(await text(`${sheet} .ops-warning`), /^MySQL Shell .*older than the server/);
   assert.equal(await page.$eval(`${sheet} .ops-warning`, e => !!(e.compareDocumentPosition(e.parentElement.querySelector('.inspector-fields')) & Node.DOCUMENT_POSITION_FOLLOWING)), true);
   assert.equal(await page.$$eval(`${sheet} .ops-warning`, es => es.length), 2, 'routine caveats remain plain notes');
@@ -316,6 +415,16 @@ try {
   assert.equal(await page.$(`${view} .ops-details`), null, 'failed preflight clears old commands');
   await field('Output folder', dumpPlan.target);
 
+  // F3: tables picked for one dump never leak into the next one.
+  await page.click(`${view} [data-dump-tables] .perf-picker-button`);
+  await page.waitForSelector(".dump-table-panel [data-table=orders]");
+  await page.click(".dump-table-panel [data-table=orders] input");
+  await page.click(".dump-table-panel [data-table=users] input");
+  assert.equal(await page.$eval(".dump-table-panel .perf-picker-all input", (e) => e.checked), false, "picked tables uncheck All tables");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".dump-table-panel"));
+  assert.equal(await text(`${view} #ops-dump-tables`), "orders, users");
+
   // Start, progress, Cancel.
   next.start.push({ job: job(running, "job-1") });
   await preflight();
@@ -329,6 +438,7 @@ try {
   assert.deepEqual([started.operation, started.typed_target, started.confirmed, started.plan.binding], ["dump", dumpPlan.target, true, dumpPlan.binding]);
   await closedSheet();
   await page.waitForSelector(`${view} .ops-job[data-job=job-1][data-state=running]`);
+  assert.equal(await text(`${view} #ops-dump-tables`), "All tables (3)", "a started dump resets the next one to All tables");
   assert.match(await text(`${view} .ops-job`), /Dump · .*Running.*Cancel/);
   assert.match(await text(`${view} .ops-job .ops-progress`), /25%/);
   await page.waitForFunction(() => document.activeElement?.dataset.job === 'job-1');
@@ -370,6 +480,12 @@ try {
   assert.match(await text(`${view} .ops-job`), /Cancelled/);
   assert.match(await text(`${view} .ops-job .ops-warning`), /An incomplete dump may remain/);
   assert.equal(calls(REVEAL).length, 0, "cancelled dumps never open a folder");
+  const chosenParent = dumpPlan.target.slice(0, dumpPlan.target.lastIndexOf('/'));
+  assert.notEqual(chosenParent, tools.default_dump_parent);
+  await field("Output folder", "");
+  await page.waitForFunction(parent => document.querySelector('.ops-folder-input input')?.value.startsWith(parent + '/'), {}, chosenParent);
+  assert.equal(await page.$eval('.ops-folder-input input', e => e.value.slice(0, e.value.lastIndexOf('/'))), chosenParent,
+    "the earlier dump's chosen parent wins over the backend default in this window");
   const polls = calls(STATUS).length;
   await pause(2000);
   assert.equal(calls(STATUS).length, polls, "a finished job is not polled");
@@ -393,6 +509,7 @@ try {
   await section("Dump");
   await page.waitForSelector(`${view} .ops-job[data-job=job-2][data-state=done]`);
   assert.match(await text(`${view} .ops-job[data-job=job-2]`), /Completed/);
+  assert.equal(await text(`${view} #ops-dump-tables`), "All tables (3)", "reopening Dump after a completed dump starts from All tables");
   await settle(REVEAL, 1, 'a dump recovered after a lost Start reply auto-opens once');
   assert.deepEqual(calls(REVEAL)[0].body, { path: `${done.result.directory}/myflames-manifest.json` });
   const completedCard = `${view} .ops-job[data-job=job-2]`;
@@ -414,6 +531,22 @@ try {
     const path = document.querySelector(`${v} .ops-folder-input input`)?.value;
     return path?.startsWith('/Users/dba/maintenance/') && path !== old;
   }, {}, view, dumpPlan.target);
+
+  // F2: opening Dump or Restore re-reads the database list, once per opening,
+  // so a database created or dropped elsewhere shows up without Reload databases.
+  const schemaReads = () => calls("/api/live/schemas").length;
+  const schemaReadsBecome = async (n, message) => {
+    for (let i = 0; i < 100 && schemaReads() < n; i++) await pause(25);
+    assert.equal(schemaReads(), n, message);
+  };
+  const beforeTabs = schemaReads();
+  await section("Tools");
+  await section("Dump");
+  await schemaReadsBecome(beforeTabs + 1, "opening Dump re-reads the database list once");
+  await section("Restore");
+  await schemaReadsBecome(beforeTabs + 2, "opening Restore re-reads the database list once");
+  await pause(300);
+  assert.equal(schemaReads(), beforeTabs + 2, "an open section reads once");
 
   // Restore: the typed target gates Start.
   await section("Restore");
@@ -475,6 +608,64 @@ try {
   await settle(START, beforeAckStart + 1);
   assert.equal(calls(START).at(-1).body.typed_acknowledgement, systemPlan.required_acknowledgement);
   assert.deepEqual(calls(START).at(-1).body.plan, systemPlan, 'the reviewed plan and token are unchanged');
+
+  // F5: the Dump folder read (lifecycle-dump-info-1.0) shapes Default database
+  // up front. The preflight stays the authority: Start is never blocked on it.
+  const infoCalls = (directory) => calls(DUMPINFO).filter((c) => c.body.directory === directory);
+  const databaseOptions = () => page.$$eval(`${databaseChoice} option`, (os) => os.map((o) => o.textContent));
+  const databaseHint = () => page.$eval(databaseChoice, (e) => e.closest("label")?.querySelector(".hint")?.textContent || "");
+  const folderHint = () => page.$eval(`${view} .ops-folder-input input`, (e) => e.closest(".ops-field")?.querySelector(".hint")?.textContent || "");
+  await page.$eval(`${view} .ops-form details > summary`, (e) => { e.closest("details").open = true; });
+  await page.waitForFunction((s) => document.querySelectorAll(`${s} option`).length > 2, {}, databaseChoice);
+  assert.ok(infoCalls(dumpPlan.target).length >= 1, "the folder in the field was read");
+  assert.ok((await databaseOptions()).includes("New database…"), "a remap-allowed dump keeps today's choices");
+  // remap_allowed false: only As in the dump, the reason as the field's hint,
+  // and a previous choice resets.
+  dumpInfos.set("/dumps/own-databases", { status: 200, body: {
+    schema_version: "lifecycle-dump-info-1.0", tool: { name: "mysqldump", version: "8.4.3" }, engine: "mysql",
+    scope: { schemas: [], tables: [] }, structure_only: false, remap_allowed: false,
+    remap_reason: "This dump creates its own databases (CREATE DATABASE and USE), so it restores into them; choose As in the dump.",
+  } });
+  await page.select(databaseChoice, "mftab");
+  await field("Dump folder", "/dumps/own-databases");
+  await page.waitForFunction((s) => { const os = document.querySelectorAll(`${s} option`); return os.length === 1 && os[0].textContent === "As in the dump"; }, {}, databaseChoice);
+  assert.equal(await page.$eval(databaseChoice, (e) => e.value), "", "a previous choice resets to As in the dump");
+  assert.equal(await databaseHint(), "This dump creates its own databases (CREATE DATABASE and USE), so it restores into them; choose As in the dump.");
+  assert.equal(await text(`${view} .ops-note[role=status]`),
+    "Default database is back to As in the dump: This dump creates its own databases (CREATE DATABASE and USE), so it restores into them; choose As in the dump.",
+    "the reset of a chosen database is announced");
+  assert.equal(infoCalls("/dumps/own-databases").length, 1, "one read once typing settled");
+  assert.equal(await page.$eval(`${view} .ops-actions button.primary`, (e) => e.disabled), false, "Start is never blocked on the dump folder read");
+  // A failed read keeps today's choices and its sentence is the folder's hint.
+  dumpInfos.set("/dumps/broken", { status: 400, body: { error: "No completed myflames dump in /dumps/broken: myflames-manifest.json is missing." } });
+  await field("Dump folder", "/dumps/broken");
+  await page.waitForFunction((s) => {
+    const input = document.querySelector(`${s} .ops-folder-input input`);
+    return input?.closest(".ops-field")?.querySelector(".hint")?.textContent.includes("No completed myflames dump");
+  }, {}, view);
+  assert.ok((await databaseOptions()).includes("New database…"), "a failed read keeps today's choices");
+  assert.equal(await folderHint(), "No completed myflames dump in /dumps/broken: myflames-manifest.json is missing.", "a failed read is the folder field's hint");
+  // A folder change while a read is in flight: the latest request wins and the
+  // late answer never applies.
+  dumpInfos.set("/dumps/slow", { status: 200, delay: 700, body: {
+    schema_version: "lifecycle-dump-info-1.0", tool: { name: "mysqlsh", version: "9.6.0" }, engine: "mysql",
+    scope: { schemas: [], tables: [] }, structure_only: false, remap_allowed: false,
+    remap_reason: "Shell schema remapping is offered only for single-schema table dumps.",
+  } });
+  dumpInfos.set("/dumps/final", dumpInfoDefault);
+  await field("Dump folder", "/dumps/slow");
+  for (let i = 0; i < 100 && !infoCalls("/dumps/slow").length; i++) await pause(25);
+  assert.equal(infoCalls("/dumps/slow").length, 1, "the read for the typed folder started");
+  await field("Dump folder", "/dumps/final");
+  await page.waitForFunction((s) => { const os = [...document.querySelectorAll(`${s} option`)]; return os.length > 2 && os.at(-1).textContent === "New database…"; }, {}, databaseChoice);
+  await pause(900);
+  assert.ok((await databaseOptions()).includes("New database…"), "a late answer for a replaced folder never applies");
+  assert.equal(infoCalls("/dumps/slow").length, 1, "a replaced folder is not read again");
+  assert.equal(infoCalls("/dumps/final").length, 1, "the latest folder was read once");
+  // The remap-denied layout, both themes and widths.
+  await field("Dump folder", "/dumps/own-databases");
+  await page.waitForFunction((s) => document.querySelectorAll(`${s} option`).length === 1, {}, databaseChoice);
+  await captureSheet("restore-remap-denied");
 
   // Clone: the donor fields fill from a saved connection (never the one in
   // use, never a password), and stay editable.
@@ -706,6 +897,56 @@ try {
   assert.equal(await page.$(`${view} .ops-actions button.primary`), null, "unsupported clone has no write action");
   await section("Tools");
   await h.setPrivileges({});
+
+  // M3: a MariaDB server with no MariaDB client tools. Dump and Restore name
+  // the missing program and the engine note instead of offering dead choices,
+  // and the gate opens the Client tools dialog.
+  const noMariaTools = structuredClone(tools);
+  noMariaTools.server = { ...noMariaTools.server, engine: "mariadb", version: "11.4.5", product: "MariaDB" };
+  noMariaTools.offered = { ...noMariaTools.offered, dump: [], clone: false };
+  noMariaTools.used = {
+    client: { ...noMariaTools.used.client, reason: "other_engine" },
+    dump: null, load: null, backup: null, shell: noMariaTools.used.shell,
+    missing: [
+      { role: "dump", program: "mariadb-dump", text: "No usable mariadb-dump was found." },
+      { role: "load", program: "mariadb", text: "No usable mariadb was found." },
+    ],
+    notes: ["No MariaDB client tools were found; the MySQL client reads this server. Dumps and restores need MariaDB client tools."],
+  };
+  state.queue.push({ status: 200, body: noMariaTools });
+  await section("Tools");
+  await h.refresh(); await h.idle(view);
+  assert.match(await text(usedBlock), /No usable mariadb-dump was found\./);
+  await section("Dump");
+  await page.waitForSelector(`${view} .gate`);
+  const dumpGate = await text(`${view} .gate`);
+  assert.match(dumpGate, /No usable mariadb-dump was found\./);
+  assert.match(dumpGate, /Dumps and restores need MariaDB client tools\./);
+  assert.match(dumpGate, /Choose client tools…/);
+  // The Tool select offers only tools that can run: none here.
+  assert.deepEqual(await page.$$eval(`${view} select[aria-label="Tool"] option`, (os) => os.map((o) => [o.textContent, o.disabled])),
+    [["No dump tool for this server", true]], "no runnable tool is offered");
+  assert.equal(await page.$eval(`${view} select[aria-label="Tool"]`, (e) => e.disabled), true);
+  assert.equal(await page.$eval(`${view} .ops-actions button.primary`, (e) => e.disabled || e.getAttribute("aria-disabled") === "true"), true, "Start dump stays greyed");
+  assert.match(await text(`${view} .ops-actions`), /No usable mariadb-dump was found\./);
+  assert.doesNotMatch(await text(`${view} .ops-actions`), /Checks first/, "the reason replaces the Checks first hint");
+  await captureSheet("dump-no-tool");
+  await h.button("Choose client tools…", `${view} .gate `);
+  await page.waitForSelector("dialog.client-tools-dialog[open]");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.client-tools-dialog"));
+  assert.equal(await page.evaluate(() => document.activeElement?.textContent), "Choose client tools…", "closing the dialog returns focus to the gate button");
+  await section("Restore");
+  await page.waitForSelector(`${view} .gate`);
+  assert.match(await text(`${view} .gate`), /No usable mariadb was found\./);
+  assert.match(await text(`${view} .gate`), /Dumps and restores need MariaDB client tools\./);
+  assert.match(await text(`${view} .ops-actions`), /No usable mariadb was found\./);
+  assert.doesNotMatch(await text(`${view} .ops-actions`), /Checks first/);
+  await captureSheet("restore-no-tool");
+  // Back to the MySQL tools for the closing screenshots.
+  state.queue.push({ status: 200, body: tools });
+  await section("Tools");
+  await h.refresh(); await h.idle(view);
 
   await h.narrow("maintenance-390.png");
   await page.screenshot({ path: path.join(h.shots, "maintenance-1440.png") });

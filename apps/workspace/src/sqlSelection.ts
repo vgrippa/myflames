@@ -449,6 +449,16 @@ export function sqlRun(sql: string, selectionStart: number, selectionEnd: number
 const READ_STOP = new Set(["WHERE", "GROUP", "HAVING", "WINDOW", "ORDER", "LIMIT", "FOR", "LOCK", "INTO", "PROCEDURE"]);
 /** Index hints may follow the table (USE/FORCE/IGNORE INDEX (...)). */
 const INDEX_HINT = new Set(["USE", "FORCE", "IGNORE"]);
+const SELECT_MODIFIERS = new Set([
+  "ALL", "DISTINCT", "DISTINCTROW", "HIGH_PRIORITY", "STRAIGHT_JOIN",
+  "SQL_SMALL_RESULT", "SQL_BIG_RESULT", "SQL_BUFFER_RESULT", "SQL_NO_CACHE", "SQL_CALC_FOUND_ROWS",
+]);
+
+function selectListStart(tokens: string[]) {
+  let i = 1;
+  while (SELECT_MODIFIERS.has(keyword(tokens[i]))) i++;
+  return i;
+}
 
 /**
  * The statement's words, backtick identifiers and punctuation, with comments
@@ -496,7 +506,7 @@ export function singleTableRead(sql: string, backslash = true): { schema: string
   else if (first === "SELECT") {
     let depth = 0;
     const from: number[] = [];
-    for (let k = 0; k < tokens.length; k++) {
+    for (let k = selectListStart(tokens); k < tokens.length; k++) {
       const t = tokens[k];
       const w = keyword(t);
       if (t === "(") {
@@ -543,6 +553,69 @@ export function singleTableRead(sql: string, backslash = true): { schema: string
   // Nothing but the rest of a single-table read may follow (no comma join, no PARTITION list).
   if (i < tokens.length && tokens[i] !== ";" && !READ_STOP.has(keyword(tokens[i]))) return null;
   return { schema, table };
+}
+
+/**
+ * Source column names by result position, or null when the read/shape is
+ * ambiguous. Only a single SELECT from one table qualifies. Expressions get
+ * null entries, even when their aliases happen to name declared columns.
+ * A lone wildcard maps by result name; a mixed wildcard never borrows types.
+ */
+export function selectColumnReferences(sql: string, columns: string[], backslash = true): (string | null)[] | null {
+  if (sql.length > 65_536) return null;
+  const tokens = readTokens(sql, backslash);
+  if (!tokens || keyword(tokens[0]) !== "SELECT" || !singleTableRead(sql, backslash)) return null;
+  // A result statement must contain exactly one server statement, even when
+  // a custom client delimiter let several statements travel together.
+  if (tokens.some((t, i) => t === ";" && i !== tokens.length - 1)) return null;
+  const items: string[][] = [[]];
+  let depth = 0;
+  let foundFrom = false;
+  for (let i = selectListStart(tokens); i < tokens.length; i++) {
+    const t = tokens[i];
+    if (depth === 0 && keyword(t) === "FROM") { foundFrom = true; break; }
+    if (t === "(") depth++;
+    if (t === ")" && --depth < 0) return null;
+    if (t === "," && depth === 0) items.push([]);
+    else items[items.length - 1].push(t);
+  }
+  if (!foundFrom || depth !== 0 || items.some(item => !item.length)) return null;
+
+  // Bare SQL constants and no-parentheses functions are expressions. Quoted
+  // identifiers with these names are still ordinary column references.
+  const expressions = new Set([
+    "NULL", "TRUE", "FALSE", "UNKNOWN", "BINARY", "CASE", "INTERVAL", "DEFAULT",
+    "CURRENT_DATE", "CURRENT_TIME", "CURRENT_TIMESTAMP", "LOCALTIME", "LOCALTIMESTAMP",
+    "UTC_DATE", "UTC_TIME", "UTC_TIMESTAMP", "CURRENT_USER", "CURRENT_ROLE",
+    "SESSION_USER", "SYSTEM_USER", "USER",
+  ]);
+  const name = (t: string | undefined) => t && (t[0] === "`" || /^[A-Za-z_$\u0080-￿]/.test(t)) && !expressions.has(keyword(t))
+    ? identifier(t) : null;
+  function reference(item: string[]): string | null {
+    let i = 0;
+    let column = name(item[i++]);
+    if (!column) return null;
+    let parts = 1;
+    while (item[i] === ".") {
+      if (++parts > 3) return null;
+      column = name(item[i + 1]);
+      if (!column) return null;
+      i += 2;
+    }
+    if (keyword(item[i]) === "AS") i++;
+    if (i < item.length) {
+      if (!name(item[i])) return null;
+      i++;
+    }
+    // AS without an alias must not qualify.
+    if (keyword(item[item.length - 1]) === "AS") return null;
+    return i === item.length ? column : null;
+  }
+  const wildcard = (item: string[]) => item.length === 1 && item[0] === "*" ||
+    item.length === 3 && !!name(item[0]) && item[1] === "." && item[2] === "*";
+  if (items.length === 1 && wildcard(items[0])) return columns.map(c => c);
+  if (items.some(wildcard) || items.length !== columns.length) return null;
+  return items.map(reference);
 }
 
 /** The database a `USE name` statement selects, or null for any other statement. */

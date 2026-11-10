@@ -35,7 +35,7 @@ for (const [p, file] of [
   ["/api/live/sessions", "sessions-mysql-8.4.json"], ["/api/live/report", "report-mysql-8.4.json"],
   ["/api/live/replication", "replication-mysql-8.4-gtid-error.json"], ["/api/live/cluster", "cluster-ic-8.4-healthy.json"],
   ["/api/live/proxysql", "proxysql-lab.json"], ["/api/live/schemas", "schemas-mysql-8.4.json"],
-  ["/api/lifecycle/tools", "lifecycle-tools-mysql.json"],
+  ["/api/lifecycle/tools", "lifecycle-tools-mysql.json"], ["/api/live/memory", "memory-ok.json"],
 ]) F[p] = await load(file);
 F["/api/live/sessions"].server_identity = { server_uuid: "feedback-server-uuid" };
 const LOCKS_DDL = await load("locks-mysql-26.7-ddl.json");
@@ -413,7 +413,7 @@ function viewRefresh(view, place, apiPath, extra = {}) {
 const LIVE_VIEWS = ["/api/live/health", "/api/live/innodb", "/api/live/error-log", "/api/live/locks", "/api/live/indexes",
   "/api/live/tables", "/api/live/config", "/api/live/instruments", "/api/live/sessions", "/api/live/waits", "/api/live/io",
   "/api/live/top", "/api/live/replication", "/api/live/cluster", "/api/live/proxysql", "/api/accounts/list",
-  "/api/lifecycle/tools", "/api/schema-diagram/read", "/api/live/report"];
+  "/api/lifecycle/tools", "/api/schema-diagram/read", "/api/live/report", "/api/live/memory"];
 
 export const SCENARIOS = [
   ...operationScenarios({ click, named, visible, confirmButton, goPlace, goView, waitText, waitNotBusy,

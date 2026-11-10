@@ -8,7 +8,7 @@ myflames is a desktop performance workspace for MySQL, MariaDB and Percona Serve
 
 Download the signed, notarized `.dmg` from [official downloads](https://github.com/vgrippa/myflames/releases/latest), open it, and drag `myflames.app` to Applications. Open the app from Applications.
 
-The current downloadable release checked for this site is **3.3.3**. A macOS Intel binary is not advertised in this release.
+The current downloadable release checked for this site is **3.3.4**. A macOS Intel binary is not advertised in this release.
 
 ### Windows x64, preview
 
@@ -28,7 +28,9 @@ To share it, choose **Export** in Plans for a standalone HTML report or JSON. **
 
 ## Connect to a server
 
-Live features need a `mysql` or `mariadb` client. The desktop app includes the official MySQL 8.4 LTS client (`mysql` and `mysqldump`), so you can connect without installing one. A client you installed, reachable through PATH or standard vendor installation folders, is always preferred to the included one. MariaDB accounts that use `ed25519` or `parsec` authentication need an installed MariaDB client. Maintenance may also need `mysqlsh` or, for MariaDB servers, `mariadb-dump`. If myflames still cannot use a client, the view says so and offers **Choose client…**: pick `mysql` or `mariadb` (on Windows `mysql.exe` or `mariadb.exe` under Program Files or your profile), or open **Settings > Database client…** to see the client in use, the ones found, and to choose or clear one.
+The app includes the MySQL 8.4 LTS client (`mysql` and `mysqldump`) and finds installed client tools. For each server it prefers tools of the same engine and major.minor series, then the nearest newer series, then the newest older series with a warning. Within that series, authentication plugins come first, then the newest patch, then installed before bundled. MariaDB accounts using `ed25519` or `parsec` need MariaDB tools, and Maintenance may also need `mysqlsh` or `mariadb-dump`.
+
+Open **Settings > Client tools…** to see the programs for the connection in use and every installation found. MySQL and MariaDB each have a choice: **Automatic (best match for each server)** or an installation you choose. A choice that stops working stays selected with its error until you change it. If a view cannot use a client, **Choose client tools…** opens the same dialog; an authentication-plugin error names the plugin the client could not load.
 
 Add a connection on Home, choose a connection policy, and test it. Start with **Read-only** for inspection. Use SSH tunneling when your connection requires a bastion. Credentials and SSH configuration remain on your computer.
 

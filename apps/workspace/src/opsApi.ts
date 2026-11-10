@@ -1,7 +1,7 @@
 // Wire types for replication.py and lifecycle.py. Keep opaque, engine-specific
 // facts as JSON; statements, bindings and identities are round-tripped intact.
 import { useEffect, useRef } from "react";
-import { api, type Connection, type ConnectionType } from "./api";
+import { api, type ClientToolsOrigin, type ClientToolsReason, type ClientToolsUsed, type Connection, type ConnectionType } from "./api";
 import { connectionKey } from "./binding";
 import type { DatabaseTopologyTiers } from "./readysetApi";
 
@@ -143,15 +143,26 @@ export type DumpCapabilities = {options: DumpOption[]; groups?: [string, string]
 export type SchemaTable = { name: string; type: "table" | "view" | "system view" | "sequence"; engine?: string | null; rows?: number | null; bytes?: number | null };
 export type SchemaTables = { schema_version: "catalog-1.0"; level: "tables"; schema: string; tables: SchemaTable[]; truncated: boolean; limit: number; next_after: string | null; stats?: boolean };
 export type DumpOptions = Record<string, string | boolean | number>;
-export type Tool = { dump_capabilities?: DumpCapabilities; dump_table_capabilities?: DumpCapabilities; download_url?: string; update?: ToolUpdate; available: boolean; deprecated: boolean; path?: string; version?: string; version_tuple?: number[]; engine?: string; error?: string; name?: string };
+export type Tool = { dump_capabilities?: DumpCapabilities; dump_table_capabilities?: DumpCapabilities; download_url?: string; update?: ToolUpdate; available: boolean; deprecated: boolean; path?: string; version?: string; version_tuple?: number[]; engine?: string; error?: string; name?: string;
+  /** lifecycle-tools-2.0: where this copy comes from and why it was picked. */
+  installation?: string | null; origin?: ClientToolsOrigin; origin_label?: string; reason?: ClientToolsReason; warning?: string | null; realpath?: string;
+  /** Set on `copies` entries: this copy is the one chosen for the server. */
+  used?: boolean };
 export type LifecycleServer = {
   engine: string; version: string; identity?: Facts; variables?: Facts;
   /** mysql, percona or mariadb, and the product name (Percona Server keeps engine "mysql"). */
   flavor?: string; product?: string;
 };
 export type LifecycleTools = {
-  schema_version: "lifecycle-tools-1.0"; tools: Record<string, Tool>;
+  schema_version: "lifecycle-tools-2.0"; tools: Record<string, Tool>;
+  /** Backend-resolved real-user dump parent; suggesting it creates nothing. */
+  default_dump_parent: string;
   server: LifecycleServer;
+  /** Every copy found, one row per copy in the Tools table (copies of the
+   * tools map entries carry the same fields plus name and used). */
+  copies?: (Tool & { name: string })[];
+  /** The programs the resolver picked for this server (client-tools-1.0). */
+  used?: ClientToolsUsed;
   offered: { dump: string[]; upgrade: string; clone: boolean; physical_backup: boolean; physical_backup_requires_local_files: boolean };
   /** When the server cannot be read for lack of a client, tools and download
    * links still answer and server and offered are empty; this says why. */
@@ -221,6 +232,19 @@ export type LifecycleJob = {
   result: LifecycleResult | null; error: string; policy?: OpsPolicy;
 };
 export function jobActive(job: LifecycleJob) { return job.state === "queued" || job.state === "running"; }
+/** lifecycle-dump-info-1.0: what a dump folder restores into, read before the
+ * preflight so Restore's Default database choices match the dump. */
+export type DumpInfo = {
+  schema_version: "lifecycle-dump-info-1.0";
+  tool: { name: "mysqldump" | "mariadb-dump" | "mysqlsh"; version?: string };
+  engine: "mysql" | "mariadb";
+  scope: { schemas: string[]; tables: string[] };
+  structure_only: boolean;
+  /** null: too large to scan on a folder pick; the restore review decides. */
+  remap_allowed: boolean | null;
+  remap_reason: string;
+};
+export const readDumpInfo = (directory: string, signal?: AbortSignal) => api<DumpInfo>("lifecycle/dump-info", { directory }, signal);
 export const readLifecycleTools = (connection: Connection, signal?: AbortSignal, checkUpdates = false) => api<LifecycleTools>("lifecycle/tools", { connection, check_updates: checkUpdates }, signal);
 export const readUpgradeTargets = (connection: Connection, signal?: AbortSignal) => api<UpgradeTargets>("lifecycle/upgrade-targets", { connection }, signal);
 export const checkUpgrade = (connection: Connection, target_version: string, prefer_shell: boolean, signal?: AbortSignal) => api<UpgradeReport>("lifecycle/upgrade-check", { connection, target_version, prefer_shell }, signal);

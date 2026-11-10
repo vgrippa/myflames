@@ -2041,12 +2041,12 @@ export function DataTable<T>({
       // Neither do flags: a cell's pills keep their size (a name beside them truncates).
       const cells = t.tBodies[0].querySelectorAll<HTMLElement>(`:scope > tr[data-row-key] > td[data-col="${CSS.escape(key)}"]`);
       for (let i = 0; i < cells.length; i++) {
-        const pills = cells[i].querySelectorAll(".pill, .status-pill");
+        const pills = cells[i].querySelectorAll(".pill, .status-pill, .type-tag");
         if (!pills.length) continue;
         let flags = 0;
         pills.forEach((p) => (flags += p.getBoundingClientRect().width + 8));
         // A name beside the flags keeps a few characters.
-        const pillWidth = CELL_PAD + (cells[i].querySelector(".cell-name > :not(.pill, .status-pill)") ? 64 : 0) + flags;
+        const pillWidth = CELL_PAD + (cells[i].querySelector(".cell-name > :not(.pill, .status-pill, .type-tag)") ? 64 : 0) + flags;
         min = Math.max(min, Math.ceil(pillWidth));
         if ((nextFlags[key] || 0) < Math.ceil(flags) - 1) {
           nextFlags[key] = Math.ceil(flags);
@@ -2875,8 +2875,9 @@ export function SummaryLine({ tone, toneLabel, children, notes, notesTitle, extr
 }
 
 /** Facts on one line: "Server MySQL 8.4 · Uptime 2 d". Under 900 px it folds
- * into a Details disclosure so narrow windows reach the content first. */
-export function FactStrip({ label, facts }: { label: string; facts: [string, ReactNode][] }) {
+ * into a Details disclosure so narrow windows reach the content first.
+ * *title* explains the whole strip on hover. */
+export function FactStrip({ label, facts, title }: { label: string; facts: [string, ReactNode][]; title?: string }) {
   const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(max-width: 900px)").matches);
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
@@ -2892,7 +2893,7 @@ export function FactStrip({ label, facts }: { label: string; facts: [string, Rea
         <Icon name="disclosure" size={14} />
         Details
       </summary>
-      <dl className="fact-strip" aria-label={label}>
+      <dl className="fact-strip" aria-label={label} title={title}>
         {facts.map(([dt, dd]) => (
           <div key={dt}>
             <dt>{dt}</dt>
@@ -3467,10 +3468,22 @@ export function ViewLayout({
                   trigger={<Icon name="chevron-down" size={12} />}>
                   <div className="view-refresh-menu">
                     {refreshAll && (
+                      // aria-disabled while running, never disabled: a focused
+                      // button that turns disabled drops focus on the page;
+                      // this one keeps it until the menu returns it to its
+                      // Refresh options button.
                       <button type="button" role="menuitem" data-action="refresh-all"
-                        disabled={refreshAll.disabled || refreshAll.running}
+                        disabled={refreshAll.disabled}
+                        aria-disabled={refreshAll.running || undefined}
                         title={`Reads all ${refreshAll.count} sections on ${refreshAll.label} (${shortcut("R", true)})`}
-                        onClick={() => { closePopovers(); refreshAll.run(); }}>
+                        onClick={(e) => {
+                          if (refreshAll.running) return;
+                          // Hand focus to the Refresh options button first (it
+                          // stays focusable while busy), synchronously, so no
+                          // later effect has to win a race against a reader.
+                          e.currentTarget.closest(".view-refresh")?.querySelector<HTMLButtonElement>(".split-button-options")?.focus();
+                          closePopovers(); refreshAll.run();
+                        }}>
                         <span>Refresh every view on {refreshAll.label} ({shortcut("R", true)})</span>
                         <span className="hint">{refreshAll.count} sections</span>
                       </button>
@@ -3561,8 +3574,8 @@ export function ViewStatus({
   loading?: string;
   error?: string;
   /** The error's machine-readable reason (reads.errorCode). "client-missing"
-   * shows the ClientMissingNotice (Choose client…, Try again) instead of the
-   * bare text. */
+   * and "client-auth-plugin" show the ClientMissingNotice (Choose client
+   * tools…, Try again) instead of the bare text. */
   errorCode?: string;
   children?: ReactNode;
   /** Stop waiting for the read (reads.stop), offered once it is slow. */
@@ -3633,8 +3646,8 @@ export function ViewStatus({
       {showError && (
         // The alert holds the error alone; Try again sits beside it in the same box.
         <div className={`error view-status-error${onRetry ? " has-retry" : ""}`}>
-          {errorCode === "client-missing" ? (
-            <ClientMissingNotice onRetry={onRetry ? () => { onRetry(); refocus(); } : undefined} />
+          {errorCode === "client-missing" || errorCode === "client-auth-plugin" ? (
+            <ClientMissingNotice text={errorCode === "client-auth-plugin" ? error : ""} onRetry={onRetry ? () => { onRetry(); refocus(); } : undefined} />
           ) : (
             <>
               <p role="alert">

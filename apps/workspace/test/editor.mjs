@@ -116,6 +116,8 @@ const mock = {
   run: [], // queued replies for editor/run (else `runDefault`)
   status: [], // queued replies for editor/status with a run_id
   stopReply: null,
+  // The database list the editor's picker caches; tests add databases to it.
+  schemas: [{ name: "testdb", tables: 2, system: false }, { name: "mysql", tables: 38, system: true }],
   commit: [],
   rollback: [],
   close: [],
@@ -125,6 +127,7 @@ const mock = {
   holdStatus: false,
   holdRun: false,
   holdTable: false,
+  catalogColumns: null,
   privilegeActions: {},
   preview: null,
   holdPreview: false,
@@ -172,7 +175,7 @@ function reply(p, body) {
     case "/api/live/schemas":
       return {
         schema_version: "schemas-1.0", engine: "mysql", server_version: "8.4.3", taken_at: "x", uptime_s: 1, performance_schema: true,
-        schemas: [{ name: "testdb", tables: 2, system: false }, { name: "mysql", tables: 38, system: true }],
+        schemas: mock.schemas,
         user_tables: 2, all_limit: 2000, all_note: "", system: ["mysql"],
       };
     case "/api/live/catalog":
@@ -186,7 +189,7 @@ function reply(p, body) {
           tables: (filtered || (body.after ? ["users"] : ["orders"])).map((name) => ({ name, type: "table" })) };
       }
       return { schema_version: "catalog-1.0", level: "table", schema: body.schema, table: body.table,
-        columns: [{ name: "id", type: "int", nullable: false, key: "PRI", default: null, extra: "auto_increment", generated: false },
+        columns: mock.catalogColumns || [{ name: "id", type: "int", nullable: false, key: "PRI", default: null, extra: "auto_increment", generated: false },
           { name: "status", type: "varchar(20)", nullable: true, key: "MUL", default: null, extra: "", generated: false }],
         indexes: [{ name: "PRIMARY", unique: true, primary: true, type: "BTREE", columns: [{ name: "id", expression: null, sub_part: null }] }] };
   }
@@ -500,6 +503,73 @@ try {
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   await page.setViewport({ width: 1440, height: 1000 });
 
+  // 3b. SQL INSERT export borrows declared types for plain references only.
+  // LPAD(id, ...) AS id stays quoted even though the catalog calls id int;
+  // qty retains its own server type. XML results without types borrow once.
+  mock.catalogColumns = ["id", "qty"].map(name => ({ name, type: "int", nullable: false,
+    key: "", default: null, extra: "", generated: false }));
+  mock.run.push({
+    status: "complete",
+    session: session(),
+    run: run(
+      [statement(0, "SELECT LPAD(id, 5, '0') AS id, qty FROM shop.users", 0)],
+      [rows(0, [{ name: "id", hex: false, type: null }, { name: "qty", hex: false, type: "int" }], [["00123", "7"], ["00042", "8"]])],
+    ),
+  });
+  await setText("SELECT LPAD(id, 5, '0') AS id, qty FROM shop.users");
+  const beforeUsersRun = calls("/api/editor/run").length;
+  await page.click("[data-action=run-all]");
+  await ran(beforeUsersRun + 1);
+  await idle();
+  await page.locator(".result-export button ::-p-text(Export)").click();
+  await page.waitForSelector(".popover .export-sql");
+  assert.deepEqual(await page.$$eval(".popover .export-sql input", (els) => els.map((e) => e.value)), ["users", "shop"]);
+  const exportsBefore = calls("/api/editor/export").length;
+  const catalogBefore = calls("/api/live/catalog").length;
+  await page.locator(".popover button ::-p-text(Download SQL)").click();
+  const sqlExport = await until(() => calls("/api/editor/export").length > exportsBefore && calls("/api/editor/export").at(-1), "no SQL export");
+  assert.equal(sqlExport.format, "sql");
+  assert.equal(sqlExport.result.columns[0].type, null, "an alias reusing a column name stays untyped, so 00123 keeps its quotes");
+  assert.equal(sqlExport.result.columns[1].type, "int", "a result column the server typed numeric is written unquoted");
+  assert.deepEqual(sqlExport.result.rows, [["00123", "7"], ["00042", "8"]]);
+  assert.equal(calls("/api/live/catalog").length, catalogBefore + 1, "at most one catalog read for an export");
+  assert.equal(calls("/api/live/catalog").at(-1).table, "users");
+  assert.equal(calls("/api/live/catalog").at(-1).schema, "shop");
+  await page.waitForSelector(".popover .export-sql", { hidden: true });
+
+  // Direct columns use their source's declared types, even when the INSERT
+  // target is edited. A UNION cannot borrow from either input table.
+  for (const union of [false, true]) {
+    const sql = "SELECT id, qty FROM shop.users" + (union ? " UNION SELECT id, qty FROM shop.other" : "");
+    mock.run.push({ status: "complete", session: session(),
+      run: run([statement(0, sql, 0)], [rows(0, ["id", "qty"], [["1", "7"]])]) });
+    await setText(sql);
+    const beforeRun = calls("/api/editor/run").length;
+    await page.click("[data-action=run-all]");
+    await ran(beforeRun + 1);
+    await idle();
+    await page.locator(".result-export button ::-p-text(Export)").click();
+    await page.waitForSelector(".popover .export-sql");
+    await page.locator('.popover .export-sql input[placeholder="Target table name"]').fill("users_copy");
+    const beforeExport = calls("/api/editor/export").length;
+    const beforeCatalog = calls("/api/live/catalog").length;
+    await page.locator(".popover button ::-p-text(Download SQL)").click();
+    const exported = await until(() => calls("/api/editor/export").length > beforeExport && calls("/api/editor/export").at(-1), "no direct/UNION SQL export");
+    assert.equal(exported.format, "sql");
+    assert.equal(exported.table, "users_copy");
+    assert.deepEqual(exported.result.columns.map(c => c.type), union ? [null, null] : ["int", "int"],
+      union ? "UNION values stay quoted" : "both direct integer columns are unquoted");
+    assert.equal(calls("/api/live/catalog").length, beforeCatalog + (union ? 0 : 1),
+      union ? "UNION never reads a table's types" : "one catalog read per direct-column export");
+    if (!union) {
+      const catalogRead = calls("/api/live/catalog").at(-1);
+      assert.deepEqual([catalogRead.schema, catalogRead.table], ["shop", "users"], "read the source, not the INSERT target");
+      assert.deepEqual(catalogRead.connection, calls("/api/editor/run").at(-1).connection, "catalog uses the result's session connection");
+    }
+    await page.waitForSelector(".popover .export-sql", { hidden: true });
+  }
+  mock.catalogColumns = null;
+
   // 4. An error: Messages, the underline, and Go to line.
   const BAD = "SELECT 1;\nSELEC 2 FROM t";
   await setText(BAD);
@@ -512,7 +582,7 @@ try {
     ),
   });
   await page.click("[data-action=run-all]");
-  await ran(5);
+  await ran(8);
   await page.waitForSelector(".message-error");
   assert.equal(await page.$eval(".results-tabs [aria-selected=true]", (e) => e.textContent), "Messages1", "an error opens Messages");
   assert.match(await text(".message-error"), /ERROR 1064 \(42000\): You have an error/);
@@ -528,7 +598,7 @@ try {
   mock.run.push({ status: "running", session: session({ state: "running" }), run: running });
   mock.holdStatus = true;
   await chord("Enter");
-  await ran(6);
+  await ran(9);
   await page.waitForSelector(".results-running");
   assert.equal(await page.$eval("[data-action=stop]", (e) => e.disabled), false);
   await until(() => heldStatus.length > 0, "no status poll while running");
@@ -551,7 +621,7 @@ try {
   mock.holdStatus = true;
   await page.focus(EDITOR);
   await chord("Enter");
-  await ran(7);
+  await ran(10);
   await page.waitForSelector(".results-running");
   await page.focus(EDITOR);
   await page.keyboard.press("Escape");
@@ -575,7 +645,7 @@ try {
     run: run([statement(0, "SELECT * FROM orders", 0)], [rows(0, ["id"], [["1"], ["2"]], { stopped: "row_limit", label: "stopped after 2 rows", truncated: true, limit: 2 })]),
   });
   await chord("Enter");
-  body = await ran(8);
+  body = await ran(11);
   assert.equal(body.limit, 2);
   await page.waitForSelector(".result-cut");
   assert.equal(await text(".result-cut"), "stopped after 2 rows");
@@ -585,7 +655,7 @@ try {
     run: run([statement(0, "SELECT * FROM orders", 0)], [rows(0, ["id"], [["1"], ["2"], ["3"], ["4"], ["5"]], { limit: 1002 })]),
   });
   await page.locator(".result-actions button ::-p-text(Load more)").click();
-  body = await ran(9);
+  body = await ran(12);
   assert.equal(body.limit, 1002);
   // The run's own text with that statement selected, in the same session.
   assert.equal(body.sql, "SELECT * FROM orders");
@@ -604,7 +674,7 @@ try {
   mock.run.push({ status: "complete", session: session({ in_transaction: true, autocommit: true }), run: run([statement(0, "START TRANSACTION", 0, { kind: "write" })], [{ type: "ok", statement: 0, affected_rows: 0, info: null, warnings: 0, duration_ms: 1 }]) });
   await setText("START TRANSACTION");
   await chord("Enter");
-  await ran(10);
+  await ran(13);
   await page.waitForFunction(() => document.querySelector(".tx-state")?.dataset.state === "Transaction open");
   assert.ok(await page.$('.query-tabs .tab-transaction[aria-label="Transaction open"]'), "the tab shows its open transaction");
   const action = (verb) => ({ status: "complete", session: session({ in_transaction: false }), run: run([statement(0, verb, 0, { kind: verb === "COMMIT" ? "write" : "read" })], [{ type: "ok", statement: 0, affected_rows: 0, info: null, warnings: 0, duration_ms: 1 }], { kind: "action" }) });
@@ -619,7 +689,7 @@ try {
   mock.run.push({ status: "complete", session: session({ in_transaction: true }), run: run([statement(0, "BEGIN", 0, { kind: "write" })], [{ type: "ok", statement: 0, affected_rows: 0, info: null, warnings: 0, duration_ms: 1 }]) });
   await setText("BEGIN");
   await chord("Enter");
-  await ran(11);
+  await ran(14);
   await page.waitForSelector(".editor-transaction-trigger");
   await page.click(".editor-transaction-trigger");
   await page.waitForSelector("[data-action=commit]");
@@ -647,7 +717,7 @@ try {
   mock.run.push({ status: "complete", session: session({ tab_id: "2", in_transaction: null, transaction_note: "The transaction instrument is off." }), run: run([statement(0, "UPDATE t SET a = 1 WHERE id = 1", 0, { kind: "write" })], [{ type: "ok", statement: 0, affected_rows: 1, info: null, warnings: 0, duration_ms: 1 }]) });
   await setText("UPDATE t SET a = 1 WHERE id = 1");
   await chord("Enter");
-  await ran(12);
+  await ran(15);
   await page.waitForFunction(() => document.querySelector(".tx-state")?.dataset.state === "Transaction unknown");
   // The footer leaves the transaction to the toolbar, which is always shown:
   // Query digest is a place of its own, not a mode of the editor.
@@ -860,9 +930,12 @@ try {
   await page.waitForFunction((sel) => document.querySelector(sel).value === "SELECT * FROM customers WHERE id = 7", {}, EDITOR);
   await page.click('button[aria-label="Hide the history"]');
 
-  // 10. Schema browser: one automatic list read; details stay lazy.
-  assert.equal(seen.filter((s) => s.path === "/api/live/schemas").length, 1, "one schema-list read when the editor opens");
-  assert.equal(calls("/api/live/catalog").length, 0, "table details stay lazy");
+  // 10. Schema browser: one automatic list read on open; the DROP DATABASE
+  // run above re-read it once (a dropped database leaves the picker).
+  // Details stay lazy.
+  assert.equal(seen.filter((s) => s.path === "/api/live/schemas").length, 2,
+    "one schema-list read on open, one after DROP DATABASE (showing the editor again after Home reads nothing)");
+  assert.equal(calls("/api/live/catalog").filter((b) => b.schema === "testdb").length, 0, "table details stay lazy");
   const treeRow = async (kind, label) => {
     await page.waitForFunction((kind, label) => [...document.querySelectorAll(`.tree-row.kind-${kind}`)].some((r) => r.querySelector(".tree-label")?.textContent === label), {}, kind, label);
     for (const handle of await page.$$(`.tree-row.kind-${kind}`))
@@ -874,9 +947,10 @@ try {
   await more.focus();
   await page.keyboard.press("Enter");
   const users = await treeRow("table", "users");
-  assert.equal(calls("/api/live/catalog")[0].schema, "testdb");
-  assert.equal(calls("/api/live/catalog")[1].after, "orders");
-  assert.equal(calls("/api/live/catalog")[1].prefix, "");
+  const treeReads = calls("/api/live/catalog").filter((b) => b.schema === "testdb");
+  assert.equal(treeReads[0].schema, "testdb");
+  assert.equal(treeReads[1].after, "orders");
+  assert.equal(treeReads[1].prefix, "");
   assert.equal(await page.$(".tree-row.kind-more"), null, "no continuation after the last page");
   assert.equal(await page.$eval(".schema-browser", e => /Showing the first/.test(e.textContent)), false, "the cap notice goes away on the last page");
   assert.equal((await page.$$(".tree-row.kind-table")).length, 2, "pages are appended");
@@ -924,7 +998,7 @@ try {
   await page.click('.editor-toolbar button[aria-label="Show the schema browser"]');
   await page.waitForFunction(() => document.querySelector(".schema-browser-slot")?.hidden === false);
   assert.ok(await page.$(".tree-row.kind-column"), "the tree is still there");
-  assert.equal(calls("/api/live/schemas").length, 1, "and nothing was read again");
+  assert.equal(calls("/api/live/schemas").length, 2, "and nothing was read again");
 
   // A prefix is sent to the server, including literal SQL wildcard characters;
   // it can find a table outside the pages already loaded in the tree.
@@ -942,6 +1016,79 @@ try {
   await page.keyboard.press("Backspace");
   await treeRow("table", "users");
   assert.equal((await page.$$(".tree-row.kind-table")).length, 2, "clearing the prefix restores all loaded pages");
+
+  // 10b. The Database picker's catalog does not go stale (T3a): a run with
+  // CREATE/DROP DATABASE (or a statement the editor cannot classify) re-reads
+  // it, and showing the editor again re-reads it too. A plain SELECT keeps
+  // the cached list.
+  const schemaReads = () => calls("/api/live/schemas").length;
+  const databaseNames = () => page.$$eval('[data-action="database"] option', (els) => els.map((e) => e.value));
+  assert.ok((await databaseNames()).includes("testdb"), "the picker starts from the cached list");
+  let catalogReads = schemaReads();
+  const runsBeforeCatalog = calls("/api/editor/run").length;
+  await setText("SELECT 1");
+  await chord("Enter");
+  await ran(runsBeforeCatalog + 1);
+  await idle();
+  await pause(150);
+  assert.equal(schemaReads(), catalogReads, "a SELECT keeps the cached database list");
+  mock.run.push({ status: "complete", session: session(), run: run(
+    [statement(0, "CREATE DATABASE newdb", 0, { verb: "CREATE DATABASE", kind: "write", category: "ddl" })],
+    [{ type: "ok", statement: 0, affected_rows: 1, info: null, warnings: 0, duration_ms: 3 }]) });
+  mock.schemas = [...mock.schemas, { name: "newdb", tables: 0, system: false }];
+  await setText("CREATE DATABASE newdb");
+  await chord("Enter");
+  await until(() => schemaReads() === catalogReads + 1, "CREATE DATABASE did not re-read the database list");
+  await until(async () => (await databaseNames()).includes("newdb"), "the picker lacks the database created a moment ago");
+  // Focusing the picker right after a read does not refetch.
+  await page.focus('[data-action="database"]');
+  await pause(150);
+  assert.equal(schemaReads(), catalogReads + 1, "opening the picker within the stale interval does not refetch");
+  // A statement the editor cannot classify (no verb) re-reads it too.
+  catalogReads = schemaReads();
+  mock.run.push({ status: "complete", session: session(), run: run(
+    [statement(0, "SELECT 1", 0, { verb: null, kind: null, category: null })], [rows(0, ["1"], [["1"]])]) });
+  await setText("SELECT 1");
+  await chord("Enter");
+  await until(() => schemaReads() === catalogReads + 1, "an unclassifiable statement did not re-read the database list");
+  // Shown again (a restore into a new database happened elsewhere), the
+  // editor keeps its list (each read counts tables); opening the picker
+  // re-reads a list older than 10 seconds, without an app restart.
+  catalogReads = schemaReads();
+  await page.locator(".main-nav button ::-p-text(Home)").click();
+  await page.waitForSelector(".home", { visible: true });
+  mock.schemas = [...mock.schemas, { name: "restoredb", tables: 1, system: false }];
+  await page.locator(".main-nav button ::-p-text(Query editor)").click();
+  await page.waitForSelector(EDITOR);
+  await pause(300);
+  assert.equal(schemaReads(), catalogReads, "showing the editor again keeps a list nothing invalidated");
+  await pause(10_500);
+  await page.focus('[data-action="database"]');
+  await until(() => schemaReads() === catalogReads + 1, "opening the picker did not re-read a list older than 10 seconds");
+  await until(async () => (await databaseNames()).includes("restoredb"), "the picker lacks the database created while away");
+  // A CREATE DATABASE that ends while the editor is hidden reads nothing
+  // then (the view is off screen); showing the editor reads the list once.
+  catalogReads = schemaReads();
+  mock.holdRun = true;
+  await setText("CREATE DATABASE laterdb");
+  await chord("Enter");
+  await until(() => held.some((e) => e.path === "/api/editor/run" && e.body.sql === "CREATE DATABASE laterdb"), "the CREATE DATABASE run was not sent");
+  await page.locator(".main-nav button ::-p-text(Home)").click();
+  await page.waitForSelector(".home", { visible: true });
+  mock.holdRun = false;
+  const heldCreate = held.find((e) => e.path === "/api/editor/run" && e.body.sql === "CREATE DATABASE laterdb");
+  held.splice(held.indexOf(heldCreate), 1);
+  mock.schemas = [...mock.schemas, { name: "laterdb", tables: 0, system: false }];
+  answerHeld(heldCreate, { status: "complete", session: session(), run: run(
+    [statement(0, "CREATE DATABASE laterdb", 0, { verb: "CREATE DATABASE", kind: "write", category: "ddl" })],
+    [{ type: "ok", statement: 0, affected_rows: 1, info: null, warnings: 0, duration_ms: 3 }]) });
+  await pause(500);
+  assert.equal(schemaReads(), catalogReads, "a run that ended while the editor was hidden read no database list");
+  await page.locator(".main-nav button ::-p-text(Query editor)").click();
+  await page.waitForSelector(EDITOR);
+  await until(() => schemaReads() === catalogReads + 1, "showing the editor again did not read the invalidated list");
+  await until(async () => (await databaseNames()).includes("laterdb"), "the picker lacks the database created while hidden");
+  await idle();
 
   // 11. The session ended: what was lost, and Reconnect (never automatic).
   mock.run.push({ status: "session_ended", session: session({ ended: true, ended_reason: "connection_lost", state: "ended", message: "Session ended. Session settings were lost and any open transaction was rolled back." }),
@@ -1688,6 +1835,21 @@ try {
   await page.waitForFunction(() => document.querySelector('[data-action=run]')?.title.includes("read-only"));
   assert.equal(await page.$eval('[data-action=run]', e => e.getAttribute("aria-disabled")), "true");
   await sharedPrivilegeNotice("This connection is read-only.");
+
+  // F7b: a refused Run all (several DDL statements) says so once, in the
+  // banner, not also in amber beside Auto-commit.
+  const ddlRefusal = "Run DDL statements one at a time, with a separate confirmation for each; nothing was sent.";
+  mock.preview = () => ({ ...previewReply("allowed"), policy: { action: "refuse", text: ddlRefusal } });
+  await setText("CREATE TABLE t1 (id INT);\nCREATE TABLE t2 (id INT)");
+  await page.waitForFunction((t) => document.querySelector(".editor-privilege-note")?.textContent === t, {}, ddlRefusal);
+  const ddlBefore = calls("/api/editor/run").length;
+  await page.focus(EDITOR);
+  await chord("Enter", true);
+  assert.equal(calls("/api/editor/run").length, ddlBefore, "a refused Run all sends nothing");
+  await page.waitForFunction((t) => [...document.querySelectorAll("p.error[role=alert]")].some((e) => e.textContent.includes(t)), {}, ddlRefusal);
+  assert.equal(await page.$(".editor-privilege-note"), null, "the banner's refusal is not repeated beside Auto-commit");
+  await page.click("p.error[role=alert] .notice-dismiss");
+  await page.waitForFunction(() => !document.querySelector("p.error[role=alert]"));
   mock.preview = null;
   // An unknown persistent session (including SET ROLE) stays runnable.
   for (const sql of ["SET ROLE NONE", "SET GLOBAL max_connections = 123"]) {

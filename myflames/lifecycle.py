@@ -8,7 +8,8 @@ profile safety from dbops.connection_safety, not a policy supplied by a client.
 No CLI, HTTP endpoint, global registry, or process starts on import.
 
 Wire contracts:
-  lifecycle-tools-1.0: tools[name] {available, path, version, engine, deprecated}
+  lifecycle-tools-2.0: tools[name] {available, path, version, engine, deprecated},
+    default_dump_parent (the real user's Documents/myflames dumps, or home fallback).
   upgrade-check-1.0: server, target_version, method, partial, checks[], counts,
     manual_checks[], limitations[], status (findings are NOT a process failure).
   lifecycle-plan-1.0: operation, request, server, connection_key, tool, target,
@@ -18,10 +19,12 @@ Wire contracts:
     written_bytes and the server's estimated_bytes, else null);
     result: status, verification[] and (for dumps) manifest.
     Failures include failure_category (input, connection, operation).
-  Restore plans carry manifest, manifest_hash, required_acknowledgement and a
+  Restore plans carry manifest, manifest_hash, create_database, sql_scan,
+    remap_allowed, remap_reason, required_acknowledgement and a
     staging_space check. Start requires typed_acknowledgement for mysql table
     replacement, in addition to typed_target and existing_objects=drop.
-  lifecycle-manifest-1.0: source, scope, tool, options, started_at, finished_at,
+  lifecycle-manifest-1.0: source, scope, schema_defaults (per-schema character_set
+    and collation; optional for older dumps), tool, options, started_at, finished_at,
     files[{path,size_bytes,sha256}], samples[], verification[], complete.
   tool-groups-1.0 (ToolGroups file for a supervising desktop app): groups[]
     (process group ids of running external tools).
@@ -32,6 +35,7 @@ Database contracts and source locations: .claude/skills/server-lifecycle/SKILL.m
 Native checks deliberately cover a small documented set, not Shell's checker.
 No MySQL Shell implementation is vendored or translated here.
 """
+import codecs
 import collections
 import contextlib
 import copy
@@ -39,6 +43,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import stat
@@ -70,6 +75,9 @@ MANIFEST = 'myflames-manifest.json'
 MAX_RESTORE_FILES = 10000
 MAX_RESTORE_BYTES = 10 * 1024 * 1024 * 1024
 MAX_RESTORE_DIRECTORIES = 10000
+# Folder picks are advisory (the UI reads after each pause in typing): scan
+# at most this much; the restore review decides for larger dumps.
+DUMP_INFO_SCAN_BYTES = 16 * 1024 * 1024
 DOC = 'https://dev.mysql.com/doc/refman/8.4/en/'
 SHELL_DOC = 'https://dev.mysql.com/doc/mysql-shell/9.6/en/mysql-shell-utilities-upgrade.html'
 # Intentionally limited metadata checks; dates verified in the versioned manual.
@@ -224,84 +232,84 @@ def _report_safe(value, passwords=(), field=''):
     return value
 
 
-# Completed local version probes only. Release-page results belong to tool_updates.
-_PROBE_CACHE = collections.OrderedDict()
-_PROBE_LOCK = threading.Lock()
-_PROBE_TTL = 60
-_PROBE_LIMIT = 64
+def detect_tools(path=None, common_dirs=None, job=None, check_updates=False, refresh=False, server=None):
+    """Describe every copy; select per server using the Settings client policy.
 
-
-def _probe_key(name, binary):
-    try:
-        info = os.stat(binary)
-        return (name, os.path.realpath(binary), info.st_dev, info.st_ino,
-                info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-    except OSError:
-        return None
-
-
-def detect_tools(path=None, common_dirs=None, job=None, check_updates=False, refresh=False):
-    """Discover each external tool, including deprecated mysqlpump (never offered).
-
-    common_dirs=() makes PATH-only discovery deterministic for callers/tests.
-    An unrecognized or failing version probe is unavailable, never guessed.
-    Completed probes are memoized for 60 seconds by binary identity; discovery
-    still runs every time. refresh=True bypasses the cache. Failures to launch
-    and timeouts are never cached. No network check runs unless requested.
+    Without server facts, preserve the first copy in search order. Selection
+    never substitutes another installation for a missing explicit choice.
     """
-    found = {}
-    # The desktop app's bundled mysql and mysqldump come after every installed
-    # tool, the common folders included (connector.bundled_client_dir).
-    bundled = bundled_client_dir() if path is None else None
-    search = installed_search_path(bundled) if bundled else path
-    for name in TOOLS:
-        if job:
-            job.check_cancel()
-        binary = shutil.which(name, path=search)
-        if not binary:
-            for folder in COMMON_BIN_DIRS if common_dirs is None else common_dirs:
-                candidate = os.path.join(folder, name)
-                if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-                    binary = candidate
-                    break
-        if not binary and bundled:
-            binary = bundled_program(bundled, name)
-        entry = {'available': False, 'deprecated': name == 'mysqlpump'}
-        if binary:
-            entry['path'] = os.path.abspath(binary)
-            # Discovery is cheap and always fresh. A replaced binary invalidates
-            # the cache even when its path and mtime were preserved.
-            with _PROBE_LOCK:
-                if job:
-                    job.check_cancel()
-                cache_key = _probe_key(name, binary)
-                cached = _PROBE_CACHE.get(cache_key)
-                if not refresh and cached and time.monotonic() - cached[0] < _PROBE_TTL:
-                    entry.update(copy.deepcopy(cached[1]))
-                else:
-                    try:
-                        with tempfile.TemporaryDirectory(prefix='myflames-probe-') as home:
-                            child = subprocess.run([entry['path'], '--version'], stdout=subprocess.PIPE,
-                                                   stderr=subprocess.STDOUT, timeout=8, env=_clean_env(home))
-                        output = child.stdout.decode('utf-8', 'replace').strip()[:4096]
-                        entry['version'] = output
-                        entry['version_tuple'] = list(version_tuple(output))
-                        entry['engine'] = detect_flavor(output)
-                        entry['available'] = child.returncode == 0 and version_tuple(output) != (0, 0, 0)
-                        if not entry['available']:
-                            entry['error'] = 'Version probe failed or returned an unrecognized version.'
-                        if cache_key is not None and _probe_key(name, binary) == cache_key:
-                            fields = {key: value for key, value in entry.items() if key not in ('path', 'deprecated')}
-                            _PROBE_CACHE[cache_key] = (time.monotonic(), copy.deepcopy(fields))
-                            _PROBE_CACHE.move_to_end(cache_key)
-                            while len(_PROBE_CACHE) > _PROBE_LIMIT:
-                                _PROBE_CACHE.popitem(last=False)
-                    except (OSError, subprocess.TimeoutExpired) as exc:
-                        entry['error'] = type(exc).__name__
-        found[name] = entry
+    from . import client_tools, connector
     from .tool_updates import enrich_tools
-    return enrich_tools({'schema_version': 'lifecycle-tools-1.0', 'tools': found},
-                        check_updates=check_updates)
+    choices = connector.client_choices()
+    discovered = client_tools.discover_lifecycle(path, common_dirs, choices, refresh, job)
+    keys, errors = client_tools.choice_keys(discovered, choices)
+    used = client_tools.select(discovered, server, keys) if server is not None else None
+    if used and errors.get(server['engine']):
+        # A stale choice is not Automatic. Keep the inventory visible but make
+        # every engine-bound role unavailable rather than silently falling back.
+        text = errors[server['engine']]
+        for role in ('client', 'dump', 'load', 'backup'):
+            selected = used.get(role)
+            program = selected['program'] if selected else {
+                'client': 'mysql' if server['engine'] == 'mysql' else 'mariadb',
+                'dump': 'mysqldump' if server['engine'] == 'mysql' else 'mariadb-dump',
+                'load': 'mysql' if server['engine'] == 'mysql' else 'mariadb',
+                'backup': 'mariadb-backup'}[role]
+            used[role] = None
+            used['missing'] = [m for m in used['missing'] if m['role'] != role]
+            used['missing'].append(dict(role=role, program=program, text=text))
+    copies = copy.deepcopy(discovered['copies'])
+    found = {}
+    roles = {'mysql': 'load', 'mariadb': 'load', 'mysqldump': 'dump',
+             'mariadb-dump': 'dump', 'mariadb-backup': 'backup', 'mysqlsh': 'shell'}
+    for name in TOOLS:
+        entry = dict(available=False, deprecated=name == 'mysqlpump', realpath=None,
+                     installation=None, origin=None, origin_label=None, reason=None, warning=None)
+        first = next((c for c in copies if c['name'] == name), None)
+        if server is None or name == 'mysqlpump':
+            if first:
+                entry.update({k: v for k, v in first.items() if k != 'name'})
+        else:
+            role = roles.get(name)
+            selected = used.get(role) if role else client_tools.select_program(discovered, server, name, keys)
+            if not role and errors.get(server['engine']):
+                selected = None
+            if selected and selected['program'] == name:
+                chosen = next(c for c in copies if c['realpath'] == selected['realpath'])
+                entry.update({k: v for k, v in chosen.items() if k != 'name'})
+                entry.update(reason=selected['reason'], warning=selected['warning'])
+            else:
+                missing = next((m for m in used['missing'] if m['role'] == role), None)
+                entry['error'] = (missing['text'] if missing else errors.get(server['engine']) or
+                                  ('The installation chosen in Settings > Client tools has no %s.' % name
+                                   if keys.get(server['engine']) else
+                                   'No usable %s was selected for this server.' % name))
+        if name == 'mysqlpump':
+            entry['used'] = False
+        found[name] = entry
+    selected_paths = {item['path']: item for item in
+                      (used.get(role) for role in ('shell', 'backup', 'load', 'dump', 'client'))
+                      if item} if used is not None else {}
+    for entry in copies:
+        selected = (selected_paths.get(entry['path'], {}) if used is not None else
+                    found.get(entry['name'], {}))
+        entry['used'] = bool(entry['name'] != 'mysqlpump' and entry.get('available') and
+                             selected.get('path') == entry['path'])
+        if entry['used']:
+            entry.update(reason=selected['reason'], warning=selected['warning'])
+    report = dict(schema_version='lifecycle-tools-2.0', tools=found, copies=copies,
+                  default_dump_parent=default_dump_parent())
+    if used is not None:
+        # Match the public client-tools Use shape, not selector-only facts.
+        used.pop('server', None)
+        for role in ('client', 'dump', 'load', 'backup', 'shell'):
+            if used[role] is not None:
+                used[role] = {k: v for k, v in used[role].items()
+                              if k not in ('realpath', 'version_tuple', 'order')}
+                if role == 'shell':
+                    used[role]['installation'] = None
+        report['used'] = used
+    return enrich_tools(report, check_updates=check_updates)
 
 
 def _tool(tools, name):
@@ -312,13 +320,31 @@ def _pick(tools, names, engine=None):
     for name in names:
         entry = _tool(tools, name)
         if entry.get('available') and not entry.get('deprecated') and (not engine or entry.get('engine') == engine):
-            return dict(entry, name=name)
+            fields = ('path', 'realpath', 'version', 'version_tuple', 'engine', 'installation',
+                      'origin', 'origin_label', 'reason', 'warning', 'available', 'deprecated')
+            return dict({key: copy.deepcopy(entry[key]) for key in fields if key in entry}, name=name)
+    missing = next((_tool(tools, name).get('error') for name in names
+                    if 'Settings > Client tools' in (_tool(tools, name).get('error') or '')), None)
+    if missing:
+        raise Refused(missing)
     other = [name for name in names if _tool(tools, name).get('available')]
     note = (' (%s here is from %s, which this %s server does not use)' % (
         ' and '.join(other), 'MariaDB' if engine == 'mysql' else 'MySQL', 'MySQL' if engine == 'mysql' else 'MariaDB')
         if other and engine else '')
     raise Refused('No usable %s on this machine%s. Install %s client tools and run it again.' % (
         ' or '.join(names), note, 'MariaDB' if engine == 'mariadb' else 'MySQL'))
+
+
+def _load_tool(tools, engine):
+    """Use the selector's load role, tied to the selected dump installation."""
+    used = tools.get('used')
+    if used is not None:
+        load = used.get('load')
+        if load and load['engine'] == engine:
+            name = load['program']
+            entry = dict(_tool(tools, name), reason=load['reason'], warning=load['warning'])
+            return _pick({'tools': {name: entry}}, (name,), engine)
+    return _pick(tools, ('mariadb', 'mysql') if engine == 'mariadb' else ('mysql',), engine)
 
 
 def offered_tools(server, tools):
@@ -437,21 +463,15 @@ def _credential_file(options, tool, shell):
                 for key, value in options.items():
                     if key == 'database':
                         continue  # database is a client argument, not a shared tool option
-                    if key == 'ssl_mode' and tool.get('engine') == 'mariadb':
-                        mode = value.upper()
-                        if mode == 'DISABLED':
-                            handle.write('skip-ssl\n')
-                        elif mode in ('REQUIRED', 'VERIFY_CA', 'VERIFY_IDENTITY'):
-                            handle.write('ssl\n')
-                            if mode.startswith('VERIFY'):
-                                handle.write('ssl-verify-server-cert\n')
-                        elif mode != 'PREFERRED':
-                            raise ValueError('Invalid TLS mode.')
+                    if key in MySQLConnection._SSL_KEYS:
                         continue
                     text = str(value).replace('\\', '\\\\').replace('"', '\\"')
                     for char, escaped in (('\n', '\\n'), ('\r', '\\r'), ('\t', '\\t'), ('\b', '\\b')):
                         text = text.replace(char, escaped)
                     handle.write('%s="%s"\n' % (key.replace('_', '-'), text))
+                from .connector import client_tls_options
+                for line in client_tls_options(options, tool.get('engine')):
+                    handle.write(line + '\n')
             yield [tool['path'], '--defaults-file=' + path], _clean_env(home)
         finally:
             if os.path.exists(path):
@@ -481,6 +501,10 @@ class LifecycleConnection(MySQLConnection):
                 raise ConnectorError('Lifecycle control query timed out.')
         if proc.returncode:
             raw = proc.stderr.decode('utf-8', 'replace')
+            from .connector import _client_auth_error
+            auth = _client_auth_error(raw, argv[0], getattr(self, '_client_use', None))
+            if auth is not None:
+                raise auth
             error = ConnectorError(dbops.redact(raw, self.password))
             error.server_error_code = dbops.error_code(raw)
             raise error
@@ -793,7 +817,11 @@ class LifecycleJob(object):
         self._started = False
         self.cancel_error = ''
         #: What a failure or cancel may leave behind; the operation sets it.
-        self.partial_state = 'Partial dump, restore or clone data may remain; inspect the target.'
+        self.partial_state = ('Nothing was loaded: the client stopped before running any statement.' if operation == 'restore'
+                              else 'Partial dump, restore or clone data may remain; inspect the target.')
+        # Restore changes this guidance only when its load client reports that
+        # the first statement/script ran. connection_id is cleared on exit.
+        self.restore_started_state = None
         #: Latest structured progress (clone: performance_schema.clone_progress).
         self.detail = None
         #: Events emitted so far (the log keeps the last 200).
@@ -814,6 +842,8 @@ class LifecycleJob(object):
         if stream in ('stdout', 'status') and re.fullmatch(re.escape(self.marker) + r'[0-9]+', raw):
             with self.lock:
                 self.connection_id = int(raw[len(self.marker):])
+                if self.restore_started_state is not None:
+                    self.partial_state = self.restore_started_state
             if self.cancelled.is_set():
                 self._kill_query()
             return
@@ -989,7 +1019,12 @@ class LifecycleJob(object):
         """
         self.check_cancel()
         def spawn():
-            return subprocess.Popen(argv, stdin=input_file if input_file else subprocess.PIPE,
+            from .connector import checked_program, bundled_client_dir, _same_dir
+            bundle = bundled_client_dir()
+            binary = checked_program(argv[0], bundled=bool(bundle and _same_dir(
+                os.path.dirname(os.path.realpath(argv[0])), bundle)))
+            command = [binary] + list(argv[1:])
+            return subprocess.Popen(command, stdin=input_file if input_file else subprocess.PIPE,
                                     stdout=output_file if output_file else subprocess.PIPE,
                                     stderr=subprocess.PIPE, env=env, start_new_session=os.name == 'posix')
         # The tool has its own process group: record it for shutdown.
@@ -1122,6 +1157,10 @@ class LifecycleJob(object):
 def _invoke(job, tool, connection, args, script=None, **kwargs):
     _check_profile_policy(job)
     with _credentials(connection, tool) as (argv, env):
+        from .connector import checked_program, bundled_client_dir, _same_dir
+        bundle = bundled_client_dir()
+        argv[0] = checked_program(tool['path'], tool.get('realpath'), bundled=bool(
+            bundle and _same_dir(os.path.dirname(os.path.realpath(tool['path'])), bundle)))
         return job.process_tool(argv + args, env, input_data=script, **kwargs)
 
 
@@ -1341,7 +1380,7 @@ def upgrade_check(conn, target_version, connection=None, tools=None, config_path
     if source < (5, 7, 0) or source >= target or target < (8, 0, 0):
         raise Refused('MySQL upgrade checks require source >=5.7, target >=8.0 and source older than target.')
     if prefer_shell:
-        tools = detect_tools() if tools is None else tools
+        tools = detect_tools(server=server, job=job) if tools is None else tools
     shell = _tool(tools, 'mysqlsh') if prefer_shell else {}
     if shell.get('available'):
         shell_version = version_tuple(shell.get('version', ''))
@@ -1392,7 +1431,31 @@ def _output_path(path):
     return os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path))
 
 
-def _empty_directory(path):
+def default_dump_parent():
+    """Suggest a real-user folder without creating it, even under an isolated HOME."""
+    from .ssh_tunnel import ssh_home
+    home = _absolute(ssh_home())
+    documents = os.path.join(home, 'Documents')
+    return os.path.join(documents if os.path.isdir(documents) else home, 'myflames dumps')
+
+
+def _empty_directory(path, allow_default_parent=False, create_default_parent=False):
+    """Validate the output; only a confirmed dump may create its default parent.
+
+    Return the missing parent so preflight can name and bind that extra write.
+    Never create intermediate directories or follow a linked Documents folder.
+    """
+    parent = os.path.dirname(path)
+    default = default_dump_parent() if allow_default_parent else None
+    is_default = default is not None and os.path.normcase(parent) == os.path.normcase(os.path.realpath(_absolute(default)))
+    if is_default:
+        anchor = os.path.dirname(default)
+        if os.path.islink(anchor) or not os.path.isdir(anchor):
+            raise Refused('The default dump parent must be an existing folder, not a symbolic link: ' + anchor)
+        # A link named like the default folder (even a dangling one) would
+        # make myflames create its target elsewhere.
+        if os.path.islink(default):
+            raise Refused('The default dump folder is a symbolic link; choose another output folder: ' + default)
     # The final component must not be a link, and the parent must still be the
     # real path resolved at preflight: a folder swapped for a link afterwards
     # (into another backup tree, say) refuses instead of being followed.
@@ -1403,8 +1466,15 @@ def _empty_directory(path):
                       'nothing was written: ' + path)
     if os.path.lexists(path) and (not os.path.isdir(path) or os.listdir(path)):
         raise Refused('Output directory must not exist or must be empty; refusing to overwrite: ' + path)
-    if not os.path.isdir(os.path.dirname(path)):
-        raise Refused('Output parent directory must exist.')
+    if not os.path.isdir(parent):
+        if not is_default or os.path.lexists(parent):
+            raise Refused('Output parent directory must exist.')
+        if create_default_parent:
+            os.mkdir(parent, 0o700)
+            # Recheck the usual link/empty-directory rules after the write.
+            _empty_directory(path, allow_default_parent=True)
+        return parent
+    return None
 
 
 def _names(values, label):
@@ -1430,6 +1500,12 @@ def _plan_binding(plan, binding_extra=None):
 
 
 def _plan(operation, server, connection, request, tool, target, commands, checks, warnings, binding_extra=None):
+    fields = ('name', 'path', 'realpath', 'version', 'version_tuple', 'engine', 'installation',
+              'origin', 'origin_label', 'reason', 'warning', 'available', 'deprecated')
+    tool = {key: copy.deepcopy(tool[key]) for key in fields if key in tool}
+    warnings = list(warnings)
+    if tool.get('reason') == 'older' and tool.get('warning') and tool['warning'] not in warnings:
+        warnings.append(tool['warning'])
     plan = {'schema_version': 'lifecycle-plan-1.0', 'operation': operation, 'request': request,
             'server': server, 'connection_key': dbops.connection_identity(connection), 'tool': tool,
             'target': target, 'commands': commands, 'checks': checks, 'warnings': warnings,
@@ -1470,6 +1546,17 @@ def _catalog(conn, schemas=None, tables=None, include_system=False):
     return Reader(conn, TAG).rows('SELECT TABLE_SCHEMA,TABLE_NAME,TABLE_TYPE,ENGINE,COALESCE(DATA_LENGTH,0),'
                                   'COALESCE(INDEX_LENGTH,0) FROM information_schema.TABLES WHERE ' +
                                   _catalog_where(schemas, tables, include_system))
+
+
+def _schema_defaults(conn, schemas, include_system=False):
+    """Record database defaults, including selected databases with no tables."""
+    where = ("SCHEMA_NAME NOT IN ('performance_schema','information_schema')" if include_system else
+             "SCHEMA_NAME NOT IN ('mysql','sys','performance_schema','information_schema')")
+    if schemas:
+        where = 'SCHEMA_NAME IN (' + ','.join(literal(s) for s in schemas) + ')'
+    rows = Reader(conn, TAG).rows('SELECT SCHEMA_NAME,DEFAULT_CHARACTER_SET_NAME,DEFAULT_COLLATION_NAME '
+                                  'FROM information_schema.SCHEMATA WHERE ' + where)
+    return {row[0]: {'character_set': row[1], 'collation': row[2]} for row in rows}
 
 
 def _dump_size_estimate(conn, server, catalog, schemas, tables, include_system):
@@ -1551,7 +1638,7 @@ def prepare_dump(conn, connection, directory, schemas=None, tables=None, threads
     """Build a reviewable logical dump plan; Shell dryRun runs before confirmation."""
     server = read_server(conn, connection)
     directory = _output_path(directory)
-    _empty_directory(directory)
+    missing_parent = _empty_directory(directory, allow_default_parent=True)
     if isinstance(schemas, str) or isinstance(tables, str):
         raise ValueError('Schemas and tables must be lists, not strings.')
     schemas, tables = _names(schemas, 'schema'), _names(tables, 'table')
@@ -1559,7 +1646,7 @@ def prepare_dump(conn, connection, directory, schemas=None, tables=None, threads
         raise ValueError('Table dumps require exactly one schema.')
     if isinstance(threads, bool) or not isinstance(threads, int) or not 1 <= threads <= 64:
         raise ValueError('Threads must be 1..64.')
-    tools = detect_tools() if tools is None else tools
+    tools = detect_tools(server=server, job=job) if tools is None else tools
     offers = offered_tools(server, tools)['dump']
     if not prefer_shell:
         offers = [name for name in offers if name != 'mysqlsh']
@@ -1570,7 +1657,7 @@ def prepare_dump(conn, connection, directory, schemas=None, tables=None, threads
         request['options'] = selected_options
     catalog = _catalog(conn, schemas, tables, include_system=tool['name'] != 'mysqlsh' and not schemas)
     estimate = sum(int(row[4] or 0) + int(row[5] or 0) for row in catalog)
-    available = shutil.disk_usage(os.path.dirname(directory)).free
+    available = shutil.disk_usage(os.path.dirname(missing_parent) if missing_parent else os.path.dirname(directory)).free
     required = [('SELECT', 'ALL', 'ALL PRIVILEGES')]
     if selected_options.get('events', not (tool['name'] == 'mysqlsh' and tables)):
         required.append(('EVENT', 'ALL', 'ALL PRIVILEGES'))
@@ -1580,6 +1667,9 @@ def prepare_dump(conn, connection, directory, schemas=None, tables=None, threads
                             'Uncompressed table/index estimate; dump size can differ.',
                             estimated_bytes=estimate, available_bytes=available),
               _privileges_check(conn, required)]
+    if missing_parent:
+        checks.append(_verification('output_parent', 'passed', 'Creates the folder %s.' % missing_parent,
+                                    path=missing_parent))
     if tables:
         checks.append(_tables_check(catalog, schemas[0], tables, _lower_case_table_names(conn)))
     nontransactional = ['%s.%s' % (r[0], r[1]) for r in catalog if r[2] == 'BASE TABLE' and r[3] != 'InnoDB']
@@ -1620,7 +1710,8 @@ def prepare_dump(conn, connection, directory, schemas=None, tables=None, threads
         checks.append(_verification('long_statements', 'passed', 'Review long statements before locks.', sessions=running))
     except ConnectorError:
         checks.append(_verification('long_statements', 'not_checked', 'PROCESS access unavailable.'))
-    return _plan('dump', server, connection, request, tool, directory, commands, checks, warnings)
+    return _plan('dump', server, connection, request, tool, directory, commands, checks, warnings,
+                 binding_extra={'create_dump_parent': missing_parent} if missing_parent else None)
 
 
 def _lower_case_table_names(conn):
@@ -1668,8 +1759,39 @@ def _manifest_path(path):
     return path.split('/')
 
 
-def _file_records(directory, job=None, max_files=None, max_bytes=None, max_directories=None):
+@contextlib.contextmanager
+def _regular_input(path, expected_size=None, text=False):
+    """Refuse special files without waiting for a FIFO writer or reading bytes.
+
+    Validate the opened descriptor, not a preceding pathname stat: an input
+    can be replaced between that stat and open. Keep ownership until fdopen
+    succeeds so every refusal also closes the descriptor.
+    """
+    flags = (os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0) |
+             getattr(os, 'O_BINARY', 0))
+    fd = os.open(path, flags)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise Refused('%s is not a regular file.' % os.path.basename(path))
+        if expected_size is not None and info.st_size != expected_size:
+            raise Refused('Backup file size no longer matches the dump manifest: %s.' % os.path.basename(path))
+        # Hand the descriptor over before fdopen: if fdopen fails it has
+        # already closed it, and closing it again here could close a
+        # descriptor another thread opened meanwhile.
+        owned, fd = fd, None
+        handle = os.fdopen(owned, 'r', encoding='utf-8') if text else os.fdopen(owned, 'rb')
+        with handle:
+            yield handle, info
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def _file_records(directory, job=None, max_files=None, max_bytes=None, max_directories=None,
+                  expected_records=None):
     records = []
+    expected_sizes = {r['path']: r['size_bytes'] for r in expected_records or []}
     total_bytes, directories = 0, 0
     for root, folders, files in os.walk(directory, followlinks=False):
         directories += 1
@@ -1690,13 +1812,15 @@ def _file_records(directory, job=None, max_files=None, max_bytes=None, max_direc
                 continue
             if max_files is not None and len(records) >= max_files:
                 raise Refused('Restore preflight exceeds the file limit (%d).' % max_files)
-            if os.path.islink(path) or not os.path.isfile(path):
+            if os.path.islink(path):
                 raise Refused('Backup contains a symlink or non-regular file.')
-            if max_bytes is not None and total_bytes + os.path.getsize(path) > max_bytes:
-                raise Refused('Restore preflight exceeds the byte limit (%d bytes).' % max_bytes)
+            relative = '/'.join(os.path.relpath(path, directory).split(os.sep))
+            _manifest_path(relative)
             digest = hashlib.sha256()
             size = 0
-            with open(path, 'rb') as handle:
+            with _regular_input(path, expected_sizes.get(relative)) as (handle, info):
+                if max_bytes is not None and total_bytes + info.st_size > max_bytes:
+                    raise Refused('Restore preflight exceeds the byte limit (%d bytes).' % max_bytes)
                 while True:
                     # Read at most one byte beyond the remaining budget, even
                     # when a file grows after the initial stat.
@@ -1711,8 +1835,6 @@ def _file_records(directory, job=None, max_files=None, max_bytes=None, max_direc
                     if job:
                         job.check_cancel()
                     digest.update(data)
-            relative = '/'.join(os.path.relpath(path, directory).split(os.sep))
-            _manifest_path(relative)
             records.append({'path': relative, 'size_bytes': size,
                             'sha256': digest.hexdigest()})
     return sorted(records, key=lambda r: r['path'])
@@ -1732,7 +1854,7 @@ def _read_manifest_value(directory):
     directory = _absolute(directory)
     if os.path.islink(os.path.join(directory, MANIFEST)):
         raise Refused('Manifest cannot be a symlink.')
-    with open(os.path.join(directory, MANIFEST), 'r', encoding='utf-8') as handle:
+    with _regular_input(os.path.join(directory, MANIFEST), text=True) as (handle, unused):
         text = handle.read(16 * 1024 * 1024 + 1)
         if len(text) > 16 * 1024 * 1024:
             raise Refused('Backup manifest exceeds the 16 MiB metadata limit.')
@@ -1758,7 +1880,7 @@ def read_manifest(directory, job=None):
     """Validate a completed backup and every file checksum before restore."""
     manifest = _read_manifest_value(directory)
     if manifest['files'] != _file_records(directory, job, MAX_RESTORE_FILES, MAX_RESTORE_BYTES,
-                                         MAX_RESTORE_DIRECTORIES):
+                                         MAX_RESTORE_DIRECTORIES, expected_records=manifest['files']):
         raise Refused('Backup file list, sizes or checksums no longer match the manifest.')
     return manifest
 
@@ -1912,6 +2034,9 @@ def _write_job(operation, connection, plan, rebuild, action, confirmed, typed_ta
                     refuse('Server identity changed before preflight; nothing was sent.')
                 stack.enter_context(_RESERVATIONS.hold(job.id, _resources(plan, identity)))
                 fresh = rebuild(conn, job)
+                if fresh['tool'] != plan.get('tool'):
+                    refuse('The tool for this server changed since the review (Settings > Client tools or an installed '
+                           'program changed). Review it again; nothing was run.')
                 if (fresh['binding'] != plan.get('binding') or fresh['target'] != plan.get('target')
                         or fresh['commands'] != plan.get('commands')):
                     refuse('Server identity, tool, backup or request changed; nothing was sent.')
@@ -1972,7 +2097,7 @@ def dump_job(connection, plan, confirmed=False, typed_target=None, audit=None, s
     connection = copy.deepcopy(connection)
     request = copy.deepcopy(plan.get('request', {}))
     def rebuild(conn, job):
-        return prepare_dump(conn, connection, tools=detect_tools(job=job), job=job, **request)
+        return prepare_dump(conn, connection, tools=None, job=job, **request)
     def action(job, conn, fresh):
         return _perform_dump(job, conn, fresh, connection)
     return _write_job('dump', connection, plan, rebuild, action, confirmed, typed_target, audit, safety, factory, start)
@@ -1983,12 +2108,17 @@ def _perform_dump(job, conn, plan, connection):
     directory = request['directory']
     job.partial_state = ('An incomplete dump may remain in %s; its manifest marks it incomplete and restore '
                          'refuses it. Remove the directory before dumping there again.' % directory)
-    _empty_directory(directory)
+    missing_parent = _empty_directory(directory, allow_default_parent=True)
+    if missing_parent:
+        if not any(c['check'] == 'output_parent' and c.get('path') == missing_parent for c in plan['checks']):
+            raise Refused('Output parent directory must exist.')
+        _empty_directory(directory, allow_default_parent=True, create_default_parent=True)
     if not os.path.exists(directory):
         os.mkdir(directory, 0o700)
     os.chmod(directory, 0o700)
     started = now()
     catalog, samples = [], []
+    schema_defaults = {}
     records = []
     complete = False
     verification = []
@@ -1996,6 +2126,7 @@ def _perform_dump(job, conn, plan, connection):
         selected_options = request.get('options', {})
         return {'schema_version': 'lifecycle-manifest-1.0', 'source': plan['server'],
                 'scope': {'schemas': request['schemas'], 'tables': request['tables']}, 'tool': tool,
+                'schema_defaults': schema_defaults,
                 'options': {'consistent': True, 'threads': request['threads'], 'users': tool['name'] != 'mysqlsh' and not request['schemas'],
                             'routines': selected_options.get('routines', not (tool['name'] == 'mysqlsh' and request['tables'])),
                             'events': selected_options.get('events', not (tool['name'] == 'mysqlsh' and request['tables'])),
@@ -2009,6 +2140,7 @@ def _perform_dump(job, conn, plan, connection):
         job.step('Reading the list of tables.')
         include_system = tool['name'] != 'mysqlsh' and not request['schemas']
         catalog = _catalog(conn, request['schemas'], request['tables'], include_system=include_system)
+        schema_defaults = _schema_defaults(conn, request['schemas'], include_system=include_system)
         structure_only = bool(request.get('options', {}).get('structure_only'))
         # Source row counts feed restore's row comparison; a structure-only
         # dump carries no rows, so no counts are sampled or recorded.
@@ -2103,10 +2235,7 @@ def _copy_reviewed_file(directory, record, output, job):
         if os.path.islink(relative):
             raise Refused('Backup input became a symbolic link.')
     digest, size = hashlib.sha256(), 0
-    flags = os.O_RDONLY | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOFOLLOW', 0)
-    with os.fdopen(os.open(path, flags), 'rb') as source:
-        if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
-            raise Refused('Backup input is not a regular file.')
+    with _regular_input(path, record['size_bytes']) as (source, unused):
         for chunk in iter(lambda: source.read(1024 * 1024), b''):
             job.check_cancel()
             size += len(chunk)
@@ -2118,6 +2247,326 @@ def _copy_reviewed_file(directory, record, output, job):
         raise Refused('Backup changed while staging; no restore statement was sent.')
 
 
+def _sql_schema_scan(directory, record, source_schema, job=None, target_schema=None):
+    """Scan the reviewed bytes with bounded tokens and chunk-independent state.
+
+    This recognizes the schema references relevant to picked-table mysqldump
+    output, not arbitrary SQL semantics. Skip data strings and ordinary
+    comments; inspect executable version comments, including MariaDB's form.
+    Never rewrite the dump. The checksum must still match after this read.
+    """
+    found = dict(create_database=False, create_schema=False, use=False,
+                 qualified_source=False, qualified_other=False)
+    source = (source_schema or '').casefold()
+    target = target_schema or source_schema or ''
+    words = re.compile(r'[\w$]+')
+    spaces = re.compile(r'\s+')
+    line_end = re.compile(r'[\r\n]')
+    quote_end = {"'": re.compile(r"['\\]"), '"': re.compile(r'["\\]'), '`': re.compile('`')}
+
+    class Scan(object):
+        def __init__(self):
+            self.decoder = codecs.getincrementaldecoder('utf-8')('replace')
+            self.pending = self.word = self.quoted = ''
+            self.quote = self.comment = None
+            self.version = False
+            self.previous = ''
+            self.source_previous = False
+            self.at_start = True
+            self.line_start = True
+            self.delimiter = ';'
+            self.identifier_previous = self.qualifier = ''
+            # Database names have at most 64 characters. Longer tokens must
+            # not retain unbounded INSERT data, nor match a truncated name.
+            self.limit = max(64, len(source), len(target)) + 1
+
+        def token(self, kind, value):
+            spelling = value
+            value = value.casefold()
+            if self.qualifier and kind in ('word', 'identifier'):
+                found['qualified_other'] = True
+            self.qualifier = (self.identifier_previous if kind == 'symbol' and value == '.' and
+                              self.identifier_previous.casefold() != source and
+                              self.identifier_previous != target else '')
+            # A two-part reference can also be table.column. Be conservative:
+            # this scan cannot prove that such a qualifier is a table alias.
+            # Do not case-fold the target exception: database names can be
+            # case-sensitive, and this scan has no lower_case_table_names fact.
+            self.identifier_previous = (spelling if kind == 'identifier' or
+                                        (kind == 'word' and not value.isdigit()) else '')
+            if self.source_previous and kind == 'symbol' and value == '.':
+                found['qualified_source'] = True
+            self.source_previous = bool(source) and kind in ('word', 'identifier') and value == source
+            if kind == 'word':
+                if self.previous == 'create' and value in ('database', 'schema'):
+                    found['create_' + value] = True
+                if self.at_start and value == 'use':
+                    found['use'] = True
+            self.previous = value if kind == 'word' else ''
+            self.at_start = kind == 'symbol' and value == ';'
+
+        def end_word(self):
+            if self.word:
+                self.token('word', self.word)
+                self.word = ''
+
+        def write(self, chunk, final=False):
+            text = self.pending + self.decoder.decode(chunk, final=final)
+            i = 0
+            while i < len(text):
+                # Preserve enough lookahead even when a delimiter changes in
+                # this chunk, including a delimiter split across input reads.
+                end = len(text) if final else max(0, len(text) - max(3, len(self.delimiter)))
+                if i >= end:
+                    break
+                char = text[i]
+                if self.comment == 'line':
+                    newline = line_end.search(text, i, end)
+                    if newline:
+                        self.comment = None
+                        i = newline.end()
+                        self.line_start = True
+                    else:
+                        i = end
+                    continue
+                if self.comment == 'block':
+                    closing = text.find('*/', i, end + 1)
+                    if closing >= 0:
+                        self.comment = None
+                        i = closing + 2
+                    else:
+                        i = end
+                    continue
+                if self.quote:
+                    closing = quote_end[self.quote].search(text, i, end)
+                    stop = closing.start() if closing else end
+                    if self.quote != "'":
+                        self.quoted = (self.quoted + text[i:min(stop, i + self.limit)])[:self.limit]
+                    i = stop
+                    if not closing:
+                        continue
+                    char = text[i]
+                    if char == self.quote:
+                        if text.startswith(self.quote * 2, i):
+                            self.quoted = (self.quoted + char)[:self.limit]
+                            i += 2
+                            continue
+                        self.token('literal' if self.quote == "'" else 'identifier', self.quoted)
+                        self.quote, self.quoted = None, ''
+                    elif char == '\\' and self.quote in ("'", '"'):
+                        # SQL dump strings use backslash escapes; retain no
+                        # string data. Double quotes may also be identifiers.
+                        self.quoted = (self.quoted + text[i + 1:i + 2])[:self.limit]
+                        i += 2
+                        continue
+                    elif self.quote != "'":
+                        self.quoted = (self.quoted + char)[:self.limit]
+                    i += 1
+                    continue
+                if self.version:
+                    if char.isdigit():
+                        i += 1
+                        continue
+                    self.version = False
+                if (self.line_start or self.at_start) and not self.word:
+                    remainder = text[i:]
+                    if not final and len(remainder) < 10 and 'delimiter'.startswith(remainder.casefold()):
+                        break
+                    if remainder[:9].casefold() == 'delimiter' and remainder[9:10].isspace():
+                        newline = line_end.search(text, i + 9)
+                        if newline is None and not final:
+                            if len(remainder) > 1024:
+                                raise Refused('dump.sql has a DELIMITER command too long to scan safely.')
+                            break
+                        delimiter = text[i + 9:newline.start() if newline else len(text)].strip()
+                        if delimiter[:1] in ("'", '"', '`') and len(delimiter) >= 2 and delimiter[-1] == delimiter[0]:
+                            delimiter = delimiter[1:-1]
+                        # Both clients store at most 15 bytes: mysql.cc's
+                        # delimiter[16] and com_delimiter. Refuse unsupported
+                        # arguments instead of tracking a different delimiter.
+                        if (not delimiter or len(delimiter) > 15 or
+                                any(c.isspace() or ord(c) > 127 or c in "\\'\"`" for c in delimiter)):
+                            raise Refused('dump.sql has a DELIMITER command that cannot be scanned safely.')
+                        self.delimiter = delimiter
+                        self.token('symbol', ';')
+                        i = newline.end() if newline else len(text)
+                        continue
+                if text.startswith(self.delimiter, i):
+                    self.end_word()
+                    self.token('symbol', ';')
+                    self.line_start = False
+                    i += len(self.delimiter)
+                    continue
+                if char.isalnum() or char in '_$':
+                    match = words.match(text, i, end)
+                    stop = match.end()
+                    delimiter_at = text.find(self.delimiter, i, stop + len(self.delimiter) - 1)
+                    if i <= delimiter_at < stop:
+                        stop = delimiter_at
+                    self.word = (self.word + text[i:min(stop, i + self.limit)])[:self.limit]
+                    self.line_start = False
+                    i = stop
+                    continue
+                self.end_word()
+                if text.startswith('/*!', i) or text.startswith('/*M!', i):
+                    self.version = True
+                    i += 3 if text.startswith('/*!', i) else 4
+                elif text.startswith('/*', i):
+                    self.comment = 'block'
+                    i += 2
+                elif text.startswith('*/', i):
+                    i += 2
+                elif char == '#' or (text.startswith('--', i) and text[i + 2:i + 3].isspace()):
+                    self.comment = 'line'
+                    i += 1
+                elif char in ("'", '"', '`'):
+                    self.quote = char
+                    self.line_start = False
+                    i += 1
+                elif char.isspace():
+                    match = spaces.match(text, i, end)
+                    if line_end.search(match.group()):
+                        self.line_start = True
+                    i = match.end()
+                else:
+                    # A semicolon inside a custom-delimited statement is not
+                    # its end; only the active client delimiter resets USE.
+                    self.token('symbol', '' if char == ';' else char)
+                    self.line_start = False
+                    i += 1
+            self.pending = text[i:]
+            if final:
+                self.end_word()
+
+    runner = job or LifecycleJob('restore_scan', lambda job: None)
+    scan = Scan()
+    _copy_reviewed_file(directory, record, scan, runner)
+    scan.write(b'', final=True)
+    return found
+
+
+def _restore_remap(manifest, sql_scan):
+    scope = manifest['scope']
+    picked = len(scope['schemas']) == 1 and bool(scope['tables'])
+    if manifest['tool']['name'] == 'mysqlsh':
+        return (True, 'Single-schema Shell table dumps support a different default database.') if picked else (
+            False, 'Shell schema remapping is offered only for single-schema table dumps.')
+    if not picked:
+        return False, ('This dump creates its own databases (CREATE DATABASE and USE), so it restores into them; '
+                       'choose As in the dump.')
+    reasons = [name for key, name in (('create_database', 'CREATE DATABASE'), ('create_schema', 'CREATE SCHEMA'),
+                                     ('use', 'USE')) if sql_scan.get(key)]
+    if reasons:
+        return False, 'dump.sql contains %s, so it cannot load into another database.' % ', '.join(reasons)
+    if sql_scan.get('qualified_source'):
+        return False, ('dump.sql names %s in qualified references (such as view definitions), '
+                       'so it cannot load into another database.' % scope['schemas'][0])
+    if sql_scan.get('qualified_other'):
+        return False, ('dump.sql contains a qualified reference outside the target database, '
+                       'so it cannot load into another database.')
+    return True, ('The dump.sql scan found no CREATE DATABASE, CREATE SCHEMA, USE or qualified reference '
+                  'outside the target database.')
+
+
+def _restore_input(directory, job=None, verify=True):
+    """Shared folder normalization and bounded manifest validation for reads.
+
+    *verify* checksums every file (restore's preflight). Folder facts read the
+    manifest only: their SQL scan still checks dump.sql's own checksum.
+    """
+    if not isinstance(directory, (str, os.PathLike)) or not os.fspath(directory):
+        raise Refused('Choose a dump folder containing myflames-manifest.json.')
+    try:
+        directory = os.path.realpath(_absolute(directory))
+        manifest = read_manifest(directory, job) if verify else _read_manifest_value(directory)
+    except Refused as exc:
+        raise Refused(str(exc) + ' Choose a completed dump folder.') from None
+    except FileNotFoundError:
+        raise Refused('The dump folder or myflames-manifest.json is missing; choose a completed dump folder.') from None
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise Refused('Cannot read the dump folder or manifest; check folder permissions and choose a completed dump: ' +
+                      str(exc)) from None
+    # File records are validated by read_manifest before any named file is
+    # opened. Validate the facts consumed by both callers, too.
+    tool, source, scope = (manifest.get(key) for key in ('tool', 'source', 'scope'))
+    options = manifest.get('options', {})
+    if (not isinstance(tool, dict) or tool.get('name') not in
+            ('mysqldump', 'mariadb-dump', 'mysqlsh', 'mariadb-backup') or
+            not isinstance(tool.get('version'), str) or
+            not isinstance(source, dict) or source.get('engine') not in ('mysql', 'mariadb') or
+            not isinstance(scope, dict) or not isinstance(options, dict) or
+            type(options.get('structure_only', False)) is not bool):
+        raise Refused('The dump manifest has invalid tool, source, scope or options; choose a completed dump folder.')
+    for key in ('schemas', 'tables'):
+        names = scope.get(key)
+        if not isinstance(names, list):
+            raise Refused('The dump manifest has invalid scope names; choose a completed dump folder.')
+        try:
+            _names(names, key)
+        except ValueError:
+            raise Refused('The dump manifest has invalid scope names; choose a completed dump folder.') from None
+    return directory, manifest
+
+
+def _restore_sql_scan(directory, manifest, job=None, max_scan_bytes=None):
+    """Share the scan; folder facts may defer it above their byte budget."""
+    if manifest['tool']['name'] == 'mysqlsh':
+        return {}
+    record = next((r for r in manifest['files'] if r['path'] == 'dump.sql'), None)
+    if record is None:
+        raise Refused('SQL backup manifest has no dump.sql file; choose a completed SQL dump folder.')
+    scope = manifest['scope']
+    if scope['tables'] and len(scope['schemas']) == 1:
+        # Check size before entering the scanner. A small manifest record
+        # cannot disguise a huge input, and even a deferred file must be regular.
+        path = os.path.join(directory, 'dump.sql')
+        if os.path.islink(path):
+            raise Refused('Backup input became a symbolic link.')
+        with _regular_input(path, record['size_bytes']):
+            pass
+        if max_scan_bytes is not None and record['size_bytes'] > max_scan_bytes:
+            return None
+        # Eligibility describes the folder before a target name is chosen.
+        # Do not exempt a hardcoded qualifier matching a proposed target: the
+        # folder facts and preflight must make the same remapping decision.
+        return _sql_schema_scan(directory, record, scope['schemas'][0], job)
+    return {}
+
+
+def dump_info(directory, job=None):
+    """Read completed dump facts without a server connection or tool launch.
+
+    Reads the manifest without checksumming every file (a folder pick must
+    stay cheap); a bounded SQL scan checks dump.sql's checksum. These are advisory
+    facts: restore's preflight still verifies every file and decides.
+    """
+    directory, manifest = _restore_input(directory, job, verify=False)
+    if manifest['tool']['name'] == 'mariadb-backup':
+        raise Refused('This is a physical backup; choose a logical dump folder for Restore.')
+    try:
+        sql_scan = _restore_sql_scan(directory, manifest, job, max_scan_bytes=DUMP_INFO_SCAN_BYTES)
+    except Refused as exc:
+        # The reviewed-bytes reader speaks of staging; no restore is staged here.
+        if not str(exc).startswith('Backup '):
+            raise
+        raise Refused('dump.sql no longer matches the dump manifest (changed, replaced or a link); '
+                      'choose a completed dump folder.') from None
+    except OSError:
+        raise Refused('Cannot read dump.sql; check that it exists and is a readable regular file, '
+                      'then choose a completed dump folder.') from None
+    if sql_scan is None:
+        allowed, reason = None, ('This dump is large; whether it can load into another database is decided '
+                                 'when you review the restore.')
+    else:
+        allowed, reason = _restore_remap(manifest, sql_scan)
+    return dict(schema_version='lifecycle-dump-info-1.0',
+                tool=dict(name=manifest['tool']['name'], version=manifest['tool']['version'][:64]),
+                engine=manifest['source']['engine'],
+                scope={key: list(manifest['scope'][key]) for key in ('schemas', 'tables')},
+                structure_only=manifest.get('options', {}).get('structure_only', False),
+                remap_allowed=allowed, remap_reason=reason)
+
+
 def prepare_restore(conn, connection, directory, schema=None, tools=None, allow_source_restore=False,
                     existing_objects='refuse', threads=4, resume=False, staging_directory=None, job=None):
     """Preflight checksum, target identity, local_infile and duplicate objects.
@@ -2127,8 +2576,7 @@ def prepare_restore(conn, connection, directory, schema=None, tools=None, allow_
     Only this backend's completed, verified manifests are accepted.
     """
     server = read_server(conn, connection)
-    directory = os.path.realpath(_absolute(directory))
-    manifest = read_manifest(directory, job)
+    directory, manifest = _restore_input(directory, job)
     staging_directory = os.path.realpath(_absolute(staging_directory or tempfile.gettempdir()))
     if not os.path.isdir(staging_directory):
         raise ValueError('Restore staging directory must exist.')
@@ -2148,7 +2596,7 @@ def prepare_restore(conn, connection, directory, schema=None, tools=None, allow_
         raise ValueError('Choose refuse, ignore or drop existing objects explicitly.')
     if isinstance(threads, bool) or not isinstance(threads, int) or not 1 <= threads <= 64:
         raise ValueError('Threads must be 1..64.')
-    tools = detect_tools() if tools is None else tools
+    tools = detect_tools(server=server, job=job) if tools is None else tools
     shell_dump = manifest['tool']['name'] == 'mysqlsh'
     checks = [_staging_check(manifest, staging_directory)]
     warnings = ['Restore executes DDL and DML and can overwrite data. It cannot be undone.',
@@ -2162,10 +2610,10 @@ def prepare_restore(conn, connection, directory, schema=None, tools=None, allow_
                                 'Target is the source; explicitly choose allow_source_restore.' if same_source else 'Target differs from source.'))
     if source['engine'] != server['engine']:
         checks.append(_verification('engine', 'failed', 'Cross-engine restores are not validated; refused.'))
-    if schema and not shell_dump and scope['schemas'] != [schema]:
-        raise Refused('A SQL dump containing CREATE DATABASE/USE or qualified DDL cannot be remapped to a different schema.')
-    if schema and shell_dump and (len(scope['schemas']) != 1 or not scope['tables']):
-        raise Refused('Shell schema remapping is offered only for single-schema table dumps.')
+    sql_scan = _restore_sql_scan(directory, manifest, job)
+    remap_allowed, remap_reason = _restore_remap(manifest, sql_scan)
+    if schema and ((not shell_dump and scope['schemas'] != [schema]) or shell_dump) and not remap_allowed:
+        raise Refused(remap_reason)
     if shell_dump:
         tool = _pick(tools, ('mysqlsh',))
         if server['engine'] != 'mysql' or version_tuple(server['version']) < (5, 7, 0):
@@ -2173,9 +2621,7 @@ def prepare_restore(conn, connection, directory, schema=None, tools=None, allow_
         checks.append(_verification('local_infile', 'passed' if server['variables'].get('local_infile', '').upper() in ('ON', '1') else 'failed',
                                     'loadDump requires local_infile=ON. No SET GLOBAL is sent automatically.'))
     else:
-        if not any(r['path'] == 'dump.sql' for r in manifest['files']):
-            raise Refused('SQL backup manifest has no dump.sql file.')
-        tool = _pick(tools, ('mariadb', 'mysql') if server['engine'] == 'mariadb' else ('mysql',), server['engine'])
+        tool = _load_tool(tools, server['engine'])
         if existing_objects == 'ignore':
             raise Refused('Ignoring existing objects is supported only by Shell loads; SQL dumps include DROP TABLE.')
     instance_sql = not shell_dump and not scope['schemas']
@@ -2207,7 +2653,34 @@ def prepare_restore(conn, connection, directory, schema=None, tools=None, allow_
         progress_unsafe = os.path.islink(progress_file) or (os.path.lexists(progress_file) and resume is not True)
         checks.append(_verification('load_progress', 'failed' if progress_unsafe else 'passed',
                                     'Existing progress requires resume=True; the file is retained for cancellation recovery.'))
-    commands = [_load_expression(request)] if shell_dump else [tool['name'] + ' --defaults-file=<0600 file> --binary-mode --comments < ' + os.path.join(directory, 'dump.sql')]
+    commands = ([_load_expression(request)] if shell_dump else
+                [tool['name'] + ' --defaults-file=<0600 file> ' +
+                 ' '.join(shlex.quote(arg) for arg in _sql_load_args(request)) +
+                 ' < ' + shlex.quote(os.path.join(directory, 'dump.sql'))])
+    create_database = None
+    if schema and not shell_dump:
+        rows = Reader(conn, TAG).rows('SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ' + literal(schema))
+        if not rows and scope['tables'] and not (sql_scan.get('create_database') or sql_scan.get('create_schema')):
+            create_database = 'CREATE DATABASE ' + ident(schema)
+            defaults = manifest.get('schema_defaults', {}).get(scope['schemas'][0], {})
+            for key, label in (('character_set', 'character set'), ('collation', 'collation')):
+                if key in defaults and (not isinstance(defaults[key], str) or
+                                        re.fullmatch(r'[A-Za-z0-9_]{1,64}', defaults[key]) is None):
+                    raise Refused('The dump manifest has an invalid database %s name; '
+                                  'use 1 to 64 ASCII letters, digits or underscores.' % label)
+            if defaults.get('character_set') and defaults.get('collation'):
+                create_database += (' DEFAULT CHARACTER SET ' + ident(defaults['character_set']) +
+                                    ' COLLATE ' + ident(defaults['collation']))
+            else:
+                warnings.append('The dump manifest has no source database character set and collation; '
+                                'database %s will use the server defaults.' % schema)
+            commands.insert(0, create_database)
+            checks.append(_verification('target_schema', 'passed',
+                                        'Creates database %s first; it does not exist on this server.' % schema))
+        else:
+            checks.append(_verification('target_schema', 'passed',
+                                        'Database %s exists on this server.' % schema if rows else
+                                        'The dump creates its own database.'))
     if shell_dump and all(c['status'] != 'failed' for c in checks):
         runner = job or LifecycleJob('restore_dry_run', lambda job: None, connection)
         with tempfile.TemporaryDirectory(prefix='myflames-dry-run-') as scratch:
@@ -2216,8 +2689,10 @@ def prepare_restore(conn, connection, directory, schema=None, tools=None, allow_
                     _shell_script(runner, _load_expression(dry_request, True)), timeout=120)
         checks.append(_verification('dry_run', 'passed', 'MySQL Shell loadDump dryRun completed.'))
     plan = _plan('restore', server, connection, request, tool, target, commands, checks, warnings,
-                 binding_extra=_hash(manifest))
+                 binding_extra={'manifest': _hash(manifest), 'create_database': create_database, 'sql_scan': sql_scan})
     plan.update(manifest=manifest, manifest_hash=_hash(manifest),
+                create_database=create_database, sql_scan=sql_scan,
+                remap_allowed=remap_allowed, remap_reason=remap_reason,
                 required_acknowledgement=('REPLACE mysql SYSTEM TABLES ON ' + target) if system_sql else None)
     return plan
 
@@ -2233,26 +2708,34 @@ def _load_expression(request, dry_run=False):
     return 'util.loadDump(%s,%s)' % (json.dumps(request['directory']), json.dumps(options))
 
 
+def _sql_load_args(request):
+    args = ['--local-infile=0', '--batch', '--skip-column-names', '--unbuffered'] + list(dbops.WRITE_CLIENT_FLAGS)
+    if request.get('schema'):
+        args.append('--database=' + request['schema'])
+    return args
+
+
 def restore_job(connection, plan, confirmed=False, typed_target=None, audit=None, safety=None,
                 factory=LifecycleConnection, start=True, typed_acknowledgement=None):
     connection = copy.deepcopy(connection)
     request = copy.deepcopy(plan.get('request', {}))
     prepare_request = {k: v for k, v in request.items() if k != 'progress_file'}
     def rebuild(conn, job):
-        return prepare_restore(conn, connection, tools=detect_tools(job=job), job=job, **prepare_request)
+        return prepare_restore(conn, connection, tools=None, job=job, **prepare_request)
     def action(job, conn, fresh):
         manifest = fresh['manifest']
         _check_reviewed_manifest(request['directory'], fresh['manifest_hash'], job)
         if _staging_check(manifest, request['staging_directory'])['status'] != 'passed':
             raise Refused('Insufficient free space for the reviewed restore snapshot.')
         tool = fresh['tool']
+        job.partial_state = 'Nothing was loaded: the client stopped before running any statement.'
         if tool['name'] == 'mysqlsh':
-            job.partial_state = ('Part of the dump may be loaded on %s. MySQL Shell recorded its progress in %s: '
-                                 'prepare the restore again with resume to continue.' % (fresh['target'],
-                                                                                         request['progress_file']))
+            job.restore_started_state = ('Part of the dump may be loaded on %s. MySQL Shell recorded its progress in %s: '
+                                         'prepare the restore again with resume to continue.' %
+                                         (fresh['target'], request['progress_file']))
         else:
-            job.partial_state = ('Part of the dump may be loaded on %s (statements run in order and each one '
-                                 'commits). Check the schemas before running it again.' % fresh['target'])
+            job.restore_started_state = ('Part of the dump may be loaded on %s (statements run in order and each one '
+                                         'commits). Check the schemas before running it again.' % fresh['target'])
         if tool['name'] == 'mysqlsh':
             # Shell reads chunks lazily. Loading the original directory would
             # leave a TOCTOU window even after its preflight checksums passed.
@@ -2268,9 +2751,7 @@ def restore_job(connection, plan, confirmed=False, typed_target=None, audit=None
                 job.step('Loading with MySQL Shell.')
                 _invoke(job, tool, connection, ['--js'], _shell_script(job, _load_expression(staged_request)))
         else:
-            args = ['--local-infile=0', '--batch', '--skip-column-names', '--unbuffered'] + list(dbops.WRITE_CLIENT_FLAGS)
-            if request.get('schema'):
-                args += ['--database=' + request['schema']]
+            args = _sql_load_args(request)
             # An stdin prefix prints the actual executing session id before
             # streaming the dump. No password or SQL is put in -e/argv.
             with tempfile.TemporaryFile('w+b', dir=request['staging_directory']) as sql:
@@ -2280,6 +2761,16 @@ def restore_job(connection, plan, confirmed=False, typed_target=None, audit=None
                 _copy_reviewed_file(request['directory'], record, sql, job)
                 _check_reviewed_manifest(request['directory'], fresh['manifest_hash'], job)
                 sql.seek(0)
+                if fresh.get('create_database'):
+                    # This is the exact reviewed first command, under the same
+                    # consumed token, policy checks and audit as the load. Do
+                    # not select the new database until creation has succeeded.
+                    job.step('Creating the reviewed target database.')
+                    _invoke(job, tool, connection,
+                            ['--local-infile=0', '--batch'] + list(dbops.WRITE_CLIENT_FLAGS),
+                            TAG + fresh['create_database'] + ';\n')
+                    job.partial_state = ('Database %s was created, but nothing was loaded into it: '
+                                         'the load client stopped before running any statement.' % request['schema'])
                 job.step('Loading dump.sql with %s.' % tool['name'])
                 _invoke(job, tool, connection, args, input_file=sql)
         job.step('Verifying the restored objects and row counts.')
@@ -2572,7 +3063,7 @@ def refuse_clone_through_ssh(donor_connection, recipient_connection):
 
 
 def prepare_clone(donor_conn, recipient_conn, donor_connection, recipient_connection, data_directory=None,
-                  require_ssl=True, directory_probe=None, tools=None, donor_address=None):
+                  require_ssl=True, directory_probe=None, tools=None, donor_address=None, job=None):
     refuse_clone_through_ssh(donor_connection, recipient_connection)
     if donor_connection.get('ssl_mode') in ('REQUIRED', 'VERIFY_CA', 'VERIFY_IDENTITY') and require_ssl is False:
         raise Refused('The donor requires TLS; clone must use REQUIRE SSL.')
@@ -2596,7 +3087,8 @@ def prepare_clone(donor_conn, recipient_conn, donor_connection, recipient_connec
                         'Without a restart supervisor the recipient can shut down and require a manual start. This cannot be undone.')
         warnings.append("After it, the recipient has the donor's accounts and passwords (the mysql schema is cloned): "
                         'connect to it with an account from the donor.')
-    tool = _pick(detect_tools() if tools is None else tools, ('mysql',), 'mysql')
+    tools = detect_tools(server=recipient['server'], job=job) if tools is None else tools
+    tool = _load_tool(tools, 'mysql')
     expect = _clone_expect(donor_connection, recipient_connection, require_ssl, donor_address)
     plan = _plan('clone', recipient['server'], recipient_connection, request, tool, target,
                  [clone_statement(donor_connection, data_directory, require_ssl, donor_address=donor_address)],
@@ -2644,7 +3136,7 @@ def clone_job(donor_connection, recipient_connection, plan, confirmed=False, typ
         with _connect(factory, donor_connection) as donor:
             return prepare_clone(_BoundedConnection(donor, job), conn, donor_connection, recipient_connection,
                                  request.get('data_directory'), request.get('require_ssl', True), directory_probe,
-                                 tools=detect_tools(job=job), donor_address=donor_address)
+                                 tools=None, donor_address=donor_address, job=job)
     def action(job, conn, fresh):
         require_clone_recipient_tls(donor_connection, recipient_connection,
                                     saved=request.get('saved_donor_password') is True)
@@ -2779,7 +3271,7 @@ def _gtid_text(value):
     return re.sub(r'\s+', '', str(value or '')).lower()
 
 
-def prepare_physical_backup(conn, connection, directory, tools=None, same_host_confirmed=False):
+def prepare_physical_backup(conn, connection, directory, tools=None, same_host_confirmed=False, job=None):
     """Prepare MariaDB backup+prepare as one explicitly confirmed host operation.
 
     Locality requires an explicitly selected, matching live Unix socket and
@@ -2789,7 +3281,8 @@ def prepare_physical_backup(conn, connection, directory, tools=None, same_host_c
     guidance = physical_backup_guidance(conn, connection, directory)
     server, directory = guidance['server'], _output_path(directory)
     _empty_directory(directory)
-    tool = _pick(detect_tools() if tools is None else tools, ('mariadb-backup',), 'mariadb')
+    tools = detect_tools(server=server, job=job) if tools is None else tools
+    tool = _pick(tools, ('mariadb-backup',), 'mariadb')
     checks = [_verification('engine', 'passed' if server['engine'] == 'mariadb' else 'failed', 'mariadb-backup requires MariaDB.'),
               _verification('local_files', 'passed' if guidance['local_files_detected'] and not connection.get('ssh_host') and
                             connection.get('host') in ('localhost', '127.0.0.1', '::1') and same_host_confirmed is True else 'failed',
@@ -2816,7 +3309,7 @@ def physical_backup_job(connection, plan, confirmed=False, typed_target=None, au
     connection = copy.deepcopy(connection)
     request = copy.deepcopy(plan.get('request', {}))
     def rebuild(conn, job):
-        return prepare_physical_backup(conn, connection, tools=detect_tools(job=job), **request)
+        return prepare_physical_backup(conn, connection, tools=None, job=job, **request)
     def action(job, conn, fresh):
         directory, tool = request['directory'], fresh['tool']
         _empty_directory(directory)

@@ -107,7 +107,7 @@ keep Developer ID signing and notarization explicitly disabled; the certificate
 and the notary sign-in come from the environment, never the repository. Verify
 the delivered app with a minimal PATH and an unavailable system Python; normal
 Finder launches must not require a terminal. Keep the standard client-discovery
-paths fixed and preserve explicit PATH precedence. Keep the renderer sandboxed
+paths fixed; discovery order breaks ties after the per-server ranking below. Keep the renderer sandboxed
 and isolated, with no Node integration or broad IPC bridge; the one bridge is
 the updater's (`preload.cjs` exposes `window.myflamesDesktop.update` with
 `support()`, `prepare()` and `restart()`, over the IPC channels
@@ -169,16 +169,11 @@ origin. `main.cjs` passes `process.resourcesPath` to `backendEnvironment` only w
 `<resources>/mysql-client/bin` as the very last PATH entry on macOS and Windows,
 after everything above (moving it there if the inherited PATH already holds it,
 and leaving it off PATH when the folder name holds the PATH separator), and sets
-`MYFLAMES_BUNDLED_CLIENT_DIR` to it. `connector._resolve_binary` keeps its order
-(`--mysql-binary`, then `mysql`, then `mariadb`) but searches a PATH without that
-folder under any spelling (`installed_search_path`: a trailing separator, another
-case, a symlink or junction), so an installed `mariadb` anywhere on PATH still wins
-(Debian's MariaDB 11 packages ship `mysql` only in `mariadb-client-compat`); the
-bundled `mysql` is the last resort, built as `<folder>/mysql[.exe]` and never
-searched (`bundled_program`: `shutil.which` would split a folder name holding the
-PATH separator). `lifecycle.detect_tools` looks for each tool on that PATH, then in
-`COMMON_BIN_DIRS`, then in the bundled folder (the bundled `mysqldump` reports
-engine `mysql`, so it is offered for MySQL servers only). The
+`MYFLAMES_BUNDLED_CLIENT_DIR` to it. Discovery includes that folder alongside
+installed tools; selection ranks each role against the server's engine and
+major.minor series, so the bundled copy can beat an older or newer installed
+series. Installed tools win only after series, authentication plugins and patch
+version tie. The bundled `mysqldump` is offered for MySQL servers only. The
 bundled client cannot sign in to MariaDB accounts that use `ed25519` or `parsec`
 (`ERROR 2059: Authentication plugin 'client_ed25519' cannot be loaded`); those need
 an installed MariaDB client. It carries no client plugins (`lib/plugin`), so
@@ -207,55 +202,214 @@ system folders on PATH and checks that the backend found a usable `mysql`
 recorded in the lock's `comment` (Oracle's MD5 file and `.asc` signature, then
 the SHA-256) and updates NOTICE. Tests: `apps/desktop/test` (PATH order,
 extraResources, lock) and `test/test_fetch_mysql_client.py`,
-`test_connector.TestBundledClientResolution`.
+`test_connector.TestBundledClientResolution` and
+`test_connector.TestVersionAwareClients`.
 Packaged app data is separate from development and CLI data.
-When no client is found, `connector.ClientMissingError` (a `ConnectorError`,
-`code = "client-missing"`) carries "myflames could not find the MySQL or MariaDB
-command-line client (mysql or mariadb)." (with the bundled client, when no
-client can be used at all, or for a broken chosen client). `connector.client_missing_error`
-finds it through `__cause__`, and through `__context__` only for myflames' own
-wrapper types (`ConnectorError`, `ValueError`, which suppress context with
-`from None` only to redact secrets); such a failure answers 400 with the client
-error's own text and `"code": "client-missing"`. Other types never inherit it,
-and unexpected exceptions still answer with a generic 500. The CLI alone adds "Install it or pass
---mysql-binary /path/to/mysql.". The workspace shows `ClientMissingNotice`
-(`ClientMissing.tsx`) for that code in every Server view's `ViewStatus`, Test
-connection, the Query editor tab and Maintenance > Tools, which keeps its tools
-and download links (`server: {}`, `offered: {}`, `server_error: {code, error}`).
-A client chosen in the workspace (`POST /api/client/settings`: `{}` reads,
-`{"path": <absolute>}` stores after `<path> --version` exits 0 within 5 s, 16 KiB
-per stream, in `client_environment()`, naming mysql or mariadb, for a regular file
-named `mysql`, `mariadb`, `mysql.exe` or `mariadb.exe`; `{"path": null}` clears;
-the workspace store keeps it) is `connector.set_default_binary` at server start
-and after each change, and `_resolve_binary` uses it after a per-connection
-`binary=` override and before PATH, probing it again when the file changes. The
-chosen client serves server reads, the Query editor, reviewed writes and CSV
-import. Restore and clone use the client found by `lifecycle.detect_tools`.
-Because the chosen client receives every connection's password (the option
-file), `connector._check_client_trust` runs before each use and in the probe:
-on macOS and Linux the file and every folder above both the chosen path and its
-real path must be owned by the user or root with no group or other write, except
-a root-owned sticky folder and, on macOS only, group write by the admin group
-(gid 80: its members can already act as root, and `/opt/homebrew/bin` and
-`/Applications` give it write access); on Windows only a local `mysql.exe` or
-`mariadb.exe` (no UNC or device path) under `ProgramFiles`, `ProgramFiles(x86)`,
-`ProgramW6432`, `LOCALAPPDATA` or the real profile (`MYFLAMES_USER_PROFILE`, which
-`main.cjs` sets because the backend's `USERPROFILE` is isolated; `backendEnvironment`
-passes the other four) is accepted, and an ACL check is still to come. The client
-runs by its fully resolved path, so no link on the way can redirect it after the
-check; the dialog shows the chosen path. `--no-defaults --version` runs in its own
-process group (killed with its children at the deadline) outside the selection
-lock. Detection offers only clients that pass the check; the automatic PATH client
-is described as PATH finds it, because the connector uses it so (the same check
-for PATH discovery is an open lead).
-A broken stored choice raises `ClientMissingError` ("The chosen database client is
-unavailable…") instead of falling back. `POST /api/client/detect` lists usable
-clients on PATH and, on macOS and Linux, in `lifecycle.COMMON_BIN_DIRS`
-(deduplicated by real path, at most ten probed). Both answer `client-settings-1.0`
-(`path`, `active` {`path`, `version`, `source` `chosen`|`path`} or null,
-`detected` [{`path`, `name`, `version`, `source` `path`|`common`}], `error` for a
-broken stored choice). Tests: `test/test_connector.py`, `test/test_ui.py`,
-`apps/workspace/test/database-client.mjs`.
+**Client tool discovery and selection.** `myflames/client_tools.py` is shared
+by query connections and Maintenance. `snapshot` only stats executable regular
+files: every copy of `mysql`, `mariadb`, `mysqldump`, `mariadb-dump`,
+`mariadb-backup`, `mariadb-upgrade`, `mysqlpump` and `mysqlsh` in nonempty PATH
+entries, then `lifecycle.COMMON_BIN_DIRS` on POSIX, then the bundled folder.
+Aliases are deduplicated by realpath, with MariaDB names preferred for
+compatibility links; there is no implicit current-directory or PATHEXT lookup.
+Installations are keyed by `<engine>:<realpath folder>`; `folder` is resolved,
+`found_in` retains the discovery folder. Each program keeps its path, realpath
+and distribution version. Origin codes and labels are `bundled` (Bundled with
+myflames), `homebrew` (Homebrew <formula>), `macports` (MacPorts),
+`mysql-installer` (MySQL installer), `workbench` (MySQL Workbench),
+`mariadb-installer` (MariaDB), `system` (System package, Linux /usr/bin and
+/usr/sbin), `path` (On PATH), and `folder` (Chosen folder for otherwise
+unclassified Settings folders outside the search). `has_auth_plugins` means a
+recognized plugin file exists in `../lib/plugin`, `../lib/mysql/plugin` or
+`../lib64/mysql/plugin`: LDAP SASL, Kerberos, OCI, WebAuthn, ed25519, GSSAPI or
+parsec. It is a selection hint, not proof that an account can authenticate.
+
+`discover` requests at most 32 version probes per call, including cache hits;
+`discover_choices` and lifecycle discovery can make extra discovery calls for
+chosen folders. `probe` runs `--version` with an isolated HOME and allowlisted
+environment, no stdin and an 8 s timeout; banners retain at most 4,096 characters.
+Successful recognized versions use a 64-entry LRU keyed by program name,
+realpath, device, inode, size, mtime_ns and ctime_ns, without a time limit.
+Failures and timeouts are not retained, and a file changed during a probe is
+not cached. Concurrent probes of one identity share a flight, including its
+failure; child processes run outside the cache lock. `refresh=True` bypasses
+cached results. Workspace startup warms discovery on a daemon thread without
+blocking the window. `mysqlpump` is presence-only, with null version and
+version tuple; it is deprecated, never probed, selected or marked used. Shell
+copies are listed separately, newest first.
+
+`select` is pure. For each supported role it considers the server's own engine,
+using that program's version even in a mixed-version folder. Automatic ranks
+its own major.minor series first, then the nearest newer series, then the newest
+older series. Within the selected series, installations with authentication
+plugins win, then the newest patch, then installed before bundled, then discovery
+order and stable keys/paths. An older automatic dump or load program carries
+`<program> <version> is older than this server (<engine> <series>).`; dumps add
+`Install <engine> <series> client tools for a complete dump.` A Settings choice
+wins for that engine's roles, and missing programs never come from another
+installation to repair that choice. Chosen tools use reason `chosen`, without
+an automatic older-version warning.
+
+Roles are `client` (queries), `dump`, `load` (SQL restores and CLONE), `backup`
+(MariaDB physical backup) and `shell`. MariaDB prefers `mariadb` and
+`mariadb-dump`, accepting its own `mysql` and `mysqldump` compatibility names.
+Load uses the client in the selected dump installation; if it has no client,
+load is missing. Without a selected dump, an own-engine query client can supply
+load. MySQL Shell uses the newest discovered Shell independently of the Settings
+choice and is selected only for a known MySQL server. Auxiliary programs such
+as `mariadb-upgrade` use the same series ranking through `select_program`.
+An unknown or unrecognized server gets only a query client: installed before
+bundled, then mysql before mariadb, then discovery order. If a known server has
+no tools of its own engine, only queries may use the other engine; dump, load
+and backup stay missing. That `other_engine` query client prefers authentication
+plugins, then the newest client version, then installed before bundled, then
+discovery order and installation key. The `unknown_server` first-contact order
+stays unchanged. For MariaDB this adds a note that dumps and restores need
+MariaDB tools. Reason codes are `chosen`, `series`, `newer`, `older`,
+`unknown_server`, `other_engine` and `newest` (Shell).
+
+**Choices and trust.** **Settings > Client tools…** stores independent
+`client_choice_mysql` and `client_choice_mariadb` settings. The value is the
+absolute client path or folder as chosen (preserving stable symlink spelling),
+`bundled`, or no key for **Automatic (best match for each server)**. Validation
+requires an absolute path of at most 4,096 characters without NUL or line
+breaks, a client named mysql or mariadb (with .exe on Windows), a regular
+executable file, and a recognized mysql/mariadb banner of the requested engine.
+The chooser runs `--no-defaults --version` in `client_environment()` with a
+5 s deadline and 16 KiB per stream, in a process group killed with its children
+at the deadline. A rejected choice leaves the stored and active choices intact.
+A stored choice that moved, stopped working or became untrusted remains stored
+with its error; resolution raises `ClientMissingError` rather than silently
+falling back. At startup `migrate_client_choices` moves `client_binary` once:
+a successful trusted probe decides the engine, otherwise a mariadb filename
+means MariaDB and any other name means MySQL; broken paths are preserved.
+Bundled paths become `bundled`, existing per-engine choices win, and the legacy
+key is deleted. Choices are published with `connector.set_client_choices` at
+startup and after changes; existing connection objects follow the generation
+on their next resolution.
+
+Every discovered or chosen non-bundled copy must pass
+`connector.checked_program` before probing or receiving credentials. On POSIX,
+the file and every ancestor of both the chosen spelling and its realpath must
+be owned by the user or root, with no group/other write; symlink modes do not
+control replacement. Exceptions are root-owned sticky directories and, only on
+macOS, group write by the admin group (gid 80) without other write. Windows
+accepts only local mysql.exe, mariadb.exe, mysqldump.exe, mariadb-dump.exe,
+mariadb-backup.exe or mysqlsh.exe under ProgramFiles, ProgramFiles(x86),
+ProgramW6432, LOCALAPPDATA or the user profile (MYFLAMES_USER_PROFILE or
+USERPROFILE); UNC and device paths are refused before resolution. This is a
+location restriction, not a Windows ACL check. Only the actual bundled folder
+is exempt, never an arbitrary extra search folder. Refused copies remain in
+`skipped` with their reason. Each use rechecks the path and pinned resolved
+target, refuses a changed target, and executes the resolved file. Lifecycle
+rechecks immediately before launching; editor helpers recheck the tab's pinned
+client. The single-client shortcut also checks trust. An explicit connector
+`binary=` override bypasses automatic selection and its trust checks; it is
+not a workspace setting or accepted connection field.
+
+**Connector resolution and first contact.** Resolution is a per-connection
+`binary=` override, then the Settings choice for the known engine, otherwise
+automatic selection for that server. With no choices and at most one stat
+candidate, resolution uses the checked candidate without an inventory probe
+or preliminary server read; option-file construction still probes its engine.
+With multiple distinct clients and no cached facts, `_first_contact` runs
+`SELECT @@version, @@version_comment` once per endpoint flight using that
+connection's credentials, socket/TCP, TLS and SSH tunnel. A MySQL choice is used
+first, then a MariaDB choice; without choices it uses the unknown-server query
+fallback. Unrelated automatic clients are not probed while a chosen
+installation supplies the connection. If the read discovers an engine with no
+choice, full discovery then supplies that engine's automatic pick.
+
+Concurrent callers share first-contact success or failure. Only a missing
+authentication plugin permits one retry with the other engine's best client;
+login and transport failures propagate without a second connection. A server
+SQL error with `at line N` and a non-2xxx error number leaves the version
+unknown; so do unparseable or unsupported versions such as ProxySQL 2.x.
+Unknown and failed reads are not cached and a later request may retry.
+`client_tools` keeps valid `{engine, version}` facts in a thread-safe 256-entry
+LRU without a time limit. The key is host, port, socket, ssh_host, ssh_user and
+ssh_port (defaults localhost/3306/22); localhost and 127.0.0.1 are distinct,
+and database user, password and TLS are not part of the key. Connector version
+reads, editor handshakes and the client-tools API also remember valid facts.
+
+`ClientMissingError` (`ConnectorError`, code `client-missing`) reports no usable
+client or a broken choice. `ClientAuthPluginError` subclasses it with code
+`client-auth-plugin`. Only the first ERROR line of a client connection failure
+matching `ERROR 2059 (HY000): Authentication plugin '<name>' cannot be loaded`
+(end of line, colon or period after `loaded`, plugin name letters/digits/underscores)
+gets that type. Statement errors (`at line N`) and subsequent ERROR lines do
+not. Its text names the program, version, origin and plugin, and directs the
+user to Settings. `client_missing_error` follows causes and only myflames'
+own ConnectorError/ValueError wrapper contexts; unexpected exception contexts
+still produce generic 500 errors. Typed client failures answer HTTP 400 with
+`error` and the error's `code`. `ClientMissingNotice` offers **Choose client
+tools…** and **Try again** in Server views, Test connection and the Query editor;
+plugin failures show their specific text. Maintenance can retain its inventory
+and download links when the server cannot be read.
+
+Option files follow the probed client engine, including a mysql compatibility
+link to MariaDB, and remain paired with that invocation's binary.
+`client_tls_options` serves reads, writes, editor/CSV sessions and lifecycle
+programs. MySQL gets `ssl-mode` and, for connector sessions unless TLS is
+DISABLED, `get-server-public-key=ON`. MariaDB maps DISABLED to `skip-ssl`,
+REQUIRED to `ssl`, VERIFY_CA and VERIFY_IDENTITY to `ssl` plus
+`ssl-verify-server-cert`, and PREFERRED to no mode option. It receives neither
+`ssl-mode` nor `get-server-public-key`. Both keep CA, certificate, key and
+cipher options. This mapping uses the client engine, not the server engine.
+
+**Client tools API.** Authenticated `POST /api/client/tools` accepts `{}` for
+inventory only, optional `refresh: true` to re-probe, and optional `connection`
+to read that server and select roles. `POST /api/client/tools/choose` requires
+`engine` (mysql or mariadb), `path` (absolute program/folder, `bundled`, or null
+for Automatic), and optionally `connection`; unexpected fields are refused.
+Only choose mutates settings. Missing API authentication answers 403; invalid
+fields, paths or engine choices answer 400 with a plain `{error}` and no code,
+leaving the active choice intact. Both return `client-tools-1.0`:
+
+- `installations[]`: `key`, `engine`, `version`, `series`, `folder`, `found_in`,
+  `origin`, `origin_label`, `bundled`, `has_auth_plugins`, `programs` keyed by
+  name with `{path, realpath, version}` (no mysqlpump), and `chosen_for[]`.
+  Order is engine, descending version, then discovery order/key.
+- `shells[]`: `{path, realpath, version, origin, origin_label}`, newest first;
+  `skipped[]`: `{path, reason}`; `choice`: mysql and mariadb objects with
+  `{path, installation, error}` (null where absent).
+- With a connection only: `server` `{engine, version, product}` or null,
+  `server_error` `{code, error}` or null, and `used` with nullable `client`,
+  `dump`, `load`, `backup`, `shell`, plus `missing[]` `{role, program, text}`
+  and `notes[]`. Each use has `role`, `program`, `path`, `version`, `engine`,
+  `installation` (null for Shell), `origin`, `origin_label`, `bundled`,
+  `reason`, `warning`; internal realpath/version_tuple/order are omitted.
+  A server-read error uses `client-missing`, `client-auth-plugin` or
+  `server-read`; typed client failures clear `used.client`.
+
+`/api/client/settings`, `/api/client/detect` and `client-settings-1.0` are
+removed; the old endpoints return 404. The dialog shows the programs for the
+connection in use, separate engine choices and **Found on this computer** with
+**Detect again**. Its install hint appears only when no installation was found.
+`toolUseLine` renders program, version, origin and selection reason in
+Maintenance and the review sheet; Maintenance heads this block **Used for this
+server**. The Dump tool choice names the program, version and origin (or the
+Shell version for Automatic).
+
+The deprecated CLI and `myflames-mcp` use automatic selection only, without the
+workspace's stored choices; `--mysql-binary` still overrides query connections.
+Each new command process with several clients pays its own first-contact read
+because endpoint facts are in memory. No new CLI flag or MCP tool is added.
+
+Contract tests: `test/test_client_tools.py` (`DiscoveryTests`: inventory,
+origins, plugins, trust, probe identity/LRU/single flight/limits;
+`SelectionTests`: ranking, roles, reasons, missing choices; `EndpointTests`:
+endpoint normalization and facts LRU). `test/test_connector.py`
+(`TestVersionAwareClients`: resolution and first contact; `TestClientSelection`
+and `TestWindowsClientTrust`: validation/trust; `TestClientSecurityFixes`:
+trust, exact 2059 matching and MariaDB TLS; `TestBundledClientResolution`:
+bundle paths). `test/test_workspace_store.py` (`TestWorkspaceStore`: independent
+choices and legacy migration); `test/test_ui.py` (`TestClientToolsAPI`:
+authentication, validation, wire fields, removed routes and typed errors).
+`test/test_editor_session.py` (`ProcessTests`, `PinnedClientTrustTests`): pinned
+helpers and permission changes. UI: `apps/workspace/test/client-tools.mjs`
+(`npm run test:client-tools`), replacing `database-client.mjs`.
+
 `package:win` builds the unsigned Windows x64 NSIS installer
 (`myflames-<version>-windows-x64-setup.exe`, per user). PyInstaller does not
 cross-compile, so `.github/workflows/windows-desktop.yml` builds the backend on a
@@ -1739,6 +1893,7 @@ planner, write gate and session engine from the CLI.
   calls `EditorSessions.close`; an `atexit` hook kills leftover clients). Never
   reconnected: an ended session answers runs with `status: "session_ended"`
   and `SESSION_ENDED_TEXT` until `/close` or `/open`.
+- Client: opening a session uses the connector's per-server choice and keeps the binary paired with its engine-specific option file. The handshake remembers valid endpoint engine/version facts. The tab pins its resolved client for plan and KILL QUERY helpers even after Settings changes; each helper rechecks trust before starting. New sessions use the current choice. Authentication-plugin connection failures preserve `client-auth-plugin`. Tests: `test/test_editor_session.py` (`ProcessTests`, `PinnedClientTrustTests`) and `test/test_connector.py` (`TestVersionAwareClients`, `TestClientSecurityFixes`).
 - Framing: a random client delimiter is set once (`DELIMITER __mf<hex>_`);
   each statement is written as `<text>\n<delimiter>\ndelimiter\n`. The bare
   `delimiter` line makes the client print `ERROR at line N: DELIMITER must be
@@ -1998,6 +2153,14 @@ planner, write gate and session engine from the CLI.
   the text holds a backslash or a control character, so the output does not
   depend on NO_BACKSLASH_ESCAPES; same for MySQL and MariaDB), Markdown
   (escaped pipes and Markdown characters, `<br>` for newlines, `*NULL*`).
+  For SQL INSERT only, when a result lacks types, the editor makes at most
+  one `live/catalog` read on that result's source connection and borrows
+  declared types only for plain column references in a single-table SELECT,
+  matching select items by position and source names case-insensitively
+  (aliases do not change the source name; a lone `*` or `t.*` maps by result name).
+  Expressions, ambiguous result shapes or mixed wildcards, UNIONs, joins,
+  WITH, missing source schema/table metadata and failed reads leave untyped
+  values quoted; existing server result types always take precedence.
 - Privilege preview: `POST /api/editor/preview {connection, tab_id, sql,
   selection? | cursor?}` uses `_plan_run` and `dbops.classify`, exactly as Run
   does before connecting. It returns `status`, `scope`, `statements[]`
@@ -2260,7 +2423,7 @@ planner, write gate and session engine from the CLI.
     The process-local `_FILE_TOKENS` map keeps at most 200 opaque tokens bound to the resolved path and its parent directory's device/inode; the renderer never supplies a write path. `⌘S` / `Ctrl+S` saves via `POST /api/editor/file/save` (`{sql, token}`). `⇧⌘S` / `Ctrl+Shift+S`, or Save without a binding, uses `{sql, save_as: true, name}` and `choose_save_file`. An `unknown_token` after a backend restart opens Save as within the same Save operation; success, cancellation or failure is reported, and a cancelled or failed save or close keeps the tab's unsaved edits. Save as suggests the bound file's name, or `<tab.name>.sql` without a binding. `_clean_suggested_name` removes path components and controls, replaces colons with hyphens, appends `.sql` when needed and clips the suggested name to 255 characters. On macOS and Windows the sanitized name reaches the native dialog through `MYFLAMES_SAVE_NAME` unchanged, including quotes and Unicode, never as script source.
     Save accepts at most 8,000,000 characters and `.sql` or `.txt` destinations. It refuses a symbolic-link target, directories, special files, and a parent whose identity changed since selection ("Use Save as to choose the file again"). When it adds `.sql` to a name without an extension, publication never replaces an existing file, including one created after validation: choose the full filename in Save as to approve replacement. `write_text_atomic` writes UTF-8 without BOM to a temporary file, flushes and `fsync`s it, then uses `os.replace` for an approved full name or an atomic no-clobber link when `.sql` was added. With directory-descriptor support, the parent stays pinned during creation, publication and cleanup; other platforms recheck its identity. An existing regular file owned by this user with one hard link keeps its `0777` permission bits; if the temporary file lands in a different group, group permissions are set to the old permissions for others. Other files use `0666` less the umask with directory-descriptor support; the temporary-file fallback uses owner-only permissions. A file-backed tab whose `sql !== file.savedSql` shows an edited dot (`title="Edited since the last save"`), adds `Edited` to the window status bar, and asks **Unsaved changes** with **Save**, **Don't save** and **Cancel** before closing the tab. Tests: `test/test_editor_files.py`, `test/test_file_picker.py`, `test/test_editor_session.py`, `apps/workspace/test/editor-files-unit.mjs` and `editor-file-safety.mjs`.
   - **Continue on error**: **Run options** offers **On error: Stop / Continue**, default Stop (stored per tab as `on_error?: "stop" | "continue"` in `session-1.0` and sent to `POST /api/editor/run`). `_review_digest` includes `on_error`, so approving a write in one mode never approves running it in the other. Continue applies only to `scope == "all"` (**Run all**); Stop, loss of the session, and safety or review refusals still prevent further statements. After a Continue run finishes, Messages counts actual statement statuses: succeeded (`ok`), failed (`error`), not run (`not_run` or `pending`), stopped (`stopped`) and outcome unknown (`session_ended` or `running`), showing the last three counts when nonzero, and lists each failure with its statement number and jump link. Error 1213 adds "Error 1213: an InnoDB deadlock rolls back the victim's whole transaction" and error 1205 adds "Error 1205: an InnoDB lock wait timeout rolls back the whole transaction only with innodb_rollback_on_timeout ON": engine behavior, never a claimed outcome, since a script can SIGNAL either code and a metadata lock wait also ends with 1205. The On error ⓘ explains that by default an InnoDB error rolls back only the failed statement; a deadlock, or a lock wait timeout with `innodb_rollback_on_timeout` ON, rolls back the whole transaction.
-  - **Default database picker**: **Database** (`<select aria-label="Default database">`) offers **None** and schema names from `useSchemaCatalog(connection, onScreen)`, read only while the Query editor is on screen. `database?: string` in `session-1.0` permits an explicit empty string for None, or up to 64 characters without controls; restore preserves the empty value. `connectionFor` uses the tab value with nullish fallback, so None starts the tab's next session without a default database even if the connection has one. `chooseDatabase` refuses a change while the tab's live session belongs to another connection. With no live session, the chosen database is used on the next session; with one, `POST /api/editor/use` (`{tab_id, connection, database}`) takes `run_lock`, sends tagged `USE` with quoted identifiers, and verifies through `refresh_state()` and `SELECT DATABASE()` (a session read, no confirmation or audit). Choosing None cannot clear a live session's database: it keeps that database until the session closes, and the next session starts with none.
+  - **Default database picker**: **Database** (`<select aria-label="Default database">`) offers **None** and schema names from `useSchemaCatalog(connection, onScreen)`, read only while the Query editor is on screen. A finished run whose statements may change the list (`runMayChangeDatabases`: a CREATE or DROP DATABASE or SCHEMA, or a statement without a verb) calls `invalidateSchemaCatalog` with the connection the run went to (`sessionConnectionOf`), never the one on screen when the late callback runs: that connection's cached list is dropped, its views on screen read it again and hidden ones (the editor included) read it when shown. Any `useSchemaCatalog` view that is shown again attaches to the current shared read when the list was invalidated or replaced while it was hidden (an invalidated list is read once); an unchanged list stays, because each read also counts tables. The picker re-reads it on focus when the read is older than `CATALOG_STALE_MS` (10 s), so a database created elsewhere appears without a restart. Every read uses the connection its cache key was rendered with (`catalogConnections`). A reload replaces the shared per-connection promise and notifies every other `useSchemaCatalog` instance of that connection (one listener set per key), so the Schema browser and server pickers see the new list. `database?: string` in `session-1.0` permits an explicit empty string for None, or up to 64 characters without controls; restore preserves the empty value. `connectionFor` uses the tab value with nullish fallback, so None starts the tab's next session without a default database even if the connection has one. `chooseDatabase` refuses a change while the tab's live session belongs to another connection. With no live session, the chosen database is used on the next session; with one, `POST /api/editor/use` (`{tab_id, connection, database}`) takes `run_lock`, sends tagged `USE` with quoted identifiers, and verifies through `refresh_state()` and `SELECT DATABASE()` (a session read, no confirmation or audit). Choosing None cannot clear a live session's database: it keeps that database until the session closes, and the next session starts with none.
 
 #### Saved queries, the fill form and result selection
 
@@ -2382,7 +2545,16 @@ planner, write gate and session engine from the CLI.
   counters `rows_examined`, `rows_sent`, `rows_affected`, `no_index_used`,
   `no_good_index_used`, `created_tmp_tables`, `created_tmp_disk_tables`,
   `sort_merge_passes`, `select_full_join`, `select_scan`, `lock_time`,
-  `timer_wait`, `errors` and `warnings`. Unsigned counters and `event_id` are
+  `timer_wait`, `errors` and `warnings`. Each `server_stats` also carries
+  `analyzable` (boolean) and `analyze_reason` (the converter's refusal sentence
+  when false, empty string when true), including when history is unavailable.
+  Eligibility calls `analysis_query.prepare` on the statement's sent text
+  without connecting or executing SQL. It accepts exactly that converter's
+  SELECT/WITH and supported simple UPDATE, DELETE and INSERT/REPLACE SELECT
+  projections; SET, SHOW and unsupported DML remain ineligible. Execution errors
+  do not remove eligibility from convertible SQL. The editor uses these fields
+  to gate Explain analyze; the capture checks remain authoritative.
+  Unsigned counters and `event_id` are
   decimal strings to preserve BIGINT precision; `timer_wait` alone may be
   null; timers keep the server's picosecond units. The verdict (frontend):
   Watch when `rows_sent > 0` and `rows_examined > 10000` and `rows_examined >
@@ -2429,7 +2601,10 @@ planner, write gate and session engine from the CLI.
   the counters and points to Server > Locks rather than showing stale values,
   and the meter's age is extrapolated between samples. The transaction
   popover keeps Commit, Roll back and **Show who waits**; **Explain analyze**
-  on a statement opens the existing Run analysis review. Commit, Roll back
+  on a statement opens the existing Run analysis review. It is shown only when
+  `server_stats.analyzable` is not false (absent on an older backend means
+  shown); otherwise the stats line's title is `server_stats.analyze_reason`.
+  A statement with status `error` starts its line with **Statement failed**. Commit, Roll back
   and Run analysis keep their review, confirmation, privilege and audit
   paths. Tests: `test/test_editor_session.py`,
   `apps/workspace/test/editor-insights.mjs`.
@@ -3530,18 +3705,20 @@ Workspace UI (`Tuning.tsx`, `tuning.css`, `tuningRules.ts`, `apps/workspace/test
 Backend `myflames/lifecycle.py` (contract and evidence: the server-lifecycle skill), CLI `myflames/lifecycle_cli.py`, endpoints in `ui.py` (`_lifecycle_*`). Tests: `test/test_lifecycle.py` (fake tool executables that record argv, env and option-file mode, strict replays of live recordings, a "regressions found on live servers" section) and `test/test_lifecycle_cli.py` (CLI exit codes, confirmations, audit, endpoints); fixtures and what was and was not verified live: `test/fixtures/lifecycle/PROVENANCE.txt`.
 
 - `python3 -m myflames upgrade-check --target-version X.Y.Z [--no-shell] [--config-path PATH] [--fail-on error|warning] [--json] [-o PATH] [-q]` (`upgrade-check-1.0`): `lifecycle.upgrade_check`. MySQL Shell (`mysqlsh --defaults-file=<0600> --js -- util check-for-server-upgrade --target-version=... --output-format=JSON`) when installed and the pair is in range (server older than the Shell, target at most the Shell's major.minor; otherwise exit 2 with a `--no-shell` hint); `parse_upgrade_json` reads `errorCount`/`warningCount`/`noticeCount` and `checksPerformed` (the Shell exits 0 with errors). `--no-shell` or no Shell: `_native_upgrade` (`partial: true`, `limitations[]`), every check version gated as source < change <= target: `removed_variables` from `performance_schema.variables_info` excluding COMPILED, DYNAMIC and PERSISTED (error: an unknown option in an option file or on the command line stops mysqld; `my_getopt.cc`), `removed_persisted_variables` (warning: logged and ignored at startup; `persisted_variable.cc`), on 5.7 the running values (warning); `reserved_identifiers` over schema, table, view, column, routine, trigger and event names with `reserved_words(source, target, source_reserved)` from `RESERVED_SINCE` minus the source's own `information_schema.KEYWORDS` (parity test against KEYWORDS read live on 8.0.46, 8.4.11, 9.7.2); `partition_engines` (5.7 sources only, joins TABLES for ENGINE); `utf8mb3` and `zero_date_defaults` in user schemas (notice from 8.0 sources, warning from 5.7); `native_password_users` (`'user'@'host'`, warning for 8.4, error for 9.x). MariaDB: `method: mariadb_upgrade_guidance`, never invokes the Shell; a target below 10 (a MySQL number) or older than the server is refused. Dump with MySQL Shell refuses when the Shell's major is older than the server's and warns for an older minor (`shell_version_gap`, mysql-shell `dumper.cc:5311-5334`); failed tool output is reduced to one line by `tool_error_line` with colour codes stripped. Counts are affected objects per severity; `--fail-on` exits 1. Read-only: endpoint `POST /api/lifecycle/upgrade-check` (`connection`, `target_version`, `prefer_shell`). HTTP `config_path` is rejected before connecting, also on `/api/lifecycle/prepare`; only the CLI accepts `--config-path`.
-- Tools: `detect_tools` (`lifecycle-tools-1.0`; PATH then `COMMON_BIN_DIRS`, `--version` in an isolated HOME, engine from the banner, `mysqlpump` listed as deprecated and never offered); `offered_tools(server, tools)`. Option files (`_credentials`): `[client]`, every value quoted, 0600 in a 0700 temporary directory, first on argv, removed in `finally`; environment allowlisted (`_clean_env`, no `MYSQL_PWD`). SQL and Shell scripts go on stdin. Endpoint `POST /api/lifecycle/tools` (with a `connection`, also `server` and `offered`).
+- Tools: `detect_tools(server=...)` returns `lifecycle-tools-2.0`, including `default_dump_parent` from `lifecycle.default_dump_parent()` (the real user home from `ssh_tunnel.ssh_home()`, `Documents/myflames dumps` when Documents exists, otherwise `myflames dumps` under home; Windows uses USERPROFILE). Computing the path creates nothing. This field is present with or without a connection, including missing-client replies. Detection uses the shared [client selection and trust rules](#local-ui) after reading the server. `tools[name]` holds the selected copy for each tool, `copies[]` lists every discovered copy with `name`, path, resolved path, version banner/tuple, engine, availability/error, installation, origin/label, reason, warning and `used`; `mysqlpump` has null version/tuple and is never used. A copy is marked `used` by its path whenever any selected client, dump, load, backup or shell role uses it, including an other-engine query client with no load role; its reason and warning come from that role (client takes precedence for a shared path). With server facts, `used` has the same public role/missing/notes shape as `client-tools-1.0`. Without facts, `tools` keeps the first copy per name in discovery order and omits `used`. A stale engine choice leaves its roles unavailable instead of selecting another installation. `offered_tools(server, tools)` determines operations. `POST /api/lifecycle/tools` with a connection reads the server before detecting for it, then adds `server` and `offered`; without a connection it returns inventory only. A typed client failure retains inventory and download links with `server: {}`, `offered: {}` and `server_error: {code: "client-missing", error}`; this route currently uses `client-missing` even for `ClientAuthPluginError`, unlike `/api/client/tools`. Option files (`_credentials`): `[client]`, quoted values or engine-specific TLS switches, 0600 in a 0700 temporary directory, first on argv, removed in `finally`; environment allowlisted (`_clean_env`, no `MYSQL_PWD`). TLS uses the actual tool engine's mapping described above. SQL and Shell scripts go on stdin. Tests: `test/test_ui.py` (`TestLifecycleToolsAPI`), `test/test_lifecycle.py` (`LifecycleTests`, `MissingClientToolsTests`, `ClientToolTrustTests`).
 - Tool release metadata: `tool_updates.enrich_tools`, invoked by `detect_tools(check_updates=True)` only after explicit UI detection/refresh. Each tool adds `download_url` and `update {status, latest_version, checked_at, source_url, message}`. Status is `not_checked`, `available`, `current`, `unknown`, `not_installed` or `deprecated`; current means no newer verified release in the checked series, not a compatibility or support guarantee. MySQL GA download headings and the MariaDB stable-series REST API supply versions. Fixed HTTPS endpoints only, no redirects or ambient proxies, 1 MiB response cap, 5 s socket timeout, 12 s caller budget, at most 8 in-flight workers and 64 cache keys; success TTL 1 hour, failure TTL 1 minute. Unsupported distributions/prereleases, mismatched series, malformed/future metadata and failed checks stay unknown. CLI discovery and lifecycle preflights do not request network checks.
 - `POST /api/lifecycle/choose-directory` accepts an empty object through the normal authenticated API. It opens the server host's folder dialog, with a 120 s deadline and one dialog at a time; no client-supplied script or path is executed. Cancel preserves the form path. The selected directory still undergoes normal preflight and empty-directory validation. Native folder selection accepts no command or path input and does not start a backup.
+- Dump folder facts: authenticated `POST /api/lifecycle/dump-info {directory}` accepts only `directory` and needs no connection or saved password. It is registered beside `choose-directory`, with the same authentication, CSRF header and request limits. It returns `{schema_version: "lifecycle-dump-info-1.0", tool: {name, version}, engine, scope: {schemas, tables}, structure_only, remap_allowed: true | false | null, remap_reason}`; `tool.version` is capped at 64 characters. Tool names are `mysqldump`, `mariadb-dump` or `mysqlsh`; engines are `mysql` or `mariadb`. Old manifests without `options.structure_only` report false. `dump_info` and `prepare_restore` share `_restore_input` (absolute/expanded real directory path, completed manifest validation and safe relative file records) and `_restore_sql_scan` with `_restore_remap`. A folder pick stays cheap: `dump_info` reads the manifest without checksumming every file (`verify=False`). For single-schema picked-table SQL dumps, it checks the opened `dump.sql` descriptor is a regular file and its size matches the manifest before reading; scans at most `DUMP_INFO_SCAN_BYTES` (16 MiB) and checks SHA-256. When the manifest record exceeds that cap, it skips the scan and returns `remap_allowed: null` with `remap_reason: "This dump is large; whether it can load into another database is decided when you review the restore."` A size mismatch refuses before any SQL read. Manifests, scanned SQL and preflight files are opened without following links or blocking on FIFOs, and must be regular files before reading. `prepare_restore` verifies every file, including its descriptor size before reading, and the restore file, directory and byte budgets before any restore; it stays the authority and retains its own scan limits. Files named outside the folder are refused by both. Whole-database SQL dumps report that they create their own databases; single-schema picked-table SQL dumps within the folder-pick scan budget scan `dump.sql` for CREATE DATABASE, CREATE SCHEMA, USE and qualified references; single-schema Shell table dumps allow remapping. Missing or unreadable folders/manifests, missing or unreadable scanned SQL, special files and invalid metadata raise `lifecycle.Refused`, using HTTP 400 `{error}` with an actionable sentence. Extra payload keys raise `ValueError` through the same HTTP 400 envelope. No tool, server connection or restore is started. These facts let Restore decide whether to offer a new database when the folder is picked. When reported, remap eligibility is independent of the proposed target name: a qualified reference to another database still refuses even if it spells that proposed name, so scanned folder facts and preflight cannot disagree. Restore preflight still reloads the folder and refuses unsupported remapping; jobs retain fresh validation and reviewed-write checks. Tests: `test/test_lifecycle.py` (folder facts/preflight agreement, SQL and Shell scopes, invalid metadata, traversal, symlinks, FIFO and directory refusal, missing SQL, checksum tampering, scan cap and size checks before reads), `test/test_lifecycle_cli.py` (route registration), `test/test_ui_http.py` (HTTP refusal, payload keys and authentication).
 - Upgrade targets (`myflames/upgrade_targets.py`, `POST /api/lifecycle/upgrade-targets {connection}`, `upgrade-targets-1.0`): read when Maintenance > Upgrade check opens, once per connection, beside the view's other reads (never blocking Check upgrade). It reads `basedir`, `plugin_dir`, `character_sets_dir`, `lc_messages_dir`, `socket`, `version`, `version_comment`, `version_compile_os`, `version_compile_machine`, `build_id` and `hostname` (one `SHOW GLOBAL VARIABLES`), then the vendor's releases. MySQL Community Server: the release notes series the documentation index links (`https://dev.mysql.com/doc/`, then `https://dev.mysql.com/doc/relnotes/mysql/<series>/en/`; on 2026-11-08 the 8.0, 8.4, 9.7 and 26.10 pages, the 9.7 page also listing 9.0 to 9.6 and the 26.10 page 26.7), every "Changes in MySQL X.Y.Z (YYYY-MM-DD)" entry without a pre-GA label (Release Candidate, Development Milestone and similar) or a future date; then each offered target's own release page (`news-X-Y-Z.html`, at most 32 per report, cached per page) is read for Oracle's markers, and a release "no longer available for download" (8.0.38, 8.4.1, 9.0.0) or published as "a Critical Security Patch Update for the MySQL Server docker image, only" (8.4.12, 9.7.3) moves to `unavailable` with its reason, except that a Docker-only release stays (`docker_only: true`) when `install.container` is set; a page that cannot be read, or that has no "Changes in MySQL" heading, leaves its release listed and adds a note; a series page that answers but lists no release makes the read partial (cached for a minute); offline (or a server built without `release_reader`) it falls back to `sysvar_history_mysql.VERSIONS` with `source.kind` `bundled`. Percona Server: `repo.percona.com` package listings of the lines the root lists (`ps-80`, `ps-84-lts`, `ps-97-lts`, `ps-8x-innovation`): the Yum `RPMS/<arch>/` folders of the newest four el releases for an RPM install (a folder missing for this architecture answers 404 and counts as no packages, not an error), else the APT pool (`apt/pool/main/p/percona-server/`); each target carries `repository` and `packages` (codenames or `el8`, `el9`, `el10`), and Percona has no bundled list. Percona XtraDB Cluster and MariaDB get no list (`source.kind` `none`). Network: fixed HTTPS URL patterns (`_ALLOWED`), no redirects or ambient proxy, 2 MiB per response, 5 s per socket read and 10 s per whole response (`READ_TIMEOUT`), 15 s per report for every fetch including the first (pending fetches cancelled at the deadline), 4 worker threads, cache keyed by reader (success 1 hour; a failure or a partly read result 1 minute; at most 256 entries); only `cmd_ui` passes `release_reader=upgrade_targets.fetch_page`, and `upgrade_targets()` without a reader uses `offline`, so test servers never read the network. Server variables lose control and format characters (bidirectional overrides) before they become evidence text. Paths follow the MySQL 9.7 manual, "Upgrade Paths" (Table 3.1): patches in the series (`patch`), the next LTS or bugfix series (`next_lts`; from an Innovation series `lts_after_innovation`), Innovation releases before the next LTS (`innovation`), never skipping an LTS or bugfix series; series kinds come from the bundled catalog's maturity (5.7 and 8.0 bugfix, 8.4 and 9.7 LTS, 8.1-8.3, 9.0-9.6 and 26.x Innovation), and once the next LTS has a release the Innovation series before it are `not_direct`: still a supported path in Table 3.1, but superseded (an Innovation release is supported only until the next release); the step to a bugfix series (5.7 to 8.0) is labeled "next bugfix series". Releases of the server's own series are always `patch` (or `innovation`), even when the catalog does not classify the series. A series the catalog does not know is `unclassified`, never placed on a path. `recommended` is the newest next-LTS release, else the newest patch, else none (an Innovation release is never chosen by default). Each target has `check_version` (Percona's upstream version), `path_label`, `date`, `url` (release notes page) and `shell {ok, needs}` against the detected MySQL Shell (source older than the Shell, target major.minor at most the Shell's). `install {method, label, confidence, evidence[], package, build_id, container}`: `rpm` (`/usr` with `/usr/lib64/mysql/plugin`, INSTALL_LAYOUT=RPM, also the official Docker images), `distro_rpm` (that layout with `version_comment` "Source distribution", what a distribution build such as Fedora's reports), `deb` (`/usr/lib/mysql/plugin`; medium on 32-bit, where RPM uses it too), `ubuntu_deb` (an Ubuntu suffix in `version` or `version_comment` "(Ubuntu)"), `tarball` (every folder under `basedir`; `package` from an archive-named basedir), `windows_msi`, `windows_zip`, `homebrew`, `macos`, `unknown`; `container` when the host name is 12 hex digits and the layout is RPM (the official MySQL and Percona images are RPM builds). `build_id` is evidence only (no public index maps build IDs to packages). `guidance {text, command, url}` names the MySQL Yum or APT repository guide, Ubuntu's package, the generic archive download, or for Percona packages `sudo percona-release enable-only {repository} release` (the client fills in the selected target's line after checking it matches `ps-NN`, `ps-NN-lts` or `ps-Nx-innovation`; `percona-release setup ps-97-lts` enables nothing, per Percona's 9.7 install pages), with "run sudo dnf -y module disable mysql first" on RHEL 8 for RPM installs. UI: the Target version list shows `version · path_label · date` newest first, chooses `recommended`, and `UpgradeTargetNotes` shows the install method, source and read time, the guidance with its command, the chosen target's path, packages, Shell requirement and release notes link (`upgradeLinkUrl`: HTTPS on dev.mysql.com or docs.percona.com only), and **How this was decided** (evidence, `not_direct`, `unclassified`). Tests: `test/test_upgrade_targets.py` over `test/fixtures/upgrade_targets/` (vendor pages captured 2026-11-08, trimmed to the parsed lines; `layout-*.json` read live on 2026-11-08 from the official mysql:8.0.44 and mysql:9.7.2 images and percona/percona-server:8.0 (8.0.46-37), Ubuntu 24.04's mysql-server-8.0 and the generic mysql-8.4.13-linux-glibc2.28-aarch64 archive; the endpoint answered 200 on MySQL 8.0.44, 9.7.2 and Percona 8.0.46-37), browser `apps/workspace/test/maintenance.mjs` with `lifecycle-upgrade-targets-mysql-8.4.json`.
 - Logical dump options: `dump_options.capability_catalog` exposes tool/scope-specific descriptors, each with `group` (one of `groups`: performance, contents, output, compression, the sections of the Dump form) and, for a boolean, `row` (the label its checkbox shares: Chunking, Include, Write, Connection); `encryption` has a one-line `summary` and the full `message`. `normalize` rejects unknown names and invalid values. Shell supports compression default/none/gzip/zstd, levels from Shell 8.4 (gzip 0..9, zstd 0..22), chunking, decimal byte sizes (minimum 128k per chunk) and max rate per thread. SQL tools expose hex blobs, add-drop-table and network compression. Triggers/routines/events follow scope, with no routines/events toggle for Shell table dumps. Local file encryption is unsupported; TLS and connection compression affect transport only. Selected options bind the plan, execution and manifest; CLI flags are unchanged.
-- Plans (`lifecycle-plan-1.0`: `operation, request, server, connection_key, tool, target, commands[], checks[], warnings[], ready, binding`) come from `prepare_dump`, `prepare_restore`, `prepare_clone`; a table dump adds the check `tables`, failed (with `missing`) when a named table or view is not in the schema's catalog read (names match exactly, or without case only when `SELECT @@lower_case_table_names` reads 1 or 2, so a missing `orders` is never taken for an existing `Orders` on a case-sensitive server); endpoint `POST /api/lifecycle/prepare` with `operation` dump|restore|clone (reads only; the Shell's `dryRun` runs here). Dump dry runs use a private temporary destination, and restore dry runs use a private temporary progress file, both removed afterwards; they cannot create the requested output directory or modify the saved load progress before confirmation. A plan is never authority: `_write_job` rebuilds it on a fresh connection and refuses (nothing sent) unless binding, target and commands match, every check passed, the server identity is unchanged and the typed target equals `plan.target`.
-- Output directories (`_output_path`, `_empty_directory`): parent links resolved once and bound in the plan (macOS `/tmp`, `/var`), the directory itself must not be a link, a parent swapped for a link after the preflight refuses; absent or empty only. Dump writes `myflames-manifest.json` (`lifecycle-manifest-1.0`: files with SHA-256, exact `COUNT(*)` of up to 3 tables under 1 MiB, the object catalog, `complete`); `read_manifest` re-hashes every file before a restore, capped by `MAX_RESTORE_FILES` (10,000), `MAX_RESTORE_BYTES` (10 GiB), and `MAX_RESTORE_DIRECTORIES` (10,000). Exceeding a limit refuses preflight with the limit named. Bytes are counted while reading as well as checked against file size, so growth during hashing also refuses. Successful logical dumps hash files once and reuse those records for verification and the manifest. Interrupted dumps skip further hashing and retain an incomplete manifest. Confirmed dump manifest creation is not capped by these restore preflight limits; larger backups require another restore tool.
-- Restore: API and direct restore callers reject a mismatched typed target synchronously, before creating or registering a job or opening its connection; the API checks before saved-password lookup. The CLI checks before job creation. A mismatch says `Nothing was restored: the typed target does not match <target>.`, is audited as unsent, and never carries a partial-restore warning. Policy checks retain precedence, and all server identity and preflight rechecks still run for a matching target. Shell dumps through `util.loadDump` (`local_infile=ON` is a failed check, never set; progress file beside the dump; `--resume`; `--existing ignore|drop`), SQL dumps through the client with `--binary-mode --comments` reading a staged copy whose hash is checked again. Verification: object presence and the recorded row counts (`passed`, `failed`, `not_checked`; a successful child process is never evidence).
+- Plans (`lifecycle-plan-1.0`: `operation, request, server, connection_key, tool, target, commands[], checks[], warnings[], ready, binding`) come from `prepare_dump`, `prepare_restore`, `prepare_clone`; a table dump adds the check `tables`, failed (with `missing`) when a named table or view is not in the schema's catalog read (names match exactly, or without case only when `SELECT @@lower_case_table_names` reads 1 or 2, so a missing `orders` is never taken for an existing `Orders` on a case-sensitive server); endpoint `POST /api/lifecycle/prepare` with `operation` dump|restore|clone (reads only; the Shell's `dryRun` runs here). Dump dry runs use a private temporary destination, and restore dry runs use a private temporary progress file, both removed afterwards; they cannot create the requested output directory or modify the saved load progress before confirmation. Each plan's `tool` retains `name`, `path`, `realpath`, `version`, `version_tuple`, `engine`, `installation`, `origin`, `origin_label`, `reason`, `warning`, `available` and `deprecated` when present, without release-update metadata. Dump, restore, clone, upgrade check and physical backup read the server before selecting tools; job rebuilds pass those fresh server facts through detection. SQL restore and CLONE use the load client from the selected dump installation. An automatic older-than-server dump/load warning is also in `plan.warnings`. A plan is never authority: `_write_job` rebuilds it on a fresh connection and first compares the entire tool record. A mismatch refuses with `The tool for this server changed since the review (Settings > Client tools or an installed program changed). Review it again; nothing was run.` Binding, target and commands must then match, every check must pass, the server identity must be unchanged and the typed target must equal `plan.target`. Lifecycle rechecks trust and the pinned target immediately before executing the resolved program. Tests: `test/test_lifecycle.py` (`LifecycleTests`: per-server copies/choice, tool-change refusal, load installation and older warnings; `ClientToolTrustTests`: launch rechecks).
+- Output directories (`_output_path`, `_empty_directory`): parent links resolved once and bound in the plan (macOS `/tmp`, `/var`), the directory itself must not be a link, a parent swapped for a link after the preflight refuses; absent or empty only. A missing output parent still refuses with `Output parent directory must exist.`, except exactly the backend default dump parent (absolute, realpath-normalized comparison). For that exception, its own parent (Documents or home) must already exist and must not be a symbolic link. Preflight creates nothing, reads free space from that existing parent, and adds an `output_parent` check saying `Creates the folder <path>.`; the creation intent participates in the plan binding, so repeating preflight before Start is stable while a changed intent requires a fresh review. Only the reviewed dump Start creates that one folder with `os.mkdir(..., 0o700)`, then applies the usual output checks. It never creates arbitrary intermediate folders. Dump writes `myflames-manifest.json` (`lifecycle-manifest-1.0`: files with SHA-256, exact `COUNT(*)` of up to 3 tables under 1 MiB, the object catalog, `schema_defaults` keyed by schema with `character_set` and `collation` (including selected empty databases), `complete`); `read_manifest` re-hashes every file before a restore, capped by `MAX_RESTORE_FILES` (10,000), `MAX_RESTORE_BYTES` (10 GiB), and `MAX_RESTORE_DIRECTORIES` (10,000). Exceeding a limit refuses preflight with the limit named. Bytes are counted while reading as well as checked against file size, so growth during hashing also refuses. Successful logical dumps hash files once and reuse those records for verification and the manifest. Interrupted dumps skip further hashing and retain an incomplete manifest. Confirmed dump manifest creation is not capped by these restore preflight limits; larger backups require another restore tool.
+- Restore: API and direct restore callers reject a mismatched typed target synchronously, before creating or registering a job or opening its connection; the API checks before saved-password lookup. The CLI checks before job creation. A mismatch says `Nothing was restored: the typed target does not match <target>.`, is audited as unsent, and never carries a partial-restore warning. Policy checks retain precedence, and all server identity and preflight rechecks still run for a matching target. Shell dumps through `util.loadDump` (`local_infile=ON` is a failed check, never set; progress file beside the dump; `--resume`; `--existing ignore|drop`), SQL dumps through the client with `--binary-mode --comments` reading a staged copy whose hash is checked again. Picked-tables SQL restores inspect the checksum-verified `dump.sql` using `_sql_schema_scan`: skip string data and ordinary comments, inspect executable MySQL/MariaDB version comments, and recognize CREATE DATABASE, CREATE SCHEMA, statement-start USE and source-qualified references. This recognizes generated dump constructs, not arbitrary SQL semantics, and never rewrites the dump. The plan adds `sql_scan`, `remap_allowed` and `remap_reason`. A single-schema picked-tables SQL dump can use another default database only when none of those constructs occurs. Refusals are `dump.sql contains <CREATE DATABASE, CREATE SCHEMA, USE>, so it cannot load into another database.` or `dump.sql names <source> in qualified references (such as view definitions), so it cannot load into another database.` A whole-database SQL dump refuses remapping with `This dump creates its own databases (CREATE DATABASE and USE), so it restores into them; choose As in the dump.` Shell remapping remains limited to single-schema table dumps; otherwise `Shell schema remapping is offered only for single-schema table dumps.`
+  When a SQL table restore has a selected target database that does not exist and the dump supplies no CREATE DATABASE/CREATE SCHEMA, `create_database` contains the exact reviewed CREATE DATABASE command before the load command. It uses the source's manifest `schema_defaults`; older manifests without both defaults warn that server defaults will be used. Existing databases need no extra CREATE. The plan binding includes the manifest hash, creation SQL and scan result. Execution creates the database under the same consumed review, policy and audit before starting the client with `--database`; it never creates during preflight or Shell load preparation. Before the load's connection-id marker, failure/cancellation guidance is `Nothing was loaded: the client stopped before running any statement.` After that marker it changes to the SQL or Shell partial-load guidance; database creation is a separate step and is not itself proof of loaded data. Verification: object presence and the recorded row counts (`passed`, `failed`, `not_checked`; a successful child process is never evidence). Tests: `test/test_lifecycle.py` (`LifecycleTests`: missing/existing database, charset quoting/defaults, review failure, remap content and version comments, typed target, SQL/Shell marker guidance and remap endpoint fields).
 - CLONE (MySQL only): `clone_preflight` (engine, version series, plugin on both, BACKUP_ADMIN donor, CLONE_ADMIN recipient or BACKUP_ADMIN with DATA DIRECTORY, platform and character set variables, collations, plugins, `max_allowed_packet`, `clone_valid_donor_list` containing the donor address, different servers; DATA DIRECTORY absolute and not under `@@datadir` as text, existence `not_checked` without a recipient-host probe because the server refuses an existing or in-datadir path before copying). `donor_address` (`--donor-address`) is the donor as the recipient reaches it, used in the statement and the donor-list check. The statement goes on the client's stdin (`clone_statement(..., redact=False)`), shown and audited redacted. Clone plans add `expect` with `donor` and `recipient` objects (`endpoint`, `connection_key`, `type`, `read_only`), `donor_address` and `require_ssl`, all included in the binding. The workspace evaluates both saved profiles with `dbops.connection_safety`; a read-only donor is allowed. Before sending a remembered donor password, it verifies negotiated TLS on the recipient connection. Start checks the reviewed pair before retrieving the saved donor password, and rejects TLS downgrades when the donor profile requires TLS. Both passwords are scrubbed from errors, audit records, logs and manifest free text. Progress: a second connection polls `performance_schema.clone_progress` (job `progress` percent and `detail`). In place: ERROR 3707 (no supervisor, the server shuts down) or a lost connection is expected; the job waits up to `restart_wait` (`--restart-wait`, default `RESTART_WAIT` 180 s) and then reads `clone_status`, tied to this clone by `BEGIN_TIME`, `SOURCE` and `DESTINATION` (the table keeps the previous clone's row); result `needs_restart` when it does not come back, `needs_verification` when the recipient account is refused (it now has the donor's accounts). GTID: donor `gtid_executed` at preflight against `clone_status.GTID_EXECUTED` (empty for DATA DIRECTORY clones, `not_checked`).
 - Jobs (`LifecycleJob`, `lifecycle-job-1.0`: `id, operation, state queued|running|done|failed|refused|cancelled, progress, detail, events[] (last 200), phase, elapsed_s, output, result {status, verification[], partial_state, cancel_error, audit_id}, error`): `progress` is a percent only when the tool printed one (MySQL Shell's `showProgress`); `phase` names the step in words (`LifecycleJob.step`, also a `status` event, never with a percent sign): the repeated preflight, reading the table list, counting rows, dumping with the tool, checksumming, counting again, writing the manifest, and for restore copying to staging, loading and verifying. `elapsed_s` counts from the start of the job and stops when it ends. `output` is set for SQL dumps only (`mysqldump`, `mariadb-dump`, which print no progress): `written_bytes` is the size of `dump.sql`, sampled from its file descriptor every 0.5 s while the tool runs and once after it ends, and `estimated_bytes` the sum of `DATA_LENGTH` of the dumped tables (`BASE TABLE`, and MariaDB's `SYSTEM VERSIONED`) (None when unknown or structure only). On MySQL 8.0.3 and later the sizes are read from the storage engine, not the information_schema cache, in one bounded call (`SET SESSION information_schema_stats_expiry=0` first: information_schema caches table sizes for a day by default and the variable is not settable with `SET_VAR`); on MariaDB, MySQL 5.7 or when that read fails, the catalog's sizes stand. The estimate only feeds a progress bar; the written size can end above or below it. tool output drained on threads, CR progress parsed, ANSI colors stripped, secrets redacted. Cancel: SIGTERM then SIGKILL to the process group (EPERM from a zombie group tolerated), and `KILL QUERY` on the session the job printed on its own stdout (marker line; mysqlsh's `print` needs an explicit line break). `partial_state` names what may remain. `LifecycleJobs` (the workspace's registry: two running at most, never two on one target, finished ones kept an hour, closed with the server). Shutdown: `LifecycleJobs.shutdown()` runs first in `WorkspaceServer.server_close`, before replication loops, table data, live jobs and editor sessions (whose cleanup can block on `KILL QUERY`). It refuses new jobs and preflight runners, cancels every running job and runner, starts `KILL QUERY` on threads with the session id read before the tool stops, sends SIGTERM to every tool process group and SIGKILL after 1 s, then gives jobs 1.5 s to write their audit record (cancelled, outcome unknown, as for Cancel); `close()` finishes the rest. `ToolGroups` lists a tool's process group from just after it starts until the group is gone. Tools start through `ToolGroups.start`, serialized with shutdown (`close_spawning`): a tool being started is listed before shutdown's snapshot, and none starts afterwards. With `MYFLAMES_TOOL_GROUPS_FILE` (set only by the desktop app, in a 0700 directory it owns; a missing or shared directory refuses startup with exit 2) the list is also kept in an owner-only `tool-groups-1.0` file (`{"schema_version", "groups"}`), written before the launch line, replaced atomically and kept (empty) after a clean close. When it cannot be rewritten it is removed, so it never names a group that may have ended, and the desktop treats a missing file after launch as unconfirmed; a tool whose group cannot be recorded is stopped at once and reported as cancelled. Shell dryRun and upgrade check tools run under `LifecycleJobs.runner()`, so shutdown stops them too.
 - Writes: dump, restore and clone are `risky` for `dbops.decide` (a read-only connection refuses, Production and Development confirm). CLI: policy from `--profile` before any prompt or connection; plan and commands on stderr; dump asks `[y/N]`, restore and clone ask to type the target; non-TTY needs `--yes` (plus `--confirm-target TARGET` for restore and clone); `--preflight` prints the plan (exit 0 ready, 1 not); Ctrl+C cancels the job. Exit 0 completed, 1 a started job failed, was cancelled or was not verified, 2 an unsent refusal, decline, bad input or connection failure. Failed-job text names the reason once in the operation heading, omits duplicate or empty `not_checked operation` rows and repeated status words, and retains distinct verification and partial-state guidance; JSON evidence is unchanged. UI: `POST /api/lifecycle/start` (`operation`, `plan`, `typed_target`, `confirmed: true`, `connection`, and `donor` for clone) is in `ui._WRITE_PATHS`: `dbops.gate` first (refused envelope with `audit_id`), then saved passwords (`connection.profile_id`, `donor.profile_id`), then the job; `POST /api/lifecycle/status` and `/api/lifecycle/cancel` take `id` and `connection`. Every attempt has an `AuditTrail` record (`surface` cli or ui; refused, declined, `unknown` after a cancel, `ok` or `error`). `POST /api/lifecycle/jobs` (`connection`; `lifecycle-jobs-1.0`, `_lifecycle_jobs_response`) lists the jobs this workspace holds for the connection's endpoint (`dbops.identity_endpoint`, recorded by `_lifecycle_add` before the job starts and dropped when `LifecycleJobs` lets the job go); it opens no connection and starts nothing (`test/test_lifecycle_cli.py`). Status and cancel check this same owner before looking up or cancelling a job and return “No such job.” for missing, expired or mismatched jobs. They open no connection and read no saved password. A change to type or read-only preserves access to the original job.
-- Workspace UI (`Maintenance.tsx`, Server > Setup): Tools, Upgrade check (MySQL Shell, or the labeled partial check), Dump, Restore, Clone. Tools are detected on open through `useOpenRead` (`lifecycle/tools` without `check_updates`; the probes are cached for 60 s in `lifecycle.py`); the view's Refresh is labeled Detect again and shows only on Tools; Check for updates sends `check_updates: true`. Start dump…, Start restore… and Start clone… run the preflight (it only reads) and open the confirmation only when `ready` (target, exact commands, warnings, checks; restore and clone type the target; stale after `PREFLIGHT_TTL_MS`, 60 s). Failed checks show under the button with a Next step (Choose another folder…, Review fields, Remove <table> from the selection); passed ones fold into a details line. A preflight error clears the old plan; after a field changes, the old checks are labeled as the last preflight's and the planned commands are hidden. Dump's Output folder is suggested (`OpsShared.suggestDumpFolder`: `dumpFolderStem` of the database or connection plus the local date, in the home folder or the last dump's parent, `-2`, `-3` past names already listed or reserved this session; never over a typed path); Browse… picks the parent. The dump confirmation is primary-toned (policy, review token and audit unchanged), names its Contents and shows non-routine warnings first. A restore plan with `required_acknowledgement` needs its own checkbox; the workspace sends that exact string as `typed_acknowledgement` only when checked, and `lifecycle.restore_job` compares it with the fresh plan's; Cancel and Escape call `audit/declined`. Frontend callers must send the original `connection` on every status and cancel request, and show both `plan.expect.donor.endpoint` and `plan.expect.recipient.endpoint` with their policy when confirming clone. Jobs are polled while they run and bound to their connection (greyed after a switch). On open, and after a Start whose reply failed, the view reads `lifecycle/jobs` and adopts what it finds, so a reload or a lost reply never sends Start twice. A job card (`JobProgress`) shows a bar from `lifecycleProgress`: determinate on the tool's `progress`, else an estimated "≈N%" from `output.written_bytes` over `output.estimated_bytes` (capped at 99, with a title saying it is estimated from table sizes), else indeterminate (also once the written size passes the estimate: "X written, more than the Y estimate"). Under it one facts line: the `phase` while it runs, the bytes written (of about the estimate), a rate from two snapshots on the job's own clock (`elapsed_s`), and "Elapsed m:ss" ("Completed in m:ss" when done). The last log line shows only when it differs from the phase. While a job runs on the connection, the actions row shows `JobSummary` beside the disabled Start button ("Dump running · ≈46% · 120.0 MiB", Show progress); after Start (and after a lost reply is found in the job list) the view switches to the job's task and scrolls to and focuses its card (no smooth scroll under reduced motion). Every job stays mounted across task switches so completion is noticed. A completed dump (`state` done, `result.status` completed) has Open in Finder / Open in File Explorer / Open folder, which reveals `<result.directory>/myflames-manifest.json` through `files/local/reveal` (the dump folder opens with its manifest selected; nothing is run); a dump this mounted view started opens it once by itself (`autoRevealDump`: claimed before the request, never retried by rendering, never for adopted, failed or cancelled jobs, restore or clone, and never on Windows, where File Explorer's `/select,` argument splits a path at commas: security open lead 17). The session keeps only `slow.maintenance_section`; the donor password stays in the page. Browser suite `apps/workspace/test/maintenance.mjs`.
+- Workspace UI (`Maintenance.tsx`, Server > Setup): Tools, Upgrade check (MySQL Shell, or the labeled partial check), Dump, Restore, Clone. Tools are detected on open through `useOpenRead` (`lifecycle/tools` without `check_updates`; successful version probes use the shared identity-keyed cache without a time limit); the view's Refresh is labeled **Detect again** and shows only on **Tools**; **Check for updates** sends `check_updates: true`. **Used for this server** shows the role selections with program, version, origin and reason; **Change…** opens the same dialog as **Settings > Client tools…**. The table lists every copy with **From**, **Path** and **Used**, and selects rows by path so copies of one program keep distinct inspectors. The review uses the same `toolUseLine` as the dialog; the Dump tool choice names the selected program, version and origin, or the Shell version for Automatic. These are separate from the dialog's **Detect again**, which sends `refresh: true` to `/api/client/tools`. Start dump…, Start restore… and Start clone… run the preflight (it only reads) and open the confirmation only when `ready` (target, exact commands, warnings, checks; restore and clone type the target; stale after `PREFLIGHT_TTL_MS`, 60 s). Failed checks show under the button with a Next step (Choose another folder…, Review fields, Remove <table> from the selection); passed ones fold into a details line. A preflight error clears the old plan; after a field changes, the old checks are labeled as the last preflight's and the planned commands are hidden. Dump's Output folder is suggested (`OpsShared.suggestDumpFolder`: `dumpFolderStem` of the database or connection plus the local date, in the backend reply's `default_dump_parent`, or the last dump's parent when this window already started a dump, `-2`, `-3` past names already listed or reserved this session; never over a typed path); Browse… picks the parent. The dump confirmation is primary-toned (policy, review token and audit unchanged), names its Contents and shows non-routine warnings first. A restore plan with `required_acknowledgement` needs its own checkbox; the workspace sends that exact string as `typed_acknowledgement` only when checked, and `lifecycle.restore_job` compares it with the fresh plan's; Cancel and Escape call `audit/declined`. Frontend callers must send the original `connection` on every status and cancel request, and show both `plan.expect.donor.endpoint` and `plan.expect.recipient.endpoint` with their policy when confirming clone. Jobs are polled while they run and bound to their connection (greyed after a switch). On open, and after a Start whose reply failed, the view reads `lifecycle/jobs` and adopts what it finds, so a reload or a lost reply never sends Start twice. A job card (`JobProgress`) shows a bar from `lifecycleProgress`: determinate on the tool's `progress`, else an estimated "≈N%" from `output.written_bytes` over `output.estimated_bytes` (capped at 99, with a title saying it is estimated from table sizes), else indeterminate (also once the written size passes the estimate: "X written, more than the Y estimate"). Under it one facts line: the `phase` while it runs, the bytes written (of about the estimate), a rate from two snapshots on the job's own clock (`elapsed_s`), and "Elapsed m:ss" ("Completed in m:ss" when done). The last log line shows only when it differs from the phase. While a job runs on the connection, the actions row shows `JobSummary` beside the disabled Start button ("Dump running · ≈46% · 120.0 MiB", Show progress); after Start (and after a lost reply is found in the job list) the view switches to the job's task and scrolls to and focuses its card (no smooth scroll under reduced motion). Every job stays mounted across task switches so completion is noticed. A completed dump (`state` done, `result.status` completed) has Open in Finder / Open in File Explorer / Open folder, which reveals `<result.directory>/myflames-manifest.json` through `files/local/reveal` (the dump folder opens with its manifest selected; nothing is run); a dump this mounted view started opens it once by itself (`autoRevealDump`: claimed before the request, never retried by rendering, never for adopted, failed or cancelled jobs, restore or clone, and never on Windows, where File Explorer's `/select,` argument splits a path at commas: security open lead 17). The session keeps only `slow.maintenance_section`; the donor password stays in the page. Browser suite `apps/workspace/test/maintenance.mjs`.
 - Not wired to the CLI or UI yet: `prepare_physical_backup` / `physical_backup_job` (MariaDB `mariadb-backup --backup` then `--prepare`, only with a matching local socket and an explicit same-host confirmation); `clone` on MariaDB prints the `mariadb-backup` steps instead.
 
 ### Replication: status, skip, skip-loop
@@ -5394,8 +5571,14 @@ apply per plan, at most two imports at once. Apply re-checks, in order, the
 policy, the token, the file (size and mtime, then a full SHA-256), the saved
 password, the client path and file policy, then the private session. A changed
 client path or file policy refuses the import and requires another review. Each
-plan or apply resolves the client once and uses that same path for the capability
-check and session start. A client or capability check failure refuses the import;
+plan or apply resolves the client once through the per-server connector rule
+(override, engine choice, otherwise automatic) and uses that same path for the
+capability check and session start. A Settings or inventory change that resolves
+to another path requires another review; there is no substitution on apply.
+The session's option file uses that client's engine, including MariaDB-compatible
+TLS switches for a mysql compatibility link. Tests: `test/test_csv_import_api.py`
+(`ClientReviewTest`, `SessionFlagTest`) pin path/file-policy binding and refusal;
+`test/test_connector.py` (`TestClientSecurityFixes`) pins TLS mapping. A client or capability check failure refuses the import;
 it never falls back to `--local-infile=1`. Capability results are cached by file
 identity (`st_dev`, `st_ino`, `st_size`, `st_mtime_ns`), so a replacement at the
 same path is checked again. The local-file capability is only for LOAD DATA: a

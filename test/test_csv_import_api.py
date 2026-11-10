@@ -20,6 +20,8 @@ from email.message import Message
 from types import SimpleNamespace
 from unittest import mock
 
+from _client_tools_fixture import private_client_dir
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
 from myflames import csv_import as ci  # noqa: E402
@@ -38,7 +40,7 @@ ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
 
 def fake_client(folder, supports=True, fail_first_version=False):
     """A real executable that logs argv; it never connects to a server."""
-    os.makedirs(folder, exist_ok=True)
+    private_client_dir(folder)
     path = os.path.join(folder, 'mysql')
     log = os.path.join(folder, 'argv.jsonl')
     marker = os.path.join(folder, 'version-checked')
@@ -218,10 +220,15 @@ class Base(unittest.TestCase):
         self.home = tempfile.TemporaryDirectory()
         self.addCleanup(self.home.cleanup)
         env = mock.patch.dict(os.environ, {'HOME': self.home.name, 'USERPROFILE': self.home.name,
-                                          'MYFLAMES_SECRET_BACKEND': 'vault'})
+                                          'MYFLAMES_SECRET_BACKEND': 'vault', 'PATH': '', 'MYFLAMES_BUNDLED_CLIENT_DIR': ''})
         env.start()
         self.addCleanup(env.stop)
         os.environ.pop('MYFLAMES_VAULT_PASSPHRASE', None)
+        from myflames import lifecycle, client_tools
+        patcher = mock.patch.object(lifecycle, 'COMMON_BIN_DIRS', ())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        client_tools._FACTS.clear()
         self.ws = SimpleNamespace(store=WorkspaceStore())
         self.server = FakeServer()
         self.opened = []
@@ -764,6 +771,13 @@ class VersionRuleTest(unittest.TestCase):
 
 class SessionFlagTest(unittest.TestCase):
     def setUp(self):
+        from myflames import lifecycle
+        patcher = mock.patch.object(lifecycle, 'COMMON_BIN_DIRS', ())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        patcher = mock.patch.dict(os.environ, {'PATH': '', 'MYFLAMES_BUNDLED_CLIENT_DIR': ''})
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.home = tempfile.TemporaryDirectory()
         self.addCleanup(self.home.cleanup)
         api._LOAD_DIR_SUPPORT.clear()
@@ -843,9 +857,9 @@ class SessionFlagTest(unittest.TestCase):
     def test_first_version_failure_does_not_downgrade_load_flags(self):
         from myflames import connector
         path, log = fake_client(self.home.name, fail_first_version=True)
-        previous = connector.default_binary()
-        self.addCleanup(connector.set_default_binary, previous)
-        connector.set_default_binary(path)
+        previous = connector.client_choices()
+        self.addCleanup(connector.set_client_choices, previous)
+        connector.set_client_choices({'mysql': path})
         full = {'host': 'db.example.invalid'}
         with self.assertRaises(ClientMissingError):
             api.load_flags(full, self.home.name)
@@ -856,7 +870,7 @@ class SessionFlagTest(unittest.TestCase):
                          (('--local-infile=0', '--load-data-local-dir=' + self.home.name), True))
         with open(log) as handle:
             calls = [json.loads(line) for line in handle]
-        self.assertEqual(calls[:2], [['--no-defaults', '--version'], ['--no-defaults', '--version']])
+        self.assertEqual(calls[:2], [['--version'], ['--version']])
         self.assertFalse(any('--local-infile=1' in argv for argv in calls))
 
     def test_checked_flags_and_binary_are_used_without_reselecting(self):
@@ -871,6 +885,50 @@ class SessionFlagTest(unittest.TestCase):
 
 
 class ClientReviewTest(Base):
+    def test_cold_endpoint_plan_and_execute_bind_the_same_matched_client(self):
+        from myflames import connector, client_tools
+        old, log = fake_client(os.path.join(self.home.name, 'old'))
+        matched, _ = fake_client(os.path.join(self.home.name, 'matched'))
+        for path, version in ((old, '8.0.45'), (matched, '8.4.13')):
+            with open(path) as handle:
+                source = handle.read().replace('mysql Ver 8.4.0', 'mysql Ver ' + version)
+            source += "\nelif '-e' in sys.argv:\n    print('8.4.14\\tMySQL Community Server')\n"
+            with open(path, 'w') as handle:
+                handle.write(source)
+        previous = connector.client_choices()
+        connector.set_client_choices({})
+        self.addCleanup(connector.set_client_choices, previous)
+        endpoint = client_tools.endpoint_key(self.connection)
+        self.assertIsNone(client_tools.server_facts(endpoint))
+        with mock.patch.dict(os.environ, {'PATH': os.pathsep.join(map(os.path.dirname, (old, matched)))}), \
+                mock.patch.object(api, 'client_binary', ORIGINAL_CLIENT_BINARY), \
+                mock.patch.object(api, 'limits_local_files', ORIGINAL_LIMITS_LOCAL_FILES):
+            plan = self.plan(method='load_data')
+            record = api.registry(self.ws).plan(plan['token'])
+            self.assertEqual(record.details['client_binary'], os.path.realpath(matched))
+            self.assertEqual(self.apply(plan)['outcome'], 'done')
+        self.assertEqual([full['binary'] for full, _ in self.opened], [os.path.realpath(matched)] * 2)
+        with open(log) as handle:
+            calls = [json.loads(line) for line in handle]
+        self.assertEqual(sum('-e' in argv for argv in calls), 1)
+
+    def test_settings_change_between_review_and_execution_is_refused(self):
+        from myflames import connector
+        first, _ = fake_client(os.path.join(self.home.name, 'first'))
+        other, _ = fake_client(os.path.join(self.home.name, 'other'))
+        previous = connector.client_choices()
+        self.addCleanup(connector.set_client_choices, previous)
+        connector.set_client_choices({'mysql': first})
+        with mock.patch.object(api, 'client_binary', ORIGINAL_CLIENT_BINARY):
+            plan = self.plan(method='insert')
+            opened, sent = len(self.opened), list(self.server.sent)
+            connector.set_client_choices({'mysql': other})
+            with self.assertRaisesRegex(ValueError, 'client or its local-file policy changed'):
+                self.apply(plan)
+        self.assertEqual(len(self.opened), opened)
+        self.assertEqual(self.server.sent, sent)
+        self.assertEqual(self.audits()[0]['outcome'], 'changed')
+
     def test_client_and_policy_are_bound_to_the_review(self):
         for method, expected in (('insert', None), ('load_data', True)):
             with self.subTest(method=method):
@@ -936,22 +994,22 @@ class ClientReviewTest(Base):
     @unittest.skipIf(os.name == 'nt', 'POSIX executable fixture')
     def test_switch_to_unrestricted_client_never_starts_it_with_local_enabled(self):
         from myflames import connector
-        previous = connector.default_binary()
-        self.addCleanup(connector.set_default_binary, previous)
+        previous = connector.client_choices()
+        self.addCleanup(connector.set_client_choices, previous)
         api._LOAD_DIR_SUPPORT.clear()
         self.addCleanup(api._LOAD_DIR_SUPPORT.clear)
         for same_path in (False, True):
             with self.subTest(same_path=same_path):
                 folder = os.path.join(self.home.name, 'chosen-' + str(same_path))
                 path, _ = fake_client(folder)
-                connector.set_default_binary(path)
+                connector.set_client_choices({'mysql': path})
                 with mock.patch.object(api, 'client_binary', ORIGINAL_CLIENT_BINARY), \
                         mock.patch.object(api, 'limits_local_files', ORIGINAL_LIMITS_LOCAL_FILES):
                     plan = self.plan(method='load_data')
                     self.assertTrue(plan['method']['client_limits_files'])
                     opened, sent = len(self.opened), list(self.server.sent)
                     changed_path, log = fake_client(folder if same_path else folder + '-other', supports=False)
-                    connector.set_default_binary(changed_path)
+                    connector.set_client_choices({'mysql': changed_path})
                     with self.assertRaisesRegex(ValueError, 'local-file policy changed'):
                         self.apply(plan)
                 self.assertEqual(len(self.opened), opened)

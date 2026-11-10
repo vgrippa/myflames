@@ -559,9 +559,10 @@ class Endpoints(Isolated):
         self.assertIn('/api/lifecycle/start', ui._WRITE_PATHS)
         for path in ui._LIFECYCLE_READ_PATHS + ui._LIFECYCLE_WRITE_PATHS:
             self.assertIn(path, ui._CONNECTION_PATHS)
-        for path in ('/api/lifecycle/status', '/api/lifecycle/cancel'):
+        for path in ('/api/lifecycle/status', '/api/lifecycle/cancel', '/api/lifecycle/dump-info'):
             self.assertNotIn(path, ui._CONNECTION_PATHS)
             self.assertIn(path, ui._LIFECYCLE_PATHS)
+        self.assertNotIn('/api/lifecycle/dump-info', ui._LIFECYCLE_READ_PATHS)
         # Real HTTP parsing/routing, without a listening socket: sandboxed
         # test runners may prohibit bind even on loopback.
         self.workspace.origin, self.workspace.token = 'http://127.0.0.1:8765', 'test-token'

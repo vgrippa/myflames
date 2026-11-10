@@ -7,6 +7,8 @@
 import { useEffect, useRef, useState, type ComponentProps, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { deletedConnectionLabel } from "./savedConnections";
 import { ClientMissingNotice } from "./ClientMissing";
+import { ClientToolsDialog, UsedForServer } from "./ClientTools";
+import { reasonSentence, toolUseLine } from "./clientToolsText";
 import { privilegeResult, targetPrivilege, usePrivilege, usePrivileges } from "./privileges";
 import { download, recordDeclined, type Connection, type Profile } from "./api";
 import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "./binding";
@@ -24,8 +26,8 @@ import { MAC, WINDOWS } from "./platform";
 import { durationText } from "./duration";
 import {
   cancelLifecycleJob, checkUpgrade, documentationUrl, jobActive, listLifecycleJobs,
-  prepareLifecycle, readLifecycleJob, readLifecycleTools, readUpgradeTargets, startLifecycle, upgradeLinkUrl, useOpsScope,
-  type LifecycleJob, type LifecyclePlan, type LifecycleTools, type UpgradeTarget, type UpgradeTargets,
+  prepareLifecycle, readDumpInfo, readLifecycleJob, readLifecycleTools, readUpgradeTargets, startLifecycle, upgradeLinkUrl, useOpsScope,
+  type DumpInfo, type LifecycleJob, type LifecyclePlan, type LifecycleTools, type UpgradeTarget, type UpgradeTargets,
   type MissingPrivileges, type PrepareRequest, type Tool, type UpgradeFinding,
   type UpgradeReport, type Verification,
 } from "./opsApi";
@@ -124,9 +126,10 @@ function planMessages(plan: LifecyclePlan) {
   if (versionWarning > 0) warnings.unshift(...warnings.splice(versionWarning, 1));
   return { warnings, notes: plan.warnings.filter(routine) };
 }
-/** "mysqlsh 9.6.0" (the full --version banner is in the plan's tool). */
-// A plan of another step (or one still loading) may carry no tool yet.
-const toolName = (tool?: Tool) => (tool ? [tool.name, tool.version_tuple?.length ? tool.version_tuple.join(".") : tool.version].filter(Boolean).join(" ") : "") || "Not available";
+/** The reviewed tool, as the resolver describes it everywhere (clientToolsText). */
+function planToolLine(plan: LifecyclePlan) {
+  return toolUseLine(plan.tool, { engine: plan.server.engine, version: plan.server.version, product: plan.server.product });
+}
 
 function FormField({ label, value, onChange, disabled, type = "text", hint, wide, placeholder }: {
   label: string; value: string; onChange: (value: string) => void;
@@ -319,6 +322,10 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   const directoryEdit = useRef(0);
   const reservedDirectories = useRef<string[]>([]);
   const [restoreDirectory, setRestoreDirectory] = useState("");
+  /** lifecycle-dump-info-1.0 for the folder in the Dump folder field. It only
+   * shapes the Default database choices and hints; the preflight stays the
+   * authority and Start never waits for this read. */
+  const [dumpInfo, setDumpInfo] = useState<{ directory: string; report: DumpInfo | null; error: string } | null>(null);
   const [restoreSchema, setRestoreSchema] = useState("");
   /** Restore into a database the list does not have (typed). */
   const [restoreNew, setRestoreNew] = useState(false);
@@ -350,6 +357,14 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   const [startLeft, setStartLeft] = useState(false);
   const startSince = useSince(busy);
   const [checkingUpdates, setCheckingUpdates] = useState(false);
+  const [clientToolsOpen, setClientToolsOpen] = useState(false);
+  const changeToolsButton = useRef<HTMLButtonElement>(null);
+  /** The button the Client tools dialog returns focus to (its opener). */
+  const toolsReturnFocus = useRef<HTMLElement | null>(null);
+  function openClientTools(from: HTMLElement | null) {
+    toolsReturnFocus.current = from;
+    setClientToolsOpen(true);
+  }
   const [readKind, setReadKind] = useState<"tools" | "upgrade" | "preflight">("tools");
   const readSince = useSince(!!reads.loading);
   const detecting = !!reads.loading && readKind === "tools";
@@ -401,9 +416,13 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   const unknownTables = tables.filter((name) => !loadedTables.has(name));
   const tableScope = !!oneSchema && tables.length > 0;
   const rawTools = memory.tools?.key === key ? memory.tools.report : null;
-  // The client-missing answer still lists the tools and their download links
-  // but leaves server and offered empty; guard every offered read.
-  const toolsMissing = rawTools?.server_error?.code === "client-missing";
+  // The client-missing (or client-auth-plugin) answer still lists the tools
+  // and their download links but leaves server and offered empty; guard every
+  // offered read.
+  const toolsClientError = rawTools?.server_error && ["client-missing", "client-auth-plugin"].includes(rawTools.server_error.code)
+    ? rawTools.server_error
+    : null;
+  const toolsMissing = !!toolsClientError;
   const rawOffered = rawTools?.offered;
   const tools = rawTools ? { ...rawTools, offered: {
     dump: rawOffered?.dump || [],
@@ -413,11 +432,31 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
     physical_backup_requires_local_files: rawOffered?.physical_backup_requires_local_files === true,
   } } : null;
   const targetReport = memory.targets?.key === key ? memory.targets.report : null;
+  /** A target the installed MySQL Shell cannot check (shell.ok false). */
+  const shellBlocked = (t: UpgradeTarget) => !!t.shell && !t.shell.ok;
+  const shellNeeds = (t: UpgradeTarget) => t.shell?.needs ? `needs MySQL Shell ${t.shell.needs} or newer` : "needs a newer MySQL Shell";
+  // The newest release can need a newer MySQL Shell than the installed one:
+  // suggest the newest target the installed Shell can actually check.
+  const suggestedTarget = targetReport
+    ? targetReport.targets.some((t) => t.version === targetReport.recommended && !shellBlocked(t))
+      ? targetReport.recommended
+      : [...targetReport.targets].reverse().find((t) => !shellBlocked(t))?.version ?? null
+    : null;
   // Percona targets are "8.4.11-11"; the checker takes the upstream version.
   const chosenTarget: UpgradeTarget | undefined = targetReport?.targets.find((t) => t.version === target);
   const chosenVersion = () => target === "custom" ? customTarget.trim() : chosenTarget ? chosenTarget.check_version : target;
   // Dump's databases, and Restore's Default database once its form is shown.
   const catalog = useSchemaCatalog(connection, onScreen && ((section === "dump" && scope !== "instance") || (section === "restore" && !!tools)));
+  // Opening Dump or Restore re-reads the database list once: a database
+  // created or dropped since the cached read shows up without Reload databases.
+  const catalogReload = useRef(catalog.reload);
+  catalogReload.current = catalog.reload;
+  const catalogSection = useRef("");
+  useEffect(() => {
+    const opened = onScreen && (section === "dump" || section === "restore") ? section : "";
+    if (opened && catalogSection.current !== opened) catalogReload.current();
+    catalogSection.current = opened;
+  }, [section, onScreen]);
   const restoreDatabases = (catalog.catalog?.schemas || []).filter((s) => !s.system).map((s) => s.name);
   // The donor is another server: every saved connection but the one in use.
   // Not one through SSH: CLONE runs from server to server, never through
@@ -444,6 +483,36 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
     return !!option && optionShown(option, dumpOptions) && (name !== "compression_level" || ["gzip", "zstd"].includes(String(dumpOptions.compression)));
   }));
   useEffect(() => { setDumpOptions({}); }, [key, dumpToolName]);
+  // The roles the resolver could not fill for this server (client-tools-1.0),
+  // and its engine note (for example the MariaDB sentence about its tools).
+  const missingRole = (role: "dump" | "load") => rawTools?.used?.missing.find((m) => m.role === role);
+  const toolNotes = rawTools?.used?.notes || [];
+  const noToolSentence = (role: "dump" | "load") =>
+    [missingRole(role)?.text || (role === "dump" ? "No dump tool for this server." : ""), ...toolNotes].filter(Boolean).join(" ");
+  /** Dump can run only when a tool is offered for the chosen kind; Restore
+   * needs the load role. */
+  const sqlDumpOffered = !!tools?.offered.dump.some((name) => name !== "mysqlsh");
+  const noDumpTool = !!tools && !toolsMissing && !tools.offered.dump.length;
+  const noLoadTool = !!tools && !!missingRole("load");
+  const dumpToolOptions: ["auto" | "sql", string][] = [];
+  if (tools && !noDumpTool) {
+    const sqlName = tools.offered.dump.find(name => name !== "mysqlsh") || (tools.server.engine === "mariadb" ? "mariadb-dump" : "mysqldump");
+    // Automatic names what it will run here: without MySQL Shell it is the SQL dump tool.
+    dumpToolOptions.push(["auto", rawTools?.used?.shell ? `Automatic (MySQL Shell ${rawTools.used.shell.version} first)`
+      : tools.offered.dump.includes("mysqlsh") ? "Automatic (MySQL Shell first)" : `Automatic (${sqlName}; no MySQL Shell found)`]);
+    if (sqlDumpOffered) dumpToolOptions.push(["sql", rawTools?.used?.dump ? `SQL dump (${rawTools.used.dump.program} ${rawTools.used.dump.version} · ${rawTools.used.dump.origin_label})` : `SQL dump (${sqlName})`]);
+  }
+  useEffect(() => { if (!sqlDumpOffered) setSqlDump(false); }, [sqlDumpOffered]);
+  // The dump-info answer counts only for the folder still in the field.
+  const folderInfo = dumpInfo && dumpInfo.directory === restoreDirectory.trim() ? dumpInfo : null;
+  const remapDenied = folderInfo?.report?.remap_allowed === false;
+  useEffect(() => {
+    // A dump that creates its own databases restores into them only.
+    if (!remapDenied) return;
+    // Say so when it replaces a database the person had chosen.
+    if (restoreNew || restoreSchema) setNotice(`Default database is back to As in the dump: ${folderInfo?.report?.remap_reason || "this dump restores into its own databases."}`);
+    setRestoreNew(false); setRestoreSchema("");
+  }, [remapDenied]);
   const plan = prepared?.report;
   const upgrade = memory.upgrade?.report || null;
   const shownPlan = plan?.operation === section && prepared?.key === key ? prepared : null;
@@ -460,28 +529,44 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   const activeJob = memory.jobs.find((b) => b.key === key && jobActive(b.report));
   const activeHere = !!activeJob;
   const dumpStem = dumpFolderStem(oneSchema || connection.name || connection.host);
+  const defaultDumpParent = tools?.default_dump_parent || "";
   const finishedDumps = memory.jobs.filter(b => b.key === key && b.report.operation === "dump" && !jobActive(b.report)).map(b => b.report.id).join(",");
   useEffect(() => {
-    if (section !== "dump" || !onScreen || directoryTouched || directoryPicking || busy || activeHere) return;
+    if (section !== "dump" || !onScreen || directoryTouched || directoryPicking || busy || activeHere || (!lastDumpParent && !defaultDumpParent)) return;
     const controller = new AbortController();
     const edit = directoryEdit.current;
     setDirectoryError("");
     // Clearing a field often precedes typing a replacement. Let that edit
     // finish, and never apply a suggestion over a newer keystroke.
     const timer = window.setTimeout(() => {
-      void suggestDumpFolder(lastDumpParent, dumpStem, controller.signal, reservedDirectories.current).then(path => {
+      void suggestDumpFolder(lastDumpParent, dumpStem, controller.signal, reservedDirectories.current, defaultDumpParent).then(path => {
         if (!controller.signal.aborted && edit === directoryEdit.current) setDirectory(path);
       }).catch(e => {
         if (!controller.signal.aborted && edit === directoryEdit.current) setDirectoryError(`Could not suggest an output folder: ${(e as Error).message} Browse or enter a new folder path.`);
       });
     }, 250);
     return () => { controller.abort(); window.clearTimeout(timer); };
-  }, [key, section, onScreen, dumpStem, scope, schemas.join("\u0000"), directoryTouched, directoryVersion, directoryPicking, busy, activeHere, finishedDumps]);
+  }, [key, section, onScreen, dumpStem, defaultDumpParent, scope, schemas.join("\u0000"), directoryTouched, directoryVersion, directoryPicking, busy, activeHere, finishedDumps]);
   function changeDirectory(path: string) {
     directoryEdit.current++;
     setDirectoryVersion(n => n + 1);
     setDirectoryTouched(!!path); setDirectory(path); setDirectoryError("");
   }
+  // Read the restore folder's dump summary once typing or picking settles. A
+  // folder change cancels the read in flight; a late answer for a replaced
+  // folder is dropped (the abort guard), so the latest request always wins.
+  useEffect(() => {
+    const directory = restoreDirectory.trim();
+    if (!directory) { setDumpInfo(null); return; }
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      readDumpInfo(directory, controller.signal).then(
+        (report) => { if (!controller.signal.aborted) setDumpInfo({ directory, report, error: "" }); },
+        (e: unknown) => { if (!controller.signal.aborted) setDumpInfo({ directory, report: null, error: e instanceof Error ? e.message : String(e) }); },
+      );
+    }, 300);
+    return () => { controller.abort(); window.clearTimeout(timer); };
+  }, [restoreDirectory]);
   function removeTables(names: string[]) {
     const remaining = tables.filter(name => !names.includes(name));
     setTables(remaining);
@@ -612,7 +697,12 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [section, !!tools, disabled, key]);
   useEffect(() => { setTarget(""); setCustomTarget(""); }, [key]);
-  useEffect(() => { if (targetReport?.recommended) setTarget((t) => t || targetReport.recommended || ""); }, [targetReport]);
+  useEffect(() => { if (suggestedTarget) setTarget((t) => t || suggestedTarget); }, [targetReport]);
+  // An upgrade check's error belongs to the Upgrade check tab: leaving the
+  // tab drops it (a later check replaces it, as every read does).
+  useEffect(() => {
+    if (section !== "upgrade" && readKind === "upgrade") reads.clearError();
+  }, [section, readKind]);
   useEffect(() => {
     if (!preflightError && !failedChecks.length) return;
     resultRef.current?.focus();
@@ -705,9 +795,9 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
         lastDumpParent = parentPath(p.report.target);
         reservedDirectories.current = [...reservedDirectories.current.slice(-KEEP_FINISHED), p.report.target];
         setDirectoryTouched(false);
+        // A started dump ends its table picking: the next dump starts from All tables.
+        setTables([]);
       }
-      // An authorized job keeps its original binding even if the user
-      // switched while start was in flight; keep its id for Cancel.
       denied(job.error, checked);
       rememberOwners([job], checked);
       rememberStart(job);
@@ -738,6 +828,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
             lastDumpParent = parentPath(p.report.target);
             reservedDirectories.current = [...reservedDirectories.current.slice(-KEEP_FINISHED), p.report.target];
             setDirectoryTouched(false);
+            setTables([]);
           }
           rememberOwners([found], from);
           rememberStart(found);
@@ -773,7 +864,23 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
     finally { cancelPending.current.delete(id); setCancelling((pending) => pending === id ? "" : pending); }
   }
 
-  const toolRows = Object.entries(memory.tools?.report.tools || {}).map(([name, tool]) => ({ ...tool, name }));
+  // lifecycle-tools-2.0: one row per copy found (the tools record's entry for
+  // the copy's name supplies its update check and download link). Without
+  // copies (older answer), the record alone lists the tools.
+  const toolCopies = memory.tools?.report.copies;
+  const toolRows = (toolCopies?.length
+    ? toolCopies
+    : Object.entries(memory.tools?.report.tools || {}).map(([name, tool]) => ({ ...tool, name }))
+  ).map((copy, i) => ({
+    ...(memory.tools?.report.tools[copy.name || ""] || {}),
+    ...copy,
+    name: copy.name || "",
+    // The update check covered the copy in the tools record for the name
+    // (tools[name]); any other copy, even one used for another role (a
+    // query-only client), was never checked.
+    ...(toolCopies?.length && copy.path !== memory.tools?.report.tools[copy.name || ""]?.path ? { update: undefined } : {}),
+    row: `tool:${copy.path || `${copy.name}:${i}`}`,
+  }));
   const updateWord = (tool: Tool): string => {
     const update = tool.update;
     if (tool.deprecated) return "Deprecated";
@@ -784,13 +891,16 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
     return "Could not check";
   };
   const availableUpdates = toolRows.filter(t => t.update?.status === "available" && t.available && !t.deprecated);
-  const toolColumns: Column<Tool & { name: string }>[] = [
+  const toolColumns: Column<(typeof toolRows)[number]>[] = [
     { key: "name", label: "Tool", primary: true, sort: (r) => r.name, render: (r) => r.name },
     { key: "status", label: "Status", sort: (r) => Number(r.available), render: (r) => <StatusPill tone={r.deprecated ? "unknown" : r.available ? "ok" : "unknown"} label={r.deprecated ? "Deprecated" : r.available ? "Available" : "Not found"} /> },
-    { key: "version", label: "Version", flex: true, sort: (r) => (r.version_tuple || []).join("."), render: (r) => (r.version_tuple?.length ? <span title={r.version}>{r.version_tuple.join(".")}</span> : r.version || r.error || "Not available") },
+    { key: "version", label: "Version", sort: (r) => (r.version_tuple || []).join("."), render: (r) => (r.version_tuple?.length ? <span title={r.version}>{r.version_tuple.join(".")}</span> : r.version || r.error || "Not available") },
+    { key: "from", label: "From", sort: (r) => r.origin_label || "", render: (r) => r.origin_label || "Not available" },
+    { key: "path", label: "Path", flex: true, render: (r) => (r.path ? <code className="client-path" title={r.realpath || r.path}>{r.path}</code> : "Not found") },
     { key: "update", label: "Updates", render: (r) => <span title={r.update?.message}><StatusPill tone={r.update?.status === "available" ? "watch" : "unknown"} label={updateWord(r)} /></span> },
     { key: "download", label: "Download", render: (r) => toolDownloadUrl(r.download_url) ? <a className="ops-tool-link" href={toolDownloadUrl(r.download_url)} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} aria-label={`Official download page for ${r.name}`}>Official site</a> : "Not available" },
     { key: "engine", label: "Engine", render: (r) => (r.engine ? engineName(r.engine) : "Not available") },
+    { key: "used", label: "Used", render: (r) => (r.used ? <StatusPill tone="ok" label="Used" /> : "") },
   ];
   const findings = (upgrade?.checks || []).map((finding, index) => ({ ...finding, row: String(index) }));
   const findingColumns: Column<(typeof findings)[number]>[] = [
@@ -798,14 +908,14 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
     { key: "check", label: "Check", primary: true, flex: true, sort: (r) => r.title, render: (r) => r.title },
     { key: "objects", label: "Objects", num: true, sort: (r) => r.affected_objects.length, render: (r) => <span title={r.affected_objects.join(", ") || undefined}>{r.affected_objects.length.toLocaleString()}</span> },
   ];
-  const selectedTool = section === "tools" ? toolRows.find((t) => `tool:${t.name}` === selection.key) : undefined;
+  const selectedTool = section === "tools" ? toolRows.find((t) => t.row === selection.key) : undefined;
   const selectedFinding = section === "upgrade" ? findings.find((f) => `finding:${f.row}` === selection.key) : undefined;
   const selectedCheck = operation ? shownPlan?.report.checks.find((_, i) => `check:${i}` === selection.key) : undefined;
   let inspector: InspectorContent | null = null;
   if (selectedTool) inspector = {
-    key: `tool:${selectedTool.name}`, title: selectedTool.name,
+    key: selectedTool.row, title: selectedTool.name,
     meta: <StatusPill tone={selectedTool.deprecated ? "unknown" : selectedTool.available ? "ok" : "unknown"} label={selectedTool.deprecated ? "Deprecated" : selectedTool.available ? "Available" : "Not found"} />,
-    body: <InspectorSection title="Detected tool"><Fields rows={[["Path", selectedTool.path || "Not found"], ["Version", selectedTool.version || "Not available"], ["Engine", selectedTool.engine ? engineName(selectedTool.engine) : "Not available"], !!selectedTool.error && ["Probe", selectedTool.error]]} />{selectedTool.deprecated && <p>Deprecated tools are listed for information and never offered.</p>}
+    body: <InspectorSection title="Detected tool"><Fields rows={[["Path", selectedTool.path || "Not found"], ["Version", selectedTool.version || "Not available"], ["Engine", selectedTool.engine ? engineName(selectedTool.engine) : "Not available"], !!selectedTool.origin_label && ["From", selectedTool.origin_label], !!selectedTool.reason && ["Why this copy", reasonSentence(selectedTool.reason, selectedTool, tools?.server)], !!selectedTool.used && ["Used", "This copy runs the job on this server"], !!selectedTool.error && ["Probe", selectedTool.error]]} />{selectedTool.deprecated && <p>Deprecated tools are listed for information and never offered.</p>}
       {selectedTool.update && <><p>{selectedTool.update.message}</p><Fields rows={[["Latest checked", selectedTool.update.latest_version || "Unknown"], ["Checked at", selectedTool.update.checked_at || "Not checked"]]} /></>}
       {toolDownloadUrl(selectedTool.download_url) && <a className="ops-tool-link" href={toolDownloadUrl(selectedTool.download_url)} target="_blank" rel="noopener noreferrer">Official download page</a>}
     </InspectorSection>,
@@ -831,7 +941,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   // reading, or it failed) the MySQL Shell version stays the one offer.
   const targetOptions: [string, string][] = targetReport && targetReport.targets.length
     ? [...targetReport.targets].reverse().map((t): [string, string] => [t.version,
-      [t.version, t.path_label, t.version === targetReport.recommended ? "suggested" : ""].filter(Boolean).join(" · ")])
+      [t.version, t.path_label, shellBlocked(t) ? shellNeeds(t) : "", t.version === suggestedTarget ? "suggested" : ""].filter(Boolean).join(" · ")])
     : targetReport?.server.engine === "mariadb" ? [] : versions.map((v): [string, string] => [v, v]);
   // Chosen tables come from the loaded list: one a reload no longer lists blocks the preflight.
   const dumpValid = !!directory.trim() && validInteger(threads, 1, 64) && (scope === "instance" || schemas.length > 0) && !unknownTables.length && !missingTables.length;
@@ -842,7 +952,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
     <Segmented label="Maintenance task" value={section} options={(Object.keys(SECTION_LABEL) as MaintenanceSection[]).filter(value => value !== "clone" || !tools || tools.offered.clone).map((value) => ({ value, label: SECTION_LABEL[value], disabled: busy || (!!reads.loading && readKind !== "tools") }))} onChange={(next) => { selection.select("", false); setNotice(""); onSection(next); }} />
   </>;
   const form = (children: ReactNode) => <div className="ops-form"><fieldset disabled={formDisabled}>{children}</fieldset></div>;
-  const statusError = failure?.key === key ? failure.text : readKind === "preflight" ? "" : reads.error;
+  const statusError = failure?.key === key ? failure.text : readKind === "preflight" || (readKind === "upgrade" && section !== "upgrade") ? "" : reads.error;
   const retryRead = () => { void (readKind === "upgrade" ? runUpgrade() : readKind === "preflight" ? prepare() : loadTools(checkingUpdates)); };
   const readStatus = (kind: typeof readKind) => <ActionStatus keepLine state={{ phase: reads.loading && readKind === kind ? "pending" : "idle", message: reads.loading, startedAt: readSince }}
     onStop={reads.stop} stopLabel="Stop waiting" />;
@@ -880,11 +990,17 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
       )}
       {!tools && <div className="ops-tool-loading">{detecting ? "Finding MySQL and MariaDB tools on this computer…" : reads.error ? "Tool detection failed. Try again above to continue." : "Waiting to detect local tools…"}{readStatus("tools")}</div>}
       {section === "tools" && memory.tools && <>
+        {!toolsMissing && memory.tools.report.used && (
+          <div className="ops-used client-tools-used-block">
+            <strong>Used for this server</strong>
+            <UsedForServer used={memory.tools.report.used} server={memory.tools.report.server} onChange={() => openClientTools(changeToolsButton.current)} changeRef={changeToolsButton} />
+          </div>
+        )}
         <div className="ops-actions"><ActionButton busy={detecting && checkingUpdates} busyLabel="Checking…" disabled={disabled || busy || (!!reads.loading && !checkingUpdates)} onClick={() => { void loadTools(true); }}>Check for updates</ActionButton>{tools && <ActionStatus keepLine state={{ phase: detecting && checkingUpdates ? "pending" : "idle", message: reads.loading, startedAt: readSince }} onStop={reads.stop} stopLabel="Stop waiting" />}</div>
         {!!availableUpdates.length && <div className="ops-tool-updates" role="status">Updates available for {availableUpdates.map(t => t.name).join(", ")}.</div>}
-        <DataTable id="maintenance.tools" label="Detected tools" rows={toolRows} columns={toolColumns} rowKey={(r) => `tool:${r.name}`} selection={selection} />
+        <DataTable id="maintenance.tools" label="Detected tools" rows={toolRows} columns={toolColumns} rowKey={(r) => r.row} selection={selection} />
         {toolsMissing ? (
-          <ClientMissingNotice className="ops-offered" onRetry={() => { void loadTools(); }} />
+          <ClientMissingNotice className="ops-offered" text={toolsClientError?.code === "client-auth-plugin" ? toolsClientError.error : ""} onRetry={() => { void loadTools(); }} />
         ) : (
         <div className="ops-offered"><Fields label="Offered for this server" rows={[["Dump", memory.tools.report.offered.dump.join(", ") || "No dump tool for this engine"], ["Upgrade check", memory.tools.report.offered.upgrade === "mysqlsh" ? "MySQL Shell (full check)" : memory.tools.report.offered.upgrade === "native_subset" ? "Partial check (native subset)" : "mariadb-upgrade steps to run on the server host"], ["Clone", memory.tools.report.offered.clone ? "Offered after its preflight" : "Not offered"], ["Physical backup", memory.tools.report.offered.physical_backup ? "Detected; runs on the server host" : "Not available"]]} /></div>
         )}
@@ -903,6 +1019,16 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
         </>}
       </>}
       <div ref={fieldsRef} className="ops-task-fields">
+      {section === "dump" && tools && noDumpTool && (
+        <PrerequisiteGate action={<button type="button" className="button small" onClick={(e) => openClientTools(e.currentTarget)}>Choose client tools…</button>}>
+          {noToolSentence("dump")}
+        </PrerequisiteGate>
+      )}
+      {section === "restore" && tools && noLoadTool && (
+        <PrerequisiteGate action={<button type="button" className="button small" onClick={(e) => openClientTools(e.currentTarget)}>Choose client tools…</button>}>
+          {noToolSentence("load")}
+        </PrerequisiteGate>
+      )}
       {section === "dump" && tools && <div className="ops-form ops-dump"><fieldset disabled={formDisabled}>
         <FormGrid>
           <FormRow label="Scope" htmlFor="ops-dump-scope">
@@ -911,7 +1037,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
           {scope !== "instance" && <div className="form-row">
             <span className="form-row-label">Databases</span>
             <div className="form-row-control">
-              <SchemaPicker id="ops-dump-schemas" value={schemas} onChange={setSchemas} catalog={catalog.catalog} error={catalog.error} loading={catalog.loading} onReload={catalog.reload} disabled={formDisabled} />
+              <SchemaPicker id="ops-dump-schemas" value={schemas} onChange={(next) => { setSchemas(next); setTables([]); }} catalog={catalog.catalog} error={catalog.error} loading={catalog.loading} onReload={catalog.reload} disabled={formDisabled} emptyLabel="No database chosen" />
               <p className="hint">{!schemas.length ? "Choose at least one database." : schemas.length > 1 ? "Choose one database to pick its tables." : ""}</p>
             </div>
           </div>}
@@ -932,7 +1058,13 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
             </div>
           </div>}
           <FormRow label="Tool" htmlFor="ops-dump-tool">
-            <Select id="ops-dump-tool" label="Tool" value={sqlDump ? "sql" : "auto"} options={[["auto", "Automatic (MySQL Shell first)"], ["sql", `SQL dump (${tools.offered.dump.find(name => name !== "mysqlsh") || (tools.server.engine === "mariadb" ? "mariadb-dump" : "mysqldump")})`]]} onChange={(v) => setSqlDump(v === "sql")} />
+            {noDumpTool ? (
+              <select id="ops-dump-tool" className="select" aria-label="Tool" disabled value="">
+                <option value="" disabled>No dump tool for this server</option>
+              </select>
+            ) : (
+              <Select id="ops-dump-tool" label="Tool" value={sqlDump ? "sql" : "auto"} options={dumpToolOptions} onChange={(v) => setSqlDump(v === "sql")} />
+            )}
           </FormRow>
           <div className={`ops-folder-check${folderFailure ? " ops-invalid" : ""}`} role="group" aria-label="Output folder" aria-invalid={!!folderFailure || undefined}><DumpFolderField key={`dump:${key}`} value={directory} stem={dumpStem} onChange={changeDirectory} onPicking={picking => { directoryEdit.current++; setDirectoryPicking(picking); }} disabled={formDisabled} />{directoryError && <p className="form-error" role="alert">{directoryError}</p>}{folderFailure && <p className="form-error">{folderFailure.reason}</p>}</div>
         </FormGrid>
@@ -943,9 +1075,15 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
       </fieldset></div>}
       {section === "restore" && tools && form(<>
         <div className="ops-target"><span>Restores into</span><strong>{connectionLabel(connection)}</strong></div>
-        <FolderField key={`restore:${key}`} label="Dump folder" value={restoreDirectory} onChange={setRestoreDirectory} disabled={formDisabled} hint="A completed myflames dump with its checksummed manifest." />
+        <FolderField key={`restore:${key}`} label="Dump folder" value={restoreDirectory} onChange={setRestoreDirectory} disabled={formDisabled}
+          hint={folderInfo?.error ? folderInfo.error : "A completed myflames dump with its checksummed manifest."} />
         <details><summary>Options</summary>
-          {catalog.error ? (
+          {remapDenied ? (
+            <label className="ops-field"><span>Default database</span>
+              <Select label="Default database" value="" options={[["", "As in the dump"]]} onChange={() => {}} />
+              <span className="hint">{folderInfo?.report?.remap_reason}</span>
+            </label>
+          ) : catalog.error ? (
             <FormField label="Default database" value={restoreSchema} onChange={setRestoreSchema} placeholder="As in the dump"
               hint={`Could not list databases (${catalog.error}). Type a name, or leave it empty. SQL dumps can name other databases; this does not confine the restore.`} />
           ) : <>
@@ -988,7 +1126,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
         <details><summary>Donor TLS</summary><label className="ops-field"><span>TLS mode</span><Select label="TLS mode" value={donor.ssl_mode || "REQUIRED"} options={[["REQUIRED", "Required"], ["VERIFY_CA", "Verify CA"], ["VERIFY_IDENTITY", "Verify identity"]]} onChange={(v) => setDonor({ ...donor, ssl_mode: v })} /></label><FormField label="CA file" value={donor.ssl_ca || ""} onChange={(v) => setDonor({ ...donor, ssl_ca: v })} /></details>
       </>))}
       </div>
-      {operation && tools && (operation !== "clone" || tools.offered.clone) && <div className="ops-actions"><ReadAction busy={preparing} busyLabel="Checking…" action={operation === "clone" ? "clone_recipient" : operation === "restore" ? "restore" : undefined} gate={operationGate} className="primary" disabled={formDisabled || detecting || !canPrepare} blocked={blocked || privilegeBlock} onClick={() => { void prepare(); }}>{`Start ${operation}…`}</ReadAction>{readStatus("preflight")}{activeJob ? <JobSummary job={activeJob.report} onShow={() => { onSection(activeJob.report.operation); setFocusJob(activeJob.report.id || ""); }} /> : !blocked && !privilegeBlock && <span className="hint">Checks first (reads only), then shows the exact commands for you to confirm.</span>}</div>}
+      {operation && tools && (operation !== "clone" || tools.offered.clone) && <div className="ops-actions"><ReadAction busy={preparing} busyLabel="Checking…" action={operation === "clone" ? "clone_recipient" : operation === "restore" ? "restore" : undefined} gate={operationGate} className="primary" disabled={formDisabled || detecting || !canPrepare} blocked={blocked || privilegeBlock} onClick={() => { void prepare(); }}>{`Start ${operation}…`}</ReadAction>{readStatus("preflight")}{activeJob ? <JobSummary job={activeJob.report} onShow={() => { onSection(activeJob.report.operation); setFocusJob(activeJob.report.id || ""); }} /> : operation === "dump" && noDumpTool ? <span className="hint">{noToolSentence("dump")}</span> : operation === "restore" && noLoadTool ? <span className="hint">{noToolSentence("load")}</span> : !blocked && !privilegeBlock && <span className="hint">Checks first (reads only), then shows the exact commands for you to confirm.</span>}</div>}
       {notice && <p className="ops-note" role="status">{notice}</p>}
       <section ref={resultRef} className={`ops-preflight-result${preflightError || failedChecks.length ? " has-result" : ""}`} role="alert" tabIndex={-1}>
         {preflightError && <><p>Start {operation} is blocked: {preflightError} Fix the fields, then click Start {operation}… again.</p><button type="button" className="text-button" onClick={() => focusFix({ check: "input", status: "failed", reason: preflightError })}>Review fields</button></>}
@@ -1029,9 +1167,10 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
         ] as [string, string][] : []),
         ["Server", engineName(sheet.report.server.engine, sheet.report.server.version, sheet.report.server.product)],
         !!sheet.report.server.identity?.hostname && ["Host name", String(sheet.report.server.identity.hostname)],
-        ["Tool", toolName(sheet.report.tool)],
+        ["Tool", <span className="ops-tool-line">{planToolLine(sheet.report).line}{sheet.report.tool.path ? <><br /><code className="client-path hint">{sheet.report.tool.path}</code></> : null}</span>],
         ["Preflight", `${plural(sheet.report.checks.filter((c) => c.status === "passed").length, "check")} passed${sheet.report.checks.some((c) => c.status === "not_checked") ? `, ${sheet.report.checks.filter((c) => c.status === "not_checked").length.toLocaleString()} not checked` : ""}`],
       ]} />
+      {sheet.report.tool.warning && <p className="ops-warning">{sheet.report.tool.warning}</p>}
       {sheet.report.policy?.text && <p>{sheet.report.policy.text}</p>}
       {sheet.report.operation !== "dump" && sheet.report.warnings.map((line, i) => <p className="ops-warning" key={i}>{line}</p>)}
       {!!planMessages(sheet.report).notes.length && <ul className="hint">{planMessages(sheet.report).notes.map((line, i) => <li key={i}>{line}</li>)}</ul>}
@@ -1044,6 +1183,13 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
       </div>}
       <p className="hint">myflames repeats the preflight right before starting and stops if anything changed. Cancelling a running job may leave partial data to clean up.</p>
     </ConfirmSheet>}
+    {clientToolsOpen && (
+      <ClientToolsDialog
+        returnFocus={toolsReturnFocus}
+        onClose={() => setClientToolsOpen(false)}
+        onChanged={() => { void loadTools(); }}
+      />
+    )}
   </>;
 }
 

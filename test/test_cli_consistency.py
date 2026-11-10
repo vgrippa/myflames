@@ -1,15 +1,18 @@
 """Regression coverage for the CLI review's flag, stream and exit contracts."""
 import argparse
 import contextlib
+import importlib
 import io
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest import mock
 
-from myflames import cli, workspace_cli
+from _client_tools_fixture import private_client_dir
+from myflames import cli, connector, workspace_cli
 from myflames.teach import cmd_teach
 
 # These tests check each command's own stderr; the CLI deprecation notice has
@@ -18,6 +21,26 @@ os.environ.setdefault("MYFLAMES_NO_DEPRECATION_WARNING", "1")
 
 ROOT = Path(__file__).resolve().parent.parent
 PLAN = str(ROOT / 'test/fixtures/explain-004-pk-lookup-user.json')
+
+# Tests here patch myflames.connector.MySQLConnection around CLI calls, and the
+# CLI imports most commands lazily. These modules bind that class by name at
+# import time, so one first imported inside the patch keeps the mock for the
+# rest of the run: lifecycle.LifecycleConnection then subclasses a MagicMock
+# and itself becomes one. Load them before any test patches the class.
+CONNECTION_BOUND_MODULES = (
+    'accounts', 'accounts_api', 'baselines', 'compare_api', 'compare_cli', 'discover',
+    'editor_session', 'health', 'lifecycle', 'live', 'locks', 'perf_common',
+    'schema_diagram_api', 'schema_versions_api', 'schema_versions_cli', 'variables')
+for _name in CONNECTION_BOUND_MODULES:
+    importlib.import_module('myflames.' + _name)
+REAL_CONNECTION = connector.MySQLConnection
+
+
+def _modules_holding_patched_connection():
+    """Names of loaded myflames modules whose MySQLConnection is not the real class."""
+    return {name for name, module in list(sys.modules.items())
+            if name.startswith('myflames') and module is not None
+            and vars(module).get('MySQLConnection', REAL_CONNECTION) is not REAL_CONNECTION}
 
 
 class TestCLIConsistency(unittest.TestCase):
@@ -31,6 +54,31 @@ class TestCLIConsistency(unittest.TestCase):
         self.env.start()
         self.addCleanup(self.env.stop)
         os.environ.pop('MYFLAMES_VAULT_PASSPHRASE', None)
+        # Runs after the test's own patches have stopped.
+        self.addCleanup(self.assert_connection_class_not_leaked, _modules_holding_patched_connection())
+
+    def assert_connection_class_not_leaked(self, before):
+        leaked = sorted(_modules_holding_patched_connection() - before)
+        self.assertEqual(leaked, [], 'first imported while myflames.connector.MySQLConnection was '
+                         'patched, so they keep the mock; add them to CONNECTION_BOUND_MODULES')
+
+    def only_fake_client(self):
+        """Make a private fake mysql the only client, whatever the host has installed."""
+        from myflames import client_tools, lifecycle
+        bindir = Path(self.directory.name) / 'bin'
+        private_client_dir(bindir)
+        client = bindir / 'mysql'
+        client.write_text('#!%s\nprint("mysql Ver 8.4.0")\n' % sys.executable, encoding='utf-8')
+        client.chmod(0o700)
+        env = mock.patch.dict(os.environ, {'PATH': str(bindir), 'MYFLAMES_BUNDLED_CLIENT_DIR': ''})
+        env.start()
+        self.addCleanup(env.stop)
+        folders = mock.patch.object(lifecycle, 'COMMON_BIN_DIRS', ())
+        folders.start()
+        self.addCleanup(folders.stop)
+        self.addCleanup(connector.set_client_choices, connector.client_choices())
+        connector.set_client_choices({})
+        client_tools._FACTS.clear()
 
     def call(self, argv, function=None):
         out, err = io.StringIO(), io.StringIO()
@@ -142,6 +190,9 @@ class TestCLIConsistency(unittest.TestCase):
         self.assertIn('START TRANSACTION READ ONLY', conn.run_stdin.call_args[0][0])
 
     def test_live_setup_oserror_is_sanitized_exit_two(self):
+        # The mkstemp case must get past client resolution to the option file;
+        # with no mysql or mariadb on the host it stopped at "could not find".
+        self.only_fake_client()
         for target in ('myflames.connector.MySQLConnection', 'myflames.connector.tempfile.mkstemp'):
             with self.subTest(target=target), mock.patch(target, side_effect=PermissionError('secret\nfailed')):
                 code, out, err = self.call(['-e', 'SELECT 1', '-psecret', '-q'])

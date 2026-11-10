@@ -89,6 +89,11 @@ try {
   assert.match(facts, /Limit\s*151/);
   assert.match(facts, /Max seen\s*12/);
   assert.match(facts, /History list\s*[\d,]+/);
+  // The counters are server-wide status counters, not sessions of the list:
+  // the group is labeled so, with the reason in its tooltip.
+  assert.equal(await page.$eval(`${view} dl.fact-strip`, (e) => e.getAttribute("aria-label")), "Server-wide");
+  assert.equal(await page.$eval(`${view} dl.fact-strip`, (e) => e.title),
+    "Threads_connected and Threads_running from SHOW GLOBAL STATUS; they include monitoring and background threads.");
   // Kill sessions… opens the review dialog, titled Kill sessions; Escape closes
   // it without sending anything.
   const killSessions = `${view} .view-toolbar button[data-action=kill-sessions]`;
@@ -503,6 +508,35 @@ try {
   await h.refresh();
   await page.waitForSelector(`${view} [role=alert]`);
   assert.ok(await page.$(`${view} tbody tr`));
+
+  // An empty table under Active with active sessions in the summary means the
+  // filters hid them; with none active the table says so plainly.
+  const minField = `${view} input[aria-label="Running at least (seconds)"]`;
+  // A minimum duration has its own, more specific sentence: clear it here,
+  // and look at the Active scope (the All scope says "No sessions.").
+  await page.locator(minField).fill("0");
+  await page.click(`${view} .segmented button[data-value=active]`);
+  await h.idle(view);
+  const emptied = structuredClone(active);
+  emptied.sessions = [];
+  emptied.matched = 0;
+  state.queue.push({ status: 200, body: emptied });
+  await h.refresh();
+  await h.idle(view);
+  assert.equal(await text(`${view} .table-empty`), "No sessions match the filters.", "the summary still counts 9 active sessions");
+  const quiet = structuredClone(emptied);
+  quiet.summary = { ...emptied.summary, active: 0 };
+  state.queue.push({ status: 200, body: quiet });
+  await h.refresh();
+  await h.idle(view);
+  assert.equal(await text(`${view} .table-empty`), "No active sessions right now.");
+  await page.locator(minField).fill("30");
+  await page.click(`${view} .segmented button[data-value=all]`);
+  await h.idle(view);
+  state.queue.push({ status: 200, body: active });
+  await h.refresh();
+  await page.waitForSelector(`${view} tbody tr`);
+  await h.idle(view);
 
   // Automatic refresh is opt-in.
   await page.evaluate(() => {

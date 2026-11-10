@@ -39,7 +39,9 @@ mysql-client/LICENSE) inside the app. The corresponding source code is the
 mysql-8.4.13 tag of https://github.com/mysql/mysql-server
 (https://github.com/mysql/mysql-server/tree/mysql-8.4.13), also available as
 https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.13.tar.gz and from
-https://dev.mysql.com/downloads/mysql/ (Source Code). The Windows installer
+https://dev.mysql.com/downloads/mysql/ (Source Code). Each myflames release that
+includes these programs also carries that unmodified source archive
+(mysql-8.4.13.tar.gz) among its downloads. The Windows installer
 also includes the Microsoft Visual C++ runtime DLLs those programs load
 (msvcp140.dll, vcruntime140.dll and vcruntime140_1.dll), copied unmodified from
 Visual Studio's redistributable folder and redistributed under Microsoft's

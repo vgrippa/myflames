@@ -122,7 +122,9 @@ export function ReadinessFacts({ connection, details = false }: { connection: Co
   const entry = useReadiness(connection);
   const line = entry.facts ? readinessLine(entry.facts) : details ? "Not checked" : "";
   const seen = entry.facts ? `seen ${relativeTime(entry.facts.checked_at)}${entry.stale ? " · stale" : ""}` : "";
-  const fullTitle = [line || "Not checked", seen, entry.pending ? "Checking…" : "", entry.error || ""].filter(Boolean).join(" · ");
+  // Nothing is read on mount: without facts the hover says how to get them.
+  const fullTitle = [line || "Not checked yet: Check now in the connection's menu reads the server", seen,
+    entry.pending ? "Checking…" : "", entry.error || ""].filter(Boolean).join(" · ");
   return <span className="connection-readiness" aria-live="polite" title={details ? undefined : fullTitle}>
     <span className="connection-readiness-line" title={fullTitle}>{line && <bdi>{line}</bdi>}</span>
     {entry.facts && <span className="hint" title={fullTitle}> · {seen}</span>}

@@ -6,7 +6,7 @@ import { Fragment, useEffect, useRef, useState, type KeyboardEvent } from "react
 import type { ReactNode } from "react";
 import { AboutDialog } from "./About";
 import { time, type Plan } from "./api";
-import { DatabaseClientDialog } from "./ClientMissing";
+import { ClientToolsDialog } from "./ClientTools";
 import { Icon, type IconName } from "./components";
 import { Checkbox, CountBadge, Popover, closePopovers, useFocusScope } from "./kit";
 import { NewsSetting } from "./HomeNews";
@@ -460,7 +460,7 @@ export function Sidebar({
               </button>}
               <button type="button" className="settings-item" aria-haspopup="dialog" onClick={openClientSettings}>
                 <Icon name="wrench" size={16} />
-                Database client…
+                Client tools…
               </button>
               <button
                 type="button"
@@ -489,7 +489,7 @@ export function Sidebar({
           />
         )}
         {clientOpen && (
-          <DatabaseClientDialog
+          <ClientToolsDialog
             returnFocus={settingsButton}
             onClose={() => setClientOpen(false)}
           />

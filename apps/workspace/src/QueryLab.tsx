@@ -1,6 +1,6 @@
 import { captureThreadKey, indexWasApplied, measurementMatches, type SqlOpenOptions, type SuggestedIndexOrigin } from "./statementThread";
 import { DigestBefore, MeasuredStatement } from "./MeasureAgain";
-import { bytes, useSchemaCatalog } from "./PerfShared";
+import { bytes, invalidateSchemaCatalog, useSchemaCatalog } from "./PerfShared";
 import { AlterPredictionWhy, notPredictedReason, type AlterPrediction } from "./AlterPrediction";
 import { engineName } from "./OpsShared";
 import {
@@ -21,8 +21,10 @@ import {
   ddlProgress,
   type DdlProgress,
   ApiError,
-  isClientMissing,
+  clientMissingCode,
+  isClientAuthPlugin,
   type Capture,
+  type CatalogTable,
   type Connection,
   type EditorClose,
   type EditorConfirmation,
@@ -40,7 +42,7 @@ import {
 } from "./api";
 import type { DigestAction } from "./SlowQueries";
 import { durationText } from "./duration";
-import { delimiterAt, describeTarget, runTarget, sqlRun, type RunTarget } from "./sqlSelection";
+import { delimiterAt, describeTarget, insertDefaults, runTarget, selectColumnReferences, sqlRun, type RunTarget } from "./sqlSelection";
 import {
   digestName,
   digestQuery,
@@ -106,6 +108,9 @@ const RESULTS_KEEP = 208;
 const RESULT_BAR_LINE = 40;
 /** The editor itself keeps three lines. */
 const EDITOR_FLOOR = 72;
+/** Opening the Database picker re-reads the database list only when the
+ * cached read is older than this (never on every focus or keystroke). */
+const CATALOG_STALE_MS = 10_000;
 type Tab = QueryTab;
 type ExplainFormat = "table" | "tree" | "json";
 const EXPLAIN_FORMAT_KEY = "myflames.editor.explainFormat";
@@ -213,6 +218,9 @@ type Runtime = {
   runKey: string;
   runSessionId: number | null;
   runConnectionName: string;
+  /** Retained with the result, even if the tab later opens another session. */
+  runConnection: Connection | null;
+  runBackslash: boolean;
   /** Requests started for the tab; an answer to an older probe is dropped. */
   gen: number;
   /** The last status poll failed: the run may still be going, retrying. */
@@ -257,6 +265,8 @@ const blankRuntime = (): Runtime => ({
   runKey: "",
   runSessionId: null,
   runConnectionName: "",
+  runConnection: null,
+  runBackslash: true,
   gen: 0,
   pollTrouble: false,
   run: null,
@@ -350,6 +360,20 @@ function sessionName(s: EditorSession) {
 }
 function connectionShortName(c: Connection) {
   return c.name || `${c.user ? `${c.user}@` : ""}${c.host}:${c.port}`;
+}
+/** CREATE or DROP of a database or schema (the verb the backend names it). */
+const DATABASE_LIST_DDL = /^(?:CREATE|DROP)\s+(?:DATABASE|SCHEMA)$/i;
+/** True when a finished run may have changed the connection's database list:
+ * a CREATE/DROP DATABASE or SCHEMA, or a statement the editor cannot classify
+ * as harmless (no verb, or a bare CREATE/DROP whose text names a database). */
+function runMayChangeDatabases(run: EditorRun): boolean {
+  return run.statements.some((s) => {
+    const verb = (s.verb || "").trim();
+    if (!verb) return true;
+    if (DATABASE_LIST_DDL.test(verb)) return true;
+    if (/^(?:CREATE|DROP)$/i.test(verb)) return /^\s*(?:CREATE|DROP)\s+(?:DATABASE|SCHEMA)\b/i.test(s.text);
+    return false;
+  });
 }
 /** The word at *offset*, for the error underline (at least one character). */
 function wordAt(sql: string, offset: number): Range {
@@ -534,7 +558,11 @@ export const QueryLab = forwardRef<
   // The connection's schema list pre-fills the default-database picker (one
   // cheap catalog read per connection, cached; PerfShared.useSchemaCatalog),
   // read only while the editor is on screen: a hidden editor never reads.
-  const { catalog: schemaCatalog } = useSchemaCatalog(connection, onScreen);
+  const { catalog: schemaCatalog, reloadStale: reloadStaleSchemaCatalog } = useSchemaCatalog(connection, onScreen);
+  // Back on screen, a list invalidated or replaced while the editor was
+  // hidden is read or attached by useSchemaCatalog itself; an unchanged list
+  // stays (each read counts tables), and opening the picker re-reads one
+  // older than CATALOG_STALE_MS.
   const [timeout, setTimeoutSeconds] = useState(start.timeout);
   const [repeat, setRepeat] = useState(start.repeat);
   const [trace, setTrace] = useState(start.trace);
@@ -612,7 +640,7 @@ export const QueryLab = forwardRef<
   // A Run or Explain refused for a missing database client keeps the failed
   // request here, so the notice's Try again sends that same request again.
   /** A Run or Explain refused for a missing client, with the connection it was for (Try again resends only to it). */
-  const [runClientMissing, setRunClientMissing] = useState<{ tabId: string; connection: string; retry: () => void } | null>(null);
+  const [runClientMissing, setRunClientMissing] = useState<{ tabId: string; connection: string; text: string; retry: () => void } | null>(null);
   // When a fresh-connection capture fails because the query names a table
   // the server does not have (a TEMPORARY table lives only in the tab's
   // session), the error notice offers one retry inside that session.
@@ -1354,12 +1382,16 @@ export const QueryLab = forwardRef<
   // One explanation for the run group, shown only when something is denied
   // (or a mixed batch has denied statements). Unverified privileges stay
   // quiet: the server decides, and each button keeps its reason for
-  // assistive technology. Keep mixed batches runnable.
+  // assistive technology. Keep mixed batches runnable. A Run or Run all
+  // refusal the error banner already shows (for example "Run DDL statements
+  // one at a time") is not repeated here; the analysis gate's reason stays
+  // (its denial has no banner of its own wording to repeat).
+  const refusedByRunGate = (reason: string) => reason === error && [runGate, allGate].some(gate => gate.disabledReason === reason);
   const privilegeReasons = [...new Set(
     [runGate, allGate, analysisGate].map(gate => gate.disabledReason)
-      .filter(reason => reason && !previewWarning?.includes(reason)),
+      .filter(reason => reason && !refusedByRunGate(reason) && !previewWarning?.includes(reason)),
   )];
-  const privilegeNotice = [previewWarning, ...privilegeReasons].filter(Boolean).join(" ");
+  const privilegeNotice = [previewWarning && previewWarning !== error ? previewWarning : "", ...privilegeReasons].filter(Boolean).join(" ");
   const privilegeNoticeId = privilegeNotice ? `${privilegeId}-notice` : undefined;
   const scopeLabel = describeTarget(tab.sql, target);
   const selecting = target.scope === "selection";
@@ -1698,8 +1730,9 @@ export const QueryLab = forwardRef<
         patchRuntime(id, { sessionFeedback: { ...failure, message: failure.phase === "unknown" ? `Outcome unknown. ${failure.message}` : failure.message,
           startedAt: null, endedAt: Date.now() } });
       } else {
-        if (!isRun) patchRuntime(id, { sessionFeedback: { phase: "failed", message: err.message, code: isClientMissing(e) ? "client-missing" : undefined, startedAt: null, endedAt: Date.now() } });
-        else if (isClientMissing(e)) setRunClientMissing({ tabId: id, connection: connectionKey(payload.connection as Connection),
+        if (!isRun) patchRuntime(id, { sessionFeedback: { phase: "failed", message: err.message, code: clientMissingCode(e) || undefined, startedAt: null, endedAt: Date.now() } });
+        else if (clientMissingCode(e)) setRunClientMissing({ tabId: id, connection: connectionKey(payload.connection as Connection),
+          text: isClientAuthPlugin(e) ? err.message : "",
           retry: () => void send(id, path, payload, meta) });
         else setError(err.message);
       }
@@ -1797,6 +1830,8 @@ export const QueryLab = forwardRef<
       runKey: now.sessionKey,
       runSessionId: s?.connection_id ?? null,
       runConnectionName: s ? sessionName(s) : now.sessionConnection ? connectionShortName(now.sessionConnection) : "",
+      runConnection: now.sessionConnection,
+      runBackslash: s?.backslash_escapes !== false,
     };
   }
   async function poll(id: string, runId: string, meta: SendMeta, gen: number) {
@@ -1848,6 +1883,12 @@ export const QueryLab = forwardRef<
   }
   function finish(id: string, run: EditorRun, meta: SendMeta, session?: EditorSession | null) {
     if (run.error) denied(run.error, sessionConnectionOf(id));
+    // A run that created or dropped a database (or one the editor cannot
+    // classify) makes the database list of the connection it ran on stale,
+    // whichever connection is on screen now: views on screen read it again,
+    // a hidden editor when it is shown (this callback may be from an earlier
+    // render, so it never decides visibility itself).
+    if (!meta.action && runMayChangeDatabases(run)) invalidateSchemaCatalog(sessionConnectionOf(id) || connectionRef.current);
     // A completed statement does not acknowledge a Stop still on its way.
     patchRuntime(id, { running: false, explaining: false, operation: "", execConnection: null, pollTrouble: false });
     setHistoryTick((n) => n + 1);
@@ -1893,6 +1934,28 @@ export const QueryLab = forwardRef<
     const rows = rowResults(run);
     changeTab({ result_tab: run.error || !rows.length || run.state === "session_ended" ? "messages" : "result:0" }, id);
     if (run.state === "stopped") note(id, run.stopped?.message || "Stopped.");
+  }
+  /** SQL export alone asks for declared types, using the result's source
+   * connection and statement, never the editable INSERT target or picker. */
+  async function columnTypesFor(result: EditorRows): Promise<(string | null)[]> {
+    const original = result.columns.map(c => c.type);
+    const source = rt.run?.statements[result.statement];
+    const backslash = rt.runBackslash;
+    if (!source || !rt.runConnection || original.every(Boolean)) return original;
+    const references = selectColumnReferences(source.text, result.columns.map(c => c.name), backslash);
+    const target = insertDefaults(rt.run, result, backslash);
+    if (!references?.some(Boolean) || !target.schema || !target.table) return original;
+    try {
+      const catalog = await api<CatalogTable>("live/catalog", {
+        connection: rt.runConnection, schema: target.schema, table: target.table,
+      });
+      if (catalog.schema !== target.schema || catalog.table !== target.table) return original;
+      const declared = new Map(catalog.columns.map(c => [c.name.toLowerCase(), c.type]));
+      return original.map((type, i) => type || (references[i] ? declared.get(references[i]!.toLowerCase()) : null) || null);
+    } catch {
+      // Missing or unreadable catalog metadata never changes literal quoting.
+      return original;
+    }
   }
   async function stop(id = tab.id) {
     const now = runtimeRef.current[id];
@@ -2860,6 +2923,7 @@ export const QueryLab = forwardRef<
                     data-action="database"
                     value={databaseShown}
                     disabled={running || busy || rt.fileBusy || !!rt.operation}
+                    onFocus={() => reloadStaleSchemaCatalog(CATALOG_STALE_MS)}
                     onChange={(e) => void chooseDatabase(e.target.value)}
                   >
                     <option value="">None</option>
@@ -3112,8 +3176,8 @@ export const QueryLab = forwardRef<
                 </ActionButton>
               </div>
             )}
-            {rt.sessionFeedback.phase === "failed" && rt.sessionFeedback.code === "client-missing" ? (
-              <ClientMissingNotice className="editor-session-status" onRetry={() => reconnect()} />
+            {rt.sessionFeedback.phase === "failed" && (rt.sessionFeedback.code === "client-missing" || rt.sessionFeedback.code === "client-auth-plugin") ? (
+              <ClientMissingNotice className="editor-session-status" text={rt.sessionFeedback.code === "client-auth-plugin" ? rt.sessionFeedback.message : ""} onRetry={() => reconnect()} />
             ) : (
               <ActionStatus className="editor-session-status" state={rt.sessionFeedback} />
             )}
@@ -3130,7 +3194,7 @@ export const QueryLab = forwardRef<
               <Notice variant="note">{status}</Notice>
             )}
             {runClientMissing && runClientMissing.tabId === tab.id && runClientMissing.connection === connectionKey(connection) ? (
-              <ClientMissingNotice onRetry={() => {
+              <ClientMissingNotice text={runClientMissing.text} onRetry={() => {
                 const retry = runClientMissing.retry;
                 setRunClientMissing(null);
                 // The tab still uses the connection the run was for (checked above).
@@ -3273,7 +3337,8 @@ export const QueryLab = forwardRef<
               selected={tab.result_tab || ""}
               onSelect={(key) => changeTab({ result_tab: key })}
               engine={session?.engine || null}
-              backslash={session?.backslash_escapes !== false}
+              backslash={rt.runBackslash}
+              columnTypes={columnTypesFor}
               plan={planPane}
               explain={rt.explain}
               explaining={rt.explaining}

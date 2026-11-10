@@ -13,6 +13,7 @@ import path from "node:path";
 import { load, open, pause } from "./perf-harness.mjs";
 
 const mysql = await load("indexes-mysql-8.4.json");
+const percona = await load("indexes-percona-8.4.json");
 const off = await load("indexes-mariadb-13.0-default.json");
 const userstat = await load("indexes-mariadb-11.4-userstat.json");
 const tablesReport = await load("tables-mysql-8.4.json");
@@ -118,9 +119,12 @@ try {
   assert.match(await text(`${view} .fact-strip`), /Databases\s*mfshop/);
   assert.match(await text(`${view} .fact-strip`), /Usage from\s*Performance Schema/);
   assert.equal(await text(`${view} .perf-summary-line`),
-    "5 unused · 1 for foreign keys · 3 redundant · 1 mostly full scans · 1 without data");
+    "5 unused · 1 for foreign keys · 3 redundant · 1 table read by full scans (1 mostly) · 1 without data");
   assert.deepEqual(await page.$$eval(`${view} .segmented button`, (els) => els.map((e) => e.textContent)),
     ["Unused6", "Redundant3", "Full scans1", "No data1"]);
+  // The pill keeps its short label; the tooltip says what the count covers.
+  assert.equal(await page.$eval(`${view} .segmented button[data-value=scans]`, (e) => e.title),
+    "Tables with reads that used no index");
   // The badge counts what to review.
   assert.equal(await text("#server-nav-indexes .count-badge"), "8");
   // Row actions are a ⋯ menu in the trailing column (no bordered Actions button
@@ -317,6 +321,10 @@ try {
       await h.refresh();
       await loaded;
       await h.idle(view);
+      // No unindexed fetches: the phrase drops the parenthesis entirely.
+      const guardedSummary = await text(`${view} .perf-summary-line`);
+      assert.match(guardedSummary, /0 tables read by full scans/);
+      assert.doesNotMatch(guardedSummary, /mostly/);
       await list("nodata");
       const noDataRow = `${view} tr[data-table="parted"]`;
       await page.waitForSelector(noDataRow);
@@ -370,12 +378,30 @@ try {
     assert.equal(await text(`${view} .table-more[data-more=${name}]`), `${n} more not shown. Choose fewer databases to see them.`);
   }
 
+
+  // The summary names both full-scan counts in one phrase (plural: 6 tables
+  // with unindexed fetches, 3 of them mostly unindexed). Only the counts
+  // differ from the report above, so the steps below see the same server.
+  const limited = { ...mysql, more: { unused: 1, redundant: 4, full_scans: 2, no_data: 3 } };
+  state.queue.push({ status: 200, body: { ...limited, summary: { ...mysql.summary, full_scans: 6, mostly_full_scans: 3 } } });
+  await h.refresh();
+  await h.idle(view);
+  assert.match(await text(`${view} .perf-summary-line`), /6 tables read by full scans \(3 mostly\)/);
+  state.queue.push({ status: 200, body: limited });
+  await h.refresh();
+  await h.idle(view);
+
   // All user databases sends no list (the server applies the 2,000-table rule);
   // an error shows in an alert and keeps the report.
+  // A large server again (a re-read anywhere reaches every view of the
+  // connection, so the list is loaded here rather than assumed stale).
+  schemasMock.body = { ...small, user_tables: 12345 };
   await page.click("#indexes-schemas");
+  await page.locator("#indexes-schemas-panel button ::-p-text(Reload databases)").click();
   await page.click("#indexes-schemas-panel .perf-picker-all input");
-  // Still the large server: All user databases cannot be loaded.
-  assert.equal(await page.$eval(refresh, (e) => e.disabled), true);
+  // The large server: All user databases cannot be loaded.
+  await page.waitForFunction((sel) => document.querySelector(sel).disabled, {}, refresh);
+  schemasMock.body = small;
   await page.locator("#indexes-schemas-panel button ::-p-text(Reload databases)").click();
   await page.waitForFunction((sel) => !document.querySelector(sel).disabled, {}, refresh);
   await page.keyboard.press("Escape");

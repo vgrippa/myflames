@@ -898,6 +898,10 @@ def _lifecycle_response(path, payload, workspace):
             raise ValueError("Folder selection does not accept arguments.")
         from .folder_picker import choose_directory
         return choose_directory()
+    if path == "/api/lifecycle/dump-info":
+        if set(payload) - {"directory"}:
+            raise ValueError("Dump folder facts accept only a directory.")
+        return lc.dump_info(payload.get("directory"))
     if path == "/api/lifecycle/tools" and not isinstance(payload.get("connection"), dict):
         return _dump_tool_capabilities(lc.detect_tools(check_updates=payload.get("check_updates") is True))
     if path in ("/api/lifecycle/upgrade-check", "/api/lifecycle/prepare") and payload.get("config_path") is not None:
@@ -912,15 +916,17 @@ def _lifecycle_response(path, payload, workspace):
         passwords.append((payload.get("connection") or {}).get("password"))
         options = _lifecycle_connection(payload.get("connection"), safety)
         if path == "/api/lifecycle/tools":
-            tools = _dump_tool_capabilities(lc.detect_tools(check_updates=payload.get("check_updates") is True))
             try:
                 with lc._connect(lc.LifecycleConnection, options) as conn:
                     server = lc.read_server(conn, options)
             except Exception as exc:
                 if client_missing_error(exc) is None:
                     raise
+                tools = _dump_tool_capabilities(lc.detect_tools(check_updates=payload.get("check_updates") is True))
                 return dict(tools, server={}, offered={}, server_error={
                     "code": "client-missing", "error": lc._safe(str(exc), passwords)})
+            tools = _dump_tool_capabilities(lc.detect_tools(server=server,
+                check_updates=payload.get("check_updates") is True))
             return dict(tools, server={k: server[k] for k in ("engine", "version")},
                         offered=lc.offered_tools(server, tools))
         if path == "/api/lifecycle/upgrade-targets":
@@ -1216,7 +1222,8 @@ _LIFECYCLE_PATHS = _LIFECYCLE_READ_PATHS + _LIFECYCLE_WRITE_PATHS + ("/api/lifec
 #: The jobs of one connection (answered by _lifecycle_jobs_response): opens no
 #: database connection, so it is neither a read nor a write path.
 _LIFECYCLE_JOB_LIST_PATHS = ("/api/lifecycle/jobs",)
-_LIFECYCLE_PATHS = _LIFECYCLE_PATHS + _LIFECYCLE_JOB_LIST_PATHS + ("/api/lifecycle/choose-directory",)
+_LIFECYCLE_PATHS = _LIFECYCLE_PATHS + _LIFECYCLE_JOB_LIST_PATHS + ("/api/lifecycle/choose-directory",
+                                                              "/api/lifecycle/dump-info")
 _WRITE_PATHS = _WRITE_PATHS + _LIFECYCLE_WRITE_PATHS
 _CONNECTION_PATHS = _CONNECTION_PATHS + _LIFECYCLE_READ_PATHS + _LIFECYCLE_WRITE_PATHS
 #: Replication (replication.py, answered by _replication_response). Status only
@@ -1399,54 +1406,80 @@ def _active_lifecycle_operations(workspace):
 _APP_UPDATE_PATHS = ('/api/app/update/check', '/api/app/update/download', '/api/app/update/status',
                      '/api/app/update/stage', '/api/app/update/settings')
 # Application client selection is separate from saved connection credentials.
-_CLIENT_PATHS = ('/api/client/settings', '/api/client/detect')
+_CLIENT_PATHS = ('/api/client/tools', '/api/client/tools/choose')
 _CLIENT_SETTINGS_LOCK = threading.Lock()
 
 
+class _ClientChoiceError(ValueError):
+    """A plain, user-facing refusal from the client tools chooser."""
+
+
 def _client_settings_response(path, payload, workspace):
-    from . import connector
+    from . import connector, client_tools
     if workspace is None:
         raise ValueError("This operation requires a running workspace.")
-    allowed = {'path'} if path == '/api/client/settings' else set()
+    choosing = path == '/api/client/tools/choose'
+    allowed = {'engine', 'path', 'connection'} if choosing else {'refresh', 'connection'}
     if set(payload) - allowed:
-        raise ValueError("Unexpected database client setting.")
-    # Serialize validation, persistence and publication of the process choice.
-    # A refused candidate leaves both the stored and active choices intact.
-    with _CLIENT_SETTINGS_LOCK:
-        if 'path' in payload:
-            chosen = payload['path']
-            if chosen is not None:
-                connector.probe_client(chosen)
-            workspace.store.set_client_binary(chosen)
-        stored = workspace.store.client_binary()
-        connector.set_default_binary(stored)
-        result = {'schema_version': 'client-settings-1.0', 'path': stored,
-                  'active': None, 'detected': connector.detect_clients()}
-        if stored is not None:
+        raise _ClientChoiceError('Unexpected client tools setting.')
+    if choosing:
+        if 'path' not in payload or 'engine' not in payload:
+            raise _ClientChoiceError('Choose an engine and client tools path, or null for Automatic.')
+        # Validation can run a version probe. Only choice mutation is serialized;
+        # ordinary readers and unrelated connection resolution remain independent.
+        with _CLIENT_SETTINGS_LOCK:
             try:
-                active = connector.probe_client(stored)
+                value = client_tools.validate_choice(payload['engine'], payload['path'])
+                workspace.store.set_client_choice(payload['engine'], value)
             except ValueError as exc:
-                result['error'] = str(exc)
-                return result
-            source = 'chosen'
-        else:
-            # Common install folders are suggestions only. The automatic
-            # client is the connector's own: installed mysql, then mariadb,
-            # then the desktop's bundled MySQL client.
-            try:
-                automatic = connector.MySQLConnection(host='localhost')._resolve_binary()
-            except connector.ClientMissingError:
-                return result
-            try:
-                # Described as PATH finds it: the connector uses it without the chosen-client trust rule.
-                active = connector.probe_client(os.path.abspath(automatic), check_trust=False)
-            except ValueError as exc:
-                result['error'] = str(exc)
-                return result
-            source = 'path'
-        result['active'] = {key: active[key] for key in ('path', 'version')}
-        result['active']['source'] = source
-        return result
+                raise _ClientChoiceError(str(exc)) from None
+            choices = {e: workspace.store.client_choice(e) for e in ('mysql', 'mariadb')}
+            connector.set_client_choices(choices)
+    else:
+        with _CLIENT_SETTINGS_LOCK:
+            choices = {e: workspace.store.client_choice(e) for e in ('mysql', 'mariadb')}
+    discovered = client_tools.discover_choices(choices, refresh=payload.get('refresh') is True)
+    keys, errors = client_tools.choice_keys(discovered, choices)
+    installations = []
+    for group in sorted(discovered['installations'], key=lambda g: (
+            g['engine'], tuple(-n for n in g['version_tuple']), g['order'], g['key'])):
+        item = {key: group[key] for key in ('key', 'engine', 'version', 'series', 'folder', 'found_in',
+                'origin', 'origin_label', 'bundled', 'has_auth_plugins')}
+        item['programs'] = {name: {k: program[k] for k in ('path', 'realpath', 'version')}
+                            for name, program in group['programs'].items() if name != 'mysqlpump'}
+        item['chosen_for'] = [e for e in keys if keys[e] == group['key']]
+        installations.append(item)
+    result = dict(schema_version='client-tools-1.0', installations=installations,
+                  shells=[{k: shell[k] for k in ('path', 'realpath', 'version', 'origin', 'origin_label')}
+                          for shell in discovered['shells']],
+                  skipped=[dict(path=entry['path'], reason=entry['reason']) for entry in discovered['skipped']],
+                  choice={e: dict(path=choices[e], installation=keys[e], error=errors[e]) for e in keys})
+    if 'connection' in payload:
+        from . import lifecycle as lc
+        filled = _with_saved_password(payload, workspace)
+        options = _lifecycle_connection(filled.get('connection'))
+        passwords = [(filled.get('connection') or {}).get('password')]
+        result.update(server=None, server_error=None)
+        try:
+            with lc._connect(lc.LifecycleConnection, options) as conn:
+                server = lc.read_server(conn, options)
+                client_tools.remember_server(client_tools.endpoint_key(options), server['engine'], server['version'])
+            result['server'] = {k: server[k] for k in ('engine', 'version', 'product')}
+        except Exception as exc:
+            missing = connector.client_missing_error(exc)
+            result['server_error'] = dict(code=missing.code if missing else 'server-read',
+                                         error=lc._safe(str(missing or exc), passwords))
+        used = client_tools.select(discovered, result['server'], keys)
+        used.pop('server', None)
+        for role in ('client', 'dump', 'load', 'backup', 'shell'):
+            if used[role] is not None:
+                used[role] = {k: v for k, v in used[role].items() if k not in ('realpath', 'version_tuple', 'order')}
+                if role == 'shell':
+                    used[role]['installation'] = None
+        if result['server_error'] and result['server_error']['code'] in ('client-missing', 'client-auth-plugin'):
+            used['client'] = None
+        result['used'] = used
+    return result
 
 
 # Home news (news.py): fixed official feeds, read only while Home is shown
@@ -2172,6 +2205,8 @@ class WorkspaceServer(ThreadingHTTPServer):
     #: their own process groups, and the desktop's backend entry kills this
     #: process five seconds after it was asked to stop.
     TUNNEL_CLOSE_SECONDS = 3.0
+    #: How long close waits for the start-up client probes (each is bounded).
+    TOOLS_WARMUP_WAIT_SECONDS = 2.0
 
     def __init__(self, port=0, store_path=None, no_restore=False, tool_groups_file=None, news_reader=None,
                  release_reader=None):
@@ -2179,13 +2214,8 @@ class WorkspaceServer(ThreadingHTTPServer):
         from .live import LiveJobs
         self.store = WorkspaceStore(store_path)
         from . import connector
-        connector.set_default_binary(self.store.client_binary())
-        # Do not prevent the workspace from opening when a saved client moved.
-        # Keep the choice so Settings can report it and offer recovery.
-        try:
-            connector._default_client_path()
-        except connector.ClientMissingError:
-            pass
+        self.store.migrate_client_choices()
+        connector.set_client_choices({e: self.store.client_choice(e) for e in ('mysql', 'mariadb')})
         # --no-restore: start clean for this launch and leave the stored
         # session untouched (no restore, no autosave).
         self.no_restore = bool(no_restore)
@@ -2223,6 +2253,11 @@ class WorkspaceServer(ThreadingHTTPServer):
         super().__init__(("127.0.0.1", port), WorkspaceHandler)
         self.origin = "http://127.0.0.1:%s" % self.server_address[1]
         self.launch_url = self.origin + "/#launch=" + self.bootstrap_secret
+        # Warm cached version probes without delaying startup or recovery;
+        # started last so a construction that fails leaves no probe running.
+        from . import client_tools
+        self._tools_warmup = threading.Thread(target=client_tools.discover, daemon=True)
+        self._tools_warmup.start()
 
 
     def process_request(self, request, client_address):
@@ -2284,6 +2319,9 @@ class WorkspaceServer(ThreadingHTTPServer):
             # Waits for a close the deadline already started.
             TUNNELS.close_all()
             TUNNELS.detach_groups(self.lifecycle.groups)
+            warmup = getattr(self, "_tools_warmup", None)
+            if warmup is not None:
+                warmup.join(self.TOOLS_WARMUP_WAIT_SECONDS)
             super().server_close()
 
 
@@ -2406,6 +2444,8 @@ def request_error_text(exc, prefix=True):
     (*prefix* False: never, for a client error passed through as it is)."""
     from .dbops import connection_error_text
     text = str(exc)
+    if isinstance(exc, _ClientChoiceError):
+        return text
     plain = connection_error_text(text)
     if plain:
         return plain
@@ -2695,7 +2735,7 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                 exc, (ConnectorError, ValueError, TypeError, KeyError, AttributeError, RecursionError, OverflowError))
                 else None)
             if missing is not None:
-                self._send(400, {"error": str(missing), "code": "client-missing"})
+                self._send(400, {"error": str(missing), "code": missing.code})
             elif isinstance(reason, str) and reason:
                 self._send(400, {"error": request_error_text(exc, prefix=False), "code": reason})
             elif isinstance(exc, (ValueError, TypeError, KeyError, AttributeError, RecursionError, OverflowError)):

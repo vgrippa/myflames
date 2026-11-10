@@ -4,6 +4,7 @@ import path from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {open,load} from './perf-harness.mjs';
 const tools=await load('lifecycle-tools-mysql.json');
+tools.default_dump_parent='/Users/dba/Documents/myflames dumps';
 const catalogs=JSON.parse(execFileSync(process.env.PYTHON || 'python3',['-c',
  'import json; from myflames.dump_options import capability_catalog; print(json.dumps({n:capability_catalog(n,tool_version="8.4.0") for n in ("mysqlsh","mysqldump")}))'],{cwd:new URL('../../../',import.meta.url),encoding:'utf8'}));
 for(const name of ['mysqlsh','mysqldump'])tools.tools[name].dump_capabilities=catalogs[name];
@@ -36,10 +37,12 @@ tools.tools.mysqlpump.download_url='javascript:alert(1)';
 let folder={status:200,body:{path:'/tmp/Backup folder – café',cancelled:false}};
 const picker='/api/lifecycle/choose-directory';
 let localEntries=[];
+let defaultParentExists=false;
 const h=await open('/api/lifecycle/tools','maintenance-convenience',{
  '/api/lifecycle/jobs':{status:200,body:{jobs:[]}},
  [picker]:()=>folder,
- '/api/files/local/list':b=>({status:200,body:{path:b.path||'/Users/dba',home:'/Users/dba',transfers:false,entries:localEntries}}),
+ '/api/files/local/list':b=>({status:200,body:{path:b.path||'/Users/dba',home:'/Users/dba',transfers:false,
+  entries:b.path==='/Users/dba/Documents'?(defaultParentExists?[{name:'myflames dumps',kind:'dir'}]:[]):localEntries}}),
  '/api/lifecycle/prepare':()=>preflightReply,
  '/api/live/schemas':{status:200,body:schemas},
  '/api/live/catalog':catalogAnswer,
@@ -53,32 +56,35 @@ const view='.server-view[data-view="maintenance"]';
 const field=()=>page.$eval(`${view} .ops-folder-input input`,e=>e.value);
 try {
  await h.server();await h.view('maintenance');
- await page.waitForSelector('[data-row-key="tool:mysqlsh"]');
+ await page.waitForSelector('[data-row-key="tool:/usr/local/bin/mysqlsh"]');
  assert.equal(state.seen.length,1);
  assert.equal(state.seen[0].check_updates,false);
- assert.match(await h.text('[data-row-key="tool:mysqlsh"]'),/Not checked/);
+ assert.match(await h.text('[data-row-key="tool:/usr/local/bin/mysqlsh"]'),/Not checked/);
  state.fallback={status:200,body:tools};
  const updateReply=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/lifecycle/tools');
  await h.button('Check for updates',`${view} `);
  await updateReply;
- await page.waitForSelector('[data-row-key="tool:mysqlsh"]');
+ await page.waitForSelector('[data-row-key="tool:/usr/local/bin/mysqlsh"]');
  await page.waitForFunction(()=>!document.querySelector('.ops-actions button[aria-busy=true]'));
  assert.equal(state.seen[1].check_updates,true);
- assert.match(await h.text('[data-row-key="tool:mysqlsh"]'),/Update available: 9.7.1/);
- assert.match(await h.text('[data-row-key="tool:mysqldump"]'),/Could not check/);
+ assert.match(await h.text('[data-row-key="tool:/usr/local/bin/mysqlsh"]'),/Update available: 9.7.1/);
+ assert.match(await h.text('[data-row-key="tool:/usr/local/bin/mysqldump"]'),/Could not check/);
  assert.match(await h.text('.ops-tool-updates'),/mysqlsh/);
- assert.equal(await page.$eval('[data-row-key="tool:mysqlsh"] a',e=>e.href),'https://dev.mysql.com/downloads/');
- assert.equal(await page.$('[data-row-key="tool:mysqlpump"] a'),null);
+ assert.equal(await page.$eval('[data-row-key="tool:/usr/local/bin/mysqlsh"] a',e=>e.href),'https://dev.mysql.com/downloads/');
+ assert.equal(await page.$('[data-row-key="tool:/usr/local/bin/mysqlpump"] a'),null);
  for(const theme of ['light','dark']) {
   await page.emulateMediaFeatures([{name:'prefers-color-scheme',value:theme}]);
   await page.screenshot({path:path.join(h.shots,`tools-${theme}-1440.png`)});
   await h.narrow(`tools-${theme}-390.png`);
  }
  await page.locator(`${view} .segmented button ::-p-text(Dump)`).click();
- await page.waitForFunction(()=>document.querySelector('.ops-folder-input input')?.value.startsWith('/Users/dba/'));
+ await page.waitForFunction(parent=>document.querySelector('.ops-folder-input input')?.value.startsWith(parent+'/'),{},tools.default_dump_parent);
  const suggested=await field();
+ assert.equal(suggested.slice(0,suggested.lastIndexOf('/')),tools.default_dump_parent,'the backend default is used even before its folder exists');
+ assert.equal(state.other.some(r=>/mkdir|prepare|start/.test(r.path)),false,'a first-use suggestion creates nothing');
  assert.match(suggested,/\d{4}-\d{2}-\d{2}$/,'the initial output folder includes a local calendar date');
  const suggestedName=suggested.split('/').at(-1);
+ defaultParentExists=true;
  localEntries=[{name:suggestedName},{name:suggestedName+'-2'}];
  await page.$eval('.ops-folder-input input',e=>e.select());
  await page.keyboard.press('Backspace');
@@ -144,7 +150,7 @@ try {
  assert.deepEqual(await h.texts(`${view} .dump-group > legend`),['Contents','SQL output','Compression']);
  assert.match(await h.text('.ops-dump-options'),/backup file stays uncompressed/);
  assert.match(await h.text('.ops-dump-options'),/do not offer encryption/);
- assert.match(await h.text('select[aria-label="Tool"] option[value=sql]'),/^SQL dump \(mysqldump\)$/);
+ assert.match(await h.text('select[aria-label="Tool"] option[value=sql]'),/^SQL dump \(mysqldump 8\.4\.3 · Homebrew mysql@8\.4\)$/);
  await page.select('select[aria-label="Tool"]','auto');
  await page.waitForFunction(()=>document.querySelector('.ops-dump-options')?.textContent.includes('Options for mysqlsh'));
 

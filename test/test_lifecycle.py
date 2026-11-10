@@ -7,6 +7,7 @@ argv/env and credential file metadata, never its contents or secret stdin.
 import ast
 import copy
 import hashlib
+import io
 import json
 import os
 import re
@@ -22,6 +23,8 @@ import time
 import types
 import unittest
 from unittest import mock
+
+from _client_tools_fixture import private_client_dir
 
 from myflames import connector, dbops, lifecycle as lc, privileges
 from myflames.connector import ConnectorError
@@ -62,6 +65,7 @@ class ReplayConnection(object):
         self.change_identity_at = None
         self.denied = None
         self.row_count = 2
+        self.schema_defaults = {'app': {'character_set': 'utf8mb4', 'collation': 'utf8mb4_0900_ai_ci'}}
         self.clone_state = 'Completed'
         self.grants = ['GRANT ALL PRIVILEGES ON *.* TO `operator`@`%`',
                        'GRANT BACKUP_ADMIN, CLONE_ADMIN ON *.* TO `operator`@`%`']
@@ -117,6 +121,13 @@ class ReplayConnection(object):
             if self.restored_marker and os.path.exists(self.restored_marker):
                 return _tsv(CATALOG)
             return _tsv(self.catalog)
+        if body.startswith('SELECT SCHEMA_NAME,DEFAULT_CHARACTER_SET_NAME,DEFAULT_COLLATION_NAME '):
+            return _tsv([[name, values['character_set'], values['collation']]
+                         for name, values in self.schema_defaults.items()])
+        if body.startswith('SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = '):
+            name = re.search(r"CONVERT\(X'([0-9a-f]+)' USING utf8mb4\)", body).group(1)
+            name = bytes.fromhex(name).decode('utf-8')
+            return _tsv([[name]]) if name in self.schema_defaults else ''
         if body == 'SELECT @@lower_case_table_names':
             if 'lower_case_table_names' not in self.variables:
                 raise ConnectorError('ERROR 1193 (HY000): Unknown system variable')
@@ -190,6 +201,7 @@ stdin = sys.stdin.read()
 record = {'name':name, 'argv':sys.argv, 'env':dict(os.environ), 'cnf':cnf,
           'cnf_mode':stat.S_IMODE(os.stat(cnf).st_mode), 'password_seen':'password=' in config,
           'stdin_hash':hashlib.sha256(stdin.encode()).hexdigest(),
+          'create_database_sql':stdin if stdin.startswith('/*myflames:lifecycle*/ CREATE DATABASE ') else None,
           'donor_secret_on_stdin':"donor''private" in stdin,
           'sql_on_argv':any('CLONE ' in arg or 'SELECT ' in arg for arg in sys.argv)}
 with (root/'calls.jsonl').open('a') as log:
@@ -222,12 +234,16 @@ if mode == 'slow':
     while True: signal.pause()
 if name.endswith('dump') or name == 'mysqldump':
     print('25% dumped',file=sys.stderr,flush=True)
-    print('CREATE DATABASE IF NOT EXISTS app;\nUSE app;\nCREATE TABLE t(id INT);\nINSERT INTO t VALUES (1),(2);')
+    if '--databases' in sys.argv or '--all-databases' in sys.argv:
+        print('CREATE DATABASE IF NOT EXISTS app;\nUSE app;')
+    print('CREATE TABLE t(id INT);\nINSERT INTO t VALUES (1),(2);')
     print('100% dumped',file=sys.stderr,flush=True)
 elif name == 'mysqlsh':
     # JavaScript print() adds no line break; only an explicit "\\n" ends the line.
     marker = re.search(r'print\("(myflames_job_[^"]+:)" \+ session.getConnectionId\(\)( \+ "\\n")?\)', stdin)
     if marker: print(marker.group(1)+'41', end='\n' if marker.group(2) else '', flush=True)
+    if mode == 'fail_after_marker':
+        print('failure after marker',file=sys.stderr); sys.exit(3)
     print('Initializing - done', flush=True)
     print('\x1b[36mNOTE: \x1b[0mProgress information uses estimated values', file=sys.stderr, flush=True)
     call = re.search(r'util\.(dumpInstance|dumpSchemas|dumpTables|loadDump)\((.*)\);?',stdin)
@@ -259,7 +275,9 @@ elif mode in ('restart', 'gone') and 'CLONE INSTANCE' in stdin:
 else:
     marker = re.search(r"SELECT CONCAT\('(myflames_job_[^']+:)',CONNECTION_ID\(\)\)",stdin)
     if marker: print(marker.group(1)+'41',flush=True)
-    (root/'restored').touch()
+    if mode == 'fail_after_marker':
+        print('failure after marker',file=sys.stderr); sys.exit(3)
+    if marker: (root/'restored').touch()
     print('100% restored',file=sys.stderr,flush=True)
 '''
 
@@ -360,9 +378,9 @@ class MissingClientToolsTests(unittest.TestCase):
                                          'PATH': '', 'MYFLAMES_SECRET_BACKEND': 'vault'})
         env.start()
         self.addCleanup(env.stop)
-        previous = connector.default_binary()
-        connector.set_default_binary(None)
-        self.addCleanup(connector.set_default_binary, previous)
+        previous = connector.client_choices()
+        connector.set_client_choices({})
+        self.addCleanup(connector.set_client_choices, previous)
         folders = mock.patch.object(lc, 'COMMON_BIN_DIRS', ())
         folders.start()
         self.addCleanup(folders.stop)
@@ -372,7 +390,8 @@ class MissingClientToolsTests(unittest.TestCase):
         from myflames import ui, tool_updates
         from myflames.connector import ClientMissingError
         report = ui.api_response('/api/lifecycle/tools', {'connection': {'host': 'localhost'}}, self.workspace)
-        self.assertEqual(report['schema_version'], 'lifecycle-tools-1.0')
+        self.assertEqual(report['schema_version'], 'lifecycle-tools-2.0')
+        self.assertEqual(report['default_dump_parent'], lc.default_dump_parent())
         self.assertEqual(report['server'], {})
         self.assertEqual(report['offered'], {})
         self.assertEqual(report['server_error'], {'code': 'client-missing', 'error': ClientMissingError.MESSAGE})
@@ -412,13 +431,43 @@ class MissingClientToolsTests(unittest.TestCase):
                 ui.api_response('/api/lifecycle/tools', {'connection': {'host': 'localhost'}}, self.workspace)
 
 
+class DefaultDumpParentTests(unittest.TestCase):
+    def test_real_home_documents_and_home_fallback_are_read_only(self):
+        with tempfile.TemporaryDirectory() as home, \
+                mock.patch.dict(os.environ, {'MYFLAMES_SSH_HOME': home, 'HOME': '/isolated-backend-home'}):
+            expected = os.path.join(home, 'myflames dumps')
+            self.assertEqual(lc.default_dump_parent(), expected)
+            self.assertFalse(os.path.exists(expected))
+            documents = os.path.join(home, 'Documents')
+            os.mkdir(documents)
+            expected = os.path.join(documents, 'myflames dumps')
+            self.assertEqual(lc.default_dump_parent(), expected)
+            self.assertEqual(os.listdir(documents), [])
+
+    def test_windows_userprofile_with_and_without_documents(self):
+        import ntpath
+        from myflames import ssh_tunnel
+        # Exercise Windows path and environment semantics on every test host.
+        for documents_exist in (False, True):
+            with self.subTest(documents=documents_exist), \
+                    mock.patch.dict(os.environ, {'MYFLAMES_SSH_HOME': '', 'USERPROFILE': r'C:\Users\DBA',
+                                                 'HOME': '/isolated-backend-home'}), \
+                    mock.patch.object(ssh_tunnel.os, 'name', 'nt'), \
+                    mock.patch.object(lc.os, 'path', ntpath), \
+                    mock.patch.object(ntpath, 'isdir', return_value=documents_exist) as isdir:
+                expected = r'C:\Users\DBA\Documents\myflames dumps' if documents_exist else r'C:\Users\DBA\myflames dumps'
+                self.assertEqual(lc.default_dump_parent(), expected)
+                self.assertEqual(isdir.call_args[0], (r'C:\Users\DBA\Documents',))
+
+
+@unittest.skipIf(os.name == 'nt', 'POSIX executable fixtures; Windows trust tested separately')
 class LifecycleTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='lc-')
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
         self.bin = self.root / 'bin'
-        self.bin.mkdir()
+        private_client_dir(self.bin)
         self.env = mock.patch.dict(os.environ, {'HOME': str(self.root), 'USERPROFILE': str(self.root),
                          'TMPDIR': str(self.root), 'PATH': str(self.bin), 'MYFLAMES_SECRET_BACKEND': 'vault',
                          'MYSQL_PWD': PASSWORD, 'AWS_SECRET_ACCESS_KEY': 'never-inherit',
@@ -443,6 +492,14 @@ class LifecycleTests(unittest.TestCase):
         self.output = str(self.root / 'backup')
         self.jobs = []
         self.addCleanup(self.close_jobs)
+
+    def tool_script(self, source):
+        # Validate a private fixture, not the CI runner's Python installation:
+        # hosted toolcache ancestors may be writable by another group.
+        tool = self.bin / 'test-tool'
+        tool.write_text('#!' + sys.executable + '\n' + source, encoding='utf-8')
+        tool.chmod(0o755)
+        return str(tool)
 
     def close_jobs(self):
         for job in self.jobs:
@@ -474,11 +531,65 @@ class LifecycleTests(unittest.TestCase):
     def target(self):
         return ReplayConnection(server_variables(identity='recipient'), catalog=[], restored_marker=str(self.bin / 'restored'))
 
+    def make_picked_dump(self):
+        conn, tools = ReplayConnection(catalog=CATALOG[:1]), self.native_tools()
+        plan = lc.prepare_dump(conn, CONNECTION, self.output, schemas=['app'], tables=['t'], tools=tools)
+        with mock.patch.object(lc, 'detect_tools', return_value=tools):
+            result = lc.dump_job(CONNECTION, plan, True, plan['target'], self.audit('dump'),
+                                 factory=lambda **kw: conn, start=False).run()
+        self.assertEqual(result['state'], 'done', result)
+        return result['result']['manifest']
+
+    def update_dump(self, sql=None, **fields):
+        """Synthetic backup variants, with a manifest matching their bytes."""
+        path = Path(self.output, lc.MANIFEST)
+        manifest = json.loads(path.read_text(encoding='utf-8'))
+        if sql is not None:
+            Path(self.output, 'dump.sql').write_text(sql, encoding='utf-8')
+            manifest['files'] = lc._file_records(self.output)
+        manifest.update(fields)
+        path.write_text(json.dumps(manifest), encoding='utf-8')
+        return manifest
+
     def stop_detect(self):
         # Python 3.7's patcher.stop() raises on a second call (3.8 made it a no-op).
         if self.detecting:
             self.detecting = False
             self.detect.stop()
+
+    def test_tools_used_marks_other_engine_query_client_by_path(self):
+        self.stop_detect()
+        for name in ('mariadb', 'mariadb-dump', 'mariadb-backup', 'mariadb-upgrade'):
+            (self.bin / name).unlink()
+        second = self.root / 'second'
+        private_client_dir(second)
+        (second / 'mysql').write_bytes((self.bin / 'mysql').read_bytes())
+        (second / 'mysql').chmod(0o700)
+        with mock.patch.object(connector, 'bundled_client_dir', return_value=None), \
+                mock.patch.object(connector, 'client_choices', return_value={}):
+            report = lc.detect_tools(path=os.pathsep.join((str(self.bin), str(second))), common_dirs=(),
+                                     server={'engine': 'mariadb', 'version': '11.4.5-MariaDB'})
+        chosen = report['used']['client']
+        self.assertEqual(chosen['program'], 'mysql')
+        self.assertEqual(chosen['reason'], 'other_engine')
+        self.assertIsNone(report['used']['load'])
+        clients = [c for c in report['copies'] if c['name'] == 'mysql']
+        self.assertEqual(len(clients), 2)
+        self.assertEqual([c['path'] for c in clients if c['used']], [chosen['path']])
+        selected = next(c for c in clients if c['used'])
+        self.assertEqual((selected['reason'], selected['warning']), (chosen['reason'], chosen['warning']))
+
+    def test_tools_used_marks_all_mysql_roles_and_never_mysqlpump(self):
+        self.stop_detect()
+        report = lc.detect_tools(path=str(self.bin), common_dirs=(), server={'engine': 'mysql', 'version': '8.4.3'})
+        for role in ('client', 'dump', 'load', 'shell'):
+            selected = report['used'][role]
+            matches = [c for c in report['copies'] if c['path'] == selected['path']]
+            self.assertEqual(len(matches), 1)
+            self.assertTrue(matches[0]['used'], role)
+            self.assertEqual((matches[0]['reason'], matches[0]['warning']),
+                             (selected['reason'], selected['warning']))
+        self.assertFalse(next(c for c in report['copies'] if c['name'] == 'mysqlpump')['used'])
 
     def test_tool_detection_and_engine_from_banner(self):
         self.assertTrue(all(v['available'] for v in self.tools['tools'].values()))
@@ -514,21 +625,24 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(run.call_count, 0, 'setUp already probed these unchanged binaries')
         self.assertNotEqual(second['tools']['mysqlsh']['version_tuple'][0], 999)
 
-    def test_probe_cache_expires_and_explicit_refresh_reprobes(self):
+    def test_probe_cache_identity_and_explicit_refresh_reprobe(self):
         self.stop_detect()
-        with mock.patch.object(lc.time, 'monotonic', return_value=10 ** 12), \
-                mock.patch.object(lc.subprocess, 'run', wraps=lc.subprocess.run) as run:
+        with mock.patch.object(lc.subprocess, 'run', wraps=lc.subprocess.run) as run:
             lc.detect_tools(path=str(self.bin), common_dirs=())
-            self.assertEqual(run.call_count, len(lc.TOOLS))
-            lc.detect_tools(path=str(self.bin), common_dirs=())
-            self.assertEqual(run.call_count, len(lc.TOOLS))
+            self.assertEqual(run.call_count, 0)
             lc.detect_tools(path=str(self.bin), common_dirs=(), refresh=True)
-            self.assertEqual(run.call_count, 2 * len(lc.TOOLS))
+            self.assertEqual(run.call_count, len(lc.TOOLS) - 1, 'mysqlpump is presence-only')
+            binary = self.bin / 'mysqlsh'
+            info = binary.stat()
+            os.utime(str(binary), ns=(info.st_atime_ns, info.st_mtime_ns + 1000000))
+            lc.detect_tools(path=str(self.bin), common_dirs=())
+            self.assertEqual(run.call_count, len(lc.TOOLS))
 
     def test_probe_cache_never_remembers_timeouts_or_missing_tools(self):
         self.stop_detect()
         (self.bin / 'mysqlsh').write_text('#!' + sys.executable + '\nprint("mysqlsh 9.6.1")\n')
-        with mock.patch.object(lc, 'TOOLS', ('mysqlsh',)), \
+        with mock.patch('myflames.client_tools.PROGRAMS', ('mysqlsh',)), \
+                mock.patch.object(lc, 'TOOLS', ('mysqlsh',)), \
                 mock.patch.object(lc.subprocess, 'run', side_effect=subprocess.TimeoutExpired('mysqlsh', 8)) as run:
             for _ in range(2):
                 report = lc.detect_tools(path=str(self.bin), common_dirs=())
@@ -561,7 +675,181 @@ class LifecycleTests(unittest.TestCase):
                 reports = list(pool.map(lambda _: lc.detect_tools(path=str(self.bin), common_dirs=()), range(4)))
             self.assertEqual(run.call_count, 1, 'concurrent detection must share a cache miss')
             self.assertTrue(all(r['tools']['mysqlsh']['available'] for r in reports))
-        self.assertLessEqual(len(lc._PROBE_CACHE), lc._PROBE_LIMIT)
+        from myflames import client_tools
+        self.assertLessEqual(len(client_tools._PROBE_CACHE), client_tools._PROBE_LIMIT)
+
+    def version_layout(self):
+        """Owner's symlinked Homebrew, keg-only and packaged client layout."""
+        self.stop_detect()
+        previous = connector.client_choices()
+        connector.set_client_choices({})
+        self.addCleanup(connector.set_client_choices, previous)
+        links = self.root / 'prefix/bin'
+        private_client_dir(links)
+        folders = [self.root / 'prefix/Cellar/mysql/8.4.8/bin',
+                   self.root / 'prefix/Cellar/mysql@8.0/8.0.45/bin', self.root / 'app/bin']
+        for folder, version in zip(folders, ('8.4.8', '8.0.45', '8.4.13')):
+            private_client_dir(folder)
+            for name in ('mysql', 'mysqldump'):
+                binary = folder / name
+                source = FAKE_TOOL.replace("'mysql':'mysql Ver 8.4.3'", "'mysql':'mysql Ver " + version + "'")
+                source = source.replace("'mysqldump':'mysqldump Ver 8.4.3'", "'mysqldump':'mysqldump Ver " + version + "'")
+                binary.write_text('#!' + sys.executable + '\n' + source)
+                binary.chmod(0o700)
+        for name in ('mysql', 'mysqldump'):
+            (links / name).symlink_to(folders[0] / name)
+        shell = links / 'mysqlsh'
+        shell.write_text('#!' + sys.executable + '\nprint("mysqlsh Ver 9.6.0")\n')
+        shell.chmod(0o700)
+        patches = [mock.patch.dict(os.environ, {'PATH': str(links), 'MYFLAMES_BUNDLED_CLIENT_DIR': str(folders[2])}),
+                   mock.patch.object(lc, 'COMMON_BIN_DIRS', (str(folders[1]),))]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        return folders
+
+    def test_per_server_tools_rank_versions_and_list_all_copies(self):
+        brew, old, bundle = self.version_layout()
+        first = lc.detect_tools()
+        self.assertEqual(first['schema_version'], 'lifecycle-tools-2.0')
+        self.assertNotIn('used', first)
+        self.assertEqual(first['tools']['mysqldump']['realpath'], str(brew / 'mysqldump'))
+        for version, folder, reason in (('8.4.3', bundle, 'series'), ('8.0.36', old, 'series'),
+                                        ('9.7.2', bundle, 'older')):
+            with self.subTest(server=version):
+                server = lc.read_server(ReplayConnection(server_variables(version=version)))
+                report = lc.detect_tools(server=server)
+                for name in ('mysqldump', 'mysql'):
+                    tool = report['tools'][name]
+                    self.assertEqual(tool['path'], str(folder / name))
+                    self.assertEqual(tool['reason'], reason)
+                    self.assertEqual(tool['origin'], 'bundled' if folder == bundle else 'homebrew')
+                self.assertEqual(len(report['copies']), 7)
+                self.assertEqual({c['path'] for c in report['copies'] if c['used']},
+                                 {str(folder / 'mysql'), str(folder / 'mysqldump'), str(self.root / 'prefix/bin/mysqlsh')})
+                self.assertEqual(report['used']['load']['installation'], report['used']['dump']['installation'])
+                self.assertIsNone(report['used']['shell']['installation'])
+                self.assertNotIn('server', report['used'])
+                self.assertNotIn('realpath', report['used']['dump'])
+        plan = lc.prepare_dump(ReplayConnection(server_variables(version='9.7.2')), CONNECTION,
+                               self.output, schemas=['app'], prefer_shell=False)
+        self.assertIn(plan['tool']['warning'], plan['warnings'])
+        self.assertEqual(plan['tool']['reason'], 'older')
+
+    def test_explicit_choice_missing_dump_and_stale_choice_never_fall_back(self):
+        brew, old, bundle = self.version_layout()
+        connector.set_client_choices({'mysql': str(old)})
+        (old / 'mysqldump').unlink()
+        report = lc.detect_tools(server=lc.read_server(self.conn))
+        self.assertFalse(report['tools']['mysqldump']['available'])
+        text = 'The installation chosen in Settings > Client tools has no mysqldump.'
+        self.assertEqual(report['tools']['mysqldump']['error'], text)
+        with self.assertRaisesRegex(lc.Refused, 'chosen in Settings > Client tools has no mysqldump'):
+            lc.prepare_dump(self.conn, CONNECTION, self.output, prefer_shell=False)
+        connector.set_client_choices({'mysql': str(old / 'gone/mysql')})
+        report = lc.detect_tools(server=lc.read_server(self.conn))
+        self.assertFalse(report['tools']['mysql']['available'])
+        self.assertFalse(report['tools']['mysqldump']['available'])
+        self.assertIn('no longer at', report['tools']['mysqldump']['error'])
+
+    def test_per_server_mariadb_refuses_mysql_only_dump(self):
+        self.version_layout()
+        maria = ReplayConnection(server_variables('mariadb'))
+        with self.assertRaisesRegex(lc.Refused, 'Install MariaDB client tools'):
+            lc.prepare_dump(maria, CONNECTION, self.output, prefer_shell=False)
+
+    def test_review_binding_stable_despite_update_metadata_and_settings_change_refused(self):
+        brew, old, bundle = self.version_layout()
+        plan = lc.prepare_dump(self.conn, CONNECTION, self.output, schemas=['app'], prefer_shell=False)
+        allowed = {'name', 'path', 'realpath', 'version', 'version_tuple', 'engine', 'installation',
+                   'origin', 'origin_label', 'reason', 'warning', 'available', 'deprecated'}
+        self.assertEqual(set(plan['tool']), allowed)
+        # JSON round trips and online metadata never change what the user reviews.
+        report = lc.detect_tools(server=lc.read_server(self.conn))
+        report['tools']['mysqldump'].update(update={'checked_at': 'different'}, copies=[{}], anything='ignored')
+        again = lc.prepare_dump(self.conn, CONNECTION, self.output, schemas=['app'], prefer_shell=False, tools=report)
+        self.assertEqual(plan['binding'], again['binding'])
+        self.assertEqual(plan['tool'], json.loads(json.dumps(plan['tool'])))
+        connector.set_client_choices({'mysql': str(old)})
+        job = lc.dump_job(CONNECTION, plan, True, plan['target'], self.audit('dump'),
+                          factory=lambda **kw: self.conn, start=False)
+        result = job.run()
+        self.assertEqual(result['state'], 'refused', result)
+        self.assertIn('The tool for this server changed since the review', result['error'])
+        self.assertIn('Review it again; nothing was run.', result['error'])
+        self.assertFalse(os.path.exists(self.output))
+        self.assertFalse((old / 'calls.jsonl').exists())
+        self.assertFalse((bundle / 'calls.jsonl').exists())
+
+    def test_per_server_dump_rebuild_keeps_binding_and_executes_selected_program(self):
+        brew, old, bundle = self.version_layout()
+        plan = lc.prepare_dump(self.conn, CONNECTION, self.output, schemas=['app'], prefer_shell=False)
+        original = lc.prepare_dump
+        rebuilt = []
+        def prepare(*args, **kwargs):
+            value = original(*args, **kwargs)
+            rebuilt.append(value)
+            return value
+        with mock.patch.object(lc, 'prepare_dump', side_effect=prepare):
+            result = lc.dump_job(CONNECTION, plan, True, plan['target'], self.audit('dump'),
+                                 factory=lambda **kw: self.conn, start=False).run()
+        self.assertEqual(result['state'], 'done', result)
+        self.assertEqual(plan['binding'], rebuilt[0]['binding'])
+        calls = [json.loads(line) for line in (bundle / 'calls.jsonl').read_text().splitlines()]
+        self.assertEqual(calls[-1]['argv'][0], str(bundle / 'mysqldump'))
+        self.assertFalse((brew / 'calls.jsonl').exists())
+
+    def test_sql_restore_and_clone_use_load_from_dump_installation(self):
+        # Client ranks Homebrew first, while its missing dump forces the bundled
+        # dump. The SQL loader and CLONE must follow the latter installation.
+        self.make_dump()
+        brew, old, bundle = self.version_layout()
+        (brew / 'mysqldump').unlink()
+        for name in ('mysql', 'mysqldump'):
+            binary = brew / name
+            if binary.exists():
+                binary.write_text(binary.read_text().replace('8.4.8', '8.4.13'))
+        target = self.target()
+        target.restored_marker = str(bundle / 'restored')
+        tools = lc.detect_tools(server=lc.read_server(target))
+        self.assertEqual(tools['used']['client']['installation'], 'mysql:' + str(brew))
+        self.assertEqual(tools['used']['load']['installation'], 'mysql:' + str(bundle))
+        plan = lc.prepare_restore(target, CONNECTION, self.output)
+        self.assertEqual(plan['tool']['path'], str(bundle / 'mysql'))
+        result = lc.restore_job(CONNECTION, plan, True, plan['target'], self.audit(),
+                                factory=lambda **kw: target, start=False).run()
+        self.assertEqual(result['state'], 'done', result)
+        calls = [json.loads(line) for line in (bundle / 'calls.jsonl').read_text().splitlines()]
+        self.assertEqual(calls[-1]['argv'][0], str(bundle / 'mysql'))
+        clone = lc.prepare_clone(ReplayConnection(), self.target(), CONNECTION, CONNECTION, tools=tools)
+        self.assertEqual(clone['tool']['path'], str(bundle / 'mysql'))
+        donor, recipient = ReplayConnection(), self.target()
+        clone = lc.prepare_clone(donor, recipient, CONNECTION, CONNECTION)
+        connections = iter([recipient, donor])
+        result = lc.clone_job(CONNECTION, CONNECTION, clone, True, clone['target'], self.audit('clone'),
+                              factory=lambda **kw: next(connections), start=False).run()
+        self.assertEqual(result['state'], 'done', result)
+        calls = [json.loads(line) for line in (bundle / 'calls.jsonl').read_text().splitlines()]
+        self.assertEqual(calls[-1]['argv'][0], str(bundle / 'mysql'))
+        older_target = ReplayConnection(server_variables(identity='new', version='9.7.2'), catalog=[])
+        older = lc.prepare_restore(older_target, CONNECTION, self.output)
+        self.assertEqual(older['tool']['reason'], 'older')
+        self.assertIn(older['tool']['warning'], older['warnings'])
+
+    def test_maintenance_preparations_pass_server_facts_and_job_to_detection(self):
+        runner = lc.LifecycleJob('preflight', lambda job: None, CONNECTION)
+        with mock.patch.object(lc, 'detect_tools', return_value=self.tools) as detect:
+            source = ReplayConnection(server_variables(version='8.0.36'))
+            lc.upgrade_check(source, '8.4.0', CONNECTION, job=runner)
+            self.assertEqual(detect.call_args[1]['server']['version'], '8.0.36')
+            self.assertIs(detect.call_args[1]['job'], runner)
+            lc.prepare_clone(ReplayConnection(), self.target(), CONNECTION, CONNECTION, job=runner)
+            self.assertEqual(detect.call_args[1]['server']['identity']['server_uuid'], 'recipient')
+            self.assertIs(detect.call_args[1]['job'], runner)
+            lc.prepare_physical_backup(ReplayConnection(server_variables('mariadb')), CONNECTION,
+                                       self.output, job=runner)
+            self.assertEqual(detect.call_args[1]['server']['engine'], 'mariadb')
+            self.assertIs(detect.call_args[1]['job'], runner)
 
     def test_option_file_escaping_and_permissions(self):
         password = 'a"b\\c\nd\r\t#;='
@@ -742,7 +1030,7 @@ class LifecycleTests(unittest.TestCase):
         code = ("import sys\nsys.stderr.write('\\x1b[36mNOTE: \\x1b[0mdryRun enabled\\n"
                 "Following schemas were not found: nosuch (ArgumentError)  at STDIN:2\\n')\nsys.exit(1)")
         with self.assertRaises(lc.LifecycleError) as caught:
-            job.process_tool([sys.executable, '-c', code], dict(os.environ))
+            job.process_tool([self.tool_script(code)], dict(os.environ))
         self.assertEqual(str(caught.exception),
                          'Tool exited 1: Following schemas were not found: nosuch (ArgumentError)')
 
@@ -789,6 +1077,79 @@ class LifecycleTests(unittest.TestCase):
         self.assert_secret_transport(self.calls()[0])
         self.assertNotIn(PASSWORD, json.dumps(result) + json.dumps(self.store.audit_records()))
         self.assertIn('--set-gtid-purged=OFF', self.calls()[0]['argv'])
+
+    def test_dump_creates_only_reviewed_default_parent_at_start(self):
+        for documents_exist in (False, True):
+            with self.subTest(documents=documents_exist), tempfile.TemporaryDirectory(dir=str(self.root)) as home, \
+                    mock.patch.dict(os.environ, {'MYFLAMES_SSH_HOME': home}):
+                anchor = Path(home, 'Documents') if documents_exist else Path(home)
+                if documents_exist:
+                    anchor.mkdir()
+                parent = anchor / 'myflames dumps'
+                output = str(parent / 'app-2026-11-10')
+                conn, tools = ReplayConnection(), self.native_tools()
+                with mock.patch.object(lc, 'detect_tools', return_value=tools):
+                    plan = lc.prepare_dump(conn, CONNECTION, output, schemas=['app'], tools=tools)
+                    self.assertTrue(plan['ready'])
+                    check = next(c for c in plan['checks'] if c['check'] == 'output_parent')
+                    self.assertEqual(check['reason'], 'Creates the folder %s.' % parent)
+                    self.assertFalse(parent.exists(), 'preflight must create nothing')
+                    repeated = lc.prepare_dump(conn, CONNECTION, output, schemas=['app'], tools=tools)
+                    self.assertEqual(plan['binding'], repeated['binding'])
+                    with mock.patch.object(lc.os, 'mkdir', wraps=os.mkdir) as mkdir:
+                        result = lc.dump_job(CONNECTION, plan, True, plan['target'], self.audit('dump'),
+                                             factory=lambda **kw: conn, start=False).run()
+                    self.assertEqual(result['state'], 'done', result)
+                    created = [c[0] for c in mkdir.call_args_list if str(c[0][0]).startswith(str(anchor) + os.sep)]
+                    self.assertEqual(created, [(str(parent), 0o700), (output, 0o700)])
+                self.assertEqual(sorted(p.name for p in anchor.iterdir()), ['myflames dumps'])
+                self.assertEqual(sorted(p.name for p in parent.iterdir()), ['app-2026-11-10'])
+                self.assertEqual(sorted(p.name for p in Path(output).iterdir()), ['dump.sql', lc.MANIFEST])
+                self.assertEqual(stat.S_IMODE(parent.stat().st_mode), 0o700)
+
+    def test_dump_refuses_any_other_missing_parent(self):
+        output = str(self.root / 'myflames dump typo' / 'app')
+        with self.assertRaisesRegex(lc.Refused, '^Output parent directory must exist\\.$'):
+            lc.prepare_dump(self.conn, CONNECTION, output, schemas=['app'], tools=self.native_tools())
+        self.assertFalse(Path(output).parent.exists())
+
+    def test_dump_refuses_linked_documents_even_after_output_normalization(self):
+        real = self.root / 'real-documents'
+        real.mkdir()
+        (self.root / 'Documents').symlink_to(real, target_is_directory=True)
+        with mock.patch.dict(os.environ, {'MYFLAMES_SSH_HOME': str(self.root)}):
+            output = os.path.join(lc.default_dump_parent(), 'app')
+            with self.assertRaisesRegex(lc.Refused, 'not a symbolic link'):
+                lc.prepare_dump(self.conn, CONNECTION, output, schemas=['app'], tools=self.native_tools())
+        self.assertEqual(list(real.iterdir()), [])
+
+    def test_dump_refuses_a_default_folder_that_is_a_dangling_link(self):
+        (self.root / 'Documents').mkdir()
+        elsewhere = self.root / 'elsewhere' / 'target'
+        (self.root / 'elsewhere').mkdir()
+        with mock.patch.dict(os.environ, {'MYFLAMES_SSH_HOME': str(self.root)}):
+            default = Path(lc.default_dump_parent())
+            default.symlink_to(elsewhere, target_is_directory=True)
+            output = os.path.join(str(default), 'app')
+            with self.assertRaisesRegex(lc.Refused, 'default dump folder is a symbolic link'):
+                lc.prepare_dump(self.conn, CONNECTION, output, schemas=['app'], tools=self.native_tools())
+        self.assertFalse(elsewhere.exists(), 'nothing was created at the link target')
+
+    def test_dump_refuses_default_parent_creation_not_in_review(self):
+        with mock.patch.dict(os.environ, {'MYFLAMES_SSH_HOME': str(self.root)}):
+            parent = Path(lc.default_dump_parent())
+            parent.mkdir()
+            output = str(parent / 'app')
+            tools = self.native_tools()
+            with mock.patch.object(lc, 'detect_tools', return_value=tools):
+                plan = lc.prepare_dump(self.conn, CONNECTION, output, schemas=['app'], tools=tools)
+                self.assertFalse(any(c['check'] == 'output_parent' for c in plan['checks']))
+                parent.rmdir()
+                result = lc.dump_job(CONNECTION, plan, True, plan['target'], self.audit('dump'),
+                                     factory=lambda **kw: self.conn, start=False).run()
+            self.assertEqual(result['state'], 'refused', result)
+            self.assertFalse(parent.exists(), 'a changed creation intent needs another review')
+            self.assertEqual(self.calls(), [])
 
     def run_dump(self, conn, engine='mysql', shell=False):
         tools = self.tools if shell else self.native_tools(engine)
@@ -884,7 +1245,7 @@ class LifecycleTests(unittest.TestCase):
         watcher = threading.Thread(target=watch)
         watcher.start()
         with open(self.root / 'out.sql', 'wb') as handle:
-            job.process_tool([sys.executable, '-c', script], dict(os.environ), output_file=handle)
+            job.process_tool([self.tool_script(script)], dict(os.environ), output_file=handle)
         watcher.join()
         self.assertIn(3000, seen, 'a partial size was reported before the tool ended')
         self.assertEqual(job.snapshot()['output']['written_bytes'], 4000)
@@ -1249,6 +1610,682 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn('--binary-mode', self.calls()[-1]['argv'])
         self.assertNotIn('-e', self.calls()[-1]['argv'])
 
+    def test_picked_restore_creates_missing_database_with_reviewed_charset_first(self):
+        manifest = self.make_picked_dump()
+        self.assertEqual(manifest['schema_defaults'], self.conn.schema_defaults)
+        target, tools = self.target(), self.native_tools()
+        target.schema_defaults = {}
+        plan = lc.prepare_restore(target, CONNECTION, self.output, tools=tools)
+        create = 'CREATE DATABASE `app` DEFAULT CHARACTER SET `utf8mb4` COLLATE `utf8mb4_0900_ai_ci`'
+        self.assertEqual(plan['commands'][0], create)
+        self.assertEqual(plan['create_database'], create)
+        self.assertTrue(plan['ready'])
+        self.assertEqual(next(c for c in plan['checks'] if c['check'] == 'target_schema'),
+                         {'check': 'target_schema', 'status': 'passed',
+                          'reason': 'Creates database app first; it does not exist on this server.'})
+        self.assertTrue(plan['remap_allowed'])
+        self.assertEqual(len([sql for sql, flags in target.calls if
+                              sql.startswith(lc.TAG + 'SELECT SCHEMA_NAME FROM')]), 1)
+        self.assertFalse(any('CREATE DATABASE' in sql for sql, flags in target.calls))
+        consumed = []
+        with mock.patch.object(lc, 'detect_tools', return_value=tools):
+            job = lc.restore_job(CONNECTION, plan, True, plan['target'], self.audit(),
+                                 factory=lambda **kw: target, start=False)
+            job.review_consumer = lambda: consumed.append(len(self.calls()))
+            result = job.run()
+        self.assertEqual(result['state'], 'done', result)
+        create_call, load_call = self.calls()[-2:]
+        self.assertEqual(consumed, [len(self.calls()) - 2], 'review consumed before either write client')
+        self.assertEqual(create_call['create_database_sql'], lc.TAG + create + ';\n')
+        self.assertFalse(any(arg.startswith('--database=') for arg in create_call['argv']))
+        self.assertIn('--database=app', load_call['argv'])
+        self.assertIn('--binary-mode', create_call['argv'])
+        self.assertIn('--comments', create_call['argv'])
+        self.assert_secret_transport(create_call)
+        self.assert_secret_transport(load_call)
+        records = self.store.audit_records()
+        restore_audit = next(row for row in records if row['operation'] == 'restore')
+        self.assertIn(create, json.dumps(restore_audit))
+
+    def test_picked_restore_old_manifest_warns_and_uses_server_defaults(self):
+        self.make_picked_dump()
+        manifest = self.update_dump()
+        del manifest['schema_defaults']
+        Path(self.output, lc.MANIFEST).write_text(json.dumps(manifest), encoding='utf-8')
+        target = self.target()
+        target.schema_defaults = {}
+        plan = lc.prepare_restore(target, CONNECTION, self.output, tools=self.native_tools())
+        self.assertEqual(plan['commands'][0], 'CREATE DATABASE `app`')
+        self.assertTrue(any('server defaults' in w for w in plan['warnings']))
+
+    def test_dump_records_defaults_for_selected_empty_databases(self):
+        conn, tools = ReplayConnection(catalog=[]), self.native_tools()
+        conn.schema_defaults['empty'] = {'character_set': 'latin1', 'collation': 'latin1_swedish_ci'}
+        plan = lc.prepare_dump(conn, CONNECTION, self.output, schemas=['app', 'empty'], tools=tools)
+        with mock.patch.object(lc, 'detect_tools', return_value=tools):
+            result = lc.dump_job(CONNECTION, plan, True, plan['target'], self.audit('dump'),
+                                 factory=lambda **kw: conn, start=False).run()
+        self.assertEqual(result['state'], 'done', result)
+        self.assertEqual(result['result']['manifest']['schema_defaults'], conn.schema_defaults)
+        reads = [sql for sql, flags in conn.calls if 'DEFAULT_CHARACTER_SET_NAME' in sql]
+        self.assertEqual(reads, [lc.TAG + 'SELECT SCHEMA_NAME,DEFAULT_CHARACTER_SET_NAME,DEFAULT_COLLATION_NAME '
+                                'FROM information_schema.SCHEMATA WHERE SCHEMA_NAME IN (' +
+                                lc.literal('app') + ',' + lc.literal('empty') + ')'])
+
+    def test_picked_restore_refuses_invalid_charset_and_collation_metadata(self):
+        self.make_picked_dump()
+        target = self.target()
+        target.schema_defaults = {}
+        calls = len(self.calls())
+        for key, label in (('character_set', 'character set'), ('collation', 'collation')):
+            for value in ('utf8mb4`; DROP DATABASE valuable; --', '', 'a' * 65,
+                          'utf8-mb4', 'utf8 mb4', 'utf8mb4\n', 'utf8é', None, 123, ['utf8mb4']):
+                with self.subTest(key=key, value=value):
+                    defaults = {'character_set': 'utf8mb4', 'collation': 'utf8mb4_0900_ai_ci'}
+                    defaults[key] = value
+                    self.update_dump(schema_defaults={'app': defaults})
+                    with self.assertRaisesRegex(lc.Refused, 'invalid database ' + label + ' name'):
+                        lc.prepare_restore(target, CONNECTION, self.output, tools=self.native_tools())
+                    self.assertEqual(len(self.calls()), calls, 'invalid metadata never starts a write client')
+
+    def test_picked_restore_accepts_charset_and_collation_name_boundaries(self):
+        self.make_picked_dump()
+        target = self.target()
+        target.schema_defaults = {}
+        for value in ('a', 'A9_' + 'x' * 61):
+            with self.subTest(value=value):
+                self.update_dump(schema_defaults={'app': {'character_set': value, 'collation': value}})
+                plan = lc.prepare_restore(target, CONNECTION, self.output, tools=self.native_tools())
+                self.assertEqual(plan['create_database'], 'CREATE DATABASE `app` DEFAULT CHARACTER SET ' +
+                                 lc.ident(value) + ' COLLATE ' + lc.ident(value))
+
+    def test_picked_restore_existing_database_needs_no_create(self):
+        self.make_picked_dump()
+        plan = lc.prepare_restore(self.target(), CONNECTION, self.output, tools=self.native_tools())
+        self.assertIsNone(plan['create_database'])
+        self.assertEqual(len(plan['commands']), 1)
+        self.assertEqual(next(c for c in plan['checks'] if c['check'] == 'target_schema')['reason'],
+                         'Database app exists on this server.')
+        self.assertFalse(any('server defaults' in w for w in plan['warnings']))
+
+    def test_picked_restore_creation_and_scan_are_bound_before_writes(self):
+        self.make_picked_dump()
+        target, tools = self.target(), self.native_tools()
+        target.schema_defaults = {}
+        plan = lc.prepare_restore(target, CONNECTION, self.output, tools=tools)
+        extra = {'manifest': plan['manifest_hash'], 'create_database': plan['create_database'],
+                 'sql_scan': plan['sql_scan']}
+        self.assertEqual(plan['binding'], lc._plan_binding(plan, extra))
+        for key in ('create_database', 'sql_scan'):
+            changed = dict(extra)
+            changed[key] = None
+            self.assertNotEqual(plan['binding'], lc._plan_binding(plan, changed))
+        # A database appearing after review requires a new review. Never
+        # silently skip a reviewed CREATE, or substitute IF NOT EXISTS.
+        target.schema_defaults = self.conn.schema_defaults
+        calls = len(self.calls())
+        with mock.patch.object(lc, 'detect_tools', return_value=tools):
+            result = lc.restore_job(CONNECTION, plan, True, plan['target'], self.audit(),
+                                    factory=lambda **kw: target, start=False).run()
+        self.assertEqual(result['state'], 'refused', result)
+        self.assertEqual(len(self.calls()), calls)
+
+    def test_picked_restore_review_failure_blocks_database_creation(self):
+        self.make_picked_dump()
+        target, tools = self.target(), self.native_tools()
+        target.schema_defaults = {}
+        plan = lc.prepare_restore(target, CONNECTION, self.output, tools=tools)
+        def refuse_review():
+            raise lc.Refused('Review expired; nothing was sent.')
+        calls = len(self.calls())
+        with mock.patch.object(lc, 'detect_tools', return_value=tools):
+            job = lc.restore_job(CONNECTION, plan, True, plan['target'], self.audit(),
+                                 factory=lambda **kw: target, start=False)
+            job.review_consumer = refuse_review
+            result = job.run()
+        self.assertEqual(result['state'], 'refused', result)
+        self.assertEqual(len(self.calls()), calls)
+
+    def test_picked_restore_remaps_to_new_database(self):
+        self.make_picked_dump()
+        target, tools = self.target(), self.native_tools()
+        plan = lc.prepare_restore(target, CONNECTION, self.output, schema='new_app', tools=tools)
+        self.assertTrue(plan['remap_allowed'])
+        self.assertIn('no CREATE DATABASE', plan['remap_reason'])
+        self.assertTrue(plan['commands'][0].startswith('CREATE DATABASE `new_app`'))
+        self.assertEqual(plan['target'], '127.0.0.1:3306/new_app')
+        # Return the actual remapped catalog for verification, rather than
+        # treating a successful client exit as proof of restored objects.
+        target.restored_marker = None
+        invoke = lc._invoke
+        def load(*args, **kwargs):
+            value = invoke(*args, **kwargs)
+            if kwargs.get('input_file'):
+                target.catalog = [['new_app'] + CATALOG[0][1:]]
+            return value
+        with mock.patch.object(lc, 'detect_tools', return_value=tools), mock.patch.object(lc, '_invoke', side_effect=load):
+            result = lc.restore_job(CONNECTION, plan, True, plan['target'], self.audit(),
+                                    factory=lambda **kw: target, start=False).run()
+        self.assertEqual(result['result']['status'], 'completed', result)
+        self.assertIn('--database=new_app', self.calls()[-1]['argv'])
+
+    def test_picked_restore_refuses_content_that_cannot_remap(self):
+        self.make_picked_dump()
+        for sql, reason in [('USE app;\nCREATE TABLE t(id INT);', 'USE'),
+                            ('cReAtE dAtAbAsE app;\n', 'CREATE DATABASE'),
+                            ('CREATE SCHEMA app;\n', 'CREATE SCHEMA'),
+                            ('CREATE VIEW v AS SELECT * FROM `aPp`.t;', 'names app'),
+                            ('CREATE VIEW v AS SELECT * FROM app.t;', 'names app'),
+                            ('DELIMITER //\nUSE other//\nDELIMITER ;\nCREATE TABLE t(a int);', 'USE'),
+                            ('CREATE TABLE t(a int);\nINSERT INTO other.t VALUES (1);', 'qualified reference'),
+                            ('INSERT INTO `other`.`t` VALUES (1);', 'qualified reference'),
+                            ('INSERT INTO `123`.`t` VALUES (1);', 'qualified reference')]:
+            with self.subTest(reason=reason):
+                self.update_dump(sql=sql)
+                plan = lc.prepare_restore(self.target(), CONNECTION, self.output, tools=self.native_tools())
+                self.assertFalse(plan['remap_allowed'])
+                self.assertIn(reason, plan['remap_reason'])
+                with self.assertRaisesRegex(lc.Refused, re.escape(plan['remap_reason'])):
+                    lc.prepare_restore(self.target(), CONNECTION, self.output, schema='new_app', tools=self.native_tools())
+
+    def test_whole_database_restore_keeps_own_databases(self):
+        self.make_dump()
+        with mock.patch.object(lc, '_sql_schema_scan', wraps=lc._sql_schema_scan) as scan:
+            plan = lc.prepare_restore(self.target(), CONNECTION, self.output, tools=self.native_tools())
+        scan.assert_not_called()  # Scope alone refuses remapping; avoid an unnecessary full scan.
+        self.assertFalse(plan['remap_allowed'])
+        self.assertEqual(plan['remap_reason'], 'This dump creates its own databases (CREATE DATABASE and USE), '
+                                              'so it restores into them; choose As in the dump.')
+        self.assertIsNone(plan['create_database'])
+        with self.assertRaisesRegex(lc.Refused, re.escape(plan['remap_reason'])):
+            lc.prepare_restore(self.target(), CONNECTION, self.output, schema='new_app', tools=self.native_tools())
+
+    def test_restore_failure_guidance_follows_load_marker_for_sql_and_shell(self):
+        for shell in (False, True):
+            self.output = str(self.root / ('failure-shell-' + str(shell)))
+            self.make_dump(shell=shell)
+            tools = self.tools if shell else self.native_tools()
+            for mode, started in (('fail', False), ('fail_after_marker', True)):
+                with self.subTest(shell=shell, mode=mode):
+                    target = self.target()
+                    plan = lc.prepare_restore(target, CONNECTION, self.output, tools=tools)
+                    (self.bin / 'mode').write_text(mode)
+                    # Set mode after rebuild so Shell dryRun succeeds, and
+                    # failure occurs in the actual load client.
+                    def set_mode():
+                        (self.bin / 'mode').write_text(mode)
+                    (self.bin / 'mode').unlink()
+                    with mock.patch.object(lc, 'detect_tools', return_value=tools):
+                        job = lc.restore_job(CONNECTION, plan, True, plan['target'], self.audit(),
+                                             factory=lambda **kw: target, start=False)
+                        job.review_consumer = set_mode
+                        result = job.run()
+                    (self.bin / 'mode').unlink()
+                    self.assertEqual(result['state'], 'failed', result)
+                    self.assertIn('failure', result['error'])
+                    partial = result['result']['partial_state']
+                    if started:
+                        self.assertTrue(partial.startswith('Part of the dump may be loaded'), partial)
+                    else:
+                        self.assertEqual(partial, 'Nothing was loaded: the client stopped before running any statement.')
+
+    def dump_info_reply(self):
+        from myflames import ui
+        self.assertIn('/api/lifecycle/dump-info', ui._LIFECYCLE_PATHS)
+        self.assertNotIn('/api/lifecycle/dump-info', ui._LIFECYCLE_READ_PATHS)
+        self.assertNotIn('/api/lifecycle/dump-info', ui._CONNECTION_PATHS)
+        self.assertNotIn('/api/lifecycle/dump-info', ui._WRITE_PATHS)
+        with mock.patch.object(lc, '_connect', side_effect=AssertionError('dump-info must not connect')), \
+                mock.patch.object(self.store, 'connection_with_saved_password',
+                                  side_effect=AssertionError('folder facts must not read saved passwords')):
+            return ui.api_response('/api/lifecycle/dump-info', {'directory': self.output},
+                                   types.SimpleNamespace(store=self.store))
+
+    def test_dump_info_whole_database_matches_restore_preflight(self):
+        self.make_dump()
+        reply = self.dump_info_reply()
+        plan = lc.prepare_restore(self.target(), CONNECTION, self.output, tools=self.native_tools())
+        self.assertEqual(reply['schema_version'], 'lifecycle-dump-info-1.0')
+        self.assertEqual(reply['tool']['name'], 'mysqldump')
+        self.assertEqual(reply['engine'], 'mysql')
+        self.assertEqual(reply['scope'], {'schemas': ['app'], 'tables': []})
+        self.assertFalse(reply['structure_only'])
+        self.assertFalse(reply['remap_allowed'])
+        self.assertIn('creates its own databases', reply['remap_reason'])
+        self.assertEqual((reply['remap_allowed'], reply['remap_reason']),
+                         (plan['remap_allowed'], plan['remap_reason']))
+        with self.assertRaisesRegex(lc.Refused, 'creates its own databases'):
+            lc.prepare_restore(self.target(), CONNECTION, self.output, schema='new_app', tools=self.native_tools())
+
+    def test_dump_info_picked_sql_scans_same_bytes_as_restore(self):
+        self.make_picked_dump()
+        for sql, allowed in [('CREATE TABLE t(id INT);', True), ('USE app; CREATE TABLE t(id INT);', False)]:
+            with self.subTest(sql=sql):
+                self.update_dump(sql=sql, options={'structure_only': True})
+                before = self.calls()
+                reply = self.dump_info_reply()
+                self.assertEqual(self.calls(), before, 'folder facts launch no client tool')
+                plan = lc.prepare_restore(self.target(), CONNECTION, self.output, tools=self.native_tools())
+                self.assertIs(reply['remap_allowed'], allowed)
+                self.assertTrue(reply['structure_only'])
+                self.assertEqual((reply['remap_allowed'], reply['remap_reason']),
+                                 (plan['remap_allowed'], plan['remap_reason']))
+                if allowed:
+                    remapped = lc.prepare_restore(self.target(), CONNECTION, self.output,
+                                                  schema='new_app', tools=self.native_tools())
+                    self.assertTrue(remapped['remap_allowed'])
+                else:
+                    self.assertIn('USE', reply['remap_reason'])
+                    with self.assertRaisesRegex(lc.Refused, 'USE'):
+                        lc.prepare_restore(self.target(), CONNECTION, self.output,
+                                           schema='new_app', tools=self.native_tools())
+
+    def test_dump_info_shell_single_schema_tables_matches_restore(self):
+        self.make_dump(shell=True)
+        self.update_dump(scope={'schemas': ['app'], 'tables': ['t']})
+        reply = self.dump_info_reply()
+        self.assertEqual(reply['tool']['name'], 'mysqlsh')
+        self.assertTrue(reply['remap_allowed'])
+        plan = lc.prepare_restore(self.target(), CONNECTION, self.output, schema='new_app', tools=self.tools)
+        self.assertEqual(reply['remap_reason'], plan['remap_reason'])
+
+    def test_dump_info_mariadb_dump(self):
+        self.make_dump(engine='mariadb')
+        reply = self.dump_info_reply()
+        self.assertEqual(reply['tool']['name'], 'mariadb-dump')
+        self.assertEqual(reply['engine'], 'mariadb')
+        self.assertFalse(reply['remap_allowed'])
+
+    def test_dump_info_missing_manifest_is_typed_refusal(self):
+        Path(self.output).mkdir()
+        with self.assertRaisesRegex(lc.Refused, 'manifest.*missing.*completed dump folder'):
+            self.dump_info_reply()
+
+    def test_dump_info_large_picked_sql_defers_remap_scan_to_restore(self):
+        self.make_picked_dump()
+        self.update_dump(sql='CREATE TABLE t(id INT);')
+        reason = ('This dump is large; whether it can load into another database is decided '
+                  'when you review the restore.')
+        with mock.patch.object(lc, 'DUMP_INFO_SCAN_BYTES', 8), \
+                mock.patch.object(lc, '_sql_schema_scan', side_effect=AssertionError('folder pick scanned large SQL')):
+            reply = self.dump_info_reply()
+        self.assertIsNone(reply['remap_allowed'])
+        self.assertEqual(reply['remap_reason'], reason)
+        # The advisory cap does not weaken the authoritative restore review.
+        with mock.patch.object(lc, 'DUMP_INFO_SCAN_BYTES', 8):
+            plan = lc.prepare_restore(self.target(), CONNECTION, self.output, tools=self.native_tools())
+        self.assertTrue(plan['remap_allowed'])
+        with mock.patch.object(lc, 'MAX_RESTORE_BYTES', 8):
+            with self.assertRaisesRegex(lc.Refused, 'byte limit'):
+                lc.prepare_restore(self.target(), CONNECTION, self.output, tools=self.native_tools())
+
+    def test_dump_info_limits_tool_version_length(self):
+        self.make_picked_dump()
+        manifest = lc.read_manifest(self.output)
+        self.update_dump(tool=dict(manifest['tool'], version='v' * 65))
+        self.assertEqual(self.dump_info_reply()['tool']['version'], 'v' * 64)
+
+    @unittest.skipUnless(os.name == 'posix' and hasattr(os, 'mkfifo') and hasattr(os, 'O_NONBLOCK'),
+                         'requires POSIX nonblocking FIFOs')
+    def test_dump_info_and_restore_refuse_fifo_inputs_without_waiting_for_writer(self):
+        self.make_picked_dump()
+        for name in ('dump.sql', lc.MANIFEST):
+            path = Path(self.output, name)
+            original = path.read_bytes()
+            path.unlink()
+            os.mkfifo(str(path), 0o600)
+            try:
+                for operation in ('dump_info', 'prepare_restore'):
+                    with self.subTest(file=name, operation=operation):
+                        errors = []
+                        def read_input():
+                            try:
+                                if operation == 'dump_info':
+                                    lc.dump_info(self.output)
+                                else:
+                                    lc.prepare_restore(self.target(), CONNECTION, self.output,
+                                                       tools=self.native_tools())
+                            except BaseException as exc:
+                                errors.append(exc)
+                        worker = threading.Thread(target=read_input)
+                        worker.daemon = True
+                        worker.start()
+                        worker.join(2)
+                        blocked = worker.is_alive()
+                        if blocked:
+                            # Unblock a regressed blocking open before reporting
+                            # failure; never leave a reader behind in the suite.
+                            writer = os.open(str(path), os.O_WRONLY | os.O_NONBLOCK)
+                            os.close(writer)
+                            worker.join(2)
+                        self.assertFalse(worker.is_alive(), 'FIFO reader did not stop after cleanup')
+                        self.assertFalse(blocked, 'Reading a FIFO waited for a writer')
+                        self.assertEqual(len(errors), 1, errors)
+                        self.assertIsInstance(errors[0], lc.Refused)
+            finally:
+                path.unlink()
+                path.write_bytes(original)
+
+    def test_dump_info_and_restore_refuse_directory_or_missing_sql(self):
+        self.make_picked_dump()
+        path = Path(self.output, 'dump.sql')
+        original = path.read_bytes()
+        for kind in ('directory', 'missing'):
+            path.unlink()
+            if kind == 'directory':
+                path.mkdir()
+            try:
+                with self.subTest(kind=kind), self.assertRaises(lc.Refused):
+                    self.dump_info_reply()
+                with self.subTest(kind=kind), self.assertRaises(lc.Refused):
+                    lc.prepare_restore(self.target(), CONNECTION, self.output, tools=self.native_tools())
+            finally:
+                if kind == 'directory':
+                    path.rmdir()
+                path.write_bytes(original)
+
+    def test_dump_info_size_mismatch_refuses_before_sql_scan(self):
+        self.make_picked_dump()
+        path = Path(self.output, 'dump.sql')
+        path.write_bytes(path.read_bytes() + b'-- changed size')
+        with mock.patch.object(lc, '_sql_schema_scan', side_effect=AssertionError('changed SQL was scanned')):
+            with self.assertRaisesRegex(lc.Refused, 'no longer matches the dump manifest'):
+                self.dump_info_reply()
+
+    def test_restore_size_mismatch_refuses_before_sql_read_or_scan(self):
+        self.make_picked_dump()
+        path = Path(self.output, 'dump.sql')
+        path.write_bytes(path.read_bytes() + b'-- changed size')
+        inode = path.stat().st_ino
+        fdopen = lc.os.fdopen
+        def checked_fdopen(fd, *args, **kwargs):
+            if lc.os.fstat(fd).st_ino == inode:
+                raise AssertionError('changed SQL was opened for reading')
+            return fdopen(fd, *args, **kwargs)
+        with mock.patch.object(lc.os, 'fdopen', side_effect=checked_fdopen), \
+                mock.patch.object(lc, '_sql_schema_scan', side_effect=AssertionError('changed SQL was scanned')):
+            with self.assertRaises(lc.Refused):
+                lc.prepare_restore(self.target(), CONNECTION, self.output, tools=self.native_tools())
+
+    def test_reviewed_copy_size_mismatch_refuses_before_read(self):
+        manifest = self.make_picked_dump()
+        record = next(record for record in manifest['files'] if record['path'] == 'dump.sql')
+        path = Path(self.output, 'dump.sql')
+        path.write_bytes(path.read_bytes() + b'-- changed size')
+        job = mock.Mock()
+        with mock.patch.object(lc.os, 'fdopen', side_effect=AssertionError('changed SQL was read')):
+            with self.assertRaises(lc.Refused):
+                lc._copy_reviewed_file(self.output, record, io.BytesIO(), job)
+
+    def test_dump_info_scan_oserror_is_typed_refusal(self):
+        self.make_picked_dump()
+        with mock.patch.object(lc, '_sql_schema_scan', side_effect=PermissionError('permission denied')):
+            with self.assertRaisesRegex(lc.Refused, 'completed dump folder'):
+                self.dump_info_reply()
+
+    def test_dump_info_refuses_manifest_traversal_without_opening_named_file(self):
+        self.make_dump()
+        manifest = lc.read_manifest(self.output)
+        manifest['files'][0]['path'] = '../outside.sql'
+        self.update_dump(files=manifest['files'])
+        with mock.patch('builtins.open', wraps=open) as opened:
+            with self.assertRaisesRegex(lc.Refused, 'unsafe relative file path'):
+                self.dump_info_reply()
+        self.assertFalse(any(str(call[0][0]).endswith('outside.sql') for call in opened.call_args_list))
+        with self.assertRaisesRegex(lc.Refused, 'unsafe relative file path'):
+            lc.prepare_restore(self.target(), CONNECTION, self.output, tools=self.native_tools())
+
+    def test_dump_info_refuses_symlinked_or_changed_sql_and_leaves_limits_to_restore(self):
+        self.make_picked_dump()
+        sql = Path(self.output, 'dump.sql')
+        original = sql.read_bytes()
+        outside = self.root / 'outside.sql'
+        outside.write_bytes(original)
+        sql.unlink()
+        sql.symlink_to(outside)
+        with self.assertRaisesRegex(lc.Refused, 'no longer matches the dump manifest .*a link'):
+            self.dump_info_reply()
+        sql.unlink()
+        sql.write_bytes(original + b'-- changed')
+        with self.assertRaisesRegex(lc.Refused, 'no longer matches the dump manifest'):
+            self.dump_info_reply()
+        sql.write_bytes(original)
+        # A folder pick reads the manifest, not every file's checksum; the
+        # preflight checks every file and its limits before any restore.
+        with mock.patch.object(lc, '_file_records', side_effect=AssertionError('folder facts hashed every file')):
+            self.assertTrue(self.dump_info_reply()['remap_allowed'])
+        with mock.patch.object(lc, 'MAX_RESTORE_BYTES', len(original) - 1):
+            with self.assertRaisesRegex(lc.Refused, 'byte limit'):
+                lc.prepare_restore(self.target(), CONNECTION, self.output, tools=self.native_tools())
+
+    def test_dump_info_and_restore_share_folder_normalization(self):
+        self.make_picked_dump()
+        alias = self.root / 'dump-alias'
+        alias.symlink_to(self.output, target_is_directory=True)
+        self.output = str(alias / '..' / 'dump-alias')
+        reply = self.dump_info_reply()
+        plan = lc.prepare_restore(self.target(), CONNECTION, self.output, tools=self.native_tools())
+        self.assertEqual(plan['request']['directory'], str(self.root / 'backup'))
+        self.assertEqual((reply['remap_allowed'], reply['remap_reason']),
+                         (plan['remap_allowed'], plan['remap_reason']))
+
+    def test_dump_info_unreadable_folder_is_typed_refusal(self):
+        with mock.patch.object(lc, '_read_manifest_value', side_effect=PermissionError('permission denied')):
+            with self.assertRaisesRegex(lc.Refused, 'check folder permissions.*completed dump'):
+                self.dump_info_reply()
+
+    def test_dump_info_invalid_metadata_is_typed_refusal(self):
+        self.make_dump()
+        manifest = lc.read_manifest(self.output)
+        for change in ({'scope': None}, {'scope': {'schemas': 'app', 'tables': []}},
+                       {'tool': []}, {'source': []}, {'options': {'structure_only': 'false'}}):
+            with self.subTest(change=change):
+                self.update_dump(**dict(manifest, **change))
+                with self.assertRaisesRegex(lc.Refused, 'invalid.*choose a completed dump folder'):
+                    self.dump_info_reply()
+        self.update_dump(**manifest)
+        path = Path(self.output, lc.MANIFEST)
+        path.write_text('{bad json')
+        with self.assertRaisesRegex(lc.Refused, 'Cannot read.*completed dump'):
+            self.dump_info_reply()
+
+    def test_restore_prepare_endpoint_exposes_remap_fields_before_start(self):
+        from myflames import ui
+        self.make_picked_dump()
+        target = self.target()
+        workspace = types.SimpleNamespace(store=self.store, lifecycle=lc.LifecycleJobs())
+        self.addCleanup(workspace.lifecycle.close)
+        payload = {'connection': CONNECTION, 'operation': 'restore', 'directory': self.output}
+        with mock.patch.object(lc, 'LifecycleConnection', return_value=target):
+            for sql, allowed in [('CREATE TABLE t(id INT);', True), ('USE app;', False)]:
+                self.update_dump(sql=sql)
+                reply = ui.api_response('/api/lifecycle/prepare', payload, workspace)
+                self.assertIs(reply['remap_allowed'], allowed)
+                self.assertIsInstance(reply['remap_reason'], str)
+                self.assertTrue(reply['review_token'])
+        self.assertFalse((self.bin / 'restored').exists(), 'prepare is read-only')
+
+    def test_restore_failure_guidance_records_successful_database_creation(self):
+        self.make_picked_dump()
+        tools = self.native_tools()
+        for create_succeeds in (False, True):
+            with self.subTest(create_succeeds=create_succeeds):
+                target = self.target()
+                target.schema_defaults = {}
+                plan = lc.prepare_restore(target, CONNECTION, self.output, tools=tools)
+                invoke = lc._invoke
+                def fail_load(*args, **kwargs):
+                    value = invoke(*args, **kwargs)
+                    if create_succeeds and not kwargs.get('input_file'):
+                        (self.bin / 'mode').write_text('fail')
+                    return value
+                calls = len(self.calls())
+                with mock.patch.object(lc, 'detect_tools', return_value=tools), \
+                        mock.patch.object(lc, '_invoke', side_effect=fail_load):
+                    job = lc.restore_job(CONNECTION, plan, True, plan['target'], self.audit(),
+                                         factory=lambda **kw: target, start=False)
+                    if not create_succeeds:
+                        job.review_consumer = lambda: (self.bin / 'mode').write_text('fail')
+                    result = job.run()
+                (self.bin / 'mode').unlink()
+                self.assertEqual(result['state'], 'failed', result)
+                self.assertEqual(len(self.calls()) - calls, 2 if create_succeeds else 1)
+                if create_succeeds:
+                    self.assertEqual(result['result']['partial_state'],
+                        'Database app was created, but nothing was loaded into it: '
+                        'the load client stopped before running any statement.')
+                    self.assertEqual(self.calls()[-2]['create_database_sql'], lc.TAG + plan['create_database'] + ';\n')
+                else:
+                    self.assertEqual(result['result']['partial_state'],
+                                     'Nothing was loaded: the client stopped before running any statement.')
+                self.assertFalse((self.bin / 'restored').exists())
+
+    def test_restore_preflight_failure_does_not_claim_partial_data(self):
+        self.make_dump(shell=True)
+        target = self.target()
+        plan = lc.prepare_restore(target, CONNECTION, self.output, tools=self.tools)
+        (self.bin / 'mode').write_text('fail')
+        result = lc.restore_job(CONNECTION, plan, True, plan['target'], self.audit(),
+                                factory=lambda **kw: target, start=False).run()
+        self.assertEqual(result['state'], 'failed', result)
+        self.assertEqual(result['result']['partial_state'],
+                         'Nothing was loaded: the client stopped before running any statement.')
+        self.assertFalse((self.bin / 'restored').exists())
+
+    def test_picked_restore_scans_chunk_boundaries_against_reviewed_hash(self):
+        self.make_picked_dump()
+        for suffix, key in [('cReAtE' + ' ' * (2 * 1024 * 1024) + 'DaTaBaSe app;', 'create_database'),
+                            (';\nUsE app;', 'use'), ('`aPp`.t;', 'qualified_source')]:
+            with self.subTest(key=key):
+                sql = 'x' * (1024 * 1024 - 5) + ';\n' + suffix
+                self.update_dump(sql=sql)
+                plan = lc.prepare_restore(self.target(), CONNECTION, self.output, tools=self.native_tools())
+                self.assertTrue(plan['sql_scan'][key])
+                self.assertFalse(plan['remap_allowed'])
+        # A raced input must match the reviewed record during scanning too.
+        manifest = lc.read_manifest(self.output)
+        Path(self.output, 'dump.sql').write_text('CREATE TABLE different(id INT);')
+        with self.assertRaises(lc.Refused):
+            lc._sql_schema_scan(self.output, manifest['files'][0], 'app')
+
+    def test_picked_restore_scan_handles_comments_and_data_without_rewriting(self):
+        self.make_picked_dump()
+        cases = [('-- header\n/* comment */ uSe app;', 'use'),
+                 ('CREATE /* ordinary comment */ DATABASE app;', 'create_database'),
+                 ('/*!50000 USE app */;', 'use'),
+                 ('/*M!100100 USE app */;', 'use'),
+                 ('CREATE VIEW v AS SELECT * FROM `app` /* gap */ . `t`;', 'qualified_source')]
+        for sql, key in cases:
+            with self.subTest(sql=sql):
+                self.update_dump(sql=sql)
+                plan = lc.prepare_restore(self.target(), CONNECTION, self.output, tools=self.native_tools())
+                self.assertTrue(plan['sql_scan'][key])
+                self.assertFalse(plan['remap_allowed'])
+        sql = ("-- USE app; CREATE DATABASE app; `app`.t\n"
+               "/* CREATE SCHEMA app; */\n"
+               "CREATE TABLE t(note TEXT);\n"
+               "INSERT INTO t VALUES ('USE app; CREATE DATABASE app; `app`.t'), ('it\\'s fine');\n")
+        self.update_dump(sql=sql)
+        target = self.target()
+        target.schema_defaults = {}
+        plan = lc.prepare_restore(target, CONNECTION, self.output, tools=self.native_tools())
+        self.assertTrue(plan['remap_allowed'])
+        self.assertTrue(plan['create_database'])
+        self.assertFalse(any(plan['sql_scan'].values()))
+        self.assertEqual(Path(self.output, 'dump.sql').read_text(), sql)
+
+    def test_picked_restore_scan_quotes_schema_names_and_handles_unicode_boundaries(self):
+        self.make_picked_dump()
+        for schema in ('a`pp', 'sãles', 'app space'):
+            with self.subTest(schema=schema):
+                sql = 'x' * (1024 * 1024 - 3) + ';\nSELECT * FROM ' + lc.ident(schema) + '.t;'
+                manifest = self.update_dump(sql=sql, scope={'schemas': [schema], 'tables': ['t']})
+                scan = lc._sql_schema_scan(self.output, manifest['files'][0], schema)
+                self.assertTrue(scan['qualified_source'])
+
+    def test_picked_restore_scan_tracks_custom_delimiters_and_reset(self):
+        self.make_picked_dump()
+        for delimiter in ('//', '$$', ';;', 'long_delimiter'):
+            with self.subTest(delimiter=delimiter):
+                routine = ("DELIMITER %s\nCREATE PROCEDURE p() BEGIN SELECT 'USE other; `other`.`t`'; "
+                           "SELECT 1.25; END%s\n" % (delimiter, delimiter))
+                for suffix in ('USE other' + delimiter + '\n', 'DELIMITER ;\nUSE other;\n'):
+                    manifest = self.update_dump(sql=routine + suffix)
+                    scan = lc._sql_schema_scan(self.output, manifest['files'][0], 'app')
+                    self.assertTrue(scan['use'], scan)
+                    self.assertFalse(scan['qualified_other'], scan)
+                manifest = self.update_dump(sql=routine + 'DELIMITER ;\nCREATE TABLE t(a int);')
+                scan = lc._sql_schema_scan(self.output, manifest['files'][0], 'app')
+                self.assertFalse(any(scan.values()), scan)
+
+    def test_picked_restore_and_folder_facts_refuse_hardcoded_target_qualifiers(self):
+        self.make_picked_dump()
+        for qualifier in ('new_app', 'NEW_APP'):
+            with self.subTest(qualifier=qualifier):
+                self.update_dump(sql='INSERT INTO `%s`.`t` VALUES (1);' % qualifier)
+                reply = self.dump_info_reply()
+                plan = lc.prepare_restore(self.target(), CONNECTION, self.output, tools=self.native_tools())
+                self.assertFalse(reply['remap_allowed'])
+                self.assertEqual(reply['remap_reason'], plan['remap_reason'])
+                self.assertFalse(plan['remap_allowed'])
+                with self.assertRaisesRegex(lc.Refused, re.escape(reply['remap_reason'])):
+                    lc.prepare_restore(self.target(), CONNECTION, self.output,
+                                       schema='new_app', tools=self.native_tools())
+
+    def test_picked_restore_scan_handles_quoted_and_same_line_delimiter_commands(self):
+        self.make_picked_dump()
+        for command in ("DELIMITER '//'", 'DELIMITER "//"', 'DELIMITER `//`'):
+            sql = 'SELECT 1;' + command + '\nSELECT 2//\nUSE other//\n'
+            with self.subTest(command=command):
+                manifest = self.update_dump(sql=sql)
+                scan = lc._sql_schema_scan(self.output, manifest['files'][0], 'app')
+                self.assertTrue(scan['use'], scan)
+
+    def test_picked_restore_scan_refuses_unsupported_delimiter_arguments(self):
+        self.make_picked_dump()
+        for delimiter in ('x' * 16, '\\x', "'//", 'two words', 'é'):
+            with self.subTest(delimiter=delimiter):
+                manifest = self.update_dump(sql='DELIMITER ' + delimiter + '\nSELECT 1;\n')
+                with self.assertRaisesRegex(lc.Refused, 'DELIMITER command that cannot be scanned safely'):
+                    lc._sql_schema_scan(self.output, manifest['files'][0], 'app')
+
+    def test_picked_shell_restore_remapping_has_no_extra_create(self):
+        self.make_dump(shell=True)
+        self.update_dump(scope={'schemas': ['app'], 'tables': ['t']})
+        plan = lc.prepare_restore(self.target(), CONNECTION, self.output, schema='other', tools=self.tools)
+        self.assertTrue(plan['remap_allowed'])
+        self.assertIn('Shell table dumps', plan['remap_reason'])
+        self.assertIsNone(plan['create_database'])
+        self.assertEqual(plan['sql_scan'], {})
+        self.assertEqual(len(plan['commands']), 1)
+        self.assertIn('"schema": "other"', plan['commands'][0])
+
+    def test_picked_restore_scan_keeps_lexer_state_across_every_byte_boundary(self):
+        self.make_picked_dump()
+        original = lc._copy_reviewed_file
+        def fragment_copy(directory, record, output, job):
+            class Fragments(object):
+                def write(self, chunk):
+                    for byte in chunk:
+                        output.write(bytes([byte]))
+            return original(directory, record, Fragments(), job)
+        for sql, source, key in [('CREATE/* comment */DATABASE app;', 'app', 'create_database'),
+                                 ('/*M!100100 USE app */;', 'app', 'use'),
+                                 ('-- comment\n/*!50000 USE app */;', 'app', 'use'),
+                                 ('SELECT * FROM `sãles` /* gap */ . t;', 'sãles', 'qualified_source'),
+                                 ('SELECT * FROM `a``pp`.t;', 'a`pp', 'qualified_source'),
+                                 ('DELIMITER //\nUSE other//\nDELIMITER ;\n', 'app', 'use'),
+                                 ('DELIMITER $$\nSELECT 1$$\nUSE other$$\n', 'app', 'use'),
+                                 ('INSERT INTO `other` /* gap */ . `t` VALUES (1);', 'app', 'qualified_other'),
+                                 ('INSERT INTO other.t VALUES (1);', 'app', 'qualified_other'),
+                                 ('INSERT INTO `123`.`t` VALUES (1);', 'app', 'qualified_other'),
+                                 ("INSERT INTO t VALUES ('it\\'s `app`.t; USE app;');", 'app', None)]:
+            with self.subTest(sql=sql):
+                manifest = self.update_dump(sql=sql)
+                with mock.patch.object(lc, '_copy_reviewed_file', side_effect=fragment_copy):
+                    scan = lc._sql_schema_scan(self.output, manifest['files'][0], source)
+                self.assertTrue(scan[key] if key else not any(scan.values()), scan)
+
     def test_restore_row_mismatch_is_failed_verification(self):
         self.make_dump()
         target, tools = self.target(), self.native_tools()
@@ -1590,7 +2627,7 @@ class LifecycleTests(unittest.TestCase):
         self.assert_secret_transport(self.calls()[0])
 
     def test_credentials_removed_after_spawn_failure(self):
-        tool = dict(self.tools['tools']['mysql'], name='mysql', path=str(self.bin/'missing'))
+        tool = dict(self.tools['tools']['mysql'], name='mysql')
         runner = lc.LifecycleJob('test', lambda j: None, CONNECTION)
         with mock.patch.object(lc.subprocess, 'Popen', side_effect=OSError('spawn failed')) as spawn:
             with self.assertRaises(OSError):
@@ -2175,7 +3212,7 @@ class LifecycleTests(unittest.TestCase):
         with mock.patch.object(registry.groups, '_write', side_effect=OSError('disk full')), \
                 mock.patch.object(lc.subprocess, 'Popen', side_effect=popen):
             with self.assertRaisesRegex(lc.LifecycleError, 'Could not record the tool process'):
-                job.process_tool([sys.executable, '-c', script], dict(os.environ))
+                job.process_tool([self.tool_script(script)], dict(os.environ))
         self.assertIsNotNone(started[0].poll())
         self.assertFalse(lc._group_alive(started[0].pid))
         self.assertTrue(job.cancelled.is_set())
@@ -2233,7 +3270,7 @@ class LifecycleTests(unittest.TestCase):
                         started.set()
                 runner.emit = observed
                 try:
-                    runner.process_tool([sys.executable, '-c', script], dict(os.environ))
+                    runner.process_tool([self.tool_script(script)], dict(os.environ))
                 except lc.LifecycleError as exc:
                     errors.append(str(exc))
         thread = threading.Thread(target=preflight, daemon=True)
@@ -2271,6 +3308,26 @@ class LifecycleTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as caught:
                 ui.cmd_ui(['--no-browser', '--no-restore'])
         self.assertEqual(caught.exception.code, 2)
+
+    def test_workspace_server_probe_warmup_never_outlives_the_server(self):
+        from myflames import client_tools, ui
+        started, finished = [], threading.Event()
+
+        def slow_discover(*args, **kwargs):
+            started.append(1)
+            time.sleep(0.3)
+            finished.set()
+
+        with mock.patch.object(client_tools, 'discover', slow_discover):
+            # A construction that fails (bad tool groups file) starts no probe.
+            with self.assertRaises((ValueError, OSError)):
+                ui.WorkspaceServer(store_path=str(self.root / 'bad.sqlite3'),
+                                   tool_groups_file=str(self.root / 'missing' / 'g.json'))
+            self.assertEqual(started, [])
+            server = ui.WorkspaceServer(store_path=str(self.root / 'ws.sqlite3'))
+            server.server_close()
+            self.assertEqual(started, [1])
+            self.assertTrue(finished.is_set(), 'server_close returned while the start-up probe was running')
 
     def test_review_tool_connection_failure_category_survives_password_redaction(self):
         # The password overlaps the numeric error; the display is redacted
@@ -2628,3 +3685,62 @@ class LifecycleTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+@unittest.skipIf(os.name == 'nt', 'POSIX executable trust checks')
+class ClientToolTrustTests(unittest.TestCase):
+    def test_invoke_rechecks_path_and_target_and_runs_realpath(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            binary = root / 'mysqldump'
+            binary.write_text('#!/bin/sh\necho "mysqldump Ver 8.4.13"\n')
+            binary.chmod(0o700)
+            link = root / 'link' / 'mysqldump'
+            private_client_dir(link.parent)
+            link.symlink_to(binary)
+            tool = dict(name='mysqldump', path=str(link), realpath=str(binary), engine='mysql')
+            job = lc.LifecycleJob('test', lambda j: None, {'host': 'h'})
+            with lc._credentials({'host': 'h'}, tool) as (argv, env):
+                stdout, stderr = job.process_tool(argv, env)
+            self.assertIn('mysqldump Ver 8.4.13', stdout)
+            job = mock.Mock()
+            with mock.patch.object(lc, '_check_profile_policy'):
+                lc._invoke(job, tool, {'host': 'h'}, [])
+                self.assertEqual(job.process_tool.call_args[0][0][0], str(binary))
+                job.reset_mock()
+                binary.chmod(0o777)
+                with self.assertRaises(connector.ClientMissingError):
+                    lc._invoke(job, tool, {'host': 'h'}, [])
+                job.process_tool.assert_not_called()
+                binary.chmod(0o700)
+                link.parent.chmod(0o777)
+                with self.assertRaises(connector.ClientMissingError):
+                    lc._invoke(job, tool, {'host': 'h'}, [])
+                job.process_tool.assert_not_called()
+
+    def test_mysqlpump_has_no_used_or_probed_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            pump = root / 'mysqlpump'
+            marker = root / 'ran'
+            pump.write_text('#!/bin/sh\ntouch ' + str(marker) + '\n')
+            pump.chmod(0o700)
+            report = lc.detect_tools(path=str(root), common_dirs=(), server={'engine': 'mysql', 'version': '8.4.13'})
+            self.assertIsNone(report['tools']['mysqlpump']['version'])
+            self.assertIsNone(report['tools']['mysqlpump']['version_tuple'])
+            self.assertFalse(report['tools']['mysqlpump']['used'])
+            copy = next(c for c in report['copies'] if c['name'] == 'mysqlpump')
+            self.assertFalse(copy['used'])
+            self.assertIsNone(copy['version'])
+            self.assertFalse(marker.exists())
+
+    def test_lifecycle_and_connector_share_mariadb_tls_mapping(self):
+        for mode in ('DISABLED', 'PREFERRED', 'REQUIRED', 'VERIFY_CA', 'VERIFY_IDENTITY'):
+            options = dict(host='h', ssl_mode=mode, ssl_ca='ca', ssl_cert='cert', ssl_key='key')
+            tool = dict(name='mariadb-dump', path='/unused', engine='mariadb')
+            with lc._credentials(options, tool) as (argv, env):
+                content = Path(argv[1].split('=', 1)[1]).read_text()
+            for line in connector.client_tls_options(options, 'mariadb'):
+                self.assertIn(line + '\n', content)
+            self.assertNotIn('ssl-mode', content)
+            self.assertNotIn('get-server-public-key', content)

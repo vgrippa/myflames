@@ -27,7 +27,7 @@ export function batchC({ goPlace, goView, visible, named, click, confirmButton, 
   }
   async function tools(page) {
     await goView(page, "server", "maintenance");
-    await visible(page, `${MV} [data-row-key="tool:mysqlsh"]`);
+    await visible(page, `${MV} [data-row-key^="tool:"][data-row-key$="mysqlsh"]`);
   }
   async function field(page, text, value) {
     const handle = await page.evaluateHandle((label) => {
@@ -201,7 +201,7 @@ export function batchC({ goPlace, goView, visible, named, click, confirmButton, 
     {
       name: 'maintenance-tool-updates', label: 'Check for updates', paths: [TOOLS], delayMs: 2000,
       setup: async ({page}) => tools(page), target: named('Check for updates', MV),
-      ok: async ({page}) => { await waitNotBusy(page, `${MV} .ops-actions button`); await visible(page, `${MV} [data-row-key="tool:mysqlsh"]`); }, error: readError, hang: stopRead,
+      ok: async ({page}) => { await waitNotBusy(page, `${MV} .ops-actions button`); await visible(page, `${MV} [data-row-key^="tool:"][data-row-key$="mysqlsh"]`); }, error: readError, hang: stopRead,
     },
     {
       name: 'maintenance-check-upgrade', label: 'Check upgrade', paths: ['/api/lifecycle/upgrade-check'], delayMs: 2000,

@@ -34,31 +34,67 @@ class TestWorkspaceStore(unittest.TestCase):
         self.store = WorkspaceStore(self.path)
 
     def test_client_choice_read_and_clear_do_not_create_a_database(self):
-        self.assertIsNone(self.store.client_binary())
-        self.assertIsNone(self.store.set_client_binary(None))
+        self.assertIsNone(self.store.client_choice('mysql'))
+        self.assertIsNone(self.store.set_client_choice('mysql', None))
         self.assertFalse(self.path.exists())
 
     def test_client_choice_round_trip_and_clear(self):
         value = str(Path(self.temp.name) / 'client' / 'mysql')
-        self.assertEqual(self.store.set_client_binary(value), value)
-        self.assertEqual(WorkspaceStore(self.path).client_binary(), value)
+        self.assertEqual(self.store.set_client_choice('mysql', value), value)
+        self.assertEqual(WorkspaceStore(self.path).client_choice('mysql'), value)
         replacement = str(Path(self.temp.name) / 'mariadb')
-        self.store.set_client_binary(replacement)
-        self.assertEqual(WorkspaceStore(self.path).client_binary(), replacement)
-        self.store.set_client_binary(None)
-        self.assertIsNone(WorkspaceStore(self.path).client_binary())
+        self.store.set_client_choice('mysql', replacement)
+        self.assertEqual(WorkspaceStore(self.path).client_choice('mysql'), replacement)
+        self.store.set_client_choice('mysql', None)
+        self.assertIsNone(WorkspaceStore(self.path).client_choice('mysql'))
 
     def test_client_choice_refuses_invalid_types_without_changing_setting(self):
-        self.store.set_client_binary('/chosen/mysql')
+        self.store.set_client_choice('mysql', '/chosen/mysql')
         for value in ('', 3, True, {}, []):
             with self.subTest(value=value), self.assertRaises(ValueError):
-                self.store.set_client_binary(value)
-        self.assertEqual(self.store.client_binary(), '/chosen/mysql')
+                self.store.set_client_choice('mysql', value)
+        self.assertEqual(self.store.client_choice('mysql'), '/chosen/mysql')
 
     def test_client_choice_does_not_allow_per_connection_binary_fields(self):
-        self.store.set_client_binary('/chosen/mysql')
+        self.store.set_client_choice('mysql', '/chosen/mysql')
         with self.assertRaises(ValueError):
             self.store.connection_with_saved_password({'host': 'localhost', 'binary': '/other/mysql'})
+
+    def test_client_choices_are_independent_and_bundle_is_preserved(self):
+        self.store.set_client_choice('mysql', 'bundled')
+        self.store.set_client_choice('mariadb', '/opt/mariadb/mysql')
+        self.assertEqual(self.store.client_choice('mysql'), 'bundled')
+        self.assertEqual(self.store.client_choice('mariadb'), '/opt/mariadb/mysql')
+        self.store.set_client_choice('mysql', None)
+        self.assertIsNone(self.store.client_choice('mysql'))
+        self.assertEqual(self.store.client_choice('mariadb'), '/opt/mariadb/mysql')
+        for engine in ('other', None, ''):
+            with self.assertRaises(ValueError):
+                self.store.client_choice(engine)
+            with self.assertRaises(ValueError):
+                self.store.set_client_choice(engine, None)
+
+    def test_migrate_legacy_client_choice_once_including_broken_and_bundled(self):
+        from myflames import connector
+        cases = [('/opt/mysql', 'mysql Ver 8.4.13', 'mysql', '/opt/mysql'),
+                 ('/opt/mysql', 'mysql Distrib 11.4.2-MariaDB', 'mariadb', '/opt/mysql'),
+                 ('/bundled/bin/mysql', 'mysql Ver 8.4.13', 'mysql', 'bundled'),
+                 ('/gone/mariadb-old', None, 'mariadb', '/gone/mariadb-old'),
+                 ('/gone/mysql', None, 'mysql', '/gone/mysql')]
+        for i, (value, banner, engine, expected) in enumerate(cases):
+            store = WorkspaceStore(Path(self.temp.name) / ('case%d.sqlite3' % i))
+            with contextlib.closing(store._connect()) as conn, conn:
+                conn.execute("INSERT INTO settings VALUES ('client_binary', ?)", (value,))
+            probe = (patch.object(connector, 'probe_client', return_value={'version': banner}) if banner
+                     else patch.object(connector, 'probe_client', side_effect=ValueError('unusable')))
+            with probe, patch.dict(os.environ, {'MYFLAMES_BUNDLED_CLIENT_DIR': '/bundled/bin'}):
+                store.migrate_client_choices()
+            self.assertEqual(store.client_choice(engine), expected)
+            with contextlib.closing(store._connect()) as conn:
+                self.assertIsNone(conn.execute("SELECT value FROM settings WHERE key='client_binary'").fetchone())
+            store.set_client_choice(engine, None)
+            store.migrate_client_choices()
+            self.assertIsNone(store.client_choice(engine))
 
     def test_app_update_last_check_survives_a_restart(self):
         self.assertIsNone(self.store.app_update_last_check())

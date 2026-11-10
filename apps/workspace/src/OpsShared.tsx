@@ -18,8 +18,13 @@ export function dumpFolderStem(name: string, now = new Date()) {
 }
 
 /** Advisory only: preflight and Start retain their empty-directory checks. */
-export async function suggestDumpFolder(parent: string, stem: string, signal?: AbortSignal, reserved: string[] = []) {
-  const listing = await localList(parent, signal);
+export async function suggestDumpFolder(parent: string, stem: string, signal?: AbortSignal, reserved: string[] = [], defaultParent = "") {
+  const selected = parent || defaultParent;
+  // The backend can create exactly its default parent at Start. Read its
+  // enclosing folder first so a first-use suggestion needs no filesystem write.
+  const enclosing = !parent && defaultParent ? await localList(parentPath(defaultParent), signal) : null;
+  const missingDefault = enclosing && !enclosing.entries.some(e => e.name.toLowerCase() === baseName(defaultParent).toLowerCase());
+  const listing = missingDefault ? { path: selected, entries: [] } : await localList(selected, signal);
   const names = new Set([...listing.entries.map(e => e.name.toLowerCase()), ...reserved
     .filter(p => parentPath(p) === listing.path).map(p => baseName(p).toLowerCase())]);
   let name = stem, suffix = 2;

@@ -245,6 +245,25 @@ export function WindowSelect({
 /** One list per connection while the workspace is open (one cheap read:
  * schema names and table counts, perf_common.schema_catalog). */
 const catalogs = new Map<string, Promise<SchemaCatalog>>();
+/** When the cached read of a connection resolved, for reloadStale. */
+const catalogReadAt = new Map<string, number>();
+/** The hook instances of a connection: a refresh replaces the shared promise,
+ * so the others are told to attach to it (one subscriber set per key); an
+ * invalidation (true) makes only the instances on screen read again. */
+const catalogListeners = new Map<string, Set<(invalidated?: boolean) => void>>();
+/** The connection each key was last rendered with: a read for a key always
+ * uses that key's connection, never the one on screen when a late callback
+ * runs (a run that ends after the person switched connections). */
+const catalogConnections = new Map<string, Connection>();
+
+/** Forget *connection*'s database list (a run created or dropped a database):
+ * its views on screen read it again now; hidden ones read when shown. */
+export function invalidateSchemaCatalog(connection: Connection) {
+  const key = connectionKey(connection);
+  catalogs.delete(key);
+  catalogReadAt.delete(key);
+  for (const listener of [...(catalogListeners.get(key) || [])]) listener(true);
+}
 
 /** The database list for *connection*: loaded when *enabled*, cached. */
 export function useSchemaCatalog(connection: Connection, enabled = true) {
@@ -254,19 +273,29 @@ export function useSchemaCatalog(connection: Connection, enabled = true) {
   const [state, setState] = useState<{ key: string; catalog: SchemaCatalog | null; error: string; loading: boolean }>(
     { key: "", catalog: null, error: "", loading: false },
   );
-  const connectionRef = useRef(connection);
-  connectionRef.current = connection;
+  catalogConnections.set(key, connection);
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
+  /** The shared read this instance shows: when it is shown again after the
+   * list was invalidated or replaced meanwhile, it attaches to the current one. */
+  const attached = useRef<Promise<SchemaCatalog> | null>(null);
   const load = useCallback(
     (refresh = false) => {
       if (refresh || !catalogs.has(key)) {
-        const request = api<SchemaCatalog>("live/schemas", { connection: connectionRef.current });
+        const request = api<SchemaCatalog>("live/schemas", { connection: catalogConnections.get(key)! });
         catalogs.set(key, request);
+        // The failure is handled below; this branch only records the time.
+        request.then(() => {
+          if (catalogs.get(key) === request) catalogReadAt.set(key, Date.now());
+        }, () => {});
         // A failed read is forgotten, unless a newer one already replaced it.
         request.catch(() => {
           if (catalogs.get(key) === request) catalogs.delete(key);
         });
+        if (refresh) for (const listener of catalogListeners.get(key) || []) listener();
       }
       const request = catalogs.get(key)!;
+      attached.current = request;
       // Only the latest read of the connection on screen may answer: an older
       // read of the same connection (before Reload databases) is dropped.
       // (A failed read removes itself from the cache first.)
@@ -279,21 +308,54 @@ export function useSchemaCatalog(connection: Connection, enabled = true) {
     },
     [key],
   );
+  // Another instance's refresh (Reload databases, the editor's catalog
+  // triggers) shows here without waiting for this view to reload itself.
   useEffect(() => {
-    if (enabled && state.key !== key) load();
+    let listeners = catalogListeners.get(key);
+    if (!listeners) catalogListeners.set(key, (listeners = new Set()));
+    const attach = (invalidated?: boolean) => { if (!invalidated || enabledRef.current) load(); };
+    listeners.add(attach);
+    return () => {
+      listeners.delete(attach);
+      if (!listeners.size) catalogListeners.delete(key);
+    };
+  }, [key, load]);
+  useEffect(() => {
+    if (enabled && (state.key !== key || catalogs.get(key) !== attached.current)) load();
   }, [enabled, key, load, state.key]);
   const current = state.key === key ? state : { catalog: null, error: "", loading: enabled };
-  return { catalog: current.catalog, error: current.error, loading: current.loading, reload: () => load(true) };
+  return {
+    catalog: current.catalog,
+    error: current.error,
+    loading: current.loading,
+    reload: () => load(true),
+
+    /** Re-read only when the cached list is older than *ms* (or never read):
+     * opening a picker every few seconds does not refetch. */
+    reloadStale: (ms: number) => {
+      const at = catalogReadAt.get(key);
+      if (at !== undefined && Date.now() - at <= ms) return;
+      load(at !== undefined);
+    },
+  };
 }
 
-function schemaSummary(value: string[]) {
-  if (!value.length) return "All user databases";
+function schemaSummary(value: string[], catalog: SchemaCatalog | null, emptyLabel: string) {
+  if (!value.length) return emptyLabel;
+  // Exactly the user databases chosen reads as "All user databases"; an extra
+  // system or unknown name makes it a plain selection. Nothing chosen is the
+  // caller's empty label (Dump: "No database chosen").
+  const user = (catalog?.schemas || []).filter((s) => !s.system);
+  const names = new Set(user.map((s) => s.name));
+  if (user.length > 0 && value.length === user.length && value.every((name) => names.has(name))) return "All user databases";
   if (value.length <= 2) return value.join(", ");
   return `${value.length} databases`;
 }
 
 /** Multi-select of databases with search. An empty selection means every
- * database except mysql, sys, performance_schema and information_schema.
+ * database except mysql, sys, performance_schema and information_schema,
+ * unless the caller names emptiness itself with *emptyLabel* (Dump: there
+ * nothing chosen is not a valid dump).
  * The floating kit popover keeps the toolbar height stable. */
 export function SchemaPicker({
   id,
@@ -304,6 +366,7 @@ export function SchemaPicker({
   loading,
   onReload,
   disabled,
+  emptyLabel = "All user databases",
 }: {
   id: string;
   value: string[];
@@ -313,6 +376,8 @@ export function SchemaPicker({
   loading: boolean;
   onReload: () => void;
   disabled?: boolean;
+  /** What the field reads while nothing is chosen. */
+  emptyLabel?: string;
 }) {
   const control = useRef<HTMLFieldSetElement>(null);
   const [showSystem, setShowSystem] = useState(false);
@@ -329,7 +394,7 @@ export function SchemaPicker({
           trigger={
             <>
               <span className="visually-hidden">Databases: </span>
-              <span id={id} className="perf-picker-summary">{schemaSummary(value)}</span>
+              <span id={id} className="perf-picker-summary">{schemaSummary(value, catalog, emptyLabel)}</span>
             </>
           }
         >

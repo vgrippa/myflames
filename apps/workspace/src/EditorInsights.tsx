@@ -34,10 +34,16 @@ export function StatementInsight({ statement, onAnalyze, disabled, busy, onOpenI
   if (BigInt(stats.select_scan) > 0n) facts.push("full scan");
   if (join) facts.push("join without an index");
   facts.push(disk ? `${count(stats.created_tmp_disk_tables)} temporary tables on disk` : "no temporary tables on disk");
+  if (statement.status === "error") facts.unshift("Statement failed");
+  // The backend names the statements Explain analyze refuses (SET, SHOW, …):
+  // no action then, and its reason is the stats line's title. An older
+  // backend without the field keeps the action for every statement.
+  const analyzable = stats.analyzable !== false;
+  const lineTitle = !analyzable && stats.analyze_reason ? stats.analyze_reason : facts.join(" · ");
   return <div className="editor-insight" data-statement={statement.index}>
     {numbered && <span>Statement {statement.index + 1}:</span>}
     <StatusPill tone={tone} />
-    <span className="editor-insight-text" title={facts.join(" · ")}>{facts.join(" · ")}</span>
+    <span className="editor-insight-text" title={lineTitle}>{facts.join(" · ")}</span>
     <InfoPopover label="Statement stats and verdict">
       <p>Watch: more than 10,000 examined and over 100 examined per returned row, a disk temporary table, or a join without an index. Problem: the server recorded an error. A full scan alone does not imply a problem.</p>
       <details><summary>Server counters</summary><dl className="editor-insight-counters">
@@ -46,7 +52,7 @@ export function StatementInsight({ statement, onAnalyze, disabled, busy, onOpenI
       </dl></details>
       <p>Timers are in picoseconds. History is read after the script, before session helpers; a small history ring can lose earlier statements. Server totals can exceed retained result rows.</p>
     </InfoPopover>
-    <button className="button small ghost" disabled={disabled} aria-busy={busy || undefined}
-      onClick={onAnalyze}>{busy ? "Analyzing…" : "Explain analyze"}</button>
+    {analyzable && <button className="button small ghost" disabled={disabled} aria-busy={busy || undefined}
+      onClick={onAnalyze}>{busy ? "Analyzing…" : "Explain analyze"}</button>}
   </div>;
 }

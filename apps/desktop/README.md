@@ -131,7 +131,8 @@ discover installed tools without reading shell startup files. On Windows it
 appends the folders the MySQL and MariaDB installers create under Program Files
 (`MySQL\MySQL Server 8.4\bin`, `MariaDB 11.8\bin`, `MySQL\MySQL Shell 8.4\bin`
 and other versions, newest first, then a MySQL Workbench folder that holds
-`mysql.exe`), which they do not add to PATH; PATH keeps precedence.
+`mysql.exe`), which they do not add to PATH. This is discovery order; the backend
+selects tools per server as described below.
 
 ### Bundled MySQL client
 
@@ -141,8 +142,14 @@ in `Contents/Resources/mysql-client` (Windows: `resources\mysql-client`), so a
 computer with no client installed can connect. `main.cjs` passes the resources
 folder to `backendEnvironment` only when packaged, which appends
 `mysql-client/bin` as the very last PATH entry and names it in
-`MYFLAMES_BUNDLED_CLIENT_DIR`: every installed client above is found first, and
-the backend also prefers an installed `mariadb` to the bundled `mysql`.
+`MYFLAMES_BUNDLED_CLIENT_DIR`. The backend inventories all copies and selects
+per server: its engine and major.minor series first, then the nearest newer
+series, then the newest older series with a warning. Within that series,
+authentication plugins come first, then the newest patch, then installed before
+bundled. The bundled client can therefore be selected ahead of an installed
+client from another series. **Settings > Client tools…** shows the programs used
+and stores a choice separately for MySQL and MariaDB, or **Automatic (best match
+for each server)**. A broken choice never silently falls back.
 Development runs (`npm start`) add nothing. MariaDB accounts that use `ed25519`
 or `parsec` authentication need an installed MariaDB client.
 
@@ -230,7 +237,8 @@ attaching the zip to a release. It verifies the bundled backend,
 authentication, reload, renderer isolation, command search, keyword completion
 and owned-process shutdown, that the bundled `mysql --version` runs with only
 the system folders on PATH, and that the backend found a usable `mysql` (it
-prints which one: the bundled client, or an installed one the launcher found).
+prints which one discovery reports without server facts; this does not validate
+the per-server choice).
 It does not connect to a database. Packaged test mode
 requires both `--smoke` and `MYFLAMES_DESKTOP_SMOKE=1`; normal Finder launches do
 not enter it.

@@ -28,7 +28,7 @@ async function load(entry) {
       b.onLoad({ filter: /.*/, namespace: 'stub' }, args => ({ loader: 'js', contents: args.path === 'react'
         ? 'export const useSyncExternalStore = (sub, snapshot) => snapshot(); export const useCallback = x => x; export const useEffect = () => {}; export const useRef = x => ({current:x}); export const useState = x => [x,()=>{}];'
         : args.path === 'react/jsx-runtime' ? 'export const jsx = () => null, jsxs = () => null, Fragment = () => null;'
-        : args.path === 'api' ? 'export const readReadiness = c => globalThis.__readinessApi(c); export const api = () => {}; export const previewConnections = () => {};'
+        : args.path === 'api' ? 'export const readReadiness = c => globalThis.__readinessApi(c); export const api = () => {}; export const previewConnections = () => {}; export class ApiError extends Error {}'
         : args.path === 'session' ? 'export const relativeTime = () => "2 h ago";'
         : 'export const InfoPopover = () => null, ActionButton = () => null, Checkbox = () => null, ConfirmSheet = () => null, DataTable = () => null, Select = () => null;' }));
       b.onLoad({ filter: /\.css$/ }, () => ({ contents: '', loader: 'text' }));

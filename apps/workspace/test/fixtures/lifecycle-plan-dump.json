@@ -51,6 +51,7 @@
   "available": true,
   "deprecated": false,
   "path": "/Users/dba/maintenance/bin/mysqldump",
+  "realpath": "/Users/dba/maintenance/bin/mysqldump",
   "version": "mysqldump Ver 8.4.3",
   "version_tuple": [
    8,
@@ -58,6 +59,11 @@
    3
   ],
   "engine": "mysql",
+  "installation": "mysql:/Users/dba/maintenance/bin",
+  "origin": "folder",
+  "origin_label": "Chosen folder",
+  "reason": "series",
+  "warning": null,
   "download_url": "https://dev.mysql.com/downloads/mysql/",
   "update": {
    "status": "not_checked",

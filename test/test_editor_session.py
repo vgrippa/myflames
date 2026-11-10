@@ -24,7 +24,6 @@ from pathlib import Path
 import random
 import re
 import shutil
-import stat
 import sys
 import tempfile
 import threading
@@ -32,6 +31,8 @@ import time
 import types
 import unittest
 from unittest import mock
+
+from _client_tools_fixture import private_client_dir
 
 from myflames import dbops, editor_session as ed
 from myflames.workspace_store import WorkspaceStore
@@ -160,6 +161,37 @@ class InsightTests(unittest.TestCase):
         for unit in units:
             unit.update(status="ok", server_stats={"available": False, "reason": "not read"})
         return types.SimpleNamespace(units=units)
+
+    def test_statement_analysis_eligibility_uses_converter_including_failed_select(self):
+        from myflames import analysis_query
+        session, fixture = self.session()
+        cases = [('SET @x=1', False, 'ok'), ('SHOW TABLES', False, 'ok'),
+                 ('SELECT 1', True, 'ok'), ('SELECT * FROM missing', True, 'error'),
+                 ('UPDATE t SET x=1 WHERE id=2', True, 'ok'),
+                 ('UPDATE t JOIN other USING (id) SET t.x=1', False, 'ok')]
+        for sql, allowed, status in cases:
+            with self.subTest(sql=sql, status=status):
+                run = self.run_for(sql)
+                run.units[0]['status'] = status
+                row = dict(fixture['history'][0], sql_text=run.units[0]['send'],
+                           errors='1' if status == 'error' else '0')
+                with mock.patch.object(session, '_helper', side_effect=AssertionError('eligibility is local')):
+                    session._attribute_history(run, [row], 40)
+                stats = run.units[0]['server_stats']
+                self.assertTrue(stats['available'])
+                self.assertIs(stats['analyzable'], allowed)
+                self.assertEqual(stats['analyze_reason'], analysis_query.prepare(sql)['problem'])
+                self.assertEqual(bool(stats['analyze_reason']), not allowed)
+
+    def test_analysis_eligibility_survives_missing_history(self):
+        session, fixture = self.session()
+        run = self.run_for('SET @x=1; SELECT 1')
+        with mock.patch.object(session, '_helper', return_value=self.step()):
+            self.assertIsNone(session._history_boundary(run))
+        self.assertEqual([u['server_stats']['analyzable'] for u in run.units], [False, True])
+        session._attribute_history(run, [], 40)
+        self.assertEqual([u['server_stats']['analyzable'] for u in run.units], [False, True])
+        self.assertFalse(any(u['server_stats']['available'] for u in run.units))
 
     def test_both_engines_preserve_counters_null_timer_and_bigint(self):
         for engine in ("mysql", "mariadb"):
@@ -945,6 +977,16 @@ class ExportTests(unittest.TestCase):
         self.assertIn("(9223372036854775807, '=SUM(A1)', NULL)", text)
         self.assertIn("_utf8mb4 X'%s'" % "back\\slash 'q'".encode("utf-8").hex().upper(), text)
         self.assertEqual(text.count("INSERT INTO"), 2)
+        # Typed numeric, a value is unquoted only when it reads back as the same
+        # text in any column: leading zeros, exponents and negative zero stay
+        # quoted (the type may come from another table than the result's).
+        typed = ed.export_result("sql", {"columns": [{"name": "n", "type": "int"}],
+                                         "rows": [["7"], ["-12"], ["1.50"], ["0"], ["-0.5"], ["001"], ["1e3"], ["1."],
+                                                  [".5"], ["-0"], ["-0.0"], ["+5"]]}, table="t", options={"rows_per_insert": 20})["content"]
+        for kept in ("(7)", "(-12)", "(1.50)", "(0)", "(-0.5)"):
+            self.assertIn(kept, typed)
+        for quoted in ("('001')", "('1e3')", "('1.')", "('.5')", "('-0')", "('-0.0')", "('+5')"):
+            self.assertIn(quoted, typed)
         # Without a numeric type, numbers are quoted (safe for any column).
         plain = ed.export_result("sql", {"columns": ["n"], "rows": [["5"]]}, table="t")["content"]
         self.assertIn("('5')", plain)
@@ -1002,7 +1044,7 @@ class ProcessTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         root = Path(self.temp.name)
         bindir = root / "bin"
-        bindir.mkdir()
+        private_client_dir(bindir)
         self.state = root / "state"
         self.state.mkdir()
         script = bindir / "mysql"
@@ -1014,9 +1056,9 @@ class ProcessTests(unittest.TestCase):
                                 'arg.startswith(("--defaults-file=", "--defaults-extra-file="))')
         client = client.replace('        upper = text.upper()\n', '        upper = text.upper()\n' + PLAN_FAKE)
         script.write_text("#!%s\n%s" % (sys.executable, client), encoding="utf-8")
-        script.chmod(script.stat().st_mode | stat.S_IEXEC)
+        script.chmod(0o755)
         env = {"HOME": self.temp.name, "USERPROFILE": self.temp.name, "MYFLAMES_SECRET_BACKEND": "vault",
-               "PATH": str(bindir) + os.pathsep + os.environ.get("PATH", ""), "FAKE_STATE": str(self.state),
+               "PATH": str(bindir), "MYFLAMES_BUNDLED_CLIENT_DIR": "", "FAKE_STATE": str(self.state),
                "FAKE_ENGINE": self.engine}
         patcher = mock.patch.dict(os.environ, env)
         patcher.start()
@@ -1035,6 +1077,14 @@ class ProcessTests(unittest.TestCase):
         process_patch = mock.patch.object(ed.subprocess, "Popen", side_effect=spawn)
         self.processes = process_patch.start()
         self.addCleanup(process_patch.stop)
+        from myflames import lifecycle, client_tools, connector
+        patcher = mock.patch.object(lifecycle, 'COMMON_BIN_DIRS', ())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        previous = connector.client_choices()
+        connector.set_client_choices({})
+        self.addCleanup(connector.set_client_choices, previous)
+        client_tools._FACTS.clear()
         ed._FEATURES.clear()
         self.store = WorkspaceStore()
         self.registry = ed.EditorSessions(reap_every=0)
@@ -1063,6 +1113,8 @@ class ProcessTests(unittest.TestCase):
         self.assertTrue(all(s.get("server_stats", {}).get("available") for s in statements),
                         "each completed statement must carry its own history stats")
         self.assertEqual([s["server_stats"]["rows_examined"] for s in statements], ["1", "1"])
+        self.assertTrue(all(s["server_stats"]["analyzable"] for s in statements))
+        self.assertEqual([s["server_stats"]["analyze_reason"] for s in statements], ["", ""])
         log = self.session_log()
         start = log.index("SELECT 1")
         self.assertEqual(log[start:start + 2], ["SELECT 1", "SELECT 2"])
@@ -1243,6 +1295,41 @@ class ProcessTests(unittest.TestCase):
                             explain_format="table", parameters={"v": 1})
         self.assertEqual((missing["status"], missing["message"]), ("invalid", "Missing parameter: id"))
         self.assertNotIn("DELETE FROM t", self.session_log())
+
+    def test_session_start_remembers_endpoint_facts(self):
+        from myflames import client_tools
+        self.call('/api/editor/open')
+        session = self.registry.get('tab1')
+        self.assertEqual(client_tools.server_facts(client_tools.endpoint_key(self.connection)),
+                         dict(engine=session.engine, version=session.server_version))
+
+    def test_pinned_client_permissions_are_rechecked_after_session_start(self):
+        self.call('/api/editor/open')
+        session = self.registry.get('tab1')
+        binary = Path(session._resolved_binary)
+        binary.chmod(0o777)
+        count = self.processes.call_count
+        step = types.SimpleNamespace(marker=False, unfinished=False)
+        status, text = session._kill_query(self.connection, step)
+        self.assertEqual(status, 'failed')
+        self.assertIn('changed by other users', text)
+        self.assertEqual(self.processes.call_count, count)
+
+    def test_plan_and_kill_keep_the_sessions_client_after_settings_change(self):
+        from myflames import connector
+        self.call('/api/editor/open')
+        session = self.registry.get('tab1')
+        binary = session._resolved_binary
+        connector.set_client_choices({'mysql': '/missing/new/mysql', 'mariadb': '/missing/new/mariadb'})
+        with mock.patch.object(ed, 'Run', wraps=ed.Run) as run:
+            session.run_plan('SELECT 1', 'explain')
+        self.assertEqual(run.call_args[0][2]['binary'], binary)
+        # The real timeout sends KILL through a second client process. If it
+        # re-resolved, the changed Settings would fail before sending KILL.
+        with self.assertRaisesRegex(ed.EditorError, '1317'):
+            session.run_plan('SELECT 1 /*gate*/', 'analyze', timeout=0.1)
+        self.assertTrue((self.state / 'kills.log').exists())
+        self.assertFalse(session.ended)
 
     def test_plan_json_uses_the_tab_and_restores_settings_in_order(self):
         self.call("/api/editor/open")
@@ -3488,3 +3575,23 @@ class UseDatabaseProcessTests(ProcessTests):
         reply = self.call("/api/editor/use", database="mydb")
         self.assertEqual(reply["status"], "none")
         self.assertIsNone(reply["session"])
+
+
+@unittest.skipIf(os.name == 'nt', 'POSIX chmod trust check')
+class PinnedClientTrustTests(unittest.TestCase):
+    def test_next_kill_helper_refuses_a_newly_writable_pinned_client(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory).resolve() / 'mysql'
+            marker = binary.parent / 'ran'
+            binary.write_text('#!/bin/sh\ntouch ' + str(marker) + '\n')
+            binary.chmod(0o700)
+            session = ed.EditorSession('pin', {}, {})
+            session._resolved_binary = str(binary)
+            session.connection_id = 123
+            self.assertEqual(session._checked_helper_binary(), str(binary))
+            binary.chmod(0o777)
+            step = types.SimpleNamespace(marker=False, unfinished=False)
+            status, text = session._kill_query({'host': 'h'}, step)
+            self.assertEqual(status, 'failed')
+            self.assertIn('changed by other users', text)
+            self.assertFalse(marker.exists())

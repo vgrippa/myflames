@@ -1144,6 +1144,22 @@ export function Server({
   // ⌥⌘R (Alt+Ctrl+R elsewhere) runs Refresh all while Server is on screen;
   // Escape stops a run unless something else used it (a popover, the inspector).
   const running = refresh?.state === "running" && !!refreshControl.current;
+  // Starting from the Refresh menu closes it under the pointer, which leaves
+  // focus on the page: give it to Stop, the control for the run (focusable
+  // while not yet armed, aria-disabled).
+  useEffect(() => {
+    if (!running) return;
+    // The browser may move focus to the page again while the toolbar settles
+    // (the menu item turns disabled, the menu closes): check over two frames.
+    const toStop = () => {
+      const active = document.activeElement;
+      if (!active || active === document.body) document.querySelector<HTMLButtonElement>(".server-place .refresh-all-stop")?.focus();
+    };
+    toStop();
+    let second = 0;
+    const first = requestAnimationFrame(() => { toStop(); second = requestAnimationFrame(toStop); });
+    return () => { cancelAnimationFrame(first); cancelAnimationFrame(second); };
+  }, [running]);
   useWindowStatus(`${place || "server"}:${activeKey}`, {
     connectionState: connectionLabel(connection),
     engineVersion: lastRead.key === activeKey ? lastRead.engineVersion : undefined,

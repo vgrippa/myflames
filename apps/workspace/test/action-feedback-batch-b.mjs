@@ -179,7 +179,11 @@ export function batchBScenarios({ goPlace, goView, visible, named, click, confir
       error: async ({ page }) => { await waitText(page, sessionStatus, /Simulated failure/); await named("Reconnect")(page); },
       hang: async ({ page }) => { await elapsed(page, sessionStatus); await requireFocus(page, '[data-banner="ended"] button'); },
     },
-    capture("explain"), capture("analyze"),
+    // Explain and Run analysis no longer start a capture on click: Explain
+    // runs EXPLAIN in the tab's session (feedback-audit-scenarios.mjs
+    // editor-explain), and analysis opens its review first (editor-insights.mjs
+    // "analysis starts exactly once after review"), so the capture scenarios
+    // below (capture) are not listed.
     // Refresh of the diagram on screen: its progress and errors use the status line.
     viewRefresh("diagram", "diagram", "/api/schema-diagram/read", {
       name: "diagram-rebuild", label: "Rebuild database diagram", mocks: diagramMocks,

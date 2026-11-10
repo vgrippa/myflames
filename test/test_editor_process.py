@@ -6,13 +6,14 @@ server, user workspace, or changes to the shared fake are needed.
 """
 import os
 from pathlib import Path
-import stat
 import sys
 import tempfile
 import time
 import types
 import unittest
 from unittest import mock
+
+from _client_tools_fixture import private_client_dir
 
 from myflames import editor_session as ed
 from myflames.workspace_store import WorkspaceStore
@@ -31,7 +32,7 @@ class EditorProcessTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         root = Path(self.temp.name)
         bindir = root / "bin"
-        bindir.mkdir()
+        private_client_dir(bindir)
         self.state = root / "state"
         self.state.mkdir()
         # Match the identity-bearing fake installed by test_editor_session.py.
@@ -40,14 +41,21 @@ class EditorProcessTests(unittest.TestCase):
             '"connection_id": str(self.conn_id), "hostname": "fake-db", "port": "3306", "server_id": "1",')
         script = bindir / "mysql"
         script.write_text("#!%s\n%s" % (sys.executable, client), encoding="utf-8")
-        script.chmod(script.stat().st_mode | stat.S_IEXEC)
+        script.chmod(0o755)
         patcher = mock.patch.dict(os.environ, {
             "HOME": self.temp.name, "USERPROFILE": self.temp.name,
             "MYFLAMES_SECRET_BACKEND": "vault",
-            "PATH": str(bindir) + os.pathsep + os.environ.get("PATH", ""),
+            # The fake is the only client: installed and bundled clients would
+            # make client_tools read the server's version first.
+            "PATH": str(bindir), "MYFLAMES_BUNDLED_CLIENT_DIR": "",
         })
         patcher.start()
         self.addCleanup(patcher.stop)
+        from myflames import client_tools, lifecycle
+        folders = mock.patch.object(lifecycle, "COMMON_BIN_DIRS", ())
+        folders.start()
+        self.addCleanup(folders.stop)
+        client_tools._FACTS.clear()
         os.environ.pop("MYFLAMES_VAULT_PASSPHRASE", None)
         self.children = []
         self.sessions = []

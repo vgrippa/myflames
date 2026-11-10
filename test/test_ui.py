@@ -293,7 +293,99 @@ class TestLiveJobOwnership(unittest.TestCase):
         self.assertTrue(job.cancelled.is_set())
 
 
-class TestDatabaseClientAPI(unittest.TestCase):
+class TestLifecycleToolsAPI(unittest.TestCase):
+    """Exercise lifecycle dispatch directly, without binding a loopback socket."""
+
+    def setUp(self):
+        import types
+        from myflames import client_tools, connector
+        from myflames.workspace_store import WorkspaceStore
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.workspace = types.SimpleNamespace(
+            store=WorkspaceStore(Path(self.temp.name) / 'workspace.sqlite3'))
+        # Keep discovery deterministic while using the real schema, selector,
+        # capability descriptors and connection policy in these route tests.
+        discovered = dict(installations=[], shells=[], skipped=[], copies=[])
+        for patch in (mock.patch.object(client_tools, 'discover_lifecycle', return_value=discovered),
+                      mock.patch.object(connector, 'client_choices', return_value=dict(mysql=None, mariadb=None))):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def test_lifecycle_tools_without_connection_publishes_inventory_schema(self):
+        from myflames import lifecycle
+        with mock.patch.object(lifecycle, '_connect') as connect, \
+                mock.patch.object(lifecycle, 'read_server') as read:
+            result = api_response('/api/lifecycle/tools', {}, self.workspace)
+        self.assertEqual(result['schema_version'], 'lifecycle-tools-2.0')
+        self.assertEqual(set(result), {'schema_version', 'tools', 'copies', 'default_dump_parent'})
+        self.assertTrue(result['default_dump_parent'].endswith('myflames dumps'))
+        self.assertEqual(set(result['tools']), set(lifecycle.TOOLS))
+        self.assertEqual(result['copies'], [])
+        self.assertTrue(all(not entry['available'] for entry in result['tools'].values()))
+        connect.assert_not_called()
+        read.assert_not_called()
+
+    def test_lifecycle_tools_reads_server_before_detecting_for_that_server(self):
+        from myflames import lifecycle
+        server = dict(engine='mysql', version='8.4.13', product='MySQL', identity={'server_uuid': 'test'})
+        events = []
+        real_detect = lifecycle.detect_tools
+
+        def read_server(conn, options):
+            events.append('read')
+            self.assertEqual(options['host'], 'db.example')
+            return server
+
+        def detect_tools(*args, **kwargs):
+            events.append('detect')
+            self.assertIs(kwargs['server'], server)
+            self.assertFalse(kwargs['check_updates'])
+            return real_detect(*args, **kwargs)
+
+        with mock.patch.object(lifecycle, '_connect') as connect, \
+                mock.patch.object(lifecycle, 'read_server', side_effect=read_server) as read, \
+                mock.patch.object(lifecycle, 'detect_tools', side_effect=detect_tools) as detect:
+            result = api_response('/api/lifecycle/tools', {'connection': {'host': 'db.example'}}, self.workspace)
+        self.assertEqual(events, ['read', 'detect'])
+        read.assert_called_once()
+        self.assertIs(read.call_args[0][0], connect.return_value.__enter__.return_value)
+        detect.assert_called_once_with(server=server, check_updates=False)
+        self.assertEqual(result['schema_version'], 'lifecycle-tools-2.0')
+        self.assertEqual(result['server'], dict(engine='mysql', version='8.4.13'))
+        self.assertEqual(result['copies'], [])
+        self.assertEqual(set(result['used']), {'client', 'dump', 'load', 'backup', 'shell', 'missing', 'notes'})
+        self.assertEqual(result['offered']['dump'], [])
+        self.assertTrue(all(result['used'][role] is None for role in ('client', 'dump', 'load', 'backup', 'shell')))
+
+    def test_dump_capabilities_use_selected_entry_version_for_both_scopes(self):
+        from myflames import dump_options, ui
+        # First in discovery order can be a different Shell than the one the
+        # server selector picked. Compression levels follow the selected one.
+        for selected, first, has_levels in (('8.0.40', '8.4.13', False), ('8.4.13', '8.0.40', True)):
+            with self.subTest(selected=selected):
+                copies = [dict(name='mysqlsh', version=first, path='/first/mysqlsh')]
+                report = dict(schema_version='lifecycle-tools-2.0', copies=copies,
+                              tools={'mysqlsh': dict(available=True, version=selected, path='/chosen/mysqlsh'),
+                                     'mysqldump': dict(available=True, version='8.4.13'),
+                                     'mariadb-dump': dict(available=True, version='11.4.5'),
+                                     'mysql': dict(available=True, version='8.4.13')})
+                with mock.patch.object(dump_options, 'capability_catalog', wraps=dump_options.capability_catalog) as catalog:
+                    result = ui._dump_tool_capabilities(report)
+                self.assertIs(result, report)
+                self.assertEqual(catalog.call_count, 6)
+                for name in ('mysqlsh', 'mysqldump', 'mariadb-dump'):
+                    version = report['tools'][name]['version']
+                    self.assertIn(mock.call(name, tool_version=version), catalog.call_args_list)
+                    self.assertIn(mock.call(name, table_scope=True, tool_version=version), catalog.call_args_list)
+                for scope in ('dump_capabilities', 'dump_table_capabilities'):
+                    keys = {option['key'] for option in result['tools']['mysqlsh'][scope]['options']}
+                    self.assertEqual('compression_level' in keys, has_levels)
+                self.assertEqual(copies, [dict(name='mysqlsh', version=first, path='/first/mysqlsh')])
+                self.assertNotIn('dump_capabilities', result['tools']['mysql'])
+
+
+class TestClientToolsAPI(unittest.TestCase):
     """Dispatch through the real handler without requiring a loopback socket."""
 
     def setUp(self):
@@ -310,9 +402,9 @@ class TestDatabaseClientAPI(unittest.TestCase):
         folders = mock.patch.object(lifecycle, 'COMMON_BIN_DIRS', ())
         folders.start()
         self.addCleanup(folders.stop)
-        previous = connector.default_binary()
-        connector.set_default_binary(None)
-        self.addCleanup(connector.set_default_binary, previous)
+        previous = connector.client_choices()
+        connector.set_client_choices({})
+        self.addCleanup(connector.set_client_choices, previous)
         self.workspace = types.SimpleNamespace(store=WorkspaceStore(Path(self.temp.name) / 'workspace.sqlite3'),
                                                token='test-token', editor=EditorSessions())
         self.addCleanup(self.workspace.editor.close)
@@ -421,130 +513,139 @@ class TestDatabaseClientAPI(unittest.TestCase):
             self.assertEqual(self.post('/api/connection/test', {}),
                              (400, {'error': 'SSH failed', 'code': 'ssh-failed'}))
 
-    def test_settings_and_detection_without_clients_do_not_create_store(self):
-        expected = {'schema_version': 'client-settings-1.0', 'path': None, 'active': None, 'detected': []}
-        for route in ('/api/client/settings', '/api/client/detect'):
-            self.assertEqual(self.post(route, {}), (200, expected))
+    def test_tools_without_clients_shape_and_no_localhost_connection(self):
+        from myflames import connector
+        expected = {'schema_version': 'client-tools-1.0', 'installations': [], 'shells': [], 'skipped': [],
+                    'choice': {'mysql': {'path': None, 'installation': None, 'error': None},
+                               'mariadb': {'path': None, 'installation': None, 'error': None}}}
+        with mock.patch.object(connector, 'MySQLConnection', side_effect=AssertionError('localhost read')):
+            self.assertEqual(self.post('/api/client/tools', {}), (200, expected))
         self.assertFalse(self.workspace.store.path.exists())
+        # The report includes this exact response as the contract example.
+        self.assertEqual(json.loads(json.dumps(expected)), expected)
 
-    @unittest.skipIf(os.name == 'nt', 'POSIX executable fixture')
-    def test_settings_round_trip_clear_and_automatic_active_client(self):
+    def test_old_client_endpoints_are_404(self):
+        for route in ('/api/client/settings', '/api/client/detect'):
+            self.assertEqual(self.post(route, {})[0], 404)
+
+    def test_choose_round_trip_per_engine_and_clear(self):
         from myflames import connector
-        path = self.binary(folder='chosen')
-        status, result = self.post('/api/client/settings', {'path': path})
+        mysql = self.binary(folder='mysql')
+        maria = self.binary(body='print("mariadb Ver 11.4.2-MariaDB")', name='mariadb', folder='maria')
+        for engine, path in (('mysql', mysql), ('mariadb', maria)):
+            status, result = self.post('/api/client/tools/choose', dict(engine=engine, path=path))
+            self.assertEqual(status, 200, result)
+            choice = result['choice'][engine]
+            self.assertEqual(choice['path'], path)
+            self.assertIsNone(choice['error'])
+            group = next(g for g in result['installations'] if g['key'] == choice['installation'])
+            self.assertEqual(group['chosen_for'], [engine])
+            self.assertEqual(connector.client_choices()[engine], path)
+        status, result = self.post('/api/client/tools/choose', dict(engine='mysql', path=None))
         self.assertEqual(status, 200, result)
-        self.assertEqual(result['path'], path)
-        self.assertEqual(result['active'], {'path': path, 'version': 'mysql Ver 8.4.0', 'source': 'chosen'})
-        self.assertEqual(self.post('/api/client/settings', {})[1], result)
-        self.assertEqual(connector.default_binary(), path)
-        self.assertEqual(connector.MySQLConnection(host='localhost')._resolve_binary(), path)
-        automatic = self.binary(folder='automatic')
-        with mock.patch.dict(os.environ, {'PATH': str(Path(automatic).parent)}):
-            status, cleared = self.post('/api/client/settings', {'path': None})
-        self.assertEqual(status, 200, cleared)
-        self.assertIsNone(cleared['path'])
-        self.assertIsNone(connector.default_binary())
-        self.assertEqual(cleared['active']['path'], automatic)
-        self.assertEqual(cleared['active']['source'], 'path')
-        self.assertEqual(cleared['detected'][0]['path'], automatic)
-        # An automatic PATH client in a shared folder is described as PATH finds it
-        # (the connector uses it so), but never offered as a choice (security re-review R2).
-        shared = self.binary(folder='shared')
-        os.chmod(str(Path(shared).parent), 0o777)
-        self.addCleanup(os.chmod, str(Path(shared).parent), 0o755)
-        with mock.patch.dict(os.environ, {'PATH': str(Path(shared).parent)}):
-            status, described = self.post('/api/client/settings', {})
-        self.assertEqual(status, 200, described)
-        self.assertNotIn('error', described)
-        self.assertEqual((described['active']['path'], described['active']['source']), (shared, 'path'))
-        self.assertEqual(described['detected'], [])
+        self.assertIsNone(result['choice']['mysql']['path'])
+        self.assertEqual(result['choice']['mariadb']['path'], maria)
+        self.assertIsNone(connector.client_choices()['mysql'])
 
-    @unittest.skipIf(os.name == 'nt', 'POSIX executable fixture')
-    def test_every_invalid_choice_is_refused_without_replacing_saved_choice(self):
-        from myflames import connector
+    def test_choose_refuses_path_and_wrong_engine_with_plain_sentence(self):
         good = self.binary(folder='good')
-        self.assertEqual(self.post('/api/client/settings', {'path': good})[0], 200)
-        directory = Path(self.temp.name) / 'mysql'
-        directory.mkdir()
-        link = Path(self.temp.name) / 'mariadb'
-        link.symlink_to(directory)
-        bad = ['relative/mysql', str(Path(self.temp.name) / 'missing' / 'mysql'), str(directory), str(link),
-               self.binary(name='not-a-client', folder='wrong'),
-               self.binary(body='print("mysql"); raise SystemExit(1)', folder='nonzero'),
-               self.binary(body='print("not a database client")', folder='banner'),
-               self.binary(body='import time; time.sleep(30)', folder='timeout'), '', False, {}, 1]
-        for candidate in bad:
-            with self.subTest(candidate=candidate):
-                status, error = self.post('/api/client/settings', {'path': candidate})
-                self.assertEqual(status, 400, error)
-                self.assertEqual(self.workspace.store.client_binary(), good)
-                self.assertEqual(connector.default_binary(), good)
+        self.assertEqual(self.post('/api/client/tools/choose', dict(engine='mysql', path=good))[0], 200)
+        for engine, path in (('mysql', 'relative/mysql'), ('mariadb', good),
+                             ('mysql', '/missing/mysql'), ('other', good)):
+            status, result = self.post('/api/client/tools/choose', dict(engine=engine, path=path))
+            self.assertEqual(status, 400, result)
+            self.assertEqual(set(result), {'error'})
+            self.assertTrue(result['error'].endswith('.'))
+            self.assertFalse(result['error'].startswith('Could not complete'))
+            self.assertEqual(self.workspace.store.client_choice('mysql'), good)
 
-    @unittest.skipIf(os.name == 'nt', 'POSIX executable fixture')
-    def test_changed_stored_client_is_reported_unavailable_and_can_be_replaced(self):
-        from myflames import connector
-        good = self.binary()
-        self.assertEqual(self.post('/api/client/settings', {'path': good})[0], 200)
-        conn = connector.MySQLConnection(host='localhost')
-        self.assertEqual(conn._resolve_binary(), good)
-        self.binary(body='raise SystemExit(1)')
-        status, result = self.post('/api/client/settings', {})
-        self.assertEqual(status, 200)
-        self.assertIsNone(result['active'])
-        self.assertEqual(result['path'], good)
-        self.assertIn('unsuccessfully', result['error'])
-        with self.assertRaises(connector.ClientMissingError):
-            conn._resolve_binary()
-        replacement = self.binary(folder='replacement')
-        status, result = self.post('/api/client/settings', {'path': replacement})
-        self.assertEqual(status, 200, result)
-        self.assertEqual(conn._resolve_binary(), replacement)
-
-    def test_settings_are_authenticated_and_detection_cannot_write(self):
-        for route in ('/api/client/settings', '/api/client/detect'):
-            self.assertEqual(self.post(route, {'path': '/bad/mysql'}, authenticated=False)[0], 403)
-        self.assertEqual(self.post('/api/client/detect', {'path': None})[0], 400)
-        self.assertEqual(self.post('/api/client/settings', {'binary': '/bad/mysql'})[0], 400)
+    def test_tools_and_choose_require_authentication_and_tools_cannot_write(self):
+        for route in ('/api/client/tools', '/api/client/tools/choose'):
+            self.assertEqual(self.post(route, {}, authenticated=False)[0], 403)
+        self.assertEqual(self.post('/api/client/tools', {'path': None})[0], 400)
+        self.assertEqual(self.post('/api/client/tools/choose', {})[0], 400)
         self.assertFalse(self.workspace.store.path.exists())
 
-    def test_stored_broken_path_is_reported_and_not_used(self):
-        from myflames import connector
-        path = str(Path(self.temp.name) / 'missing' / 'mysql')
-        self.workspace.store.set_client_binary(path)
-        status, result = self.post('/api/client/settings', {})
+    def test_stored_broken_choice_is_kept_with_its_error(self):
+        missing = str(Path(self.temp.name) / 'gone' / 'mysql')
+        self.workspace.store.set_client_choice('mysql', missing)
+        status, result = self.post('/api/client/tools', {})
         self.assertEqual(status, 200, result)
-        self.assertEqual(result['path'], path)
-        self.assertIsNone(result['active'])
-        self.assertIn('regular file', result['error'])
-        with self.assertRaises(connector.ClientMissingError):
-            connector.MySQLConnection(host='localhost')._resolve_binary()
-        self.assertIsNone(self.post('/api/client/settings', {'path': None})[1]['path'])
+        self.assertEqual(result['choice']['mysql'], dict(path=missing, installation=None,
+            error='The client tools chosen in Settings > Client tools are no longer at ' + missing + '.'))
 
-    @unittest.skipIf(os.name == 'nt', 'POSIX executable fixture')
-    def test_server_start_restores_and_validates_choice_without_blocking_recovery(self):
-        from myflames import connector, ui
+    def test_tools_connection_reads_server_and_reports_used_roles(self):
+        from myflames import lifecycle
+        binary = self.binary()
+        with mock.patch.dict(os.environ, {'PATH': str(Path(binary).parent)}), \
+                mock.patch.object(lifecycle, 'read_server', return_value=dict(
+                    engine='mysql', version='8.4.13', product='MySQL')) as read:
+            status, result = self.post('/api/client/tools', {'connection': {'host': 'db'}})
+        self.assertEqual(status, 200, result)
+        read.assert_called_once()
+        self.assertEqual(result['server'], dict(engine='mysql', version='8.4.13', product='MySQL'))
+        self.assertIsNone(result['server_error'])
+        self.assertEqual(result['used']['client']['path'], binary)
+        self.assertEqual(result['used']['client']['reason'], 'series')
+        self.assertEqual(set(result['used']), {'client', 'dump', 'load', 'backup', 'shell', 'missing', 'notes'})
+
+    def test_untrusted_path_copy_is_skipped_with_a_plain_reason(self):
+        marker = str(Path(self.temp.name) / 'ran')
+        binary = self.binary(body='open(%r, "w").close(); print("mysql Ver 99.0.0")' % marker)
+        Path(binary).parent.chmod(0o777)
+        with mock.patch.dict(os.environ, {'PATH': str(Path(binary).parent)}):
+            status, result = self.post('/api/client/tools', {})
+        self.assertEqual(status, 200)
+        self.assertEqual(result['installations'], [])
+        self.assertEqual(len(result['skipped']), 1)
+        self.assertEqual(result['skipped'][0]['reason'],
+                         'Other users can change %s, so myflames does not run programs from it.' % binary)
+        self.assertFalse(Path(marker).exists())
+
+    def test_tools_refresh_reprobes(self):
+        from myflames import client_tools
         path = self.binary()
-        self.workspace.store.set_client_binary(path)
-        # Stop immediately before socket creation. Everything up to the
-        # server bind is real; no worker thread or client session is started.
-        for broken in (False, True):
-            if broken:
-                Path(path).unlink()
-            connector.set_default_binary(None)
-            server = object.__new__(WorkspaceServer)
+        with mock.patch.dict(os.environ, {'PATH': str(Path(path).parent)}), \
+                mock.patch.object(client_tools, 'probe', wraps=client_tools.probe) as probe:
+            self.assertEqual(self.post('/api/client/tools', {'refresh': True})[0], 200)
+        self.assertTrue(all(c[1]['refresh'] for c in probe.call_args_list))
+
+    def test_auth_plugin_code_survives_the_shared_wrapper_path(self):
+        from myflames import ui, connector
+        error = connector.ClientAuthPluginError('mysql 8.4.13 (Bundled with myflames) cannot sign in: plugin.')
+        try:
+            raise error
+        except connector.ClientAuthPluginError:
             try:
-                with mock.patch.object(ui.ThreadingHTTPServer, '__init__', side_effect=OSError('test bind boundary')):
-                    with self.assertRaisesRegex(OSError, 'test bind boundary'):
-                        server.__init__(store_path=self.workspace.store.path)
-            finally:
-                with mock.patch.object(ui.ThreadingHTTPServer, 'server_close'):
-                    server.server_close()
-            self.assertEqual(connector.default_binary(), path)
-            if broken:
-                with self.assertRaises(connector.ClientMissingError):
-                    connector.MySQLConnection(host='localhost')._resolve_binary()
-            else:
-                self.assertEqual(connector.MySQLConnection(host='localhost')._resolve_binary(), path)
+                raise ValueError('redacted wrapper') from None
+            except ValueError as wrapped:
+                with mock.patch.object(ui, 'api_response', side_effect=wrapped):
+                    self.assertEqual(self.post('/api/connection/test', {}),
+                                     (400, {'error': str(error), 'code': 'client-auth-plugin'}))
+
+    def test_tools_server_error_preserves_client_code(self):
+        from myflames import lifecycle, connector
+        for kind in (connector.ClientMissingError, connector.ClientAuthPluginError):
+            with mock.patch.object(lifecycle, 'read_server', side_effect=kind('client unavailable')):
+                status, result = self.post('/api/client/tools', {'connection': {'host': 'db'}})
+            self.assertEqual(status, 200, result)
+            self.assertIsNone(result['server'])
+            self.assertEqual(result['server_error'], dict(code=kind.code, error='client unavailable'))
+            self.assertIsNone(result['used']['client'])
+
+    def test_server_start_migrates_and_publishes_without_blocking_recovery(self):
+        from myflames import connector, ui
+        self.workspace.store.set_client_choice('mysql', '/gone/mysql')
+        server = object.__new__(WorkspaceServer)
+        try:
+            with mock.patch.object(ui.ThreadingHTTPServer, '__init__', side_effect=OSError('test bind boundary')):
+                with self.assertRaisesRegex(OSError, 'test bind boundary'):
+                    server.__init__(store_path=self.workspace.store.path)
+        finally:
+            with mock.patch.object(ui.ThreadingHTTPServer, 'server_close'):
+                server.server_close()
+        self.assertEqual(connector.client_choices()['mysql'], '/gone/mysql')
+
 
 
 class TestWorkspaceAnalysis(unittest.TestCase):

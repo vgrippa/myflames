@@ -97,30 +97,95 @@ export class ApiError extends Error {
 }
 /** True when a request was refused because no MySQL or MariaDB command-line
  * client is available (connector.py ClientMissingError); the workspace answers
- * it with the ClientMissingNotice and the Database client dialog. */
+ * it with the ClientMissingNotice and the Client tools dialog. */
 export function isClientMissing(error: unknown): boolean {
   return error instanceof ApiError && error.code === "client-missing";
 }
+/** True when the client ran but lacks the authentication plugin the server's
+ * account needs; the workspace shows the same notice as client-missing, with
+ * the server's own text instead of the generic sentence. */
+export function isClientAuthPlugin(error: unknown): boolean {
+  return error instanceof ApiError && error.code === "client-auth-plugin";
+}
+/** The client refusal code of a failed request, or "" for any other error. */
+export function clientMissingCode(error: unknown): "client-missing" | "client-auth-plugin" | "" {
+  if (isClientMissing(error)) return "client-missing";
+  if (isClientAuthPlugin(error)) return "client-auth-plugin";
+  return "";
+}
 
-// ---- Database client (which mysql/mariadb binary runs statements) ------------
+// ---- Client tools (which MySQL/MariaDB program runs each job) ---------------
+// client-tools-1.0 (docs/DEVELOPER_REFERENCE.md): one resolver answers which
+// program runs queries, dumps, restores and MySQL Shell jobs for the server in
+// use; every surface shows that one answer.
 
-/** client-settings-1.0: the answer of client/settings and client/detect. */
-export type ClientSettings = {
-  schema_version: "client-settings-1.0";
-  /** The stored choice (client/settings with a path), null for automatic. */
-  path: string | null;
-  /** The client statements run through: the choice, or the first on PATH. */
-  active: { path: string; version: string; source: "chosen" | "path" } | null;
-  /** Clients found on PATH (source "path") and in common install folders. */
-  detected: { path: string; name: string; version: string; source: "path" | "common" }[];
-  /** Why the stored choice cannot run, when it cannot. */
-  error?: string;
+export type ClientToolsEngine = "mysql" | "mariadb";
+export type ClientToolsOrigin = "bundled" | "homebrew" | "macports" | "mysql-installer" | "workbench" | "mariadb-installer" | "system" | "path" | "folder";
+export type ClientToolsReason = "chosen" | "series" | "newer" | "older" | "unknown_server" | "other_engine" | "newest";
+export type ClientToolsRole = "client" | "dump" | "load" | "backup" | "shell";
+export type ClientToolsProgram = { path: string; realpath: string; version: string };
+/** One installation of an engine's client tools found on this computer. */
+export type ClientToolsInstallation = {
+  /** Stable id: "<engine>:<realpath folder>" ("bundled" is never a key). */
+  key: string;
+  engine: ClientToolsEngine;
+  version: string;
+  series: string;
+  /** The realpath folder; found_in is where it was found (a PATH entry, a
+   * common folder or the bundled folder). */
+  folder: string;
+  found_in: string;
+  origin: ClientToolsOrigin;
+  origin_label: string;
+  bundled: boolean;
+  has_auth_plugins: boolean;
+  /** "mysql", "mysqldump", "mariadb", "mariadb-dump", … */
+  programs: Record<string, ClientToolsProgram>;
+  /** Engines whose Settings choice is this installation ([] when automatic). */
+  chosen_for: ClientToolsEngine[];
 };
-/** No argument reads; a path validates and stores the choice; null clears it. */
-export const clientSettings = (path?: string | null) =>
-  api<ClientSettings>("client/settings", path === undefined ? {} : { path });
-/** The clients found on this computer (the same answer shape as settings). */
-export const detectClients = (signal?: AbortSignal) => api<ClientSettings>("client/detect", {}, signal);
+export type ClientToolsShell = { path: string; realpath: string; version: string; origin: ClientToolsOrigin; origin_label: string };
+/** The program the resolver picked for one role on the server in use. */
+export type ClientToolUse = {
+  role: ClientToolsRole; program: string; path: string; version: string; engine: ClientToolsEngine;
+  /** Installation.key, null for a shell. */
+  installation: string | null;
+  origin: ClientToolsOrigin; origin_label: string; bundled: boolean;
+  reason: ClientToolsReason;
+  /** e.g. the older-than-server sentence. */
+  warning: string | null;
+};
+export type ClientToolMissing = { role: ClientToolsRole; program: string; text: string };
+/** The stored Settings choice of one engine; a kept error names why a stored
+ * choice cannot be used now (never silently replaced). */
+export type ClientToolsChoice = { path: string | null; installation: string | null; error: string | null };
+export type ClientToolsUsed = {
+  client: ClientToolUse | null; dump: ClientToolUse | null; load: ClientToolUse | null;
+  backup: ClientToolUse | null; shell: ClientToolUse | null;
+  missing: ClientToolMissing[]; notes: string[];
+};
+export type ClientTools = {
+  schema_version: "client-tools-1.0";
+  /** Sorted: engine, then version newest first, then search order. */
+  installations: ClientToolsInstallation[];
+  /** MySQL Shell copies, newest first. */
+  shells: ClientToolsShell[];
+  skipped: { path: string; reason: string }[];
+  choice: { mysql: ClientToolsChoice; mariadb: ClientToolsChoice };
+  /** Present only when the request names a connection (null: unreadable). */
+  server?: { engine: ClientToolsEngine; version: string; product?: string } | null;
+  server_error?: { code: string; error: string } | null;
+  used?: ClientToolsUsed;
+};
+/** The client tools on this computer; with a connection, also the programs the
+ * resolver picked for its server. refresh re-probes every copy. */
+export const clientTools = (connection?: Connection, refresh = false, signal?: AbortSignal) =>
+  api<ClientTools>("client/tools", { ...(connection ? { connection } : {}), ...(refresh ? { refresh: true } : {}) }, signal);
+/** Store the choice for one engine: the absolute path of a client program or
+ * its folder, "bundled" for the bundled one, or null for Automatic. A refused
+ * path answers 400 with a plain sentence. */
+export const chooseClientTools = (engine: ClientToolsEngine, path: string | null, connection?: Connection) =>
+  api<ClientTools>("client/tools/choose", { engine, path, ...(connection ? { connection } : {}) });
 // Capture and erase the fragment as soon as this module loads. It is never
 // written to storage, the DOM, a request URL, or the saved workspace.
 let launchSecret = "";
@@ -2105,11 +2170,17 @@ export type EditorTransactionMeter = {
   note: string | null;
 };
 /** Exact unsigned server counters; a missing timer is not zero elapsed time. */
-export type EditorStatementStats = { available: false; reason: string } | ({
+export type EditorStatementStats = ({ available: false; reason: string } | ({
   available: true; reason: null; event_id: string;
 } & Record<"rows_examined" | "rows_sent" | "rows_affected" | "no_index_used" | "no_good_index_used" |
   "created_tmp_tables" | "created_tmp_disk_tables" | "sort_merge_passes" | "select_full_join" |
-  "select_scan" | "lock_time" | "errors" | "warnings", string> & { timer_wait: string | null });
+  "select_scan" | "lock_time" | "errors" | "warnings", string> & { timer_wait: string | null })) & {
+  /** False when Explain analyze refuses this statement's text (SET, SHOW, …);
+   * absent from an older backend, which the editor treats as true. */
+  analyzable?: boolean;
+  /** Why analyzable is false (a sentence); empty otherwise. */
+  analyze_reason?: string;
+};
 export type EditorSession = {
   schema_version: "editor-session-1.0";
   tab_id: string;

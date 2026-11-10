@@ -15,7 +15,7 @@ installer is built and smoke-tested in CI and attached to releases unsigned
 
 ## Install and first launch
 
-Download `myflames-3.3.3-macos-arm64.dmg` from the GitHub release, open it and
+Download `myflames-3.3.4-macos-arm64.dmg` from the GitHub release, open it and
 drag `myflames.app` to Applications. The app is signed with a Developer ID and
 notarized by Apple, so it opens from Finder like any other downloaded app.
 Releases before 3.3.0 were unsigned zips: Control-click those and choose Open
@@ -119,19 +119,20 @@ the [signed release build](../apps/desktop/README.md#build-the-signed-release));
 local builds stay unsigned
 ([build instructions](../apps/desktop/README.md#build-an-unsigned-macos-app)).
 Before distributing official builds more widely, complete native packaging
-tests and dependency notices. Keep the Python CLI
-available independently.
+tests and dependency notices.
 
 Client distribution policy: the app bundles the official MySQL command-line
 client, `mysql` and `mysqldump` from one MySQL 8.4 LTS release (pinned with its
 download URL, size and SHA-256 in `apps/desktop/mysql-client.lock.json`), so a
-computer with no MySQL or MariaDB client installed can still connect. Installed
-clients always win: the backend searches PATH, then the standard macOS locations
-(Homebrew, including keg-only versioned formulae, MacPorts, Oracle's
-`/usr/local/mysql`, Laravel Herd, MySQL Workbench) or, on Windows, the MySQL
-Server, MariaDB, MySQL Shell and MySQL Workbench folders under Program Files, and
-only then the bundled folder, which is the last PATH entry; an installed
-`mariadb` also wins over the bundled `mysql`. The bundled client is unmodified
+computer with no MySQL or MariaDB client installed can still connect. Discovery
+includes PATH, standard installation folders and the bundle. Automatic selection
+uses each server's engine and major.minor series first, then the nearest newer
+series, then the newest older series with a warning. Within that series,
+authentication plugins come first, then the newest patch, then installed before
+bundled; the included client can therefore beat an installed client from another
+series. **Settings > Client tools…** shows the programs for the connection in use
+and lets you choose an installation per engine or keep **Automatic (best match
+for each server)**. A broken choice is reported without a silent fallback. The bundled client is unmodified
 Oracle code under GPLv2 with the Universal FOSS Exception, run as a separate
 program; its license ships in the app and NOTICE says where its source is. It
 connects to MySQL servers and to MariaDB accounts that use
