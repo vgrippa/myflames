@@ -25,6 +25,19 @@ contributors, and its dependency nearley 2.20.1
 Tim Radvan, both licensed under the MIT License. They are built into a chunk
 of the workspace (myflames/ui_assets) that loads on first use.
 
+The Query editor is built on CodeMirror 6 (@codemirror/state 6.7.6,
+@codemirror/view 6.43.15, @codemirror/commands 6.11.1, @codemirror/language
+6.13.1, @codemirror/autocomplete 6.20.4, @codemirror/search 6.7.2 and
+@codemirror/lint 6.9.7, https://codemirror.net) and the Lezer parser
+toolkit (@lezer/common 1.5.4, @lezer/highlight 1.2.5 and @lezer/lr 1.4.11,
+https://lezer.codemirror.net), Copyright (C) 2018-2021 by Marijn Haverbeke
+and others (the Lezer packages: Copyright (C) 2018), all licensed under the
+MIT License, together with their dependencies @codemirror/streamparser 6.0.0,
+crelt 1.0.7, style-mod 4.1.4, w3c-keyname 2.2.8 and
+@marijn/find-cluster-break 1.0.4 (same license, same copyright holder).
+They are built into the lazy Query editor chunk of the workspace
+(myflames/ui_assets).
+
 The desktop app for macOS and Windows includes the MySQL command-line client
 programs mysql and mysqldump from MySQL 8.4.13 Community Server
 (https://www.mysql.com), Copyright (c) 1997, 2026, Oracle and/or its

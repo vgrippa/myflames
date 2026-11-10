@@ -432,7 +432,7 @@ selecting is kept where you put it).
 
 ## SQL completion and table data
 
-The editor suggests SQL keywords and catalog names while you type. Press
+The editor suggests SQL keywords, the release's functions and catalog names while you type. Press
 Ctrl+Space (or Ctrl+Shift+Space when macOS reserves that shortcut), use the arrow
 keys, and accept with Tab or Return. Escape dismisses suggestions. Execution
 keeps its existing shortcut. Suggestions do not run statements and stay off
@@ -440,8 +440,15 @@ inside strings, comments and input-method composition.
 
 Catalog suggestions use the selected connection's configured database. They
 include schemas, tables, columns and simple aliases, with quoted identifiers.
-They do not represent temporary tables or a database selected by running `USE`
-in an editor session. Complex nested scopes and CTEs are deliberately limited.
+Keyword and function suggestions come from the connected server's own
+release (an uncataloged patch or Percona build gets the nearest earlier
+cataloged list, named in the suggestion); a function is labeled
+`function · N arguments`, and accepting one inserts `NAME()` with the
+cursor inside, or only the name when a `(` already follows. `@@` offers
+that release's system variables with their scope. They do not represent
+temporary tables or a database
+selected by running `USE` in an editor session. Complex nested scopes and
+CTEs are deliberately limited.
 Metadata reads are bounded and cached briefly in memory. Switching connection,
 database or credentials discards that cache and cancels stale requests.
 
@@ -534,19 +541,104 @@ side.
 - `DELIMITER` lines work as in the `mysql` client, so `CREATE PROCEDURE`,
   triggers and events run as one statement. Run on a statement after a
   DELIMITER line sends it with its DELIMITER line.
-- The editor shows line numbers, SQL syntax colors, the bracket or quote that
-  pairs with the one next to the caret, and a wavy underline where the last
-  error points. Undo, input methods and spell check stay the browser's own
-  (the editor is a native text area under a colored layer). Above 60,000
-  characters the colors are off.
+- The editor (CodeMirror 6) shows line numbers, SQL syntax colors, the
+  bracket or quote that pairs with the one next to the caret, the active
+  line and the other occurrences of the selected word, and a wavy underline
+  where the last error points. Each tab keeps its own undo history, also
+  for the Edit menu's Undo and Redo in the desktop app. Above 60,000
+  characters the syntax colors, bracket matching, suggestions, hover
+  details, the argument hint and problem warnings switch off.
+- **Several cursors**: Option-click (Alt-click on Windows and Linux) adds a
+  cursor. **⌘D** (**Ctrl+D**) first selects the word at the caret, then adds
+  its next occurrence. With one nonempty selection, **⇧⌘L**
+  (**Ctrl+Shift+L**) selects its occurrences, and **⌥⌘↑** / **⌥⌘↓**
+  (**Ctrl+Alt+↑** / **Ctrl+Alt+↓**) add a cursor on the line above or
+  below. **Esc** closes suggestions first, then keeps only the main cursor.
+  Run, Explain and Run analysis use the main cursor or selection; Run all
+  runs the whole tab. Format SQL asks you to keep one cursor or selection.
+- **Suggestions while typing** offer the server's own keywords and
+  functions for its release (an uncataloged patch or Percona build gets the
+  nearest earlier cataloged list, named in the suggestion), the schemas, tables and columns
+  of the connection (table names match fuzzily only in a schema of at most
+  200 tables according to the database list; otherwise tables are read by
+  prefix and a truncated answer says "More tables match. Keep typing to narrow the list."), aliases
+  and CTE names, and `@@` system variables with their scope (**Ctrl+Space**
+  requests suggestions up to 60,000 characters, **Tab** accepts). Names
+  that are keywords on the connected server are inserted with backticks.
+- **Problem warnings** underline an UPDATE or DELETE without WHERE, and a
+  table or column the cached metadata does not know (never a fetched list:
+  only complete, untruncated lists already read are evidence). Columns are
+  checked only when qualified by a table or alias. References to a table
+  created earlier in the script, a CTE or `DUAL` are exempt from missing-name
+  warnings. After the session creates a temporary table, missing-table
+  warnings are suppressed, but missing-column and missing-WHERE warnings
+  can still appear. All warnings are suppressed in scripts containing a
+  DELIMITER line, in routine or compound blocks and unbalanced statements,
+  and at and after USE or an executable comment.
+  **⇧⌘M** (**Ctrl+Shift+M**) shows the problem list, **F8** and
+  **⇧F8** step through it.
+- **Details on hover** (350 ms) show a table's columns with their types and
+  key and null flags (the first 12, then a count of the rest), one column's
+  type and flags, or the table's estimated row count when it is already
+  known from a cached read. Nothing is fetched for the estimate. The same
+  setting shows an argument hint when the caret is inside a known function
+  call: `DATE_FORMAT(…) · 2 arguments · argument 1` names the function, its
+  argument count when known for the connected release and the argument the
+  caret is in, counts only, never parameter names. No hint shows for a name the
+  release does not list (including a qualified call such as `db.POW`),
+  inside strings, quoted names or comments, with several cursors or a
+  selection, or when the opening `(` is more than 4,000 characters before
+  the caret.
+- The editor's **Query editor shortcuts** popover (the ⓘ in the editor
+  toolbar) lists the available keys from this table. `Mod` below is **⌘**
+  on macOS and **Ctrl** on Windows and Linux.
+
+  | Action | macOS | Windows/Linux |
+  | --- | --- | --- |
+  | Close suggestions or keep only the main cursor | `Escape` | `Escape` |
+  | Accept suggestion or indent | `Tab` | `Tab` |
+  | Accept suggestion or unindent | `Shift-Tab` | `Shift-Tab` |
+  | Toggle Tab moving focus | `Shift-Alt-m` | `Ctrl-m` |
+  | Show suggestions | `Ctrl-Space` | `Ctrl-Space` |
+  | Show suggestions | `Shift-Ctrl-Space` | `Shift-Ctrl-Space` |
+  | Toggle SQL comment | `Mod-/` | `Mod-/` |
+  | Move line up | `Alt-ArrowUp` | `Alt-ArrowUp` |
+  | Move line down | `Alt-ArrowDown` | `Alt-ArrowDown` |
+  | Copy line up | `Shift-Alt-ArrowUp` | `Shift-Alt-ArrowUp` |
+  | Copy line down | `Shift-Alt-ArrowDown` | `Shift-Alt-ArrowDown` |
+  | Delete line | `Shift-Mod-k` | `Shift-Mod-k` |
+  | Select next occurrence | `Mod-d` | `Mod-d` |
+  | Select all occurrences | `Shift-Mod-l` | `Shift-Mod-l` |
+  | Add cursor above | `Mod-Alt-ArrowUp` | `Mod-Alt-ArrowUp` |
+  | Add cursor below | `Mod-Alt-ArrowDown` | `Mod-Alt-ArrowDown` |
+  | Go to line | `Ctrl-g` | |
+  | Find | `Mod-f` | `Mod-f` |
+  | Find and replace | `Mod-Alt-f` | `Ctrl-h` |
+  | Find and replace | | `Mod-Alt-f` |
+  | Next match (Ctrl+G opens Go to line when Find is closed) | `Mod-g` | `Mod-g` |
+  | Previous match | `Shift-Mod-g` | `Shift-Mod-g` |
+  | Show problems | `Shift-Mod-m` | `Shift-Mod-m` |
+  | Next problem | `F8` | `F8` |
+  | Previous problem | `Shift-F8` | `Shift-F8` |
+
+  With suggestions closed and one cursor, Escape followed by Tab within two
+  seconds temporarily lets Tab move focus.
+  The multiple-cursor rows need **Multiple cursors** on, the problem rows
+  need **Problem warnings** on; with the setting off, the keys do nothing.
+- **Settings** (the sidebar's Settings popover, **Query editor** group) are
+  kept on this computer, not on the server: **Multiple cursors** (on;
+  Option/Alt-click, occurrence and add-cursor keys), **Suggestions while
+  typing** (on; **Ctrl+Space** also requests suggestions when off, up to the
+  size limit), **Close brackets and quotes** (on), **Wrap long lines** (off), **Problem warnings** (on) and **Details
+  on hover** (on).
 - **Find and replace** (**⌘F** / **Ctrl+F** for Find, **⌥⌘F** / **Ctrl+H**
   for Replace) searches SQL in the active tab with **Match case** (`Aa`),
   **Whole word** (`|ab|`) and **Regular expression** (`.*`). It counts up to
-  100,000 nonempty matches and highlights up to 1,000 while syntax highlighting
-  is enabled (up to 60,000 characters). Enter and Shift+Enter, or **⌘G** /
+  100,000 nonempty matches and highlights up to 1,000, including in scripts
+  above the 60,000-character syntax-color limit. Enter and Shift+Enter, or **⌘G** /
   **⇧⌘G** (**Ctrl+G** / **Ctrl+Shift+G**), step between matches. **Replace**
   and **Replace all** insert the replacement literally, including `$1` and
-  `$&`, through the native text area. Regex search runs in a background worker
+  `$&`, as one undo step. Regex search runs in a background worker
   with a 250 ms budget; a slow pattern reports "Pattern too slow to search".
   Escape closes the bar and returns focus to the editor.
 
@@ -1806,6 +1898,8 @@ and never lowers a saved connection's protection.
 | `profiles/delete` | `id` | `deleted`; also deletes the saved password |
 | `news` | optional `refresh` (boolean; reads again when the last read is at least a minute old) | `news-1.0`: `enabled`, up to six `items` (`title`, `link`, `source`, `source_id`, `engine`, `published` UTC or null, `summary`), `fetched_at`, `stale`, optional `error` and `offline`, and `sources` with each feed's last read. With the Settings switch off: `enabled: false` and nothing read |
 | `news/settings` | optional `enabled` (boolean) | `enabled`, the Settings switch **Show MySQL and MariaDB news on Home** (default on, stored in the workspace store) |
+| `settings/editor` | optional `set`: an object of Query editor settings (`multi_cursor`, `completion_auto`, `close_brackets`, `soft_wrap`, `problem_warnings`, `hover_info`) to booleans, written in one transaction | `editor-settings-1.0`: `settings` (the stored values merged over the defaults) and `defaults`. Local only: the workspace store on this computer; no connection, no server read, no audit. An unknown key, a non-boolean value or any field besides `set` is a 400; a read never creates the database |
+| `config/versions/names` | `engine` (`mysql` or `mariadb`), `version` (at most 32 characters) | `param-names-1.0`: `engine`, `requested`, `release` (null when the series is not cataloged), `exact` (false when an uncataloged patch or a Percona build resolved to the nearest earlier cataloged release of the same series) and `names` (`name`, `scope` `global`/`session`/`both`, `type`, `dynamic`, `deprecated`; `type` and `dynamic` are null where the catalogs do not record them). Answered offline from the shipped parameter catalogs; the Query editor reads it for `@@` system-variable suggestions. A bad engine or version is a 400 |
 | `connection/test` | `connection` | `version`, `engine`, `flavor`, `product`, visible `schemas`, `databases` (at most 1,000 from SHOW DATABASES, with `databases_truncated`) or `databases_error` (the test still succeeds), and `through_ssh` ("Through SSH host X") for a connection through SSH. Identity uses both version and version comment, including MariaDB with a numeric-only version |
 | `live/readiness` | `connection` (a saved `profile_id` fills its password) | The last-known server facts: `engine`, `flavor`, `product`, `version`, `read_only`, `super_read_only`, `performance_schema`, `replica`, `group_member`, `galera_member` (booleans or null when unavailable), `privileges`, `actions` (the sessions-all, kill and replication-status decisions), `notes` and `checked_at`. One bounded read-only invocation (3 s budget by default) plus up to two follow-up invocations for MariaDB replica status (`SHOW ALL SLAVES STATUS` or `SHOW SLAVE STATUS`) and ProxySQL Admin fallback, each capped at 64 MiB of output and 1 MiB of error text; no writes |
 | `connections/import` | `tool` (`workbench` or `dbeaver`), optional `choose` (true opens a fixed-argv native file dialog) | `items` (name, host, port, user, database, `type: "production"`, optional SSH fields), `found`, `cancelled`. Reads only the tool's own connections file (fixed default locations or the chosen file, at most 2 MiB and 1,000 connections); no passwords or keys are read or returned; nothing connects |
