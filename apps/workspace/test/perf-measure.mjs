@@ -41,7 +41,7 @@ import path from "node:path";
 import net from "node:net";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
-import { EDITOR, setEditorText, insertEditorText, selectEditor } from "./editor-helpers.mjs";
+import { EDITOR, insertEditorText, selectEditor } from "./editor-helpers.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const root = fileURLToPath(new URL("../../../", import.meta.url));
@@ -850,10 +850,23 @@ async function editorScenario(s, bigPlanFile) {
   const out = [];
   out.push(await goPlace(s, "query"));
   const text = script(5000);
-  // A paste, the way a script arrives: one ClipboardEvent through the editor's
-  // paste path. Chrome's execCommand("insertText") of the same text takes
-  // seconds, so it would measure Chrome, not the editor.
-  out.push({ ...(await interact(s, "editor paste 5,000 lines", () => setEditorText(page, text),
+  // A real paste, the way a script arrives: a synthetic ClipboardEvent never
+  // produces the trusted input event interact() waits for (it always timed
+  // out), so write the text to the clipboard and send the paste shortcut.
+  // In headless chrome-shell a bare Meta+V key event never runs the browser's
+  // Paste edit command (the editor keeps its text while the clipboard holds
+  // the script), so the key event carries the paste editing command over CDP:
+  // still one trusted keydown that makes the browser paste into the editor.
+  await page.browserContext().overridePermissions(s.origin, ["clipboard-read", "clipboard-write", "clipboard-sanitized-write"]);
+  const pasteMod = process.platform === "darwin" ? 4 : 2; // CDP modifiers: Command on a Mac, Control elsewhere
+  const pasteKey = { key: "v", code: "KeyV", modifiers: pasteMod, windowsVirtualKeyCode: 86 };
+  const paste = async () => {
+    await page.evaluate((t) => navigator.clipboard.writeText(t), text);
+    await page.$eval(EDITOR, (el) => { el.focus(); el.select(); });
+    await s.cdp.send("Input.dispatchKeyEvent", { type: "keyDown", ...pasteKey, commands: ["paste"] });
+    await s.cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...pasteKey });
+  };
+  out.push({ ...(await interact(s, "editor paste 5,000 lines", paste,
     `document.querySelector('.sql-editor').value.length > 300000`, { max: 8000, timeout: 60000 })), chars: text.length });
   // Type at the end, then in the middle (the highlight layers redraw what follows).
   await selectEditor(page, await page.$eval(EDITOR, (el) => el.value.length));
