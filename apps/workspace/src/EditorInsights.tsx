@@ -35,11 +35,11 @@ export function StatementInsight({ statement, onAnalyze, disabled, busy, onOpenI
   if (join) facts.push("join without an index");
   facts.push(disk ? `${count(stats.created_tmp_disk_tables)} temporary tables on disk` : "no temporary tables on disk");
   if (statement.status === "error") facts.unshift("Statement failed");
-  // The backend names the statements EXPLAIN ANALYZE refuses (SET, SHOW, …):
+  // The backend names the statements Explain analyze refuses (SET, SHOW, …):
   // no action then, and its reason is the stats line's title. An older
   // backend without the field keeps the action for every statement.
-  const analyzable = statement.analyzable !== false;
-  const lineTitle = !analyzable && statement.analyze_reason ? statement.analyze_reason : facts.join(" · ");
+  const analyzable = stats.analyzable !== false;
+  const lineTitle = !analyzable && stats.analyze_reason ? stats.analyze_reason : facts.join(" · ");
   return <div className="editor-insight" data-statement={statement.index}>
     {numbered && <span>Statement {statement.index + 1}:</span>}
     <StatusPill tone={tone} />

@@ -378,19 +378,30 @@ try {
     assert.equal(await text(`${view} .table-more[data-more=${name}]`), `${n} more not shown. Choose fewer databases to see them.`);
   }
 
-  // The summary names both full-scan counts in one phrase (plural here: 6
-  // tables with unindexed fetches, 3 of them mostly unindexed).
-  state.queue.push({ status: 200, body: percona });
+
+  // The summary names both full-scan counts in one phrase (plural: 6 tables
+  // with unindexed fetches, 3 of them mostly unindexed). Only the counts
+  // differ from the report above, so the steps below see the same server.
+  const limited = { ...mysql, more: { unused: 1, redundant: 4, full_scans: 2, no_data: 3 } };
+  state.queue.push({ status: 200, body: { ...limited, summary: { ...mysql.summary, full_scans: 6, mostly_full_scans: 3 } } });
   await h.refresh();
   await h.idle(view);
   assert.match(await text(`${view} .perf-summary-line`), /6 tables read by full scans \(3 mostly\)/);
+  state.queue.push({ status: 200, body: limited });
+  await h.refresh();
+  await h.idle(view);
 
   // All user databases sends no list (the server applies the 2,000-table rule);
   // an error shows in an alert and keeps the report.
+  // A large server again (a re-read anywhere reaches every view of the
+  // connection, so the list is loaded here rather than assumed stale).
+  schemasMock.body = { ...small, user_tables: 12345 };
   await page.click("#indexes-schemas");
+  await page.locator("#indexes-schemas-panel button ::-p-text(Reload databases)").click();
   await page.click("#indexes-schemas-panel .perf-picker-all input");
-  // Still the large server: All user databases cannot be loaded.
-  assert.equal(await page.$eval(refresh, (e) => e.disabled), true);
+  // The large server: All user databases cannot be loaded.
+  await page.waitForFunction((sel) => document.querySelector(sel).disabled, {}, refresh);
+  schemasMock.body = small;
   await page.locator("#indexes-schemas-panel button ::-p-text(Reload databases)").click();
   await page.waitForFunction((sel) => !document.querySelector(sel).disabled, {}, refresh);
   await page.keyboard.press("Escape");

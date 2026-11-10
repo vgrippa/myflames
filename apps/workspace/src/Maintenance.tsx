@@ -496,8 +496,11 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   const noLoadTool = !!tools && !!missingRole("load");
   const dumpToolOptions: ["auto" | "sql", string][] = [];
   if (tools && !noDumpTool) {
-    dumpToolOptions.push(["auto", rawTools?.used?.shell ? `Automatic (MySQL Shell ${rawTools.used.shell.version} first)` : "Automatic (MySQL Shell first)"]);
-    if (sqlDumpOffered) dumpToolOptions.push(["sql", rawTools?.used?.dump ? `SQL dump (${rawTools.used.dump.program} ${rawTools.used.dump.version} · ${rawTools.used.dump.origin_label})` : `SQL dump (${tools.offered.dump.find(name => name !== "mysqlsh") || (tools.server.engine === "mariadb" ? "mariadb-dump" : "mysqldump")})`]);
+    const sqlName = tools.offered.dump.find(name => name !== "mysqlsh") || (tools.server.engine === "mariadb" ? "mariadb-dump" : "mysqldump");
+    // Automatic names what it will run here: without MySQL Shell it is the SQL dump tool.
+    dumpToolOptions.push(["auto", rawTools?.used?.shell ? `Automatic (MySQL Shell ${rawTools.used.shell.version} first)`
+      : tools.offered.dump.includes("mysqlsh") ? "Automatic (MySQL Shell first)" : `Automatic (${sqlName}; no MySQL Shell found)`]);
+    if (sqlDumpOffered) dumpToolOptions.push(["sql", rawTools?.used?.dump ? `SQL dump (${rawTools.used.dump.program} ${rawTools.used.dump.version} · ${rawTools.used.dump.origin_label})` : `SQL dump (${sqlName})`]);
   }
   useEffect(() => { if (!sqlDumpOffered) setSqlDump(false); }, [sqlDumpOffered]);
   // The dump-info answer counts only for the folder still in the field.

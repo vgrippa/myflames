@@ -893,9 +893,10 @@ try {
   await page.click('button[aria-label="Hide the history"]');
 
   // 10. Schema browser: one automatic list read on open; the DROP DATABASE
-  // run above re-read it once (a dropped database leaves the picker). Details
-  // stay lazy.
-  assert.equal(seen.filter((s) => s.path === "/api/live/schemas").length, 2, "one schema-list read on open, one after DROP DATABASE");
+  // run above re-read it once (a dropped database leaves the picker), and so
+  // did showing the editor again after Home. Details stay lazy.
+  assert.equal(seen.filter((s) => s.path === "/api/live/schemas").length, 3,
+    "one schema-list read on open, one after DROP DATABASE, one when the editor was shown again after Home");
   assert.equal(calls("/api/live/catalog").filter((b) => b.schema === "testdb").length, 0, "table details stay lazy");
   const treeRow = async (kind, label) => {
     await page.waitForFunction((kind, label) => [...document.querySelectorAll(`.tree-row.kind-${kind}`)].some((r) => r.querySelector(".tree-label")?.textContent === label), {}, kind, label);
@@ -959,7 +960,7 @@ try {
   await page.click('.editor-toolbar button[aria-label="Show the schema browser"]');
   await page.waitForFunction(() => document.querySelector(".schema-browser-slot")?.hidden === false);
   assert.ok(await page.$(".tree-row.kind-column"), "the tree is still there");
-  assert.equal(calls("/api/live/schemas").length, 2, "and nothing was read again");
+  assert.equal(calls("/api/live/schemas").length, 3, "and nothing was read again");
 
   // A prefix is sent to the server, including literal SQL wildcard characters;
   // it can find a table outside the pages already loaded in the tree.

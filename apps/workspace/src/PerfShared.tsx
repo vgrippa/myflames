@@ -266,9 +266,10 @@ export function useSchemaCatalog(connection: Connection, enabled = true) {
       if (refresh || !catalogs.has(key)) {
         const request = api<SchemaCatalog>("live/schemas", { connection: connectionRef.current });
         catalogs.set(key, request);
+        // The failure is handled below; this branch only records the time.
         request.then(() => {
           if (catalogs.get(key) === request) catalogReadAt.set(key, Date.now());
-        });
+        }, () => {});
         // A failed read is forgotten, unless a newer one already replaced it.
         request.catch(() => {
           if (catalogs.get(key) === request) catalogs.delete(key);

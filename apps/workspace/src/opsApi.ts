@@ -238,7 +238,8 @@ export type DumpInfo = {
   engine: "mysql" | "mariadb";
   scope: { schemas: string[]; tables: string[] };
   structure_only: boolean;
-  remap_allowed: boolean;
+  /** null: too large to scan on a folder pick; the restore review decides. */
+  remap_allowed: boolean | null;
   remap_reason: string;
 };
 export const readDumpInfo = (directory: string, signal?: AbortSignal) => api<DumpInfo>("lifecycle/dump-info", { directory }, signal);

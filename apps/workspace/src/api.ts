@@ -2170,11 +2170,17 @@ export type EditorTransactionMeter = {
   note: string | null;
 };
 /** Exact unsigned server counters; a missing timer is not zero elapsed time. */
-export type EditorStatementStats = { available: false; reason: string } | ({
+export type EditorStatementStats = ({ available: false; reason: string } | ({
   available: true; reason: null; event_id: string;
 } & Record<"rows_examined" | "rows_sent" | "rows_affected" | "no_index_used" | "no_good_index_used" |
   "created_tmp_tables" | "created_tmp_disk_tables" | "sort_merge_passes" | "select_full_join" |
-  "select_scan" | "lock_time" | "errors" | "warnings", string> & { timer_wait: string | null });
+  "select_scan" | "lock_time" | "errors" | "warnings", string> & { timer_wait: string | null })) & {
+  /** False when Explain analyze refuses this statement's text (SET, SHOW, …);
+   * absent from an older backend, which the editor treats as true. */
+  analyzable?: boolean;
+  /** Why analyzable is false (a sentence); empty otherwise. */
+  analyze_reason?: string;
+};
 export type EditorSession = {
   schema_version: "editor-session-1.0";
   tab_id: string;
@@ -2267,11 +2273,6 @@ export type EditorStatement = {
   verb: string | null;
   kind: string | null;
   category: string | null;
-  /** False when the backend refuses EXPLAIN ANALYZE for this statement (SET,
-   * SHOW, …); absent on an older backend, which the editor treats as true. */
-  analyzable?: boolean;
-  /** Why analyzable is false (a sentence); empty or absent otherwise. */
-  analyze_reason?: string;
   status: EditorStatementStatus;
   duration_ms: number | null;
   sent?: string;

@@ -28,9 +28,8 @@ const server = spawn(process.env.PYTHON || "python3", ["-c",
 });
 let browser, page, runN = 0;
 let fixture = fixtures[0], nextStats = null, meter = null, tx = false, holdMeter = false, expectMeterAbort = false;
-// Merged into the run's statement: the analyzable contract fields, and a
-// message when the statement failed.
-let statementExtra = {}, failNext = null;
+// A message makes the next run's statement fail with it.
+let failNext = null;
 // Where the person is: the Server place cancels its own reads when it switches views or goes off screen.
 let phase = "editor";
 const seen = [], held = [], diagnostics = [], responses = [], failedRequests = [];
@@ -47,7 +46,7 @@ const session = tabId => ({
 function result(body) {
   const sql = body.sql || "SELECT 1";
   const statements = [{ index: 0, text: sql, start: 0, end: sql.length, verb: "select", kind: "read", category: "read",
-    status: failNext ? "error" : "ok", duration_ms: 5, server_stats: nextStats, ...statementExtra,
+    status: failNext ? "error" : "ok", duration_ms: 5, server_stats: nextStats,
     ...(body.explain_format ? { sent: `EXPLAIN ${sql}` } : {}) }];
   const failure = failNext ? { type: "error", statement: 0, code: 1064, sqlstate: "42000", message: failNext,
     interrupted: false, duration_ms: 5, position: null } : null;
@@ -153,6 +152,31 @@ try {
   nextStats = { ...nextStats, errors: "1" };
   await run();
   assert.equal(await page.$eval(".editor-insight .status-pill", element => element.textContent), "Problem");
+  // Explain analyze is offered only for statements it can read
+  // (server_stats.analyzable); the reason is the stats line's tooltip.
+  const analyzeButton = () => page.$$eval(".editor-insight button", buttons => buttons.some(b => b.textContent === "Explain analyze"));
+  const setReason = "Explain analyze reads SELECT, WITH and simple UPDATE, DELETE or INSERT … SELECT statements; SET is none of these.";
+  nextStats = { ...available(fixtures[0].history[0]), analyzable: false, analyze_reason: setReason };
+  await run("SET @a = 1");
+  assert.equal(await analyzeButton(), false, "no Explain analyze for SET");
+  assert.equal(await page.$eval(".editor-insight-text", element => element.title), setReason);
+  failNext = "You have an error in your SQL syntax";
+  nextStats = { ...available(fixtures[0].history[0]), errors: "1", analyzable: true, analyze_reason: "" };
+  {
+    // A failed run has no rows: wait for its stats line instead of a cell.
+    const count = calls("editor/run").length;
+    await page.locator('[aria-label="SQL editor"]').fill("SELECT * FROM t WHERE");
+    await page.click("[data-action=run]");
+    await wait(() => calls("editor/run").length === count + 1, "one Run request");
+    await page.waitForFunction(() => !document.querySelector(".results-running") &&
+      /^Statement failed/.test(document.querySelector(".editor-insight-text")?.textContent || ""));
+  }
+  failNext = null;
+  assert.match(await page.$eval(".editor-insight-text", element => element.textContent), /^Statement failed · Examined/);
+  assert.equal(await analyzeButton(), true, "a failed SELECT can still be analyzed");
+  nextStats = available(fixtures[0].history[0]);
+  await run();
+  assert.equal(await analyzeButton(), true, "an older backend without the field keeps the action");
   nextStats = { available: false, reason: "Performance Schema is off; check Server > Instruments. <img src=x onerror=alert(1)>" };
   await run();
   assert.equal(await page.$eval(".editor-insight", element => element.textContent), "Server stats not collected");
