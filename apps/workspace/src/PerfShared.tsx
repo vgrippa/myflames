@@ -276,6 +276,9 @@ export function useSchemaCatalog(connection: Connection, enabled = true) {
   catalogConnections.set(key, connection);
   const enabledRef = useRef(enabled);
   enabledRef.current = enabled;
+  /** The shared read this instance shows: when it is shown again after the
+   * list was invalidated or replaced meanwhile, it attaches to the current one. */
+  const attached = useRef<Promise<SchemaCatalog> | null>(null);
   const load = useCallback(
     (refresh = false) => {
       if (refresh || !catalogs.has(key)) {
@@ -292,6 +295,7 @@ export function useSchemaCatalog(connection: Connection, enabled = true) {
         if (refresh) for (const listener of catalogListeners.get(key) || []) listener();
       }
       const request = catalogs.get(key)!;
+      attached.current = request;
       // Only the latest read of the connection on screen may answer: an older
       // read of the same connection (before Reload databases) is dropped.
       // (A failed read removes itself from the cache first.)
@@ -317,7 +321,7 @@ export function useSchemaCatalog(connection: Connection, enabled = true) {
     };
   }, [key, load]);
   useEffect(() => {
-    if (enabled && state.key !== key) load();
+    if (enabled && (state.key !== key || catalogs.get(key) !== attached.current)) load();
   }, [enabled, key, load, state.key]);
   const current = state.key === key ? state : { catalog: null, error: "", loading: enabled };
   return {
@@ -325,6 +329,7 @@ export function useSchemaCatalog(connection: Connection, enabled = true) {
     error: current.error,
     loading: current.loading,
     reload: () => load(true),
+
     /** Re-read only when the cached list is older than *ms* (or never read):
      * opening a picker every few seconds does not refetch. */
     reloadStale: (ms: number) => {

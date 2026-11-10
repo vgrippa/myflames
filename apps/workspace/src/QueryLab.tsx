@@ -559,15 +559,10 @@ export const QueryLab = forwardRef<
   // cheap catalog read per connection, cached; PerfShared.useSchemaCatalog),
   // read only while the editor is on screen: a hidden editor never reads.
   const { catalog: schemaCatalog, reloadStale: reloadStaleSchemaCatalog } = useSchemaCatalog(connection, onScreen);
-  // Back on screen the list may be stale: a database created elsewhere (the
-  // Maintenance restore, another tab's CREATE DATABASE) shows without an app
-  // restart. reloadStale(0) attaches to the first read still in flight
-  // instead of starting a second one next to it.
-  const wasOnScreen = useRef(onScreen);
-  useEffect(() => {
-    if (onScreen && !wasOnScreen.current) reloadStaleSchemaCatalog(0);
-    wasOnScreen.current = onScreen;
-  }, [onScreen, reloadStaleSchemaCatalog]);
+  // Back on screen, a list invalidated or replaced while the editor was
+  // hidden is read or attached by useSchemaCatalog itself; an unchanged list
+  // stays (each read counts tables), and opening the picker re-reads one
+  // older than CATALOG_STALE_MS.
   const [timeout, setTimeoutSeconds] = useState(start.timeout);
   const [repeat, setRepeat] = useState(start.repeat);
   const [trace, setTrace] = useState(start.trace);

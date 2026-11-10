@@ -44,6 +44,8 @@ function hooks() {
     }
   };
   const api = {
+    // binding.ts imports ApiError from ./api; this stand-in answers every require.
+    ApiError: class extends Error {},
     useRef(value) { const i = index++; return slots[i] ||= { current: value }; },
     useState(initial) {
       const i = index++;
