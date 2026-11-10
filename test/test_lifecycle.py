@@ -2911,6 +2911,26 @@ class LifecycleTests(unittest.TestCase):
                 ui.cmd_ui(['--no-browser', '--no-restore'])
         self.assertEqual(caught.exception.code, 2)
 
+    def test_workspace_server_probe_warmup_never_outlives_the_server(self):
+        from myflames import client_tools, ui
+        started, finished = [], threading.Event()
+
+        def slow_discover(*args, **kwargs):
+            started.append(1)
+            time.sleep(0.3)
+            finished.set()
+
+        with mock.patch.object(client_tools, 'discover', slow_discover):
+            # A construction that fails (bad tool groups file) starts no probe.
+            with self.assertRaises((ValueError, OSError)):
+                ui.WorkspaceServer(store_path=str(self.root / 'bad.sqlite3'),
+                                   tool_groups_file=str(self.root / 'missing' / 'g.json'))
+            self.assertEqual(started, [])
+            server = ui.WorkspaceServer(store_path=str(self.root / 'ws.sqlite3'))
+            server.server_close()
+            self.assertEqual(started, [1])
+            self.assertTrue(finished.is_set(), 'server_close returned while the start-up probe was running')
+
     def test_review_tool_connection_failure_category_survives_password_redaction(self):
         # The password overlaps the numeric error; the display is redacted
         # while the failure category remains useful to the CLI.

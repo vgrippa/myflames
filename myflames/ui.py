@@ -2200,6 +2200,8 @@ class WorkspaceServer(ThreadingHTTPServer):
     #: their own process groups, and the desktop's backend entry kills this
     #: process five seconds after it was asked to stop.
     TUNNEL_CLOSE_SECONDS = 3.0
+    #: How long close waits for the start-up client probes (each is bounded).
+    TOOLS_WARMUP_WAIT_SECONDS = 2.0
 
     def __init__(self, port=0, store_path=None, no_restore=False, tool_groups_file=None, news_reader=None,
                  release_reader=None):
@@ -2209,9 +2211,6 @@ class WorkspaceServer(ThreadingHTTPServer):
         from . import connector
         self.store.migrate_client_choices()
         connector.set_client_choices({e: self.store.client_choice(e) for e in ('mysql', 'mariadb')})
-        # Warm cached version probes without delaying startup or recovery.
-        from . import client_tools
-        threading.Thread(target=client_tools.discover, daemon=True).start()
         # --no-restore: start clean for this launch and leave the stored
         # session untouched (no restore, no autosave).
         self.no_restore = bool(no_restore)
@@ -2249,6 +2248,11 @@ class WorkspaceServer(ThreadingHTTPServer):
         super().__init__(("127.0.0.1", port), WorkspaceHandler)
         self.origin = "http://127.0.0.1:%s" % self.server_address[1]
         self.launch_url = self.origin + "/#launch=" + self.bootstrap_secret
+        # Warm cached version probes without delaying startup or recovery;
+        # started last so a construction that fails leaves no probe running.
+        from . import client_tools
+        self._tools_warmup = threading.Thread(target=client_tools.discover, daemon=True)
+        self._tools_warmup.start()
 
 
     def process_request(self, request, client_address):
@@ -2310,6 +2314,9 @@ class WorkspaceServer(ThreadingHTTPServer):
             # Waits for a close the deadline already started.
             TUNNELS.close_all()
             TUNNELS.detach_groups(self.lifecycle.groups)
+            warmup = getattr(self, "_tools_warmup", None)
+            if warmup is not None:
+                warmup.join(self.TOOLS_WARMUP_WAIT_SECONDS)
             super().server_close()
 
 
