@@ -156,39 +156,14 @@ test('KILL preview clamps an obsolete offset and resets scroll/cancels a queued 
   raf.current = 18; h.close(); assert.deepEqual(cancelled, [17, 18], 'unmount cancels pending frames too');
 });
 
-test('Run backdrop mounted after scrolling immediately follows both scroll axes', () => {
-  const code = fn('SqlEditor.tsx', 'follow') + '\n' + effect('SqlEditor.tsx', 'follow,');
-  const h = hooks(), backdrop = { current: null }, area = { current: { scrollTop: 320, scrollLeft: 90 } };
-  const env = { value: 'SELECT 1;', height: 400, area, backdrop, layer: { current: { style: {} } }, gutter: { current: { style: {} } } };
-  h.render(code, { ...env, flash: null });
-  backdrop.current = { style: {} };
-  h.render(code, { ...env, flash: { start: 0, end: 9 } });
-  assert.equal(backdrop.current.style.transform, 'translate(-90px, -320px)');
-  h.close();
-});
-
-test('completion popup repositions when loading finishes or its note changes', () => {
-  const code = fn('SqlEditor.tsx', 'positionCompletion') + '\n' + effect('SqlEditor.tsx', 'positionCompletion,');
-  const h = hooks(), popup = { current: { offsetWidth: 320, offsetHeight: 40 } };
-  let position = { left: 0, top: 0 };
-  const env = {
-    showing: true, value: 'SELECT ', caret: { start: 7 }, selected: 0, popup,
-    area: { current: { scrollTop: 20, scrollLeft: 0, getBoundingClientRect: () => ({ left: 20, top: 500 }) } },
-    getComputedStyle: () => ({ lineHeight: '20px' }), window: { innerWidth: 800, innerHeight: 600 },
-    document: { createElement: () => ({ style: {}, append() {}, remove() {}, getBoundingClientRect: () => ({ left: 30, top: 10 }) }), body: { append() {} } },
-    setPosition: update => { position = update(position); },
-  };
-  h.render(code, { ...env, completion: { items: [], loading: true, note: '' } });
-  assert.equal(position.top, 510);
-  popup.current.offsetHeight = 220;
-  const items = Array.from({ length: 8 }, () => ({}));
-  h.render(code, { ...env, completion: { items, loading: false, note: '' } });
-  assert.equal(position.top, 270); assert.ok(position.top + popup.current.offsetHeight <= 592);
-  popup.current.offsetHeight = 260;
-  h.render(code, { ...env, completion: { items, loading: false, note: 'Metadata unavailable' } });
-  assert.equal(position.top, 230);
-  h.close();
-});
+// The textarea editor's backdrop-follow effect and completion-positioning
+// effect left with SqlEditor.tsx: CodeMirror 6 owns scrolling and tooltip
+// positioning now. Their replacements are browser checks in
+// test/editor-core.mjs: check 9 (scrolling .cm-scroller causes no React
+// commit), check 10 (a tab switch keeps each tab's EditorState: undo history
+// and selection survive) and check 11 (.sql-completion stays inside the
+// window at 390 px and 1440 px, also covered light/dark in
+// test/completion-browser.mjs).
 
 test('table measurement covers new pages/windows, every new row, and revealed columns', () => {
   const file = 'kit.tsx';

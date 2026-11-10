@@ -2,12 +2,15 @@
 // bar, the count ("3 of 12"), Enter and Shift+Enter, ⌘G and ⇧⌘G, wrap, the
 // Match case, Whole word and Regular expression toggles, an invalid pattern
 // shown inline (never thrown), a one-line selection prefilling the field,
-// match marks on the highlight layer with the current one stronger, scrolling
-// to the current match (also past HIGHLIGHT_LIMIT, where no marks are drawn),
-// Replace and Replace all as single undo steps, Escape returning focus to the
-// editor at the current match, hit targets, and the bar fitting at 720 px in
-// light and dark. The packaged page and the real Python server; the editor
-// API is mocked and nothing may run. Run after `npm run build`:
+// match marks in the CodeMirror content with the current one stronger,
+// scrolling to the current match (marks stay capped at FIND_MARK_LIMIT on a
+// 1 MB script), Replace and Replace all as single undo steps, Escape returning
+// focus to the editor at the current match, hit targets, and the bar fitting
+// at 720 px in light and dark. The packaged page and the real Python server;
+// the editor API is mocked and nothing may run. The find helpers themselves
+// (Unicode offsets, the regex worker timeout, planReplace anchor semantics)
+// are unit-tested against the real modules in test/editor-find-unit.mjs, so
+// this suite keeps only browser behavior. Run after `npm run build`:
 // node test/editor-find.mjs (EDITOR_FIND_SHOTS=<dir> also writes screenshots).
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -16,206 +19,15 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { Worker as NodeWorker } from "node:worker_threads";
 import puppeteer from "puppeteer";
-import ts from "typescript";
-
-// Direct checks of SqlEditor.tsx's compiled find, worker timeout and replace
-// anchor logic before launching the browser.
-{
-  const sourceText = await fs.readFile(new URL("../src/SqlEditor.tsx", import.meta.url), "utf8");
-  const head = sourceText.slice(
-    sourceText.indexOf("export type Range ="),
-    sourceText.indexOf("/** Text pieces with their classes:"),
-  );
-  const compiled = ts.transpileModule(head, {
-    compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS },
-  }).outputText;
-  const exportsObj = {};
-  new Function("exports", compiled)(exportsObj);
-  const { computeFind, firstMatchAt, createRegexFinder, FIND_WORKER_SOURCE, FIND_SLOW_PATTERN_ERROR } = exportsObj;
-
-  // 1. Unicode case-insensitive search preserves original offsets when
-  // lowercasing would expand "İ" into two code units.
-  assert.deepEqual(
-    computeFind("İfoo", "foo", { matchCase: false, wholeWord: false, regex: false }),
-    { matches: [{ start: 1, end: 4 }], error: "", capped: false },
-    'case-insensitive search in "İfoo" selects "foo" at [1, 4], not "oo" at [2, 5]',
-  );
-  assert.deepEqual(
-    computeFind("İfoo and İFOO", "foo", { matchCase: false, wholeWord: false, regex: false }).matches,
-    [
-      { start: 1, end: 4 },
-      { start: 10, end: 13 },
-    ],
-  );
-  assert.deepEqual(
-    computeFind("İfoo and İ foo", "foo", { matchCase: false, wholeWord: true, regex: false }).matches,
-    [{ start: 11, end: 14 }],
-    '"İ" is a letter for Whole word',
-  );
-
-  // 2. Pathological regex runs in a terminable worker and times out with
-  // "Pattern too slow to search" instead of blocking the caller.
-  let terminatedCount = 0;
-  function spawnNodeWorker() {
-    const bridge = `
-      const { parentPort } = require("node:worker_threads");
-      const self = { postMessage: (msg) => parentPort.postMessage(msg) };
-      ${FIND_WORKER_SOURCE}
-      parentPort.on("message", (data) => self.onmessage({ data }));
-    `;
-    const worker = new NodeWorker(bridge, { eval: true });
-    let onmessage = null;
-    let onerror = null;
-    worker.on("message", (data) => onmessage?.({ data }));
-    worker.on("error", (err) => onerror?.({ message: err.message }));
-    return {
-      postMessage: (data) => worker.postMessage(data),
-      terminate: () => {
-        terminatedCount++;
-        void worker.terminate();
-      },
-      set onmessage(fn) {
-        onmessage = fn;
-      },
-      get onmessage() {
-        return onmessage;
-      },
-      set onerror(fn) {
-        onerror = fn;
-      },
-      get onerror() {
-        return onerror;
-      },
-    };
-  }
-  const finder = createRegexFinder(spawnNodeWorker);
-  const pathologicalStart = Date.now();
-  const slowResult = await new Promise((resolve) => {
-    finder.search(`${"a".repeat(35)}!`, "(a+)+$", { matchCase: false, wholeWord: false, regex: true }, resolve, 250);
-  });
-  const pathologicalElapsed = Date.now() - pathologicalStart;
-  assert.deepEqual(slowResult, { matches: [], error: FIND_SLOW_PATTERN_ERROR, capped: false });
-  assert.equal(terminatedCount, 1, "the stuck regex worker was terminated");
-  assert.ok(pathologicalElapsed < 1000, `pathological regex timed out in ${pathologicalElapsed} ms`);
-  const fastResult = await new Promise((resolve) => {
-    finder.search("a1 b22 c333", "\\d+", { matchCase: false, wholeWord: false, regex: true }, resolve, 250);
-  });
-  assert.deepEqual(fastResult, {
-    matches: [
-      { start: 1, end: 2 },
-      { start: 4, end: 6 },
-      { start: 8, end: 11 },
-    ],
-    error: "",
-    capped: false,
-  });
-  finder.dispose();
-
-  // 3. Execute SqlEditor.tsx's actual applyReplace function: single Replace
-  // advances findAnchor past the inserted text so a replacement containing the
-  // search term moves to the next occurrence, and Unicode case-insensitive
-  // Replace modifies the exact match ranges.
-  const applySlice = sourceText.slice(
-    sourceText.indexOf("  function applyReplace(all: boolean)"),
-    sourceText.indexOf("  function findFieldKeyDown("),
-  );
-  const applyJs = ts.transpileModule(`${applySlice}\nreturn applyReplace;`, {
-    compilerOptions: { target: ts.ScriptTarget.ES2020 },
-  }).outputText;
-  function makeReplacer(initialValue, query, replacement, options = { matchCase: false, wholeWord: false, regex: false }) {
-    const state = {
-      value: initialValue,
-      findQuery: query,
-      replaceWith: replacement,
-      findOptions: options,
-      findOptionsKey: `${options.matchCase ? "c" : ""}${options.wholeWord ? "w" : ""}${options.regex ? "r" : ""}`,
-      found: computeFind(initialValue, query, options),
-      findIndex: 0,
-      findAnchor: { current: 0 },
-      lastReplaceStart: { current: null },
-      findReveal: { current: false },
-      foundFor: { current: { value: initialValue, query, options: "" } },
-    };
-    const el = {
-      focus() {},
-      setSelectionRange(s, e) {
-        this.sel = [s, e];
-      },
-      setRangeText(text, start, end) {
-        state.value = state.value.slice(0, start) + text + state.value.slice(end);
-      },
-      dispatchEvent() {},
-    };
-    return {
-      state,
-      step(all = false) {
-        const fn = new Function(
-          "area",
-          "value",
-          "findQuery",
-          "replaceWith",
-          "findOptions",
-          "findOptionsKey",
-          "found",
-          "findIndex",
-          "findAnchor",
-          "lastReplaceStart",
-          "findReveal",
-          "foundFor",
-          "computeFind",
-          "firstMatchAt",
-          "document",
-          "Event",
-          "onSelect",
-          "findField",
-          applyJs,
-        )(
-          { current: el },
-          state.value,
-          state.findQuery,
-          state.replaceWith,
-          state.findOptions,
-          state.findOptionsKey,
-          state.found,
-          state.findIndex,
-          state.findAnchor,
-          state.lastReplaceStart,
-          state.findReveal,
-          state.foundFor,
-          computeFind,
-          firstMatchAt,
-          { execCommand: () => false },
-          class {
-            constructor(type) {
-              this.type = type;
-            }
-          },
-          () => {},
-          { current: { focus() {} } },
-        );
-        fn(all);
-        state.found = computeFind(state.value, state.findQuery, state.findOptions);
-        state.findIndex = firstMatchAt(state.found.matches, state.findAnchor.current);
-        state.findReveal.current = false;
-      },
-    };
-  }
-  const overlap = makeReplacer("foo foo", "foo", "foobar");
-  overlap.step(false);
-  assert.equal(overlap.state.value, "foobar foo");
-  assert.equal(overlap.state.findAnchor.current, 6, "findAnchor advances past 'foobar'");
-  assert.equal(overlap.state.findIndex, 1, "next match is the second 'foo'");
-  overlap.step(false);
-  assert.equal(overlap.state.value, "foobar foobar", "replacing 'foo' with 'foobar' twice replaces both occurrences");
-
-  const unicodeRep = makeReplacer("İfoo and İFOO", "foo", "bar");
-  unicodeRep.step(false);
-  assert.equal(unicodeRep.state.value, "İbar and İFOO");
-  unicodeRep.step(false);
-  assert.equal(unicodeRep.state.value, "İbar and İbar");
-}
+import {
+  EDITOR,
+  editorSelection,
+  editorUndo,
+  selectEditor,
+  setEditorText,
+  waitForEditorText,
+} from "./editor-helpers.mjs";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const directory = await fs.mkdtemp(path.join(os.tmpdir(), "myflames-editor-find-"));
@@ -248,13 +60,13 @@ function reply(p) {
   return undefined;
 }
 
-const EDITOR = '[aria-label="SQL editor"]';
 const BAR = '.sql-find[role="search"]';
 const FIND = '[aria-label="Find"]';
 const REPLACE = '[aria-label="Replace with"]';
 const COUNT = ".sql-find-count";
-const MARK = ".sql-layer .sql-find-mark";
+const MARK = ".cm-content .sql-find-mark";
 const ERROR = ".sql-find-error";
+const SCROLLER = ".cm-scroller";
 
 let browser;
 try {
@@ -271,7 +83,7 @@ try {
     });
     server.on("error", reject);
   });
-  browser = await puppeteer.launch({ headless: "shell" });
+  browser = await puppeteer.launch({ headless: "shell", args: process.env.MYFLAMES_NO_SANDBOX ? ["--no-sandbox"] : [] });
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
@@ -293,12 +105,15 @@ try {
   const mac = await page.evaluate(() => /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent));
   const MOD = mac ? "Meta" : "Control";
   await page.locator(".main-nav button ::-p-text(Query editor)").click();
-  await page.waitForSelector(".query-lab .editor-toolbar");
+  await page.waitForSelector(`.query-lab ${EDITOR}`, { visible: true });
 
   const sql = () => page.$eval(EDITOR, (e) => e.value);
   const active = (selector) => page.$eval(selector, (e) => e === document.activeElement).catch(() => false);
   const count = () => page.$eval(COUNT, (e) => e.textContent);
-  const selection = () => page.$eval(EDITOR, (e) => [e.selectionStart, e.selectionEnd]);
+  const selection = async () => {
+    const s = await editorSelection(page);
+    return [s.start, s.end];
+  };
   async function until(check, message, timeout = 8000) {
     const end = Date.now() + timeout;
     while (Date.now() < end) {
@@ -308,40 +123,10 @@ try {
     }
     assert.fail(message);
   }
-  /** Replace the editor's text the way typing does (an input event React
-   * sees), so the tab's state holds it too. Large scripts use the native
-   * value setter + input event instead of per-line editing commands. */
-  async function setText(value) {
-    await page.$eval(EDITOR, (el, v) => {
-      el.focus();
-      el.select();
-      if (v.length > 50_000) {
-        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(el, v);
-        el.dispatchEvent(new Event("input", { bubbles: true }));
-      } else {
-        document.execCommand("insertText", false, v);
-      }
-    }, value);
-    await page.waitForFunction(
-      (len, head, tail) => {
-        const el = document.querySelector('[aria-label="SQL editor"]');
-        return el && el.value.length === len && el.value.startsWith(head) && el.value.endsWith(tail);
-      },
-      {},
-      value.length,
-      value.slice(0, 40),
-      value.slice(-40),
-    );
-    if (value.length <= 50_000) {
-      assert.equal(await sql(), value, "the tab keeps the new text");
-    }
-  }
-  async function select(start, end) {
-    await page.$eval(EDITOR, (el, start, end) => {
-      el.focus();
-      el.setSelectionRange(start, end);
-    }, start, end);
-  }
+  /** Replace the editor's text the way a paste does (one undo step), so the
+   * tab's state holds it too. Fast even for a 1 MB script. */
+  const setText = (value) => setEditorText(page, value);
+  const select = (start, end) => selectEditor(page, start, end);
   /** Replace the find field's content the way typing does. */
   async function setFind(query) {
     await page.$eval(FIND, (el) => {
@@ -370,7 +155,7 @@ try {
     await page.waitForSelector(BAR);
     await until(() => active(FIND), "the find field is focused");
   }
-  const undo = () => page.$eval(EDITOR, (e) => { e.focus(); document.execCommand("undo"); });
+  const undo = () => editorUndo(page);
 
   // 1. ⌘F opens the find bar docked in the editor; the field is focused and
   // the count is a live region.
@@ -382,7 +167,7 @@ try {
   assert.equal(await count(), "", "no query yet");
 
   // 2. Typing finds case-insensitively; the first match is selected; marks
-  // land on the highlight layer with the current one stronger.
+  // land in the CodeMirror content with the current one stronger.
   await page.keyboard.type("select");
   await until(async () => (await count()) === "1 of 3", "count 1 of 3");
   assert.deepEqual(await selection(), [0, 6], "the first match is selected");
@@ -489,20 +274,23 @@ try {
   await page.click('[aria-label="Match case"]');
   await page.click(REPLACE);
   await page.keyboard.type("SELECT");
+  // Toggling the option clears the matches until the debounced search lands;
+  // the Replace button is disabled while the count is empty.
+  await until(async () => (await count()) === "1 of 3", "the Match case search settled");
   await page.click(`${BAR} .sql-find-action`);
-  await page.waitForFunction((v) => document.querySelector('[aria-label="SQL editor"]').value === v, {}, "SELECT a;\nselect b;\nselect c");
+  await waitForEditorText(page, "SELECT a;\nselect b;\nselect c");
   await until(async () => (await count()) === "1 of 2", "Replace moves to the next match");
   assert.deepEqual(await selection(), [10, 16], "the next match is selected");
   await undo();
-  await page.waitForFunction((v) => document.querySelector('[aria-label="SQL editor"]').value === v, {}, "select a;\nselect b;\nselect c");
+  await waitForEditorText(page, "select a;\nselect b;\nselect c");
 
   // 9. Replace all changes every match as one undo step.
   await until(async () => (await count()) === "1 of 3", "the undo is reflected in the count");
   await page.click(`${BAR} .sql-find-action ~ .sql-find-action`);
-  await page.waitForFunction((v) => document.querySelector('[aria-label="SQL editor"]').value === v, {}, "SELECT a;\nSELECT b;\nSELECT c");
+  await waitForEditorText(page, "SELECT a;\nSELECT b;\nSELECT c");
   await until(async () => (await count()) === "No matches", "nothing left to find");
   await undo();
-  await page.waitForFunction((v) => document.querySelector('[aria-label="SQL editor"]').value === v, {}, "select a;\nselect b;\nselect c");
+  await waitForEditorText(page, "select a;\nselect b;\nselect c");
 
   // 10. Escape returns focus to the editor at the current match; the close
   // button does the same.
@@ -537,11 +325,11 @@ try {
   });
   await page.keyboard.type("bar");
   await page.click(`${BAR} .sql-find-action`);
-  await page.waitForFunction((v) => document.querySelector('[aria-label="SQL editor"]').value === v, {}, "İbar and İFOO");
+  await waitForEditorText(page, "İbar and İFOO");
   await until(async () => (await count()) === "1 of 1", "Replace in İfoo moves to the remaining match");
   assert.deepEqual(await selection(), [10, 13], "the second match in İbar and İFOO is selected");
   await page.click(`${BAR} .sql-find-action`);
-  await page.waitForFunction((v) => document.querySelector('[aria-label="SQL editor"]').value === v, {}, "İbar and İbar");
+  await waitForEditorText(page, "İbar and İbar");
   await until(async () => (await count()) === "No matches", "both Unicode matches were replaced");
 
   await setText("foo foo");
@@ -554,23 +342,24 @@ try {
   });
   await page.keyboard.type("foobar");
   await page.click(`${BAR} .sql-find-action`);
-  await page.waitForFunction((v) => document.querySelector('[aria-label="SQL editor"]').value === v, {}, "foobar foo");
+  await waitForEditorText(page, "foobar foo");
   await until(async () => (await count()) === "2 of 2", "Replace advances past the inserted replacement text");
   assert.deepEqual(await selection(), [7, 10], "the second foo is selected");
   await page.click(`${BAR} .sql-find-action`);
-  await page.waitForFunction((v) => document.querySelector('[aria-label="SQL editor"]').value === v, {}, "foobar foobar");
+  await waitForEditorText(page, "foobar foobar");
   await page.keyboard.press("Escape");
   await page.waitForFunction((b) => !document.querySelector(b), {}, BAR);
 
-  // 11. The current match scrolls into view, also past HIGHLIGHT_LIMIT where
-  // no marks are drawn (the highlight layer is off there by design).
+  // 11. The current match scrolls into view. Marks are capped at
+  // FIND_MARK_LIMIT (1000) whatever the document size, and the current match
+  // is always drawn, even past the syntax highlight limit on a 1 MB script.
   const tall = Array.from({ length: 400 }, (_, i) => `select ${i};`).join("\n") + "\nselect needle_from_nowhere;";
   await setText(tall);
   await select(0, 0);
   await openFind();
   await setFind("needle_from_nowhere");
   await until(async () => (await count()) === "1 of 1", "the needle is found");
-  await until(async () => page.$eval(EDITOR, (e) => e.scrollTop > 0), "the editor scrolled to the match");
+  await until(async () => page.$eval(SCROLLER, (e) => e.scrollTop > 0), "the editor scrolled to the match");
   const huge = "select x from t;\n".repeat(65000) + "select zztargetzz;";
   assert.ok(huge.length > 1_000_000, "about 1 MB");
   await setText(huge);
@@ -580,8 +369,14 @@ try {
   await until(async () => (await count()) === "1 of 1", "find stays responsive on a 1 MB script", 2000);
   const searchElapsed = Date.now() - searchStart;
   assert.ok(searchElapsed < 1500, `searching a 1 MB script stayed responsive (${searchElapsed} ms)`);
-  assert.equal(await page.$$eval(MARK, (els) => els.length), 0, "no marks past the highlight limit");
-  await until(async () => page.$eval(EDITOR, (e) => e.scrollTop > 0), "the 1 MB script scrolled to the match");
+  await until(async () => page.$eval(SCROLLER, (e) => e.scrollTop > 0), "the 1 MB script scrolled to the match");
+  // CodeMirror renders marks only for the visible viewport; after the scroll
+  // the current match's mark is there even past the syntax highlight limit.
+  await until(async () => (await page.$$eval(MARK, (els) => els.length)) === 1, "the current match is marked even on a 1 MB script");
+  await setFind("select");
+  await until(async () => (await count()) === "1 of 65001", "the 1 MB script counts every match");
+  const markCount = await page.$$eval(MARK, (els) => els.length);
+  assert.ok(markCount > 0 && markCount <= 1000, `marks are capped at FIND_MARK_LIMIT on a 1 MB script (${markCount} drawn)`);
 
   // 12. Hit targets and the layout at the 720 px minimum, light and dark.
   await setText("select 1;\nselect 2");
@@ -607,7 +402,7 @@ try {
   await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: "light" }]);
 
   assert.deepEqual(errors, [], "no page errors (the invalid pattern never throws)");
-  console.log("Editor find and replace: ⌘F / ⌥⌘F (Ctrl+F / Ctrl+H), prefill from a one-line selection, count, Enter / Shift+Enter and ⌘G / ⇧⌘G with wrap, Match case, Whole word, Regular expression with an inline error, marks with a stronger current match, scroll into view (also past the highlight limit on a 1 MB script), Replace and Replace all as single undo steps, Escape and the close button returning focus to the editor, hit targets, and 1440/720 px layouts in light and dark passed.");
+  console.log("Editor find and replace: ⌘F / ⌥⌘F (Ctrl+F / Ctrl+H), prefill from a one-line selection, count, Enter / Shift+Enter and ⌘G / ⇧⌘G with wrap, Match case, Whole word, Regular expression with an inline error, marks with a stronger current match, scroll into view (marks capped at FIND_MARK_LIMIT on a 1 MB script), Replace and Replace all as single undo steps, Escape and the close button returning focus to the editor, hit targets, and 1440/720 px layouts in light and dark passed.");
 } finally {
   await browser?.close();
   server.kill();

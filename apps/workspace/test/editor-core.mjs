@@ -7,6 +7,9 @@
 // 6. Hidden mount line-height measurement after reload from Home
 // 7. Refused .sql file drop on .cm-content
 // 8. Multi-cursor Escape during an active run vs second Escape Stop
+// 9. Scrolling .cm-scroller causes no React commit
+// 10. A tab switch keeps each tab's EditorState (undo history and selection)
+// 11. The suggestions popup stays inside the window at 1440 and 390 px
 // Run after `npm run build`: node test/editor-core.mjs
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -20,6 +23,7 @@ import puppeteer from "puppeteer";
 import {
   EDITOR,
   assertEditorText,
+  editorSelection,
   editorUndo,
   selectEditor,
   setEditorText,
@@ -307,6 +311,25 @@ try {
   });
 
   const client = await page.createCDPSession();
+  // Count every React commit from before the bundle loads. Step 9 first proves
+  // the counter observes a real commit, then proves scrolling produces none.
+  await page.evaluateOnNewDocument(() => {
+    const hook = {
+      renderers: new Map(),
+      isDisabled: false,
+      supportsFiber: true,
+      checkDCE() {},
+      inject(renderer) {
+        const id = this.renderers.size + 1;
+        this.renderers.set(id, renderer);
+        return id;
+      },
+      onCommitFiberRoot() { window.__reactCommits = (window.__reactCommits || 0) + 1; },
+      onCommitFiberUnmount() {},
+      onScheduleFiberRoot() {},
+    };
+    Object.defineProperty(window, "__REACT_DEVTOOLS_GLOBAL_HOOK__", { value: hook });
+  });
   await page.setViewport({ width: 1440, height: 1000 });
   await page.goto(url, { waitUntil: "networkidle0" });
 
@@ -628,9 +651,90 @@ try {
     stepDone("8. Escape collapses two cursors without stopping run, second Escape stops run");
   }
 
-  assert.equal(completedSteps.length, 8, "all 8 editor-core checks completed");
+  // ---- Step 9: Scrolling the editor causes no React commit ------------------
+  {
+    const manyLines = Array.from({ length: 300 }, (_, i) => `SELECT ${i};`).join("\n");
+    await setEditorText(page, manyLines);
+    await selectEditor(page, 0);
+    const commits = () => page.evaluate(() => window.__reactCommits || 0);
+    const before = await commits();
+    await page.keyboard.type("1");
+    await until(async () => (await commits()) > before, "step 9: the commit counter saw the edit's React commit");
+    await editorUndo(page);
+    await waitForEditorText(page, manyLines);
+    // Let the autosave of the edit above settle so no in-flight save commits
+    // during the scroll window.
+    await page.waitForNetworkIdle({ idleTime: 150, timeout: 5000 }).catch(() => {});
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))));
+    const settled = await commits();
+    await page.$eval(".cm-scroller", (el) => {
+      el.scrollTop = 1200;
+      el.scrollLeft = 40;
+    });
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))));
+    await pause(60);
+    assert.equal(await commits(), settled, "step 9: scrolling .cm-scroller caused no React commit");
+    const scrolled = await page.$eval(".cm-scroller", (el) => el.scrollTop > 0);
+    assert.ok(scrolled, "step 9: the editor actually scrolled");
+    stepDone("9. Scrolling the editor causes no React commit");
+  }
+
+  // ---- Step 10: A tab switch keeps each tab's EditorState -------------------
+  {
+    const prior = await page.$eval(EDITOR, (e) => e.value);
+    await setEditorText(page, "SELECT alpha;\nSELECT beta;");
+    await selectEditor(page, 7, 12); // "alpha"
+    const tabsBefore = await page.$$eval(".query-tablist [role=tab]", (tabs) => tabs.length);
+    const activeBefore = await page.$$eval(".query-tablist [role=tab]", (tabs) => tabs.findIndex((t) => t.getAttribute("aria-selected") === "true"));
+    assert.ok(activeBefore >= 0, "step 10: a tab is active before the switch");
+    await page.click('button.query-tab-add[aria-label="New query tab"]');
+    await until(
+      () => page.$$eval(".query-tablist [role=tab]", (tabs, n) => tabs.length === n + 1 && tabs[n].getAttribute("aria-selected") === "true", tabsBefore),
+      "step 10: the new tab did not open and become active",
+    );
+    await setEditorText(page, "SELECT gamma;");
+    await (await page.$$(".query-tablist [role=tab]"))[activeBefore].click();
+    await until(
+      () => page.$$eval(".query-tablist [role=tab]", (tabs, i) => tabs[i]?.getAttribute("aria-selected") === "true", activeBefore),
+      "step 10: the original tab did not become active again",
+    );
+    await assertEditorText(page, "SELECT alpha;\nSELECT beta;", "step 10: the original tab kept its text across the switch");
+    assert.deepEqual(await editorSelection(page), { start: 7, end: 12 }, "step 10: the selection survived the tab switch");
+    await editorUndo(page);
+    await waitForEditorText(page, prior);
+    await assertEditorText(page, prior, "step 10: the undo history survived the tab switch");
+    stepDone("10. Tab switch keeps EditorState (undo history and selection)");
+  }
+
+  // ---- Step 11: The suggestions popup stays inside the window ---------------
+  {
+    for (const width of [1440, 390]) {
+      await page.setViewport({ width, height: 900 });
+      await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))));
+      await setEditorText(page, "SEL");
+      await selectEditor(page, 3);
+      await page.keyboard.down("Control");
+      await page.keyboard.press("Space");
+      await page.keyboard.up("Control");
+      await page.waitForSelector(".sql-completion .sql-completion-label", { visible: true, timeout: 8000 });
+      const box = await page.$eval(".sql-completion", (el) => {
+        const r = el.getBoundingClientRect();
+        return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, w: innerWidth, h: innerHeight };
+      });
+      assert.ok(
+        box.left >= 0 && box.top >= 0 && box.right <= box.w && box.bottom <= box.h,
+        `step 11: the suggestions popup fits inside the ${width} px window: ${JSON.stringify(box)}`,
+      );
+      await page.keyboard.press("Escape");
+      await page.waitForFunction(() => !document.querySelector(".sql-completion"));
+    }
+    await page.setViewport({ width: 1440, height: 1000 });
+    stepDone("11. Suggestions popup stays inside the window at 1440 and 390 px");
+  }
+
+  assert.equal(completedSteps.length, 11, "all 11 editor-core checks completed");
   assert.deepEqual(errors, [], "no uncaught page errors occurred");
-  console.log(`Editor core checks passed (${completedSteps.length}/8).`);
+  console.log(`Editor core checks passed (${completedSteps.length}/11).`);
 } finally {
   if (browser) await browser.close();
   if (server.exitCode === null) {
