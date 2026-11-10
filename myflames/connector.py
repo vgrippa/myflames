@@ -651,7 +651,7 @@ class MySQLConnection:
         from . import client_tools
         return client_tools.endpoint_key(vars(self))
 
-    def _first_contact(self, discovered, keys):
+    def _first_contact(self, discovered, keys, choices, errors):
         """Single flight per endpoint, using this object's credentials/transport.
 
         Only valid server facts persist. All waiters share failures as well as
@@ -674,10 +674,11 @@ class MySQLConnection:
                 raise flight['error']
             return flight['facts']
         try:
-            engine = next((e for e in ('mysql', 'mariadb') if keys.get(e)), None)
-            used = client_tools.select(discovered,
-                dict(engine=engine, version='5.7.0') if engine else None, keys)['client']
+            used = client_tools.first_contact_client(discovered, keys)
             if used is None:
+                for error in errors.values():
+                    if error:
+                        raise ClientMissingError(error)
                 raise ClientMissingError()
             for attempt in range(2):
                 try:
@@ -688,9 +689,17 @@ class MySQLConnection:
                     if attempt:
                         raise
                     other = 'mariadb' if used['engine'] == 'mysql' else 'mysql'
+                    if choices.get(other) and not keys.get(other):
+                        raise ClientMissingError(errors[other])
+                    # Chosen-only discovery deliberately skips PATH probes.
+                    # On a plugin failure, an automatic other engine needs its
+                    # own lazy discovery with the normal pre-probe trust checks.
+                    retry_discovered = (client_tools.discover()
+                                        if any(choices.values()) and not choices.get(other)
+                                        else discovered)
                     # The other engine's pure ranking selects its best copy.
-                    candidates = dict(discovered, installations=[g for g in discovered['installations']
-                                                                 if g['engine'] == other])
+                    candidates = dict(retry_discovered, installations=[
+                        g for g in retry_discovered['installations'] if g['engine'] == other])
                     used = client_tools.select(candidates, dict(engine=other, version='5.7.0'), keys)['client']
                     if used is None:
                         raise
@@ -751,15 +760,20 @@ class MySQLConnection:
                     if generation != _CLIENT_CHOICES_GENERATION:
                         continue
                 facts = client_tools.server_facts(self._endpoint_key())
-                relevant = (facts['engine'],) if facts else ('mysql', 'mariadb')
-                for engine in relevant:
-                    if errors[engine]:
-                        raise ClientMissingError(errors[engine])
+                if facts and errors[facts['engine']]:
+                    raise ClientMissingError(errors[facts['engine']])
+                if facts is None and any(errors.values()) and not any(keys.values()):
+                    # No valid choice can identify this endpoint. A trusted
+                    # automatic client may read its identity, but cannot repair
+                    # the stored choice for the engine it discovers.
+                    discovered = client_tools.discover()
                 client_count = len({p['realpath'] for g in discovered['installations']
                                     for name, p in g['programs'].items() if name in ('mysql', 'mariadb')} |
                                    {c['realpath'] for c in candidates})
-                if facts is None and max(len(candidates), client_count) >= 2:
-                    facts = self._first_contact(discovered, keys)
+                if facts is None and (any(errors.values()) or max(len(candidates), client_count) >= 2):
+                    facts = self._first_contact(discovered, keys, choices, errors)
+                if facts and errors[facts['engine']]:
+                    raise ClientMissingError(errors[facts['engine']])
                 if facts and any(choices.values()) and not choices.get(facts['engine']):
                     discovered = client_tools.discover_choices(choices)
                     keys, errors = client_tools.choice_keys(discovered, choices)
@@ -771,9 +785,7 @@ class MySQLConnection:
                 # Unknown servers still honor an explicit choice for the
                 # fallback client's engine (select intentionally remains pure).
                 if facts is None:
-                    engine = next((e for e in ('mysql', 'mariadb') if keys[e]), None)
-                    if engine and keys.get(engine):
-                        used = client_tools.select(discovered, dict(engine=engine, version='5.7.0'), keys)['client']
+                    used = client_tools.first_contact_client(discovered, keys)
                 if used is None:
                     raise ClientMissingError()
                 try:

@@ -477,6 +477,16 @@ class SelectionTests(unittest.TestCase):
     def choose(self, version='8.4.3', engine='mysql', choice=None):
         return ct.select(self.discovered, dict(engine=engine, version=version), choice)
 
+    def test_first_contact_prefers_valid_choices_then_automatic_fallback(self):
+        maria = self.group('11.4.2', 3, engine='mariadb')
+        self.groups.append(maria)
+        for keys, expected in ((dict(mysql=self.groups[2]['key'], mariadb=maria['key']), self.groups[2]),
+                               (dict(mysql=None, mariadb=maria['key']), maria),
+                               (dict(mysql=None, mariadb=None), self.groups[0])):
+            with self.subTest(keys=keys):
+                self.assertEqual(ct.first_contact_client(self.discovered, keys)['installation'], expected['key'])
+        self.assertIsNone(ct.first_contact_client(dict(installations=[], shells=[]), {}))
+
     def test_owner_mac_selection_table(self):
         for server, version, reason in (('8.4.3', '8.4.13', 'series'), ('8.0.44', '8.0.45', 'series'),
                                         ('5.7.44', '8.0.45', 'newer'), ('9.7.2', '8.4.13', 'older')):

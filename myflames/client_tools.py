@@ -462,6 +462,17 @@ def server_facts(key):
     return None
 
 
+def first_contact_client(discovered, keys):
+    """Prefer a valid Settings choice, then the trusted unknown-server fallback.
+
+    ``keys`` contains resolved installation keys, not stored choice spellings.
+    A broken choice is enforced after the contact identifies the server engine.
+    """
+    engine = next((e for e in ('mysql', 'mariadb') if keys.get(e)), None)
+    return select(discovered, dict(engine=engine, version='5.7.0') if engine else None,
+                  keys)['client']
+
+
 def choice_keys(discovered, choices):
     """Resolve stored spellings without silently replacing unavailable choices."""
     keys = dict(mysql=None, mariadb=None)

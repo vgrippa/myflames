@@ -33,6 +33,21 @@ sys.path.insert(0, os.path.dirname(TEST_DIR))
 
 from myflames import connector
 from myflames.connector import MySQLConnection, ConnectorError
+# Load before any test runs: these bind connector.MySQLConnection by name, and
+# one first imported while another test patches that class keeps the mock
+# (lifecycle.LifecycleConnection then becomes a MagicMock).
+from myflames import discover, editor_session, health, lifecycle  # noqa: F401
+
+
+def _require_real_connection_classes(case):
+    """Fail clearly, not with StopIteration or mock results, on a leaked patch."""
+    for module in (connector, editor_session, lifecycle):
+        case.assertIs(vars(module)['MySQLConnection'], MySQLConnection,
+                      '%s holds a patched MySQLConnection left by another test' % module.__name__)
+    case.assertTrue(isinstance(lifecycle.LifecycleConnection, type) and
+                    issubclass(lifecycle.LifecycleConnection, MySQLConnection),
+                    'lifecycle.LifecycleConnection is not a MySQLConnection subclass: %r'
+                    % (lifecycle.LifecycleConnection,))
 
 
 def _fake_completed(stdout=b"", stderr=b"", returncode=0):
@@ -94,6 +109,11 @@ else:
 
 
 class TestConcurrentCredentials(unittest.TestCase):
+    def setUp(self):
+        # Every connection here passes binary=, so client choices, PATH and
+        # cached server facts are never read; the classes themselves are.
+        _require_real_connection_classes(self)
+
     def test_twenty_concurrent_reads_have_distinct_ephemeral_files(self):
         self._concurrent_calls(MySQLConnection, 'run')
 
@@ -737,8 +757,13 @@ class TestClientSelection(unittest.TestCase):
 
 @unittest.skipIf(os.name == 'nt', 'POSIX executable fixtures; Windows names tested separately')
 class TestVersionAwareClients(unittest.TestCase):
-    setUp = TestClientSelection.setUp
     binary = TestClientSelection.binary
+
+    def setUp(self):
+        # Client choices, PATH, bundled and common folders, facts and probes.
+        TestClientSelection.setUp(self)
+        _require_real_connection_classes(self)
+
     def layout(self):
         latest = self.binary(folder='Cellar/mysql/9.7.0/bin', body='print("mysql Ver 9.7.0")')
         old = self.binary(folder='Cellar/mysql@8.0/8.0.45/bin', body='print("mysql Ver 8.0.45")')
@@ -879,6 +904,107 @@ class TestVersionAwareClients(unittest.TestCase):
             self.assertIn('mariadb 11.4.2 (On PATH)', str(caught.exception))
             self.assertIn('client_ed25519 plugin', str(caught.exception))
             self.assertIs(connector.client_missing_error(ValueError('wrapped', caught.exception)), None)
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX executable scripts')
+    def test_chosen_mysql_2059_lazily_discovers_automatic_mariadb(self):
+        from myflames import client_tools as ct
+        mysql = self.binary(folder='chosen')
+        maria = self.binary('mariadb', body='print("mariadb Ver 11.4.2-MariaDB")', folder='path')
+        os.environ['PATH'] = os.path.dirname(maria)
+        connector.set_client_choices({'mysql': mysql})
+        failure = _fake_completed(stderr=b"ERROR 2059 (HY000): Authentication plugin 'client_ed25519' cannot be loaded", returncode=1)
+        def read(argv, **kwargs):
+            if argv[0] == mysql:
+                self.assertFalse(any(call[0][1] == maria for call in probe.call_args_list))
+                return failure
+            self.assertEqual(argv[0], maria)
+            return _fake_completed(b'11.4.2-MariaDB\tMariaDB Server\n')
+        with mock.patch.object(ct, 'probe', wraps=ct.probe) as probe, \
+                mock.patch.object(connector, '_run_bounded', side_effect=read) as run:
+            conn = MySQLConnection(host='chosen-mysql-ed25519')
+            self.assertEqual(conn._resolve_binary(), maria)
+        self.assertEqual([call[0][0][0] for call in run.call_args_list], [mysql, maria])
+        self.assertEqual(ct.server_facts(conn._endpoint_key())['engine'], 'mariadb')
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX executable scripts')
+    def test_broken_other_engine_choice_is_checked_after_first_contact(self):
+        mysql = self.binary(folder='chosen')
+        broken = self.binary('mariadb', body='raise SystemExit(1)', folder='broken')
+        os.environ['PATH'] = os.path.dirname(mysql)
+        connector.set_client_choices({'mysql': mysql, 'mariadb': broken})
+        for engine, response in (('mysql', b'8.4.14\tMySQL Community Server\n'),
+                                 ('mariadb', b'11.4.2-MariaDB\tMariaDB Server\n')):
+            with self.subTest(engine=engine), mock.patch.object(connector, '_run_bounded',
+                    return_value=_fake_completed(response)) as run:
+                conn = MySQLConnection(host='broken-other-' + engine)
+                if engine == 'mysql':
+                    self.assertEqual(conn._resolve_binary(), mysql)
+                else:
+                    with self.assertRaisesRegex(connector.ClientMissingError, re.escape(
+                            'The client tools chosen in Settings > Client tools are no longer at ' + broken + '.')):
+                        conn._resolve_binary()
+                self.assertEqual(run.call_count, 1)
+                self.assertEqual(run.call_args[0][0][0], mysql)
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX executable scripts')
+    def test_broken_choice_can_use_automatic_first_contact_without_repairing_choice(self):
+        mysql = self.binary(folder='automatic')
+        marker = os.path.join(self.temp.name, 'untrusted-contact-ran')
+        planted = self.binary(body='open(%r, "w").close(); print("mysql Ver 8.4.99")' % marker,
+                              folder='untrusted-automatic')
+        os.chmod(os.path.dirname(planted), 0o777)
+        broken = os.path.join(self.temp.name, 'missing', 'mariadb')
+        os.environ['PATH'] = os.pathsep.join(map(os.path.dirname, (planted, mysql)))
+        connector.set_client_choices({'mariadb': broken})
+        for engine, response in (('mysql', b'8.4.14\tMySQL Community Server\n'),
+                                 ('mariadb', b'11.4.2-MariaDB\tMariaDB Server\n')):
+            with self.subTest(engine=engine), mock.patch.object(connector, '_run_bounded',
+                    return_value=_fake_completed(response)) as run:
+                conn = MySQLConnection(host='automatic-contact-' + engine)
+                if engine == 'mysql':
+                    self.assertEqual(conn._resolve_binary(), mysql)
+                else:
+                    with self.assertRaisesRegex(connector.ClientMissingError, re.escape(broken)):
+                        conn._resolve_binary()
+                self.assertEqual(run.call_count, 1)
+                self.assertEqual(run.call_args[0][0][0], mysql)
+                self.assertEqual(connector.client_choices(), {'mysql': None, 'mariadb': broken})
+                self.assertFalse(os.path.exists(marker))
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX executable scripts')
+    def test_chosen_mysql_2059_retry_refuses_untrusted_automatic_client(self):
+        marker = os.path.join(self.temp.name, 'untrusted-ran')
+        mysql = self.binary(folder='chosen')
+        trusted = self.binary('mariadb', body='print("mariadb Ver 11.4.2-MariaDB")', folder='trusted')
+        planted = self.binary('mariadb', body='open(%r, "w").close(); print("mariadb Ver 11.4.99-MariaDB")' % marker,
+                              folder='planted')
+        os.chmod(os.path.dirname(planted), 0o777)
+        os.environ['PATH'] = os.pathsep.join(map(os.path.dirname, (planted, trusted)))
+        connector.set_client_choices({'mysql': mysql})
+        failure = _fake_completed(stderr=b"ERROR 2059 (HY000): Authentication plugin 'client_ed25519' cannot be loaded", returncode=1)
+        with mock.patch.object(connector, '_run_bounded', side_effect=[failure,
+                _fake_completed(b'11.4.2-MariaDB\tMariaDB Server\n')]) as run:
+            self.assertEqual(MySQLConnection(host='trusted-auth-retry')._resolve_binary(), trusted)
+        self.assertEqual([call[0][0][0] for call in run.call_args_list], [mysql, trusted])
+        self.assertFalse(os.path.exists(marker))
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX executable scripts')
+    def test_chosen_mysql_2059_retry_is_once_and_keeps_broken_other_choice(self):
+        mysql = self.binary(folder='chosen')
+        maria = self.binary('mariadb', body='print("mariadb Ver 11.4.2-MariaDB")', folder='automatic')
+        os.environ['PATH'] = os.path.dirname(maria)
+        failure = _fake_completed(stderr=b"ERROR 2059 (HY000): Authentication plugin 'client_ed25519' cannot be loaded", returncode=1)
+        for broken in (None, os.path.join(self.temp.name, 'missing', 'mariadb')):
+            connector.set_client_choices({'mysql': mysql, 'mariadb': broken})
+            with self.subTest(broken=broken), mock.patch.object(connector, '_run_bounded',
+                    return_value=failure) as run:
+                expected = connector.ClientMissingError if broken else connector.ClientAuthPluginError
+                with self.assertRaises(expected) as caught:
+                    MySQLConnection(host='retry-limit-' + str(broken))._resolve_binary()
+                if broken:
+                    self.assertIn(broken, str(caught.exception))
+                self.assertEqual([call[0][0][0] for call in run.call_args_list],
+                                 [mysql] if broken else [mysql, maria])
 
     def test_first_contact_uses_socket_and_ssh_lease(self):
         from myflames.lifecycle import LifecycleConnection
