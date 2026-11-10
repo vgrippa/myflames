@@ -983,7 +983,7 @@ class TestWindowsClientTrust(unittest.TestCase):
 
     def test_lifecycle_executable_allowlist_accepts_every_installation_root(self):
         names = ('mysql.exe', 'mariadb.exe', 'mysqldump.exe', 'mariadb-dump.exe',
-                 'mariadb-backup.exe', 'mysqlsh.exe')
+                 'mariadb-backup.exe', 'mariadb-upgrade.exe', 'mysqlpump.exe', 'mysqlsh.exe')
         for key in ('ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'LOCALAPPDATA',
                     'MYFLAMES_USER_PROFILE', 'USERPROFILE'):
             self.windows_os.environ = {key: r'C:\Allowed'}
@@ -1003,7 +1003,8 @@ class TestWindowsClientTrust(unittest.TestCase):
         self.run.assert_not_called()
 
     def test_lifecycle_executables_still_require_safe_local_roots(self):
-        for name in ('mysqldump.exe', 'mariadb-dump.exe', 'mariadb-backup.exe', 'mysqlsh.exe'):
+        for name in ('mysqldump.exe', 'mariadb-dump.exe', 'mariadb-backup.exe',
+                     'mariadb-upgrade.exe', 'mysqlpump.exe', 'mysqlsh.exe'):
             for root in (r'C:\untrusted', r'C:\Program FilesOther', r'C:\Users\tester-other',
                          r'D:\Program Files', r'C:\Program Files\..\untrusted'):
                 with self.subTest(name=name, root=root), self.assertRaises(ValueError):
@@ -1016,7 +1017,8 @@ class TestWindowsClientTrust(unittest.TestCase):
         self.run.assert_not_called()
 
     def test_lifecycle_executable_resolved_targets_cannot_escape_trusted_roots(self):
-        for name in ('mysqldump.exe', 'mariadb-dump.exe', 'mariadb-backup.exe', 'mysqlsh.exe'):
+        for name in ('mysqldump.exe', 'mariadb-dump.exe', 'mariadb-backup.exe',
+                     'mariadb-upgrade.exe', 'mysqlpump.exe', 'mysqlsh.exe'):
             path = ntpath.join(r'C:\Program Files\MySQL\bin', name)
             for root in (r'C:\outside', r'\\server\share'):
                 destination = ntpath.join(root, name)
@@ -1876,23 +1878,31 @@ class TestClientSecurityFixes(unittest.TestCase):
             "ERROR 1644 (45000) at line 1: SIGNAL\nERROR 2059 (HY000): Authentication plugin 'x' cannot be loaded",
             "ERROR 2059 (HY000) at line 1: Authentication plugin 'x' cannot be loaded",
             "ERROR 2059 (HY000): Authentication plugin 'x\n<b>evil</b>' cannot be loaded",
+            "ERROR 2059 (HY000) at line 1: Plugin client_ed25519 could not be loaded: missing",
+            "ERROR 1644 (45000) at line 1: SIGNAL\nERROR 2059 (HY000): Plugin x could not be loaded: missing",
+            "ERROR 2059 (HY000): Plugin x-y could not be loaded: missing",
+            "ERROR 2059 (HY000): Plugin x\nERROR 2059 (HY000): Plugin y could not be loaded: missing",
+            "ERROR 2059 (HY000): Plugin 'client_ed25519' could not be loaded: missing",
         ]
-        genuine = "ERROR 2059 (HY000): Authentication plugin 'client_ed25519' cannot be loaded: dlopen(...)"
-        for text in cases + [genuine]:
+        genuine = ["ERROR 2059 (HY000): Authentication plugin 'client_ed25519' cannot be loaded: dlopen(...)",
+                   "warning before first error\nERROR 2059 (HY000): Plugin client_ed25519 could not be loaded: dlopen(...)"]
+        for text in cases + genuine:
             binary = self.binary(body=("import sys\n"
                 "if '--version' in sys.argv: print('mysql Ver 8.4.13')\n"
                 "else: sys.stderr.write(%r); sys.exit(1)" % text))
             for method in ('run', 'run_write', 'run_script'):
                 with self.subTest(text=text, method=method):
                     conn = MySQLConnection('errors', binary=binary)
-                    if method == 'run_script' and ' at line ' in text and text != genuine:
+                    if method == 'run_script' and ' at line ' in text and text not in genuine:
                         # Script mode intentionally returns server statement errors.
                         self.assertEqual(getattr(conn, method)('SELECT 1')[1], text)
                     else:
                         with self.assertRaises(ConnectorError) as caught:
                             getattr(conn, method)('SELECT 1')
                         self.assertEqual(type(caught.exception), connector.ClientAuthPluginError
-                                         if text == genuine else ConnectorError)
+                                         if text in genuine else ConnectorError)
+                        if text in genuine:
+                            self.assertIn('client_ed25519 plugin', str(caught.exception))
 
     def test_option_file_keeps_the_client_it_was_built_for(self):
         mysql = self.binary()

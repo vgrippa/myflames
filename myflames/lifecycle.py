@@ -2171,7 +2171,7 @@ def _copy_reviewed_file(directory, record, output, job):
         raise Refused('Backup changed while staging; no restore statement was sent.')
 
 
-def _sql_schema_scan(directory, record, source_schema, job=None):
+def _sql_schema_scan(directory, record, source_schema, job=None, target_schema=None):
     """Scan the reviewed bytes with bounded tokens and chunk-independent state.
 
     This recognizes the schema references relevant to picked-table mysqldump
@@ -2179,8 +2179,10 @@ def _sql_schema_scan(directory, record, source_schema, job=None):
     comments; inspect executable version comments, including MariaDB's form.
     Never rewrite the dump. The checksum must still match after this read.
     """
-    found = dict(create_database=False, create_schema=False, use=False, qualified_source=False)
+    found = dict(create_database=False, create_schema=False, use=False,
+                 qualified_source=False, qualified_other=False)
     source = (source_schema or '').casefold()
+    target = target_schema or source_schema or ''
     words = re.compile(r'[\w$]+')
     spaces = re.compile(r'\s+')
     line_end = re.compile(r'[\r\n]')
@@ -2195,12 +2197,27 @@ def _sql_schema_scan(directory, record, source_schema, job=None):
             self.previous = ''
             self.source_previous = False
             self.at_start = True
+            self.line_start = True
+            self.delimiter = ';'
+            self.identifier_previous = self.qualifier = ''
             # Database names have at most 64 characters. Longer tokens must
             # not retain unbounded INSERT data, nor match a truncated name.
-            self.limit = max(len(source), len('DATABASE')) + 1
+            self.limit = max(64, len(source), len(target)) + 1
 
         def token(self, kind, value):
+            spelling = value
             value = value.casefold()
+            if self.qualifier and kind in ('word', 'identifier'):
+                found['qualified_other'] = True
+            self.qualifier = (self.identifier_previous if kind == 'symbol' and value == '.' and
+                              self.identifier_previous.casefold() != source and
+                              self.identifier_previous != target else '')
+            # A two-part reference can also be table.column. Be conservative:
+            # this scan cannot prove that such a qualifier is a table alias.
+            # Do not case-fold the target exception: database names can be
+            # case-sensitive, and this scan has no lower_case_table_names fact.
+            self.identifier_previous = (spelling if kind == 'identifier' or
+                                        (kind == 'word' and not value.isdigit()) else '')
             if self.source_previous and kind == 'symbol' and value == '.':
                 found['qualified_source'] = True
             self.source_previous = bool(source) and kind in ('word', 'identifier') and value == source
@@ -2219,15 +2236,20 @@ def _sql_schema_scan(directory, record, source_schema, job=None):
 
         def write(self, chunk, final=False):
             text = self.pending + self.decoder.decode(chunk, final=final)
-            end = len(text) if final else max(0, len(text) - 3)
             i = 0
-            while i < end:
+            while i < len(text):
+                # Preserve enough lookahead even when a delimiter changes in
+                # this chunk, including a delimiter split across input reads.
+                end = len(text) if final else max(0, len(text) - max(3, len(self.delimiter)))
+                if i >= end:
+                    break
                 char = text[i]
                 if self.comment == 'line':
                     newline = line_end.search(text, i, end)
                     if newline:
                         self.comment = None
                         i = newline.end()
+                        self.line_start = True
                     else:
                         i = end
                     continue
@@ -2270,10 +2292,44 @@ def _sql_schema_scan(directory, record, source_schema, job=None):
                         i += 1
                         continue
                     self.version = False
+                if (self.line_start or self.at_start) and not self.word:
+                    remainder = text[i:]
+                    if not final and len(remainder) < 10 and 'delimiter'.startswith(remainder.casefold()):
+                        break
+                    if remainder[:9].casefold() == 'delimiter' and remainder[9:10].isspace():
+                        newline = line_end.search(text, i + 9)
+                        if newline is None and not final:
+                            if len(remainder) > 1024:
+                                raise Refused('dump.sql has a DELIMITER command too long to scan safely.')
+                            break
+                        delimiter = text[i + 9:newline.start() if newline else len(text)].strip()
+                        if delimiter[:1] in ("'", '"', '`') and len(delimiter) >= 2 and delimiter[-1] == delimiter[0]:
+                            delimiter = delimiter[1:-1]
+                        # Both clients store at most 15 bytes: mysql.cc's
+                        # delimiter[16] and com_delimiter. Refuse unsupported
+                        # arguments instead of tracking a different delimiter.
+                        if (not delimiter or len(delimiter) > 15 or
+                                any(c.isspace() or ord(c) > 127 or c in "\\'\"`" for c in delimiter)):
+                            raise Refused('dump.sql has a DELIMITER command that cannot be scanned safely.')
+                        self.delimiter = delimiter
+                        self.token('symbol', ';')
+                        i = newline.end() if newline else len(text)
+                        continue
+                if text.startswith(self.delimiter, i):
+                    self.end_word()
+                    self.token('symbol', ';')
+                    self.line_start = False
+                    i += len(self.delimiter)
+                    continue
                 if char.isalnum() or char in '_$':
                     match = words.match(text, i, end)
-                    self.word = (self.word + match.group()[:self.limit])[:self.limit]
-                    i = match.end()
+                    stop = match.end()
+                    delimiter_at = text.find(self.delimiter, i, stop + len(self.delimiter) - 1)
+                    if i <= delimiter_at < stop:
+                        stop = delimiter_at
+                    self.word = (self.word + text[i:min(stop, i + self.limit)])[:self.limit]
+                    self.line_start = False
+                    i = stop
                     continue
                 self.end_word()
                 if text.startswith('/*!', i) or text.startswith('/*M!', i):
@@ -2289,11 +2345,18 @@ def _sql_schema_scan(directory, record, source_schema, job=None):
                     i += 1
                 elif char in ("'", '"', '`'):
                     self.quote = char
+                    self.line_start = False
                     i += 1
                 elif char.isspace():
-                    i = spaces.match(text, i, end).end()
+                    match = spaces.match(text, i, end)
+                    if line_end.search(match.group()):
+                        self.line_start = True
+                    i = match.end()
                 else:
-                    self.token('symbol', char)
+                    # A semicolon inside a custom-delimited statement is not
+                    # its end; only the active client delimiter resets USE.
+                    self.token('symbol', '' if char == ';' else char)
+                    self.line_start = False
                     i += 1
             self.pending = text[i:]
             if final:
@@ -2322,7 +2385,11 @@ def _restore_remap(manifest, sql_scan):
     if sql_scan.get('qualified_source'):
         return False, ('dump.sql names %s in qualified references (such as view definitions), '
                        'so it cannot load into another database.' % scope['schemas'][0])
-    return True, 'dump.sql has no CREATE DATABASE, CREATE SCHEMA, USE or source-qualified references.'
+    if sql_scan.get('qualified_other'):
+        return False, ('dump.sql contains a qualified reference outside the target database, '
+                       'so it cannot load into another database.')
+    return True, ('The dump.sql scan found no CREATE DATABASE, CREATE SCHEMA, USE or qualified reference '
+                  'outside the target database.')
 
 
 def prepare_restore(conn, connection, directory, schema=None, tools=None, allow_source_restore=False,
@@ -2375,7 +2442,7 @@ def prepare_restore(conn, connection, directory, schema=None, tools=None, allow_
         if record is None:
             raise Refused('SQL backup manifest has no dump.sql file.')
         if scope['tables'] and len(scope['schemas']) == 1:
-            sql_scan = _sql_schema_scan(directory, record, scope['schemas'][0], job)
+            sql_scan = _sql_schema_scan(directory, record, scope['schemas'][0], job, target_schema=schema)
     remap_allowed, remap_reason = _restore_remap(manifest, sql_scan)
     if schema and ((not shell_dump and scope['schemas'] != [schema]) or shell_dump) and not remap_allowed:
         raise Refused(remap_reason)
@@ -2428,6 +2495,11 @@ def prepare_restore(conn, connection, directory, schema=None, tools=None, allow_
         if not rows and scope['tables'] and not (sql_scan.get('create_database') or sql_scan.get('create_schema')):
             create_database = 'CREATE DATABASE ' + ident(schema)
             defaults = manifest.get('schema_defaults', {}).get(scope['schemas'][0], {})
+            for key, label in (('character_set', 'character set'), ('collation', 'collation')):
+                if key in defaults and (not isinstance(defaults[key], str) or
+                                        re.fullmatch(r'[A-Za-z0-9_]{1,64}', defaults[key]) is None):
+                    raise Refused('The dump manifest has an invalid database %s name; '
+                                  'use 1 to 64 ASCII letters, digits or underscores.' % label)
             if defaults.get('character_set') and defaults.get('collation'):
                 create_database += (' DEFAULT CHARACTER SET ' + ident(defaults['character_set']) +
                                     ' COLLATE ' + ident(defaults['collation']))
@@ -2529,6 +2601,8 @@ def restore_job(connection, plan, confirmed=False, typed_target=None, audit=None
                     _invoke(job, tool, connection,
                             ['--local-infile=0', '--batch'] + list(dbops.WRITE_CLIENT_FLAGS),
                             TAG + fresh['create_database'] + ';\n')
+                    job.partial_state = ('Database %s was created, but nothing was loaded into it: '
+                                         'the load client stopped before running any statement.' % request['schema'])
                 job.step('Loading dump.sql with %s.' % tool['name'])
                 _invoke(job, tool, connection, args, input_file=sql)
         job.step('Verifying the restored objects and row counts.')

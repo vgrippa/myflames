@@ -118,8 +118,9 @@ def probe(name, binary, refresh=False, job=None):
 
 def snapshot(path=None, common_dirs=None, bundled=None):
     """Return stat-only candidates [{name,path,realpath,identity,found_in,
-    bundled,order,source}]. Aliases share one entry, preferring MariaDB names.
-    No trust check or subprocess runs here; this is not execution authority.
+    bundled,order,source}]. Trusted aliases share one entry, preferring MariaDB
+    names. Refused spellings remain separate with trust_error for reporting.
+    Trust checks are stat-only; execution still requires a fresh check.
     """
     from . import lifecycle
     bundle = connector.bundled_client_dir() if bundled is None else bundled
@@ -133,7 +134,8 @@ def snapshot(path=None, common_dirs=None, bundled=None):
                        if not (bundle and connector._same_dir(folder, bundle)))
     if bundle:
         folders.append((bundle, 'bundled'))
-    copies = {}
+    copies, refused = {}, []
+    order = 0
     for folder, source in folders:
         for name in PROGRAMS:
             binary = os.path.abspath(os.path.join(folder, name + ('.exe' if os.name == 'nt' else '')))
@@ -143,18 +145,25 @@ def snapshot(path=None, common_dirs=None, bundled=None):
             if identity is None:
                 continue
             real = identity[1]
+            candidate = dict(name=name, path=binary, realpath=real, identity=identity,
+                             found_in=folder, bundled=bool(bundle and connector._same_dir(
+                                 os.path.dirname(real), bundle)), order=order, source=source)
+            order += 1
+            try:
+                connector.checked_program(binary, real, candidate['bundled'] and source == 'bundled')
+            except connector.ClientMissingError as exc:
+                candidate['trust_error'] = str(exc)
+                refused.append(candidate)
+                continue
             existing = copies.get(real)
             if existing is not None:
-                # Keep the earliest source's trust status and ordering, while
-                # retaining the MariaDB spelling of compatibility symlinks.
+                # Only trusted spellings participate in alias preference.
                 if name.startswith('mariadb') and not existing['name'].startswith('mariadb'):
-                    existing.update(name=name, path=binary, identity=identity, found_in=folder)
+                    existing.update(name=name, path=binary, identity=identity, found_in=folder,
+                                    source=source)
                 continue
-            copies[real] = dict(name=name, path=binary, realpath=real, identity=identity,
-                                found_in=folder, bundled=bool(bundle and connector._same_dir(
-                                    os.path.dirname(real), bundle)),
-                                order=len(copies), source=source)
-    return sorted(copies.values(), key=lambda c: (c['order'], c['realpath'], c['name']))
+            copies[real] = candidate
+    return sorted(list(copies.values()) + refused, key=lambda c: (c['order'], c['realpath'], c['name']))
 
 
 def _origin(folder, bundled):
@@ -223,6 +232,8 @@ def discover(path=None, common_dirs=None, bundled=None, refresh=False, job=None)
                      warning=None, available=False, deprecated=name == 'mysqlpump')
         copies.append(entry)
         try:
+            if candidate.get('trust_error'):
+                raise connector.ClientMissingError(candidate['trust_error'])
             connector.checked_program(binary, candidate['realpath'], candidate['bundled'])
         except connector.ClientMissingError as exc:
             reason = ('Other users can change %s, so myflames does not run programs from it.' % binary

@@ -170,9 +170,53 @@ class DiscoveryTests(unittest.TestCase):
     def test_windows_snapshot_uses_exe_suffix_without_probing(self):
         binary = self.make(self.root, 'mysql.exe')
         self.make(self.root, 'mysql')
-        with mock.patch.object(ct.os, 'name', 'nt'):
+        # Windows root restrictions are exercised by TestWindowsClientTrust;
+        # this POSIX fixture checks inventory suffixes without a subprocess.
+        with mock.patch.object(ct.os, 'name', 'nt'), \
+                mock.patch.object(ct.connector, '_check_client_trust'):
             candidates = ct.snapshot(str(self.root), (), False)
         self.assertEqual([c['path'] for c in candidates], [str(binary)])
+
+    def test_untrusted_alias_cannot_hide_trusted_client_in_either_path_order(self):
+        mysql = self.make(self.root / 'trusted')
+        for later_maria in (False, True):
+            with self.subTest(later_maria=later_maria):
+                planted = self.root / ('evil-' + str(later_maria))
+                planted.mkdir()
+                alias = planted / ('mariadb' if later_maria else 'mysql')
+                alias.symlink_to(mysql)
+                planted.chmod(0o777)
+                folders = (mysql.parent, planted) if later_maria else (planted, mysql.parent)
+                with mock.patch.object(ct.subprocess, 'run', wraps=ct.subprocess.run) as run:
+                    report = self.discover(*folders, refresh=True)
+                self.assertEqual(run.call_count, 1)
+                self.assertEqual(len(report['installations']), 1)
+                self.assertEqual(report['installations'][0]['programs']['mysql']['path'], str(mysql))
+                self.assertEqual([s['path'] for s in report['skipped']], [str(alias)])
+                self.assertIn('Other users can change', report['skipped'][0]['reason'])
+                with mock.patch.dict(os.environ, {'PATH': os.pathsep.join(map(str, folders)),
+                                                  'MYFLAMES_BUNDLED_CLIENT_DIR': ''}), \
+                        mock.patch('myflames.lifecycle.COMMON_BIN_DIRS', ()), \
+                        mock.patch.dict(ct.connector._CLIENT_CHOICES, {'mysql': None, 'mariadb': None}):
+                    self.assertEqual(ct.connector.MySQLConnection(host='alias')._resolve_binary(), str(mysql))
+
+    def test_untrusted_alias_cannot_force_bundled_fallback_for_mariadb(self):
+        maria = self.make(self.root / 'maria/bin', 'mariadb', banner='mariadb Ver 11.8.2-MariaDB')
+        bundle = self.make(self.root / 'bundle').parent
+        planted = self.root / 'evil'
+        planted.mkdir()
+        alias = planted / 'mariadb'
+        alias.symlink_to(maria)
+        planted.chmod(0o777)
+        path = os.pathsep.join(map(str, (planted, maria.parent)))
+        with mock.patch.dict(os.environ, {'PATH': path, 'MYFLAMES_BUNDLED_CLIENT_DIR': str(bundle)}), \
+                mock.patch('myflames.lifecycle.COMMON_BIN_DIRS', ()), \
+                mock.patch.dict(ct.connector._CLIENT_CHOICES, {'mysql': None, 'mariadb': None}), \
+                mock.patch.dict(ct._FACTS, clear=True):
+            report = ct.discover()
+            self.assertEqual([s['path'] for s in report['skipped']], [str(alias)])
+            ct.remember_server(ct.endpoint_key({'host': 'alias-bundle'}), 'mariadb', '11.8.2-MariaDB')
+            self.assertEqual(ct.connector.MySQLConnection(host='alias-bundle')._resolve_binary(), str(maria))
 
     def test_mariadb_compatibility_symlink_counted_once(self):
         maria = self.make(self.root, 'mariadb', banner='mariadb from 11.8.2-MariaDB, client 15.2')

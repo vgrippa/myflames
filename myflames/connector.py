@@ -370,11 +370,14 @@ class ClientAuthPluginError(ClientMissingError):
 def _auth_plugin_error(stderr, binary, used=None):
     """Recognize the client error number, never a server SQL error mentioning it."""
     first = re.search(r'^ERROR[^\r\n]*', stderr, re.M)
-    match = (re.match(r"ERROR 2059 \(HY000\): Authentication plugin '([A-Za-z0-9_]+)' cannot be loaded(?:$|:|\.)",
+    # Connector/C errmsg.h: CR_AUTH_PLUGIN_CANNOT_LOAD is 2059. MariaDB
+    # words this as "Plugin <name> could not be loaded: <reason>".
+    match = (re.match(r"ERROR 2059 \(HY000\): (?:Authentication plugin '([A-Za-z0-9_]+)' cannot be loaded(?:$|:|\.)"
+                      r"|Plugin ([A-Za-z0-9_]+) could not be loaded:)",
                       first.group()) if first else None)
     if match is None:
         return None
-    plugin = match.group(1)
+    plugin = match.group(1) or match.group(2)
     used = used or {}
     return ClientAuthPluginError(
         '%s %s (%s) cannot sign in to this server: the account uses the %s plugin, '
@@ -413,7 +416,8 @@ def _check_client_trust(path):
 
         if (not local_path(path) or
                 ntpath.basename(path).lower() not in ('mysql.exe', 'mariadb.exe', 'mysqldump.exe',
-                                                       'mariadb-dump.exe', 'mariadb-backup.exe', 'mysqlsh.exe')):
+                                                       'mariadb-dump.exe', 'mariadb-backup.exe',
+                                                       'mariadb-upgrade.exe', 'mysqlpump.exe', 'mysqlsh.exe')):
             raise ValueError("Choose a local client named mysql.exe or mariadb.exe.")
         resolved = os.path.realpath(path)
         if not local_path(resolved):
@@ -730,7 +734,8 @@ class MySQLConnection:
             with _CLIENT_CHOICES_LOCK:
                 generation = _CLIENT_CHOICES_GENERATION
                 choices = dict(_CLIENT_CHOICES)
-            candidates = [c for c in client_tools.snapshot() if c['name'] in ('mysql', 'mariadb')]
+            candidates = [c for c in client_tools.snapshot()
+                          if c['name'] in ('mysql', 'mariadb') and not c.get('trust_error')]
             if not any(choices.values()) and len(candidates) <= 1:
                 # Snapshot covers PATH without current-directory/PATHEXT fallback.
                 if not candidates:

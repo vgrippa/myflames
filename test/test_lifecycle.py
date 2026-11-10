@@ -1523,19 +1523,32 @@ class LifecycleTests(unittest.TestCase):
                                 'FROM information_schema.SCHEMATA WHERE SCHEMA_NAME IN (' +
                                 lc.literal('app') + ',' + lc.literal('empty') + ')'])
 
-    def test_picked_restore_quotes_untrusted_charset_metadata(self):
+    def test_picked_restore_refuses_invalid_charset_and_collation_metadata(self):
         self.make_picked_dump()
-        charset = 'utf8mb4`; DROP DATABASE valuable; --'
-        self.update_dump(schema_defaults={'app': {'character_set': charset, 'collation': 'utf8mb4_0900_ai_ci'}})
         target = self.target()
         target.schema_defaults = {}
-        plan = lc.prepare_restore(target, CONNECTION, self.output, tools=self.native_tools())
-        self.assertEqual(plan['create_database'], 'CREATE DATABASE `app` DEFAULT CHARACTER SET ' +
-                         lc.ident(charset) + ' COLLATE `utf8mb4_0900_ai_ci`')
-        # The apparent injected commands remain inside one quoted identifier.
-        classification = dbops.classify(plan['create_database'])
-        self.assertEqual(classification['count'], 1)
-        self.assertEqual(classification['statements'][0]['verb'], 'CREATE DATABASE')
+        calls = len(self.calls())
+        for key, label in (('character_set', 'character set'), ('collation', 'collation')):
+            for value in ('utf8mb4`; DROP DATABASE valuable; --', '', 'a' * 65,
+                          'utf8-mb4', 'utf8 mb4', 'utf8mb4\n', 'utf8é', None, 123, ['utf8mb4']):
+                with self.subTest(key=key, value=value):
+                    defaults = {'character_set': 'utf8mb4', 'collation': 'utf8mb4_0900_ai_ci'}
+                    defaults[key] = value
+                    self.update_dump(schema_defaults={'app': defaults})
+                    with self.assertRaisesRegex(lc.Refused, 'invalid database ' + label + ' name'):
+                        lc.prepare_restore(target, CONNECTION, self.output, tools=self.native_tools())
+                    self.assertEqual(len(self.calls()), calls, 'invalid metadata never starts a write client')
+
+    def test_picked_restore_accepts_charset_and_collation_name_boundaries(self):
+        self.make_picked_dump()
+        target = self.target()
+        target.schema_defaults = {}
+        for value in ('a', 'A9_' + 'x' * 61):
+            with self.subTest(value=value):
+                self.update_dump(schema_defaults={'app': {'character_set': value, 'collation': value}})
+                plan = lc.prepare_restore(target, CONNECTION, self.output, tools=self.native_tools())
+                self.assertEqual(plan['create_database'], 'CREATE DATABASE `app` DEFAULT CHARACTER SET ' +
+                                 lc.ident(value) + ' COLLATE ' + lc.ident(value))
 
     def test_picked_restore_existing_database_needs_no_create(self):
         self.make_picked_dump()
@@ -1613,7 +1626,11 @@ class LifecycleTests(unittest.TestCase):
                             ('cReAtE dAtAbAsE app;\n', 'CREATE DATABASE'),
                             ('CREATE SCHEMA app;\n', 'CREATE SCHEMA'),
                             ('CREATE VIEW v AS SELECT * FROM `aPp`.t;', 'names app'),
-                            ('CREATE VIEW v AS SELECT * FROM app.t;', 'names app')]:
+                            ('CREATE VIEW v AS SELECT * FROM app.t;', 'names app'),
+                            ('DELIMITER //\nUSE other//\nDELIMITER ;\nCREATE TABLE t(a int);', 'USE'),
+                            ('CREATE TABLE t(a int);\nINSERT INTO other.t VALUES (1);', 'qualified reference'),
+                            ('INSERT INTO `other`.`t` VALUES (1);', 'qualified reference'),
+                            ('INSERT INTO `123`.`t` VALUES (1);', 'qualified reference')]:
             with self.subTest(reason=reason):
                 self.update_dump(sql=sql)
                 plan = lc.prepare_restore(self.target(), CONNECTION, self.output, tools=self.native_tools())
@@ -1679,6 +1696,41 @@ class LifecycleTests(unittest.TestCase):
                 self.assertTrue(reply['review_token'])
         self.assertFalse((self.bin / 'restored').exists(), 'prepare is read-only')
 
+    def test_restore_failure_guidance_records_successful_database_creation(self):
+        self.make_picked_dump()
+        tools = self.native_tools()
+        for create_succeeds in (False, True):
+            with self.subTest(create_succeeds=create_succeeds):
+                target = self.target()
+                target.schema_defaults = {}
+                plan = lc.prepare_restore(target, CONNECTION, self.output, tools=tools)
+                invoke = lc._invoke
+                def fail_load(*args, **kwargs):
+                    value = invoke(*args, **kwargs)
+                    if create_succeeds and not kwargs.get('input_file'):
+                        (self.bin / 'mode').write_text('fail')
+                    return value
+                calls = len(self.calls())
+                with mock.patch.object(lc, 'detect_tools', return_value=tools), \
+                        mock.patch.object(lc, '_invoke', side_effect=fail_load):
+                    job = lc.restore_job(CONNECTION, plan, True, plan['target'], self.audit(),
+                                         factory=lambda **kw: target, start=False)
+                    if not create_succeeds:
+                        job.review_consumer = lambda: (self.bin / 'mode').write_text('fail')
+                    result = job.run()
+                (self.bin / 'mode').unlink()
+                self.assertEqual(result['state'], 'failed', result)
+                self.assertEqual(len(self.calls()) - calls, 2 if create_succeeds else 1)
+                if create_succeeds:
+                    self.assertEqual(result['result']['partial_state'],
+                        'Database app was created, but nothing was loaded into it: '
+                        'the load client stopped before running any statement.')
+                    self.assertEqual(self.calls()[-2]['create_database_sql'], lc.TAG + plan['create_database'] + ';\n')
+                else:
+                    self.assertEqual(result['result']['partial_state'],
+                                     'Nothing was loaded: the client stopped before running any statement.')
+                self.assertFalse((self.bin / 'restored').exists())
+
     def test_restore_preflight_failure_does_not_claim_partial_data(self):
         self.make_dump(shell=True)
         target = self.target()
@@ -1742,6 +1794,52 @@ class LifecycleTests(unittest.TestCase):
                 scan = lc._sql_schema_scan(self.output, manifest['files'][0], schema)
                 self.assertTrue(scan['qualified_source'])
 
+    def test_picked_restore_scan_tracks_custom_delimiters_and_reset(self):
+        self.make_picked_dump()
+        for delimiter in ('//', '$$', ';;', 'long_delimiter'):
+            with self.subTest(delimiter=delimiter):
+                routine = ("DELIMITER %s\nCREATE PROCEDURE p() BEGIN SELECT 'USE other; `other`.`t`'; "
+                           "SELECT 1.25; END%s\n" % (delimiter, delimiter))
+                for suffix in ('USE other' + delimiter + '\n', 'DELIMITER ;\nUSE other;\n'):
+                    manifest = self.update_dump(sql=routine + suffix)
+                    scan = lc._sql_schema_scan(self.output, manifest['files'][0], 'app')
+                    self.assertTrue(scan['use'], scan)
+                    self.assertFalse(scan['qualified_other'], scan)
+                manifest = self.update_dump(sql=routine + 'DELIMITER ;\nCREATE TABLE t(a int);')
+                scan = lc._sql_schema_scan(self.output, manifest['files'][0], 'app')
+                self.assertFalse(any(scan.values()), scan)
+
+    def test_picked_restore_scan_allows_only_the_selected_target_qualifier(self):
+        self.make_picked_dump()
+        self.update_dump(sql='INSERT INTO `new_app`.`t` VALUES (1);')
+        plan = lc.prepare_restore(self.target(), CONNECTION, self.output, schema='new_app', tools=self.native_tools())
+        self.assertTrue(plan['remap_allowed'])
+        self.assertEqual(plan['remap_reason'],
+                         'The dump.sql scan found no CREATE DATABASE, CREATE SCHEMA, USE or qualified reference '
+                         'outside the target database.')
+        plan = lc.prepare_restore(self.target(), CONNECTION, self.output, tools=self.native_tools())
+        self.assertFalse(plan['remap_allowed'])
+        self.update_dump(sql='INSERT INTO `NEW_APP`.`t` VALUES (1);')
+        with self.assertRaisesRegex(lc.Refused, 'qualified reference outside the target database'):
+            lc.prepare_restore(self.target(), CONNECTION, self.output, schema='new_app', tools=self.native_tools())
+
+    def test_picked_restore_scan_handles_quoted_and_same_line_delimiter_commands(self):
+        self.make_picked_dump()
+        for command in ("DELIMITER '//'", 'DELIMITER "//"', 'DELIMITER `//`'):
+            sql = 'SELECT 1;' + command + '\nSELECT 2//\nUSE other//\n'
+            with self.subTest(command=command):
+                manifest = self.update_dump(sql=sql)
+                scan = lc._sql_schema_scan(self.output, manifest['files'][0], 'app')
+                self.assertTrue(scan['use'], scan)
+
+    def test_picked_restore_scan_refuses_unsupported_delimiter_arguments(self):
+        self.make_picked_dump()
+        for delimiter in ('x' * 16, '\\x', "'//", 'two words', 'é'):
+            with self.subTest(delimiter=delimiter):
+                manifest = self.update_dump(sql='DELIMITER ' + delimiter + '\nSELECT 1;\n')
+                with self.assertRaisesRegex(lc.Refused, 'DELIMITER command that cannot be scanned safely'):
+                    lc._sql_schema_scan(self.output, manifest['files'][0], 'app')
+
     def test_picked_shell_restore_remapping_has_no_extra_create(self):
         self.make_dump(shell=True)
         self.update_dump(scope={'schemas': ['app'], 'tables': ['t']})
@@ -1767,6 +1865,11 @@ class LifecycleTests(unittest.TestCase):
                                  ('-- comment\n/*!50000 USE app */;', 'app', 'use'),
                                  ('SELECT * FROM `sãles` /* gap */ . t;', 'sãles', 'qualified_source'),
                                  ('SELECT * FROM `a``pp`.t;', 'a`pp', 'qualified_source'),
+                                 ('DELIMITER //\nUSE other//\nDELIMITER ;\n', 'app', 'use'),
+                                 ('DELIMITER $$\nSELECT 1$$\nUSE other$$\n', 'app', 'use'),
+                                 ('INSERT INTO `other` /* gap */ . `t` VALUES (1);', 'app', 'qualified_other'),
+                                 ('INSERT INTO other.t VALUES (1);', 'app', 'qualified_other'),
+                                 ('INSERT INTO `123`.`t` VALUES (1);', 'app', 'qualified_other'),
                                  ("INSERT INTO t VALUES ('it\\'s `app`.t; USE app;');", 'app', None)]:
             with self.subTest(sql=sql):
                 manifest = self.update_dump(sql=sql)
