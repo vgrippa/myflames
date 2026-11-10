@@ -288,10 +288,12 @@ export function useSchemaCatalog(connection: Connection, enabled = true) {
 
 function schemaSummary(value: string[], catalog: SchemaCatalog | null, emptyLabel: string) {
   if (!value.length) return emptyLabel;
-  // Every user database chosen reads as "All user databases"; nothing chosen
-  // is the caller's empty label (Dump: "No database chosen").
+  // Exactly the user databases chosen reads as "All user databases"; an extra
+  // system or unknown name makes it a plain selection. Nothing chosen is the
+  // caller's empty label (Dump: "No database chosen").
   const user = (catalog?.schemas || []).filter((s) => !s.system);
-  if (user.length > 0 && user.every((s) => value.includes(s.name))) return "All user databases";
+  const names = new Set(user.map((s) => s.name));
+  if (user.length > 0 && value.length === user.length && value.every((name) => names.has(name))) return "All user databases";
   if (value.length <= 2) return value.join(", ");
   return `${value.length} databases`;
 }

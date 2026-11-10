@@ -500,19 +500,19 @@ try {
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   await page.setViewport({ width: 1440, height: 1000 });
 
-  // 3b. SQL INSERT export: the run's rows carry no column types; the catalog
-  // of the one table the statement read declares them, and numeric columns
-  // (id INT) go unquoted. Untyped columns stay quoted; values are never
-  // inspected for a guess.
+  // 3b. SQL INSERT export: only the result column's own server type decides
+  // quoting. An expression or alias reusing a column name (LPAD(id, ...) AS
+  // id) carries no type and stays quoted, even where the read table declares
+  // that name numeric; a result column the server typed numeric is unquoted.
   mock.run.push({
     status: "complete",
     session: session(),
     run: run(
-      [statement(0, "SELECT id, name FROM shop.users", 0)],
-      [rows(0, [{ name: "id", hex: false, type: null }, { name: "name", hex: false, type: null }], [["1", "User 1"], ["2", "User 2"]])],
+      [statement(0, "SELECT LPAD(id, 5, '0') AS id, qty FROM shop.users", 0)],
+      [rows(0, [{ name: "id", hex: false, type: null }, { name: "qty", hex: false, type: "int" }], [["00123", "7"], ["00042", "8"]])],
     ),
   });
-  await setText("SELECT id, name FROM shop.users");
+  await setText("SELECT LPAD(id, 5, '0') AS id, qty FROM shop.users");
   const beforeUsersRun = calls("/api/editor/run").length;
   await page.click("[data-action=run-all]");
   await ran(beforeUsersRun + 1);
@@ -521,13 +521,14 @@ try {
   await page.waitForSelector(".popover .export-sql");
   assert.deepEqual(await page.$$eval(".popover .export-sql input", (els) => els.map((e) => e.value)), ["users", "shop"]);
   const exportsBefore = calls("/api/editor/export").length;
+  const catalogBefore = calls("/api/live/catalog").length;
   await page.locator(".popover button ::-p-text(Download SQL)").click();
   const sqlExport = await until(() => calls("/api/editor/export").length > exportsBefore && calls("/api/editor/export").at(-1), "no SQL export");
   assert.equal(sqlExport.format, "sql");
-  assert.equal(sqlExport.result.columns[0].type, "int", "the catalog types id numeric, so the export writes it unquoted");
-  assert.equal(sqlExport.result.columns[1].type, null, "a column the catalog does not declare stays untyped (quoted)");
-  assert.deepEqual(sqlExport.result.rows, [["1", "User 1"], ["2", "User 2"]]);
-  assert.ok(calls("/api/live/catalog").some((b) => b.table === "users" && b.schema === "shop"), "the table's catalog supplied the types");
+  assert.equal(sqlExport.result.columns[0].type, null, "an alias reusing a column name stays untyped, so 00123 keeps its quotes");
+  assert.equal(sqlExport.result.columns[1].type, "int", "a result column the server typed numeric is written unquoted");
+  assert.deepEqual(sqlExport.result.rows, [["00123", "7"], ["00042", "8"]]);
+  assert.equal(calls("/api/live/catalog").length, catalogBefore, "the export never reads the table's catalog for column types");
 
   // 4. An error: Messages, the underline, and Go to line.
   const BAD = "SELECT 1;\nSELEC 2 FROM t";
@@ -891,7 +892,6 @@ try {
 
   // 10. Schema browser: one automatic list read; details stay lazy.
   assert.equal(seen.filter((s) => s.path === "/api/live/schemas").length, 1, "one schema-list read when the editor opens");
-  // (The SQL export of the users result read its table's catalog for column types.)
   assert.equal(calls("/api/live/catalog").filter((b) => b.schema === "testdb").length, 0, "table details stay lazy");
   const treeRow = async (kind, label) => {
     await page.waitForFunction((kind, label) => [...document.querySelectorAll(`.tree-row.kind-${kind}`)].some((r) => r.querySelector(".tree-label")?.textContent === label), {}, kind, label);

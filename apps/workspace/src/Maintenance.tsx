@@ -811,13 +811,17 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   // lifecycle-tools-2.0: one row per copy found (the tools record's entry for
   // the copy's name supplies its update check and download link). Without
   // copies (older answer), the record alone lists the tools.
-  const toolRows = (memory.tools?.report.copies?.length
-    ? memory.tools.report.copies
+  const toolCopies = memory.tools?.report.copies;
+  const toolRows = (toolCopies?.length
+    ? toolCopies
     : Object.entries(memory.tools?.report.tools || {}).map(([name, tool]) => ({ ...tool, name }))
   ).map((copy, i) => ({
     ...(memory.tools?.report.tools[copy.name || ""] || {}),
     ...copy,
     name: copy.name || "",
+    // The update check covered the copy myflames uses for the tool's name;
+    // another installed copy of the same tool was never checked.
+    ...(toolCopies?.length && !copy.used ? { update: undefined } : {}),
     row: `tool:${copy.path || `${copy.name}:${i}`}`,
   }));
   const updateWord = (tool: Tool): string => {

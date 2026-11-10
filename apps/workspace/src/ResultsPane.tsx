@@ -745,7 +745,6 @@ function ExportMenu({
   onDone,
   editorRun,
   backslash,
-  columnTypes,
 }: {
   result: EditorRows;
   isFiltered?: boolean;
@@ -759,9 +758,6 @@ function ExportMenu({
    * table the result's statement read (still editable). */
   editorRun: EditorRun | null;
   backslash: boolean;
-  /** Declared column types of the table the statement read, for the SQL
-   * export's numeric literals (the run's rows carry no types). */
-  columnTypes?: (result: EditorRows) => Promise<Record<string, string> | null>;
 }) {
   // Read once per result (the menu is keyed by run and result).
   const [defaults] = useState(() => insertDefaults(editorRun, result, backslash));
@@ -776,16 +772,9 @@ function ExportMenu({
     if (busy) return;
     setBusy(format);
     try {
-      let columns = result.columns.map((c, j) => ({ name: c.name, hex: c.hex, binary: binary.includes(j), type: c.type }));
-      // SQL literals are typed: a column the catalog declares numeric is
-      // written unquoted. Untyped columns (expressions, joins) stay quoted.
-      if (format === "sql" && columnTypes && columns.some((c) => !c.type)) {
-        const declared = await columnTypes(result);
-        if (declared) {
-          const lowered = new Map(Object.entries(declared).map(([name, type]) => [name.toLowerCase(), type]));
-          columns = columns.map((c) => c.type ? c : { ...c, type: declared[c.name] ?? lowered.get(c.name.toLowerCase()) ?? null });
-        }
-      }
+      // SQL literals are typed only by the server: a result column whose own
+      // type is numeric is written unquoted; every other value stays quoted.
+      const columns = result.columns.map((c, j) => ({ name: c.name, hex: c.hex, binary: binary.includes(j), type: c.type }));
       const reply = await api<EditorExport>("editor/export", {
         format,
         result: {
@@ -995,9 +984,6 @@ export type ResultsPaneProps = {
   empty: ReactNode;
   /** The session reads backslashes in strings as escapes (sql_mode). */
   backslash?: boolean;
-  /** Declared column types of the table a result's statement read, for the
-   * SQL export's numeric literals (the run's rows carry no types). */
-  columnTypes?: (result: EditorRows) => Promise<Record<string, string> | null>;
 };
 
 /** The results area: result tabs, Messages, and the plan tab. */
@@ -1205,7 +1191,6 @@ export function ResultsPane(props: ResultsPaneProps) {
               binary={props.binary[index] || []}
               onBinary={(column, on) => props.onBinary(index, column, on)}
               onDone={props.onNote}
-              columnTypes={props.columnTypes}
             />
           </div>
         )}

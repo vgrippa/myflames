@@ -24,7 +24,6 @@ import {
   clientMissingCode,
   isClientAuthPlugin,
   type Capture,
-  type CatalogTable,
   type Connection,
   type EditorClose,
   type EditorConfirmation,
@@ -42,7 +41,7 @@ import {
 } from "./api";
 import type { DigestAction } from "./SlowQueries";
 import { durationText } from "./duration";
-import { delimiterAt, describeTarget, insertDefaults, runTarget, sqlRun, type RunTarget } from "./sqlSelection";
+import { delimiterAt, describeTarget, runTarget, sqlRun, type RunTarget } from "./sqlSelection";
 import {
   digestName,
   digestQuery,
@@ -1595,23 +1594,6 @@ export const QueryLab = forwardRef<
   function sessionConnectionOf(id: string) {
     const now = runtimeRef.current[id] || blankRuntime();
     return now.execConnection || now.sessionConnection;
-  }
-  /** Declared column types of the one table a result's statement read, for
-   * the SQL export's numeric literals: the catalog says them, the values
-   * never decide. Null when the statement read no single table or the
-   * catalog cannot be read (such values stay quoted). */
-  async function columnTypesFor(id: string, result: EditorRows): Promise<Record<string, string> | null> {
-    const now = runtimeRef.current[id] || blankRuntime();
-    if (!now.run) return null;
-    const read = insertDefaults(now.run, result, now.session?.backslash_escapes !== false);
-    const schema = read.schema || now.session?.database_name || "";
-    if (!read.table || !schema) return null;
-    try {
-      const table = await api<CatalogTable>("live/catalog", { connection: sessionConnectionOf(id) || connectionRef.current, schema, table: read.table });
-      return Object.fromEntries(table.columns.map((c) => [c.name, c.type]));
-    } catch {
-      return null;
-    }
   }
   function noSessionConnection(id: string) {
     const now = runtimeRef.current[id];
@@ -3298,7 +3280,6 @@ export const QueryLab = forwardRef<
               onSelect={(key) => changeTab({ result_tab: key })}
               engine={session?.engine || null}
               backslash={session?.backslash_escapes !== false}
-              columnTypes={(r) => columnTypesFor(tab.id, r)}
               plan={planPane}
               explain={rt.explain}
               explaining={rt.explaining}

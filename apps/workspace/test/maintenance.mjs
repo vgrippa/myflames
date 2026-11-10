@@ -56,6 +56,10 @@ const running = await load("lifecycle-job-dump-running.json");
 const cancelled = await load("lifecycle-job-dump-cancelled.json");
 const done = await load("lifecycle-job-dump-done.json");
 const schemas = await load("schemas-mysql-8.4.json");
+// The update check covered the used copy of a tool name (mysqldump 8.4.3 in
+// /usr/local); the bundled copy beside it was never checked and must not
+// inherit the result.
+tools.tools.mysqldump.update = { status: "current", latest_version: "8.4.13", checked_at: "2026-11-01T10:00:00Z", source_url: "https://dev.mysql.com/downloads/mysql/", message: "Checked mysqldump Ver 8.4.3 against the 8.4 series." };
 
 const UPGRADE = "/api/lifecycle/upgrade-check";
 const TARGETS = "/api/lifecycle/upgrade-targets";
@@ -225,6 +229,11 @@ try {
   const bundledDumpRow = `${view} [data-row-key="tool:/Applications/myflames.app/Contents/Resources/client-tools/8.4/bin/mysqldump"]`;
   assert.match(await text(bundledDumpRow), /Bundled with myflames/);
   assert.doesNotMatch(await text(bundledDumpRow), /Used/);
+  // Only the copy the update check covered carries its result.
+  assert.match(await text(`${view} [data-row-key="tool:/usr/local/bin/mysqldump"]`), /Current in checked series/, "the used copy carries the update result");
+  assert.match(await text(bundledDumpRow), /Not checked/, "another copy of the same tool was never checked");
+  await h.select(bundledDumpRow);
+  assert.doesNotMatch(await h.inspector(), /Latest checked/, "an unchecked copy has no update detail");
   assert.match(await text(`${view} [data-row-key="tool:/usr/local/bin/mysqlpump"]`), /Deprecated/);
   assert.match(await text(`${view} .ops-offered`), /Dumpmysqlsh, mysqldump.*Upgrade checkMySQL Shell \(full check\)/s);
   await h.select(shellRow);
@@ -316,6 +325,13 @@ try {
   await page.locator(`${view} .perf-picker-option ::-p-text(mfother)`).click();
   assert.equal(await text(`${view} #ops-dump-schemas`), "All user databases", "every user database chosen reads as all");
   assert.doesNotMatch(await text(`${view} .ops-dump .form-row-control > .hint`), /Choose at least one database/);
+  // A system database on top of every user database is a plain selection, not
+  // "All user databases" (the label means exactly the user set).
+  await page.locator(`${view} .perf-picker-foot label ::-p-text(Show system databases)`).click();
+  await page.locator(`${view} .perf-picker-option ::-p-text(mysql)`).click();
+  assert.equal(await text(`${view} #ops-dump-schemas`), "3 databases", "a system database on top of every user database reads as a count");
+  await page.locator(`${view} .perf-picker-option ::-p-text(mysql)`).click();
+  assert.equal(await text(`${view} #ops-dump-schemas`), "All user databases", "back to exactly the user set");
   await page.locator(`${view} .perf-picker-option ::-p-text(mfother)`).click();
   await page.keyboard.press("Escape");
   assert.equal(await text(`${view} #ops-dump-schemas`), "mftab");
