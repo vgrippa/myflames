@@ -1,6 +1,7 @@
 // Real EditorState and installed lint scheduler; no DOM, network or database.
 // Run from apps/workspace: node test/problems-unit.mjs
 import assert from 'node:assert/strict';
+import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { readFileSync } from 'node:fs';
@@ -119,6 +120,21 @@ function editor(p, doc) {
 }
 
 try {
+  await test('temporary creates reject repeated hostile comments without backtracking', () => {
+    for (const prefix of ['/**/', '/**/ ', '-- \n', '# \n']) {
+      const sql = prefix.repeat(5000) + 'SELECT 1';
+      const started = performance.now();
+      const result = cm.createsTemporaryTable(sql);
+      const elapsed = performance.now() - started;
+      assert.equal(result, false, JSON.stringify(prefix));
+      assert.ok(elapsed < 50, `${JSON.stringify(prefix)} took ${elapsed.toFixed(3)} ms`);
+      console.log(`temporary creates ${JSON.stringify(prefix)} x5000: ${elapsed.toFixed(3)} ms`);
+    }
+    for (const sql of ['/* a ** b */CREATE TEMPORARY TABLE t', '/**/-- c\nCREATE TEMPORARY TABLE t']) {
+      assert.equal(cm.createsTemporaryTable(sql), true, sql);
+    }
+    assert.equal(cm.createsTemporaryTable('/**/-- CREATE TEMPORARY TABLE t'), false);
+  });
   await test('temporary creates accept MariaDB OR REPLACE and preserve MySQL leading-comment rules', () => {
     for (const sql of ['CREATE TEMPORARY TABLE tmp(id INT)', 'CREATE OR REPLACE TEMPORARY TABLE tmp(id INT)',
       '/* leading */ CREATE OR REPLACE TEMPORARY TABLE tmp(id INT)',

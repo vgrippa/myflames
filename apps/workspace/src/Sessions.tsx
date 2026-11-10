@@ -47,7 +47,10 @@ import { DdlDetails, DdlMeter, DdlUnavailable } from "./DdlProgress";
 
 const AUTO_INTERVALS = [10, 30, 60];
 // A navigation hint only. SQL execution/review keeps its server classifier.
-const DDL_START = /^\s*(?:(?:\/\*[\s\S]*?\*\/|--[^\n]*|#[^\n]*)\s*)*(?:ALTER|CREATE|DROP|TRUNCATE|RENAME|OPTIMIZE|REPAIR)\b/i;
+const DDL_START = /^\s*(?:(?:\/\*(?:[^*]|\*(?!\/))*\*\/|--[^\n]*(?=\n|$)|#[^\n]*(?=\n|$))\s*)*(?:ALTER|CREATE|DROP|TRUNCATE|RENAME|OPTIMIZE|REPAIR)\b/i;
+export function startsDdl(text: string): boolean {
+  return DDL_START.test(text);
+}
 const FLAGS: Record<SessionFlag, [string, "warn" | "danger" | "neutral" | "info"]> = {
   long_running: ["Long running", "warn"],
   idle_in_trx: ["Idle in transaction", "warn"],
@@ -899,7 +902,7 @@ export function SessionsView({
                   onChange={(v) => onMinSecondsChange(Math.max(0, Math.round(+v) || 0))}
                 />
               </label>
-              {!auto && !other && report?.sessions.some(x => x.ddl || (x.command !== "Sleep" && DDL_START.test(x.info || ""))) &&
+              {!auto && !other && report?.sessions.some(x => x.ddl || (x.command !== "Sleep" && startsDdl(x.info || ""))) &&
                 <button type="button" className="text-button" onClick={() => setAuto(AUTO_INTERVALS[0])}>Follow progress</button>}
               <SearchField label="Filter sessions" value={search} onChange={setSearch} placeholder="Filter" />
             </div>

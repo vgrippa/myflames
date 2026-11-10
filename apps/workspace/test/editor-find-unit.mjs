@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { Worker as NodeWorker } from "node:worker_threads";
-import { build } from "esbuild";
+import { build, transform } from "esbuild";
 import ts from "typescript";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -34,15 +34,16 @@ assert.equal(cm.FIND_WORKER_SOURCE, oldExports.FIND_WORKER_SOURCE, "worker sourc
 assert.equal(cm.FIND_MATCH_LIMIT, 100_000);
 assert.equal(cm.FIND_MARK_LIMIT, 1000);
 assert.equal(cm.FIND_REGEX_TIMEOUT_MS, 250);
-for (const [text, query] of [
+const findCases = [
   ["İfoo", "foo"], ["İfoo and İFOO", "foo"], ["İfoo and İ foo", "foo"],
   ["select in inside tint", "in"], ["in _in in$ in1 🐬in 𐐀in in𐐀", "in"],
   ["foo\nFOO foo", "foo"], ["a1 b22 c333", "\\d+"], ["aaaa", "a*"],
   ["aaa", "\\b"], ["aaa", "(?=a)"], ["🐬X🐬", "🐬"], ["[] .* $&", ".*"],
   ["a", "["], ["", "a"], ["text", ""], ["a\nb", "^|$"],
-]) {
-  for (const matchCase of [false, true]) for (const wholeWord of [false, true]) for (const isRegex of [false, true]) {
-    const opts = { matchCase, wholeWord, regex: isRegex };
+];
+for (const [text, query] of findCases) {
+  for (const matchCase of [false, true]) for (const wholeWord of [false, true]) {
+    const opts = { matchCase, wholeWord, regex: false };
     assert.deepEqual(cm.computeFind(text, query, opts), oldExports.computeFind(text, query, opts), JSON.stringify({ text, query, opts }));
   }
 }
@@ -51,17 +52,78 @@ assert.deepEqual(cm.computeFind("İfoo and İFOO", "foo", options).matches, [{ s
 assert.deepEqual(cm.computeFind("İfoo and İ foo", "foo", { ...options, wholeWord: true }).matches, [{ start: 11, end: 14 }]);
 assert.deepEqual(cm.computeFind("in _in in$ in1 🐬in 𐐀in in𐐀", "in", { ...options, wholeWord: true }).matches,
   [{ start: 0, end: 2 }, { start: 17, end: 19 }], "supplementary letters are word characters, emoji are not");
-for (const opts of [options, regex]) {
+for (const opts of [options, { ...options, matchCase: true }]) {
   const capped = cm.computeFind("a".repeat(cm.FIND_MATCH_LIMIT + 1), "a", opts);
   assert.equal(capped.matches.length, cm.FIND_MATCH_LIMIT);
   assert.equal(capped.capped, true);
   assert.deepEqual(capped, oldExports.computeFind("a".repeat(cm.FIND_MATCH_LIMIT + 1), "a", opts));
 }
-assert.deepEqual(cm.computeFind("aaa", "(?=a)", regex), { matches: [], error: "", capped: false });
-assert.ok(cm.computeFind("a", "[", regex).error);
+// Any accidental main-thread regex caller must refuse before compiling or
+// evaluating even a valid pattern. The worker below owns regex semantics.
+{
+  const nativeRegExp = globalThis.RegExp, nativeMatchAll = String.prototype.matchAll;
+  globalThis.RegExp = new Proxy(nativeRegExp, {
+    construct() { assert.fail("main-thread regex Find must not compile a pattern"); },
+    apply() { assert.fail("main-thread regex Find must not compile a pattern"); },
+  });
+  String.prototype.matchAll = () => assert.fail("main-thread regex Find must not evaluate a pattern");
+  try {
+    for (const query of ["(a+)+$", "[", "a", "(?=a)", ""]) {
+      for (const matchCase of [false, true]) for (const wholeWord of [false, true]) {
+        assert.deepEqual(cm.computeFind("a".repeat(35) + "!", query, { ...regex, matchCase, wholeWord }),
+          { matches: [], error: "", capped: false });
+      }
+    }
+  } finally {
+    globalThis.RegExp = nativeRegExp;
+    String.prototype.matchAll = nativeMatchAll;
+  }
+}
 assert.equal(cm.firstMatchAt([{ start: 2, end: 3 }, { start: 8, end: 9 }], 3), 1);
 assert.equal(cm.firstMatchAt([{ start: 2, end: 3 }, { start: 8, end: 9 }], 9), 0);
 assert.equal(cm.firstMatchAt([], 9), 0);
+
+// Completion text shares the editor stylesheet. Exercise the installed native
+// renderers and our custom label against the isolation rule without a browser.
+{
+  const nativeSource = await fs.readFile(new URL("../node_modules/@codemirror/autocomplete/dist/index.js", import.meta.url), "utf8");
+  const completionSource = await fs.readFile(new URL("../src/editor/completion.ts", import.meta.url), "utf8");
+  function declaration(source, name, kind) {
+    const file = ts.createSourceFile("completion.ts", source, ts.ScriptTarget.Latest, true);
+    let found;
+    function visit(node) {
+      if (kind(node) && node.name?.getText(file) === name) found = node;
+      ts.forEachChild(node, visit);
+    }
+    visit(file); assert.ok(found, name);
+    return found.getText(file);
+  }
+  const document = {
+    createElement() { return { className: "", textContent: "", children: [], appendChild(node) { this.children.push(node); return node; } }; },
+    createTextNode(text) { return { textContent: text }; },
+  };
+  const nativeRenderers = new Function("document", `${declaration(nativeSource, "optionContent", ts.isFunctionDeclaration)}
+    return optionContent({icons: false, addToOptions: []});`)(document);
+  const customRenderers = new Function("document", ts.transpileModule(`
+    const ${declaration(completionSource, "textOption", ts.isVariableDeclaration)};
+    const addToOptions = ${declaration(completionSource, "addToOptions", ts.isPropertyAssignment).replace(/^addToOptions:\s*/, "")};
+    return addToOptions;`, { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText)(document);
+  const hostile = "db_\u202Etxt", completion = { label: hostile, detail: hostile, type: "table" };
+  const nodes = [...nativeRenderers.map(render => render(completion, null, null, [])),
+    ...customRenderers.map(option => option.render(completion))];
+  const css = await fs.readFile(new URL("../src/editor-cm.css", import.meta.url), "utf8");
+  const compiled = await transform(css, { loader: "css" });
+  const rules = [...compiled.code.matchAll(/([^{}]+)\{([^{}]*)\}/g)];
+  for (const className of ["cm-completionLabel", "sql-completion-label", "cm-completionDetail"]) {
+    const node = nodes.find(node => node?.className === className);
+    assert.ok(node, `${className} must be an actual rendered completion class`);
+    assert.equal(node.textContent || node.children.map(child => child.textContent).join(""), hostile);
+    assert.ok(rules.some(([, selectors, body]) =>
+      selectors.split(",").map(selector => selector.trim()).includes(`.sql-completion .${className}`) &&
+      /unicode-bidi:\s*isolate\s*;/.test(body)), `${className} must isolate the hostile bidi name`);
+  }
+  console.log("Completion bidi isolation: native labels, custom labels and details passed.");
+}
 
 const terminations = [];
 let terminatedCount = 0;
@@ -91,10 +153,12 @@ try {
   assert.ok(Date.now() - started < 1000, "regex timeout leaves the main thread responsive");
   const fast = await new Promise(resolve => finder.search("a1 b22 c333", "\\d+", regex, resolve));
   assert.deepEqual(fast, { matches: [{ start: 1, end: 2 }, { start: 4, end: 6 }, { start: 8, end: 11 }], error: "", capped: false });
-  for (const [text, query] of [["aaa", "(?=a)"], ["foo foo!", "foo"], ["İfoo and İ foo", "foo"], ["a", "["]]) {
-    const opts = { ...regex, wholeWord: true };
-    const result = await new Promise(resolve => finder.search(text, query, opts, resolve));
-    assert.deepEqual(result, cm.computeFind(text, query, opts), "worker regex semantics match the legacy helpers");
+  for (const [text, query] of [...findCases, ["foo foo!", "foo"], ["a".repeat(cm.FIND_MATCH_LIMIT + 1), "a"]]) {
+    for (const matchCase of [false, true]) for (const wholeWord of [false, true]) {
+      const opts = { ...regex, matchCase, wholeWord };
+      const result = await new Promise(resolve => finder.search(text, query, opts, resolve));
+      assert.deepEqual(result, oldExports.computeFind(text, query, opts), "worker regex semantics match the legacy helpers");
+    }
   }
   let delivered = false;
   const cancel = finder.search(`${"a".repeat(35)}!`, "(a+)+$", regex, () => { delivered = true; });
@@ -352,11 +416,11 @@ try {
   assert.equal(async.view.state.doc.toString(), "a1 b22", "pending regex cannot replace");
   async.view.dispatch({ changes: { from: 0, insert: "z" }, userEvent: "input.type" });
   assert.equal(stale.canceled, true);
-  stale.done(cm.computeFind(stale.text, stale.query, stale.opts));
+  stale.done({ matches: [{ start: 1, end: 2 }, { start: 4, end: 6 }], error: "", capped: false });
   assert.deepEqual(async.controller.snapshot.found.matches, [], "late results from old documents are ignored");
   await flush();
   const latest = jobs.at(-1);
-  latest.done(cm.computeFind(latest.text, latest.query, latest.opts));
+  latest.done({ matches: [{ start: 2, end: 3 }, { start: 5, end: 7 }], error: "", capped: false });
   async.controller.focusFind("replace");
   assert.equal(async.controller.snapshot.query, "\\d+", "opening Replace from the bar preserves a regex query");
   async.controller.replace(true);

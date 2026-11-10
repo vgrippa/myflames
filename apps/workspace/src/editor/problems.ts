@@ -15,7 +15,7 @@ const word = /[A-Za-z0-9_$\u0080-\uffff]/;
 const clauseEnd = new Set(["WHERE", "SET", "GROUP", "HAVING", "ORDER", "LIMIT", "WINDOW", "RETURNING", "UNION", "EXCEPT", "INTERSECT", "FOR", "LOCK", "VALUES"]);
 const notName = new Set([...clauseEnd, "SELECT", "FROM", "JOIN", "INNER", "LEFT", "RIGHT", "CROSS", "NATURAL", "OUTER", "ON", "USING", "AS", "INTO"]);
 const nameAt = (w: Word | undefined) => w?.name && !notName.has(w.kw) ? w.name : null;
-const CREATE_TEMPORARY_TABLE = /^(?:\s|\/\*[\s\S]*?\*\/|--(?=\s|$)[^\r\n]*(?=[\r\n]|$)|#[^\r\n]*(?=[\r\n]|$))*CREATE\s+(?:OR\s+REPLACE\s+)?TEMPORARY\s+TABLE\b/i;
+const CREATE_TEMPORARY_TABLE = /^(?:\s|\/\*(?:[^*]|\*(?!\/))*\*\/|--(?=\s|$)[^\r\n]*(?=[\r\n]|$)|#[^\r\n]*(?=[\r\n]|$))*CREATE\s+(?:OR\s+REPLACE\s+)?TEMPORARY\s+TABLE\b/i;
 
 export function createsTemporaryTable(text: string): boolean {
   return CREATE_TEMPORARY_TABLE.test(text);

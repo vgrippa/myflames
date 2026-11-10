@@ -83,3 +83,8 @@
   -webkit-box-decoration-break: clone;
   box-decoration-break: clone;
 }
+.sql-completion .cm-completionLabel,
+.sql-completion .sql-completion-label,
+.sql-completion .cm-completionDetail {
+  unicode-bidi: isolate;
+}

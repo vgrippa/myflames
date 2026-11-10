@@ -181,19 +181,8 @@ export function createRegexFinder(spawnWorker: () => RegexWorkerLike = defaultSp
  * Case-insensitive literal search uses a Unicode RegExp on the escaped query
  * so characters whose lowercase expands (such as "İ") keep original offsets. */
 export function computeFind(text: string, query: string, options: FindOptions): FindResult {
-  if (!query) return { matches: [], error: "", capped: false };
-  if (options.regex) {
-    const { re, error } = compileFindRegex(query, options);
-    if (!re) return { matches: [], error, capped: false };
-    const matches: Range[] = [];
-    for (const hit of text.matchAll(re)) {
-      const start = hit.index ?? 0;
-      // Empty matches (a*, \b) would be invisible marks; skip them.
-      if (hit[0].length > 0) matches.push({ start, end: start + hit[0].length });
-      if (matches.length >= FIND_MATCH_LIMIT) return { matches, error: "", capped: true };
-    }
-    return { matches, error: "", capped: false };
-  }
+  // User regex searches belong only in the worker, where they can time out.
+  if (!query || options.regex) return { matches: [], error: "", capped: false };
   const re = new RegExp(escapeRegExp(query), options.matchCase ? "gu" : "giu");
   const matches: Range[] = [];
   for (const hit of text.matchAll(re)) {

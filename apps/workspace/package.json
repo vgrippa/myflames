@@ -50,6 +50,7 @@
     "test:history-nav": "npm run build && node test/history-nav.mjs",
     "test:server-nav": "npm run build && node test/server-nav.mjs",
     "test:sessions": "npm run build && node test/sessions.mjs",
+    "test:sessions-ddl-unit": "node test/sessions-ddl-unit.mjs",
     "test:innodb": "npm run build && node test/innodb.mjs",
     "test:errorlog": "npm run build && node test/errorlog.mjs",
     "test:errorlog-static": "node test/errorlog-static.mjs",
