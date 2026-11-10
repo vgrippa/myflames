@@ -11,5 +11,7 @@
 .connections .data-table [data-col="server"] .connection-readiness { display: flex; align-items: baseline; gap: var(--space-1); white-space: nowrap; }
 /* The product and version keep their room; the "seen ... stale" hint yields first (full text on hover). */
 .connections .data-table [data-col="server"] .connection-readiness-line { flex: 0 1 auto; min-width: 6ch; overflow: hidden; text-overflow: ellipsis; }
-.connections .data-table [data-col="server"] .connection-readiness-line:empty::before { content: "Not checked"; color: var(--ink-faint); }
+/* Like the other empty cells: a dash (its tooltip says how to read the
+   server). "Not checked" beside a connection In use read as a contradiction. */
+.connections .data-table [data-col="server"] .connection-readiness-line:empty::before { content: "\2014"; color: var(--ink-faint); }
 .connections .data-table [data-col="server"] .connection-readiness > .hint { flex: 0 100 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
