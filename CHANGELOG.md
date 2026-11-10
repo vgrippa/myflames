@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.4] - 2026-11-10
+
+myflames 3.3.4 keeps itself up to date and brings its own MySQL client. The desktop app checks for new releases and installs them in place, and it includes the official MySQL 8.4.13 command-line client, so a computer without MySQL installed can connect right away. One rule now decides which MySQL or MariaDB program runs for each server, matched to the server's version: Settings > Client tools…, Maintenance > Tools and every dump or restore review show the same program, where it comes from and why. Restore, Dump, the Query editor and the server views also carry the fixes from this round's macOS and Windows test tours. Install 3.3.4 by hand once; later releases update in place. The macOS and Windows downloads are below; this release also carries the unmodified MySQL 8.4.13 source code for the bundled client (`mysql-8.4.13.tar.gz`), as its GPL license asks.
+
 ### Added
 
 - **myflames updates itself.** **Settings > Check for updates automatically** (on by default) checks 10 seconds after the app opens when the last check is stale or missing and once a day after that, and **Check for updates** in Home's footer and About myflames still checks on demand. When a newer release is found, a badge beside the logo shows the update, its download progress and when it is ready; **Update** downloads the release's update file, verifies it against the SHA-256 published in the release and stages it, and **Restart to update** installs it in place (choosing **Later** installs it when you next quit; on macOS the app must be in an Applications folder). On Windows the unsigned installer runs silently after the app quits: the update is trusted through HTTPS from GitHub's release hosts and the release's SHA-256 until Windows code signing lands.
@@ -23,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Home no longer says "Not checked" beside "In use".** A server whose readiness was not read shows a dash like the other empty cells; its tooltip says that **Check now** in the connection's menu reads it.
 - **Refresh all keeps keyboard focus.** Starting **Refresh every view** from a view's Refresh menu moves focus to the run's **Stop** button instead of dropping it on the page, so Escape, Tab and screen readers stay on the running action.
 - **SQL INSERT exports write numbers unquoted.** When a result reads plain columns of one table (`SELECT id, qty FROM t`, `SELECT * FROM t`), the export uses the table's declared column types, so integer and decimal columns are written as numbers instead of quoted strings. Expressions and aliased computations (`LPAD(id, 5, '0') AS id`), joins, unions and anything else the editor cannot trace to a column stay quoted. If the restore folder's facts reset a chosen database to **As in the dump**, Restore now says so.
 - **Restore offers New database… only for dumps that can load there.** Choosing a dump folder reads its manifest first: a dump that creates its own databases offers only **As in the dump**, with the reason under the field, instead of offering **New database…** and refusing at Start. A picked-tables dump containing `USE` or database-qualified references, including one naming the chosen target, is refused the same way in the form and in the restore check.
@@ -45,6 +50,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - **Installed client tools are checked before probing and use.** On macOS and Linux, programs or parent folders that other users can change are refused, with the existing root-owned sticky-folder and macOS admin-group exceptions. Windows restricts tools to local programs in Program Files or the user's profile locations; it does not yet check ACLs. Refused copies remain listed with their reason. Lifecycle jobs and editor helpers recheck trust and execute the resolved path, and first contact uses the chosen installation before automatic clients. Only the client's own first ERROR 2059 connection line can produce a missing authentication-plugin error.
+
+### Known issues
+
+- **Windows builds are an unsigned preview.** Windows shows an "Unknown Publisher" warning when the installer runs.
+- **Refresh every view can still leave keyboard focus on the page.** When it starts from a view's Refresh menu, focus usually moves to the menu button, but on some redraws it falls back to the page; press Tab to reach the toolbar again.
+- **The bundled MySQL client cannot sign in to MariaDB accounts that use `ed25519` or `parsec`, or to servers that require Kerberos, LDAP SASL, OCI or WebAuthn.** Install the MariaDB or MySQL client tools for those; Settings > Client tools… lists what is found.
 
 ## [3.3.3] - 2026-11-09
 

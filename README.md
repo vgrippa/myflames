@@ -48,14 +48,14 @@ Try a [MySQL plan demo](https://vgrippa.github.io/myflames/demos/live-mysql/live
 
 ### macOS app
 
-1. Download `myflames-3.3.3-macos-arm64.dmg` from [GitHub Releases](https://github.com/vgrippa/myflames/releases) (Apple Silicon), open it, and drag `myflames.app` to `/Applications`.
+1. Download `myflames-3.3.4-macos-arm64.dmg` from [GitHub Releases](https://github.com/vgrippa/myflames/releases) (Apple Silicon), open it, and drag `myflames.app` to `/Applications`.
 2. Double-click `myflames.app`. It is signed with a Developer ID and notarized by Apple, so macOS opens it without extra steps. Releases before 3.3.0 were unsigned zips: Control-click those in Finder and choose **Open** the first time.
 
 The packaged app keeps its data under `~/Library/Application Support/myflames-desktop`, unless overridden by `MYFLAMES_DESKTOP_DATA`. Its workspace database and audit records are in `backend-home/.myflames/workspace.sqlite3`; saved passwords use `credentials.vault` and `vault.key` in that same `.myflames` folder, and SSH host keys you trust in **File transfer** are kept in `ssh_known_hosts` there. The app keeps itself up to date: with **Settings > Check for updates automatically** on (the default) it checks at start and once a day, a badge beside the logo shows a newer release, its download progress and when it is ready, and **Update** followed by **Restart to update** installs it in place (on macOS, keep `myflames.app` in your Applications folder; on Windows the update installs silently when the app quits). You can also check on demand with **Check for updates** on Home or in **Settings > About myflames**.
 
 ### Windows app (preview)
 
-1. Download `myflames-3.3.3-windows-x64-setup.exe` from [GitHub Releases](https://github.com/vgrippa/myflames/releases) and run it. It installs for your user only, with no administrator prompt, and adds Start menu and desktop shortcuts.
+1. Download `myflames-3.3.4-windows-x64-setup.exe` from [GitHub Releases](https://github.com/vgrippa/myflames/releases) and run it. It installs for your user only, with no administrator prompt, and adds Start menu and desktop shortcuts.
 2. The installer is not code signed yet, so SmartScreen says "Windows protected your PC" the first time: choose **More info**, then **Run anyway**.
 
 The Windows app is a preview: it has been tested on Windows 11 x64, but a crash can leave a statement that was already running on the server until it finishes. SSH tunnels end with the app however it stops; a dump, restore or clone that was running when the app crashed keeps going until it finishes. In **File transfer**, Windows can browse servers and folders, sign in with the SSH agent or a key without a passphrase, and rename, create and delete on the server, but uploads and downloads are not available yet (their safe local file handling needs macOS or Linux). Its data lives in `%APPDATA%\myflames-desktop`. Uninstall it from **Settings > Apps**.
