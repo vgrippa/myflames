@@ -106,7 +106,7 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(function Sq
   latest.current = props;
   const env = useRef<EditorEnv>({ docId: props.docId, backslashEscapes: props.backslashEscapes ?? true });
   env.current = { connection: props.completionConnection, engine: props.engine, serverVersion: props.serverVersion,
-    backslashEscapes: props.backslashEscapes ?? true, docId: props.docId };
+    backslashEscapes: props.backslashEscapes ?? true, docId: props.docId, sessionTempTables: props.sessionTempTables };
   const compartments = useRef<Compartments | null>(null);
   if (!compartments.current) compartments.current = Object.fromEntries(compartmentNames.map(name => [name, new Compartment()])) as Compartments;
   const documents = useRef(createDocumentStore());

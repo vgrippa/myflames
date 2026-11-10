@@ -14,6 +14,7 @@ export type EditorEnv = {
   connection?: unknown;
   engine?: "mysql" | "mariadb";
   serverVersion?: string;
+  sessionTempTables?: boolean;
   backslashEscapes: boolean;
   docId: string;
 };
@@ -51,6 +52,7 @@ export type SqlEditorProps = {
   completionConnection?: unknown;
   engine?: "mysql" | "mariadb";
   serverVersion?: string;
+  sessionTempTables?: boolean;
 };
 
 export function mainSelection(state: EditorState): Range {

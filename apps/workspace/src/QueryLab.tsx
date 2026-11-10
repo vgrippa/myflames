@@ -221,6 +221,8 @@ type Runtime = {
   measureBefore?: SuggestedIndexOrigin;
   measureSql?: string;
   session: EditorSession | null;
+  /** Temporary tables are absent from the server catalog; remembered only for this session. */
+  sessionTempTables: boolean;
   /** connectionKey of the connection the session was opened with. */
   sessionKey: string;
   /** That connection (with the typed password, page memory only), for Stop, Commit and Roll back. */
@@ -273,6 +275,7 @@ type Runtime = {
 };
 const blankRuntime = (): Runtime => ({
   session: null,
+  sessionTempTables: false,
   sessionKey: "",
   sessionConnection: null,
   execConnection: null,
@@ -377,6 +380,7 @@ function connectionShortName(c: Connection) {
 }
 /** CREATE or DROP of a database or schema (the verb the backend names it). */
 const DATABASE_LIST_DDL = /^(?:CREATE|DROP)\s+(?:DATABASE|SCHEMA)$/i;
+const CREATE_TEMPORARY_TABLE = /^(?:\s|\/\*[\s\S]*?\*\/|--(?=\s|$)[^\r\n]*|#[^\r\n]*)*CREATE\s+TEMPORARY\s+TABLE\b/i;
 /** True when a finished run may have changed the connection's database list:
  * a CREATE/DROP DATABASE or SCHEMA, or a statement the editor cannot classify
  * as harmless (no verb, or a bare CREATE/DROP whose text names a database). */
@@ -909,7 +913,18 @@ export const QueryLab = forwardRef<
     const all = runtimeRef.current;
     const current = all[id] || blankRuntime();
     const next = typeof patch === "function" ? patch(current) : patch;
-    runtimeRef.current = { ...all, [id]: { ...current, ...next } };
+    const updated = { ...current, ...next };
+    // Every session reply (poll, Stop, Close or replacement) passes here.
+    if (!updated.session || updated.session.ended ||
+        updated.session.connection_id !== current.session?.connection_id ||
+        updated.session.started_at !== current.session?.started_at || next.run?.state === "session_ended") {
+      updated.sessionTempTables = false;
+    }
+    if (updated.session && !updated.session.ended && next.run && next.run.state !== "session_ended" &&
+        next.run.statements.some(s => s.status === "ok" && CREATE_TEMPORARY_TABLE.test(s.text))) {
+      updated.sessionTempTables = true;
+    }
+    runtimeRef.current = { ...all, [id]: updated };
     setRuntime(runtimeRef.current);
   }
   function note(id: string, text: string, isError = false) {
@@ -3194,6 +3209,7 @@ export const QueryLab = forwardRef<
               completionConnection={connectionFor(tab)}
               engine={engine === "mysql" || engine === "mariadb" ? engine : undefined}
               serverVersion={version}
+              sessionTempTables={rt.sessionTempTables}
               backslashEscapes={rt.session?.backslash_escapes ?? true}
               onChange={(sql, sel) => {
                 // The editor reports an edit in the same task, not through a

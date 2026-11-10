@@ -117,7 +117,7 @@ function localTime(readAt: number) {
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
-function metadataProblems(words: Word[], database: string, created: Set<string>, catalog: Pick<CatalogService, "peek">): Diagnostic[] {
+function metadataProblems(words: Word[], database: string, created: Set<string>, catalog: Pick<CatalogService, "peek">, sessionTempTables = false): Diagnostic[] {
   const out: Diagnostic[] = [], locals = cteNames(words), tableWords = new Set<Word>();
   for (const scope of scopesOf(words)) {
     const top = scope.words.filter(w => w.depth === scope.depth);
@@ -167,7 +167,7 @@ function metadataProblems(words: Word[], database: string, created: Set<string>,
       bind(alias, local || !schema ? null : { schema, table: ref.table, alias });
       if (local || !schema) continue;
       const cached = catalog.peek("tables", { schema });
-      if (cached?.complete && !cached.failed && !cached.truncated && cached.value &&
+      if (!sessionTempTables && cached?.complete && !cached.failed && !cached.truncated && cached.value &&
           !cached.value.prefix && !cached.value.after && !cached.value.truncated &&
           !cached.value.tables.some(t => fold(t.name) === fold(ref.table))) {
         out.push(warning(ref.token, `No table \`${ref.table}\` in \`${schema}\` (table list read at ${localTime(cached.readAt)}).`));
@@ -233,9 +233,11 @@ export function problemDiagnostics(state: EditorState, env: EditorEnv, catalog: 
     const top = words.filter(w => w.depth === 0);
     const command = first === "WITH" ? top.find(w => ["SELECT", "UPDATE", "DELETE", "INSERT", "REPLACE"].includes(w.kw)) : top[0];
     if (command && ["UPDATE", "DELETE"].includes(command.kw) && !top.some(w => w.kw === "WHERE")) {
-      out.push(warning(command, command.kw === "UPDATE" ? "UPDATE without WHERE changes every row." : "DELETE without WHERE removes every row."));
+      out.push(warning(command, command.kw === "UPDATE"
+        ? "UPDATE without WHERE: it changes every row of the table unless LIMIT or a join narrows it."
+        : "DELETE without WHERE: it removes every row of the table unless LIMIT or a join narrows it."));
     }
-    out.push(...metadataProblems(words, database, created, catalog));
+    out.push(...metadataProblems(words, database, created, catalog, env.sessionTempTables));
   }
   return out.sort((a, b) => a.from - b.from || a.to - b.to);
 }
@@ -275,6 +277,7 @@ export function problemsExtension(settings: EditorFeatureSettings, env: { curren
         const epoch = catalog.syncConnection(), current = env.current;
         if (epoch !== this.epoch || current.docId !== this.environment.docId ||
             current.backslashEscapes !== this.environment.backslashEscapes ||
+            current.sessionTempTables !== this.environment.sessionTempTables ||
             current.engine !== this.environment.engine || current.serverVersion !== this.environment.serverVersion) this.refresh();
         this.epoch = epoch;
         this.environment = { ...current };
