@@ -3468,10 +3468,15 @@ export function ViewLayout({
                   trigger={<Icon name="chevron-down" size={12} />}>
                   <div className="view-refresh-menu">
                     {refreshAll && (
+                      // aria-disabled while running, never disabled: a focused
+                      // button that turns disabled drops focus on the page;
+                      // this one keeps it until the menu returns it to its
+                      // Refresh options button.
                       <button type="button" role="menuitem" data-action="refresh-all"
-                        disabled={refreshAll.disabled || refreshAll.running}
+                        disabled={refreshAll.disabled}
+                        aria-disabled={refreshAll.running || undefined}
                         title={`Reads all ${refreshAll.count} sections on ${refreshAll.label} (${shortcut("R", true)})`}
-                        onClick={() => { closePopovers(); refreshAll.run(); }}>
+                        onClick={() => { if (refreshAll.running) return; closePopovers(); refreshAll.run(); }}>
                         <span>Refresh every view on {refreshAll.label} ({shortcut("R", true)})</span>
                         <span className="hint">{refreshAll.count} sections</span>
                       </button>
