@@ -646,7 +646,8 @@ outcome. Cancelling or failing a save or close keeps unsaved edits.
   an index, and temporary tables on disk for the selected statement (from
   `performance_schema.events_statements_history` when available), with an ⓘ
   popover for the counters and verdict rule and **Explain analyze** to run
-  analysis on that statement. Results can also be filtered in place (**Filter
+  analysis on that statement (only for statements it can read: SELECT, WITH
+  and simple UPDATE, DELETE or INSERT … SELECT; the tooltip says why not). Results can also be filtered in place (**Filter
   rows**, plus **Show only this value** and **Hide this value** in the cell
   menu as removable chips) and pinned (**Pin result**, up to 5,000 rows, with
   **Compare with pinned** to compare a later result with the same columns by a
