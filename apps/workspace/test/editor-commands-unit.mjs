@@ -31,6 +31,8 @@ const {
   history,
   undo,
   toggleSqlComment,
+  selectNextOccurrenceCmd,
+  selectAllOccurrencesCmd,
   visualExtension,
   HIGHLIGHT_LIMIT,
 } = await import(
@@ -50,6 +52,7 @@ function runCommand(state, cmd) {
   const ok = cmd({
     state,
     dispatch(tr) {
+      assert.equal(tr.startState, state, "command transactions must apply to the live editor state");
       next = tr.state;
     },
   });
@@ -195,6 +198,42 @@ function runCommand(state, cmd) {
   assert.ok(Array.isArray(normalExt));
   assert.ok(Array.isArray(largeExt));
   assert.ok(normalExt.length > largeExt.length);
+}
+
+// Select all accepts a caret or matching ranges left by repeated Select next.
+{
+  const ranges = state => state.selection.ranges.map(r => [r.from, r.to]);
+  let state = makeState("foo foo foo foo", EditorSelection.cursor(1));
+  state = runCommand(state, selectAllOccurrencesCmd);
+  assert.deepEqual(ranges(state), [[0, 3], [4, 7], [8, 11], [12, 15]], "caret expands to its word before selecting all");
+
+  state = makeState("foo foo foo foo", EditorSelection.range(0, 3));
+  state = runCommand(state, selectNextOccurrenceCmd);
+  state = runCommand(state, selectNextOccurrenceCmd);
+  assert.equal(state.selection.ranges.length, 3);
+  state = runCommand(state, selectAllOccurrencesCmd);
+  assert.deepEqual(ranges(state), [[0, 3], [4, 7], [8, 11], [12, 15]], "select all works after two Select next commands");
+
+  state = makeState("foo foo foo", EditorSelection.create([
+    EditorSelection.range(0, 3), EditorSelection.range(8, 11),
+  ], 1));
+  state = runCommand(state, selectAllOccurrencesCmd);
+  assert.equal(state.selection.main.from, 8, "keep the main occurrence even when it is not the first range");
+
+  const capped = makeState("foo ".repeat(1002), EditorSelection.cursor(1));
+  let capDispatch = false;
+  assert.equal(selectAllOccurrencesCmd({ state: capped, dispatch() { capDispatch = true; } }), false);
+  assert.equal(capDispatch, false, "CodeMirror's occurrence cap must not leave an intermediate word selection");
+
+  for (const selection of [EditorSelection.cursor(0), EditorSelection.create([
+    EditorSelection.range(1, 4), EditorSelection.range(5, 8),
+  ])]) {
+    const initial = makeState(" foo bar", selection);
+    let dispatched = false;
+    assert.equal(selectAllOccurrencesCmd({ state: initial, dispatch() { dispatched = true; } }), false,
+      "whitespace and unequal selected text are not expanded");
+    assert.equal(dispatched, false, "a refused command keeps every selection");
+  }
 }
 
 console.log("Editor commands and visual aids unit tests passed.");

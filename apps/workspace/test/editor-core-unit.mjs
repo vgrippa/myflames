@@ -1,6 +1,7 @@
 // Renderless mounts plus real EditorState tests. No browser or server.
 // Run from apps/workspace: node test/editor-core-unit.mjs
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
@@ -16,6 +17,7 @@ const bundled = await build({
     export { history, undo, redo, undoDepth, isolateHistory } from "@codemirror/commands";
     export { syntaxTree } from "@codemirror/language";
     export { autocompletion } from "@codemirror/autocomplete";
+    export { openLintPanel, closeLintPanel, setDiagnostics } from "@codemirror/lint";
     export * from "./src/editor/SqlEditor";
     export * from "./src/editor/sqlLanguage";
     export * from "./src/editor/marks";
@@ -64,7 +66,7 @@ const bundled = await build({
           active = instance;
           instance.index = 0;
           instance.effects = [];
-          Component(props, ref);
+          instance.tree = Component(props, ref);
           active = null;
           for (const effect of instance.effects) effect();
         }
@@ -75,7 +77,7 @@ const bundled = await build({
         }
         try { render(); } catch (error) { unmount(); throw error; }
         return { render, unmount, get handle() { return ref.current; },
-          get view() { return instance.hooks[1].current; } };
+          get view() { return instance.hooks[1].current; }, get tree() { return instance.tree; } };
       }
     ` }));
     b.onResolve({ filter: /^@codemirror\/view$/ }, args =>
@@ -95,7 +97,7 @@ const bundled = await build({
             },
             setState(state) { view.state = state; },
             requestMeasure(spec) { spec.write(spec.read()); },
-            destroy() {}, focus() {},
+            plugin() { return null; }, destroy() {}, focus() {},
           };
           return view;
         }
@@ -183,7 +185,121 @@ for (const [before, after] of [["", "SELECT 1"], ["SELECT 1", ""], ["abc", "ab"]
   }
 }
 
-// CRLF is normalized once at the boundary, including every supplied offset.
+// The phrase facet belongs to every tab, including restored documents. The
+// close-button capture handler runs the real lint close command before focus.
+{
+  const props = { docId: "phrases-a", docIds: ["phrases-a", "phrases-b"], value: "SELECT 1",
+    settings: allSettings, onChange() {} };
+  const mounted = cm.mountEditor(cm.SqlEditor, props);
+  const previousElement = globalThis.Element;
+  class Button {
+    constructor(matches) { this.matches = matches; }
+    closest(selector) {
+      assert.equal(selector, ".cm-panel-lint button[name=close]");
+      return this.matches ? this : null;
+    }
+  }
+  globalThis.Element = Button;
+  try {
+    for (const docId of ["phrases-a", "phrases-b", "phrases-a"]) {
+      mounted.render({ ...props, docId });
+      for (const [phrase, expected] of [["Diagnostics", "Problems"], ["No diagnostics", "No problem warnings"],
+        ["close", "Close"], ["Completions", "SQL suggestions"]]) {
+        assert.equal(mounted.view.state.phrase(phrase), expected, `${docId}: ${phrase}`);
+      }
+    }
+    mounted.view.dispatch(cm.setDiagnostics(mounted.view.state, []));
+    cm.openLintPanel(mounted.view);
+    let focused = 0, prevented = 0, stopped = 0;
+    mounted.view.focus = () => { focused++; };
+    const close = mounted.tree.props.children[0].props.onClickCapture;
+    close({ target: new Button(false) });
+    assert.equal(focused, 0, "other clicks keep their focus");
+    close({ target: new Button(true), preventDefault() { prevented++; }, stopPropagation() { stopped++; } });
+    assert.equal(focused, 1, "closing Problems returns focus to the editor");
+    assert.equal(prevented, 1); assert.equal(stopped, 1);
+    assert.equal(cm.closeLintPanel(mounted.view), false, "the actual lint panel state is closed");
+  } finally {
+    mounted.unmount();
+    if (previousElement === undefined) delete globalThis.Element; else globalThis.Element = previousElement;
+  }
+}
+
+// Exercise the private display formatter as written in QueryLab, without
+// mounting the full workspace or starting a browser. Keep the shortcut table real.
+{
+  const source = await readFile(new URL("../src/QueryLab.tsx", import.meta.url), "utf8");
+  const formatter = source.match(/function editorKeyText\(name: string\): string \{[\s\S]*?\n\}/)?.[0];
+  assert.ok(formatter, "QueryLab's key display formatter exists");
+  for (const MAC of [true, false]) {
+    const result = await build({ stdin: { contents: `const MAC = ${MAC}; ${formatter}; export { editorKeyText };`,
+      loader: "ts" }, format: "esm", write: false, logLevel: "silent" });
+    const { editorKeyText } = await import("data:text/javascript;base64," + Buffer.from(result.outputFiles[0].text).toString("base64"));
+    for (const [name, expected] of [["Alt-ArrowUp", MAC ? "⌥↑" : "Alt+↑"],
+      ["Shift-Alt-ArrowDown", MAC ? "⌥⇧↓" : "Alt+Shift+↓"],
+      ["ArrowLeft", "←"], ["ArrowRight", "→"], ["Ctrl-Space", MAC ? "⌃Space" : "Ctrl+Space"],
+      ["Mod-Enter", MAC ? "⌘Return" : "Ctrl+Enter"], ["Escape", "Esc"], ["Tab", "Tab"],
+      ["Shift-F8", MAC ? "⇧F8" : "Shift+F8"], ["Mod-f", MAC ? "⌘F" : "Ctrl+F"]]) {
+      assert.equal(editorKeyText(name), expected);
+    }
+    for (const row of cm.EDITOR_SHORTCUTS) {
+      const name = MAC ? row.mac : row.other;
+      if (name) assert.ok(!/Arrow|Escape/.test(editorKeyText(name)), name);
+    }
+  }
+}
+
+// Handle offsets always refer to the live LF document, even before a prop echo.
+{
+  const raw = "SELECT 1;\r\nSELECT 2;";
+  const props = { docId: "format-crlf", docIds: ["format-crlf"], value: raw,
+    settings: allSettings, initialSelection: { start: 11, end: raw.length }, onChange() {} };
+  const mounted = cm.mountEditor(cm.SqlEditor, props);
+  try {
+    const { handle } = mounted;
+    const selection = handle.getSelection();
+    assert.deepEqual(selection, { start: 10, end: 19 });
+    assert.equal(handle.replaceRange(selection.start, selection.end, "SELECT\n  2;"), true);
+    assert.equal(handle.getValue(), "SELECT 1;\nSELECT\n  2;", "Format replaces exactly the live selection");
+    assert.equal(cm.undo(mounted.view), true);
+    handle.replaceRange(0, handle.getValue().length, "SELECT\n  1;\r\nSELECT\n  2;",
+      { select: { start: 0, end: 23 } });
+    assert.equal(handle.getValue(), "SELECT\n  1;\nSELECT\n  2;", "whole-document format leaves no trailing characters");
+    assert.deepEqual(handle.getSelection(), { start: 0, end: handle.getValue().length });
+    assert.equal(cm.undo(mounted.view), true);
+    // QueryLab converts server offsets from the submitted SQL at the call site.
+    const offset = cm.normalizedOffset(raw, raw.indexOf("2"));
+    handle.setSelection(offset, offset + 1, { scroll: false });
+    assert.equal(handle.getValue().slice(handle.getSelection().start, handle.getSelection().end), "2");
+  } finally { mounted.unmount(); }
+}
+
+// Initial and restored selections are reported without changing the text.
+{
+  const changes = [], selections = [];
+  const props = { docId: "restore-a", docIds: ["restore-a", "restore-b"], value: "SELECT 1;\r\nSELECT 2;",
+    settings: allSettings, initialSelection: { start: 11, end: 20 },
+    onChange: (...args) => changes.push(args), onSelectionChange: (...args) => selections.push(args) };
+  const mounted = cm.mountEditor(cm.SqlEditor, props);
+  try {
+    assert.deepEqual(selections, [[{ start: 10, end: 19 }, 1]], "mount reports the restored selection");
+    assert.deepEqual(changes, []);
+    mounted.render({ ...props });
+    assert.equal(selections.length, 1, "ordinary rerenders do not repeat the initial callback");
+    mounted.view.dispatch({ selection: cm.EditorSelection.create([cm.EditorSelection.cursor(1), cm.EditorSelection.cursor(12)], 1) });
+    const other = { ...props, docId: "restore-b", value: "SELECT 3;", initialSelection: { start: 4, end: 7 } };
+    mounted.render(other);
+    assert.deepEqual(selections.at(-1), [{ start: 4, end: 7 }, 1]);
+    const beforeRestore = selections.length;
+    mounted.render(props);
+    assert.equal(selections.length, beforeRestore + 1);
+    assert.deepEqual(selections.at(-1), [{ start: 12, end: 12 }, 2], "docId restore reports the saved main range and range count");
+    assert.deepEqual(changes, [], "mount and docId restore never emit onChange");
+    assert.equal(cm.undoDepth(mounted.view.state), 0);
+  } finally { mounted.unmount(); }
+}
+
+// Raw props are normalized at the input boundary; handle offsets stay live.
 {
   const raw = "SELECT 1;\r\nSELECT 2;", changes = [];
   const props = { docId: "crlf", docIds: ["crlf"], value: raw, settings: allSettings,
@@ -203,14 +319,14 @@ for (const [before, after] of [["", "SELECT 1"], ["SELECT 1", ""], ["abc", "ab"]
     assert.equal(mounted.view.state.doc, before, "repeated CRLF props never change the document");
     assert.equal(cm.undoDepth(mounted.view.state), 0, "repeated syncs must not grow undo history");
     assert.deepEqual(changes, [], "external sync does not emit onChange");
-    handle.setSelection(11, 17, { scroll: false });
+    handle.setSelection(10, 16, { scroll: false });
     assert.deepEqual(handle.getSelection(), { start: 10, end: 16 });
-    assert.equal(handle.replaceRange(18, 19, "20\r\n-- end", { select: { start: 22, end: 28 } }), true);
+    assert.equal(handle.replaceRange(17, 18, "20\r\n-- end", { select: { start: 20, end: 26 } }), true);
     assert.equal(handle.getValue(), "SELECT 1;\nSELECT 20\n-- end;");
     assert.deepEqual(handle.getSelection(), { start: 20, end: 26 });
     assert.deepEqual(changes.at(-1), { value: "SELECT 1;\nSELECT 20\n-- end;", selection: { start: 20, end: 26 } });
     assert.equal(cm.undoDepth(mounted.view.state), 1);
-    // Before the parent echoes onChange, handle offsets use the live text.
+    // Handle offsets keep the same basis before the parent echoes onChange.
     handle.setSelection(20, 26, { scroll: false });
     assert.deepEqual(handle.getSelection(), { start: 20, end: 26 });
     assert.equal(cm.undo(mounted.view), true);
@@ -239,7 +355,7 @@ for (const [value, offset, expected] of [["a\r\nb", 4, 3], ["a\rb", 3, 3], ["a\r
   const mounted = cm.mountEditor(cm.SqlEditor, { docId: "inside-crlf", docIds: ["inside-crlf"],
     value: "a\r\nb", settings: allSettings, onChange() {} });
   try {
-    mounted.handle.replaceRange(2, 2, "x", { select: { start: 2, end: 3 } });
+    mounted.handle.replaceRange(1, 1, "x", { select: { start: 1, end: 2 } });
     assert.equal(mounted.handle.getValue(), "ax\nb");
     assert.deepEqual(mounted.handle.getSelection(), { start: 1, end: 2 });
   } finally { mounted.unmount(); }
@@ -363,6 +479,12 @@ for (const [value, offset, expected] of [["a\r\nb", 4, 3], ["a\rb", 3, 3], ["a\r
   assert.ok(macBindings.some(binding => binding.mac === "Ctrl-g"));
   assert.ok(macBindings.some(binding => binding.mac === "Shift-Alt-m"));
   assert.equal(macBindings.find(binding => binding.mac === "Shift-Mod-k").stopPropagation, true);
+  assert.equal(macBindings.find(binding => binding.mac === "Ctrl-k").stopPropagation, true,
+    "delete to line end cannot also open the window command palette");
+  assert.equal(macBindings.find(binding => binding.mac === "Ctrl-k").preventDefault, true,
+    "even a refused deletion must stay inside the editor");
+  assert.equal(mac.EDITOR_SHORTCUTS.find(row => row.id === "nextMatch").label, "Next match");
+  assert.match(cm.EDITOR_SHORTCUTS.find(row => row.id === "nextMatch").label, /Ctrl\+G opens Go to line/);
   globalThis.__editorTestMac = false;
 }
 
@@ -371,7 +493,7 @@ for (const [value, offset, expected] of [["a\r\nb", 4, 3], ["a\rb", 3, 3], ["a\r
   const view = target(stateFor("x x x", { anchor: 0, head: 1 }));
   assert.equal(cm.selectNextOccurrenceCmd(view), true);
   assert.equal(view.state.selection.ranges.length, 2);
-  assert.equal(cm.selectAllOccurrencesCmd(view), false, "CodeMirror requires one nonempty selection for select-all matches");
+  assert.equal(cm.selectAllOccurrencesCmd(view), true, "matching ranges can expand directly to all occurrences");
   cm.escapeEditor(view);
   assert.equal(cm.selectAllOccurrencesCmd(view), true);
   assert.equal(view.state.selection.ranges.length, 3);
@@ -440,4 +562,4 @@ for (const [sql, carets, expected] of [
   detach();
   assert.equal(Object.hasOwn(element, "value"), false);
 }
-console.log("Editor core: CRLF mount/sync/offsets, large-document visual gates, bidi config, external undo, document histories, shortcuts, marks, tokenizer spy and automation passed.");
+console.log("Editor core: CRLF mount/sync/offsets, large-document visual gates, bidi config, external undo, document histories, shortcut labels, phrase vocabulary, Problems close focus, marks, tokenizer spy and automation passed.");

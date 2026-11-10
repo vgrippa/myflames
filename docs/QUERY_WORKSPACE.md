@@ -530,7 +530,8 @@ side.
   error normally rolls back only the failed statement, while those two cases
   roll back the whole transaction. Changing Stop or Continue requires a fresh
   write review.
-- **Stop** (or **Escape** in the editor) sends `KILL QUERY` for the tab's
+- **Stop** (or **Escape** in the editor after suggestions, extra cursors,
+  Find, Replace, Go to line and Problems have been dismissed) sends `KILL QUERY` for the tab's
   session from a second connection. KILL QUERY ends the statement and undoes
   what that statement changed; an open transaction stays open, and later
   statements of the run do not run. A statement that had already finished took
@@ -550,10 +551,12 @@ side.
   details, the argument hint and problem warnings switch off.
 - **Several cursors**: Option-click (Alt-click on Windows and Linux) adds a
   cursor. **⌘D** (**Ctrl+D**) first selects the word at the caret, then adds
-  its next occurrence. With one nonempty selection, **⇧⌘L**
-  (**Ctrl+Shift+L**) selects its occurrences, and **⌥⌘↑** / **⌥⌘↓**
+  its next occurrence. **⇧⌘L** (**Ctrl+Shift+L**) selects all occurrences of
+  the word at the caret or the selected text, including after selecting
+  several identical occurrences. **⌥⌘↑** / **⌥⌘↓**
   (**Ctrl+Alt+↑** / **Ctrl+Alt+↓**) add a cursor on the line above or
-  below. **Esc** closes suggestions first, then keeps only the main cursor.
+  below. **Esc** closes suggestions first, then keeps only the main cursor,
+  then closes Find, Replace or Go to line, then closes Problems.
   Run, Explain and Run analysis use the main cursor or selection; Run all
   runs the whole tab. Format SQL asks you to keep one cursor or selection.
 - **Suggestions while typing** offer the server's own keywords and
@@ -580,7 +583,9 @@ side.
 - **Details on hover** (350 ms) show a table's columns with their types and
   key and null flags (the first 12, then a count of the rest), one column's
   type and flags, or the table's estimated row count when it is already
-  known from a cached read. Nothing is fetched for the estimate. The same
+  known from a cached read. The estimate uses the exact table name, or a
+  unique case-insensitive match; ambiguous matches show no estimate.
+  Nothing is fetched for the estimate. The same
   setting shows an argument hint when the caret is inside a known function
   call: `DATE_FORMAT(…) · 2 arguments · argument 1` names the function, its
   argument count when known for the connected release and the argument the
@@ -590,12 +595,13 @@ side.
   selection, or when the opening `(` is more than 4,000 characters before
   the caret.
 - The editor's **Query editor shortcuts** popover (the ⓘ in the editor
-  toolbar) lists the available keys from this table. `Mod` below is **⌘**
+  toolbar) lists the available keys from this table, using arrow glyphs,
+  Esc and the platform's Return or Enter label. `Mod` below is **⌘**
   on macOS and **Ctrl** on Windows and Linux.
 
   | Action | macOS | Windows/Linux |
   | --- | --- | --- |
-  | Close suggestions or keep only the main cursor | `Escape` | `Escape` |
+  | Close suggestions, extra cursors, Find or Problems | `Escape` | `Escape` |
   | Accept suggestion or indent | `Tab` | `Tab` |
   | Accept suggestion or unindent | `Shift-Tab` | `Shift-Tab` |
   | Toggle Tab moving focus | `Shift-Alt-m` | `Ctrl-m` |
@@ -615,14 +621,19 @@ side.
   | Find | `Mod-f` | `Mod-f` |
   | Find and replace | `Mod-Alt-f` | `Ctrl-h` |
   | Find and replace | | `Mod-Alt-f` |
-  | Next match (Ctrl+G opens Go to line when Find is closed) | `Mod-g` | `Mod-g` |
+  | Next match | `Mod-g` | `Mod-g` |
   | Previous match | `Shift-Mod-g` | `Shift-Mod-g` |
   | Show problems | `Shift-Mod-m` | `Shift-Mod-m` |
   | Next problem | `F8` | `F8` |
   | Previous problem | `Shift-F8` | `Shift-F8` |
 
-  With suggestions closed and one cursor, Escape followed by Tab within two
-  seconds temporarily lets Tab move focus.
+  Escape first closes suggestions, then keeps only the main cursor, then
+  closes Find, Replace or Go to line, then closes Problems. With these closed
+  and one cursor, Escape followed by Tab within two seconds temporarily lets
+  Tab move focus. On Windows and Linux, Ctrl+G opens Go to line when Find is
+  closed. On macOS, Control+K deletes to the end of the line without opening
+  the command palette. Select all occurrences selects the word at an empty
+  caret, or expands several selections containing the same text.
   The multiple-cursor rows need **Multiple cursors** on, the problem rows
   need **Problem warnings** on; with the setting off, the keys do nothing.
 - **Settings** (the sidebar's Settings popover, **Query editor** group) are
@@ -630,7 +641,10 @@ side.
   Option/Alt-click, occurrence and add-cursor keys), **Suggestions while
   typing** (on; **Ctrl+Space** also requests suggestions when off, up to the
   size limit), **Close brackets and quotes** (on), **Wrap long lines** (off), **Problem warnings** (on) and **Details
-  on hover** (on).
+  on hover** (on). Each switch keeps its own saving indicator and error.
+  The **Problems** panel says **No problem warnings** when empty; its
+  **Close** button returns focus to the editor. Suggestions are announced
+  as **SQL suggestions**.
 - **Find and replace** (**⌘F** / **Ctrl+F** for Find, **⌥⌘F** / **Ctrl+H**
   for Replace) searches SQL in the active tab with **Match case** (`Aa`),
   **Whole word** (`|ab|`) and **Regular expression** (`.*`). It counts up to
@@ -640,7 +654,8 @@ side.
   and **Replace all** insert the replacement literally, including `$1` and
   `$&`, as one undo step. Regex search runs in a background worker
   with a 250 ms budget; a slow pattern reports "Pattern too slow to search".
-  Escape closes the bar and returns focus to the editor.
+  Escape closes the bar and returns focus to the editor, keeping its current
+  selection and cursors without scrolling to the last match.
 
 Results come back in tabs: one per result set (**Result 1 · 1,000 rows ·
 12 ms**), then **Messages**, which lists every statement of the run with its

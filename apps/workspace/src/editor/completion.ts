@@ -1,4 +1,4 @@
-import { autocompletion, closeCompletion, completionStatus, startCompletion, insertCompletionText, pickedCompletion, type Completion, type CompletionContext as CMContext,
+import { autocompletion, closeCompletion, completionStatus, startCompletion, pickedCompletion, type Completion, type CompletionContext as CMContext,
   type CompletionResult, type CompletionSource } from "@codemirror/autocomplete";
 import { EditorSelection, StateEffect, StateField, type Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, showPanel, type Panel } from "@codemirror/view";
@@ -104,14 +104,17 @@ function resultFor(context: { start: number; end: number; prefix: string; quoted
       const fromOff = from - main.from, toOff = to - main.from;
       const allMatch = state.selection.ranges.every(range => range.empty &&
         state.sliceDoc(range.from + fromOff, range.from + toOff) === state.sliceDoc(from, to));
-      const source = allMatch ? state : state.update({ selection: EditorSelection.single(main.anchor, main.head) }).state;
-      const parentheses = state.sliceDoc(to, to + 1) !== "(";
-      const tr = source.update(insertCompletionText(source, item.insert + (parentheses ? "()" : ""), from, to));
-      const completed = tr.newSelection.ranges.map(range => parentheses ? EditorSelection.cursor(range.head - 1) : range);
-      const selection = allMatch ? EditorSelection.create(completed, tr.newSelection.mainIndex)
-        : EditorSelection.create(state.selection.ranges.map((range, index) => index === state.selection.mainIndex
-          ? completed[0] : range.map(tr.changes)), state.selection.mainIndex);
-      view.dispatch({ changes: tr.changes, selection, scrollIntoView: true,
+      // Each cursor may already precede an opening parenthesis. changeByRange
+      // maps the independently chosen insertion/caret through every other edit.
+      const changes = state.changeByRange(range => {
+        if (!allMatch && range !== main) return { range };
+        const start = range.from + fromOff, end = to === main.from ? range.to : range.from + toOff;
+        const parentheses = state.sliceDoc(end, end + 1) !== "(";
+        const insert = item.insert + (parentheses ? "()" : "");
+        return { changes: { from: start, to: end, insert },
+          range: EditorSelection.cursor(start + insert.length - (parentheses ? 1 : 0)) };
+      });
+      view.dispatch({ ...changes, scrollIntoView: true,
         annotations: pickedCompletion.of(completion), userEvent: "input.complete" });
     } : context.quoted ? item.insert.slice(1) : item.insert,
       ...(nativeFilter ? { boost: (item.label.toLowerCase().startsWith(prefix) ? 1e6 : 0) - index * 10000 } : {}) })) };

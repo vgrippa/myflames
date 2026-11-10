@@ -22,37 +22,44 @@ const SAVE_ERROR = "Could not save this setting. Try again.";
 
 export function QueryEditorSettings() {
   const settings = useEditorSettings();
-  // The row being saved, and the row whose last save failed ("" for none).
-  const [saving, setSaving] = useState<EditorSettingKey | "">("");
-  const [failed, setFailed] = useState<EditorSettingKey | "">("");
+  const [saving, setSaving] = useState<Partial<Record<EditorSettingKey, boolean>>>({});
+  const [failed, setFailed] = useState<Partial<Record<EditorSettingKey, boolean>>>({});
+  const requests = useRef<Partial<Record<EditorSettingKey, number>>>({});
   const mounted = useRef(true);
-  useEffect(() => () => { mounted.current = false; }, []);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   function save(setting: EditorSettingKey, on: boolean) {
-    setFailed("");
-    setSaving(setting);
+    const request = (requests.current[setting] ?? 0) + 1;
+    requests.current[setting] = request;
+    const current = () => mounted.current && requests.current[setting] === request;
+    setFailed(previous => ({ ...previous, [setting]: false }));
+    setSaving(previous => ({ ...previous, [setting]: true }));
     setEditorSetting(setting, on)
-      .catch(() => { if (mounted.current) setFailed(setting); })
-      .finally(() => { if (mounted.current) setSaving(""); });
+      .catch(() => { if (current()) setFailed(previous => ({ ...previous, [setting]: true })); })
+      .finally(() => { if (current()) setSaving(previous => ({ ...previous, [setting]: false })); });
   }
   return (
     <div className="settings-editor-group">
       <span className="section-label">Query editor</span>
       {EDITOR_SETTING_KEYS.map((setting) => {
-        const note = failed === setting ? SAVE_ERROR : HINTS[setting] || "";
+        const note = HINTS[setting] || "";
+        const errorId = `editor-setting-${setting}-error`;
         const hintId = `editor-setting-${setting}-hint`;
         return (
           <Fragment key={setting}>
             <div className="settings-option-row">
               <Checkbox className="check-field session-toggle" checked={settings[setting]}
-                busy={saving === setting} describedBy={note ? hintId : undefined}
+                busy={!!saving[setting]} describedBy={[note ? hintId : "", failed[setting] ? errorId : ""].filter(Boolean).join(" ") || undefined}
                 onChange={(on) => save(setting, on)}>
                 {EDITOR_SETTING_LABELS[setting]}
               </Checkbox>
             </div>
             {note && (
-              <p className={failed === setting ? "hint error" : "hint"} id={hintId}
-                role={failed === setting ? "alert" : undefined}>{note}</p>
+              <p className="hint" id={hintId}>{note}</p>
             )}
+            <p className={failed[setting] ? "hint error" : "visually-hidden"} id={errorId} role="alert">{failed[setting] ? SAVE_ERROR : ""}</p>
           </Fragment>
         );
       })}

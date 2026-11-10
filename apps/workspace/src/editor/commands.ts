@@ -1,4 +1,4 @@
-import type { ChangeSpec, Line, StateCommand } from "@codemirror/state";
+import { EditorSelection, type ChangeSpec, type Line, type StateCommand } from "@codemirror/state";
 import { selectNextOccurrence, selectSelectionMatches } from "@codemirror/search";
 import { openLintPanel, nextDiagnostic, previousDiagnostic } from "@codemirror/lint";
 
@@ -52,7 +52,19 @@ export const toggleSqlComment: StateCommand = ({ state, dispatch }) => {
 };
 
 export const selectNextOccurrenceCmd: StateCommand = selectNextOccurrence;
-export const selectAllOccurrencesCmd: StateCommand = selectSelectionMatches;
+export const selectAllOccurrencesCmd: StateCommand = ({ state, dispatch }) => {
+  const main = state.selection.main;
+  const range = main.empty ? state.wordAt(main.head) : main;
+  if (!range) return false;
+  const text = state.sliceDoc(range.from, range.to);
+  if (state.selection.ranges.length > 1 && state.selection.ranges.some(r => state.sliceDoc(r.from, r.to) !== text)) return false;
+  // Normalize for CodeMirror's single-selection search, then dispatch against
+  // the original state so the view receives one valid transaction.
+  const searchState = state.update({ selection: EditorSelection.single(range.from, range.to) }).state;
+  return selectSelectionMatches({ state: searchState, dispatch: tr => dispatch(state.update({
+    selection: tr.state.selection, userEvent: "select.search.matches",
+  })) });
+};
 export const showProblemsCmd = openLintPanel;
 export const nextProblemCmd = nextDiagnostic;
 export const previousProblemCmd = previousDiagnostic;

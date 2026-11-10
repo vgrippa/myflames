@@ -71,7 +71,7 @@ try {
       if (match) { clearTimeout(timer); resolve(match[0]); }
     });
   });
-  browser = await puppeteer.launch({ headless: "shell" });
+  browser = await puppeteer.launch({ headless: "shell", pipe: true });
   page = await browser.newPage();
   page.setDefaultTimeout(TIMEOUT);
   page.on("pageerror", error => errors.push(String(error)));

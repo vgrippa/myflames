@@ -3,6 +3,7 @@ import { Annotation, Compartment, EditorSelection, EditorState, Prec, type Exten
 import { EditorView, crosshairCursor, drawSelection, keymap, lineNumbers, placeholder, rectangularSelection, tooltips } from "@codemirror/view";
 import { history, isolateHistory, redo, undo } from "@codemirror/commands";
 import { autocompletion, closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
+import { closeLintPanel } from "@codemirror/lint";
 import { indentUnit } from "@codemirror/language";
 import { HIGHLIGHT_LIMIT } from "../sqlHighlight";
 import { attachAutomation } from "./automation";
@@ -15,7 +16,7 @@ import { editorKeymap } from "./keymap";
 import { FLASH_MS, matchingBrackets, setError, setFlash, setStatement, sqlMarks } from "./marks";
 import { problemsExtension } from "./problems";
 import { sqlHighlighting, sqlLanguage } from "./sqlLanguage";
-import { clampOffset, clampRange, mainSelection, normalizeEol, normalizedOffset, normalizedRange, sameConnection, type EditorEnv, type Range, type SqlEditorHandle, type SqlEditorProps } from "./types";
+import { clampRange, mainSelection, normalizeEol, normalizedRange, sameConnection, type EditorEnv, type Range, type SqlEditorHandle, type SqlEditorProps } from "./types";
 import { visualExtension } from "./visual";
 
 export type { SqlEditorHandle, SqlEditorProps } from "./types";
@@ -144,6 +145,9 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(function Sq
     return EditorState.create({ doc: value, selection: EditorSelection.single(initial.start, initial.end), extensions: [
       ...compartmentNames.map(name => slots[name].of(config[name])),
       history(), lineNumbers(), drawSelection(), indentUnit.of("  "), EditorState.tabSize.of(2), sqlMarks(), findExtension(),
+      EditorState.phrases.of({
+        Diagnostics: "Problems", "No diagnostics": "No problem warnings", close: "Close", Completions: "SQL suggestions",
+      }),
       tooltips({ parent: document.body }),
       Prec.highest(EditorView.domEventHandlers({
         keydown(event) { latest.current.onKeyDown?.(event); return event.defaultPrevented; },
@@ -236,16 +240,11 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(function Sq
         }
       } });
     }
-    if (switched) latest.current.onSelectionChange?.(mainSelection(view.state), view.state.selection.ranges.length);
+    // setState does not notify update listeners, and a new view has no prior
+    // selection to compare. Report both after synchronization, outside dispatch.
+    if (!previous || switched) latest.current.onSelectionChange?.(mainSelection(view.state), view.state.selection.ranges.length);
     applied.current = props;
   });
-
-  // Before the parent's onChange echo, imperative callers already use the live
-  // normalized document. Only use raw prop offsets while those props still match.
-  function offsetSource(view: EditorView): string {
-    const live = view.state.doc.toString(), raw = latest.current.value;
-    return raw.includes("\r") && normalizeEol(raw) === live ? raw : live;
-  }
 
   useImperativeHandle(ref, () => ({
     get element() { return viewRef.current?.contentDOM ?? null; },
@@ -255,7 +254,7 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(function Sq
     setSelection(start, end = start, options = {}) {
       const view = viewRef.current;
       if (!view) return;
-      const range = normalizedRange(offsetSource(view), start, end);
+      const range = clampRange(start, end, view.state.doc.length);
       const selection = EditorSelection.single(range.start, range.end);
       view.dispatch({ selection, userEvent: "select", effects: options.scroll === false ? []
         : EditorView.scrollIntoView(selection.main, { y: options.scroll ?? "nearest" }) });
@@ -264,19 +263,9 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(function Sq
     replaceRange(from, to, text, options = {}) {
       const view = viewRef.current;
       if (!view || view.state.readOnly) return false;
-      const raw = offsetSource(view), rawRange = clampRange(from, to, raw.length);
-      const range = normalizedRange(raw, rawRange.start, rawRange.end);
-      const insert = normalizeEol(text), delta = insert.length - (range.end - range.start);
-      // Selection offsets describe the raw post-edit text. Map each segment
-      // separately so a bound inside CRLF cannot create a spurious lone CR.
-      const selectionOffset = (offset: number) => {
-        const at = clampOffset(offset, raw.length - (rawRange.end - rawRange.start) + text.length);
-        if (at <= rawRange.start) return normalizedOffset(raw, at);
-        if (at <= rawRange.start + text.length) return range.start + normalizedOffset(text, at - rawRange.start);
-        return normalizedOffset(raw, at - text.length + rawRange.end - rawRange.start) + delta;
-      };
-      const selected = options.select ? clampRange(selectionOffset(options.select.start), selectionOffset(options.select.end),
-        view.state.doc.length + delta) : null;
+      const range = clampRange(from, to, view.state.doc.length);
+      const insert = normalizeEol(text), length = view.state.doc.length - (range.end - range.start) + insert.length;
+      const selected = options.select ? clampRange(options.select.start, options.select.end, length) : null;
       view.dispatch({ changes: { from: range.start, to: range.end, insert },
         selection: selected ? EditorSelection.single(selected.start, selected.end) : undefined,
         annotations: isolateHistory.of("full"), userEvent: "input", scrollIntoView: !!options.focus });
@@ -296,7 +285,17 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(function Sq
   }), []);
 
   return <div className="sql-editor-wrap sql-cm" style={props.height === undefined ? undefined : { height: props.height }}>
-    <div className="sql-cm-host" ref={host} />
+    <div className="sql-cm-host" ref={host} onClickCapture={event => {
+      // The lint panel sits outside contentDOM, so editor event handlers do
+      // not see its Close button. Handle it before CodeMirror removes it.
+      if (!(event.target instanceof Element) || !event.target.closest(".cm-panel-lint button[name=close]")) return;
+      const view = viewRef.current;
+      if (view && closeLintPanel(view)) {
+        event.preventDefault();
+        event.stopPropagation();
+        view.focus();
+      }
+    }} />
     <FindBar view={findView} />
   </div>;
 });

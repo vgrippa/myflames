@@ -489,6 +489,30 @@ try {
     assert.equal(state.selection.mainIndex, 2);
     assert.equal(cm.undo(view), true); assert.equal(state.doc.toString(), doc);
   });
+  await test('function parentheses and carets follow each matching cursor, in either main order', async () => {
+    const pair = sourceEnv(); Object.assign(pair.env.current, { connection: undefined, engine: 'mysql', serverVersion: '8.0.36' });
+    for (const mainIndex of [0, 1]) {
+      const doc = 'SELECT PO, PO(1, 2)';
+      let state = cm.EditorState.create({ doc,
+        selection: cm.EditorSelection.create([9, 13].map(pos => cm.EditorSelection.cursor(pos)), mainIndex),
+        extensions: [cm.EditorState.allowMultipleSelections.of(true), cm.history()] });
+      const initialSelection = state.selection, transactions = [];
+      const view = { get state() { return state; }, dispatch(spec) {
+        const tr = state.update(spec); state = tr.state; transactions.push(tr);
+      } };
+      const result = await pair.source(new cm.CompletionContext(state, state.selection.main.head, true));
+      const fn = result.options.find(o => o.label === 'POW' && o.type === 'function'); assert.ok(fn);
+      fn.apply(view, fn, result.from, result.to);
+      assert.equal(state.doc.toString(), 'SELECT POW(), POW(1, 2)', `main cursor ${mainIndex}`);
+      assert.deepEqual(state.selection.ranges.map(r => r.head), [11, 17]);
+      assert.equal(state.selection.mainIndex, mainIndex);
+      assert.equal(transactions.length, 1);
+      assert.equal(transactions[0].annotation(cm.pickedCompletion), fn);
+      assert.equal(transactions[0].annotation(cm.Transaction.userEvent), 'input.complete');
+      assert.equal(cm.undo(view), true); assert.equal(state.doc.toString(), doc);
+      assert.ok(state.selection.eq(initialSelection)); assert.equal(cm.undo(view), false);
+    }
+  });
   await test('variable lexical guards, scopes, replacement and one cached offline call', async () => {
     const pair = sourceEnv(); Object.assign(pair.env.current, { connection: undefined, engine: 'mysql', serverVersion: '8.4.6' });
     const names = [

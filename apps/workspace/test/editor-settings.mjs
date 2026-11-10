@@ -137,3 +137,101 @@ const reset = () => { server.stored = { ...DEFAULTS }; server.sent.length = 0; s
   assert.equal(mod.currentEditorSettings().soft_wrap, true, "the change made during the read wins");
 }
 console.log("Editor settings store: defaults, shared read, ordered writes, re-read after a failed write, change during read passed.");
+
+// Render the real popover callbacks with stubbed hooks and controls. This
+// checks overlapping saves without a browser, transport or running service.
+{
+  const root = fileURLToPath(new URL("..", import.meta.url));
+  const ui = await build({
+    entryPoints: [fileURLToPath(new URL("../src/QueryEditorSettings.tsx", import.meta.url))],
+    bundle: true, format: "esm", platform: "neutral", target: "es2020", write: false, logLevel: "silent",
+    define: { "process.env.NODE_ENV": '"production"' },
+    plugins: [{ name: "settings-ui", setup(b) {
+      b.onResolve({ filter: /^react$|^\.\/kit$|^\.\/editorSettings$/ }, args =>
+        args.importer.endsWith("/QueryEditorSettings.tsx")
+          ? { path: args.path, namespace: "settings-ui" } : undefined);
+      b.onLoad({ filter: /.*/, namespace: "settings-ui" }, args => ({ resolveDir: root, contents:
+        args.path === "./kit" ? 'export const Checkbox = "checkbox";' : args.path === "./editorSettings" ? `
+          export { EDITOR_SETTING_KEYS, EDITOR_SETTING_LABELS } from "./src/editorSettings";
+          export const useEditorSettings = () => globalThis.__settingsUi.values;
+          export const setEditorSetting = (key, on) => globalThis.__settingsUi.save(key, on);
+        ` : `
+          export { Fragment } from "react";
+          export const useState = value => globalThis.__settingsUi.useState(value);
+          export const useRef = value => globalThis.__settingsUi.useRef(value);
+          export const useEffect = (effect, deps) => globalThis.__settingsUi.useEffect(effect, deps);
+        ` }));
+    } }],
+  });
+  const mod = await import("data:text/javascript;base64," + Buffer.from(ui.outputFiles[0].text).toString("base64"));
+  const hooks = [], pending = [], effects = [];
+  let index = 0, updates = 0;
+  const useRef = value => hooks[index++] ??= { current: value };
+  globalThis.__settingsUi = {
+    values: DEFAULTS, useRef,
+    useState(value) {
+      const slot = useRef(value);
+      return [slot.current, update => {
+        updates++; slot.current = typeof update === "function" ? update(slot.current) : update;
+      }];
+    },
+    useEffect(effect) {
+      const slot = useRef(null);
+      if (!slot.current) effects.push(() => { slot.current = { cleanup: effect() }; });
+    },
+    save: (key, on) => new Promise((resolve, reject) => pending.push({ key, on, resolve, reject })),
+  };
+  const render = () => {
+    index = 0; effects.length = 0;
+    const tree = mod.QueryEditorSettings();
+    for (const effect of effects) effect();
+    return tree;
+  };
+  const unmount = () => { for (const slot of hooks) slot.current?.cleanup?.(); };
+  const row = (tree, key) => tree.props.children[1].find(node => node.key === key);
+  const checkbox = (tree, key) => row(tree, key).props.children[0].props.children.props;
+  const alert = (tree, key) => row(tree, key).props.children.at(-1);
+  const change = (key, on) => checkbox(render(), key).onChange(on);
+  try {
+    let tree = render();
+    for (const key of Object.keys(DEFAULTS)) {
+      assert.equal(alert(tree, key).props.role, "alert", "every error live region is pre-mounted");
+      assert.equal(alert(tree, key).props.children, "", "idle live regions are empty");
+    }
+    const errorId = alert(tree, "soft_wrap").props.id;
+    change("soft_wrap", true); change("multi_cursor", false);
+    tree = render();
+    assert.equal(checkbox(tree, "soft_wrap").busy, true);
+    assert.equal(checkbox(tree, "multi_cursor").busy, true);
+    pending[0].reject(Error("A failed")); await tick();
+    tree = render();
+    assert.equal(checkbox(tree, "soft_wrap").busy, false);
+    assert.equal(checkbox(tree, "multi_cursor").busy, true, "A's finally cannot clear B's busy state");
+    assert.equal(alert(tree, "soft_wrap").props.children, "Could not save this setting. Try again.");
+    assert.equal(alert(tree, "soft_wrap").props.id, errorId, "the live region keeps its identity");
+    assert.equal(checkbox(tree, "soft_wrap").describedBy, errorId);
+    pending[1].reject(Error("B failed")); await tick();
+    change("multi_cursor", true);
+    tree = render();
+    assert.equal(alert(tree, "soft_wrap").props.children, "Could not save this setting. Try again.", "B's retry keeps A's error");
+    assert.equal(alert(tree, "multi_cursor").props.children, "");
+    pending[2].resolve(); await tick();
+
+    // Two callbacks before the busy checkbox rerenders must still be ordered.
+    change("soft_wrap", true); change("soft_wrap", false);
+    pending[3].reject(Error("stale failure")); await tick();
+    tree = render();
+    assert.equal(checkbox(tree, "soft_wrap").busy, true, "a stale save cannot clear a newer busy state");
+    assert.equal(alert(tree, "soft_wrap").props.children, "", "a stale save cannot publish its error");
+    pending[4].resolve(); await tick();
+    assert.equal(checkbox(render(), "soft_wrap").busy, false);
+
+    change("hover_info", false);
+    unmount(); const before = updates;
+    pending[5].reject(Error("unmounted")); await tick();
+    assert.equal(updates, before, "settled saves cannot update an unmounted popover");
+  } finally {
+    unmount(); delete globalThis.__settingsUi;
+  }
+  console.log("Editor settings popover: concurrent keys, independent errors, stale saves, mounted alerts and unmount passed.");
+}

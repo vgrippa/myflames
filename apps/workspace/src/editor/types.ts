@@ -18,6 +18,10 @@ export type EditorEnv = {
   backslashEscapes: boolean;
   docId: string;
 };
+/** Every handle offset uses UTF-16 code units in getValue()'s live, LF-normalized
+ * document. replaceRange's select uses that document after the normalized insert.
+ * Convert raw prop/server offsets explicitly with normalizedOffset/normalizedRange
+ * at the caller; never pass raw CRLF offsets to a handle method. */
 export type SqlEditorHandle = {
   readonly element: HTMLElement | null;
   getValue(): string;

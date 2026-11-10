@@ -11,7 +11,10 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const bundled = await build({
   stdin: { contents: `
     export { EditorState, EditorSelection, Transaction } from "@codemirror/state";
-    export { EditorView, ViewPlugin } from "@codemirror/view";
+    export { EditorView, ViewPlugin, keymap, runScopeHandlers } from "@codemirror/view";
+    export { autocompletion, startCompletion } from "@codemirror/autocomplete";
+    export { openLintPanel, closeLintPanel } from "@codemirror/lint";
+    export * from "./src/editor/keymap";
     export { history, undo, redo, undoDepth, isolateHistory } from "@codemirror/commands";
     export * from "./src/editor/find";
     export * from "./src/editor/findMarks";
@@ -309,6 +312,7 @@ function harness(doc, selection = { anchor: 0 }, extensions = [], makeFinder) {
   let plugin, updating = false;
   const view = {
     state: stateFor(doc, selection, extensions), focused: 0, transactions: [],
+    plugin() { return null; }, // Panel commands use real state without mounting a DOM panel.
     focus() { view.focused++; },
     dispatch(...specs) {
       assert.equal(updating, false, "no dispatch while a plugin is updating");
@@ -352,6 +356,66 @@ try {
   assert.equal(a.view.focused, 1);
   assert.equal(a.view.state.selection.main.from, 8);
   assert.deepEqual(marks(a.view.state), []);
+
+  // Close preserves a later user selection, including multiple cursors and direction.
+  for (const selection of [cm.EditorSelection.single(6, 4), cm.EditorSelection.create([
+    cm.EditorSelection.cursor(1), cm.EditorSelection.range(6, 4),
+  ], 1)]) {
+    const keep = harness("foo foo foo", { anchor: 0, head: 3 }, [cm.EditorState.allowMultipleSelections.of(true)]);
+    keep.controller.openFind("find");
+    keep.controller.navigate(1);
+    keep.view.dispatch({ selection });
+    const before = keep.view.transactions.length;
+    keep.controller.close();
+    assert.ok(keep.view.state.selection.eq(selection), "closing Find must preserve selections made after the last match");
+    assert.equal(keep.view.focused, 1);
+    assert.ok(keep.view.transactions.slice(before).every(tr => !tr.selection && !tr.scrollIntoView &&
+      !tr.effects.some(effect => effect.value?.y)), "closing Find must not reveal or scroll to an old match");
+  }
+
+  // Real keymap and state commands, with the same preventDefault contract as CM's input handler.
+  const settings = { multi_cursor: true, completion_auto: true, close_brackets: true,
+    soft_wrap: false, problem_warnings: true, hover_info: true };
+  const esc = harness("foo foo", { anchor: 0, head: 3 }, [
+    cm.EditorState.allowMultipleSelections.of(true), cm.keymap.of(cm.editorKeymap(settings)),
+    cm.autocompletion({ activateOnTyping: false, defaultKeymap: false, override: [() => null] }),
+  ]);
+  const pressEscape = () => {
+    const event = { key: "Escape", code: "Escape", keyCode: 27, defaultPrevented: false,
+      preventDefault() { this.defaultPrevented = true; }, stopPropagation() {} };
+    if (cm.runScopeHandlers(esc.view, event, "editor")) event.preventDefault();
+    return event.defaultPrevented;
+  };
+  esc.controller.openFind("find");
+  assert.equal(pressEscape(), true, "single cursor and no popup: closing Find prevents Escape reaching Stop");
+  assert.equal(esc.controller.snapshot.mode, false);
+  assert.equal(pressEscape(), false, "unhandled Escape still reaches the Tab-focus handler and Stop");
+  assert.notEqual(cm.editorKeymap(settings).find(binding => binding.key === "Escape").preventDefault, true,
+    "do not unconditionally swallow the Escape fall-through");
+
+  esc.controller.openFind("replace");
+  cm.openLintPanel(esc.view);
+  esc.view.dispatch({ selection: cm.EditorSelection.create([
+    cm.EditorSelection.cursor(0), cm.EditorSelection.range(4, 7),
+  ], 1) });
+  assert.equal(cm.startCompletion(esc.view), true);
+  assert.equal(pressEscape(), true);
+  assert.equal(esc.view.state.selection.ranges.length, 2, "suggestions close before extra cursors");
+  assert.equal(esc.controller.snapshot.mode, "replace");
+  assert.equal(pressEscape(), true);
+  assert.equal(esc.view.state.selection.ranges.length, 1, "extra cursors collapse before Find closes");
+  assert.equal(esc.controller.snapshot.mode, "replace");
+  assert.equal(pressEscape(), true);
+  assert.equal(esc.controller.snapshot.mode, false, "Find closes before Problems");
+  const beforeLintClose = esc.view.transactions.length;
+  assert.equal(pressEscape(), true, "Problems close consumes Escape");
+  assert.equal(esc.view.transactions.length, beforeLintClose + 1, "lint panel was still open after Find closed");
+  assert.equal(cm.closeLintPanel(esc.view), false, "Problems are now closed");
+  assert.equal(pressEscape(), false);
+  esc.controller.openGoToLine();
+  assert.equal(pressEscape(), true, "Go to line also closes before Stop");
+  assert.equal(esc.controller.snapshot.mode, false);
+  assert.equal(pressEscape(), false);
   a.view.dispatch({ selection: { anchor: 0, head: 8 } });
   cm.findHooks.openFind(a.view, "find");
   assert.equal(a.controller.snapshot.query, "foo", "multiline selection does not seed query");
@@ -469,4 +533,5 @@ try {
 }
 assert.equal(cm.findHooks.openFind({}, "find"), false);
 assert.equal(cm.findHooks.next({}), false);
+assert.equal(cm.findHooks.close({}), false, "a missing controller does not consume Escape");
 console.log("Editor find unit: legacy parity, Unicode offsets, worker timeout/recovery/cancel, replacement undo, mapped/capped marks, hooks, stale searches, tab switches and Go to line passed.");

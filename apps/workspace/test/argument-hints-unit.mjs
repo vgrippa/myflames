@@ -61,7 +61,10 @@ async function check(marked, expected, options) {
   const h = harness(marked, options); await flush(); const tip = h.tip();
   if (expected === null) assert.equal(tip, null, marked.slice(0, 120));
   else {
-    assert.ok(tip, marked.slice(0, 120)); assert.equal(tip.pos, h.view.state.selection.main.head); assert.equal(tip.above, true);
+    assert.ok(tip, marked.slice(0, 120)); assert.ok(tip.pos <= h.view.state.selection.main.head); assert.equal(tip.above, true);
+    const name = expected.slice(0, expected.indexOf("("));
+    assert.equal(h.view.state.doc.sliceString(tip.pos - name.length - 1, tip.pos).toUpperCase(), `${name}(`,
+      "the hint anchors immediately after its function's opening parenthesis");
     const { dom } = tip.create(h.view);
     assert.equal(dom.className, "sql-arg-hint"); assert.equal(dom.textContent, expected, marked.slice(0, 120));
     assert.deepEqual(dom.childNodes, [{ nodeType: 3, data: expected }], "only text nodes, never SQL as markup");
@@ -96,6 +99,11 @@ try {
     ["SELECT POW(1, `still, |", "POW(…) · 2 arguments · argument 2"],
     ["SELECT POW(1, 2); SELECT ABS(|)", "ABS(…) · 1 argument · argument 1"],
   ]) await check(marked, expected);
+  await check("SELECT CONCAT('a\\', 1, |)", "CONCAT(…) · at least 1 arguments · argument 3", { env: { backslashEscapes: false } });
+  await check("SELECT CONCAT('a\\', 1, |)", "CONCAT(…) · at least 1 arguments · argument 1", { env: { backslashEscapes: true } });
+  await check("SELECT CONCAT('a\\', 1; SELECT |", null, { env: { backslashEscapes: false } });
+  await check("SELECT CONCAT('a\\', 1); SELECT ABS(|)", "ABS(…) · 1 argument · argument 1", { env: { backslashEscapes: false } });
+  await check("SELECT CONCAT('a\\', " + " ".repeat(4000) + "|)", null, { env: { backslashEscapes: false } });
   for (const marked of [
     "SELECT POW (|)", "SELECT POW\n(|)", "SELECT POW/*comment*/(|)", "SELECT db.POW(|)",
     "SELECT db. POW(|)", "SELECT db./* c */POW(|)", "SELECT `POW`(|)", "SELECT @POW(|)",
@@ -125,6 +133,48 @@ try {
   {
     const h = harness("SELECT POW(|)"); h.destroy(); await flush();
     assert.equal(h.dispatches, 0, "destroyed editor cannot receive a lazy-load refresh"); passed++;
+  }
+  {
+    // Warm the index, then count catalog name reads rather than timing a CPU.
+    // A linear find for each unknown call reads every function name again.
+    const h = harness("SELECT ABS(|)"); await flush();
+    const before = h.tip();
+    h.view.dispatch({ changes: { from: h.view.state.selection.main.head, insert: "123" },
+      selection: { anchor: h.view.state.selection.main.head + 3 } });
+    assert.equal(h.tip(), before, "typing within one argument keeps the tooltip and create function");
+    const pos = h.view.state.selection.main.head;
+    h.view.dispatch({ changes: { from: pos, insert: "," }, selection: { anchor: pos + 1 } });
+    assert.notEqual(h.tip(), before, "a changed argument label replaces the tooltip");
+    assert.ok(h.tip().create(h.view).dom.textContent.endsWith("argument 2"));
+    const second = h.tip();
+    h.view.dispatch({ changes: { from: 0, insert: " " }, selection: { anchor: pos + 2 } });
+    assert.notEqual(h.tip(), second, "moving the call's anchor replaces the tooltip");
+    assert.equal(h.tip().pos, second.pos + 1);
+    h.destroy(); passed++;
+  }
+  {
+    const list = cm.functionsFor("mysql", "8.0.36");
+    let reads = 0;
+    const descriptors = list.functions.map(fn => Object.getOwnPropertyDescriptor(fn, "name"));
+    try {
+      list.functions.forEach((fn, i) => Object.defineProperty(fn, "name", {
+        configurable: true, get() { reads++; return descriptors[i].value; },
+      }));
+      // Existing hints have already built this catalog's map. A fresh editor
+      // and functionsFor wrapper must share it, including unknown names.
+      for (const nesting of [1, 2000]) {
+        const h = harness("a(".repeat(nesting) + "|"); await flush();
+        assert.equal(h.tip(), null);
+        assert.equal(reads, 0, "unknown call lookups do not scan the function catalog");
+        h.view.dispatch({ changes: { from: h.view.state.doc.length, insert: "1" },
+          selection: { anchor: h.view.state.doc.length + 1 } });
+        assert.equal(reads, 0, "keystrokes reuse the same catalog index");
+        h.destroy();
+      }
+    } finally {
+      list.functions.forEach((fn, i) => Object.defineProperty(fn, "name", descriptors[i]));
+    }
+    passed++;
   }
   console.log(`${passed} argument hint cases passed.`);
 } finally {

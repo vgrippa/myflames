@@ -226,7 +226,6 @@ export class FindController {
   }
 
   close() {
-    if (this.isOpen()) this.reveal(this.snapshot.current);
     this.reset();
     this.view.dispatch({ effects: clearFindMarks.of(null) });
     this.view.focus();
@@ -335,6 +334,12 @@ export function FindBar({ view }: FindBarProps) {
 
 // Keymap calls always resolve the live controller for this view.
 export const findHooks = {
+  close(view: EditorView): boolean {
+    const controller = controllers.get(view);
+    if (!controller || !controller.snapshot.mode) return false;
+    controller.close();
+    return true;
+  },
   openFind(view: EditorView, mode: "find" | "replace"): boolean { return controllers.get(view)?.openFind(mode) ?? false; },
   openGoToLine(view: EditorView): boolean { return controllers.get(view)?.openGoToLine() ?? false; },
   next(view: EditorView): boolean { return controllers.get(view)?.navigate(1) ?? false; },

@@ -83,7 +83,13 @@ type PeekCatalog = CatalogService & {
 };
 function cachedRows(catalog: CatalogService, schema: string, table: string): number | undefined {
   const cached = (catalog as PeekCatalog).peek?.("tables", { schema });
-  const rows = cached && !cached.failed ? cached.value?.tables.find(t => same(t.name, table))?.rows : undefined;
+  const tables = cached && !cached.failed ? cached.value?.tables : undefined;
+  let match = tables?.find(t => t.name === table);
+  if (!match) {
+    const folded = tables?.filter(t => same(t.name, table));
+    if (folded?.length === 1) match = folded[0];
+  }
+  const rows = match?.rows;
   return typeof rows === "number" && Number.isFinite(rows) && rows >= 0 ? rows : undefined;
 }
 

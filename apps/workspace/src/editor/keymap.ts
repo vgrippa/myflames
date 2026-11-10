@@ -5,13 +5,14 @@ import {
   indentLess, indentMore, insertNewlineKeepIndent, moveLineDown, moveLineUp, standardKeymap, toggleTabFocusMode,
 } from "@codemirror/commands";
 import { acceptCompletion, closeCompletion, completionKeymap, startCompletion } from "@codemirror/autocomplete";
+import { closeLintPanel } from "@codemirror/lint";
 import { MAC } from "../platform";
 import { findHooks } from "./FindBar";
 import { nextProblemCmd, previousProblemCmd, selectAllOccurrencesCmd, selectNextOccurrenceCmd, showProblemsCmd, toggleSqlComment } from "./commands";
 import type { EditorFeatureSettings } from "./types";
 
 export const EDITOR_SHORTCUTS: { id: string; mac: string; other: string; label: string; setting?: keyof EditorFeatureSettings }[] = [
-  { id: "escape", mac: "Escape", other: "Escape", label: "Close suggestions or keep only the main cursor" },
+  { id: "escape", mac: "Escape", other: "Escape", label: "Close suggestions, extra cursors, Find or Problems" },
   { id: "indent", mac: "Tab", other: "Tab", label: "Accept suggestion or indent" },
   { id: "outdent", mac: "Shift-Tab", other: "Shift-Tab", label: "Accept suggestion or unindent" },
   { id: "tabFocus", mac: "Shift-Alt-m", other: "Ctrl-m", label: "Toggle Tab moving focus (also Escape, then Tab)" },
@@ -31,7 +32,7 @@ export const EDITOR_SHORTCUTS: { id: string; mac: string; other: string; label: 
   { id: "find", mac: "Mod-f", other: "Mod-f", label: "Find" },
   { id: "replace", mac: "Mod-Alt-f", other: "Ctrl-h", label: "Find and replace" },
   { id: "replaceAlt", mac: "", other: "Mod-Alt-f", label: "Find and replace" },
-  { id: "nextMatch", mac: "Mod-g", other: "Mod-g", label: "Next match (Ctrl+G opens Go to line when Find is closed)" },
+  { id: "nextMatch", mac: "Mod-g", other: "Mod-g", label: MAC ? "Next match" : "Next match (Ctrl+G opens Go to line when Find is closed)" },
   { id: "previousMatch", mac: "Shift-Mod-g", other: "Shift-Mod-g", label: "Previous match" },
   { id: "problems", mac: "Shift-Mod-m", other: "Shift-Mod-m", label: "Show problems", setting: "problem_warnings" },
   { id: "nextProblem", mac: "F8", other: "F8", label: "Next problem", setting: "problem_warnings" },
@@ -40,9 +41,11 @@ export const EDITOR_SHORTCUTS: { id: string; mac: string; other: string; label: 
 
 export const escapeEditor: Command = view => {
   if (closeCompletion(view)) return true;
-  if (view.state.selection.ranges.length === 1) return false;
-  view.dispatch({ selection: EditorSelection.create([view.state.selection.main]), userEvent: "select" });
-  return true;
+  if (view.state.selection.ranges.length > 1) {
+    view.dispatch({ selection: EditorSelection.create([view.state.selection.main]), userEvent: "select" });
+    return true;
+  }
+  return findHooks.close(view) || closeLintPanel(view);
 };
 
 export type EditorKeymapCommands = Partial<Record<string, Command>> & { findIsOpen?: (view: Parameters<Command>[0]) => boolean };
@@ -80,7 +83,8 @@ export function editorKeymap(settings: EditorFeatureSettings, commands: EditorKe
   // standardKeymap contains none of the defaultKeymap's Run, history-navigation,
   // syntax-selection, comment or Escape bindings that conflict with the shell.
   const editing = standardKeymap.map(binding => binding.key === "Enter"
-    ? { ...binding, run: insertNewlineKeepIndent, shift: insertNewlineKeepIndent } : binding);
+    ? { ...binding, run: insertNewlineKeepIndent, shift: insertNewlineKeepIndent }
+    : binding.mac === "Ctrl-k" ? { ...binding, stopPropagation: true, preventDefault: true } : binding);
   const completionNavigation = completionKeymap.filter(binding =>
     ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Enter"].includes(binding.key || ""));
   return [...bindings, ...completionNavigation, ...editing, ...historyKeymap];

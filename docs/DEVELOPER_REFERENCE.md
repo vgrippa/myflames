@@ -443,6 +443,9 @@ version in the page. A bad engine or version is a 400 ("Choose engine mysql
 or mariadb.", "Choose a cataloged version of at most 32 characters.").
 Tests: `test/test_ui.py` (editor-settings round trip, bad payloads, local
 routing) and `apps/workspace/test/editor-settings.mjs`.
+`QueryEditorSettings.tsx` tracks saves and errors per setting, with a request
+sequence per key that ignores stale completions. Each row keeps an empty
+`role="alert"` node mounted until an error fills it.
 
 `package:win` builds the unsigned Windows x64 NSIS installer
 (`myflames-<version>-windows-x64-setup.exe`, per user). PyInstaller does not
@@ -2402,13 +2405,30 @@ planner, write gate and session engine from the CLI.
   `EditorState` per tab in a per-tab document store (`createDocumentStore`;
   the state carries the tab's own undo history, so undo is per tab, and
   external value replacements are one undo step through `isolateHistory`).
-  Settings reconfigure Compartments, never remount the view. Several
+  Settings reconfigure Compartments, never remount the view.
+  Every document includes the phrase overrides **Problems**, **No problem
+  warnings**, **Close** and **SQL suggestions**. The host captures the lint
+  panel's Close click, closes it and focuses the editor; CodeMirror content
+  event handlers do not receive panel clicks. The shortcuts popover renders
+  arrow glyphs and uses Esc, Space, Tab and platform-specific Return/Enter. Several
   selections: Run, Explain and Run analysis read only the main cursor or
   selection (`getSelection()`; `getSelections()` exists for checks). Run all
   runs the whole tab (`sqlSelection.sqlRun`, `all: true`), and
   Format SQL refuses several ranges ("Format SQL works with one cursor or
   selection; several are set. Keep one and try again."). Escape closes
-  suggestions, else keeps only the main cursor. The desktop Edit menu's
+  suggestions, else keeps only the main cursor, else closes Find, Replace or
+  Go to line through `findHooks.close`, else closes the lint panel when open.
+  Each handled step consumes Escape; otherwise it falls through to Stop and
+  CodeMirror's Escape-then-Tab focus handling. Closing the Find controller
+  clears marks and returns focus without changing the current selection or
+  scrolling to the last match. Select all occurrences (`Shift-Mod-l`, only
+  with Multiple cursors on) expands an empty caret using `state.wordAt`, or
+  accepts several ranges with identical selected text, then delegates to
+  CodeMirror's selection-match search. Unequal ranges are left unchanged.
+  The standard macOS `Ctrl-k` binding prevents the default event and stops
+  propagation so deleting to line end does not also open the command palette.
+  The Next match label mentions Ctrl+G opening Go to line only off macOS.
+  The desktop Edit menu's
   Undo and Redo reach the focused editor's CodeMirror history through the
   `window.__myflamesEditCommand` bridge, which accepts only the two literal
   commands `"undo"` and `"redo"` and reports an empty history as handled so
@@ -5152,13 +5172,18 @@ needs one empty caret, the document within the highlight limit, a cataloged
 or nearest-earlier release list, and the call's opening `(` within the
 4,000-character window scanned before the caret; strings, quoted
 identifiers and comments are skipped, and a name the list does not hold, or
-one qualified by a dot, shows no hint. Tests:
+one qualified by a dot, shows no hint. A WeakMap keyed by the shared
+`functionsFor` function array holds an uppercase-name index, so each call
+lookup is independent of the catalog's size. The tooltip anchors after the
+call's opening parenthesis and reuses its object and create function while
+the anchor and label stay unchanged. Tests:
 `apps/workspace/test/engine-words.mjs` (`node test/engine-words.mjs`,
 no browser: exact, uncataloged-patch, Percona- and MariaDB-suffixed,
 earlier-than-base and unknown-series resolution, case-insensitive keyword
 lookup, and a verified sample of keyword and function facts from both
 engines) and `apps/workspace/test/argument-hints-unit.mjs` (hint labels, the
-no-hint rules, lazy vocabulary loading and text-only rendering; Node, no
+no-hint rules, lazy vocabulary loading, indexed lookups, tooltip identity
+and text-only rendering; Node, no
 browser).
 
 ### MySQL 5.7 support
@@ -5651,7 +5676,8 @@ Hover (`editor/hover.ts`, 350 ms) shows a table's columns (name, type, key
 and null flags; the first 12, then "and N more") or one column's type and
 flags, plus the table's estimated row count when a cached table list
 already holds it: it reads columns through the catalog service and peeks
-cached lists, never sending `stats: true`. Problem warnings
+cached lists, never sending `stats: true`. Row estimates prefer the exact
+table name; a case-insensitive fallback must identify exactly one table. Problem warnings
 (`editor/problems.ts`; lint delay 750 ms, a gutter marker per warning, and
 the panel and F8 navigation from `editor/commands.ts`) are a bounded
 reading aid, not an SQL validity checker: above `HIGHLIGHT_LIMIT`, with a

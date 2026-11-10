@@ -67,6 +67,7 @@ import { ActionButton, ActionStatus, IDLE_ACTION, writeFailure, type ActionState
 import { ConnectionTypeBand, useWritePolicy, TYPE_LABEL } from "./Connections";
 import { ClientMissingNotice } from "./ClientMissing";
 import { SqlEditor, type SqlEditorHandle } from "./editor/SqlEditor";
+import { normalizeEol, normalizedOffset } from "./editor/types";
 import { EDITOR_SHORTCUTS } from "./editor/keymap";
 import type { Range } from "./editor/types";
 import { createsTemporaryTable } from "./editor/problems";
@@ -104,7 +105,11 @@ function keys(shift: boolean, key: "Enter" | "E" = "Enter") {
 function editorKeyText(name: string): string {
   const parts = name.split("-");
   let key = parts.pop() || "";
-  if (key.length === 1) key = key.toUpperCase();
+  const names: Record<string, string> = {
+    ArrowUp: "↑", ArrowDown: "↓", ArrowLeft: "←", ArrowRight: "→",
+    Enter: MAC ? "Return" : "Enter", Escape: "Esc", Space: "Space", Tab: "Tab",
+  };
+  key = names[key] ?? (key.length === 1 ? key.toUpperCase() : key);
   const has = (mod: string) => parts.some((p) => p.toLowerCase() === mod);
   const order = MAC ? ["ctrl", "alt", "shift", "mod"] : ["ctrl", "mod", "alt", "shift"];
   const mods = order.filter(has).map((mod) =>
@@ -2324,38 +2329,40 @@ export const QueryLab = forwardRef<
     ]);
     setTabId(id);
     window.requestAnimationFrame(() => {
-      editor.current?.setSelection(0, body.length, { focus: true });
+      editor.current?.setSelection(0, normalizeEol(body).length, { focus: true });
     });
   }
   /** Add *statement* at the end of the tab, selected, without running it. */
   function appendStatement(statement: string) {
-    const sql = tab.sql;
+    const el = editor.current;
+    const sql = el?.getValue() ?? normalizeEol(tab.sql);
     const d = sql.trim() ? delimiterAt(sql, sql.length, runtimeRef.current[tab.id]?.session?.backslash_escapes ?? true) : ";";
-    const body = statement.trim().replace(/;$/, "");
+    const body = normalizeEol(statement.trim().replace(/;$/, ""));
     const trimmed = sql.replace(/\s+$/, "");
     const lead = !trimmed ? "" : !trimmed.endsWith(d) ? `${d}\n\n` : sql.endsWith("\n\n") ? "" : sql.endsWith("\n") ? "\n" : "\n\n";
     const at = sql.length + lead.length;
-    const el = editor.current;
     // One replacement, one undo step; onChange carries the text to the tab.
     if (!el || !el.replaceRange(sql.length, sql.length, lead + body + d, { select: { start: at, end: at + body.length }, focus: true }))
       changeTab({ sql: sql + lead + body + d });
   }
   /** Add *statement* at the end of the tab and run it. */
   function appendAndRun(statement: string) {
-    const sql = tab.sql;
+    const el = editor.current;
+    const sql = el?.getValue() ?? normalizeEol(tab.sql);
     const d = sql.trim() ? delimiterAt(sql, sql.length, runtimeRef.current[tab.id]?.session?.backslash_escapes ?? true) : ";";
     const trimmed = sql.replace(/\s+$/, "");
     const lead = !trimmed ? "" : !trimmed.endsWith(d) ? `${d}\n\n` : sql.endsWith("\n\n") ? "" : sql.endsWith("\n") ? "\n" : "\n\n";
-    const addition = lead + statement + d;
+    const addition = lead + normalizeEol(statement) + d;
     const at = sql.length + lead.length;
-    const el = editor.current;
     if (!el || !el.replaceRange(sql.length, sql.length, addition, { select: { start: at, end: at }, focus: true }))
       changeTab({ sql: sql + addition });
     if (narrow) setSheet("");
     runSql(false, sql + addition, at);
   }
   function jump(offset: number) {
-    editor.current?.setSelection(offset, offset, { focus: true, scroll: "center" });
+    // Server positions belong to the submitted SQL, which may still have CRLF.
+    const at = normalizedOffset(rt.runSql || tab.sql, offset);
+    editor.current?.setSelection(at, at, { focus: true, scroll: "center" });
   }
 
   // ---- Format SQL ------------------------------------------------------------

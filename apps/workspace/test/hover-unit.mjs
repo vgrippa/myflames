@@ -91,6 +91,23 @@ try {
     assert.ok(tip.dom.textContent.includes("Estimated rows: 321"), "cached table estimates ignore identifier case");
     tip.destroy();
   }
+  for (const [name, tables, expected] of [
+    ["users", [{ name: "USERS", rows: 200 }, { name: "users", rows: 10 }], 10],
+    ["USERS", [{ name: "users", rows: 10 }, { name: "USERS", rows: 200 }], 200],
+    ["Users", [{ name: "users", rows: 10 }, { name: "USERS", rows: 200 }], undefined],
+    ["Users", [{ name: "users", rows: 10 }], 10],
+    ["users", [{ name: "USERS", rows: 200 }, { name: "users", rows: null }], undefined],
+    ["missing", [{ name: "users", rows: 10 }], undefined],
+  ]) {
+    const h = harness(`SELECT * FROM ${name}`), peek = h.catalog.peek.bind(h.catalog);
+    h.catalog.peek = (kind, params) => kind === "tables"
+      ? { failed: false, value: { tables } } : peek(kind, params);
+    const tip = await ready(h, name);
+    const estimate = texts(tip.dom).find(text => text.startsWith("Estimated rows:"));
+    assert.equal(estimate, expected === undefined ? undefined : `Estimated rows: ${expected}`,
+      "exact table names win; a folded name must be unique");
+    tip.destroy();
+  }
   for (const sql of [
     "WITH summary AS (SELECT 1 AS val) SELECT summary.val FROM summary",
     "WITH summary AS (SELECT 1 AS val) SELECT * FROM (SELECT summary.val FROM summary) t",
