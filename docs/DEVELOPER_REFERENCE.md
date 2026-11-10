@@ -900,8 +900,12 @@ are the contracts of the tools that check them.
   character, at least as long), without the heading and without leading or
   trailing blank lines, as UTF-8. A missing, undated, duplicated or empty
   section (subsection headings with no entry under them), or one with a fence
-  that never closes, prints why on stderr and exits 1. The GitHub release notes are this text verbatim, so a
-  summary paragraph for the release goes at the top of the section.
+  that never closes, prints why on stderr and exits 1. The script then ends the
+  notes with the inspiration credit line (`CREDIT`, the README's "Inspired by
+  Brendan Gregg's FlameGraph and Tanel Poder's SQL Plan FlameGraphs"), unless
+  the section already holds it, so no release's notes lose it. The GitHub
+  release notes are this text verbatim, so a summary paragraph for the release
+  goes at the top of the section.
 - **README screenshots.** `npm run docs:screenshots` in `apps/workspace`
   (`test/readme-screenshots.mjs`) builds nothing: it opens the built
   workspace in `myflames/ui_assets` through the perf harness (`open()` with

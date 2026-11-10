@@ -167,6 +167,21 @@ class ReleaseNotesTest(unittest.TestCase):
             self.assertEqual(unreadable.returncode, 1)
             self.assertIn("cannot read", unreadable.stderr)
 
+    def test_cli_notes_end_with_the_inspiration_credit_once(self):
+        readme = (REPO / "README.md").read_text(encoding="utf-8")
+        self.assertIn(notes.CREDIT, readme, "the credit matches the README's line")
+        with tempfile.TemporaryDirectory() as tmp:
+            changelog = Path(tmp) / "CHANGELOG.md"
+            changelog.write_text(CHANGELOG, encoding="utf-8")
+            done = run("release_notes.py", "3.4.0", "--changelog", str(changelog))
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertTrue(done.stdout.endswith("\n\n" + notes.CREDIT + "\n"), done.stdout[-200:])
+            # A section that already carries the credit is not given a second one.
+            changelog.write_text(CHANGELOG.replace("- **One thing.** It works.",
+                                                   "- **One thing.** It works.\n\n" + notes.CREDIT), encoding="utf-8")
+            again = run("release_notes.py", "3.4.0", "--changelog", str(changelog))
+            self.assertEqual(again.stdout.count(notes.CREDIT), 1)
+
     def test_real_changelog_has_the_333_notes(self):
         date, body = notes.section((REPO / "CHANGELOG.md").read_text(encoding="utf-8"), "3.3.3")
         self.assertEqual(date, "2026-11-09")
