@@ -870,7 +870,7 @@ class TestVersionAwareClients(unittest.TestCase):
                 _fake_completed(b'11.4.2-MariaDB\tMariaDB Server\n')]) as run:
             conn = MySQLConnection(host='maria')
             self.assertEqual(conn._resolve_binary(), maria)
-            self.assertEqual([c.args[0][0] for c in run.call_args_list], [mysql, maria])
+            self.assertEqual([c[0][0][0] for c in run.call_args_list], [mysql, maria])
         with mock.patch.object(connector, '_run_bounded', return_value=failure) as run:
             with self.assertRaises(connector.ClientAuthPluginError) as caught:
                 conn.run('SELECT 1')
@@ -1860,7 +1860,7 @@ class TestClientSecurityFixes(unittest.TestCase):
         real_run = connector._run_bounded
         with mock.patch.object(connector, '_run_bounded', wraps=real_run) as run:
             MySQLConnection('choice-first', password='private').run('SELECT 1')
-        self.assertEqual(run.call_args_list[0].args[0][0], os.path.realpath(chosen))
+        self.assertEqual(run.call_args_list[0][0][0][0], os.path.realpath(chosen))
         self.assertFalse(os.path.exists(marker))
 
     def test_common_single_candidate_refuses_world_writable_folder(self):

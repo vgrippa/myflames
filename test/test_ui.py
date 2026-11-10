@@ -607,7 +607,7 @@ class TestClientToolsAPI(unittest.TestCase):
         with mock.patch.dict(os.environ, {'PATH': str(Path(path).parent)}), \
                 mock.patch.object(client_tools, 'probe', wraps=client_tools.probe) as probe:
             self.assertEqual(self.post('/api/client/tools', {'refresh': True})[0], 200)
-        self.assertTrue(all(c.kwargs['refresh'] for c in probe.call_args_list))
+        self.assertTrue(all(c[1]['refresh'] for c in probe.call_args_list))
 
     def test_auth_plugin_code_survives_the_shared_wrapper_path(self):
         from myflames import ui, connector

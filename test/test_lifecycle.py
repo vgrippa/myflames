@@ -3288,7 +3288,7 @@ class ClientToolTrustTests(unittest.TestCase):
             job = mock.Mock()
             with mock.patch.object(lc, '_check_profile_policy'):
                 lc._invoke(job, tool, {'host': 'h'}, [])
-                self.assertEqual(job.process_tool.call_args.args[0][0], str(binary))
+                self.assertEqual(job.process_tool.call_args[0][0][0], str(binary))
                 job.reset_mock()
                 binary.chmod(0o777)
                 with self.assertRaises(connector.ClientMissingError):
