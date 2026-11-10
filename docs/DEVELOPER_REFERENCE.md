@@ -974,11 +974,15 @@ are the contracts of the tools that check them.
   repository out at its latest release tag (the peeled commit of an annotated
   tag; never master, so the site describes the released app) beside it, runs `sync_releases.py` (the latest
   release's DMG and Windows `-setup.exe` with their `.sha256`, never the update
-  zip), `build_docs.py --source` (the handbook, the release notes from 3.0.0 on
-  under a Release notes group, with older versions linked on GitHub, the
-  reference documents and the raster images in `docs/screenshots`; links and SVG files are not copied) and
-  its QA without the CLI examples (no code from this repository runs in that
-  job, which can push), and commits to its default branch when something
+  zip), `build_docs.py --source` (the handbook, the reference documents and the
+  raster images in `docs/screenshots`; links and SVG files are not copied) and
+  its release notes. Release notes are written after a release, so they come
+  from master's `docs/release-notes` alone (a sparse checkout, read as
+  Markdown, `--release-notes-source`): 3.0.0 and later under a Release notes
+  group, older versions linked on GitHub, and nothing newer than the latest
+  published release. The sync also reruns when that folder changes. Then it
+  runs its QA without the CLI examples (no code from this repository runs in
+  that job, which can push) and commits to its default branch when something
   changed. The site goes live only when someone clicks Publish
   in Lovable.
 
