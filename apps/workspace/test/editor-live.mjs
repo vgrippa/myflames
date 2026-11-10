@@ -403,6 +403,220 @@ try {
   assert.deepEqual(failedRequests.filter(item => !(item.error === "net::ERR_ABORTED" && allowedAborts.has(item.path))), [], "no unexpected failed requests");
   pass(8, "no page errors or unexpected browser/network diagnostics");
 
+  // Capture only after every existing assertion passes. With EDITOR_SHOTS
+  // unset, the live checks and their output take exactly the original path.
+  if (process.env.EDITOR_SHOTS) {
+    const out = path.resolve(process.env.EDITOR_SHOTS);
+    await fs.mkdir(out, { recursive: true });
+    const written = [];
+    const mod = await page.evaluate(() => /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent) ? "Meta" : "Control");
+    const chord = async (modifiers, key) => {
+      for (const modifier of modifiers) await page.keyboard.down(modifier);
+      try { await page.keyboard.press(key); } finally {
+        for (const modifier of [...modifiers].reverse()) await page.keyboard.up(modifier);
+      }
+    };
+    const closeShotUI = async () => {
+      await page.mouse.move(0, 0);
+      if (await page.$("#settings-popover")) {
+        await page.keyboard.press("Escape");
+        await page.waitForSelector("#settings-popover", { hidden: true });
+      }
+      if (await page.$(".query-lab .sql-find-close")) {
+        await page.click(".query-lab .sql-find-close");
+        await page.waitForSelector(".query-lab .sql-find", { hidden: true });
+      }
+      // Collapse extra selections before Escape, which otherwise only removes
+      // those selections and leaves Problems open on its first press.
+      await selectEditor(page, 0);
+      await dismiss();
+      await page.keyboard.press("Escape");
+      await page.waitForSelector(".query-lab .cm-panel-lint, .sql-hover", { hidden: true });
+    };
+    const scheme = async value => {
+      await closeShotUI();
+      // Match ui-review's myflames.theme/data-theme and media emulation.
+      // Use Appearance too, so the Settings buttons reflect the same scheme.
+      await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value }]);
+      await page.click('button[aria-label="Settings"]');
+      const themeButton = `#settings-popover .theme-segmented button:nth-child(${value === "light" ? 2 : 3})`;
+      await page.waitForSelector(themeButton, { visible: true });
+      await page.click(themeButton);
+      await page.waitForFunction((value, selector) => document.documentElement.dataset.theme === value
+        && localStorage.getItem("myflames.theme") === value
+        && document.querySelector(selector)?.getAttribute("aria-pressed") === "true", {}, value, themeButton);
+      await page.keyboard.press("Escape");
+      await page.waitForSelector("#settings-popover", { hidden: true });
+    };
+    const completionDetail = async (label, detail) => {
+      await option(label);
+      await page.waitForFunction((label, detail) => {
+        const row = [...document.querySelectorAll(".sql-completion-option")]
+          .find(row => row.querySelector(".sql-completion-label")?.textContent === label);
+        const note = row?.querySelector(".cm-completionDetail");
+        const rect = note?.getBoundingClientRect();
+        return note?.textContent.includes(detail) && rect.width > 0 && rect.height > 0
+          && rect.top >= 0 && rect.bottom <= innerHeight;
+      }, {}, label, detail);
+    };
+    const unknownTable = async () => {
+      // Re-warm through real completion, since the full inventory's 30 s TTL
+      // may expire while capturing the other states, widths and schemes.
+      await typeSuffix("SELECT * FROM ", "us");
+      await completionDetail("users", "mf_editor");
+      await dismiss();
+      await setEditorText(page, "SELECT * FROM no_such_table");
+      await dismiss();
+      await page.waitForSelector(".query-lab .cm-lintRange-warning", { visible: true });
+    };
+    const repeated = "SELECT email FROM users;\nSELECT email FROM users;\nSELECT email FROM users;";
+    const states = [
+      ["suggestions", async () => {
+        await typeSuffix("SELECT * FROM ", "us");
+        await completionDetail("users", "mf_editor");
+      }],
+      ["columns", async () => {
+        await setEditorText(page, "SELECT u. FROM users u");
+        await selectEditor(page, "SELECT u.".length);
+        await manualCompletion();
+        await completionDetail("email", "mf_editor.users");
+      }],
+      ["function", async () => {
+        await typeSuffix("SELECT ", "CONCA");
+        await completionDetail("CONCAT", "function");
+      }],
+      ["argument-hint", async () => {
+        await setEditorText(page, "SELECT DATE_FORMAT(created_at, ) FROM users;");
+        await selectEditor(page, "SELECT DATE_FORMAT(created_at, ".length);
+        await page.waitForSelector(".sql-arg-hint", { visible: true });
+        await page.waitForFunction(() => {
+          const text = document.querySelector(".sql-arg-hint")?.textContent || "";
+          return text.includes("DATE_FORMAT") && text.includes("argument 2");
+        });
+      }],
+      ["hover-table", async () => {
+        await hoverToken("SELECT * FROM users", "users");
+        await page.waitForSelector(".sql-hover", { visible: true });
+        await page.waitForFunction(() => document.querySelector(".sql-hover-heading")?.textContent === "mf_editor.users"
+          && [...document.querySelectorAll(".sql-hover-name")].some(node => node.textContent === "email"));
+      }],
+      ["hover-column", async () => {
+        await hoverToken("SELECT email FROM users", "email");
+        await page.waitForSelector(".sql-hover", { visible: true });
+        await page.waitForFunction(() => document.querySelector(".sql-hover-heading")?.textContent === "mf_editor.users.email"
+          && /varchar\(100\)/i.test(document.querySelector(".sql-hover-type")?.textContent || ""));
+      }],
+      ["warning", async () => {
+        await unknownTable();
+        // Hover a character inside the underline, as in warningText, but do
+        // not fall back to Problems: this image must show the actual tooltip.
+        const point = await page.$eval(".query-lab .cm-lintRange-warning", mark => {
+          let offset = Math.floor(mark.textContent.length / 2);
+          const walker = document.createTreeWalker(mark, NodeFilter.SHOW_TEXT);
+          for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+            if (offset >= node.textContent.length) { offset -= node.textContent.length; continue; }
+            const range = document.createRange();
+            range.setStart(node, offset); range.setEnd(node, offset + 1);
+            const rect = range.getBoundingClientRect();
+            return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+          }
+          throw Error("Warning range has no visible text node");
+        });
+        await page.mouse.move(point.x, point.y);
+        const selector = ".cm-tooltip-lint .cm-diagnostic-warning .cm-diagnosticText";
+        await page.waitForSelector(selector, { visible: true });
+        await page.waitForFunction(selector => document.querySelector(selector)?.textContent
+          .includes("No table `no_such_table` in `mf_editor`"), {}, selector);
+      }],
+      ["problems", async () => {
+        await unknownTable();
+        await page.$eval(EDITOR, editor => editor.focus());
+        await chord([mod, "Shift"], "KeyM");
+        const selector = ".query-lab .cm-panel-lint .cm-diagnostic-warning .cm-diagnosticText";
+        await page.waitForSelector(selector, { visible: true });
+        await page.waitForFunction(selector => document.querySelector(selector)?.textContent
+          .includes("No table `no_such_table` in `mf_editor`"), {}, selector);
+      }],
+      ["find", async () => {
+        await setEditorText(page, repeated);
+        await selectEditor(page, 0);
+        await chord([mod], "KeyF");
+        const field = '.sql-find input[aria-label="Find"]';
+        await page.waitForSelector(field, { visible: true });
+        await page.$eval(field, input => { input.focus(); input.select(); });
+        await page.keyboard.type("email");
+        await page.waitForFunction(() => document.querySelector(".sql-find-count")?.textContent === "1 of 3"
+          && document.querySelectorAll(".sql-find-mark").length === 3
+          && document.querySelector(".sql-find-current")?.textContent === "email");
+      }],
+      ["goto", async () => {
+        await setEditorText(page, repeated);
+        await selectEditor(page, 0);
+        await chord(["Control"], "KeyG");
+        const field = '.sql-find[aria-label="Go to line"] input[type="number"]';
+        await page.waitForSelector(field, { visible: true });
+        await page.waitForFunction(selector => document.activeElement === document.querySelector(selector)
+          && document.querySelector(".sql-find-line-hint")?.textContent === "1 to 3", {}, field);
+      }],
+      ["settings", async () => {
+        await setEditorText(page, "SELECT email FROM users;");
+        await page.click('button[aria-label="Settings"]');
+        await page.waitForSelector("#settings-popover .settings-editor-group", { visible: true });
+        await page.$eval("#settings-popover", popover => {
+          const group = popover.querySelector(".settings-editor-group");
+          popover.scrollTop += group.getBoundingClientRect().top - popover.getBoundingClientRect().top - 8;
+        });
+        await page.waitForFunction(() => {
+          const popover = document.querySelector("#settings-popover").getBoundingClientRect();
+          const group = document.querySelector(".settings-editor-group").getBoundingClientRect();
+          return group.top >= popover.top && group.bottom <= popover.bottom
+            && group.top >= 0 && group.bottom <= innerHeight;
+        });
+      }],
+      ["multi-cursor", async () => {
+        await setEditorText(page, repeated);
+        await selectEditor(page, "SELECT ".length, "SELECT email".length);
+        await chord([mod], "KeyD");
+        await chord([mod], "KeyD");
+        await page.waitForFunction(() => document.querySelectorAll(".query-lab .cm-cursor").length === 3
+          && document.querySelectorAll(".query-lab .cm-cursor-secondary").length === 2);
+      }],
+    ];
+    // Keep the three real cursors visible instead of sampling the off phase
+    // of CodeMirror's blink animation. Only the optional screenshots use this.
+    const cursorStyle = await page.addStyleTag({ content: ".query-lab .cm-cursorLayer { animation: none !important; }" });
+    try {
+      for (const appearance of ["light", "dark"]) {
+        await scheme(appearance);
+        for (const [width, height] of [[1440, 900], [720, 520]]) {
+          await page.setViewport({ width, height });
+          for (const [state, prepare] of states) {
+            stage = `screenshots ${state} ${width} ${appearance}`;
+            const consoleStart = consoleErrors.length, errorStart = errors.length;
+            const diagnostics = () => [...consoleErrors.slice(consoleStart), ...errors.slice(errorStart)];
+            try {
+              // Re-open every state after resizing; tooltips cannot be reused.
+              await closeShotUI();
+              await prepare();
+              const file = `${state}-${width}${appearance === "dark" ? "-dark" : ""}.png`;
+              await page.screenshot({ path: path.join(out, file) });
+              written.push({ file, state, width, scheme: appearance, console_errors: diagnostics() });
+            } catch (error) {
+              written.push({ state, width, scheme: appearance, error: String(error), console_errors: diagnostics() });
+              throw error;
+            }
+          }
+        }
+      }
+    } finally {
+      try { await scheme("light"); } finally {
+        await fs.writeFile(path.join(out, "index.json"), JSON.stringify(written, null, 2) + "\n");
+        await cursorStyle.dispose();
+      }
+    }
+    console.log(`editor-live: wrote ${written.length} screenshots and index.json to ${out}`);
+  }
+
 } catch (error) {
   // Do not dump request bodies, profile JSON, launch URLs or container env.
   const dom = page && !page.isClosed() ? await page.evaluate(() => ({
