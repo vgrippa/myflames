@@ -280,10 +280,13 @@ def detect_tools(path=None, common_dirs=None, job=None, check_updates=False, ref
                                   ('The installation chosen in Settings > Client tools has no %s.' % name
                                    if keys.get(server['engine']) else
                                    'No usable %s was selected for this server.' % name))
+        if name == 'mysqlpump':
+            entry['used'] = False
         found[name] = entry
     for entry in copies:
         selected = found.get(entry['name'], {})
-        entry['used'] = bool(selected.get('path') == entry['path'])
+        entry['used'] = bool(entry['name'] != 'mysqlpump' and entry.get('available') and
+                             selected.get('path') == entry['path'])
         if entry['used']:
             entry.update(reason=selected['reason'], warning=selected['warning'])
     report = dict(schema_version='lifecycle-tools-2.0', tools=found, copies=copies)
@@ -451,21 +454,15 @@ def _credential_file(options, tool, shell):
                 for key, value in options.items():
                     if key == 'database':
                         continue  # database is a client argument, not a shared tool option
-                    if key == 'ssl_mode' and tool.get('engine') == 'mariadb':
-                        mode = value.upper()
-                        if mode == 'DISABLED':
-                            handle.write('skip-ssl\n')
-                        elif mode in ('REQUIRED', 'VERIFY_CA', 'VERIFY_IDENTITY'):
-                            handle.write('ssl\n')
-                            if mode.startswith('VERIFY'):
-                                handle.write('ssl-verify-server-cert\n')
-                        elif mode != 'PREFERRED':
-                            raise ValueError('Invalid TLS mode.')
+                    if key in MySQLConnection._SSL_KEYS:
                         continue
                     text = str(value).replace('\\', '\\\\').replace('"', '\\"')
                     for char, escaped in (('\n', '\\n'), ('\r', '\\r'), ('\t', '\\t'), ('\b', '\\b')):
                         text = text.replace(char, escaped)
                     handle.write('%s="%s"\n' % (key.replace('_', '-'), text))
+                from .connector import client_tls_options
+                for line in client_tls_options(options, tool.get('engine')):
+                    handle.write(line + '\n')
             yield [tool['path'], '--defaults-file=' + path], _clean_env(home)
         finally:
             if os.path.exists(path):
@@ -495,6 +492,10 @@ class LifecycleConnection(MySQLConnection):
                 raise ConnectorError('Lifecycle control query timed out.')
         if proc.returncode:
             raw = proc.stderr.decode('utf-8', 'replace')
+            from .connector import _client_auth_error
+            auth = _client_auth_error(raw, argv[0], getattr(self, '_client_use', None))
+            if auth is not None:
+                raise auth
             error = ConnectorError(dbops.redact(raw, self.password))
             error.server_error_code = dbops.error_code(raw)
             raise error
@@ -1009,7 +1010,12 @@ class LifecycleJob(object):
         """
         self.check_cancel()
         def spawn():
-            return subprocess.Popen(argv, stdin=input_file if input_file else subprocess.PIPE,
+            from .connector import checked_program, bundled_client_dir, _same_dir
+            bundle = bundled_client_dir()
+            binary = checked_program(argv[0], bundled=bool(bundle and _same_dir(
+                os.path.dirname(os.path.realpath(argv[0])), bundle)))
+            command = [binary] + list(argv[1:])
+            return subprocess.Popen(command, stdin=input_file if input_file else subprocess.PIPE,
                                     stdout=output_file if output_file else subprocess.PIPE,
                                     stderr=subprocess.PIPE, env=env, start_new_session=os.name == 'posix')
         # The tool has its own process group: record it for shutdown.
@@ -1142,6 +1148,10 @@ class LifecycleJob(object):
 def _invoke(job, tool, connection, args, script=None, **kwargs):
     _check_profile_policy(job)
     with _credentials(connection, tool) as (argv, env):
+        from .connector import checked_program, bundled_client_dir, _same_dir
+        bundle = bundled_client_dir()
+        argv[0] = checked_program(tool['path'], tool.get('realpath'), bundled=bool(
+            bundle and _same_dir(os.path.dirname(os.path.realpath(tool['path'])), bundle)))
         return job.process_tool(argv + args, env, input_data=script, **kwargs)
 
 

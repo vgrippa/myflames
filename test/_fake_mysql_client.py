@@ -385,6 +385,10 @@ def one_shot(sql):
 
 def main():
     args = sys.argv[1:]
+    # Probes describe the client without opening a database session.
+    if "--version" in args:
+        print("mariadb Ver 11.4.13-MariaDB" if ENGINE == "mariadb" else "mysql Ver 8.4.11")
+        return 0
     if "--help" in args:
         print("mysql  Ver fake")
         if os.environ.get("FAKE_COMMANDS") == "1":

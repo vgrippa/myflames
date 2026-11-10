@@ -1259,6 +1259,18 @@ class ProcessTests(unittest.TestCase):
         self.assertEqual(client_tools.server_facts(client_tools.endpoint_key(self.connection)),
                          dict(engine=session.engine, version=session.server_version))
 
+    def test_pinned_client_permissions_are_rechecked_after_session_start(self):
+        self.call('/api/editor/open')
+        session = self.registry.get('tab1')
+        binary = Path(session._resolved_binary)
+        binary.chmod(0o777)
+        count = self.processes.call_count
+        step = types.SimpleNamespace(marker=False, unfinished=False)
+        status, text = session._kill_query(self.connection, step)
+        self.assertEqual(status, 'failed')
+        self.assertIn('changed by other users', text)
+        self.assertEqual(self.processes.call_count, count)
+
     def test_plan_and_kill_keep_the_sessions_client_after_settings_change(self):
         from myflames import connector
         self.call('/api/editor/open')
@@ -3519,3 +3531,23 @@ class UseDatabaseProcessTests(ProcessTests):
         reply = self.call("/api/editor/use", database="mydb")
         self.assertEqual(reply["status"], "none")
         self.assertIsNone(reply["session"])
+
+
+@unittest.skipIf(os.name == 'nt', 'POSIX chmod trust check')
+class PinnedClientTrustTests(unittest.TestCase):
+    def test_next_kill_helper_refuses_a_newly_writable_pinned_client(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory).resolve() / 'mysql'
+            marker = binary.parent / 'ran'
+            binary.write_text('#!/bin/sh\ntouch ' + str(marker) + '\n')
+            binary.chmod(0o700)
+            session = ed.EditorSession('pin', {}, {})
+            session._resolved_binary = str(binary)
+            session.connection_id = 123
+            self.assertEqual(session._checked_helper_binary(), str(binary))
+            binary.chmod(0o777)
+            step = types.SimpleNamespace(marker=False, unfinished=False)
+            status, text = session._kill_query({'host': 'h'}, step)
+            self.assertEqual(status, 'failed')
+            self.assertIn('changed by other users', text)
+            self.assertFalse(marker.exists())

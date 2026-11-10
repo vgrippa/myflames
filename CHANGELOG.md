@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Client tools now check every installed program before probing and use, respect the chosen installation on first contact, and recheck lifecycle tools and editor helpers before starting them. Server error text cannot masquerade as a missing authentication plugin. MariaDB clients receive compatible TLS options, including when named mysql. Deprecated mysqlpump copies show no probed version and are never marked Used.
+
 ### Added
 
 - **myflames updates itself.** **Settings > Check for updates automatically** (on by default) checks 10 seconds after the app opens when the last check is stale or missing and once a day after that, and **Check for updates** in Home's footer and About myflames still checks on demand. When a newer release is found, a badge beside the logo shows the update, its download progress and when it is ready; **Update** downloads the release's update file, verifies it against the SHA-256 published in the release and stages it, and **Restart to update** installs it in place (choosing **Later** installs it when you next quit; on macOS the app must be in an Applications folder). On Windows the unsigned installer runs silently after the app quits: the update is trusted through HTTPS from GitHub's release hosts and the release's SHA-256 until Windows code signing lands.

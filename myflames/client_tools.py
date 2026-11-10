@@ -1,8 +1,7 @@
 """Local client inventory and pure, version-aware role selection (Python 3.7+).
 
-Only version probes execute programs. Common-folder discoveries reuse the
-connector's ownership/mode checks. Its Windows name allowlist must grow to
-include non-client programs before later briefs check selected copies there.
+Only version probes execute programs. Every non-bundled discovery reuses the
+connector's ownership and mode checks before probing.
 Unavailable probes and refused/limited candidates appear in ``skipped``;
 mysqlpump is presence-only, deprecated, and never a selection candidate.
 """
@@ -88,7 +87,7 @@ def probe(name, binary, refresh=False, job=None):
         try:
             with tempfile.TemporaryDirectory(prefix='myflames-probe-') as home:
                 child = subprocess.run([os.path.abspath(binary), '--version'],
-                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                       stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                        timeout=8, env=lifecycle._clean_env(home))
             banner = child.stdout.decode('utf-8', 'replace').strip()[:4096]
             # Preserve lifecycle's historical tuple semantics here. Discovery
@@ -224,21 +223,22 @@ def discover(path=None, common_dirs=None, bundled=None, refresh=False, job=None)
                      warning=None, available=False, deprecated=name == 'mysqlpump')
         copies.append(entry)
         try:
-            if candidate['source'] == 'common':
-                connector._check_client_trust(binary)
-        except ValueError as exc:
-            entry['error'] = str(exc)
-            skipped.append(dict(candidate, available=False, error=str(exc), reason=str(exc)))
+            connector.checked_program(binary, candidate['realpath'], candidate['bundled'])
+        except connector.ClientMissingError as exc:
+            reason = ('Other users can change %s, so myflames does not run programs from it.' % binary
+                      if 'changed by other users' in str(exc) else str(exc))
+            entry.update(error=reason, reason=reason)
+            skipped.append(dict(candidate, available=False, error=reason, reason=reason))
             continue
         if name == 'mysqlpump':
-            fields = dict(available=True, version_tuple=[0, 0, 0], engine='mysql')
+            fields = dict(available=True, version=None, version_tuple=None, engine='mysql')
         else:
             if probes >= 32:
                 entry['error'] = 'probe limit'
                 skipped.append(dict(candidate, available=False, error='probe limit', reason='probe limit'))
                 continue
             probes += 1
-            fields = probe(name, binary, refresh=refresh, job=job)
+            fields = probe(name, candidate['realpath'], refresh=refresh, job=job)
             if fields['available']:
                 fields['version_tuple'] = list(_banner_version(fields['version'], name))
                 if fields['version_tuple'] == [0, 0, 0]:
@@ -248,7 +248,7 @@ def discover(path=None, common_dirs=None, bundled=None, refresh=False, job=None)
         if not fields['available']:
             skipped.append(dict(candidate, reason=fields.get('error'), **fields))
             continue
-        version_tuple = tuple(fields['version_tuple'])
+        version_tuple = tuple(fields['version_tuple'] or ())
         version = '.'.join(str(n) for n in version_tuple) if any(version_tuple) else None
         folder = os.path.dirname(candidate['realpath'])
         origin, label = _origin(folder, candidate['bundled'])
@@ -473,9 +473,8 @@ def choice_keys(discovered, choices):
                 raise ValueError('The installation is unavailable.')
             program = (group['programs'][_program(group, 'client')]['path'] if value == 'bundled'
                        else _choice_program(engine, value))
-            connector._check_client_trust(program)
-            connector._check_client_trust(os.path.realpath(program))
-        except (OSError, ValueError):
+            connector.checked_program(program, bundled=value == 'bundled')
+        except (OSError, ValueError, connector.ClientMissingError):
             errors[engine] = ('The client tools chosen in Settings > Client tools are no longer at %s.' % value)
         else:
             keys[engine] = group['key']
@@ -519,9 +518,10 @@ def validate_choice(engine, path):
     if os.name == 'nt' and value.replace('/', '\\').startswith('\\\\'):
         raise ValueError('Choose a local client named mysql.exe or mariadb.exe.')
     program = _choice_program(engine, value)
-    connector._check_client_trust(program)
-    connector._check_client_trust(os.path.realpath(program))
-    banner = connector.probe_client(os.path.realpath(program), chosen=program)['version']
+    if not bundled:
+        connector._check_client_trust(program)
+        connector._check_client_trust(os.path.realpath(program))
+    banner = connector.probe_client(os.path.realpath(program), check_trust=not bundled, chosen=program)['version']
     if server_info.detect_flavor(banner) != engine:
         raise ValueError('The chosen client tools are for %s, not %s.' % (
             server_info.detect_flavor(banner), engine))
@@ -532,13 +532,15 @@ def validate_choice(engine, path):
     return path
 
 
-def discover_choices(choices, refresh=False):
+def discover_choices(choices, refresh=False, automatic=True):
     """Include trusted Settings folders even when they are outside PATH.
 
     A stale or newly untrusted selection is retained by choice_keys as an error,
     and is never executed merely to describe Settings.
     """
-    discovered = discover(refresh=refresh)
+    discovered = (discover(refresh=refresh) if automatic else
+                  discover(path='', common_dirs=(), bundled=(connector.bundled_client_dir()
+                           if 'bundled' in (choices or {}).values() else False), refresh=refresh))
     for engine in ('mysql', 'mariadb'):
         value = (choices or {}).get(engine)
         if not value or value == 'bundled':
@@ -550,6 +552,9 @@ def discover_choices(choices, refresh=False):
         except (ValueError, OSError):
             continue
         folder = value if os.path.isdir(value) else os.path.dirname(value)
+        # Windows needs a literal folder (its name can contain PATH's ';').
+        # checked_program exempts only the actual app bundle, so this extra
+        # search folder still receives per-program trust checks.
         extra = (discover(path='', common_dirs=(folder,), bundled=False, refresh=refresh)
                  if os.name != 'nt' else discover(path='', common_dirs=(), bundled=folder, refresh=refresh))
         for group in extra['installations']:

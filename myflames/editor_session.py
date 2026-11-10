@@ -605,7 +605,7 @@ class EditorSession(EditorInsights):
             # it runs: held until end() closes the connection object.
             conn.hold_transport()
             defaults = credentials.enter_context(conn._invocation_defaults())
-            binary = conn._resolve_binary()
+            binary = getattr(defaults, "binary", None) or conn._resolve_binary()
             self._resolved_binary = binary
             self._client_home = tempfile.TemporaryDirectory(prefix="myflames-editor-")
             env = _clean_env(self._client_home.name)
@@ -1198,6 +1198,14 @@ class EditorSession(EditorInsights):
         thread.start()
         return True
 
+    def _checked_helper_binary(self):
+        """A tab pins its client, but a later helper must check it again."""
+        from .connector import checked_program, bundled_client_dir, _same_dir
+        binary = self._resolved_binary
+        bundle = bundled_client_dir()
+        return checked_program(binary, binary, bundled=bool(bundle and _same_dir(
+            os.path.dirname(os.path.realpath(binary)), bundle)))
+
     def _kill_query(self, options, step):
         """KILL QUERY this session's statement from a second connection, only
         while *step* still runs. Returns ("sent" | "skipped" | "failed", text)."""
@@ -1209,7 +1217,7 @@ class EditorSession(EditorInsights):
             try:
                 kill_options = dict(options)
                 kill_options["query_timeout"] = KILL_TIMEOUT
-                kill_options["binary"] = self._resolved_binary
+                kill_options["binary"] = self._checked_helper_binary()
                 with MySQLConnection(**kill_options) as control:
                     control.run(TAG + "KILL QUERY %d" % connection_id, extra_flags=list(_write_flags()),
                                 timeout=KILL_TIMEOUT)
@@ -1430,7 +1438,7 @@ class EditorSession(EditorInsights):
             options = {key: getattr(self._conn, key) for key in (
                 "host", "port", "user", "password", "database", "ssl_mode", "ssl_ca", "ssl_cert", "ssl_key",
                 "ssl_cipher", "connect_timeout", "query_timeout", "ssh_host", "ssh_user", "ssh_port")}
-            options["binary"] = self._resolved_binary
+            options["binary"] = self._checked_helper_binary()
             run = Run(units, 1, options, statement, Offsets(statement), "statement", kind="plan")
             with self.lock:
                 previous, self.run = self.run, run
@@ -1881,7 +1889,7 @@ class EditorSession(EditorInsights):
             try:
                 kill = dict(kill_options)
                 kill["query_timeout"] = KILL_TIMEOUT
-                kill["binary"] = self._resolved_binary
+                kill["binary"] = self._checked_helper_binary()
                 with MySQLConnection(**kill) as control:
                     control.run(TAG + "KILL QUERY %d" % self.connection_id, extra_flags=list(_write_flags()),
                                 timeout=KILL_TIMEOUT)

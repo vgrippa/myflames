@@ -183,14 +183,56 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(set(report['installations'][0]['programs']), {'mariadb'})
         self.assertEqual(len(ct.snapshot(str(self.root), (), False)), 1)
 
-    def test_common_copy_requires_trust_but_path_does_not(self):
+    def test_common_and_path_copies_require_trust(self):
         binary = self.make(self.root / 'bin')
         binary.chmod(0o770)
         with mock.patch.object(ct.subprocess, 'run', wraps=ct.subprocess.run) as run:
             report = ct.discover(path='', common_dirs=(str(binary.parent),), bundled=False)
             self.assertEqual(run.call_count, 0)
-        self.assertIn('changed by other users', report['skipped'][0]['reason'])
-        self.assertEqual(len(self.discover(binary.parent)['installations']), 1)
+        self.assertIn('Other users can change', report['skipped'][0]['reason'])
+        self.assertEqual(self.discover(binary.parent)['installations'], [])
+
+    def test_later_world_writable_path_copies_never_run_or_win(self):
+        trusted, planted = self.root / 'trusted/bin', self.root / 'planted/bin'
+        marker = self.root / 'executed'
+        for name in ('mysql', 'mysqldump', 'mysqlsh'):
+            self.make(trusted, name, version='8.4.13')
+            binary = self.make(planted, name, version='8.4.99')
+            binary.write_text('#!/bin/sh\ntouch ' + str(marker) + '\necho "' + name + ' Ver 8.4.99"\n')
+        plugins = planted.parent / 'lib/plugin'
+        plugins.mkdir(parents=True)
+        (plugins / 'client_ed25519.so').touch()
+        planted.chmod(0o777)
+        report = self.discover(trusted, planted)
+        selected = ct.select(report, {'engine': 'mysql', 'version': '8.4.14'})
+        self.assertFalse(marker.exists())
+        self.assertEqual(len(report['skipped']), 3)
+        self.assertTrue(all('Other users can change' in s['reason'] and
+                            s['reason'].endswith('so myflames does not run programs from it.')
+                            for s in report['skipped']))
+        for role in ('client', 'dump', 'shell'):
+            self.assertEqual(Path(selected[role]['path']).parent, trusted)
+
+    def test_extra_literal_folder_cannot_claim_the_app_bundle_exemption(self):
+        # Windows searches a chosen folder literally, using the bundled-folder
+        # inventory slot to avoid splitting a semicolon in its name.
+        mysql = self.make(self.root / 'chosen;folder')
+        dump = self.make(mysql.parent, 'mysqldump')
+        dump.chmod(0o777)
+        with mock.patch.dict(os.environ, {'MYFLAMES_BUNDLED_CLIENT_DIR': ''}):
+            report = ct.discover(path='', common_dirs=(), bundled=str(mysql.parent))
+        self.assertNotIn('mysqldump', report['installations'][0]['programs'])
+        self.assertEqual(report['skipped'][0]['path'], str(dump))
+
+    def test_chosen_dump_is_checked_on_path_and_off_path(self):
+        mysql = self.make(self.root / 'chosen')
+        dump = self.make(mysql.parent, 'mysqldump')
+        dump.chmod(0o777)
+        for path in ('', str(mysql.parent)):
+            with self.subTest(path=path):
+                report = ct.discover_lifecycle(path=path, common_dirs=(), choices={'mysql': str(mysql)})
+                self.assertNotIn('mysqldump', report['installations'][0]['programs'])
+                self.assertTrue(any(s['path'] == str(dump) for s in report['skipped']))
 
     def test_trust_checks_parent_and_resolved_file(self):
         folder = self.root / 'bin'
@@ -198,7 +240,7 @@ class DiscoveryTests(unittest.TestCase):
         folder.chmod(0o777)
         report = ct.discover(path='', common_dirs=(str(folder),), bundled=False)
         self.assertEqual(len(report['skipped']), 1)
-        self.assertIn('changed by other users', report['skipped'][0]['error'])
+        self.assertIn('Other users can change', report['skipped'][0]['error'])
 
     def test_authentication_plugins_exclude_qa_and_directories(self):
         folder = self.root / 'bin'
@@ -310,7 +352,7 @@ class DiscoveryTests(unittest.TestCase):
         self.assertIn('Version probe failed', entries['mysqldump']['error'])
         self.assertTrue(entries['mysqlpump']['available'])
         self.assertTrue(entries['mysqlpump']['deprecated'])
-        self.assertNotIn('version', entries['mysqlpump'])
+        self.assertIsNone(entries['mysqlpump']['version'])
 
     def test_lifecycle_inventory_includes_and_checks_chosen_offpath_folder(self):
         mysql = self.make(self.root / 'chosen')

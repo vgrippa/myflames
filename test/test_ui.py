@@ -588,6 +588,19 @@ class TestClientToolsAPI(unittest.TestCase):
         self.assertEqual(result['used']['client']['reason'], 'series')
         self.assertEqual(set(result['used']), {'client', 'dump', 'load', 'backup', 'shell', 'missing', 'notes'})
 
+    def test_untrusted_path_copy_is_skipped_with_a_plain_reason(self):
+        marker = str(Path(self.temp.name) / 'ran')
+        binary = self.binary(body='open(%r, "w").close(); print("mysql Ver 99.0.0")' % marker)
+        Path(binary).parent.chmod(0o777)
+        with mock.patch.dict(os.environ, {'PATH': str(Path(binary).parent)}):
+            status, result = self.post('/api/client/tools', {})
+        self.assertEqual(status, 200)
+        self.assertEqual(result['installations'], [])
+        self.assertEqual(len(result['skipped']), 1)
+        self.assertEqual(result['skipped'][0]['reason'],
+                         'Other users can change %s, so myflames does not run programs from it.' % binary)
+        self.assertFalse(Path(marker).exists())
+
     def test_tools_refresh_reprobes(self):
         from myflames import client_tools
         path = self.binary()

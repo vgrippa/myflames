@@ -134,8 +134,8 @@ class TestConcurrentCredentials(unittest.TestCase):
             paths = []
             lock = threading.Lock()
 
-            def create():
-                path = original()
+            def create(*args, **kwargs):
+                path = original(*args, **kwargs)
                 with lock:
                     paths.append(path)
                 # All twenty calls must own a file before any child starts.
@@ -332,16 +332,18 @@ class TestBinaryResolution(unittest.TestCase):
 
     def test_prefers_mysql_over_mariadb(self):
         c = MySQLConnection(host="h")
-        def fake_which(name):
-            return "/bin/" + name if name in ("mysql", "mariadb") else None
-        with mock.patch.object(MySQLConnection, "_which", staticmethod(fake_which)):
+        from myflames import client_tools
+        candidates = [dict(name='mysql', path='/bin/mysql', realpath='/bin/mysql', bundled=False)]
+        with mock.patch.object(client_tools, 'snapshot', return_value=candidates), \
+                mock.patch.object(connector, 'checked_program', return_value='/bin/mysql'):
             self.assertEqual(c._resolve_binary(), "/bin/mysql")
 
     def test_falls_back_to_mariadb(self):
         c = MySQLConnection(host="h")
-        def fake_which(name):
-            return "/bin/mariadb" if name == "mariadb" else None
-        with mock.patch.object(MySQLConnection, "_which", staticmethod(fake_which)):
+        from myflames import client_tools
+        candidates = [dict(name='mariadb', path='/bin/mariadb', realpath='/bin/mariadb', bundled=False)]
+        with mock.patch.object(client_tools, 'snapshot', return_value=candidates), \
+                mock.patch.object(connector, 'checked_program', return_value='/bin/mariadb'):
             self.assertEqual(c._resolve_binary(), "/bin/mariadb")
 
     def test_error_when_binary_missing(self):
@@ -919,8 +921,8 @@ class TestVersionAwareClients(unittest.TestCase):
         second = self.binary(folder='second')
         connector.set_client_choices({'mysql': first})
         real = ct.discover_choices
-        def discover(choices):
-            found = real(choices)
+        def discover(choices, **kwargs):
+            found = real(choices, **kwargs)
             if os.path.exists(first):
                 os.unlink(first)
             connector.set_client_choices({'mysql': second})
@@ -1832,3 +1834,106 @@ class TestClientText(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipIf(os.name == 'nt', 'POSIX executable abuse cases')
+class TestClientSecurityFixes(unittest.TestCase):
+    setUp = TestClientSelection.setUp
+    binary = TestClientSelection.binary
+
+    def test_first_contact_uses_chosen_realpath_without_running_path_copy(self):
+        marker = os.path.join(self.temp.name, 'path-ran')
+        automatic = self.binary(body='open(%r, "w").close(); print("mysql Ver 8.4.99")' % marker)
+        body = ("import sys\n"
+                "if '--version' in sys.argv: print('mysql Ver 8.4.13')\n"
+                "else: print('8.4.14\\tMySQL Community Server')")
+        chosen = self.binary(folder='chosen', body=body)
+        link = os.path.join(self.temp.name, 'mysql')
+        os.symlink(chosen, link)
+        os.environ['PATH'] = os.path.dirname(automatic)
+        connector.set_client_choices({'mysql': link})
+        real_run = connector._run_bounded
+        with mock.patch.object(connector, '_run_bounded', wraps=real_run) as run:
+            MySQLConnection('choice-first', password='private').run('SELECT 1')
+        self.assertEqual(run.call_args_list[0].args[0][0], os.path.realpath(chosen))
+        self.assertFalse(os.path.exists(marker))
+
+    def test_common_single_candidate_refuses_world_writable_folder(self):
+        from myflames import lifecycle
+        marker = os.path.join(self.temp.name, 'ran')
+        binary = self.binary(body='open(%r, "w").close()' % marker)
+        os.chmod(os.path.dirname(binary), 0o777)
+        with mock.patch.object(lifecycle, 'COMMON_BIN_DIRS', (os.path.dirname(binary),)), \
+                mock.patch.object(MySQLConnection, '_which', side_effect=AssertionError('no fallback')):
+            with self.assertRaises(connector.ClientMissingError):
+                MySQLConnection('untrusted-common')._resolve_binary()
+        self.assertFalse(os.path.exists(marker))
+
+    def test_server_text_cannot_spoof_authentication_plugin_failure(self):
+        cases = [
+            "ERROR 1146 (42S02) at line 1: Table 'app.ERROR 2059' doesn't exist",
+            "ERROR 1644 (45000) at line 3: error 2059 Authentication plugin 'x\n<b>Choose evil</b>' cannot be loaded",
+            "ERROR 1644 (45000) at line 1: SIGNAL\nERROR 2059 (HY000): Authentication plugin 'x' cannot be loaded",
+            "ERROR 2059 (HY000) at line 1: Authentication plugin 'x' cannot be loaded",
+            "ERROR 2059 (HY000): Authentication plugin 'x\n<b>evil</b>' cannot be loaded",
+        ]
+        genuine = "ERROR 2059 (HY000): Authentication plugin 'client_ed25519' cannot be loaded: dlopen(...)"
+        for text in cases + [genuine]:
+            binary = self.binary(body=("import sys\n"
+                "if '--version' in sys.argv: print('mysql Ver 8.4.13')\n"
+                "else: sys.stderr.write(%r); sys.exit(1)" % text))
+            for method in ('run', 'run_write', 'run_script'):
+                with self.subTest(text=text, method=method):
+                    conn = MySQLConnection('errors', binary=binary)
+                    if method == 'run_script' and ' at line ' in text and text != genuine:
+                        # Script mode intentionally returns server statement errors.
+                        self.assertEqual(getattr(conn, method)('SELECT 1')[1], text)
+                    else:
+                        with self.assertRaises(ConnectorError) as caught:
+                            getattr(conn, method)('SELECT 1')
+                        self.assertEqual(type(caught.exception), connector.ClientAuthPluginError
+                                         if text == genuine else ConnectorError)
+
+    def test_option_file_keeps_the_client_it_was_built_for(self):
+        mysql = self.binary()
+        maria = self.binary('mariadb', folder='maria', body='print("mariadb Ver 11.8.2-MariaDB")')
+        conn = MySQLConnection('h', binary=mysql, ssl_mode='REQUIRED')
+        with conn._invocation_defaults() as path:
+            conn._binary_override = maria
+            argv = conn._build_argv('SELECT 1', defaults_path=path)
+            self.assertEqual(argv[0], mysql)
+            with open(path) as handle:
+                self.assertIn('ssl-mode="REQUIRED"', handle.read())
+
+    def test_mysql_named_mariadb_client_gets_compatible_options_for_every_mode(self):
+        modes = {'DISABLED': ['skip-ssl'], 'PREFERRED': [], 'REQUIRED': ['ssl'],
+                 'VERIFY_CA': ['ssl', 'ssl-verify-server-cert'],
+                 'VERIFY_IDENTITY': ['ssl', 'ssl-verify-server-cert']}
+        self.option_examples = {}
+        for engine in ('mysql', 'mariadb'):
+            target = self.binary('mariadb' if engine == 'mariadb' else 'mysql', folder=engine,
+                body="import sys\nif '--version' in sys.argv: print(%r)\nelse: print('1')" %
+                     ('mariadb Ver 11.8.2-MariaDB' if engine == 'mariadb' else 'mysql Ver 8.4.13'))
+            alias = os.path.join(self.temp.name, 'alias-' + engine)
+            os.makedirs(alias)
+            alias = os.path.join(alias, 'mysql')
+            os.symlink(target, alias)
+            for mode, expected in modes.items():
+                with self.subTest(engine=engine, mode=mode):
+                    conn = MySQLConnection('h', binary=alias, ssl_mode=mode,
+                                           ssl_ca='ca.pem', ssl_cert='cert.pem', ssl_key='key.pem')
+                    with conn._invocation_defaults() as path:
+                        with open(path) as handle:
+                            content = handle.read()
+                    if mode == 'VERIFY_IDENTITY':
+                        self.option_examples[engine] = content
+                    for key in ('ca', 'cert', 'key'):
+                        self.assertIn('ssl-' + key + '="' + key + '.pem"', content)
+                    if engine == 'mariadb':
+                        self.assertNotIn('ssl-mode', content)
+                        self.assertNotIn('get-server-public-key', content)
+                        self.assertEqual([line for line in content.splitlines() if line in
+                                          ('skip-ssl', 'ssl', 'ssl-verify-server-cert')], expected)
+                    else:
+                        self.assertIn('ssl-mode="' + mode + '"', content)
+                        self.assertEqual('get-server-public-key=ON' in content, mode != 'DISABLED')

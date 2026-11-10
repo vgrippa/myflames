@@ -2115,7 +2115,7 @@ class LifecycleTests(unittest.TestCase):
         self.assert_secret_transport(self.calls()[0])
 
     def test_credentials_removed_after_spawn_failure(self):
-        tool = dict(self.tools['tools']['mysql'], name='mysql', path=str(self.bin/'missing'))
+        tool = dict(self.tools['tools']['mysql'], name='mysql')
         runner = lc.LifecycleJob('test', lambda j: None, CONNECTION)
         with mock.patch.object(lc.subprocess, 'Popen', side_effect=OSError('spawn failed')) as spawn:
             with self.assertRaises(OSError):
@@ -3153,3 +3153,62 @@ class LifecycleTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+@unittest.skipIf(os.name == 'nt', 'POSIX executable trust checks')
+class ClientToolTrustTests(unittest.TestCase):
+    def test_invoke_rechecks_path_and_target_and_runs_realpath(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            binary = root / 'mysqldump'
+            binary.write_text('#!/bin/sh\necho "mysqldump Ver 8.4.13"\n')
+            binary.chmod(0o700)
+            link = root / 'link' / 'mysqldump'
+            link.parent.mkdir()
+            link.symlink_to(binary)
+            tool = dict(name='mysqldump', path=str(link), realpath=str(binary), engine='mysql')
+            job = lc.LifecycleJob('test', lambda j: None, {'host': 'h'})
+            with lc._credentials({'host': 'h'}, tool) as (argv, env):
+                stdout, stderr = job.process_tool(argv, env)
+            self.assertIn('mysqldump Ver 8.4.13', stdout)
+            job = mock.Mock()
+            with mock.patch.object(lc, '_check_profile_policy'):
+                lc._invoke(job, tool, {'host': 'h'}, [])
+                self.assertEqual(job.process_tool.call_args.args[0][0], str(binary))
+                job.reset_mock()
+                binary.chmod(0o777)
+                with self.assertRaises(connector.ClientMissingError):
+                    lc._invoke(job, tool, {'host': 'h'}, [])
+                job.process_tool.assert_not_called()
+                binary.chmod(0o700)
+                link.parent.chmod(0o777)
+                with self.assertRaises(connector.ClientMissingError):
+                    lc._invoke(job, tool, {'host': 'h'}, [])
+                job.process_tool.assert_not_called()
+
+    def test_mysqlpump_has_no_used_or_probed_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            pump = root / 'mysqlpump'
+            marker = root / 'ran'
+            pump.write_text('#!/bin/sh\ntouch ' + str(marker) + '\n')
+            pump.chmod(0o700)
+            report = lc.detect_tools(path=str(root), common_dirs=(), server={'engine': 'mysql', 'version': '8.4.13'})
+            self.assertIsNone(report['tools']['mysqlpump']['version'])
+            self.assertIsNone(report['tools']['mysqlpump']['version_tuple'])
+            self.assertFalse(report['tools']['mysqlpump']['used'])
+            copy = next(c for c in report['copies'] if c['name'] == 'mysqlpump')
+            self.assertFalse(copy['used'])
+            self.assertIsNone(copy['version'])
+            self.assertFalse(marker.exists())
+
+    def test_lifecycle_and_connector_share_mariadb_tls_mapping(self):
+        for mode in ('DISABLED', 'PREFERRED', 'REQUIRED', 'VERIFY_CA', 'VERIFY_IDENTITY'):
+            options = dict(host='h', ssl_mode=mode, ssl_ca='ca', ssl_cert='cert', ssl_key='key')
+            tool = dict(name='mariadb-dump', path='/unused', engine='mariadb')
+            with lc._credentials(options, tool) as (argv, env):
+                content = Path(argv[1].split('=', 1)[1]).read_text()
+            for line in connector.client_tls_options(options, 'mariadb'):
+                self.assertIn(line + '\n', content)
+            self.assertNotIn('ssl-mode', content)
+            self.assertNotIn('get-server-public-key', content)

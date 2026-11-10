@@ -245,9 +245,29 @@ passes the other four) is accepted, and an ACL check is still to come. The clien
 runs by its fully resolved path, so no link on the way can redirect it after the
 check; the dialog shows the chosen path. `--no-defaults --version` runs in its own
 process group (killed with its children at the deadline) outside the selection
-lock. Detection offers only clients that pass the check; the automatic PATH client
-is described as PATH finds it, because the connector uses it so (the same check
-for PATH discovery is an open lead).
+lock. Every non-bundled copy, including PATH and common-folder copies, passes this
+check for its path and realpath before probing or use. Refused copies remain
+in `skipped` with a plain sentence explaining the refusal. Bundled programs
+remain exempt. A chosen installation's auxiliary programs pass the same checks,
+including on Windows; lifecycle launches the resolved program after rechecking
+both spellings immediately before execution. Editor helper connections recheck
+the pinned client before starting. The single-client fast path uses only the
+stat inventory; it never adds a current-directory or PATHEXT fallback.
+First contact uses a stored MySQL choice first, then a stored MariaDB choice,
+before considering automatic clients. Unrelated PATH clients are not probed
+while the chosen installation supplies the connection.
+Option files use the probed client engine, including a `mysql` compatibility
+link to MariaDB. `connector.client_tls_options` is shared by connector reads,
+writes, editor and CSV sessions, and lifecycle tools. MariaDB maps DISABLED to
+`skip-ssl`, REQUIRED to `ssl`, VERIFY_CA and VERIFY_IDENTITY to `ssl` plus
+`ssl-verify-server-cert`, and PREFERRED to no mode option. It never receives
+`ssl-mode` or `get-server-public-key`; CA, certificate and key paths are kept.
+Only the first ERROR line in a client connection failure with the exact
+`ERROR 2059 (HY000): Authentication plugin '<name>' cannot be loaded` form
+becomes `ClientAuthPluginError`; names contain only letters, digits and
+underscores. Statement errors and subsequent ERROR lines cannot trigger it.
+`mysqlpump` is presence-only: its version and version tuple are null, and it is
+never marked used.
 A broken stored choice raises `ClientMissingError` ("The chosen database client is
 unavailable…") instead of falling back. `POST /api/client/detect` lists usable
 clients on PATH and, on macOS and Linux, in `lifecycle.COMMON_BIN_DIRS`

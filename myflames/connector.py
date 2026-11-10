@@ -237,15 +237,6 @@ def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail
                 break
             changed.wait(min(remaining, 0.05))
         result = subprocess.CompletedProcess(argv, proc.returncode, bytes(buffers[0]), bytes(buffers[1]))
-        # Lifecycle control reads reuse argv assembly but have their own result
-        # handling. Normalize this client login failure before either caller
-        # wraps it. The thread-local holds public program metadata only.
-        invocation = getattr(_CLIENT_INVOCATION, 'program', None)
-        if (result.returncode and invocation and invocation[0] == argv[0] and
-                len(argv) > 1 and argv[1].startswith('--defaults-file=')):
-            auth = _client_auth_error(result.stderr.decode('utf-8', 'replace'), argv[0], invocation[1])
-            if auth is not None:
-                raise auth
         return result
     except subprocess.TimeoutExpired as exc:
         timed_out = exc
@@ -352,7 +343,6 @@ _CLIENT_CHOICES_LOCK = threading.RLock()
 _CLIENT_CHOICES_GENERATION = 0
 _CONTACT_LOCK = threading.Lock()
 _CONTACT_FLIGHTS = {}
-_CLIENT_INVOCATION = threading.local()
 
 
 def set_client_choices(choices):
@@ -379,10 +369,12 @@ class ClientAuthPluginError(ClientMissingError):
 
 def _auth_plugin_error(stderr, binary, used=None):
     """Recognize the client error number, never a server SQL error mentioning it."""
-    if not re.search(r'\bERROR\s+2059\b', stderr, re.I):
+    first = re.search(r'^ERROR[^\r\n]*', stderr, re.M)
+    match = (re.match(r"ERROR 2059 \(HY000\): Authentication plugin '([A-Za-z0-9_]+)' cannot be loaded(?:$|:|\.)",
+                      first.group()) if first else None)
+    if match is None:
         return None
-    match = re.search(r"Authentication plugin ['\"]([^'\"]+)['\"] cannot be loaded", stderr, re.I)
-    plugin = match.group(1) if match else 'required authentication'
+    plugin = match.group(1)
     used = used or {}
     return ClientAuthPluginError(
         '%s %s (%s) cannot sign in to this server: the account uses the %s plugin, '
@@ -394,7 +386,7 @@ def _auth_plugin_error(stderr, binary, used=None):
 
 def _client_auth_error(stderr, binary, used=None):
     """Describe even the unprobed fast-path client, only after a 2059 failure."""
-    if not re.search(r'\bERROR\s+2059\b', stderr, re.I):
+    if _auth_plugin_error(stderr, binary, used) is None:
         return None
     if used and os.path.realpath(used['path']) != os.path.realpath(binary):
         used = None
@@ -476,12 +468,66 @@ def _check_client_trust(path):
         raise ValueError(message) from exc
 
 
+def checked_program(path, realpath=None, bundled=False):
+    """Check both spellings immediately before use; execute the resolved file.
+
+    Only the actual app bundle is exempt, never a chosen installation merely
+    passed as an extra discovery folder. Keep the pinned target checked too.
+    """
+    if os.name == 'nt' and path.replace('/', '\\').startswith('\\\\'):
+        raise ClientMissingError('Choose a local client named mysql.exe or mariadb.exe.')
+    real = os.path.realpath(path)
+    bundle = bundled_client_dir()
+    exempt = bool(bundled and bundle and _same_dir(os.path.dirname(real), bundle))
+    try:
+        if not exempt:
+            _check_client_trust(path)
+            _check_client_trust(real)
+            if realpath is not None:
+                _check_client_trust(realpath)
+        if realpath is not None and os.path.normcase(real) != os.path.normcase(os.path.realpath(realpath)):
+            raise ValueError('The database client target changed.')
+        if not os.path.isfile(real) or not os.access(real, os.X_OK):
+            raise ValueError('The database client is not executable.')
+    except (OSError, ValueError) as exc:
+        raise ClientMissingError(str(exc)) from exc
+    return real
+
+
+def client_tls_options(options, engine, public_key=False):
+    """Shared option-file TLS mapping for connectors, editor, CSV and tools.
+
+    MariaDB include/sslopt-longopts.h:22-39,59-62; MySQL
+    client/include/sslopt-longopts.h:28 and
+    client/include/caching_sha2_passwordopt-longopts.h:42.
+    """
+    lines = []
+    mode = options.get('ssl_mode')
+    if engine == 'mariadb' and mode:
+        mode = mode.upper()
+        if mode == 'DISABLED':
+            lines.append('skip-ssl')
+        elif mode in ('REQUIRED', 'VERIFY_CA', 'VERIFY_IDENTITY'):
+            lines.append('ssl')
+            if mode.startswith('VERIFY'):
+                lines.append('ssl-verify-server-cert')
+        elif mode != 'PREFERRED':
+            raise ValueError('Invalid TLS mode.')
+    elif mode:
+        lines.append('ssl-mode=' + _option_value(mode))
+    for key in ('ssl_ca', 'ssl_cert', 'ssl_key', 'ssl_cipher'):
+        if options.get(key):
+            lines.append(key.replace('_', '-') + '=' + _option_value(options[key]))
+    if public_key and engine != 'mariadb' and (mode or '').upper() != 'DISABLED':
+        lines.append('get-server-public-key=ON')
+    return lines
+
+
 def probe_client(path, check_trust=True, chosen=None):
     """Validate one absolute client path and return its bounded version banner.
 
-    *check_trust* False only describes the automatic PATH client, which the
-    connector uses as PATH finds it; a client chosen in the workspace is
-    always checked. *chosen* is the path the person chose when *path* is its
+    *check_trust* False is reserved for the app bundle. Installed programs
+    always pass the trust check before probing. *chosen* is the path the person chose when *path* is its
     resolved file: the name rule applies to that choice (a ``mysql`` link to
     ``mysql-8.4`` is valid), and the resolved file is the one probed."""
     if (not isinstance(path, str) or not path or len(path) > 4096 or
@@ -520,6 +566,14 @@ class PartialReadError(ConnectorError):
     def __init__(self, message, stdout):
         super().__init__(message)
         self.stdout = stdout
+
+
+class _InvocationDefaults(str):
+    """Keep an option file paired with the client whose engine it describes."""
+    def __new__(cls, path, binary):
+        value = str.__new__(cls, path)
+        value.binary = binary
+        return value
 
 
 class MySQLConnection:
@@ -616,7 +670,9 @@ class MySQLConnection:
                 raise flight['error']
             return flight['facts']
         try:
-            used = client_tools.select(discovered, None, keys)['client']
+            engine = next((e for e in ('mysql', 'mariadb') if keys.get(e)), None)
+            used = client_tools.select(discovered,
+                dict(engine=engine, version='5.7.0') if engine else None, keys)['client']
             if used is None:
                 raise ClientMissingError()
             for attempt in range(2):
@@ -661,20 +717,8 @@ class MySQLConnection:
 
     @staticmethod
     def _checked_client(used, keys):
-        """Recheck chosen files and real folders before every credential use."""
-        path = used['path']
-        if used.get('installation') in [v for v in keys.values() if v]:
-            try:
-                _check_client_trust(path)
-                real = os.path.realpath(path)
-                _check_client_trust(real)
-                if not os.path.isfile(real) or not os.access(real, os.X_OK):
-                    raise ValueError('The chosen client is not executable.')
-                return real
-            except (OSError, ValueError) as exc:
-                raise ClientMissingError(
-                    'The client tools chosen in Settings > Client tools are no longer at %s.' % path) from exc
-        return path
+        """Recheck installed files and real folders before every credential use."""
+        return checked_program(used['path'], used.get('realpath'), used.get('bundled', False))
 
     def _resolve_binary(self):
         """Resolve a query client by endpoint facts and per-engine Settings."""
@@ -688,16 +732,15 @@ class MySQLConnection:
                 choices = dict(_CLIENT_CHOICES)
             candidates = [c for c in client_tools.snapshot() if c['name'] in ('mysql', 'mariadb')]
             if not any(choices.values()) and len(candidates) <= 1:
-                # No version process on the common one-client path. The wrapper
-                # also preserves the CLI's longstanding which test seam.
-                path = candidates[0]['path'] if candidates else None
-                if path is None:
-                    path = self._which('mysql') or self._which('mariadb')
-                if path is None:
+                # Snapshot covers PATH without current-directory/PATHEXT fallback.
+                if not candidates:
                     raise ClientMissingError()
+                candidate = candidates[0]
+                path = checked_program(candidate['path'], candidate['realpath'], candidate['bundled'])
                 used = None
             else:
-                discovered = client_tools.discover_choices(choices)
+                discovered = (client_tools.discover_choices(choices, automatic=False)
+                              if any(choices.values()) else client_tools.discover_choices(choices))
                 keys, errors = client_tools.choice_keys(discovered, choices)
                 with _CLIENT_CHOICES_LOCK:
                     if generation != _CLIENT_CHOICES_GENERATION:
@@ -708,9 +751,13 @@ class MySQLConnection:
                     if errors[engine]:
                         raise ClientMissingError(errors[engine])
                 client_count = len({p['realpath'] for g in discovered['installations']
-                                    for name, p in g['programs'].items() if name in ('mysql', 'mariadb')})
+                                    for name, p in g['programs'].items() if name in ('mysql', 'mariadb')} |
+                                   {c['realpath'] for c in candidates})
                 if facts is None and max(len(candidates), client_count) >= 2:
                     facts = self._first_contact(discovered, keys)
+                if facts and any(choices.values()) and not choices.get(facts['engine']):
+                    discovered = client_tools.discover_choices(choices)
+                    keys, errors = client_tools.choice_keys(discovered, choices)
                 relevant = (facts['engine'],) if facts else ('mysql', 'mariadb')
                 for engine in relevant:
                     if errors[engine]:
@@ -719,7 +766,7 @@ class MySQLConnection:
                 # Unknown servers still honor an explicit choice for the
                 # fallback client's engine (select intentionally remains pure).
                 if facts is None:
-                    engine = used['engine'] if used else next((e for e in keys if keys[e]), None)
+                    engine = next((e for e in ('mysql', 'mariadb') if keys[e]), None)
                     if engine and keys.get(engine):
                         used = client_tools.select(discovered, dict(engine=engine, version='5.7.0'), keys)['client']
                 if used is None:
@@ -739,7 +786,7 @@ class MySQLConnection:
                 self._client_use = used
                 return path
 
-    def _build_defaults_file_content(self, endpoint=None):
+    def _build_defaults_file_content(self, endpoint=None, client_engine=None):
         """Build the text that goes into the defaults-file.
 
         Only the ``[client]`` section is used so both ``mysql`` and
@@ -772,16 +819,10 @@ class MySQLConnection:
             lines.append("user=" + _option_value(self.user))
         if self.password is not None:
             lines.append("password=" + _option_value(self.password))
-        for key in self._SSL_KEYS:
-            value = getattr(self, key)
-            if value:
-                lines.append(key.replace("_", "-") + "=" + _option_value(value))
+        lines.extend(client_tls_options({key: getattr(self, key) for key in self._SSL_KEYS},
+                                        client_engine or 'mysql', public_key=True))
         if self.connect_timeout:
             lines.append("connect-timeout=" + str(int(self.connect_timeout)))
-        # Preserve public-key fetching for default/TLS modes, but never
-        # request an unauthenticated key when TLS is explicitly disabled.
-        if (self.ssl_mode or "").upper() != "DISABLED":
-            lines.append("get-server-public-key=ON")
         return "\n".join(lines) + "\n"
 
     def _ensure_defaults_file(self):
@@ -813,18 +854,23 @@ class MySQLConnection:
             self._defaults_file_path = self._create_defaults_file()
         return self._defaults_file_path
 
-    def _create_defaults_file(self, endpoint=None):
+    def _create_defaults_file(self, endpoint=None, client_engine=None):
         """Write a fresh, private option file without storing shared state."""
         # mkstemp creates the file with mode 0600 on POSIX. Windows has no
         # os.fchmod and ignores the mode; the file sits in the user's own
         # %TEMP% directory, whose ACL keeps other accounts out.
+        if client_engine is None and self._binary_cached:
+            client_engine = self._defaults_engine(self._binary_cached)
         fd, path = tempfile.mkstemp(prefix="myflames-", suffix=".cnf")
         try:
             with os.fdopen(fd, "wb") as handle:
                 if hasattr(os, "fchmod"):
                     os.fchmod(handle.fileno(), 0o600)
-                content = (self._build_defaults_file_content() if endpoint is None
-                           else self._build_defaults_file_content(endpoint))
+                if client_engine is not None:
+                    content = self._build_defaults_file_content(endpoint, client_engine=client_engine)
+                else:
+                    content = (self._build_defaults_file_content() if endpoint is None
+                               else self._build_defaults_file_content(endpoint))
                 handle.write(content.encode("utf-8"))
         except BaseException:
             # Never leave a file that may hold the password behind.
@@ -844,18 +890,33 @@ class MySQLConnection:
             raise ConnectorError(str(exc)) from None
         return TUNNELS.acquire(spec)
 
+    def _defaults_engine(self, binary, used=None):
+        """Describe the actual client rather than its filename or server."""
+        used = used or getattr(self, '_client_use', None)
+        if used and os.path.realpath(used['path']) == os.path.realpath(binary):
+            return used['engine']
+        else:
+            # A mysql symlink can be a MariaDB client. Probe the program, never
+            # infer its engine from its filename or the server's engine.
+            from . import client_tools
+            name = os.path.splitext(os.path.basename(binary))[0]
+            fields = client_tools.probe(name, binary) if os.path.isfile(binary) else {}
+            return fields.get('engine', 'mysql')
+
     @contextmanager
-    def _invocation_defaults(self):
+    def _invocation_defaults(self, binary=None, used=None):
         """Keep credentials local to one invocation, including spawn failures.
 
         Through SSH the option file names the tunnel's local end, and the
         invocation holds the tunnel until it ends."""
+        binary = binary or self._resolve_binary()
+        engine = self._defaults_engine(binary, used)
         lease = self._acquire_tunnel() if getattr(self, "ssh_host", None) else None
         try:
-            path = (self._create_defaults_file() if lease is None
-                    else self._create_defaults_file(("127.0.0.1", lease.port)))
+            path = self._create_defaults_file(None if lease is None else ("127.0.0.1", lease.port),
+                                              client_engine=engine)
             try:
-                yield path
+                yield _InvocationDefaults(path, binary)
             finally:
                 try:
                     os.unlink(path)
@@ -929,10 +990,9 @@ class MySQLConnection:
         Pass an invocation-owned ``defaults_path`` when starting a client.
         Omitting it retains the legacy helper's close()-managed lifetime.
         """
+        binary = binary or getattr(defaults_path, "binary", None) or self._resolve_binary()
         if defaults_path is None:
             defaults_path = self._ensure_defaults_file()
-        binary = binary or self._resolve_binary()
-        _CLIENT_INVOCATION.program = (binary, getattr(self, '_client_use', None))
         argv = [
             binary,
             "--defaults-file=" + defaults_path,
@@ -1000,7 +1060,8 @@ class MySQLConnection:
         """
         started = time.monotonic()
         try:
-            with self._invocation_defaults() as defaults_path, client_environment() as env:
+            binary = binary or self._resolve_binary()
+            with self._invocation_defaults(binary, used) as defaults_path, client_environment() as env:
                 flags = list(extra_flags or [])
                 options = {}
                 if tail_timeout is not None:
@@ -1009,7 +1070,6 @@ class MySQLConnection:
                     if on_tail_start is not None:
                         options['on_tail_start'] = on_tail_start
                 argv = self._build_argv(sql, extra_flags=flags, defaults_path=defaults_path, binary=binary)
-                _CLIENT_INVOCATION.program = (argv[0], used or getattr(self, '_client_use', None))
                 proc = _run_bounded(argv, timeout=timeout or self.query_timeout, env=env, **options)
         except subprocess.TimeoutExpired as exc:
             from .dbops import redact
@@ -1053,7 +1113,7 @@ class MySQLConnection:
         """
         try:
             with self._invocation_defaults() as defaults_path:
-                argv = [self._resolve_binary(), "--defaults-file=" + defaults_path,
+                argv = [getattr(defaults_path, "binary", None) or self._resolve_binary(), "--defaults-file=" + defaults_path,
                         "--local-infile=0",
                         "--batch", "--skip-column-names", "--silent", "--skip-reconnect", "--force",
                         "--comments", "--binary-mode"]
@@ -1106,6 +1166,8 @@ class MySQLConnection:
         except subprocess.TimeoutExpired:
             raise ConnectorError("Query timed out after {}s; the outcome is unknown.".format(
                 timeout or self.query_timeout)) from None
+        except ClientAuthPluginError:
+            raise
         except (ConnectorError, OSError) as exc:
             raise ConnectorError(redact(str(exc), self.password)) from None
 
@@ -1115,7 +1177,7 @@ class MySQLConnection:
 
     def _run_write_with_defaults(self, sql, extra_flags, timeout, defaults_path):
         from .dbops import WRITE_CLIENT_FLAGS
-        argv = [self._resolve_binary(), "--defaults-file=" + defaults_path,
+        argv = [getattr(defaults_path, "binary", None) or self._resolve_binary(), "--defaults-file=" + defaults_path,
                 "--local-infile=0",
                 "--batch", "--skip-column-names", "--silent", "--skip-reconnect"]
         argv.extend(CLIENT_CHARSET_FLAGS)
