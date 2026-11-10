@@ -23,6 +23,8 @@ import types
 import unittest
 from unittest import mock
 
+from _client_tools_fixture import private_client_dir
+
 from myflames import connector, dbops, lifecycle as lc, privileges
 from myflames.connector import ConnectorError
 from myflames.workspace_store import WorkspaceStore
@@ -427,13 +429,14 @@ class MissingClientToolsTests(unittest.TestCase):
                 ui.api_response('/api/lifecycle/tools', {'connection': {'host': 'localhost'}}, self.workspace)
 
 
+@unittest.skipIf(os.name == 'nt', 'POSIX executable fixtures; Windows trust tested separately')
 class LifecycleTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='lc-')
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
         self.bin = self.root / 'bin'
-        self.bin.mkdir()
+        private_client_dir(self.bin)
         self.env = mock.patch.dict(os.environ, {'HOME': str(self.root), 'USERPROFILE': str(self.root),
                          'TMPDIR': str(self.root), 'PATH': str(self.bin), 'MYFLAMES_SECRET_BACKEND': 'vault',
                          'MYSQL_PWD': PASSWORD, 'AWS_SECRET_ACCESS_KEY': 'never-inherit',
@@ -458,6 +461,14 @@ class LifecycleTests(unittest.TestCase):
         self.output = str(self.root / 'backup')
         self.jobs = []
         self.addCleanup(self.close_jobs)
+
+    def tool_script(self, source):
+        # Validate a private fixture, not the CI runner's Python installation:
+        # hosted toolcache ancestors may be writable by another group.
+        tool = self.bin / 'test-tool'
+        tool.write_text('#!' + sys.executable + '\n' + source, encoding='utf-8')
+        tool.chmod(0o755)
+        return str(tool)
 
     def close_jobs(self):
         for job in self.jobs:
@@ -609,11 +620,11 @@ class LifecycleTests(unittest.TestCase):
         connector.set_client_choices({})
         self.addCleanup(connector.set_client_choices, previous)
         links = self.root / 'prefix/bin'
-        links.mkdir(parents=True)
+        private_client_dir(links)
         folders = [self.root / 'prefix/Cellar/mysql/8.4.8/bin',
                    self.root / 'prefix/Cellar/mysql@8.0/8.0.45/bin', self.root / 'app/bin']
         for folder, version in zip(folders, ('8.4.8', '8.0.45', '8.4.13')):
-            folder.mkdir(parents=True)
+            private_client_dir(folder)
             for name in ('mysql', 'mysqldump'):
                 binary = folder / name
                 source = FAKE_TOOL.replace("'mysql':'mysql Ver 8.4.3'", "'mysql':'mysql Ver " + version + "'")
@@ -954,7 +965,7 @@ class LifecycleTests(unittest.TestCase):
         code = ("import sys\nsys.stderr.write('\\x1b[36mNOTE: \\x1b[0mdryRun enabled\\n"
                 "Following schemas were not found: nosuch (ArgumentError)  at STDIN:2\\n')\nsys.exit(1)")
         with self.assertRaises(lc.LifecycleError) as caught:
-            job.process_tool([sys.executable, '-c', code], dict(os.environ))
+            job.process_tool([self.tool_script(code)], dict(os.environ))
         self.assertEqual(str(caught.exception),
                          'Tool exited 1: Following schemas were not found: nosuch (ArgumentError)')
 
@@ -1096,7 +1107,7 @@ class LifecycleTests(unittest.TestCase):
         watcher = threading.Thread(target=watch)
         watcher.start()
         with open(self.root / 'out.sql', 'wb') as handle:
-            job.process_tool([sys.executable, '-c', script], dict(os.environ), output_file=handle)
+            job.process_tool([self.tool_script(script)], dict(os.environ), output_file=handle)
         watcher.join()
         self.assertIn(3000, seen, 'a partial size was reported before the tool ended')
         self.assertEqual(job.snapshot()['output']['written_bytes'], 4000)
@@ -2803,7 +2814,7 @@ class LifecycleTests(unittest.TestCase):
         with mock.patch.object(registry.groups, '_write', side_effect=OSError('disk full')), \
                 mock.patch.object(lc.subprocess, 'Popen', side_effect=popen):
             with self.assertRaisesRegex(lc.LifecycleError, 'Could not record the tool process'):
-                job.process_tool([sys.executable, '-c', script], dict(os.environ))
+                job.process_tool([self.tool_script(script)], dict(os.environ))
         self.assertIsNotNone(started[0].poll())
         self.assertFalse(lc._group_alive(started[0].pid))
         self.assertTrue(job.cancelled.is_set())
@@ -2861,7 +2872,7 @@ class LifecycleTests(unittest.TestCase):
                         started.set()
                 runner.emit = observed
                 try:
-                    runner.process_tool([sys.executable, '-c', script], dict(os.environ))
+                    runner.process_tool([self.tool_script(script)], dict(os.environ))
                 except lc.LifecycleError as exc:
                     errors.append(str(exc))
         thread = threading.Thread(target=preflight, daemon=True)
@@ -3267,7 +3278,7 @@ class ClientToolTrustTests(unittest.TestCase):
             binary.write_text('#!/bin/sh\necho "mysqldump Ver 8.4.13"\n')
             binary.chmod(0o700)
             link = root / 'link' / 'mysqldump'
-            link.parent.mkdir()
+            private_client_dir(link.parent)
             link.symlink_to(binary)
             tool = dict(name='mysqldump', path=str(link), realpath=str(binary), engine='mysql')
             job = lc.LifecycleJob('test', lambda j: None, {'host': 'h'})

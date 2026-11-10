@@ -20,6 +20,8 @@ from email.message import Message
 from types import SimpleNamespace
 from unittest import mock
 
+from _client_tools_fixture import private_client_dir
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
 from myflames import csv_import as ci  # noqa: E402
@@ -38,7 +40,7 @@ ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
 
 def fake_client(folder, supports=True, fail_first_version=False):
     """A real executable that logs argv; it never connects to a server."""
-    os.makedirs(folder, exist_ok=True)
+    private_client_dir(folder)
     path = os.path.join(folder, 'mysql')
     log = os.path.join(folder, 'argv.jsonl')
     marker = os.path.join(folder, 'version-checked')

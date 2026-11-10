@@ -24,7 +24,6 @@ from pathlib import Path
 import random
 import re
 import shutil
-import stat
 import sys
 import tempfile
 import threading
@@ -32,6 +31,8 @@ import time
 import types
 import unittest
 from unittest import mock
+
+from _client_tools_fixture import private_client_dir
 
 from myflames import dbops, editor_session as ed
 from myflames.workspace_store import WorkspaceStore
@@ -1002,7 +1003,7 @@ class ProcessTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         root = Path(self.temp.name)
         bindir = root / "bin"
-        bindir.mkdir()
+        private_client_dir(bindir)
         self.state = root / "state"
         self.state.mkdir()
         script = bindir / "mysql"
@@ -1014,7 +1015,7 @@ class ProcessTests(unittest.TestCase):
                                 'arg.startswith(("--defaults-file=", "--defaults-extra-file="))')
         client = client.replace('        upper = text.upper()\n', '        upper = text.upper()\n' + PLAN_FAKE)
         script.write_text("#!%s\n%s" % (sys.executable, client), encoding="utf-8")
-        script.chmod(script.stat().st_mode | stat.S_IEXEC)
+        script.chmod(0o755)
         env = {"HOME": self.temp.name, "USERPROFILE": self.temp.name, "MYFLAMES_SECRET_BACKEND": "vault",
                "PATH": str(bindir), "MYFLAMES_BUNDLED_CLIENT_DIR": "", "FAKE_STATE": str(self.state),
                "FAKE_ENGINE": self.engine}

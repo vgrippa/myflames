@@ -6,11 +6,12 @@ import io
 import json
 import os
 from pathlib import Path
-import stat
 import sys
 import tempfile
 import unittest
 from unittest import mock
+
+from _client_tools_fixture import private_client_dir
 
 from myflames import cli, editor_session as editor, sql_cli
 from myflames.workspace_store import WorkspaceStore
@@ -32,7 +33,7 @@ class SQLTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         bindir = self.root / 'bin'
-        bindir.mkdir()
+        private_client_dir(bindir)
         self.state = self.root / 'state'
         self.state.mkdir()
         fake = Path(__file__).with_name('_fake_mysql_client.py').read_text(encoding='utf-8')
@@ -41,7 +42,7 @@ class SQLTests(unittest.TestCase):
                             '"connection_id": str(self.conn_id), "hostname": "fake-db", "port": "3306", "server_id": "1",')
         script = bindir / 'mysql'
         script.write_text('#!%s\n%s' % (sys.executable, fake), encoding='utf-8')
-        script.chmod(script.stat().st_mode | stat.S_IEXEC)
+        script.chmod(0o755)
         patcher = mock.patch.dict(os.environ, {
             'HOME': self.temp.name, 'USERPROFILE': self.temp.name,
             'MYFLAMES_SECRET_BACKEND': 'vault', 'FAKE_ENGINE': 'mysql',

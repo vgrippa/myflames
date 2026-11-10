@@ -26,6 +26,8 @@ import traceback
 import unittest
 from unittest import mock
 
+from _client_tools_fixture import private_client_dir
+
 TEST_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(TEST_DIR))
 
@@ -377,7 +379,7 @@ class TestClientSelection(unittest.TestCase):
     def binary(self, name='mysql', body='print("mysql Ver 8.4.0")', folder='bin'):
         # The real temp path (macOS /var is a link): a chosen client runs by its real path.
         directory = os.path.join(os.path.realpath(self.temp.name), folder)
-        os.makedirs(directory, exist_ok=True)
+        private_client_dir(directory)
         path = os.path.join(directory, name)
         with open(path, 'w') as stream:
             stream.write('#!' + sys.executable + '\n' + body + '\n')
@@ -508,7 +510,7 @@ class TestClientSelection(unittest.TestCase):
         # (versioned) file is probed and run.
         real = self.binary(name='mysql-8.4')
         alias_folder = os.path.join(os.path.realpath(self.temp.name), 'links')
-        os.makedirs(alias_folder)
+        private_client_dir(alias_folder)
         alias = os.path.join(alias_folder, 'mysql')
         os.symlink(real, alias)
         self.assertEqual(connector.probe_client(alias)['name'], 'mysql')
@@ -565,7 +567,7 @@ class TestClientSelection(unittest.TestCase):
     def test_trust_checks_symlink_owner_and_both_alias_and_target_parents(self):
         path = self.binary(folder='target')
         alias_folder = os.path.join(self.temp.name, 'alias')
-        os.mkdir(alias_folder)
+        private_client_dir(alias_folder)
         link = os.path.join(alias_folder, 'mysql')
         os.symlink(path, link)
         self.assertEqual(connector.probe_client(link)['path'], link)
@@ -733,6 +735,7 @@ class TestClientSelection(unittest.TestCase):
         self.assertIn(b' Install it or pass --mysql-binary /path/to/mysql.', result.stderr)
 
 
+@unittest.skipIf(os.name == 'nt', 'POSIX executable fixtures; Windows names tested separately')
 class TestVersionAwareClients(unittest.TestCase):
     setUp = TestClientSelection.setUp
     binary = TestClientSelection.binary
@@ -1095,13 +1098,13 @@ class TestBundledClientResolution(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.bundled = os.path.join(self.tmp.name, "resources", "mysql-client", "bin")
         self.installed = os.path.join(self.tmp.name, "usr", "bin")
-        os.makedirs(self.installed)
+        private_client_dir(self.installed)
         self.program = self.make(self.bundled, "mysql")
         self.make(self.bundled, "mysqldump")
 
     @staticmethod
     def make(folder, name):
-        os.makedirs(folder, exist_ok=True)
+        private_client_dir(folder)
         path = os.path.join(folder, name + (".exe" if os.name == "nt" else ""))
         with open(path, "w") as handle:
             handle.write("")
@@ -1925,7 +1928,7 @@ class TestClientSecurityFixes(unittest.TestCase):
                 body="import sys\nif '--version' in sys.argv: print(%r)\nelse: print('1')" %
                      ('mariadb Ver 11.8.2-MariaDB' if engine == 'mariadb' else 'mysql Ver 8.4.13'))
             alias = os.path.join(self.temp.name, 'alias-' + engine)
-            os.makedirs(alias)
+            private_client_dir(alias)
             alias = os.path.join(alias, 'mysql')
             os.symlink(target, alias)
             for mode, expected in modes.items():

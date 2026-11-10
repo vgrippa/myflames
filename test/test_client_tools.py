@@ -10,6 +10,8 @@ import threading
 import unittest
 from unittest import mock
 
+from _client_tools_fixture import private_client_dir
+
 from myflames import client_tools as ct
 
 
@@ -24,7 +26,7 @@ class DiscoveryTests(unittest.TestCase):
 
     def make(self, folder, name='mysql', version='8.4.13', banner=None, exit_code=0):
         folder = Path(folder)
-        folder.mkdir(parents=True, exist_ok=True)
+        private_client_dir(folder)
         binary = folder / name
         banner = banner if banner is not None else '%s Ver %s' % (name, version)
         binary.write_text("#!/bin/sh\nprintf '%s\\n' '" + banner.replace("'", "'\\''") + "'\nexit %d\n" % exit_code)
@@ -94,12 +96,12 @@ class DiscoveryTests(unittest.TestCase):
         keg = brew / 'Cellar/mysql@8.4/8.4.8/bin'
         old = brew / 'Cellar/mysql@8.0/8.0.45/bin'
         links = brew / 'bin'
-        links.mkdir(parents=True)
+        private_client_dir(links)
         for name in ('mysql', 'mysqldump'):
             (links / name).symlink_to(self.make(keg, name, '8.4.8'))
             self.make(old, name, '8.0.45')
         opt = brew / 'opt/mysql@8.0'
-        opt.parent.mkdir()
+        private_client_dir(opt.parent)
         opt.symlink_to(old.parent)
         bundle = self.root / 'app/bin'
         for name in ('mysql', 'mysqldump'):
