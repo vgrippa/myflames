@@ -24,11 +24,10 @@ const cm = await import("data:text/javascript;base64," + Buffer.from(bundled.out
 const options = { matchCase: false, wholeWord: false, regex: false };
 const regex = { ...options, regex: true };
 
-// Compare the unchanged old helpers using editor-find.mjs's compiler boundary.
-const source = await fs.readFile(new URL("../src/SqlEditor.tsx", import.meta.url), "utf8");
+// Compare the unchanged old helpers (frozen in the fixture) using editor-find.mjs's compiler boundary.
+const source = await fs.readFile(new URL("./fixtures/legacy-find-helpers.tsx", import.meta.url), "utf8");
 const oldExports = {};
-new Function("exports", ts.transpileModule(source.slice(
-  source.indexOf("export type Range ="), source.indexOf("/** Text pieces with their classes:")), {
+new Function("exports", ts.transpileModule(source.slice(source.indexOf("export type Range =")), {
   compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS },
 }).outputText)(oldExports);
 assert.equal(cm.FIND_WORKER_SOURCE, oldExports.FIND_WORKER_SOURCE, "worker source moved verbatim");

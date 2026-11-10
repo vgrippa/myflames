@@ -1,4 +1,5 @@
 import { openConnectionPicker, chooseConnection, openAccountSheet, closeAccountSheet } from "./chrome-helpers.mjs";
+import { EDITOR, MARK, setEditorText, selectEditor } from "./editor-helpers.mjs";
 // Query editor: running SQL in the tab's session, results, Messages, Stop,
 // row limit and Load more, transactions, confirmations, export, history, the
 // schema browser, a session that ended, and restore. The packaged page and
@@ -262,7 +263,6 @@ try {
   await page.goto(url, { waitUntil: "networkidle0" });
   const mac = await page.evaluate(() => /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent));
   const MOD = mac ? "Meta" : "Control";
-  const EDITOR = '[aria-label="SQL editor"]';
   const text = (selector) => page.$eval(selector, (e) => e.textContent);
   const texts = (selector) => page.$$eval(selector, (els) => els.map((e) => e.textContent));
   async function chord(key, shift = false) {
@@ -273,18 +273,10 @@ try {
     await page.keyboard.up(MOD);
   }
   async function select(start, end = start) {
-    await page.$eval(EDITOR, (el, start, end) => {
-      el.focus();
-      el.setSelectionRange(start, end);
-    }, start, end);
+    await selectEditor(page, start, end);
   }
   async function setText(sql) {
-    if (sql) return void (await page.locator(EDITOR).fill(sql));
-    await page.$eval(EDITOR, (el) => {
-      el.focus();
-      el.select();
-    });
-    await page.keyboard.press("Backspace");
+    await setEditorText(page, sql);
   }
   async function until(check, message, timeout = 8000) {
     const end = Date.now() + timeout;
@@ -371,7 +363,7 @@ try {
   await setText(SQL);
   await select(SQL.indexOf("2"));
   // The statement at the cursor is tinted.
-  await page.waitForFunction(() => [...document.querySelectorAll(".sql-highlight .sql-current")].map((e) => e.textContent).join("") === "SELECT 2");
+  await page.waitForFunction((m) => [...document.querySelectorAll(m)].map((e) => e.textContent).join("") === "SELECT 2", {}, MARK.statement);
   await chord("Enter");
   let body = await ran(1);
   assert.equal(body.tab_id, "1");
@@ -586,8 +578,8 @@ try {
   await page.waitForSelector(".message-error");
   assert.equal(await page.$eval(".results-tabs [aria-selected=true]", (e) => e.textContent), "Messages1", "an error opens Messages");
   assert.match(await text(".message-error"), /ERROR 1064 \(42000\): You have an error/);
-  assert.equal(await text(".sql-highlight .sql-error-mark"), "SELEC");
-  assert.ok(await page.$(".sql-gutter-lines .is-error"));
+  assert.equal(await text(MARK.error), "SELEC");
+  assert.ok(await page.$(MARK.gutterError));
   await select(0);
   await page.locator(".message-error button ::-p-text(Go to line 2, column 1)").click();
   assert.deepEqual(await page.$eval(EDITOR, (e) => [e.selectionStart, e.selectionEnd, document.activeElement === e]), [10, 10, true]);
@@ -1922,6 +1914,70 @@ try {
   assert.equal(calls("/api/live/privileges").at(-1).connection.password, "replacement-part-complete");
   await page.keyboard.press("Tab"); await pause(100);
   assert.equal(calls("/api/live/privileges").length, beforeDraftReply + 1, "blur after Enter does not commit twice");
+
+  // Several cursors: Run sends only the main cursor's statement or selection,
+  // and the scope label says so.
+  const MULTI = "SELECT 1;\nSELECT 2;\nSELECT 3";
+  await setText(MULTI);
+  await select(MULTI.indexOf("2"));
+  // Alt+click on the first line adds a cursor there and makes it main.
+  const firstLine = await page.$(".cm-content .cm-line");
+  const firstBox = await firstLine.boundingBox();
+  await page.keyboard.down("Alt");
+  await page.mouse.click(firstBox.x + 20, firstBox.y + firstBox.height / 2);
+  await page.keyboard.up("Alt");
+  await until(() => page.$(".cm-cursor-secondary"), "Alt+click added no second cursor");
+  const mainAt = await page.$eval(EDITOR, (e) => e.selectionStart);
+  assert.ok(mainAt <= MULTI.indexOf(";"), `the main cursor is on the first line (${mainAt})`);
+  await until(async () => (await text("#run-scope")) === "Runs the statement at the main cursor", "the scope label never named the main cursor");
+  const multiRuns = calls("/api/editor/run").length;
+  await chord("Enter");
+  body = await ran(multiRuns + 1);
+  assert.equal(body.cursor, mainAt, "Run sends the main cursor, not another range");
+  assert.equal(body.selection, undefined);
+  await idle();
+  // A non-empty main selection: the label and the request use only it. Mod-D
+  // adds the next occurrence as a secondary selection (CodeMirror keeps the
+  // original range as main), so the request still sends the first selection.
+  await select(0, "SELECT".length);
+  await chord("d");
+  await until(() => page.$$eval(".cm-selectionBackground", (es) => es.length > 1), "Mod-D added no second selection");
+  await until(async () => (await text("#run-scope")) === "Runs the main selection", "the scope label never named the main selection");
+  const mainSelection = await page.$eval(EDITOR, (e) => [e.selectionStart, e.selectionEnd]);
+  assert.deepEqual(mainSelection, [0, "SELECT".length], "the added occurrence is secondary, not main");
+  await chord("Enter");
+  body = await ran(multiRuns + 2);
+  assert.deepEqual(body.selection, { start: mainSelection[0], end: mainSelection[1] }, "Run sends only the main selection");
+  assert.equal(body.cursor, undefined);
+  await idle();
+
+  // Escape with several cursors collapses them instead of stopping a run;
+  // with one cursor it still stops.
+  const multiRun = run([statement(0, "SELECT SLEEP(9)", 0, { status: "running" })], [], { state: "running", id: "run-multi" });
+  mock.run.push({ status: "running", session: session({ state: "running" }), run: multiRun });
+  mock.holdStatus = true;
+  await setText("SELECT SLEEP(9)");
+  await select(0);
+  await chord("Enter");
+  await page.waitForSelector(".results-running");
+  const runLine = await page.$(".cm-content .cm-line");
+  const runBox = await runLine.boundingBox();
+  await page.keyboard.down("Alt");
+  await page.mouse.click(runBox.x + runBox.width - 8, runBox.y + runBox.height / 2);
+  await page.keyboard.up("Alt");
+  await until(() => page.$(".cm-cursor-secondary"), "Alt+click added no second cursor");
+  const multiStops = calls("/api/editor/stop").length;
+  await page.keyboard.press("Escape");
+  await until(async () => !(await page.$(".cm-cursor-secondary")), "Escape did not collapse the extra cursors");
+  await pause(150);
+  assert.equal(calls("/api/editor/stop").length, multiStops, "Escape that collapses the cursors is not Stop");
+  await page.keyboard.press("Escape");
+  await until(() => calls("/api/editor/stop").length === multiStops + 1, "Escape with one cursor did not stop the run");
+  mock.holdStatus = false;
+  const stoppedMulti = { ...multiRun, state: "stopped", stopped: { by: "user", interrupted: true, message: "Stopped." },
+    statements: multiRun.statements.map((s) => ({ ...s, status: "stopped" })) };
+  for (const entry of heldStatus.splice(0)) answerHeld(entry, { status: "idle", session: session(), run: stoppedMulti });
+  await idle();
 
   assert.deepEqual(errors, []);
   console.log("Query editor checks passed. " + directory);

@@ -66,7 +66,10 @@ import { Icon } from "./components";
 import { ActionButton, ActionStatus, IDLE_ACTION, writeFailure, type ActionState, Checkbox, ConfirmSheet, EmptyState, IconButton, InfoPopover, Notice, NumberField, Popover, Segmented, StatusPill, useFocusScope, useWindowStatus, type Tone } from "./kit";
 import { ConnectionTypeBand, useWritePolicy, TYPE_LABEL } from "./Connections";
 import { ClientMissingNotice } from "./ClientMissing";
-import { SqlEditor, type Range } from "./SqlEditor";
+import { SqlEditor, type SqlEditorHandle } from "./editor/SqlEditor";
+import { EDITOR_SHORTCUTS } from "./editor/keymap";
+import type { Range } from "./editor/types";
+import { useEditorSettings } from "./editorSettings";
 import { ResultsPane, rowResults, duration as resultDuration } from "./ResultsPane";
 import { SchemaBrowser, type SchemaReveal } from "./SchemaBrowser";
 import { HistoryPanel, type SidePanelTab } from "./HistoryPanel";
@@ -95,6 +98,17 @@ const FORMAT_KEYS = MAC ? "⇧⌥F" : "Shift+Alt+F";
 function keys(shift: boolean, key: "Enter" | "E" = "Enter") {
   if (key === "E") return MAC ? `${shift ? "⇧" : ""}⌘E` : `Ctrl+${shift ? "Shift+" : ""}E`;
   return MAC ? `${shift ? "⇧" : ""}⌘Return` : `Ctrl+${shift ? "Shift+" : ""}Enter`;
+}
+/** A CodeMirror key name ("Shift-Mod-k") as the platform's visible text. */
+function editorKeyText(name: string): string {
+  const parts = name.split("-");
+  let key = parts.pop() || "";
+  if (key.length === 1) key = key.toUpperCase();
+  const has = (mod: string) => parts.some((p) => p.toLowerCase() === mod);
+  const order = MAC ? ["ctrl", "alt", "shift", "mod"] : ["ctrl", "mod", "alt", "shift"];
+  const mods = order.filter(has).map((mod) =>
+    mod === "mod" ? (MAC ? "⌘" : "Ctrl+") : mod === "ctrl" ? (MAC ? "⌃" : "Ctrl+") : mod === "alt" ? (MAC ? "⌥" : "Alt+") : MAC ? "⇧" : "Shift+");
+  return `${mods.join("")}${key}`;
 }
 /** How long the statement that runs stays highlighted in the editor. */
 const FLASH_MS = 1600;
@@ -625,6 +639,8 @@ export const QueryLab = forwardRef<
   const editorCap = editorRoom > 0 ? Math.max(EDITOR_FLOOR, editorRoom - RESULTS_KEEP) : 2000;
   const editorHeight = Math.min(layout.height, editorCap);
   const privileges = usePrivileges();
+  const editorSettings = useEditorSettings();
+  const docIds = useMemo(() => tabs.map((t) => t.id), [tabs]);
   const privilegeRef = useRef(privileges);
   privilegeRef.current = privileges;
   const explainGate = usePrivilege("explain");
@@ -676,7 +692,7 @@ export const QueryLab = forwardRef<
   }, [jobBusy]);
   const captureName = useRef("");
   const tabList = useRef<HTMLDivElement>(null);
-  const editor = useRef<HTMLTextAreaElement>(null);
+  const editor = useRef<SqlEditorHandle>(null);
   const parametersField = useRef<HTMLTextAreaElement>(null);
   const [parametersOpen, setParametersOpen] = useState(false);
   /** The tab whose parameter form is open (a digest that needs values). */
@@ -776,6 +792,8 @@ export const QueryLab = forwardRef<
   }, []);
   // Editor selection, for the run scope (selection / statement at cursor).
   const [cursor, setCursor] = useState({ start: 0, end: 0 });
+  // How many selection ranges the editor holds: only the main one runs.
+  const [cursorCount, setCursorCount] = useState(1);
   const [flash, setFlash] = useState<{
     tabId: string;
     sql: string;
@@ -958,7 +976,7 @@ export const QueryLab = forwardRef<
   }
   /** Run *action* once the editor is on screen; never on a hidden editor. */
   function whenShown(action: () => void, frames = 30) {
-    if (tabPanel.current?.offsetParent && editor.current?.offsetParent) action();
+    if (tabPanel.current?.offsetParent && editor.current?.isShown()) action();
     else if (frames > 0) window.requestAnimationFrame(() => whenShown(action, frames - 1));
   }
   /** A new tab after the others; *focus* puts the cursor in the editor. */
@@ -1045,13 +1063,11 @@ export const QueryLab = forwardRef<
       );
       window.setTimeout(() => {
         editor.current?.focus();
-        editor.current?.scrollIntoView({ block: "nearest" });
+        editor.current?.revealInPage();
       });
       return;
     }
-    window.setTimeout(() =>
-      editor.current?.scrollIntoView({ block: "nearest" }),
-    );
+    window.setTimeout(() => editor.current?.revealInPage());
     if (action === "explain") runSql(false, q.sql, 0, true, next);
     else if (measureBefore) setMeasurePending(next.id);
     else void startCapture(next, q.sql, {}, action, `Top statements #${rank}`);
@@ -1183,53 +1199,14 @@ export const QueryLab = forwardRef<
   function changeTab(changes: Partial<Tab>, id = tabId) {
     setTabs((ts) => ts.map((t) => (t.id === id ? { ...t, ...changes } : t)));
   }
-  const sqlNow = useRef(tab.sql);
-  sqlNow.current = tab.sql;
-  function syncCursor() {
-    const el = editor.current;
-    // Offsets only describe the text in state. When the field holds other
-    // text, an input event is pending and the effect below syncs after it;
-    // re-rendering now would put the old text back into the field.
-    if (!el || el.value !== sqlNow.current) return;
-    const start = el.selectionStart;
-    const end = el.selectionEnd;
-    setCursor((c) => (c.start === start && c.end === end ? c : { start, end }));
-  }
-  // A tab switch (or the first render) puts back the caret the tab was left with.
-  useLayoutEffect(() => {
-    const el = editor.current;
-    const saved = tab.selection;
-    if (!el || !saved || el.value !== tab.sql) return;
-    const length = tab.sql.length;
-    el.setSelectionRange(Math.min(saved.start, length), Math.min(saved.end, length));
-    // Only on a tab switch, never while typing.
-  }, [tabId]);
-  // A tab switch or a loaded query replaces the text, and the browser moves
-  // the caret without a select event.
-  useLayoutEffect(syncCursor, [tabId, tab.sql]);
-  useEffect(() => {
-    // React's onSelect misses selections made without a key or mouse event
-    // (context menu Select All, assistive technology, setSelectionRange).
-    const el = editor.current;
-    el?.addEventListener("select", syncCursor);
-    el?.addEventListener("selectionchange", syncCursor);
-    document.addEventListener("selectionchange", syncCursor);
-    return () => {
-      el?.removeEventListener("select", syncCursor);
-      el?.removeEventListener("selectionchange", syncCursor);
-      document.removeEventListener("selectionchange", syncCursor);
-      window.clearTimeout(flashTimer.current);
-    };
-  }, []);
+  // The caret and selection come only from the editor's onSelectionChange and
+  // onChange; a tab switch restores each document's own state and reports its
+  // selection, and the saved caret seeds a fresh document (initialSelection).
   // The caret is saved with the tab a moment after it stops moving, once the
-  // user has worked in the editor (opening the page saves nothing).
+  // user has worked in the editor (onFocus marks it; opening the page saves
+  // nothing).
   const touched = useRef(false);
-  useEffect(() => {
-    const el = editor.current;
-    const mark = () => (touched.current = true);
-    el?.addEventListener("focus", mark);
-    return () => el?.removeEventListener("focus", mark);
-  }, []);
+  useEffect(() => () => window.clearTimeout(flashTimer.current), []);
   useEffect(() => {
     const timer = window.setTimeout(() => {
       if (!touched.current) return;
@@ -1393,7 +1370,11 @@ export const QueryLab = forwardRef<
   )];
   const privilegeNotice = [previewWarning && previewWarning !== error ? previewWarning : "", ...privilegeReasons].filter(Boolean).join(" ");
   const privilegeNoticeId = privilegeNotice ? `${privilegeId}-notice` : undefined;
-  const scopeLabel = describeTarget(tab.sql, target);
+  const scopeLabel = cursorCount > 1
+    ? cursor.start === cursor.end
+      ? "Runs the statement at the main cursor"
+      : "Runs the main selection"
+    : describeTarget(tab.sql, target);
   const selecting = target.scope === "selection";
   const lit =
     flash && flash.tabId === tab.id && flash.sql === tab.sql ? flash : null;
@@ -1565,11 +1546,12 @@ export const QueryLab = forwardRef<
     if (problem) { setError(problem); return; }
     setError("");
     setStatus("");
-    // Read the selection now: a click on a button keeps the editor's
-    // selection, and a shortcut runs before any select event.
+    // Read the selection and text now: a click on a button keeps the editor's
+    // selection, and a shortcut runs before React has seen the latest state.
     const el = editor.current;
-    const chosen = el
-      ? runTarget(tab.sql, el.selectionStart, el.selectionEnd)
+    const sel = el?.getSelection();
+    const chosen = el && sel
+      ? runTarget(el.getValue(), sel.start, sel.end)
       : target;
     if (chosen.problem) {
       setError(chosen.problem);
@@ -1641,10 +1623,13 @@ export const QueryLab = forwardRef<
     setError("");
     setStatus("");
     const t = runTab;
-    const sql = text ?? t.sql;
+    // The text and the main selection as they are now, not the React state a
+    // render ago; *text* and *caret* override both after a scripted edit.
     const el = editor.current;
-    const lo = caret ?? (el ? el.selectionStart : cursor.start);
-    const hi = caret ?? (el ? el.selectionEnd : cursor.end);
+    const sql = text ?? el?.getValue() ?? t.sql;
+    const sel = caret === undefined ? el?.getSelection() : undefined;
+    const lo = caret ?? sel?.start ?? cursor.start;
+    const hi = caret ?? sel?.end ?? cursor.end;
     const now = runtimeRef.current[t.id] || blankRuntime();
     const part = sqlRun(sql, lo, hi, all, now.session?.backslash_escapes ?? true);
     if (part.problem) {
@@ -2293,17 +2278,12 @@ export const QueryLab = forwardRef<
 
   // ---- Editing helpers (schema browser, history, error positions) ----------
 
-  /** Insert *text* at the caret, keeping the browser's undo history. */
+  /** Insert *text* at every cursor, as one undo step. */
   function insertAtCursor(text: string) {
     const el = editor.current;
     if (!el) return;
     el.focus();
-    if (!document.execCommand("insertText", false, text)) {
-      const s = el.selectionStart;
-      const e = el.selectionEnd;
-      changeTab({ sql: tab.sql.slice(0, s) + text + tab.sql.slice(e) });
-      window.requestAnimationFrame(() => el.setSelectionRange(s + text.length, s + text.length));
-    }
+    el.insertAtCursor(text);
     if (narrow) setSheet("");
   }
   /** Open *statement* in a new tab, selected, without running it. */
@@ -2329,10 +2309,7 @@ export const QueryLab = forwardRef<
     ]);
     setTabId(id);
     window.requestAnimationFrame(() => {
-      const el = editor.current;
-      if (!el) return;
-      el.focus();
-      el.setSelectionRange(0, body.length);
+      editor.current?.setSelection(0, body.length, { focus: true });
     });
   }
   /** Add *statement* at the end of the tab, selected, without running it. */
@@ -2343,41 +2320,27 @@ export const QueryLab = forwardRef<
     const trimmed = sql.replace(/\s+$/, "");
     const lead = !trimmed ? "" : !trimmed.endsWith(d) ? `${d}\n\n` : sql.endsWith("\n\n") ? "" : sql.endsWith("\n") ? "\n" : "\n\n";
     const at = sql.length + lead.length;
-    changeTab({ sql: sql + lead + body + d });
-    window.requestAnimationFrame(() => {
-      const el = editor.current;
-      if (!el) return;
-      el.focus();
-      el.setSelectionRange(at, at + body.length);
-    });
+    const el = editor.current;
+    // One replacement, one undo step; onChange carries the text to the tab.
+    if (!el || !el.replaceRange(sql.length, sql.length, lead + body + d, { select: { start: at, end: at + body.length }, focus: true }))
+      changeTab({ sql: sql + lead + body + d });
   }
   /** Add *statement* at the end of the tab and run it. */
   function appendAndRun(statement: string) {
-    const el = editor.current;
-    if (!el) return;
     const sql = tab.sql;
     const d = sql.trim() ? delimiterAt(sql, sql.length, runtimeRef.current[tab.id]?.session?.backslash_escapes ?? true) : ";";
     const trimmed = sql.replace(/\s+$/, "");
     const lead = !trimmed ? "" : !trimmed.endsWith(d) ? `${d}\n\n` : sql.endsWith("\n\n") ? "" : sql.endsWith("\n") ? "\n" : "\n\n";
     const addition = lead + statement + d;
-    el.focus();
-    el.setSelectionRange(sql.length, sql.length);
-    if (!document.execCommand("insertText", false, addition)) changeTab({ sql: sql + addition });
     const at = sql.length + lead.length;
-    el.setSelectionRange(at, at);
+    const el = editor.current;
+    if (!el || !el.replaceRange(sql.length, sql.length, addition, { select: { start: at, end: at }, focus: true }))
+      changeTab({ sql: sql + addition });
     if (narrow) setSheet("");
     runSql(false, sql + addition, at);
   }
   function jump(offset: number) {
-    const el = editor.current;
-    if (!el) return;
-    const at = Math.max(0, Math.min(offset, tab.sql.length));
-    el.focus();
-    el.setSelectionRange(at, at);
-    let line = 0;
-    for (let i = 0; i < at; i++) if (tab.sql[i] === "\n") line++;
-    el.scrollTop = Math.max(0, (line - 3) * 20);
-    syncCursor();
+    editor.current?.setSelection(offset, offset, { focus: true, scroll: "center" });
   }
 
   // ---- Format SQL ------------------------------------------------------------
@@ -2395,29 +2358,35 @@ export const QueryLab = forwardRef<
     const el = editor.current;
     if (!el || formatBusy.current) return;
     const id = tab.id;
-    const sql = el.value;
-    const whole = el.selectionStart === el.selectionEnd;
-    const from = whole ? 0 : el.selectionStart;
-    const to = whole ? sql.length : el.selectionEnd;
+    if (el.getSelections().length > 1) {
+      note(id, "Format SQL works with one cursor or selection; several are set. Keep one and try again.", true);
+      return;
+    }
+    const sql = el.getValue();
+    const first = el.getSelection();
+    const whole = first.start === first.end;
+    const from = whole ? 0 : first.start;
+    const to = whole ? sql.length : first.end;
     formatBusy.current = true;
     setFormatting(true);
     note(id, whole ? "Formatting the tab…" : "Formatting the selection…");
     try {
       const { formatEditorText, describeKept, mapOffset } = await import("./sqlFormat");
-      if (el.value !== sql || tabRef.current !== id) {
+      if (el.getValue() !== sql || tabRef.current !== id) {
         note(id, "The text changed while Format SQL was starting, so nothing was changed. Try again.", true);
         return;
       }
       // Hidden meanwhile (Query digest, table data, another place): a hidden
-      // field cannot take the edit as one undo step, so nothing changes.
-      if (!el.offsetParent) {
+      // editor cannot take the edit as one undo step, so nothing changes.
+      if (!el.isShown()) {
         note(id, "The editor was hidden while Format SQL was starting, so nothing was changed. Try again.", true);
         return;
       }
       // A selection made, changed or cleared meanwhile changes what to
       // format: nothing changes. A caret moved without selecting is kept.
-      const caret = el.selectionStart;
-      if ((caret === el.selectionEnd) !== whole || (!whole && (caret !== from || el.selectionEnd !== to))) {
+      const caret = el.getSelection().start;
+      const end = el.getSelection().end;
+      if (el.getSelections().length > 1 || (caret === end) !== whole || (!whole && (caret !== from || end !== to))) {
         note(id, "The selection changed while Format SQL was starting, so nothing was changed. Try again.", true);
         return;
       }
@@ -2432,25 +2401,13 @@ export const QueryLab = forwardRef<
         note(id, outcome.message, outcome.status === "refused");
         return;
       }
-      const next = sql.slice(0, from) + outcome.text + sql.slice(to);
-      el.focus();
-      el.setSelectionRange(from, to);
-      // One edit through the browser keeps it a single undo step; an edit the
-      // browser refuses is not replaced by one that cannot be undone.
-      if (!document.execCommand("insertText", false, outcome.text)) {
-        note(id, "Format SQL changed nothing: the browser did not accept the edit.", true);
-        return;
-      }
-      if (el.value !== next) changeTab({ sql: next }, id);
-      const place = () => {
-        if (whole) {
-          const at = mapOffset(sql, outcome.text, caret);
-          el.setSelectionRange(at, at);
-        } else el.setSelectionRange(from, from + outcome.text.length);
-        syncCursor();
-      };
-      if (el.value === next) place();
-      else window.requestAnimationFrame(place);
+      // One replacement, one undo step: the caret keeps its place among the
+      // statement's characters, or the formatted text stays selected.
+      const at = whole ? mapOffset(sql, outcome.text, caret) : from;
+      el.replaceRange(from, to, outcome.text, {
+        select: { start: at, end: whole ? at : from + outcome.text.length },
+        focus: true,
+      });
       const count = outcome.formatted === 1 ? "1 statement" : `${outcome.formatted} statements`;
       note(id, `${whole ? `Formatted ${count}` : "Formatted the selection"}${outcome.kept.length ? `; ${describeKept(outcome.kept)}` : ""}. ${MAC ? "⌘Z" : "Ctrl+Z"} undoes it.`);
     } catch (e) {
@@ -2780,8 +2737,10 @@ export const QueryLab = forwardRef<
             className="query-tab-panel"
             aria-labelledby={`query-tab-${Math.max(0, tabs.indexOf(tab))}`}
             onKeyDown={(e) => {
-              // Escape that ends an input method's composition is not Stop.
-              if (e.key === "Escape" && !e.nativeEvent.isComposing && e.keyCode !== 229 && rt.running && !pending && !closing) {
+              // Escape that ends an input method's composition is not Stop,
+              // and neither is one the editor consumed (closing suggestions
+              // or collapsing extra cursors).
+              if (e.key === "Escape" && !e.defaultPrevented && !e.nativeEvent.isComposing && e.keyCode !== 229 && rt.running && !pending && !closing) {
                 e.preventDefault();
                 void stop();
               }
@@ -3068,9 +3027,14 @@ export const QueryLab = forwardRef<
                   <p>
                     {keys(false)} runs the selection or the statement at the cursor; {keys(true)} runs every
                     statement. {keys(false, "E")} explains; {keys(true, "E")} runs analysis. <kbd>Esc</kbd> stops a run.
-                    Ctrl+Space opens SQL suggestions; Ctrl+Shift+Space also works when the system reserves Ctrl+Space.
                     {" "}{FORMAT_KEYS} formats the selection or the whole tab.
                   </p>
+                  <ul className="editor-shortcut-list">
+                    {EDITOR_SHORTCUTS.filter((row) => !row.setting || editorSettings[row.setting]).map((row) => {
+                      const name = MAC ? row.mac : row.other;
+                      return name ? <li key={row.id}><kbd>{editorKeyText(name)}</kbd> {row.label}</li> : null;
+                    })}
+                  </ul>
                   <p>Right-click a tab, or press Shift+F10 on it, to rename, duplicate, save or close it.</p>
                   <p>
                     In a result, click a cell; Shift+click or Shift+arrows select a range, a row number selects its row,
@@ -3224,27 +3188,39 @@ export const QueryLab = forwardRef<
             )}
             <SqlEditor
               ref={editor}
+              docId={tab.id}
+              docIds={docIds}
               value={tab.sql}
               completionConnection={connectionFor(tab)}
-              completionScope={tab.id}
+              engine={engine === "mysql" || engine === "mariadb" ? engine : undefined}
+              serverVersion={version}
               backslashEscapes={rt.session?.backslash_escapes ?? true}
-              onChange={(sql, start, end) => {
-                sqlNow.current = sql;
+              onChange={(sql, sel) => {
+                // The editor reports an edit in the same task, not through a
+                // React event: hand the tabs over now, so the beforeunload
+                // check (main.tsx's tabsNow ref) sees the edit even when the
+                // render this queues has not run yet.
+                tabsNowRef.current?.(tabsRef.current.map((t) => (t.id === tabRef.current ? { ...t, sql } : t)));
                 changeTab({ sql });
-                if (typeof start === "number" && typeof end === "number") {
-                  setCursor((c) => (c.start === start && c.end === end ? c : { start, end }));
-                }
+                setCursor((c) => (c.start === sel.start && c.end === sel.end ? c : { start: sel.start, end: sel.end }));
               }}
-              onSelect={syncCursor}
-              caret={cursor}
+              onSelectionChange={(sel, count) => {
+                setCursor((c) => (c.start === sel.start && c.end === sel.end ? c : { start: sel.start, end: sel.end }));
+                setCursorCount(count);
+              }}
+              onFocus={() => {
+                touched.current = true;
+              }}
+              initialSelection={tab.selection}
               statement={statementMark}
               flash={lit}
               error={errorMark}
               height={editorHeight}
               describedBy={scopeLabel ? "run-scope" : undefined}
               placeholder="Write SQL. Run sends the statement at the cursor."
+              settings={editorSettings}
               onKeyDown={(e) => {
-                if (e.nativeEvent.isComposing) return;
+                if (e.isComposing) return;
                 const enter = (e.metaKey || e.ctrlKey) && !e.altKey && e.key === "Enter";
                 const explain = (MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey) && !e.altKey && e.key.toLowerCase() === "e";
                 if (enter) {
@@ -3417,7 +3393,7 @@ export const QueryLab = forwardRef<
             tabName={t.name}
             fields={fillFields(t.sql, t.fill, t.fill_lists)}
             parameters={t.parameters}
-            returnFocus={() => editor.current}
+            returnFocus={() => editor.current?.element ?? null}
             onUse={(parameters, filled, remaining) => applyFillValues(t.id, parameters, filled, remaining)}
             onLater={editParametersByHand}
             onClose={() => setFillFormTab(null)}

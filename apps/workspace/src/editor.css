@@ -384,6 +384,16 @@
 .editor-feedback {
   color: var(--info-text);
 }
+/* The generated shortcut list in the Query editor shortcuts popover. */
+.editor-shortcut-list {
+  margin: 0;
+  padding-left: var(--space-5);
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+}
+.editor-shortcut-list li + li {
+  margin-top: 2px;
+}
 
 /* Banners: the session ended, or it is on another connection. */
 .editor-banner {
@@ -425,10 +435,12 @@
   color: var(--accent-text);
 }
 
-/* ---- The SQL text area and its layers ------------------------------------ */
-/* Every layer repeats the textarea's text metrics exactly. */
+/* ---- The SQL editor ------------------------------------------------------ */
 /* Its height comes from the splitter (QueryLab caps it so the results keep
-   three rows); in a short window it may still give way to the results. */
+   three rows); in a short window it may still give way to the results. The
+   CodeMirror surface itself is styled in editor-cm.css; the marks below
+   (.tok-*, .sql-current, .sql-match, .sql-unmatched, .sql-error-mark) are the
+   decorations that CSS draws. */
 .sql-editor-wrap {
   flex: 0 1 auto;
   position: relative;
@@ -440,107 +452,8 @@
   background: var(--surface);
   overflow: hidden;
 }
-.sql-gutter {
-  flex: none;
-  width: 48px;
-  overflow: hidden;
-  background: var(--surface-subtle);
-  border-right: 1px solid var(--line);
-  color: var(--ink-faint);
-  font-family: var(--font-mono);
-  font-size: var(--text-sm);
-  line-height: var(--editor-line-h);
-  text-align: right;
-  user-select: none;
-}
-.sql-gutter-lines {
-  padding: var(--space-3) var(--space-2) var(--space-6) 0;
-  white-space: pre;
-  will-change: transform;
-}
-.sql-gutter-lines > span {
-  display: block;
-  padding-right: 2px;
-}
-.sql-gutter-lines > .is-current {
-  color: var(--accent-text);
-  font-weight: 600;
-}
-.sql-gutter-lines > .is-error {
-  color: var(--danger-text);
-  font-weight: 600;
-}
-.sql-surface {
-  position: relative;
-  flex: 1 1 auto;
-  min-width: 0;
-}
-.sql-editor,
-.sql-layer {
-  margin: 0;
-  padding: var(--space-3) var(--space-4) var(--space-6);
-  font-family: var(--font-mono);
-  font-size: var(--text-md);
-  line-height: var(--editor-line-h);
-  tab-size: 2;
-  letter-spacing: 0;
-  white-space: pre;
-  overflow-wrap: normal;
-  font-variant-ligatures: none;
-}
-.sql-highlight,
-.sql-backdrop {
-  position: absolute;
-  inset: 0;
-  overflow: hidden;
-  pointer-events: none;
-}
-.sql-layer {
-  width: max-content;
-  min-width: 100%;
-  color: var(--ink);
-  will-change: transform;
-}
-.sql-backdrop .sql-layer {
-  color: transparent;
-}
-.sql-editor {
-  position: relative;
-  z-index: 1;
-  display: block;
-  width: 100%;
-  height: 100%;
-  border: 0;
-  border-radius: 0;
-  outline: none;
-  resize: none;
-  overflow: auto;
-  background: transparent;
-  color: var(--ink);
-  caret-color: var(--ink);
-}
-/* The active line and gutter identify focus without boxing the canvas. */
-.sql-editor:focus-visible {
-  outline: none;
-}
 .sql-editor-wrap:focus-within .sql-current {
   background: var(--accent-subtle, var(--editor-current));
-}
-/* With colors on, the textarea's own text is invisible: the layer draws it. */
-.sql-editor-wrap.is-colored .sql-editor {
-  color: transparent;
-}
-.sql-editor-wrap.is-colored.is-composing .sql-editor {
-  color: var(--ink);
-}
-.sql-editor::selection {
-  background: var(--editor-selection);
-}
-.sql-editor::placeholder {
-  color: var(--ink-faint);
-}
-.sql-editor-wrap.is-colored .sql-editor::placeholder {
-  color: var(--ink-faint);
 }
 .tok-keyword {
   color: var(--syntax-keyword);
@@ -580,22 +493,6 @@
 .sql-error-mark {
   text-decoration: wavy underline var(--danger);
   text-decoration-skip-ink: none;
-}
-/* The statement that runs, highlighted briefly behind the text. */
-.sql-backdrop mark {
-  color: transparent;
-  background: var(--accent-soft);
-  border-radius: var(--radius-sm);
-  box-shadow: 0 0 0 2px var(--accent-soft);
-  -webkit-box-decoration-break: clone;
-  box-decoration-break: clone;
-  animation: sql-flash 0.2s ease-out;
-}
-@keyframes sql-flash {
-  from {
-    background: transparent;
-    box-shadow: none;
-  }
 }
 
 /* Local split buttons until the shared kit supports controlled disclosure. */
@@ -1339,13 +1236,6 @@
 /* The 720 px window (the app's minimum): the editor and its results keep
    one window-high column, split by the splitter. */
 @media (max-width: 720px) {
-  .sql-gutter {
-    width: 36px;
-  }
-  .sql-editor,
-  .sql-layer {
-    padding: var(--space-2) var(--space-3) var(--space-5);
-  }
   /* With its " · " separator. */
   .result-meta > span:has(> .result-sortnote) {
     display: none;
