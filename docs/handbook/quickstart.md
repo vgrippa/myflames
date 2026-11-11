@@ -8,7 +8,7 @@ myflames is a desktop performance workspace for MySQL, MariaDB and Percona Serve
 
 Download the signed, notarized `.dmg` from [official downloads](https://github.com/vgrippa/myflames/releases/latest), open it, and drag `myflames.app` to Applications. Open the app from Applications.
 
-The current downloadable release checked for this site is **3.3.4**. A macOS Intel binary is not advertised in this release.
+The current downloadable release checked for this site is **3.4.0**. A macOS Intel binary is not advertised in this release.
 
 ### Windows x64, preview
 
